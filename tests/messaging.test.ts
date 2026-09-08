@@ -35,7 +35,9 @@ import {
   resolveInboxDeclaration,
   selectInboxDeclarationCreatedAt,
   selectPrivateMessageDeliveryRoute,
+  setInboxCoordinatedPendingCheckpoint,
   sharedInboxDiscoveryRelayUrls,
+  stageInboxDeclarationDistribution,
   unwrapGiftWrap,
   type GiftUnwrapFn,
   type InboxDeclarationDistributionRepository,
@@ -783,6 +785,82 @@ describe("publishPrivateMessage", () => {
     }
   })
 
+  it("uses an exact coordinator-authorized pending inbox for a kind-14 sender self-copy", async () => {
+    __resetInboxRelayCache()
+    const senderRelay = "wss://sender.inbox.conduit.market"
+    const recipientRelay = "wss://recipient.inbox.conduit.market"
+    const siblingSharedRelay = sharedInboxDiscoveryRelayUrls()[1]!
+    const publishRelays: string[][] = []
+    const evidenceRepository =
+      createInMemoryInboxDeclarationEvidenceRepository()
+    const pendingEvent = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+      senderRelay,
+    ])
+    await stageInboxDeclarationDistribution(
+      {
+        pubkey: INBOX_OWNER,
+        signedEvent: pendingEvent,
+        publishRelayUrls: [SHARED_INBOX_RELAY, siblingSharedRelay],
+        coordinatedUpdateId: "network-update",
+        expectedCurrentEventId: null,
+      },
+      evidenceRepository
+    )
+    await mergeInboxDeclarationEvidence(
+      {
+        pubkey: INBOX_OWNER,
+        signedEvent: pendingEvent,
+        sourceRelayUrls: [SHARED_INBOX_RELAY],
+        sharedSourceRelayUrls: [SHARED_INBOX_RELAY],
+        observedAt: 1_000,
+        lookup: {
+          observedAt: 1_000,
+          coverage: "partial",
+          hadEvent: true,
+          eventId: pendingEvent.id,
+        },
+      },
+      evidenceRepository
+    )
+    setInboxCoordinatedPendingCheckpoint(INBOX_OWNER, {
+      eventId: pendingEvent.id,
+      updateId: "network-update",
+    })
+
+    const result = await publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+        pubkey: INBOX_OWNER,
+        tags: [["p", INBOX_PEER]],
+      }),
+      senderPubkey: INBOX_OWNER,
+      recipientPubkey: INBOX_PEER,
+      signer: {
+        user: async () => ({ pubkey: INBOX_OWNER }),
+      } as unknown as NDKSigner,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      recipientInboxRelays: [recipientRelay],
+      inspectOwnInboxReadiness: async (pubkey) =>
+        await inspectRetainedOwnPrivateMessageRelayReadiness(pubkey, {
+          evidenceRepository,
+        }),
+      giftWrapFn: (async (_message, recipient) =>
+        wrap(`wrap-${recipient.pubkey}`)) as never,
+      publishFn: (async (_event, options) => {
+        const relayUrls = [...(options.exclusiveRelayUrls ?? [])]
+        publishRelays.push(relayUrls)
+        return {
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        } as never
+      }) as never,
+    })
+
+    expect(publishRelays).toEqual([[recipientRelay], [senderRelay]])
+    expect(result.selfCopyError).toBeNull()
+    expect(result.selfDeliveryStatus).toBe("full_success")
+    __resetInboxRelayCache()
+  })
+
   it("delivers one scoped guest order companion without inspecting a guest inbox", async () => {
     const { companion, scope } = guestOrderCompanionFixture()
     const wrappedRecipients: string[] = []
@@ -1117,6 +1195,99 @@ describe("publishPrivateMessage", () => {
     expect(result.selfCopyError).toBeNull()
     expect(result.selfDeliveryStatus).toBe("full_success")
     expect(result.selfDelivery).toEqual({})
+  })
+
+  it("reloads the authenticated sender cutoff after wrapping before publishing", async () => {
+    const removed = "wss://removed-by-owner.conduit.market"
+    const permitted = "wss://recipient-inbox.conduit.market"
+    const calls: string[] = []
+    const publishRelays: string[][] = []
+    let removalStaged = false
+
+    await publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+        pubkey: INBOX_OWNER,
+        tags: [["p", INBOX_PEER]],
+      }),
+      senderPubkey: INBOX_OWNER,
+      recipientPubkey: INBOX_PEER,
+      signer: {
+        user: async () => ({ pubkey: INBOX_OWNER }),
+      } as unknown as NDKSigner,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      selfCopy: false,
+      inspectOwnInboxReadiness: readyOwnInbox,
+      loadAccountRelayCutoff: async (pubkey) => {
+        calls.push(`cutoff:${pubkey}`)
+        return {
+          pubkey,
+          excludedRelayUrls: removalStaged ? [removed] : [],
+        }
+      },
+      resolveInboxRelays: async (pubkey) => {
+        calls.push(`declaration:${pubkey}`)
+        return [removed, permitted]
+      },
+      giftWrapFn: (async () => {
+        calls.push("wrap")
+        removalStaged = true
+        return wrap("recipient-wrap")
+      }) as never,
+      publishFn: (async (_event, options) => {
+        calls.push("publish")
+        publishRelays.push([...(options.exclusiveRelayUrls ?? [])])
+        return {
+          successfulRelayUrls: [permitted],
+          failedRelayUrls: [],
+        } as never
+      }) as never,
+    })
+
+    expect(calls).toEqual([
+      `cutoff:${INBOX_OWNER}`,
+      `declaration:${INBOX_PEER}`,
+      "wrap",
+      `cutoff:${INBOX_OWNER}`,
+      "publish",
+    ])
+    expect(publishRelays).toEqual([[permitted]])
+  })
+
+  it("does no relay discovery, wrapping, or publishing when the durable sender cutoff is unavailable", async () => {
+    const calls: string[] = []
+
+    await expect(
+      publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          pubkey: INBOX_OWNER,
+          tags: [["p", INBOX_PEER]],
+        }),
+        senderPubkey: INBOX_OWNER,
+        recipientPubkey: INBOX_PEER,
+        signer: {
+          user: async () => ({ pubkey: INBOX_OWNER }),
+        } as unknown as NDKSigner,
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        selfCopy: false,
+        loadAccountRelayCutoff: async () => {
+          calls.push("cutoff")
+          throw new Error("cutoff store unavailable")
+        },
+        resolveInboxRelays: async () => {
+          calls.push("declaration")
+          return ["wss://unexpected.example"]
+        },
+        giftWrapFn: (async () => {
+          calls.push("wrap")
+          return wrap("unexpected")
+        }) as never,
+        publishFn: (async () => {
+          calls.push("publish")
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toThrow("cutoff store unavailable")
+    expect(calls).toEqual(["cutoff"])
   })
 
   it("reports exact zero, partial, and full self-copy delivery diagnostics", async () => {

@@ -338,6 +338,41 @@ describe("Market and Merchant protected inbox integration", () => {
     expect(persisted).not.toContain("authentication")
   })
 
+  it("reloads the account cutoff after inbox discovery before protected reads", async () => {
+    const removedRelay = "wss://removed-inbox.example"
+    const activeRelay = "wss://active-inbox.example"
+    const readPlans: string[][] = []
+    let cutoffLoads = 0
+
+    __setCommerceTestOverrides({
+      getNdk: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => [removedRelay, activeRelay],
+      loadAccountRelayCutoff: async (pubkey) => {
+        cutoffLoads += 1
+        return {
+          pubkey,
+          excludedRelayUrls: cutoffLoads === 1 ? [] : [removedRelay],
+        }
+      },
+      readProtectedInbox: async (options) => {
+        readPlans.push([...options.relayUrls])
+        return emptyProtectedRead()
+      },
+      getCachedOrderMessages: async () => [],
+      putCachedOrderMessages: async () => undefined,
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+    })
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+
+    await getMerchantConversationList({ principalPubkey: MERCHANT })
+
+    expect(cutoffLoads).toBe(2)
+    expect(readPlans).toHaveLength(1)
+    expect(readPlans[0]).toContain(activeRelay)
+    expect(readPlans[0]).not.toContain(removedRelay)
+  })
+
   it("keeps cached orders visible when every relay rejects authentication", async () => {
     rejectAuthentication = true
     __setCommerceTestOverrides({

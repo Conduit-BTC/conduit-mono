@@ -853,6 +853,47 @@ describe("planPublishRelays", () => {
     expect(attempts).toEqual([[`${exclusiveRelay}/`], [`${exclusiveRelay}/`]])
   })
 
+  it("revalidates exclusive relays before a critical retry", async () => {
+    const removedRelay = "wss://removed-inbox.conduit.market"
+    const permittedRelay = "wss://permitted-inbox.conduit.market"
+    const attempts: string[][] = []
+    let removalStaged = false
+    const fakeEvent = signedTestEvent({
+      kind: EVENT_KINDS.GIFT_WRAP,
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        if (attempts.length === 1) {
+          removalStaged = true
+          throw new Error("first attempt timed out")
+        }
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+
+    const result = await publishWithPlanner(fakeEvent, {
+      intent: "recipient_event",
+      authorPubkey: "alice",
+      recipientPubkeys: ["bob"],
+      deliveryMode: "critical",
+      exclusiveRelayUrls: [removedRelay, permittedRelay],
+      revalidateExclusiveRelayUrls: async (relayUrls) =>
+        relayUrls.filter(
+          (relayUrl) => !removalStaged || !relayUrl.startsWith(removedRelay)
+        ),
+    })
+
+    expect(attempts).toEqual([
+      [`${removedRelay}/`, `${permittedRelay}/`],
+      [`${permittedRelay}/`],
+    ])
+    expect(result.successfulRelayUrls).toEqual([permittedRelay])
+    expect(result.failedRelayUrls).toEqual([removedRelay])
+  })
+
   it("publishes an immutable signed snapshot over one isolated socket", async () => {
     const fakeWebSocket = installRelayPublishWebSocket()
     const relayUrl = "wss://durable-delete.conduit.market"

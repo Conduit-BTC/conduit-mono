@@ -173,6 +173,92 @@ describe("order relay delivery retry", () => {
     expect(attempts).toEqual(["wss://retry.conduit.market/inbox"])
   })
 
+  it("reloads the active buyer cutoff before each persisted relay attempt", async () => {
+    const pending = lifecycle()
+    pending.orderRelayDelivery!.relayDelivery.push({
+      relayUrl: "wss://permitted.conduit.market",
+      source: "declared",
+      status: "timed_out",
+      attemptCount: 1,
+    })
+    const store = repository(pending)
+    const attempts: string[] = []
+    let cutoffLoads = 0
+
+    await retryOrderRelayDelivery("order-id", "buyer", {
+      repository: store.repository,
+      leaseOwner: "worker",
+      now: () => 100,
+      loadAccountRelayCutoff: async (pubkey) => {
+        cutoffLoads += 1
+        return {
+          pubkey,
+          excludedRelayUrls:
+            cutoffLoads === 1 ? [] : ["wss://failed.conduit.market"],
+        }
+      },
+      publisher: async ({ relayUrl }) => {
+        attempts.push(relayUrl)
+        return "acked"
+      },
+    })
+
+    expect(attempts).toEqual(["wss://permitted.conduit.market"])
+    expect(cutoffLoads).toBe(3)
+  })
+
+  it("does not acquire a delivery lease when the durable cutoff is unavailable", async () => {
+    const store = repository(lifecycle())
+    const before = store.read()
+    let attempts = 0
+
+    await expect(
+      retryOrderRelayDelivery("order-id", "buyer", {
+        repository: store.repository,
+        leaseOwner: "worker",
+        now: () => 100,
+        loadAccountRelayCutoff: async () => {
+          throw new Error("cutoff store unavailable")
+        },
+        publisher: async () => {
+          attempts += 1
+          return "acked"
+        },
+      })
+    ).rejects.toThrow("cutoff store unavailable")
+    expect(attempts).toBe(0)
+    expect(store.read()).toEqual(before)
+  })
+
+  it("releases its lease when cutoff revalidation fails before a retry", async () => {
+    const store = repository(lifecycle())
+    let cutoffLoads = 0
+    let attempts = 0
+
+    await expect(
+      retryOrderRelayDelivery("order-id", "buyer", {
+        repository: store.repository,
+        leaseOwner: "worker",
+        now: () => 100,
+        loadAccountRelayCutoff: async (pubkey) => {
+          cutoffLoads += 1
+          if (cutoffLoads > 1) throw new Error("cutoff store unavailable")
+          return { pubkey, excludedRelayUrls: [] }
+        },
+        publisher: async () => {
+          attempts += 1
+          return "acked"
+        },
+      })
+    ).rejects.toThrow("cutoff store unavailable")
+
+    expect(attempts).toBe(0)
+    expect(store.read().orderRelayDelivery?.deliveryLeaseOwner).toBeUndefined()
+    expect(
+      store.read().orderRelayDelivery?.deliveryLeaseExpiresAt
+    ).toBeUndefined()
+  })
+
   it("refuses background replay for a guest or different active account", async () => {
     for (const candidate of [
       lifecycle({ buyerIdentityKind: "guest_ephemeral" }),

@@ -31,12 +31,14 @@ import {
   type PublishPrivateMessageResult,
 } from "./messaging"
 import { getNdk } from "./ndk"
+import { loadAccountPrivateMessageRelayCutoff } from "./network-preference-update-state"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import type {
   ParsedEventMarketPrivateMessage,
   ParsedOrderMessage,
 } from "./orders"
 import {
+  applyAccountPrivateMessageRelayCutoff,
   MAX_DECLARED_INBOX_WRITE_RELAYS,
   resolveInboxDeclaration,
   type ResolveInboxDeclarationOptions,
@@ -1294,23 +1296,47 @@ export async function retryEventMarketPrivateDelivery(input: {
   deliveryProgress?: EventMarketPrivateDeliveryProgress
   recipientInboxRelays?: readonly string[]
   senderInboxRelays?: readonly string[]
+  /** Exact-account durable privacy policy loader; injectable for tests. */
+  loadAccountRelayCutoff?: typeof loadAccountPrivateMessageRelayCutoff
   /** Shared declaration read seam for deterministic delivery tests/adapters. */
   inboxDeclarationOptions?: ResolveInboxDeclarationOptions
   publishFn?: typeof publishWithPlanner
 }): Promise<RetryEventMarketPrivateDeliveryResult> {
   assertValidEventMarketPrivateDeliveryRecord(input.record)
+  const loadRelayCutoff =
+    input.loadAccountRelayCutoff ?? loadAccountPrivateMessageRelayCutoff
+  let relayCutoff = await loadRelayCutoff(input.record.senderPubkey)
+  const applyRelayCutoff = (
+    relayUrls: readonly string[],
+    cutoff = relayCutoff
+  ) =>
+    applyAccountPrivateMessageRelayCutoff(
+      input.record.senderPubkey,
+      relayUrls,
+      cutoff
+    )
+  const revalidatePrivateRelayUrls = async (relayUrls: readonly string[]) =>
+    applyRelayCutoff(
+      relayUrls,
+      await loadRelayCutoff(input.record.senderPubkey)
+    )
   let deliveryProgress = input.deliveryProgress
     ? parseEventMarketPrivateDeliveryProgress(
         input.deliveryProgress,
         input.record
       )
     : createEventMarketPrivateDeliveryProgress(input.record)
-  const recipientRelayUrls = input.recipientInboxRelays
+  const recipientRelayCandidates = input.recipientInboxRelays
     ? declaredInboxWriteRelayUrls(input.recipientInboxRelays)
     : await strictInboxRelays(
         input.record.recipientPubkey,
         input.inboxDeclarationOptions
       )
+  relayCutoff = await loadRelayCutoff(input.record.senderPubkey)
+  const recipientRelayUrls = applyRelayCutoff(
+    recipientRelayCandidates,
+    relayCutoff
+  )
   if (recipientRelayUrls.length === 0) {
     throw new Error("Private-message recipient inbox is not currently usable.")
   }
@@ -1330,6 +1356,7 @@ export async function retryEventMarketPrivateDelivery(input: {
           authenticatedPubkey: input.record.senderPubkey,
           recipientPubkeys: [input.record.recipientPubkey],
           exclusiveRelayUrls: pendingRecipientRelayUrls,
+          revalidateExclusiveRelayUrls: revalidatePrivateRelayUrls,
           deliveryMode: "critical",
         }
       )
@@ -1358,12 +1385,19 @@ export async function retryEventMarketPrivateDelivery(input: {
   let selfCopyError: string | null = null
   if (input.record.signedSelfWrap) {
     try {
-      const senderRelayUrls = input.senderInboxRelays
+      const senderRelayCandidates = input.senderInboxRelays
         ? declaredInboxWriteRelayUrls(input.senderInboxRelays)
         : await strictInboxRelays(
             input.record.senderPubkey,
             input.inboxDeclarationOptions
           )
+      const currentRelayCutoff = await loadRelayCutoff(
+        input.record.senderPubkey
+      )
+      const senderRelayUrls = applyRelayCutoff(
+        senderRelayCandidates,
+        currentRelayCutoff
+      )
       if (senderRelayUrls.length === 0) {
         throw new Error("Sender inbox is not currently usable.")
       }
@@ -1381,6 +1415,7 @@ export async function retryEventMarketPrivateDelivery(input: {
               authenticatedPubkey: input.record.senderPubkey,
               recipientPubkeys: [input.record.senderPubkey],
               exclusiveRelayUrls: pendingSelfRelayUrls,
+              revalidateExclusiveRelayUrls: revalidatePrivateRelayUrls,
               deliveryMode: "critical",
             }
           )

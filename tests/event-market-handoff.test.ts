@@ -1034,6 +1034,49 @@ describe("event-market private handoff delivery", () => {
     ).rejects.toThrow("signer does not match sender")
   })
 
+  it("reloads the sender cutoff before retrying each exact private wrap", async () => {
+    const removedRelay = "wss://removed.inbox.relay.dev"
+    const recipientRelay = "wss://organizer.inbox.relay.dev"
+    const senderRelay = "wss://merchant.inbox.relay.dev"
+    const attemptedTargets: string[][] = []
+    let cutoffLoads = 0
+
+    await retryEventMarketPrivateDelivery({
+      record: readyDeliveryRecord(),
+      recipientInboxRelays: [removedRelay, recipientRelay],
+      senderInboxRelays: [removedRelay, senderRelay],
+      loadAccountRelayCutoff: async (pubkey) => {
+        cutoffLoads += 1
+        return {
+          pubkey,
+          excludedRelayUrls: cutoffLoads === 1 ? [] : [removedRelay],
+        }
+      },
+      publishFn: (async (_event, options) => {
+        const targets = [...(options.exclusiveRelayUrls ?? [])]
+        attemptedTargets.push(targets)
+        return successfulDelivery(targets)
+      }) as never,
+    })
+
+    expect(attemptedTargets).toEqual([[recipientRelay], [senderRelay]])
+    expect(cutoffLoads).toBe(3)
+
+    await expect(
+      retryEventMarketPrivateDelivery({
+        record: readyDeliveryRecord(),
+        recipientInboxRelays: [recipientRelay],
+        senderInboxRelays: [senderRelay],
+        loadAccountRelayCutoff: async () => {
+          throw new Error("cutoff store unavailable")
+        },
+        publishFn: (async () => {
+          throw new Error("unexpected publish")
+        }) as never,
+      })
+    ).rejects.toThrow("cutoff store unavailable")
+  })
+
   it("tracks only the exact configured E2E loopback relay for private retries", async () => {
     const isolatedRelayUrl = "ws://127.0.0.1:7777"
     const otherLoopbackRelayUrl = "ws://127.0.0.1:7788"
@@ -2055,6 +2098,135 @@ describe("event-market organizer inbox readiness", () => {
       )
     ).toEqual(["organizer_fulfillment_receipt"])
     expect(seenPlans.at(-1)).toEqual([declaredRelay])
+  })
+
+  it("reads strict handoffs from pending and active cutover inboxes only", async () => {
+    const pendingRelay = "wss://pending.inbox.relay.dev"
+    const recoveryRelay = "wss://recovery.inbox.relay.dev"
+    const removedRelay = "wss://removed.inbox.relay.dev"
+    const compatibilityRelay = "wss://compatibility.relay.dev"
+    const wrap = signedWrap(ORGANIZER)
+    const seenPlans: string[][] = []
+    let cutoffLoads = 0
+    let phase: "pending" | "confirmed_grace" | "expired" = "pending"
+
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () => ({ signer: organizerSigner }) as never,
+      resolveInboxDeclaration: async (pubkey) =>
+        phase !== "pending"
+          ? {
+              pubkey,
+              state: "declared",
+              relayUrls: [pendingRelay],
+              cutoverRecoveryRelayUrls:
+                phase === "confirmed_grace"
+                  ? [removedRelay, recoveryRelay]
+                  : [],
+              stale: false,
+              fetchedAt: ISSUED_AT * 1_000,
+            }
+          : {
+              pubkey,
+              state: "distribution_pending",
+              relayUrls: [],
+              pendingRelayUrls: [pendingRelay, removedRelay],
+              retainedReadRelayUrls: [
+                pendingRelay,
+                removedRelay,
+                recoveryRelay,
+              ],
+              cutoverRecoveryRelayUrls: [removedRelay, recoveryRelay],
+              stale: true,
+              fetchedAt: ISSUED_AT * 1_000,
+            },
+      loadAccountRelayCutoff: async (pubkey) => {
+        cutoffLoads += 1
+        return {
+          pubkey,
+          excludedRelayUrls: cutoffLoads === 1 ? [] : [removedRelay],
+        }
+      },
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+        const relays = [...(options?.relayUrls ?? [])]
+        seenPlans.push(relays)
+        return {
+          events: [wrap],
+          attemptedRelayUrls: relays,
+          successfulRelayUrls: relays,
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }
+      },
+      giftUnwrap: async () => buildEventMarketReadyReceiptRumor(readyPayload()),
+    })
+
+    const pending = await getEventMarketPrivateMessageList(ORGANIZER)
+    expect(pending.messages.map((message) => message.type)).toEqual([
+      "organizer_fulfillment_receipt",
+    ])
+    expect(seenPlans).toEqual([[pendingRelay], [recoveryRelay]])
+    expect(seenPlans.flat()).not.toContain(removedRelay)
+    expect(seenPlans.flat()).not.toContain(compatibilityRelay)
+
+    phase = "confirmed_grace"
+    const confirmedResult = await getEventMarketPrivateMessageList(ORGANIZER)
+    expect(confirmedResult.messages.map((message) => message.type)).toEqual([
+      "organizer_fulfillment_receipt",
+    ])
+    expect(seenPlans.slice(-2)).toEqual([[pendingRelay], [recoveryRelay]])
+
+    phase = "expired"
+    const expiredResult = await getEventMarketPrivateMessageList(ORGANIZER)
+    expect(expiredResult.messages.map((message) => message.type)).toEqual([
+      "organizer_fulfillment_receipt",
+    ])
+    expect(seenPlans.at(-1)).toEqual([pendingRelay])
+    expect(cutoffLoads).toBe(11)
+  })
+
+  it("rechecks whole-removal cutoff before a strict pagination request", async () => {
+    const removedRelay = "wss://removed-during-scan.inbox.relay.dev"
+    const wrap = signedWrap(ORGANIZER)
+    let cutoffLoads = 0
+    let relayRequests = 0
+
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () => ({ signer: organizerSigner }) as never,
+      resolveInboxRelayUrls: async () => [removedRelay],
+      loadAccountRelayCutoff: async (pubkey) => {
+        cutoffLoads += 1
+        return {
+          pubkey,
+          // Load 1 precedes discovery, load 2 plans the scan, load 3 gates
+          // the first page, and load 4 simulates another tab removing the
+          // relay before the exact-boundary request.
+          excludedRelayUrls: cutoffLoads >= 4 ? [removedRelay] : [],
+        }
+      },
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+        relayRequests += 1
+        const relays = [...(options?.relayUrls ?? [])]
+        return {
+          events: [wrap],
+          attemptedRelayUrls: relays,
+          successfulRelayUrls: relays,
+          failedRelayUrls: [],
+          cappedRelayUrls: relays,
+        }
+      },
+      giftUnwrap: async () => buildEventMarketReadyReceiptRumor(readyPayload()),
+    })
+
+    const result = await getEventMarketPrivateMessageList(ORGANIZER)
+
+    expect(result.messages.map((message) => message.type)).toEqual([
+      "organizer_fulfillment_receipt",
+    ])
+    expect(result.inbox?.coverage).toBe("partial")
+    expect(relayRequests).toBe(1)
+    expect(cutoffLoads).toBe(4)
   })
 
   it("reads handoff wraps only from the exact configured E2E loopback", async () => {

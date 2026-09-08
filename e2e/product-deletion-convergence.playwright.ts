@@ -549,12 +549,14 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   productIndexes: string[]
   tombstoneIndexes: string[]
   ownerEvidenceIndexes: string[]
+  networkPreferenceUpdateIndexes: string[]
   product: Record<string, unknown> | undefined
   tombstone: Record<string, unknown> | undefined
   eventMarketEvidence: Record<string, unknown> | undefined
   merchantPendingInvoice: Record<string, unknown> | undefined
   outboxCount: number
   ownerEvidenceCount: number
+  networkPreferenceUpdateCount: number
 }> {
   return await page.evaluate(
     ({ addressId, merchantPubkey, eventId }) =>
@@ -566,7 +568,8 @@ async function readDatabaseMigrationState(page: Page): Promise<{
           const stores = Array.from(database.objectStoreNames)
           if (
             !stores.includes("productDeletionOutbox") ||
-            !stores.includes("ownerRelayListEvidence")
+            !stores.includes("ownerRelayListEvidence") ||
+            !stores.includes("networkPreferenceUpdates")
           ) {
             database.close()
             resolve({
@@ -576,12 +579,14 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               productIndexes: [],
               tombstoneIndexes: [],
               ownerEvidenceIndexes: [],
+              networkPreferenceUpdateIndexes: [],
               product: undefined,
               tombstone: undefined,
               eventMarketEvidence: undefined,
               merchantPendingInvoice: undefined,
               outboxCount: -1,
               ownerEvidenceCount: -1,
+              networkPreferenceUpdateCount: -1,
             })
             return
           }
@@ -591,6 +596,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               "productTombstones",
               "productDeletionOutbox",
               "ownerRelayListEvidence",
+              "networkPreferenceUpdates",
               "eventMarketEvidence",
               "merchantPendingInvoices",
             ],
@@ -602,6 +608,9 @@ async function readDatabaseMigrationState(page: Page): Promise<{
           const ownerEvidence = transaction.objectStore(
             "ownerRelayListEvidence"
           )
+          const networkPreferenceUpdates = transaction.objectStore(
+            "networkPreferenceUpdates"
+          )
           const eventMarkets = transaction.objectStore("eventMarketEvidence")
           const pendingInvoices = transaction.objectStore(
             "merchantPendingInvoices"
@@ -612,6 +621,8 @@ async function readDatabaseMigrationState(page: Page): Promise<{
           )
           const outboxCountRequest = outbox.count()
           const ownerEvidenceCountRequest = ownerEvidence.count()
+          const networkPreferenceUpdateCountRequest =
+            networkPreferenceUpdates.count()
           const eventMarketRequest = eventMarkets.get(
             `31990:${merchantPubkey}:migration-market`
           )
@@ -626,12 +637,17 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               productIndexes: Array.from(products.indexNames).sort(),
               tombstoneIndexes: Array.from(tombstones.indexNames).sort(),
               ownerEvidenceIndexes: Array.from(ownerEvidence.indexNames).sort(),
+              networkPreferenceUpdateIndexes: Array.from(
+                networkPreferenceUpdates.indexNames
+              ).sort(),
               product: productRequest.result,
               tombstone: tombstoneRequest.result,
               eventMarketEvidence: eventMarketRequest.result,
               merchantPendingInvoice: pendingInvoiceRequest.result,
               outboxCount: outboxCountRequest.result,
               ownerEvidenceCount: ownerEvidenceCountRequest.result,
+              networkPreferenceUpdateCount:
+                networkPreferenceUpdateCountRequest.result,
             }
             database.close()
             resolve(state)
@@ -648,7 +664,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", async ({
+test("Merchant upgrades v16 data through the v18 Network update store @merchant", async ({
   page,
 }) => {
   await page.route(
@@ -690,12 +706,15 @@ test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", asy
           hasOwnerRelayListEvidence: state.stores.includes(
             "ownerRelayListEvidence"
           ),
+          hasNetworkPreferenceUpdates: state.stores.includes(
+            "networkPreferenceUpdates"
+          ),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 170,
+      nativeVersion: 180,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
@@ -706,6 +725,7 @@ test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", asy
       hasShippingOptionFrontiers: true,
       hasMerchantPendingInvoices: true,
       hasOwnerRelayListEvidence: true,
+      hasNetworkPreferenceUpdates: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)
@@ -727,7 +747,13 @@ test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", asy
   ).toBe(true)
   expect(migrated.outboxCount).toBe(0)
   expect(migrated.ownerEvidenceCount).toBe(0)
+  expect(migrated.networkPreferenceUpdateCount).toBe(0)
   expect(migrated.ownerEvidenceIndexes).toEqual(["cachedAt"])
+  expect(migrated.networkPreferenceUpdateIndexes).toEqual([
+    "stagedAt",
+    "updateId",
+    "updatedAt",
+  ])
   expect(migrated.outboxIndexes).toEqual([
     "createdAt",
     "deliveryLeaseExpiresAt",

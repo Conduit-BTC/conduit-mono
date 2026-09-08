@@ -81,6 +81,14 @@ export interface PublishWithPlannerInput {
   replaceableSafety?: ReplaceablePublishSafetyOptions
   /** Abort before a relay attempt when the caller's authenticated session changed. */
   shouldContinue?: () => boolean
+  /**
+   * Revalidate an exclusive private-message target set immediately before
+   * each network attempt. The callback may remove targets but cannot add new
+   * ones; this lets a durable whole-removal cutoff stop a built-in retry.
+   */
+  revalidateExclusiveRelayUrls?: (
+    relayUrls: readonly string[]
+  ) => Promise<readonly string[]>
 }
 
 function hasAuthenticatedAuthorRelayContext(
@@ -677,6 +685,14 @@ export async function publishWithPlanner(
       "Gift wraps require an exclusive private-message relay plan."
     )
   }
+  if (
+    input.revalidateExclusiveRelayUrls &&
+    input.exclusiveRelayUrls === undefined
+  ) {
+    throw new Error(
+      "Exclusive relay revalidation requires an exclusive relay plan."
+    )
+  }
   if (event.kind === EVENT_KINDS.RELAY_LIST) {
     assertSafeNip65RelayTags(event.tags ?? [])
   }
@@ -687,6 +703,16 @@ export async function publishWithPlanner(
     if (input.shouldContinue?.() === false) {
       throw new Error("Publish cancelled because the signer session changed.")
     }
+  }
+  const revalidateExclusiveRelayAttempt = async (
+    relayUrls: readonly string[]
+  ): Promise<string[]> => {
+    const candidates = normalizeSecureOrIsolatedE2eRelayUrls(relayUrls)
+    if (!input.revalidateExclusiveRelayUrls) return candidates
+    const revalidated = await input.revalidateExclusiveRelayUrls(candidates)
+    assertShouldContinue()
+    const retained = new Set(normalizeSecureOrIsolatedE2eRelayUrls(revalidated))
+    return candidates.filter((relayUrl) => retained.has(relayUrl))
   }
 
   const basePlan = input.exclusiveRelayUrls
@@ -734,7 +760,9 @@ export async function publishWithPlanner(
   const plannedRelayUrls = Array.from(
     new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
   )
-  let attemptedRelayUrls = [...plannedRelayUrls]
+  let attemptedRelayUrls = input.revalidateExclusiveRelayUrls
+    ? []
+    : [...plannedRelayUrls]
   const authorFallbackAllowed =
     input.intent !== "author_event" ||
     plan.signedRelayListAuthoritative !== true
@@ -804,11 +832,20 @@ export async function publishWithPlanner(
       ? CRITICAL_PUBLISH_TIMEOUT_MS
       : STANDARD_PUBLISH_TIMEOUT_MS
   assertShouldContinue()
+  const primaryRelayUrls = await revalidateExclusiveRelayAttempt(
+    plan.primaryRelayUrls
+  )
+  if (primaryRelayUrls.length === 0 && input.exclusiveRelayUrls) {
+    throw new Error(
+      "Refusing to publish because the exclusive relay targets are no longer eligible."
+    )
+  }
+  attemptedRelayUrls = mergeUnique([attemptedRelayUrls, primaryRelayUrls])
   const primary = await publishToRelayUrls({
     event,
     ndk,
-    relayUrls: plan.primaryRelayUrls,
-    requiredRelayCount: plan.primaryRelayUrls.length > 0 ? 1 : 0,
+    relayUrls: primaryRelayUrls,
+    requiredRelayCount: primaryRelayUrls.length > 0 ? 1 : 0,
     timeoutMs: publishTimeoutMs,
   })
 
@@ -817,22 +854,25 @@ export async function publishWithPlanner(
 
     if (input.deliveryMode === "critical" && primary.failedRelayUrls.length) {
       assertShouldContinue()
-      retry = await publishToRelayUrls({
-        event,
-        ndk,
-        relayUrls: primary.failedRelayUrls,
-        requiredRelayCount: 1,
-        timeoutMs: CRITICAL_RETRY_PUBLISH_TIMEOUT_MS,
-      })
+      const retryRelayUrls = await revalidateExclusiveRelayAttempt(
+        primary.failedRelayUrls
+      )
+      if (retryRelayUrls.length > 0) {
+        attemptedRelayUrls = mergeUnique([attemptedRelayUrls, retryRelayUrls])
+        retry = await publishToRelayUrls({
+          event,
+          ndk,
+          relayUrls: retryRelayUrls,
+          requiredRelayCount: 1,
+          timeoutMs: CRITICAL_RETRY_PUBLISH_TIMEOUT_MS,
+        })
+      }
 
-      if (!retry.thrown) {
+      if (retry && !retry.thrown) {
         const merged = mergePublishResults([primary, retry])
         return {
           plan,
-          attemptedRelayUrls: mergeUnique([
-            attemptedRelayUrls,
-            primary.failedRelayUrls,
-          ]),
+          attemptedRelayUrls,
           successfulRelayUrls: merged.successfulRelayUrls,
           failedRelayUrls: merged.failedRelayUrls,
           relayFailureMessages: merged.relayFailureMessages,

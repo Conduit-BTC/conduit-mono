@@ -17,6 +17,7 @@ import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
+import { loadAccountPrivateMessageRelayCutoff } from "./network-preference-update-state"
 import {
   extractFollowPubkeys,
   isPlausibleFollowListEventTimestamp,
@@ -35,9 +36,11 @@ import {
   mergeEventSourceRelayUrls,
 } from "./ndk"
 import {
+  applyAccountPrivateMessageRelayCutoff,
   deriveInboxReadCoverage,
   planInboxReadRelays,
   resolveInboxDeclaration,
+  type AccountPrivateMessageRelayCutoff,
   type InboxDeclarationResolution,
   type InboxDeclarationState,
   type InboxReadCoverage,
@@ -444,6 +447,10 @@ type CommerceTestOverrides = {
     assertAuthority: () => void
   ) => Promise<void>
   resolveInboxRelayUrls?: (principalPubkey: string) => Promise<string[]>
+  resolveInboxDeclaration?: (
+    principalPubkey: string
+  ) => Promise<InboxDeclarationResolution>
+  loadAccountRelayCutoff?: typeof loadAccountPrivateMessageRelayCutoff
   markDirectMessagesRead?: (
     principalPubkey: string,
     counterpartyPubkey: string,
@@ -4975,17 +4982,40 @@ async function readEventMarketInboxRelay(
   principalPubkey: string,
   relayUrl: string,
   scan: EventMarketInboxRelayScan,
-  authorization: ProtectedReadAuthorization | null
+  authorization: ProtectedReadAuthorization | null,
+  loadRelayCutoff: typeof loadAccountPrivateMessageRelayCutoff
 ): Promise<EventMarketInboxRelayRead> {
   const retained = new Map<string, NDKEvent>()
   let successful = false
+  const canStartRelayRead = async (): Promise<boolean> => {
+    assertInboxSyncAuthority(authorization)
+    let cutoff: AccountPrivateMessageRelayCutoff
+    try {
+      cutoff = await loadRelayCutoff(principalPubkey)
+    } catch {
+      return false
+    }
+    assertInboxSyncAuthority(authorization)
+    return (
+      applyAccountPrivateMessageRelayCutoff(principalPubkey, [relayUrl], cutoff)
+        .length > 0
+    )
+  }
 
   for (
     let pageIndex = 0;
     pageIndex < EVENT_MARKET_HANDOFF_PAGE_BUDGET_PER_READ;
     pageIndex += 1
   ) {
-    assertInboxSyncAuthority(authorization)
+    if (!(await canStartRelayRead())) {
+      return {
+        events: Array.from(retained.values()),
+        complete: false,
+        singleRequestComplete: false,
+        successful,
+        capped: false,
+      }
+    }
     const page = await runFetchEventsFanoutWithDiagnostics(
       {
         kinds: [EVENT_KINDS.GIFT_WRAP],
@@ -5041,7 +5071,15 @@ async function readEventMarketInboxRelay(
       }
     }
     const boundaryCreatedAt = Math.min(...createdAts)
-    assertInboxSyncAuthority(authorization)
+    if (!(await canStartRelayRead())) {
+      return {
+        events: Array.from(retained.values()),
+        complete: false,
+        singleRequestComplete: false,
+        successful,
+        capped: false,
+      }
+    }
     const boundary = await runFetchEventsFanoutWithDiagnostics(
       {
         kinds: [EVENT_KINDS.GIFT_WRAP],
@@ -5184,7 +5222,8 @@ function eventMarketInboxScanCycle(
 async function readEventMarketInboxWraps(
   principalPubkey: string,
   relayUrls: readonly string[],
-  authorization: ProtectedReadAuthorization | null
+  authorization: ProtectedReadAuthorization | null,
+  loadRelayCutoff: typeof loadAccountPrivateMessageRelayCutoff
 ): Promise<EventMarketInboxWrapRead> {
   const { key, cycle } = eventMarketInboxScanCycle(
     principalPubkey,
@@ -5204,7 +5243,8 @@ async function readEventMarketInboxWraps(
         principalPubkey,
         relayUrl,
         scan,
-        authorization
+        authorization,
+        loadRelayCutoff
       )
     })
   )
@@ -5332,15 +5372,18 @@ function retainBoundedEventMarketFailure(
 async function advanceEventMarketPrivateMessageScan(input: {
   principalPubkey: string
   relayUrls: readonly string[]
+  cappedRelayUrls: readonly string[]
   signer: NDKSigner
   declaration: Awaited<ReturnType<typeof resolvePrincipalInboxDeclaration>>
   authorization: ProtectedReadAuthorization | null
+  loadRelayCutoff: typeof loadAccountPrivateMessageRelayCutoff
 }): Promise<EventMarketPrivateMessageListResult> {
   assertInboxSyncAuthority(input.authorization)
   const result = await readEventMarketInboxWraps(
     input.principalPubkey,
     input.relayUrls,
-    input.authorization
+    input.authorization,
+    input.loadRelayCutoff
   )
   assertInboxSyncAuthority(input.authorization)
   const cycle = result.scanCycle
@@ -5431,7 +5474,13 @@ async function advanceEventMarketPrivateMessageScan(input: {
   }
 
   assertInboxSyncAuthority(input.authorization)
-  const derivedCoverage = deriveInboxReadCoverage(result)
+  const derivedCoverage = deriveInboxReadCoverage({
+    ...result,
+    cappedRelayUrls: [
+      ...(result.cappedRelayUrls ?? []),
+      ...input.cappedRelayUrls,
+    ],
+  })
   const coverage =
     derivedCoverage === "unavailable"
       ? "unavailable"
@@ -5462,7 +5511,32 @@ async function advanceEventMarketPrivateMessageScan(input: {
   return response
 }
 
-/** Handoff traffic reads declared kind-10050 relays only, never CND-208. */
+function planEventMarketInboxReadRelays(input: {
+  principalPubkey: string
+  declaration: InboxDeclarationResolution
+  relayCutoff: AccountPrivateMessageRelayCutoff
+}): { relayUrls: string[]; cappedRelayUrls: string[] } {
+  const currentRelayUrls =
+    input.declaration.state === "declared"
+      ? input.declaration.relayUrls
+      : input.declaration.state === "distribution_pending"
+        ? (input.declaration.pendingRelayUrls ?? [])
+        : []
+  const eligibleRelayUrls = applyAccountPrivateMessageRelayCutoff(
+    input.principalPubkey,
+    normalizeSecureOrIsolatedE2eRelayUrls([
+      ...currentRelayUrls,
+      ...(input.declaration.cutoverRecoveryRelayUrls ?? []),
+    ]),
+    input.relayCutoff
+  )
+  return {
+    relayUrls: eligibleRelayUrls.slice(0, DM_INBOX_READ_FANOUT),
+    cappedRelayUrls: eligibleRelayUrls.slice(DM_INBOX_READ_FANOUT),
+  }
+}
+
+/** Handoff traffic reads strict kind-10050 inboxes only, never CND-208. */
 async function fetchEventMarketPrivateMessagesStrict(
   principalPubkey: string
 ): Promise<EventMarketPrivateMessageListResult> {
@@ -5474,11 +5548,48 @@ async function fetchEventMarketPrivateMessagesStrict(
     discardEventMarketInboxScanCycles(principalPubkey)
     throw new Error("Connect your Nostr signer to view event handoffs.")
   }
+  const loadRelayCutoff =
+    testOverrides.loadAccountRelayCutoff ?? loadAccountPrivateMessageRelayCutoff
+  let relayCutoff: AccountPrivateMessageRelayCutoff
+  try {
+    relayCutoff = await loadRelayCutoff(principalPubkey)
+  } catch {
+    discardEventMarketInboxScanCycles(principalPubkey)
+    return {
+      messages: [],
+      stale: true,
+      decryptFailures: [],
+      inbox: {
+        declarationState: "lookup_unavailable",
+        coverage: "unavailable",
+        readSource: "declared",
+      },
+    }
+  }
+  assertInboxSyncAuthority(authorization)
   const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
   assertInboxSyncAuthority(authorization)
-  const relayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
-    declaration.state === "declared" ? declaration.relayUrls : []
-  )
+  try {
+    relayCutoff = await loadRelayCutoff(principalPubkey)
+  } catch {
+    discardEventMarketInboxScanCycles(principalPubkey)
+    return {
+      messages: [],
+      stale: true,
+      decryptFailures: [],
+      inbox: {
+        declarationState: "lookup_unavailable",
+        coverage: "unavailable",
+        readSource: "declared",
+      },
+    }
+  }
+  assertInboxSyncAuthority(authorization)
+  const { relayUrls, cappedRelayUrls } = planEventMarketInboxReadRelays({
+    principalPubkey,
+    declaration,
+    relayCutoff,
+  })
   if (relayUrls.length === 0) {
     discardEventMarketInboxScanCycles(principalPubkey)
     return {
@@ -5507,9 +5618,11 @@ async function fetchEventMarketPrivateMessagesStrict(
   const pending = advanceEventMarketPrivateMessageScan({
     principalPubkey,
     relayUrls,
+    cappedRelayUrls,
     signer,
     declaration,
     authorization,
+    loadRelayCutoff,
   })
   eventMarketInboxScanPromises.set(scanKey, {
     sessionScope,
@@ -5533,6 +5646,9 @@ async function fetchEventMarketPrivateMessagesStrict(
 async function resolvePrincipalInboxDeclaration(
   principalPubkey: string
 ): Promise<InboxDeclarationResolution> {
+  if (testOverrides.resolveInboxDeclaration) {
+    return await testOverrides.resolveInboxDeclaration(principalPubkey)
+  }
   if (testOverrides.resolveInboxRelayUrls) {
     try {
       const relays = await testOverrides.resolveInboxRelayUrls(principalPubkey)
@@ -5582,10 +5698,53 @@ async function fetchNewInboxWraps(
     limit,
   }
 
+  const loadRelayCutoff =
+    testOverrides.loadAccountRelayCutoff ?? loadAccountPrivateMessageRelayCutoff
+  let relayCutoff: AccountPrivateMessageRelayCutoff
+  try {
+    relayCutoff = await loadRelayCutoff(principalPubkey)
+  } catch {
+    return {
+      wraps: [],
+      inbox: {
+        declarationState: "lookup_unavailable",
+        coverage: "unavailable",
+        readSource: "compatibility",
+        authentication: {
+          state: "not_challenged",
+          challengedCount: 0,
+          succeededCount: 0,
+          failedCount: 0,
+        },
+      },
+    }
+  }
+  assertInboxSyncAuthority(authorization)
   const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
+  assertInboxSyncAuthority(authorization)
+  try {
+    relayCutoff = await loadRelayCutoff(principalPubkey)
+  } catch {
+    return {
+      wraps: [],
+      inbox: {
+        declarationState: "lookup_unavailable",
+        coverage: "unavailable",
+        readSource: "compatibility",
+        authentication: {
+          state: "not_challenged",
+          challengedCount: 0,
+          succeededCount: 0,
+          failedCount: 0,
+        },
+      },
+    }
+  }
+  assertInboxSyncAuthority(authorization)
   const readPlan = planInboxReadRelays({
     declaration,
     authenticatedPubkey: principalPubkey,
+    relayCutoff,
     maxRelays: DM_INBOX_READ_FANOUT,
   })
 
@@ -5603,7 +5762,13 @@ async function fetchNewInboxWraps(
       wraps: result.events.filter((event) => !successful?.has(event.id)),
       inbox: {
         declarationState: declaration.state,
-        coverage: deriveInboxReadCoverage(result),
+        coverage: deriveInboxReadCoverage({
+          ...result,
+          cappedRelayUrls: [
+            ...(result.cappedRelayUrls ?? []),
+            ...readPlan.cappedRelayUrls,
+          ],
+        }),
         readSource: readPlan.source,
         authentication: {
           state: "not_challenged",
@@ -5633,7 +5798,12 @@ async function fetchNewInboxWraps(
       .map((event) => new NDKEvent(undefined, event)),
     inbox: {
       declarationState: declaration.state,
-      coverage: protectedResult.coverage,
+      coverage:
+        protectedResult.coverage === "unavailable"
+          ? "unavailable"
+          : readPlan.cappedRelayUrls.length > 0
+            ? "partial"
+            : protectedResult.coverage,
       readSource: readPlan.source,
       authentication: protectedResult.auth,
     },
