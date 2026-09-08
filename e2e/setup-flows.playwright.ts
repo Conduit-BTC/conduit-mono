@@ -407,6 +407,14 @@ async function exerciseProfileEditAfterDisplayEnrichment(
   await expect(
     page.getByText(`Current ${profileName} bio`, { exact: true }).first()
   ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByRole("button", { name: "Edit profile", exact: true }).first()
+  ).toBeEnabled({ timeout: 30_000 })
+
+  // Leave the mounted app before replacing the persisted projection. The
+  // profile route and account chrome intentionally issue separate reads; an
+  // in-flight read from this first mount must not race the cache fixture.
+  await page.goto(`${appUrl}/favicon.svg`)
   await page.evaluate(
     ({ ownerPubkey, eventCreatedAt, cachedDisplayName }) =>
       new Promise<void>((resolve, reject) => {
@@ -443,7 +451,7 @@ async function exerciseProfileEditAfterDisplayEnrichment(
     }
   )
 
-  await page.reload()
+  await page.goto(`${appUrl}/profile`)
   await expect(
     page.getByText(`Cached ${profileName}`, { exact: true }).first()
   ).toBeVisible({ timeout: 30_000 })
