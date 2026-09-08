@@ -68,6 +68,7 @@ import {
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
   organizerEventMarketReachesExpectedFrontiers,
+  organizerEventMarketRetryRemainsCurrent,
   rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
   selectOrganizerEventMarketResolution,
@@ -943,25 +944,58 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         record: input.record,
       }),
     onSuccess: async (delivery, input) => {
+      const latestSavedReferences =
+        loadSavedOrganizerEventMarkets(organizerPubkey)
+      const latestSavedReference =
+        findSavedOrganizerEventMarketReference(
+          latestSavedReferences,
+          input.reference
+        ) ?? input.savedReference
+      const coordinate = parseOrganizerEventMarketReference(
+        input.reference
+      ).coordinate
+      const latestDeliveries =
+        loadOrganizerEventMarketDeliveryOutbox(organizerPubkey)[coordinate] ??
+        []
+      const latestDelivery = latestDeliveries.find(
+        (candidate) => candidate.record === delivery.record
+      )
+      const retryRemainsCurrent = organizerEventMarketRetryRemainsCurrent(
+        delivery,
+        latestSavedReference,
+        latestDelivery
+      )
       const reference = organizerEventMarketReferenceWithAllDeliveryRelayHints(
-        input.reference,
-        [...input.deliveries, delivery]
+        latestSavedReference?.reference ?? input.reference,
+        [...input.deliveries, ...latestDeliveries, delivery]
       )
       const saved = rememberOrganizerEventMarket(organizerPubkey, {
         reference,
-        title: input.title,
+        title: latestSavedReference?.title ?? input.title,
         savedAt: Date.now(),
-        ...expectedOrganizerEventMarketFrontiersAfterRetry(
-          delivery,
-          input.savedReference
-        ),
+        ...(retryRemainsCurrent
+          ? expectedOrganizerEventMarketFrontiersAfterRetry(
+              delivery,
+              latestSavedReference
+            )
+          : {}),
       })
       setSavedReferences(saved)
       const nextReference =
         findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
         reference
       updateInitiatingEventSelection(input.reference, nextReference)
-      rememberDelivery(reference, delivery)
+      if (retryRemainsCurrent) {
+        rememberDelivery(reference, delivery)
+      } else if (latestDelivery) {
+        setDeliveriesByReference((current) =>
+          mergeOrganizerEventMarketDeliveryState(
+            current,
+            coordinate,
+            latestDelivery
+          )
+        )
+      }
       await refreshMarketQueries(input.reference)
     },
   })

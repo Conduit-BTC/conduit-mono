@@ -281,6 +281,50 @@ function savedExpectedFrontier(
   }
 }
 
+type EventMarketDeliveryFrontier = {
+  record: EventMarketRecord
+  signedEvent: SignedPublicNostrEvent | null
+}
+
+function signedDeliveryFrontier(
+  delivery: EventMarketDeliveryFrontier | undefined
+): EventMarketRecordFrontier | undefined {
+  const signedEvent = delivery?.signedEvent
+  if (!delivery || !signedEvent) return undefined
+  const coordinate = organizerEventMarketSignedRecordCoordinate(
+    delivery.record,
+    signedEvent
+  )
+  return {
+    createdAt: signedEvent.created_at * 1_000,
+    eventId: signedEvent.id.toLowerCase(),
+    ...(coordinate ? { coordinate } : {}),
+  }
+}
+
+export function organizerEventMarketRetryRemainsCurrent(
+  delivery: EventMarketDeliveryFrontier,
+  savedReference: SavedOrganizerEventMarketReference | undefined,
+  latestDelivery?: EventMarketDeliveryFrontier
+): boolean {
+  const retry = signedDeliveryFrontier(delivery)
+  if (!retry) return false
+  const stillReaches = (
+    current: EventMarketRecordFrontier | undefined
+  ): boolean =>
+    !current ||
+    ((!retry.coordinate ||
+      !current.coordinate ||
+      retry.coordinate === current.coordinate) &&
+      compareEventMarketRecordFrontier(retry, current) >= 0)
+
+  return (
+    stillReaches(savedExpectedFrontier(savedReference, delivery.record)) &&
+    (latestDelivery?.record !== delivery.record ||
+      stillReaches(signedDeliveryFrontier(latestDelivery)))
+  )
+}
+
 function mergeRecordFrontier(
   references: readonly NormalizedSavedOrganizerEventMarketReference[],
   record: EventMarketRecord

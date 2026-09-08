@@ -14,6 +14,7 @@ import {
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
   organizerEventMarketReachesExpectedFrontiers,
+  organizerEventMarketRetryRemainsCurrent,
   rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
   selectOrganizerEventMarketResolution,
@@ -1341,6 +1342,57 @@ describe("merchant organizer event workflow", () => {
       expectedPickupEventId: "c".repeat(64),
       replaceExpectedRecordFrontiers: true,
     })
+  })
+
+  it("rejects a late collection retry behind the persisted or exact-retry frontier", () => {
+    const retriedCollection = {
+      id: "f".repeat(64),
+      pubkey: ORGANIZER,
+      created_at: 4,
+      kind: 30405,
+      content: "",
+      tags: [["d", "market"]],
+      sig: "e".repeat(128),
+    }
+    const newerCollection = {
+      ...retriedCollection,
+      id: "a".repeat(64),
+      created_at: 5,
+    }
+    const savedReference = {
+      reference: COLLECTION,
+      savedAt: 20,
+      expectedCollectionCoordinate: COLLECTION,
+      expectedCollectionCreatedAt: 5_000,
+      expectedCollectionEventId: newerCollection.id,
+    }
+
+    expect(
+      organizerEventMarketRetryRemainsCurrent(
+        { record: "collection", signedEvent: retriedCollection },
+        savedReference,
+        { record: "collection", signedEvent: newerCollection }
+      )
+    ).toBe(false)
+    expect(
+      organizerEventMarketRetryRemainsCurrent(
+        { record: "collection", signedEvent: newerCollection },
+        savedReference,
+        { record: "collection", signedEvent: newerCollection }
+      )
+    ).toBe(true)
+
+    const losingEqualTimestampRetry = {
+      ...retriedCollection,
+      created_at: newerCollection.created_at,
+    }
+    expect(
+      organizerEventMarketRetryRemainsCurrent(
+        { record: "collection", signedEvent: losingEqualTimestampRetry },
+        savedReference,
+        { record: "collection", signedEvent: newerCollection }
+      )
+    ).toBe(false)
   })
 
   it("keeps a hinted selection through bare edit and publish references for sharing", () => {

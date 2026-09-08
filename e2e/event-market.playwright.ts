@@ -256,6 +256,9 @@ function createRelayHarness() {
         eventsById.set(event.id, event)
       }
     },
+    remove(...events: SignedEvent[]) {
+      for (const event of events) eventsById.delete(event.id)
+    },
     events(): SignedEvent[] {
       return Array.from(eventsById.values())
     },
@@ -1276,6 +1279,115 @@ test("event membership and retry completions stay bound to their initiating even
   await expect(page.locator("#event-market-selector")).toContainText(
     "Synthetic Race Event B"
   )
+})
+
+test("a late old collection retry ACK preserves a newer same-coordinate update @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Late Retry Event",
+    organizerHandoffEnabled: true,
+  })
+  const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
+  const deliveryStorageKey = `conduit:merchant:event-market-delivery:v1:${ORGANIZER_PUBKEY}`
+  const markedForRetry = await page.evaluate(
+    ({ key, eventId }) => {
+      const rows = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+        delivery?: {
+          acknowledgedCount?: number
+          rejectedCount?: number
+          timedOutCount?: number
+          signedEvent?: { id?: string }
+        }
+      }>
+      const row = rows.find(
+        (candidate) => candidate.delivery?.signedEvent?.id === eventId
+      )
+      if (!row?.delivery) return false
+      row.delivery.acknowledgedCount = 0
+      row.delivery.rejectedCount = 0
+      row.delivery.timedOutCount = 1
+      localStorage.setItem(key, JSON.stringify(rows))
+      return true
+    },
+    { key: deliveryStorageKey, eventId: market.initialCollection.id }
+  )
+  expect(markedForRetry).toBe(true)
+
+  await page.reload()
+  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  await selectOrganizerMarket(page, "Synthetic Late Retry Event")
+  const retryAck = relay.holdNextPublicationAck(
+    (event) => event.id === market.initialCollection.id
+  )
+  await page.getByRole("button", { name: "Retry delivery" }).click()
+  await retryAck.captured
+
+  const updateStart = relay.publications.length
+  await page.getByRole("button", { name: "Update event", exact: true }).click()
+  const editor = page.getByRole("dialog", { name: "Update event market" })
+  await expect(editor).toBeVisible()
+  await editor
+    .getByRole("textbox", { name: "Public summary Required", exact: true })
+    .fill("Synthetic update published while the old retry ACK is held.")
+  await editor.getByRole("button", { name: "Publish update" }).click()
+  await expect(editor).toBeHidden({ timeout: 30_000 })
+
+  const updatedRecords = uniquePublishedEvents(
+    relay.publications.slice(updateStart)
+  ).filter((event) => [31922, 31923, 30406, 30405].includes(event.kind))
+  const updatedCollection = updatedRecords.find(
+    (event) =>
+      event.kind === 30405 &&
+      eventCoordinate(event) === market.collectionCoordinate
+  )
+  expect(updatedCollection).toBeTruthy()
+  expect(updatedCollection!.created_at).toBeGreaterThan(
+    market.initialCollection.created_at
+  )
+
+  relay.remove(...updatedRecords)
+  retryAck.release()
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        ({ savedKey, deliveryKey }) => {
+          const references = JSON.parse(
+            localStorage.getItem(savedKey) ?? "[]"
+          ) as Array<{ expectedCollectionEventId?: string }>
+          const deliveries = JSON.parse(
+            localStorage.getItem(deliveryKey) ?? "[]"
+          ) as Array<{
+            delivery?: {
+              record?: string
+              signedEvent?: { id?: string }
+            }
+          }>
+          return {
+            savedEventId: references[0]?.expectedCollectionEventId,
+            exactRetryEventId: deliveries.find(
+              (row) => row.delivery?.record === "collection"
+            )?.delivery?.signedEvent?.id,
+          }
+        },
+        { savedKey: savedStorageKey, deliveryKey: deliveryStorageKey }
+      )
+    )
+    .toEqual({
+      savedEventId: updatedCollection!.id,
+      exactRetryEventId: updatedCollection!.id,
+    })
+  await expect(
+    page.getByRole("button", { name: "Update event", exact: true })
+  ).toBeDisabled({ timeout: 30_000 })
+  await expect(
+    page.getByText("Showing earlier signed event evidence", { exact: true })
+  ).toBeVisible()
 })
 
 test("terminal event deletion removes the exact-record retry path @merchant", async ({
