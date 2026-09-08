@@ -44,6 +44,7 @@ import {
   discoverFollowedEventMarkets,
   loadOrganizerEventMarketDeliveryOutbox,
   mergeOrganizerEventMarketDeliveryState,
+  organizerEventMarketReferenceWithAllDeliveryRelayHints,
   organizerEventMarketReferenceWithDeliveryRelayHints,
   organizerEventMarketReferencesMatch,
   organizerEventMarketToForm,
@@ -106,6 +107,7 @@ type OrganizerMembershipMutationInput = {
 
 type OrganizerRetryMutationInput = {
   record: MerchantOrganizerRecordDelivery
+  deliveries: readonly MerchantOrganizerRecordDelivery[]
   reference: string
   title?: string
   savedReference?: SavedOrganizerEventMarketReference
@@ -836,6 +838,21 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         onSignedRecord: (record, reference) => {
           setPublishState("publishing")
           rememberDelivery(reference, record)
+          const hintedReference =
+            organizerEventMarketReferenceWithAllDeliveryRelayHints(reference, [
+              record,
+            ])
+          const saved = rememberOrganizerEventMarket(organizerPubkey, {
+            reference: hintedReference,
+            title: input.form.title,
+            savedAt: Date.now(),
+            ...expectedOrganizerEventMarketFrontier(record),
+          })
+          setSavedReferences(saved)
+          setSelectedReference(
+            findSavedOrganizerEventMarketReference(saved, hintedReference)
+              ?.reference ?? hintedReference
+          )
         },
       }),
     onMutate: () => {
@@ -926,9 +943,9 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         record: input.record,
       }),
     onSuccess: async (delivery, input) => {
-      const reference = organizerEventMarketReferenceWithDeliveryRelayHints(
+      const reference = organizerEventMarketReferenceWithAllDeliveryRelayHints(
         input.reference,
-        delivery
+        [...input.deliveries, delivery]
       )
       const saved = rememberOrganizerEventMarket(organizerPubkey, {
         reference,
@@ -950,9 +967,10 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   })
 
   function retryDelivery(record: MerchantOrganizerRecordDelivery): void {
-    if (!selectedReference) return
+    if (!selectedReference || selectedReadDeleted) return
     retryMutation.mutate({
       record,
+      deliveries,
       reference: selectedReference,
       title: selectedMarket?.title ?? selectedSavedReference?.title,
       savedReference: selectedSavedReference,
@@ -1187,7 +1205,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         </div>
       )}
 
-      {!selectedMarket && deliveries.length > 0 && (
+      {!selectedMarket && !selectedReadDeleted && deliveries.length > 0 && (
         <OrganizerEventMarketDeliveryList
           deliveries={deliveries}
           retryingRecord={

@@ -687,6 +687,17 @@ export function organizerEventMarketReferenceWithDeliveryRelayHints(
   )
 }
 
+export function organizerEventMarketReferenceWithAllDeliveryRelayHints(
+  reference: string,
+  deliveries: readonly MerchantOrganizerRecordDelivery[]
+): string {
+  return deliveries.reduce(
+    (current, delivery) =>
+      organizerEventMarketReferenceWithDeliveryRelayHints(current, delivery),
+    reference
+  )
+}
+
 function projectPublishResult(
   value: OrganizerEventMarketPublishResult,
   collectionCoordinate: string

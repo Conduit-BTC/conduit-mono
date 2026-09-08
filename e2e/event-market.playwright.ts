@@ -1278,6 +1278,71 @@ test("event membership and retry completions stay bound to their initiating even
   )
 })
 
+test("terminal event deletion removes the exact-record retry path @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Deleted Retry Event",
+    organizerHandoffEnabled: true,
+  })
+  const deliveryStorageKey = `conduit:merchant:event-market-delivery:v1:${ORGANIZER_PUBKEY}`
+  const markedForRetry = await page.evaluate(
+    ({ key, eventId }) => {
+      const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+        delivery?: {
+          acknowledgedRelayUrls?: string[]
+          acknowledgedCount?: number
+          rejectedCount?: number
+          timedOutCount?: number
+          signedEvent?: { id?: string }
+        }
+      }>
+      const entry = saved.find(
+        (candidate) => candidate.delivery?.signedEvent?.id === eventId
+      )
+      if (!entry?.delivery) return false
+      entry.delivery.acknowledgedRelayUrls = []
+      entry.delivery.acknowledgedCount = 0
+      entry.delivery.rejectedCount = 0
+      entry.delivery.timedOutCount = 1
+      localStorage.setItem(key, JSON.stringify(saved))
+      return true
+    },
+    { key: deliveryStorageKey, eventId: market.initialCollection.id }
+  )
+  expect(markedForRetry).toBe(true)
+
+  await page.reload()
+  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  await selectOrganizerMarket(page, "Synthetic Deleted Retry Event")
+  const retryDelivery = page.getByRole("button", {
+    name: "Retry delivery",
+    exact: true,
+  })
+  await expect(retryDelivery).toBeVisible()
+
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 5,
+      created_at: market.initialCollection.created_at + 1,
+      tags: [["a", market.collectionCoordinate]],
+      content: "",
+    })
+  )
+  const publicationCount = relay.publications.length
+  await page.getByRole("button", { name: "Refresh evidence" }).click()
+
+  await expect(
+    page.getByRole("heading", { name: "Event deleted", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(retryDelivery).toHaveCount(0)
+  expect(relay.publications).toHaveLength(publicationCount)
+})
+
 test("organizer actions wait for an initial hinted read and use its newer collection @merchant", async ({
   page,
 }) => {

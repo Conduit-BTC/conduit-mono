@@ -17,6 +17,7 @@ import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 import {
   loadOrganizerEventMarketDeliveryOutbox,
   mergeOrganizerEventMarketDeliveryState,
+  organizerEventMarketReferenceWithAllDeliveryRelayHints,
   organizerEventMarketReferenceWithDeliveryRelayHints,
   publishMerchantOrganizerEventMarket,
   retryMerchantOrganizerRecord,
@@ -76,7 +77,7 @@ function expectExactSignedEvent(
 }
 
 describe("merchant organizer delivery outbox", () => {
-  it("includes disjoint required-record acknowledgements in a guest-readable share link", async () => {
+  it("keeps earlier required-record acknowledgements in a guest-readable recovery link", async () => {
     const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000)
       .toISOString()
       .slice(0, 16)
@@ -150,6 +151,31 @@ describe("merchant organizer delivery outbox", () => {
       pickup: [PICKUP_RELAY],
       collection: [PUBLISH_RELAY],
     })
+    const collection = result.records.find(
+      (record) => record.record === "collection"
+    )!
+    const recoveredReference =
+      organizerEventMarketReferenceWithAllDeliveryRelayHints(
+        encodeEventMarketNaddr(result.collectionCoordinate, []),
+        [
+          ...result.records.filter((record) => record.record !== "collection"),
+          {
+            ...collection,
+            acknowledgedRelayUrls: [],
+            acknowledgedCount: 0,
+            timedOutCount: 1,
+          },
+          collection,
+        ]
+      )
+    expect(
+      decodeEventMarketReference(recoveredReference, [30405])?.relayHints
+    ).toEqual(
+      expect.arrayContaining([CALENDAR_RELAY, PICKUP_RELAY, PUBLISH_RELAY])
+    )
+    expect(
+      decodeEventMarketReference(recoveredReference, [30405])?.relayHints
+    ).toHaveLength(3)
     const signedRecords = result.records.flatMap((record) =>
       record.signedEvent ? [record.signedEvent] : []
     )
@@ -202,7 +228,7 @@ describe("merchant organizer delivery outbox", () => {
       persistCachedEvidence: async () => undefined,
     })
 
-    await expect(loadEventCatalog(result.naddr)).resolves.toMatchObject({
+    await expect(loadEventCatalog(recoveredReference)).resolves.toMatchObject({
       state: "active",
       calendar: { coordinate: expect.any(String) },
       pickup: { coordinate: expect.any(String) },
