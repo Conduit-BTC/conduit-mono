@@ -3918,6 +3918,47 @@ describe("commerce gateway", () => {
     })
   })
 
+  it("keeps a live payment address positive when required relay coverage is partial", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: [
+            {
+              id: "profile-current-payment",
+              pubkey: "merchant",
+              created_at: 20,
+              content: JSON.stringify({
+                display_name: "Current Merchant",
+                lud16: "current@wallet.example",
+              }),
+              tags: [],
+            } as never,
+          ],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls.slice(0, -1),
+          failedRelayUrls: relayUrls.slice(-1),
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      requireCompleteEvidence: true,
+      evidenceScope: "payment",
+    })
+
+    expect(result.data.merchant?.lud16).toBe("current@wallet.example")
+    expect(result.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: true,
+      capped: false,
+    })
+  })
+
   it("treats a malformed latest kind-0 as unavailable profile evidence", async () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async () =>
@@ -3926,7 +3967,10 @@ describe("commerce gateway", () => {
             id: "profile-valid-older",
             pubkey: "merchant",
             created_at: 10,
-            content: JSON.stringify({ display_name: "Older Merchant" }),
+            content: JSON.stringify({
+              display_name: "Older Merchant",
+              lud16: "obsolete@wallet.example",
+            }),
             tags: [],
           },
           {
@@ -3946,6 +3990,7 @@ describe("commerce gateway", () => {
     })
 
     expect(result.data.merchant?.displayName).toBe("Older Merchant")
+    expect(result.data.merchant?.lud16).toBeUndefined()
     expect(result.meta.degraded).toBe(true)
   })
 

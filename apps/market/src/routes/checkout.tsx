@@ -161,6 +161,7 @@ import {
   getMerchantPaymentLud16,
   getMerchantPaymentProfileState,
   getMerchantPaymentReadiness,
+  hasPositiveMerchantPaymentAddressEvidence,
 } from "../lib/merchant-payment-readiness"
 import {
   clearCheckoutShippingSession,
@@ -2716,6 +2717,10 @@ function CheckoutPage() {
         evidenceIncomplete: isCommerceReadIncomplete(
           refreshedProfileResult.meta
         ),
+        positiveAddressEvidence: hasPositiveMerchantPaymentAddressEvidence({
+          meta: refreshedProfileResult.meta,
+          lud16: refreshedProfileResult.data[selectedMerchant]?.lud16,
+        }),
       })
       const currentMerchantLud16 = getMerchantPaymentLud16({
         profileState: refreshedProfileState,

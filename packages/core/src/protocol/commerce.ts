@@ -2514,14 +2514,18 @@ function mergeProfileEvents(
     // kind-0 frontier. A newer valid profile that removes lud16 must never
     // inherit the obsolete address from display/cache enrichment.
     const profile =
-      effectiveFrontierContent !== undefined &&
-      hasValidProfileEventContent(effectiveFrontierContent)
+      effectiveFrontierContent !== undefined
         ? {
             ...(richProfile ?? { pubkey }),
-            lud16: parseProfileEvent({
-              pubkey,
-              content: effectiveFrontierContent,
-            }).lud16,
+            // An invalid exact frontier cannot authorize an older retained
+            // payment destination. Keep richer identity fields for display,
+            // but clear lud16 unless the current frontier parses safely.
+            lud16: hasValidProfileEventContent(effectiveFrontierContent)
+              ? parseProfileEvent({
+                  pubkey,
+                  content: effectiveFrontierContent,
+                }).lud16
+              : undefined,
           }
         : richProfile
     const sourceRelayUrls = uniqueStrings([

@@ -3,6 +3,7 @@ import {
   getMerchantPaymentLud16,
   getMerchantPaymentProfileState,
   getMerchantPaymentReadiness,
+  hasPositiveMerchantPaymentAddressEvidence,
 } from "../apps/market/src/lib/merchant-payment-readiness"
 import { getCheckoutEvidenceCheckingLabel } from "../apps/market/src/lib/checkout-validation"
 
@@ -56,6 +57,7 @@ describe("shopper merchant payment readiness", () => {
         isFetching: true,
         lookupSettled: false,
         evidenceIncomplete: true,
+        positiveAddressEvidence: true,
       })
     ).toBe("loading")
     expect(
@@ -64,6 +66,7 @@ describe("shopper merchant payment readiness", () => {
         isFetching: false,
         lookupSettled: true,
         evidenceIncomplete: true,
+        positiveAddressEvidence: false,
       })
     ).toBe("unavailable")
     expect(
@@ -72,8 +75,45 @@ describe("shopper merchant payment readiness", () => {
         isFetching: false,
         lookupSettled: true,
         evidenceIncomplete: false,
+        positiveAddressEvidence: false,
       })
     ).toBe("available")
+  })
+
+  it("accepts a live positive address without treating partial coverage as absence", () => {
+    const lud16 = "merchant@wallet.example"
+    const positiveAddressEvidence = hasPositiveMerchantPaymentAddressEvidence({
+      meta: { source: "public", stale: false },
+      lud16,
+    })
+
+    expect(positiveAddressEvidence).toBe(true)
+    expect(
+      getMerchantPaymentProfileState({
+        isLoading: false,
+        isFetching: false,
+        lookupSettled: true,
+        evidenceIncomplete: true,
+        positiveAddressEvidence,
+      })
+    ).toBe("available")
+    expect(getMerchantPaymentLud16({ profileState: "available", lud16 })).toBe(
+      lud16
+    )
+  })
+
+  it("rejects cache-only or stale addresses as positive payment evidence", () => {
+    for (const meta of [
+      { source: "local_cache" as const, stale: true },
+      { source: "public" as const, stale: true },
+    ]) {
+      expect(
+        hasPositiveMerchantPaymentAddressEvidence({
+          meta,
+          lud16: "cached@wallet.example",
+        })
+      ).toBe(false)
+    }
   })
 
   it("does not infer missing setup while the profile is loading", () => {
@@ -106,7 +146,7 @@ describe("shopper merchant payment readiness", () => {
     ).toBe("profile_unavailable")
   })
 
-  it("exposes a payment destination only from complete current profile evidence", () => {
+  it("exposes a payment destination only from authoritative current evidence", () => {
     expect(
       getMerchantPaymentLud16({
         profileState: "unavailable",

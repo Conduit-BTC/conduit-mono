@@ -15,6 +15,7 @@ import {
 } from "@conduit/core"
 import {
   getMerchantPaymentProfileState,
+  hasPositiveMerchantPaymentAddressEvidence,
   type MerchantPaymentProfileState,
 } from "../lib/merchant-payment-readiness"
 
@@ -154,6 +155,10 @@ export function useMerchantTrustContext({
         isFetching: profileQuery.isFetching,
         lookupSettled: profileQuery.lookupSettled,
         evidenceIncomplete: isCommerceReadIncomplete(profileQuery.meta),
+        positiveAddressEvidence: hasPositiveMerchantPaymentAddressEvidence({
+          meta: profileQuery.meta,
+          lud16: profileQuery.evidenceData?.lud16,
+        }),
         error: profileQuery.error,
       })
     : "unavailable"
