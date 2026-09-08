@@ -109,6 +109,24 @@ export function expectedOrganizerEventMarketFrontiersAfterRetry(
   }
 }
 
+export function expectedOrganizerEventMarketFrontiersAfterMembership(
+  delivery: {
+    record: "calendar" | "pickup" | "collection"
+    signedEvent: SignedPublicNostrEvent | null
+  },
+  market: EventMarketFrontierCarrier
+): Partial<SavedOrganizerEventMarketReference> {
+  return {
+    ...expectedOrganizerEventMarketFrontier(delivery),
+    ...expectedFrontierFields("calendar", carrierFrontier(market, "calendar")),
+    ...expectedFrontierFields("pickup", carrierFrontier(market, "pickup")),
+    // The just-signed collection retains the exact child relationships from
+    // this resolved graph. Omitted pickup fields therefore retire an older
+    // saved pickup instead of inheriting it across the membership mutation.
+    replaceExpectedRecordFrontiers: true,
+  }
+}
+
 const EVENT_MARKET_STORAGE_PREFIX = "conduit:merchant:event-markets:v1"
 const DISCOVERED_EVENT_MARKET_STORAGE_PREFIX =
   "conduit:merchant:discovered-event-markets:v1"

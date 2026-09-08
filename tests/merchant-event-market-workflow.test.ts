@@ -5,6 +5,7 @@ import {
 } from "@conduit/core"
 import {
   findSavedOrganizerEventMarketReference,
+  expectedOrganizerEventMarketFrontiersAfterMembership,
   expectedOrganizerEventMarketFrontiersAfterRetry,
   forgetOrganizerEventMarket,
   getDiscoveredEventMarketStorageKey,
@@ -1351,6 +1352,111 @@ describe("merchant organizer event workflow", () => {
       expectedCalendarCoordinate: CALENDAR,
       expectedCalendarCreatedAt: 2_000,
       expectedCalendarEventId: "b".repeat(64),
+      replaceExpectedRecordFrontiers: true,
+    })
+  })
+
+  it("replaces child frontiers after a collection-only membership update", () => {
+    const storage = new MemoryStorage()
+    const replacementCalendar = `31923:${ORGANIZER}:replacement-calendar`
+    const collectionEvent = {
+      id: "a".repeat(64),
+      pubkey: ORGANIZER,
+      created_at: 7,
+      kind: 30405,
+      content: "",
+      tags: [["d", "market"]],
+      sig: "e".repeat(128),
+    }
+
+    rememberOrganizerEventMarket(
+      ORGANIZER,
+      {
+        reference: COLLECTION,
+        savedAt: 10,
+        expectedCollectionCoordinate: COLLECTION,
+        expectedCollectionCreatedAt: 4_000,
+        expectedCollectionEventId: "d".repeat(64),
+        expectedCalendarCoordinate: CALENDAR,
+        expectedCalendarCreatedAt: 2_000,
+        expectedCalendarEventId: "b".repeat(64),
+        expectedPickupCoordinate: ORGANIZER_PICKUP,
+        expectedPickupCreatedAt: 3_000,
+        expectedPickupEventId: "c".repeat(64),
+      },
+      storage
+    )
+
+    const savedWithoutPickup = rememberOrganizerEventMarket(
+      ORGANIZER,
+      {
+        reference: COLLECTION,
+        savedAt: 20,
+        ...expectedOrganizerEventMarketFrontiersAfterMembership(
+          { record: "collection", signedEvent: collectionEvent },
+          {
+            collectionCoordinate: COLLECTION,
+            collectionCreatedAt: 6_000,
+            collectionEventId: "f".repeat(64),
+            calendarCoordinate: replacementCalendar,
+            calendarCreatedAt: 5_000,
+            calendarEventId: "1".repeat(64),
+          }
+        ),
+      },
+      storage
+    )
+
+    expect(savedWithoutPickup[0]).toMatchObject({
+      expectedCollectionCoordinate: COLLECTION,
+      expectedCollectionCreatedAt: 7_000,
+      expectedCollectionEventId: collectionEvent.id,
+      expectedCalendarCoordinate: replacementCalendar,
+      expectedCalendarCreatedAt: 5_000,
+      expectedCalendarEventId: "1".repeat(64),
+      replaceExpectedRecordFrontiers: true,
+    })
+    expect(savedWithoutPickup[0]?.expectedPickupCoordinate).toBeUndefined()
+    expect(savedWithoutPickup[0]?.expectedPickupCreatedAt).toBeUndefined()
+    expect(savedWithoutPickup[0]?.expectedPickupEventId).toBeUndefined()
+
+    const savedWithReplacementPickup = rememberOrganizerEventMarket(
+      ORGANIZER,
+      {
+        reference: COLLECTION,
+        savedAt: 30,
+        ...expectedOrganizerEventMarketFrontiersAfterMembership(
+          {
+            record: "collection",
+            signedEvent: {
+              ...collectionEvent,
+              id: "0".repeat(64),
+              created_at: 8,
+            },
+          },
+          {
+            collectionCoordinate: COLLECTION,
+            collectionCreatedAt: 7_000,
+            collectionEventId: collectionEvent.id,
+            calendarCoordinate: replacementCalendar,
+            calendarCreatedAt: 5_000,
+            calendarEventId: "1".repeat(64),
+            pickupCoordinate: REPLACEMENT_ORGANIZER_PICKUP,
+            pickupCreatedAt: 6_000,
+            pickupEventId: "2".repeat(64),
+          }
+        ),
+      },
+      storage
+    )
+
+    expect(savedWithReplacementPickup[0]).toMatchObject({
+      expectedCollectionCreatedAt: 8_000,
+      expectedCalendarCoordinate: replacementCalendar,
+      expectedCalendarCreatedAt: 5_000,
+      expectedPickupCoordinate: REPLACEMENT_ORGANIZER_PICKUP,
+      expectedPickupCreatedAt: 6_000,
+      expectedPickupEventId: "2".repeat(64),
       replaceExpectedRecordFrontiers: true,
     })
   })

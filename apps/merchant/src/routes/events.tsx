@@ -64,6 +64,7 @@ import type { OrganizerEventMarketFormValues } from "../lib/event-market-form"
 import {
   findSavedOrganizerEventMarketReference,
   expectedOrganizerEventMarketFrontier,
+  expectedOrganizerEventMarketFrontiersAfterMembership,
   expectedOrganizerEventMarketFrontiersAfterRetry,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
@@ -910,7 +911,10 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
             reference,
             title: input.market.title,
             savedAt: Date.now(),
-            ...expectedOrganizerEventMarketFrontier(record),
+            ...expectedOrganizerEventMarketFrontiersAfterMembership(
+              record,
+              input.market
+            ),
           })
           setSavedReferences(saved)
           updateInitiatingEventSelection(
@@ -930,7 +934,10 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         reference,
         title: input.market.title,
         savedAt: Date.now(),
-        ...expectedOrganizerEventMarketFrontier(delivery),
+        ...expectedOrganizerEventMarketFrontiersAfterMembership(
+          delivery,
+          input.market
+        ),
       })
       setSavedReferences(saved)
       const nextReference =

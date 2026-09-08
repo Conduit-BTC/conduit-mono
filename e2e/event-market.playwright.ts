@@ -1756,6 +1756,153 @@ test("a newer external collection can replace its calendar without inheriting th
   ).toBeEnabled({ timeout: 30_000 })
 })
 
+test("membership updates retain externally replaced children and retire removed pickup @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const eventTitle = "Synthetic Membership Child Frontier"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: eventTitle,
+    organizerHandoffEnabled: true,
+  })
+  const merchantProduct = await publishMerchantProductFromEvent(
+    page,
+    relay,
+    market,
+    {
+      eventTitle,
+      productTitle: "Synthetic child frontier product",
+      handoffMode: "merchant",
+    }
+  )
+
+  const replacementCalendar = signEvent(ORGANIZER_SECRET, {
+    kind: market.calendarEvent.kind,
+    created_at: market.calendarEvent.created_at - 5,
+    tags: market.calendarEvent.tags.map((tag) =>
+      tag[0] === "d" ? ["d", "membership-replacement-calendar"] : tag
+    ),
+    content: market.calendarEvent.content,
+  })
+  const replacementPickup = signEvent(ORGANIZER_SECRET, {
+    kind: market.pickupEvent!.kind,
+    created_at: market.pickupEvent!.created_at - 5,
+    tags: market.pickupEvent!.tags.map((tag) =>
+      tag[0] === "d" ? ["d", "membership-replacement-pickup"] : tag
+    ),
+    content: market.pickupEvent!.content,
+  })
+  const replacementCollection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 5,
+    tags: market.initialCollection.tags.map((tag) =>
+      tag[0] === "a" && tag[1] === market.calendarCoordinate
+        ? ["a", eventCoordinate(replacementCalendar)]
+        : tag[0] === "shipping_option" && tag[1] === market.pickupCoordinate
+          ? ["shipping_option", eventCoordinate(replacementPickup)]
+          : tag
+    ),
+    content: market.initialCollection.content,
+  })
+  relay.seed(replacementCalendar, replacementPickup, replacementCollection)
+
+  await gotoAs(page, merchantUrl, "/events", "organizer")
+  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  await selectOrganizerMarket(page, eventTitle)
+  const acceptedCollection = await acceptMerchantProduct(
+    page,
+    relay,
+    merchantProduct,
+    market.collectionCoordinate
+  )
+  expect(acceptedCollection.tags).toContainEqual([
+    "a",
+    eventCoordinate(replacementCalendar),
+  ])
+  expect(acceptedCollection.tags).toContainEqual([
+    "shipping_option",
+    eventCoordinate(replacementPickup),
+  ])
+
+  await page.reload()
+  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  await selectOrganizerMarket(page, eventTitle)
+  const removeProduct = page.getByRole("button", {
+    name: "Remove",
+    exact: true,
+  })
+  await expect(removeProduct).toBeEnabled({ timeout: 30_000 })
+
+  const pickupRemovedCollection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: acceptedCollection.created_at + 5,
+    tags: acceptedCollection.tags.filter((tag) => tag[0] !== "shipping_option"),
+    content: acceptedCollection.content,
+  })
+  relay.seed(pickupRemovedCollection)
+  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  await expect(
+    page.getByText("Organizer handoff not offered", { exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(removeProduct).toBeEnabled({ timeout: 30_000 })
+
+  const removalStart = relay.publications.length
+  await removeProduct.click()
+  await expect(removeProduct).toHaveCount(0, { timeout: 30_000 })
+  const removedCollection = uniquePublishedEvents(
+    relay.publications.slice(removalStart)
+  ).find((event) => event.kind === 30405)
+  expect(removedCollection).toBeTruthy()
+  expect(removedCollection!.tags).toContainEqual([
+    "a",
+    eventCoordinate(replacementCalendar),
+  ])
+  expect(
+    removedCollection!.tags.some(
+      (tag) => tag[0] === "a" && tag[1] === eventCoordinate(merchantProduct)
+    )
+  ).toBe(false)
+  expect(
+    removedCollection!.tags.some((tag) => tag[0] === "shipping_option")
+  ).toBe(false)
+
+  await page.reload()
+  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  await selectOrganizerMarket(page, eventTitle)
+  await expect(
+    page.getByRole("button", { name: "Update event", exact: true })
+  ).toBeEnabled({ timeout: 30_000 })
+  await expect(
+    page.getByTestId("organizer-event-reconciliation-pending")
+  ).toHaveCount(0)
+  const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
+  await expect
+    .poll(() =>
+      page.evaluate((key) => {
+        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+          expectedCollectionEventId?: string
+          expectedCalendarCoordinate?: string
+          expectedPickupCoordinate?: string
+        }>
+        return saved[0]
+      }, savedStorageKey)
+    )
+    .toMatchObject({
+      expectedCollectionEventId: removedCollection!.id,
+      expectedCalendarCoordinate: eventCoordinate(replacementCalendar),
+    })
+  const savedReference = await page.evaluate((key) => {
+    const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+      expectedPickupCoordinate?: string
+    }>
+    return saved[0]
+  }, savedStorageKey)
+  expect(savedReference?.expectedPickupCoordinate).toBeUndefined()
+})
+
 test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @market @merchant", async ({
   page,
 }) => {
