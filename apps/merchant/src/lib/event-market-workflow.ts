@@ -67,44 +67,46 @@ export function expectedOrganizerEventMarketFrontiersAfterRetry(
   if (!signedEvent) return frontier
   if (delivery.record !== "collection" || !savedReference) return frontier
 
-  const collectionRetainsPickup = signedEvent.tags.some(
-    (tag) =>
-      tag[0] === "shipping_option" &&
-      parseAddressableCoordinate(tag[1] ?? "")?.kind === 30406
-  )
+  const collectionCalendarCoordinate = signedEvent.tags
+    .filter((tag) => tag[0] === "a")
+    .map((tag) =>
+      parseAddressableCoordinate(tag[1] ?? "", [
+        EVENT_KINDS.CALENDAR_DATE,
+        EVENT_KINDS.CALENDAR_TIME,
+      ])
+    )
+    .find(
+      (coordinate) =>
+        coordinate?.authorPubkey === signedEvent.pubkey.toLowerCase()
+    )?.coordinate
+  const collectionPickupCoordinate = signedEvent.tags
+    .filter((tag) => tag[0] === "shipping_option")
+    .map((tag) =>
+      parseAddressableCoordinate(tag[1] ?? "", [EVENT_KINDS.SHIPPING_OPTION])
+    )
+    .find(
+      (coordinate) =>
+        coordinate?.authorPubkey === signedEvent.pubkey.toLowerCase()
+    )?.coordinate
+  const savedCalendar = savedExpectedFrontier(savedReference, "calendar")
+  const savedPickup = savedExpectedFrontier(savedReference, "pickup")
+  const collectionRetainsCalendar =
+    !!collectionCalendarCoordinate &&
+    savedCalendar?.coordinate === collectionCalendarCoordinate
+  const collectionRetainsPickup =
+    !!collectionPickupCoordinate &&
+    savedPickup?.coordinate === collectionPickupCoordinate
+
   return {
     ...frontier,
-    ...(savedReference.expectedCalendarCreatedAt !== undefined
-      ? {
-          ...(savedReference.expectedCalendarCoordinate
-            ? {
-                expectedCalendarCoordinate:
-                  savedReference.expectedCalendarCoordinate,
-              }
-            : {}),
-          expectedCalendarCreatedAt: savedReference.expectedCalendarCreatedAt,
-          ...(savedReference.expectedCalendarEventId
-            ? {
-                expectedCalendarEventId: savedReference.expectedCalendarEventId,
-              }
-            : {}),
-        }
+    ...(collectionRetainsCalendar
+      ? expectedFrontierFields("calendar", savedCalendar)
       : {}),
-    ...(collectionRetainsPickup &&
-    savedReference.expectedPickupCreatedAt !== undefined
-      ? {
-          ...(savedReference.expectedPickupCoordinate
-            ? {
-                expectedPickupCoordinate:
-                  savedReference.expectedPickupCoordinate,
-              }
-            : {}),
-          expectedPickupCreatedAt: savedReference.expectedPickupCreatedAt,
-          ...(savedReference.expectedPickupEventId
-            ? { expectedPickupEventId: savedReference.expectedPickupEventId }
-            : {}),
-        }
+    ...(collectionRetainsPickup
+      ? expectedFrontierFields("pickup", savedPickup)
       : {}),
+    // A replacement collection owns its child relationships. Any saved child
+    // frontier not referenced by this exact signed revision must be retired.
     replaceExpectedRecordFrontiers: true,
   }
 }

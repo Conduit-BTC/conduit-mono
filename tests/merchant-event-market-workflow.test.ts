@@ -1339,6 +1339,7 @@ describe("merchant organizer event workflow", () => {
       content: "",
       tags: [
         ["d", "market"],
+        ["a", CALENDAR],
         ["a", `30406:${ORGANIZER}:not-a-collection-pickup-link`],
       ],
       sig: "e".repeat(128),
@@ -1484,7 +1485,8 @@ describe("merchant organizer event workflow", () => {
       content: "",
       tags: [
         ["d", "market"],
-        ["shipping_option", `30406:${ORGANIZER}:event-pickup`],
+        ["a", CALENDAR],
+        ["shipping_option", ORGANIZER_PICKUP],
       ],
       sig: "e".repeat(128),
     }
@@ -1506,6 +1508,80 @@ describe("merchant organizer event workflow", () => {
       expectedPickupEventId: "c".repeat(64),
       replaceExpectedRecordFrontiers: true,
     })
+  })
+
+  it("retires losing child frontiers when an equal-timestamp winning retry replaces them", () => {
+    const replacementCalendar = `31923:${ORGANIZER}:replacement-calendar`
+    const savedReference = {
+      reference: COLLECTION,
+      savedAt: 10,
+      expectedCollectionCoordinate: COLLECTION,
+      expectedCollectionCreatedAt: 4_000,
+      expectedCollectionEventId: "f".repeat(64),
+      expectedCalendarCoordinate: CALENDAR,
+      expectedCalendarCreatedAt: 2_000,
+      expectedCalendarEventId: "b".repeat(64),
+      expectedPickupCoordinate: ORGANIZER_PICKUP,
+      expectedPickupCreatedAt: 3_000,
+      expectedPickupEventId: "c".repeat(64),
+    }
+    const retriedCollection = {
+      id: "a".repeat(64),
+      pubkey: ORGANIZER,
+      created_at: 4,
+      kind: 30405,
+      content: "",
+      tags: [
+        ["d", "market"],
+        ["a", replacementCalendar],
+        ["shipping_option", REPLACEMENT_ORGANIZER_PICKUP],
+      ],
+      sig: "e".repeat(128),
+    }
+    const retryFrontiers = expectedOrganizerEventMarketFrontiersAfterRetry(
+      { record: "collection", signedEvent: retriedCollection },
+      savedReference
+    )
+
+    expect(retryFrontiers).toEqual({
+      expectedCollectionCoordinate: COLLECTION,
+      expectedCollectionCreatedAt: 4_000,
+      expectedCollectionEventId: retriedCollection.id,
+      replaceExpectedRecordFrontiers: true,
+    })
+
+    const storage = new MemoryStorage()
+    rememberOrganizerEventMarket(ORGANIZER, savedReference, storage)
+    const [savedAfterRetry] = rememberOrganizerEventMarket(
+      ORGANIZER,
+      {
+        reference: COLLECTION,
+        savedAt: 20,
+        ...retryFrontiers,
+      },
+      storage
+    )
+
+    expect(savedAfterRetry?.expectedCalendarCoordinate).toBeUndefined()
+    expect(savedAfterRetry?.expectedCalendarCreatedAt).toBeUndefined()
+    expect(savedAfterRetry?.expectedPickupCoordinate).toBeUndefined()
+    expect(savedAfterRetry?.expectedPickupCreatedAt).toBeUndefined()
+    expect(
+      organizerEventMarketReachesExpectedFrontiers(
+        {
+          collectionCoordinate: COLLECTION,
+          collectionCreatedAt: 4_000,
+          collectionEventId: retriedCollection.id,
+          calendarCoordinate: replacementCalendar,
+          calendarCreatedAt: 5_000,
+          calendarEventId: "1".repeat(64),
+          pickupCoordinate: REPLACEMENT_ORGANIZER_PICKUP,
+          pickupCreatedAt: 6_000,
+          pickupEventId: "2".repeat(64),
+        },
+        savedAfterRetry
+      )
+    ).toBe(true)
   })
 
   it("rejects a late collection retry behind the persisted or exact-retry frontier", () => {
