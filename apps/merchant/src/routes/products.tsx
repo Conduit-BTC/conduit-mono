@@ -65,6 +65,7 @@ import {
 } from "@conduit/ui"
 import { ProductCombinationMatrix } from "../components/ProductCombinationMatrix"
 import { ProductInboxReadinessDialog } from "../components/ProductInboxReadinessDialog"
+import { ProductPaymentSetupNotice } from "../components/ProductPaymentSetupNotice"
 import { ProductSignerRecoveryNotice } from "../components/ProductSignerRecoveryNotice"
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ProductFulfillmentEditor } from "../components/ProductFulfillmentEditor"
@@ -2892,6 +2893,13 @@ function ProductsPage() {
                 : "Add a product to your store."}
             </DialogDescription>
           </DialogHeader>
+
+          {pubkey && (
+            <ProductPaymentSetupNotice
+              merchantPubkey={pubkey}
+              enabled={productDialogOpen}
+            />
+          )}
 
           {editing && editFulfillmentChoiceRequired ? (
             <div

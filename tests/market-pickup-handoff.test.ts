@@ -76,6 +76,39 @@ describe("Market pickup handoff", () => {
     )
   })
 
+  it("keeps historical organizer-owned product snapshots merchant-only", async () => {
+    const historical = pickupFulfillment("organizer_handoff")
+    historical.product = {
+      ...historical.product,
+      coordinate: `30402:${ORGANIZER}:own-coffee`,
+      merchantPubkey: ORGANIZER,
+    }
+
+    expect(getPickupHandoffSummary(historical)).toEqual({
+      mode: "merchant_handoff",
+      handlerPubkey: ORGANIZER,
+      legacySafeDefault: false,
+      label: "Pickup from merchant booth",
+    })
+    expect(
+      getOrganizerPickupClaimCode("private-order-id", historical)
+    ).toBeNull()
+
+    let inboxLookups = 0
+    await assertCartPickupHandlerReady(
+      [{ fulfillment: historical }],
+      async () => {
+        inboxLookups += 1
+        return {
+          state: "blocked",
+          organizerPubkey: ORGANIZER,
+          reason: "not_declared",
+        }
+      }
+    )
+    expect(inboxLookups).toBe(0)
+  })
+
   it("discloses the bounded organizer receipt without sensitive fields", () => {
     const summary = getPickupHandoffSummary(
       pickupFulfillment("organizer_handoff")
