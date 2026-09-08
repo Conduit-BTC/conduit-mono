@@ -67,6 +67,7 @@ import {
   expectedOrganizerEventMarketFrontiersAfterRetry,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
+  organizerEventMarketDeletionRetiresDelivery,
   organizerEventMarketReachesExpectedFrontiers,
   organizerEventMarketRetryRemainsCurrent,
   rememberDiscoveredEventMarket,
@@ -668,7 +669,11 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       selectedMarketQuery.data,
       selectedSavedReference
     ) ?? null
-  const selectedReadDeleted = selectedResolution?.state === "deleted"
+  const selectedDeletion =
+    selectedResolution?.state === "deleted" && "terminal" in selectedResolution
+      ? selectedResolution
+      : null
+  const selectedReadDeleted = !!selectedDeletion
   const selectedReadReconciliationPending =
     selectedResolution?.state === "pending"
   const selectedMarket =
@@ -1001,7 +1006,13 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   })
 
   function retryDelivery(record: MerchantOrganizerRecordDelivery): void {
-    if (!selectedReference || selectedReadDeleted) return
+    if (
+      !selectedReference ||
+      (selectedDeletion &&
+        organizerEventMarketDeletionRetiresDelivery(selectedDeletion, record))
+    ) {
+      return
+    }
     retryMutation.mutate({
       record,
       deliveries,
@@ -1088,6 +1099,15 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   const deliveries = selectedReference
     ? (deliveriesByReference[selectedIdentity?.coordinate ?? ""] ?? [])
     : []
+  const retryableDeliveries = selectedDeletion
+    ? deliveries.filter(
+        (delivery) =>
+          !organizerEventMarketDeletionRetiresDelivery(
+            selectedDeletion,
+            delivery
+          )
+      )
+    : deliveries
 
   function handleImport(event: React.FormEvent<HTMLFormElement>): void {
     event.preventDefault()
@@ -1239,9 +1259,9 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         </div>
       )}
 
-      {!selectedMarket && !selectedReadDeleted && deliveries.length > 0 && (
+      {!selectedMarket && retryableDeliveries.length > 0 && (
         <OrganizerEventMarketDeliveryList
-          deliveries={deliveries}
+          deliveries={retryableDeliveries}
           retryingRecord={
             retryMutation.isPending
               ? (retryMutation.variables?.record.record ?? null)

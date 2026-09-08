@@ -13,6 +13,7 @@ import {
   isPreferredOrganizerEventMarketListResolution,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
+  organizerEventMarketDeletionRetiresDelivery,
   organizerEventMarketReachesExpectedFrontiers,
   organizerEventMarketRetryRemainsCurrent,
   rememberDiscoveredEventMarket,
@@ -1391,6 +1392,117 @@ describe("merchant organizer event workflow", () => {
         { record: "collection", signedEvent: losingEqualTimestampRetry },
         savedReference,
         { record: "collection", signedEvent: newerCollection }
+      )
+    ).toBe(false)
+  })
+
+  it("keeps newer exact retries beyond a legacy coordinate deletion frontier", () => {
+    const signedCollection = {
+      id: "b".repeat(64),
+      pubkey: ORGANIZER,
+      created_at: 5,
+      kind: 30405,
+      content: "",
+      tags: [["d", "market"]],
+      sig: "e".repeat(128),
+    }
+    const terminalDeletion = {
+      terminal: true as const,
+      state: "deleted" as const,
+      collectionCoordinate: COLLECTION,
+      deletion: {
+        record: "collection" as const,
+        coordinate: COLLECTION,
+        deletions: [
+          {
+            deletionEventId: "c".repeat(64),
+            deletionCreatedAt: 4_000,
+            authorPubkey: ORGANIZER,
+            eventTargets: [],
+            addressableTargets: [COLLECTION],
+          },
+        ],
+      },
+      naddr: COLLECTION,
+    }
+
+    expect(
+      organizerEventMarketDeletionRetiresDelivery(terminalDeletion, {
+        record: "collection",
+        signedEvent: signedCollection,
+      })
+    ).toBe(false)
+    expect(
+      organizerEventMarketDeletionRetiresDelivery(
+        {
+          ...terminalDeletion,
+          deletion: {
+            ...terminalDeletion.deletion,
+            deletions: [
+              {
+                ...terminalDeletion.deletion.deletions[0]!,
+                deletionCreatedAt: 6_000,
+              },
+            ],
+          },
+        },
+        { record: "collection", signedEvent: signedCollection }
+      )
+    ).toBe(true)
+    expect(
+      organizerEventMarketDeletionRetiresDelivery(
+        {
+          ...terminalDeletion,
+          deletion: {
+            ...terminalDeletion.deletion,
+            deletions: [
+              {
+                ...terminalDeletion.deletion.deletions[0]!,
+                deletionCreatedAt: 1_000,
+                eventTargets: [signedCollection.id],
+                addressableTargets: [],
+              },
+            ],
+          },
+        },
+        { record: "collection", signedEvent: signedCollection }
+      )
+    ).toBe(true)
+
+    const equalTimestampWinner = {
+      ...terminalDeletion,
+      deletion: {
+        ...terminalDeletion.deletion,
+        deletions: [
+          {
+            ...terminalDeletion.deletion.deletions[0]!,
+            deletionEventId: "a".repeat(64),
+            deletionCreatedAt: 5_000,
+          },
+        ],
+      },
+    }
+    expect(
+      organizerEventMarketDeletionRetiresDelivery(equalTimestampWinner, {
+        record: "collection",
+        signedEvent: signedCollection,
+      })
+    ).toBe(true)
+    expect(
+      organizerEventMarketDeletionRetiresDelivery(
+        {
+          ...equalTimestampWinner,
+          deletion: {
+            ...equalTimestampWinner.deletion,
+            deletions: [
+              {
+                ...equalTimestampWinner.deletion.deletions[0]!,
+                deletionEventId: "f".repeat(64),
+              },
+            ],
+          },
+        },
+        { record: "collection", signedEvent: signedCollection }
       )
     ).toBe(false)
   })

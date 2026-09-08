@@ -302,6 +302,55 @@ function signedDeliveryFrontier(
   }
 }
 
+function eventMarketDeletionAppliesToFrontier(
+  deletion: EventMarketDeletedRecordEvidence["deletions"][number],
+  coordinate: string,
+  frontier: EventMarketRecordFrontier | undefined
+): boolean {
+  if (deletion.authorPubkey !== coordinate.split(":")[1]?.toLowerCase()) {
+    return false
+  }
+  if (
+    frontier?.eventId &&
+    deletion.eventTargets.includes(frontier.eventId.toLowerCase())
+  ) {
+    return true
+  }
+  if (
+    !frontier ||
+    frontier.coordinate !== coordinate ||
+    !deletion.addressableTargets.includes(coordinate)
+  ) {
+    return false
+  }
+  return (
+    compareEventMarketRecordFrontier(
+      {
+        createdAt: deletion.deletionCreatedAt,
+        eventId: deletion.deletionEventId.toLowerCase(),
+        coordinate,
+      },
+      frontier
+    ) >= 0
+  )
+}
+
+export function organizerEventMarketDeletionRetiresDelivery(
+  terminal: OrganizerEventMarketTerminalResolution,
+  delivery: EventMarketDeliveryFrontier
+): boolean {
+  if (terminal.deletion.record !== delivery.record) return false
+  const frontier = signedDeliveryFrontier(delivery)
+  if (!frontier?.coordinate) return false
+  return terminal.deletion.deletions.some((deletion) =>
+    eventMarketDeletionAppliesToFrontier(
+      deletion,
+      terminal.deletion.coordinate,
+      frontier
+    )
+  )
+}
+
 export function organizerEventMarketRetryRemainsCurrent(
   delivery: EventMarketDeliveryFrontier,
   savedReference: SavedOrganizerEventMarketReference | undefined,
@@ -906,23 +955,9 @@ function terminalDeletionRemovesMarket(
   const deletionAppliesToFrontier = (
     frontier: EventMarketRecordFrontier | undefined
   ): boolean =>
-    terminal.deletion.deletions.some((deletion) => {
-      if (deletion.authorPubkey !== coordinate.split(":")[1]?.toLowerCase()) {
-        return false
-      }
-      if (
-        frontier?.eventId &&
-        deletion.eventTargets.includes(frontier.eventId.toLowerCase())
-      ) {
-        return true
-      }
-      return (
-        frontier !== undefined &&
-        frontier.coordinate === coordinate &&
-        deletion.addressableTargets.includes(coordinate) &&
-        deletion.deletionCreatedAt >= frontier.createdAt
-      )
-    })
+    terminal.deletion.deletions.some((deletion) =>
+      eventMarketDeletionAppliesToFrontier(deletion, coordinate, frontier)
+    )
 
   const knownFrontiers = [
     carrierFrontier(terminal, record),

@@ -1390,6 +1390,112 @@ test("a late old collection retry ACK preserves a newer same-coordinate update @
   ).toBeVisible()
 })
 
+test("legacy saved event keeps a newer exact retry beyond an older coordinate deletion @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Legacy Retry Event",
+    organizerHandoffEnabled: true,
+  })
+  const newerCollection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    tags: market.initialCollection.tags,
+    content: market.initialCollection.content,
+  })
+  const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
+  const deliveryStorageKey = `conduit:merchant:event-market-delivery:v1:${ORGANIZER_PUBKEY}`
+  const preparedLegacyState = await page.evaluate(
+    ({ savedKey, deliveryKey, newerEvent }) => {
+      const references = JSON.parse(
+        localStorage.getItem(savedKey) ?? "[]"
+      ) as Array<Record<string, unknown>>
+      for (const reference of references) {
+        for (const key of Object.keys(reference)) {
+          if (
+            key.startsWith("expected") ||
+            key === "replaceExpectedRecordFrontiers"
+          ) {
+            delete reference[key]
+          }
+        }
+      }
+
+      const deliveries = JSON.parse(
+        localStorage.getItem(deliveryKey) ?? "[]"
+      ) as Array<{
+        delivery?: {
+          record?: string
+          acknowledgedRelayUrls?: string[]
+          acknowledgedCount?: number
+          rejectedCount?: number
+          timedOutCount?: number
+          signedEvent?: SignedEvent
+        }
+      }>
+      const collections = deliveries.flatMap((entry) =>
+        entry.delivery?.record === "collection" ? [entry.delivery] : []
+      )
+      if (collections.length === 0) return false
+      for (const collection of collections) {
+        collection.signedEvent = newerEvent
+        collection.acknowledgedRelayUrls = []
+        collection.acknowledgedCount = 0
+        collection.rejectedCount = 0
+        collection.timedOutCount = 1
+      }
+      localStorage.setItem(savedKey, JSON.stringify(references))
+      localStorage.setItem(deliveryKey, JSON.stringify(deliveries))
+      return true
+    },
+    {
+      savedKey: savedStorageKey,
+      deliveryKey: deliveryStorageKey,
+      newerEvent: newerCollection,
+    }
+  )
+  expect(preparedLegacyState).toBe(true)
+
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 5,
+      created_at: market.initialCollection.created_at + 1,
+      tags: [["a", market.collectionCoordinate]],
+      content: "",
+    })
+  )
+  await page.reload()
+  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  await selectOrganizerMarket(page, "Synthetic Legacy Retry Event")
+  await expect(
+    page.getByRole("heading", { name: "Event deleted", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+
+  const retryDelivery = page.getByRole("button", {
+    name: "Retry delivery",
+    exact: true,
+  })
+  await expect(retryDelivery).toBeVisible()
+  const publicationCount = relay.publications.length
+  await retryDelivery.click()
+  await expect
+    .poll(
+      () =>
+        relay.publications
+          .slice(publicationCount)
+          .map((publication) => publication.event.id),
+      { timeout: 30_000 }
+    )
+    .toContain(newerCollection.id)
+  await expect(page.getByText("Active", { exact: true })).toBeVisible({
+    timeout: 30_000,
+  })
+})
+
 test("terminal event deletion removes the exact-record retry path @merchant", async ({
   page,
 }) => {
