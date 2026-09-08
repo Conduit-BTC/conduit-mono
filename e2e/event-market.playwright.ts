@@ -1455,6 +1455,48 @@ test("organizer actions wait for an initial hinted read and use its newer collec
   ])
 })
 
+test("a newer external collection can remove the organizer pickup without leaving actions disabled @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic External Pickup Removal",
+    organizerHandoffEnabled: true,
+  })
+  const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
+  await expect
+    .poll(() =>
+      page.evaluate((key) => {
+        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+          expectedPickupCoordinate?: string
+        }>
+        return saved[0]?.expectedPickupCoordinate
+      }, savedStorageKey)
+    )
+    .toBe(market.pickupCoordinate)
+
+  const pickupRemovedCollection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 5,
+    tags: market.initialCollection.tags.filter(
+      (tag) => tag[0] !== "shipping_option"
+    ),
+    content: market.initialCollection.content,
+  })
+  relay.seed(pickupRemovedCollection)
+  await page.getByRole("button", { name: "Refresh evidence" }).click()
+
+  await expect(
+    page.getByText("Organizer handoff not offered", { exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByRole("button", { name: "Update event", exact: true })
+  ).toBeEnabled({ timeout: 30_000 })
+})
+
 test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @market @merchant", async ({
   page,
 }) => {

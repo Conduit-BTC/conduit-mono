@@ -747,9 +747,33 @@ function marketReachesExpectedFrontiers(
   savedReference: SavedOrganizerEventMarketReference | undefined,
   expectedRecords = expectedEventMarketRecords(savedReference)
 ): boolean {
+  if (market?.pickupCoordinate && !carrierFrontier(market, "pickup")) {
+    return false
+  }
   return expectedRecords.every((record) => {
     const current = carrierFrontier(market, record)
     const expected = savedExpectedFrontier(savedReference, record)
+    if (
+      record === "pickup" &&
+      expected?.coordinate &&
+      market?.pickupCoordinate !== expected.coordinate
+    ) {
+      // The collection owns the organizer-pickup relationship. Only a strictly
+      // newer collection can retire or replace a previously saved pickup.
+      const currentCollection = carrierFrontier(market, "collection")
+      const expectedCollection = savedExpectedFrontier(
+        savedReference,
+        "collection"
+      )
+      return (
+        !!currentCollection &&
+        !!expectedCollection &&
+        compareEventMarketRecordFrontier(
+          currentCollection,
+          expectedCollection
+        ) > 0
+      )
+    }
     if (!current || !expected) return false
     if (
       current.createdAt === expected.createdAt &&
@@ -839,12 +863,31 @@ function compareOrganizerEventMarketGraphFrontier(
   left: EventMarketFrontierCarrier,
   right: EventMarketFrontierCarrier
 ): number | null {
-  const comparisons = EVENT_MARKET_RECORDS.map((record) =>
-    compareEventMarketRecordFrontier(
-      carrierFrontier(left, record),
-      carrierFrontier(right, record)
-    )
+  const collectionComparison = compareEventMarketRecordFrontier(
+    carrierFrontier(left, "collection"),
+    carrierFrontier(right, "collection")
   )
+  const pickupRelationshipMatches =
+    left.pickupCoordinate === right.pickupCoordinate
+  // Equal collection revisions cannot truthfully advertise different pickup
+  // relationships. Across revisions, compare the pickup frontier only while
+  // both collections still advertise the same coordinate.
+  if (!pickupRelationshipMatches && collectionComparison === 0) return null
+  const comparisons = [
+    collectionComparison,
+    compareEventMarketRecordFrontier(
+      carrierFrontier(left, "calendar"),
+      carrierFrontier(right, "calendar")
+    ),
+    ...(pickupRelationshipMatches
+      ? [
+          compareEventMarketRecordFrontier(
+            carrierFrontier(left, "pickup"),
+            carrierFrontier(right, "pickup")
+          ),
+        ]
+      : []),
+  ]
   const advances = comparisons.some((comparison) => comparison > 0)
   const regresses = comparisons.some((comparison) => comparison < 0)
   if (advances && regresses) return null
@@ -913,11 +956,6 @@ export function selectOrganizerEventMarketResolution<
     savedReference,
     expectedRecords
   )
-  const hintedReachesExpectedFrontiers = marketReachesExpectedFrontiers(
-    hintedMarket,
-    savedReference,
-    expectedRecords
-  )
   const hintedIsPreferred =
     isPreferredOrganizerEventMarketListResolution(hintedMarket)
   const preferredListMarket =
@@ -933,19 +971,6 @@ export function selectOrganizerEventMarketResolution<
           preferredListMarket
         )
       : undefined
-  const expectedFrontierWinner =
-    expectedRecords.length > 0 &&
-    hintedReachesExpectedFrontiers !== listReachesExpectedFrontiers
-      ? hintedReachesExpectedFrontiers
-        ? comparableHintedMarket
-        : preferredListMarket
-      : undefined
-  const expectedFrontierWinnerIsCompletePickupRemoval =
-    !!expectedFrontierWinner &&
-    !expectedFrontierWinner.pickupCoordinate &&
-    expectedRecords.includes("collection") &&
-    expectedRecords.includes("calendar") &&
-    !expectedRecords.includes("pickup")
   const selected =
     hintedMarket?.state === "deleted" && "terminal" in hintedMarket
       ? terminalDeletionRemovesMarket(
@@ -963,17 +988,15 @@ export function selectOrganizerEventMarketResolution<
             : undefined))
       : preferredListMarket
         ? comparableHintedMarket
-          ? expectedFrontierWinnerIsCompletePickupRemoval
-            ? expectedFrontierWinner
-            : graphFrontierComparison === null
-              ? pendingOrganizerEventMarketResolution(
-                  "crossed_frontiers",
-                  comparableHintedMarket,
-                  preferredListMarket
-                )
-              : (graphFrontierComparison ?? 0) > 0
-                ? comparableHintedMarket
-                : preferredListMarket
+          ? graphFrontierComparison === null
+            ? pendingOrganizerEventMarketResolution(
+                "crossed_frontiers",
+                comparableHintedMarket,
+                preferredListMarket
+              )
+            : (graphFrontierComparison ?? 0) > 0
+              ? comparableHintedMarket
+              : preferredListMarket
           : preferredListMarket
         : (hintedMarket ?? listMarket)
   if (!selected) return undefined

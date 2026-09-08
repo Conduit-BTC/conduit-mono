@@ -33,6 +33,7 @@ const PRODUCT_TWO = `30402:${"d".repeat(64)}:coffee`
 const COLLECTION = `30405:${ORGANIZER}:market`
 const CALENDAR = `31923:${ORGANIZER}:market-calendar`
 const ORGANIZER_PICKUP = `30406:${ORGANIZER}:organizer-desk`
+const REPLACEMENT_ORGANIZER_PICKUP = `30406:${ORGANIZER}:replacement-desk`
 const OTHER_COLLECTION = `30405:${OTHER_ORGANIZER}:meetup`
 const MERCHANT = "c".repeat(64)
 const MERCHANT_PICKUP = `30406:${MERCHANT}:market-booth`
@@ -490,6 +491,105 @@ describe("merchant organizer event workflow", () => {
         collectionEventId: "a".repeat(64),
         calendarEventId: "b".repeat(64),
       })
+    }
+  })
+
+  it("lets a newer collection supersede a saved pickup frontier that it removes or replaces", () => {
+    const olderMarket = {
+      collectionCoordinate: COLLECTION,
+      calendarCoordinate: CALENDAR,
+      pickupCoordinate: ORGANIZER_PICKUP,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "d".repeat(64),
+      calendarCreatedAt: 1_000,
+      calendarEventId: "e".repeat(64),
+      pickupCreatedAt: 5_000,
+      pickupEventId: "f".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, ["wss://older.example/events"]),
+      state: "active",
+    }
+    const pickupRemoved = {
+      collectionCoordinate: COLLECTION,
+      calendarCoordinate: CALENDAR,
+      collectionCreatedAt: 2_000,
+      collectionEventId: "a".repeat(64),
+      calendarCreatedAt: 1_000,
+      calendarEventId: "e".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://current.example/events",
+      ]),
+      state: "active",
+    }
+    const savedReference = {
+      reference: olderMarket.naddr,
+      savedAt: 20,
+      expectedCollectionCoordinate: COLLECTION,
+      expectedCollectionCreatedAt: 1_000,
+      expectedCollectionEventId: "d".repeat(64),
+      expectedCalendarCoordinate: CALENDAR,
+      expectedCalendarCreatedAt: 1_000,
+      expectedCalendarEventId: "e".repeat(64),
+      expectedPickupCoordinate: ORGANIZER_PICKUP,
+      expectedPickupCreatedAt: 5_000,
+      expectedPickupEventId: "f".repeat(64),
+    }
+    const pickupReplaced = {
+      ...pickupRemoved,
+      pickupCoordinate: REPLACEMENT_ORGANIZER_PICKUP,
+      pickupCreatedAt: 2_000,
+      pickupEventId: "c".repeat(64),
+    }
+
+    for (const candidate of [pickupRemoved, pickupReplaced]) {
+      for (const reference of [savedReference, undefined]) {
+        const selected = selectOrganizerEventMarketResolution(
+          olderMarket,
+          candidate,
+          reference
+        )
+        expect(selected).toMatchObject({
+          state: "active",
+          collectionEventId: "a".repeat(64),
+        })
+        expect(selected?.pickupCoordinate).toBe(candidate.pickupCoordinate)
+      }
+      expect(
+        organizerEventMarketReachesExpectedFrontiers(candidate, savedReference)
+      ).toBe(true)
+    }
+  })
+
+  it("keeps a newer collection non-actionable until its advertised replacement pickup resolves", () => {
+    const savedReference = {
+      reference: encodeEventMarketNaddr(COLLECTION, [
+        "wss://older.example/events",
+      ]),
+      savedAt: 20,
+      expectedCollectionCoordinate: COLLECTION,
+      expectedCollectionCreatedAt: 1_000,
+      expectedCollectionEventId: "d".repeat(64),
+      expectedPickupCoordinate: ORGANIZER_PICKUP,
+      expectedPickupCreatedAt: 5_000,
+      expectedPickupEventId: "f".repeat(64),
+    }
+    const newerUnresolvedMarket = {
+      collectionCoordinate: COLLECTION,
+      pickupCoordinate: REPLACEMENT_ORGANIZER_PICKUP,
+      collectionCreatedAt: 2_000,
+      collectionEventId: "a".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://current.example/events",
+      ]),
+      state: "active",
+    }
+
+    for (const reference of [savedReference, undefined]) {
+      expect(
+        organizerEventMarketReachesExpectedFrontiers(
+          newerUnresolvedMarket,
+          reference
+        )
+      ).toBe(false)
     }
   })
 
