@@ -1034,6 +1034,44 @@ describe("event-market private handoff delivery", () => {
     ).rejects.toThrow("signer does not match sender")
   })
 
+  it("applies the sender cutoff before retrying exact private wraps", async () => {
+    const removedRelay = "wss://removed.inbox.relay.dev"
+    const recipientRelay = "wss://organizer.inbox.relay.dev"
+    const senderRelay = "wss://merchant.inbox.relay.dev"
+    const attemptedTargets: string[][] = []
+
+    await retryEventMarketPrivateDelivery({
+      record: readyDeliveryRecord(),
+      recipientInboxRelays: [removedRelay, recipientRelay],
+      senderInboxRelays: [removedRelay, senderRelay],
+      loadAccountRelayCutoff: async (pubkey) => ({
+        pubkey,
+        excludedRelayUrls: [removedRelay],
+      }),
+      publishFn: (async (_event, options) => {
+        const targets = [...(options.exclusiveRelayUrls ?? [])]
+        attemptedTargets.push(targets)
+        return successfulDelivery(targets)
+      }) as never,
+    })
+
+    expect(attemptedTargets).toEqual([[recipientRelay], [senderRelay]])
+
+    await expect(
+      retryEventMarketPrivateDelivery({
+        record: readyDeliveryRecord(),
+        recipientInboxRelays: [recipientRelay],
+        senderInboxRelays: [senderRelay],
+        loadAccountRelayCutoff: async () => {
+          throw new Error("cutoff store unavailable")
+        },
+        publishFn: (async () => {
+          throw new Error("unexpected publish")
+        }) as never,
+      })
+    ).rejects.toThrow("cutoff store unavailable")
+  })
+
   it("tracks only the exact configured E2E loopback relay for private retries", async () => {
     const isolatedRelayUrl = "ws://127.0.0.1:7777"
     const otherLoopbackRelayUrl = "ws://127.0.0.1:7788"

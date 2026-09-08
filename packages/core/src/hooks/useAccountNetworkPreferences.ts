@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { subscribeToAccountNetworkPreferenceRuntimeState } from "../protocol/network-preference-update-state"
 import {
   hydrateAccountNetworkPreferences,
   reconcileAccountNetworkPreferences,
@@ -53,6 +54,10 @@ export function useAccountNetworkPreferences(
 ): UseAccountNetworkPreferencesResult {
   const contextKey = enabled ? pubkey?.trim().toLowerCase() || null : null
   const [retryRevision, setRetryRevision] = useState(0)
+  const runtimeRecordRef = useRef<{
+    contextKey: string
+    record: AccountNetworkPreferencesReconciliation["pendingUpdate"]
+  } | null>(null)
   const [state, setState] = useState<AccountNetworkPreferencesState>({
     contextKey: null,
     status: "idle",
@@ -63,6 +68,7 @@ export function useAccountNetworkPreferences(
 
   useEffect(() => {
     if (!contextKey) {
+      runtimeRecordRef.current = null
       setState({
         contextKey: null,
         status: "idle",
@@ -74,6 +80,7 @@ export function useAccountNetworkPreferences(
     }
 
     let cancelled = false
+    runtimeRecordRef.current = null
     setState({
       contextKey,
       status: "reconciling",
@@ -84,11 +91,22 @@ export function useAccountNetworkPreferences(
     void hydrateAccountNetworkPreferences(contextKey)
       .then((hydration) => {
         if (cancelled) return
+        const observedRuntimeRecord =
+          runtimeRecordRef.current?.contextKey === contextKey
+            ? runtimeRecordRef.current.record
+            : undefined
         setState({
           contextKey,
           status: "reconciling",
           localReady: true,
-          reconciliation: hydration,
+          reconciliation:
+            observedRuntimeRecord === undefined
+              ? hydration
+              : {
+                  ...hydration,
+                  pendingUpdate: observedRuntimeRecord,
+                  pendingUpdateStatus: observedRuntimeRecord ? "ready" : "none",
+                },
           error: null,
         })
       })
@@ -112,6 +130,75 @@ export function useAccountNetworkPreferences(
   }, [contextKey])
 
   useEffect(() => {
+    if (!contextKey) return
+    let active = true
+    let unsubscribe: () => void = () => undefined
+    try {
+      unsubscribe = subscribeToAccountNetworkPreferenceRuntimeState(
+        contextKey,
+        {
+          onChange({ record }) {
+            if (!active) return
+            runtimeRecordRef.current = { contextKey, record }
+            setState((current) => {
+              if (
+                current.contextKey !== contextKey ||
+                !current.reconciliation
+              ) {
+                return current
+              }
+              return {
+                ...current,
+                reconciliation: {
+                  ...current.reconciliation,
+                  pendingUpdate: record,
+                  pendingUpdateStatus: record ? "ready" : "none",
+                },
+              }
+            })
+          },
+          onError(error) {
+            if (!active) return
+            setState((current) => {
+              if (current.contextKey !== contextKey) return current
+              return {
+                ...current,
+                status: "error",
+                reconciliation: current.reconciliation
+                  ? {
+                      ...current.reconciliation,
+                      pendingUpdateStatus: "unavailable",
+                    }
+                  : null,
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : "Unable to synchronize Network preferences",
+              }
+            })
+          },
+        }
+      )
+    } catch (error) {
+      if (active) {
+        setState((current) => ({
+          ...current,
+          contextKey,
+          status: "error",
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unable to synchronize Network preferences",
+        }))
+      }
+    }
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [contextKey])
+
+  useEffect(() => {
     if (
       !contextKey ||
       !freshEnabled ||
@@ -130,11 +217,22 @@ export function useAccountNetworkPreferences(
     void reconcileAccountNetworkPreferences(contextKey)
       .then((reconciliation) => {
         if (cancelled) return
+        const observedRuntimeRecord =
+          runtimeRecordRef.current?.contextKey === contextKey
+            ? runtimeRecordRef.current.record
+            : undefined
         setState({
           contextKey,
           status: "ready",
           localReady: true,
-          reconciliation,
+          reconciliation:
+            observedRuntimeRecord === undefined
+              ? reconciliation
+              : {
+                  ...reconciliation,
+                  pendingUpdate: observedRuntimeRecord,
+                  pendingUpdateStatus: observedRuntimeRecord ? "ready" : "none",
+                },
           error: null,
         })
       })

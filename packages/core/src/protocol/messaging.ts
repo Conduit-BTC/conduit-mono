@@ -16,6 +16,7 @@ import {
   type InboxDeclarationEvidenceRepository,
 } from "./inbox-declaration-evidence"
 import { EVENT_KINDS } from "./kinds"
+import { loadAccountPrivateMessageRelayCutoff } from "./network-preference-update-state"
 import {
   fetchEventsFanout,
   fetchEventsFanoutWithDiagnostics,
@@ -32,6 +33,7 @@ import {
   resolveInboxDeclaration,
   selectPrivateMessageDeliveryRoute,
   sharedInboxDiscoveryRelayUrls,
+  type AccountPrivateMessageRelayCutoff,
   type DeliveryRouteSelection,
   type InboxDeclarationResolution,
   type PrivateMessageDeliveryRoute,
@@ -778,6 +780,10 @@ export interface PublishPrivateMessageInput {
   resolveCompatibilityRecipientReadRelays?: (
     pubkey: string
   ) => Promise<readonly string[]>
+  /** Exact-account durable privacy policy loader; injectable for tests. */
+  loadAccountRelayCutoff?: (
+    pubkey: string
+  ) => Promise<AccountPrivateMessageRelayCutoff>
 }
 
 function createVisibilityGatedSigner(
@@ -935,6 +941,9 @@ export async function publishPrivateMessage(
       "Private message rumor recipient does not match delivery recipient"
     )
   }
+  const relayCutoff = await (
+    input.loadAccountRelayCutoff ?? loadAccountPrivateMessageRelayCutoff
+  )(senderPubkey)
 
   const giftWrapFn = input.giftWrapFn ?? giftWrap
   const selfCopy = input.selfCopy ?? true
@@ -975,6 +984,8 @@ export async function publishPrivateMessage(
   const recipientRoute = selectPrivateMessageDeliveryRoute({
     rumorKind: input.rumorKind,
     declaration: recipientDeclaration,
+    authenticatedPubkey: senderPubkey,
+    relayCutoff,
     validatedOrder,
     compatibilityEnabled: input.compatibilityOrderRoute?.enabled,
     compatibilityRelayUrls: input.compatibilityOrderRoute?.relayUrls,
@@ -1003,20 +1014,42 @@ export async function publishPrivateMessage(
       input.inspectOwnInboxReadiness ??
       inspectRetainedOwnPrivateMessageRelayReadiness
     )(senderPubkey)
-    if (senderReadiness.state !== "ready") {
+    const coordinatedPending =
+      senderReadiness.state === "distribution_pending" &&
+      senderReadiness.pendingWriteAuthorized === true
+    if (senderReadiness.state !== "ready" && !coordinatedPending) {
       throw new PrivateMessageRelayReadinessError("sender_not_ready")
     }
+    const senderDeclaration: InboxDeclarationResolution =
+      senderReadiness.state === "ready"
+        ? {
+            pubkey: senderPubkey,
+            state: "declared",
+            relayUrls: senderReadiness.relayUrls,
+            stale: senderReadiness.stale,
+            fetchedAt: Date.now(),
+          }
+        : {
+            pubkey: senderPubkey,
+            state: "distribution_pending",
+            relayUrls: [],
+            pendingRelayUrls: senderReadiness.relayUrls,
+            retainedReadRelayUrls: senderReadiness.retainedRelayUrls,
+            pendingWriteAuthorized: true,
+            eventId: senderReadiness.eventId,
+            stale: true,
+            fetchedAt: Date.now(),
+          }
     senderRoute = selectPrivateMessageDeliveryRoute({
       rumorKind: input.rumorKind,
-      declaration: {
-        pubkey: senderPubkey,
-        state: "declared",
-        relayUrls: senderReadiness.relayUrls,
-        stale: senderReadiness.stale,
-        fetchedAt: Date.now(),
-      },
+      declaration: senderDeclaration,
+      authenticatedPubkey: senderPubkey,
+      relayCutoff,
       validatedOrder: false,
     })
+    if (senderRoute.route === "blocked") {
+      throw new PrivateMessageRelayReadinessError("sender_not_ready")
+    }
   } else if (selfCopy) {
     const senderDeclaration = await resolveDeclarationForSend(
       input.senderPubkey,
@@ -1029,6 +1062,8 @@ export async function publishPrivateMessage(
     senderRoute = selectPrivateMessageDeliveryRoute({
       rumorKind: input.rumorKind,
       declaration: senderDeclaration,
+      authenticatedPubkey: senderPubkey,
+      relayCutoff,
       validatedOrder: false,
     })
   }
@@ -1438,6 +1473,7 @@ export type OwnPrivateMessageRelayReadiness =
       retainedRelayUrls: string[]
       stale: true
       distributionRepairable: boolean
+      pendingWriteAuthorized?: true
     }
   | {
       state: "signed_empty"
@@ -1505,6 +1541,9 @@ function projectOwnPrivateMessageRelayReadiness(
         distributionRepairable:
           (resolution.pendingPublishRelayUrls?.length ?? 0) > 0 ||
           distributionRepairable,
+        ...(resolution.pendingWriteAuthorized === true
+          ? { pendingWriteAuthorized: true as const }
+          : {}),
       }
     case "signed_empty":
       if (!resolution.eventId) return { state: "lookup_unavailable" }

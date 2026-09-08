@@ -1,6 +1,12 @@
 import { db, type OrderLifecycle, type OrderRelayDeliveryStatus } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
+import { loadAccountPrivateMessageRelayCutoff } from "./network-preference-update-state"
+import {
+  applyAccountPrivateMessageRelayCutoff,
+  type AccountPrivateMessageRelayCutoff,
+} from "./private-message-routing"
 import { publishSignedEventToRelay } from "./relay-publish"
+import { normalizeSecureRelayUrls } from "./relay-settings"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
 const RETRY_DELAY_MS = 60_000
@@ -23,6 +29,8 @@ export type OrderRelayDeliveryPublisher = (input: {
 export interface RetryOrderRelayDeliveryOptions {
   repository?: OrderRelayDeliveryRepository
   publisher?: OrderRelayDeliveryPublisher
+  /** Exact-account durable privacy policy loader; injectable for tests. */
+  loadAccountRelayCutoff?: typeof loadAccountPrivateMessageRelayCutoff
   now?: () => number
   leaseOwner?: string
 }
@@ -60,13 +68,27 @@ function nextLeaseOwner(): string {
 }
 
 function hasRetryablePublicTarget(
-  delivery: NonNullable<OrderLifecycle["orderRelayDelivery"]>
+  delivery: NonNullable<OrderLifecycle["orderRelayDelivery"]>,
+  accountPubkey?: string,
+  relayCutoff?: AccountPrivateMessageRelayCutoff
 ): boolean {
-  return delivery.relayDelivery.some(
-    (target) =>
-      target.status !== "acked" &&
-      normalizePublicWebSocketUrl(target.relayUrl) !== null
-  )
+  return delivery.relayDelivery.some((target) => {
+    if (target.status === "acked") return false
+    const relayUrl = retryablePublicRelayUrl(target.relayUrl)
+    if (!relayUrl) return false
+    return accountPubkey
+      ? applyAccountPrivateMessageRelayCutoff(
+          accountPubkey,
+          [relayUrl],
+          relayCutoff
+        ).length > 0
+      : true
+  })
+}
+
+function retryablePublicRelayUrl(relayUrl: string): string | null {
+  if (!normalizePublicWebSocketUrl(relayUrl)) return null
+  return normalizeSecureRelayUrls([relayUrl])[0] ?? null
 }
 
 export async function retryOrderRelayDelivery(
@@ -80,6 +102,32 @@ export async function retryOrderRelayDelivery(
   const leaseOwner = options.leaseOwner ?? nextLeaseOwner()
   const timestamp = now()
 
+  const initial = await repository.get(orderId)
+  if (
+    !initial?.orderRelayDelivery ||
+    initial.buyerIdentityKind === "guest_ephemeral" ||
+    initial.buyerPubkey !== activeBuyerPubkey ||
+    initial.orderRelayDelivery.expiresAt <= timestamp ||
+    !hasRetryablePublicTarget(initial.orderRelayDelivery) ||
+    (initial.orderRelayDelivery.deliveryLeaseOwner &&
+      initial.orderRelayDelivery.deliveryLeaseOwner !== leaseOwner &&
+      (initial.orderRelayDelivery.deliveryLeaseExpiresAt ?? 0) > timestamp)
+  ) {
+    return initial
+  }
+  const relayCutoff = await (
+    options.loadAccountRelayCutoff ?? loadAccountPrivateMessageRelayCutoff
+  )(activeBuyerPubkey)
+  if (
+    !hasRetryablePublicTarget(
+      initial.orderRelayDelivery,
+      activeBuyerPubkey,
+      relayCutoff
+    )
+  ) {
+    return initial
+  }
+
   const claimed = await repository.update(orderId, (current) => {
     const delivery = current.orderRelayDelivery
     if (
@@ -87,7 +135,7 @@ export async function retryOrderRelayDelivery(
       current.buyerIdentityKind === "guest_ephemeral" ||
       current.buyerPubkey !== activeBuyerPubkey ||
       delivery.expiresAt <= timestamp ||
-      !hasRetryablePublicTarget(delivery) ||
+      !hasRetryablePublicTarget(delivery, activeBuyerPubkey, relayCutoff) ||
       (delivery.deliveryLeaseOwner &&
         delivery.deliveryLeaseOwner !== leaseOwner &&
         (delivery.deliveryLeaseExpiresAt ?? 0) > timestamp)
@@ -117,9 +165,18 @@ export async function retryOrderRelayDelivery(
 
   const signedEvent = claimed.orderRelayDelivery.signedRecipientWrap
   const outstanding = claimed.orderRelayDelivery.relayDelivery.filter(
-    (target) =>
-      target.status !== "acked" &&
-      normalizePublicWebSocketUrl(target.relayUrl) !== null
+    (target) => {
+      if (target.status === "acked") return false
+      const relayUrl = retryablePublicRelayUrl(target.relayUrl)
+      return (
+        relayUrl !== null &&
+        applyAccountPrivateMessageRelayCutoff(
+          activeBuyerPubkey,
+          [relayUrl],
+          relayCutoff
+        ).length > 0
+      )
+    }
   )
 
   for (const target of outstanding) {

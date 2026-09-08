@@ -760,6 +760,67 @@ describe("general direct-message gateway", () => {
     expect(result.meta.inbox?.coverage).toBe("complete")
   })
 
+  it("surfaces planner-capped inbox evidence as partial coverage", async () => {
+    const relayUrls = Array.from(
+      { length: 25 },
+      (_, index) =>
+        `wss://inbox-${String(index).padStart(2, "0")}.conduit.market`
+    )
+    let attemptedGiftWrapRelays: readonly string[] = []
+    __setCommerceTestOverrides({
+      loadAccountRelayCutoff: async (pubkey) => ({
+        pubkey,
+        excludedRelayUrls: [],
+      }),
+      resolveInboxRelayUrls: async () => relayUrls,
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
+          attemptedGiftWrapRelays = options?.relayUrls ?? []
+        }
+        return {
+          events: [],
+          attemptedRelayUrls: [...(options?.relayUrls ?? [])],
+          successfulRelayUrls: [...(options?.relayUrls ?? [])],
+          failedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    expect(attemptedGiftWrapRelays).toEqual(relayUrls.slice(0, 24))
+    expect(result.meta.inbox?.coverage).toBe("partial")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("does not attempt an inbox fanout when the durable account cutoff is unavailable", async () => {
+    let giftWrapReads = 0
+    __setCommerceTestOverrides({
+      loadAccountRelayCutoff: async () => {
+        throw new Error("cutoff store unavailable")
+      },
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) giftWrapReads += 1
+        return {
+          events: [],
+          attemptedRelayUrls: [...(options?.relayUrls ?? [])],
+          successfulRelayUrls: [...(options?.relayUrls ?? [])],
+          failedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    expect(giftWrapReads).toBe(0)
+    expect(result.meta.inbox?.coverage).toBe("unavailable")
+    expect(result.meta.degraded).toBe(true)
+  })
+
   it("re-attempts only previously-failed wraps on a later read", async () => {
     const unwrapCalls: Record<string, number> = {}
     let badResolves = false

@@ -31,12 +31,14 @@ import {
   type PublishPrivateMessageResult,
 } from "./messaging"
 import { getNdk } from "./ndk"
+import { loadAccountPrivateMessageRelayCutoff } from "./network-preference-update-state"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import type {
   ParsedEventMarketPrivateMessage,
   ParsedOrderMessage,
 } from "./orders"
 import {
+  applyAccountPrivateMessageRelayCutoff,
   MAX_DECLARED_INBOX_WRITE_RELAYS,
   resolveInboxDeclaration,
   type ResolveInboxDeclarationOptions,
@@ -1294,23 +1296,36 @@ export async function retryEventMarketPrivateDelivery(input: {
   deliveryProgress?: EventMarketPrivateDeliveryProgress
   recipientInboxRelays?: readonly string[]
   senderInboxRelays?: readonly string[]
+  /** Exact-account durable privacy policy loader; injectable for tests. */
+  loadAccountRelayCutoff?: typeof loadAccountPrivateMessageRelayCutoff
   /** Shared declaration read seam for deterministic delivery tests/adapters. */
   inboxDeclarationOptions?: ResolveInboxDeclarationOptions
   publishFn?: typeof publishWithPlanner
 }): Promise<RetryEventMarketPrivateDeliveryResult> {
   assertValidEventMarketPrivateDeliveryRecord(input.record)
+  const relayCutoff = await (
+    input.loadAccountRelayCutoff ?? loadAccountPrivateMessageRelayCutoff
+  )(input.record.senderPubkey)
+  const applyRelayCutoff = (relayUrls: readonly string[]) =>
+    applyAccountPrivateMessageRelayCutoff(
+      input.record.senderPubkey,
+      relayUrls,
+      relayCutoff
+    )
   let deliveryProgress = input.deliveryProgress
     ? parseEventMarketPrivateDeliveryProgress(
         input.deliveryProgress,
         input.record
       )
     : createEventMarketPrivateDeliveryProgress(input.record)
-  const recipientRelayUrls = input.recipientInboxRelays
-    ? declaredInboxWriteRelayUrls(input.recipientInboxRelays)
-    : await strictInboxRelays(
-        input.record.recipientPubkey,
-        input.inboxDeclarationOptions
-      )
+  const recipientRelayUrls = applyRelayCutoff(
+    input.recipientInboxRelays
+      ? declaredInboxWriteRelayUrls(input.recipientInboxRelays)
+      : await strictInboxRelays(
+          input.record.recipientPubkey,
+          input.inboxDeclarationOptions
+        )
+  )
   if (recipientRelayUrls.length === 0) {
     throw new Error("Private-message recipient inbox is not currently usable.")
   }
@@ -1358,12 +1373,14 @@ export async function retryEventMarketPrivateDelivery(input: {
   let selfCopyError: string | null = null
   if (input.record.signedSelfWrap) {
     try {
-      const senderRelayUrls = input.senderInboxRelays
-        ? declaredInboxWriteRelayUrls(input.senderInboxRelays)
-        : await strictInboxRelays(
-            input.record.senderPubkey,
-            input.inboxDeclarationOptions
-          )
+      const senderRelayUrls = applyRelayCutoff(
+        input.senderInboxRelays
+          ? declaredInboxWriteRelayUrls(input.senderInboxRelays)
+          : await strictInboxRelays(
+              input.record.senderPubkey,
+              input.inboxDeclarationOptions
+            )
+      )
       if (senderRelayUrls.length === 0) {
         throw new Error("Sender inbox is not currently usable.")
       }

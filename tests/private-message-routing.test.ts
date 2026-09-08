@@ -18,6 +18,7 @@ import {
   primeInboxDeclarationCache,
   resolveInboxDeclaration,
   selectPrivateMessageDeliveryRoute,
+  setInboxExplicitRemovalRelayUrls,
   setInboxMigrationRecoveryRelayUrls,
   type InboxDeclarationResolution,
   type InboxDeclarationEvidenceRepository,
@@ -28,6 +29,7 @@ import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 const OWNER_SECRET = new Uint8Array(32).fill(1)
 const OTHER_SECRET = new Uint8Array(32).fill(2)
 const OWNER = getPublicKey(OWNER_SECRET)
+const OTHER = getPublicKey(OTHER_SECRET)
 
 function declarationEvent(params: {
   secretKey?: Uint8Array
@@ -865,6 +867,29 @@ describe("resolveInboxDeclaration", () => {
     expect(fetches).toBe(1)
   })
 
+  it("does not let a recipient account cutoff rewrite peer declaration evidence", async () => {
+    const removed = "wss://recipient-removed.conduit.market"
+    const permitted = "wss://recipient-inbox.conduit.market"
+    setInboxExplicitRemovalRelayUrls(OTHER, [removed])
+    primeInboxDeclarationCache(OTHER, [removed, permitted], () => 0)
+
+    const declaration = await resolveInboxDeclaration(OTHER, {
+      evidenceRepository,
+      now: () => 1,
+    })
+
+    expect(declaration.relayUrls).toEqual([removed, permitted])
+    expect(
+      selectPrivateMessageDeliveryRoute({
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        declaration,
+        authenticatedPubkey: OWNER,
+        relayCutoff: { pubkey: OWNER, excludedRelayUrls: [] },
+        validatedOrder: false,
+      }).relayUrls
+    ).toEqual([removed, permitted])
+  })
+
   it("reconciles a newer cross-tab durable frontier before the TTL fast path", async () => {
     const cases = [
       {
@@ -1260,6 +1285,47 @@ describe("planInboxReadRelays", () => {
     ])
   })
 
+  for (const pendingCount of [1, 2, 3]) {
+    it(`reserves ${pendingCount} active pending inbox relays before accumulated cutover recovery`, () => {
+      const recovery = Array.from(
+        { length: 25 },
+        (_, index) => `wss://cutover-${String(index).padStart(2, "0")}.example`
+      )
+      const pending = Array.from(
+        { length: pendingCount },
+        (_, index) => `wss://pending-${String(index).padStart(2, "0")}.example`
+      )
+      const plan = planInboxReadRelays({
+        declaration: resolution({
+          state: "distribution_pending",
+          relayUrls: [],
+          pendingRelayUrls: pending,
+          retainedReadRelayUrls: [...pending, ...recovery],
+          cutoverRecoveryRelayUrls: recovery,
+        }),
+        authenticatedPubkey: OWNER,
+        localReadRelayUrls: [],
+        compatibilityRelayUrls: [],
+        requiredCompatibilityRelayUrls: [],
+        maxRelays: 24,
+      })
+
+      expect(plan.relayUrls).toEqual([
+        ...pending,
+        ...recovery.slice(0, 24 - pendingCount),
+      ])
+      expect(plan.relayUrls).toHaveLength(24)
+      expect(plan.cappedRelayUrls).toEqual(recovery.slice(24 - pendingCount))
+      expect(
+        deriveInboxReadCoverage({
+          successfulRelayUrls: plan.relayUrls,
+          failedRelayUrls: [],
+          cappedRelayUrls: plan.cappedRelayUrls,
+        })
+      ).toBe("partial")
+    })
+  }
+
   it("drops insecure relay urls from every source", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ relayUrls: ["ws://inbox.conduit.market"] }),
@@ -1302,6 +1368,52 @@ describe("deriveInboxReadCoverage", () => {
 })
 
 describe("selectPrivateMessageDeliveryRoute", () => {
+  it("applies a whole-removal cutoff from the authenticated sender without affecting other accounts", () => {
+    const removed = "wss://removed-by-sender.example"
+    const permitted = "wss://recipient-inbox.example"
+    setInboxExplicitRemovalRelayUrls(OWNER, [removed])
+
+    const declaredInput = {
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      declaration: resolution({
+        pubkey: OTHER,
+        relayUrls: [removed, permitted],
+      }),
+      validatedOrder: false,
+      authenticatedPubkey: OWNER,
+    }
+    expect(selectPrivateMessageDeliveryRoute(declaredInput)).toMatchObject({
+      route: "declared_inbox",
+      relayUrls: [permitted],
+    })
+
+    const compatibilityInput = {
+      rumorKind: EVENT_KINDS.ORDER,
+      declaration: resolution({
+        pubkey: OTHER,
+        state: "not_observed" as const,
+        relayUrls: [],
+      }),
+      validatedOrder: true,
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: [removed, permitted],
+      authenticatedPubkey: OWNER,
+    }
+    expect(selectPrivateMessageDeliveryRoute(compatibilityInput)).toMatchObject(
+      {
+        route: "compatibility_order",
+        relayUrls: [permitted],
+      }
+    )
+
+    expect(
+      selectPrivateMessageDeliveryRoute({
+        ...declaredInput,
+        authenticatedPubkey: OTHER,
+      }).relayUrls
+    ).toEqual([removed, permitted])
+  })
+
   it("limits canonical compatibility writes to the protected inbox defaults", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,

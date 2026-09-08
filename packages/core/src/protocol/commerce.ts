@@ -17,6 +17,7 @@ import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
+import { loadAccountPrivateMessageRelayCutoff } from "./network-preference-update-state"
 import {
   extractFollowPubkeys,
   isPlausibleFollowListEventTimestamp,
@@ -444,6 +445,7 @@ type CommerceTestOverrides = {
     assertAuthority: () => void
   ) => Promise<void>
   resolveInboxRelayUrls?: (principalPubkey: string) => Promise<string[]>
+  loadAccountRelayCutoff?: typeof loadAccountPrivateMessageRelayCutoff
   markDirectMessagesRead?: (
     principalPubkey: string,
     counterpartyPubkey: string,
@@ -5474,11 +5476,32 @@ async function fetchEventMarketPrivateMessagesStrict(
     discardEventMarketInboxScanCycles(principalPubkey)
     throw new Error("Connect your Nostr signer to view event handoffs.")
   }
+  let relayCutoff
+  try {
+    relayCutoff = await (
+      testOverrides.loadAccountRelayCutoff ??
+      loadAccountPrivateMessageRelayCutoff
+    )(principalPubkey)
+  } catch {
+    discardEventMarketInboxScanCycles(principalPubkey)
+    return {
+      messages: [],
+      stale: true,
+      decryptFailures: [],
+      inbox: {
+        declarationState: "lookup_unavailable",
+        coverage: "unavailable",
+        readSource: "declared",
+      },
+    }
+  }
+  assertInboxSyncAuthority(authorization)
   const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
   assertInboxSyncAuthority(authorization)
+  const explicitlyRemoved = new Set(relayCutoff.excludedRelayUrls)
   const relayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
     declaration.state === "declared" ? declaration.relayUrls : []
-  )
+  ).filter((relayUrl) => !explicitlyRemoved.has(relayUrl))
   if (relayUrls.length === 0) {
     discardEventMarketInboxScanCycles(principalPubkey)
     return {
@@ -5582,10 +5605,35 @@ async function fetchNewInboxWraps(
     limit,
   }
 
+  let relayCutoff
+  try {
+    relayCutoff = await (
+      testOverrides.loadAccountRelayCutoff ??
+      loadAccountPrivateMessageRelayCutoff
+    )(principalPubkey)
+  } catch {
+    return {
+      wraps: [],
+      inbox: {
+        declarationState: "lookup_unavailable",
+        coverage: "unavailable",
+        readSource: "compatibility",
+        authentication: {
+          state: "not_challenged",
+          challengedCount: 0,
+          succeededCount: 0,
+          failedCount: 0,
+        },
+      },
+    }
+  }
+  assertInboxSyncAuthority(authorization)
   const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
+  assertInboxSyncAuthority(authorization)
   const readPlan = planInboxReadRelays({
     declaration,
     authenticatedPubkey: principalPubkey,
+    relayCutoff,
     maxRelays: DM_INBOX_READ_FANOUT,
   })
 
@@ -5603,7 +5651,13 @@ async function fetchNewInboxWraps(
       wraps: result.events.filter((event) => !successful?.has(event.id)),
       inbox: {
         declarationState: declaration.state,
-        coverage: deriveInboxReadCoverage(result),
+        coverage: deriveInboxReadCoverage({
+          ...result,
+          cappedRelayUrls: [
+            ...(result.cappedRelayUrls ?? []),
+            ...readPlan.cappedRelayUrls,
+          ],
+        }),
         readSource: readPlan.source,
         authentication: {
           state: "not_challenged",
@@ -5633,7 +5687,12 @@ async function fetchNewInboxWraps(
       .map((event) => new NDKEvent(undefined, event)),
     inbox: {
       declarationState: declaration.state,
-      coverage: protectedResult.coverage,
+      coverage:
+        protectedResult.coverage === "unavailable"
+          ? "unavailable"
+          : readPlan.cappedRelayUrls.length > 0
+            ? "partial"
+            : protectedResult.coverage,
       readSource: readPlan.source,
       authentication: protectedResult.auth,
     },

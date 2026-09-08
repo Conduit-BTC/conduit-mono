@@ -54,6 +54,7 @@ export type InboxReadCoverage = "complete" | "partial" | "unavailable"
 /** Where a private-message read relay came from. */
 export type InboxReadSource =
   | "declared"
+  | "cutover_recovery"
   | "local_in"
   | "migration_recovery"
   | "compatibility"
@@ -114,6 +115,10 @@ export interface InboxDeclarationResolution {
   relayUrls: string[]
   /** Last usable declaration retained only for permissive inbox reads. */
   retainedReadRelayUrls?: string[]
+  /** Hidden previous inboxes retained by the versioned stale-sender policy. */
+  cutoverRecoveryRelayUrls?: string[]
+  cutoverRecoveryPolicyVersion?: number
+  cutoverRecoveryExpiresAt?: number
   /** True when served from cache past its freshness window. */
   stale: boolean
   fetchedAt: number
@@ -125,10 +130,12 @@ export interface InboxDeclarationResolution {
   sourceRelayUrls?: string[]
   /** Shared discovery relays that returned the exact current event. */
   sharedSourceRelayUrls?: string[]
-  /** Usable relay tags in the staged declaration; never write-authorizing. */
+  /** Usable relay tags in a fully signed and durably staged declaration. */
   pendingRelayUrls?: string[]
   /** Immutable targets for retrying the exact staged event. */
   pendingPublishRelayUrls?: string[]
+  /** True only for a declaration atomically staged with its Network update. */
+  pendingWriteAuthorized?: boolean
   /** Diagnostics for this invocation's network observation. */
   observation?: InboxDeclarationObservation
 }
@@ -170,6 +177,11 @@ const declarationEvidenceCache = new Map<
 const declarationEvidenceMergeTails = new Map<string, Promise<void>>()
 const invalidatedDeclarationKeys = new Set<string>()
 const inboxMigrationRecoveryRelayUrls = new Map<string, string[]>()
+const inboxExplicitRemovalRelayUrls = new Map<string, string[]>()
+const inboxCoordinatedPendingCheckpoints = new Map<
+  string,
+  { eventId: string; updateId: string }
+>()
 
 function hasCurrentCompleteLookup(
   record: InboxDeclarationEvidenceRecord
@@ -193,6 +205,8 @@ export function __resetInboxDeclarationCache(): void {
   declarationEvidenceMergeTails.clear()
   invalidatedDeclarationKeys.clear()
   inboxMigrationRecoveryRelayUrls.clear()
+  inboxExplicitRemovalRelayUrls.clear()
+  inboxCoordinatedPendingCheckpoints.clear()
 }
 
 /** Expire freshness without deleting monotonic declaration evidence. */
@@ -237,6 +251,7 @@ export function primeInboxDeclarationEvidence(
     stale: !hasCurrentCompleteLookup(merged),
     fetchedAt:
       merged.current.completeObservedAt ?? merged.current.observedAt ?? now(),
+    evaluatedAt: now(),
   })
   declarationCache.set(key, resolution)
   invalidatedDeclarationKeys.delete(key)
@@ -309,6 +324,7 @@ export async function readRetainedInboxDeclaration(
       durable.latestLookup?.observedAt ??
       durable.current.completeObservedAt ??
       durable.current.observedAt,
+    evaluatedAt: (options.now ?? Date.now)(),
   })
 }
 
@@ -346,6 +362,10 @@ function evidenceMergeInputs(
     pendingDistribution:
       entry.signedEvent.id === record.current.signedEvent.id
         ? record.pendingDistribution
+        : undefined,
+    cutoverRecovery:
+      entry.signedEvent.id === record.current.signedEvent.id
+        ? record.cutoverRecovery
         : undefined,
     observedAt: entry.observedAt,
     completeObservedAt: entry.completeObservedAt,
@@ -543,6 +563,7 @@ async function projectAndCacheInboxDeclarationResolution(
           : (strongest.latestLookup?.observedAt ??
             strongest.current.completeObservedAt ??
             strongest.current.observedAt),
+      evaluatedAt: now(),
       observation: sameFrontier && sameLookup ? input.observation : undefined,
     })
     declarationCache.set(key, resolution)
@@ -605,6 +626,83 @@ export function getInboxMigrationRecoveryRelayUrls(pubkey: string): string[] {
   return [...(inboxMigrationRecoveryRelayUrls.get(key) ?? [])]
 }
 
+/**
+ * Apply a fully signed/staged whole-setup privacy cutoff in this process.
+ * Durable Network update state re-primes this exclusion after restart.
+ */
+export function setInboxExplicitRemovalRelayUrls(
+  pubkey: string,
+  relayUrls: readonly string[]
+): void {
+  const key = normalizeInboxDeclarationEvidencePubkey(pubkey)
+  if (!key) return
+  const normalized = ownerRelayUrls(relayUrls)
+  if (normalized.length === 0) {
+    inboxExplicitRemovalRelayUrls.delete(key)
+  } else {
+    inboxExplicitRemovalRelayUrls.set(key, normalized)
+  }
+}
+
+export function getInboxExplicitRemovalRelayUrls(pubkey: string): string[] {
+  const key = normalizeInboxDeclarationEvidencePubkey(pubkey)
+  if (!key) return []
+  return [...(inboxExplicitRemovalRelayUrls.get(key) ?? [])]
+}
+
+/** Validated account policy applied atomically to one read or write decision. */
+export interface AccountPrivateMessageRelayCutoff {
+  pubkey: string
+  excludedRelayUrls: readonly string[]
+}
+
+function explicitRemovalRelayUrlsForOperation(
+  pubkey: string,
+  cutoff: AccountPrivateMessageRelayCutoff | undefined
+): string[] {
+  if (!cutoff) return getInboxExplicitRemovalRelayUrls(pubkey)
+  const accountPubkey = cacheKey(pubkey)
+  const cutoffPubkey = cacheKey(cutoff.pubkey)
+  if (!accountPubkey || accountPubkey !== cutoffPubkey) {
+    throw new Error("Private-message relay cutoff does not match the account")
+  }
+  return ownerRelayUrls(cutoff.excludedRelayUrls)
+}
+
+/** Apply one account's validated cutoff to an already-normalized relay plan. */
+export function applyAccountPrivateMessageRelayCutoff(
+  pubkey: string,
+  relayUrls: readonly string[],
+  cutoff?: AccountPrivateMessageRelayCutoff
+): string[] {
+  const explicitlyRemoved = new Set(
+    explicitRemovalRelayUrlsForOperation(pubkey, cutoff)
+  )
+  return relayUrls.filter((relayUrl) => !explicitlyRemoved.has(relayUrl))
+}
+
+export function setInboxCoordinatedPendingCheckpoint(
+  pubkey: string,
+  checkpoint: { eventId: string; updateId: string } | null
+): void {
+  const key = normalizeInboxDeclarationEvidencePubkey(pubkey)
+  if (!key) return
+  const normalizedEventId = checkpoint?.eventId.trim().toLowerCase()
+  const updateId = checkpoint?.updateId.trim()
+  if (
+    normalizedEventId &&
+    /^[0-9a-f]{64}$/.test(normalizedEventId) &&
+    updateId
+  ) {
+    inboxCoordinatedPendingCheckpoints.set(key, {
+      eventId: normalizedEventId,
+      updateId,
+    })
+  } else {
+    inboxCoordinatedPendingCheckpoints.delete(key)
+  }
+}
+
 export function publicRelayHintUrls(relayUrls: readonly string[]): string[] {
   return normalizePublicOrIsolatedE2eRelayHints(relayUrls)
 }
@@ -616,11 +714,17 @@ function declarationForContext(
   const projectRelayUrls = allowLocalRelayUrls
     ? ownerRelayUrls
     : publicRelayHintUrls
+  const coordinatedCheckpoint = inboxCoordinatedPendingCheckpoints.get(
+    declaration.pubkey
+  )
   const projected = {
     ...declaration,
     relayUrls: projectRelayUrls(declaration.relayUrls),
     retainedReadRelayUrls: projectRelayUrls(
       declaration.retainedReadRelayUrls ?? []
+    ),
+    cutoverRecoveryRelayUrls: projectRelayUrls(
+      declaration.cutoverRecoveryRelayUrls ?? []
     ),
     sourceRelayUrls: projectRelayUrls(declaration.sourceRelayUrls ?? []),
     sharedSourceRelayUrls: publicRelayHintUrls(
@@ -630,6 +734,10 @@ function declarationForContext(
     pendingPublishRelayUrls: projectRelayUrls(
       declaration.pendingPublishRelayUrls ?? []
     ),
+    pendingWriteAuthorized:
+      declaration.state === "distribution_pending" &&
+      declaration.pendingWriteAuthorized === true &&
+      declaration.eventId === coordinatedCheckpoint?.eventId,
   }
   if (declaration.state !== "declared") return projected
 
@@ -716,6 +824,8 @@ function resolutionFromEvidence(
   input: {
     stale: boolean
     fetchedAt: number
+    /** Current local time used only to evaluate time-bound recovery policy. */
+    evaluatedAt?: number
     observation?: InboxDeclarationObservation
   }
 ): InboxDeclarationResolution {
@@ -724,6 +834,9 @@ function resolutionFromEvidence(
     record.pendingDistribution?.signedEvent.id === current.signedEvent.id
       ? record.pendingDistribution
       : undefined
+  const coordinatedCheckpoint = inboxCoordinatedPendingCheckpoints.get(
+    record.pubkey
+  )
   const state: InboxDeclarationState = pendingDistribution
     ? "distribution_pending"
     : current.state
@@ -733,18 +846,40 @@ function resolutionFromEvidence(
     state === "distribution_pending" && current.state === "declared"
       ? ownerRelayUrls(current.secureRelayUrls)
       : []
+  const retainedCutover =
+    record.cutoverRecovery?.replacementEventId === current.signedEvent.id
+      ? record.cutoverRecovery
+      : undefined
+  const cutoverActive = Boolean(
+    retainedCutover &&
+    (retainedCutover.expiresAt === undefined ||
+      retainedCutover.expiresAt > (input.evaluatedAt ?? input.fetchedAt))
+  )
+  const cutoverRecoveryRelayUrls = cutoverActive
+    ? ownerRelayUrls(retainedCutover?.relayUrls ?? [])
+    : []
+  const cutoverManaged = Boolean(retainedCutover)
   const retainedReadRelayUrls =
-    state === "declared"
+    state === "declared" && !cutoverActive
       ? []
       : ownerRelayUrls([
           ...pendingRelayUrls,
-          ...(record.lastUsable?.secureRelayUrls ?? []),
+          ...(cutoverManaged
+            ? cutoverRecoveryRelayUrls
+            : (record.lastUsable?.secureRelayUrls ?? [])),
         ])
   return {
     pubkey: record.pubkey,
     state,
     relayUrls: declaredRelayUrls,
     retainedReadRelayUrls,
+    cutoverRecoveryRelayUrls,
+    cutoverRecoveryPolicyVersion: cutoverActive
+      ? retainedCutover?.policyVersion
+      : undefined,
+    cutoverRecoveryExpiresAt: cutoverActive
+      ? retainedCutover?.expiresAt
+      : undefined,
     stale: input.stale,
     fetchedAt: input.fetchedAt,
     eventId: current.signedEvent.id,
@@ -753,6 +888,11 @@ function resolutionFromEvidence(
     sharedSourceRelayUrls: [...(current.sharedSourceRelayUrls ?? [])],
     pendingRelayUrls,
     pendingPublishRelayUrls: [...(pendingDistribution?.publishRelayUrls ?? [])],
+    pendingWriteAuthorized: Boolean(
+      pendingDistribution?.coordinatedUpdateId ===
+        coordinatedCheckpoint?.updateId &&
+      pendingDistribution?.signedEvent.id === coordinatedCheckpoint?.eventId
+    ),
     observation: input.observation,
   }
 }
@@ -767,6 +907,7 @@ function cachedFallbackResolution(
     ...cached,
     relayUrls: [...cached.relayUrls],
     retainedReadRelayUrls: [...(cached.retainedReadRelayUrls ?? [])],
+    cutoverRecoveryRelayUrls: [...(cached.cutoverRecoveryRelayUrls ?? [])],
     sourceRelayUrls: [...(cached.sourceRelayUrls ?? [])],
     sharedSourceRelayUrls: [...(cached.sharedSourceRelayUrls ?? [])],
     pendingRelayUrls: [...(cached.pendingRelayUrls ?? [])],
@@ -980,6 +1121,7 @@ export async function resolveInboxDeclaration(
         latestProcessEvidence.latestLookup?.observedAt ??
         latestProcessEvidence.current.completeObservedAt ??
         latestProcessEvidence.current.observedAt,
+      evaluatedAt: fetchedAt,
     })
     declarationCache.set(key, cached)
   }
@@ -1194,6 +1336,8 @@ export async function resolveInboxDeclaration(
 
 export interface InboxReadPlan {
   relayUrls: string[]
+  /** Eligible relays omitted by the caller's explicit fanout cap. */
+  cappedRelayUrls: string[]
   /** Per-relay provenance for diagnostics (content-free). */
   relaySources: Record<string, Exclude<InboxReadSource, "mixed">>
   /** Aggregate provenance of the plan. */
@@ -1204,6 +1348,8 @@ export interface PlanInboxReadRelaysInput {
   declaration: InboxDeclarationResolution
   /** Exact authenticated inbox owner whose private/local relays may be read. */
   authenticatedPubkey?: string | null
+  /** Validated durable cutoff snapshot for the authenticated account. */
+  relayCutoff?: AccountPrivateMessageRelayCutoff
   /** Explicit bounded local-IN compatibility input; omitted in production. */
   localReadRelayUrls?: readonly string[]
   /** Bounded compatibility reads; defaults to config.commerceDmFallbackRelayUrls. */
@@ -1233,27 +1379,56 @@ export function planInboxReadRelays(
   const projectOwnerRelayUrls = allowOwnerLocalRelays
     ? ownerRelayUrls
     : publicRelayHintUrls
-  const declared = projectOwnerRelayUrls(
-    input.declaration.state === "declared" ? input.declaration.relayUrls : []
+  const excludeExplicitlyRemoved = (relayUrls: readonly string[]) =>
+    applyAccountPrivateMessageRelayCutoff(
+      input.authenticatedPubkey ?? input.declaration.pubkey,
+      relayUrls,
+      input.relayCutoff
+    )
+  const declared = excludeExplicitlyRemoved(
+    projectOwnerRelayUrls(
+      input.declaration.state === "declared" ? input.declaration.relayUrls : []
+    )
   )
-  const cachedFallback = projectOwnerRelayUrls([
-    ...(input.declaration.retainedReadRelayUrls ?? []),
-    ...(input.declaration.state === "lookup_partial" ||
-    input.declaration.state === "lookup_unavailable"
-      ? (getCachedInboxDeclaration(input.declaration.pubkey)?.relayUrls ?? [])
-      : []),
-  ])
+  const activePending = excludeExplicitlyRemoved(
+    projectOwnerRelayUrls(
+      input.declaration.state === "distribution_pending"
+        ? (input.declaration.pendingRelayUrls ?? [])
+        : []
+    )
+  )
+  const cachedFallback = excludeExplicitlyRemoved(
+    projectOwnerRelayUrls([
+      ...(input.declaration.retainedReadRelayUrls ?? []).filter(
+        (relayUrl) =>
+          !(input.declaration.cutoverRecoveryRelayUrls ?? []).includes(relayUrl)
+      ),
+      ...(input.declaration.state === "lookup_partial" ||
+      input.declaration.state === "lookup_unavailable"
+        ? (getCachedInboxDeclaration(input.declaration.pubkey)?.relayUrls ?? [])
+        : []),
+    ])
+  )
+  const cutoverRecovery = excludeExplicitlyRemoved(
+    projectOwnerRelayUrls(input.declaration.cutoverRecoveryRelayUrls ?? [])
+  )
   const migrationRecovery = allowOwnerLocalRelays
-    ? ownerRelayUrls(
-        getInboxMigrationRecoveryRelayUrls(input.declaration.pubkey)
+    ? excludeExplicitlyRemoved(
+        ownerRelayUrls(
+          getInboxMigrationRecoveryRelayUrls(input.declaration.pubkey)
+        )
       )
     : []
   const rawLocalIn = input.localReadRelayUrls ?? []
-  const localIn = allowOwnerLocalRelays
-    ? ownerRelayUrls(rawLocalIn)
-    : publicRelayHintUrls(rawLocalIn)
-  const compatibility = publicRelayHintUrls(
-    input.compatibilityRelayUrls ?? config.commerceDmFallbackRelayUrls
+  const localIn = excludeExplicitlyRemoved(
+    allowOwnerLocalRelays
+      ? ownerRelayUrls(rawLocalIn)
+      : publicRelayHintUrls(rawLocalIn)
+  )
+  const compatibility = excludeExplicitlyRemoved(
+    publicRelayHintUrls(
+      input.compatibilityRelayUrls ?? config.commerceDmFallbackRelayUrls
+    )
   )
   const compatibilitySet = new Set(compatibility)
   const requiredCompatibility = publicRelayHintUrls(
@@ -1277,6 +1452,10 @@ export function planInboxReadRelays(
     }
   }
   add(declared, "declared")
+  // Signed pending inboxes are the active read frontier. Reserve them before
+  // recovery history so a saturated stale-sender lane cannot crowd them out.
+  add(activePending, "cache")
+  add(cutoverRecovery, "cutover_recovery")
   add(cachedFallback, "cache")
   // Reserve the write/read overlap before optional local and public
   // compatibility sources so a large local IN list cannot make an order
@@ -1290,13 +1469,14 @@ export function planInboxReadRelays(
     input.maxRelays && input.maxRelays > 0
       ? orderedUrls.slice(0, input.maxRelays)
       : orderedUrls
+  const cappedRelayUrls = orderedUrls.slice(limited.length)
   const usedSources = new Set(limited.map((url) => relaySources[url]))
   const source: InboxReadSource =
     usedSources.size > 1
       ? "mixed"
       : (limited[0] && relaySources[limited[0]]) || "compatibility"
 
-  return { relayUrls: limited, relaySources, source }
+  return { relayUrls: limited, cappedRelayUrls, relaySources, source }
 }
 
 /** Derive read coverage from fanout diagnostics. */
@@ -1334,6 +1514,10 @@ export interface DeliveryRouteSelection {
 export interface SelectDeliveryRouteInput {
   rumorKind: number
   declaration: InboxDeclarationResolution
+  /** Authenticated sender whose whole-removal cutoff constrains every wrap. */
+  authenticatedPubkey?: string | null
+  /** Validated durable cutoff snapshot for the authenticated sender. */
+  relayCutoff?: AccountPrivateMessageRelayCutoff
   /**
    * True only for a validated kind-16 order lifecycle: locally created
    * checkout/order or a validated inbound order with matching order identity
@@ -1403,8 +1587,16 @@ export function selectPrivateMessageDeliveryRoute(
   input: SelectDeliveryRouteInput
 ): DeliveryRouteSelection {
   const declaration = input.declaration
+  const excludeExplicitlyRemoved = (relayUrls: readonly string[]) =>
+    applyAccountPrivateMessageRelayCutoff(
+      input.authenticatedPubkey ?? declaration.pubkey,
+      relayUrls,
+      input.relayCutoff
+    )
   if (declaration.state === "declared") {
-    const declaredRelayUrls = ownerRelayUrls(declaration.relayUrls)
+    const declaredRelayUrls = excludeExplicitlyRemoved(
+      ownerRelayUrls(declaration.relayUrls)
+    )
     const relayUrls = declaredRelayUrls.slice(
       0,
       MAX_DECLARED_INBOX_WRITE_RELAYS
@@ -1428,6 +1620,27 @@ export function selectPrivateMessageDeliveryRoute(
     }
   }
   if (declaration.state === "distribution_pending") {
+    const pendingRelayUrls = excludeExplicitlyRemoved(
+      ownerRelayUrls(declaration.pendingRelayUrls ?? [])
+    )
+    const relayUrls = pendingRelayUrls.slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS)
+    const coordinatedCheckpoint = inboxCoordinatedPendingCheckpoints.get(
+      declaration.pubkey
+    )
+    if (
+      relayUrls.length > 0 &&
+      declaration.pendingWriteAuthorized === true &&
+      declaration.eventId === coordinatedCheckpoint?.eventId
+    ) {
+      return {
+        route: "declared_inbox",
+        relayUrls,
+        relaySources: Object.fromEntries(
+          relayUrls.map((url) => [url, "declared"])
+        ),
+        truncated: pendingRelayUrls.length > relayUrls.length,
+      }
+    }
     return {
       route: "blocked",
       relayUrls: [],
@@ -1465,9 +1678,14 @@ export function selectPrivateMessageDeliveryRoute(
   const compatibilityEnabled =
     input.compatibilityEnabled ?? config.dmCompatibilityOrderRoutingEnabled
   const compatibilityPlan = planCompatibilityOrderRelays({
-    approvedRelayUrls:
-      input.compatibilityRelayUrls ?? config.dmCompatibilityOrderRelayUrls,
-    recipientReadRelayUrls: input.recipientReadRelayUrls,
+    approvedRelayUrls: excludeExplicitlyRemoved(
+      ownerRelayUrls(
+        input.compatibilityRelayUrls ?? config.dmCompatibilityOrderRelayUrls
+      )
+    ),
+    recipientReadRelayUrls: excludeExplicitlyRemoved(
+      ownerRelayUrls(input.recipientReadRelayUrls ?? [])
+    ),
     maxRelays: input.maxCompatibilityRelays,
   })
   if (!compatibilityEnabled || compatibilityPlan.relayUrls.length === 0) {
