@@ -1044,6 +1044,26 @@ export interface EventMarketParticipationBudget {
   targetLimit: number
 }
 
+export interface EventMarketDeletionEvidence {
+  /** Signed kind-5 event that supplied this deletion evidence. */
+  deletionEventId: string
+  deletionCreatedAt: number
+  authorPubkey: string
+  /** Exact event ids named by valid `e` tags. */
+  eventTargets: string[]
+  /** Canonical addressable coordinates named by valid `a` tags. */
+  addressableTargets: string[]
+}
+
+export interface EventMarketDeletedRecordEvidence {
+  record: "collection" | "calendar" | "pickup"
+  coordinate: string
+  /** Latest observed revision removed in the bounded read, when retained. */
+  eventId?: string
+  createdAt?: number
+  deletions: EventMarketDeletionEvidence[]
+}
+
 export interface EventMarketResolution {
   state: EventMarketResolutionState
   /** Canonical kind-30405 coordinate. */
@@ -1071,6 +1091,8 @@ export interface EventMarketResolution {
   participationBudget: EventMarketParticipationBudget
   pickupBudget: EventMarketParticipationBudget
   coverage: EventMarketRelayCoverage
+  /** Signed NIP-09 evidence behind a terminal deleted resolution. */
+  deletion?: EventMarketDeletedRecordEvidence
 }
 
 export interface ResolveEventMarketEvidenceInput {
@@ -1177,37 +1199,61 @@ function validDeletionEvents(
   )
 }
 
-function deletionRemovesAddressableEvent(
-  event: SignedPublicNostrEvent,
+function deletionEvidenceForAddressableEvent(
+  event: SignedPublicNostrEvent | undefined,
   coordinate: AddressableEventCoordinate,
   deletions: readonly SignedPublicNostrEvent[]
-): boolean {
-  return deletions.some((deletion) => {
-    if (deletion.pubkey.toLowerCase() !== coordinate.authorPubkey) return false
+): EventMarketDeletionEvidence[] {
+  const evidenceById = new Map<string, EventMarketDeletionEvidence>()
+  for (const deletion of validDeletionEvents(deletions)) {
+    if (deletion.pubkey.toLowerCase() !== coordinate.authorPubkey) continue
 
-    const exactEventDeletion = deletion.tags.some(
-      (tag) =>
-        tag[0] === "e" &&
-        typeof tag[1] === "string" &&
-        tag[1].toLowerCase() === event.id.toLowerCase()
-    )
-    if (exactEventDeletion) return true
-
-    if (deletion.created_at < event.created_at) return false
-    return deletion.tags.some((tag) => {
-      if (tag[0] !== "a" || !tag[1]) return false
-      const target = parseAddressableCoordinate(tag[1], [coordinate.kind])
-      return (
-        target?.authorPubkey === coordinate.authorPubkey &&
-        target.coordinate === coordinate.coordinate
+    const eventTargets = Array.from(
+      new Set(
+        deletion.tags.flatMap((tag) =>
+          tag[0] === "e" && typeof tag[1] === "string" && HEX_64.test(tag[1])
+            ? [tag[1].toLowerCase()]
+            : []
+        )
       )
+    )
+    const addressableTargets = Array.from(
+      new Set(
+        deletion.tags.flatMap((tag) => {
+          if (tag[0] !== "a" || !tag[1]) return []
+          const target = parseAddressableCoordinate(tag[1])
+          return target ? [target.coordinate] : []
+        })
+      )
+    )
+    const exactEventDeletion = event
+      ? eventTargets.includes(event.id.toLowerCase())
+      : false
+    const addressableDeletion =
+      addressableTargets.includes(coordinate.coordinate) &&
+      (!event || deletion.created_at >= event.created_at)
+    if (!exactEventDeletion && !addressableDeletion) continue
+
+    const deletionEventId = deletion.id.toLowerCase()
+    evidenceById.set(deletionEventId, {
+      deletionEventId,
+      deletionCreatedAt: deletion.created_at * 1_000,
+      authorPubkey: deletion.pubkey.toLowerCase(),
+      eventTargets,
+      addressableTargets,
     })
-  })
+  }
+  return Array.from(evidenceById.values())
 }
 
 type AddressableRecordResult<T> =
   | { state: "current"; value: T; event: SignedPublicNostrEvent }
-  | { state: "missing" | "deleted" | "malformed" }
+  | {
+      state: "deleted"
+      event?: SignedPublicNostrEvent
+      deletionEvidence: EventMarketDeletionEvidence[]
+    }
+  | { state: "missing" | "malformed" }
 
 function resolveAddressableRecord<T>(input: {
   coordinate: AddressableEventCoordinate
@@ -1222,18 +1268,30 @@ function resolveAddressableRecord<T>(input: {
         isValidSignedPublicNostrEvent(event)
     )
     .sort(compareAddressableEvents)
-  if (candidates.length === 0) return { state: "missing" }
+  if (candidates.length === 0) {
+    const deletionEvidence = deletionEvidenceForAddressableEvent(
+      undefined,
+      input.coordinate,
+      input.deletions
+    )
+    return deletionEvidence.length > 0
+      ? { state: "deleted", deletionEvidence }
+      : { state: "missing" }
+  }
 
-  let deletedRevisionObserved = false
+  let latestDeletedRevision: SignedPublicNostrEvent | undefined
+  const deletionEvidenceById = new Map<string, EventMarketDeletionEvidence>()
   for (const candidate of candidates) {
-    if (
-      deletionRemovesAddressableEvent(
-        candidate,
-        input.coordinate,
-        input.deletions
-      )
-    ) {
-      deletedRevisionObserved = true
+    const deletionEvidence = deletionEvidenceForAddressableEvent(
+      candidate,
+      input.coordinate,
+      input.deletions
+    )
+    if (deletionEvidence.length > 0) {
+      latestDeletedRevision ??= candidate
+      for (const evidence of deletionEvidence) {
+        deletionEvidenceById.set(evidence.deletionEventId, evidence)
+      }
       continue
     }
     const parsed = input.parse(candidate)
@@ -1241,7 +1299,31 @@ function resolveAddressableRecord<T>(input: {
       ? { state: "current", value: parsed, event: candidate }
       : { state: "malformed" }
   }
-  return { state: deletedRevisionObserved ? "deleted" : "missing" }
+  return latestDeletedRevision
+    ? {
+        state: "deleted",
+        event: latestDeletedRevision,
+        deletionEvidence: Array.from(deletionEvidenceById.values()),
+      }
+    : { state: "missing" }
+}
+
+function deletedRecordEvidence(
+  record: EventMarketDeletedRecordEvidence["record"],
+  coordinate: AddressableEventCoordinate,
+  result: Extract<AddressableRecordResult<unknown>, { state: "deleted" }>
+): EventMarketDeletedRecordEvidence {
+  return {
+    record,
+    coordinate: coordinate.coordinate,
+    ...(result.event
+      ? {
+          eventId: result.event.id.toLowerCase(),
+          createdAt: result.event.created_at * 1_000,
+        }
+      : {}),
+    deletions: result.deletionEvidence,
+  }
 }
 
 function coverageFromRelayStatuses(
@@ -1657,6 +1739,15 @@ export function resolveEventMarketEvidence(
       ...emptyResolution(decoded.coordinate, state, coverage),
       organizerPubkey: decoded.authorPubkey,
       collectionCoordinate: decoded.coordinate,
+      ...(collectionResult.state === "deleted"
+        ? {
+            deletion: deletedRecordEvidence(
+              "collection",
+              decoded,
+              collectionResult
+            ),
+          }
+        : {}),
     }
   }
 
@@ -1797,6 +1888,15 @@ export function resolveEventMarketEvidence(
         calendarResult.state === "missing" && readState !== "complete"
           ? readState
           : calendarResult.state,
+      ...(calendarResult.state === "deleted"
+        ? {
+            deletion: deletedRecordEvidence(
+              "calendar",
+              calendarCoordinate,
+              calendarResult
+            ),
+          }
+        : {}),
     }
   }
   if (organizerPickupResult && organizerPickupResult.state !== "current") {
@@ -1807,6 +1907,15 @@ export function resolveEventMarketEvidence(
           ? readState
           : organizerPickupResult.state,
       calendar: calendarResult.value,
+      ...(organizerPickupResult.state === "deleted" && organizerPickupCoordinate
+        ? {
+            deletion: deletedRecordEvidence(
+              "pickup",
+              organizerPickupCoordinate,
+              organizerPickupResult
+            ),
+          }
+        : {}),
     }
   }
   const organizerPickup =
@@ -3122,8 +3231,8 @@ async function persistEventMarketEvidence(input: {
         rows.map((row, index) => ({
           ...row,
           sourceRelayUrls: mergeRelayUrls(
-            existing[index]?.sourceRelayUrls ?? [],
-            row.sourceRelayUrls
+            row.sourceRelayUrls,
+            existing[index]?.sourceRelayUrls ?? []
           ),
         }))
       )
@@ -3184,8 +3293,8 @@ function mergeCachedAndLiveEvidence(input: {
     sourceRelayUrlsById.set(
       id,
       mergeRelayUrls(
-        sourceRelayUrlsById.get(id) ?? [],
-        input.live.sourceRelayUrlsById.get(id) ?? []
+        input.live.sourceRelayUrlsById.get(id) ?? [],
+        sourceRelayUrlsById.get(id) ?? []
       )
     )
   }
