@@ -5,6 +5,7 @@ import {
   getEventMarket,
   getOrganizerEventMarkets,
   isValidSignedPublicNostrEvent,
+  normalizeRelayUrl,
   normalizeSecureOrIsolatedE2eRelayUrls,
   publishOrganizerCollectionUpdate,
   publishOrganizerEventMarket,
@@ -521,8 +522,8 @@ function boundedEventMarketShareRelayHints(
   const seen = new Set<string>()
   const result: string[] = []
   for (const relayUrl of prioritized) {
-    const key = relayUrl.trim().toLowerCase()
-    if (!key || seen.has(key)) continue
+    const key = normalizeRelayUrl(relayUrl)
+    if (seen.has(key)) continue
     seen.add(key)
     result.push(relayUrl)
     if (result.length >= EVENT_MARKET_SHARE_RELAY_HINT_LIMIT) break
@@ -670,11 +671,9 @@ export function organizerEventMarketReferenceWithDeliveryRelayHints(
   const acknowledgedRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
     delivery.acknowledgedRelayUrls ?? []
   )
-  const existingRelayKeys = new Set(
-    parsed.relayHints.map((relayUrl) => relayUrl.trim().toLowerCase())
-  )
+  const existingRelayKeys = new Set(parsed.relayHints.map(normalizeRelayUrl))
   const expandsRelayHints = acknowledgedRelayUrls.some(
-    (relayUrl) => !existingRelayKeys.has(relayUrl.trim().toLowerCase())
+    (relayUrl) => !existingRelayKeys.has(normalizeRelayUrl(relayUrl))
   )
   return encodeEventMarketNaddr(
     parsed.coordinate,
@@ -849,10 +848,10 @@ export async function resolveOrganizerEventMarketRead(
   const projectedHints =
     decodeEventMarketReference(normalized.naddr, [30405])?.relayHints ?? []
   const parsedHintKeys = new Set(
-    parsedReference.relayHints.map((relayUrl) => relayUrl.trim().toLowerCase())
+    parsedReference.relayHints.map(normalizeRelayUrl)
   )
   const parsedReferenceContainsResolvedHints = projectedHints.every(
-    (relayUrl) => parsedHintKeys.has(relayUrl.trim().toLowerCase())
+    (relayUrl) => parsedHintKeys.has(normalizeRelayUrl(relayUrl))
   )
   return {
     ...normalized,

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import NDK, { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -21,9 +21,11 @@ import {
   organizerEventMarketReferenceWithDeliveryRelayHints,
   organizerEventMarketReferencesMatch,
   parseOrganizerEventMarketReference,
+  publishMerchantOrganizerEventMarket,
   resolveOrganizerEventMarket,
   resolveOrganizerEventMarketRead,
 } from "../apps/merchant/src/lib/event-market"
+import { createEmptyOrganizerEventMarketForm } from "../apps/merchant/src/lib/event-market-form"
 import { rememberOrganizerEventMarket } from "../apps/merchant/src/lib/event-market-workflow"
 import { loadEventCatalog } from "../apps/market/src/lib/event-market-adapter"
 import {
@@ -39,6 +41,8 @@ const HINT_RELAY = "wss://hint.example/events"
 const DISCOVERY_RELAY = "wss://discovery.example/read"
 const OBSERVED_RELAY = "wss://observed.example/events"
 const CALENDAR_OBSERVED_RELAY = "wss://calendar-observed.example/events"
+const PATH_CASE_COLLECTION_RELAY = "wss://path-case.example/A"
+const PATH_CASE_CALENDAR_RELAY = "wss://path-case.example/a"
 const FALLBACK_RELAY = CANONICAL_APP_BACKPLANE_RELAYS[0]!
 const SUPPORT_ONLY_RELAYS = Array.from(
   { length: 7 },
@@ -116,6 +120,191 @@ describe("merchant organizer event-market references", () => {
       relayHints: [HINT_RELAY],
     })
     expect(organizerEventMarketReferencesMatch(imported, COLLECTION)).toBe(true)
+  })
+
+  it("keeps path-distinct relay acknowledgements in a published reference", async () => {
+    const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000)
+      .toISOString()
+      .slice(0, 16)
+    const end = new Date(
+      Date.now() + 7 * 24 * 60 * 60 * 1_000 + 5 * 60 * 60 * 1_000
+    )
+      .toISOString()
+      .slice(0, 16)
+    __setEventMarketTestOverrides({
+      getNdk: async () => new NDK(),
+      signDraft: async ({ draft, createdAt }) =>
+        finalizeEvent(
+          {
+            kind: draft.kind,
+            created_at: createdAt,
+            content: draft.content,
+            tags: draft.tags,
+          },
+          ORGANIZER_SECRET
+        ),
+      publishWithPlanner: async (event) => {
+        const relayUrl =
+          event.kind === EVENT_KINDS.PRODUCT_COLLECTION
+            ? PATH_CASE_COLLECTION_RELAY
+            : PATH_CASE_CALENDAR_RELAY
+        return {
+          plan: {
+            intent: "author_event",
+            primaryRelayUrls: [relayUrl],
+            broadcastRelayUrls: [],
+            parkedRelayUrls: [],
+          },
+          attemptedRelayUrls: [relayUrl],
+          successfulRelayUrls: [relayUrl],
+          failedRelayUrls: [],
+          relayFailureMessages: {},
+        }
+      },
+    })
+
+    const result = await publishMerchantOrganizerEventMarket({
+      organizerPubkey: ORGANIZER,
+      form: {
+        ...createEmptyOrganizerEventMarketForm(),
+        title: "Path-sensitive market",
+        summary: "Relay path regression coverage",
+        imageUrl: "https://images.example/path-sensitive-market.jpg",
+        eventLocation: "Public Hall",
+        start,
+        end,
+        timezone: "America/New_York",
+      },
+    })
+
+    expect(
+      decodeEventMarketReference(result.naddr, [30405])?.relayHints
+    ).toEqual([PATH_CASE_COLLECTION_RELAY, PATH_CASE_CALENDAR_RELAY])
+  })
+
+  it("adds a path-distinct relay acknowledgement when retrying", () => {
+    const imported = encodeEventMarketNaddr(COLLECTION, [
+      PATH_CASE_COLLECTION_RELAY,
+    ])
+    const updated = organizerEventMarketReferenceWithDeliveryRelayHints(
+      imported,
+      {
+        record: "calendar",
+        acknowledgedRelayUrls: [PATH_CASE_CALENDAR_RELAY],
+        acknowledgedCount: 1,
+        rejectedCount: 0,
+        timedOutCount: 0,
+        signedEvent: null,
+      }
+    )
+
+    expect(decodeEventMarketReference(updated, [30405])?.relayHints).toEqual([
+      PATH_CASE_COLLECTION_RELAY,
+      PATH_CASE_CALENDAR_RELAY,
+    ])
+  })
+
+  it("keeps path-distinct observed relays when a reference is reopened", async () => {
+    const imported = encodeEventMarketNaddr(COLLECTION, [
+      PATH_CASE_COLLECTION_RELAY,
+    ])
+    const now = Math.floor(Date.now() / 1_000)
+    const graph = [
+      signedEvent(
+        buildEventMarketCalendarDraft({
+          kind: EVENT_KINDS.CALENDAR_TIME,
+          dTag: "public-market-day",
+          title: "Public market day",
+          start: now + 86_400,
+          end: now + 90_000,
+          startTzid: "UTC",
+          endTzid: "UTC",
+        }),
+        now
+      ),
+      signedEvent(
+        buildEventMarketCollectionDraft({
+          dTag: "public-market",
+          title: "Public market",
+          eventCoordinate: CALENDAR,
+          productCoordinates: [],
+        }),
+        now + 1
+      ),
+    ]
+    const readPlans: string[][] = []
+    let requirePathRelays = false
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        const relayUrls = [...(options.relayUrls ?? [])]
+        readPlans.push(relayUrls)
+        const filter = rawFilter as NDKFilter
+        const events = graph
+          .filter((event) => {
+            const requiredRelay =
+              event.kind === EVENT_KINDS.PRODUCT_COLLECTION
+                ? PATH_CASE_COLLECTION_RELAY
+                : PATH_CASE_CALENDAR_RELAY
+            if (requirePathRelays && !relayUrls.includes(requiredRelay)) {
+              return false
+            }
+            if (filter.kinds && !filter.kinds.includes(event.kind as never)) {
+              return false
+            }
+            if (filter.authors && !filter.authors.includes(event.pubkey)) {
+              return false
+            }
+            const dTags = filter["#d"]
+            return (
+              !dTags ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && dTags.includes(tag[1] ?? "")
+              )
+            )
+          })
+          .map((event) => {
+            const ndkEvent = new NDKEvent(undefined, event)
+            attachEventSourceRelayUrl(
+              ndkEvent,
+              event.kind === EVENT_KINDS.PRODUCT_COLLECTION
+                ? PATH_CASE_COLLECTION_RELAY
+                : PATH_CASE_CALENDAR_RELAY
+            )
+            return ndkEvent
+          })
+        return {
+          events,
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+    })
+
+    const reopened = await resolveOrganizerEventMarketRead(imported, ORGANIZER)
+    expect("terminal" in reopened).toBe(false)
+    expect(
+      decodeEventMarketReference(reopened.naddr, [30405])?.relayHints
+    ).toEqual([PATH_CASE_COLLECTION_RELAY, PATH_CASE_CALENDAR_RELAY])
+
+    requirePathRelays = true
+    readPlans.length = 0
+    const guestCatalog = await loadEventCatalog(reopened.naddr)
+
+    expect(guestCatalog.state).toBe("active")
+    expect(readPlans).not.toHaveLength(0)
+    expect(readPlans).toContainEqual(
+      expect.arrayContaining([
+        PATH_CASE_COLLECTION_RELAY,
+        PATH_CASE_CALENDAR_RELAY,
+      ])
+    )
   })
 
   it("uses a non-overlapping imported hint for reads and canonical share output", async () => {
