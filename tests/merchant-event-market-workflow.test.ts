@@ -559,6 +559,66 @@ describe("merchant organizer event workflow", () => {
     }
   })
 
+  it("makes calendar replacement relative to the collection that advertises it", () => {
+    const replacementCalendar = `31923:${ORGANIZER}:replacement-calendar`
+    const olderMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "d".repeat(64),
+      calendarCoordinate: CALENDAR,
+      calendarCreatedAt: 5_000,
+      calendarEventId: "c".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, ["wss://older.example/events"]),
+      state: "active",
+    }
+    const replacementMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 2_000,
+      collectionEventId: "a".repeat(64),
+      calendarCoordinate: replacementCalendar,
+      calendarCreatedAt: 2_000,
+      calendarEventId: "b".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://current.example/events",
+      ]),
+      state: "active",
+    }
+    const savedReference = {
+      reference: olderMarket.naddr,
+      savedAt: 20,
+      expectedCollectionCoordinate: COLLECTION,
+      expectedCollectionCreatedAt: 1_000,
+      expectedCollectionEventId: "d".repeat(64),
+      expectedCalendarCoordinate: CALENDAR,
+      expectedCalendarCreatedAt: 5_000,
+      expectedCalendarEventId: "c".repeat(64),
+    }
+
+    for (const [listMarket, hintedMarket] of [
+      [olderMarket, replacementMarket],
+      [replacementMarket, olderMarket],
+    ] as const) {
+      expect(
+        selectOrganizerEventMarketResolution(
+          listMarket,
+          hintedMarket,
+          savedReference
+        )
+      ).toMatchObject({
+        state: "active",
+        collectionEventId: "a".repeat(64),
+        calendarCoordinate: replacementCalendar,
+        calendarEventId: "b".repeat(64),
+      })
+    }
+    expect(
+      organizerEventMarketReachesExpectedFrontiers(
+        replacementMarket,
+        savedReference
+      )
+    ).toBe(true)
+  })
+
   it("keeps a newer collection non-actionable until its advertised replacement pickup resolves", () => {
     const savedReference = {
       reference: encodeEventMarketNaddr(COLLECTION, [

@@ -747,12 +747,38 @@ function marketReachesExpectedFrontiers(
   savedReference: SavedOrganizerEventMarketReference | undefined,
   expectedRecords = expectedEventMarketRecords(savedReference)
 ): boolean {
+  if (market?.calendarCoordinate && !carrierFrontier(market, "calendar")) {
+    return false
+  }
   if (market?.pickupCoordinate && !carrierFrontier(market, "pickup")) {
     return false
   }
   return expectedRecords.every((record) => {
     const current = carrierFrontier(market, record)
     const expected = savedExpectedFrontier(savedReference, record)
+    if (
+      record === "calendar" &&
+      expected?.coordinate &&
+      market?.calendarCoordinate !== expected.coordinate
+    ) {
+      if (!market?.calendarCoordinate || !current) return false
+      // The collection owns the event-calendar relationship. A strictly newer
+      // collection may replace the calendar coordinate without inheriting the
+      // unrelated record timestamp of the previously linked calendar.
+      const currentCollection = carrierFrontier(market, "collection")
+      const expectedCollection = savedExpectedFrontier(
+        savedReference,
+        "collection"
+      )
+      return (
+        !!currentCollection &&
+        !!expectedCollection &&
+        compareEventMarketRecordFrontier(
+          currentCollection,
+          expectedCollection
+        ) > 0
+      )
+    }
     if (
       record === "pickup" &&
       expected?.coordinate &&
@@ -885,18 +911,29 @@ function compareOrganizerEventMarketGraphFrontier(
     carrierFrontier(left, "collection"),
     carrierFrontier(right, "collection")
   )
+  const calendarRelationshipMatches =
+    left.calendarCoordinate === right.calendarCoordinate
   const pickupRelationshipMatches =
     left.pickupCoordinate === right.pickupCoordinate
-  // Equal collection revisions cannot truthfully advertise different pickup
-  // relationships. Across revisions, compare the pickup frontier only while
-  // both collections still advertise the same coordinate.
-  if (!pickupRelationshipMatches && collectionComparison === 0) return null
+  // Equal collection revisions cannot truthfully advertise different linked
+  // records. Across revisions, compare a child frontier only while both
+  // collections still advertise the same coordinate.
+  if (
+    (!calendarRelationshipMatches || !pickupRelationshipMatches) &&
+    collectionComparison === 0
+  ) {
+    return null
+  }
   const comparisons = [
     collectionComparison,
-    compareEventMarketRecordFrontier(
-      carrierFrontier(left, "calendar"),
-      carrierFrontier(right, "calendar")
-    ),
+    ...(calendarRelationshipMatches
+      ? [
+          compareEventMarketRecordFrontier(
+            carrierFrontier(left, "calendar"),
+            carrierFrontier(right, "calendar")
+          ),
+        ]
+      : []),
     ...(pickupRelationshipMatches
       ? [
           compareEventMarketRecordFrontier(
