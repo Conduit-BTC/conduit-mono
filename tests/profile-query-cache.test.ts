@@ -79,6 +79,7 @@ describe("profile query cache", () => {
       expect(route).toContain("reconcileProfileFormDraft(")
       expect(route).toContain("canEditProfile")
       expect(route).toContain("isCommerceReadIncomplete(profileQuery.meta)")
+      expect(route).toContain('evidenceScope: "profile_edit"')
       expect(route).toContain("editingPubkey === pubkey")
       expect(route).toContain(
         "editingPubkey === null || editingPubkey === pubkey"

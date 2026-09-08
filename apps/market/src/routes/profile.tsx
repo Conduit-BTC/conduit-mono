@@ -90,6 +90,7 @@ function ProfilePage() {
   const profileQuery = useProfile(pubkey, {
     authenticatedPubkey: pubkey,
     requireCompleteEvidence: true,
+    evidenceScope: "profile_edit",
     maxUnresolvedRefetches: 2,
   })
   const updateMutation = useUpdateProfile("market")

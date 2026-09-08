@@ -4627,6 +4627,117 @@ describe("commerce gateway", () => {
     })
   })
 
+  it("keeps a complete current profile frontier editable across display enrichment", async () => {
+    const currentContent = JSON.stringify({
+      name: "Current Merchant",
+      about: "Current relay bio",
+    })
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      displayName: "Cached Merchant",
+      picture: "https://cdn.conduit.market/cached-avatar.png",
+      rawContent: JSON.stringify({
+        display_name: "Cached Merchant",
+        picture: "https://cdn.conduit.market/cached-avatar.png",
+      }),
+      eventId: "profile-cached",
+      eventCreatedAt: 10,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: [
+            {
+              id: "profile-current",
+              pubkey: "merchant",
+              created_at: 20,
+              content: currentContent,
+              tags: [],
+            } as never,
+          ],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      authenticatedPubkey: "merchant",
+      skipCache: true,
+      requireCompleteEvidence: true,
+      evidenceScope: "profile_edit",
+    })
+
+    expect(result.data.merchant).toMatchObject({
+      name: "Current Merchant",
+      displayName: "Cached Merchant",
+      about: "Current relay bio",
+      picture: "https://cdn.conduit.market/cached-avatar.png",
+    })
+    expect(cachedProfiles.get("merchant")).toMatchObject({
+      rawContent: currentContent,
+      eventId: "profile-current",
+      eventCreatedAt: 20,
+    })
+    expect(result.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: false,
+      capped: false,
+    })
+  })
+
+  it("keeps profile editing blocked when current-frontier relay coverage is partial", async () => {
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      displayName: "Cached Merchant",
+      rawContent: JSON.stringify({ display_name: "Cached Merchant" }),
+      eventId: "profile-cached",
+      eventCreatedAt: 10,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: [
+            {
+              id: "profile-current",
+              pubkey: "merchant",
+              created_at: 20,
+              content: JSON.stringify({ name: "Current Merchant" }),
+              tags: [],
+            } as never,
+          ],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls.slice(0, -1),
+          failedRelayUrls: relayUrls.slice(-1),
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      authenticatedPubkey: "merchant",
+      skipCache: true,
+      requireCompleteEvidence: true,
+      evidenceScope: "profile_edit",
+    })
+
+    expect(result.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: true,
+      capped: false,
+    })
+  })
+
   for (const currentLud16 of ["current@example.com", undefined]) {
     it(`keeps ${currentLud16 ? "current payment" : "current payment absence"} authoritative across display enrichment`, async () => {
       cachedProfiles.set("merchant", {

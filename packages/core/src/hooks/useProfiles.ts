@@ -25,7 +25,7 @@ type ProfilePriority = "visible" | "background"
 
 export interface UseProfilesOptions {
   authenticatedPubkey?: string | null
-  evidenceScope?: "full_profile" | "payment"
+  evidenceScope?: "full_profile" | "payment" | "profile_edit"
   enabled?: boolean
   maxUnresolvedRefetches?: number
   priority?: ProfilePriority

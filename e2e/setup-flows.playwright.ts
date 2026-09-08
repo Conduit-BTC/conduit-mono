@@ -370,6 +370,99 @@ async function exerciseProfileSave(
   ).toBeVisible()
 }
 
+async function exerciseProfileEditAfterDisplayEnrichment(
+  page: Page,
+  appUrl: string,
+  profileName: string
+): Promise<void> {
+  test.setTimeout(60_000)
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  const createdAt = Math.floor(Date.now() / 1_000)
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt,
+        tags: [],
+        content: JSON.stringify({
+          name: `current-${profileName}`,
+          about: `Current ${profileName} bio`,
+        }),
+      },
+      secretKey
+    ),
+    finalizeEvent(
+      {
+        kind: 10_002,
+        created_at: createdAt,
+        tags: [["r", TEST_RELAY_URL]],
+        content: "",
+      },
+      secretKey
+    ),
+  ])
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(`${appUrl}/profile`)
+  await expect(
+    page.getByText(`Current ${profileName} bio`, { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
+  await page.evaluate(
+    ({ ownerPubkey, eventCreatedAt, cachedDisplayName }) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          try {
+            const database = request.result
+            const transaction = database.transaction("profiles", "readwrite")
+            transaction.objectStore("profiles").put({
+              pubkey: ownerPubkey,
+              displayName: cachedDisplayName,
+              picture: "https://cdn.conduit.market/cached-avatar.png",
+              rawContent: JSON.stringify({
+                display_name: cachedDisplayName,
+                picture: "https://cdn.conduit.market/cached-avatar.png",
+              }),
+              eventId: "cached-profile-frontier",
+              eventCreatedAt: eventCreatedAt - 10,
+              cachedAt: Date.now(),
+            })
+            transaction.oncomplete = () => resolve()
+            transaction.onerror = () => reject(transaction.error)
+            transaction.onabort = () => reject(transaction.error)
+          } catch (error) {
+            reject(error)
+          }
+        }
+      }),
+    {
+      ownerPubkey: pubkey,
+      eventCreatedAt: createdAt,
+      cachedDisplayName: `Cached ${profileName}`,
+    }
+  )
+
+  await page.reload()
+  await expect(
+    page.getByText(`Cached ${profileName}`, { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByText(`Current ${profileName} bio`, { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
+  const editButton = page
+    .getByRole("button", { name: "Edit profile", exact: true })
+    .first()
+  await expect(editButton).toBeEnabled({ timeout: 30_000 })
+  await editButton.click()
+  await expect(page.locator("#profile-display-name")).toHaveValue(
+    `Cached ${profileName}`
+  )
+  await expect(page.locator("#profile-about")).toHaveValue(
+    `Current ${profileName} bio`
+  )
+}
+
 async function exerciseProfileDraftSignerSwitch(page: Page): Promise<void> {
   const firstSecretKey = generateSecretKey()
   const firstPubkey = getPublicKey(firstSecretKey)
@@ -681,6 +774,18 @@ test("Merchant profile saves update the mounted owner view immediately @merchant
   page,
 }) => {
   await exerciseProfileSave(page, merchantUrl, "Merchant owner")
+})
+
+test("Market profile editing uses the complete signed frontier despite richer cached display fields @market", async ({
+  page,
+}) => {
+  await exerciseProfileEditAfterDisplayEnrichment(page, marketUrl, "Market")
+})
+
+test("Merchant profile editing uses the complete signed frontier despite richer cached display fields @merchant", async ({
+  page,
+}) => {
+  await exerciseProfileEditAfterDisplayEnrichment(page, merchantUrl, "Merchant")
 })
 
 test("Market profile drafts do not cross signer identities @market", async ({
