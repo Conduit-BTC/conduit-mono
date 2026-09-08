@@ -21,11 +21,13 @@ import {
 import {
   countAccountNetworkChangedKinds,
   getAccountNetworkRemovalInstruction,
+  isAccountNetworkRelayCommerceRelevant,
   orderAccountNetworkRelayRows,
   tryNormalizeRelayUrl,
   validateAccountNetworkDesiredRoles,
   type AccountNetworkDesiredRelayRoles,
   type AccountNetworkFrontierView,
+  type AccountNetworkRelayConfiguredUse,
   type AccountNetworkRelayRowView,
   type AccountNetworkRole,
   type AccountNetworkSettingsController,
@@ -213,9 +215,13 @@ function RoleToggle({
 function reachabilityLabel(
   reachability: AccountNetworkRelayRowView["reachability"]
 ): string {
-  if (reachability === "responded") return "Responded on the latest refresh"
-  if (reachability === "issue") return "Recent connection issue"
-  return "Not checked on the latest refresh"
+  if (reachability === "responded") {
+    return "Responded during the latest preference refresh"
+  }
+  if (reachability === "issue") {
+    return "Connection issue during the latest preference refresh"
+  }
+  return "Not included in the latest preference refresh"
 }
 
 function reachabilityDotClassName(
@@ -227,14 +233,16 @@ function reachabilityDotClassName(
 }
 
 function RelayIndicator({ row }: { row: AccountNetworkRelayRowView }) {
-  const commerce =
-    row.capability.configuredCommerce || row.capability.observedCommerce
+  const commerce = isAccountNetworkRelayCommerceRelevant(row.capability)
   const status = reachabilityLabel(row.reachability)
+  const commerceStatus = row.capability.observedCommerce
+    ? "Full commerce support observed"
+    : "Used for commerce workflows"
   return (
     <span
       role="img"
-      aria-label={commerce ? `Commerce relay. ${status}.` : `${status}.`}
-      title={commerce ? `Commerce relay · ${status}` : status}
+      aria-label={commerce ? `${commerceStatus}. ${status}.` : `${status}.`}
+      title={commerce ? `${commerceStatus} · ${status}` : status}
       className={cn(
         "relative flex size-8 shrink-0 items-center justify-center rounded-full",
         commerce &&
@@ -265,10 +273,8 @@ function RelayIndicator({ row }: { row: AccountNetworkRelayRowView }) {
   )
 }
 
-function authEvidenceLabel(
-  evidence: AccountNetworkRelayRowView["capability"]["authEvidence"]
-): string {
-  switch (evidence) {
+function authEvidenceLabel(row: AccountNetworkRelayRowView): string {
+  switch (row.capability.authEvidence) {
     case "advertised":
       return "Advertised"
     case "challenge_observed":
@@ -280,25 +286,57 @@ function authEvidenceLabel(
     case "unavailable":
       return "Unavailable"
     default:
-      return "Not tested"
+      if (row.capability.nip11 === "available") return "Not advertised"
+      if (row.capability.nip11 === "unavailable") return "Could not check"
+      return "Not checked"
   }
 }
 
 function commerceEvidenceLabel(row: AccountNetworkRelayRowView): string {
-  if (row.capability.configuredCommerce) return "Conduit commerce relay"
-  if (row.capability.observedCommerce) return "Commerce support observed"
-  return "No commerce evidence recorded"
+  if (row.capability.observedCommerce) return "Full support observed"
+  return "Not assessed"
 }
 
 function relayInformationLabel(row: AccountNetworkRelayRowView): string {
-  if (row.capability.nip11 === "advertised") {
+  if (row.capability.nip11 === "available") {
     return row.capability.observedAt
-      ? `Observed ${formatObservationTime(row.capability.observedAt)}`
-      : "Observed"
+      ? `Updated ${formatObservationTime(row.capability.observedAt)}`
+      : "Available"
   }
   if (row.capability.nip11 === "unavailable") {
     return "Unavailable on the last check"
   }
+  return "Not checked"
+}
+
+const CONFIGURED_USE_GROUPS: readonly {
+  label: string
+  uses: readonly AccountNetworkRelayConfiguredUse[]
+}[] = [
+  { label: "App publishing", uses: ["app_publishing"] },
+  { label: "Product discovery", uses: ["product_discovery"] },
+  { label: "Search", uses: ["search"] },
+  {
+    label: "Private messaging",
+    uses: ["order_messages", "private_inbox", "inbox_discovery"],
+  },
+  { label: "General reads", uses: ["general_reads"] },
+  { label: "Zap activity", uses: ["public_activity"] },
+]
+
+function configuredUsesLabel(row: AccountNetworkRelayRowView): string {
+  const configuredUses = new Set(row.capability.configuredUses)
+  return CONFIGURED_USE_GROUPS.filter((group) =>
+    group.uses.some((use) => configuredUses.has(use))
+  )
+    .map((group) => group.label)
+    .join(", ")
+}
+
+function searchEvidenceLabel(row: AccountNetworkRelayRowView): string {
+  if (row.capability.searchAdvertised) return "Advertised"
+  if (row.capability.nip11 === "available") return "Not advertised"
+  if (row.capability.nip11 === "unavailable") return "Could not check"
   return "Not checked"
 }
 
@@ -311,7 +349,7 @@ function RelayDetails({ row }: { row: AccountNetworkRelayRowView }) {
       </summary>
       <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
         <div>
-          <dt className="text-[var(--text-muted)]">Latest refresh</dt>
+          <dt className="text-[var(--text-muted)]">Recent connection</dt>
           <dd className="mt-0.5 text-[var(--text-primary)]">
             {reachabilityLabel(row.reachability)}
           </dd>
@@ -324,8 +362,16 @@ function RelayDetails({ row }: { row: AccountNetworkRelayRowView }) {
             </dd>
           </div>
         ) : null}
+        {row.capability.configuredUses.length > 0 ? (
+          <div>
+            <dt className="text-[var(--text-muted)]">Configured use</dt>
+            <dd className="mt-0.5 text-[var(--text-primary)]">
+              {configuredUsesLabel(row)}
+            </dd>
+          </div>
+        ) : null}
         <div>
-          <dt className="text-[var(--text-muted)]">Commerce</dt>
+          <dt className="text-[var(--text-muted)]">Commerce support</dt>
           <dd className="mt-0.5 text-[var(--text-primary)]">
             {commerceEvidenceLabel(row)}
           </dd>
@@ -333,15 +379,13 @@ function RelayDetails({ row }: { row: AccountNetworkRelayRowView }) {
         <div>
           <dt className="text-[var(--text-muted)]">Authentication</dt>
           <dd className="mt-0.5 text-[var(--text-primary)]">
-            {authEvidenceLabel(row.capability.authEvidence)}
+            {authEvidenceLabel(row)}
           </dd>
         </div>
         <div>
           <dt className="text-[var(--text-muted)]">Search</dt>
           <dd className="mt-0.5 text-[var(--text-primary)]">
-            {row.capability.searchAdvertised
-              ? "Advertised"
-              : "No support observed"}
+            {searchEvidenceLabel(row)}
           </dd>
         </div>
         <div>
@@ -1478,7 +1522,9 @@ function RelayPreferencesSection({
   controller: AccountNetworkSettingsController
   review: RelaySettingsReview
 }) {
-  const checking = controller.view.status === "reconciling"
+  const checking =
+    controller.view.status === "reconciling" ||
+    controller.relayInformationRefreshing
   const refreshDisabled =
     checking || review.busy || review.hasUnpublishedChanges
   return (
@@ -1498,7 +1544,7 @@ function RelayPreferencesSection({
               ? "Publish or discard your relay edits before refreshing."
               : undefined
           }
-          onClick={controller.retryReconciliation}
+          onClick={() => void controller.refresh()}
         >
           <RefreshCw
             className={cn(

@@ -251,6 +251,7 @@ describe("shared media server preference UI", () => {
         revision: "empty",
       },
       operation: { kind: null, phase: "idle", message: null },
+      relayInformationRefreshing: false,
       exactInboxRedistributionAvailable: false,
       addRelay: async () => {
         throw new Error("not used")
@@ -259,7 +260,7 @@ describe("shared media server preference UI", () => {
       removeRelay: async () => undefined,
       retryPendingUpdate: async () => undefined,
       redistributeExactInboxDeclaration: async () => undefined,
-      retryReconciliation: () => undefined,
+      refresh: async () => undefined,
       clearOperation: () => undefined,
       mediaServers: { view: view(), ...actions },
     }

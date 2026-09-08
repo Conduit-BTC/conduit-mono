@@ -27,7 +27,7 @@ function row(
     candidate: false,
     reachability: "not_checked",
     capability: {
-      configuredCommerce: false,
+      configuredUses: [],
       observedCommerce: false,
       nip11: "not_checked",
       searchAdvertised: false,
@@ -167,9 +167,9 @@ describe("account Network settings view", () => {
       row("wss://nip11-only.example", {
         signedPosition: 0,
         capability: {
-          configuredCommerce: false,
+          configuredUses: [],
           observedCommerce: false,
-          nip11: "advertised",
+          nip11: "available",
           searchAdvertised: false,
           authEvidence: "untested",
         },
@@ -177,9 +177,9 @@ describe("account Network settings view", () => {
       row("wss://advertised.example", {
         signedPosition: 99,
         capability: {
-          configuredCommerce: false,
+          configuredUses: [],
           observedCommerce: false,
-          nip11: "advertised",
+          nip11: "available",
           searchAdvertised: false,
           authEvidence: "succeeded",
         },
@@ -187,7 +187,7 @@ describe("account Network settings view", () => {
       row("wss://observed.example", {
         signedPosition: 50,
         capability: {
-          configuredCommerce: false,
+          configuredUses: [],
           observedCommerce: true,
           nip11: "not_checked",
           searchAdvertised: false,
@@ -197,7 +197,7 @@ describe("account Network settings view", () => {
       row("wss://configured.example", {
         signedPosition: 75,
         capability: {
-          configuredCommerce: true,
+          configuredUses: ["product_discovery"],
           observedCommerce: false,
           nip11: "not_checked",
           searchAdvertised: false,
@@ -213,14 +213,81 @@ describe("account Network settings view", () => {
     ])
 
     expect(ordered.map((entry) => entry.url)).toEqual([
-      "wss://configured.example",
       "wss://observed.example",
+      "wss://configured.example",
       "wss://advertised.example",
       "wss://nip11-only.example",
       "wss://plain.example",
       "wss://candidate-a.example",
       "wss://candidate-z.example",
     ])
+  })
+
+  it("separates exact configured uses from observed relay capabilities", () => {
+    const base = reconciliation(null)
+    const relayUrls = [
+      "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
+      "wss://nos.lol",
+      "wss://relay.primal.net",
+      "wss://premium.primal.net",
+    ]
+    const configured = {
+      ...base,
+      projection: {
+        ...base.projection,
+        rows: relayUrls.map((url, position) => ({
+          url,
+          position,
+          read: "published" as const,
+          write: "published" as const,
+          privateInbox: null,
+          draftRead: false,
+          draftWrite: false,
+        })),
+      },
+    }
+
+    const view = buildAccountNetworkSettingsView({
+      accountPubkey: "a".repeat(64),
+      status: "ready",
+      reconciliation: configured,
+      error: null,
+    })
+
+    expect(
+      view.capabilityByUrl["wss://relay.conduit.market"]?.configuredUses
+    ).toEqual([
+      "app_publishing",
+      "order_messages",
+      "private_inbox",
+      "inbox_discovery",
+    ])
+    expect(
+      view.capabilityByUrl["wss://relay.ditto.pub"]?.configuredUses
+    ).toEqual([
+      "product_discovery",
+      "search",
+      "order_messages",
+      "private_inbox",
+      "inbox_discovery",
+      "general_reads",
+      "public_activity",
+    ])
+    expect(view.capabilityByUrl["wss://nos.lol"]?.configuredUses).toEqual([
+      "inbox_discovery",
+      "general_reads",
+      "public_activity",
+    ])
+    expect(
+      view.capabilityByUrl["wss://relay.primal.net"]?.configuredUses
+    ).toEqual(["inbox_discovery", "general_reads", "public_activity"])
+    expect(
+      view.capabilityByUrl["wss://premium.primal.net"]?.configuredUses
+    ).toEqual([])
+    expect(
+      view.capabilityByUrl["wss://relay.conduit.market"]?.observedCommerce
+    ).toBe(false)
   })
 
   it("does not treat a search-only active probe as observed commerce", () => {

@@ -83,6 +83,7 @@ export interface AccountNetworkMediaServerController {
 export interface AccountNetworkSettingsController {
   view: AccountNetworkSettingsView
   operation: AccountNetworkSettingsOperationView
+  relayInformationRefreshing: boolean
   exactInboxRedistributionAvailable: boolean
   mediaServers: AccountNetworkMediaServerController | null
   addRelay: (url: string) => Promise<AccountNetworkRelayRowView>
@@ -90,7 +91,7 @@ export interface AccountNetworkSettingsController {
   removeRelay: (relayUrl: string) => Promise<void>
   retryPendingUpdate: () => Promise<void>
   redistributeExactInboxDeclaration: () => Promise<void>
-  retryReconciliation: () => void
+  refresh: () => Promise<void>
   clearOperation: () => void
 }
 
@@ -103,6 +104,29 @@ interface AuthFenceSnapshot {
 }
 
 const EMPTY_RELAY_CAPABILITY_EVIDENCE: Record<string, RelaySettingsEntry> = {}
+const RELAY_INFORMATION_REFRESH_CONCURRENCY = 4
+
+async function scanRelayInformationEntries(
+  urls: readonly string[],
+  existingEntries: Readonly<Record<string, RelaySettingsEntry>>
+): Promise<RelaySettingsEntry[]> {
+  const uniqueUrls = [...new Set(urls)]
+  const entries: RelaySettingsEntry[] = []
+  for (
+    let offset = 0;
+    offset < uniqueUrls.length;
+    offset += RELAY_INFORMATION_REFRESH_CONCURRENCY
+  ) {
+    entries.push(
+      ...(await Promise.all(
+        uniqueUrls
+          .slice(offset, offset + RELAY_INFORMATION_REFRESH_CONCURRENCY)
+          .map((url) => scanRelaySettingsEntry(url, {}, existingEntries[url]))
+      ))
+    )
+  }
+  return entries
+}
 
 function readRetainedRelayCapabilityEvidence(
   scope: string | null
@@ -168,6 +192,9 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     scope: session.relayScope,
     entries: readRetainedRelayCapabilityEvidence(session.relayScope),
   }))
+  const [relayInformationRefreshStatus, setRelayInformationRefreshStatus] =
+    useState<"idle" | "refreshing">("idle")
+  const relayInformationRefreshGeneration = useRef(0)
   const capabilityEntries =
     capabilityEvidence.scope === session.relayScope
       ? capabilityEvidence.entries
@@ -188,12 +215,17 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
   )
 
   useEffect(() => {
+    relayInformationRefreshGeneration.current += 1
     setTransientUpdate(null)
     setCapabilityEvidence({
       scope: session.relayScope,
       entries: readRetainedRelayCapabilityEvidence(session.relayScope),
     })
+    setRelayInformationRefreshStatus("idle")
     setOperation({ kind: null, phase: "idle", message: null })
+    return () => {
+      relayInformationRefreshGeneration.current += 1
+    }
   }, [auth.pubkey, auth.authGeneration, session.relayScope])
 
   useEffect(() => {
@@ -511,9 +543,42 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     [auth.pubkey, session.relayScope, view.rows]
   )
 
+  const refresh = useCallback(async (): Promise<void> => {
+    accountPreferences.refetch()
+    const generation = ++relayInformationRefreshGeneration.current
+    const relayScope = session.relayScope
+    setRelayInformationRefreshStatus("refreshing")
+    try {
+      const entries = await scanRelayInformationEntries(
+        view.rows.map((row) => row.url),
+        capabilityEntries
+      )
+      setCapabilityEvidence((current) => {
+        if (
+          generation !== relayInformationRefreshGeneration.current ||
+          current.scope !== relayScope
+        ) {
+          return current
+        }
+        return {
+          ...current,
+          entries: {
+            ...current.entries,
+            ...Object.fromEntries(entries.map((entry) => [entry.url, entry])),
+          },
+        }
+      })
+    } finally {
+      if (generation === relayInformationRefreshGeneration.current) {
+        setRelayInformationRefreshStatus("idle")
+      }
+    }
+  }, [accountPreferences, capabilityEntries, session.relayScope, view.rows])
+
   return {
     view,
     operation,
+    relayInformationRefreshing: relayInformationRefreshStatus === "refreshing",
     exactInboxRedistributionAvailable: canRedistributeExactInbox(
       view,
       accountPreferences.reconciliation
@@ -534,7 +599,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     removeRelay,
     retryPendingUpdate,
     redistributeExactInboxDeclaration,
-    retryReconciliation: accountPreferences.refetch,
+    refresh,
     clearOperation: () =>
       setOperation({ kind: null, phase: "idle", message: null }),
   }

@@ -444,6 +444,13 @@ test.describe("CND-162 mobile browser baseline", () => {
     ).toBeVisible()
     await assertMobileViewport(page)
 
+    const relaySection = page.getByRole("region", { name: "Relays" })
+    const refreshRelays = relaySection
+      .locator("header")
+      .getByRole("button", { name: "Refresh", exact: true })
+    await refreshRelays.click()
+    await expect(refreshRelays).toBeEnabled({ timeout: 20_000 })
+
     const readRole = page.getByRole("button", {
       name: new RegExp(`^(Disable|Enable) Read for ${TEST_RELAY_URL}`),
     })
@@ -457,7 +464,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(readRole).toHaveAttribute("aria-pressed", "true")
 
     await expect(
-      page.getByRole("img", { name: /Commerce relay\./ })
+      page.getByRole("img", { name: /Used for commerce workflows\./ })
     ).toBeVisible()
     await expect(
       page.getByRole("button", { name: /Refresh relay info/ })
@@ -468,7 +475,20 @@ test.describe("CND-162 mobile browser baseline", () => {
       .first()
       .click()
     await expect(
-      page.getByText("Latest refresh", { exact: true })
+      page.getByText("Recent connection", { exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByText("Configured use", { exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByText("Conduit local test relay", { exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByText("Commerce support", { exact: true })
+    ).toBeVisible()
+    await expect(page.getByText("Not assessed", { exact: true })).toBeVisible()
+    await expect(
+      page.getByText("Not advertised", { exact: true })
     ).toBeVisible()
 
     const removeRelay = page.getByRole("button", {

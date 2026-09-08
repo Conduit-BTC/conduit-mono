@@ -18,11 +18,20 @@ import { EVENT_KINDS } from "./kinds"
 export type AccountNetworkRole = "read" | "publish" | "private_inbox"
 export type AccountNetworkRelayReachability =
   "responded" | "issue" | "not_checked"
+export type AccountNetworkRelayConfiguredUse =
+  | "app_publishing"
+  | "product_discovery"
+  | "search"
+  | "inbox_discovery"
+  | "order_messages"
+  | "private_inbox"
+  | "general_reads"
+  | "public_activity"
 
 export interface AccountNetworkRelayCapabilityView {
-  configuredCommerce: boolean
+  configuredUses: readonly AccountNetworkRelayConfiguredUse[]
   observedCommerce: boolean
-  nip11: "not_checked" | "advertised" | "unavailable"
+  nip11: "not_checked" | "available" | "unavailable"
   searchAdvertised: boolean
   authEvidence: RelayAuthEvidenceState | "advertised"
   relayName?: string
@@ -77,13 +86,51 @@ export interface AccountNetworkSettingsView {
   revision: string
 }
 
-function normalizedConfiguredCommerceRelayUrls(): Set<string> {
-  return new Set(
-    config.commerceRelayUrls.flatMap((url) => {
-      const normalized = tryNormalizeRelayUrl(url)
-      return normalized.ok ? [normalized.url] : []
-    })
+const CONFIGURED_USE_SOURCES: readonly [
+  AccountNetworkRelayConfiguredUse,
+  readonly string[],
+][] = [
+  ["app_publishing", config.appWriteRelayUrls],
+  ["product_discovery", config.commerceDiscoveryRelayUrls],
+  ["search", config.searchIndexRelayUrls],
+  ["order_messages", config.commerceDmFallbackRelayUrls],
+  ["private_inbox", config.dmInboxDefaultRelayUrls],
+  ["inbox_discovery", config.dmDeclarationDiscoveryRelayUrls],
+  ["general_reads", config.corePublicFallbackRelayUrls],
+  ["public_activity", config.zapRelayUrls],
+]
+const COMMERCE_WORKFLOW_CONFIGURED_USES: readonly AccountNetworkRelayConfiguredUse[] =
+  ["app_publishing", "product_discovery", "order_messages", "private_inbox"]
+
+export function isAccountNetworkRelayCommerceRelevant(
+  capability: Pick<
+    AccountNetworkRelayCapabilityView,
+    "configuredUses" | "observedCommerce"
+  >
+): boolean {
+  return (
+    capability.observedCommerce ||
+    capability.configuredUses.some((use) =>
+      COMMERCE_WORKFLOW_CONFIGURED_USES.includes(use)
+    )
   )
+}
+
+function normalizedConfiguredUsesByUrl(): ReadonlyMap<
+  string,
+  readonly AccountNetworkRelayConfiguredUse[]
+> {
+  const usesByUrl = new Map<string, AccountNetworkRelayConfiguredUse[]>()
+  for (const [use, relayUrls] of CONFIGURED_USE_SOURCES) {
+    for (const url of relayUrls) {
+      const normalized = tryNormalizeRelayUrl(url)
+      if (!normalized.ok) continue
+      const uses = usesByUrl.get(normalized.url) ?? []
+      if (!uses.includes(use)) uses.push(use)
+      usesByUrl.set(normalized.url, uses)
+    }
+  }
+  return usesByUrl
 }
 
 function hasObservedCommerceEvidence(entry?: RelaySettingsEntry): boolean {
@@ -107,18 +154,21 @@ function capabilityFromEntry(
   url: string,
   entry: RelaySettingsEntry | undefined,
   authEvidence: RelayAuthEvidenceState | undefined,
-  configuredCommerceRelayUrls: ReadonlySet<string>
+  configuredUsesByUrl: ReadonlyMap<
+    string,
+    readonly AccountNetworkRelayConfiguredUse[]
+  >
 ): AccountNetworkRelayCapabilityView {
   const advertisedAuth =
     entry?.observations?.auth.status === "advertised" ||
     entry?.capabilities.auth === true
   return {
-    configuredCommerce: configuredCommerceRelayUrls.has(url),
+    configuredUses: configuredUsesByUrl.get(url) ?? [],
     observedCommerce: hasObservedCommerceEvidence(entry),
     nip11: entry?.warnings.unreachable
       ? "unavailable"
       : entry?.capabilities.nip11
-        ? "advertised"
+        ? "available"
         : "not_checked",
     searchAdvertised:
       entry?.observations?.search.status === "advertised" ||
@@ -327,7 +377,7 @@ export function buildAccountNetworkSettingsView(input: {
   const capabilityEntries = new Map(
     (input.capabilityEntries ?? []).map((entry) => [entry.url, entry])
   )
-  const configuredCommerceRelayUrls = normalizedConfiguredCommerceRelayUrls()
+  const configuredUsesByUrl = normalizedConfiguredUsesByUrl()
   const relayReachability = relayReachabilityByUrl(reconciliation)
   const rows = new Map<string, AccountNetworkRelayRowView>()
   const ensureRow = (url: string): AccountNetworkRelayRowView => {
@@ -352,7 +402,7 @@ export function buildAccountNetworkSettingsView(input: {
         url,
         entry,
         input.authEvidenceByUrl?.[url],
-        configuredCommerceRelayUrls
+        configuredUsesByUrl
       ),
     }
     rows.set(url, created)
@@ -472,7 +522,7 @@ export function buildAccountNetworkSettingsView(input: {
         url,
         capabilityEntries.get(url),
         input.authEvidenceByUrl?.[url],
-        configuredCommerceRelayUrls
+        configuredUsesByUrl
       ),
     ])
   )
@@ -552,7 +602,7 @@ export function createCandidateNetworkRelayRow(
   entry: RelaySettingsEntry,
   authEvidence?: RelayAuthEvidenceState
 ): AccountNetworkRelayRowView {
-  const configuredCommerceRelayUrls = normalizedConfiguredCommerceRelayUrls()
+  const configuredUsesByUrl = normalizedConfiguredUsesByUrl()
   return {
     url: entry.url,
     readEnabled: false,
@@ -568,7 +618,7 @@ export function createCandidateNetworkRelayRow(
       entry.url,
       entry,
       authEvidence,
-      configuredCommerceRelayUrls
+      configuredUsesByUrl
     ),
   }
 }
@@ -579,8 +629,10 @@ export function orderAccountNetworkRelayRows(
   const tier = (row: AccountNetworkRelayRowView): number => {
     const active =
       row.readEnabled || row.publishEnabled || row.privateInboxEnabled
-    if (active && row.capability.configuredCommerce) return 0
-    if (active && row.capability.observedCommerce) return 1
+    if (active && row.capability.observedCommerce) return 0
+    if (active && isAccountNetworkRelayCommerceRelevant(row.capability)) {
+      return 1
+    }
     if (
       active &&
       (row.capability.searchAdvertised ||

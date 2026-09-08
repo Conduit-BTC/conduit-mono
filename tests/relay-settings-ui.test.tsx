@@ -23,7 +23,7 @@ function relayRow(
     candidate: false,
     reachability: "not_checked",
     capability: {
-      configuredCommerce: false,
+      configuredUses: [],
       observedCommerce: false,
       nip11: "not_checked",
       searchAdvertised: false,
@@ -80,6 +80,7 @@ function controller(
   return {
     view: networkView(),
     operation: { kind: null, phase: "idle", message: null },
+    relayInformationRefreshing: false,
     exactInboxRedistributionAvailable: false,
     mediaServers: null,
     addRelay: async (url) => relayRow(url, { candidate: true }),
@@ -87,7 +88,7 @@ function controller(
     removeRelay: async () => undefined,
     retryPendingUpdate: async () => undefined,
     redistributeExactInboxDeclaration: async () => undefined,
-    retryReconciliation: () => undefined,
+    refresh: async () => undefined,
     clearOperation: () => undefined,
     ...overrides,
   }
@@ -145,9 +146,9 @@ describe("RelaySettingsPanel", () => {
         privateInboxEnabled: true,
         reachability: "responded",
         capability: {
-          configuredCommerce: true,
+          configuredUses: ["app_publishing", "order_messages"],
           observedCommerce: false,
-          nip11: "advertised",
+          nip11: "available",
           searchAdvertised: true,
           authEvidence: "advertised",
           relayName: "Metadata relay",
@@ -157,7 +158,7 @@ describe("RelaySettingsPanel", () => {
         signedPosition: 1,
         reachability: "issue",
         capability: {
-          configuredCommerce: false,
+          configuredUses: [],
           observedCommerce: false,
           nip11: "unavailable",
           searchAdvertised: false,
@@ -174,11 +175,21 @@ describe("RelaySettingsPanel", () => {
     )
 
     expect(markup).toContain("Relay details")
-    expect(markup).toContain("Conduit commerce relay")
+    expect(markup).toContain("Configured use")
+    expect(markup).toContain("App publishing, Private messaging")
+    expect(markup).toContain("Commerce support")
+    expect(markup).toContain("Not assessed")
     expect(markup).toContain("Relay information")
     expect(markup).toContain("Authentication")
-    expect(markup).toContain("Commerce relay. Responded on the latest refresh")
-    expect(markup).toContain("Recent connection issue")
+    expect(markup).toContain(
+      "Used for commerce workflows. Responded during the latest preference refresh"
+    )
+    expect(markup).toContain(
+      "Connection issue during the latest preference refresh"
+    )
+    expect(markup).not.toContain("Conduit commerce relay")
+    expect(markup).not.toContain("No commerce evidence recorded")
+    expect(markup).not.toContain("No support observed")
     expect(markup).not.toContain("Refresh relay info")
     expect(markup).not.toContain(">Signed<")
     expect(markup).not.toContain("Delivery confirmed")
@@ -192,9 +203,9 @@ describe("RelaySettingsPanel", () => {
     const auth = relayRow("wss://auth.example", {
       signedPosition: 1,
       capability: {
-        configuredCommerce: false,
+        configuredUses: [],
         observedCommerce: false,
-        nip11: "advertised",
+        nip11: "available",
         searchAdvertised: false,
         authEvidence: "advertised",
       },
@@ -457,5 +468,16 @@ describe("RelaySettingsPanel", () => {
 
     expect(buttonOpeningTag(idleMarkup, "Refresh")).not.toContain('disabled=""')
     expect(buttonOpeningTag(busyMarkup, "Refresh")).toContain('disabled=""')
+  })
+
+  it("shows one refresh state for preference and relay information checks", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({ relayInformationRefreshing: true })}
+      />
+    )
+
+    expect(markup).toContain("Refreshing")
+    expect(buttonOpeningTag(markup, "Refreshing")).toContain('disabled=""')
   })
 })
