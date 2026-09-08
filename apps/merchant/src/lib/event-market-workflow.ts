@@ -815,6 +815,24 @@ function terminalDeletionRemovesMarket(
         : terminal.pickupCoordinate
   if (!coordinate || coordinate !== terminal.deletion.coordinate) return false
 
+  if (record === "pickup" && market?.pickupCoordinate !== coordinate) {
+    const marketCollection = carrierFrontier(market, "collection")
+    const deletedPickupCollection = carrierFrontier(terminal, "collection")
+    // A pickup tombstone belongs to the collection revision that advertised
+    // that pickup. It cannot retire a strictly newer collection that removed
+    // or replaced the relationship.
+    if (
+      marketCollection &&
+      deletedPickupCollection &&
+      compareEventMarketRecordFrontier(
+        marketCollection,
+        deletedPickupCollection
+      ) > 0
+    ) {
+      return false
+    }
+  }
+
   const deletionAppliesToFrontier = (
     frontier: EventMarketRecordFrontier | undefined
   ): boolean =>

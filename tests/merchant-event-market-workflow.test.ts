@@ -688,6 +688,101 @@ describe("merchant organizer event workflow", () => {
     ).toBe("a".repeat(64))
   })
 
+  it("makes pickup deletion relative to the collection that advertises it", () => {
+    const oldPickupGraph = {
+      collectionCoordinate: COLLECTION,
+      pickupCoordinate: ORGANIZER_PICKUP,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "d".repeat(64),
+      pickupCreatedAt: 1_000,
+      pickupEventId: "c".repeat(64),
+    }
+    const deletedOldPickup = {
+      ...oldPickupGraph,
+      terminal: true as const,
+      state: "deleted" as const,
+      deletion: {
+        record: "pickup" as const,
+        coordinate: ORGANIZER_PICKUP,
+        eventId: "c".repeat(64),
+        createdAt: 1_000,
+        deletions: [
+          {
+            deletionEventId: "f".repeat(64),
+            deletionCreatedAt: 2_000,
+            authorPubkey: ORGANIZER,
+            eventTargets: ["c".repeat(64)],
+            addressableTargets: [],
+          },
+        ],
+      },
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://deletion.example/events",
+      ]),
+    }
+    const newerMarketWithoutPickup = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 3_000,
+      collectionEventId: "a".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://current.example/events",
+      ]),
+      state: "active",
+    }
+    const savedOldPickup = {
+      reference: deletedOldPickup.naddr,
+      savedAt: 20,
+      expectedCollectionCoordinate: COLLECTION,
+      expectedCollectionCreatedAt: 1_000,
+      expectedCollectionEventId: "d".repeat(64),
+      expectedPickupCoordinate: ORGANIZER_PICKUP,
+      expectedPickupCreatedAt: 1_000,
+      expectedPickupEventId: "c".repeat(64),
+    }
+
+    for (const savedReference of [undefined, savedOldPickup]) {
+      const boundedViewOrders = [
+        selectOrganizerEventMarketResolution(
+          newerMarketWithoutPickup,
+          deletedOldPickup,
+          savedReference
+        ),
+        selectOrganizerEventMarketResolution(
+          deletedOldPickup,
+          newerMarketWithoutPickup,
+          savedReference
+        ),
+      ]
+      for (const selected of boundedViewOrders) {
+        expect(selected).toMatchObject({
+          state: "active",
+          collectionEventId: "a".repeat(64),
+        })
+        expect(selected?.pickupCoordinate).toBeUndefined()
+      }
+      expect(
+        organizerEventMarketReachesExpectedFrontiers(
+          newerMarketWithoutPickup,
+          savedReference
+        )
+      ).toBe(true)
+    }
+
+    const currentMarketWithPickup = {
+      ...oldPickupGraph,
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://current.example/events",
+      ]),
+      state: "active",
+    }
+    expect(
+      selectOrganizerEventMarketResolution(
+        currentMarketWithPickup,
+        deletedOldPickup
+      )?.state
+    ).toBe("deleted")
+  })
+
   it("does not apply a calendar tombstone to a replacement coordinate", () => {
     const replacementCalendar = `31923:${ORGANIZER}:replacement-calendar`
     const replacementMarket = {
