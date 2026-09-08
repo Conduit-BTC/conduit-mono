@@ -995,6 +995,74 @@ test.use({
   screenshot: "off",
 })
 
+async function expectContainedEventBanner(page: Page): Promise<void> {
+  const banner = page.locator(
+    'img[src="https://cdn.conduit.market/conduit-test/synthetic-event-market.svg"]'
+  )
+  await expect(banner).toBeVisible({ timeout: 30_000 })
+
+  const metrics = await banner.evaluate((image) => {
+    const bounds = image.getBoundingClientRect()
+    const styles = getComputedStyle(image)
+    return {
+      objectFit: styles.objectFit,
+      backgroundColor: styles.backgroundColor,
+      naturalRatio: image.naturalWidth / image.naturalHeight,
+      renderedRatio: bounds.width / bounds.height,
+    }
+  })
+
+  expect(metrics.objectFit).toBe("contain")
+  expect(metrics.backgroundColor).not.toBe("rgba(0, 0, 0, 0)")
+  expect(
+    Math.abs(metrics.renderedRatio - metrics.naturalRatio)
+  ).toBeGreaterThan(0.05)
+}
+
+test("event banners remain fully contained on every surface and viewport @market @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Banner Review",
+    organizerHandoffEnabled: true,
+  })
+
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport)
+    await expectContainedEventBanner(page)
+  }
+
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  await expect(
+    page.getByRole("button", { name: "Publish product", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport)
+    await expectContainedEventBanner(page)
+  }
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  await expect(
+    page.getByRole("heading", { name: "Synthetic Banner Review" })
+  ).toBeVisible({ timeout: 30_000 })
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport)
+    await expectContainedEventBanner(page)
+  }
+})
+
 test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @market @merchant", async ({
   page,
 }) => {
