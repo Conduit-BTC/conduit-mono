@@ -41,6 +41,8 @@ import {
   applyAccountPrivateMessageRelayCutoff,
   MAX_DECLARED_INBOX_WRITE_RELAYS,
   resolveInboxDeclaration,
+  selectPrivateMessageDeliveryRoute,
+  type AccountPrivateMessageRelayCutoff,
   type ResolveInboxDeclarationOptions,
 } from "./private-message-routing"
 import { normalizeSecureOrIsolatedE2eRelayUrls } from "./relay-settings"
@@ -1217,6 +1219,28 @@ async function strictInboxRelays(
   return declaredInboxWriteRelayUrls(inbox.relayUrls)
 }
 
+async function strictOwnInboxRelays(
+  pubkey: string,
+  relayCutoff: AccountPrivateMessageRelayCutoff,
+  options?: ResolveInboxDeclarationOptions
+): Promise<string[]> {
+  const declaration = await resolveInboxDeclaration(pubkey, {
+    ...options,
+    allowLocalRelayUrlsForPubkey: pubkey,
+  })
+  const route = selectPrivateMessageDeliveryRoute({
+    rumorKind: EVENT_KINDS.ORDER,
+    declaration,
+    authenticatedPubkey: pubkey,
+    relayCutoff,
+    validatedOrder: false,
+  })
+  if (route.route === "blocked" || route.relayUrls.length === 0) {
+    throw new Error("Sender inbox is not currently usable.")
+  }
+  return route.relayUrls
+}
+
 function declaredInboxWriteRelayUrls(relayUrls: readonly string[]): string[] {
   return normalizeSecureOrIsolatedE2eRelayUrls(relayUrls).slice(
     0,
@@ -1385,19 +1409,19 @@ export async function retryEventMarketPrivateDelivery(input: {
   let selfCopyError: string | null = null
   if (input.record.signedSelfWrap) {
     try {
-      const senderRelayCandidates = input.senderInboxRelays
-        ? declaredInboxWriteRelayUrls(input.senderInboxRelays)
-        : await strictInboxRelays(
-            input.record.senderPubkey,
-            input.inboxDeclarationOptions
-          )
       const currentRelayCutoff = await loadRelayCutoff(
         input.record.senderPubkey
       )
-      const senderRelayUrls = applyRelayCutoff(
-        senderRelayCandidates,
-        currentRelayCutoff
-      )
+      const senderRelayUrls = input.senderInboxRelays
+        ? applyRelayCutoff(
+            declaredInboxWriteRelayUrls(input.senderInboxRelays),
+            currentRelayCutoff
+          )
+        : await strictOwnInboxRelays(
+            input.record.senderPubkey,
+            currentRelayCutoff,
+            input.inboxDeclarationOptions
+          )
       if (senderRelayUrls.length === 0) {
         throw new Error("Sender inbox is not currently usable.")
       }

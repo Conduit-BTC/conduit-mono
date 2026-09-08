@@ -861,6 +861,92 @@ describe("publishPrivateMessage", () => {
     __resetInboxRelayCache()
   })
 
+  it("re-resolves a newly staged pending inbox before the sender self-copy", async () => {
+    __resetInboxRelayCache()
+    const previousSenderRelay = "wss://previous-sender.inbox.conduit.market"
+    const pendingSenderRelay = "wss://pending-sender.inbox.conduit.market"
+    const recipientRelay = "wss://recipient.inbox.conduit.market"
+    const evidenceRepository =
+      createInMemoryInboxDeclarationEvidenceRepository()
+    const previousEvent = signedInboxDeclaration(
+      INBOX_OWNER_SECRET,
+      [previousSenderRelay],
+      100
+    )
+    const pendingEvent = signedInboxDeclaration(
+      INBOX_OWNER_SECRET,
+      [pendingSenderRelay],
+      200
+    )
+    await mergeInboxDeclarationEvidence(
+      {
+        pubkey: INBOX_OWNER,
+        signedEvent: previousEvent,
+        sourceRelayUrls: [SHARED_INBOX_RELAY],
+        sharedSourceRelayUrls: [SHARED_INBOX_RELAY],
+        observedAt: 1_000,
+        completeObservedAt: 1_000,
+      },
+      evidenceRepository
+    )
+    const publishRelays: string[][] = []
+
+    const result = await publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+        pubkey: INBOX_OWNER,
+        tags: [["p", INBOX_PEER]],
+      }),
+      senderPubkey: INBOX_OWNER,
+      recipientPubkey: INBOX_PEER,
+      signer: {
+        user: async () => ({ pubkey: INBOX_OWNER }),
+      } as unknown as NDKSigner,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      recipientInboxRelays: [recipientRelay],
+      inspectOwnInboxReadiness: async (pubkey) =>
+        await inspectRetainedOwnPrivateMessageRelayReadiness(pubkey, {
+          evidenceRepository,
+        }),
+      loadAccountRelayCutoff: async (pubkey) => ({
+        pubkey,
+        excludedRelayUrls: [],
+      }),
+      giftWrapFn: (async (_message, recipient) =>
+        wrap(`wrap-${recipient.pubkey}`)) as never,
+      publishFn: (async (_event, options) => {
+        const relayUrls = [...(options.exclusiveRelayUrls ?? [])]
+        publishRelays.push(relayUrls)
+        if (publishRelays.length === 1) {
+          await stageInboxDeclarationDistribution(
+            {
+              pubkey: INBOX_OWNER,
+              signedEvent: pendingEvent,
+              publishRelayUrls: [SHARED_INBOX_RELAY],
+              coordinatedUpdateId: "successor-network-update",
+              expectedCurrentEventId: previousEvent.id,
+            },
+            evidenceRepository
+          )
+          setInboxCoordinatedPendingCheckpoint(INBOX_OWNER, {
+            eventId: pendingEvent.id,
+            updateId: "successor-network-update",
+          })
+        }
+        return {
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        } as never
+      }) as never,
+    })
+
+    expect(publishRelays).toEqual([[recipientRelay], [pendingSenderRelay]])
+    expect(publishRelays.flat()).not.toContain(previousSenderRelay)
+    expect(result.selfCopyError).toBeNull()
+    expect(result.selfDeliveryStatus).toBe("full_success")
+    __resetInboxRelayCache()
+  })
+
   it("delivers one scoped guest order companion without inspecting a guest inbox", async () => {
     const { companion, scope } = guestOrderCompanionFixture()
     const wrappedRecipients: string[] = []
@@ -1177,7 +1263,7 @@ describe("publishPrivateMessage", () => {
       }) as never,
     })
 
-    expect(resolved).toEqual(["recipient", "sender"])
+    expect(resolved).toEqual(["recipient", "sender", "sender"])
     expect(wrappedRecipients).toEqual(["recipient", "sender"])
     expect(wrappedRumorsHaveNdk).toEqual([true, true])
     expect(publishes).toEqual([
@@ -1251,6 +1337,67 @@ describe("publishPrivateMessage", () => {
       "publish",
     ])
     expect(publishRelays).toEqual([[permitted]])
+  })
+
+  it("persists retry outcomes only for relays actually attempted after revalidation", async () => {
+    const removed = "wss://removed-by-owner.conduit.market"
+    const permitted = "wss://recipient-inbox.conduit.market"
+    const signedWrap = finalizeEvent(
+      {
+        kind: EVENT_KINDS.GIFT_WRAP,
+        created_at: 1_000,
+        tags: [["p", "recipient"]],
+        content: "ciphertext",
+      },
+      INBOX_OTHER_SECRET
+    )
+    let cutoffLoads = 0
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [removed, permitted],
+      loadAccountRelayCutoff: async (pubkey) => {
+        cutoffLoads += 1
+        return {
+          pubkey,
+          excludedRelayUrls: cutoffLoads >= 3 ? [removed] : [],
+        }
+      },
+      giftWrapFn: (async () => new NDKEvent(undefined, signedWrap)) as never,
+      publishFn: (async (_event, options) => {
+        const attemptedRelayUrls = await options.revalidateExclusiveRelayUrls!(
+          options.exclusiveRelayUrls ?? []
+        )
+        return {
+          plan: {
+            intent: "recipient_event",
+            primaryRelayUrls: [...(options.exclusiveRelayUrls ?? [])],
+            broadcastRelayUrls: [],
+            parkedRelayUrls: [],
+          },
+          attemptedRelayUrls,
+          successfulRelayUrls: attemptedRelayUrls,
+          failedRelayUrls: [],
+          relayFailureMessages: {},
+        }
+      }) as never,
+    })
+
+    expect(cutoffLoads).toBe(3)
+    expect(result.orderRelayDelivery?.relayDelivery).toEqual([
+      expect.objectContaining({
+        relayUrl: permitted,
+        status: "acked",
+        attemptCount: 1,
+      }),
+    ])
+    expect(result.orderRelayDelivery?.nextRetryAt).toBeUndefined()
+    expect(JSON.stringify(result.orderRelayDelivery)).not.toContain(removed)
   })
 
   it("does no relay discovery, wrapping, or publishing when the durable sender cutoff is unavailable", async () => {

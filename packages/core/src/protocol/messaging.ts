@@ -1016,69 +1016,48 @@ export async function publishPrivateMessage(
     throwRecipientRouteBlocked(initialRecipientRoute)
   }
 
-  let senderRoute: ReturnType<typeof selectPrivateMessageDeliveryRoute> | null =
-    null
-  let senderDeclaration: InboxDeclarationResolution | null = null
-  if (
+  const senderReadinessRequired =
     input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE &&
     !validatedGuestOrderCompanion
-  ) {
-    const senderReadiness = await (
-      input.inspectOwnInboxReadiness ??
-      inspectRetainedOwnPrivateMessageRelayReadiness
-    )(senderPubkey)
-    const coordinatedPending =
-      senderReadiness.state === "distribution_pending" &&
-      senderReadiness.pendingWriteAuthorized === true
-    if (senderReadiness.state !== "ready" && !coordinatedPending) {
-      throw new PrivateMessageRelayReadinessError("sender_not_ready")
+  const resolveCurrentSenderDeclaration = async () => {
+    if (senderReadinessRequired) {
+      const readiness = await (
+        input.inspectOwnInboxReadiness ??
+        inspectRetainedOwnPrivateMessageRelayReadiness
+      )(senderPubkey)
+      return declarationFromOwnReadiness(senderPubkey, readiness)
     }
-    senderDeclaration =
-      senderReadiness.state === "ready"
-        ? {
-            pubkey: senderPubkey,
-            state: "declared",
-            relayUrls: senderReadiness.relayUrls,
-            stale: senderReadiness.stale,
-            fetchedAt: Date.now(),
-          }
-        : {
-            pubkey: senderPubkey,
-            state: "distribution_pending",
-            relayUrls: [],
-            pendingRelayUrls: senderReadiness.relayUrls,
-            retainedReadRelayUrls: senderReadiness.retainedRelayUrls,
-            pendingWriteAuthorized: true,
-            eventId: senderReadiness.eventId,
-            stale: true,
-            fetchedAt: Date.now(),
-          }
-    senderRoute = selectPrivateMessageDeliveryRoute({
-      rumorKind: input.rumorKind,
-      declaration: senderDeclaration,
-      authenticatedPubkey: senderPubkey,
-      relayCutoff,
-      validatedOrder: false,
-    })
-    if (senderRoute.route === "blocked") {
-      throw new PrivateMessageRelayReadinessError("sender_not_ready")
-    }
-  } else if (selfCopy) {
-    senderDeclaration = await resolveDeclarationForSend(
+    if (!selfCopy) return null
+    return await resolveDeclarationForSend(
       input.senderPubkey,
       input.senderInboxRelays,
       input.resolveInboxRelays,
       true
     )
-    // The compatibility lane is recipient-only: the non-critical sender self-copy
-    // stays strict and fails soft instead of writing to compatibility relays.
-    senderRoute = selectPrivateMessageDeliveryRoute({
-      rumorKind: input.rumorKind,
-      declaration: senderDeclaration,
-      authenticatedPubkey: senderPubkey,
-      relayCutoff,
-      validatedOrder: false,
-    })
+  }
+  const selectSenderRoute = (
+    declaration: InboxDeclarationResolution | null,
+    cutoff: AccountPrivateMessageRelayCutoff
+  ) =>
+    declaration
+      ? selectPrivateMessageDeliveryRoute({
+          rumorKind: input.rumorKind,
+          declaration,
+          authenticatedPubkey: senderPubkey,
+          relayCutoff: cutoff,
+          validatedOrder: false,
+        })
+      : null
+
+  let senderDeclaration = senderReadinessRequired
+    ? await resolveCurrentSenderDeclaration()
+    : null
+  let senderRoute = selectSenderRoute(senderDeclaration, relayCutoff)
+  if (
+    senderReadinessRequired &&
+    (!senderRoute || senderRoute.route === "blocked")
+  ) {
+    throw new PrivateMessageRelayReadinessError("sender_not_ready")
   }
 
   // NDK's giftWrap builds and encrypts the seal from rumor.ndk. Attach the
@@ -1172,48 +1151,38 @@ export async function publishPrivateMessage(
       : undefined
 
   if (wrappedToSelf) {
-    if (!senderRoute || senderRoute.route === "blocked") {
-      selfCopyError = "Sender has no usable NIP-17 inbox relay declaration."
-    } else {
-      try {
-        const currentRelayCutoff = await loadRelayCutoff(senderPubkey)
-        senderRoute = senderDeclaration
-          ? selectPrivateMessageDeliveryRoute({
-              rumorKind: input.rumorKind,
-              declaration: senderDeclaration,
-              authenticatedPubkey: senderPubkey,
-              relayCutoff: currentRelayCutoff,
-              validatedOrder: false,
-            })
-          : null
-        if (!senderRoute || senderRoute.route === "blocked") {
-          throw new Error(
-            "Sender has no usable NIP-17 inbox relay declaration."
-          )
-        }
-        try {
-          selfDelivery = await publishFn(wrappedToSelf, {
-            intent: "recipient_event",
-            authorPubkey: input.senderPubkey,
-            authenticatedPubkey: input.senderPubkey,
-            recipientPubkeys: [input.senderPubkey],
-            exclusiveRelayUrls: senderRoute.relayUrls,
-            revalidateExclusiveRelayUrls: revalidatePrivateRelayUrls,
-            refreshRelayLists,
-            deliveryMode: "critical",
-          })
-        } catch (error) {
-          const partial = recoverPartialRelayPublishDiagnostics(error)
-          if (!partial) throw error
-          selfDelivery = partial
-        }
-        const summary = summarizePrivateMessageSelfDelivery(selfDelivery)
-        selfDeliveryStatus = summary.status
-        selfCopyError = summary.error
-      } catch (error) {
-        selfCopyError =
-          error instanceof Error ? error.message : "Self-copy publish failed"
+    try {
+      const currentRelayCutoff = await loadRelayCutoff(senderPubkey)
+      // The cutoff reload also hydrates a newer staged inbox from another tab.
+      // Resolve the declaration again so the self-copy cannot write to the
+      // now read-only predecessor captured before wrapping or recipient I/O.
+      senderDeclaration = await resolveCurrentSenderDeclaration()
+      senderRoute = selectSenderRoute(senderDeclaration, currentRelayCutoff)
+      if (!senderRoute || senderRoute.route === "blocked") {
+        throw new Error("Sender has no usable NIP-17 inbox relay declaration.")
       }
+      try {
+        selfDelivery = await publishFn(wrappedToSelf, {
+          intent: "recipient_event",
+          authorPubkey: input.senderPubkey,
+          authenticatedPubkey: input.senderPubkey,
+          recipientPubkeys: [input.senderPubkey],
+          exclusiveRelayUrls: senderRoute.relayUrls,
+          revalidateExclusiveRelayUrls: revalidatePrivateRelayUrls,
+          refreshRelayLists,
+          deliveryMode: "critical",
+        })
+      } catch (error) {
+        const partial = recoverPartialRelayPublishDiagnostics(error)
+        if (!partial) throw error
+        selfDelivery = partial
+      }
+      const summary = summarizePrivateMessageSelfDelivery(selfDelivery)
+      selfDeliveryStatus = summary.status
+      selfCopyError = summary.error
+    } catch (error) {
+      selfCopyError =
+        error instanceof Error ? error.message : "Self-copy publish failed"
     }
   }
 
@@ -1307,30 +1276,33 @@ function buildOrderRelayDeliveryRecord(input: {
   if (!isValidSignedPublicNostrEvent(signedRecipientWrap)) return undefined
 
   const now = Date.now()
+  const attempted = new Set(input.recipientDelivery.attemptedRelayUrls ?? [])
   const successful = new Set(input.recipientDelivery.successfulRelayUrls ?? [])
   const failures = input.recipientDelivery.relayFailureMessages ?? {}
-  const relayDelivery = input.recipientRoute.relayUrls.map((relayUrl) => {
-    const acked = successful.has(relayUrl)
-    const rejected =
-      /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
-        failures[relayUrl]?.trim() ?? ""
-      )
-    const status: OrderRelayDeliveryStatus = acked
-      ? "acked"
-      : rejected
-        ? "rejected"
-        : "timed_out"
-    return {
-      relayUrl,
-      source: input.recipientRoute.relaySources[relayUrl] ?? "declared",
-      status,
-      attemptCount: 1,
-      lastAttemptAt: now,
-      ...(acked ? { acknowledgedAt: now } : {}),
-      ...(rejected ? { rejectedAt: now } : {}),
-      ...(!acked && !rejected ? { timedOutAt: now } : {}),
-    }
-  })
+  const relayDelivery = input.recipientRoute.relayUrls
+    .filter((relayUrl) => attempted.has(relayUrl))
+    .map((relayUrl) => {
+      const acked = successful.has(relayUrl)
+      const rejected =
+        /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
+          failures[relayUrl]?.trim() ?? ""
+        )
+      const status: OrderRelayDeliveryStatus = acked
+        ? "acked"
+        : rejected
+          ? "rejected"
+          : "timed_out"
+      return {
+        relayUrl,
+        source: input.recipientRoute.relaySources[relayUrl] ?? "declared",
+        status,
+        attemptCount: 1,
+        lastAttemptAt: now,
+        ...(acked ? { acknowledgedAt: now } : {}),
+        ...(rejected ? { rejectedAt: now } : {}),
+        ...(!acked && !rejected ? { timedOutAt: now } : {}),
+      }
+    })
 
   return {
     signedRecipientWrap,
@@ -1358,6 +1330,38 @@ async function resolveCompatibilityRecipientReadRelays(
   } catch {
     return []
   }
+}
+
+function declarationFromOwnReadiness(
+  pubkey: string,
+  readiness: OwnPrivateMessageRelayReadiness
+): InboxDeclarationResolution | null {
+  if (readiness.state === "ready") {
+    return {
+      pubkey,
+      state: "declared",
+      relayUrls: readiness.relayUrls,
+      stale: readiness.stale,
+      fetchedAt: Date.now(),
+    }
+  }
+  if (
+    readiness.state === "distribution_pending" &&
+    readiness.pendingWriteAuthorized === true
+  ) {
+    return {
+      pubkey,
+      state: "distribution_pending",
+      relayUrls: [],
+      pendingRelayUrls: readiness.relayUrls,
+      retainedReadRelayUrls: readiness.retainedRelayUrls,
+      pendingWriteAuthorized: true,
+      eventId: readiness.eventId,
+      stale: true,
+      fetchedAt: Date.now(),
+    }
+  }
+  return null
 }
 
 /**

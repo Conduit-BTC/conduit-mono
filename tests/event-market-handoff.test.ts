@@ -20,6 +20,7 @@ import {
   buildEventMarketReadyReceiptPayload,
   buildEventMarketReadyReceiptRumor,
   config,
+  createInMemoryInboxDeclarationEvidenceRepository,
   EVENT_KINDS,
   eventMarketFulfillmentRevocationSchema,
   eventMarketHandoffAckSchema,
@@ -40,9 +41,12 @@ import {
   readEventMarketReadyReceipts,
   RelayPublishDiagnosticsError,
   reduceEventMarketOrganizerClaims,
+  mergeInboxDeclarationEvidence,
   resolveEventMarketHandoffAckGate,
   resolveEventMarketOrganizerInbox,
   retryEventMarketPrivateDelivery,
+  setInboxCoordinatedPendingCheckpoint,
+  stageInboxDeclarationDistribution,
   validateEventMarketReadyReceipt,
   type EventMarketPrivateDeliveryRecord,
   type EventMarketReadyReceiptSchema,
@@ -1879,6 +1883,85 @@ describe("event-market organizer inbox readiness", () => {
       deliveryProgress: delivered.deliveryProgress,
     })
     expect(calls).toHaveLength(2)
+  })
+
+  it("uses a newly staged pending sender inbox for the exact self-copy retry", async () => {
+    const recipientRelay = "wss://organizer.inbox.relay.dev"
+    const previousSenderRelay = "wss://previous-merchant.inbox.relay.dev"
+    const pendingSenderRelay = "wss://pending-merchant.inbox.relay.dev"
+    const recipientDeclaration = inboxDeclaration(ORGANIZER_SECRET, [
+      recipientRelay,
+    ])
+    const previousSenderDeclaration = inboxDeclaration(
+      MERCHANT_SECRET,
+      [previousSenderRelay],
+      ISSUED_AT
+    )
+    const pendingSenderDeclaration = inboxDeclaration(
+      MERCHANT_SECRET,
+      [pendingSenderRelay],
+      ISSUED_AT + 1
+    )
+    const evidenceRepository =
+      createInMemoryInboxDeclarationEvidenceRepository()
+    await mergeInboxDeclarationEvidence(
+      {
+        pubkey: MERCHANT,
+        signedEvent: previousSenderDeclaration,
+        sourceRelayUrls: ["wss://discovery.relay.dev"],
+        observedAt: ISSUED_AT * 1_000,
+        completeObservedAt: ISSUED_AT * 1_000,
+      },
+      evidenceRepository
+    )
+    const record = readyDeliveryRecord()
+    const calls: Array<{ id: string; relays: string[] }> = []
+
+    const delivered = await retryEventMarketPrivateDelivery({
+      record,
+      inboxDeclarationOptions: {
+        ...partialDeclarationRead([
+          recipientDeclaration,
+          previousSenderDeclaration,
+        ]),
+        evidenceRepository,
+      },
+      loadAccountRelayCutoff: async (pubkey) => ({
+        pubkey,
+        excludedRelayUrls: [],
+      }),
+      publishFn: (async (event, options) => {
+        const relays = [...(options.exclusiveRelayUrls ?? [])]
+        calls.push({ id: event.id, relays })
+        if (calls.length === 1) {
+          await stageInboxDeclarationDistribution(
+            {
+              pubkey: MERCHANT,
+              signedEvent: pendingSenderDeclaration,
+              publishRelayUrls: ["wss://discovery.relay.dev"],
+              coordinatedUpdateId: "successor-network-update",
+              expectedCurrentEventId: previousSenderDeclaration.id,
+            },
+            evidenceRepository
+          )
+          setInboxCoordinatedPendingCheckpoint(MERCHANT, {
+            eventId: pendingSenderDeclaration.id,
+            updateId: "successor-network-update",
+          })
+        }
+        return successfulDelivery(relays)
+      }) as typeof import("@conduit/core").publishWithPlanner,
+    })
+
+    expect(calls).toEqual([
+      { id: record.signedRecipientWrap.id, relays: [recipientRelay] },
+      { id: record.signedSelfWrap!.id, relays: [pendingSenderRelay] },
+    ])
+    expect(calls.flatMap((call) => call.relays)).not.toContain(
+      previousSenderRelay
+    )
+    expect(delivered.selfDeliveryStatus).toBe("full_success")
+    expect(delivered.selfCopyError).toBeNull()
   })
 
   it("caps partial-discovery retry delivery to the first three declared relays", async () => {
