@@ -344,11 +344,23 @@ export function getShippingStepBlockingMessage(params: {
   return null
 }
 
+export function getCheckoutEvidenceCheckingLabel(input: {
+  availabilityChecking: boolean
+  eventPickupChecking: boolean
+  organizerInboxChecking: boolean
+}): string | null {
+  if (input.eventPickupChecking) return "Checking signed event pickup"
+  if (input.organizerInboxChecking) return "Checking organizer pickup inbox"
+  if (input.availabilityChecking) return "Checking product availability"
+  return null
+}
+
 // ─── Fast checkout eligibility ────────────────────────────────────────────────
 
 export function isFastCheckoutEligible(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
+  merchantProfileLoading?: boolean
   merchantProfileUnavailable?: boolean
   lnurlAllowsNostr: boolean
   lnurlAmountWithinRange?: boolean
@@ -440,6 +452,7 @@ export function getShippingCheckoutState(params: {
 export function getFastCheckoutUnavailableReasons(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
+  merchantProfileLoading?: boolean
   merchantProfileUnavailable?: boolean
   lnurlAllowsNostr: boolean
   lnurlAmountWithinRange?: boolean
@@ -459,9 +472,11 @@ export function getFastCheckoutUnavailableReasons(params: {
   }
   if (!params.merchantLud16) {
     reasons.push(
-      params.merchantProfileUnavailable
-        ? "Merchant profile could not be loaded from relays."
-        : "Merchant has not added a Lightning Address."
+      params.merchantProfileLoading
+        ? "Checking merchant payment setup."
+        : params.merchantProfileUnavailable
+          ? "Merchant profile could not be loaded from relays."
+          : "Merchant has not added a Lightning Address."
     )
   }
   if (params.merchantLud16 && !params.lnurlAllowsNostr) {

@@ -41,6 +41,7 @@ import {
   getProductSignerRequestMessage,
   type ProductSignerRequestProgress,
 } from "../lib/product-publishing"
+import { ProductPaymentSetupNotice } from "./ProductPaymentSetupNotice"
 
 const BLANK_TEMPLATE = "__blank__"
 
@@ -225,6 +226,11 @@ export function EventProductPublisherDialog({
               " Since you organize this event, publishing also asks your signer to accept the product into your event catalog."}
           </DialogDescription>
         </DialogHeader>
+
+        <ProductPaymentSetupNotice
+          merchantPubkey={merchantPubkey}
+          enabled={open}
+        />
 
         <form
           className="grid gap-4"

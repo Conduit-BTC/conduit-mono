@@ -1,5 +1,6 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import type { Profile } from "../types"
+import type { ProfileFormValues } from "../schemas"
 import { db, type CachedProfile } from "../db"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
@@ -82,10 +83,11 @@ function hasNonRoundTrippableJsonNumber(content: string): boolean {
   return false
 }
 
-function parseProfilePublishContent(
-  content: string | null | undefined
-): Record<string, unknown> {
-  if (!content) return {}
+function parseProfilePublishContent(content: string | null | undefined): {
+  content: Record<string, unknown>
+  validObject: boolean
+} {
+  if (!content) return { content: {}, validObject: false }
   const parse = JSON.parse as (
     text: string,
     reviver: (
@@ -118,12 +120,16 @@ function parseProfilePublishContent(
     if (cannotPreserveNumber) {
       throw new Error("This browser cannot preserve profile numeric metadata")
     }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return {}
-    return Object.fromEntries(Object.entries(parsed))
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { content: {}, validObject: false }
+    }
+    return {
+      content: Object.fromEntries(Object.entries(parsed)),
+      validObject: true,
+    }
   } catch (error) {
     if (cannotPreserveNumber) throw error
-    return {}
+    return { content: {}, validObject: false }
   }
 }
 
@@ -174,6 +180,24 @@ export function buildProfileUpdatePayload(
   ) as Omit<Profile, "pubkey">
 }
 
+/**
+ * Rebase an active profile draft onto the latest signed profile projection.
+ * Fields unchanged from the edit baseline follow the remote revision; fields
+ * the user changed locally keep the user's draft value.
+ */
+export function reconcileProfileFormDraft(
+  draft: ProfileFormValues,
+  editBaseline: ProfileFormValues,
+  latest: ProfileFormValues
+): ProfileFormValues {
+  return Object.fromEntries(
+    PROFILE_CONTENT_FIELDS.map(([field]) => [
+      field,
+      draft[field] === editBaseline[field] ? latest[field] : draft[field],
+    ])
+  ) as ProfileFormValues
+}
+
 export function buildNip01ProfilePublishContent({
   profile,
   latestProfile,
@@ -189,8 +213,16 @@ export function buildNip01ProfilePublishContent({
 
   if (!hasProfileInput) return buildNip01ProfileContent(profile)
 
-  const content = latestContent
+  const parsedLatestContent = latestContent
     ? parseProfilePublishContent(latestContent)
+    : undefined
+  // A malformed latest frontier is not an implicit request to erase the
+  // owner's last readable identity. Rebuild a valid object from the safe
+  // projection shown in the repair form, then apply the explicit edits. A
+  // valid signed empty object remains authoritative and does not take this
+  // fallback.
+  const content = parsedLatestContent?.validObject
+    ? parsedLatestContent.content
     : buildNip01ProfileContent(latestProfile ?? {})
   for (const [profileField, contentKey] of PROFILE_CONTENT_FIELDS) {
     if (!hasOwnProfileField(profile, profileField)) continue

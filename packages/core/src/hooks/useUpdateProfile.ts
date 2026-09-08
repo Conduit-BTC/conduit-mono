@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import type { ConduitAppId } from "../protocol/nip89"
+import type { CommerceResult } from "../protocol/commerce"
 import type { ProfileMap } from "../protocol/profile-cache"
 import {
   ProfilePublishSupersededError,
@@ -10,6 +11,20 @@ import {
   getProfileQueryPerspectiveKey,
   getProfileSingletonQueryKey,
 } from "./useProfiles"
+
+export function updateProfileQueryCache(
+  current: CommerceResult<ProfileMap> | undefined,
+  profile: Profile
+): CommerceResult<ProfileMap> | undefined {
+  if (!current) return current
+  return {
+    ...current,
+    data: {
+      ...current.data,
+      [profile.pubkey]: profile,
+    },
+  }
+}
 
 export function useUpdateProfile(appId: ConduitAppId) {
   const qc = useQueryClient()
@@ -29,18 +44,12 @@ export function useUpdateProfile(appId: ConduitAppId) {
         getProfileSingletonQueryKey(profile.pubkey, ownerPerspective),
         profile
       )
-      qc.setQueriesData<ProfileMap>(
+      qc.setQueriesData<CommerceResult<ProfileMap>>(
         {
           predicate: ({ queryKey }) =>
             queryKey[0] === "profiles" && queryKey[1] === ownerPerspective,
         },
-        (current) => {
-          if (!current) return current
-          return {
-            ...current,
-            [profile.pubkey]: profile,
-          }
-        }
+        (current) => updateProfileQueryCache(current, profile)
       )
       void qc.invalidateQueries({
         predicate: ({ queryKey }) =>
