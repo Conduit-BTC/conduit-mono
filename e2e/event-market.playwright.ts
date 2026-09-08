@@ -1056,19 +1056,38 @@ async function expectContainedEventBanner(page: Page): Promise<void> {
   )
   await expect(banner).toBeVisible({ timeout: 30_000 })
 
+  // A freshly loaded Vite document can paint the image before its stylesheet is
+  // applied. Keep the assertion strict, but give the computed presentation a
+  // moment to settle instead of making the whole smoke test retry-dependent.
+  await expect
+    .poll(() => banner.evaluate((image) => getComputedStyle(image).objectFit), {
+      timeout: 10_000,
+    })
+    .toBe("contain")
+  await expect
+    .poll(
+      () => banner.evaluate((image) => getComputedStyle(image).backgroundColor),
+      { timeout: 10_000 }
+    )
+    .not.toBe("rgba(0, 0, 0, 0)")
+  await expect
+    .poll(
+      () =>
+        banner.evaluate((image) => image.complete && image.naturalWidth > 0),
+      {
+        timeout: 10_000,
+      }
+    )
+    .toBe(true)
+
   const metrics = await banner.evaluate((image) => {
     const bounds = image.getBoundingClientRect()
-    const styles = getComputedStyle(image)
     return {
-      objectFit: styles.objectFit,
-      backgroundColor: styles.backgroundColor,
       naturalRatio: image.naturalWidth / image.naturalHeight,
       renderedRatio: bounds.width / bounds.height,
     }
   })
 
-  expect(metrics.objectFit).toBe("contain")
-  expect(metrics.backgroundColor).not.toBe("rgba(0, 0, 0, 0)")
   expect(
     Math.abs(metrics.renderedRatio - metrics.naturalRatio)
   ).toBeGreaterThan(0.05)
