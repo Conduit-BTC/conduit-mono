@@ -353,11 +353,15 @@ describe("presence room counts", () => {
     expect(server.messages).toEqual(['{"count":1}'])
   })
 
-  it("rejects another connection when the global gateway reaches its ceiling", () => {
+  it("counts closing sockets toward the global gateway ceiling", () => {
     const state = new FakeRoomState()
     for (let index = 0; index < PRESENCE_GATEWAY_CONNECTION_LIMIT; index += 1) {
+      const socket = new FakeSocket()
+      if (index === PRESENCE_GATEWAY_CONNECTION_LIMIT - 1) {
+        socket.readyState = 2
+      }
       state.addSocket(
-        new FakeSocket(),
+        socket,
         index % 2 === 0 ? ROOM_KEY : SECOND_ROOM_KEY,
         index.toString(16).padStart(64, "0")
       )
@@ -379,13 +383,14 @@ describe("presence room counts", () => {
     expect(state.sockets).toHaveLength(PRESENCE_GATEWAY_CONNECTION_LIMIT)
   })
 
-  it("limits one private source across every room in the shared gateway", () => {
+  it("counts closing sockets toward one source's gateway ceiling", () => {
     const state = new FakeRoomState()
     for (let index = 0; index < PRESENCE_SOURCE_CONNECTION_LIMIT; index += 1) {
-      state.addSocket(
-        new FakeSocket(),
-        index % 2 === 0 ? ROOM_KEY : SECOND_ROOM_KEY
-      )
+      const socket = new FakeSocket()
+      if (index === PRESENCE_SOURCE_CONNECTION_LIMIT - 1) {
+        socket.readyState = 2
+      }
+      state.addSocket(socket, index % 2 === 0 ? ROOM_KEY : SECOND_ROOM_KEY)
     }
     let createdPair = false
     const room = new PresenceRoom(state as PresenceRoomState, undefined, () => {
@@ -427,7 +432,7 @@ describe("presence room counts", () => {
     expect(first.messages.at(-1)).toBe('{"count":2}')
     expect(second.messages.at(-1)).toBe('{"count":2}')
 
-    first.readyState = 3
+    first.readyState = 2
     room.webSocketClose(asWebSocket(first))
     expect(second.messages.at(-1)).toBe('{"count":1}')
   })

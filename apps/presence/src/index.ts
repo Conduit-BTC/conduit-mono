@@ -228,15 +228,15 @@ export class PresenceRoom {
       return jsonResponse({ error: "admission_required" }, 403)
     }
 
-    const openSockets = this.getAllOpenSockets()
+    const attachedSockets = this.state.getWebSockets()
     if (
-      openSockets.filter(
+      attachedSockets.filter(
         (socket) => this.getSocketAttachment(socket)?.sourceKey === sourceKey
       ).length >= PRESENCE_SOURCE_CONNECTION_LIMIT
     ) {
       return jsonResponse({ error: "source_at_capacity" }, 429)
     }
-    if (openSockets.length >= PRESENCE_GATEWAY_CONNECTION_LIMIT) {
+    if (attachedSockets.length >= PRESENCE_GATEWAY_CONNECTION_LIMIT) {
       return jsonResponse({ error: "gateway_at_capacity" }, 429)
     }
 
@@ -305,12 +305,6 @@ export class PresenceRoom {
     } catch {
       // A concurrent close can make the socket terminal before this callback.
     }
-  }
-
-  private getAllOpenSockets(): WebSocket[] {
-    return this.state
-      .getWebSockets()
-      .filter((socket) => socket.readyState === OPEN_READY_STATE)
   }
 
   private getOpenSockets(
