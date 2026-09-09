@@ -540,6 +540,7 @@ export function OrganizerEventMarketPanel({
   copiedUrl,
   refreshing,
   membershipPending,
+  actionsDisabled,
   retryingRecord,
   onCopy,
   onEdit,
@@ -552,6 +553,7 @@ export function OrganizerEventMarketPanel({
   copiedUrl: string | null
   refreshing: boolean
   membershipPending: boolean
+  actionsDisabled: boolean
   retryingRecord: MerchantOrganizerRecordDelivery["record"] | null
   onCopy: (url: string) => void
   onEdit: () => void
@@ -566,8 +568,8 @@ export function OrganizerEventMarketPanel({
   const displayState = getOrganizerEventMarketDisplayState(market.state)
   const shopperUrl = getEventMarketUrl(market.naddr)
   const merchantUrl = getMerchantEventParticipationUrl(market.naddr)
-  const canEdit = market.state === "active" || market.state === "ended"
-  const canChangeMembership = market.state === "active"
+  const showEdit = market.state === "active" || market.state === "ended"
+  const canChangeMembership = market.state === "active" && !actionsDisabled
   const pendingRequests = market.participation.filter(
     (item) => item.status === "pending"
   )
@@ -679,8 +681,13 @@ export function OrganizerEventMarketPanel({
           </div>
 
           <div className="flex flex-wrap gap-2">
-            {canEdit && (
-              <Button type="button" variant="outline" onClick={onEdit}>
+            {showEdit && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={actionsDisabled}
+                onClick={onEdit}
+              >
                 Update event
               </Button>
             )}
