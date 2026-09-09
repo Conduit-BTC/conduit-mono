@@ -80,7 +80,7 @@ export function MerchantEventMarketPanel({
           <img
             src={market.imageUrl}
             alt=""
-            className="h-48 w-full border-b border-[var(--border)] object-cover sm:h-60"
+            className="h-48 w-full border-b border-[var(--border)] bg-[var(--surface-elevated)] object-contain sm:h-60"
           />
         )}
         <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">

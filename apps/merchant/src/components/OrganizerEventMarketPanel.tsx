@@ -615,7 +615,7 @@ export function OrganizerEventMarketPanel({
           <img
             src={market.imageUrl}
             alt=""
-            className="h-52 w-full object-cover"
+            className="h-52 w-full bg-[var(--surface-elevated)] object-contain"
           />
         )}
         <CardHeader>

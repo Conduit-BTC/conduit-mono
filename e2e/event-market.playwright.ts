@@ -1150,6 +1150,93 @@ test.use({
   screenshot: "off",
 })
 
+async function expectContainedEventBanner(page: Page): Promise<void> {
+  const banner = page.locator(
+    'img[src="https://cdn.conduit.market/conduit-test/synthetic-event-market.svg"]'
+  )
+  await expect(banner).toBeVisible({ timeout: 30_000 })
+
+  // A freshly loaded Vite document can paint the image before its stylesheet is
+  // applied. Keep the assertion strict, but give the computed presentation a
+  // moment to settle instead of making the whole smoke test retry-dependent.
+  await expect
+    .poll(() => banner.evaluate((image) => getComputedStyle(image).objectFit), {
+      timeout: 10_000,
+    })
+    .toBe("contain")
+  await expect
+    .poll(
+      () => banner.evaluate((image) => getComputedStyle(image).backgroundColor),
+      { timeout: 10_000 }
+    )
+    .not.toBe("rgba(0, 0, 0, 0)")
+  await expect
+    .poll(
+      () =>
+        banner.evaluate((image) => image.complete && image.naturalWidth > 0),
+      {
+        timeout: 10_000,
+      }
+    )
+    .toBe(true)
+
+  const metrics = await banner.evaluate((image) => {
+    const bounds = image.getBoundingClientRect()
+    return {
+      naturalRatio: image.naturalWidth / image.naturalHeight,
+      renderedRatio: bounds.width / bounds.height,
+    }
+  })
+
+  expect(
+    Math.abs(metrics.renderedRatio - metrics.naturalRatio)
+  ).toBeGreaterThan(0.05)
+}
+
+test("event banners remain fully contained on every surface and viewport @market @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Banner Review",
+    organizerHandoffEnabled: true,
+  })
+
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport)
+    await expectContainedEventBanner(page)
+  }
+
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  await expect(
+    page.getByRole("button", { name: "Publish product", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport)
+    await expectContainedEventBanner(page)
+  }
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  await expect(
+    page.getByRole("heading", { name: "Synthetic Banner Review" })
+  ).toBeVisible({ timeout: 30_000 })
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport)
+    await expectContainedEventBanner(page)
+  }
+})
+
 test("event membership and retry completions stay bound to their initiating event @merchant", async ({
   page,
 }) => {
