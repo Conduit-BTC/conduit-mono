@@ -97,7 +97,12 @@ Historical pageview analytics and live presence are separate systems.
 - Live presence may count active connections for one public product or store
   page. It must not persist visit history or send presence events to PostHog.
 - Live presence must not receive or reuse telemetry session IDs, pageview IDs,
-  active user identifiers, cookies, IP-derived identifiers, or fingerprints.
+  active user identifiers, cookies, fingerprints, or persistent viewer IDs.
+- The edge may derive a secret-keyed source hash from Cloudflare's connection
+  address only to enforce a concurrent socket limit. It must discard the raw
+  address before the gateway request. The hash may exist only in an active
+  socket attachment. It must not enter logs, analytics, responses, durable
+  records, or page-level visit history.
 - An exact live value means the current active connection count known to the
   service, including the current visible page. Multiple tabs, browsers, or
   devices can count separately.

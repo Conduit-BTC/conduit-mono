@@ -239,6 +239,29 @@ describe("live presence connection lifecycle", () => {
     expect(browser.activityListenerCount()).toBe(0)
   })
 
+  it("clears a trusted count and reconnects after an invalid message", () => {
+    const browser = createRuntime()
+    const counts: Array<number | null> = []
+    const stop = startLivePresenceSession({
+      endpoint: ENDPOINT,
+      scopeHash: SCOPE_HASH,
+      runtime: browser.runtime,
+      onCount: (count) => counts.push(count),
+    })
+
+    const socket = browser.sockets[0]!
+    socket.emit("message", '{"count":3}')
+    socket.emit("message", '{"count":3,"unexpected":true}')
+
+    expect(counts).toEqual([3, null])
+    expect(socket.closeCalls).toEqual([{ code: undefined, reason: undefined }])
+    expect(browser.pendingTimerCount()).toBe(1)
+    expect(browser.nextTimer()).toBe(1_000)
+    expect(browser.sockets).toHaveLength(2)
+
+    stop()
+  })
+
   it("ignores stale sockets and bounds consecutive reconnects", () => {
     const browser = createRuntime()
     const counts: Array<number | null> = []

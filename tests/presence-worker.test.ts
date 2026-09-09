@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test"
 import {
   PresenceRoom,
   PRESENCE_GATEWAY_CONNECTION_LIMIT,
+  PRESENCE_SOURCE_CONNECTION_LIMIT,
   getPresenceRoomKey,
   handlePresenceRequest,
   isAllowedPresenceOrigin,
@@ -12,6 +13,10 @@ import {
 
 const ROOM_KEY = "a".repeat(64)
 const SECOND_ROOM_KEY = "b".repeat(64)
+const SOURCE_KEY = "c".repeat(64)
+const SECOND_SOURCE_KEY = "d".repeat(64)
+const SOURCE_KEY_HEADER = "x-conduit-presence-source-key"
+const TEST_ABUSE_HMAC_KEY = "test-only-presence-abuse-hmac-key"
 const MARKET_PREVIEW_ORIGIN = "https://test.conduit-market.pages.dev"
 
 class FakeSocket {
@@ -50,8 +55,12 @@ class FakeRoomState {
   readonly sockets: FakeSocket[] = []
   private readonly tags = new Map<FakeSocket, Set<string>>()
 
-  addSocket(socket: FakeSocket, roomKey = ROOM_KEY): void {
-    socket.serializeAttachment(roomKey)
+  addSocket(
+    socket: FakeSocket,
+    roomKey = ROOM_KEY,
+    sourceKey = SOURCE_KEY
+  ): void {
+    socket.serializeAttachment({ roomKey, sourceKey })
     this.acceptWebSocket(asWebSocket(socket), [roomKey])
   }
 
@@ -73,11 +82,27 @@ function asWebSocket(socket: FakeSocket): WebSocket {
   return socket as unknown as WebSocket
 }
 
-function closedSocket(roomKey = ROOM_KEY): WebSocket {
+function closedSocket(roomKey = ROOM_KEY, sourceKey = SOURCE_KEY): WebSocket {
   const socket = new FakeSocket()
-  socket.serializeAttachment(roomKey)
+  socket.serializeAttachment({ roomKey, sourceKey })
   socket.readyState = 3
   return asWebSocket(socket)
+}
+
+function gatewayUpgradeHeaders(sourceKey = SOURCE_KEY): HeadersInit {
+  return {
+    origin: MARKET_PREVIEW_ORIGIN,
+    [SOURCE_KEY_HEADER]: sourceKey,
+    upgrade: "websocket",
+  }
+}
+
+function edgeUpgradeHeaders(clientIp = "192.0.2.1"): HeadersInit {
+  return {
+    "cf-connecting-ip": clientIp,
+    origin: MARKET_PREVIEW_ORIGIN,
+    upgrade: "websocket",
+  }
 }
 
 describe("presence Worker request boundary", () => {
@@ -176,7 +201,9 @@ describe("presence Worker request boundary", () => {
   it("routes every opaque room key through one bounded gateway object", async () => {
     const selectedNames: string[] = []
     const forwardedUrls: string[] = []
+    const forwardedHeaders: Array<Record<string, string | null>> = []
     const env: PresenceEnv = {
+      PRESENCE_ABUSE_HMAC_KEY: TEST_ABUSE_HMAC_KEY,
       PRESENCE_ROOMS: {
         idFromName(name) {
           selectedNames.push(name)
@@ -186,6 +213,12 @@ describe("presence Worker request boundary", () => {
           return {
             async fetch(request: Request) {
               forwardedUrls.push(request.url)
+              forwardedHeaders.push({
+                clientIp: request.headers.get("cf-connecting-ip"),
+                origin: request.headers.get("origin"),
+                sourceKey: request.headers.get(SOURCE_KEY_HEADER),
+                userAgent: request.headers.get("user-agent"),
+              })
               return new Response(null, { status: 204 })
             },
           } as DurableObjectStub
@@ -193,23 +226,78 @@ describe("presence Worker request boundary", () => {
       },
     }
 
-    const responses = await Promise.all(
-      [ROOM_KEY, SECOND_ROOM_KEY].map((roomKey) =>
-        handlePresenceRequest(
-          new Request(`https://presence.example/v1/presence/${roomKey}`, {
-            headers: { origin: MARKET_PREVIEW_ORIGIN, upgrade: "websocket" },
-          }),
-          env
-        )
-      )
-    )
+    const makeRequest = (roomKey: string, clientIp: string) =>
+      new Request(`https://presence.example/v1/presence/${roomKey}`, {
+        headers: {
+          ...edgeUpgradeHeaders(clientIp),
+          "user-agent": "not-forwarded",
+        },
+      })
+    const responses = [
+      await handlePresenceRequest(makeRequest(ROOM_KEY, "192.0.2.1"), env),
+      await handlePresenceRequest(
+        makeRequest(SECOND_ROOM_KEY, "192.0.2.1"),
+        env
+      ),
+      await handlePresenceRequest(makeRequest(ROOM_KEY, "192.0.2.2"), env),
+    ]
 
-    expect(responses.map((response) => response.status)).toEqual([204, 204])
-    expect(selectedNames).toEqual(["preview-v1", "preview-v1"])
+    expect(responses.map((response) => response.status)).toEqual([
+      204, 204, 204,
+    ])
+    expect(selectedNames).toEqual(["preview-v1", "preview-v1", "preview-v1"])
     expect(forwardedUrls).toEqual([
       `https://presence.example/v1/presence/${ROOM_KEY}`,
       `https://presence.example/v1/presence/${SECOND_ROOM_KEY}`,
+      `https://presence.example/v1/presence/${ROOM_KEY}`,
     ])
+    expect(forwardedHeaders).toHaveLength(3)
+    expect(forwardedHeaders[0]?.clientIp).toBeNull()
+    expect(forwardedHeaders[0]?.userAgent).toBeNull()
+    expect(forwardedHeaders[0]?.origin).toBe(MARKET_PREVIEW_ORIGIN)
+    expect(forwardedHeaders[0]?.sourceKey).toMatch(/^[0-9a-f]{64}$/)
+    expect(forwardedHeaders[1]?.sourceKey).toBe(forwardedHeaders[0]?.sourceKey)
+    expect(forwardedHeaders[2]?.sourceKey).not.toBe(
+      forwardedHeaders[0]?.sourceKey
+    )
+  })
+
+  it("fails closed when private source admission data is unavailable", async () => {
+    const makeRequest = (headers: HeadersInit) =>
+      new Request(`https://presence.example/v1/presence/${ROOM_KEY}`, {
+        headers,
+      })
+    const unreachableRooms = {
+      idFromName() {
+        throw new Error("must not select a gateway")
+      },
+      get() {
+        throw new Error("must not select a gateway")
+      },
+    }
+
+    expect(
+      (
+        await handlePresenceRequest(makeRequest(edgeUpgradeHeaders()), {
+          PRESENCE_ABUSE_HMAC_KEY: "short",
+          PRESENCE_ROOMS: unreachableRooms,
+        })
+      ).status
+    ).toBe(503)
+    expect(
+      (
+        await handlePresenceRequest(
+          makeRequest({
+            origin: MARKET_PREVIEW_ORIGIN,
+            upgrade: "websocket",
+          }),
+          {
+            PRESENCE_ABUSE_HMAC_KEY: TEST_ABUSE_HMAC_KEY,
+            PRESENCE_ROOMS: unreachableRooms,
+          }
+        )
+      ).status
+    ).toBe(503)
   })
 })
 
@@ -225,19 +313,48 @@ describe("presence room counts", () => {
 
     const response = room.fetch(
       new Request(`https://presence.example/v1/presence/${ROOM_KEY}`, {
-        headers: { origin: MARKET_PREVIEW_ORIGIN, upgrade: "websocket" },
+        headers: gatewayUpgradeHeaders(),
       })
     )
 
     expect(response.status).toBe(101)
     expect(state.sockets).toEqual([server])
-    expect(server.deserializeAttachment()).toBe(ROOM_KEY)
+    expect(server.deserializeAttachment()).toEqual({
+      roomKey: ROOM_KEY,
+      sourceKey: SOURCE_KEY,
+    })
     expect(server.messages).toEqual(['{"count":1}'])
   })
 
   it("rejects another connection when the global gateway reaches its ceiling", () => {
     const state = new FakeRoomState()
     for (let index = 0; index < PRESENCE_GATEWAY_CONNECTION_LIMIT; index += 1) {
+      state.addSocket(
+        new FakeSocket(),
+        index % 2 === 0 ? ROOM_KEY : SECOND_ROOM_KEY,
+        index.toString(16).padStart(64, "0")
+      )
+    }
+    let createdPair = false
+    const room = new PresenceRoom(state as PresenceRoomState, undefined, () => {
+      createdPair = true
+      return [asWebSocket(new FakeSocket()), asWebSocket(new FakeSocket())]
+    })
+
+    const response = room.fetch(
+      new Request(`https://presence.example/v1/presence/${ROOM_KEY}`, {
+        headers: gatewayUpgradeHeaders(),
+      })
+    )
+
+    expect(response.status).toBe(429)
+    expect(createdPair).toBe(false)
+    expect(state.sockets).toHaveLength(PRESENCE_GATEWAY_CONNECTION_LIMIT)
+  })
+
+  it("limits one private source across every room in the shared gateway", () => {
+    const state = new FakeRoomState()
+    for (let index = 0; index < PRESENCE_SOURCE_CONNECTION_LIMIT; index += 1) {
       state.addSocket(
         new FakeSocket(),
         index % 2 === 0 ? ROOM_KEY : SECOND_ROOM_KEY
@@ -250,14 +367,22 @@ describe("presence room counts", () => {
     })
 
     const response = room.fetch(
-      new Request(`https://presence.example/v1/presence/${ROOM_KEY}`, {
-        headers: { origin: MARKET_PREVIEW_ORIGIN, upgrade: "websocket" },
+      new Request(`https://presence.example/v1/presence/${SECOND_ROOM_KEY}`, {
+        headers: gatewayUpgradeHeaders(),
       })
     )
 
     expect(response.status).toBe(429)
     expect(createdPair).toBe(false)
-    expect(state.sockets).toHaveLength(PRESENCE_GATEWAY_CONNECTION_LIMIT)
+    expect(state.sockets).toHaveLength(PRESENCE_SOURCE_CONNECTION_LIMIT)
+
+    const alternateSourceResponse = room.fetch(
+      new Request(`https://presence.example/v1/presence/${SECOND_ROOM_KEY}`, {
+        headers: gatewayUpgradeHeaders(SECOND_SOURCE_KEY),
+      })
+    )
+    expect(alternateSourceResponse.status).toBe(101)
+    expect(createdPair).toBe(true)
   })
 
   it("broadcasts exact join and leave counts to open sockets", () => {

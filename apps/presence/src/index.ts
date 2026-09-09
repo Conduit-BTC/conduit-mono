@@ -1,9 +1,14 @@
 const PRESENCE_PATH_PATTERN = /^\/v1\/presence\/([0-9a-f]{64})$/
+const PRESENCE_SOURCE_KEY_PATTERN = /^[0-9a-f]{64}$/
+const CLOUDFLARE_CLIENT_IP_PATTERN = /^[0-9a-fA-F:.]{2,64}$/
 const OPEN_READY_STATE = 1
 // Route every page room through one preview gateway. Room hashes tag sockets;
 // they never select or create additional Durable Object instances.
 const PRESENCE_GATEWAY_OBJECT_NAME = "preview-v1"
+const PRESENCE_SOURCE_KEY_HEADER = "x-conduit-presence-source-key"
+const MINIMUM_ABUSE_HMAC_KEY_LENGTH = 32
 export const PRESENCE_GATEWAY_CONNECTION_LIMIT = 512
+export const PRESENCE_SOURCE_CONNECTION_LIMIT = 8
 const MAX_BROADCAST_CORRECTION_PASSES = 8
 
 const allowedMarketPreviewSuffixes = [
@@ -18,6 +23,7 @@ interface PresenceRoomNamespace {
 
 export interface PresenceEnv {
   PRESENCE_ROOMS: PresenceRoomNamespace
+  PRESENCE_ABUSE_HMAC_KEY: string
 }
 
 export interface PresenceRoomState {
@@ -27,9 +33,52 @@ export interface PresenceRoomState {
 
 type PresenceWebSocketPairFactory = () => readonly [WebSocket, WebSocket]
 
+type PresenceSocketAttachment = {
+  roomKey: string
+  sourceKey: string
+}
+
 function createPresenceWebSocketPair(): readonly [WebSocket, WebSocket] {
   const pair = new WebSocketPair()
   return [pair[0], pair[1]]
+}
+
+function bytesToLowercaseHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    ""
+  )
+}
+
+async function createPresenceSourceKey(
+  request: Request,
+  hmacSecret: string
+): Promise<string | null> {
+  const clientIp = request.headers.get("cf-connecting-ip")?.trim()
+  if (
+    !clientIp ||
+    !CLOUDFLARE_CLIENT_IP_PATTERN.test(clientIp) ||
+    hmacSecret.length < MINIMUM_ABUSE_HMAC_KEY_LENGTH
+  ) {
+    return null
+  }
+
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(hmacSecret),
+      { hash: "SHA-256", name: "HMAC" },
+      false,
+      ["sign"]
+    )
+    const digest = await crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode(clientIp)
+    )
+    return bytesToLowercaseHex(new Uint8Array(digest))
+  } catch {
+    return null
+  }
 }
 
 function jsonResponse(body: Record<string, string>, status: number): Response {
@@ -123,8 +172,24 @@ export async function handlePresenceRequest(
     return jsonResponse({ error: "websocket_upgrade_required" }, 426)
   }
 
+  const sourceKey = await createPresenceSourceKey(
+    request,
+    env.PRESENCE_ABUSE_HMAC_KEY
+  )
+  if (!sourceKey) {
+    return jsonResponse({ error: "admission_unavailable" }, 503)
+  }
+
   const gatewayId = env.PRESENCE_ROOMS.idFromName(PRESENCE_GATEWAY_OBJECT_NAME)
-  return env.PRESENCE_ROOMS.get(gatewayId).fetch(request)
+  return env.PRESENCE_ROOMS.get(gatewayId).fetch(
+    new Request(request, {
+      headers: {
+        origin: request.headers.get("origin") ?? "",
+        [PRESENCE_SOURCE_KEY_HEADER]: sourceKey,
+        upgrade: "websocket",
+      },
+    })
+  )
 }
 
 export class PresenceRoom {
@@ -142,12 +207,25 @@ export class PresenceRoom {
     if (!roomKey || !isWebSocketUpgradeRequest(request)) {
       return jsonResponse({ error: "websocket_upgrade_required" }, 426)
     }
-    if (this.getAllOpenSockets().length >= PRESENCE_GATEWAY_CONNECTION_LIMIT) {
+    const sourceKey = request.headers.get(PRESENCE_SOURCE_KEY_HEADER)
+    if (!sourceKey || !PRESENCE_SOURCE_KEY_PATTERN.test(sourceKey)) {
+      return jsonResponse({ error: "admission_required" }, 403)
+    }
+
+    const openSockets = this.getAllOpenSockets()
+    if (
+      openSockets.filter(
+        (socket) => this.getSocketAttachment(socket)?.sourceKey === sourceKey
+      ).length >= PRESENCE_SOURCE_CONNECTION_LIMIT
+    ) {
+      return jsonResponse({ error: "source_at_capacity" }, 429)
+    }
+    if (openSockets.length >= PRESENCE_GATEWAY_CONNECTION_LIMIT) {
       return jsonResponse({ error: "gateway_at_capacity" }, 429)
     }
 
     const [client, server] = this.createWebSocketPair()
-    server.serializeAttachment(roomKey)
+    server.serializeAttachment({ roomKey, sourceKey })
     this.state.acceptWebSocket(server, [roomKey])
     this.broadcastCount(roomKey)
 
@@ -176,8 +254,28 @@ export class PresenceRoom {
 
   private getSocketRoomKey(webSocket: WebSocket): string | null {
     const attachment: unknown = webSocket.deserializeAttachment()
-    return typeof attachment === "string" && /^[0-9a-f]{64}$/.test(attachment)
-      ? attachment
+    if (
+      typeof attachment === "string" &&
+      PRESENCE_PATH_PATTERN.test(`/v1/presence/${attachment}`)
+    ) {
+      return attachment
+    }
+    return this.getSocketAttachment(webSocket)?.roomKey ?? null
+  }
+
+  private getSocketAttachment(
+    webSocket: WebSocket
+  ): PresenceSocketAttachment | null {
+    const attachment: unknown = webSocket.deserializeAttachment()
+    if (!attachment || typeof attachment !== "object") return null
+
+    const record = attachment as Record<string, unknown>
+    return Object.keys(record).length === 2 &&
+      typeof record.roomKey === "string" &&
+      PRESENCE_SOURCE_KEY_PATTERN.test(record.roomKey) &&
+      typeof record.sourceKey === "string" &&
+      PRESENCE_SOURCE_KEY_PATTERN.test(record.sourceKey)
+      ? { roomKey: record.roomKey, sourceKey: record.sourceKey }
       : null
   }
 

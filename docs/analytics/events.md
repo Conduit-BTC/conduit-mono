@@ -107,7 +107,10 @@ Live product and storefront counts use a separate ephemeral presence path.
 Live presence must not send events to PostHog, reuse PostHog session or
 pageview IDs, or retain a page-level visit history. An exact live count means
 active visible-page connections known to that service, including the current
-page. Separate tabs, browsers, or devices can count separately. The exact-count
+page. Separate tabs, browsers, or devices can count separately. The edge may
+use a secret-keyed, connection-lifetime source hash only to enforce the socket
+limit. It must discard the raw network address before the presence gateway and
+must not log, return, retain, or join the hash to analytics. The exact-count
 feature is preview-only; production and staging keep it disabled pending
 explicit privacy and abuse-control approval.
 

@@ -228,7 +228,10 @@ export function startLivePresenceSession(
     nextSocket.addEventListener("message", (event) => {
       if (disposed || socket !== nextSocket) return
       const count = parseLivePresenceCount(event.data)
-      if (count === null) return
+      if (count === null) {
+        handleDisconnect(nextSocket)
+        return
+      }
       reconnectAttempts = 0
       options.onCount(count)
     })
