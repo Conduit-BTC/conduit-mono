@@ -4,7 +4,10 @@ import {
   MediaServerPreferencesSection,
   RelaySettingsPanel,
 } from "../packages/ui/src"
-import type { MediaServerPreferencesView } from "../packages/core/src"
+import type {
+  AccountNetworkSettingsController,
+  MediaServerPreferencesView,
+} from "../packages/core/src"
 
 function view(
   overrides: Partial<MediaServerPreferencesView> = {}
@@ -57,11 +60,14 @@ describe("shared media server preference UI", () => {
     expect(html).toContain("https://blossom.nostr.build")
     expect(html).toContain("will not add or publish that fallback")
     expect(html).not.toContain('value="https://blossom.nostr.build"')
-    expect(html).toContain("separate from Nostr relays")
-    expect(html).toContain("Access-controlled public roots may be entered")
+    expect(html).toContain(
+      "Choose the preferred order for Blossom media servers."
+    )
+    expect(html).not.toContain("Changes stay on this device")
+    expect(html).not.toContain("Enter a public HTTPS origin")
   })
 
-  it("renders ordered native controls, dirty state, and linked validation help", () => {
+  it("renders ordered native controls, dirty state, and a quiet clean field", () => {
     const html = renderToStaticMarkup(
       <MediaServerPreferencesSection
         view={view({
@@ -77,19 +83,94 @@ describe("shared media server preference UI", () => {
         {...actions}
       />
     )
-    expect(html.indexOf("https://two.conduit.market")).toBeLessThan(
-      html.indexOf("https://one.conduit.market")
+    const orderedListStart = html.indexOf('aria-label="Ordered media servers"')
+    const orderedListEnd = html.indexOf("</ol>", orderedListStart)
+    const orderedList = html.slice(orderedListStart, orderedListEnd)
+    expect(orderedList.indexOf("https://two.conduit.market")).toBeLessThan(
+      orderedList.indexOf("https://one.conduit.market")
     )
     expect(html).toContain(
       'aria-label="Move https://two.conduit.market earlier"'
     )
     expect(html).toContain('aria-label="Move https://two.conduit.market later"')
     expect(html).toContain('aria-label="Remove https://one.conduit.market"')
-    expect(html).toContain("Unpublished local edits")
-    expect(html).toContain(
-      'aria-describedby="media-server-url-help media-server-url-error"'
-    )
+    expect(html).toContain("Draft saved on this device; not published.")
+    expect(html).not.toContain("media-server-url-help")
+    expect(html).not.toContain('aria-describedby="media-server-url-error"')
     expect(html).not.toContain("draggable=")
+  })
+
+  it("uses one calm section flow without redundant happy-state pills", () => {
+    const html = renderToStaticMarkup(
+      <MediaServerPreferencesSection
+        view={view({
+          status: "published",
+          localServerUrls: ["https://media.conduit.market"],
+          publishedServerUrls: ["https://media.conduit.market"],
+          sourceRelayCount: 2,
+          publishedCreatedAt: 1_700_000_000,
+        })}
+        {...actions}
+      />
+    )
+
+    expect(html).toContain(">Refresh</button>")
+    expect(html).not.toContain("Published list observed")
+    expect(html).not.toContain("Matches observed list")
+    expect(html.indexOf("Published preference")).toBeLessThan(
+      html.indexOf('aria-label="Ordered media servers"')
+    )
+    expect(html.indexOf('aria-label="Ordered media servers"')).toBeLessThan(
+      html.indexOf("Add media server")
+    )
+    expect(html.indexOf("Add media server")).toBeLessThan(
+      html.indexOf("Review and publish")
+    )
+  })
+
+  it("keeps a retained published event calm after an incomplete refresh", () => {
+    const html = renderToStaticMarkup(
+      <MediaServerPreferencesSection
+        view={view({
+          status: "lookup_partial",
+          coverage: "partial",
+          publishedServerUrls: ["https://media.conduit.market"],
+          sourceRelayCount: 1,
+          publishedCreatedAt: 1_700_000_000,
+          stale: true,
+          retained: true,
+        })}
+        {...actions}
+      />
+    )
+
+    expect(html).toContain("Published preference")
+    expect(html).toContain("Published")
+    expect(html).toContain("Last seen")
+    expect(html).toContain("Seen on 1 relay")
+    expect(html).not.toContain("Lookup incomplete")
+    expect(html).not.toContain("Lookup coverage")
+    expect(html).not.toContain("bounded")
+  })
+
+  it("keeps a malformed published replacement visibly repairable", () => {
+    const html = renderToStaticMarkup(
+      <MediaServerPreferencesSection
+        view={view({
+          status: "malformed",
+          publishedServerUrls: ["https://retained.conduit.market"],
+          publishedCreatedAt: 1_700_000_000,
+          stale: true,
+          retained: true,
+        })}
+        {...actions}
+      />
+    )
+
+    expect(html).toContain(
+      "The published preference needs repair. Add a valid media server to replace it."
+    )
+    expect(html).not.toContain("Lookup coverage")
   })
 
   it("reports partial delivery, pending confirmation, retry, and cancellation distinctly", () => {
@@ -142,19 +223,55 @@ describe("shared media server preference UI", () => {
   })
 
   it("is composed once through the shared Network settings panel", () => {
+    const controller: AccountNetworkSettingsController = {
+      view: {
+        rows: [],
+        relayList: {
+          state: "not_observed",
+          stale: false,
+          retained: false,
+          coverage: "complete",
+          eventCreatedAt: null,
+          observedAt: null,
+          sourceRelayCount: 0,
+        },
+        inbox: {
+          state: "not_observed",
+          stale: false,
+          retained: false,
+          coverage: "complete",
+          eventCreatedAt: null,
+          observedAt: null,
+          sourceRelayCount: 0,
+        },
+        pendingExactDeliveries: [],
+      },
+      status: "ready",
+      error: null,
+      revision: "media-composition-test",
+      operation: { kind: null, phase: "idle", message: null },
+      relayInformationRefreshing: false,
+      exactInboxRedistributionAvailable: false,
+      legacyDraftReviewAvailable: false,
+      mediaServers: { view: view(), ...actions },
+      addRelay: async () => {
+        throw new Error("not used")
+      },
+      validate: () => ({ valid: false, errors: [], warnings: [] }),
+      save: async () => undefined,
+      removeRelay: async () => undefined,
+      retryPendingUpdate: async () => undefined,
+      redistributeExactInboxDeclaration: async () => undefined,
+      reorderRelays: async () => undefined,
+      discardLegacyDraft: async () => undefined,
+      refresh: async () => undefined,
+      clearOperation: () => undefined,
+    }
     const html = renderToStaticMarkup(
-      <RelaySettingsPanel
-        settings={{ entries: [] }}
-        onAddRelay={() => undefined}
-        onRefreshRelay={() => undefined}
-        onRemoveRelay={() => undefined}
-        onToggleRead={() => undefined}
-        onToggleWrite={() => undefined}
-        mediaServers={{ view: view(), ...actions }}
-      />
+      <RelaySettingsPanel controller={controller} />
     )
-    expect(html.match(/Media servers/g)?.length).toBe(1)
-    expect(html).toContain("Add media server root")
-    expect(html).toContain("Add Relay")
+    expect(html.match(/id="media-server-preferences-heading"/g)?.length).toBe(1)
+    expect(html).toContain("Add media server")
+    expect(html).toContain("Add relay")
   })
 })

@@ -15,7 +15,6 @@ import {
   useConduitSession,
   useInboxDeclaration,
   useProfile,
-  useRelaySettings,
 } from "@conduit/core"
 import {
   getNwcUriStorageKey,
@@ -30,6 +29,7 @@ import {
   shippingOptionToConfig,
   shouldHydrateShippingConfig,
   isPaymentsComplete,
+  isNetworkComplete,
   isProfileComplete,
 } from "../lib/readiness"
 
@@ -121,10 +121,6 @@ export function useMerchantReadiness() {
   })
   const profile = profileQuery.data
   const refetchProfile = profileQuery.refetch
-  const { settings } = useRelaySettings(session.relayScope, {
-    pubkey,
-    bootstrapRelayList: false,
-  })
   const privateInboxCheckEnabled = !!pubkey && session.relaySettingsReady
   const privateInbox = useInboxDeclaration(pubkey, {
     enabled: privateInboxCheckEnabled,
@@ -196,6 +192,9 @@ export function useMerchantReadiness() {
     !!pubkey &&
     !hasAuthoritativeStoredShipping &&
     remoteShippingQuery.isFetching
+  const networkComplete = isNetworkComplete(
+    session.accountNetworkPreferences.reconciliation?.projection.rows ?? []
+  )
 
   useEffect(() => {
     if (!pubkey || !shouldHydrateRemoteShipping) return
@@ -236,7 +235,7 @@ export function useMerchantReadiness() {
   return getMerchantSetupReadiness({
     profile,
     shippingConfig: effectiveShippingConfig,
-    relaySettings: settings,
+    networkComplete,
     hasNwc,
     profileCheckPending,
     paymentsCheckPending,
