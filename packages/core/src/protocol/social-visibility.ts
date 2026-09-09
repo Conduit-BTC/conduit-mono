@@ -46,13 +46,8 @@ export type SocialVisibilityReason =
   | "second_hop"
   | "outside_trust"
 
-type SocialVisibilityDisposition =
-  | { decision: "visible"; revealPermission: "not_needed" }
-  | { decision: "activity_only"; revealPermission: "denied" }
-  | { decision: "revealable"; revealPermission: "allowed" }
-  | { decision: "hidden"; revealPermission: "denied" }
-
-export type SocialVisibilityDecision = SocialVisibilityDisposition & {
+export type SocialVisibilityDecision = {
+  decision: "visible" | "activity_only" | "revealable" | "hidden"
   reason: SocialVisibilityReason
   source: "guest" | "signed_in_follow_list" | "named_read_only_follow_list"
   freshness: "not_applicable" | SocialTrustContext["freshness"]
@@ -99,7 +94,6 @@ export function evaluateSocialVisibility({
     return {
       decision: "hidden",
       reason: muteReason,
-      revealPermission: "denied",
       source,
       freshness,
     }
@@ -109,7 +103,6 @@ export function evaluateSocialVisibility({
     return {
       decision: "visible",
       reason: "public_activity",
-      revealPermission: "not_needed",
       source,
       freshness,
     }
@@ -120,7 +113,6 @@ export function evaluateSocialVisibility({
       return {
         decision: "visible",
         reason: "following_scope",
-        revealPermission: "not_needed",
         source,
         freshness,
       }
@@ -143,7 +135,6 @@ export function evaluateSocialVisibility({
         return {
           decision: "revealable",
           reason,
-          revealPermission: "allowed",
           source,
           freshness,
         }
@@ -152,7 +143,6 @@ export function evaluateSocialVisibility({
       return {
         decision: "hidden",
         reason,
-        revealPermission: "denied",
         source,
         freshness,
       }
@@ -161,7 +151,6 @@ export function evaluateSocialVisibility({
     return {
       decision: "visible",
       reason: viewer.trust.relationship,
-      revealPermission: "not_needed",
       source,
       freshness,
     }
@@ -170,7 +159,6 @@ export function evaluateSocialVisibility({
   return {
     decision: "activity_only",
     reason: "guest_body_restricted",
-    revealPermission: "denied",
     source: "guest",
     freshness: "not_applicable",
   }

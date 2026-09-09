@@ -11,7 +11,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "visible",
       reason: "public_activity",
-      revealPermission: "not_needed",
       source: "guest",
       freshness: "not_applicable",
     })
@@ -31,7 +30,6 @@ describe("social visibility policy", () => {
       ).toEqual({
         decision: "activity_only",
         reason: "guest_body_restricted",
-        revealPermission: "denied",
         source: "guest",
         freshness: "not_applicable",
       })
@@ -50,7 +48,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "visible",
       reason: "direct_follow",
-      revealPermission: "not_needed",
       source: "signed_in_follow_list",
       freshness: "current",
     })
@@ -66,7 +63,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "visible",
       reason: "second_hop",
-      revealPermission: "not_needed",
       source: "named_read_only_follow_list",
       freshness: "stale",
     })
@@ -82,7 +78,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "visible",
       reason: "self",
-      revealPermission: "not_needed",
       source: "signed_in_follow_list",
       freshness: "partial",
     })
@@ -100,7 +95,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "visible",
       reason: "following_scope",
-      revealPermission: "not_needed",
       source: "signed_in_follow_list",
       freshness: "unavailable",
     })
@@ -118,7 +112,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "revealable",
       reason: "outside_trust",
-      revealPermission: "allowed",
       source: "signed_in_follow_list",
       freshness: "current",
     })
@@ -134,7 +127,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "revealable",
       reason: "trust_unavailable",
-      revealPermission: "allowed",
       source: "named_read_only_follow_list",
       freshness: "partial",
     })
@@ -150,7 +142,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "hidden",
       reason: "outside_trust",
-      revealPermission: "denied",
       source: "signed_in_follow_list",
       freshness: "current",
     })
@@ -166,7 +157,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "hidden",
       reason: "trust_unavailable",
-      revealPermission: "denied",
       source: "signed_in_follow_list",
       freshness: "partial",
     })
@@ -190,7 +180,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "hidden",
       reason: "profile_muted",
-      revealPermission: "denied",
       source: "signed_in_follow_list",
       freshness: "current",
     })
@@ -204,7 +193,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "hidden",
       reason: "thread_or_post_muted",
-      revealPermission: "denied",
       source: "signed_in_follow_list",
       freshness: "current",
     })
@@ -218,7 +206,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "hidden",
       reason: "word_muted",
-      revealPermission: "denied",
       source: "signed_in_follow_list",
       freshness: "current",
     })
@@ -236,7 +223,6 @@ describe("social visibility policy", () => {
     ).toEqual({
       decision: "visible",
       reason: "public_activity",
-      revealPermission: "not_needed",
       source: "named_read_only_follow_list",
       freshness: "partial",
     })
