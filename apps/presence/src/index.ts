@@ -11,6 +11,7 @@ export const PRESENCE_HEARTBEAT_REQUEST = '{"type":"ping"}'
 export const PRESENCE_HEARTBEAT_RESPONSE = '{"type":"pong"}'
 export const PRESENCE_GATEWAY_CONNECTION_LIMIT = 512
 export const PRESENCE_SOURCE_CONNECTION_LIMIT = 8
+export const PRESENCE_BROADCAST_COALESCE_MS = 250
 const MAX_BROADCAST_CORRECTION_PASSES = 8
 
 const allowedMarketPreviewSuffixes = [
@@ -38,6 +39,10 @@ export interface PresenceRoomState {
 
 type PresenceWebSocketPairFactory = () => readonly [WebSocket, WebSocket]
 type PresenceHeartbeatPairFactory = () => WebSocketRequestResponsePair
+type PresenceBroadcastScheduler = (
+  callback: () => void,
+  delayMs: number
+) => void
 
 type PresenceSocketAttachment = {
   roomKey: string
@@ -54,6 +59,13 @@ function createPresenceHeartbeatPair(): WebSocketRequestResponsePair {
     PRESENCE_HEARTBEAT_REQUEST,
     PRESENCE_HEARTBEAT_RESPONSE
   )
+}
+
+function schedulePresenceBroadcast(
+  callback: () => void,
+  delayMs: number
+): void {
+  setTimeout(callback, delayMs)
 }
 
 function bytesToLowercaseHex(bytes: Uint8Array): string {
@@ -206,11 +218,15 @@ export async function handlePresenceRequest(
 }
 
 export class PresenceRoom {
+  private readonly pendingBroadcasts = new Map<string, Set<WebSocket>>()
+  private broadcastFlushScheduled = false
+
   constructor(
     private readonly state: PresenceRoomState,
     _env?: PresenceEnv,
     private readonly createWebSocketPair: PresenceWebSocketPairFactory = createPresenceWebSocketPair,
-    createHeartbeatPair: PresenceHeartbeatPairFactory = createPresenceHeartbeatPair
+    createHeartbeatPair: PresenceHeartbeatPairFactory = createPresenceHeartbeatPair,
+    private readonly scheduleBroadcast: PresenceBroadcastScheduler = schedulePresenceBroadcast
   ) {
     this.state.setWebSocketAutoResponse?.(createHeartbeatPair())
   }
@@ -240,10 +256,12 @@ export class PresenceRoom {
       return jsonResponse({ error: "gateway_at_capacity" }, 429)
     }
 
+    const previousOpenSocketCount = this.getOpenSockets(roomKey).length
     const [client, server] = this.createWebSocketPair()
     server.serializeAttachment({ roomKey, sourceKey })
     this.state.acceptWebSocket(server, [roomKey])
-    this.broadcastCount(roomKey)
+    this.sendCurrentCount(server, roomKey)
+    if (previousOpenSocketCount > 0) this.queueBroadcast(roomKey)
 
     return new Response(null, {
       status: 101,
@@ -254,18 +272,18 @@ export class PresenceRoom {
   webSocketMessage(webSocket: WebSocket): void {
     const roomKey = this.getSocketRoomKey(webSocket)
     this.closeSocket(webSocket, 1008, "Unsupported client message")
-    if (roomKey) this.broadcastCount(roomKey, webSocket)
+    if (roomKey) this.queueBroadcast(roomKey, webSocket)
   }
 
   webSocketClose(webSocket: WebSocket): void {
     const roomKey = this.getSocketRoomKey(webSocket)
-    if (roomKey) this.broadcastCount(roomKey, webSocket)
+    if (roomKey) this.queueBroadcast(roomKey, webSocket)
   }
 
   webSocketError(webSocket: WebSocket): void {
     const roomKey = this.getSocketRoomKey(webSocket)
     this.closeSocket(webSocket, 1011, "WebSocket error")
-    if (roomKey) this.broadcastCount(roomKey, webSocket)
+    if (roomKey) this.queueBroadcast(roomKey, webSocket)
   }
 
   private getSocketRoomKey(webSocket: WebSocket): string | null {
@@ -319,10 +337,55 @@ export class PresenceRoom {
       )
   }
 
-  private broadcastCount(roomKey: string, excludedSocket?: WebSocket): void {
-    const excludedSockets = new Set<WebSocket>()
+  private sendCurrentCount(webSocket: WebSocket, roomKey: string): void {
+    try {
+      webSocket.send(
+        JSON.stringify({ count: this.getOpenSockets(roomKey).length })
+      )
+    } catch {
+      this.closeSocket(webSocket, 1011, "WebSocket send failed")
+    }
+  }
+
+  private queueBroadcast(roomKey: string, excludedSocket?: WebSocket): void {
+    const excludedSockets =
+      this.pendingBroadcasts.get(roomKey) ?? new Set<WebSocket>()
     if (excludedSocket) excludedSockets.add(excludedSocket)
 
+    if (this.getOpenSockets(roomKey, excludedSockets).length === 0) {
+      this.pendingBroadcasts.delete(roomKey)
+      return
+    }
+
+    this.pendingBroadcasts.set(roomKey, excludedSockets)
+    if (this.broadcastFlushScheduled) return
+
+    // One short shared timer bounds fanout during membership churn.
+    this.broadcastFlushScheduled = true
+    try {
+      this.scheduleBroadcast(
+        () => this.flushPendingBroadcasts(),
+        PRESENCE_BROADCAST_COALESCE_MS
+      )
+    } catch {
+      this.flushPendingBroadcasts()
+    }
+  }
+
+  private flushPendingBroadcasts(): void {
+    const pendingBroadcasts = [...this.pendingBroadcasts.entries()]
+    this.pendingBroadcasts.clear()
+    this.broadcastFlushScheduled = false
+
+    for (const [roomKey, excludedSockets] of pendingBroadcasts) {
+      this.broadcastCount(roomKey, excludedSockets)
+    }
+  }
+
+  private broadcastCount(
+    roomKey: string,
+    excludedSockets: Set<WebSocket>
+  ): void {
     for (let pass = 0; pass < MAX_BROADCAST_CORRECTION_PASSES; pass += 1) {
       const openSockets = this.getOpenSockets(roomKey, excludedSockets)
       const payload = JSON.stringify({ count: openSockets.length })

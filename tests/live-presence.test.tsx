@@ -10,6 +10,7 @@ import {
   LIVE_PRESENCE_HEARTBEAT_INTERVAL_MS,
   LIVE_PRESENCE_HEARTBEAT_REQUEST,
   LIVE_PRESENCE_HEARTBEAT_RESPONSE,
+  LIVE_PRESENCE_INITIAL_COUNT_TIMEOUT_MS,
   LIVE_PRESENCE_MAX_RECONNECT_ATTEMPTS,
   LIVE_PRESENCE_MAX_COUNT,
   LIVE_PRESENCE_STALE_AFTER_MS,
@@ -227,6 +228,27 @@ describe("live presence count messages", () => {
 })
 
 describe("live presence connection lifecycle", () => {
+  it("reconnects when a socket never delivers its initial count", () => {
+    const browser = createRuntime()
+    const counts: Array<number | null> = []
+    const stop = startLivePresenceSession({
+      endpoint: ENDPOINT,
+      scopeHash: SCOPE_HASH,
+      runtime: browser.runtime,
+      onCount: (count) => counts.push(count),
+    })
+
+    const socket = browser.sockets[0]!
+    expect(browser.pendingTimerCount()).toBe(1)
+    expect(browser.nextTimer()).toBe(LIVE_PRESENCE_INITIAL_COUNT_TIMEOUT_MS)
+    expect(counts).toEqual([null])
+    expect(socket.closeCalls).toEqual([{ code: undefined, reason: undefined }])
+
+    expect(browser.nextTimer()).toBe(1_000)
+    expect(browser.sockets).toHaveLength(2)
+    stop()
+  })
+
   it("connects only while the page is visible and online", () => {
     const browser = createRuntime({ online: false })
     const counts: Array<number | null> = []

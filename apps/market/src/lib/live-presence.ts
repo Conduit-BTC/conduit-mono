@@ -5,6 +5,7 @@ export const DEFAULT_LIVE_PRESENCE_WEBSOCKET_URL =
 
 export const LIVE_PRESENCE_MAX_RECONNECT_ATTEMPTS = 5
 export const LIVE_PRESENCE_MAX_COUNT = 512
+export const LIVE_PRESENCE_INITIAL_COUNT_TIMEOUT_MS = 15_000
 export const LIVE_PRESENCE_HEARTBEAT_INTERVAL_MS = 20_000
 export const LIVE_PRESENCE_STALE_AFTER_MS = 45_000
 export const LIVE_PRESENCE_HEARTBEAT_REQUEST = '{"type":"ping"}'
@@ -172,6 +173,7 @@ export function startLivePresenceSession(
   let disposed = false
   let socket: LivePresenceSocket | null = null
   let retryHandle: number | null = null
+  let initialCountHandle: number | null = null
   let heartbeatHandle: number | null = null
   let staleHandle: number | null = null
   let reconnectAttempts = 0
@@ -184,6 +186,10 @@ export function startLivePresenceSession(
   }
 
   const clearLivenessTimers = () => {
+    if (initialCountHandle !== null) {
+      options.runtime.cancel(initialCountHandle)
+      initialCountHandle = null
+    }
     if (heartbeatHandle !== null) {
       options.runtime.cancel(heartbeatHandle)
       heartbeatHandle = null
@@ -275,9 +281,18 @@ export function startLivePresenceSession(
     }
 
     socket = nextSocket
+    initialCountHandle = options.runtime.schedule(() => {
+      initialCountHandle = null
+      handleDisconnect(nextSocket)
+    }, LIVE_PRESENCE_INITIAL_COUNT_TIMEOUT_MS)
+    let hasTrustedCount = false
     nextSocket.addEventListener("message", (event) => {
       if (disposed || socket !== nextSocket) return
       if (event.data === LIVE_PRESENCE_HEARTBEAT_RESPONSE) {
+        if (!hasTrustedCount) {
+          handleDisconnect(nextSocket)
+          return
+        }
         refreshLiveness(nextSocket)
         return
       }
@@ -286,6 +301,7 @@ export function startLivePresenceSession(
         handleDisconnect(nextSocket)
         return
       }
+      hasTrustedCount = true
       reconnectAttempts = 0
       refreshLiveness(nextSocket)
       options.onCount(count)

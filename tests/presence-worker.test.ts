@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 
 import {
   PresenceRoom,
+  PRESENCE_BROADCAST_COALESCE_MS,
   PRESENCE_GATEWAY_CONNECTION_LIMIT,
   PRESENCE_HEARTBEAT_REQUEST,
   PRESENCE_HEARTBEAT_RESPONSE,
@@ -82,6 +83,19 @@ class FakeRoomState {
 
 function asWebSocket(socket: FakeSocket): WebSocket {
   return socket as unknown as WebSocket
+}
+
+function createTestRoom(
+  state: FakeRoomState,
+  createWebSocketPair?: () => readonly [WebSocket, WebSocket]
+): PresenceRoom {
+  return new PresenceRoom(
+    state as PresenceRoomState,
+    undefined,
+    createWebSocketPair,
+    undefined,
+    (callback) => callback()
+  )
 }
 
 function closedSocket(roomKey = ROOM_KEY, sourceKey = SOURCE_KEY): WebSocket {
@@ -333,7 +347,7 @@ describe("presence room counts", () => {
     const state = new FakeRoomState()
     const client = new FakeSocket()
     const server = new FakeSocket()
-    const room = new PresenceRoom(state as PresenceRoomState, undefined, () => [
+    const room = createTestRoom(state, () => [
       asWebSocket(client),
       asWebSocket(server),
     ])
@@ -367,7 +381,7 @@ describe("presence room counts", () => {
       )
     }
     let createdPair = false
-    const room = new PresenceRoom(state as PresenceRoomState, undefined, () => {
+    const room = createTestRoom(state, () => {
       createdPair = true
       return [asWebSocket(new FakeSocket()), asWebSocket(new FakeSocket())]
     })
@@ -393,7 +407,7 @@ describe("presence room counts", () => {
       state.addSocket(socket, index % 2 === 0 ? ROOM_KEY : SECOND_ROOM_KEY)
     }
     let createdPair = false
-    const room = new PresenceRoom(state as PresenceRoomState, undefined, () => {
+    const room = createTestRoom(state, () => {
       createdPair = true
       return [asWebSocket(new FakeSocket()), asWebSocket(new FakeSocket())]
     })
@@ -422,7 +436,7 @@ describe("presence room counts", () => {
     const first = new FakeSocket()
     const second = new FakeSocket()
     state.addSocket(first)
-    const room = new PresenceRoom(state)
+    const room = createTestRoom(state)
 
     room.webSocketClose(closedSocket())
     expect(first.messages).toEqual(['{"count":1}'])
@@ -437,13 +451,53 @@ describe("presence room counts", () => {
     expect(second.messages.at(-1)).toBe('{"count":1}')
   })
 
+  it("coalesces rapid membership churn into one final room broadcast", () => {
+    const state = new FakeRoomState()
+    const active = new FakeSocket()
+    const scheduled: Array<{ callback: () => void; delayMs: number }> = []
+    const joinedServers: FakeSocket[] = []
+    state.addSocket(active)
+    const room = new PresenceRoom(
+      state as PresenceRoomState,
+      undefined,
+      () => {
+        const client = new FakeSocket()
+        const server = new FakeSocket()
+        joinedServers.push(server)
+        return [asWebSocket(client), asWebSocket(server)]
+      },
+      undefined,
+      (callback, delayMs) => scheduled.push({ callback, delayMs })
+    )
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = room.fetch(
+        new Request(`https://presence.example/v1/presence/${ROOM_KEY}`, {
+          headers: gatewayUpgradeHeaders(),
+        })
+      )
+      expect(response.status).toBe(101)
+      const joined = joinedServers.at(-1)!
+      expect(joined.messages).toEqual(['{"count":2}'])
+      joined.readyState = 3
+      room.webSocketClose(asWebSocket(joined))
+    }
+
+    expect(scheduled).toHaveLength(1)
+    expect(scheduled[0]?.delayMs).toBe(PRESENCE_BROADCAST_COALESCE_MS)
+    expect(active.messages).toEqual([])
+
+    scheduled[0]!.callback()
+    expect(active.messages).toEqual(['{"count":1}'])
+  })
+
   it("keeps counts isolated between rooms inside the shared gateway", () => {
     const state = new FakeRoomState()
     const firstRoomSocket = new FakeSocket()
     const secondRoomSocket = new FakeSocket()
     state.addSocket(firstRoomSocket, ROOM_KEY)
     state.addSocket(secondRoomSocket, SECOND_ROOM_KEY)
-    const room = new PresenceRoom(state)
+    const room = createTestRoom(state)
 
     room.webSocketClose(closedSocket(ROOM_KEY))
     expect(firstRoomSocket.messages).toEqual(['{"count":1}'])
@@ -461,7 +515,7 @@ describe("presence room counts", () => {
     failed.failNextSend = true
     state.addSocket(failed)
     state.addSocket(healthy)
-    const room = new PresenceRoom(state)
+    const room = createTestRoom(state)
 
     room.webSocketClose(closedSocket())
 
@@ -479,7 +533,7 @@ describe("presence room counts", () => {
     state.addSocket(firstFailure)
     state.addSocket(secondFailure)
     state.addSocket(healthy)
-    const room = new PresenceRoom(state)
+    const room = createTestRoom(state)
 
     room.webSocketClose(closedSocket())
 
@@ -498,7 +552,7 @@ describe("presence room counts", () => {
     const invalid = new FakeSocket()
     state.addSocket(active)
     state.addSocket(invalid)
-    const room = new PresenceRoom(state)
+    const room = createTestRoom(state)
 
     room.webSocketMessage(asWebSocket(invalid))
     expect(invalid.closeCode).toBe(1008)
