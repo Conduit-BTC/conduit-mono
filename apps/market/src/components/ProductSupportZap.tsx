@@ -82,6 +82,15 @@ export function ProductSupportZap({
     lightningAddress,
   }
 
+  function closeDialog() {
+    preparationSequenceRef.current += 1
+    setPreparing(false)
+    setInvoice(null)
+    setError(null)
+    setCopied(false)
+    setOpen(false)
+  }
+
   useEffect(() => {
     preparationSequenceRef.current += 1
     setPreparing(false)
@@ -213,10 +222,14 @@ export function ProductSupportZap({
       <Dialog
         open={open}
         onOpenChange={(nextOpen) => {
-          if (!preparing) setOpen(nextOpen)
+          if (nextOpen) {
+            setOpen(true)
+            return
+          }
+          closeDialog()
         }}
       >
-        <DialogContent showCloseButton={!preparing}>
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>Support {productTitle}</DialogTitle>
             <DialogDescription>
@@ -304,7 +317,7 @@ export function ProductSupportZap({
                 >
                   Create another invoice
                 </Button>
-                <Button type="button" onClick={() => setOpen(false)}>
+                <Button type="button" onClick={closeDialog}>
                   Done
                 </Button>
               </DialogFooter>
@@ -356,12 +369,7 @@ export function ProductSupportZap({
                 </p>
               ) : null}
               <DialogFooter>
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={preparing}
-                  onClick={() => setOpen(false)}
-                >
+                <Button type="button" variant="outline" onClick={closeDialog}>
                   Cancel
                 </Button>
                 <Button type="submit" disabled={preparing}>
