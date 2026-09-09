@@ -54,6 +54,9 @@ const MERCHANT_SECRET = new Uint8Array(32).fill(4)
 const OTHER_MERCHANT_SECRET = new Uint8Array(32).fill(5)
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
+const allowAllAccountNetworkLocalStateRepository = {
+  get: async () => undefined,
+}
 
 function publishAndParse(
   product: ProductSchema,
@@ -263,6 +266,8 @@ beforeEach(() => {
     putCachedProductTombstones: async () => {},
   })
   __setRelayPublishTestOverrides({
+    accountNetworkLocalStateRepository:
+      allowAllAccountNetworkLocalStateRepository,
     planPublishRelays: async () => ({
       intent: "author_event",
       primaryRelayUrls: [],
@@ -649,6 +654,8 @@ describe("merchant product event delivery", () => {
       },
       deletionDeliveryOptions: {
         repository: beforeReload,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         now: () => NOW,
         retryDelayMs: 1,
         restoreLocalEvidence: async () => {},
@@ -688,6 +695,8 @@ describe("merchant product event delivery", () => {
     const resumedEventIds: string[] = []
     await resumePendingProductDeletionDeliveries({
       repository: afterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
       now: () => NOW + 10_000,
       retryDelayMs: 1,
       deliveryLeaseOwner: "after-reload",
@@ -989,6 +998,8 @@ describe("merchant product event delivery", () => {
         },
         deletionDeliveryOptions: {
           repository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           now: () => NOW,
           retryDelayMs: 1,
           restoreLocalEvidence: async () => {},
@@ -1010,6 +1021,8 @@ describe("merchant product event delivery", () => {
       const afterReload = new MemoryProductDeletionOutbox(durableStorage)
       await resumePendingProductDeletionDeliveries({
         repository: afterReload,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         now: () => NOW + 10_000,
         retryDelayMs: 1,
         deliveryLeaseOwner: "after-isolated-reload",
@@ -1066,6 +1079,8 @@ describe("merchant product event delivery", () => {
         },
         deletionDeliveryOptions: {
           repository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           restoreLocalEvidence: async () => {},
           publisher: async () => {
             deletionPublishAttempts += 1
@@ -1128,6 +1143,8 @@ describe("merchant product event delivery", () => {
           },
           deletionDeliveryOptions: {
             repository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
             restoreLocalEvidence: async () => {},
             publisher: async () => ({ status: "acked" }),
           },

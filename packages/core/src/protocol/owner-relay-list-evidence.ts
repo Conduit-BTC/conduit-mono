@@ -3,15 +3,18 @@ import { config } from "../config"
 import {
   db,
   type NormalizedOwnerRelayListPubkey,
+  type NetworkPreferenceRelayOutcome,
   type OwnerRelayListEvidenceRecord,
   type OwnerRelayListEventEvidence,
   type OwnerRelayListLookupCoverage,
   type OwnerRelayListLookupEvidence,
+  type PendingOwnerRelayListDistribution,
 } from "../db"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanoutWithDiagnostics,
   getEventSourceRelayUrls,
+  type FetchEventsFanoutOptions,
   type FetchEventsFanoutDiagnosticsResult,
 } from "./ndk"
 import {
@@ -20,17 +23,24 @@ import {
   type RelayPreference,
 } from "./relay-settings"
 import {
+  applyNetworkPreferenceDistributionOutcomes,
+  hasCompletedExactNetworkPreferenceReadback,
+  type NetworkPreferenceDistributionOutcomeUpdate,
+} from "./network-preference-delivery"
+import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
 
 export type {
   NormalizedOwnerRelayListPubkey,
+  NetworkPreferenceRelayOutcome,
   OwnerRelayListEvidenceRecord,
   OwnerRelayListEventEvidence,
   OwnerRelayListEvidenceState,
   OwnerRelayListLookupCoverage,
   OwnerRelayListLookupEvidence,
+  PendingOwnerRelayListDistribution,
 } from "../db"
 
 const HEX_PUBKEY = /^[0-9a-f]{64}$/
@@ -54,6 +64,27 @@ export interface ReconcileOwnerRelayListEvidenceInput {
     eventId?: string
   }
   cachedAt?: number
+}
+
+export interface StageOwnerRelayListDistributionInput {
+  pubkey: string
+  signedEvent: SignedPublicNostrEvent
+  publishRelayUrls: readonly string[]
+  relayOutcomes: readonly NetworkPreferenceRelayOutcome[]
+  expectedCurrentEventId: string | null
+  stagedAt?: number
+  cachedAt?: number
+}
+
+export class OwnerRelayListDistributionConflictError extends Error {
+  readonly code = "staged_event_lost_frontier" as const
+
+  constructor() {
+    super(
+      "A newer owner relay list was retained before this signed event could be staged"
+    )
+    this.name = "OwnerRelayListDistributionConflictError"
+  }
 }
 
 export interface OwnerRelayListEvidenceRepository {
@@ -91,6 +122,8 @@ export interface OwnerRelayListResolution {
   stale: boolean
   current?: OwnerRelayListEventEvidence
   lastUsable?: OwnerRelayListEventEvidence
+  /** Exact staged kind-10002 work retained for independent retry/readback. */
+  pendingDistribution?: PendingOwnerRelayListDistribution
   lookup: OwnerRelayListLookupEvidence
   observation: OwnerRelayListObservation
 }
@@ -99,6 +132,9 @@ export interface ResolveOwnerRelayListOptions {
   relayUrls?: readonly string[]
   fetchEventsWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   evidenceRepository?: OwnerRelayListEvidenceRepository
+  /** Account on whose behalf this discovery I/O is admitted. */
+  requestingAccountPubkey?: string | null
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   now?: () => number
 }
 
@@ -145,6 +181,93 @@ function assertTimestamp(value: number, label: string): number {
 
 function normalizeSourceRelayUrls(urls: readonly string[]): string[] {
   return normalizePublicOrIsolatedE2eRelayHints(urls).sort()
+}
+
+function sameSignedEvent(
+  left: SignedPublicNostrEvent | undefined,
+  right: SignedPublicNostrEvent | undefined
+): boolean {
+  return Boolean(
+    left &&
+    right &&
+    left.id === right.id &&
+    left.pubkey === right.pubkey &&
+    left.created_at === right.created_at &&
+    left.kind === right.kind &&
+    left.content === right.content &&
+    left.sig === right.sig &&
+    JSON.stringify(left.tags) === JSON.stringify(right.tags)
+  )
+}
+
+function normalizeRelayOutcomes(
+  publishRelayUrls: readonly string[],
+  outcomes: readonly NetworkPreferenceRelayOutcome[]
+): NetworkPreferenceRelayOutcome[] {
+  if (outcomes.length !== publishRelayUrls.length) {
+    throw new Error("Owner relay-list outcomes must match its immutable plan")
+  }
+  const publishStatuses = new Set(["pending", "acked", "rejected", "timed_out"])
+  const readbackStatuses = new Set([
+    "pending",
+    "observed",
+    "absent",
+    "timed_out",
+  ])
+  return outcomes.map((outcome, index) => {
+    const relayUrl = normalizeSourceRelayUrls([outcome.relayUrl])[0]
+    if (
+      !relayUrl ||
+      relayUrl !== publishRelayUrls[index] ||
+      !publishStatuses.has(outcome.publishStatus) ||
+      !readbackStatuses.has(outcome.readbackStatus) ||
+      !Number.isSafeInteger(outcome.publishAttemptCount) ||
+      outcome.publishAttemptCount < 0 ||
+      !Number.isSafeInteger(outcome.readbackAttemptCount) ||
+      outcome.readbackAttemptCount < 0
+    ) {
+      throw new Error("Owner relay-list outcomes are invalid")
+    }
+    for (const [value, label] of [
+      [outcome.publishAttemptedAt, "publishAttemptedAt"],
+      [outcome.readbackAttemptedAt, "readbackAttemptedAt"],
+      [outcome.observedAt, "observedAt"],
+    ] as const) {
+      if (value !== undefined) assertTimestamp(value, label)
+    }
+    return { ...outcome, relayUrl }
+  })
+}
+
+function normalizePendingDistribution(
+  pending: PendingOwnerRelayListDistribution | undefined,
+  pubkey: NormalizedOwnerRelayListPubkey,
+  current: OwnerRelayListEventEvidence | undefined
+): PendingOwnerRelayListDistribution | undefined {
+  if (!pending || !current) return undefined
+  assertOwnerRelayListEvent(pubkey, pending.signedEvent)
+  if (pending.signedEvent.id !== current.signedEvent.id) return undefined
+  if (!sameSignedEvent(pending.signedEvent, current.signedEvent)) {
+    throw new Error(
+      "Owner relay-list pending bytes must match the retained frontier"
+    )
+  }
+  const publishRelayUrls = normalizeSourceRelayUrls(pending.publishRelayUrls)
+  if (publishRelayUrls.length === 0) {
+    throw new Error("Owner relay-list pending work requires publish targets")
+  }
+  return {
+    signedEvent: structuredClone(pending.signedEvent),
+    publishRelayUrls,
+    relayOutcomes: normalizeRelayOutcomes(
+      publishRelayUrls,
+      pending.relayOutcomes
+    ),
+    stagedAt: assertTimestamp(
+      pending.stagedAt,
+      "Owner relay-list distribution stagedAt"
+    ),
+  }
 }
 
 function parseOwnerRelayPreferences(
@@ -416,10 +539,19 @@ function validateRetainedRecord(
   if (current && current.state !== "malformed") {
     lastUsable = mergeLastUsableEvidence(lastUsable, current)
   }
+  const pendingDistribution = normalizePendingDistribution(
+    record.pendingDistribution,
+    pubkey,
+    current
+  )
+  if (pendingDistribution && current) {
+    current.signedEvent = structuredClone(pendingDistribution.signedEvent)
+  }
   return {
     pubkey,
     current,
     lastUsable,
+    pendingDistribution,
     latestLookup: createLookupEvidence(record.latestLookup),
     cachedAt: assertTimestamp(record.cachedAt, "Owner relay-list cachedAt"),
   }
@@ -449,6 +581,26 @@ export function applyOwnerRelayListEvidenceReconciliation(
     current = mergeEventEvidence(current, candidate)
     lastUsable = mergeLastUsableEvidence(lastUsable, candidate)
   }
+  let pendingDistribution = normalizePendingDistribution(
+    retained?.pendingDistribution,
+    pubkey,
+    current
+  )
+  if (
+    pendingDistribution &&
+    current?.signedEvent.id === pendingDistribution.signedEvent.id &&
+    hasCompletedExactNetworkPreferenceReadback(
+      pendingDistribution.relayOutcomes
+    )
+  ) {
+    pendingDistribution = undefined
+  }
+  if (
+    pendingDistribution &&
+    current?.signedEvent.id === pendingDistribution.signedEvent.id
+  ) {
+    current.signedEvent = structuredClone(pendingDistribution.signedEvent)
+  }
   const latestLookup = mergeLookupEvidence(
     retained?.latestLookup,
     lookup,
@@ -458,6 +610,7 @@ export function applyOwnerRelayListEvidenceReconciliation(
     pubkey,
     current,
     lastUsable,
+    pendingDistribution,
     latestLookup,
     cachedAt: Math.max(
       retained?.cachedAt ?? 0,
@@ -467,6 +620,124 @@ export function applyOwnerRelayListEvidenceReconciliation(
       )
     ),
   }
+}
+
+/** Pure per-kind stage used by the cross-kind account transaction. */
+export function applyOwnerRelayListDistributionStage(
+  existing: OwnerRelayListEvidenceRecord | undefined,
+  input: StageOwnerRelayListDistributionInput,
+  now: () => number = Date.now
+): OwnerRelayListEvidenceRecord {
+  const pubkey = normalizeOwnerRelayListPubkey(input.pubkey)
+  if (!pubkey) {
+    throw new Error("Owner relay-list evidence requires a valid hex pubkey")
+  }
+  const currentEventId = existing?.current?.signedEvent.id ?? null
+  if (currentEventId !== input.expectedCurrentEventId) {
+    throw new OwnerRelayListDistributionConflictError()
+  }
+  const stagedAt = assertTimestamp(
+    input.stagedAt ?? now(),
+    "Owner relay-list distribution stagedAt"
+  )
+  const publishRelayUrls = normalizeSourceRelayUrls(input.publishRelayUrls)
+  if (publishRelayUrls.length === 0) {
+    throw new Error("Owner relay-list pending work requires publish targets")
+  }
+  const relayOutcomes = normalizeRelayOutcomes(
+    publishRelayUrls,
+    input.relayOutcomes
+  )
+  const lookup = existing?.latestLookup ?? {
+    observedAt: stagedAt,
+    coverage: "unavailable" as const,
+    hadEvent: false,
+  }
+  const record = applyOwnerRelayListEvidenceReconciliation(
+    existing,
+    {
+      pubkey,
+      observations: [
+        {
+          signedEvent: input.signedEvent,
+          sourceRelayUrls: [],
+          observedAt: stagedAt,
+        },
+      ],
+      lookup,
+      cachedAt: input.cachedAt ?? stagedAt,
+    },
+    now
+  )
+  if (record.current?.signedEvent.id !== input.signedEvent.id) {
+    throw new OwnerRelayListDistributionConflictError()
+  }
+  record.current.signedEvent = structuredClone(input.signedEvent)
+  record.pendingDistribution = {
+    signedEvent: structuredClone(input.signedEvent),
+    publishRelayUrls,
+    relayOutcomes,
+    stagedAt,
+  }
+  return cloneRecord(record)
+}
+
+/** Apply retry evidence while retaining the exact staged bytes and plan. */
+export function applyOwnerRelayListDistributionOutcomes(
+  existing: OwnerRelayListEvidenceRecord,
+  update: NetworkPreferenceDistributionOutcomeUpdate
+): OwnerRelayListEvidenceRecord {
+  const pubkey = normalizeOwnerRelayListPubkey(existing.pubkey)
+  if (!pubkey) {
+    throw new Error("Owner relay-list evidence requires a valid hex pubkey")
+  }
+  const retained = validateRetainedRecord(existing, pubkey, Date.now)
+  const pending = retained.pendingDistribution
+  if (!pending) {
+    throw new Error("Owner relay-list distribution is not pending")
+  }
+  const relayOutcomes = applyNetworkPreferenceDistributionOutcomes(
+    pending.relayOutcomes,
+    update
+  )
+  const exactSourceRelayUrls = relayOutcomes.flatMap((outcome) =>
+    outcome.readbackStatus === "observed" ? [outcome.relayUrl] : []
+  )
+  const completed = hasCompletedExactNetworkPreferenceReadback(relayOutcomes)
+  const next: OwnerRelayListEvidenceRecord = {
+    ...retained,
+    pendingDistribution: {
+      ...pending,
+      relayOutcomes,
+    },
+  }
+  return applyOwnerRelayListEvidenceReconciliation(next, {
+    pubkey,
+    observations:
+      exactSourceRelayUrls.length === 0
+        ? []
+        : [
+            {
+              signedEvent: pending.signedEvent,
+              sourceRelayUrls: exactSourceRelayUrls,
+              observedAt: update.observedAt,
+              ...(completed ? { completeObservedAt: update.observedAt } : {}),
+            },
+          ],
+    lookup: {
+      observedAt: update.observedAt,
+      coverage: completed
+        ? "complete"
+        : exactSourceRelayUrls.length > 0
+          ? "partial"
+          : "unavailable",
+      hadEvent: exactSourceRelayUrls.length > 0,
+      ...(exactSourceRelayUrls.length > 0
+        ? { eventId: pending.signedEvent.id }
+        : {}),
+    },
+    cachedAt: update.observedAt,
+  })
 }
 
 function applyRepositoryReconciliation(
@@ -577,12 +848,34 @@ function mergeEvidenceRecords(
   current: OwnerRelayListEvidenceRecord | undefined,
   candidate: OwnerRelayListEvidenceRecord
 ): OwnerRelayListEvidenceRecord {
-  return applyOwnerRelayListEvidenceReconciliation(current, {
+  let merged = applyOwnerRelayListEvidenceReconciliation(current, {
     pubkey: candidate.pubkey,
     observations: recordObservations(candidate),
     lookup: candidate.latestLookup,
     cachedAt: candidate.cachedAt,
   })
+  if (
+    candidate.pendingDistribution &&
+    merged.current?.signedEvent.id ===
+      candidate.pendingDistribution.signedEvent.id
+  ) {
+    // The durable pending checkpoint owns the exact signed bytes, immutable
+    // relay plan, and per-relay outcomes across process restarts. Replaying only
+    // event observations would silently relabel that work as published.
+    merged = applyOwnerRelayListEvidenceReconciliation(
+      {
+        ...merged,
+        pendingDistribution: structuredClone(candidate.pendingDistribution),
+      },
+      {
+        pubkey: candidate.pubkey,
+        observations: [],
+        lookup: candidate.latestLookup,
+        cachedAt: candidate.cachedAt,
+      }
+    )
+  }
+  return merged
 }
 
 export async function getOwnerRelayListEvidence(
@@ -796,6 +1089,9 @@ function resolutionFromRecord(
     lastUsable: record.lastUsable
       ? structuredClone(record.lastUsable)
       : undefined,
+    pendingDistribution: record.pendingDistribution
+      ? structuredClone(record.pendingDistribution)
+      : undefined,
     lookup: { ...record.latestLookup },
     observation,
   }
@@ -867,6 +1163,9 @@ export async function resolveOwnerRelayList(
         },
         {
           relayUrls,
+          accountPubkey: options.requestingAccountPubkey,
+          accountNetworkLocalStateRepository:
+            options.accountNetworkLocalStateRepository,
           connectTimeoutMs: 4_000,
           fetchTimeoutMs: 6_000,
           skipHealthFilter: true,

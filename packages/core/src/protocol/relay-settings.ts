@@ -796,31 +796,19 @@ export function assertSafeNip65RelayList(
     "url" | "readEnabled" | "writeEnabled"
   >[]
 ): void {
-  const activeRelayCount = countActiveNip65RelayTags(relays)
-  if (activeRelayCount <= 1) {
-    throw new Error(
-      "Refusing to publish a tiny NIP-65 relay list. Load or add at least two active relays before publishing."
-    )
-  }
   const writeRelayCount = countWriteNip65Relays(relays)
   if (writeRelayCount < 1) {
     throw new Error(
-      "Refusing to publish a NIP-65 relay list without an OUT relay. Enable write access on at least one relay before publishing."
+      "Refusing to publish a NIP-65 relay list without a Publish relay. Enable Publish on at least one relay before publishing."
     )
   }
 }
 
 export function assertSafeNip65RelayTags(tags: readonly string[][]): void {
-  const activeRelayCount = countActiveNip65RelayTagsFromTags(tags)
-  if (activeRelayCount <= 1) {
-    throw new Error(
-      "Refusing to publish a tiny NIP-65 relay list. Load or add at least two active relays before publishing."
-    )
-  }
   const writeRelayCount = countWriteNip65RelayTags(tags)
   if (writeRelayCount < 1) {
     throw new Error(
-      "Refusing to publish a NIP-65 relay list without an OUT relay. Enable write access on at least one relay before publishing."
+      "Refusing to publish a NIP-65 relay list without a Publish relay. Enable Publish on at least one relay before publishing."
     )
   }
 }

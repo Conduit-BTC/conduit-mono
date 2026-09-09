@@ -3,17 +3,20 @@ import { config } from "../config"
 import {
   applyInboxDeclarationEvidenceMerge,
   cloneInboxDeclarationEvidenceRecord,
+  getActiveInboxCutoverRecoveryRelayUrls,
   getInboxDeclarationEvidence,
   mergeInboxDeclarationEvidenceBatch as mergeInboxDeclarationEvidenceBatchDurably,
   normalizeInboxDeclarationEvidencePubkey,
   type InboxDeclarationEvidenceRecord,
   type InboxDeclarationEvidenceRepository,
   type MergeInboxDeclarationEvidenceInput,
+  type NetworkPreferenceRelayOutcome,
 } from "./inbox-declaration-evidence"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanoutWithDiagnostics,
   getEventSourceRelayUrls,
+  type FetchEventsFanoutOptions,
 } from "./ndk"
 import {
   getGeneralReadRelayUrls,
@@ -54,6 +57,7 @@ export type InboxReadCoverage = "complete" | "partial" | "unavailable"
 /** Where a private-message read relay came from. */
 export type InboxReadSource =
   | "declared"
+  | "cutover_recovery"
   | "local_in"
   | "migration_recovery"
   | "compatibility"
@@ -114,6 +118,8 @@ export interface InboxDeclarationResolution {
   relayUrls: string[]
   /** Last usable declaration retained only for permissive inbox reads. */
   retainedReadRelayUrls?: string[]
+  /** Previous inboxes retained read-only during a confirmed cutover grace. */
+  cutoverRecoveryRelayUrls?: string[]
   /** True when served from cache past its freshness window. */
   stale: boolean
   fetchedAt: number
@@ -129,6 +135,11 @@ export interface InboxDeclarationResolution {
   pendingRelayUrls?: string[]
   /** Immutable targets for retrying the exact staged event. */
   pendingPublishRelayUrls?: string[]
+  /** Per-target truth for the exact staged event; absent on legacy rows. */
+  pendingRelayOutcomes?: NetworkPreferenceRelayOutcome[]
+  /** Exact shared-set confirmation retained for restart-safe recovery cleanup. */
+  cutoverRecoveryReadbackObservedAt?: number
+  cutoverRecoveryExpiresAt?: number
   /** Diagnostics for this invocation's network observation. */
   observation?: InboxDeclarationObservation
 }
@@ -157,6 +168,9 @@ export interface ResolveInboxDeclarationOptions {
   sharedConfirmationRelayUrls?: readonly string[]
   /** Preserve local/private WSS only while inspecting this authenticated owner. */
   allowLocalRelayUrlsForPubkey?: string | null
+  /** Account on whose behalf this discovery I/O is admitted. */
+  requestingAccountPubkey?: string | null
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
 }
 
 /** Positive declarations stay fresh for this long before a re-fetch. */
@@ -346,6 +360,10 @@ function evidenceMergeInputs(
     pendingDistribution:
       entry.signedEvent.id === record.current.signedEvent.id
         ? record.pendingDistribution
+        : undefined,
+    cutoverRecovery:
+      entry.signedEvent.id === record.current.signedEvent.id
+        ? record.cutoverRecovery
         : undefined,
     observedAt: entry.observedAt,
     completeObservedAt: entry.completeObservedAt,
@@ -622,6 +640,9 @@ function declarationForContext(
     retainedReadRelayUrls: projectRelayUrls(
       declaration.retainedReadRelayUrls ?? []
     ),
+    cutoverRecoveryRelayUrls: projectRelayUrls(
+      declaration.cutoverRecoveryRelayUrls ?? []
+    ),
     sourceRelayUrls: projectRelayUrls(declaration.sourceRelayUrls ?? []),
     sharedSourceRelayUrls: publicRelayHintUrls(
       declaration.sharedSourceRelayUrls ?? []
@@ -745,6 +766,9 @@ function resolutionFromEvidence(
     state,
     relayUrls: declaredRelayUrls,
     retainedReadRelayUrls,
+    cutoverRecoveryRelayUrls: ownerRelayUrls(
+      getActiveInboxCutoverRecoveryRelayUrls(record, input.fetchedAt)
+    ),
     stale: input.stale,
     fetchedAt: input.fetchedAt,
     eventId: current.signedEvent.id,
@@ -753,6 +777,16 @@ function resolutionFromEvidence(
     sharedSourceRelayUrls: [...(current.sharedSourceRelayUrls ?? [])],
     pendingRelayUrls,
     pendingPublishRelayUrls: [...(pendingDistribution?.publishRelayUrls ?? [])],
+    pendingRelayOutcomes: pendingDistribution?.relayOutcomes
+      ? structuredClone(pendingDistribution.relayOutcomes)
+      : undefined,
+    ...(record.cutoverRecovery?.replacementEventId === current.signedEvent.id
+      ? {
+          cutoverRecoveryReadbackObservedAt:
+            record.cutoverRecovery.readbackObservedAt,
+          cutoverRecoveryExpiresAt: record.cutoverRecovery.expiresAt,
+        }
+      : {}),
     observation: input.observation,
   }
 }
@@ -767,10 +801,16 @@ function cachedFallbackResolution(
     ...cached,
     relayUrls: [...cached.relayUrls],
     retainedReadRelayUrls: [...(cached.retainedReadRelayUrls ?? [])],
+    cutoverRecoveryRelayUrls: [
+      ...(cached.cutoverRecoveryRelayUrls ?? []),
+    ],
     sourceRelayUrls: [...(cached.sourceRelayUrls ?? [])],
     sharedSourceRelayUrls: [...(cached.sharedSourceRelayUrls ?? [])],
     pendingRelayUrls: [...(cached.pendingRelayUrls ?? [])],
     pendingPublishRelayUrls: [...(cached.pendingPublishRelayUrls ?? [])],
+    pendingRelayOutcomes: cached.pendingRelayOutcomes
+      ? structuredClone(cached.pendingRelayOutcomes)
+      : undefined,
     stale: true,
     fetchedAt: now,
     observation,
@@ -1012,6 +1052,9 @@ export async function resolveInboxDeclaration(
       },
       {
         relayUrls,
+        accountPubkey: options.requestingAccountPubkey,
+        accountNetworkLocalStateRepository:
+          options.accountNetworkLocalStateRepository,
         connectTimeoutMs: 3_000,
         fetchTimeoutMs: 6_000,
         skipHealthFilter: true,
@@ -1243,6 +1286,9 @@ export function planInboxReadRelays(
       ? (getCachedInboxDeclaration(input.declaration.pubkey)?.relayUrls ?? [])
       : []),
   ])
+  const cutoverRecovery = projectOwnerRelayUrls(
+    input.declaration.cutoverRecoveryRelayUrls ?? []
+  )
   const migrationRecovery = allowOwnerLocalRelays
     ? ownerRelayUrls(
         getInboxMigrationRecoveryRelayUrls(input.declaration.pubkey)
@@ -1277,6 +1323,7 @@ export function planInboxReadRelays(
     }
   }
   add(declared, "declared")
+  add(cutoverRecovery, "cutover_recovery")
   add(cachedFallback, "cache")
   // Reserve the write/read overlap before optional local and public
   // compatibility sources so a large local IN list cannot make an order

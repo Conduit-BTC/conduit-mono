@@ -30,6 +30,10 @@ import {
   removeSigner,
   setSigner,
 } from "../packages/core/src/protocol/ndk"
+import {
+  emptyAccountNetworkLocalState,
+  type AccountNetworkLocalStateRepository,
+} from "../packages/core/src/protocol/account-network-local-state"
 
 const NOW = 1_700_000_000_000
 const AUTHOR_SECRET = Uint8Array.from([...new Uint8Array(31), 21])
@@ -40,6 +44,22 @@ const APP_WRITE_ATTEMPT_RELAYS = CANONICAL_APP_WRITE_RELAYS.map(
   (url) => `${url}/`
 )
 const originalConfig = structuredClone(config)
+
+function accountNetworkState(
+  pubkey: string,
+  excludedRelayUrls: readonly string[]
+) {
+  const state = emptyAccountNetworkLocalState(pubkey)
+  return {
+    ...state,
+    exclusions: excludedRelayUrls.map((relayUrl, index) => ({
+      relayUrl,
+      committedAt: NOW + index,
+      relayListFrontier: { eventId: null, createdAt: null },
+      inboxDeclarationFrontier: { eventId: null, createdAt: null },
+    })),
+  }
+}
 
 function signedTestEvent(input: {
   kind?: number
@@ -459,19 +479,19 @@ describe("planPublishRelays", () => {
     expect(planned).toBe(false)
   })
 
-  it("refuses tiny NIP-65 relay-list publishes before planning relays", async () => {
+  it("allows a single Publish relay before planning relays", async () => {
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.RELAY_LIST,
+      tags: [["r", "wss://only.conduit.market"]],
+      content: "",
+      publish: async () => new Set(),
+    })
     await expect(
-      publishWithPlanner(
-        {
-          kind: EVENT_KINDS.RELAY_LIST,
-          tags: [["r", "wss://only.conduit.market"]],
-        } as never,
-        {
-          intent: "author_event",
-          authorPubkey: "alice",
-        }
-      )
-    ).rejects.toThrow("Refusing to publish a tiny NIP-65 relay list")
+      publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).resolves.toBeDefined()
   })
 
   it("uses the app write relay for NIP-65 publishes without a planner target", async () => {
@@ -755,6 +775,10 @@ describe("planPublishRelays", () => {
     const result = await publishWithPlanner(fakeEvent, {
       intent: "author_event",
       authorPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: {
+        get: async (pubkey) => accountNetworkState(pubkey, []),
+      },
       extraRelayUrls: ["wss://relay.damus.io"],
     })
 
@@ -1498,6 +1522,230 @@ describe("planPublishRelays", () => {
     expect(attempts[2]).toContain(APP_WRITE_ATTEMPT_RELAYS[0])
     expect(result.successfulRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
     expect(result.failedRelayUrls).toContain(primaryRelay)
+  })
+
+  it("filters a stale publish plan by explicit account without changing other or public callers", async () => {
+    const relayUrl = "wss://stale-publish-plan.conduit.market"
+    const attempts: string[][] = []
+    const queriedPubkeys: string[] = []
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => {
+        queriedPubkeys.push(pubkey)
+        return accountNetworkState(
+          pubkey,
+          pubkey === AUTHOR_PUBKEY ? [relayUrl] : []
+        )
+      },
+    }
+    const event = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        signedRelayListAuthoritative: true,
+        primaryRelayUrls: [relayUrl],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        accountPubkey: AUTHOR_PUBKEY,
+        accountNetworkLocalStateRepository: repository,
+      })
+    ).rejects.toThrow("no primary relay accepted")
+    await expect(
+      publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        accountPubkey: OTHER_AUTHOR_PUBKEY,
+        accountNetworkLocalStateRepository: repository,
+      })
+    ).resolves.toMatchObject({ attemptedRelayUrls: [relayUrl] })
+    const explicitAccountQueryCount = queriedPubkeys.length
+    await expect(
+      publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        accountNetworkLocalStateRepository: repository,
+      })
+    ).resolves.toMatchObject({ attemptedRelayUrls: [relayUrl] })
+
+    expect(attempts).toEqual([[`${relayUrl}/`], [`${relayUrl}/`]])
+    expect(queriedPubkeys).toHaveLength(explicitAccountQueryCount)
+    expect(new Set(queriedPubkeys)).toEqual(
+      new Set([AUTHOR_PUBKEY, OTHER_AUTHOR_PUBKEY])
+    )
+  })
+
+  it("re-checks a broadcast target after the primary attempt commits its removal", async () => {
+    const primaryRelay = "wss://primary-before-removal.conduit.market"
+    const broadcastRelay = "wss://removed-broadcast.conduit.market"
+    const attempts: string[][] = []
+    let removalCommitted = false
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) =>
+        accountNetworkState(pubkey, removalCommitted ? [broadcastRelay] : []),
+    }
+    const event = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        removalCommitted = true
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [broadcastRelay],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    const result = await publishWithPlanner(event, {
+      intent: "author_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: repository,
+    })
+
+    expect(attempts).toEqual([[`${primaryRelay}/`]])
+    expect(result.attemptedRelayUrls).toEqual([primaryRelay])
+    expect(result.successfulRelayUrls).toEqual([primaryRelay])
+    expect(result.failedRelayUrls).toEqual([])
+  })
+
+  it("refuses an excluded exclusive target without entering NDK publish", async () => {
+    const relayUrl = "wss://excluded-private-inbox.conduit.market"
+    let publishCalls = 0
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => accountNetworkState(pubkey, [relayUrl]),
+    }
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.GIFT_WRAP,
+      publish: async () => {
+        publishCalls += 1
+        return new Set()
+      },
+    })
+
+    await expect(
+      publishWithPlanner(event, {
+        intent: "recipient_event",
+        authorPubkey: "alice",
+        recipientPubkeys: ["bob"],
+        exclusiveRelayUrls: [relayUrl],
+        accountPubkey: AUTHOR_PUBKEY,
+        accountNetworkLocalStateRepository: repository,
+      })
+    ).rejects.toThrow("required exclusive relay set")
+    expect(publishCalls).toBe(0)
+  })
+
+  it("suppresses retry and recipient fallback relays removed after the primary attempt", async () => {
+    const primaryRelay = "wss://removed-between-attempts.conduit.market"
+    const excludedAfterCommit = Array.from(
+      new Set([
+        primaryRelay,
+        ...config.appWriteRelayUrls,
+        ...config.commerceDmFallbackRelayUrls,
+      ])
+    )
+    const attempts: string[][] = []
+    let removalCommitted = false
+    let durableReads = 0
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => {
+        durableReads += 1
+        return accountNetworkState(
+          pubkey,
+          removalCommitted ? excludedAfterCommit : []
+        )
+      },
+    }
+    const event = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        removalCommitted = true
+        throw new Error("primary failed after local removal committed")
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "recipient_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(event, {
+        intent: "recipient_event",
+        authorPubkey: "alice",
+        recipientPubkeys: ["bob"],
+        deliveryMode: "critical",
+        accountPubkey: AUTHOR_PUBKEY,
+        accountNetworkLocalStateRepository: repository,
+      })
+    ).rejects.toThrow("no account-eligible relay target remains")
+
+    expect(attempts).toEqual([[`${primaryRelay}/`]])
+    expect(durableReads).toBeGreaterThanOrEqual(3)
+  })
+
+  it("suppresses an excluded exact publish without inferring the account from its author", async () => {
+    const relayUrl = "wss://excluded-exact-publish.conduit.market"
+    const fakeWebSocket = installRelayPublishWebSocket()
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => accountNetworkState(pubkey, [relayUrl]),
+    }
+    const signedEvent = signedRawTestEvent({ kind: EVENT_KINDS.DELETION })
+
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent,
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+          accountPubkey: AUTHOR_PUBKEY,
+          accountNetworkLocalStateRepository: repository,
+        })
+      ).rejects.toThrow("exact relay is not eligible")
+      expect(fakeWebSocket.counters.opened).toBe(0)
+
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent,
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+          accountNetworkLocalStateRepository: repository,
+        })
+      ).resolves.toBe("acked")
+      expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
+    } finally {
+      fakeWebSocket.restore()
+    }
   })
 
   it("does not fall through to NDK default publishing without an approved target", async () => {

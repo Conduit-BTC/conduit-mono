@@ -75,6 +75,9 @@ const COLLECTION_EVENT_ID = "c".repeat(64)
 const PICKUP_EVENT_ID = "d".repeat(64)
 const EVIDENCE_CREATED_AT = 1_700_000_000_000
 const ISSUED_AT = 1_700_000_100
+const allowAllAccountNetworkLocalStateRepository = {
+  get: async () => undefined,
+}
 const PRODUCT_EVENT = finalizeEvent(
   {
     kind: EVENT_KINDS.PRODUCT,
@@ -781,6 +784,8 @@ describe("event-market private handoff delivery", () => {
         persisted = record
       },
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
         senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
         giftWrapFn: (async (_rumor, recipient) =>
@@ -883,6 +888,8 @@ describe("event-market private handoff delivery", () => {
       persistExactWraps: (record) => persisted.push(record),
       transport: {
         ...transport,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: ["wss://merchant.inbox.relay.dev"],
         senderInboxRelays: ["wss://organizer.inbox.relay.dev"],
       },
@@ -904,6 +911,8 @@ describe("event-market private handoff delivery", () => {
       persistExactWraps: (record) => persisted.push(record),
       transport: {
         ...transport,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
         senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
       },
@@ -929,6 +938,8 @@ describe("event-market private handoff delivery", () => {
       recipientRelay: string,
       senderRelay: string
     ) => ({
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
       recipientInboxRelays: [recipientRelay],
       senderInboxRelays: [senderRelay],
       giftWrapFn: (async (_rumor: NDKEvent, recipient: { pubkey: string }) => {
@@ -1008,6 +1019,8 @@ describe("event-market private handoff delivery", () => {
       fulfillmentState: "paid" as const,
       persistExactWraps: async () => {},
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: [] as string[],
         giftWrapFn: (async () => {
           wrapped = true
@@ -1028,6 +1041,8 @@ describe("event-market private handoff delivery", () => {
         } as unknown as NDKSigner,
         transport: {
           ...common.transport,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
         },
       })
@@ -1087,6 +1102,8 @@ describe("event-market private handoff delivery", () => {
           initialProgress = progress
         },
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
           senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
@@ -1334,6 +1351,8 @@ describe("event-market private handoff delivery", () => {
         record = persisted
       },
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: recipientRelays,
         senderInboxRelays: selfRelays,
         giftWrapFn: (async (_rumor, recipient) =>

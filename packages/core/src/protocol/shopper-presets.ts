@@ -14,6 +14,7 @@ import {
   type ShopperPricePreference,
 } from "../pricing"
 import { SHIPPING_COUNTRIES } from "./countries"
+import type { AccountNetworkLocalStateRepository } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanoutDetailed,
@@ -198,6 +199,10 @@ export type ShopperPresetsProtocolDependencies = {
   fetchEvents?: typeof fetchEventsFanoutDetailed
   getRelayLists?: typeof getRelayLists
   publishEvent?: typeof publishWithPlanner
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
   readRelayUrls?: readonly string[]
   now?: () => number
   randomBytes?: (length: number) => Uint8Array
@@ -475,6 +480,9 @@ export async function fetchShopperPresets(
     cacheOnly: false,
     relayUrls: relayListDiscoveryUrls,
     allowInsecureRelayUrlsForPubkey: owner,
+    accountPubkey: owner,
+    accountNetworkLocalStateRepository:
+      dependencies.accountNetworkLocalStateRepository,
   })
   const plan = planRelayReads({
     intent: "general",
@@ -508,6 +516,9 @@ export async function fetchShopperPresets(
   try {
     result = await fetchEvents(filter, {
       relayUrls,
+      accountPubkey: owner,
+      accountNetworkLocalStateRepository:
+        dependencies.accountNetworkLocalStateRepository,
       connectTimeoutMs: SHOPPER_PRESETS_CONNECT_TIMEOUT_MS,
       fetchTimeoutMs: SHOPPER_PRESETS_FETCH_TIMEOUT_MS,
     })
@@ -550,6 +561,7 @@ async function verifyShopperPresetsConvergence({
   createdAt,
   relayUrls,
   fetchEvents,
+  accountNetworkLocalStateRepository,
   waitForRetry,
 }: {
   owner: string
@@ -557,6 +569,10 @@ async function verifyShopperPresetsConvergence({
   createdAt: number
   relayUrls: readonly string[]
   fetchEvents: typeof fetchEventsFanoutDetailed
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
   waitForRetry: () => Promise<void>
 }): Promise<Extract<ShopperPresetsReadResult, { state: "found" }> | null> {
   const targets = Array.from(
@@ -580,6 +596,8 @@ async function verifyShopperPresetsConvergence({
         },
         {
           relayUrls: targets,
+          accountPubkey: owner,
+          accountNetworkLocalStateRepository,
           connectTimeoutMs: SHOPPER_PRESETS_CONNECT_TIMEOUT_MS,
           fetchTimeoutMs: SHOPPER_PRESETS_FETCH_TIMEOUT_MS,
         }
@@ -718,6 +736,9 @@ export async function publishShopperPresets({
     intent: "author_event",
     authorPubkey: owner,
     authenticatedPubkey: owner,
+    accountPubkey: owner,
+    accountNetworkLocalStateRepository:
+      dependencies.accountNetworkLocalStateRepository,
     refreshRelayLists: false,
     deliveryMode: "standard",
   })
@@ -728,6 +749,8 @@ export async function publishShopperPresets({
     createdAt,
     relayUrls: publish.successfulRelayUrls,
     fetchEvents: dependencies.fetchEvents ?? fetchEventsFanoutDetailed,
+    accountNetworkLocalStateRepository:
+      dependencies.accountNetworkLocalStateRepository,
     waitForRetry:
       dependencies.waitForConvergenceRetry ??
       (() =>

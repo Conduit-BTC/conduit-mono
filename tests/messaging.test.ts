@@ -7,9 +7,11 @@ import {
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetInboxRelayCache,
+  applyAccountNetworkRelayExclusion,
   buildDirectMessageRumor,
   classifyPrivateMessageKind,
   createInMemoryInboxDeclarationEvidenceRepository,
+  createInMemoryAccountNetworkLocalStateRepository,
   createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
   decryptLegacyDirectMessage,
@@ -718,6 +720,152 @@ describe("publishPrivateMessage", () => {
     )
     expect(wrapped).toBe(false)
     expect(published).toBe(false)
+  })
+
+  it("intersects declared recipient inboxes with the explicit sender account policy", async () => {
+    const excludedRelayUrl = "wss://removed-inbox.conduit.market"
+    const eligibleRelayUrl = "wss://eligible-inbox.conduit.market"
+    const repository = createInMemoryAccountNetworkLocalStateRepository(
+      [],
+      () => 100
+    )
+    await repository.update(INBOX_OWNER, (state) =>
+      applyAccountNetworkRelayExclusion(state, {
+        relayUrl: excludedRelayUrl,
+        relayListFrontier: { eventId: null, createdAt: null },
+        inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        committedAt: 100,
+      })
+    )
+    let publishOptions: Parameters<
+      NonNullable<Parameters<typeof publishPrivateMessage>[0]["publishFn"]>
+    >[1]
+
+    const result = await publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+        pubkey: INBOX_OWNER,
+        tags: [["p", INBOX_PEER]],
+      }),
+      senderPubkey: INBOX_OWNER,
+      recipientPubkey: INBOX_PEER,
+      accountPubkey: INBOX_OWNER,
+      accountNetworkLocalStateRepository: repository,
+      signer: {
+        user: async () => ({ pubkey: INBOX_OWNER }),
+      } as unknown as NDKSigner,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      selfCopy: false,
+      recipientInboxRelays: [excludedRelayUrl, eligibleRelayUrl],
+      inspectOwnInboxReadiness: async () => ({
+        state: "ready",
+        eventId: "a".repeat(64),
+        relayUrls: [eligibleRelayUrl],
+        stale: false,
+        distributionRepairable: false,
+      }),
+      giftWrapFn: (async () => wrap("eligible-recipient-wrap")) as never,
+      publishFn: (async (_event, options) => {
+        publishOptions = options
+        return {
+          successfulRelayUrls: [...(options.exclusiveRelayUrls ?? [])],
+          failedRelayUrls: [],
+        } as never
+      }) as never,
+    })
+
+    expect(result.deliveryRoute).toBe("declared_inbox")
+    expect(publishOptions!.exclusiveRelayUrls).toEqual([eligibleRelayUrl])
+    expect(publishOptions!.accountPubkey).toBe(INBOX_OWNER)
+    expect(publishOptions!.accountNetworkLocalStateRepository).toBe(repository)
+  })
+
+  it("blocks when every declared recipient inbox is excluded without compatibility substitution", async () => {
+    const excludedRelayUrl = "wss://removed-inbox.conduit.market"
+    const compatibilityRelayUrl = "wss://compatibility.conduit.market"
+    const repository = createInMemoryAccountNetworkLocalStateRepository(
+      [],
+      () => 100
+    )
+    await repository.update(INBOX_OWNER, (state) =>
+      applyAccountNetworkRelayExclusion(state, {
+        relayUrl: excludedRelayUrl,
+        relayListFrontier: { eventId: null, createdAt: null },
+        inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        committedAt: 100,
+      })
+    )
+    const order = orderRumor({
+      pubkey: INBOX_OWNER,
+      tags: [
+        ["p", INBOX_PEER],
+        ["type", "message"],
+        ["order", "order-id"],
+      ],
+    })
+    const validatedOrderScope = createValidatedOrderRouteScope({
+      rumor: order,
+      orderId: "order-id",
+      senderPubkey: INBOX_OWNER,
+      recipientPubkey: INBOX_PEER,
+    })
+    let wraps = 0
+    let publishes = 0
+    let compatibilityLookups = 0
+
+    await expect(
+      publishPrivateMessage({
+        rumor: order,
+        senderPubkey: INBOX_OWNER,
+        recipientPubkey: INBOX_PEER,
+        accountPubkey: INBOX_OWNER,
+        accountNetworkLocalStateRepository: repository,
+        signer: {
+          user: async () => ({ pubkey: INBOX_OWNER }),
+        } as unknown as NDKSigner,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [excludedRelayUrl],
+        validatedOrderScope,
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: [compatibilityRelayUrl],
+        },
+        resolveCompatibilityRecipientReadRelays: async () => {
+          compatibilityLookups += 1
+          return [compatibilityRelayUrl]
+        },
+        giftWrapFn: (async () => {
+          wraps += 1
+          return wrap("unexpected")
+        }) as never,
+        publishFn: (async () => {
+          publishes += 1
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toMatchObject({ reason: "recipient_relays_excluded" })
+    expect(compatibilityLookups).toBe(0)
+    expect(wraps).toBe(0)
+    expect(publishes).toBe(0)
+  })
+
+  it("requires an explicit account scope to match the sender", async () => {
+    await expect(
+      publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          pubkey: INBOX_OWNER,
+          tags: [["p", INBOX_PEER]],
+        }),
+        senderPubkey: INBOX_OWNER,
+        recipientPubkey: INBOX_PEER,
+        accountPubkey: INBOX_PEER,
+        signer: {
+          user: async () => ({ pubkey: INBOX_OWNER }),
+        } as unknown as NDKSigner,
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+      })
+    ).rejects.toThrow("account does not match sender")
   })
 
   it("blocks kind-14 sends for every non-ready sender state before wrapping", async () => {
@@ -2553,6 +2701,8 @@ describe("publishPrivateMessageRelayDeclaration", () => {
   it("signs and publishes an exact kind-10050 declaration to discovery targets", async () => {
     __resetInboxRelayCache()
     const calls: string[] = []
+    const accountNetworkRepository =
+      createInMemoryAccountNetworkLocalStateRepository()
     let publishedEvent: NDKEvent | undefined
     let publishOptions: Record<string, unknown> | undefined
 
@@ -2563,6 +2713,7 @@ describe("publishPrivateMessageRelayDeclaration", () => {
       expectedFrontierEventId: null,
       nowMs: () => 1_234_000,
       evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
+      accountNetworkLocalStateRepository: accountNetworkRepository,
       relayConfig: {
         dmInboxDefaultRelayUrls: [
           "wss://inbox-a.conduit.market/",
@@ -2610,6 +2761,8 @@ describe("publishPrivateMessageRelayDeclaration", () => {
       intent: "author_event",
       authorPubkey: INBOX_OWNER,
       authenticatedPubkey: INBOX_OWNER,
+      accountPubkey: INBOX_OWNER,
+      accountNetworkLocalStateRepository: accountNetworkRepository,
       exclusiveRelayUrls: [
         "wss://read-a.conduit.market",
         "wss://read-b.conduit.market",
@@ -2934,13 +3087,20 @@ describe("publishPrivateMessageRelayDeclaration", () => {
       ],
       1234
     )
+    const accountNetworkRepository =
+      createInMemoryAccountNetworkLocalStateRepository()
     let published: NDKEvent | undefined
     const event = await redistributePrivateMessageRelayDeclaration({
       pubkey: INBOX_OWNER,
       signedEvent: retained,
+      accountNetworkLocalStateRepository: accountNetworkRepository,
       getDiscoveryRelayUrls: () => ["wss://shared.conduit.market"],
       publishFn: (async (candidate, options) => {
         published = candidate
+        expect(options.accountPubkey).toBe(INBOX_OWNER)
+        expect(options.accountNetworkLocalStateRepository).toBe(
+          accountNetworkRepository
+        )
         expect(options.exclusiveRelayUrls).toEqual([
           "wss://shared.conduit.market",
         ])
@@ -2962,7 +3122,14 @@ describe("publishPrivateMessageRelayDeclaration", () => {
       ["wss://inbox.example"],
       1234
     )
-    const attempts: Array<{ relays: readonly string[]; raw: unknown }> = []
+    const accountNetworkRepository =
+      createInMemoryAccountNetworkLocalStateRepository()
+    const attempts: Array<{
+      relays: readonly string[]
+      raw: unknown
+      accountPubkey: string | null | undefined
+      accountNetworkRepository: unknown
+    }> = []
 
     await redistributePrivateMessageRelayDeclarationAcrossPlans({
       pubkey: INBOX_OWNER,
@@ -2975,9 +3142,15 @@ describe("publishPrivateMessageRelayDeclaration", () => {
         "wss://shared-b.example",
         "wss://shared-c.example",
       ],
+      accountNetworkLocalStateRepository: accountNetworkRepository,
       publishFn: (async (event, options) => {
         const relays = options.exclusiveRelayUrls ?? []
-        attempts.push({ relays, raw: structuredClone(event.rawEvent()) })
+        attempts.push({
+          relays,
+          raw: structuredClone(event.rawEvent()),
+          accountPubkey: options.accountPubkey,
+          accountNetworkRepository: options.accountNetworkLocalStateRepository,
+        })
         return { successfulRelayUrls: [relays[0]], failedRelayUrls: [] }
       }) as never,
     })
@@ -2992,6 +3165,16 @@ describe("publishPrivateMessageRelayDeclaration", () => {
       JSON.parse(JSON.stringify(retained)),
       JSON.parse(JSON.stringify(retained)),
     ])
+    expect(attempts.map((attempt) => attempt.accountPubkey)).toEqual([
+      INBOX_OWNER,
+      INBOX_OWNER,
+    ])
+    expect(
+      attempts.every(
+        (attempt) =>
+          attempt.accountNetworkRepository === accountNetworkRepository
+      )
+    ).toBe(true)
   })
 
   it("recovers through current shared relays when every stored target is dead", async () => {

@@ -1071,7 +1071,7 @@ describe("relay settings protocol helpers", () => {
     ).toEqual(["wss://fallback.example"])
   })
 
-  it("blocks unsafe tiny NIP-65 publishes", () => {
+  it("allows one active relay when it is a Publish relay", () => {
     expect(() =>
       assertSafeNip65RelayList(
         createRelaySettingsFromPreferences([
@@ -1082,7 +1082,7 @@ describe("relay settings protocol helpers", () => {
           },
         ]).entries
       )
-    ).toThrow("Refusing to publish a tiny NIP-65 relay list")
+    ).not.toThrow()
 
     expect(() =>
       assertSafeNip65RelayList(
@@ -1102,7 +1102,7 @@ describe("relay settings protocol helpers", () => {
     ).not.toThrow()
   })
 
-  it("blocks NIP-65 publishes without an OUT relay", () => {
+  it("blocks NIP-65 publishes without a Publish relay", () => {
     expect(() =>
       assertSafeNip65RelayList(
         createRelaySettingsFromPreferences([
@@ -1118,7 +1118,7 @@ describe("relay settings protocol helpers", () => {
           },
         ]).entries
       )
-    ).toThrow("without an OUT relay")
+    ).toThrow("without a Publish relay")
   })
 
   it("applies safe defaults when creating an entry from a scan", () => {

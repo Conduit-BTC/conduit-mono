@@ -92,6 +92,7 @@ export async function deliverSignedProductEvent(
       intent: "author_event",
       authorPubkey: merchantPubkey,
       authenticatedPubkey: merchantPubkey,
+      accountPubkey: merchantPubkey,
       deliveryMode: "critical",
       extraRelayUrls: options.extraRelayUrls,
     })
@@ -661,6 +662,7 @@ export async function signAndPublishProductWriteBundle(input: {
       intent: "author_event",
       authorPubkey: signerPubkey,
       authenticatedPubkey: signerPubkey,
+      accountPubkey: signerPubkey,
       deliveryMode: "critical",
     })
     if (delivery.successfulRelayUrls.length === 0) {

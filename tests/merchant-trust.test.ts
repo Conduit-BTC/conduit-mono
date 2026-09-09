@@ -653,6 +653,9 @@ describe("NIP-02 merchant trust helpers", () => {
         },
         {
           now: () => 20_000_000,
+          accountNetworkLocalStateRepository: {
+            get: async () => undefined,
+          },
           resolveRelayLists: async () =>
             new Map([
               [viewerPubkey, relayList(viewerPubkey, [], [publicRelay])],
@@ -663,11 +666,18 @@ describe("NIP-02 merchant trust helpers", () => {
       expect(read.events).toEqual([])
       expect(read.authors[0]?.relays.length).toBeGreaterThan(0)
       expect(
-        read.authors[0]?.relays.every(
+        read.authors[0]?.relays.some(
           (relay) =>
             relay.status === "success" &&
             relay.eventCount === 0 &&
             relay.rejectedEventCount === 1
+        )
+      ).toBe(true)
+      expect(
+        read.authors[0]?.relays.every(
+          (relay) =>
+            relay.status === "failed" ||
+            (relay.eventCount === 0 && relay.rejectedEventCount === 1)
         )
       ).toBe(true)
       expect(() =>

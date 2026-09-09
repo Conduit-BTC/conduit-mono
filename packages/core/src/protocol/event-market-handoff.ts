@@ -724,6 +724,7 @@ export type EventMarketPrivateTransportOptions = Pick<
   | "recipientInboxRelays"
   | "senderInboxRelays"
   | "resolveInboxRelays"
+  | "accountNetworkLocalStateRepository"
   | "giftWrapFn"
   | "publishFn"
   | "waitForSignerVisibility"
@@ -1050,6 +1051,7 @@ async function publishEventMarketPrivatePayload(input: {
   const result = await publishPrivateMessage({
     rumor: input.rumor,
     senderPubkey: expectedSender(input.payload),
+    accountPubkey: expectedSender(input.payload),
     recipientPubkey: expectedRecipient(input.payload),
     signer: input.signer,
     rumorKind: EVENT_KINDS.ORDER,
@@ -1328,6 +1330,7 @@ export async function retryEventMarketPrivateDelivery(input: {
           intent: "recipient_event",
           authorPubkey: input.record.senderPubkey,
           authenticatedPubkey: input.record.senderPubkey,
+          accountPubkey: input.record.senderPubkey,
           recipientPubkeys: [input.record.recipientPubkey],
           exclusiveRelayUrls: pendingRecipientRelayUrls,
           deliveryMode: "critical",
@@ -1379,6 +1382,7 @@ export async function retryEventMarketPrivateDelivery(input: {
               intent: "recipient_event",
               authorPubkey: input.record.senderPubkey,
               authenticatedPubkey: input.record.senderPubkey,
+              accountPubkey: input.record.senderPubkey,
               recipientPubkeys: [input.record.senderPubkey],
               exclusiveRelayUrls: pendingSelfRelayUrls,
               deliveryMode: "critical",

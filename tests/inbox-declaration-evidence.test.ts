@@ -3,13 +3,20 @@ import { schnorr } from "../packages/core/node_modules/@noble/curves/secp256k1.j
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 
 import {
+  applyInboxDeclarationCutoverExclusions,
+  applyInboxDeclarationDistributionOutcomes,
+  applyInboxDeclarationDistributionStage,
   applyInboxDeclarationEvidenceMerge,
   cloneInboxDeclarationEventEvidence,
   cloneInboxDeclarationEvidenceRecord,
   createInMemoryInboxDeclarationEvidenceRepository,
   getInboxDeclarationEvidence,
+  getActiveInboxCutoverRecoveryRelayUrls,
+  INBOX_DECLARATION_CUTOVER_GRACE_MS,
+  INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
   mergeInboxDeclarationEvidence,
   stageInboxDeclarationDistribution,
+  type NetworkPreferenceRelayOutcome,
 } from "@conduit/core/protocol/inbox-declaration-evidence"
 import { readRetainedInboxDeclarationEvidence } from "@conduit/core/protocol/private-message-routing"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
@@ -57,8 +64,260 @@ function declarationEvent(input: {
   }
 }
 
+function pendingRelayOutcome(
+  relayUrl: string
+): NetworkPreferenceRelayOutcome {
+  return {
+    relayUrl,
+    publishStatus: "pending",
+    publishAttemptCount: 0,
+    readbackStatus: "pending",
+    readbackAttemptCount: 0,
+  }
+}
+
 describe("durable inbox declaration evidence", () => {
-  it("keeps staged bytes pending until exact shared-source confirmation", async () => {
+  it("keeps exact per-relay outcomes immutable while retrying only unresolved work", () => {
+    const signedEvent = declarationEvent({ createdAt: 100 })
+    const exactSignedBytes = structuredClone(signedEvent)
+    const relayOutcomes = [
+      pendingRelayOutcome("wss://relay.damus.io"),
+      pendingRelayOutcome("wss://nos.lol"),
+    ]
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: ACCOUNT_A,
+      signedEvent,
+      publishRelayUrls: ["wss://relay.damus.io", "wss://nos.lol"],
+      relayOutcomes,
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+
+    signedEvent.tags[0]![1] = "wss://caller-mutation.example"
+    relayOutcomes[0]!.publishStatus = "rejected"
+    expect(staged.pendingDistribution).toEqual({
+      signedEvent: exactSignedBytes,
+      publishRelayUrls: ["wss://relay.damus.io", "wss://nos.lol"],
+      relayOutcomes: [
+        pendingRelayOutcome("wss://relay.damus.io"),
+        pendingRelayOutcome("wss://nos.lol"),
+      ],
+      stagedAt: 1_000,
+    })
+
+    const firstAttempt = applyInboxDeclarationDistributionOutcomes(staged, {
+      publish: [
+        { relayUrl: "wss://nos.lol", status: "timed_out" },
+        { relayUrl: "wss://relay.damus.io", status: "acked" },
+      ],
+      observedAt: 1_100,
+    })
+    expect(firstAttempt.current.signedEvent).toEqual(exactSignedBytes)
+    expect(firstAttempt.pendingDistribution).toEqual({
+      signedEvent: exactSignedBytes,
+      publishRelayUrls: ["wss://relay.damus.io", "wss://nos.lol"],
+      relayOutcomes: [
+        {
+          relayUrl: "wss://relay.damus.io",
+          publishStatus: "acked",
+          publishAttemptCount: 1,
+          publishAttemptedAt: 1_100,
+          readbackStatus: "pending",
+          readbackAttemptCount: 0,
+        },
+        {
+          relayUrl: "wss://nos.lol",
+          publishStatus: "timed_out",
+          publishAttemptCount: 1,
+          publishAttemptedAt: 1_100,
+          readbackStatus: "pending",
+          readbackAttemptCount: 0,
+        },
+      ],
+      stagedAt: 1_000,
+    })
+    expect(staged.pendingDistribution?.relayOutcomes).toEqual([
+      pendingRelayOutcome("wss://relay.damus.io"),
+      pendingRelayOutcome("wss://nos.lol"),
+    ])
+
+    const retried = applyInboxDeclarationDistributionOutcomes(firstAttempt, {
+      publish: [
+        { relayUrl: "wss://relay.damus.io", status: "rejected" },
+        { relayUrl: "wss://nos.lol", status: "acked" },
+      ],
+      observedAt: 1_200,
+    })
+    expect(retried.current.signedEvent).toEqual(exactSignedBytes)
+    expect(retried.pendingDistribution?.signedEvent).toEqual(exactSignedBytes)
+    expect(retried.pendingDistribution?.publishRelayUrls).toEqual(
+      staged.pendingDistribution?.publishRelayUrls
+    )
+    expect(retried.pendingDistribution?.stagedAt).toBe(1_000)
+    expect(retried.pendingDistribution?.relayOutcomes).toEqual([
+      {
+        relayUrl: "wss://relay.damus.io",
+        publishStatus: "acked",
+        publishAttemptCount: 1,
+        publishAttemptedAt: 1_100,
+        readbackStatus: "pending",
+        readbackAttemptCount: 0,
+      },
+      {
+        relayUrl: "wss://nos.lol",
+        publishStatus: "acked",
+        publishAttemptCount: 2,
+        publishAttemptedAt: 1_200,
+        readbackStatus: "pending",
+        readbackAttemptCount: 0,
+      },
+    ])
+  })
+
+  it("starts the seven-day cutover only when exact shared-set readback completes", () => {
+    const replacement = declarationEvent({
+      createdAt: 200,
+      tags: [["relay", "wss://relay.ditto.pub"]],
+    })
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: ACCOUNT_A,
+      signedEvent: replacement,
+      publishRelayUrls: ["wss://relay.damus.io", "wss://nos.lol"],
+      relayOutcomes: [
+        pendingRelayOutcome("wss://relay.damus.io"),
+        pendingRelayOutcome("wss://nos.lol"),
+      ],
+      previousRelayUrls: [
+        "wss://relay.primal.net",
+        "wss://relay.ditto.pub",
+      ],
+      cutoverPolicyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      cutoverGraceMs: INBOX_DECLARATION_CUTOVER_GRACE_MS,
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+
+    expect(staged.cutoverRecovery).toEqual({
+      policyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      replacementEventId: replacement.id,
+      relayUrls: ["wss://relay.primal.net"],
+    })
+    expect(Object.hasOwn(staged.cutoverRecovery!, "graceMs")).toBe(false)
+
+    const partiallyReadBack = applyInboxDeclarationDistributionOutcomes(
+      staged,
+      {
+        readback: [
+          { relayUrl: "wss://relay.damus.io", status: "observed" },
+        ],
+        observedAt: 2_000,
+      }
+    )
+    expect(partiallyReadBack.pendingDistribution?.relayOutcomes).toEqual([
+      {
+        relayUrl: "wss://relay.damus.io",
+        publishStatus: "pending",
+        publishAttemptCount: 0,
+        readbackStatus: "observed",
+        readbackAttemptCount: 1,
+        readbackAttemptedAt: 2_000,
+        observedAt: 2_000,
+      },
+      pendingRelayOutcome("wss://nos.lol"),
+    ])
+    expect(partiallyReadBack.cutoverRecovery).toEqual(
+      staged.cutoverRecovery
+    )
+
+    const nonRegressed = applyInboxDeclarationDistributionOutcomes(
+      partiallyReadBack,
+      {
+        readback: [
+          { relayUrl: "wss://relay.damus.io", status: "absent" },
+        ],
+        observedAt: 2_500,
+      }
+    )
+    expect(nonRegressed.pendingDistribution?.relayOutcomes?.[0]).toEqual(
+      partiallyReadBack.pendingDistribution?.relayOutcomes?.[0]
+    )
+    expect(nonRegressed.cutoverRecovery).toEqual(staged.cutoverRecovery)
+
+    const confirmed = applyInboxDeclarationDistributionOutcomes(
+      nonRegressed,
+      {
+        readback: [
+          { relayUrl: "wss://nos.lol", status: "absent" },
+        ],
+        observedAt: 3_000,
+      }
+    )
+    expect(confirmed.current.signedEvent).toEqual(replacement)
+    expect(confirmed.pendingDistribution).toBeUndefined()
+    expect(confirmed.cutoverRecovery).toEqual({
+      policyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      replacementEventId: replacement.id,
+      relayUrls: ["wss://relay.primal.net"],
+      readbackObservedAt: 3_000,
+      expiresAt: 3_000 + INBOX_DECLARATION_CUTOVER_GRACE_MS,
+    })
+    expect(
+      getActiveInboxCutoverRecoveryRelayUrls(
+        confirmed,
+        3_000 + INBOX_DECLARATION_CUTOVER_GRACE_MS - 1
+      )
+    ).toEqual(["wss://relay.primal.net"])
+    expect(
+      getActiveInboxCutoverRecoveryRelayUrls(
+        confirmed,
+        3_000 + INBOX_DECLARATION_CUTOVER_GRACE_MS
+      )
+    ).toEqual([])
+
+    const excluded = applyInboxDeclarationCutoverExclusions(confirmed, [
+      "wss://relay.primal.net/",
+    ])
+    expect(excluded.cutoverRecovery).toBeUndefined()
+    expect(
+      getActiveInboxCutoverRecoveryRelayUrls(excluded, 3_001)
+    ).toEqual([])
+  })
+
+  it("lets stronger same-kind evidence supersede pending and cutover recovery", () => {
+    const pending = declarationEvent({
+      createdAt: 200,
+      tags: [["relay", "wss://relay.ditto.pub"]],
+    })
+    const stronger = declarationEvent({
+      createdAt: 201,
+      tags: [["relay", "wss://relay.primal.net"]],
+    })
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: ACCOUNT_A,
+      signedEvent: pending,
+      publishRelayUrls: ["wss://nos.lol"],
+      relayOutcomes: [pendingRelayOutcome("wss://nos.lol")],
+      previousRelayUrls: ["wss://relay.damus.io"],
+      cutoverPolicyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      cutoverGraceMs: INBOX_DECLARATION_CUTOVER_GRACE_MS,
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+
+    const superseded = applyInboxDeclarationEvidenceMerge(staged, {
+      pubkey: ACCOUNT_A,
+      signedEvent: stronger,
+      sourceRelayUrls: ["wss://nos.lol"],
+      sharedSourceRelayUrls: ["wss://nos.lol"],
+      observedAt: 2_000,
+    })
+
+    expect(superseded.current.signedEvent).toEqual(stronger)
+    expect(superseded.pendingDistribution).toBeUndefined()
+    expect(superseded.cutoverRecovery).toBeUndefined()
+  })
+
+  it("keeps staged bytes and cutover pending until exact shared-set confirmation", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
     const signedEvent = declarationEvent({ createdAt: 100 })
 
@@ -67,6 +326,9 @@ describe("durable inbox declaration evidence", () => {
         pubkey: ACCOUNT_A,
         signedEvent,
         publishRelayUrls: ["wss://shared-b.example", "wss://shared-a.example"],
+        previousRelayUrls: ["wss://previous.example"],
+        cutoverPolicyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+        cutoverGraceMs: INBOX_DECLARATION_CUTOVER_GRACE_MS,
         expectedCurrentEventId: null,
         stagedAt: 1_000,
       },
@@ -81,13 +343,50 @@ describe("durable inbox declaration evidence", () => {
       stagedAt: 1_000,
     })
 
-    const confirmed = await mergeInboxDeclarationEvidence(
+    const partiallyObserved = await mergeInboxDeclarationEvidence(
       {
         pubkey: ACCOUNT_A,
         signedEvent,
         sourceRelayUrls: ["wss://shared-a.example"],
         sharedSourceRelayUrls: ["wss://shared-a.example"],
         observedAt: 2_000,
+        lookup: {
+          observedAt: 2_000,
+          coverage: "partial",
+          hadEvent: true,
+          eventId: signedEvent.id,
+        },
+      },
+      repository
+    )
+
+    expect(partiallyObserved.pendingDistribution).toBeDefined()
+    expect(partiallyObserved.cutoverRecovery).toEqual({
+      policyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      replacementEventId: signedEvent.id,
+      relayUrls: ["wss://previous.example"],
+    })
+
+    const confirmed = await mergeInboxDeclarationEvidence(
+      {
+        pubkey: ACCOUNT_A,
+        signedEvent,
+        sourceRelayUrls: [
+          "wss://shared-b.example",
+          "wss://shared-a.example",
+        ],
+        sharedSourceRelayUrls: [
+          "wss://shared-b.example",
+          "wss://shared-a.example",
+        ],
+        observedAt: 3_000,
+        completeObservedAt: 3_000,
+        lookup: {
+          observedAt: 3_000,
+          coverage: "complete",
+          hadEvent: true,
+          eventId: signedEvent.id,
+        },
       },
       repository
     )
@@ -95,8 +394,16 @@ describe("durable inbox declaration evidence", () => {
     expect(confirmed.pendingDistribution).toBeUndefined()
     expect(confirmed.current.sharedSourceRelayUrls).toEqual([
       "wss://shared-a.example",
+      "wss://shared-b.example",
     ])
     expect(confirmed.lastUsable?.signedEvent).toEqual(signedEvent)
+    expect(confirmed.cutoverRecovery).toEqual({
+      policyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      replacementEventId: signedEvent.id,
+      relayUrls: ["wss://previous.example"],
+      readbackObservedAt: 3_000,
+      expiresAt: 3_000 + INBOX_DECLARATION_CUTOVER_GRACE_MS,
+    })
   })
 
   it("rejects a same-id stage with different signed bytes or targets", async () => {

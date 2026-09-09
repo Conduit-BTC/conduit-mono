@@ -5,6 +5,7 @@ import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
+  type FetchEventsFanoutOptions,
   type FetchEventsFanoutResult,
 } from "./ndk"
 import {
@@ -58,6 +59,10 @@ export interface RelayListLookupOptions {
    * are limited to public-network wss:// destinations.
    */
   allowInsecureRelayUrlsForPubkey?: string | null
+  /** Account whose durable whole-relay exclusions govern this network lookup. */
+  accountPubkey?: string | null
+  /** Injectable durable policy reader for the final per-relay I/O gate. */
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   /** Override `Date.now()` (test seam). */
   now?: () => number
   /** Cancel obsolete network work, such as after changing the selected order. */
@@ -369,21 +374,30 @@ async function retainStrongestRelayList(
 async function runFetch(
   filter: NDKFilter,
   relayUrls: readonly string[],
-  signal?: AbortSignal
+  options: Pick<
+    RelayListLookupOptions,
+    "accountPubkey" | "accountNetworkLocalStateRepository" | "signal"
+  >
 ): Promise<NDKEvent[]> {
   const impl = testOverrides.fetchEventsFanout ?? fetchEventsFanout
   return (await impl(filter, {
     relayUrls: relayUrls.length > 0 ? [...relayUrls] : undefined,
+    accountPubkey: options.accountPubkey,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
     connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
     fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
-    signal,
+    signal: options.signal,
   })) as NDKEvent[]
 }
 
 async function runFetchDetailed(
   filter: NDKFilter,
   relayUrls: readonly string[],
-  signal?: AbortSignal
+  options: Pick<
+    RelayListLookupOptions,
+    "accountPubkey" | "accountNetworkLocalStateRepository" | "signal"
+  >
 ): Promise<FetchEventsFanoutResult> {
   if (relayUrls.length === 0) {
     return { events: [], relays: [], eventsVerified: true }
@@ -391,19 +405,25 @@ async function runFetchDetailed(
   if (testOverrides.fetchEventsFanoutDetailed) {
     return await testOverrides.fetchEventsFanoutDetailed(filter, {
       relayUrls: [...relayUrls],
+      accountPubkey: options.accountPubkey,
+      accountNetworkLocalStateRepository:
+        options.accountNetworkLocalStateRepository,
       connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
       fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
       skipHealthFilter: true,
-      signal,
+      signal: options.signal,
     })
   }
   if (testOverrides.fetchEventsFanout) {
     const events = await testOverrides.fetchEventsFanout(filter, {
       relayUrls: [...relayUrls],
+      accountPubkey: options.accountPubkey,
+      accountNetworkLocalStateRepository:
+        options.accountNetworkLocalStateRepository,
       connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
       fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
       skipHealthFilter: true,
-      signal,
+      signal: options.signal,
     })
     return {
       events,
@@ -417,10 +437,13 @@ async function runFetchDetailed(
   }
   return await fetchEventsFanoutDetailed(filter, {
     relayUrls: [...relayUrls],
+    accountPubkey: options.accountPubkey,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
     connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
     fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
     skipHealthFilter: true,
-    signal,
+    signal: options.signal,
   })
 }
 
@@ -461,7 +484,7 @@ export async function getRelayList(
     const events = await runFetch(
       { kinds: [EVENT_KINDS.RELAY_LIST], authors: [pubkey], limit: 5 },
       relayUrls,
-      opts.signal
+      opts
     )
     throwIfLookupAborted(opts.signal)
     const latest = pickLatestRelayListEvent(events, pubkey)
@@ -581,7 +604,7 @@ export async function getRelayListsDetailed(
         limit: Math.max(missing.length * 2, 10),
       },
       relayUrls,
-      opts.signal
+      opts
     )
     throwIfLookupAborted(opts.signal)
     const statusByRelay = new Map(

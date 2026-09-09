@@ -85,14 +85,14 @@ Invariants:
   may still send there and those messages can be missed.
 - Legacy NIP-65 draft import begins only after complete bounded discovery
   establishes scoped absence for `kind:10002`; valid signed NIP-65 suppresses
-  that import. Capturing bounded read-only secure-IN recovery is independent and
-  occurs even when signed `kind:10002` exists. Migration persists and verifies
-  every eligible replacement record before retiring legacy keys. Incomplete
-  migration retains or recovers the prior read path and remains retryable;
-  partial new records are not authority. The recovery lane never writes or
-  publishes and ends only after a usable `kind:10050` replacement with one to
-  three secure relays is fully signed and durably staged, or after explicit
-  discard recorded by a durable local migration tombstone.
+  that import. Legacy NIP-65 roles are never reinterpreted as NIP-17 inbox
+  evidence. Builds that already committed an explicit bounded secure-IN
+  recovery record retain it read-only while it converges; new migration runs do
+  not create one from role drafts. The recovery lane never writes or publishes.
+  An ordinary replacement moves those URLs into the versioned cutover lane: its
+  seven-day grace starts only after exact shared-set readback of a usable
+  `kind:10050` replacement. Whole-relay removal ends recovery for that URL
+  immediately after the atomic local commit.
 - Relay-settings changes expire evidence freshness and trigger rediscovery; they
   do not delete the account-scoped frontier or its last-usable relay set.
 - Only an exact-event observation from a completed bounded relay plan advances
@@ -217,11 +217,12 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
   no read or write uses `declared-a`, even while ACK/readback is pending. The
   warning explains that stale-client sends there can be missed.
 - Legacy local migration when signed NIP-65 already exists: suppress draft
-  import, persist and verify the bounded read-only inbox-recovery record, then
-  retire the old key. Signer cancellation or an unrelated NIP-65 update keeps
-  recovery reads; no legacy relay becomes a write target. Only a usable, fully
-  signed and durably staged kind `10050` replacement or explicit discard with a
-  durable migration tombstone ends that recovery.
+  import and retire the obsolete role source after its migration marker is
+  durable. If an older build already committed an explicit bounded inbox
+  recovery record, retain it as read-only evidence; never infer one from the
+  NIP-65 draft. A usable replacement keeps those reads through the seven-day
+  cutover that starts after exact shared-set readback. Whole-relay removal ends
+  recovery for that URL immediately.
 - Complete-empty or partial rediscovery after a valid declaration: the retained
   frontier becomes stale/degraded but remains the declared route; it is not
   deleted.

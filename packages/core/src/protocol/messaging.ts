@@ -22,6 +22,11 @@ import {
   getNdk,
 } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
+import {
+  filterEligibleAccountRelayUrls,
+  normalizeAccountNetworkPubkey,
+  type AccountNetworkLocalStateRepository,
+} from "./account-network-local-state"
 import { parseOrderMessageRumorEvent } from "./orders"
 import {
   __resetInboxDeclarationCache,
@@ -718,6 +723,17 @@ export interface PublishPrivateMessageInput {
   rumor: NDKEvent
   senderPubkey: string
   recipientPubkey: string
+  /**
+   * Explicit signed-in account whose durable whole-relay exclusions apply to
+   * discovery and delivery. Omit for guest/public sends; this is never inferred
+   * from the rumor author or recipient.
+   */
+  accountPubkey?: string | null
+  /** Injectable durable-state reader for deterministic eligibility tests. */
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
   signer: NDKSigner
   rumorKind: typeof EVENT_KINDS.DIRECT_MESSAGE | typeof EVENT_KINDS.ORDER
   /** Wrap a sender self-copy for local recovery. Default true. */
@@ -875,6 +891,7 @@ const ORDER_RELAY_RETRY_RETENTION_MS = 24 * 60 * 60 * 1_000
 export type PrivateMessageRelayReadinessReason =
   | "sender_not_ready"
   | "recipient_not_ready"
+  | "recipient_relays_excluded"
   | "recipient_lookup_failed"
   | "recipient_declaration_distribution_pending"
   | "recipient_declaration_signed_empty"
@@ -884,6 +901,8 @@ const READINESS_MESSAGES: Record<PrivateMessageRelayReadinessReason, string> = {
   sender_not_ready:
     "Your current NIP-17 inbox declaration is not ready for direct messages.",
   recipient_not_ready: "Recipient has not declared NIP-17 inbox relays.",
+  recipient_relays_excluded:
+    "Recipient inbox relays are excluded by your Network settings.",
   recipient_lookup_failed: "Recipient inbox relay discovery failed.",
   recipient_declaration_distribution_pending:
     "Recipient inbox declaration has not been confirmed on discovery relays.",
@@ -917,6 +936,16 @@ export async function publishPrivateMessage(
 
   const senderPubkey = input.senderPubkey.trim().toLowerCase()
   const recipientPubkey = input.recipientPubkey.trim().toLowerCase()
+  let accountPubkey: string | null = null
+  if (input.accountPubkey !== undefined && input.accountPubkey !== null) {
+    accountPubkey = normalizeAccountNetworkPubkey(input.accountPubkey)
+    if (!accountPubkey) {
+      throw new Error("Private message account pubkey is invalid")
+    }
+    if (accountPubkey !== senderPubkey) {
+      throw new Error("Private message account does not match sender")
+    }
+  }
   if (input.rumor.pubkey?.trim().toLowerCase() !== senderPubkey) {
     throw new Error("Private message rumor author does not match sender")
   }
@@ -960,11 +989,29 @@ export async function publishPrivateMessage(
     senderPubkey,
     recipientPubkey,
   })
-  const recipientDeclaration = await resolveDeclarationForSend(
+  const resolvedRecipientDeclaration = await resolveDeclarationForSend(
     input.recipientPubkey,
     input.recipientInboxRelays,
-    input.resolveInboxRelays
+    input.resolveInboxRelays,
+    false,
+    accountPubkey,
+    input.accountNetworkLocalStateRepository
   )
+  const recipientDeclaration = await applyAccountRelayEligibilityToDeclaration(
+    resolvedRecipientDeclaration,
+    accountPubkey,
+    input.accountNetworkLocalStateRepository
+  )
+  if (
+    resolvedRecipientDeclaration.state === "declared" &&
+    resolvedRecipientDeclaration.relayUrls.length > 0 &&
+    recipientDeclaration.relayUrls.length === 0
+  ) {
+    // Keep a valid kind:10050 declaration authoritative even when local policy
+    // excludes every target. Do not reinterpret it as missing and activate the
+    // non-standard compatibility lane.
+    throw new PrivateMessageRelayReadinessError("recipient_relays_excluded")
+  }
   const compatibilityRecipientReadRelays =
     validatedOrder && recipientDeclaration.state !== "declared"
       ? await resolveCompatibilityRecipientReadRelays(
@@ -1006,12 +1053,20 @@ export async function publishPrivateMessage(
     if (senderReadiness.state !== "ready") {
       throw new PrivateMessageRelayReadinessError("sender_not_ready")
     }
+    const senderRelayUrls = await filterRelayUrlsForAccount(
+      senderReadiness.relayUrls,
+      accountPubkey,
+      input.accountNetworkLocalStateRepository
+    )
+    if (senderRelayUrls.length === 0) {
+      throw new PrivateMessageRelayReadinessError("sender_not_ready")
+    }
     senderRoute = selectPrivateMessageDeliveryRoute({
       rumorKind: input.rumorKind,
       declaration: {
         pubkey: senderPubkey,
         state: "declared",
-        relayUrls: senderReadiness.relayUrls,
+        relayUrls: senderRelayUrls,
         stale: senderReadiness.stale,
         fetchedAt: Date.now(),
       },
@@ -1022,7 +1077,9 @@ export async function publishPrivateMessage(
       input.senderPubkey,
       input.senderInboxRelays,
       input.resolveInboxRelays,
-      true
+      true,
+      accountPubkey,
+      input.accountNetworkLocalStateRepository
     )
     // The compatibility lane is recipient-only: the non-critical sender self-copy
     // stays strict and fails soft instead of writing to compatibility relays.
@@ -1087,6 +1144,17 @@ export async function publishPrivateMessage(
       exclusiveRelayUrls: recipientRoute.relayUrls,
       refreshRelayLists,
       deliveryMode: "critical",
+      ...(accountPubkey
+        ? {
+            accountPubkey,
+            ...(input.accountNetworkLocalStateRepository
+              ? {
+                  accountNetworkLocalStateRepository:
+                    input.accountNetworkLocalStateRepository,
+                }
+              : {}),
+          }
+        : {}),
     })
   } catch (error) {
     const partial = recoverPartialRelayPublishDiagnostics(error)
@@ -1127,6 +1195,17 @@ export async function publishPrivateMessage(
             exclusiveRelayUrls: senderRoute.relayUrls,
             refreshRelayLists,
             deliveryMode: "critical",
+            ...(accountPubkey
+              ? {
+                  accountPubkey,
+                  ...(input.accountNetworkLocalStateRepository
+                    ? {
+                        accountNetworkLocalStateRepository:
+                          input.accountNetworkLocalStateRepository,
+                      }
+                    : {}),
+                }
+              : {}),
           })
         } catch (error) {
           const partial = recoverPartialRelayPublishDiagnostics(error)
@@ -1295,7 +1374,12 @@ async function resolveDeclarationForSend(
   pubkey: string,
   knownRelayUrls: readonly string[] | undefined,
   legacySeam: ((pubkey: string) => Promise<string[]>) | undefined,
-  allowLocalRelayUrls = false
+  allowLocalRelayUrls = false,
+  requestingAccountPubkey: string | null = null,
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
 ): Promise<InboxDeclarationResolution> {
   const key = pubkey.trim().toLowerCase()
   if (knownRelayUrls) {
@@ -1306,7 +1390,39 @@ async function resolveDeclarationForSend(
   }
   return resolveInboxDeclaration(pubkey, {
     allowLocalRelayUrlsForPubkey: allowLocalRelayUrls ? pubkey : null,
+    requestingAccountPubkey,
+    accountNetworkLocalStateRepository,
   })
+}
+
+async function filterRelayUrlsForAccount(
+  relayUrls: readonly string[],
+  accountPubkey: string | null,
+  repository?: Pick<AccountNetworkLocalStateRepository, "get">
+): Promise<string[]> {
+  return accountPubkey
+    ? await filterEligibleAccountRelayUrls({
+        accountPubkey,
+        candidateRelayUrls: relayUrls,
+        repository,
+      })
+    : [...relayUrls]
+}
+
+async function applyAccountRelayEligibilityToDeclaration(
+  declaration: InboxDeclarationResolution,
+  accountPubkey: string | null,
+  repository?: Pick<AccountNetworkLocalStateRepository, "get">
+): Promise<InboxDeclarationResolution> {
+  if (declaration.state !== "declared" || !accountPubkey) return declaration
+  return {
+    ...declaration,
+    relayUrls: await filterRelayUrlsForAccount(
+      declaration.relayUrls,
+      accountPubkey,
+      repository
+    ),
+  }
 }
 
 /**
@@ -1421,6 +1537,12 @@ export interface FetchInboxRelayOptions {
   fetchEventsWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   relayUrls?: string[]
   evidenceRepository?: InboxDeclarationEvidenceRepository
+  /** Account whose durable whole-relay exclusions govern declaration lookup. */
+  requestingAccountPubkey?: string | null
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
 }
 
 export type OwnPrivateMessageRelayReadiness =
@@ -1585,6 +1707,9 @@ function toDeclarationOptions(
       : options.fetchEventsWithDiagnostics,
     relayUrls: options.relayUrls,
     evidenceRepository: options.evidenceRepository,
+    requestingAccountPubkey: options.requestingAccountPubkey,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
   }
 }
 
@@ -1643,6 +1768,9 @@ export async function inspectOwnPrivateMessageRelayReadiness(
     // The signed relay set is rendered for its authenticated owner, so an
     // intentional local relay remains visible without becoming a peer target.
     allowLocalRelayUrlsForPubkey: pubkey,
+    requestingAccountPubkey: pubkey,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
   })
   const distributionRepairable = Boolean(
     resolution.stale &&
@@ -1673,6 +1801,11 @@ export interface PublishPrivateMessageRelayDeclarationInput {
   signFn?: (event: NDKEvent, signer: NDKSigner) => Promise<string>
   getDiscoveryRelayUrls?: () => readonly string[]
   publishFn?: typeof publishWithPlanner
+  /** Injectable durable whole-relay eligibility state. */
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
   /** Durable evidence seam (tests/non-browser adapters). */
   evidenceRepository?: InboxDeclarationDistributionRepository
 }
@@ -1686,6 +1819,11 @@ export interface RedistributePrivateMessageRelayDeclarationInput {
   /** Exact durable targets from the first attempt, when one was staged. */
   publishRelayUrls?: readonly string[]
   publishFn?: typeof publishWithPlanner
+  /** Injectable durable whole-relay eligibility state. */
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
 }
 
 export interface RedistributePrivateMessageRelayDeclarationAcrossPlansInput extends Omit<
@@ -1868,6 +2006,13 @@ export async function publishPrivateMessageRelayDeclaration(
     authenticatedPubkey: input.pubkey,
     exclusiveRelayUrls: discoveryRelayUrls,
     deliveryMode: "critical",
+    accountPubkey: input.pubkey,
+    ...(input.accountNetworkLocalStateRepository
+      ? {
+          accountNetworkLocalStateRepository:
+            input.accountNetworkLocalStateRepository,
+        }
+      : {}),
   })
   if (
     Array.isArray(delivery.successfulRelayUrls) &&
@@ -1916,6 +2061,13 @@ export async function redistributePrivateMessageRelayDeclaration(
     authenticatedPubkey: input.pubkey,
     exclusiveRelayUrls: discoveryRelayUrls,
     deliveryMode: "critical",
+    accountPubkey: input.pubkey,
+    ...(input.accountNetworkLocalStateRepository
+      ? {
+          accountNetworkLocalStateRepository:
+            input.accountNetworkLocalStateRepository,
+        }
+      : {}),
   })
   if (
     Array.isArray(delivery.successfulRelayUrls) &&
@@ -1967,6 +2119,8 @@ export async function redistributePrivateMessageRelayDeclarationAcrossPlans(
         ndk: input.ndk,
         publishRelayUrls: storedPublishRelayUrls,
         publishFn: input.publishFn,
+        accountNetworkLocalStateRepository:
+          input.accountNetworkLocalStateRepository,
       })
       if (currentPlanCovered) return storedAttempt
     } catch (error) {
@@ -1982,6 +2136,8 @@ export async function redistributePrivateMessageRelayDeclarationAcrossPlans(
       ndk: input.ndk,
       publishRelayUrls: currentSharedRelayUrls,
       publishFn: input.publishFn,
+      accountNetworkLocalStateRepository:
+        input.accountNetworkLocalStateRepository,
     })
   } catch (currentAttemptError) {
     if (storedAttemptError) {

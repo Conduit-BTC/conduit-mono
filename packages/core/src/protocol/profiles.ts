@@ -336,6 +336,7 @@ export async function publishProfile(
     intent: "author_event",
     authorPubkey: pubkey,
     authenticatedPubkey: pubkey,
+    accountPubkey: pubkey,
   })
 
   const publishedProfile = parseProfileEvent({ pubkey, content: event.content })

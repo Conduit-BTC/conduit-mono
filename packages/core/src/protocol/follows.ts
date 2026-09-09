@@ -9,6 +9,7 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { db, type CachedOwnContactListSnapshot } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
+import type { AccountNetworkLocalStateRepository } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { getNdk } from "./ndk"
@@ -125,6 +126,10 @@ export interface FollowListReadOptions {
   resolveRelayLists?: typeof getRelayLists
   resolveRelayListsDetailed?: typeof getRelayListsDetailed
   fetchEvents?: typeof fetchSignedEventsFanoutDetailed
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
 }
 
 const FOLLOW_LIST_FUTURE_TOLERANCE_SECONDS = 5 * 60
@@ -615,8 +620,14 @@ export async function readLatestFollowLists(
     }
   }
 
+  const normalizedAuthenticatedPubkey = normalizeHexPubkey(
+    authenticatedPubkey ?? undefined
+  )
   const relayLookupOptions = {
     allowInsecureRelayUrlsForPubkey: authenticatedPubkey,
+    accountPubkey: normalizedAuthenticatedPubkey,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
     skipCache: options.refreshRelayLists,
     signal: options.signal,
   }
@@ -645,9 +656,6 @@ export async function readLatestFollowLists(
   }
   throwIfFollowReadAborted(options.signal)
   const fetchEvents = options.fetchEvents ?? fetchSignedEventsFanoutDetailed
-  const normalizedAuthenticatedPubkey = normalizeHexPubkey(
-    authenticatedPubkey ?? undefined
-  )
   const requestedMaxRelays = Math.floor(
     options.maxRelays ?? FOLLOW_LIST_MAX_RELAYS_PER_AUTHOR
   )
@@ -730,6 +738,9 @@ export async function readLatestFollowLists(
           },
           {
             relayUrls: plannedRelayUrls,
+            accountPubkey: normalizedAuthenticatedPubkey,
+            accountNetworkLocalStateRepository:
+              options.accountNetworkLocalStateRepository,
             connectTimeoutMs: FOLLOW_LIST_CONNECT_TIMEOUT_MS,
             fetchTimeoutMs: FOLLOW_LIST_FETCH_TIMEOUT_MS,
             skipHealthFilter: true,
@@ -1137,6 +1148,7 @@ export async function publishContactListUpdate({
       intent: "author_event",
       authorPubkey: normalizedOwnerPubkey,
       authenticatedPubkey: normalizedOwnerPubkey,
+      accountPubkey: normalizedOwnerPubkey,
       replaceableSafety,
       shouldContinue: () => {
         try {

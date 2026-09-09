@@ -439,12 +439,16 @@ adds an inbox read target. Read results carry coverage
 (`complete | partial | unavailable`) and source provenance; an all-failed read
 must never be reported as an authoritative empty inbox.
 
-Legacy inbox-read recovery is independent of NIP-65 draft import. A signed
-`kind:10002` suppresses legacy NIP-65 draft import but does not remove the
-bounded read-only secure-IN recovery record. That record never authorizes writes
-and ends only after a usable `kind:10050` replacement with one to three secure
-relays is fully signed and durably staged, or after explicit discard recorded by
-a durable local migration tombstone.
+Legacy NIP-65 roles never create NIP-17 evidence. A bounded read-only secure-IN
+recovery record explicitly committed by an older build is handled independently
+of NIP-65 draft import and never authorizes writes. An ordinary replacement
+carries those relays into the cutover lane; its seven-day read-only grace begins
+only after a usable `kind:10050` replacement with one to three secure relays is
+read back exactly from its complete shared relay set. Signing or durable staging
+alone does not start or end that grace. Explicit whole-relay removal is the only
+early-termination path and ends recovery for that URL at the atomic local
+commit. A migration discard tombstone applies only to a discarded legacy
+NIP-65 role draft.
 
 Shared acceleration, cache, index, and routing systems may derive only from
 relay-visible state and must remain rebuildable rather than becoming hidden

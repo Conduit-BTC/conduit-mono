@@ -4497,6 +4497,7 @@ async function publishSignedEventMarketRecord(input: {
       intent: "author_event",
       authorPubkey: input.organizerPubkey,
       authenticatedPubkey: input.organizerPubkey,
+      accountPubkey: input.organizerPubkey,
       deliveryMode: "critical",
     })
   } catch (error) {

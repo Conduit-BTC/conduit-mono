@@ -35,6 +35,9 @@ const CALENDAR = `31923:${ORGANIZER}:summer-market`
 const PICKUP = `30406:${ORGANIZER}:summer-market-pickup`
 const PRODUCT = `30402:${MERCHANT}:coffee`
 const WRAP_SECRET = generateSecretKey()
+const allowAllAccountNetworkLocalStateRepository = {
+  get: async () => undefined,
+}
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>()
@@ -722,6 +725,8 @@ describe("merchant organizer handoff workflow", () => {
         signer: merchantSigner,
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
           senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
@@ -797,6 +802,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: {} as never,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
         senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (event, options) => {
@@ -853,6 +860,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: merchantSigner,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: recipientRelays,
         senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         giftWrapFn: (async (_rumor, recipient) =>
@@ -907,6 +916,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: merchantSigner,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: recipientRelays,
         senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         giftWrapFn: (async (_rumor, recipient) =>
@@ -943,6 +954,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: {} as never,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: recipientRelays,
         senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (_event, options) => {
@@ -987,6 +1000,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: merchantSigner,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: [recipientRelay],
         senderInboxRelays: senderRelays,
         giftWrapFn: (async (_rumor, recipient) =>
@@ -1019,6 +1034,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: {} as never,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: [recipientRelay],
         senderInboxRelays: senderRelays,
         publishFn: (async (_event, options) => {
@@ -1065,6 +1082,8 @@ describe("merchant organizer handoff workflow", () => {
         signer: merchantSigner,
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: recipientRelays,
           senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
@@ -1094,6 +1113,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: {} as never,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: recipientRelays,
         senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (_event, options) => {
@@ -1137,6 +1158,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: merchantSigner,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: [relayA, relayB],
         senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         giftWrapFn: (async (_rumor, recipient) =>
@@ -1168,6 +1191,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: {} as never,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: [relayB, relayC],
         senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (_event, options) => {
@@ -1196,6 +1221,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: {} as never,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: [relayA, relayB, relayC],
         senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (_event, options) => {
@@ -1269,6 +1296,8 @@ describe("merchant organizer handoff workflow", () => {
         signer: merchantSigner,
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
           senderInboxRelays: senderRelays,
           giftWrapFn: (async (_rumor, recipient) =>
@@ -1315,6 +1344,8 @@ describe("merchant organizer handoff workflow", () => {
           signer: {} as never,
           storage,
           transport: {
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
             recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
             senderInboxRelays: senderRelays,
             publishFn: (async (event, options) => {
@@ -1357,6 +1388,8 @@ describe("merchant organizer handoff workflow", () => {
         signer: merchantSigner,
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: recipientRelays,
           senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
@@ -1394,6 +1427,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: merchantSigner,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
         senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         giftWrapFn: (async (_rumor, recipient) =>
@@ -1428,6 +1463,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: {} as never,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
         senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (event, options) => {
@@ -1493,6 +1530,8 @@ describe("merchant organizer handoff workflow", () => {
         signer: merchantSigner,
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
           senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
@@ -1539,6 +1578,8 @@ describe("merchant organizer handoff workflow", () => {
         signer: merchantSigner,
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
           senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
@@ -1846,6 +1887,8 @@ describe("merchant organizer handoff workflow", () => {
         matchingAckReceiptIds: new Set(),
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
           senderInboxRelays: senderRelays,
           giftWrapFn: (async (_rumor, recipient) =>
@@ -1940,6 +1983,8 @@ describe("merchant organizer handoff workflow", () => {
         matchingAckReceiptIds: new Set(),
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
           senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
@@ -2001,6 +2046,8 @@ describe("merchant organizer handoff workflow", () => {
         signer: merchantSigner,
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           publishFn: (async () => {
             reissuePublishCount += 1
             throw new Error("should not publish")
@@ -2057,6 +2104,8 @@ describe("merchant organizer handoff workflow", () => {
           matchingAckReceiptIds: new Set(),
           storage,
           transport: {
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
             recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
             senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
             publishFn: (async (event, options) => {
@@ -2141,6 +2190,8 @@ describe("merchant organizer handoff workflow", () => {
           matchingAckReceiptIds: new Set(),
           storage,
           transport: {
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
             recipientInboxRelays: [
               "wss://organizer-primary.relay.dev",
               "wss://organizer-backup.relay.dev",

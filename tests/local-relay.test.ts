@@ -5,6 +5,7 @@ import {
   __resetInboxDeclarationCache,
   applyE2eRelayIsolation,
   config,
+  createInMemoryAccountNetworkLocalStateRepository,
   createInMemoryInboxDeclarationEvidenceRepository,
   EVENT_KINDS,
   getInboxRelayCandidates,
@@ -635,6 +636,8 @@ describe("local Bun relay", () => {
         expectedFrontierEventId: null,
         nowMs: () => 11_000,
         evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
+        accountNetworkLocalStateRepository:
+          createInMemoryAccountNetworkLocalStateRepository(),
         getDiscoveryRelayUrls: () => [relayUrl],
       })
 

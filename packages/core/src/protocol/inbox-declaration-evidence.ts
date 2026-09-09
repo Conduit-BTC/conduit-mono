@@ -4,12 +4,19 @@ import {
   type InboxDeclarationEventEvidence,
   type InboxDeclarationEvidenceRecord,
   type InboxDeclarationEvidenceState,
+  type InboxDeclarationCutoverRecovery,
   type InboxDeclarationLookupCoverage,
   type InboxDeclarationLookupEvidence,
+  type NetworkPreferenceRelayOutcome,
   type NormalizedInboxDeclarationPubkey,
   type PendingInboxDeclarationDistribution,
 } from "../db"
 import { EVENT_KINDS } from "./kinds"
+import {
+  applyNetworkPreferenceDistributionOutcomes,
+  hasCompletedExactNetworkPreferenceReadback,
+  type NetworkPreferenceDistributionOutcomeUpdate,
+} from "./network-preference-delivery"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -21,13 +28,17 @@ export type {
   InboxDeclarationEventEvidence,
   InboxDeclarationEvidenceRecord,
   InboxDeclarationEvidenceState,
+  InboxDeclarationCutoverRecovery,
   InboxDeclarationLookupCoverage,
   InboxDeclarationLookupEvidence,
   NormalizedInboxDeclarationPubkey,
+  NetworkPreferenceRelayOutcome,
   PendingInboxDeclarationDistribution,
 } from "../db"
 
 const HEX_PUBKEY = /^[0-9a-f]{64}$/
+export const INBOX_DECLARATION_CUTOVER_POLICY_VERSION = 1
+export const INBOX_DECLARATION_CUTOVER_GRACE_MS = 7 * 24 * 60 * 60 * 1_000
 
 export interface MergeInboxDeclarationEvidenceInput {
   pubkey: string
@@ -37,6 +48,8 @@ export interface MergeInboxDeclarationEvidenceInput {
   sharedSourceRelayUrls?: readonly string[]
   /** Existing exact pending work carried across process/durable reconciliation. */
   pendingDistribution?: PendingInboxDeclarationDistribution
+  /** Existing ordinary cutover recovery carried with the current frontier. */
+  cutoverRecovery?: InboxDeclarationCutoverRecovery
   /** Local wall-clock observation time in milliseconds. */
   observedAt?: number
   /**
@@ -59,6 +72,13 @@ export interface StageInboxDeclarationDistributionInput {
   pubkey: string
   signedEvent: SignedPublicNostrEvent
   publishRelayUrls: readonly string[]
+  relayOutcomes?: readonly NetworkPreferenceRelayOutcome[]
+  /** Prior usable inboxes retained read-only until exact shared readback + grace. */
+  previousRelayUrls?: readonly string[]
+  /** Whole-relay exclusions terminate matching recovery at the local commit. */
+  excludedRelayUrls?: readonly string[]
+  cutoverPolicyVersion?: number
+  cutoverGraceMs?: number
   /** Durable frontier observed before signing; null means no retained row. */
   expectedCurrentEventId: string | null
   /** Local wall-clock time when the exact event became restart-durable. */
@@ -194,6 +214,7 @@ interface InboxDeclarationEvidenceCandidate {
   pubkey: NormalizedInboxDeclarationPubkey
   current: InboxDeclarationEventEvidence
   pendingDistribution?: PendingInboxDeclarationDistribution
+  cutoverRecovery?: InboxDeclarationCutoverRecovery
   latestLookup?: InboxDeclarationLookupEvidence
   cachedAt: number
 }
@@ -261,6 +282,10 @@ function createEventEvidence(
     completeObservedAt,
   }
   let pendingDistribution: PendingInboxDeclarationDistribution | undefined
+  let cutoverRecovery = normalizeCutoverRecovery(
+    input.cutoverRecovery,
+    input.signedEvent.id
+  )
   const requestedPending = pendingInput ?? input.pendingDistribution
   if (requestedPending) {
     if (state !== "declared") {
@@ -300,10 +325,51 @@ function createEventEvidence(
     pendingDistribution = {
       signedEvent: cloneSignedEvent(input.signedEvent),
       publishRelayUrls,
+      ...(requestedPending.relayOutcomes
+        ? {
+            relayOutcomes: normalizeRelayOutcomes(
+              publishRelayUrls,
+              requestedPending.relayOutcomes
+            ),
+          }
+        : {}),
       stagedAt: assertLocalTimestamp(
         requestedPending.stagedAt ?? now(),
         "Inbox declaration distribution stagedAt"
       ),
+    }
+    if (pendingInput?.previousRelayUrls) {
+      const excluded = new Set(
+        normalizeSecureOrIsolatedE2eRelayUrls(
+          pendingInput.excludedRelayUrls ?? []
+        )
+      )
+      const currentRelayUrls = new Set(secureRelayUrls)
+      const relayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+        pendingInput.previousRelayUrls
+      ).filter(
+        (relayUrl) => !currentRelayUrls.has(relayUrl) && !excluded.has(relayUrl)
+      )
+      if (relayUrls.length > 0) {
+        const policyVersion = assertPositiveInteger(
+          pendingInput.cutoverPolicyVersion,
+          "Inbox cutover policy version"
+        )
+        const graceMs = assertPositiveInteger(
+          pendingInput.cutoverGraceMs,
+          "Inbox cutover grace"
+        )
+        if (graceMs !== cutoverGraceMsForPolicyVersion(policyVersion)) {
+          throw new Error(
+            "Inbox cutover grace does not match its durable policy version"
+          )
+        }
+        cutoverRecovery = {
+          policyVersion,
+          replacementEventId: input.signedEvent.id,
+          relayUrls,
+        }
+      }
     }
   }
 
@@ -312,6 +378,7 @@ function createEventEvidence(
       pubkey,
       current: { ...base, state, secureRelayUrls },
       pendingDistribution,
+      cutoverRecovery,
       latestLookup,
       cachedAt,
     }
@@ -321,9 +388,70 @@ function createEventEvidence(
     pubkey,
     current: { ...base, state, secureRelayUrls: [] },
     pendingDistribution,
+    cutoverRecovery,
     latestLookup,
     cachedAt,
   }
+}
+
+function assertPositiveInteger(
+  value: number | undefined,
+  label: string
+): number {
+  if (!Number.isSafeInteger(value) || (value ?? 0) <= 0) {
+    throw new Error(`${label} must be a positive integer`)
+  }
+  return value!
+}
+
+function cutoverGraceMsForPolicyVersion(policyVersion: number): number {
+  if (policyVersion !== INBOX_DECLARATION_CUTOVER_POLICY_VERSION) {
+    throw new Error("Inbox cutover policy version is unsupported")
+  }
+  return INBOX_DECLARATION_CUTOVER_GRACE_MS
+}
+
+function normalizeRelayOutcomes(
+  publishRelayUrls: readonly string[],
+  outcomes: readonly NetworkPreferenceRelayOutcome[]
+): NetworkPreferenceRelayOutcome[] {
+  if (outcomes.length !== publishRelayUrls.length) {
+    throw new Error(
+      "Inbox declaration outcomes must match the immutable publish plan"
+    )
+  }
+  const publishStatuses = new Set(["pending", "acked", "rejected", "timed_out"])
+  const readbackStatuses = new Set([
+    "pending",
+    "observed",
+    "absent",
+    "timed_out",
+  ])
+  return outcomes.map((outcome, index) => {
+    const relayUrl = normalizeSecureOrIsolatedE2eRelayUrls([
+      outcome.relayUrl,
+    ])[0]
+    if (
+      !relayUrl ||
+      relayUrl !== publishRelayUrls[index] ||
+      !publishStatuses.has(outcome.publishStatus) ||
+      !readbackStatuses.has(outcome.readbackStatus) ||
+      !Number.isSafeInteger(outcome.publishAttemptCount) ||
+      outcome.publishAttemptCount < 0 ||
+      !Number.isSafeInteger(outcome.readbackAttemptCount) ||
+      outcome.readbackAttemptCount < 0
+    ) {
+      throw new Error("Inbox declaration outcomes are invalid")
+    }
+    for (const [value, label] of [
+      [outcome.publishAttemptedAt, "publishAttemptedAt"],
+      [outcome.readbackAttemptedAt, "readbackAttemptedAt"],
+      [outcome.observedAt, "observedAt"],
+    ] as const) {
+      if (value !== undefined) assertLocalTimestamp(value, label)
+    }
+    return { ...outcome, relayUrl }
+  })
 }
 
 function compareReplaceableFrontier(
@@ -389,6 +517,94 @@ function selectEarlierPendingDistribution(
     : right
 }
 
+function normalizeCutoverRecovery(
+  recovery: InboxDeclarationCutoverRecovery | undefined,
+  currentEventId: string
+): InboxDeclarationCutoverRecovery | undefined {
+  if (!recovery) return undefined
+  if (
+    recovery.replacementEventId !== currentEventId ||
+    !/^[0-9a-f]{64}$/.test(recovery.replacementEventId)
+  ) {
+    return undefined
+  }
+  const relayUrls = normalizeSecureOrIsolatedE2eRelayUrls(recovery.relayUrls)
+  if (relayUrls.length === 0) return undefined
+  const policyVersion = assertPositiveInteger(
+    recovery.policyVersion,
+    "Inbox cutover policy version"
+  )
+  const graceMs = cutoverGraceMsForPolicyVersion(policyVersion)
+  const readbackObservedAt =
+    recovery.readbackObservedAt === undefined
+      ? undefined
+      : assertLocalTimestamp(
+          recovery.readbackObservedAt,
+          "Inbox cutover readbackObservedAt"
+        )
+  const expiresAt =
+    recovery.expiresAt === undefined
+      ? undefined
+      : assertLocalTimestamp(recovery.expiresAt, "Inbox cutover expiresAt")
+  if (
+    (readbackObservedAt === undefined) !== (expiresAt === undefined) ||
+    (readbackObservedAt !== undefined &&
+      expiresAt !== readbackObservedAt + graceMs)
+  ) {
+    throw new Error("Inbox cutover expiry must follow exact shared readback")
+  }
+  return {
+    policyVersion,
+    replacementEventId: recovery.replacementEventId,
+    relayUrls,
+    ...(readbackObservedAt === undefined
+      ? {}
+      : { readbackObservedAt, expiresAt }),
+  }
+}
+
+function mergeCutoverRecovery(input: {
+  existing?: InboxDeclarationCutoverRecovery
+  candidate?: InboxDeclarationCutoverRecovery
+  current: InboxDeclarationEventEvidence
+  exactSharedSetReadbackCompleted: boolean
+  candidateObservedAt: number
+}): InboxDeclarationCutoverRecovery | undefined {
+  const recovery = normalizeCutoverRecovery(
+    input.candidate ?? input.existing,
+    input.current.signedEvent.id
+  )
+  if (!recovery || recovery.readbackObservedAt !== undefined) return recovery
+  if (!input.exactSharedSetReadbackCompleted) return recovery
+  return {
+    ...recovery,
+    readbackObservedAt: input.candidateObservedAt,
+    expiresAt:
+      input.candidateObservedAt +
+      cutoverGraceMsForPolicyVersion(recovery.policyVersion),
+  }
+}
+
+function completesExactPendingReadback(
+  pending: PendingInboxDeclarationDistribution | undefined,
+  candidate: InboxDeclarationEvidenceCandidate
+): boolean {
+  if (!pending) return false
+  if (
+    pending.relayOutcomes &&
+    hasCompletedExactNetworkPreferenceReadback(pending.relayOutcomes)
+  ) {
+    return true
+  }
+  if (candidate.current.completeObservedAt === undefined) return false
+  const exactSharedSources = new Set(
+    candidate.current.sharedSourceRelayUrls ?? []
+  )
+  return pending.publishRelayUrls.every((relayUrl) =>
+    exactSharedSources.has(relayUrl)
+  )
+}
+
 function enrichSameEvent(
   existing: InboxDeclarationEvidenceRecord,
   candidate: InboxDeclarationEvidenceCandidate
@@ -419,13 +635,20 @@ function enrichSameEvent(
   let lastUsable = existing.lastUsable
     ? cloneInboxDeclarationEventEvidence(existing.lastUsable)
     : undefined
-  const pendingDistribution = hasSharedConfirmation(current)
-    ? undefined
-    : selectEarlierPendingDistribution(
-        existing.pendingDistribution,
-        candidate.pendingDistribution,
-        current.signedEvent.id
-      )
+  const selectedPending = selectEarlierPendingDistribution(
+    existing.pendingDistribution,
+    candidate.pendingDistribution,
+    current.signedEvent.id
+  )
+  const exactSharedSetReadbackCompleted = completesExactPendingReadback(
+    selectedPending,
+    candidate
+  )
+  // An explicit same-event redistribution can begin after earlier shared
+  // evidence already exists. Its new immutable plan remains pending until its
+  // own tracked readback completes; historical provenance cannot complete it.
+  const pendingDistribution =
+    exactSharedSetReadbackCompleted ? undefined : selectedPending
   // The event id commits to the body but not to its Schnorr signature. When
   // concurrent copies retain different valid signatures for the same body,
   // the staged distribution bytes are the restart contract and therefore own
@@ -446,12 +669,20 @@ function enrichSameEvent(
   if (current.state === "declared" && hasSharedConfirmation(current)) {
     lastUsable = cloneInboxDeclarationEventEvidence(current)
   }
+  const cutoverRecovery = mergeCutoverRecovery({
+    existing: existing.cutoverRecovery,
+    candidate: candidate.cutoverRecovery,
+    current,
+    exactSharedSetReadbackCompleted,
+    candidateObservedAt: candidate.current.observedAt,
+  })
 
   return {
     pubkey: existing.pubkey,
     current,
     lastUsable,
     pendingDistribution,
+    cutoverRecovery,
     cachedAt: Math.max(existing.cachedAt, candidate.cachedAt),
   }
 }
@@ -515,6 +746,10 @@ function mergeHistoricalUsableEvidence(
       existing.pendingDistribution,
       existing.current.signedEvent.id
     ),
+    cutoverRecovery: normalizeCutoverRecovery(
+      existing.cutoverRecovery,
+      existing.current.signedEvent.id
+    ),
     cachedAt: Math.max(existing.cachedAt, candidate.cachedAt),
   }
 }
@@ -537,9 +772,17 @@ function applyEventEvidenceMerge(
   }
 
   const current = cloneInboxDeclarationEventEvidence(candidate.current)
-  const pendingDistribution = hasSharedConfirmation(current)
+  const selectedPending = pendingForCurrent(
+    candidate.pendingDistribution,
+    current.signedEvent.id
+  )
+  const exactSharedSetReadbackCompleted = completesExactPendingReadback(
+    selectedPending,
+    candidate
+  )
+  const pendingDistribution = exactSharedSetReadbackCompleted
     ? undefined
-    : pendingForCurrent(candidate.pendingDistribution, current.signedEvent.id)
+    : selectedPending
   let lastUsable: DeclaredInboxDeclarationEventEvidence | undefined
   if (current.state === "declared" && !pendingDistribution) {
     lastUsable = cloneInboxDeclarationEventEvidence(current)
@@ -554,12 +797,20 @@ function applyEventEvidenceMerge(
   ) {
     lastUsable = cloneInboxDeclarationEventEvidence(existing.current)
   }
+  const cutoverRecovery = mergeCutoverRecovery({
+    existing: undefined,
+    candidate: candidate.cutoverRecovery,
+    current,
+    exactSharedSetReadbackCompleted,
+    candidateObservedAt: candidate.current.observedAt,
+  })
 
   return {
     pubkey: candidate.pubkey,
     current,
     lastUsable,
     pendingDistribution,
+    cutoverRecovery,
     cachedAt: candidate.cachedAt,
   }
 }
@@ -701,6 +952,109 @@ function requireStagedCandidateWon(
   }
 }
 
+/** Pure per-kind stage used by the cross-kind account transaction. */
+export function applyInboxDeclarationDistributionStage(
+  existing: InboxDeclarationEvidenceRecord | undefined,
+  input: StageInboxDeclarationDistributionInput,
+  now: () => number = Date.now
+): InboxDeclarationEvidenceRecord {
+  const candidate = createStagedCandidate(input, now)
+  requireExpectedDistributionFrontier(existing, input.expectedCurrentEventId)
+  const merged = applyEvidenceMerge(existing, candidate)
+  requireStagedCandidateWon(merged, candidate)
+  return cloneInboxDeclarationEvidenceRecord(merged)
+}
+
+/** Apply retry evidence while retaining the exact staged bytes and plan. */
+export function applyInboxDeclarationDistributionOutcomes(
+  existing: InboxDeclarationEvidenceRecord,
+  update: NetworkPreferenceDistributionOutcomeUpdate
+): InboxDeclarationEvidenceRecord {
+  const pending = existing.pendingDistribution
+  if (!pending?.relayOutcomes) {
+    throw new Error("Inbox declaration distribution outcomes are not pending")
+  }
+  const relayOutcomes = applyNetworkPreferenceDistributionOutcomes(
+    pending.relayOutcomes,
+    update
+  )
+  const exactSourceRelayUrls = relayOutcomes.flatMap((outcome) =>
+    outcome.readbackStatus === "observed" ? [outcome.relayUrl] : []
+  )
+  const completed = hasCompletedExactNetworkPreferenceReadback(relayOutcomes)
+  const retained = cloneInboxDeclarationEvidenceRecord(existing)
+  retained.pendingDistribution = {
+    ...pending,
+    relayOutcomes,
+  }
+  return applyEvidenceMerge(
+    retained,
+    createEventEvidence(
+      {
+        pubkey: retained.pubkey,
+        signedEvent: pending.signedEvent,
+        sourceRelayUrls: exactSourceRelayUrls,
+        sharedSourceRelayUrls: completed ? exactSourceRelayUrls : [],
+        observedAt: update.observedAt,
+        ...(completed ? { completeObservedAt: update.observedAt } : {}),
+        cachedAt: update.observedAt,
+        lookup: {
+          observedAt: update.observedAt,
+          coverage: completed
+            ? "complete"
+            : exactSourceRelayUrls.length > 0
+              ? "partial"
+              : "unavailable",
+          hadEvent: exactSourceRelayUrls.length > 0,
+          ...(exactSourceRelayUrls.length > 0
+            ? { eventId: pending.signedEvent.id }
+            : {}),
+        },
+      },
+      Date.now
+    )
+  )
+}
+
+/** Remove whole-setup exclusions from the ordinary cutover recovery lane. */
+export function applyInboxDeclarationCutoverExclusions(
+  record: InboxDeclarationEvidenceRecord,
+  excludedRelayUrls: readonly string[]
+): InboxDeclarationEvidenceRecord {
+  const excluded = new Set(
+    normalizeSecureOrIsolatedE2eRelayUrls(excludedRelayUrls)
+  )
+  const recovery = normalizeCutoverRecovery(
+    record.cutoverRecovery,
+    record.current.signedEvent.id
+  )
+  if (!recovery || excluded.size === 0) {
+    return cloneInboxDeclarationEvidenceRecord(record)
+  }
+  const relayUrls = recovery.relayUrls.filter(
+    (relayUrl) => !excluded.has(relayUrl)
+  )
+  const next = cloneInboxDeclarationEvidenceRecord(record)
+  if (relayUrls.length === 0) delete next.cutoverRecovery
+  else next.cutoverRecovery = { ...recovery, relayUrls }
+  return next
+}
+
+/** Read-only cutover relays whose exact-readback grace has not expired. */
+export function getActiveInboxCutoverRecoveryRelayUrls(
+  record: InboxDeclarationEvidenceRecord | null | undefined,
+  now: number = Date.now()
+): string[] {
+  if (!record?.cutoverRecovery) return []
+  const recovery = normalizeCutoverRecovery(
+    record.cutoverRecovery,
+    record.current.signedEvent.id
+  )
+  if (!recovery) return []
+  if (recovery.expiresAt !== undefined && now >= recovery.expiresAt) return []
+  return [...recovery.relayUrls]
+}
+
 export function areSameSignedInboxDeclarationEvent(
   left: SignedPublicNostrEvent | undefined,
   right: SignedPublicNostrEvent | undefined
@@ -760,15 +1114,17 @@ function createDexieRepository(
   const stageDistribution = async (
     input: StageInboxDeclarationDistributionInput
   ): Promise<InboxDeclarationEvidenceRecord> => {
-    const candidate = createStagedCandidate(input, now)
+    const pubkey = normalizeInboxDeclarationEvidencePubkey(input.pubkey)
+    if (!pubkey) {
+      throw new Error("Inbox declaration evidence requires a valid hex pubkey")
+    }
     return db.transaction("rw", db.inboxDeclarationEvidence, async () => {
-      const existing = await db.inboxDeclarationEvidence.get(candidate.pubkey)
-      requireExpectedDistributionFrontier(
+      const existing = await db.inboxDeclarationEvidence.get(pubkey)
+      const finalRecord = applyInboxDeclarationDistributionStage(
         existing,
-        input.expectedCurrentEventId
+        input,
+        now
       )
-      const finalRecord = applyEvidenceMerge(existing, candidate)
-      requireStagedCandidateWon(finalRecord, candidate)
       if (
         !existing ||
         JSON.stringify(existing) !== JSON.stringify(finalRecord)
@@ -830,12 +1186,13 @@ export function createInMemoryInboxDeclarationEvidenceRepository(
   const stageDistribution = async (
     input: StageInboxDeclarationDistributionInput
   ): Promise<InboxDeclarationEvidenceRecord> => {
-    const candidate = createStagedCandidate(input, now)
-    const existing = records.get(candidate.pubkey)
-    requireExpectedDistributionFrontier(existing, input.expectedCurrentEventId)
-    const merged = applyEvidenceMerge(existing, candidate)
-    requireStagedCandidateWon(merged, candidate)
-    records.set(candidate.pubkey, cloneInboxDeclarationEvidenceRecord(merged))
+    const pubkey = normalizeInboxDeclarationEvidencePubkey(input.pubkey)
+    if (!pubkey) {
+      throw new Error("Inbox declaration evidence requires a valid hex pubkey")
+    }
+    const existing = records.get(pubkey)
+    const merged = applyInboxDeclarationDistributionStage(existing, input, now)
+    records.set(pubkey, cloneInboxDeclarationEvidenceRecord(merged))
     return cloneInboxDeclarationEvidenceRecord(merged)
   }
 

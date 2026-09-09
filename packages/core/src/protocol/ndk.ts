@@ -20,11 +20,27 @@ import {
   recordRelayFailure,
   recordRelaySuccess,
 } from "./relay-health"
+import {
+  filterEligibleAccountRelayUrls,
+  orderEquivalentAccountRelayOperations,
+  type AccountNetworkLocalStateRepository,
+} from "./account-network-local-state"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
 export interface FetchEventsFanoutOptions {
   /** Omit for configured defaults; pass an empty array for no relay traffic. */
   relayUrls?: string[]
+  /**
+   * Explicit account whose locally removed whole relays must be excluded.
+   * Omit for guest/public reads; event authors and filter pubkeys are never
+   * treated as the active account.
+   */
+  accountPubkey?: string | null
+  /** Injectable durable-state reader for deterministic boundary tests. */
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
   connectTimeoutMs?: number
   fetchTimeoutMs?: number
   skipHealthFilter?: boolean
@@ -985,27 +1001,46 @@ async function fetchEventsFromRelay(
   connectTimeoutMs: number,
   fetchTimeoutMs: number,
   connections: Map<string, RelayConnection>,
-  signal?: AbortSignal
+  options: Pick<
+    FetchEventsFanoutOptions,
+    "accountPubkey" | "accountNetworkLocalStateRepository" | "signal"
+  >
 ): Promise<{
   relayUrl: string
   events: NDKEvent[]
   status: FetchEventsRelayStatus["status"]
   rejectedEventCount: number
-}> {
+} | null> {
   let acquiredRelayReadSlot = false
+  let admittedRelayUrl: string | null = null
   try {
-    await acquireRelayReadSlot(signal)
+    await acquireRelayReadSlot(options.signal)
     acquiredRelayReadSlot = true
-    throwIfAborted(signal)
+    throwIfAborted(options.signal)
+    if (options.accountPubkey === undefined || options.accountPubkey === null) {
+      admittedRelayUrl = relayUrl
+    } else {
+      const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+        accountPubkey: options.accountPubkey,
+        candidateRelayUrls: [relayUrl],
+        repository: options.accountNetworkLocalStateRepository,
+      })
+      admittedRelayUrl = eligibleRelayUrls[0] ?? null
+    }
+    // Eligibility is re-read only after this attempt owns an execution slot.
+    // Once admitted, an in-flight socket may finish even if another tab commits
+    // a removal; every later queued attempt observes the new durable state.
+    if (!admittedRelayUrl) return null
+    throwIfAborted(options.signal)
     const { events, complete, truncated } = await readRelayEvents(
-      relayUrl,
+      admittedRelayUrl,
       filter,
       connectTimeoutMs,
       fetchTimeoutMs,
       connections,
-      signal
+      options.signal
     )
-    throwIfAborted(signal)
+    throwIfAborted(options.signal)
     const orderedEvents = [...events].sort((left, right) => {
       if (left.created_at !== right.created_at) {
         return right.created_at - left.created_at
@@ -1034,8 +1069,8 @@ async function fetchEventsFromRelay(
       schnorrIndex.push(i)
     }
 
-    const schnorrValid = await verifySchnorrBatch(schnorrItems, signal)
-    throwIfAborted(signal)
+    const schnorrValid = await verifySchnorrBatch(schnorrItems, options.signal)
+    throwIfAborted(options.signal)
     for (let j = 0; j < schnorrIndex.length; j++) {
       if (!schnorrValid[j]) continue
       const i = schnorrIndex[j]
@@ -1051,7 +1086,7 @@ async function fetchEventsFromRelay(
     for (let i = 0; i < orderedEvents.length; i++) {
       if (!accepted[i]) continue
       const event = new NDKEvent(undefined, orderedEvents[i])
-      attachEventSourceRelayUrl(event, relayUrl)
+      attachEventSourceRelayUrl(event, admittedRelayUrl)
       verified.push(event)
       if (eventLimit !== null && verified.length >= eventLimit) break
     }
@@ -1069,15 +1104,24 @@ async function fetchEventsFromRelay(
             ? "partial"
             : "failed"
 
-    if (status === "success") recordRelaySuccess(relayUrl)
-    else recordRelayFailure(relayUrl)
+    if (status === "success") recordRelaySuccess(admittedRelayUrl)
+    else recordRelayFailure(admittedRelayUrl)
 
-    return { relayUrl, events: verified, status, rejectedEventCount }
-  } catch (error) {
-    if (signal?.aborted || isAbortError(error)) throw error
-    if (acquiredRelayReadSlot) recordRelayFailure(relayUrl)
     return {
-      relayUrl,
+      relayUrl: admittedRelayUrl,
+      events: verified,
+      status,
+      rejectedEventCount,
+    }
+  } catch (error) {
+    if (options.signal?.aborted || isAbortError(error)) throw error
+    // Queue-capacity and other pre-admission executor failures remain visible
+    // as failed relay results, matching the public fanout contract. A policy
+    // suppression returns above and is omitted because no attempt occurred.
+    const failedRelayUrl = admittedRelayUrl ?? relayUrl
+    if (acquiredRelayReadSlot) recordRelayFailure(failedRelayUrl)
+    return {
+      relayUrl: failedRelayUrl,
       events: [],
       status: "failed",
       rejectedEventCount: 0,
@@ -1125,6 +1169,28 @@ function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
   return cappedFallback.length > 0 ? cappedFallback : dedupedUrls.slice(0, 4)
 }
 
+async function orderAccountRelayFanout(
+  relayUrls: readonly string[],
+  options: Pick<
+    FetchEventsFanoutOptions,
+    "accountPubkey" | "accountNetworkLocalStateRepository"
+  >
+): Promise<string[]> {
+  if (options.accountPubkey === undefined || options.accountPubkey === null) {
+    return [...relayUrls]
+  }
+  const ordered = await orderEquivalentAccountRelayOperations({
+    accountPubkey: options.accountPubkey,
+    operations: relayUrls.map((relayUrl) => ({
+      relayUrl,
+      equivalenceKey: "final-read-fanout",
+      value: relayUrl,
+    })),
+    repository: options.accountNetworkLocalStateRepository,
+  })
+  return ordered.map((operation) => operation.value)
+}
+
 function mergeEventsInto(
   merged: Map<string, NDKEvent>,
   events: NDKEvent[]
@@ -1155,7 +1221,10 @@ export async function fetchEventsFanoutDetailed(
   options: FetchEventsFanoutOptions = {}
 ): Promise<FetchEventsFanoutResult> {
   throwIfAborted(options.signal)
-  const relayUrls = resolveFanoutRelayUrls(options)
+  const relayUrls = await orderAccountRelayFanout(
+    resolveFanoutRelayUrls(options),
+    options
+  )
 
   if (relayUrls.length === 0) {
     return { events: [], relays: [], eventsVerified: true }
@@ -1169,18 +1238,20 @@ export async function fetchEventsFanoutDetailed(
       : relayConnections
 
   try {
-    const perRelayResults = await Promise.all(
-      relayUrls.map((relayUrl) =>
-        fetchEventsFromRelay(
-          relayUrl,
-          filter,
-          connectTimeoutMs,
-          fetchTimeoutMs,
-          connections,
-          options.signal
+    const perRelayResults = (
+      await Promise.all(
+        relayUrls.map((relayUrl) =>
+          fetchEventsFromRelay(
+            relayUrl,
+            filter,
+            connectTimeoutMs,
+            fetchTimeoutMs,
+            connections,
+            options
+          )
         )
       )
-    )
+    ).filter((result) => result !== null)
     throwIfAborted(options.signal)
 
     const merged = new Map<string, NDKEvent>()
@@ -1239,7 +1310,10 @@ export async function fetchEventsFanoutProgressive(
   onProgress: (progress: FetchEventsFanoutProgress) => void | Promise<void>
 ): Promise<NDKEvent[]> {
   throwIfAborted(options.signal)
-  const relayUrls = resolveFanoutRelayUrls(options)
+  const relayUrls = await orderAccountRelayFanout(
+    resolveFanoutRelayUrls(options),
+    options
+  )
   if (relayUrls.length === 0) return []
 
   const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
@@ -1259,12 +1333,13 @@ export async function fetchEventsFanoutProgressive(
           connectTimeoutMs,
           fetchTimeoutMs,
           connections,
-          options.signal
+          options
         )
+        if (!result) return
         throwIfAborted(options.signal)
         mergeEventsInto(merged, result.events)
         await onProgress({
-          relayUrl,
+          relayUrl: result.relayUrl,
           events: result.events,
           mergedEvents: Array.from(merged.values()),
           status: result.status,

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "bun:test"
 import { finalizeEvent } from "nostr-tools/pure"
 
-import { applyE2eRelayIsolation, config } from "@conduit/core"
+import {
+  applyAccountNetworkRelayExclusion,
+  applyE2eRelayIsolation,
+  config,
+  createInMemoryAccountNetworkLocalStateRepository,
+  emptyAccountNetworkLocalState,
+} from "@conduit/core"
 import type { ProductDeletionDeliveryJob } from "@conduit/core/db"
 import {
   deliverProductDeletionJob,
@@ -9,6 +15,7 @@ import {
   getPendingProductDeletionDeliveries,
   persistProductDeletionDelivery,
   planProductDeletionRelays,
+  type ProductDeletionDeliveryOptions,
   type ProductDeletionOutboxRepository,
   type ProductDeletionRelayPublisher,
 } from "@conduit/core/protocol/product-deletion-delivery"
@@ -22,6 +29,19 @@ import { buildProductDeliveryNotice } from "../apps/merchant/src/lib/product-del
 
 const MERCHANT_SECRET = new Uint8Array(32).fill(7)
 const NOW = 1_700_000_000_000
+const allowAllAccountNetworkLocalStateRepository = {
+  get: async () => undefined,
+}
+
+function withEligibleAccountRelays<T extends ProductDeletionDeliveryOptions>(
+  options: T
+) {
+  return {
+    accountNetworkLocalStateRepository:
+      allowAllAccountNetworkLocalStateRepository,
+    ...options,
+  }
+}
 
 function signedDeletionEvent(
   targetEventId = "a".repeat(64)
@@ -239,7 +259,7 @@ describe("durable product deletion delivery", () => {
         sourceRelayUrls: [],
         canonicalConduitRelayUrl: "wss://relay.conduit.market",
       },
-      { repository, now: () => NOW }
+      withEligibleAccountRelays({ repository, now: () => NOW })
     )
     const privateSourceRelay = "wss://127.0.0.1:7447"
     await repository.update(created.id, (current) => ({
@@ -261,7 +281,7 @@ describe("durable product deletion delivery", () => {
         attemptedRelayUrls.push(relayUrl)
         return { status: "acked" }
       },
-      { repository, now: () => NOW }
+      withEligibleAccountRelays({ repository, now: () => NOW })
     )
 
     expect(attemptedRelayUrls).toEqual(["wss://relay.conduit.market"])
@@ -279,7 +299,7 @@ describe("durable product deletion delivery", () => {
         attemptedRelayUrls.push(relayUrl)
         return { status: "acked" }
       },
-      { repository, now: () => NOW }
+      withEligibleAccountRelays({ repository, now: () => NOW })
     )
     expect(attemptedRelayUrls).toEqual(["wss://relay.conduit.market"])
     expect(await getPendingProductDeletionDeliveries({ repository })).toEqual(
@@ -325,7 +345,10 @@ describe("durable product deletion delivery", () => {
           attemptedRelayUrls.push(relayUrl)
           return { status: "acked" }
         },
-        { repository: afterReload, now: () => NOW }
+        withEligibleAccountRelays({
+          repository: afterReload,
+          now: () => NOW,
+        })
       )
 
       expect(attemptedRelayUrls).toEqual([isolatedRelayUrl])
@@ -371,11 +394,15 @@ describe("durable product deletion delivery", () => {
       return { status: "timed_out" }
     }
 
-    const result = await deliverProductDeletionJob(job.id, publisher, {
-      repository,
-      now,
-      retryDelayMs: 1_000,
-    })
+    const result = await deliverProductDeletionJob(
+      job.id,
+      publisher,
+      withEligibleAccountRelays({
+        repository,
+        now,
+        retryDelayMs: 1_000,
+      })
+    )
 
     expect(publisherObservedPersistedJob).toBe(true)
     expect(result.state).toBe("partial")
@@ -422,6 +449,208 @@ describe("durable product deletion delivery", () => {
     ])
   })
 
+  it("uses the revalidated deletion author for account eligibility and preserves excluded work", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const event = signedDeletionEvent()
+    const excludedRelayUrl = "wss://write.conduit.market"
+    const accountNetworkLocalStateRepository =
+      createInMemoryAccountNetworkLocalStateRepository([
+        applyAccountNetworkRelayExclusion(
+          emptyAccountNetworkLocalState(event.pubkey, () => NOW),
+          {
+            relayUrl: excludedRelayUrl,
+            relayListFrontier: { eventId: null, createdAt: null },
+            inboxDeclarationFrontier: { eventId: null, createdAt: null },
+            committedAt: NOW,
+          }
+        ),
+      ])
+    const job = await persistProductDeletionDelivery(
+      {
+        signedEvent: event,
+        currentWriteRelayUrls: [excludedRelayUrl],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+      },
+      { repository, now: () => NOW }
+    )
+    const publisherInputs: Parameters<ProductDeletionRelayPublisher>[0][] = []
+
+    const result = await deliverProductDeletionJob(
+      job.id,
+      async (input) => {
+        publisherInputs.push(input)
+        return { status: "acked" }
+      },
+      {
+        repository,
+        accountNetworkLocalStateRepository,
+        now: tickingClock(),
+      }
+    )
+
+    expect(
+      publisherInputs.map(({ relayUrl, accountPubkey }) => ({
+        relayUrl,
+        accountPubkey,
+      }))
+    ).toEqual([
+      {
+        relayUrl: "wss://relay.conduit.market",
+        accountPubkey: event.pubkey,
+      },
+    ])
+    expect(publisherInputs[0]?.accountNetworkLocalStateRepository).toBe(
+      accountNetworkLocalStateRepository
+    )
+    expect(result.relayPlan).toEqual(job.relayPlan)
+    expect(
+      result.relayDelivery.find(({ relayUrl }) => relayUrl === excludedRelayUrl)
+    ).toEqual({
+      relayUrl: excludedRelayUrl,
+      status: "pending",
+      attemptCount: 0,
+    })
+    expect(result.state).toBe("partial")
+  })
+
+  it("fails closed without changing pending delivery evidence when account policy is unavailable", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const event = signedDeletionEvent()
+    const accountLookups: string[] = []
+    const job = await persistProductDeletionDelivery(
+      {
+        signedEvent: event,
+        currentWriteRelayUrls: ["wss://relay.conduit.market"],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+      },
+      { repository, now: () => NOW }
+    )
+    const published: string[] = []
+
+    const result = await deliverProductDeletionJob(
+      job.id,
+      async ({ relayUrl }) => {
+        published.push(relayUrl)
+        return { status: "acked" }
+      },
+      {
+        repository,
+        accountNetworkLocalStateRepository: {
+          get: async (accountPubkey) => {
+            accountLookups.push(accountPubkey)
+            throw new Error("local policy unavailable")
+          },
+        },
+        now: () => NOW,
+      }
+    )
+
+    expect(accountLookups).toEqual([event.pubkey])
+    expect(published).toEqual([])
+    expect(result.relayPlan).toEqual(job.relayPlan)
+    expect(result.relayDelivery).toEqual(job.relayDelivery)
+    expect(result.deliveryAttemptCount).toBe(0)
+    expect(result.state).toBe("pending")
+  })
+
+  it("re-reads account eligibility before each pending relay attempt", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const event = signedDeletionEvent()
+    const removedAfterFirstAttempt = "wss://write.conduit.market"
+    const accountNetworkLocalStateRepository =
+      createInMemoryAccountNetworkLocalStateRepository([
+        emptyAccountNetworkLocalState(event.pubkey, () => NOW),
+      ])
+    const job = await persistProductDeletionDelivery(
+      {
+        signedEvent: event,
+        currentWriteRelayUrls: [removedAfterFirstAttempt],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+      },
+      { repository, now: () => NOW }
+    )
+    const attemptedRelayUrls: string[] = []
+
+    const result = await deliverProductDeletionJob(
+      job.id,
+      async ({ relayUrl }) => {
+        attemptedRelayUrls.push(relayUrl)
+        await accountNetworkLocalStateRepository.update(
+          event.pubkey,
+          (current) =>
+            applyAccountNetworkRelayExclusion(current, {
+              relayUrl: removedAfterFirstAttempt,
+              relayListFrontier: { eventId: null, createdAt: null },
+              inboxDeclarationFrontier: { eventId: null, createdAt: null },
+              committedAt: NOW + 1,
+            })
+        )
+        return { status: "acked" }
+      },
+      {
+        repository,
+        accountNetworkLocalStateRepository,
+        now: tickingClock(),
+      }
+    )
+
+    expect(attemptedRelayUrls).toEqual(["wss://relay.conduit.market"])
+    expect(
+      result.relayDelivery.find(
+        ({ relayUrl }) => relayUrl === removedAfterFirstAttempt
+      )
+    ).toEqual({
+      relayUrl: removedAfterFirstAttempt,
+      status: "pending",
+      attemptCount: 0,
+    })
+  })
+
+  it("revalidates a persisted exact event before deriving its account principal", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const event = signedDeletionEvent()
+    const job = await persistProductDeletionDelivery(
+      {
+        signedEvent: event,
+        currentWriteRelayUrls: ["wss://relay.conduit.market"],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+      },
+      { repository, now: () => NOW }
+    )
+    await repository.update(job.id, (current) => ({
+      ...current,
+      signedEvent: { ...current.signedEvent, content: "tampered" },
+    }))
+    const accountLookups: string[] = []
+    const published: string[] = []
+
+    await expect(
+      deliverProductDeletionJob(
+        job.id,
+        async ({ relayUrl }) => {
+          published.push(relayUrl)
+          return { status: "acked" }
+        },
+        {
+          repository,
+          accountNetworkLocalStateRepository: {
+            get: async (accountPubkey) => {
+              accountLookups.push(accountPubkey)
+              return undefined
+            },
+          },
+          now: () => NOW,
+        }
+      )
+    ).rejects.toThrow("valid signed kind-5 event")
+    expect(accountLookups).toEqual([])
+    expect(published).toEqual([])
+  })
+
   it("survives reload and retries the same event on only unacked relays", async () => {
     const durableStorage = new Map<string, ProductDeletionDeliveryJob>()
     const beforeReload = new MemoryProductDeletionOutbox(durableStorage)
@@ -445,7 +674,11 @@ describe("durable product deletion delivery", () => {
           : relayUrl === "wss://source.conduit.market"
             ? { status: "rejected" }
             : { status: "timed_out" },
-      { repository: beforeReload, now: firstNow, retryDelayMs: 1 }
+      withEligibleAccountRelays({
+        repository: beforeReload,
+        now: firstNow,
+        retryDelayMs: 1,
+      })
     )
 
     // A new repository instance represents route teardown/browser restart.
@@ -466,11 +699,11 @@ describe("durable product deletion delivery", () => {
         retriedEvents.push(signedEvent)
         return { status: "acked" }
       },
-      {
+      withEligibleAccountRelays({
         repository: afterReload,
         now: tickingClock(NOW + 20_000),
         retryDelayMs: 1,
-      }
+      })
     )
 
     expect(retriedRelayUrls).toEqual([
@@ -517,7 +750,11 @@ describe("durable product deletion delivery", () => {
         relayUrl === "wss://relay.conduit.market"
           ? { status: "acked" }
           : { status: "timed_out" },
-      { repository, now: () => timestamp, retryDelayMs: 1 }
+      withEligibleAccountRelays({
+        repository,
+        now: () => timestamp,
+        retryDelayMs: 1,
+      })
     )
 
     timestamp += 10
@@ -528,7 +765,11 @@ describe("durable product deletion delivery", () => {
         retried.push(relayUrl)
         return { status: "acked" }
       },
-      { repository, now: () => timestamp, retryDelayMs: 1 }
+      withEligibleAccountRelays({
+        repository,
+        now: () => timestamp,
+        retryDelayMs: 1,
+      })
     )
 
     expect(retried).toEqual([
@@ -575,12 +816,12 @@ describe("durable product deletion delivery", () => {
         await firstAttemptStarted
         return { status: "timed_out" }
       },
-      {
+      withEligibleAccountRelays({
         repository: firstTab,
         now: () => timestamp,
         deliveryLeaseOwner: "first-tab",
         deliveryLeaseMs: 10_000,
-      }
+      })
     )
     await observedFirstAttempt
 
@@ -588,13 +829,13 @@ describe("durable product deletion delivery", () => {
     const winningDelivery = await deliverProductDeletionJob(
       event.id,
       async () => ({ status: "acked" }),
-      {
+      withEligibleAccountRelays({
         repository: secondTab,
         now: () => timestamp,
         deliveryLeaseOwner: "second-tab",
         deliveryLeaseMs: 10_000,
         forceDeliveryLeaseRecovery: true,
-      }
+      })
     )
     expect(winningDelivery.state).toBe("delivered")
 
@@ -665,6 +906,8 @@ describe("durable product deletion delivery", () => {
     const published: string[] = []
     const options = {
       repository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
       now: () => NOW,
       restoreLocalEvidence: async () => {
         if (!allowRestore) throw new Error("transient tombstone write failure")
@@ -706,22 +949,25 @@ describe("durable product deletion delivery", () => {
     await deliverProductDeletionJob(
       event.id,
       async () => ({ status: "acked" }),
-      { repository, now: () => NOW }
+      withEligibleAccountRelays({ repository, now: () => NOW })
     )
 
     const restored: string[] = []
     const republished: string[] = []
-    const result = await deliverQueuedProductDeletion(event.id, {
-      repository,
-      now: () => NOW,
-      restoreLocalEvidence: async (job) => {
-        restored.push(job.id)
-      },
-      publisher: async ({ signedEvent }) => {
-        republished.push(signedEvent.id)
-        return { status: "acked" }
-      },
-    })
+    const result = await deliverQueuedProductDeletion(
+      event.id,
+      withEligibleAccountRelays({
+        repository,
+        now: () => NOW,
+        restoreLocalEvidence: async (job) => {
+          restored.push(job.id)
+        },
+        publisher: async ({ signedEvent }) => {
+          republished.push(signedEvent.id)
+          return { status: "acked" }
+        },
+      })
+    )
 
     expect(result.successfulRelayUrls).toEqual(["wss://relay.conduit.market"])
     expect(result.failedRelayUrls).toEqual([])
@@ -750,6 +996,8 @@ describe("durable product deletion delivery", () => {
     const published: string[] = []
     const options = {
       repository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
       now: () => NOW,
       deliveryLeaseOwner: "worker",
       restoreLocalEvidence: async (job: ProductDeletionDeliveryJob) => {
@@ -809,7 +1057,7 @@ describe("durable product deletion delivery", () => {
     }
     const completed = await deliverPendingProductDeletions(
       async () => ({ status: "acked" }),
-      { repository, now: () => NOW }
+      withEligibleAccountRelays({ repository, now: () => NOW })
     )
 
     expect(completed.map(({ id }) => id)).toEqual([second.id])
@@ -834,7 +1082,7 @@ describe("durable product deletion delivery", () => {
     const result = await deliverProductDeletionJob(
       event.id,
       async () => ({ status: "acked" }),
-      { repository, now }
+      withEligibleAccountRelays({ repository, now })
     )
 
     expect(result.relayPlan).toEqual([

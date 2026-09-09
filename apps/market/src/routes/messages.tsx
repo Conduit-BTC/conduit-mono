@@ -486,6 +486,7 @@ function MessagesPage() {
       const { selfCopyError } = await publishPrivateMessage({
         rumor,
         senderPubkey: pubkey,
+        accountPubkey: pubkey,
         recipientPubkey: selectedConversation.merchantPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.ORDER,
@@ -702,6 +703,7 @@ function MessagesPage() {
       const { selfCopyError } = await publishPrivateMessage({
         rumor,
         senderPubkey: pubkey,
+        accountPubkey: pubkey,
         recipientPubkey: counterpartyPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,

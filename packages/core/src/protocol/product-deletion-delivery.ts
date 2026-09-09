@@ -16,6 +16,10 @@ import {
   tryNormalizeRelayUrl,
 } from "./relay-settings"
 import { config } from "../config"
+import {
+  filterEligibleAccountRelayUrls,
+  type AccountNetworkLocalStateRepository,
+} from "./account-network-local-state"
 
 const DEFAULT_RETRY_DELAY_MS = 30_000
 const DEFAULT_DELIVERY_LEASE_MS = 30_000
@@ -49,6 +53,12 @@ export type ProductDeletionRelayPublisher = (input: {
   relayUrl: string
   roles: ProductDeletionRelayRole[]
   signedEvent: SignedPublicNostrEvent
+  /** The revalidated event author whose local whole-relay cutoff applies. */
+  accountPubkey: string
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
 }) => Promise<ProductDeletionPublisherResult>
 
 /**
@@ -68,6 +78,10 @@ export interface ProductDeletionOutboxRepository {
 
 export interface ProductDeletionDeliveryOptions {
   repository?: ProductDeletionOutboxRepository
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
   now?: () => number
   retryDelayMs?: number
   deliveryLeaseOwner?: string
@@ -640,6 +654,11 @@ async function deliverProductDeletionJobUnlocked(
     options.forceDeliveryLeaseRecovery === true
   )
   if (claimed.deliveryLeaseOwner !== leaseOwner) return claimed
+  // The exact signed event is the durable identity for this signer-free retry.
+  // Revalidate it after the claim, then use only its author as the account
+  // principal. No ambient session identity or duplicate outbox owner is needed.
+  assertSignedDeletionEvent(claimed.signedEvent)
+  const accountPubkey = claimed.signedEvent.pubkey
 
   const outstandingRelayUrls = claimed.relayDelivery
     .filter((delivery) => delivery.status !== "acked")
@@ -653,15 +672,32 @@ async function deliverProductDeletionJobUnlocked(
   }
 
   try {
-    await markDeliveryRunStarted(
-      repository,
-      id,
-      leaseOwner,
-      getNow(options),
-      retryDelayMs
-    )
+    let deliveryRunStarted = false
 
     for (const relayUrl of outstandingRelayUrls) {
+      const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+        accountPubkey,
+        candidateRelayUrls: [relayUrl],
+        repository: options.accountNetworkLocalStateRepository,
+      })
+      if (eligibleRelayUrls.length === 0) {
+        // Whole-relay removal is an admission cutoff, not delivery evidence.
+        // Keep the immutable target and its prior outcome/attempt count so an
+        // authoritative later re-add can resume the exact staged event.
+        continue
+      }
+
+      if (!deliveryRunStarted) {
+        await markDeliveryRunStarted(
+          repository,
+          id,
+          leaseOwner,
+          getNow(options),
+          retryDelayMs
+        )
+        deliveryRunStarted = true
+      }
+
       const attemptAt = getNow(options)
       const current = await markRelayAttemptStarted(
         repository,
@@ -681,6 +717,12 @@ async function deliverProductDeletionJobUnlocked(
         continue
       }
       const exactSignedEvent = cloneSignedEvent(current.signedEvent)
+      assertSignedDeletionEvent(exactSignedEvent)
+      if (!signedEventMatches(exactSignedEvent, claimed.signedEvent)) {
+        throw new Error(
+          "Product deletion delivery job signed event is immutable"
+        )
+      }
       const currentTarget = current.relayPlan.find(
         (target) => target.relayUrl === relayUrl
       )
@@ -697,8 +739,22 @@ async function deliverProductDeletionJobUnlocked(
             relayUrl,
             roles: [...currentTarget.roles],
             signedEvent: exactSignedEvent,
+            accountPubkey,
+            accountNetworkLocalStateRepository:
+              options.accountNetworkLocalStateRepository,
           })
         } catch {
+          const stillEligible = await filterEligibleAccountRelayUrls({
+            accountPubkey,
+            candidateRelayUrls: [relayUrl],
+            repository: options.accountNetworkLocalStateRepository,
+          })
+          if (stillEligible.length === 0) {
+            // The target became ineligible after this run admitted it but
+            // before the exact publisher could start. Do not convert a local
+            // cutoff (or an unavailable policy read) into relay failure truth.
+            continue
+          }
           outcome = { status: "timed_out" }
         }
       }

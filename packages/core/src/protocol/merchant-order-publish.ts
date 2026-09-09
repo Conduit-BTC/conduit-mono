@@ -127,6 +127,7 @@ export async function publishMerchantOrderMessage(
   const { selfCopyError, deliveryRoute } = await publishPrivateMessage({
     rumor,
     senderPubkey: input.merchantPubkey,
+    accountPubkey: input.merchantPubkey,
     recipientPubkey: target.recipientPubkey,
     signer: ndk.signer,
     rumorKind: EVENT_KINDS.ORDER,

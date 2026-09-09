@@ -1,5 +1,10 @@
 import { kinds, type Filter } from "nostr-tools"
 import { normalizePublicHttpsUrl } from "../network-target-safety"
+import {
+  filterEligibleAccountRelayUrls,
+  orderEquivalentAccountRelayOperations,
+  type AccountNetworkLocalStateRepository,
+} from "./account-network-local-state"
 import { getRelayLists } from "./relay-list"
 import {
   fetchSignedEventsFanoutDetailed,
@@ -161,6 +166,10 @@ export interface ReadMediaServerPreferencesDependencies {
   getRelayLists?: typeof getRelayLists
   planReads?: typeof planRelayReads
   fetchEvents?: typeof fetchSignedEventsFanoutDetailed
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
   storage?: MediaServerPreferencesStorage | null
   now?: () => number
 }
@@ -816,6 +825,9 @@ async function resolveReadPlan(
     {
       cacheOnly: false,
       allowInsecureRelayUrlsForPubkey: owner,
+      accountPubkey: owner,
+      accountNetworkLocalStateRepository:
+        dependencies.accountNetworkLocalStateRepository,
     }
   )
   return (dependencies.planReads ?? planRelayReads)({
@@ -938,6 +950,9 @@ export async function readMediaServerPreferences(
       } satisfies Filter,
       {
         relayUrls: plan.relayUrls,
+        accountPubkey: normalizedOwner,
+        accountNetworkLocalStateRepository:
+          dependencies.accountNetworkLocalStateRepository,
         connectTimeoutMs: 4_000,
         fetchTimeoutMs: 6_000,
         skipHealthFilter: true,
@@ -1127,6 +1142,9 @@ async function resolvePublishTargets(
     intent: "author_event",
     authorPubkey: owner,
     authenticatedPubkey: owner,
+    accountPubkey: owner,
+    accountNetworkLocalStateRepository:
+      dependencies.accountNetworkLocalStateRepository,
     refreshRelayLists: true,
     skipHealthFilter: true,
   }
@@ -1201,6 +1219,9 @@ async function verifyPreferenceReadBack(input: {
       },
       {
         relayUrls: acknowledged,
+        accountPubkey: input.owner,
+        accountNetworkLocalStateRepository:
+          input.dependencies.accountNetworkLocalStateRepository,
         connectTimeoutMs: 4_000,
         fetchTimeoutMs: 6_000,
         skipHealthFilter: true,
@@ -1269,8 +1290,24 @@ async function deliverPendingPreference(input: {
   input.dependencies.onPhase?.("publishing")
   const publishToRelay =
     input.dependencies.publishToRelay ?? publishSignedEventToRelay
+  const orderedUnresolved = await orderEquivalentAccountRelayOperations({
+    accountPubkey: input.owner,
+    operations: unresolved.map((relayUrl) => ({
+      relayUrl,
+      equivalenceKey: "exact-media-preference-retry",
+      value: relayUrl,
+    })),
+    repository: input.dependencies.accountNetworkLocalStateRepository,
+  })
   const outcomes = await Promise.all(
-    unresolved.map(async (relayUrl) => {
+    orderedUnresolved.map(async ({ value: relayUrl }) => {
+      assertContinue(input.dependencies.shouldContinue)
+      const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+        accountPubkey: input.owner,
+        candidateRelayUrls: [relayUrl],
+        repository: input.dependencies.accountNetworkLocalStateRepository,
+      })
+      if (eligibleRelayUrls.length === 0) return null
       assertContinue(input.dependencies.shouldContinue)
       try {
         const status = await publishToRelay({
@@ -1278,9 +1315,18 @@ async function deliverPendingPreference(input: {
           authorPubkey: input.owner,
           relayUrl,
           authenticatedPubkey: input.owner,
+          accountPubkey: input.owner,
+          accountNetworkLocalStateRepository:
+            input.dependencies.accountNetworkLocalStateRepository,
         })
         return [relayUrl, status] as const
       } catch {
+        const stillEligible = await filterEligibleAccountRelayUrls({
+          accountPubkey: input.owner,
+          candidateRelayUrls: [relayUrl],
+          repository: input.dependencies.accountNetworkLocalStateRepository,
+        })
+        if (stillEligible.length === 0) return null
         return [relayUrl, "timed_out" as ExclusiveRelayPublishStatus] as const
       }
     })
@@ -1289,7 +1335,9 @@ async function deliverPendingPreference(input: {
 
   const rejected = new Set(pending.rejectedRelayUrls)
   const timedOut = new Set(pending.timedOutRelayUrls)
-  for (const [relayUrl, status] of outcomes) {
+  for (const outcome of outcomes) {
+    if (!outcome) continue
+    const [relayUrl, status] = outcome
     rejected.delete(relayUrl)
     timedOut.delete(relayUrl)
     if (status === "acked") acknowledged.add(relayUrl)

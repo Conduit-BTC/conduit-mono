@@ -29,6 +29,9 @@ async function publishProductDeletionRelay(
       signedEvent: input.signedEvent,
       relayUrl: input.relayUrl,
       authorPubkey: input.signedEvent.pubkey,
+      accountPubkey: input.accountPubkey,
+      accountNetworkLocalStateRepository:
+        input.accountNetworkLocalStateRepository,
       authenticatedPubkey: input.roles.includes("author_write")
         ? input.signedEvent.pubkey
         : null,

@@ -5,6 +5,7 @@ import {
   getPublicKey,
   verifyEvent,
 } from "nostr-tools"
+import { applyE2eRelayIsolation, config } from "../packages/core/src/config"
 import {
   __resetMediaServerPreferencesForTests,
   BLOSSOM_SERVER_LIST_KIND,
@@ -22,6 +23,7 @@ import {
   NostrSignerError,
   type NostrEventSigner,
 } from "../packages/core/src/protocol/nostr-event-signer"
+import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
 import type { SignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
 
 const OWNER_KEY = generateSecretKey()
@@ -29,6 +31,9 @@ const OTHER_KEY = generateSecretKey()
 const OWNER = getPublicKey(OWNER_KEY)
 const OTHER_OWNER = getPublicKey(OTHER_KEY)
 const NOW = 1_700_000_000_000
+const allowAllAccountNetworkRepository = {
+  get: async () => undefined,
+}
 
 class MemoryStorage implements MediaServerPreferencesStorage {
   readonly values = new Map<string, string>()
@@ -115,6 +120,7 @@ describe("explicit kind 10063 publication", () => {
       now: () => NOW,
       readRelayUrls: ["wss://one.conduit.market", "wss://two.conduit.market"],
       publishRelayUrls: targets,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
       onPhase: (phase) => phases.push(phase),
       publishToRelay: async (input) => {
         signed = input.signedEvent
@@ -183,6 +189,7 @@ describe("explicit kind 10063 publication", () => {
       now: () => NOW,
       readRelayUrls: targets,
       publishRelayUrls: targets,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
       publishToRelay: async (input) => {
         signed = input.signedEvent
         attempts.push(input.relayUrl)
@@ -251,83 +258,231 @@ describe("explicit kind 10063 publication", () => {
     ).toBeUndefined()
   })
 
-  it("preserves an authenticated planner local relay through reload and read-back", async () => {
+  it("keeps an excluded durable target unresolved until a fresh retry admits it", async () => {
     const storage = new MemoryStorage()
-    const readRelayUrl = "wss://read.conduit.market"
-    const publishRelayUrl = "ws://127.0.0.1:7777"
-    const resolution = await reviewedEmpty(storage, [readRelayUrl])
-    const attempts: string[] = []
+    const blockedRelayUrl = "wss://blocked.conduit.market"
+    const allowedRelayUrl = "wss://allowed.conduit.market"
+    const targets = [blockedRelayUrl, allowedRelayUrl]
+    const resolution = await reviewedEmpty(storage, targets)
+    let excluded = true
+    let eligibilityReads = 0
+    const accountNetworkLocalStateRepository = {
+      get: async (pubkey: string) => {
+        eligibilityReads += 1
+        expect(pubkey).toBe(OWNER)
+        const state = emptyAccountNetworkLocalState(OWNER, () => NOW)
+        state.exclusions = excluded
+          ? [
+              {
+                relayUrl: blockedRelayUrl,
+                committedAt: NOW,
+                relayListFrontier: { eventId: null, createdAt: null },
+                inboxDeclarationFrontier: { eventId: null, createdAt: null },
+              },
+            ]
+          : []
+        return state
+      },
+    }
     let signed: SignedPublicNostrEvent | null = null
-    let acceptPublish = false
+    let signCalls = 0
+    const attempts: Array<{
+      relayUrl: string
+      eventId: string
+      accountPubkey: string | null | undefined
+    }> = []
+    const exactReadBacks: Array<{
+      relayUrls: string[]
+      accountPubkey: string | null | undefined
+      repository: unknown
+    }> = []
     const dependencies: PublishMediaServerPreferencesDependencies = {
       storage,
       now: () => NOW,
-      readRelayUrls: [readRelayUrl],
-      planPublish: async (input) => {
-        expect(input).toMatchObject({
-          intent: "author_event",
-          authorPubkey: OWNER,
-          authenticatedPubkey: OWNER,
-        })
-        return {
-          intent: "author_event",
-          primaryRelayUrls: [publishRelayUrl],
-          broadcastRelayUrls: [],
-          parkedRelayUrls: [],
-        }
-      },
+      readRelayUrls: targets,
+      publishRelayUrls: targets,
+      accountNetworkLocalStateRepository,
       publishToRelay: async (input) => {
         signed = input.signedEvent
-        attempts.push(input.relayUrl)
-        return acceptPublish ? "acked" : "timed_out"
+        attempts.push({
+          relayUrl: input.relayUrl,
+          eventId: input.signedEvent.id,
+          accountPubkey: input.accountPubkey,
+        })
+        expect(input.accountNetworkLocalStateRepository).toBe(
+          accountNetworkLocalStateRepository
+        )
+        return "acked"
       },
-      fetchEvents: async (filter, options) =>
-        filter.ids?.length && signed
-          ? readResult({
-              events: [signed],
-              relayUrls: options.relayUrls,
-              sources: { [signed.id]: [publishRelayUrl] },
-            })
-          : readResult({ relayUrls: options.relayUrls }),
+      fetchEvents: async (filter, options) => {
+        if (filter.ids?.length && signed) {
+          exactReadBacks.push({
+            relayUrls: [...options.relayUrls],
+            accountPubkey: options.accountPubkey,
+            repository: options.accountNetworkLocalStateRepository,
+          })
+          return readResult({
+            events: [signed],
+            relayUrls: options.relayUrls,
+            sources: { [signed.id]: [...options.relayUrls] },
+          })
+        }
+        return readResult({ relayUrls: options.relayUrls })
+      },
     }
 
     const first = await publishMediaServerPreferences({
       owner: OWNER,
       serverUrls: ["https://media.conduit.market"],
-      signer: signer(),
+      signer: signer({
+        onSign: () => {
+          signCalls += 1
+        },
+      }),
       reviewed: toReviewedMediaServerEvidence(resolution),
       dependencies,
     })
+
     expect(first).toMatchObject({
-      outcome: "failed",
-      targetRelayCount: 1,
+      outcome: "partial",
+      acceptedRelayCount: 1,
+      rejectedRelayCount: 0,
+      timedOutRelayCount: 0,
       retryAvailable: true,
     })
-    expect(attempts).toEqual([publishRelayUrl])
-
-    __resetMediaServerPreferencesForTests()
+    expect(attempts.map((attempt) => attempt.relayUrl)).toEqual([
+      allowedRelayUrl,
+    ])
+    expect(attempts[0]?.accountPubkey).toBe(OWNER)
     expect(
-      loadMediaServerPreferenceRecord(OWNER, storage).pending?.publishRelayUrls
-    ).toEqual([publishRelayUrl])
+      loadMediaServerPreferenceRecord(OWNER, storage).pending
+    ).toMatchObject({
+      acknowledgedRelayUrls: [allowedRelayUrl],
+      rejectedRelayUrls: [],
+      timedOutRelayUrls: [],
+    })
 
-    acceptPublish = true
+    excluded = false
     const retried = await retryMediaServerPreferencesPublish({
       owner: OWNER,
       dependencies,
     })
+
     expect(retried).toMatchObject({
       outcome: "confirmed",
-      acceptedRelayCount: 1,
-      targetRelayCount: 1,
-      confirmed: true,
+      acceptedRelayCount: 2,
+      rejectedRelayCount: 0,
+      timedOutRelayCount: 0,
       retryAvailable: false,
     })
-    expect(attempts).toEqual([publishRelayUrl, publishRelayUrl])
+    expect(signCalls).toBe(1)
+    expect(eligibilityReads).toBe(5)
+    expect(attempts.map((attempt) => attempt.relayUrl)).toEqual([
+      allowedRelayUrl,
+      blockedRelayUrl,
+    ])
+    expect(new Set(attempts.map((attempt) => attempt.eventId))).toEqual(
+      new Set([signed!.id])
+    )
+    expect(exactReadBacks).toEqual([
+      {
+        relayUrls: [allowedRelayUrl],
+        accountPubkey: OWNER,
+        repository: accountNetworkLocalStateRepository,
+      },
+      {
+        relayUrls: [allowedRelayUrl, blockedRelayUrl],
+        accountPubkey: OWNER,
+        repository: accountNetworkLocalStateRepository,
+      },
+    ])
+  })
 
-    __resetMediaServerPreferencesForTests()
-    expect(
-      loadMediaServerPreferenceRecord(OWNER, storage).published?.sourceRelayUrls
-    ).toEqual([publishRelayUrl])
+  it("preserves an authenticated planner local relay through reload and read-back", async () => {
+    const storage = new MemoryStorage()
+    const publishRelayUrl = "ws://127.0.0.1:7777"
+    const originalConfig = { ...config }
+    Object.assign(config, applyE2eRelayIsolation(config, [publishRelayUrl]))
+    try {
+      const resolution = await reviewedEmpty(storage, [publishRelayUrl])
+      const attempts: string[] = []
+      let signed: SignedPublicNostrEvent | null = null
+      let acceptPublish = false
+      const dependencies: PublishMediaServerPreferencesDependencies = {
+        storage,
+        now: () => NOW,
+        readRelayUrls: [publishRelayUrl],
+        accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+        planPublish: async (input) => {
+          expect(input).toMatchObject({
+            intent: "author_event",
+            authorPubkey: OWNER,
+            authenticatedPubkey: OWNER,
+          })
+          return {
+            intent: "author_event",
+            primaryRelayUrls: [publishRelayUrl],
+            broadcastRelayUrls: [],
+            parkedRelayUrls: [],
+          }
+        },
+        publishToRelay: async (input) => {
+          signed = input.signedEvent
+          attempts.push(input.relayUrl)
+          return acceptPublish ? "acked" : "timed_out"
+        },
+        fetchEvents: async (filter, options) =>
+          filter.ids?.length && signed
+            ? readResult({
+                events: [signed],
+                relayUrls: options.relayUrls,
+                sources: { [signed.id]: [publishRelayUrl] },
+              })
+            : readResult({ relayUrls: options.relayUrls }),
+      }
+
+      const first = await publishMediaServerPreferences({
+        owner: OWNER,
+        serverUrls: ["https://media.conduit.market"],
+        signer: signer(),
+        reviewed: toReviewedMediaServerEvidence(resolution),
+        dependencies,
+      })
+      expect(first).toMatchObject({
+        outcome: "failed",
+        targetRelayCount: 1,
+        retryAvailable: true,
+      })
+      expect(attempts).toEqual([publishRelayUrl])
+
+      __resetMediaServerPreferencesForTests()
+      expect(
+        loadMediaServerPreferenceRecord(OWNER, storage).pending
+          ?.publishRelayUrls
+      ).toEqual([publishRelayUrl])
+
+      acceptPublish = true
+      const retried = await retryMediaServerPreferencesPublish({
+        owner: OWNER,
+        dependencies,
+      })
+      expect(retried).toMatchObject({
+        outcome: "confirmed",
+        acceptedRelayCount: 1,
+        targetRelayCount: 1,
+        confirmed: true,
+        retryAvailable: false,
+      })
+      expect(attempts).toEqual([publishRelayUrl, publishRelayUrl])
+
+      __resetMediaServerPreferencesForTests()
+      expect(
+        loadMediaServerPreferenceRecord(OWNER, storage).published
+          ?.sourceRelayUrls
+      ).toEqual([publishRelayUrl])
+    } finally {
+      Object.assign(config, originalConfig)
+    }
   })
 
   it("distinguishes full rejection from accepted-but-pending confirmation", async () => {
@@ -345,6 +500,7 @@ describe("explicit kind 10063 publication", () => {
         now: () => NOW,
         readRelayUrls: ["wss://reject.conduit.market"],
         publishRelayUrls: ["wss://reject.conduit.market"],
+        accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
         publishToRelay: async () => "rejected",
         fetchEvents: async (_filter, options) =>
           readResult({ relayUrls: options.relayUrls }),
@@ -373,6 +529,7 @@ describe("explicit kind 10063 publication", () => {
         now: () => NOW,
         readRelayUrls: ["wss://pending.conduit.market"],
         publishRelayUrls: ["wss://pending.conduit.market"],
+        accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
         publishToRelay: async () => "acked",
         fetchEvents: async (_filter, options) =>
           readResult({ relayUrls: options.relayUrls }),
@@ -410,6 +567,7 @@ describe("explicit kind 10063 publication", () => {
             "wss://two.conduit.market",
           ],
           publishRelayUrls: ["wss://one.conduit.market"],
+          accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
           fetchEvents: async (_filter, options) =>
             readResult({ relayUrls: options.relayUrls }),
         },
@@ -448,6 +606,7 @@ describe("explicit kind 10063 publication", () => {
             "wss://two.conduit.market",
           ],
           publishRelayUrls: ["wss://one.conduit.market"],
+          accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
           fetchEvents: async () =>
             readResult({
               relayUrls: [
@@ -485,6 +644,7 @@ describe("explicit kind 10063 publication", () => {
             "wss://two.conduit.market",
           ],
           publishRelayUrls: ["wss://one.conduit.market"],
+          accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
           fetchEvents: async (_filter, options) =>
             readResult({ relayUrls: options.relayUrls }),
           publishToRelay: async () => {
@@ -539,6 +699,7 @@ describe("explicit kind 10063 publication", () => {
           now: () => NOW,
           readRelayUrls: ["wss://one.conduit.market"],
           publishRelayUrls: ["wss://one.conduit.market"],
+          accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
           fetchEvents: async (_filter, options) =>
             readResult({ relayUrls: options.relayUrls }),
           publishToRelay: async () => {
@@ -578,6 +739,7 @@ describe("explicit kind 10063 publication", () => {
         now: () => NOW + 1,
         readRelayUrls: targets,
         publishRelayUrls: targets,
+        accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
         publishToRelay: async (input) => {
           signed = input.signedEvent
           return input.relayUrl === targets[0] ? "acked" : "rejected"
@@ -631,6 +793,7 @@ describe("explicit kind 10063 publication", () => {
         now: () => NOW,
         readRelayUrls: [target],
         publishRelayUrls: [target],
+        accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
         publishToRelay: async () => "timed_out",
         fetchEvents: async (_filter, options) =>
           readResult({ relayUrls: options.relayUrls }),
@@ -657,6 +820,7 @@ describe("explicit kind 10063 publication", () => {
           now: () => NOW + 1_000,
           readRelayUrls: [target],
           publishRelayUrls: [target],
+          accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
           publishToRelay: async () => {
             publishCalls += 1
             return "acked"

@@ -410,6 +410,7 @@ type CommerceTestOverrides = {
   readProtectedInbox?: (
     options: ReadProtectedInboxOptions
   ) => ReturnType<typeof readProtectedInbox>
+  accountNetworkLocalStateRepository?: ReadProtectedInboxOptions["accountNetworkLocalStateRepository"]
   giftUnwrap?: (
     event: NDKEvent,
     signer: NDKSigner
@@ -660,10 +661,16 @@ async function planCommerceReadRelayPlan(input: {
           ? {
               cacheOnly: true,
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+              accountPubkey: input.authenticatedPubkey,
+              accountNetworkLocalStateRepository:
+                testOverrides.accountNetworkLocalStateRepository,
             }
           : {
               relayUrls: relayListLookupRelayUrls,
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+              accountPubkey: input.authenticatedPubkey,
+              accountNetworkLocalStateRepository:
+                testOverrides.accountNetworkLocalStateRepository,
             }
       )
     : undefined
@@ -1073,6 +1080,7 @@ async function streamProductRecordChunks(input: {
   baseFilter: NDKFilter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
+  authenticatedPubkey?: string | null
   readPolicy?: CommerceReadPolicy
   merged: Map<string, NDKEvent>
   deletionTimestamps?: DeletionTimestamps
@@ -1106,6 +1114,9 @@ async function streamProductRecordChunks(input: {
           chunkFilter,
           {
             relayUrls: input.relayUrls,
+            accountPubkey: input.authenticatedPubkey,
+            accountNetworkLocalStateRepository:
+              testOverrides.accountNetworkLocalStateRepository,
             connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
             fetchTimeoutMs: input.readPolicy?.fetchTimeoutMs ?? 8_000,
           },
@@ -2766,6 +2777,9 @@ async function fetchProductDeletionTimestamps(
             async (relayUrls) =>
               await (options.fetchEvents ?? runFetchEventsFanout)(filter, {
                 relayUrls,
+                accountPubkey: options.authenticatedPubkey,
+                accountNetworkLocalStateRepository:
+                  testOverrides.accountNetworkLocalStateRepository,
                 connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
                 fetchTimeoutMs: options.readPolicy?.fetchTimeoutMs ?? 10_000,
               })
@@ -3049,6 +3063,9 @@ async function fetchPublicProductRecords(query: {
 
   const result = await runFetchEventsFanoutDetailed(filter, {
     relayUrls,
+    accountPubkey: query.authenticatedPubkey,
+    accountNetworkLocalStateRepository:
+      testOverrides.accountNetworkLocalStateRepository,
     connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
     fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
   })
@@ -3132,6 +3149,7 @@ async function fetchPublicProductRecordsProgressive(
     baseFilter: filter,
     authorChunks,
     relayUrls,
+    authenticatedPubkey: query.authenticatedPubkey,
     readPolicy: query.readPolicy,
     merged,
     deletionTimestamps: initialDeletionTimestamps,
@@ -3148,6 +3166,7 @@ async function fetchPublicProductRecordsProgressive(
       baseFilter: filter,
       authorChunks,
       relayUrls: expansionRelayUrls,
+      authenticatedPubkey: query.authenticatedPubkey,
       readPolicy: query.readPolicy,
       merged,
       deletionTimestamps: initialDeletionTimestamps,
@@ -3222,7 +3241,11 @@ export async function getFollowPubkeys(
       pubkeys: [pubkey],
       authenticatedPubkey: query.authenticatedPubkey,
     },
-    { now: testOverrides.now }
+    {
+      now: testOverrides.now,
+      accountNetworkLocalStateRepository:
+        testOverrides.accountNetworkLocalStateRepository,
+    }
   )
   const author = result.authors[0]
   const selectedEvent = author?.event
@@ -4764,6 +4787,9 @@ export async function getProfiles(
     }
     const fanoutOptions = {
       relayUrls: relayPlan.relayUrls,
+      accountPubkey: query.authenticatedPubkey,
+      accountNetworkLocalStateRepository:
+        testOverrides.accountNetworkLocalStateRepository,
       connectTimeoutMs:
         query.readPolicy?.connectTimeoutMs ?? (visible ? 1_500 : 3_000),
       fetchTimeoutMs:
@@ -5083,6 +5109,9 @@ async function readEventMarketInboxRelay(
       },
       {
         relayUrls: [relayUrl],
+        accountPubkey: principalPubkey,
+        accountNetworkLocalStateRepository:
+          testOverrides.accountNetworkLocalStateRepository,
         connectTimeoutMs: 4_000,
         fetchTimeoutMs: 12_000,
       }
@@ -5140,6 +5169,9 @@ async function readEventMarketInboxRelay(
       },
       {
         relayUrls: [relayUrl],
+        accountPubkey: principalPubkey,
+        accountNetworkLocalStateRepository:
+          testOverrides.accountNetworkLocalStateRepository,
         connectTimeoutMs: 4_000,
         fetchTimeoutMs: 12_000,
       }
@@ -5645,6 +5677,9 @@ async function resolvePrincipalInboxDeclaration(
   return await resolveInboxDeclaration(principalPubkey, {
     fetchEventsWithDiagnostics: runFetchEventsFanoutWithDiagnostics,
     allowLocalRelayUrlsForPubkey: principalPubkey,
+    requestingAccountPubkey: principalPubkey,
+    accountNetworkLocalStateRepository:
+      testOverrides.accountNetworkLocalStateRepository,
   })
 }
 
@@ -5683,6 +5718,9 @@ async function fetchNewInboxWraps(
   ) {
     const result = await runFetchEventsFanoutWithDiagnostics(filter, {
       relayUrls: readPlan.relayUrls,
+      accountPubkey: principalPubkey,
+      accountNetworkLocalStateRepository:
+        testOverrides.accountNetworkLocalStateRepository,
       connectTimeoutMs: 4_000,
       fetchTimeoutMs: 12_000,
     })
@@ -5710,6 +5748,8 @@ async function fetchNewInboxWraps(
     relayUrls: readPlan.relayUrls,
     limit,
     authorization,
+    accountNetworkLocalStateRepository:
+      testOverrides.accountNetworkLocalStateRepository,
     connectTimeoutMs: 4_000,
     queryTimeoutMs: 12_000,
   })
@@ -5929,7 +5969,14 @@ async function runLegacyDmSync(
         "#p": [principalPubkey],
         limit: 400,
       },
-      { relayUrls, connectTimeoutMs: 4_000, fetchTimeoutMs: 12_000 }
+      {
+        relayUrls,
+        accountPubkey: principalPubkey,
+        accountNetworkLocalStateRepository:
+          testOverrides.accountNetworkLocalStateRepository,
+        connectTimeoutMs: 4_000,
+        fetchTimeoutMs: 12_000,
+      }
     ),
     runFetchEventsFanout(
       {
@@ -5937,7 +5984,14 @@ async function runLegacyDmSync(
         authors: [principalPubkey],
         limit: 400,
       },
-      { relayUrls, connectTimeoutMs: 4_000, fetchTimeoutMs: 12_000 }
+      {
+        relayUrls,
+        accountPubkey: principalPubkey,
+        accountNetworkLocalStateRepository:
+          testOverrides.accountNetworkLocalStateRepository,
+        connectTimeoutMs: 4_000,
+        fetchTimeoutMs: 12_000,
+      }
     ),
     loadCachedDirectMessages(principalPubkey),
   ])

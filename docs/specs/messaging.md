@@ -166,13 +166,17 @@ The boundary provides:
   `complete`, `partial`, or `unavailable` coverage and an explicit source such as
   `declared`, `pending_declared`, `cutover_recovery`, `migration_recovery`,
   `compatibility`, `mixed`, or `cache`.
-- **Legacy inbox-read recovery.** Capturing the bounded read-only secure-IN
-  recovery record is independent of NIP-65 draft import. A valid signed
-  `kind:10002` suppresses the draft but does not end recovery. The record is not
-  current membership and never authorizes writes. It ends only after a usable
-  `kind:10050` replacement with one to three secure relays is fully signed and
-  durably staged, or after explicit discard recorded by a durable local
-  migration tombstone.
+- **Legacy inbox-read recovery.** Legacy NIP-65 roles never create NIP-17
+  evidence. A bounded read-only secure-IN recovery record explicitly committed
+  by an older build is handled independently of NIP-65 draft import. It is not
+  current membership and never authorizes writes. An ordinary replacement
+  carries those relays into the cutover lane; its seven-day read-only grace
+  begins only after a usable `kind:10050` replacement with one to three secure
+  relays is read back exactly from its complete shared relay set. Signing or
+  durable staging alone does not start or end that grace. Explicit whole-relay
+  removal is the only early-termination path and ends recovery for that URL at
+  the atomic local commit. A migration discard tombstone applies only to a
+  discarded legacy NIP-65 role draft.
 - **Protected inbox execution.** The shared inbox path executes the principal's
   own `kind:1059`, `#p`-scoped filters through the NDK-neutral protected relay
   executor. The explicit account/session authorization boundary accepts only

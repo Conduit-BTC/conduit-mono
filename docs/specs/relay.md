@@ -6,12 +6,13 @@ Conduit treats relays as Nostr infrastructure, not fixed app roles. Market and
 Merchant expose one account-level Network experience projected from the user's
 latest validated signed NIP-65 `kind:10002` and NIP-17 `kind:10050` events.
 
-The UI presents one flat, automatically ordered relay list. Each row may
+The UI presents one flat relay list. Each row may
 participate in Read, Publish, Private inbox, or any combination, and may show
 configured, advertised, or observed capability evidence. Only configured or
 scoped observed commerce compatibility can move a relay into the Commerce tier.
-Advertised relay-protocol capabilities remain weaker supporting evidence; users
-do not categorize or manually rank relays.
+Advertised relay-protocol capabilities remain weaker supporting evidence. A
+signer-free Conduit-local preference may order otherwise eligible and equivalent
+operations, but cannot change signed membership or protocol routing.
 
 The detailed product and client architecture lives in [Relay Architecture](./relay/conduit_relay_architecture.md).
 
@@ -166,8 +167,8 @@ should come from:
 
 - the latest usable validated signed `kind:10002` and `kind:10050` frontiers;
 - evidence-labelled capabilities and warnings;
-- deterministic automatic ordering, with signed declaration order as a stable
-  tie-breaker;
+- evidence groups followed by signer-free Conduit-local ordering only among
+  otherwise eligible and equivalent operations;
 - bounded code-owned fallback for bootstrap or recovery when no usable signed
   evidence exists;
 - cached signed evidence only as an explicitly stale or degraded fallback.
@@ -179,18 +180,25 @@ pending projection immediately while reporting that network confirmation is
 pending. Newer reconciled signed evidence supersedes an obsolete pending event
 and cancels its retry.
 
+Local order is shared wherever Conduit storage is shared. It is not synchronized
+as a new authority across isolated devices and never overrides protocol event
+ordering, signed authority, `kind:10050` routing, whole-relay exclusions,
+validity, or evidence rules.
+
 Every fresh signer connection reconciles both replaceable-event frontiers over
 a bounded discovery plan independent of legacy local preferences. Partial or
 unavailable coverage is unknown, not absence. Valid signed state always wins;
 legacy data may only seed a reviewed unpublished draft after complete bounded
 discovery establishes scoped absence for `kind:10002`.
 
-That draft-import gate is independent of legacy inbox-read recovery. A valid
-signed `kind:10002` suppresses draft import but does not end a bounded read-only
-recovery lane captured from old secure-IN settings. Only a usable
-`kind:10050` replacement with one to three secure relays that is fully signed
-and durably staged, or an explicit discard recorded by a durable migration
-tombstone, ends that lane. It never authorizes writes or publication.
+That draft-import gate is independent of legacy inbox-read recovery. Legacy
+NIP-65 roles never create NIP-17 evidence. A valid signed `kind:10002`
+suppresses draft import but does not end an explicit bounded read-only recovery
+record already committed by an older build. An ordinary replacement moves
+those URLs into a seven-day cutover lane whose clock starts only after exact
+shared-set readback of a usable `kind:10050` event. Whole-relay removal ends
+recovery for that URL immediately. Recovery never authorizes writes or
+publication.
 
 Both frontiers use the canonical NIP-01 replaceable-event order after
 validation: greater `created_at` wins, then the lexicographically lowest event
@@ -200,24 +208,25 @@ The current resolver cannot emit a conflict state for valid replaceable events.
 Conflict remains a fail-closed reserved outcome only if a future richer evidence
 model can validate an internal inconsistency after canonical ordering.
 
-A single reviewed ordinary update may change one or both event kinds. Explicit
-whole-setup removal always prepares, signs, and stages replacements for both
-`kind:10002` and `kind:10050`, even when the URL appears in only one current
-frontier. This deliberate exception records complete-removal intent in both
-signed account objects. All required event drafts must be signed and their exact
-bytes and immutable target plans staged before either is published. Publication
-and readback remain independent and must expose truthful partial outcomes and
-exact retry because Nostr provides no cross-event transaction.
+A single reviewed signed-role update may change one or both event kinds. A
+signer-free local reorder changes neither. Explicit whole-relay removal clears
+the URL from every applicable desired role and prepares only the signed
+frontiers whose semantics change. All required event drafts must be signed and
+their exact bytes and immutable target plans staged before either is published.
+Publication and readback remain independent and must expose truthful partial
+outcomes and exact retry because Nostr provides no cross-event transaction.
 
 For an ordinary Private inbox change, new writes use the fully signed and staged
 pending declaration while prior valid inboxes remain a hidden read-only recovery
-lane through exact shared-set readback and a bounded stale-sender grace period.
-An explicit whole-setup removal excludes the removed URL from reads and writes
-immediately after every required signature is staged. Unsigned drafts,
-cancelled signer flows, and missing signatures change nothing.
+lane. Exact shared-set readback starts a seven-day recovery grace; the prior
+inboxes remain read-only until it expires. An explicit whole-relay removal
+excludes the removed URL from reads, writes, and recovery immediately after
+every required exact checkpoint is staged. Unsigned drafts, cancelled signer
+flows, and missing required signatures change nothing.
 
-One-kind membership still yields two whole-setup replacement events. Cancel or
-any missing signature yields neither publication nor runtime cutover.
+The desired configuration retains at least one Publish relay. A single Publish
+relay is valid with a redundancy warning. A reviewed change cannot eliminate the
+last usable Private inbox without selecting a replacement.
 
 Shared acceleration, cache, index, and routing systems may derive only from
 relay-visible state and must never expose a hidden API for private messages,

@@ -4,6 +4,10 @@ import {
   type RelayAuthOutcome,
   type RelayQueryResult,
 } from "./relay-executor"
+import {
+  filterEligibleAccountRelayUrls,
+  type AccountNetworkLocalStateRepository,
+} from "./account-network-local-state"
 import type { SignedNostrEvent } from "./nostr-event-signer"
 import type { ProtectedReadAuthorization } from "./protected-read-authorization"
 
@@ -29,6 +33,10 @@ export interface ReadProtectedInboxOptions {
   relayUrls: string[]
   limit: number
   authorization: ProtectedReadAuthorization | null
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
   executor?: CommerceRelayExecutor
   signal?: AbortSignal
   connectTimeoutMs?: number
@@ -131,10 +139,22 @@ export async function readProtectedInbox(
     )
   }
 
+  // Whole-relay removal is an account-local authority cutoff. Re-read it at
+  // the last admission boundary so another tab can stop future protected
+  // reads without interrupting work that was already admitted.
+  const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+    accountPubkey: principalPubkey,
+    candidateRelayUrls: options.relayUrls,
+    repository: options.accountNetworkLocalStateRepository,
+  })
+  if (eligibleRelayUrls.length === 0) {
+    return emptyUnavailableResult(0, "authority_changed")
+  }
+
   const executor = options.executor ?? commerceRelayExecutor
   const relayResult = await executor.query(
     {
-      relayUrls: options.relayUrls,
+      relayUrls: eligibleRelayUrls,
       filters: [
         {
           kinds: [1_059],
