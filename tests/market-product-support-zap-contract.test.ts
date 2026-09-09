@@ -22,6 +22,8 @@ describe("Market product support zap contracts", () => {
     expect(supportUi).toContain("prepareProductSupportZapInvoice({")
     expect(supportUi).toContain("createNdkNostrEventSigner(")
     expect(supportUi).toContain("relayUrls: config.zapRelayUrls")
+    expect(supportUi).toContain("isCurrent:")
+    expect(supportUi).not.toContain("lud16: lightningAddress")
     expect(normalizedUi).toContain(
       "This is separate from buying the product and never changes cart or order status."
     )
@@ -38,13 +40,23 @@ describe("Market product support zap contracts", () => {
     const supportUi = await Bun.file(
       "apps/market/src/components/ProductSupportZap.tsx"
     ).text()
-    const normalizedUi = supportUi.replace(/\s+/g, " ")
 
     expect(supportUi).toContain("Public note (optional)")
     expect(supportUi).toContain("PRODUCT_SUPPORT_ZAP_NOTE_MAX_CODE_POINTS")
-    expect(supportUi).toContain("The public zap request includes this note")
-    expect(normalizedUi).toContain(
-      "It never includes cart, order, shipping, or customer details."
+    expect(supportUi).toContain("getProductSupportZapDisclosure({ note })")
+    expect(supportUi).toContain("{disclosure.preSubmitCopy}")
+  })
+
+  it("uses a theme-safe semantic invoice status", async () => {
+    const supportUi = await Bun.file(
+      "apps/market/src/components/ProductSupportZap.tsx"
+    ).text()
+
+    expect(supportUi).toContain("border-[var(--success)]/35")
+    expect(supportUi).toContain(
+      "bg-[color-mix(in_srgb,var(--success)_10%,transparent)]"
     )
+    expect(supportUi).toContain("text-[var(--text-primary)]")
+    expect(supportUi).not.toContain("text-green-300")
   })
 })

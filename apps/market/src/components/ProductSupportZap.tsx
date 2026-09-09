@@ -1,7 +1,8 @@
 import { Check, Copy, ExternalLink, Zap } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   config,
+  getProductSupportZapDisclosure,
   normalizeLightningInvoice,
   prepareProductSupportZapInvoice,
   PRODUCT_SUPPORT_ZAP_NOTE_MAX_CODE_POINTS,
@@ -52,6 +53,10 @@ export function ProductSupportZap({
   const [preparing, setPreparing] = useState(false)
   const [copied, setCopied] = useState(false)
   const noteLength = useMemo(() => Array.from(note).length, [note])
+  const disclosure = useMemo(
+    () => getProductSupportZapDisclosure({ note }),
+    [note]
+  )
   const lightningAddress = lud16?.trim() ?? ""
   const signerReady =
     auth.status === "connected" &&
@@ -59,12 +64,38 @@ export function ProductSupportZap({
     !!auth.signer &&
     !!auth.method &&
     auth.capabilities.signEvent
+  const currentTargetRef = useRef({
+    shopperPubkey: auth.pubkey,
+    signer: auth.signer,
+    authMethod: auth.method,
+    merchantPubkey,
+    productAddress,
+    lightningAddress,
+  })
+  const preparationSequenceRef = useRef(0)
+  currentTargetRef.current = {
+    shopperPubkey: auth.pubkey,
+    signer: auth.signer,
+    authMethod: auth.method,
+    merchantPubkey,
+    productAddress,
+    lightningAddress,
+  }
 
   useEffect(() => {
+    preparationSequenceRef.current += 1
+    setPreparing(false)
     setInvoice(null)
     setError(null)
     setCopied(false)
-  }, [auth.pubkey, productAddress])
+  }, [
+    auth.method,
+    auth.pubkey,
+    auth.signer,
+    lightningAddress,
+    merchantPubkey,
+    productAddress,
+  ])
 
   if (!lightningAddress) return null
 
@@ -89,34 +120,53 @@ export function ProductSupportZap({
       return
     }
 
+    const shopperPubkey = auth.pubkey
+    const signer = auth.signer
+    const authMethod = auth.method
+    const selectedMerchantPubkey = merchantPubkey
+    const selectedProductAddress = productAddress
+    const selectedLightningAddress = lightningAddress
+    const preparationSequence = preparationSequenceRef.current + 1
+    preparationSequenceRef.current = preparationSequence
+    const isCurrent = () => {
+      const current = currentTargetRef.current
+      return (
+        preparationSequenceRef.current === preparationSequence &&
+        current.shopperPubkey === shopperPubkey &&
+        current.signer === signer &&
+        current.authMethod === authMethod &&
+        current.merchantPubkey === selectedMerchantPubkey &&
+        current.productAddress === selectedProductAddress &&
+        current.lightningAddress === selectedLightningAddress
+      )
+    }
+
     setPreparing(true)
     setError(null)
     setInvoice(null)
     setCopied(false)
     try {
       const result = await prepareProductSupportZapInvoice({
-        signer: createNdkNostrEventSigner(
-          auth.signer,
-          auth.pubkey,
-          auth.method
-        ),
-        shopperPubkey: auth.pubkey,
-        recipientPubkey: merchantPubkey,
-        productAddress,
-        lud16: lightningAddress,
+        signer: createNdkNostrEventSigner(signer, shopperPubkey, authMethod),
+        shopperPubkey,
+        recipientPubkey: selectedMerchantPubkey,
+        productAddress: selectedProductAddress,
         amountSats,
         note,
         relayUrls: config.zapRelayUrls,
+        isCurrent: isCurrent,
       })
-      setInvoice(result.invoice)
+      if (isCurrent()) setInvoice(result.invoice)
     } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "The support invoice could not be prepared."
-      )
+      if (isCurrent()) {
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "The support invoice could not be prepared."
+        )
+      }
     } finally {
-      setPreparing(false)
+      if (isCurrent()) setPreparing(false)
     }
   }
 
@@ -204,9 +254,12 @@ export function ProductSupportZap({
             <div className="space-y-4">
               <div
                 role="status"
-                className="rounded-xl border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-300"
+                className="flex items-start gap-2 rounded-xl border border-[var(--success)]/35 bg-[color-mix(in_srgb,var(--success)_10%,transparent)] p-3 text-sm text-[var(--text-primary)]"
               >
-                Invoice ready. Conduit has not sent or confirmed a payment.
+                <Check className="mt-0.5 size-4 shrink-0 text-[var(--success)]" />
+                <span>
+                  Invoice ready. Conduit has not sent or confirmed a payment.
+                </span>
               </div>
               <div className="flex flex-col items-start gap-4 sm:flex-row">
                 <div className="rounded-xl bg-white p-3">
@@ -294,10 +347,7 @@ export function ProductSupportZap({
                   disabled={preparing}
                 />
                 <p className="text-xs leading-5 text-[var(--text-secondary)]">
-                  The public zap request includes this note, your Nostr
-                  identity, the amount, the merchant and product references, and
-                  the wallet receipt relays. It never includes cart, order,
-                  shipping, or customer details.
+                  {disclosure.preSubmitCopy}
                 </p>
               </div>
               {error ? (

@@ -3,9 +3,11 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 
 import {
   buildProductSupportZapRequest,
+  getProductSupportZapDisclosure,
   normalizeProductSupportZapNote,
   prepareProductSupportZapInvoice,
   PRODUCT_SUPPORT_ZAP_NOTE_MAX_CODE_POINTS,
+  resolveProductSupportPaymentAddress,
   type ProductSupportZapDependencies,
 } from "../packages/core/src/protocol/product-support-zap"
 import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
@@ -18,6 +20,71 @@ const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const PROVIDER_PUBKEY = getPublicKey(PROVIDER_SECRET)
 const PRODUCT_ADDRESS = `30402:${MERCHANT_PUBKEY}:coffee-mug`
 
+const profileCapabilities = {
+  sortModes: [],
+  textSearch: false,
+  protectedSummaries: false,
+  canonicalFreshness: false,
+  cursorPagination: false,
+}
+
+function profileResult(
+  lud16?: string,
+  overrides: Partial<{
+    source: "public" | "local_cache"
+    stale: boolean
+    degraded: boolean
+    capped: boolean
+  }> = {}
+) {
+  return {
+    data: {
+      [MERCHANT_PUBKEY]: {
+        pubkey: MERCHANT_PUBKEY,
+        ...(lud16 ? { lud16 } : {}),
+      },
+    },
+    meta: {
+      source: "public" as const,
+      stale: false,
+      degraded: false,
+      capped: false,
+      capabilities: profileCapabilities,
+      fetchedAt: 1_700_000_000_000,
+      ...overrides,
+    },
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((next) => {
+    resolve = next
+  })
+  return { promise, resolve }
+}
+
+function actualDisclosureFields(event: {
+  content: string
+  tags: string[][]
+}): string[] {
+  const tagNames = new Set(event.tags.map((tag) => tag[0]))
+  return [
+    "zap_request_type",
+    "shopper_identity_and_signature",
+    "timestamp",
+    ...(event.content ? ["public_note"] : []),
+    ...(tagNames.has("amount") ? ["amount"] : []),
+    ...(tagNames.has("p") ? ["merchant_reference"] : []),
+    ...(tagNames.has("a") && tagNames.has("k")
+      ? ["product_reference_and_kind"]
+      : []),
+    ...(tagNames.has("lnurl") ? ["lightning_endpoint"] : []),
+    ...(tagNames.has("relays") ? ["receipt_relays"] : []),
+    ...(tagNames.has("client") ? ["client_attribution"] : []),
+  ]
+}
+
 function signer(
   pubkey = SHOPPER_PUBKEY,
   secret = SHOPPER_SECRET
@@ -29,19 +96,32 @@ function signer(
   }
 }
 
+function lnurlMetadata(
+  overrides: Partial<{
+    allowsNostr: boolean
+    nostrPubkey: string
+    minSendable: number
+    maxSendable: number
+  }> = {}
+) {
+  return {
+    payRequestUrl: "https://pay.example/.well-known/lnurlp/merchant",
+    lnurl: "lnurl1product",
+    callback: "https://pay.example/zap",
+    minSendable: 1_000,
+    maxSendable: 1_000_000_000,
+    tag: "payRequest" as const,
+    allowsNostr: true,
+    nostrPubkey: PROVIDER_PUBKEY,
+    metadata: "[]",
+    ...overrides,
+  }
+}
+
 function dependencies(overrides: Partial<ProductSupportZapDependencies> = {}) {
   return {
-    fetchLnurlPayMetadata: mock(async () => ({
-      payRequestUrl: "https://pay.example/.well-known/lnurlp/merchant",
-      lnurl: "lnurl1product",
-      callback: "https://pay.example/zap",
-      minSendable: 1_000,
-      maxSendable: 1_000_000_000,
-      tag: "payRequest",
-      allowsNostr: true,
-      nostrPubkey: PROVIDER_PUBKEY,
-      metadata: "[]",
-    })),
+    getProfiles: mock(async () => profileResult("merchant@example.com")),
+    fetchLnurlPayMetadata: mock(async () => lnurlMetadata()),
     fetchZapInvoice: mock(async () => ({ invoice: "lnbc1bound" })),
     validateLightningInvoiceForPayment: mock(() => ({
       ok: true as const,
@@ -108,6 +188,56 @@ describe("product support zap request", () => {
     expect(draft.tags).toContainEqual(["a", PRODUCT_ADDRESS])
   })
 
+  it("derives provider disclosure from the built field inventory with or without client attribution", () => {
+    const built = buildProductSupportZapRequest({
+      shopperPubkey: SHOPPER_PUBKEY,
+      recipientPubkey: MERCHANT_PUBKEY,
+      productAddress: PRODUCT_ADDRESS,
+      amountMsats: 21_000,
+      lnurl: "lnurl1product",
+      relayUrls: ["wss://relay.example"],
+      note: "public note",
+      nowSeconds: 1_700_000_000,
+    })
+    const withoutClient = {
+      ...built,
+      tags: built.tags.filter((tag) => tag[0] !== "client"),
+    }
+    const withClient = {
+      ...withoutClient,
+      tags: [
+        ...withoutClient.tags,
+        [
+          "client",
+          "Conduit Market",
+          `31990:${PROVIDER_PUBKEY}:market`,
+          "wss://relay.example",
+        ],
+      ],
+    }
+
+    for (const event of [withoutClient, withClient]) {
+      const includesClientAttribution = event.tags.some(
+        (tag) => tag[0] === "client"
+      )
+      const disclosure = getProductSupportZapDisclosure({
+        note: event.content,
+        includeClientAttribution: includesClientAttribution,
+      })
+
+      expect(disclosure.publicFields).toEqual(actualDisclosureFields(event))
+      expect(disclosure.preSubmitCopy).toContain(
+        "sends a signed public zap request to the merchant's Lightning provider, even if you never pay it"
+      )
+      expect(disclosure.preSubmitCopy).toContain(
+        "may publish that request inside a public zap receipt on Nostr"
+      )
+      expect(
+        disclosure.preSubmitCopy.includes("Conduit Market attribution")
+      ).toBe(includesClientAttribution)
+    }
+  })
+
   it("normalizes controls and truncates by Unicode code point", () => {
     const note = `${"a".repeat(279)}🔥b\u0000`
     const normalized = normalizeProductSupportZapNote(note)
@@ -154,6 +284,53 @@ describe("product support zap request", () => {
   })
 })
 
+describe("product support payment profile evidence", () => {
+  it("uses a complete live rotation and never revives a cached address removed by the live profile", async () => {
+    const rotatedProfiles = mock(async () =>
+      profileResult("rotated@wallet.example")
+    )
+    await expect(
+      resolveProductSupportPaymentAddress(MERCHANT_PUBKEY, {
+        getProfiles: rotatedProfiles,
+      })
+    ).resolves.toBe("rotated@wallet.example")
+    expect(rotatedProfiles).toHaveBeenCalledWith({
+      pubkeys: [MERCHANT_PUBKEY],
+      skipCache: true,
+      requireCompleteEvidence: true,
+      evidenceScope: "payment",
+      priority: "visible",
+    })
+
+    const removedProfiles = mock(async () => profileResult())
+    await expect(
+      resolveProductSupportPaymentAddress(MERCHANT_PUBKEY, {
+        getProfiles: removedProfiles,
+      })
+    ).rejects.toThrow("current profile does not include")
+  })
+
+  it("fails closed when the exact payment-profile read is partial or unavailable", async () => {
+    const partialProfiles = mock(async () =>
+      profileResult("merchant@example.com", { degraded: true })
+    )
+    await expect(
+      resolveProductSupportPaymentAddress(MERCHANT_PUBKEY, {
+        getProfiles: partialProfiles,
+      })
+    ).rejects.toThrow("could not be confirmed from relays")
+
+    const unavailableProfiles = mock(async () => {
+      throw new Error("relay unavailable")
+    })
+    await expect(
+      resolveProductSupportPaymentAddress(MERCHANT_PUBKEY, {
+        getProfiles: unavailableProfiles,
+      })
+    ).rejects.toThrow("could not be confirmed from relays")
+  })
+})
+
 describe("product support zap invoice preparation", () => {
   it("signs the exact public request and asks for a description-bound invoice", async () => {
     const deps = dependencies()
@@ -163,7 +340,6 @@ describe("product support zap invoice preparation", () => {
         shopperPubkey: SHOPPER_PUBKEY,
         recipientPubkey: MERCHANT_PUBKEY,
         productAddress: PRODUCT_ADDRESS,
-        lud16: "merchant@example.com",
         amountSats: 21,
         note: "nice mug",
         relayUrls: ["wss://relay.example"],
@@ -180,6 +356,14 @@ describe("product support zap invoice preparation", () => {
       receiptRelayUrls: ["wss://relay.example"],
     })
     expect(result.zapRequest.content).toBe("nice mug")
+    expect(deps.getProfiles).toHaveBeenCalledTimes(2)
+    expect(deps.getProfiles).toHaveBeenNthCalledWith(1, {
+      pubkeys: [MERCHANT_PUBKEY],
+      skipCache: true,
+      requireCompleteEvidence: true,
+      evidenceScope: "payment",
+      priority: "visible",
+    })
     expect(deps.fetchLnurlPayMetadata).toHaveBeenCalledWith(
       "merchant@example.com"
     )
@@ -206,7 +390,6 @@ describe("product support zap invoice preparation", () => {
         shopperPubkey: SHOPPER_PUBKEY,
         recipientPubkey: MERCHANT_PUBKEY,
         productAddress: PRODUCT_ADDRESS,
-        lud16: "merchant@example.com",
         amountSats: 21,
         note: "public note",
         relayUrls: ["wss://relay.example"],
@@ -254,7 +437,6 @@ describe("product support zap invoice preparation", () => {
           shopperPubkey: SHOPPER_PUBKEY,
           recipientPubkey: MERCHANT_PUBKEY,
           productAddress: PRODUCT_ADDRESS,
-          lud16: "merchant@example.com",
           amountSats: 21,
           relayUrls: ["wss://relay.example"],
         },
@@ -284,7 +466,6 @@ describe("product support zap invoice preparation", () => {
       shopperPubkey: SHOPPER_PUBKEY,
       recipientPubkey: MERCHANT_PUBKEY,
       productAddress: PRODUCT_ADDRESS,
-      lud16: "merchant@example.com",
       amountSats: 21,
       relayUrls: ["wss://relay.example"],
     }
@@ -320,7 +501,6 @@ describe("product support zap invoice preparation", () => {
           shopperPubkey: SHOPPER_PUBKEY,
           recipientPubkey: MERCHANT_PUBKEY,
           productAddress: PRODUCT_ADDRESS,
-          lud16: "merchant@example.com",
           amountSats: 21,
           relayUrls: ["wss://relay.example"],
         },
@@ -342,7 +522,6 @@ describe("product support zap invoice preparation", () => {
           shopperPubkey: SHOPPER_PUBKEY,
           recipientPubkey: MERCHANT_PUBKEY,
           productAddress: PRODUCT_ADDRESS,
-          lud16: "merchant@example.com",
           amountSats: 21,
           note: "original",
           relayUrls: ["wss://relay.example"],
@@ -351,6 +530,87 @@ describe("product support zap invoice preparation", () => {
       )
     ).rejects.toThrow("altered")
     expect(alteredRequest.fetchZapInvoice).toHaveBeenCalledTimes(0)
+  })
+
+  it("discards preparation when the selected target changes during metadata lookup", async () => {
+    const metadataGate = deferred<ReturnType<typeof lnurlMetadata>>()
+    const fetchMetadata = mock(() => metadataGate.promise)
+    const signEvent = mock(signer().signEvent)
+    const deps = dependencies({ fetchLnurlPayMetadata: fetchMetadata })
+    let isCurrent = true
+    const preparation = prepareProductSupportZapInvoice(
+      {
+        signer: { ...signer(), signEvent },
+        shopperPubkey: SHOPPER_PUBKEY,
+        recipientPubkey: MERCHANT_PUBKEY,
+        productAddress: PRODUCT_ADDRESS,
+        amountSats: 21,
+        relayUrls: ["wss://relay.example"],
+        isCurrent: () => isCurrent,
+      },
+      deps
+    )
+
+    while (fetchMetadata.mock.calls.length === 0) await Promise.resolve()
+    isCurrent = false
+    metadataGate.resolve(lnurlMetadata())
+
+    await expect(preparation).rejects.toThrow("target changed")
+    expect(signEvent).toHaveBeenCalledTimes(0)
+    expect(deps.fetchZapInvoice).toHaveBeenCalledTimes(0)
+  })
+
+  it("discards the invoice when the selected target changes while the provider request is pending", async () => {
+    const invoiceGate = deferred<{ invoice: string }>()
+    const fetchInvoice = mock(() => invoiceGate.promise)
+    const deps = dependencies({ fetchZapInvoice: fetchInvoice })
+    let isCurrent = true
+    const preparation = prepareProductSupportZapInvoice(
+      {
+        signer: signer(),
+        shopperPubkey: SHOPPER_PUBKEY,
+        recipientPubkey: MERCHANT_PUBKEY,
+        productAddress: PRODUCT_ADDRESS,
+        amountSats: 21,
+        relayUrls: ["wss://relay.example"],
+        isCurrent: () => isCurrent,
+      },
+      deps
+    )
+
+    while (fetchInvoice.mock.calls.length === 0) await Promise.resolve()
+    isCurrent = false
+    invoiceGate.resolve({ invoice: "lnbc1superseded" })
+
+    await expect(preparation).rejects.toThrow("target changed")
+    expect(deps.getProfiles).toHaveBeenCalledTimes(1)
+  })
+
+  it("discards an invoice when the merchant rotates the address during preparation", async () => {
+    let profileRead = 0
+    const getProfiles = mock(async () => {
+      profileRead += 1
+      return profileResult(
+        profileRead === 1 ? "merchant@example.com" : "rotated@wallet.example"
+      )
+    })
+    const deps = dependencies({ getProfiles })
+
+    await expect(
+      prepareProductSupportZapInvoice(
+        {
+          signer: signer(),
+          shopperPubkey: SHOPPER_PUBKEY,
+          recipientPubkey: MERCHANT_PUBKEY,
+          productAddress: PRODUCT_ADDRESS,
+          amountSats: 21,
+          relayUrls: ["wss://relay.example"],
+        },
+        deps
+      )
+    ).rejects.toThrow("Lightning address changed")
+    expect(deps.fetchZapInvoice).toHaveBeenCalledTimes(1)
+    expect(getProfiles).toHaveBeenCalledTimes(2)
   })
 
   it("does not surface an invoice that fails amount, network, or expiry validation", async () => {
@@ -375,7 +635,6 @@ describe("product support zap invoice preparation", () => {
           shopperPubkey: SHOPPER_PUBKEY,
           recipientPubkey: MERCHANT_PUBKEY,
           productAddress: PRODUCT_ADDRESS,
-          lud16: "merchant@example.com",
           amountSats: 21,
           relayUrls: ["wss://relay.example"],
         },
