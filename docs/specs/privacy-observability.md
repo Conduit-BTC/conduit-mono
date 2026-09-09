@@ -30,10 +30,12 @@ that can reconstruct a viewer journey.
 Public page identity means an address already used to render a public commerce
 surface. This includes a storefront route identified by a store npub and a
 kind-30402 product route identified by a canonical public naddr. A public store
-npub or product naddr may appear only in sanitized route context such as
-`page_path` or `page_url`, and only for aggregate page reporting. It must not
-be copied into custom identity fields, joined to active user identity, used
-for per-viewer drilldowns, or used to infer what a merchant is doing in an
+npub may appear only in sanitized route context such as `page_path` or
+`page_url`. A product naddr may appear only in `$pageview` route context. Every
+custom event, error event, `$pageleave`, and `$web_vitals` event must redact the
+product route as `/products/:productId`. Neither public page identifier may be
+copied into custom identity fields, joined to active user identity, used for
+per-viewer drilldowns, or used to infer what a merchant is doing in an
 authenticated session.
 
 ## Data Classes
@@ -80,8 +82,9 @@ Permitted public page context:
 
 - sanitized storefront route context may include the public store npub in
   `page_path` or `page_url`
-- sanitized product route context may include a canonical kind-30402 naddr in
+- `$pageview` product route context may include a canonical kind-30402 naddr in
   `page_path` or `page_url`; canonicalization must remove relay hints
+- every non-pageview event must use `/products/:productId`
 - invalid product references must use `/products/:productId`
 - profile, order, query string, unknown route, and active user identifiers must
   remain redacted
@@ -166,7 +169,7 @@ Expose only aggregate KPIs:
 
 - Weekly active merchants (aggregate)
 - Storefront page performance by public store route (aggregate)
-- Product page performance by canonical public product route (aggregate)
+- Product pageview counts by canonical public product route (aggregate)
 - Weekly order-event count
 - Product catalog growth
 - Checkout success rate (aggregate)

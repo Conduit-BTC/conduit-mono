@@ -84,16 +84,17 @@ fingerprints, signer connection strings, NWC URIs, raw URLs, raw paths, query
 strings, cross-session identifiers, or SDK window/device identifiers. Browser
 custom events may include only shared-helper route context through `page_url`
 and `page_path`. Store route context may include the public store `npub`.
-Product route context may include a canonical public kind-30402 `naddr` with no
-relay hints. The sanitizer derives that `naddr` from a valid raw coordinate or
-existing `naddr`; it redacts invalid product references as `:productId`.
-The ingestion proxy verifies the naddr checksum and requires its relay-free
-canonical re-encoding before it accepts the route.
+Only `$pageview` may include a canonical public kind-30402 product `naddr` with
+no relay hints. The pageview sanitizer derives that `naddr` from a valid raw
+coordinate or existing `naddr`. Every custom event, error event, `$pageleave`,
+and `$web_vitals` event must use `/products/:productId`. The ingestion proxy
+enforces this event-specific boundary. It verifies the naddr checksum and
+requires relay-free canonical re-encoding before accepting a product-attributed
+`$pageview`.
 Profile, order, query string, unknown route, and active user identifiers stay
-redacted. Public store npubs and product naddrs must not be copied into custom
-properties or joined to viewer identity. Event-specific bans on product or
-store identifiers refer to custom properties outside this permitted route
-context.
+redacted. Public store npubs must not be copied into custom properties or
+joined to viewer identity. Product naddrs must not appear outside `$pageview`
+route context.
 
 ## Historical Pageviews and Live Presence
 
@@ -334,10 +335,10 @@ identifiers.
 
 Emitted for the bounded `add_to_cart` and `view_cart` actions on a product
 detail page. It records only the action, product-format class, and the shared
-sanitized route context. The canonical public product naddr may appear only in
-that route context. It must not include product or merchant identifiers in
-custom properties, titles, descriptions, tags, prices, quantities, stock,
-images, profile data, or cart contents.
+sanitized route context. That route context must use
+`/products/:productId`. It must not include product or merchant identifiers,
+titles, descriptions, tags, prices, quantities, stock, images, profile data,
+or cart contents.
 
 <!-- telemetry-event: anon_zap_signer_request_result properties=event_name,app,surface,action,status,latency_bucket -->
 

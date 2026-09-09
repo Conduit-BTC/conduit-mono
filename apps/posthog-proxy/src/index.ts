@@ -386,12 +386,12 @@ function rebuildIngestEventProperties(
       continue
     }
     if (pagePathPropertyNames.has(key)) {
-      if (!isSanitizedPagePath(propertyValue)) return null
+      if (!isSanitizedPagePath(propertyValue, eventName)) return null
       rebuilt[key] = propertyValue
       continue
     }
     if (pageUrlPropertyNames.has(key)) {
-      if (!isSanitizedPageUrl(propertyValue)) return null
+      if (!isSanitizedPageUrl(propertyValue, eventName)) return null
       rebuilt[key] = propertyValue
       continue
     }
@@ -406,7 +406,7 @@ function rebuildIngestEventProperties(
       continue
     }
     if (eventName === "$pageleave" && key === "$prev_pageview_pathname") {
-      if (!isSanitizedPagePath(propertyValue)) return null
+      if (!isSanitizedPagePath(propertyValue, eventName)) return null
       rebuilt[key] = propertyValue
       continue
     }
@@ -557,11 +557,20 @@ export function isSanitizedTelemetryRoutePath(value: unknown): value is string {
   return match !== null && sanitizedStaticRouteSegments.has(match[1] ?? "")
 }
 
-function isSanitizedPagePath(value: unknown): value is string {
-  return isSanitizedTelemetryRoutePath(value)
+function isSanitizedPagePath(
+  value: unknown,
+  eventName: string
+): value is string {
+  return (
+    isSanitizedTelemetryRoutePath(value) &&
+    (eventName === "$pageview" || !isCanonicalProductNaddrPath(value))
+  )
 }
 
-function isSanitizedPageUrl(value: unknown): value is string {
+function isSanitizedPageUrl(
+  value: unknown,
+  eventName: string
+): value is string {
   if (
     typeof value !== "string" ||
     value.length > MAX_SANITIZED_PAGE_URL_LENGTH
@@ -579,7 +588,7 @@ function isSanitizedPageUrl(value: unknown): value is string {
     return false
   }
   if (url.username || url.password) return false
-  if (!isSanitizedTelemetryRoutePath(url.pathname)) return false
+  if (!isSanitizedPagePath(url.pathname, eventName)) return false
   if (value !== `${url.origin}${url.pathname}`) return false
 
   return getOfficialProductTelemetryApp(url.hostname) !== null

@@ -13,7 +13,11 @@ import {
   type BrowserTelemetryEventName,
 } from "../packages/core/src/telemetry-contract"
 import { encodeProductNaddr } from "../packages/core/src/protocol/product-reference"
-import { sanitizeTelemetryPath } from "../packages/core/src/telemetry"
+import {
+  sanitizePostHogCaptureEvent,
+  sanitizeTelemetryPath,
+  type PostHogCaptureEvent,
+} from "../packages/core/src/telemetry"
 import { pubkeyToNpub } from "../packages/core/src/utils"
 
 const PROJECT_TOKEN = "phc_workerTestProjectToken0001"
@@ -473,6 +477,111 @@ describe("PostHog reverse proxy", () => {
       "$pageview",
       "checkout_result",
     ])
+  })
+
+  it("retains product identity only for pageviews across both sanitizers", () => {
+    const productUrl = `${MARKET_ORIGIN_CONTEXT.origin}${PRODUCT_PATH}`
+    const attributedPageview = sanitizePostHogCaptureEvent(
+      makeEvent(
+        {},
+        {
+          $current_url: productUrl,
+          $pathname: PRODUCT_PATH,
+          page_path: PRODUCT_PATH,
+          page_url: productUrl,
+        }
+      ) as PostHogCaptureEvent
+    )
+    expect(attributedPageview?.properties).toMatchObject({
+      page_path: PRODUCT_PATH,
+      page_url: productUrl,
+    })
+    const rebuiltPageview = rebuildPostHogIngestPayload(
+      encode(attributedPageview)
+    )
+    expect(rebuiltPageview.ok).toBe(true)
+    if (rebuiltPageview.ok) {
+      expect(rebuiltPageview.events[0]?.properties).toMatchObject({
+        page_path: PRODUCT_PATH,
+        page_url: productUrl,
+      })
+    }
+
+    for (const eventName of [
+      "client_error_result",
+      "checkout_result",
+      "payment_attempt_result",
+      "product_detail_action",
+    ] as const) {
+      const sanitized = sanitizePostHogCaptureEvent(
+        makeBrowserTelemetryEvent(eventName, {
+          $current_url: productUrl,
+          $pathname: PRODUCT_PATH,
+          page_path: PRODUCT_PATH,
+          page_url: productUrl,
+        }) as PostHogCaptureEvent
+      )
+      expect(sanitized?.properties).toMatchObject({
+        $current_url: "https://shop.conduit.market/products/:productId",
+        $pathname: "/products/:productId",
+        page_path: "/products/:productId",
+        page_url: "https://shop.conduit.market/products/:productId",
+      })
+
+      const rebuilt = rebuildPostHogIngestPayload(encode(sanitized))
+      expect(rebuilt.ok).toBe(true)
+      if (rebuilt.ok) {
+        expect(rebuilt.events).toHaveLength(1)
+        expect(JSON.stringify(rebuilt.events[0])).not.toContain(PRODUCT_NADDR)
+      }
+
+      const bypassAttempt = rebuildPostHogIngestPayload(
+        encode(
+          makeBrowserTelemetryEvent(eventName, {
+            $current_url: productUrl,
+            $pathname: PRODUCT_PATH,
+            page_path: PRODUCT_PATH,
+            page_url: productUrl,
+          })
+        )
+      )
+      expect(bypassAttempt.ok).toBe(true)
+      if (bypassAttempt.ok) expect(bypassAttempt.events).toHaveLength(0)
+    }
+
+    for (const [eventName, eventProperties] of [
+      ["$pageleave", { $prev_pageview_pathname: PRODUCT_PATH }],
+      ["$web_vitals", { $web_vitals_LCP_value: 1_200 }],
+    ] as const) {
+      const rawEvent = makeEvent(
+        { event: eventName },
+        {
+          ...eventProperties,
+          $current_url: productUrl,
+          $pathname: PRODUCT_PATH,
+          page_path: PRODUCT_PATH,
+          page_url: productUrl,
+        }
+      ) as PostHogCaptureEvent
+      const sanitized = sanitizePostHogCaptureEvent(rawEvent)
+      expect(sanitized?.properties).toMatchObject({
+        $current_url: "https://shop.conduit.market/products/:productId",
+        $pathname: "/products/:productId",
+        page_path: "/products/:productId",
+        page_url: "https://shop.conduit.market/products/:productId",
+      })
+
+      const rebuilt = rebuildPostHogIngestPayload(encode(sanitized))
+      expect(rebuilt.ok).toBe(true)
+      if (rebuilt.ok) {
+        expect(rebuilt.events).toHaveLength(1)
+        expect(JSON.stringify(rebuilt.events[0])).not.toContain(PRODUCT_NADDR)
+      }
+
+      const bypassAttempt = rebuildPostHogIngestPayload(encode(rawEvent))
+      expect(bypassAttempt.ok).toBe(true)
+      if (bypassAttempt.ok) expect(bypassAttempt.events).toHaveLength(0)
+    }
   })
 
   it("binds app and page context to the allowed caller origin", async () => {

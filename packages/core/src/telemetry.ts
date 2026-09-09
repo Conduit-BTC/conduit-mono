@@ -329,7 +329,10 @@ export function constrainOfficialBrowserTelemetryConfig(
   }
 }
 
-export function sanitizeTelemetryPath(pathname: string): string {
+function sanitizeTelemetryPathInternal(
+  pathname: string,
+  includeProductIdentity: boolean
+): string {
   let parsedPathname: string
   try {
     // Relative paths need an absolute base for URL parsing; `.invalid` is a
@@ -349,7 +352,9 @@ export function sanitizeTelemetryPath(pathname: string): string {
   const [section] = segments
   if (section === "products") {
     if (segments.length === 1) return "/products"
-    if (segments.length === 2) return getProductTelemetryPath(segments[1])
+    if (segments.length === 2 && includeProductIdentity) {
+      return getProductTelemetryPath(segments[1])
+    }
     return "/products/:productId"
   }
   if (section === "store") return getStoreTelemetryPath(segments[1])
@@ -359,6 +364,14 @@ export function sanitizeTelemetryPath(pathname: string): string {
   if (!staticTelemetryRouteSegments.has(section)) return "/:param"
   if (segments.length === 1) return `/${section}`
   return `/${section}/:param`
+}
+
+export function sanitizeTelemetryPath(pathname: string): string {
+  return sanitizeTelemetryPathInternal(pathname, false)
+}
+
+export function sanitizeTelemetryPageViewPath(pathname: string): string {
+  return sanitizeTelemetryPathInternal(pathname, true)
 }
 
 function getProductTelemetryPath(productRef: string | undefined): string {
@@ -382,6 +395,15 @@ export function buildTelemetryPageUrl(input: {
   pathname: string
 }): string {
   const sanitizedPath = sanitizeTelemetryPath(input.pathname)
+  const trimmedOrigin = input.origin.replace(/\/+$/, "")
+  return `${trimmedOrigin}${sanitizedPath}`
+}
+
+export function buildTelemetryPageViewUrl(input: {
+  origin: string
+  pathname: string
+}): string {
+  const sanitizedPath = sanitizeTelemetryPageViewPath(input.pathname)
   const trimmedOrigin = input.origin.replace(/\/+$/, "")
   return `${trimmedOrigin}${sanitizedPath}`
 }
@@ -516,6 +538,15 @@ export function sanitizePostHogCaptureEvent(
   const sanitizedProperties: Record<string, PostHogPropertyValue> =
     getPostHogIngestionProperties(sourceProperties)
   const isBrowserEvent = isBrowserTelemetryEventName(eventName)
+  const includeProductIdentity = eventName === "$pageview"
+  const sanitizeEventPath = (pathname: string) =>
+    includeProductIdentity
+      ? sanitizeTelemetryPageViewPath(pathname)
+      : sanitizeTelemetryPath(pathname)
+  const buildEventPageUrl = (input: { origin: string; pathname: string }) =>
+    includeProductIdentity
+      ? buildTelemetryPageViewUrl(input)
+      : buildTelemetryPageUrl(input)
 
   for (const [key, value] of Object.entries(sourceProperties)) {
     if (!browserTelemetryPropertyNameSet.has(key)) continue
@@ -537,13 +568,13 @@ export function sanitizePostHogCaptureEvent(
     if (typeof value !== "string") return null
 
     if (key === "page_url") {
-      const pageUrl = sanitizeTelemetryRouteUrl(value)
+      const pageUrl = sanitizeTelemetryRouteUrl(value, includeProductIdentity)
       if (!pageUrl) return null
       sanitizedProperties[key] = pageUrl
       continue
     }
     if (key === "page_path") {
-      sanitizedProperties[key] = sanitizeTelemetryPath(value)
+      sanitizedProperties[key] = sanitizeEventPath(value)
       continue
     }
 
@@ -561,7 +592,8 @@ export function sanitizePostHogCaptureEvent(
   }
 
   const sourcePageUrl = sanitizeTelemetryRouteUrl(
-    getStringProperty(sourceProperties, "$current_url")
+    getStringProperty(sourceProperties, "$current_url"),
+    includeProductIdentity
   )
   const currentPageUrl =
     typeof sanitizedProperties.page_url === "string"
@@ -578,13 +610,13 @@ export function sanitizePostHogCaptureEvent(
     (typeof sanitizedProperties.page_path === "string"
       ? sanitizedProperties.page_path
       : sourcePagePath
-        ? sanitizeTelemetryPath(sourcePagePath)
+        ? sanitizeEventPath(sourcePagePath)
         : currentPageUrl
-          ? sanitizeTelemetryPath(new URL(currentPageUrl).pathname)
+          ? sanitizeEventPath(new URL(currentPageUrl).pathname)
           : "/")
   const pageUrl =
     previousPagePath && currentPageUrl
-      ? buildTelemetryPageUrl({
+      ? buildEventPageUrl({
           origin: new URL(currentPageUrl).origin,
           pathname: previousPagePath,
         })
@@ -809,11 +841,11 @@ function recordBrowserTelemetryPageViewUnsafe(
   if (!isTelemetryAllowedForCurrentHost(config)) return
   if (isGlobalPrivacyControlEnabled()) return
 
-  const pageUrl = buildTelemetryPageUrl({
+  const pageUrl = buildTelemetryPageViewUrl({
     origin: input.origin ?? window.location.origin,
     pathname: input.pathname,
   })
-  const sanitizedPath = sanitizeTelemetryPath(input.pathname)
+  const sanitizedPath = sanitizeTelemetryPageViewPath(input.pathname)
   // Keep the raw route only in memory for exact duplicate suppression.
   // Invalid dynamic routes share a redacted provider URL, but distinct route
   // transitions must still count as separate pageviews.
@@ -851,14 +883,17 @@ function getStringProperty(
   return typeof value === "string" && value.trim() ? value : null
 }
 
-function sanitizeTelemetryRouteUrl(value: string | null): string | null {
+function sanitizeTelemetryRouteUrl(
+  value: string | null,
+  includeProductIdentity = false
+): string | null {
   if (!value) return null
   try {
     const url = new URL(value)
-    return buildTelemetryPageUrl({
-      origin: url.origin,
-      pathname: url.pathname,
-    })
+    const input = { origin: url.origin, pathname: url.pathname }
+    return includeProductIdentity
+      ? buildTelemetryPageViewUrl(input)
+      : buildTelemetryPageUrl(input)
   } catch {
     return null
   }
