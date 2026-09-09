@@ -406,19 +406,30 @@ describe("LivePresenceIndicator", () => {
     expect(markup).toContain('role="status"')
     expect(markup).toContain('aria-live="polite"')
     expect(markup).toContain("tabular-nums")
+    expect(markup).toContain("market-live-presence-in")
+    expect(markup).toContain("motion-safe:animate-ping")
+    expect(markup).toContain("border-[var(--success)]")
     expect(markup).toContain("20 visitors are looking at this product")
     expect(markup).toContain("exact number of active page sessions")
   })
 
-  it("hides loading, disconnected, and zero states", () => {
+  it("reserves loading space but hides unavailable and invalid states", () => {
     expect(
       renderToStaticMarkup(
-        <LivePresenceIndicator count={null} pageType="store" />
+        <LivePresenceIndicator count={undefined} pageType="store" />
       )
     ).toBe("")
+
+    const loadingMarkup = renderToStaticMarkup(
+      <LivePresenceIndicator count={null} pageType="store" />
+    )
+    expect(loadingMarkup).toContain("min-h-5")
+    expect(loadingMarkup).toContain('aria-hidden="true"')
+    expect(loadingMarkup).not.toContain('role="status"')
+
     expect(
       renderToStaticMarkup(<LivePresenceIndicator count={0} pageType="store" />)
-    ).toBe("")
+    ).not.toContain('role="status"')
   })
 
   it("wires product variations and normalized storefront keys", async () => {

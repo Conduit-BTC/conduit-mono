@@ -63,7 +63,7 @@ function isLivePresenceFeatureEnabled(): boolean {
 export function useLivePresenceCount({
   canonicalId,
   pageType,
-}: UseLivePresenceCountOptions): number | null {
+}: UseLivePresenceCountOptions): number | null | undefined {
   const endpoint = resolveLivePresenceWebSocketUrl()
   const normalizedCanonicalId = canonicalId?.trim() || null
   const permitted = isLivePresencePermitted({
@@ -123,6 +123,8 @@ export function useLivePresenceCount({
       stopSession?.()
     }
   }, [endpoint, normalizedCanonicalId, pageType, requestKey, requestRevision])
+
+  if (!requestKey) return undefined
 
   return snapshot.requestKey === requestKey &&
     snapshot.requestRevision === requestRevision
