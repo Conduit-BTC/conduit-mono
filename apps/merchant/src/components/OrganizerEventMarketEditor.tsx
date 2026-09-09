@@ -223,7 +223,7 @@ export function OrganizerEventMarketEditor({
               </div>
               <div className="grid gap-1.5 sm:col-span-2">
                 <RequiredFieldLabel htmlFor="event-market-image">
-                  Image URL
+                  Event photo URL
                 </RequiredFieldLabel>
                 <Input
                   id="event-market-image"
@@ -243,8 +243,19 @@ export function OrganizerEventMarketEditor({
                   id="event-market-image-help"
                   className="text-xs leading-5 text-[var(--text-muted)]"
                 >
-                  Paste a direct HTTPS image URL. Image upload is not available
-                  in this form yet.
+                  Need an image link?{" "}
+                  <a
+                    href="https://nostrcheck.me/media"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+                  >
+                    Open the Nostrcheck uploader
+                  </a>
+                  , choose a public photo, then select Browser extension upload
+                  and approve it with your Nostr signer. Copy the direct HTTPS
+                  file URL shown after upload and paste it here. Nostrcheck is
+                  an external host that supports Blossom and NIP-96.
                 </p>
                 <FieldError field="imageUrl" errors={errors} />
               </div>
