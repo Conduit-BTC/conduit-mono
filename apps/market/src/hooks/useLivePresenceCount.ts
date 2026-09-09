@@ -1,6 +1,7 @@
 import { conduitBuildInfo } from "@conduit/core"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
+  advanceLivePresenceRequestRevision,
   hashLivePresenceScope,
   isLivePresencePermitted,
   resolveLivePresenceWebSocketUrl,
@@ -78,10 +79,17 @@ export function useLivePresenceCount({
     permitted && endpoint && normalizedCanonicalId
       ? JSON.stringify([endpoint, pageType, normalizedCanonicalId])
       : null
+  const requestRevisionRef = useRef({ requestKey, revision: 0 })
+  requestRevisionRef.current = advanceLivePresenceRequestRevision(
+    requestRevisionRef.current,
+    requestKey
+  )
+  const requestRevision = requestRevisionRef.current.revision
   const [snapshot, setSnapshot] = useState<{
     count: number | null
     requestKey: string | null
-  }>({ count: null, requestKey: null })
+    requestRevision: number
+  }>({ count: null, requestKey: null, requestRevision: -1 })
 
   useEffect(() => {
     if (!requestKey || !endpoint || !normalizedCanonicalId) return
@@ -104,19 +112,25 @@ export function useLivePresenceCount({
           scopeHash,
           runtime,
           onCount: (count) => {
-            setSnapshot({ count, requestKey })
+            setSnapshot({ count, requestKey, requestRevision })
           },
         })
       })
       .catch(() => {
         // Browsers without Web Crypto do not participate in live presence.
+        if (!disposed) {
+          setSnapshot({ count: null, requestKey, requestRevision })
+        }
       })
 
     return () => {
       disposed = true
       stopSession?.()
     }
-  }, [endpoint, normalizedCanonicalId, pageType, requestKey])
+  }, [endpoint, normalizedCanonicalId, pageType, requestKey, requestRevision])
 
-  return snapshot.requestKey === requestKey ? snapshot.count : null
+  return snapshot.requestKey === requestKey &&
+    snapshot.requestRevision === requestRevision
+    ? snapshot.count
+    : null
 }

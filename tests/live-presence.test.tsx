@@ -9,6 +9,7 @@ import {
   DEFAULT_LIVE_PRESENCE_WEBSOCKET_URL,
   LIVE_PRESENCE_MAX_RECONNECT_ATTEMPTS,
   LIVE_PRESENCE_MAX_COUNT,
+  advanceLivePresenceRequestRevision,
   buildLivePresenceWebSocketUrl,
   hashLivePresenceScope,
   isLivePresencePermitted,
@@ -111,6 +112,25 @@ const SCOPE_HASH = "a".repeat(64)
 const ENDPOINT = "wss://presence.example.com"
 
 describe("live presence privacy boundary", () => {
+  it("invalidates a prior room revision after an A to B to A transition", () => {
+    const firstRoom = {
+      requestKey: "room-a",
+      revision: 0,
+    }
+    const secondRoom = advanceLivePresenceRequestRevision(firstRoom, "room-b")
+    const revisitedFirstRoom = advanceLivePresenceRequestRevision(
+      secondRoom,
+      "room-a"
+    )
+
+    expect(secondRoom).toEqual({ requestKey: "room-b", revision: 1 })
+    expect(revisitedFirstRoom).toEqual({ requestKey: "room-a", revision: 2 })
+    expect(revisitedFirstRoom.revision).not.toBe(firstRoom.revision)
+    expect(
+      advanceLivePresenceRequestRevision(revisitedFirstRoom, "room-a")
+    ).toBe(revisitedFirstRoom)
+  })
+
   it("hashes deployment host, page type, and canonical ID into a 64-hex scope", async () => {
     const productHash = await hashLivePresenceScope({
       canonicalId: "30402:abc:hat",

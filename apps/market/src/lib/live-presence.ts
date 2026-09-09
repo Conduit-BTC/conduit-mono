@@ -37,6 +37,20 @@ export interface LivePresenceSessionOptions {
   onCount(count: number | null): void
 }
 
+export interface LivePresenceRequestRevision {
+  requestKey: string | null
+  revision: number
+}
+
+export function advanceLivePresenceRequestRevision(
+  current: LivePresenceRequestRevision,
+  requestKey: string | null
+): LivePresenceRequestRevision {
+  return current.requestKey === requestKey
+    ? current
+    : { requestKey, revision: current.revision + 1 }
+}
+
 function bytesToLowercaseHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
     ""
