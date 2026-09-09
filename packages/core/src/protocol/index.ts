@@ -1,6 +1,7 @@
 export * from "./kinds"
 export * from "./products"
 export * from "./product-reference"
+export * from "./product-support-zap"
 export * from "./product-family"
 export * from "./listing-safety"
 export * from "./profiles"
