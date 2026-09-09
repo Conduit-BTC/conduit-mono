@@ -69,13 +69,13 @@ A reusable-shipping product is a valid signed kind `30402` authored by merchant
 
 The minimum shipping facts carried by the product are:
 
-| Fact             | Normalization                                                                       | Invalid or conflicting behavior                                                                   |
-| ---------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Merchant         | Lowercase 64-character event author pubkey                                          | Reject the event                                                                                  |
-| Product identity | Full `30402:<merchant>:<d>` coordinate plus exact event ID                          | `malformed_product`                                                                               |
-| Physical format  | Exactly one effective `type` whose format is `physical`                             | Conflicting values are `malformed_product`; an omitted format follows Open Markets and is digital |
-| Product currency | Trimmed, uppercase assigned ISO 4217 code, or a bounded Bitcoin compatibility value | Empty, unassigned, or malformed is `currency_unresolved`                                          |
-| Policy selection | Exactly one direct, same-author `30406` coordinate with no third element            | Any other shape is `unsupported_policy`                                                           |
+| Fact             | Normalization                                                                                | Invalid or conflicting behavior                                                                                 |
+| ---------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Merchant         | Lowercase 64-character event author pubkey                                                   | Reject the event                                                                                                |
+| Product identity | Full `30402:<merchant>:<d>` coordinate plus exact event ID                                   | `malformed_product`                                                                                             |
+| Physical format  | Exactly one effective `type` whose format is `physical`                                      | Conflicting values are `malformed_product`; an omitted format follows Open Markets and is digital               |
+| Product currency | Trimmed, uppercase assigned ISO 4217 code, or a bounded Bitcoin compatibility value          | Empty, unassigned, or malformed is `currency_unresolved`                                                        |
+| Policy selection | Exactly one syntactically valid direct, same-author `30406` coordinate with no third element | A malformed coordinate/tag is `malformed_product`; a valid shape outside this v1 subset is `unsupported_policy` |
 
 Cart quantity is not a public product fact. It is a positive safe integer from
 the private cart/order input and is frozen in the result.
@@ -98,7 +98,10 @@ The direct-calculation lane does not accept:
   `shipping_exclude` as reusable-policy authority.
 
 These forms remain parseable where existing compatibility contracts allow, but
-they do not enter this calculation.
+they do not enter this calculation. In particular, repeated syntactically valid
+`shipping_option` tags are valid Open Markets data and resolve as
+`unsupported_policy`; only malformed tag syntax or an invalid product event
+resolves as `malformed_product`.
 
 ### Merchant shipping profile
 
@@ -187,8 +190,19 @@ replacement rule applies when checking a product coordinate.
 
 A valid same-author NIP-09 deletion targeting the coordinate or selected event
 is authoritative according to NIP-09 and the repository's durable
-deletion-evidence rules. Deletion evidence is applied to the selected revision;
-it does not silently reactivate an older revision.
+deletion-evidence rules. An `e` target dominates its exact selected event
+regardless of deletion timestamp. An `a` target dominates a selected event at
+that coordinate only when the selected event's `created_at` is less than or
+equal to the deletion event's `created_at`; a genuinely newer revision remains
+eligible for selection. A dominated selected product or profile resolves as
+`withdrawn`. It does not silently reactivate an older revision or collapse into
+absence, staleness, or conflict.
+
+Validated dominating deletion event IDs are retained in the frozen group and
+their exact signed events remain in durable recovery storage. That evidence is
+monotonic: a later relay omission cannot downgrade `withdrawn`. Only a valid
+newer revision that is not dominated by the retained evidence can produce a
+new calculation.
 
 A bounded relay lookup cannot prove global absence. A complete bounded lookup,
 a degraded lookup, and an unavailable lookup remain distinct. Coverage and
@@ -277,6 +291,7 @@ or `unavailable`:
 | `lookup_partial`          | Coverage is degraded and at least one required current product/profile revision was not observed         | No authoritative amount       | Coordinate with merchant     |
 | `lookup_unavailable`      | No planned source completed                                                                              | No                            | Coordinate with merchant     |
 | `stale_revision`          | A stored plan names a product/profile revision that is no longer the selected current revision           | Stored historical amount only | Recalculate and reauthorize  |
+| `withdrawn`               | A selected product or profile revision is dominated by valid same-author NIP-09 deletion evidence        | No                            | Relist or coordinate         |
 | `conflicting`             | Valid selected evidence disagrees internally or combines digital format with shipping authority          | No                            | Coordinate with merchant     |
 | `malformed_product`       | Required product facts cannot be normalized safely                                                       | No                            | Coordinate with merchant     |
 | `malformed_profile`       | Required profile facts cannot be normalized safely                                                       | No                            | Coordinate with merchant     |
@@ -300,8 +315,9 @@ The calculation is deterministic and ordered:
    produces an amount.
 3. Resolve each physical line's one explicit same-author profile coordinate.
 4. Resolve the current exact profile revision using the greatest timestamp and
-   lowest-ID tie-break, apply known deletion evidence, and retain source
-   coverage from the bounded read plan.
+   lowest-ID tie-break, apply known deletion evidence, retain every relevant
+   dominating deletion event ID, and return `withdrawn` if the selected product
+   or profile is dominated.
 5. Group physical lines by merchant only when every line selects the same
    profile coordinate, exact profile event ID, `standard` service, and
    normalized currency.
@@ -339,6 +355,7 @@ interface ReusableShippingPlanV1 {
     }>
     profileCoordinate: string | null
     profileEventId: string | null
+    deletionEventIds: string[]
     evidenceCoverage: "complete" | "degraded" | "unavailable"
     service: "standard" | null
     currency: string | null
@@ -347,8 +364,11 @@ interface ReusableShippingPlanV1 {
 }
 ```
 
-Groups are sorted by merchant pubkey. A conflicting digital line is retained in
-the affected merchant group so its exact product revision and failed state are
+Groups are sorted by merchant pubkey. `deletionEventIds` is the sorted,
+deduplicated list of validated kind `5` event IDs that dominate a selected
+product or profile in that group; it is empty for every result without known
+dominating deletion evidence. A conflicting digital line is retained in the
+affected merchant group so its exact product revision and failed state are
 frozen rather than disappearing from the authorization input. When it is the
 only line for that merchant, the profile coordinate, profile event ID, service,
 currency, and amount are `null`. When physical lines also exist, otherwise
@@ -376,7 +396,7 @@ merchant-scoped projection:
 ```typescript
 interface ReusableShippingOrderProjectionV1 {
   calculationVersion: "conduit-reusable-shipping-v1"
-  sourcePlanId: string
+  projectionId: string
   destinationCountry: string
   group: ReusableShippingPlanV1["groups"][number]
 }
@@ -384,13 +404,17 @@ interface ReusableShippingOrderProjectionV1 {
 
 `group` is the one group whose `merchantPubkey` is exactly the order recipient.
 It contains only that merchant's product lines and resolved shipping evidence.
-`sourcePlanId` binds the projection to the locally retained cart-wide plan;
-local checkout and recovery verify that the projection equals the selected
-group in that plan. The recipient is not given any other group's merchant,
+`projectionId` is `sha256:` plus the lowercase hexadecimal SHA-256 of the RFC
+8785 canonical JSON form of the projection without `projectionId`. Local
+checkout stores the private mapping from that projection ID to its source plan
+and verifies that the projected group exactly equals the recipient's selected
+group before encryption. The cart-wide `planId` is not included in any merchant
+payload, so two recipients cannot correlate orders merely by comparing a shared
+plan identifier. The recipient is not given any other group's merchant,
 product, quantity, profile, pricing, or evidence fields and is not expected to
-reconstruct the cart-wide plan. Neither the plan nor a projection may be
-logged, emitted through telemetry, or published as a public Nostr event, and
-`sourcePlanId` must not be reused as a public identifier.
+reconstruct the cart-wide plan. Neither the plan, the local mapping, nor a
+projection may be logged, emitted through telemetry, or published as a public
+Nostr event.
 
 No wall-clock TTL is invented here. Direct-payment authorization must refresh
 the bounded evidence immediately before payment. If it observes a different
@@ -444,31 +468,36 @@ Unless overridden, fixtures use:
   covers `US` with base `700 SATS`; and
 - complete source coverage with no known deletion evidence.
 
-| ID           | Inputs                                                                                                    | Required result                                                                                                                                                                                                                                  |
-| ------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `RSP-FX-01`  | `P1` quantity 1, destination `US`, current `A1`                                                           | One `M1` group, `priced`, `500 SATS`                                                                                                                                                                                                             |
-| `RSP-FX-02`  | `P1` quantity 3, destination `US`, current `A1`                                                           | One `M1` group, base still applied once, `500 SATS`                                                                                                                                                                                              |
-| `RSP-FX-03`  | `P1` quantity 1 plus `P2` quantity 2, destination `US`, current `A1`                                      | One compatible `M1` group, `500 SATS`                                                                                                                                                                                                            |
-| `RSP-FX-04`  | `D1` plus `P1`, destination `US`                                                                          | `D1` excluded; one physical group, `500 SATS`                                                                                                                                                                                                    |
-| `RSP-FX-04A` | Digital `D1` carries a shipping reference, with or without `P1`                                           | One retained `M1` evaluation group, `conflicting`, amount `null`; exact `D1` revision remains in its lines                                                                                                                                       |
-| `RSP-FX-05`  | `M1/P1` plus `M2/P3`, destination `US`, current `A1` and `B1`; derive each merchant order projection      | Local plan has groups `500 SATS` and `700 SATS`; M1's projection contains only M1/P1 and no M2 pubkey, product, quantity, profile, price, or evidence field; M2's projection has the inverse isolation; both carry the same local `sourcePlanId` |
-| `RSP-FX-06`  | Current profile is valid and explicitly has base `0 SATS`                                                 | `included_free`, amount exactly `0`                                                                                                                                                                                                              |
-| `RSP-FX-07`  | `P1`, destination `CA`, current `A1` covers only `US`                                                     | `unsupported_destination`, no amount                                                                                                                                                                                                             |
-| `RSP-FX-08`  | Complete bounded read finds `P1` but no `A`                                                               | `missing_evidence`, no amount                                                                                                                                                                                                                    |
-| `RSP-FX-09`  | Stored valid `A1`; degraded refresh observes `P1` but no current revision of `A`                          | `lookup_partial`; `A1` may be displayed only as a last-known estimate                                                                                                                                                                            |
-| `RSP-FX-09A` | Degraded refresh observes valid current `P1` and `A1`; another planned source fails                       | `priced`, `500 SATS`, with `evidenceCoverage: degraded`                                                                                                                                                                                          |
-| `RSP-FX-09B` | Degraded refresh observes current `P1`, no source supplies `A`, and no stored estimate exists             | `lookup_partial`, no amount, with `evidenceCoverage: degraded`                                                                                                                                                                                   |
-| `RSP-FX-10`  | Stored plan names `A1`; complete refresh selects newer `A2`                                               | `stale_revision`; old amount remains historical and direct payment requires reauthorization                                                                                                                                                      |
-| `RSP-FX-11`  | Valid profile IDs `A-low` and `A-high` tie at the newest `created_at`; `A-low` is lexicographically lower | Select `A-low`, retain both observations, and resolve `priced`, `500 SATS`                                                                                                                                                                       |
-| `RSP-FX-12`  | Product has an invalid physical type, invalid coordinate, or repeated option                              | `malformed_product`, no amount                                                                                                                                                                                                                   |
-| `RSP-FX-13`  | Profile has malformed price/country/service or an invalid signature                                       | `malformed_profile` or `missing_evidence` according to whether malformed evidence was observed, never free                                                                                                                                       |
-| `RSP-FX-13A` | Product and profile use matching syntactic but unassigned currency `ZZZ`                                  | `currency_unresolved`, no amount; never `priced` or `included_free`                                                                                                                                                                              |
-| `RSP-FX-13B` | Profile country or private destination is unassigned identifier `ZZ`                                      | `malformed_profile` or `malformed_input`, respectively; never `priced` or `included_free`                                                                                                                                                        |
-| `RSP-FX-14`  | `P1` and `P2` select different profiles for `M1`                                                          | `incompatible_items`, no automatic split                                                                                                                                                                                                         |
-| `RSP-FX-15`  | Profile currency differs from product currency                                                            | Affected group is `currency_unresolved`; currency and amount are `null`                                                                                                                                                                          |
-| `RSP-FX-15A` | Two otherwise eligible merchant groups output different normalized currencies                             | Both groups become `currency_unresolved`; known group currencies remain and both amounts are `null`                                                                                                                                              |
-| `RSP-FX-16`  | Destination is malformed or a line has a non-positive/non-integer quantity                                | `malformed_input`, no amount                                                                                                                                                                                                                     |
-| `RSP-FX-17`  | Product uses the existing product-scoped fixed option                                                     | Bounded fixed-product compatibility result; not a reusable group                                                                                                                                                                                 |
+| ID           | Inputs                                                                                                    | Required result                                                                                                                                                                                                                                                                                                                |
+| ------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `RSP-FX-01`  | `P1` quantity 1, destination `US`, current `A1`                                                           | One `M1` group, `priced`, `500 SATS`                                                                                                                                                                                                                                                                                           |
+| `RSP-FX-02`  | `P1` quantity 3, destination `US`, current `A1`                                                           | One `M1` group, base still applied once, `500 SATS`                                                                                                                                                                                                                                                                            |
+| `RSP-FX-03`  | `P1` quantity 1 plus `P2` quantity 2, destination `US`, current `A1`                                      | One compatible `M1` group, `500 SATS`                                                                                                                                                                                                                                                                                          |
+| `RSP-FX-04`  | `D1` plus `P1`, destination `US`                                                                          | `D1` excluded; one physical group, `500 SATS`                                                                                                                                                                                                                                                                                  |
+| `RSP-FX-04A` | Digital `D1` carries a shipping reference, with or without `P1`                                           | One retained `M1` evaluation group, `conflicting`, amount `null`; exact `D1` revision remains in its lines                                                                                                                                                                                                                     |
+| `RSP-FX-05`  | `M1/P1` plus `M2/P3`, destination `US`, current `A1` and `B1`; derive each merchant order projection      | Local plan has groups `500 SATS` and `700 SATS`; M1's projection contains only M1/P1 and no M2 pubkey, product, quantity, profile, price, or evidence field; M2's projection has the inverse isolation; each has a distinct `projectionId`, neither contains the cart-wide `planId`, and the source-plan mapping remains local |
+| `RSP-FX-06`  | Current profile is valid and explicitly has base `0 SATS`                                                 | `included_free`, amount exactly `0`                                                                                                                                                                                                                                                                                            |
+| `RSP-FX-07`  | `P1`, destination `CA`, current `A1` covers only `US`                                                     | `unsupported_destination`, no amount                                                                                                                                                                                                                                                                                           |
+| `RSP-FX-08`  | Complete bounded read finds `P1` but no `A`                                                               | `missing_evidence`, no amount                                                                                                                                                                                                                                                                                                  |
+| `RSP-FX-09`  | Stored valid `A1`; degraded refresh observes `P1` but no current revision of `A`                          | `lookup_partial`; `A1` may be displayed only as a last-known estimate                                                                                                                                                                                                                                                          |
+| `RSP-FX-09A` | Degraded refresh observes valid current `P1` and `A1`; another planned source fails                       | `priced`, `500 SATS`, with `evidenceCoverage: degraded`                                                                                                                                                                                                                                                                        |
+| `RSP-FX-09B` | Degraded refresh observes current `P1`, no source supplies `A`, and no stored estimate exists             | `lookup_partial`, no amount, with `evidenceCoverage: degraded`                                                                                                                                                                                                                                                                 |
+| `RSP-FX-10`  | Stored plan names `A1`; complete refresh selects newer `A2`                                               | `stale_revision`; old amount remains historical and direct payment requires reauthorization                                                                                                                                                                                                                                    |
+| `RSP-FX-10A` | Selected product `P1` is targeted by valid same-author `e` deletion, including one older than `P1`        | `withdrawn`, no amount; retain the deletion event ID and exact signed event; later relay omission cannot downgrade the result                                                                                                                                                                                                  |
+| `RSP-FX-10B` | Selected product `P1` is targeted by valid same-author `a` deletion at or after `P1.created_at`           | `withdrawn`, no amount; retain the deletion event ID and exact signed event; a genuinely newer product revision may produce a new calculation                                                                                                                                                                                  |
+| `RSP-FX-10C` | Selected profile `A1` is targeted by valid same-author `e` deletion, including one older than `A1`        | `withdrawn`, no amount; retain the deletion event ID and exact signed event; do not fall back to an older profile revision                                                                                                                                                                                                     |
+| `RSP-FX-10D` | Selected profile `A1` is targeted by valid same-author `a` deletion at or after `A1.created_at`           | `withdrawn`, no amount; retain the deletion event ID and exact signed event; a genuinely newer profile revision may produce a new calculation                                                                                                                                                                                  |
+| `RSP-FX-11`  | Valid profile IDs `A-low` and `A-high` tie at the newest `created_at`; `A-low` is lexicographically lower | Select `A-low`, retain both observations, and resolve `priced`, `500 SATS`                                                                                                                                                                                                                                                     |
+| `RSP-FX-12`  | Product has an invalid physical type or malformed `shipping_option` coordinate                            | `malformed_product`, no amount                                                                                                                                                                                                                                                                                                 |
+| `RSP-FX-12A` | Product has two syntactically valid `shipping_option` tags, including repeated identical coordinates      | `unsupported_policy`, no amount; retain the protocol-valid listing without selecting or guessing one option                                                                                                                                                                                                                    |
+| `RSP-FX-13`  | Profile has malformed price/country/service or an invalid signature                                       | `malformed_profile` or `missing_evidence` according to whether malformed evidence was observed, never free                                                                                                                                                                                                                     |
+| `RSP-FX-13A` | Product and profile use matching syntactic but unassigned currency `ZZZ`                                  | `currency_unresolved`, no amount; never `priced` or `included_free`                                                                                                                                                                                                                                                            |
+| `RSP-FX-13B` | Profile country or private destination is unassigned identifier `ZZ`                                      | `malformed_profile` or `malformed_input`, respectively; never `priced` or `included_free`                                                                                                                                                                                                                                      |
+| `RSP-FX-14`  | `P1` and `P2` select different profiles for `M1`                                                          | `incompatible_items`, no automatic split                                                                                                                                                                                                                                                                                       |
+| `RSP-FX-15`  | Profile currency differs from product currency                                                            | Affected group is `currency_unresolved`; currency and amount are `null`                                                                                                                                                                                                                                                        |
+| `RSP-FX-15A` | Two otherwise eligible merchant groups output different normalized currencies                             | Both groups become `currency_unresolved`; known group currencies remain and both amounts are `null`                                                                                                                                                                                                                            |
+| `RSP-FX-16`  | Destination is malformed or a line has a non-positive/non-integer quantity                                | `malformed_input`, no amount                                                                                                                                                                                                                                                                                                   |
+| `RSP-FX-17`  | Product uses the existing product-scoped fixed option                                                     | Bounded fixed-product compatibility result; not a reusable group                                                                                                                                                                                                                                                               |
 
 Writer delivery fixtures use exact pre-signed profile `A1` and product `P1`:
 
@@ -480,16 +509,16 @@ Writer delivery fixtures use exact pre-signed profile `A1` and product `P1`:
 
 ## Acceptance traceability
 
-| Requirement        | Contract evidence                                                                                                                               |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SHIP-CONTRACT-01` | Public product/profile shapes and `RSP-FX-03` contain two physical products plus one merchant profile                                           |
-| `SHIP-CONTRACT-02` | Money normalization, ordered grouping, exact-once calculation, and frozen output are deterministic from signed inputs plus private country      |
-| `SHIP-CONTRACT-03` | `RSP-FX-02` and `RSP-FX-03` prove quantity and multiple lines do not multiply the reusable base                                                 |
-| `SHIP-CONTRACT-04` | `RSP-FX-04` through `RSP-FX-16` give distinct digital, merchant, free, destination, evidence, stale, conflict, malformed, and currency outcomes |
-| `SHIP-CONTRACT-05` | `ReusableShippingPlanV1` binds exact product/profile event IDs, quantity, currency, amount, state, version, and deterministic plan ID           |
-| `SHIP-CONTRACT-06` | Bounded compatibility and `RSP-FX-17` preserve fixed product shipping without making it the new authoring model                                 |
-| `SHIP-CONTRACT-07` | Private input/result sections and `RSP-FX-05` prohibit public data and isolate every encrypted merchant order from other merchant groups        |
-| `SHIP-CONTRACT-08` | Canonical authoring order plus `RSP-WR-01` through `RSP-WR-03` require profile-first positive acknowledgement and immutable exact-event retry   |
+| Requirement        | Contract evidence                                                                                                                                                       |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SHIP-CONTRACT-01` | Public product/profile shapes and `RSP-FX-03` contain two physical products plus one merchant profile                                                                   |
+| `SHIP-CONTRACT-02` | Money normalization, ordered grouping, exact-once calculation, and frozen output are deterministic from signed inputs plus private country                              |
+| `SHIP-CONTRACT-03` | `RSP-FX-02` and `RSP-FX-03` prove quantity and multiple lines do not multiply the reusable base                                                                         |
+| `SHIP-CONTRACT-04` | `RSP-FX-04` through `RSP-FX-16` give distinct digital, merchant, free, destination, evidence, stale, withdrawn, conflict, malformed, unsupported, and currency outcomes |
+| `SHIP-CONTRACT-05` | `ReusableShippingPlanV1` binds exact product/profile event IDs, quantity, currency, amount, state, version, and deterministic plan ID                                   |
+| `SHIP-CONTRACT-06` | Bounded compatibility and `RSP-FX-17` preserve fixed product shipping without making it the new authoring model                                                         |
+| `SHIP-CONTRACT-07` | Private input/result sections and `RSP-FX-05` prohibit public data and isolate every encrypted merchant order from other merchant groups                                |
+| `SHIP-CONTRACT-08` | Canonical authoring order plus `RSP-WR-01` through `RSP-WR-03` require profile-first positive acknowledgement and immutable exact-event retry                           |
 
 ## Deferred behavior
 
