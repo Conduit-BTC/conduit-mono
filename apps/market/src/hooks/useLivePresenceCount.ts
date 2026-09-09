@@ -1,5 +1,5 @@
-import { conduitBuildInfo } from "@conduit/core"
 import { useEffect, useRef, useState } from "react"
+import { conduitBuildInfo } from "@conduit/core"
 import {
   advanceLivePresenceRequestRevision,
   hashLivePresenceScope,
