@@ -145,6 +145,11 @@ export {
   type ProductCartActionProps,
 } from "./ProductCard"
 export {
+  ClaveConnectButton,
+  claveConnectUrl,
+  type ClaveConnectButtonProps,
+} from "./ClaveConnectButton"
+export {
   NoSignerSetupGuide,
   SignerConnectPanel,
   SignerSwitch,

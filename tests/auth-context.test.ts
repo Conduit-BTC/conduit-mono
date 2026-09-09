@@ -5,6 +5,7 @@ import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure"
 import {
   connectNip07SignerForAuth,
+  NOSTR_CONNECT_RELAYS,
   beginAuthRestorePending,
   getNip07Capabilities,
   getAuthSignerReadiness,
@@ -12,12 +13,17 @@ import {
   isAuthRestoreAttemptCurrent,
   isTransientNip07ConnectError,
   resolveFailedAuthAttempt,
+  resolveSignerClientMetadata,
   settleAuthRestorePending,
   shouldReuseConnectedAuthSession,
   type AuthConnectOptions,
   type AuthContextValue,
   type RemoteSignerRecoveryState,
 } from "../packages/core/src/context/AuthContext"
+import {
+  CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
+  CLAVE_PUSH_RELAY,
+} from "../packages/core/src/config"
 import {
   canStartAuthConnection,
   parseAuthSession,
@@ -1200,5 +1206,100 @@ describe("cross-tab signer authority retirement", () => {
         relayUrls: ["wss://replacement.example"],
       })
     ).toBe(true)
+  })
+})
+
+describe("NIP-46 Clave handoff pairing", () => {
+  it("pairs Nostr Connect over Clave's push relay within the relay cap", () => {
+    expect(CLAVE_PUSH_RELAY).toBe("wss://relay.powr.build")
+    expect(NOSTR_CONNECT_RELAYS[0]).toBe(CLAVE_PUSH_RELAY)
+    expect(NOSTR_CONNECT_RELAYS.length).toBeGreaterThanOrEqual(2)
+    expect(NOSTR_CONNECT_RELAYS.length).toBeLessThanOrEqual(3)
+    expect(new Set(NOSTR_CONNECT_RELAYS).size).toBe(NOSTR_CONNECT_RELAYS.length)
+    for (const relay of NOSTR_CONNECT_RELAYS.slice(1)) {
+      expect(CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS).toContain(relay)
+    }
+  })
+
+  it("changes the pairing relay set for Nostr Connect only", async () => {
+    const source = await readFile(
+      "packages/core/src/context/AuthContext.tsx",
+      "utf8"
+    )
+
+    expect(source).toContain(
+      "pairRemoteSignerFromNostrConnect(NOSTR_CONNECT_RELAYS, {"
+    )
+    expect(source).toContain("pairRemoteSigner(options.bunkerUri, {")
+    expect(source).not.toContain(
+      "CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS.slice(0, 3)"
+    )
+  })
+
+  it("adds the client icon to signer metadata only when one is configured", () => {
+    expect(
+      resolveSignerClientMetadata("https://conduit.market", "/pwa-192x192.png")
+    ).toEqual({
+      name: "Conduit",
+      url: "https://conduit.market",
+      image: "https://conduit.market/pwa-192x192.png",
+    })
+    expect(
+      resolveSignerClientMetadata(
+        "https://merchant.conduit.market",
+        "https://cdn.example/icon.png"
+      )
+    ).toEqual({
+      name: "Conduit",
+      url: "https://merchant.conduit.market",
+      image: "https://cdn.example/icon.png",
+    })
+
+    const withoutIcon = resolveSignerClientMetadata("https://conduit.market")
+    expect(withoutIcon).toEqual({
+      name: "Conduit",
+      url: "https://conduit.market",
+    })
+    expect(withoutIcon).not.toHaveProperty("image")
+
+    const withoutOrigin = resolveSignerClientMetadata(
+      undefined,
+      "/pwa-192x192.png"
+    )
+    expect(withoutOrigin.name).toBe("Conduit")
+    expect(withoutOrigin.url).toBeUndefined()
+    expect(withoutOrigin).not.toHaveProperty("image")
+  })
+
+  it("sends the same client metadata on both remote signer pairing paths", async () => {
+    const source = await readFile(
+      "packages/core/src/context/AuthContext.tsx",
+      "utf8"
+    )
+    const connectStart = source.indexOf("const connectWithoutLock")
+    const connectAttempt = source.slice(
+      connectStart,
+      source.indexOf("const connect = useCallback", connectStart)
+    )
+
+    expect(
+      connectAttempt.match(/clientMetadata: signerClientMetadata,/g)?.length
+    ).toBe(2)
+    expect(connectAttempt).not.toContain('name: "Conduit"')
+    expect(source).toContain("resolveSignerClientMetadata(")
+  })
+
+  it("passes each app's installable icon to the AuthProvider", async () => {
+    const [market, merchant] = await Promise.all([
+      readFile("apps/market/src/main.tsx", "utf8"),
+      readFile("apps/merchant/src/main.tsx", "utf8"),
+    ])
+
+    expect(market).toContain(
+      '<AuthProvider signerClientIcon="/pwa-192x192.png">'
+    )
+    expect(merchant).toContain(
+      '<AuthProvider signerClientIcon="/merchant-icon-192.png">'
+    )
   })
 })

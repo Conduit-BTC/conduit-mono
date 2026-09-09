@@ -153,7 +153,7 @@ if (isProductLegalEntry) {
   root.render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
-        <AuthProvider>
+        <AuthProvider signerClientIcon="/pwa-192x192.png">
           <ConduitSessionProvider appId="market">
             <MarketAuthQueryBoundary>
               <ShopperPresetsProvider>

@@ -566,13 +566,12 @@ export function MarketHeader() {
         </div>
       </div>
 
-      {!connected && (
-        <SignerSwitch
-          open={connectOpen}
-          onOpenChange={setConnectOpen}
-          hideTrigger
-        />
-      )}
+      {/* Keep mounted so successful sign-in can clear the controlled open state. */}
+      <SignerSwitch
+        open={connectOpen}
+        onOpenChange={setConnectOpen}
+        hideTrigger
+      />
     </header>
   )
 }

@@ -5,8 +5,11 @@ import {
   getEventMarket,
   getOrganizerEventMarkets,
   isValidSignedPublicNostrEvent,
+  normalizeRelayUrl,
+  normalizeSecureOrIsolatedE2eRelayUrls,
   publishOrganizerCollectionUpdate,
   publishOrganizerEventMarket,
+  parseEventMarketCollectionEvent,
   retryOrganizerEventMarketRecord,
   type FollowedEventMarketDiscoveryResult,
   type OrganizerEventMarketCalendarPublishInput,
@@ -17,6 +20,7 @@ import {
   type OrganizerEventMarketSignedRecord,
   type SignedPublicNostrEvent,
   type EventMarketAcceptedProductEvidence,
+  type EventMarketDeletedRecordEvidence,
   type EventMarketProductPreview,
   type EventMarketHandoffMode,
   type EventMarketParticipationRequest,
@@ -40,6 +44,8 @@ export type MerchantOrganizerEventRecord = "calendar" | "pickup" | "collection"
 
 export interface MerchantOrganizerRecordDelivery {
   record: MerchantOrganizerEventRecord
+  /** Normalized relays that accepted this exact signed record. */
+  acknowledgedRelayUrls?: string[]
   acknowledgedCount: number
   rejectedCount: number
   timedOutCount: number
@@ -86,12 +92,35 @@ export interface MerchantOrganizerEventMarket {
   pickupPrice?: string
   pickupCurrency?: string
   calendarCreatedAt?: number
+  calendarEventId?: string
   pickupCreatedAt?: number
+  pickupEventId?: string
   collectionCreatedAt?: number
+  collectionEventId?: string
   productCoordinates: string[]
   participation: MerchantOrganizerParticipation[]
   source: EventMarketResolution
 }
+
+export interface MerchantOrganizerEventMarketDeletion {
+  terminal: true
+  state: "deleted"
+  organizerPubkey: string
+  collectionCoordinate: string
+  calendarCoordinate?: string
+  pickupCoordinate?: string
+  collectionCreatedAt?: number
+  collectionEventId?: string
+  calendarCreatedAt?: number
+  calendarEventId?: string
+  pickupCreatedAt?: number
+  pickupEventId?: string
+  deletion: EventMarketDeletedRecordEvidence
+  naddr: string
+}
+
+export type MerchantOrganizerEventMarketRead =
+  MerchantOrganizerEventMarket | MerchantOrganizerEventMarketDeletion
 
 export interface MerchantOrganizerPublishResult {
   records: MerchantOrganizerRecordDelivery[]
@@ -180,6 +209,13 @@ function validStoredDelivery(
     reference: decodedReference.coordinate,
     delivery: {
       record: record as MerchantOrganizerEventRecord,
+      acknowledgedRelayUrls: normalizeSecureOrIsolatedE2eRelayUrls(
+        Array.isArray(delivery?.acknowledgedRelayUrls)
+          ? delivery.acknowledgedRelayUrls.filter(
+              (relayUrl): relayUrl is string => typeof relayUrl === "string"
+            )
+          : []
+      ),
       acknowledgedCount: count("acknowledgedCount"),
       rejectedCount: count("rejectedCount"),
       timedOutCount: count("timedOutCount"),
@@ -447,6 +483,55 @@ export function isParticipationProductPreviewVerified(
   )
 }
 
+function resolvedEventMarketRelayHints(
+  resolution: EventMarketResolution
+): string[] {
+  return boundedEventMarketShareRelayHints([
+    resolution.collection?.sourceRelayUrls,
+    resolution.calendar?.sourceRelayUrls,
+    ...resolution.pickups.map((pickup) => pickup.sourceRelayUrls),
+  ])
+}
+
+function publishedEventMarketRelayHints(
+  value: OrganizerEventMarketPublishResult
+): string[] {
+  return boundedEventMarketShareRelayHints([
+    value.collection.delivery.acknowledgedRelayUrls,
+    value.calendar.delivery.acknowledgedRelayUrls,
+    value.pickup?.delivery.acknowledgedRelayUrls,
+  ])
+}
+
+// Event-market reads currently allow eight relays. Keep one slot available for
+// the organizer/default read plan so imported or observed hints cannot replace
+// every normal fallback. Take one relay from every required record before
+// adding secondary observations so disjoint collection/calendar/pickup
+// delivery remains reachable from the portable link.
+const EVENT_MARKET_SHARE_RELAY_HINT_LIMIT = 7
+
+function boundedEventMarketShareRelayHints(
+  groups: readonly (readonly string[] | undefined)[]
+): string[] {
+  const normalizedGroups = groups
+    .map((group) => [...(group ?? [])])
+    .filter((group) => group.length > 0)
+  const prioritized = [
+    ...normalizedGroups.flatMap((group) => group.slice(0, 1)),
+    ...normalizedGroups.flatMap((group) => group.slice(1)),
+  ]
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const relayUrl of prioritized) {
+    const key = normalizeRelayUrl(relayUrl)
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(relayUrl)
+    if (result.length >= EVENT_MARKET_SHARE_RELAY_HINT_LIMIT) break
+  }
+  return result
+}
+
 function projectEventMarket(
   resolution: EventMarketResolution
 ): MerchantOrganizerEventMarket | null {
@@ -489,7 +574,10 @@ function projectEventMarket(
       status: "organizer_only",
     })
   )
-  const naddr = encodeEventMarketNaddr(collectionCoordinate)
+  const naddr = encodeEventMarketNaddr(
+    collectionCoordinate,
+    resolvedEventMarketRelayHints(resolution)
+  )
   const calendarKind = calendar.kind === 31922 ? 31922 : 31923
   const start =
     calendarKind === 31922
@@ -529,8 +617,11 @@ function projectEventMarket(
     pickupPrice: pickup ? String(pickup.price) : undefined,
     pickupCurrency: pickup?.currency,
     calendarCreatedAt: calendar.createdAt,
+    calendarEventId: calendar.eventId,
     pickupCreatedAt: pickup?.createdAt,
+    pickupEventId: pickup?.eventId,
     collectionCreatedAt: collection?.createdAt,
+    collectionEventId: collection?.eventId,
     productCoordinates,
     participation: [...pending, ...accepted, ...organizerOnly],
     source: resolution,
@@ -558,14 +649,54 @@ function projectDeliveryRecord(
   const rejected = delivery?.rejectedRelayUrls ?? []
   const timedOut = delivery?.timedOutRelayUrls ?? []
   const failed = delivery?.failedRelayUrls ?? []
+  const acknowledgedRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls([
+    ...acknowledged,
+    ...successful,
+  ])
   return {
     record: value.record,
+    acknowledgedRelayUrls,
     acknowledgedCount: acknowledged.length || successful.length,
     rejectedCount: rejected.length,
     timedOutCount:
       timedOut.length || Math.max(0, failed.length - rejected.length),
     signedEvent: value.signedEvent,
   }
+}
+
+export function organizerEventMarketReferenceWithDeliveryRelayHints(
+  reference: string,
+  delivery: MerchantOrganizerRecordDelivery
+): string {
+  const parsed = parseOrganizerEventMarketReference(reference)
+  const acknowledgedRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+    delivery.acknowledgedRelayUrls ?? []
+  )
+  const existingRelayKeys = new Set(parsed.relayHints.map(normalizeRelayUrl))
+  const expandsRelayHints = acknowledgedRelayUrls.some(
+    (relayUrl) => !existingRelayKeys.has(normalizeRelayUrl(relayUrl))
+  )
+  return encodeEventMarketNaddr(
+    parsed.coordinate,
+    expandsRelayHints
+      ? boundedEventMarketShareRelayHints([
+          parsed.relayHints.slice(0, 3),
+          acknowledgedRelayUrls,
+          parsed.relayHints.slice(3),
+        ])
+      : parsed.relayHints
+  )
+}
+
+export function organizerEventMarketReferenceWithAllDeliveryRelayHints(
+  reference: string,
+  deliveries: readonly MerchantOrganizerRecordDelivery[]
+): string {
+  return deliveries.reduce(
+    (current, delivery) =>
+      organizerEventMarketReferenceWithDeliveryRelayHints(current, delivery),
+    reference
+  )
 }
 
 function projectPublishResult(
@@ -580,7 +711,10 @@ function projectPublishResult(
   return {
     records,
     collectionCoordinate,
-    naddr: encodeEventMarketNaddr(collectionCoordinate),
+    naddr: encodeEventMarketNaddr(
+      collectionCoordinate,
+      publishedEventMarketRelayHints(value)
+    ),
   }
 }
 
@@ -642,12 +776,12 @@ export async function discoverFollowedEventMarkets(
   }
 }
 
-export async function resolveOrganizerEventMarket(
+export async function resolveOrganizerEventMarketRead(
   reference: string,
   organizerPubkey?: string,
   authenticatedPubkey: string | null = organizerPubkey ?? null,
   signal?: AbortSignal
-): Promise<MerchantOrganizerEventMarket> {
+): Promise<MerchantOrganizerEventMarketRead> {
   const parsedReference = parseOrganizerEventMarketReference(reference)
   const result = await getEventMarket({
     reference: parsedReference.naddr,
@@ -655,6 +789,67 @@ export async function resolveOrganizerEventMarket(
     authenticatedPubkey,
     ...(signal ? { signal } : {}),
   })
+  if (
+    result.state === "deleted" &&
+    result.deletion &&
+    result.organizerPubkey &&
+    result.collectionCoordinate === parsedReference.coordinate
+  ) {
+    const deletion = result.deletion
+    return {
+      terminal: true,
+      state: "deleted",
+      organizerPubkey: result.organizerPubkey,
+      collectionCoordinate: result.collectionCoordinate,
+      ...(result.calendarCoordinate
+        ? { calendarCoordinate: result.calendarCoordinate }
+        : {}),
+      ...(result.pickupCoordinate
+        ? { pickupCoordinate: result.pickupCoordinate }
+        : {}),
+      ...(result.collection
+        ? {
+            collectionCreatedAt: result.collection.createdAt,
+            collectionEventId: result.collection.eventId,
+          }
+        : deletion.record === "collection" &&
+            deletion.createdAt !== undefined &&
+            deletion.eventId
+          ? {
+              collectionCreatedAt: deletion.createdAt,
+              collectionEventId: deletion.eventId,
+            }
+          : {}),
+      ...(result.calendar
+        ? {
+            calendarCreatedAt: result.calendar.createdAt,
+            calendarEventId: result.calendar.eventId,
+          }
+        : deletion.record === "calendar" &&
+            deletion.createdAt !== undefined &&
+            deletion.eventId
+          ? {
+              calendarCreatedAt: deletion.createdAt,
+              calendarEventId: deletion.eventId,
+            }
+          : {}),
+      ...(result.pickup
+        ? {
+            pickupCreatedAt: result.pickup.createdAt,
+            pickupEventId: result.pickup.eventId,
+          }
+        : deletion.record === "pickup" &&
+            deletion.createdAt !== undefined &&
+            deletion.eventId
+          ? {
+              pickupCreatedAt: deletion.createdAt,
+              pickupEventId: deletion.eventId,
+            }
+          : {}),
+      deletion,
+      naddr: parsedReference.naddr,
+    }
+  }
   const normalized = projectEventMarket(result)
   if (
     !normalized ||
@@ -662,7 +857,46 @@ export async function resolveOrganizerEventMarket(
   ) {
     throw new Error("The organizer event records could not be resolved.")
   }
-  return { ...normalized, naddr: parsedReference.naddr }
+  const projectedHints =
+    decodeEventMarketReference(normalized.naddr, [30405])?.relayHints ?? []
+  const parsedHintKeys = new Set(
+    parsedReference.relayHints.map(normalizeRelayUrl)
+  )
+  const parsedReferenceContainsResolvedHints = projectedHints.every(
+    (relayUrl) => parsedHintKeys.has(normalizeRelayUrl(relayUrl))
+  )
+  return {
+    ...normalized,
+    naddr: encodeEventMarketNaddr(
+      parsedReference.coordinate,
+      parsedReferenceContainsResolvedHints &&
+        parsedReference.relayHints.length > 0
+        ? parsedReference.relayHints
+        : boundedEventMarketShareRelayHints([
+            parsedReference.relayHints.slice(0, 1),
+            projectedHints,
+            parsedReference.relayHints.slice(1),
+          ])
+    ),
+  }
+}
+
+export async function resolveOrganizerEventMarket(
+  reference: string,
+  organizerPubkey?: string,
+  authenticatedPubkey: string | null = organizerPubkey ?? null,
+  signal?: AbortSignal
+): Promise<MerchantOrganizerEventMarket> {
+  const result = await resolveOrganizerEventMarketRead(
+    reference,
+    organizerPubkey,
+    authenticatedPubkey,
+    signal
+  )
+  if ("terminal" in result) {
+    throw new Error("The organizer event records were deleted.")
+  }
+  return result
 }
 
 function randomDTagSuffix(): string {
@@ -795,56 +1029,146 @@ export async function publishMerchantOrganizerEventMarket(input: {
   return projectPublishResult(result, collectionCoordinate)
 }
 
+function compareParsedCollectionRevisions(
+  left: NonNullable<EventMarketResolution["collection"]>,
+  right: NonNullable<EventMarketResolution["collection"]>
+): number {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt - right.createdAt
+  }
+  // NIP-01 selects the lowest event id when timestamps tie.
+  return right.eventId.localeCompare(left.eventId)
+}
+
+export function reconcileMerchantOrganizerCollectionEvidence(
+  market: MerchantOrganizerEventMarket,
+  retainedDelivery: MerchantOrganizerRecordDelivery | null | undefined
+): MerchantOrganizerEventMarket {
+  if (!retainedDelivery) return market
+  const retainedEvent = retainedDelivery.signedEvent
+  const retainedCollection = retainedEvent
+    ? parseEventMarketCollectionEvent(retainedEvent)
+    : null
+  if (
+    retainedDelivery.record !== "collection" ||
+    !retainedCollection ||
+    retainedCollection.coordinate !== market.collectionCoordinate ||
+    retainedCollection.authorPubkey !== market.organizerPubkey ||
+    retainedCollection.eventCoordinates.length !== 1
+  ) {
+    throw new Error(
+      "The retained event collection is invalid. Refresh this event before changing its products."
+    )
+  }
+  const relayCollection = market.source?.collection
+  if (
+    relayCollection &&
+    compareParsedCollectionRevisions(retainedCollection, relayCollection) <= 0
+  ) {
+    return market
+  }
+
+  return {
+    ...market,
+    title: retainedCollection.title,
+    summary: retainedCollection.summary,
+    imageUrl: retainedCollection.image,
+    eventLocation: retainedCollection.location,
+    eventGeohash: retainedCollection.geohash,
+    calendarCoordinate: retainedCollection.eventCoordinates[0]!,
+    pickupCoordinate:
+      retainedCollection.pickupCoordinates.length === 1
+        ? retainedCollection.pickupCoordinates[0]
+        : undefined,
+    pickupCoordinates: retainedCollection.pickupCoordinates,
+    collectionCreatedAt: retainedCollection.createdAt,
+    productCoordinates: retainedCollection.productCoordinates,
+    source: {
+      ...market.source,
+      collection: retainedCollection,
+      collectionCoordinate: retainedCollection.coordinate,
+      calendarCoordinate: retainedCollection.eventCoordinates[0]!,
+      pickupCoordinate:
+        retainedCollection.pickupCoordinates.length === 1
+          ? retainedCollection.pickupCoordinates[0]
+          : undefined,
+      organizerProductCoordinates: retainedCollection.productCoordinates,
+    },
+  }
+}
+
 export async function publishMerchantOrganizerMembership(input: {
   organizerPubkey: string
   market: MerchantOrganizerEventMarket
   item: MerchantOrganizerParticipation
   action: OrganizerCollectionMembershipAction
+  retainedCollection?: MerchantOrganizerRecordDelivery | null
   onSignedEvent?: (
     record: MerchantOrganizerRecordDelivery,
     collectionCoordinate: string
   ) => void | Promise<void>
 }): Promise<MerchantOrganizerRecordDelivery> {
+  const retainedCollection =
+    input.retainedCollection ??
+    loadOrganizerEventMarketDeliveryOutbox(input.organizerPubkey)[
+      input.market.collectionCoordinate
+    ]?.find((record) => record.record === "collection") ??
+    null
+  const market = reconcileMerchantOrganizerCollectionEvidence(
+    input.market,
+    retainedCollection
+  )
+  const retainedEvent = retainedCollection?.signedEvent
+  const retainedCollectionIsUnrepresented =
+    retainedCollection?.acknowledgedCount === 0 &&
+    !!retainedEvent &&
+    market.source.collection?.eventId === retainedEvent.id &&
+    input.market.source.collection?.eventId !== retainedEvent.id
+  if (retainedCollectionIsUnrepresented) {
+    throw new Error(
+      "The latest signed event collection still needs exact delivery retry."
+    )
+  }
   const productCoordinates = updateOrganizerCollectionProducts(
-    input.market.productCoordinates,
+    market.productCoordinates,
     input.item.productCoordinate,
     input.action
   )
+  const organizerHandoffStillAdvertised =
+    input.item.handoffMode !== "organizer_handoff" ||
+    (!!input.item.pickupCoordinate &&
+      market.pickupCoordinates.includes(input.item.pickupCoordinate))
   if (
     input.action === "accept" &&
-    (!isParticipationHandoffVerified(
-      input.item,
-      input.market.organizerPubkey
-    ) ||
+    (!isParticipationHandoffVerified(input.item, market.organizerPubkey) ||
+      !organizerHandoffStillAdvertised ||
       !isParticipationProductPreviewVerified(input.item))
   ) {
     throw new Error(
       "Current signed product preview or handoff evidence is unavailable or unsupported."
     )
   }
-  const sourceCollection = input.market.source.collection
+  const sourceCollection = market.source.collection
   const collection: OrganizerEventMarketCollectionPublishInput = {
-    dTag: coordinateDTag(input.market.collectionCoordinate),
-    title: input.market.title,
+    dTag: coordinateDTag(market.collectionCoordinate),
+    title: market.title,
     content: sourceCollection?.content ?? "",
-    summary: input.market.summary,
-    image: input.market.imageUrl,
-    location: input.market.eventLocation,
-    geohash: input.market.eventGeohash,
-    eventCoordinate: input.market.calendarCoordinate,
-    pickupCoordinates: input.market.pickupCoordinate
-      ? [input.market.pickupCoordinate]
-      : [],
+    summary: market.summary,
+    image: market.imageUrl,
+    location: market.eventLocation,
+    geohash: market.eventGeohash,
+    eventCoordinate: market.calendarCoordinate,
+    pickupCoordinates: market.pickupCoordinates,
     productCoordinates,
   }
   const result = await publishOrganizerCollectionUpdate({
     organizerPubkey: input.organizerPubkey,
     collection,
-    previousCreatedAt: input.market.collectionCreatedAt,
+    previousCreatedAt: market.collectionCreatedAt,
     onSignedEvent: async (record) => {
       await input.onSignedEvent?.(
         projectDeliveryRecord(record),
-        input.market.collectionCoordinate
+        market.collectionCoordinate
       )
     },
   })

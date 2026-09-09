@@ -4,8 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   buildOrderStatusTimeline,
   clearProtectedReadAuthenticationSuppression,
-  compileProductFulfillmentIntent,
-  CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
   deriveProtectedReadPresentationState,
@@ -21,7 +19,6 @@ import {
   getMerchantOrderReopenTransition,
   getProductImageCandidates,
   getProductsByIds,
-  getShippingOptionsByCoordinates,
   hasWebLN,
   isInvoiceCompatibleWithCurrentNetwork,
   isValidLud16Address,
@@ -34,17 +31,14 @@ import {
   pubkeyToNpub,
   prepareProtectedReadRefreshState,
   selectProtectedReadRows,
-  resolveProductFulfillment,
   type MerchantConversationSummary,
   type MerchantOrderDelivery,
   type MerchantOrderAction,
   type MerchantOrderReopenTransition,
   type MerchantOrderState,
-  type EventMarketResolution,
   type KnownOrderStatus,
   type Profile,
-  type ProductFulfillmentIntent,
-  type ProductSchema,
+  type OrderSummary,
   type SignedPublicNostrEvent,
   useAuth,
   useConduitSession,
@@ -142,6 +136,11 @@ import {
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
 import {
+  getOrderStockPickupFulfillment,
+  rebaseOrderStockAdjustmentOnProduct,
+  resolveStockUpdateFulfillmentIntent,
+} from "../lib/order-stock-fulfillment"
+import {
   applyOrderStockTarget,
   buildOrderStockAdjustments,
   getOrderStockAdjustmentForDisplay,
@@ -163,6 +162,10 @@ import {
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
 import { OrderStockPanel } from "../components/OrderStockPanel"
+import {
+  confirmMerchantPayment,
+  type MerchantPaymentConfirmationInput,
+} from "../lib/order-payment-release"
 import {
   eventMarketHandoffDeliveryNeedsRetry,
   eventMarketHandoffRecipientAcknowledged,
@@ -190,63 +193,6 @@ type ReopenOrderMutationInput = {
   transition: MerchantOrderReopenTransition
 }
 
-async function resolveStockUpdateFulfillmentIntent(
-  product: ProductSchema
-): Promise<ProductFulfillmentIntent> {
-  if (product.format === "digital") return { kind: "digital" }
-
-  const legacyShippingAmount =
-    product.sourceShippingCost?.amount ?? product.shippingCostSats
-  if (
-    typeof legacyShippingAmount === "number" &&
-    (!product.shippingOptionId ||
-      product.shippingOptionDTag === CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG)
-  ) {
-    const destinations = product.shippingCountryRules?.length
-      ? product.shippingCountryRules
-      : (product.shippingCountries ?? []).map((code) => ({
-          code,
-          name: code,
-          restrictTo: [],
-          exclude: [],
-        }))
-    return compileProductFulfillmentIntent({
-      format: "physical",
-      shippingPricingMode: "fixed",
-      amount: legacyShippingAmount,
-      currency:
-        product.sourceShippingCost?.normalizedCurrency ??
-        product.sourceShippingCost?.currency ??
-        "SATS",
-      destinations,
-    })
-  }
-
-  if (product.shippingOptionId) {
-    const shippingOptions = await getShippingOptionsByCoordinates([
-      product.shippingOptionId,
-    ])
-    const prepared = resolveProductFulfillment(product, shippingOptions)
-    if (
-      prepared.intent !== "fixed_standard" ||
-      prepared.status !== "ready" ||
-      !prepared.option
-    ) {
-      throw new Error(
-        "Could not verify this listing's fixed shipping option. Review the listing before updating stock."
-      )
-    }
-    return {
-      kind: "fixed_standard",
-      amount: prepared.option.price,
-      currency: prepared.option.currency,
-      countries: [...prepared.option.countries],
-    }
-  }
-
-  return { kind: "coordinate_after_order" }
-}
-
 type StockDeliveryState = {
   orderId: string
   adjustment: OrderStockAdjustment
@@ -259,6 +205,7 @@ type StockUpdateMutationPayload =
       action: "update"
       orderId: string
       adjustment: OrderStockAdjustment
+      orderItems: OrderSummary["items"]
     }
   | {
       action: "retry"
@@ -736,6 +683,7 @@ function OrdersPage() {
   >(null)
   const [paymentConfirmationTarget, setPaymentConfirmationTarget] =
     useState<MerchantPaymentConfirmationTarget | null>(null)
+  const [releaseWithPayment, setReleaseWithPayment] = useState(false)
   const [confirmingOrganizerFallback, setConfirmingOrganizerFallback] =
     useState(false)
   const [confirmingOrganizerRelease, setConfirmingOrganizerRelease] =
@@ -1226,6 +1174,7 @@ function OrdersPage() {
     setReopenConfirmation(null)
     setReopenConfirmationError(null)
     setPaymentConfirmationTarget(null)
+    setReleaseWithPayment(false)
     setConfirmingOrganizerFallback(false)
     setConfirmingOrganizerRelease(false)
     setOrganizerReleaseConfirmed(false)
@@ -1465,13 +1414,9 @@ function OrdersPage() {
     if (!pubkey || !orderSummary) {
       throw new Error("Current signed pickup evidence is unavailable.")
     }
-    let verifiedMarket: EventMarketResolution | null = null
     const result = await verifyMerchantPickupOrderAuthorization({
       items: orderSummary.items,
       merchantPubkey: pubkey,
-      onVerifiedMarket: (market) => {
-        verifiedMarket = market
-      },
     })
     queryClient.setQueriesData(
       {
@@ -1485,10 +1430,7 @@ function OrdersPage() {
     if (result.status !== "verified") {
       throw new Error(getMerchantPickupAuthorizationMessage(result))
     }
-    if (!verifiedMarket) {
-      throw new Error("Current signed pickup evidence is unavailable.")
-    }
-    return verifiedMarket
+    return result.market
   }, [
     orderSummary,
     pubkey,
@@ -1690,6 +1632,7 @@ function OrdersPage() {
         return {
           delivery,
           signedEvent: payload.signedEvent,
+          adjustment: payload.adjustment,
         }
       }
 
@@ -1720,36 +1663,79 @@ function OrdersPage() {
         throw new Error("Stock must be a non-negative safe integer.")
       }
 
-      const fulfillmentIntent = await resolveStockUpdateFulfillmentIntent(
-        record.product
+      const hasPickupClaim = payload.orderItems.some(
+        (item) => item.fulfillment?.type === "pickup"
       )
+      const pickupFulfillment = getOrderStockPickupFulfillment({
+        items: payload.orderItems,
+        productAddressId: payload.adjustment.addressId,
+      })
+      let publicationRecord = record
+      let effectiveAdjustment = payload.adjustment
+      if (pickupFulfillment) {
+        const verification = await verifyMerchantPickupOrderAuthorization({
+          items: payload.orderItems,
+          merchantPubkey: pubkey,
+          targetProductCoordinate: payload.adjustment.addressId,
+        })
+        const verifiedProduct =
+          verification.status === "verified"
+            ? verification.products.find(
+                (candidate) =>
+                  candidate.addressId === payload.adjustment.addressId
+              )
+            : undefined
+        if (
+          verification.status !== "verified" ||
+          !verifiedProduct ||
+          !verifiedProduct.dTag
+        ) {
+          throw new Error("Current signed pickup evidence is unavailable.")
+        }
+        publicationRecord = verifiedProduct
+        effectiveAdjustment = rebaseOrderStockAdjustmentOnProduct({
+          adjustment: payload.adjustment,
+          record: verifiedProduct,
+        })
+      }
+      if (!publicationRecord.dTag) {
+        throw new Error(
+          "The current listing revision cannot be used for this stock update. Refresh the order and try again."
+        )
+      }
+      const fulfillmentIntent = await resolveStockUpdateFulfillmentIntent({
+        product: publicationRecord.product,
+        productAddressId: payload.adjustment.addressId,
+        orderHasPickupClaim: hasPickupClaim,
+        ...(pickupFulfillment ? { verifiedPickup: pickupFulfillment } : {}),
+      })
       let signedEvent: SignedPublicNostrEvent | null = null
       const delivery = await signAndPublishProductListing({
         merchantPubkey: pubkey,
         product: {
-          ...record.product,
-          stock: payload.adjustment.nextStock,
+          ...publicationRecord.product,
+          stock: effectiveAdjustment.nextStock,
           updatedAt: Date.now(),
         },
-        dTag: record.dTag,
-        previousEventCreatedAt: record.eventCreatedAt,
+        dTag: publicationRecord.dTag,
+        previousEventCreatedAt: publicationRecord.eventCreatedAt,
         fulfillmentIntent,
         onSignedLocal: async (event) => {
           const rawEvent = event.rawEvent() as SignedPublicNostrEvent
           signedEvent = rawEvent
           pendingStockDeliveryStoreRef.current.set(pubkey, {
             orderId: payload.orderId,
-            adjustment: payload.adjustment,
+            adjustment: effectiveAdjustment,
             signedEvent: rawEvent,
           })
           setSessionStockDecisionKeys((current) => {
             const next = new Set(current)
-            next.add(`${pubkey}:${payload.adjustment.key}`)
+            next.add(`${pubkey}:${effectiveAdjustment.key}`)
             return next
           })
           setStockDelivery({
             orderId: payload.orderId,
-            adjustment: payload.adjustment,
+            adjustment: effectiveAdjustment,
             notice: buildLocalProductDeliveryNotice("publish"),
             signedEvent: rawEvent,
           })
@@ -1759,7 +1745,7 @@ function OrdersPage() {
       if (!signedEvent) {
         throw new Error("The signed stock update was not saved locally")
       }
-      return { delivery, signedEvent }
+      return { delivery, signedEvent, adjustment: effectiveAdjustment }
     },
     onMutate: (payload) => {
       if (payload.action === "update") setStockDelivery(null)
@@ -1775,7 +1761,7 @@ function OrdersPage() {
       const merchantPubkey = result.signedEvent.pubkey
       setStockDelivery({
         orderId: payload.orderId,
-        adjustment: payload.adjustment,
+        adjustment: result.adjustment,
         notice,
         signedEvent: result.signedEvent,
       })
@@ -1783,18 +1769,18 @@ function OrdersPage() {
         const decisionPersisted = stockDecisionStoreRef.current.set(
           merchantPubkey,
           payload.orderId,
-          payload.adjustment.addressId,
+          result.adjustment.addressId,
           "applied",
-          payload.adjustment
+          result.adjustment
         )
         pendingStockDeliveryStoreRef.current.delete(
           merchantPubkey,
           payload.orderId,
-          payload.adjustment.addressId
+          result.adjustment.addressId
         )
         setSessionStockDecisionKeys((current) => {
           const next = new Set(current)
-          next.delete(`${merchantPubkey}:${payload.adjustment.key}`)
+          next.delete(`${merchantPubkey}:${result.adjustment.key}`)
           return next
         })
         const nextPendingDelivery =
@@ -1812,22 +1798,22 @@ function OrdersPage() {
         }
         flash(
           decisionPersisted
-            ? `Stock updated for ${payload.adjustment.title}`
-            : `Stock updated for ${payload.adjustment.title}, but this device could not remember the order decision after reload.`
+            ? `Stock updated for ${result.adjustment.title}`
+            : `Stock updated for ${result.adjustment.title}, but this device could not remember the order decision after reload.`
         )
       } else {
         const retryPersisted = pendingStockDeliveryStoreRef.current.set(
           merchantPubkey,
           {
             orderId: payload.orderId,
-            adjustment: payload.adjustment,
+            adjustment: result.adjustment,
             signedEvent: result.signedEvent,
           }
         )
         flash(
           retryPersisted
-            ? `Stock update saved locally for ${payload.adjustment.title}; relay delivery still needs attention.`
-            : `Stock update saved locally for ${payload.adjustment.title}, but this device could not remember the relay retry after reload.`
+            ? `Stock update saved locally for ${result.adjustment.title}; relay delivery still needs attention.`
+            : `Stock update saved locally for ${result.adjustment.title}, but this device could not remember the relay retry after reload.`
         )
       }
       await invalidateProductQueries()
@@ -2020,6 +2006,29 @@ function OrdersPage() {
     },
     onError: () => {
       setHandoffDeliveryRevision((revision) => revision + 1)
+    },
+  })
+
+  const confirmPaymentMutation = useMutation({
+    mutationFn: (input: MerchantPaymentConfirmationInput) =>
+      runExclusiveOrderAction(orderActionLockRef, () =>
+        confirmMerchantPayment(input)
+      ),
+    onSuccess: async (result, input) => {
+      setHandoffDeliveryRevision((revision) => revision + 1)
+      if (selected?.orderId === input.orderId) {
+        flash(
+          result.release === "needs_attention"
+            ? "Payment confirmed. Organizer release needs attention; review or retry the release below. Do not request another payment."
+            : result.release === "delivered"
+              ? "Payment confirmed and organizer release authorization delivered"
+              : "Payment confirmed."
+        )
+        if (result.release !== "not_requested") {
+          await handoffAcksQuery.refetch()
+        }
+      }
+      await invalidateOrderQueries()
     },
   })
 
@@ -2327,6 +2336,7 @@ function OrdersPage() {
 
   const orderActionPending =
     stockUpdateMutation.isPending ||
+    confirmPaymentMutation.isPending ||
     organizerReceiptMutation.isPending ||
     coordinatedFallbackMutation.isPending ||
     reopenOrderMutation.isPending ||
@@ -2349,11 +2359,12 @@ function OrdersPage() {
     stock: number,
     targetMode: OrderStockTargetMode
   ): void {
-    if (!selected) return
+    if (!selected || !orderSummary) return
     stockUpdateMutation.mutate({
       action: "update",
       orderId: selected.orderId,
       adjustment: applyOrderStockTarget(adjustment, stock, targetMode),
+      orderItems: orderSummary.items,
     })
   }
 
@@ -2643,6 +2654,49 @@ function OrdersPage() {
                             </h4>
                           )}
 
+                          {confirmPaymentMutation.error &&
+                            confirmPaymentMutation.variables?.orderId ===
+                              selected?.orderId && (
+                              <p role="alert" className="text-sm text-error">
+                                Payment confirmation could not be recorded.
+                                Review the order status before retrying. No new
+                                organizer release was authorized by this
+                                attempt.
+                              </p>
+                            )}
+
+                          {selectedUsesOrganizerHandoff &&
+                            (merchantPaid || selectedOrderIsZeroCost) &&
+                            !selectedReadyDelivery &&
+                            !selectedRevocationDelivery &&
+                            !exactHandoffAck && (
+                              <div className="rounded-md border border-[var(--border-default)] p-3">
+                                <h4 className="text-sm font-semibold">
+                                  Ready for organizer pickup?
+                                </h4>
+                                <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                                  Confirm the order is prepared, then share its
+                                  pickup authorization with the organizer.
+                                  Payment confirmation alone does not release
+                                  the order.
+                                </p>
+                                <Button
+                                  className="mt-3"
+                                  size="sm"
+                                  disabled={
+                                    orderActionPending ||
+                                    !pickupAuthorizationVerified
+                                  }
+                                  onClick={() => {
+                                    setOrganizerReleaseConfirmed(false)
+                                    setConfirmingOrganizerRelease(true)
+                                  }}
+                                >
+                                  Prepare organizer release
+                                </Button>
+                              </div>
+                            )}
+
                           {canRequestPaymentOutOfBand && (
                             <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-warning">
                               <div className="font-semibold">
@@ -2674,6 +2728,8 @@ function OrdersPage() {
                                     onClick={() => {
                                       if (action.action === "confirm_payment") {
                                         if (!selected) return
+                                        setReleaseWithPayment(false)
+                                        confirmPaymentMutation.reset()
                                         setPaymentConfirmationTarget(
                                           captureMerchantPaymentConfirmationTarget(
                                             selected
@@ -3483,34 +3539,26 @@ function OrdersPage() {
                           </p>
                         )}
 
-                        {!exactHandoffAck && !selectedRevocationDelivery && (
-                          <Button
-                            type="button"
-                            size="sm"
-                            className="mt-3"
-                            disabled={
-                              orderActionPending ||
-                              !pickupAuthorizationVerified ||
-                              (!selectedReadyDelivery &&
-                                !merchantPaid &&
-                                !selectedOrderIsZeroCost)
-                            }
-                            onClick={() => {
-                              if (selectedReadyDelivery) {
-                                organizerReceiptMutation.mutate(false)
-                                return
+                        {selectedReadyDelivery &&
+                          !exactHandoffAck &&
+                          !selectedRevocationDelivery && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="mt-3"
+                              disabled={
+                                orderActionPending ||
+                                !pickupAuthorizationVerified
                               }
-                              setOrganizerReleaseConfirmed(false)
-                              setConfirmingOrganizerRelease(true)
-                            }}
-                          >
-                            {organizerReceiptMutation.isPending
-                              ? "Sending exact receipt..."
-                              : selectedReadyDelivery
-                                ? "Retry exact receipt"
-                                : "Review release authorization"}
-                          </Button>
-                        )}
+                              onClick={() =>
+                                organizerReceiptMutation.mutate(false)
+                              }
+                            >
+                              {organizerReceiptMutation.isPending
+                                ? "Sending exact receipt..."
+                                : "Retry exact receipt"}
+                            </Button>
+                          )}
                       </section>
                     )}
 
@@ -3923,7 +3971,10 @@ function OrdersPage() {
                 <AlertDialog
                   open={paymentConfirmationSelection !== null}
                   onOpenChange={(open) => {
-                    if (!open) setPaymentConfirmationTarget(null)
+                    if (!open) {
+                      setPaymentConfirmationTarget(null)
+                      setReleaseWithPayment(false)
+                    }
                   }}
                 >
                   <AlertDialogContent>
@@ -3937,11 +3988,41 @@ function OrdersPage() {
                           : "Continue only after independently verifying this order's payment settled. This records payment as confirmed in your encrypted order history and unlocks fulfillment."}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
+                    {selectedUsesOrganizerHandoff &&
+                      !selectedReadyDelivery &&
+                      !selectedRevocationDelivery && (
+                        <div className="space-y-2">
+                          <div className="flex items-start gap-2">
+                            <Checkbox
+                              id="release-with-payment"
+                              checked={releaseWithPayment}
+                              onCheckedChange={(checked) =>
+                                setReleaseWithPayment(checked === true)
+                              }
+                            />
+                            <Label
+                              htmlFor="release-with-payment"
+                              className="text-sm leading-5"
+                            >
+                              The order is ready. Also authorize the organizer
+                              to release it for pickup.
+                            </Label>
+                          </div>
+                          <p className="text-xs text-[var(--text-secondary)]">
+                            Shares only the pickup code, exact event/product
+                            evidence and quantity. Buyer contact, address,
+                            notes, invoices and payment details stay private.
+                          </p>
+                        </div>
+                      )}
                     <AlertDialogFooter>
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => setPaymentConfirmationTarget(null)}
+                        onClick={() => {
+                          setPaymentConfirmationTarget(null)
+                          setReleaseWithPayment(false)
+                        }}
                       >
                         Keep unpaid
                       </Button>
@@ -3951,24 +4032,36 @@ function OrdersPage() {
                           orderActionPending || !paymentConfirmationSelection
                         }
                         onClick={() => {
-                          if (!paymentConfirmationSelection) {
+                          if (!paymentConfirmationSelection || !pubkey) {
                             setPaymentConfirmationTarget(null)
                             return
                           }
-                          advanceStatusMutation.mutate({
-                            nextStatus: "paid",
-                            conversation: paymentConfirmationSelection,
+                          confirmPaymentMutation.mutate({
+                            merchantPubkey: pubkey,
+                            buyerPubkey:
+                              paymentConfirmationSelection.buyerPubkey,
+                            orderId: paymentConfirmationSelection.orderId,
+                            delivery: operationalDelivery,
+                            order: selectedOrder,
+                            authorizeOrganizerRelease:
+                              releaseWithPayment &&
+                              selectedUsesOrganizerHandoff &&
+                              !selectedReadyDelivery &&
+                              !selectedRevocationDelivery,
                           })
                           setPaymentConfirmationTarget(null)
+                          setReleaseWithPayment(false)
                         }}
                       >
-                        {advanceStatusMutation.isPending
+                        {confirmPaymentMutation.isPending
                           ? buyerInboxKnown
                             ? "Sending…"
                             : "Recording…"
-                          : buyerInboxKnown
-                            ? "Confirm payment"
-                            : "Record payment received"}
+                          : releaseWithPayment
+                            ? "Confirm payment and authorize pickup"
+                            : buyerInboxKnown
+                              ? "Confirm payment"
+                              : "Record payment received"}
                       </Button>
                     </AlertDialogFooter>
                   </AlertDialogContent>

@@ -73,6 +73,14 @@ describe("merchant invoice route contract", () => {
     expect(source).toContain("open={paymentConfirmationSelection !== null}")
     expect(source).toContain("checking your wallet")
     expect(source).toContain("notifies the buyer")
+    expect(source).toContain("confirmMerchantPayment")
+    expect(source).toContain('id="release-with-payment"')
+    expect(source).toContain("Confirm payment and authorize pickup")
+    expect(source).toContain("Do not request another payment")
+    expect(source).toContain(': "Payment confirmed."')
+    expect(source).not.toContain(
+      "Payment confirmed. Prepare the order before authorizing pickup."
+    )
     expect(source).not.toMatch(
       /action\.action === "confirm_payment"\s*&&\s*canRequestPaymentOutOfBand/
     )

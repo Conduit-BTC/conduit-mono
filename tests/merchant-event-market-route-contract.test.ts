@@ -82,7 +82,7 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain("no global event absence is inferred")
     expect(route).toContain("aria-label={`View ${market.title}`}")
     expect(route).toContain("resolveOrganizerEventMarket(")
-    expect(route).toContain("merchantPubkey,\n        signal")
+    expect(route).toMatch(/merchantPubkey,\r?\n\s+signal/)
     expect(route).not.toContain("selectedFromDiscovery")
   })
 
@@ -130,6 +130,28 @@ describe("merchant organizer event market route", () => {
     expect(route).not.toContain("setSelectedReference(reference)")
   })
 
+  it("hydrates merchant identity without changing organizer acceptance authority", async () => {
+    const panel = await Bun.file(
+      "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
+    ).text()
+
+    expect(panel).toContain("useProfiles(merchantPubkeys")
+    expect(panel).toContain("maxUnresolvedRefetches: 1")
+    expect(panel).toContain('data-testid="participation-merchant-identity"')
+    expect(panel).toContain("data-profile-state={state}")
+    expect(panel).toContain('"Profile not loaded"')
+    expect(panel).not.toContain("No public profile found")
+    expect(panel).toContain("getProfileName(profile)")
+    expect(panel).toContain("Copy npub")
+    expect(panel).toContain("getStorefrontUrl(pubkey)")
+    expect(panel).toContain("Open storefront")
+    expect(panel).toContain("Profile context is informational")
+    expect(panel).toContain(
+      "const canAccept = handoffVerified && previewVerified"
+    )
+    expect(panel).toContain("disabled={pending || (!removable && !canAccept)}")
+  })
+
   it("makes event authoring requirements and modal state explicit", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
     const editor = await Bun.file(
@@ -158,19 +180,15 @@ describe("merchant organizer event market route", () => {
     expect(openEdit).toContain('setPublishState("idle")')
 
     const publishSuccess = publisher.slice(
-      publisher.indexOf("onSuccess: async (result) =>"),
-      publisher.indexOf(
-        "onError:",
-        publisher.indexOf("onSuccess: async (result) =>")
-      )
+      publisher.indexOf("async function finishPublication("),
+      publisher.indexOf("const publishMutation = useMutation(")
     )
-    expect(publishSuccess).toContain(
-      "await onPublished(result.productCoordinate)"
-    )
+    expect(publishSuccess).toContain("await onPublished(result.accepted)")
     expect(publishSuccess).toContain("onOpenChange(false)")
     expect(publishSuccess.indexOf("onOpenChange(false)")).toBeGreaterThan(
-      publishSuccess.indexOf("await onPublished(result.productCoordinate)")
+      publishSuccess.indexOf("await onPublished(")
     )
+    expect(publisher.match(/onSuccess: finishPublication/g)).toHaveLength(2)
   })
 
   it("keeps merchant booth pickup evidence on the merchant product graph", async () => {
@@ -181,9 +199,7 @@ describe("merchant organizer event market route", () => {
     expect(adapter).toContain(
       "pickupCoordinates: pickupCoordinate ? [pickupCoordinate] : []"
     )
-    expect(adapter).toContain(
-      "pickupCoordinates: input.market.pickupCoordinate"
-    )
+    expect(adapter).toContain("pickupCoordinates: market.pickupCoordinates")
     expect(adapter).not.toContain("getOrganizerEventUpdatePickupCoordinates")
     expect(adapter).not.toContain("...input.market.pickupCoordinates")
     expect(adapter).not.toContain("acceptedPickupCoordinate")

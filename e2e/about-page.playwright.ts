@@ -65,12 +65,12 @@ for (const { app, appName, url } of appCases) {
       })
       await expect(workspaceLink).toBeVisible()
       await expect(
-        page.getByRole("heading", { name: "Connect a signer" })
+        page.getByRole("heading", { name: "Sign in to Conduit" })
       ).toHaveCount(0)
       await workspaceLink.click()
       await expect(page).toHaveURL(`${url}/`)
       await expect(
-        page.getByRole("heading", { name: "Connect a signer" })
+        page.getByRole("heading", { name: "Sign in to Conduit" })
       ).toBeVisible()
     }
   })

@@ -271,7 +271,24 @@ function cloneSnapshot(): OrderPickupFulfillmentSchema {
 
 describe("Merchant pickup order authorization", () => {
   it("verifies exact current organizer, merchant product, and two-sided participation evidence", async () => {
-    expect(await verify()).toEqual({ status: "verified" })
+    let verifiedMarket: EventMarketResolution | undefined
+    const result = await verifyMerchantPickupOrderAuthorization(
+      {
+        items: orderItems(),
+        merchantPubkey: merchant,
+        onVerifiedMarket: (currentMarket) => {
+          verifiedMarket = currentMarket
+        },
+      },
+      dependencies()
+    )
+    expect(result.status).toBe("verified")
+    expect(verifiedMarket).toBe(
+      result.status === "verified" ? result.market : undefined
+    )
+    expect(
+      result.status === "verified" ? result.products[0]?.eventId : null
+    ).toBe("4".repeat(64))
     expect(
       await verify(
         dependencies(
@@ -279,7 +296,7 @@ describe("Merchant pickup order authorization", () => {
           products({ listing: "partial", deletion: "unavailable" })
         )
       )
-    ).toEqual({ status: "verified" })
+    ).toMatchObject({ status: "verified" })
   })
 
   it("preserves exact positive live evidence when another relay fails", async () => {
@@ -290,7 +307,22 @@ describe("Merchant pickup order authorization", () => {
           products({ listing: "partial", deletion: "partial" })
         )
       )
-    ).toEqual({ status: "verified" })
+    ).toMatchObject({ status: "verified" })
+  })
+
+  it("preserves an exact live product when the aggregate read is partial", async () => {
+    expect(
+      await verify(
+        dependencies(
+          market("partial"),
+          products({
+            stale: true,
+            listing: "partial",
+            deletion: "partial",
+          })
+        )
+      )
+    ).toMatchObject({ status: "verified" })
   })
 
   it("verifies a direct merchant booth handoff outside the organizer collection", async () => {
@@ -333,7 +365,45 @@ describe("Merchant pickup order authorization", () => {
         dependencies(multiPickupMarket, products({ product: merchantProduct })),
         orderItems(merchantHandoff)
       )
-    ).toEqual({ status: "verified" })
+    ).toMatchObject({ status: "verified" })
+  })
+
+  it("verifies a historical own-organizer snapshot without a receipt handoff", async () => {
+    const ownProductCoordinate = `30402:${organizer}:own-coffee`
+    const ownMarket = market()
+    ownMarket.collection = {
+      ...ownMarket.collection!,
+      productCoordinates: [ownProductCoordinate],
+    }
+    ownMarket.organizerProductCoordinates = [ownProductCoordinate]
+    ownMarket.acceptedProductCoordinates = [ownProductCoordinate]
+    ownMarket.acceptedProductEvidence = [
+      {
+        ...ownMarket.acceptedProductEvidence[0]!,
+        productCoordinate: ownProductCoordinate,
+        merchantPubkey: organizer,
+      },
+    ]
+    ownMarket.participationRequests = [
+      { productCoordinate: ownProductCoordinate, merchantPubkey: organizer },
+    ]
+    const ownProduct = product({
+      id: ownProductCoordinate,
+      pubkey: organizer,
+    })
+    const ownProducts = products({ product: ownProduct })
+    ownProducts.data[0]!.addressId = ownProductCoordinate
+    ownProducts.diagnostics[0]!.productId = ownProductCoordinate
+    ownProducts.diagnostics[0]!.addressId = ownProductCoordinate
+    const historical = cloneSnapshot()
+    historical.product.coordinate = ownProductCoordinate
+    historical.product.merchantPubkey = organizer
+    const items = orderItems(historical)
+    items[0]!.productId = ownProductCoordinate
+
+    expect(
+      await verify(dependencies(ownMarket, ownProducts), items, organizer)
+    ).toMatchObject({ status: "verified" })
   })
 
   it("allows an existing pickup order to complete after the signed event ends", async () => {
@@ -344,7 +414,7 @@ describe("Merchant pickup order authorization", () => {
         { items: orderItems(), merchantPubkey: merchant, nowMs: 500 },
         dependencies(ended)
       )
-    ).toEqual({ status: "verified" })
+    ).toMatchObject({ status: "verified" })
   })
 
   it("accepts semantically equivalent signed replacements", async () => {
@@ -364,7 +434,7 @@ describe("Merchant pickup order authorization", () => {
           })
         )
       )
-    ).toEqual({ status: "verified" })
+    ).toMatchObject({ status: "verified" })
 
     const otherProduct = `30402:${"c".repeat(64)}:tea`
     const collectionReplacement = market()
@@ -382,7 +452,7 @@ describe("Merchant pickup order authorization", () => {
       productCoordinate,
       otherProduct,
     ]
-    expect(await verify(dependencies(collectionReplacement))).toEqual({
+    expect(await verify(dependencies(collectionReplacement))).toMatchObject({
       status: "verified",
     })
 
@@ -397,9 +467,79 @@ describe("Merchant pickup order authorization", () => {
       eventId: "5".repeat(64),
       createdAt: 203,
     }
-    expect(await verify(dependencies(equivalentGraphReplacement))).toEqual({
+    expect(
+      await verify(dependencies(equivalentGraphReplacement))
+    ).toMatchObject({
       status: "verified",
     })
+  })
+
+  it("scopes a stock authorization read to the selected pickup product", async () => {
+    const siblingCoordinate = `30402:${merchant}:stale-sibling`
+    const siblingFulfillment = cloneSnapshot()
+    siblingFulfillment.product = {
+      ...siblingFulfillment.product,
+      coordinate: siblingCoordinate,
+      eventId: "9".repeat(64),
+    }
+    const siblingItem = {
+      ...orderItems(siblingFulfillment)[0]!,
+      productId: siblingCoordinate,
+      title: "Changed sibling",
+      priceAtPurchase: 9_999,
+      sourcePrice: {
+        amount: 9_999,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+    }
+    let requestedProducts: string[] = []
+    const scopedDependencies: MerchantPickupAuthorizationDependencies = {
+      getEventMarket: async () => market(),
+      getProductsByIds: async (productCoordinates) => {
+        requestedProducts = [...productCoordinates]
+        return products()
+      },
+    }
+
+    const result = await verifyMerchantPickupOrderAuthorization(
+      {
+        items: [...orderItems(), siblingItem],
+        merchantPubkey: merchant,
+        targetProductCoordinate: productCoordinate,
+      },
+      scopedDependencies
+    )
+
+    expect(result).toMatchObject({ status: "verified" })
+    expect(requestedProducts).toEqual([productCoordinate])
+    expect(result.status === "verified" ? result.products : []).toHaveLength(1)
+  })
+
+  it("keeps invalid or unavailable scoped pickup targets unverified", async () => {
+    expect(
+      await verifyMerchantPickupOrderAuthorization(
+        {
+          items: orderItems(),
+          merchantPubkey: merchant,
+          targetProductCoordinate: `30402:${merchant}:missing`,
+        },
+        dependencies()
+      )
+    ).toEqual({ status: "unverified", reason: "invalid_snapshot" })
+    expect(
+      await verifyMerchantPickupOrderAuthorization(
+        {
+          items: orderItems(),
+          merchantPubkey: merchant,
+          targetProductCoordinate: productCoordinate,
+        },
+        dependencies(
+          market(),
+          products({ issue: "lookup_unavailable", includeRecord: false })
+        )
+      )
+    ).toEqual({ status: "unverified", reason: "network_unavailable" })
   })
 
   it("fails closed for stale, unavailable, or cache-only evidence", async () => {
@@ -682,7 +822,7 @@ describe("Merchant pickup order authorization", () => {
   it("uses deterministic signed listing price fields when legacy order source price is absent", async () => {
     const legacyItems = orderItems()
     delete legacyItems[0]!.sourcePrice
-    expect(await verify(dependencies(), legacyItems)).toEqual({
+    expect(await verify(dependencies(), legacyItems)).toMatchObject({
       status: "verified",
     })
 
@@ -735,7 +875,7 @@ describe("Merchant pickup order authorization", () => {
         dependencies(market(), products({ product: zeroProduct })),
         zeroItems
       )
-    ).toEqual({ status: "verified" })
+    ).toMatchObject({ status: "verified" })
   })
 
   it("rejects zero fiat and a nonzero order amount against a native-zero listing", async () => {
@@ -842,7 +982,9 @@ describe("Merchant pickup order authorization", () => {
       normalizedCurrency: "SATS",
     }
     canonical.costSats = 15
-    expect(await verify(pricedDependencies, orderItems(canonical))).toEqual({
+    expect(
+      await verify(pricedDependencies, orderItems(canonical))
+    ).toMatchObject({
       status: "verified",
     })
 
@@ -901,7 +1043,7 @@ describe("Merchant pickup order authorization", () => {
       canonical.costSats = testCase.costSats
       expect(
         await verify(dependencies(pricedMarket), orderItems(canonical))
-      ).toEqual({ status: "verified" })
+      ).toMatchObject({ status: "verified" })
 
       const forged = structuredClone(canonical)
       forged.costSats += 1
@@ -928,7 +1070,7 @@ describe("Merchant pickup order authorization", () => {
 
     expect(
       await verify(dependencies(pricedMarket), orderItems(canonical))
-    ).toEqual({ status: "verified" })
+    ).toMatchObject({ status: "verified" })
 
     const impossibleZero = structuredClone(canonical)
     impossibleZero.costSats = 0

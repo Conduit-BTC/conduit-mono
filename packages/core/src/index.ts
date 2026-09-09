@@ -292,6 +292,13 @@ export {
   type UseRelaySettingsResult,
 } from "./hooks/useRelaySettings"
 export {
+  prepareAccountNetworkPreferencesPresentation,
+  useAccountNetworkPreferences,
+  type AccountNetworkPreferencesState,
+  type AccountNetworkPreferencesStatus,
+  type UseAccountNetworkPreferencesResult,
+} from "./hooks/useAccountNetworkPreferences"
+export {
   INBOX_DECLARATION_QUERY_KEY,
   useInboxDeclaration,
   type InboxDeclarationStatus,

@@ -22,6 +22,12 @@ export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
   "wss://relay.ditto.pub",
   "wss://relay.primal.net",
 ]
+/**
+ * Clave's push-wake proxy only watches this relay. Keep it in the Nostr
+ * Connect pairing set so a backgrounded Clave (iOS) is woken for later sign
+ * requests; it is not a general read or write relay for Conduit.
+ */
+export const CLAVE_PUSH_RELAY = "wss://relay.powr.build"
 export const CANONICAL_COMMERCE_DISCOVERY_RELAYS = [
   "wss://relay.plebeian.market",
   "wss://relay.ditto.pub",

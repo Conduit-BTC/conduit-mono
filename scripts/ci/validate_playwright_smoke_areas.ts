@@ -10,10 +10,26 @@ type PlaywrightJsonSpec = {
   tags?: string[]
   tests?: Array<{
     expectedStatus?: string
-    results?: Array<{ status?: string }>
+    results?: PlaywrightJsonResult[]
     status?: string
   }>
   title?: string
+}
+
+type PlaywrightJsonResult = {
+  duration?: number
+  error?: PlaywrightJsonError
+  errors?: PlaywrightJsonError[]
+  retry?: number
+  status?: string
+}
+
+type PlaywrightJsonError = {
+  location?: {
+    column?: number
+    file?: string
+    line?: number
+  }
 }
 
 type PlaywrightJsonSuite = {
@@ -66,7 +82,7 @@ function collectSpecs(
 
 function formatSpec(spec: PlaywrightJsonSpec): string {
   const location = spec.file
-    ? `${spec.file}${spec.line ? `:${spec.line}` : ""}`
+    ? `${manifestFile(spec.file)}${spec.line ? `:${spec.line}` : ""}`
     : "unknown location"
   return `${location} (${spec.title ?? "untitled test"})`
 }
@@ -83,11 +99,46 @@ function manifestFile(file?: string): string {
   const normalized = file.replaceAll("\\", "/")
   const e2eIndex = normalized.lastIndexOf("/e2e/")
   if (e2eIndex >= 0) return normalized.slice(e2eIndex + 1)
-  return normalized.startsWith("e2e/") ? normalized : `e2e/${normalized}`
+  if (normalized.startsWith("e2e/")) return normalized
+  return normalized.includes("/") ? "unknown" : `e2e/${normalized}`
 }
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
+}
+
+function firstAttemptDiagnostic(result?: PlaywrightJsonResult): string {
+  const reportedStatus = result?.status
+  const status =
+    reportedStatus === "failed" ||
+    reportedStatus === "interrupted" ||
+    reportedStatus === "passed" ||
+    reportedStatus === "skipped" ||
+    reportedStatus === "timedOut"
+      ? reportedStatus
+      : "unknown"
+  const reportedRetry = result?.retry
+  const retry =
+    typeof reportedRetry === "number" &&
+    Number.isInteger(reportedRetry) &&
+    reportedRetry >= 0
+      ? reportedRetry
+      : 0
+  const reportedDuration = result?.duration
+  const duration =
+    typeof reportedDuration === "number" &&
+    Number.isFinite(reportedDuration) &&
+    reportedDuration >= 0
+      ? `${Math.round(reportedDuration)}ms`
+      : "unknown"
+  const location = result?.error?.location ?? result?.errors?.[0]?.location
+  const file = manifestFile(location?.file)
+  const errorLocation =
+    file !== "unknown"
+      ? `${file}${location?.line ? `:${location.line}` : ""}${location?.column ? `:${location.column}` : ""}`
+      : "unavailable"
+
+  return `First attempt: retry=${retry} status=${status} duration=${duration} error=${errorLocation}.`
 }
 
 export function buildPlaywrightSmokeManifest(
@@ -206,11 +257,16 @@ export function validatePlaywrightSmokeExecution(
     if (!selected) continue
 
     const tests = spec.tests ?? []
-    if (spec.ok !== true || tests.length === 0) {
+    if (tests.length === 0) {
       errors.push(
         `Playwright did not execute ${formatSpec(spec)} successfully.`
       )
       continue
+    }
+    if (spec.ok !== true) {
+      errors.push(
+        `Playwright did not execute ${formatSpec(spec)} successfully.`
+      )
     }
 
     for (const test of tests) {
@@ -224,7 +280,7 @@ export function validatePlaywrightSmokeExecution(
         resultStatuses[0] !== "passed"
       ) {
         errors.push(
-          `Playwright smoke did not pass cleanly on its first attempt: ${formatSpec(spec)}.`
+          `Playwright smoke did not pass cleanly on its first attempt: ${formatSpec(spec)}.\n${firstAttemptDiagnostic(test.results?.[0])}`
         )
       }
     }

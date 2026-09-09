@@ -106,6 +106,7 @@ import {
 import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
+  loadRelaySettingsPlanningSnapshot,
   normalizePublicOrIsolatedE2eRelayHints,
   normalizePublicRelayHints,
   normalizeSecureOrIsolatedE2eRelayUrls,
@@ -113,6 +114,7 @@ import {
 } from "./relay-settings"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
+import { getAccountRelayScope } from "./session"
 import {
   readProtectedInbox,
   type ProtectedInboxAuthSummary,
@@ -292,6 +294,10 @@ export interface ProfileBatchQuery {
   pubkeys: string[]
   authenticatedPubkey?: string | null
   skipCache?: boolean
+  /** Require relay-coverage diagnostics before absence is treated as current. */
+  requireCompleteEvidence?: boolean
+  /** Limit cache comparison to fields authoritative for the current action. */
+  evidenceScope?: "full_profile" | "payment" | "profile_edit"
   priority?: "visible" | "background"
   readPolicy?: CommerceReadPolicy
   relayHintsByPubkey?: Record<string, string[] | undefined>
@@ -604,7 +610,8 @@ function hasCommerceFetchTestOverride(): boolean {
  * Resolve a planner-driven relay URL list for a commerce read intent.
  * Pulls cached NIP-65 relay lists for any author/recipient hints so
  * fanout includes the author's write/read relays alongside user settings.
- * Falls back to the legacy URL accessors if planning yields nothing.
+ * Public commerce discovery keeps its bounded app fallback; authoritative
+ * signed account state leaves generic reads empty when no relay is enabled.
  */
 type CommerceReadRelayPlan = {
   relayUrls: string[]
@@ -623,6 +630,11 @@ async function planCommerceReadRelayPlan(input: {
   /** Hints belonging to the exact authenticated author. */
   authenticatedAuthorRelayUrls?: readonly string[]
 }): Promise<CommerceReadRelayPlan> {
+  const settingsSnapshot = loadRelaySettingsPlanningSnapshot(
+    input.authenticatedPubkey
+      ? getAccountRelayScope(input.authenticatedPubkey)
+      : undefined
+  )
   const hintPubkeys = Array.from(
     new Set(
       [...(input.authors ?? []), ...(input.recipients ?? [])]
@@ -636,6 +648,11 @@ async function planCommerceReadRelayPlan(input: {
     (input.relayHintMode === "force" ||
       (input.relayHintMode !== "skip" &&
         hintPubkeys.length <= BROAD_AUTHOR_HINT_LIMIT))
+  const relayListLookupRelayUrls = getGeneralReadRelayUrls({
+    settings: settingsSnapshot.settings,
+    fallbackRelayUrls: config.defaultRelays,
+    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
+  })
   const relayLists = shouldFetchRelayHints
     ? await getRelayLists(
         hintPubkeys,
@@ -645,6 +662,7 @@ async function planCommerceReadRelayPlan(input: {
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
             }
           : {
+              relayUrls: relayListLookupRelayUrls,
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
             }
       )
@@ -657,18 +675,18 @@ async function planCommerceReadRelayPlan(input: {
     relayLists,
     authenticatedPubkey: input.authenticatedPubkey,
     maxRelays: input.maxRelays,
+    settings: settingsSnapshot.settings,
+    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
   })
 
+  const preservesPublicCommerceDiscovery =
+    input.intent === "commerce_products" || input.intent === "author_products"
   const fallbackRelayUrls = (() => {
-    switch (input.intent) {
-      case "commerce_products":
-      case "author_products":
-        return commerceFallbackRelayUrls()
-      default:
-        return config.corePublicFallbackRelayUrls.length > 0
-          ? config.corePublicFallbackRelayUrls
-          : config.defaultRelays
-    }
+    if (preservesPublicCommerceDiscovery) return commerceFallbackRelayUrls()
+    if (settingsSnapshot.signedRelayListAuthoritative) return []
+    return config.corePublicFallbackRelayUrls.length > 0
+      ? config.corePublicFallbackRelayUrls
+      : config.defaultRelays
   })()
   const preferFallbackFirst =
     input.relayHintMode !== "force" &&
@@ -706,7 +724,12 @@ async function planCommerceReadRelayPlan(input: {
     : expandedRelayUrls
   const executableRelayUrlSet = new Set(executableRelayUrls)
 
-  if (config.e2eRelayIsolationEnabled || executableRelayUrls.length > 0) {
+  if (
+    config.e2eRelayIsolationEnabled ||
+    executableRelayUrls.length > 0 ||
+    (settingsSnapshot.signedRelayListAuthoritative &&
+      !preservesPublicCommerceDiscovery)
+  ) {
     return {
       relayUrls: executableRelayUrls,
       parkedRelayUrls: plan.parkedRelayUrls.filter(
@@ -821,7 +844,9 @@ async function runFetchEventsFanoutDetailed(
       capped: isBoundedFanoutSaturated(
         filter,
         result.events,
-        result.relays.map((relay) => relay.eventCount)
+        result.relays.map(
+          (relay) => relay.eventCount + (relay.rejectedEventCount ?? 0)
+        )
       ),
     }
   }
@@ -863,7 +888,9 @@ async function runFetchEventsFanoutDetailed(
     capped: isBoundedFanoutSaturated(
       filter,
       result.events,
-      result.relays.map((relay) => relay.eventCount)
+      result.relays.map(
+        (relay) => relay.eventCount + (relay.rejectedEventCount ?? 0)
+      )
     ),
   }
 }
@@ -2394,6 +2421,18 @@ function pickLatestProfileEvent(
     .sort(compareReplaceableProfileEvents)[0]
 }
 
+function hasValidProfileEventContent(
+  content: string | null | undefined
+): boolean {
+  if (typeof content !== "string") return false
+  try {
+    const parsed = JSON.parse(content) as unknown
+    return !!parsed && typeof parsed === "object" && !Array.isArray(parsed)
+  } catch {
+    return false
+  }
+}
+
 function pickLatestProfileEventWithContent(
   events: readonly NDKEvent[],
   pubkey: string
@@ -2413,10 +2452,12 @@ function mergeProfileEvents(
   profiles: Record<string, Profile>
   rowsToCache: CachedProfile[]
   hasResolvedProfile: boolean
+  hasInvalidLatestProfile: boolean
 } {
   const profiles = { ...currentProfiles }
   const rowsToCache: CachedProfile[] = []
   let hasResolvedProfile = false
+  let hasInvalidLatestProfile = false
 
   for (const pubkey of pubkeys) {
     const event = pickLatestProfileEventWithContent(events, pubkey)
@@ -2443,7 +2484,19 @@ function mergeProfileEvents(
         latestEventCreatedAt < currentFrontier ||
         (latestEventCreatedAt === currentFrontier &&
           (currentRow.eventId || "\uffff") <= (latestEvent.id || "\uffff")))
-    const profile = exactCurrentFrontierObserved
+    const effectiveFrontierContent =
+      latestEventWins || exactCurrentFrontierObserved
+        ? latestEvent?.content
+        : currentFrontierWins
+          ? currentRow?.rawContent
+          : undefined
+    if (
+      effectiveFrontierContent !== undefined &&
+      !hasValidProfileEventContent(effectiveFrontierContent)
+    ) {
+      hasInvalidLatestProfile = true
+    }
+    const richProfile = exactCurrentFrontierObserved
       ? mergeRicherProfile(
           undefined,
           event ? parseProfileEvent(event) : { pubkey }
@@ -2456,6 +2509,25 @@ function mergeProfileEvents(
               ? parseProfileEvent(event)
               : { pubkey }
         )
+    // Display identity may retain richer older fields, but a Lightning
+    // destination is action authority and must reflect the exact effective
+    // kind-0 frontier. A newer valid profile that removes lud16 must never
+    // inherit the obsolete address from display/cache enrichment.
+    const profile =
+      effectiveFrontierContent !== undefined
+        ? {
+            ...(richProfile ?? { pubkey }),
+            // An invalid exact frontier cannot authorize an older retained
+            // payment destination. Keep richer identity fields for display,
+            // but clear lud16 unless the current frontier parses safely.
+            lud16: hasValidProfileEventContent(effectiveFrontierContent)
+              ? parseProfileEvent({
+                  pubkey,
+                  content: effectiveFrontierContent,
+                }).lud16
+              : undefined,
+          }
+        : richProfile
     const sourceRelayUrls = uniqueStrings([
       ...(currentRow?.sourceRelayUrls ?? []),
       ...(event ? getEventSourceRelayUrls(event) : []),
@@ -2488,7 +2560,12 @@ function mergeProfileEvents(
     }
   }
 
-  return { profiles, rowsToCache, hasResolvedProfile }
+  return {
+    profiles,
+    rowsToCache,
+    hasResolvedProfile,
+    hasInvalidLatestProfile,
+  }
 }
 
 async function loadCachedOrderMessages(
@@ -4632,6 +4709,7 @@ export async function getProfiles(
       cached &&
       hasProfileContent(cached) &&
       !isAuthenticatedOwner &&
+      !query.requireCompleteEvidence &&
       now() - cached.cachedAt < PROFILE_CACHE_TTL_MS
     ) {
       result[pubkey] = projectCachedProfile(cached)
@@ -4670,7 +4748,7 @@ export async function getProfiles(
       getProfileQueryRelayHints({ ...query, pubkeys: missing }),
       await loadProductSourceRelayHints(missing, query.authenticatedPubkey)
     )
-    const relayUrls = await planCommerceReadRelays({
+    const relayPlan = await planCommerceReadRelayPlan({
       intent: "profiles",
       authors: missing,
       authenticatedPubkey: query.authenticatedPubkey,
@@ -4685,11 +4763,15 @@ export async function getProfiles(
       limit: Math.max(10, missing.length * 3),
     }
     const fanoutOptions = {
-      relayUrls,
+      relayUrls: relayPlan.relayUrls,
       connectTimeoutMs:
         query.readPolicy?.connectTimeoutMs ?? (visible ? 1_500 : 3_000),
       fetchTimeoutMs:
         query.readPolicy?.fetchTimeoutMs ?? (visible ? 3_000 : 6_000),
+      // The planner already applied relay health. Strict evidence reads must
+      // execute that exact surviving set rather than silently filtering it a
+      // second time at the transport boundary.
+      skipHealthFilter: query.requireCompleteEvidence ? true : undefined,
     }
     const emitProgress = (events: readonly NDKEvent[]) => {
       if (!query.onProgress) return
@@ -4707,25 +4789,45 @@ export async function getProfiles(
         meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
       })
     }
-    const events =
-      query.onProgress && !testOverrides.fetchEventsFanout
-        ? await fetchEventsFanoutProgressive(
-            profileFilter,
-            fanoutOptions,
-            ({ mergedEvents }) => emitProgress(mergedEvents)
-          )
-        : await runFetchEventsFanout(profileFilter, fanoutOptions)
-
-    if (query.onProgress && testOverrides.fetchEventsFanout) {
+    let evidenceDegraded =
+      query.requireCompleteEvidence && relayPlan.parkedRelayUrls.length > 0
+    let evidenceCapped = false
+    let events: NDKEvent[]
+    if (query.requireCompleteEvidence) {
+      const evidence = await runFetchEventsFanoutDetailed(
+        profileFilter,
+        fanoutOptions
+      )
+      events = evidence.events
+      evidenceDegraded = evidenceDegraded || evidence.degraded
+      evidenceCapped = evidence.capped
       emitProgress(events)
+    } else {
+      events =
+        query.onProgress && !testOverrides.fetchEventsFanout
+          ? await fetchEventsFanoutProgressive(
+              profileFilter,
+              fanoutOptions,
+              ({ mergedEvents }) => emitProgress(mergedEvents)
+            )
+          : await runFetchEventsFanout(profileFilter, fanoutOptions)
+
+      if (query.onProgress && testOverrides.fetchEventsFanout) {
+        emitProgress(events)
+      }
     }
 
-    const { profiles, rowsToCache } = mergeProfileEvents(
-      missing,
-      result,
-      events,
-      cachedRowsByPubkey
-    )
+    const { profiles, rowsToCache, hasInvalidLatestProfile } =
+      mergeProfileEvents(missing, result, events, cachedRowsByPubkey)
+    // A fully observed malformed kind-0 must stay unusable as payment or
+    // display authority, but it cannot permanently lock its owner out of the
+    // repair surface. Only an explicitly complete profile-edit read may
+    // ignore that malformed frontier; partial reads remain degraded.
+    const canRepairMalformedProfile =
+      query.evidenceScope === "profile_edit" && query.requireCompleteEvidence
+    if (!canRepairMalformedProfile) {
+      evidenceDegraded = evidenceDegraded || hasInvalidLatestProfile
+    }
     const liveRowsByPubkey = new Map(
       mergeProfileEvents(missing, {}, events).rowsToCache.map((row) => [
         row.pubkey,
@@ -4756,10 +4858,14 @@ export async function getProfiles(
           !liveRow ||
           row.eventId !== liveRow.eventId ||
           row.eventCreatedAt !== liveRow.eventCreatedAt ||
-          !areProfileProjectionsEqual(
-            projectCachedProfile(row),
-            projectCachedProfile(liveRow)
-          )
+          (query.evidenceScope === "payment"
+            ? row.lud16 !== liveRow.lud16
+            : query.evidenceScope === "profile_edit"
+              ? false
+              : !areProfileProjectionsEqual(
+                  projectCachedProfile(row),
+                  projectCachedProfile(liveRow)
+                ))
         )
       }) ?? false
     const dependsOnCache = usesFreshCachedResult || usesUnconfirmedCachedResult
@@ -4773,7 +4879,8 @@ export async function getProfiles(
         PROFILE_CAPABILITIES,
         {
           stale,
-          degraded: stale,
+          degraded: stale || evidenceDegraded,
+          capped: evidenceCapped,
         }
       ),
     }
@@ -5547,9 +5654,10 @@ type InboxWrapFetchResult = {
 }
 
 /**
- * Permissive inbox read (CND-208): union of declared inbox relays, locally
- * enabled secure IN relays, and the bounded compatibility read set. All-failed
- * reads surface as coverage "unavailable" instead of a healthy empty inbox.
+ * Permissive inbox read (CND-208): union of declared/cached inbox relays,
+ * account-scoped migration recovery, and the bounded compatibility read set.
+ * General NIP-65 reads are not inbox routes. All-failed reads surface as
+ * coverage "unavailable" instead of a healthy empty inbox.
  */
 async function fetchNewInboxWraps(
   principalPubkey: string,

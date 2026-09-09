@@ -27,9 +27,9 @@ describe("About page routing and contributor contracts", () => {
     )
 
     expect(publicBranch).toContain("<RouterProvider router={router} />")
-    expect(publicBranch).not.toContain("<AuthProvider>")
+    expect(publicBranch).not.toContain("<AuthProvider")
     expect(publicBranch).not.toContain("startProductDeletionDeliveryWorker()")
-    expect(authenticatedBranch).toContain("<AuthProvider>")
+    expect(authenticatedBranch).toContain("<AuthProvider")
     expect(authenticatedBranch).toContain(
       "startProductDeletionDeliveryWorker()"
     )

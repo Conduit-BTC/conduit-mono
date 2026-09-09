@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   AlertTriangle,
   CalendarDays,
@@ -9,15 +9,23 @@ import {
   MapPin,
   RefreshCw,
   Trash2,
+  UserRound,
   WifiOff,
 } from "lucide-react"
 import {
   formatNpub,
   formatSourcePrice,
+  getProfileName,
   normalizeCurrencyCode,
+  pubkeyToNpub,
+  useProfiles,
+  type Profile,
   type ProductImage,
 } from "@conduit/core"
 import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
   Badge,
   Button,
   Card,
@@ -42,7 +50,12 @@ import {
 import {
   getEventMarketUrl,
   getMerchantEventParticipationUrl,
+  getStorefrontUrl,
 } from "../lib/market-links"
+import {
+  getMerchantProfileState,
+  type MerchantProfileState,
+} from "../lib/event-market-participation-identity"
 
 function statusMeta(state: MerchantOrganizerEventMarket["state"]): {
   label: string
@@ -361,11 +374,15 @@ export function OrganizerEventMarketDeliveryList({
 
 function ParticipationRow({
   item,
+  merchantProfile,
+  merchantProfileState,
   organizerPubkey,
   pending,
   onMembership,
 }: {
   item: MerchantOrganizerParticipation
+  merchantProfile?: Profile
+  merchantProfileState: MerchantProfileState
   organizerPubkey: string
   pending: boolean
   onMembership: (
@@ -382,6 +399,13 @@ function ParticipationRow({
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
       <SignedProductPreview item={item} />
+      {item.merchantPubkey ? (
+        <MerchantIdentity
+          pubkey={item.merchantPubkey}
+          profile={merchantProfile}
+          state={merchantProfileState}
+        />
+      ) : null}
       <div className="mt-3 flex flex-wrap items-end justify-between gap-3 border-t border-[var(--border)] pt-3">
         <div className="min-w-0">
           {!previewVerified ? (
@@ -400,9 +424,6 @@ function ParticipationRow({
                   ? "Organizer-only entry"
                   : "Pending request"}
             </StatusPill>
-            {!previewVerified && item.merchantPubkey && (
-              <span>Merchant {formatNpub(item.merchantPubkey, 6)}</span>
-            )}
             {item.handoffMode && item.handlerPubkey && (
               <span>
                 {item.handoffMode === "organizer_handoff"
@@ -436,12 +457,90 @@ function ParticipationRow({
   )
 }
 
+function MerchantIdentity({
+  pubkey,
+  profile,
+  state,
+}: {
+  pubkey: string
+  profile?: Profile
+  state: MerchantProfileState
+}) {
+  const [copied, setCopied] = useState(false)
+  const profileName = getProfileName(profile)
+  const displayName =
+    profileName ??
+    (state === "loading"
+      ? "Loading merchant profile..."
+      : state === "unavailable"
+        ? "Profile lookup unavailable"
+        : state === "unresolved"
+          ? "Profile not loaded"
+          : "Public profile")
+  const fullNpub = pubkeyToNpub(pubkey)
+
+  async function copyNpub(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(fullNpub)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1_200)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <div
+      data-testid="participation-merchant-identity"
+      data-profile-state={state}
+      className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3"
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <Avatar className="h-10 w-10 border border-[var(--border)]">
+          <AvatarImage
+            src={state === "available" ? profile?.picture : undefined}
+            alt={profileName ?? "Merchant profile"}
+            className="object-cover"
+          />
+          <AvatarFallback>
+            <UserRound
+              className="h-5 w-5 text-[var(--text-muted)]"
+              aria-hidden="true"
+            />
+          </AvatarFallback>
+        </Avatar>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-[var(--text-primary)]">
+            {displayName}
+          </div>
+          <div className="mt-0.5 truncate font-mono text-xs text-[var(--text-muted)]">
+            {formatNpub(pubkey, 8)}
+          </div>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" size="sm" variant="outline" onClick={copyNpub}>
+          {copied ? <Check /> : <Copy />}
+          {copied ? "Copied" : "Copy npub"}
+        </Button>
+        <Button type="button" size="sm" variant="ghost" asChild>
+          <a href={getStorefrontUrl(pubkey)} target="_blank" rel="noreferrer">
+            <ExternalLink />
+            Open storefront
+          </a>
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export function OrganizerEventMarketPanel({
   market,
   deliveries,
   copiedUrl,
   refreshing,
   membershipPending,
+  actionsDisabled,
   retryingRecord,
   onCopy,
   onEdit,
@@ -454,6 +553,7 @@ export function OrganizerEventMarketPanel({
   copiedUrl: string | null
   refreshing: boolean
   membershipPending: boolean
+  actionsDisabled: boolean
   retryingRecord: MerchantOrganizerRecordDelivery["record"] | null
   onCopy: (url: string) => void
   onEdit: () => void
@@ -468,8 +568,8 @@ export function OrganizerEventMarketPanel({
   const displayState = getOrganizerEventMarketDisplayState(market.state)
   const shopperUrl = getEventMarketUrl(market.naddr)
   const merchantUrl = getMerchantEventParticipationUrl(market.naddr)
-  const canEdit = market.state === "active" || market.state === "ended"
-  const canChangeMembership = market.state === "active"
+  const showEdit = market.state === "active" || market.state === "ended"
+  const canChangeMembership = market.state === "active" && !actionsDisabled
   const pendingRequests = market.participation.filter(
     (item) => item.status === "pending"
   )
@@ -479,6 +579,26 @@ export function OrganizerEventMarketPanel({
   const organizerOnlyProducts = market.participation.filter(
     (item) => item.status === "organizer_only"
   )
+  const merchantPubkeys = useMemo(
+    () => market.participation.map((item) => item.merchantPubkey),
+    [market.participation]
+  )
+  const merchantProfilesQuery = useProfiles(merchantPubkeys, {
+    authenticatedPubkey: market.organizerPubkey,
+    priority: "visible",
+    maxUnresolvedRefetches: 1,
+  })
+
+  function merchantProfileState(
+    pubkey: string | undefined
+  ): MerchantProfileState {
+    if (!pubkey) return "unresolved"
+    return getMerchantProfileState({
+      hasProfile: merchantProfilesQuery.hasProfile(pubkey),
+      lookupSettled: merchantProfilesQuery.lookupSettled,
+      error: merchantProfilesQuery.error,
+    })
+  }
 
   return (
     <div className="space-y-5">
@@ -561,8 +681,13 @@ export function OrganizerEventMarketPanel({
           </div>
 
           <div className="flex flex-wrap gap-2">
-            {canEdit && (
-              <Button type="button" variant="outline" onClick={onEdit}>
+            {showEdit && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={actionsDisabled}
+                onClick={onEdit}
+              >
                 Update event
               </Button>
             )}
@@ -704,7 +829,8 @@ export function OrganizerEventMarketPanel({
           <CardDescription>
             A merchant reference is only a request. Products appear in the
             official catalog only after this organizer collection accepts their
-            exact coordinates.
+            exact coordinates. Profile context is informational; acceptance
+            still uses the exact signed product and handoff evidence.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -721,6 +847,14 @@ export function OrganizerEventMarketPanel({
                   <ParticipationRow
                     key={item.productCoordinate}
                     item={item}
+                    merchantProfile={
+                      item.merchantPubkey
+                        ? merchantProfilesQuery.getProfile(item.merchantPubkey)
+                        : undefined
+                    }
+                    merchantProfileState={merchantProfileState(
+                      item.merchantPubkey
+                    )}
                     organizerPubkey={market.organizerPubkey}
                     pending={membershipPending || !canChangeMembership}
                     onMembership={onMembership}
@@ -748,6 +882,14 @@ export function OrganizerEventMarketPanel({
                   <ParticipationRow
                     key={item.productCoordinate}
                     item={item}
+                    merchantProfile={
+                      item.merchantPubkey
+                        ? merchantProfilesQuery.getProfile(item.merchantPubkey)
+                        : undefined
+                    }
+                    merchantProfileState={merchantProfileState(
+                      item.merchantPubkey
+                    )}
                     organizerPubkey={market.organizerPubkey}
                     pending={membershipPending || !canChangeMembership}
                     onMembership={onMembership}
@@ -779,6 +921,14 @@ export function OrganizerEventMarketPanel({
                   <ParticipationRow
                     key={item.productCoordinate}
                     item={item}
+                    merchantProfile={
+                      item.merchantPubkey
+                        ? merchantProfilesQuery.getProfile(item.merchantPubkey)
+                        : undefined
+                    }
+                    merchantProfileState={merchantProfileState(
+                      item.merchantPubkey
+                    )}
                     organizerPubkey={market.organizerPubkey}
                     pending={membershipPending || !canChangeMembership}
                     onMembership={onMembership}

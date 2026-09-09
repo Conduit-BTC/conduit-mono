@@ -284,6 +284,376 @@ async function seedCachedMerchantProduct(page: Page): Promise<void> {
   }, TEST_MERCHANT_PUBKEY)
 }
 
+async function seedManualPaymentCart(
+  page: Page,
+  fixture: { productCoordinate: string; merchantPubkey: string }
+): Promise<void> {
+  await page.addInitScript(
+    ({ coordinate, pubkey }) => {
+      localStorage.setItem(
+        "conduit:cart",
+        JSON.stringify({
+          version: 2,
+          items: [
+            {
+              productId: coordinate,
+              merchantPubkey: pubkey,
+              title: "Manual payment checkout product",
+              price: 1_000,
+              currency: "SATS",
+              priceSats: 1_000,
+              format: "digital",
+              quantity: 1,
+            },
+          ],
+        })
+      )
+    },
+    {
+      coordinate: fixture.productCoordinate,
+      pubkey: fixture.merchantPubkey,
+    }
+  )
+}
+
+async function exerciseProfileSave(
+  page: Page,
+  appUrl: string,
+  profileName: string
+): Promise<void> {
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  const createdAt = Math.floor(Date.now() / 1_000)
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt,
+        tags: [],
+        content: JSON.stringify({
+          name: `before-${profileName}`,
+          display_name: `Before ${profileName}`,
+        }),
+      },
+      secretKey
+    ),
+    finalizeEvent(
+      {
+        kind: 10_002,
+        created_at: createdAt,
+        tags: [["r", TEST_RELAY_URL]],
+        content: "",
+      },
+      secretKey
+    ),
+  ])
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(`${appUrl}/profile`)
+
+  await expect(
+    page.getByText(`Before ${profileName}`, { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
+  await page
+    .getByRole("button", { name: "Edit profile", exact: true })
+    .first()
+    .click()
+  const displayName = page.locator("#profile-display-name")
+  await expect(displayName).toHaveValue(`Before ${profileName}`)
+  await displayName.fill(`After ${profileName}`)
+  await page.getByRole("button", { name: "Save changes", exact: true }).click()
+
+  await expect(
+    page.getByText("Profile signed and saved.", { exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByText(`After ${profileName}`, { exact: true }).first()
+  ).toBeVisible()
+}
+
+async function exerciseProfileEditAfterDisplayEnrichment(
+  page: Page,
+  appUrl: string,
+  profileName: string
+): Promise<void> {
+  test.setTimeout(60_000)
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  const createdAt = Math.floor(Date.now() / 1_000)
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt,
+        tags: [],
+        content: JSON.stringify({
+          name: `current-${profileName}`,
+          about: `Current ${profileName} bio`,
+        }),
+      },
+      secretKey
+    ),
+    finalizeEvent(
+      {
+        kind: 10_002,
+        created_at: createdAt,
+        tags: [["r", TEST_RELAY_URL]],
+        content: "",
+      },
+      secretKey
+    ),
+  ])
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(`${appUrl}/profile`)
+  await expect(
+    page.getByText(`Current ${profileName} bio`, { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByRole("button", { name: "Edit profile", exact: true }).first()
+  ).toBeEnabled({ timeout: 30_000 })
+
+  // Leave the mounted app before replacing the persisted projection. The
+  // profile route and account chrome intentionally issue separate reads; an
+  // in-flight read from this first mount must not race the cache fixture.
+  await page.goto(`${appUrl}/favicon.svg`)
+  await page.evaluate(
+    ({ ownerPubkey, eventCreatedAt, cachedDisplayName }) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          try {
+            const database = request.result
+            const transaction = database.transaction("profiles", "readwrite")
+            transaction.objectStore("profiles").put({
+              pubkey: ownerPubkey,
+              displayName: cachedDisplayName,
+              picture: "https://cdn.conduit.market/cached-avatar.png",
+              rawContent: JSON.stringify({
+                display_name: cachedDisplayName,
+                picture: "https://cdn.conduit.market/cached-avatar.png",
+              }),
+              eventId: "cached-profile-frontier",
+              eventCreatedAt: eventCreatedAt - 10,
+              cachedAt: Date.now(),
+            })
+            transaction.oncomplete = () => resolve()
+            transaction.onerror = () => reject(transaction.error)
+            transaction.onabort = () => reject(transaction.error)
+          } catch (error) {
+            reject(error)
+          }
+        }
+      }),
+    {
+      ownerPubkey: pubkey,
+      eventCreatedAt: createdAt,
+      cachedDisplayName: `Cached ${profileName}`,
+    }
+  )
+
+  await page.goto(`${appUrl}/profile`)
+  await expect(
+    page.getByText(`Cached ${profileName}`, { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByText(`Current ${profileName} bio`, { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
+  const editButton = page
+    .getByRole("button", { name: "Edit profile", exact: true })
+    .first()
+  await expect(editButton).toBeEnabled({ timeout: 30_000 })
+  await editButton.click()
+  await expect(page.locator("#profile-display-name")).toHaveValue(
+    `Cached ${profileName}`
+  )
+  await expect(page.locator("#profile-about")).toHaveValue(
+    `Current ${profileName} bio`
+  )
+}
+
+async function exerciseProfileRepairAfterMalformedFrontier(
+  page: Page,
+  appUrl: string,
+  profileName: string
+): Promise<void> {
+  test.setTimeout(60_000)
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  const createdAt = Math.floor(Date.now() / 1_000) - 10
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt,
+        tags: [],
+        content: JSON.stringify({
+          display_name: `Readable ${profileName}`,
+          about: `Readable ${profileName} bio`,
+          lud16: "obsolete@wallet.example",
+        }),
+      },
+      secretKey
+    ),
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt + 1,
+        tags: [],
+        content: "[]",
+      },
+      secretKey
+    ),
+    finalizeEvent(
+      {
+        kind: 10_002,
+        created_at: createdAt,
+        tags: [["r", TEST_RELAY_URL]],
+        content: "",
+      },
+      secretKey
+    ),
+  ])
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(`${appUrl}/profile`)
+
+  const editButton = page
+    .getByRole("button", { name: "Edit profile", exact: true })
+    .first()
+  await expect(editButton).toBeEnabled({ timeout: 30_000 })
+  await editButton.click()
+  await page.locator("#profile-display-name").fill(`Repaired ${profileName}`)
+  await page.locator("#profile-about").fill(`Repaired ${profileName} biography`)
+  await page
+    .locator("#profile-picture")
+    .fill(
+      `https://cdn.conduit.market/repaired-${profileName.toLowerCase()}.png`
+    )
+  await page.getByRole("button", { name: "Save changes", exact: true }).click()
+
+  await expect(
+    page.getByText("Profile signed and saved.", { exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByText(`Repaired ${profileName}`, { exact: true }).first()
+  ).toBeVisible()
+  await expect
+    .poll(async () => {
+      const profiles = await readTestRelayEvents({
+        authors: [pubkey],
+        kinds: [0],
+      })
+      const latest = profiles.sort((left, right) => {
+        if (left.created_at !== right.created_at) {
+          return right.created_at - left.created_at
+        }
+        return left.id.localeCompare(right.id)
+      })[0]
+      if (!latest) return null
+      try {
+        return JSON.parse(latest.content) as Record<string, unknown>
+      } catch {
+        return null
+      }
+    })
+    .toMatchObject({
+      display_name: `Repaired ${profileName}`,
+      about: `Repaired ${profileName} biography`,
+      picture: `https://cdn.conduit.market/repaired-${profileName.toLowerCase()}.png`,
+    })
+}
+
+async function exerciseProfileDraftSignerSwitch(page: Page): Promise<void> {
+  const firstSecretKey = generateSecretKey()
+  const firstPubkey = getPublicKey(firstSecretKey)
+  const secondSecretKey = generateSecretKey()
+  const secondPubkey = getPublicKey(secondSecretKey)
+  const createdAt = Math.floor(Date.now() / 1_000)
+
+  await publishTestRelayEvents(
+    [
+      [firstSecretKey, "First account"],
+      [secondSecretKey, "Second account"],
+    ].flatMap(([secretKey, displayName]) => [
+      finalizeEvent(
+        {
+          kind: 0,
+          created_at: createdAt,
+          tags: [],
+          content: JSON.stringify({ display_name: displayName }),
+        },
+        secretKey as Uint8Array
+      ),
+      finalizeEvent(
+        {
+          kind: 10_002,
+          created_at: createdAt,
+          tags: [["r", TEST_RELAY_URL]],
+          content: "",
+        },
+        secretKey as Uint8Array
+      ),
+    ])
+  )
+
+  await installTestSigner(page, firstPubkey, { secretKey: firstSecretKey })
+  await page.goto(`${marketUrl}/profile`)
+  await expect(
+    page.getByText("First account", { exact: true }).first()
+  ).toBeVisible({
+    timeout: 30_000,
+  })
+  await page
+    .getByRole("button", { name: "Edit profile", exact: true })
+    .first()
+    .click()
+  await page.locator("#profile-display-name").fill("First account draft")
+
+  await page.getByRole("button", { name: "Open account menu" }).click()
+  await page.getByRole("menuitem", { name: "Disconnect" }).click()
+  await expect(
+    page.getByRole("button", { name: "Connect", exact: true })
+  ).toBeVisible()
+
+  await page.evaluate((signerPubkey) => {
+    Object.defineProperty(window, "nostr", {
+      configurable: true,
+      value: {
+        async getPublicKey() {
+          return signerPubkey
+        },
+        async getRelays() {
+          return { "ws://127.0.0.1:7777": { read: true, write: true } }
+        },
+        async signEvent(event: Record<string, unknown>) {
+          return {
+            ...event,
+            pubkey: signerPubkey,
+            id: "0".repeat(64),
+            sig: "1".repeat(128),
+          }
+        },
+      },
+    })
+  }, secondPubkey)
+
+  await page.getByRole("button", { name: "Connect", exact: true }).click()
+  await page.getByRole("button", { name: "Connect Extension (NIP-07)" }).click()
+  await expect(
+    page.getByText("Second account", { exact: true }).first()
+  ).toBeVisible({
+    timeout: 30_000,
+  })
+  await expect(page.locator("#profile-display-name")).toBeHidden()
+
+  await page
+    .getByRole("button", { name: "Edit profile", exact: true })
+    .first()
+    .click()
+  await expect(page.locator("#profile-display-name")).toHaveValue(
+    "Second account"
+  )
+}
+
 async function seedMerchantTagCatalog(secretKey: Uint8Array): Promise<void> {
   const createdAt = Math.floor(Date.now() / 1_000)
 
@@ -491,6 +861,192 @@ test("Merchant Network repairs a signed-empty private inbox through the isolated
   page,
 }) => {
   await exerciseNetworkInboxDeclaration(page, merchantUrl, "empty")
+})
+
+test("Market profile saves update the mounted owner view immediately @market", async ({
+  page,
+}) => {
+  await exerciseProfileSave(page, marketUrl, "Market owner")
+})
+
+test("Merchant profile saves update the mounted owner view immediately @merchant", async ({
+  page,
+}) => {
+  await exerciseProfileSave(page, merchantUrl, "Merchant owner")
+})
+
+test("Market profile editing uses the complete signed frontier despite richer cached display fields @market", async ({
+  page,
+}) => {
+  await exerciseProfileEditAfterDisplayEnrichment(page, marketUrl, "Market")
+})
+
+test("Merchant profile editing uses the complete signed frontier despite richer cached display fields @merchant", async ({
+  page,
+}) => {
+  await exerciseProfileEditAfterDisplayEnrichment(page, merchantUrl, "Merchant")
+})
+
+test("Market owners can repair a completely observed malformed profile @market", async ({
+  page,
+}) => {
+  await exerciseProfileRepairAfterMalformedFrontier(page, marketUrl, "Market")
+})
+
+test("Merchant owners can repair a completely observed malformed profile @merchant", async ({
+  page,
+}) => {
+  await exerciseProfileRepairAfterMalformedFrontier(
+    page,
+    merchantUrl,
+    "Merchant"
+  )
+})
+
+test("Market profile drafts do not cross signer identities @market", async ({
+  page,
+}) => {
+  await exerciseProfileDraftSignerSwitch(page)
+})
+
+test("merchant product authoring warns about missing Lightning setup without blocking publication @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const secretKey = generateSecretKey()
+  const merchantPubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  await expect
+    .poll(
+      async () =>
+        (
+          await readTestRelayEvents({
+            authors: [merchantPubkey],
+            kinds: [0, 10_002],
+          })
+        ).length,
+      { timeout: 10_000 }
+    )
+    .toBe(2)
+  await installTestSigner(page, merchantPubkey, { secretKey })
+  await page.goto(`${merchantUrl}/products`)
+  await page.getByRole("button", { name: "Add product" }).first().click()
+
+  const dialog = page.getByRole("dialog", { name: "Add product" })
+  await expect(
+    dialog.getByText("Lightning payments are not set up", { exact: true })
+  ).toBeVisible({ timeout: 45_000 })
+  await expect(
+    dialog.getByRole("link", { name: "Set up payments", exact: true })
+  ).toHaveAttribute("href", "/payments")
+
+  await dialog.getByLabel("Title").fill("Manual payment product")
+  await dialog.getByLabel("Price").fill("1")
+  await dialog.locator("#product-fulfillment").click()
+  await page.getByRole("option", { name: "Digital", exact: true }).click()
+  await dialog
+    .getByLabel("Image URL")
+    .fill("https://media.conduit.market/manual-payment-product.png")
+  const tags = dialog.getByRole("combobox", { name: "Tags" })
+  for (const tag of ["manual", "payment", "demo"]) {
+    await tags.fill(tag)
+    await tags.press("Enter")
+  }
+  await expect(
+    dialog.getByRole("button", { name: "Publish product", exact: true })
+  ).toBeEnabled()
+})
+
+test("market checkout explains missing merchant Lightning setup without blocking signed order-first @market", async ({
+  browser,
+  page,
+}) => {
+  const merchantSecret = generateSecretKey()
+  const merchantPubkey = getPublicKey(merchantSecret)
+  const createdAt = Math.floor(Date.now() / 1_000)
+  const productCoordinate = `30402:${merchantPubkey}:manual-payment-checkout`
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt,
+        tags: [],
+        content: JSON.stringify({ name: "Manual Payment Merchant" }),
+      },
+      merchantSecret
+    ),
+    finalizeEvent(
+      {
+        kind: 10_002,
+        created_at: createdAt,
+        tags: [["r", TEST_RELAY_URL]],
+        content: "",
+      },
+      merchantSecret
+    ),
+    finalizeEvent(
+      {
+        kind: 30_402,
+        created_at: createdAt,
+        tags: [
+          ["d", "manual-payment-checkout"],
+          ["title", "Manual payment checkout product"],
+          ["summary", "Paid product without a profile Lightning Address."],
+          ["price", "1000", "SATS"],
+          ["type", "simple", "digital"],
+          ["stock", "3"],
+          ["image", "https://media.conduit.market/manual-payment-checkout.png"],
+        ],
+        content: "Paid product without a profile Lightning Address.",
+      },
+      merchantSecret
+    ),
+  ])
+  await installTestSigner(page, TEST_BUYER_PUBKEY)
+  await seedManualPaymentCart(page, { productCoordinate, merchantPubkey })
+
+  await page.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
+  await expect(
+    page.getByRole("heading", { name: "Send Order", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByText("Merchant Lightning payments are not set up", {
+      exact: true,
+    })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByText(
+      "You can still send the order first and arrange payment with the merchant.",
+      { exact: true }
+    )
+  ).toBeVisible()
+  await expect(
+    page.getByText("Checking fulfillment", { exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Send order", exact: true })
+  ).toBeEnabled({
+    timeout: 30_000,
+  })
+
+  const guestPage = await browser.newPage()
+  await seedManualPaymentCart(guestPage, { productCoordinate, merchantPubkey })
+  await guestPage.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
+  await expect(
+    guestPage.getByText("Merchant Lightning payments are not set up", {
+      exact: true,
+    })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    guestPage.getByText(
+      "Connect a signer to send the order and arrange payment with the merchant.",
+      { exact: true }
+    )
+  ).toBeVisible()
+  await expect(
+    guestPage.getByText("Checking fulfillment", { exact: true })
+  ).toHaveCount(0)
+  await guestPage.close()
 })
 
 test("merchant product tags suggest the loaded catalog without blocking freeform entry @merchant", async ({
@@ -1453,7 +2009,11 @@ test("market shopper preferences remove legacy plaintext and render the complete
 
   await page.goto(`${marketUrl}/preferences`)
   await expect(page.getByRole("heading", { name: "Preferences" })).toBeVisible()
-  await expect(page.getByRole("status")).toContainText(
+  const preferencesStatus = page
+    .locator("header")
+    .filter({ has: page.getByRole("heading", { name: "Preferences" }) })
+    .getByRole("status")
+  await expect(preferencesStatus).toContainText(
     /Encrypted on relays|Relay ready/,
     { timeout: 20_000 }
   )
@@ -1540,7 +2100,7 @@ test("market shopper preferences remove legacy plaintext and render the complete
     page.getByText("Preset encrypted and saved on your relays.")
   ).toBeVisible({ timeout: 40_000 })
   await expect(
-    page.getByRole("status").filter({ hasText: "Encrypted on relays" })
+    preferencesStatus.filter({ hasText: "Encrypted on relays" })
   ).toBeVisible()
 
   await recipientName.fill("Sensitive unsaved recipient")

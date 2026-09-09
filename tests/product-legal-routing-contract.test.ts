@@ -59,14 +59,14 @@ describe("Product legal routing contract", () => {
     const marketElse = marketMain.slice(marketMain.indexOf("} else {"))
     expect(marketElse).toContain("pruneCommerceCaches")
     expect(marketElse).toContain("pruneGuestRecoveryState")
-    expect(marketElse).toContain("<AuthProvider>")
+    expect(marketElse).toContain("<AuthProvider")
     expect(marketElse).toContain("<ConduitSessionProvider")
     expect(marketElse).toContain("<MarketPricingWarmup />")
 
     const merchantElse = merchantMain.slice(merchantMain.indexOf("} else {"))
     expect(merchantElse).toContain("startProductDeletionDeliveryWorker")
     expect(merchantElse).toContain("void pruneShopperTrustSnapshots()")
-    expect(merchantElse).toContain("<AuthProvider>")
+    expect(merchantElse).toContain("<AuthProvider")
     expect(merchantElse).toContain("<ConduitSessionProvider")
     const merchantBeforeElse = merchantMain.slice(
       0,

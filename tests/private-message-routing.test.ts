@@ -5,17 +5,20 @@ import {
   createInMemoryInboxDeclarationEvidenceRepository,
   deriveInboxReadCoverage,
   EVENT_KINDS,
+  getInboxMigrationRecoveryRelayUrls,
   getInboxDeclarationEvidence,
   getCachedInboxDeclaration,
   inboxDeclarationPublishRelayUrls,
   sharedInboxDiscoveryRelayUrls,
   invalidateInboxDeclaration,
   mergeInboxDeclarationEvidence,
+  MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS,
   planCompatibilityOrderRelays,
   planInboxReadRelays,
   primeInboxDeclarationCache,
   resolveInboxDeclaration,
   selectPrivateMessageDeliveryRoute,
+  setInboxMigrationRecoveryRelayUrls,
   type InboxDeclarationResolution,
   type InboxDeclarationEvidenceRepository,
   type ResolveInboxDeclarationOptions,
@@ -1105,6 +1108,63 @@ describe("planInboxReadRelays", () => {
 
     expect(plan.relayUrls).toContain("wss://compat.conduit.market")
     expect(plan.relayUrls).toContain("wss://local.conduit.market")
+  })
+
+  it("adds migration recovery only for the exact authenticated inbox owner", () => {
+    const localRecovery = "wss://127.0.0.1:7447"
+    const publicRecovery = "wss://legacy-inbox.conduit.market"
+    setInboxMigrationRecoveryRelayUrls(OWNER, [localRecovery, publicRecovery])
+    const declaration = resolution({ state: "not_observed", relayUrls: [] })
+
+    const ownerPlan = planInboxReadRelays({
+      declaration,
+      authenticatedPubkey: OWNER,
+      compatibilityRelayUrls: [],
+    })
+    expect(ownerPlan.relayUrls).toEqual([localRecovery, publicRecovery])
+    expect(ownerPlan.relaySources).toEqual({
+      [localRecovery]: "migration_recovery",
+      [publicRecovery]: "migration_recovery",
+    })
+    expect(ownerPlan.source).toBe("migration_recovery")
+
+    const otherPlan = planInboxReadRelays({
+      declaration,
+      authenticatedPubkey: getPublicKey(OTHER_SECRET),
+      compatibilityRelayUrls: [],
+    })
+    expect(otherPlan.relayUrls).toEqual([])
+
+    __resetInboxDeclarationCache()
+    const resetPlan = planInboxReadRelays({
+      declaration,
+      authenticatedPubkey: OWNER,
+      compatibilityRelayUrls: [],
+    })
+    expect(resetPlan.relayUrls).toEqual([])
+  })
+
+  it("bounds direct migration recovery registry input before inbox planning", () => {
+    const oversized = Array.from(
+      { length: MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS + 4 },
+      (_, index) =>
+        `wss://migration-recovery-${String(index).padStart(2, "0")}.example`
+    )
+    const expected = oversized.slice(0, MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS)
+    setInboxMigrationRecoveryRelayUrls(OWNER, oversized)
+
+    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual(expected)
+    const plan = planInboxReadRelays({
+      declaration: resolution({ state: "not_observed", relayUrls: [] }),
+      authenticatedPubkey: OWNER,
+      compatibilityRelayUrls: [],
+    })
+    expect(plan.relayUrls).toEqual(expected)
+    expect(
+      plan.relayUrls.every(
+        (relayUrl) => plan.relaySources[relayUrl] === "migration_recovery"
+      )
+    ).toBe(true)
   })
 
   it("reserves approved compatibility write targets inside a capped read plan", () => {

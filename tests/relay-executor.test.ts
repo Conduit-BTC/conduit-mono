@@ -2163,6 +2163,33 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     ).toBeUndefined()
   })
 
+  it("defers authenticated connection refresh until an active read finishes", async () => {
+    let subscriptionId: string | null = null
+    let requestStarted!: () => void
+    const request = new Promise<void>((resolve) => {
+      requestStarted = resolve
+    })
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onSend: (_socket, frame) => {
+        if (frame[0] !== "REQ") return
+        subscriptionId = frame[1] as string
+        requestStarted()
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize()
+    const read = executor.query(protectedRequest(), { authorization })
+    await request
+
+    executor.closeAuthenticatedWhenIdle()
+    expect(harness.sockets[0]?.closed).toBe(false)
+    harness.sockets[0]?.relay(["EOSE", subscriptionId])
+
+    const result = await read
+    expect(result.status).toBe("success")
+    expect(harness.sockets[0]?.closed).toBe(true)
+  })
+
   it("bounds unmatched frames, event floods, and per-relay bytes", async () => {
     const unmatchedHarness = new FakeRelayHarness().at(
       "wss://protected.example",

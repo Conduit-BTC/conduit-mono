@@ -390,7 +390,6 @@ function ConnectGate() {
     nostrConnectUri,
     rememberedMethod,
   } = useAuth()
-  const [isWorking, setIsWorking] = useState(false)
   const connectGateRef = useRef<HTMLElement | null>(null)
   const extensionAvailable = useNip07Availability()
   const authPending = status === "connecting" || status === "restoring"
@@ -404,50 +403,20 @@ function ConnectGate() {
     connectGateRef.current?.focus({ preventScroll: true })
   }, [])
 
-  async function handleConnectExtension(): Promise<void> {
-    if (authPending) return
-    setIsWorking(true)
-    try {
-      await connect({ method: "nip07" })
-    } finally {
-      setIsWorking(false)
-    }
-  }
-
-  async function handleConnectRemote(bunkerUri: string): Promise<void> {
-    if (authPending) return
-    setIsWorking(true)
-    try {
-      await connect({ method: "nip46", nip46Flow: "bunker", bunkerUri })
-    } finally {
-      setIsWorking(false)
-    }
-  }
-
-  async function handleConnectNostrConnect(): Promise<void> {
-    if (authPending) return
-    setIsWorking(true)
-    try {
-      await connect({ method: "nip46", nip46Flow: "nostrconnect" })
-    } finally {
-      setIsWorking(false)
-    }
-  }
-
   return (
     <div className="min-h-dvh bg-[var(--background)] pb-24 text-[var(--text-primary)] sm:pb-16">
       <main
         ref={connectGateRef}
         tabIndex={-1}
-        aria-label="Connect a signer"
+        aria-label="Sign in to Conduit"
         className="mx-auto flex min-h-dvh w-full max-w-4xl items-center justify-center px-4 pb-20 pt-8 outline-none sm:px-6 lg:px-8"
       >
         <SignerConnectPanel
-          title="Connect a signer"
-          description="Use your Nostr signer to open your merchant workspace."
+          title="Sign in to Conduit"
+          description="Use your Nostr account to open your merchant workspace."
           helperText={
             isProbablyMobileBrowser
-              ? "Connect a remote signer to continue securely on mobile."
+              ? "Approve sign-in in your app, then return here."
               : "Choose a browser extension or remote signer."
           }
           unlockLabel="UNLOCK YOUR COMMAND CENTER"
@@ -460,16 +429,20 @@ function ConnectGate() {
           authUrl={authUrl}
           nostrConnectUri={nostrConnectUri}
           rememberedMethod={rememberedMethod}
-          connectingMethod={method}
+          connectingMethod={status === "restoring" ? null : method}
           extensionNotice={extensionNotice}
           mobile={isProbablyMobileBrowser}
           extensionAvailable={extensionAvailable}
-          connectPending={authPending || isWorking}
-          connectDisabled={isWorking || authPending}
+          connectPending={authPending}
+          connectDisabled={authPending}
           className="w-full max-w-xl"
-          onConnectExtension={handleConnectExtension}
-          onConnectNostrConnect={handleConnectNostrConnect}
-          onConnectRemote={handleConnectRemote}
+          onConnectExtension={() => connect({ method: "nip07" })}
+          onConnectNostrConnect={() =>
+            connect({ method: "nip46", nip46Flow: "nostrconnect" })
+          }
+          onConnectRemote={(bunkerUri) =>
+            connect({ method: "nip46", nip46Flow: "bunker", bunkerUri })
+          }
           onCancelConnect={cancelConnect}
           onReconnect={() => connect({ mode: "restore" })}
           onForget={disconnect}

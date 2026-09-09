@@ -53,7 +53,12 @@ export type InboxReadCoverage = "complete" | "partial" | "unavailable"
 
 /** Where a private-message read relay came from. */
 export type InboxReadSource =
-  "declared" | "local_in" | "compatibility" | "mixed" | "cache"
+  | "declared"
+  | "local_in"
+  | "migration_recovery"
+  | "compatibility"
+  | "mixed"
+  | "cache"
 
 /** Delivery lane for an outgoing private message. */
 export type PrivateMessageDeliveryRoute =
@@ -72,6 +77,7 @@ export const MAX_COMPATIBILITY_ORDER_RELAYS = 3
 export const MAX_DECLARED_INBOX_WRITE_RELAYS = 3
 export const MAX_SHARED_INBOX_DISCOVERY_RELAYS = 5
 export const MAX_INBOX_DISCOVERY_RELAYS = 8
+export const MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS = 16
 
 export interface PrivateMessageRelays {
   pubkey: string
@@ -163,6 +169,7 @@ const declarationEvidenceCache = new Map<
 >()
 const declarationEvidenceMergeTails = new Map<string, Promise<void>>()
 const invalidatedDeclarationKeys = new Set<string>()
+const inboxMigrationRecoveryRelayUrls = new Map<string, string[]>()
 
 function hasCurrentCompleteLookup(
   record: InboxDeclarationEvidenceRecord
@@ -185,6 +192,7 @@ export function __resetInboxDeclarationCache(): void {
   declarationEvidenceCache.clear()
   declarationEvidenceMergeTails.clear()
   invalidatedDeclarationKeys.clear()
+  inboxMigrationRecoveryRelayUrls.clear()
 }
 
 /** Expire freshness without deleting monotonic declaration evidence. */
@@ -564,6 +572,37 @@ function allowsLocalRelayUrls(
 
 function ownerRelayUrls(relayUrls: readonly string[]): string[] {
   return normalizeSecureOrIsolatedE2eRelayUrls(relayUrls)
+}
+
+/** Install account-scoped, process-only legacy inbox read recovery. */
+export function setInboxMigrationRecoveryRelayUrls(
+  pubkey: string,
+  relayUrls: readonly string[]
+): void {
+  const key = normalizeInboxDeclarationEvidencePubkey(pubkey)
+  if (!key) return
+  const normalized = ownerRelayUrls(relayUrls).slice(
+    0,
+    MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS
+  )
+  if (normalized.length === 0) {
+    inboxMigrationRecoveryRelayUrls.delete(key)
+    return
+  }
+  inboxMigrationRecoveryRelayUrls.set(key, normalized)
+}
+
+/** Clear the process-only legacy inbox read lane for one account. */
+export function clearInboxMigrationRecoveryRelayUrls(pubkey: string): void {
+  const key = normalizeInboxDeclarationEvidencePubkey(pubkey)
+  if (key) inboxMigrationRecoveryRelayUrls.delete(key)
+}
+
+/** Read a defensive copy of the process-only migration recovery registry. */
+export function getInboxMigrationRecoveryRelayUrls(pubkey: string): string[] {
+  const key = normalizeInboxDeclarationEvidencePubkey(pubkey)
+  if (!key) return []
+  return [...(inboxMigrationRecoveryRelayUrls.get(key) ?? [])]
 }
 
 export function publicRelayHintUrls(relayUrls: readonly string[]): string[] {
@@ -1165,7 +1204,7 @@ export interface PlanInboxReadRelaysInput {
   declaration: InboxDeclarationResolution
   /** Exact authenticated inbox owner whose private/local relays may be read. */
   authenticatedPubkey?: string | null
-  /** Locally enabled secure IN relays; defaults to relay-settings reads. */
+  /** Explicit bounded local-IN compatibility input; omitted in production. */
   localReadRelayUrls?: readonly string[]
   /** Bounded compatibility reads; defaults to config.commerceDmFallbackRelayUrls. */
   compatibilityRelayUrls?: readonly string[]
@@ -1178,10 +1217,11 @@ export interface PlanInboxReadRelaysInput {
 }
 
 /**
- * Permissive inbox read plan: union of declared inbox relays, locally enabled
- * secure IN relays, and the bounded compatibility read set. Nonempty local
- * settings never suppress compatibility reads. Reads may consult local state;
- * writes must not (see selectPrivateMessageDeliveryRoute).
+ * Permissive inbox read plan: union of declared/cached inbox relays, an
+ * explicit secure-IN compatibility input, migration recovery, and the bounded
+ * compatibility read set. NIP-65 general reads are not inbox routes. Reads may
+ * consult owner-scoped migration state; writes must not (see
+ * selectPrivateMessageDeliveryRoute).
  */
 export function planInboxReadRelays(
   input: PlanInboxReadRelaysInput
@@ -1203,9 +1243,12 @@ export function planInboxReadRelays(
       ? (getCachedInboxDeclaration(input.declaration.pubkey)?.relayUrls ?? [])
       : []),
   ])
-  const rawLocalIn =
-    input.localReadRelayUrls ??
-    getGeneralReadRelayUrls({ fallbackRelayUrls: [] })
+  const migrationRecovery = allowOwnerLocalRelays
+    ? ownerRelayUrls(
+        getInboxMigrationRecoveryRelayUrls(input.declaration.pubkey)
+      )
+    : []
+  const rawLocalIn = input.localReadRelayUrls ?? []
   const localIn = allowOwnerLocalRelays
     ? ownerRelayUrls(rawLocalIn)
     : publicRelayHintUrls(rawLocalIn)
@@ -1239,6 +1282,7 @@ export function planInboxReadRelays(
   // compatibility sources so a large local IN list cannot make an order
   // unreadable in Conduit after a compatibility delivery.
   add(requiredCompatibility, "compatibility")
+  add(migrationRecovery, "migration_recovery")
   add(localIn, "local_in")
   add(remainingCompatibility, "compatibility")
 

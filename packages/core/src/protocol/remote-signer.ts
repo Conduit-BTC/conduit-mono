@@ -14,6 +14,7 @@ import {
   type BunkerSignerParams,
   type ClientMetadata,
 } from "nostr-tools/nip46"
+import { SimplePool } from "nostr-tools/pool"
 import type { EventTemplate, VerifiedEvent } from "nostr-tools"
 import { generateId } from "../utils"
 import {
@@ -1102,8 +1103,21 @@ async function listenForNostrConnectSigner(
   const controller = new AbortController()
   const timers = options.timers ?? defaultTimers
   const timeoutMs = options.timeoutMs ?? DEFAULT_REMOTE_SIGNER_PAIR_TIMEOUT_MS
+  const now = options.now ?? Date.now
+  const deadline = now() + timeoutMs
+  const foreground = typeof document === "undefined" ? null : document
   let timedOut = false
   let completed = false
+  let resumeListener: (() => void) | undefined
+  const onReturn = () => {
+    if (foreground?.visibilityState !== "visible") return
+    if (now() >= deadline) {
+      timedOut = true
+      controller.abort()
+    } else {
+      resumeListener?.()
+    }
+  }
   const abortFromCaller = () => controller.abort()
   const aborted = new Promise<never>((_, reject) => {
     controller.signal.addEventListener(
@@ -1131,25 +1145,77 @@ async function listenForNostrConnectSigner(
     options.createNostrConnectSigner ??
     ((key, connectionUri, params, signal) =>
       BunkerSigner.fromURI(key, connectionUri, params, signal))
+  foreground?.addEventListener("visibilitychange", onReturn)
 
   try {
-    const signer = await Promise.race([
-      controller.signal.aborted
-        ? aborted
-        : factory(
-            clientPrivateKey,
-            uri,
-            { onauth: options.onAuthUrl, skipSwitchRelays: true },
-            controller.signal
-          ),
-      aborted,
-    ])
-    completed = true
-    return signer
+    // The live approval is ephemeral. Renew only the listener, never the pending
+    // key/secret/URI or its deadline. "Open again" can request a fresh approval.
+    while (!controller.signal.aborted) {
+      const pool = new SimplePool()
+      const listener = new AbortController()
+      const abortListener = () => listener.abort()
+      controller.signal.addEventListener("abort", abortListener, { once: true })
+      let retryHandle: unknown
+      const resume = new Promise<null>((resolve) => {
+        resumeListener = () => resolve(null)
+      })
+
+      try {
+        const pending = factory(
+          clientPrivateKey,
+          uri,
+          { onauth: options.onAuthUrl, skipSwitchRelays: true, pool },
+          listener.signal
+        ).then(async (signer) => {
+          const close = signer.close.bind(signer)
+          signer.close = async () => {
+            try {
+              await close()
+            } finally {
+              pool.destroy()
+            }
+          }
+          if (listener.signal.aborted) {
+            // Never logout a superseded listener: its key may now belong to
+            // the winning listener for this same pairing.
+            await closeRemoteSigner(signer, { ...options, signal: undefined })
+            return null
+          }
+          return signer
+        })
+        const signer = await Promise.race([pending, resume, aborted])
+        if (!signer) continue
+        completed = true
+        return signer
+      } catch (error) {
+        if (
+          controller.signal.aborted ||
+          !(error instanceof Error) ||
+          error.message !==
+            "subscription closed before connection was established."
+        ) {
+          throw error
+        }
+        // Bound retries by the original deadline and avoid a closed-relay loop.
+        // Foreground return can wake this wait immediately.
+        retryHandle = timers.setTimeout(() => resumeListener?.(), 1_000)
+        await Promise.race([resume, aborted])
+      } finally {
+        resumeListener = undefined
+        if (retryHandle !== undefined) timers.clearTimeout(retryHandle)
+        controller.signal.removeEventListener("abort", abortListener)
+        if (!completed) {
+          listener.abort()
+          pool.destroy()
+        }
+      }
+    }
+    return await aborted
   } catch (error) {
     throw classifyRemoteSignerError(error, operation)
   } finally {
     timers.clearTimeout(timeoutHandle)
+    foreground?.removeEventListener("visibilitychange", onReturn)
     options.signal?.removeEventListener("abort", abortFromCaller)
     if (!completed) controller.abort()
   }

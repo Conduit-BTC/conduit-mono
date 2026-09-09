@@ -1115,6 +1115,40 @@ describe("remote signer lifecycle", () => {
     expect(listened).toBe(false)
   })
 
+  it("retries a closed nostrconnect listener without replacing the pairing", async () => {
+    let generated = 0
+    let emittedUri = ""
+    let listens = 0
+    const result = await pairRemoteSignerFromNostrConnect(
+      ["wss://one.example", "wss://two.example"],
+      {
+        keyVault: new MemoryKeyVault(),
+        generateClientPrivateKey: () => {
+          generated += 1
+          return CLIENT_PRIVATE_KEY
+        },
+        onNostrConnectUri: (uri) => {
+          emittedUri = uri
+        },
+        createNostrConnectSigner: async (key, uri) => {
+          expect(key === CLIENT_PRIVATE_KEY).toBe(true)
+          expect(uri === emittedUri).toBe(true)
+          listens += 1
+          if (listens === 1) {
+            throw new Error(
+              "subscription closed before connection was established."
+            )
+          }
+          return fakeSigner()
+        },
+        timeoutMs: 3_000,
+      }
+    )
+    expect(generated).toBe(1)
+    expect(listens).toBe(2)
+    await result.bunkerSigner.close()
+  })
+
   it("aborts and closes timed-out nostrconnect listeners", async () => {
     let listenerAborted = false
     await expect(
