@@ -7,8 +7,12 @@ import {
 } from "../apps/market/src/components/LivePresenceIndicator"
 import {
   DEFAULT_LIVE_PRESENCE_WEBSOCKET_URL,
+  LIVE_PRESENCE_HEARTBEAT_INTERVAL_MS,
+  LIVE_PRESENCE_HEARTBEAT_REQUEST,
+  LIVE_PRESENCE_HEARTBEAT_RESPONSE,
   LIVE_PRESENCE_MAX_RECONNECT_ATTEMPTS,
   LIVE_PRESENCE_MAX_COUNT,
+  LIVE_PRESENCE_STALE_AFTER_MS,
   advanceLivePresenceRequestRevision,
   buildLivePresenceWebSocketUrl,
   hashLivePresenceScope,
@@ -25,6 +29,7 @@ type SocketEventType = "close" | "error" | "message" | "open"
 class FakePresenceSocket implements LivePresenceSocket {
   readyState = 0
   closeCalls: Array<{ code?: number; reason?: string }> = []
+  sentMessages: string[] = []
   private readonly listeners = new Map<
     SocketEventType,
     Array<(event: { data?: unknown }) => void>
@@ -42,6 +47,10 @@ class FakePresenceSocket implements LivePresenceSocket {
   close(code?: number, reason?: string): void {
     this.readyState = 2
     this.closeCalls.push({ code, reason })
+  }
+
+  send(message: string): void {
+    this.sentMessages.push(message)
   }
 
   emit(type: SocketEventType, data?: unknown): void {
@@ -280,6 +289,60 @@ describe("live presence connection lifecycle", () => {
     expect(browser.sockets).toHaveLength(2)
 
     stop()
+  })
+
+  it("expires a trusted count when its heartbeat goes unanswered", () => {
+    const browser = createRuntime()
+    const counts: Array<number | null> = []
+    const stop = startLivePresenceSession({
+      endpoint: ENDPOINT,
+      scopeHash: SCOPE_HASH,
+      runtime: browser.runtime,
+      onCount: (count) => counts.push(count),
+    })
+
+    const socket = browser.sockets[0]!
+    socket.emit("message", '{"count":3}')
+    expect(browser.pendingTimerCount()).toBe(2)
+
+    expect(browser.nextTimer()).toBe(LIVE_PRESENCE_HEARTBEAT_INTERVAL_MS)
+    expect(socket.sentMessages).toEqual([LIVE_PRESENCE_HEARTBEAT_REQUEST])
+    expect(counts.at(-1)).toBe(3)
+
+    expect(browser.nextTimer()).toBe(LIVE_PRESENCE_STALE_AFTER_MS)
+    expect(counts.at(-1)).toBeNull()
+    expect(socket.closeCalls).toEqual([{ code: undefined, reason: undefined }])
+    expect(browser.nextTimer()).toBe(1_000)
+    expect(browser.sockets).toHaveLength(2)
+
+    stop()
+  })
+
+  it("refreshes count freshness after a valid heartbeat response", () => {
+    const browser = createRuntime()
+    const counts: Array<number | null> = []
+    const stop = startLivePresenceSession({
+      endpoint: ENDPOINT,
+      scopeHash: SCOPE_HASH,
+      runtime: browser.runtime,
+      onCount: (count) => counts.push(count),
+    })
+
+    const socket = browser.sockets[0]!
+    socket.emit("message", '{"count":2}')
+    expect(browser.nextTimer()).toBe(LIVE_PRESENCE_HEARTBEAT_INTERVAL_MS)
+    socket.emit("message", LIVE_PRESENCE_HEARTBEAT_RESPONSE)
+
+    expect(counts).toEqual([2])
+    expect(browser.pendingTimerCount()).toBe(2)
+    expect(browser.nextTimer()).toBe(LIVE_PRESENCE_HEARTBEAT_INTERVAL_MS)
+    expect(socket.sentMessages).toEqual([
+      LIVE_PRESENCE_HEARTBEAT_REQUEST,
+      LIVE_PRESENCE_HEARTBEAT_REQUEST,
+    ])
+
+    stop()
+    expect(browser.pendingTimerCount()).toBe(0)
   })
 
   it("ignores stale sockets and bounds consecutive reconnects", () => {

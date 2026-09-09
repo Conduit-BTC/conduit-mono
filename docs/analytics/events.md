@@ -112,8 +112,9 @@ page. Separate tabs, browsers, or devices can count separately. The edge may
 use a secret-keyed, connection-lifetime source hash only to enforce the socket
 limit. It must discard the raw network address before the presence gateway and
 must not log, return, retain, or join the hash to analytics. The exact-count
-feature is preview-only; production and staging keep it disabled pending
-explicit privacy and abuse-control approval.
+feature uses a fixed content-free heartbeat and hides a count when the
+connection stops responding. It is preview-only; production and staging keep
+it disabled pending explicit privacy and abuse-control approval.
 
 ## Provider Lifecycle Events
 

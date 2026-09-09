@@ -111,8 +111,10 @@ Historical pageview analytics and live presence are separate systems.
   devices can count separately.
 - Clients must disconnect when the page is hidden or offline and must honor
   Global Privacy Control. A failed or unavailable count stays hidden.
-- Clients may send only a deployment-scoped opaque room hash. The service may
-  return only the current integer count and must not use durable storage.
+- Clients may send only a deployment-scoped opaque room hash and a fixed,
+  content-free heartbeat. The service may return only the current integer count
+  or fixed heartbeat response and must not use durable storage. Clients must
+  hide stale counts when the heartbeat response expires.
 - The room hash reduces accidental identifier exposure in infrastructure URLs.
   It is not authentication and does not hide a public page from a determined
   observer.

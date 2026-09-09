@@ -5,6 +5,10 @@ export const DEFAULT_LIVE_PRESENCE_WEBSOCKET_URL =
 
 export const LIVE_PRESENCE_MAX_RECONNECT_ATTEMPTS = 5
 export const LIVE_PRESENCE_MAX_COUNT = 512
+export const LIVE_PRESENCE_HEARTBEAT_INTERVAL_MS = 20_000
+export const LIVE_PRESENCE_STALE_AFTER_MS = 45_000
+export const LIVE_PRESENCE_HEARTBEAT_REQUEST = '{"type":"ping"}'
+export const LIVE_PRESENCE_HEARTBEAT_RESPONSE = '{"type":"pong"}'
 
 const LIVE_PRESENCE_RECONNECT_BASE_DELAY_MS = 1_000
 const LIVE_PRESENCE_RECONNECT_MAX_DELAY_MS = 16_000
@@ -18,6 +22,7 @@ export interface LivePresenceSocket {
     type: LivePresenceSocketEventType,
     listener: (event: { data?: unknown }) => void
   ): void
+  send(message: string): void
   close(code?: number, reason?: string): void
 }
 
@@ -168,6 +173,8 @@ export function startLivePresenceSession(
   let disposed = false
   let socket: LivePresenceSocket | null = null
   let retryHandle: number | null = null
+  let heartbeatHandle: number | null = null
+  let staleHandle: number | null = null
   let reconnectAttempts = 0
   let wasActive = options.runtime.isVisible() && options.runtime.isOnline()
 
@@ -177,7 +184,19 @@ export function startLivePresenceSession(
     retryHandle = null
   }
 
+  const clearLivenessTimers = () => {
+    if (heartbeatHandle !== null) {
+      options.runtime.cancel(heartbeatHandle)
+      heartbeatHandle = null
+    }
+    if (staleHandle !== null) {
+      options.runtime.cancel(staleHandle)
+      staleHandle = null
+    }
+  }
+
   const closeSocket = () => {
+    clearLivenessTimers()
     const activeSocket = socket
     socket = null
     if (!activeSocket) return
@@ -214,6 +233,7 @@ export function startLivePresenceSession(
 
   const handleDisconnect = (disconnectedSocket: LivePresenceSocket) => {
     if (disposed || socket !== disconnectedSocket) return
+    clearLivenessTimers()
     socket = null
     options.onCount(null)
     try {
@@ -222,6 +242,23 @@ export function startLivePresenceSession(
       // The socket is already closing or closed.
     }
     scheduleReconnect()
+  }
+
+  const refreshLiveness = (activeSocket: LivePresenceSocket) => {
+    clearLivenessTimers()
+    heartbeatHandle = options.runtime.schedule(() => {
+      heartbeatHandle = null
+      if (!isActive() || socket !== activeSocket) return
+      try {
+        activeSocket.send(LIVE_PRESENCE_HEARTBEAT_REQUEST)
+      } catch {
+        handleDisconnect(activeSocket)
+      }
+    }, LIVE_PRESENCE_HEARTBEAT_INTERVAL_MS)
+    staleHandle = options.runtime.schedule(() => {
+      staleHandle = null
+      handleDisconnect(activeSocket)
+    }, LIVE_PRESENCE_STALE_AFTER_MS)
   }
 
   const connect = () => {
@@ -241,12 +278,17 @@ export function startLivePresenceSession(
     socket = nextSocket
     nextSocket.addEventListener("message", (event) => {
       if (disposed || socket !== nextSocket) return
+      if (event.data === LIVE_PRESENCE_HEARTBEAT_RESPONSE) {
+        refreshLiveness(nextSocket)
+        return
+      }
       const count = parseLivePresenceCount(event.data)
       if (count === null) {
         handleDisconnect(nextSocket)
         return
       }
       reconnectAttempts = 0
+      refreshLiveness(nextSocket)
       options.onCount(count)
     })
     nextSocket.addEventListener("close", () => {

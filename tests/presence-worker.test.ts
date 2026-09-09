@@ -3,6 +3,8 @@ import { describe, expect, it } from "bun:test"
 import {
   PresenceRoom,
   PRESENCE_GATEWAY_CONNECTION_LIMIT,
+  PRESENCE_HEARTBEAT_REQUEST,
+  PRESENCE_HEARTBEAT_RESPONSE,
   PRESENCE_SOURCE_CONNECTION_LIMIT,
   getPresenceRoomKey,
   handlePresenceRequest,
@@ -302,6 +304,31 @@ describe("presence Worker request boundary", () => {
 })
 
 describe("presence room counts", () => {
+  it("configures a content-free hibernation heartbeat", () => {
+    const state = new FakeRoomState()
+    const configuredPairs: WebSocketRequestResponsePair[] = []
+    const heartbeatPair = {
+      request: PRESENCE_HEARTBEAT_REQUEST,
+      response: PRESENCE_HEARTBEAT_RESPONSE,
+    } as WebSocketRequestResponsePair
+    const stateWithAutoResponse: PresenceRoomState = {
+      acceptWebSocket: (socket, tags) => state.acceptWebSocket(socket, tags),
+      getWebSockets: (tag) => state.getWebSockets(tag),
+      setWebSocketAutoResponse: (pair) => configuredPairs.push(pair),
+    }
+
+    new PresenceRoom(
+      stateWithAutoResponse,
+      undefined,
+      undefined,
+      () => heartbeatPair
+    )
+
+    expect(configuredPairs).toEqual([heartbeatPair])
+    expect(heartbeatPair.request).toBe('{"type":"ping"}')
+    expect(heartbeatPair.response).toBe('{"type":"pong"}')
+  })
+
   it("accepts an upgrade and sends the self-inclusive initial count", () => {
     const state = new FakeRoomState()
     const client = new FakeSocket()
@@ -460,7 +487,7 @@ describe("presence room counts", () => {
     ])
   })
 
-  it("closes clients that send messages and excludes errored sockets", () => {
+  it("closes non-heartbeat messages and excludes errored sockets", () => {
     const state = new FakeRoomState()
     const active = new FakeSocket()
     const invalid = new FakeSocket()

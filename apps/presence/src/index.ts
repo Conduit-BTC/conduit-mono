@@ -7,6 +7,8 @@ const OPEN_READY_STATE = 1
 const PRESENCE_GATEWAY_OBJECT_NAME = "preview-v1"
 const PRESENCE_SOURCE_KEY_HEADER = "x-conduit-presence-source-key"
 const MINIMUM_ABUSE_HMAC_KEY_LENGTH = 32
+export const PRESENCE_HEARTBEAT_REQUEST = '{"type":"ping"}'
+export const PRESENCE_HEARTBEAT_RESPONSE = '{"type":"pong"}'
 export const PRESENCE_GATEWAY_CONNECTION_LIMIT = 512
 export const PRESENCE_SOURCE_CONNECTION_LIMIT = 8
 const MAX_BROADCAST_CORRECTION_PASSES = 8
@@ -29,9 +31,13 @@ export interface PresenceEnv {
 export interface PresenceRoomState {
   acceptWebSocket(webSocket: WebSocket, tags?: string[]): void
   getWebSockets(tag?: string): WebSocket[]
+  setWebSocketAutoResponse?(
+    requestResponsePair: WebSocketRequestResponsePair
+  ): void
 }
 
 type PresenceWebSocketPairFactory = () => readonly [WebSocket, WebSocket]
+type PresenceHeartbeatPairFactory = () => WebSocketRequestResponsePair
 
 type PresenceSocketAttachment = {
   roomKey: string
@@ -41,6 +47,13 @@ type PresenceSocketAttachment = {
 function createPresenceWebSocketPair(): readonly [WebSocket, WebSocket] {
   const pair = new WebSocketPair()
   return [pair[0], pair[1]]
+}
+
+function createPresenceHeartbeatPair(): WebSocketRequestResponsePair {
+  return new WebSocketRequestResponsePair(
+    PRESENCE_HEARTBEAT_REQUEST,
+    PRESENCE_HEARTBEAT_RESPONSE
+  )
 }
 
 function bytesToLowercaseHex(bytes: Uint8Array): string {
@@ -196,8 +209,11 @@ export class PresenceRoom {
   constructor(
     private readonly state: PresenceRoomState,
     _env?: PresenceEnv,
-    private readonly createWebSocketPair: PresenceWebSocketPairFactory = createPresenceWebSocketPair
-  ) {}
+    private readonly createWebSocketPair: PresenceWebSocketPairFactory = createPresenceWebSocketPair,
+    createHeartbeatPair: PresenceHeartbeatPairFactory = createPresenceHeartbeatPair
+  ) {
+    this.state.setWebSocketAutoResponse?.(createHeartbeatPair())
+  }
 
   fetch(request: Request): Response {
     if (!isAllowedPresenceOrigin(request.headers.get("origin"))) {
@@ -237,7 +253,7 @@ export class PresenceRoom {
 
   webSocketMessage(webSocket: WebSocket): void {
     const roomKey = this.getSocketRoomKey(webSocket)
-    this.closeSocket(webSocket, 1008, "Client messages are not accepted")
+    this.closeSocket(webSocket, 1008, "Unsupported client message")
     if (roomKey) this.broadcastCount(roomKey, webSocket)
   }
 
