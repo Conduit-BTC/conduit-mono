@@ -727,7 +727,7 @@ async function publishOrganizerMarket(
     .getByRole("textbox", { name: "Public summary Required", exact: true })
     .fill("Synthetic browser-only organizer catalog.")
   await editor
-    .getByRole("textbox", { name: "Image URL Required", exact: true })
+    .getByRole("textbox", { name: "Event photo URL Required", exact: true })
     .fill("https://cdn.conduit.market/conduit-test/synthetic-event-market.svg")
   await editor
     .getByRole("textbox", { name: "Public location Required", exact: true })
