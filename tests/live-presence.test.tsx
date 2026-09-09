@@ -24,10 +24,9 @@ import {
   type LivePresenceSocket,
 } from "../apps/market/src/lib/live-presence"
 
-type SocketEventType = "close" | "error" | "message" | "open"
+type SocketEventType = "close" | "error" | "message"
 
 class FakePresenceSocket implements LivePresenceSocket {
-  readyState = 0
   closeCalls: Array<{ code?: number; reason?: string }> = []
   sentMessages: string[] = []
   private readonly listeners = new Map<
@@ -45,7 +44,6 @@ class FakePresenceSocket implements LivePresenceSocket {
   }
 
   close(code?: number, reason?: string): void {
-    this.readyState = 2
     this.closeCalls.push({ code, reason })
   }
 

@@ -14,10 +14,9 @@ const LIVE_PRESENCE_RECONNECT_BASE_DELAY_MS = 1_000
 const LIVE_PRESENCE_RECONNECT_MAX_DELAY_MS = 16_000
 const LIVE_PRESENCE_SCOPE_HASH_PATTERN = /^[0-9a-f]{64}$/
 
-type LivePresenceSocketEventType = "close" | "error" | "message" | "open"
+type LivePresenceSocketEventType = "close" | "error" | "message"
 
 export interface LivePresenceSocket {
-  readonly readyState: number
   addEventListener(
     type: LivePresenceSocketEventType,
     listener: (event: { data?: unknown }) => void

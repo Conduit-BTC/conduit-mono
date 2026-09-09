@@ -1,5 +1,5 @@
 import { conduitBuildInfo } from "@conduit/core"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   advanceLivePresenceRequestRevision,
   hashLivePresenceScope,
@@ -17,7 +17,6 @@ type NavigatorWithGlobalPrivacyControl = Navigator & {
 export interface UseLivePresenceCountOptions {
   canonicalId: string | null | undefined
   pageType: LivePresencePageType
-  serviceUrl?: string | null
 }
 
 function getBrowserRuntime(): LivePresenceRuntime | null {
@@ -64,12 +63,8 @@ function isLivePresenceFeatureEnabled(): boolean {
 export function useLivePresenceCount({
   canonicalId,
   pageType,
-  serviceUrl,
 }: UseLivePresenceCountOptions): number | null {
-  const endpoint = useMemo(
-    () => resolveLivePresenceWebSocketUrl(serviceUrl ?? undefined),
-    [serviceUrl]
-  )
+  const endpoint = resolveLivePresenceWebSocketUrl()
   const normalizedCanonicalId = canonicalId?.trim() || null
   const permitted = isLivePresencePermitted({
     featureEnabled: isLivePresenceFeatureEnabled(),

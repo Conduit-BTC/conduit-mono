@@ -13,15 +13,9 @@ export function getLivePresenceLabel(
   count: number,
   pageType: LivePresenceIndicatorPageType
 ): string {
-  if (pageType === "product") {
-    return count === 1
-      ? "1 visitor is looking at this product"
-      : `${count} visitors are looking at this product`
-  }
-
-  return count === 1
-    ? "1 visitor is browsing this store"
-    : `${count} visitors are browsing this store`
+  const phrase =
+    pageType === "product" ? "looking at this product" : "browsing this store"
+  return `${count} ${count === 1 ? "visitor is" : "visitors are"} ${phrase}`
 }
 
 export function LivePresenceIndicator({
@@ -37,12 +31,7 @@ export function LivePresenceIndicator({
       aria-atomic="true"
       aria-live="polite"
       title={EXACT_SESSION_CLARIFICATION}
-      className={[
-        "inline-flex max-w-full items-center gap-2 text-sm tabular-nums text-[var(--text-secondary)]",
-        className,
-      ]
-        .filter(Boolean)
-        .join(" ")}
+      className={`inline-flex max-w-full items-center gap-2 text-sm tabular-nums text-[var(--text-secondary)] ${className}`}
     >
       <span
         aria-hidden="true"
