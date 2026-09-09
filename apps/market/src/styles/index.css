@@ -50,6 +50,17 @@ body {
   }
 }
 
+@keyframes market-live-presence-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(0.25rem);
+  }
+}
+
 .market-cart-hud-item {
   animation: market-cart-hud-item-in 180ms ease-out;
 }
@@ -60,6 +71,10 @@ body {
 
 .market-live-presence-in {
   animation: market-live-presence-in 220ms ease-out;
+}
+
+.market-live-presence-out {
+  animation: market-live-presence-out 220ms ease-in forwards;
 }
 
 .market-cart-hud-surface {
@@ -77,8 +92,13 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .market-cart-hud-item,
   .market-cart-hud-value,
-  .market-live-presence-in {
+  .market-live-presence-in,
+  .market-live-presence-out {
     animation: none;
+  }
+
+  .market-live-presence-out {
+    opacity: 0;
   }
 }
 

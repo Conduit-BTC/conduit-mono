@@ -429,6 +429,7 @@ describe("LivePresenceIndicator", () => {
     expect(markup).toContain('aria-live="polite"')
     expect(markup).toContain("tabular-nums")
     expect(markup).toContain("market-live-presence-in")
+    expect(markup).not.toContain("market-live-presence-out")
     expect(markup).toContain("motion-safe:animate-ping")
     expect(markup).toContain("border-[var(--success)]")
     expect(markup).toContain("20 visitors are looking at this product")
@@ -452,6 +453,28 @@ describe("LivePresenceIndicator", () => {
     expect(
       renderToStaticMarkup(<LivePresenceIndicator count={0} pageType="store" />)
     ).not.toContain('role="status"')
+  })
+
+  it("defines matching enter and exit motion with reduced-motion support", async () => {
+    const componentSource = await readFile(
+      "apps/market/src/components/LivePresenceIndicator.tsx",
+      "utf8"
+    )
+    const styleSource = await readFile(
+      "apps/market/src/styles/index.css",
+      "utf8"
+    )
+
+    expect(componentSource).toContain("market-live-presence-out")
+    expect(componentSource).toContain("LIVE_PRESENCE_EXIT_DURATION_MS = 220")
+    expect(styleSource).toContain("@keyframes market-live-presence-out")
+    expect(styleSource).toContain(
+      ".market-live-presence-out {\n  animation: market-live-presence-out 220ms ease-in forwards;"
+    )
+    expect(styleSource).toContain("prefers-reduced-motion: reduce")
+    expect(styleSource).toContain(
+      ".market-live-presence-out {\n    opacity: 0;"
+    )
   })
 
   it("wires product variations and normalized storefront keys", async () => {
