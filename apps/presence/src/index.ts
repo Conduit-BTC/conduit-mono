@@ -1,6 +1,9 @@
 const PRESENCE_PATH_PATTERN = /^\/v1\/presence\/([0-9a-f]{64})$/
 const OPEN_READY_STATE = 1
-export const PRESENCE_ROOM_CONNECTION_LIMIT = 512
+// Route every page room through one preview gateway. Room hashes tag sockets;
+// they never select or create additional Durable Object instances.
+const PRESENCE_GATEWAY_OBJECT_NAME = "preview-v1"
+export const PRESENCE_GATEWAY_CONNECTION_LIMIT = 512
 const MAX_BROADCAST_CORRECTION_PASSES = 8
 
 const allowedMarketPreviewSuffixes = [
@@ -18,8 +21,8 @@ export interface PresenceEnv {
 }
 
 export interface PresenceRoomState {
-  acceptWebSocket(webSocket: WebSocket): void
-  getWebSockets(): WebSocket[]
+  acceptWebSocket(webSocket: WebSocket, tags?: string[]): void
+  getWebSockets(tag?: string): WebSocket[]
 }
 
 type PresenceWebSocketPairFactory = () => readonly [WebSocket, WebSocket]
@@ -120,8 +123,8 @@ export async function handlePresenceRequest(
     return jsonResponse({ error: "websocket_upgrade_required" }, 426)
   }
 
-  const roomId = env.PRESENCE_ROOMS.idFromName(roomKey)
-  return env.PRESENCE_ROOMS.get(roomId).fetch(request)
+  const gatewayId = env.PRESENCE_ROOMS.idFromName(PRESENCE_GATEWAY_OBJECT_NAME)
+  return env.PRESENCE_ROOMS.get(gatewayId).fetch(request)
 }
 
 export class PresenceRoom {
@@ -135,19 +138,18 @@ export class PresenceRoom {
     if (!isAllowedPresenceOrigin(request.headers.get("origin"))) {
       return jsonResponse({ error: "origin_not_allowed" }, 403)
     }
-    if (
-      !getPresenceRoomKey(request.url) ||
-      !isWebSocketUpgradeRequest(request)
-    ) {
+    const roomKey = getPresenceRoomKey(request.url)
+    if (!roomKey || !isWebSocketUpgradeRequest(request)) {
       return jsonResponse({ error: "websocket_upgrade_required" }, 426)
     }
-    if (this.getOpenSockets().length >= PRESENCE_ROOM_CONNECTION_LIMIT) {
-      return jsonResponse({ error: "room_at_capacity" }, 429)
+    if (this.getAllOpenSockets().length >= PRESENCE_GATEWAY_CONNECTION_LIMIT) {
+      return jsonResponse({ error: "gateway_at_capacity" }, 429)
     }
 
     const [client, server] = this.createWebSocketPair()
-    this.state.acceptWebSocket(server)
-    this.broadcastCount()
+    server.serializeAttachment(roomKey)
+    this.state.acceptWebSocket(server, [roomKey])
+    this.broadcastCount(roomKey)
 
     return new Response(null, {
       status: 101,
@@ -156,17 +158,27 @@ export class PresenceRoom {
   }
 
   webSocketMessage(webSocket: WebSocket): void {
+    const roomKey = this.getSocketRoomKey(webSocket)
     this.closeSocket(webSocket, 1008, "Client messages are not accepted")
-    this.broadcastCount(webSocket)
+    if (roomKey) this.broadcastCount(roomKey, webSocket)
   }
 
   webSocketClose(webSocket: WebSocket): void {
-    this.broadcastCount(webSocket)
+    const roomKey = this.getSocketRoomKey(webSocket)
+    if (roomKey) this.broadcastCount(roomKey, webSocket)
   }
 
   webSocketError(webSocket: WebSocket): void {
+    const roomKey = this.getSocketRoomKey(webSocket)
     this.closeSocket(webSocket, 1011, "WebSocket error")
-    this.broadcastCount(webSocket)
+    if (roomKey) this.broadcastCount(roomKey, webSocket)
+  }
+
+  private getSocketRoomKey(webSocket: WebSocket): string | null {
+    const attachment: unknown = webSocket.deserializeAttachment()
+    return typeof attachment === "string" && /^[0-9a-f]{64}$/.test(attachment)
+      ? attachment
+      : null
   }
 
   private closeSocket(
@@ -181,23 +193,30 @@ export class PresenceRoom {
     }
   }
 
+  private getAllOpenSockets(): WebSocket[] {
+    return this.state
+      .getWebSockets()
+      .filter((socket) => socket.readyState === OPEN_READY_STATE)
+  }
+
   private getOpenSockets(
+    roomKey: string,
     excludedSockets: ReadonlySet<WebSocket> = new Set()
   ): WebSocket[] {
     return this.state
-      .getWebSockets()
+      .getWebSockets(roomKey)
       .filter(
         (socket) =>
           !excludedSockets.has(socket) && socket.readyState === OPEN_READY_STATE
       )
   }
 
-  private broadcastCount(excludedSocket?: WebSocket): void {
+  private broadcastCount(roomKey: string, excludedSocket?: WebSocket): void {
     const excludedSockets = new Set<WebSocket>()
     if (excludedSocket) excludedSockets.add(excludedSocket)
 
     for (let pass = 0; pass < MAX_BROADCAST_CORRECTION_PASSES; pass += 1) {
-      const openSockets = this.getOpenSockets(excludedSockets)
+      const openSockets = this.getOpenSockets(roomKey, excludedSockets)
       const payload = JSON.stringify({ count: openSockets.length })
       let sendFailed = false
 
