@@ -24,13 +24,8 @@
   "env": {
     "preview": {
       "name": "conduit-presence-preview",
-      "workers_dev": false,
-      "routes": [
-        {
-          "pattern": "presence-preview.conduit.market",
-          "custom_domain": true,
-        },
-      ],
+      "workers_dev": true,
+      "preview_urls": false,
       "durable_objects": {
         "bindings": [
           {

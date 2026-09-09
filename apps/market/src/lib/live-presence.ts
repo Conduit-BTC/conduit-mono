@@ -1,7 +1,7 @@
 export type LivePresencePageType = "product" | "store"
 
 export const DEFAULT_LIVE_PRESENCE_WEBSOCKET_URL =
-  "wss://presence-preview.conduit.market"
+  "wss://conduit-presence-preview.eric-furletti.workers.dev"
 
 export const LIVE_PRESENCE_MAX_RECONNECT_ATTEMPTS = 5
 export const LIVE_PRESENCE_MAX_COUNT = 512
