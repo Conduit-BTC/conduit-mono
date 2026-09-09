@@ -1065,6 +1065,26 @@ describe("agent review handoff", () => {
     expect(missingActionSource.exitCode).not.toBe(0)
     expect(missingActionSource.stderr).toContain("complete Next action")
 
+    for (const quotedSource of [
+      'CONTRIBUTING.md "Acceptance Criteria."',
+      "CONTRIBUTING.md “Acceptance Criteria.”",
+    ]) {
+      const quotedSourceAction = await runReviewVerdictGate({
+        headSha,
+        reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.\nNext: Maintainer — complete QA; evidence: the PR; done when: results are recorded; source: ${quotedSource}`,
+        runId,
+      })
+      expect(quotedSourceAction.exitCode).toBe(0)
+    }
+
+    const quotedSourceWithoutPeriod = await runReviewVerdictGate({
+      headSha,
+      reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.\nNext: Maintainer — complete QA; evidence: the PR; done when: results are recorded; source: CONTRIBUTING.md “Acceptance Criteria”`,
+      runId,
+    })
+    expect(quotedSourceWithoutPeriod.exitCode).not.toBe(0)
+    expect(quotedSourceWithoutPeriod.stderr).toContain("complete Next action")
+
     for (const next of [
       nextAction(
         "   ",
@@ -1470,6 +1490,10 @@ describe("agent review handoff", () => {
     ).toBe(2)
     expect(
       countOccurrences(simplifyWorkflow, 'grep -Ec "$next_action_pattern"')
+    ).toBe(2)
+    expect(reviewWorkflow).toContain("source: ([^;]+)\\.(\"|”)?$'")
+    expect(
+      countOccurrences(simplifyWorkflow, "source: [^;]+\\.(\"|”)?$'")
     ).toBe(2)
     expect(simplifyWorkflow).not.toContain("gh api graphql --paginate")
     expect(simplifyWorkflow).not.toContain("unresolved_review_thread_count")

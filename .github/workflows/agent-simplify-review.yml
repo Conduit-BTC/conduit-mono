@@ -163,7 +163,7 @@ jobs:
             review_commit="$(jq -r '.commit_id // ""' <<< "$review")"
             review_body="$(jq -r '.body // ""' <<< "$review")"
             clean_summary="No code changes needed. Ready for human review."
-            next_action_pattern='^Next: [^;]+ — [^;]+; evidence: [^;]+; done when: [^;]+; source: [^;]+\.$'
+            next_action_pattern='^Next: [^;]+ — [^;]+; evidence: [^;]+; done when: [^;]+; source: [^;]+\.("|”)?$'
 
             if [[ "$review_commit" != "$head_sha" ]] ||
               ! grep -Fqx "$run_marker" <<< "$review_body"; then
@@ -319,7 +319,7 @@ jobs:
             run_marker="<!-- conduit:sudden-review run=$SOURCE_RUN_ID attempt=$SOURCE_RUN_ATTEMPT head=$head_sha -->"
             clean_marker="<!-- conduit:sudden-review clean head=$head_sha -->"
             clean_summary="No code changes needed. Ready for human review."
-            next_action_pattern='^Next: [^;]+ — [^;]+; evidence: [^;]+; done when: [^;]+; source: [^;]+\.$'
+            next_action_pattern='^Next: [^;]+ — [^;]+; evidence: [^;]+; done when: [^;]+; source: [^;]+\.("|”)?$'
 
             if [[ "$reviewer" != "conduit-sudden-agent[bot]" ||
               "$review_commit" != "$head_sha" ]] ||

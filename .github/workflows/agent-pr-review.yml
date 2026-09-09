@@ -542,7 +542,7 @@ jobs:
           first_visible_line="$(awk 'NF { print; exit }' <<< "$visible_body")"
           second_visible_line="$(awk 'NF { count += 1; if (count == 2) { print; exit } }' <<< "$visible_body")"
           next_action_count="$(grep -Ec '^Next:' <<< "$visible_body" || true)"
-          next_action_pattern='^Next: ([^;]+) — ([^;]+); evidence: ([^;]+); done when: ([^;]+); source: ([^;]+)\.$'
+          next_action_pattern='^Next: ([^;]+) — ([^;]+); evidence: ([^;]+); done when: ([^;]+); source: ([^;]+)\.("|”)?$'
           if [[ "$next_action_count" != "1" ||
             ! "$second_visible_line" =~ $next_action_pattern ]]; then
             echo "The current-run review lacks one complete Next action." >&2
