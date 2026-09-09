@@ -201,8 +201,10 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
   per-relay outcomes in `orderLifecycles.orderRelayDelivery`
 - Public build policy: `deploy/pages-profiles.json`. Preview and staging enable
   the lane; production remains independently false until the reviewed smoke
-  gate passes. Vite compiles the legacy `VITE_DM_BOOTSTRAP_WRITES` input from
-  that profile rather than trusting a Cloudflare dashboard override.
+  gate passes. Repo-owned Signet Pages project names select the staging profile;
+  other Pages builds remain branch-derived preview or production. Vite compiles
+  the legacy `VITE_DM_BOOTSTRAP_WRITES` input from that profile rather than
+  trusting a Cloudflare dashboard override.
 - QA manifest: `/.well-known/conduit-deployment.json` exposes only app/profile,
   source commit/branch, build time, public feature values, and their SHA-256
   digest.
@@ -265,8 +267,9 @@ aggregates.
 
 ## Activation and rollback
 
-- Staging source-profile enablement prepared: 2026-09-09. Hosted staging
-  activation has not yet been verified. Production activation: not active.
+- Staging source-profile enablement and Signet Pages selection prepared:
+  2026-09-09. Hosted staging activation has not yet been verified. Production
+  activation: not active.
 - Manual gate: dedicated synthetic buyer and merchant identities must prove one
   declared-inbox receipt and one compatibility-route receipt in staging. The
   deployed manifest must report the staging profile and compatibility enabled.

@@ -41,11 +41,12 @@ describe("deployment profiles", () => {
     ).toBe(false)
   })
 
-  it("selects Cloudflare preview and production without dashboard feature vars", () => {
+  it("selects mainnet Cloudflare preview and production without dashboard feature vars", () => {
     expect(
       selectDeploymentProfileName({
         CF_PAGES: "1",
         CF_PAGES_BRANCH: "feat/private-order-routing",
+        CF_PAGES_URL: "https://abc123.conduit-market-coo.pages.dev",
         VITE_DM_BOOTSTRAP_WRITES: "false",
       })
     ).toBe("preview")
@@ -53,6 +54,7 @@ describe("deployment profiles", () => {
       selectDeploymentProfileName({
         CF_PAGES: "1",
         CF_PAGES_BRANCH: "main",
+        CF_PAGES_URL: "https://conduit-market-coo.pages.dev",
         VITE_DM_BOOTSTRAP_WRITES: "true",
       })
     ).toBe("production")
@@ -60,9 +62,35 @@ describe("deployment profiles", () => {
       selectDeploymentProfileName({
         CF_PAGES: "1",
         CF_PAGES_BRANCH: "feat/private-order-routing",
+        CF_PAGES_URL: "https://abc123.conduit-market-coo.pages.dev",
         CONDUIT_DEPLOYMENT_PROFILE: "production",
       })
     ).toThrow("Cloudflare branch requires preview")
+  })
+
+  it("selects staging only for the repo-owned Signet Pages projects", () => {
+    expect(
+      selectDeploymentProfileName({
+        CF_PAGES: "1",
+        CF_PAGES_BRANCH: "main",
+        CF_PAGES_URL: "https://conduit-market-signet.pages.dev",
+      })
+    ).toBe("staging")
+    expect(
+      selectDeploymentProfileName({
+        CF_PAGES: "1",
+        CF_PAGES_BRANCH: "feat/rollout-smoke",
+        CF_PAGES_URL: "https://abc123.conduit-merchant-signet.pages.dev",
+      })
+    ).toBe("staging")
+    expect(() =>
+      selectDeploymentProfileName({
+        CF_PAGES: "1",
+        CF_PAGES_BRANCH: "main",
+        CF_PAGES_URL: "https://conduit-market-signet.pages.dev",
+        CONDUIT_DEPLOYMENT_PROFILE: "production",
+      })
+    ).toThrow("Cloudflare branch requires staging")
   })
 
   it("rejects a missing preview feature value but accepts explicit false", () => {
