@@ -61,6 +61,27 @@ export type EventCatalog = {
   purchaseReady: boolean
 }
 
+export function getEventCatalogProductAvailability(
+  catalog: Pick<EventCatalog, "products" | "unresolvedProductCoordinates">
+): {
+  availableProductCount: number
+  unresolvedProductCount: number
+} {
+  const availableProductCount = catalog.products.filter((entry) => {
+    if (entry.product.type !== "variable" && entry.pickupFulfillment !== null) {
+      return true
+    }
+    return Object.values(entry.familyPickupFulfillments ?? {}).some(Boolean)
+  }).length
+
+  return {
+    availableProductCount,
+    unresolvedProductCount:
+      catalog.unresolvedProductCoordinates.length +
+      (catalog.products.length - availableProductCount),
+  }
+}
+
 export type PickupFreshnessResult =
   | { fresh: true }
   | {

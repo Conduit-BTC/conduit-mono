@@ -52,7 +52,10 @@ import {
   getProductSelection,
 } from "../../lib/productVariations"
 import { getEventCatalogCartAction } from "../../lib/event-market-cart-action"
-import type { EventCatalog } from "../../lib/event-market-adapter"
+import {
+  getEventCatalogProductAvailability,
+  type EventCatalog,
+} from "../../lib/event-market-adapter"
 import {
   getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
@@ -469,10 +472,10 @@ function EventCatalogPage() {
   const eventLocations = calendar.locations.filter(Boolean)
   const calendarLocation = eventLocations.join(" · ")
   const archived = catalog.state === "ended"
+  const productAvailability = getEventCatalogProductAvailability(catalog)
   const actionability = getEventActionabilityPresentation({
     state: catalog.state,
-    availableProductCount: catalog.products.length,
-    unresolvedProductCount: catalog.unresolvedProductCoordinates.length,
+    ...productAvailability,
     requiredEventRecordsResolved,
   })
   const relayCoverage = formatEventRelayReadCoverage(catalog.coverage)

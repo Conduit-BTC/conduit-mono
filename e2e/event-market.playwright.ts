@@ -973,7 +973,7 @@ test("direct and pasted event imports hydrate one saved selector title outside t
   await installSyntheticEnvironment(page, relay)
   const eventTitle = "Synthetic imported title hydration"
   const market = await publishOrganizerMarket(page, relay, {
-    title: eventTitle,
+    title: `  ${eventTitle}  `,
     organizerHandoffEnabled: false,
   })
   const unrelatedFollowedPubkeys = Array.from({ length: 17 }, (_, index) =>
@@ -997,16 +997,44 @@ test("direct and pasted event imports hydrate one saved selector title outside t
     }
   )
   const savedStorageKey = `conduit:merchant:discovered-event-markets:v1:${MERCHANT_PUBKEY}`
-  await expect
-    .poll(() =>
-      page.evaluate((key) => {
-        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
-          title?: string
-        }>
-        return { count: saved.length, title: saved[0]?.title }
-      }, savedStorageKey)
-    )
-    .toEqual({ count: 1, title: eventTitle })
+  const expectedTitleEvidence = {
+    titleCollectionCoordinate: market.collectionCoordinate,
+    titleCollectionCreatedAt: market.initialCollection.created_at * 1_000,
+    titleCollectionEventId: market.initialCollection.id,
+    titleCalendarCoordinate: market.calendarCoordinate,
+    titleCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
+    titleCalendarEventId: market.calendarEvent.id,
+  }
+  const readSavedTitleEvidence = () =>
+    page.evaluate((key) => {
+      const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+        reference?: string
+        title?: string
+        titleCollectionCoordinate?: string
+        titleCollectionCreatedAt?: number
+        titleCollectionEventId?: string
+        titleCalendarCoordinate?: string
+        titleCalendarCreatedAt?: number
+        titleCalendarEventId?: string
+      }>
+      return {
+        count: saved.length,
+        reference: saved[0]?.reference,
+        title: saved[0]?.title,
+        titleCollectionCoordinate: saved[0]?.titleCollectionCoordinate,
+        titleCollectionCreatedAt: saved[0]?.titleCollectionCreatedAt,
+        titleCollectionEventId: saved[0]?.titleCollectionEventId,
+        titleCalendarCoordinate: saved[0]?.titleCalendarCoordinate,
+        titleCalendarCreatedAt: saved[0]?.titleCalendarCreatedAt,
+        titleCalendarEventId: saved[0]?.titleCalendarEventId,
+      }
+    }, savedStorageKey)
+  await expect.poll(readSavedTitleEvidence).toEqual({
+    count: 1,
+    reference: market.canonicalNaddr,
+    title: eventTitle,
+    ...expectedTitleEvidence,
+  })
 
   await gotoAs(page, merchantUrl, "/events", "merchant")
   const shopperLink = `${marketUrl}/events/${market.canonicalNaddr}`
@@ -1019,16 +1047,12 @@ test("direct and pasted event imports hydrate one saved selector title outside t
   )
   await page.getByLabel("Open a known event").fill(market.canonicalNaddr)
   await page.getByRole("button", { name: "Open", exact: true }).click()
-  await expect
-    .poll(() =>
-      page.evaluate((key) => {
-        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
-          title?: string
-        }>
-        return { count: saved.length, title: saved[0]?.title }
-      }, savedStorageKey)
-    )
-    .toEqual({ count: 1, title: eventTitle })
+  await expect.poll(readSavedTitleEvidence).toEqual({
+    count: 1,
+    reference: market.canonicalNaddr,
+    title: eventTitle,
+    ...expectedTitleEvidence,
+  })
 })
 
 test("current exact resolution refreshes a saved title without replacing its evidence @merchant", async ({
@@ -1057,12 +1081,12 @@ test("current exact resolution refreshes a saved title without replacing its evi
     reference: hintedReference,
     title: "Cached title before current resolution",
     savedAt,
-    expectedCollectionCoordinate: market.collectionCoordinate,
-    expectedCollectionCreatedAt: market.initialCollection.created_at * 1_000,
-    expectedCollectionEventId: market.initialCollection.id,
-    expectedCalendarCoordinate: market.calendarCoordinate,
-    expectedCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
-    expectedCalendarEventId: market.calendarEvent.id,
+    titleCollectionCoordinate: market.collectionCoordinate,
+    titleCollectionCreatedAt: market.initialCollection.created_at * 1_000,
+    titleCollectionEventId: market.initialCollection.id,
+    titleCalendarCoordinate: market.calendarCoordinate,
+    titleCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
+    titleCalendarEventId: market.calendarEvent.id,
   }
   await page.evaluate(
     ({ key, saved }) => localStorage.setItem(key, JSON.stringify([saved])),

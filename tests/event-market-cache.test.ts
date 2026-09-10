@@ -563,6 +563,43 @@ describe("event-market retained evidence", () => {
     })
   })
 
+  it("keeps a newer retained collection stale when only an older revision is live", async () => {
+    const [calendar, pickup, retainedCollection] = graph()
+    const liveCollection = sign(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Older live catalog",
+        eventCoordinate: CALENDAR,
+        pickupCoordinate: PICKUP,
+      }),
+      90
+    )
+    const harness = cacheHarness()
+    harness.setFetch([calendar!, pickup!], "success")
+
+    const result = await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      nowMs: 1_750_000_000_000,
+      projection: "discovery",
+      relayHints: [ORGANIZER_RELAY],
+      candidateCollectionEvents: [retainedCollection!, liveCollection],
+      candidateCollectionSourceRelayUrlsById: new Map([
+        [retainedCollection!.id, [ORGANIZER_RELAY]],
+        [liveCollection.id, [ORGANIZER_RELAY]],
+      ]),
+      candidateCollectionLiveEventIds: new Set([liveCollection.id]),
+    })
+
+    expect(result.state).toBe("complete")
+    expect(result.markets).toHaveLength(1)
+    expect(result.markets[0]).toMatchObject({
+      state: "stale",
+      collection: { eventId: retainedCollection!.id },
+      calendar: { coordinate: CALENDAR },
+      pickup: { coordinate: PICKUP },
+    })
+  })
+
   it("keeps a large valid event visible in the discovery-card projection", async () => {
     const productCoordinates = Array.from(
       { length: 65 },

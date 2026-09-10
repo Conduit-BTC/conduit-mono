@@ -21,7 +21,7 @@ import {
   getEventActionabilityPresentation,
 } from "@conduit/ui"
 import {
-  isParticipationProductPreviewVerified,
+  isParticipationProductAvailable,
   type MerchantOrganizerEventMarket,
 } from "../lib/event-market"
 import { getEventMarketUrl } from "../lib/market-links"
@@ -72,8 +72,8 @@ function getMerchantProductAvailability(market: MerchantOrganizerEventMarket): {
   const organizerOnlyProductCount = market.participation.filter(
     (item) => item.status === "organizer_only"
   ).length
-  const availableProductCount = acceptedProducts.filter(
-    isParticipationProductPreviewVerified
+  const availableProductCount = acceptedProducts.filter((item) =>
+    isParticipationProductAvailable(item, market.organizerPubkey)
   ).length
 
   return {
