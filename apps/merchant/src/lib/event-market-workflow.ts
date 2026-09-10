@@ -776,14 +776,39 @@ function mergeSavedReferences(
   )
   const expectedCalendar = mergeRecordFrontier(frontierReferences, "calendar")
   const expectedPickup = mergeRecordFrontier(frontierReferences, "pickup")
-  const titleSource = sorted.find((reference) => reference.title)
-  const titleEvidenceSource = titleSource
-    ? sorted.find(
-        (reference) =>
-          reference.title === titleSource.title &&
-          !!savedOrganizerEventMarketTitleFrontiers(reference)
+  const anchoredTitleSources = sorted.filter(
+    (reference) =>
+      !!reference.title && !!savedOrganizerEventMarketTitleFrontiers(reference)
+  )
+  const titleSource =
+    anchoredTitleSources.reduce<
+      NormalizedSavedOrganizerEventMarketReference | undefined
+    >((current, candidate) => {
+      if (!current) return candidate
+      const candidateFrontiers =
+        savedOrganizerEventMarketTitleFrontiers(candidate)!
+      const currentFrontiers = savedOrganizerEventMarketTitleFrontiers(current)!
+      const collectionComparison = compareEventMarketRecordFrontier(
+        candidateFrontiers.collection,
+        currentFrontiers.collection
       )
-    : undefined
+      if (collectionComparison !== 0) {
+        return collectionComparison > 0 ? candidate : current
+      }
+      if (
+        candidateFrontiers.calendar.coordinate ===
+        currentFrontiers.calendar.coordinate
+      ) {
+        const calendarComparison = compareEventMarketRecordFrontier(
+          candidateFrontiers.calendar,
+          currentFrontiers.calendar
+        )
+        if (calendarComparison !== 0) {
+          return calendarComparison > 0 ? candidate : current
+        }
+      }
+      return candidate.savedAt > current.savedAt ? candidate : current
+    }, undefined) ?? sorted.find((reference) => reference.title)
   return {
     reference:
       relayHints.length > 0
@@ -792,7 +817,7 @@ function mergeSavedReferences(
     title: titleSource?.title,
     savedAt: newest.savedAt,
     ...titleFrontierFields(
-      savedOrganizerEventMarketTitleFrontiers(titleEvidenceSource)
+      savedOrganizerEventMarketTitleFrontiers(titleSource)
     ),
     ...expectedFrontierFields("collection", expectedCollection),
     ...expectedFrontierFields("calendar", expectedCalendar),

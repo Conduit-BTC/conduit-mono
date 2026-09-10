@@ -385,6 +385,94 @@ describe("merchant organizer event workflow", () => {
     expect(normalizeOrganizerEventMarketTitle(undefined)).toBeUndefined()
   })
 
+  it("keeps an anchored title when a later product-page write has no provenance", () => {
+    const storage = new MemoryStorage()
+    const reference = encodeEventMarketNaddr(COLLECTION)
+    const anchoredTitleEvidence = {
+      titleCollectionCoordinate: COLLECTION,
+      titleCollectionCreatedAt: 2_000,
+      titleCollectionEventId: "b".repeat(64),
+      titleCalendarCoordinate: CALENDAR,
+      titleCalendarCreatedAt: 2_000,
+      titleCalendarEventId: "c".repeat(64),
+    }
+
+    rememberDiscoveredEventMarket(
+      MERCHANT,
+      {
+        reference,
+        title: "Current exact title",
+        savedAt: 10,
+        ...anchoredTitleEvidence,
+      },
+      storage
+    )
+
+    const [afterProductOpen] = rememberDiscoveredEventMarket(
+      MERCHANT,
+      {
+        reference,
+        title: "Older product-page title",
+        savedAt: 20,
+      },
+      storage
+    )
+
+    expect(afterProductOpen).toMatchObject({
+      title: "Current exact title",
+      savedAt: 20,
+      ...anchoredTitleEvidence,
+    })
+
+    const [afterOlderProvenWrite] = rememberDiscoveredEventMarket(
+      MERCHANT,
+      {
+        reference,
+        title: "Older proven title",
+        savedAt: 30,
+        titleCollectionCoordinate: COLLECTION,
+        titleCollectionCreatedAt: 1_000,
+        titleCollectionEventId: "d".repeat(64),
+        titleCalendarCoordinate: CALENDAR,
+        titleCalendarCreatedAt: 1_000,
+        titleCalendarEventId: "e".repeat(64),
+      },
+      storage
+    )
+    expect(afterOlderProvenWrite).toMatchObject({
+      title: "Current exact title",
+      savedAt: 30,
+      ...anchoredTitleEvidence,
+    })
+
+    const replacementCalendar = `31923:${ORGANIZER}:replacement-calendar`
+    const [afterNewerProvenWrite] = rememberDiscoveredEventMarket(
+      MERCHANT,
+      {
+        reference,
+        title: "Newer relinked title",
+        savedAt: 40,
+        titleCollectionCoordinate: COLLECTION,
+        titleCollectionCreatedAt: 3_000,
+        titleCollectionEventId: "f".repeat(64),
+        titleCalendarCoordinate: replacementCalendar,
+        titleCalendarCreatedAt: 500,
+        titleCalendarEventId: "1".repeat(64),
+      },
+      storage
+    )
+    expect(afterNewerProvenWrite).toMatchObject({
+      title: "Newer relinked title",
+      savedAt: 40,
+      titleCollectionCoordinate: COLLECTION,
+      titleCollectionCreatedAt: 3_000,
+      titleCollectionEventId: "f".repeat(64),
+      titleCalendarCoordinate: replacementCalendar,
+      titleCalendarCreatedAt: 500,
+      titleCalendarEventId: "1".repeat(64),
+    })
+  })
+
   it("keeps the in-session reference when browser storage rejects writes", () => {
     const storage = {
       getItem: () => null,
