@@ -48,15 +48,15 @@
         "@scure/bip39": "2.4.0",
         "@tanstack/react-query": "^5.102.8",
         "@tanstack/react-router": "^1.170.32",
-        "lucide-react": "^1.35.0",
+        "lucide-react": "^1.41.0",
         "nostr-tools": "2.25.0",
         "qrcode.react": "^4.2.0",
         "react": "^19.2.8",
         "react-dom": "^19.2.8",
-        "react-hook-form": "^7.86.0",
+        "react-hook-form": "^7.87.0",
         "react-markdown": "^10.1.0",
         "remark-gfm": "^4.0.1",
-        "zod": "^4.5.1",
+        "zod": "^4.5.4",
       },
       "devDependencies": {
         "@tailwindcss/postcss": "^4.3.3",
@@ -84,11 +84,11 @@
         "@tanstack/react-query": "^5.102.8",
         "@tanstack/react-router": "^1.170.32",
         "country-list": "^2.4.1",
-        "lucide-react": "^1.35.0",
+        "lucide-react": "^1.41.0",
         "react": "^19.2.8",
         "react-dom": "^19.2.8",
-        "react-hook-form": "^7.86.0",
-        "zod": "^4.5.1",
+        "react-hook-form": "^7.87.0",
+        "zod": "^4.5.4",
       },
       "devDependencies": {
         "@tailwindcss/postcss": "^4.3.3",
@@ -129,8 +129,8 @@
         "@tanstack/react-router": "^1.170.32",
         "react": "^19.2.8",
         "react-dom": "^19.2.8",
-        "react-hook-form": "^7.86.0",
-        "zod": "^4.5.1",
+        "react-hook-form": "^7.87.0",
+        "zod": "^4.5.4",
       },
       "devDependencies": {
         "@tailwindcss/postcss": "^4.3.3",
@@ -163,7 +163,7 @@
         "nostr-tools": "2.25.0",
         "posthog-js": "^1.422.5",
         "tailwind-merge": "^3.6.0",
-        "zod": "^4.5.1",
+        "zod": "^4.5.4",
       },
       "devDependencies": {
         "@tanstack/react-query": "^5.101.4",
@@ -193,7 +193,7 @@
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "cmdk": "^1.1.1",
-        "lucide-react": "^1.35.0",
+        "lucide-react": "^1.41.0",
         "qrcode.react": "^4.2.0",
         "tailwind-merge": "^3.6.0",
       },
@@ -1278,7 +1278,7 @@
 
     "lru-cache": ["lru-cache@5.1.1", "", { "dependencies": { "yallist": "^3.0.2" } }, "sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w=="],
 
-    "lucide-react": ["lucide-react@1.35.0", "", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-yXCCWxGFYT6bLIPYC4SY6fPQPRs/d797rRIue+J9XP2Td6vQvD53gaQRBCnIVT1kTQRHtAtxlfOQNWAuIF8ELg=="],
+    "lucide-react": ["lucide-react@1.41.0", "", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-6lksP35l6KszDKUeRTi4LV7i6DEe0Yzl2ALJm9j4c5xEYN91GdW1xGsawGMOg2mgjF5GHBVX8pKX9kP+cWsP3Q=="],
 
     "magic-string": ["magic-string@0.30.21", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.5" } }, "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ=="],
 
@@ -1480,7 +1480,7 @@
 
     "react-dom": ["react-dom@19.2.8", "", { "dependencies": { "scheduler": "^0.27.0" }, "peerDependencies": { "react": "^19.2.8" } }, "sha512-rVprimfGBG3DR+Tq0IQG2DT5PxKth1WIGDmj5yPmlzr4YBe7uyE+Du4oVqTDXZSHGGGXRtTJEGSSePyQCMBglQ=="],
 
-    "react-hook-form": ["react-hook-form@7.86.0", "", { "peerDependencies": { "react": "^16.8.0 || ^17 || ^18 || ^19" } }, "sha512-4kbWJrh5jPZt1+YqVcXcGKffGcXV/XVbozknLh0Yjh0KhpoAkus21TAQhzRYqNwFkkObmnSvRlZZ3GT+ehoIrA=="],
+    "react-hook-form": ["react-hook-form@7.87.0", "", { "peerDependencies": { "react": "^16.8.0 || ^17 || ^18 || ^19" } }, "sha512-zhFzWvLxNHH+8839OnZcUxgMZw88ah2jZWDWvKWgF3Tpbnd0vKL+dlcuU3nZVWESZQjd81EW8K+wU+cYfYAc0w=="],
 
     "react-is": ["react-is@16.13.1", "", {}, "sha512-24e6ynE2H+OKt4kqsOvNd8kBpV65zoxbA4BVsEOB3ARVWQki/DHzaUoC5KuON/BiccDaCCTZBuOcfZs70kR8bQ=="],
 
@@ -1724,7 +1724,7 @@
 
     "zen-observable-ts": ["zen-observable-ts@1.1.0", "", { "dependencies": { "@types/zen-observable": "0.8.3", "zen-observable": "0.8.15" } }, "sha512-1h4zlLSqI2cRLPJUHJFL8bCWHhkpuXkF+dbGkRaWjgDIG26DmzyshUMrdV/rL3UnR+mhaX4fRq8LPouq0MYYIA=="],
 
-    "zod": ["zod@4.5.1", "", {}, "sha512-P3GqeAEOEDqKvafVGLezbg+39YW/ze4xrD4qdS0adOY8eoI3zfjv1PQM4UwQzgT8mZKXEbqtVt8K+ZKGqkMFKg=="],
+    "zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
 
     "zod-validation-error": ["zod-validation-error@4.0.2", "", { "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-Q6/nZLe6jxuU80qb/4uJ4t5v2VEZ44lzQjPDhYJNztRQ4wyWc6VF3D3Kb/fAuPetZQnhS3hnajCf9CsWesghLQ=="],
 
