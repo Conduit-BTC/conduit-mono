@@ -38,31 +38,57 @@ describe("account Network settings controller contract", () => {
     expect(controllerSource).not.toContain("loadRelaySettings(")
   })
 
-  it("maps one reviewed role action to one coordinated publish owner", () => {
-    const mutation = sourceBetween(
-      "const runMutation = useCallback(",
-      "const save = useCallback("
+  it("carries live owner authority into independent media preference I/O", () => {
+    const mediaPreferences = sourceBetween(
+      "const mediaServerPreferences = useMediaServerPreferences(",
+      "const captureAccount = useCallback("
     )
-    expect(mutation).toContain("reviewAccountNetworkMutation(")
-    expect(mutation).toContain("publishAccountNetworkMutation({")
-    expect(mutation).toContain("reviewed,")
-    expect(mutation).toContain("createNdkNostrEventSigner(")
-    expect(controllerSource).toContain('type: "set_roles"')
-    expect(controllerSource).toContain("removedRelayUrls,")
-    expect(mutation).toContain("if (reviewed.signerRequestCount > 0)")
-    expect(mutation).toContain("const snapshot = captureAuth()")
-    expect(mutation).toContain("const snapshot = captureAccount()")
-    expect(mutation).toContain("...(signer ? { signer } : {})")
+    expect(mediaPreferences).toContain(
+      'auth.status === "connected" ? auth.pubkey : null'
+    )
   })
 
-  it("rejects an insecure or excluded candidate before relay I/O or storage", () => {
+  it("prepares one frozen authoritative review and exposes one execute doorway", () => {
+    const execution = sourceBetween(
+      "const executePreparedMutation = useCallback(",
+      "const prepareChange = useCallback("
+    )
+    const preparation = sourceBetween(
+      "const prepareChange = useCallback(",
+      "const retryPendingUpdate = useCallback("
+    )
+    expect(preparation).toContain("reviewAccountNetworkMutation(")
+    expect(execution).toContain("publishAccountNetworkMutation({")
+    expect(execution).toContain("reviewed,")
+    expect(execution).toContain("authenticatedPubkey: reviewed.pubkey")
+    expect(preparation).toContain("createNdkNostrEventSigner(")
+    expect(controllerSource).toContain('type: "set_roles"')
+    expect(controllerSource).toContain("removedRelayUrls,")
+    expect(preparation).toContain("if (summary.signerRequestCount > 0)")
+    expect(preparation).toContain("const snapshot = captureAuth()")
+    expect(preparation).toContain("const snapshot = captureAccount()")
+    expect(preparation).toContain("let started = false")
+    expect(preparation).toContain("if (started)")
+    expect(execution).toContain("revisionRef.current !== preparedRevision")
+    expect(execution).toContain("...(signer ? { signer } : {})")
+    expect(controllerSource).not.toContain("  save: (")
+    expect(controllerSource).not.toContain("  removeRelay: (")
+  })
+
+  it("accepts an owner-selected ws candidate before relay I/O or storage", () => {
     const localState = emptyAccountNetworkLocalState("a".repeat(64))
+    expect(
+      createCandidateNetworkRelayRow({
+        url: "ws://owner-selected.example",
+        localState,
+      }).url
+    ).toBe("ws://owner-selected.example")
     expect(() =>
       createCandidateNetworkRelayRow({
-        url: "ws://insecure.example",
+        url: "ftp://not-a-relay.example",
         localState,
       })
-    ).toThrow("secure relay URL")
+    ).toThrow("ws:// or wss://")
 
     const add = sourceBetween(
       "const addRelay = useCallback(",
@@ -95,10 +121,14 @@ describe("account Network settings controller contract", () => {
     )
 
     expect(retry).toContain("retryAccountNetworkMutation({")
+    expect(retry).toContain("authenticatedPubkey: snapshot.pubkey")
     expect(redistribute).toContain(
       "redistributeAccountNetworkInboxDeclaration({"
     )
+    expect(redistribute).toContain("authenticatedPubkey: snapshot.pubkey")
     expect(reorder).toContain("reorderAccountNetworkRelays({")
+    expect(reorder).toContain(".filter(isAccountNetworkRelayRowOrderEligible)")
+    expect(reorder).not.toContain("current.preferredRelayOrder.filter(")
     for (const operation of [retry, redistribute, reorder]) {
       expect(operation).not.toContain("captureAuth(")
       expect(operation).not.toContain("createNdkNostrEventSigner(")
@@ -127,6 +157,23 @@ describe("account Network settings controller contract", () => {
     expect(refresh).toContain("async (): Promise<void>")
     expect(refresh).toContain("relayUrls: baseView.rows.map((row) => row.url)")
     expect(refresh).not.toContain("relayUrls?:")
+  })
+
+  it("turns refresh failures into an actionable operation error", () => {
+    const refresh = sourceBetween(
+      "const refresh = useCallback(",
+      "return {\n    view: baseView"
+    )
+    expect(refresh).toContain(
+      'setOperation({ kind: "refresh", phase: "checking", message: null })'
+    )
+    expect(refresh).toContain("await accountPreferences.refetch()")
+    expect(refresh).toContain("} catch (error) {")
+    expect(refresh).toContain('kind: "refresh"')
+    expect(refresh).toContain('phase: "error"')
+    expect(refresh).toContain("operationErrorMessage(error)")
+    expect(refresh).toContain("Try again.")
+    expect(refresh).not.toContain("throw error")
   })
 
   it("discards only the legacy NIP-65 role draft", () => {

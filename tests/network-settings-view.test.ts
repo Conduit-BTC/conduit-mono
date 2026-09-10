@@ -218,6 +218,42 @@ function row(
 }
 
 describe("network settings view", () => {
+  it("preserves an owner-selected ws relay and all of its signed roles", () => {
+    const view = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        rows: [
+          {
+            url: "ws://OWNER-SELECTED.EXAMPLE/",
+            position: 0,
+            read: "published",
+            write: "pending",
+            privateInbox: "published",
+            draftRead: false,
+            draftWrite: false,
+          },
+        ],
+        inbox: {
+          relayUrls: ["ws://owner-selected.example"],
+        },
+      }),
+      localState: localState(),
+    })
+
+    expect(view.rows).toEqual([
+      expect.objectContaining({
+        url: "ws://owner-selected.example",
+        readEnabled: true,
+        publishEnabled: true,
+        privateInboxEnabled: true,
+        readState: "published",
+        publishState: "pending",
+        privateInboxState: "published",
+        signedPosition: 0,
+        candidate: false,
+      }),
+    ])
+  })
+
   it("projects one row per relay with independent roles and omits whole-relay exclusions", () => {
     const duplicateRows = [
       ...reconciliation().projection.rows,
@@ -401,6 +437,7 @@ describe("network settings view", () => {
         kind: 10002,
         label: "Read and Publish",
         eventId: "owner-event",
+        confirmationState: "readback_pending",
         eligibleTargetCount: 2,
         exactReadbackCount: 1,
         unresolvedCount: 1,
@@ -411,12 +448,75 @@ describe("network settings view", () => {
         kind: 10050,
         label: "Private inbox",
         eventId: "inbox-event",
+        confirmationState: "readback_pending",
         eligibleTargetCount: 2,
         exactReadbackCount: 1,
         unresolvedCount: 1,
         excludedTargetCount: 1,
         retryAvailable: true,
       },
+    ])
+  })
+
+  it("does not call an all-policy-blocked pending event exactly confirmed", () => {
+    const view = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        owner: {
+          pendingDistribution: {
+            signedEvent: { id: "owner-event" },
+            publishRelayUrls: ["wss://removed.example"],
+            relayOutcomes: [
+              {
+                relayUrl: "wss://removed.example",
+                publishStatus: "acked",
+                publishAttemptCount: 1,
+                readbackStatus: "pending",
+                readbackAttemptCount: 0,
+              },
+            ],
+            stagedAt: 1,
+          },
+        },
+        inbox: {
+          state: "distribution_pending",
+          relayUrls: [],
+          pendingRelayUrls: ["wss://removed.example"],
+          pendingPublishRelayUrls: ["wss://removed.example"],
+          pendingRelayOutcomes: [
+            {
+              relayUrl: "wss://removed.example",
+              publishStatus: "acked",
+              publishAttemptCount: 1,
+              readbackStatus: "pending",
+              readbackAttemptCount: 0,
+            },
+          ],
+        },
+      }),
+      localState: localState({
+        exclusions: [exclusion("wss://removed.example")],
+      }),
+    })
+
+    expect(view.pendingExactDeliveries).toEqual([
+      expect.objectContaining({
+        kind: 10002,
+        confirmationState: "policy_blocked",
+        eligibleTargetCount: 0,
+        exactReadbackCount: 0,
+        unresolvedCount: 0,
+        excludedTargetCount: 1,
+        retryAvailable: false,
+      }),
+      expect.objectContaining({
+        kind: 10050,
+        confirmationState: "policy_blocked",
+        eligibleTargetCount: 0,
+        exactReadbackCount: 0,
+        unresolvedCount: 0,
+        excludedTargetCount: 1,
+        retryAvailable: false,
+      }),
     ])
   })
 
@@ -430,6 +530,28 @@ describe("network settings view", () => {
         authEvidence: "untested",
       },
     })
+    const observed = row("wss://observed.example", {
+      capability: {
+        configuredUses: [],
+        observedCommerce: true,
+        nip11: "available",
+        searchAdvertised: false,
+        authEvidence: "succeeded",
+      },
+    })
+    const draftCandidate = row("wss://candidate.example", {
+      readState: "draft",
+      publishState: "draft",
+      signedPosition: null,
+      candidate: true,
+      capability: {
+        configuredUses: ["product_discovery"],
+        observedCommerce: true,
+        nip11: "available",
+        searchAdvertised: false,
+        authEvidence: "succeeded",
+      },
+    })
     const responded = row("wss://responded.example", {
       signedPosition: 2,
       reachability: "responded",
@@ -437,15 +559,31 @@ describe("network settings view", () => {
     const unchecked = row("wss://unchecked.example", { signedPosition: 1 })
     const otherUnchecked = row("wss://other.example", { signedPosition: 0 })
     const ordered = orderAccountNetworkRelayRows(
-      [unchecked, configured, otherUnchecked, responded],
-      [unchecked.url, responded.url, otherUnchecked.url, configured.url]
+      [
+        draftCandidate,
+        unchecked,
+        observed,
+        configured,
+        otherUnchecked,
+        responded,
+      ],
+      [
+        draftCandidate.url,
+        observed.url,
+        unchecked.url,
+        responded.url,
+        otherUnchecked.url,
+        configured.url,
+      ]
     )
 
     expect(ordered.map((entry) => entry.url)).toEqual([
       configured.url,
+      observed.url,
       responded.url,
       unchecked.url,
       otherUnchecked.url,
+      draftCandidate.url,
     ])
   })
 
@@ -468,6 +606,27 @@ describe("network settings view", () => {
         authEvidence: "succeeded",
       },
     })
+    expect(
+      createCandidateNetworkRelayRow({
+        url: "WS://OWNER-SELECTED.EXAMPLE:7447/",
+        localState: localState(),
+      })
+    ).toMatchObject({
+      url: "ws://owner-selected.example:7447",
+      candidate: true,
+    })
+    expect(() =>
+      createCandidateNetworkRelayRow({
+        url: "ftp://not-a-relay.example",
+        localState: localState(),
+      })
+    ).toThrow("ws:// or wss://")
+    expect(() =>
+      createCandidateNetworkRelayRow({
+        url: "not a relay host",
+        localState: localState(),
+      })
+    ).toThrow()
     expect(() =>
       createCandidateNetworkRelayRow({
         url: "wss://removed.example",
@@ -514,6 +673,41 @@ describe("network settings view", () => {
       valid: true,
       errors: [],
       warnings: [ACCOUNT_NETWORK_SINGLE_PUBLISH_WARNING],
+    })
+
+    const ownerSelectedWs = validateAccountNetworkDesiredRoles(
+      [
+        {
+          url: "ws://owner-selected.example",
+          readEnabled: true,
+          publishEnabled: true,
+          privateInboxEnabled: true,
+        },
+      ],
+      context
+    )
+    expect(ownerSelectedWs).toEqual({
+      valid: true,
+      errors: [],
+      warnings: [ACCOUNT_NETWORK_SINGLE_PUBLISH_WARNING],
+    })
+
+    const nonWebSocketScheme = validateAccountNetworkDesiredRoles(
+      [
+        {
+          url: "ftp://not-a-relay.example",
+          readEnabled: true,
+          publishEnabled: true,
+          privateInboxEnabled: true,
+        },
+      ],
+      context
+    )
+    expect(nonWebSocketScheme).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([
+        "Every selected role must use a valid relay URL.",
+      ]),
     })
 
     const declaredInboxToggledOff = validateAccountNetworkDesiredRoles(

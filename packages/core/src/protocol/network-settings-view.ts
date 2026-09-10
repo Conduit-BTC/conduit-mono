@@ -2,11 +2,7 @@ import { config } from "../config"
 import type { AccountNetworkLocalState } from "./account-network-local-state"
 import type { AccountNetworkPreferencesReconciliation } from "./network-preferences"
 import type { RelayAuthEvidenceState } from "./relay-executor"
-import {
-  getConfiguredIsolatedE2eRelayUrl,
-  tryNormalizeRelayUrl,
-  type RelayScanResult,
-} from "./relay-settings"
+import { tryNormalizeRelayUrl, type RelayScanResult } from "./relay-settings"
 import { MAX_DECLARED_INBOX_WRITE_RELAYS } from "./private-message-routing"
 
 export type AccountNetworkRole = "read" | "publish" | "private_inbox"
@@ -67,6 +63,8 @@ export interface AccountNetworkPendingExactDeliveryView {
   kind: 10002 | 10050
   label: "Read and Publish" | "Private inbox"
   eventId: string
+  /** Confirmation is explicit because zero eligible targets is not readback. */
+  confirmationState: "exact_confirmed" | "readback_pending" | "policy_blocked"
   eligibleTargetCount: number
   exactReadbackCount: number
   unresolvedCount: number
@@ -121,14 +119,7 @@ const COMMERCE_USES: readonly AccountNetworkRelayConfiguredUse[] = [
 
 function normalizeAccountRelayUrl(url: string): string {
   const normalized = tryNormalizeRelayUrl(url)
-  const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
-  if (
-    !normalized.ok ||
-    (!normalized.url.startsWith("wss://") &&
-      normalized.url !== isolatedRelayUrl)
-  ) {
-    throw new Error("Relay URL must be a secure relay URL")
-  }
+  if (!normalized.ok) throw new Error(normalized.error)
   return normalized.url
 }
 
@@ -263,14 +254,18 @@ function inboxObservedAt(
 }
 
 function rowEvidenceTier(row: AccountNetworkRelayRowView): number {
-  const active =
-    row.readEnabled ||
-    row.publishEnabled ||
-    row.privateInboxEnabled ||
-    row.recoveryReadOnly
-  if (!active) return 4
-  if (row.capability.observedCommerce) return 0
-  if (isAccountNetworkRelayCommerceRelevant(row.capability)) return 1
+  const draftOnly =
+    row.candidate ||
+    [row.readState, row.publishState, row.privateInboxState].some(
+      (state) => state === "draft"
+    )
+  if (draftOnly || !isAccountNetworkRelayRowOrderEligible(row)) return 4
+  if (
+    row.capability.configuredUses.some((use) => COMMERCE_USES.includes(use))
+  ) {
+    return 0
+  }
+  if (row.capability.observedCommerce) return 1
   if (
     row.capability.searchAdvertised ||
     row.capability.authEvidence === "advertised" ||
@@ -289,6 +284,17 @@ export function areAccountNetworkRelayRowsReorderEquivalent(
   return (
     rowEvidenceTier(left) === rowEvidenceTier(right) &&
     reachabilityTier(left.reachability) === reachabilityTier(right.reachability)
+  )
+}
+
+export function isAccountNetworkRelayRowOrderEligible(
+  row: AccountNetworkRelayRowView
+): boolean {
+  return (
+    Boolean(row.recoveryReadOnly) ||
+    [row.readState, row.publishState, row.privateInboxState].some(
+      (state) => state === "published" || state === "pending"
+    )
   )
 }
 
@@ -449,6 +455,12 @@ export function buildAccountNetworkSettingsView(input: {
       kind: 10002,
       label: "Read and Publish",
       eventId: owner.pendingDistribution.signedEvent.id,
+      confirmationState:
+        eligibleTargets.length === 0
+          ? "policy_blocked"
+          : unresolvedCount === 0
+            ? "exact_confirmed"
+            : "readback_pending",
       eligibleTargetCount: eligibleTargets.length,
       exactReadbackCount,
       unresolvedCount,
@@ -476,6 +488,12 @@ export function buildAccountNetworkSettingsView(input: {
       kind: 10050,
       label: "Private inbox",
       eventId: inbox.eventId,
+      confirmationState:
+        eligibleTargets.length === 0
+          ? "policy_blocked"
+          : unresolvedCount === 0
+            ? "exact_confirmed"
+            : "readback_pending",
       eligibleTargetCount: eligibleTargets.length,
       exactReadbackCount,
       unresolvedCount,
@@ -544,37 +562,6 @@ export function createCandidateNetworkRelayRow(input: {
   }
 }
 
-export function countAccountNetworkChangedKinds(
-  baseline: readonly AccountNetworkDesiredRelayRoles[],
-  desired: readonly AccountNetworkDesiredRelayRoles[]
-): number {
-  const normalized = (
-    rows: readonly AccountNetworkDesiredRelayRoles[],
-    role: "nip65" | "inbox"
-  ): string => {
-    const values: Array<string | [string, boolean, boolean]> = []
-    for (const row of rows) {
-      const url = normalizedRelayUrl(row.url) ?? row.url.trim()
-      const included =
-        role === "nip65"
-          ? row.readEnabled || row.publishEnabled
-          : row.privateInboxEnabled
-      if (!included) continue
-      values.push(
-        role === "nip65" ? [url, row.readEnabled, row.publishEnabled] : url
-      )
-    }
-    values.sort((left, right) =>
-      JSON.stringify(left).localeCompare(JSON.stringify(right))
-    )
-    return JSON.stringify(values)
-  }
-  return (
-    Number(normalized(baseline, "nip65") !== normalized(desired, "nip65")) +
-    Number(normalized(baseline, "inbox") !== normalized(desired, "inbox"))
-  )
-}
-
 function currentActiveInboxUrls(
   reconciliation: AccountNetworkPreferencesReconciliation
 ): string[] {
@@ -631,7 +618,7 @@ export function validateAccountNetworkDesiredRoles(
   for (const row of rows) {
     const url = normalizedRelayUrl(row.url)
     if (!url) {
-      errors.push("Every selected role must use a secure relay URL.")
+      errors.push("Every selected role must use a valid relay URL.")
       continue
     }
     if (normalized.has(url)) {

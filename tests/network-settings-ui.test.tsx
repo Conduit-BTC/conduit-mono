@@ -5,6 +5,10 @@ import type {
   AccountNetworkSettingsController,
 } from "@conduit/core"
 import { RelaySettingsPanel } from "@conduit/ui"
+import {
+  getRelayRemovalReviewCopy,
+  persistRelayOrderPreference,
+} from "../packages/ui/src/components/RelaySettingsPanel"
 
 const EMPTY_FRONTIER = {
   state: "not_observed",
@@ -49,6 +53,7 @@ function controller(
     pendingExactDeliveries?: AccountNetworkSettingsController["view"]["pendingExactDeliveries"]
     validation?: ReturnType<AccountNetworkSettingsController["validate"]>
     legacyDraftReviewAvailable?: boolean
+    exactInboxRedistributionAvailable?: boolean
   } = {}
 ): AccountNetworkSettingsController {
   return {
@@ -63,14 +68,24 @@ function controller(
     revision: "test-revision",
     operation: { kind: null, phase: "idle", message: null },
     relayInformationRefreshing: false,
-    exactInboxRedistributionAvailable: false,
+    exactInboxRedistributionAvailable:
+      input.exactInboxRedistributionAvailable ?? false,
     legacyDraftReviewAvailable: input.legacyDraftReviewAvailable ?? false,
     mediaServers: null,
     addRelay: async () => relayRow("wss://added.example"),
     validate: () =>
       input.validation ?? { valid: true, errors: [], warnings: [] },
-    save: async () => undefined,
-    removeRelay: async () => undefined,
+    prepareChange: () => ({
+      summary: {
+        signerRequestCount: 2,
+        changedObjects: [
+          "Read and Publish relay preferences",
+          "Private inbox relay preferences",
+        ],
+        warnings: [],
+      },
+      execute: async () => undefined,
+    }),
     retryPendingUpdate: async () => undefined,
     redistributeExactInboxDeclaration: async () => undefined,
     reorderRelays: async () => undefined,
@@ -111,6 +126,48 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(oneRelayMarkup).toContain(
       "One Publish relay is valid, but adding another improves redundancy."
     )
+  })
+
+  it("identifies unencrypted relay transport without blocking its controls", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [
+            relayRow("ws://relay.lan", {
+              readEnabled: false,
+            }),
+          ],
+        })}
+      />
+    )
+
+    expect(markup).toContain("Unencrypted connection")
+    expect(markup).toContain("Transport encryption is absent.")
+    expect(markup).toContain(
+      "Use this relay only when you control it or explicitly trust the relay and network path."
+    )
+    const readControl = markup.match(
+      /<button[^>]*aria-label="Enable Read for ws:\/\/relay\.lan"[^>]*>/
+    )?.[0]
+    expect(readControl).toBeDefined()
+    expect(readControl).not.toContain(' disabled=""')
+
+    const reviewTextIndex = markup.indexOf("Review and publish")
+    const reviewTagStart = markup.lastIndexOf("<button", reviewTextIndex)
+    const reviewTagEnd = markup.indexOf(">", reviewTagStart)
+    const reviewControl = markup.slice(reviewTagStart, reviewTagEnd + 1)
+    expect(reviewTextIndex).toBeGreaterThan(-1)
+    expect(reviewTagStart).toBeGreaterThan(-1)
+    expect(reviewControl).not.toContain(' disabled=""')
+
+    const encryptedMarkup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [relayRow("wss://relay.example")],
+        })}
+      />
+    )
+    expect(encryptedMarkup).not.toContain("Unencrypted connection")
   })
 
   it("identifies recovery-only inboxes and makes whole-relay cutoff explicit", () => {
@@ -178,10 +235,75 @@ describe("RelaySettingsPanel account Network review", () => {
     const preview = panelSource.match(
       /function removalInstructionForReview\([\s\S]*?\n\}/
     )?.[0]
-    expect(preview).toContain("baselineRoles.filter(")
-    expect(preview).toContain("(roles) => roles.url !== relayUrl")
-    expect(preview).not.toContain("baselineRoles.map(")
-    expect(panelSource).toContain("disabled={busy || Boolean(instruction)}")
+    expect(preview).toContain("hasUnpublishedChanges")
+    expect(preview).toContain("preparationError")
+    expect(panelSource).toContain(
+      'controller.prepareChange({ type: "remove_relay", relayUrl })'
+    )
+    expect(panelSource).toContain("!preparedChange")
+  })
+
+  it("names the exact zero, one, or two signer requests for whole removal", () => {
+    const redundancyWarning =
+      "One Publish relay is valid, but adding another improves redundancy."
+    const localOnly = getRelayRemovalReviewCopy({
+      signerRequestCount: 0,
+      changedObjects: ["Local whole-relay removal policy"],
+      warnings: [redundancyWarning],
+    })
+    expect(localOnly.signerRequestCount).toBe(0)
+    expect(localOnly.signerMessage).toContain("zero signer requests")
+    expect(localOnly.changedObjects).toEqual([
+      "Local whole-relay removal policy",
+    ])
+    expect(localOnly.warnings).toEqual([redundancyWarning])
+
+    const relayListOnly = getRelayRemovalReviewCopy({
+      signerRequestCount: 1,
+      changedObjects: [
+        "Read and Publish relay preferences",
+        "Local whole-relay removal policy",
+      ],
+      warnings: [redundancyWarning],
+    })
+    expect(relayListOnly.signerRequestCount).toBe(1)
+    expect(relayListOnly.signerMessage).toContain("exactly 1 signer request")
+    expect(relayListOnly.changedObjects).toEqual([
+      "Read and Publish relay preferences",
+      "Local whole-relay removal policy",
+    ])
+    expect(relayListOnly.warnings).toEqual([redundancyWarning])
+
+    const bothKinds = getRelayRemovalReviewCopy({
+      signerRequestCount: 2,
+      changedObjects: [
+        "Read and Publish relay preferences",
+        "Private inbox relay preferences",
+        "Local whole-relay removal policy",
+      ],
+      warnings: [redundancyWarning],
+    })
+    expect(bothKinds.signerRequestCount).toBe(2)
+    expect(bothKinds.signerMessage).toContain("exactly 2 signer requests")
+    expect(bothKinds.changedObjects).toEqual([
+      "Read and Publish relay preferences",
+      "Private inbox relay preferences",
+      "Local whole-relay removal policy",
+    ])
+    expect(bothKinds.warnings).toEqual([redundancyWarning])
+  })
+
+  it("keeps prepared warnings visible in both final review dialogs", async () => {
+    const panelSource = await Bun.file(
+      "packages/ui/src/components/RelaySettingsPanel.tsx"
+    ).text()
+
+    expect(panelSource).toContain(
+      "<PreparedReviewWarnings warnings={review.warnings} />"
+    )
+    expect(panelSource).toContain(
+      "<PreparedReviewWarnings warnings={summary.warnings} />"
+    )
   })
 
   it("keeps legacy role-draft discard separate from inbox recovery", () => {
@@ -196,6 +318,35 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup).toContain("Discard older draft")
   })
 
+  it("offers signer-free redistribution for the exact retained inbox event", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({ exactInboxRedistributionAvailable: true })}
+      />
+    )
+
+    expect(markup).toContain("Finish private inbox distribution")
+    expect(markup).toContain("Retry exact declaration")
+    expect(markup).toContain(
+      "This does not create a new event or ask your signer."
+    )
+  })
+
+  it("does not hide a durable legacy draft with a React-only discard", async () => {
+    const panelSource = await Bun.file(
+      "packages/ui/src/components/RelaySettingsPanel.tsx"
+    ).text()
+    const discardReview = panelSource.match(
+      /function discardReview\(\): void \{[\s\S]*?\n {2}\}/
+    )?.[0]
+
+    expect(discardReview).toContain("setRows(controller.view.rows)")
+    expect(panelSource).toContain(
+      "Use Discard older draft to remove these imported relay choices from Conduit storage."
+    )
+    expect(panelSource).not.toContain("function discardReviewRows(")
+  })
+
   it("shows exact readback evidence without an update-journal summary", () => {
     const markup = renderToStaticMarkup(
       <RelaySettingsPanel
@@ -206,6 +357,7 @@ describe("RelaySettingsPanel account Network review", () => {
               kind: 10050,
               label: "Private inbox",
               eventId: "f".repeat(64),
+              confirmationState: "readback_pending",
               eligibleTargetCount: 3,
               exactReadbackCount: 1,
               unresolvedCount: 2,
@@ -224,6 +376,31 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup).toContain("Retry exact signed update")
     expect(markup).not.toContain("accepted")
     expect(markup).not.toContain("timed out")
+  })
+
+  it("never labels an all-excluded exact plan as confirmed", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          pendingExactDeliveries: [
+            {
+              kind: 10050,
+              label: "Private inbox",
+              eventId: "e".repeat(64),
+              confirmationState: "policy_blocked",
+              eligibleTargetCount: 0,
+              exactReadbackCount: 0,
+              unresolvedCount: 0,
+              excludedTargetCount: 2,
+              retryAvailable: false,
+            },
+          ],
+        })}
+      />
+    )
+
+    expect(markup).toContain("Targets excluded")
+    expect(markup).not.toContain("Exact event confirmed")
   })
 
   it("offers move controls only across equivalent adjacent rows", () => {
@@ -262,6 +439,63 @@ describe("RelaySettingsPanel account Network review", () => {
       />
     )
     expect(nonEquivalentMarkup).not.toContain('aria-label="Move ')
+  })
+
+  it("serializes local reorder writes and restores deterministic focus", async () => {
+    const panelSource = await Bun.file(
+      "packages/ui/src/components/RelaySettingsPanel.tsx"
+    ).text()
+
+    expect(panelSource).toContain("if (reorderInFlightRef.current) return")
+    expect(panelSource).toContain("reorderInFlightRef.current = true")
+    expect(panelSource).toContain("reorderInFlightRef.current = false")
+    expect(panelSource).toContain("controllerPreferredOrder")
+    expect(panelSource).toContain("orderAccountNetworkRelayRows(")
+    expect(panelSource).toContain("relayOrderGroupRefs.current.get(url)")
+    expect(panelSource).toContain(
+      'querySelector<HTMLButtonElement>("button:not(:disabled)")'
+    )
+    expect(panelSource).toContain(
+      "removalFallbackFocusRef?.current?.focus({ preventScroll: true })"
+    )
+    expect(panelSource).toContain("!publishButton.disabled")
+    expect(panelSource).not.toContain("setRows(presentationRows)")
+    expect(panelSource).toContain(
+      "addRelayInputRef.current?.focus({ preventScroll: true })"
+    )
+    expect(panelSource).toContain("ref={review.addRelayInputRef}")
+  })
+
+  it("rolls a rejected reorder back to the latest durable order", async () => {
+    const first = relayRow("wss://first.example", { signedPosition: 0 })
+    const second = relayRow("wss://second.example", { signedPosition: 1 })
+    const third = relayRow("wss://third.example", { signedPosition: 2 })
+    let rows = [first, second, third]
+    let latestPreferredOrder = rows.map((row) => row.url)
+    let rejectPersist: (reason: Error) => void = () => undefined
+    const persistence = new Promise<void>((_resolve, reject) => {
+      rejectPersist = reject
+    })
+
+    const result = persistRelayOrderPreference({
+      nextRows: [second, first, third],
+      persist: async () => await persistence,
+      latestPreferredOrder: () => latestPreferredOrder,
+      updateRows: (updater) => {
+        rows = updater(rows)
+      },
+    })
+
+    expect(rows.map((row) => row.url)).toEqual([
+      second.url,
+      first.url,
+      third.url,
+    ])
+    latestPreferredOrder = [third.url, first.url, second.url]
+    rejectPersist(new Error("Could not save the relay order. Try again."))
+
+    expect(await result).toBe("Could not save the relay order. Try again.")
+    expect(rows.map((row) => row.url)).toEqual(latestPreferredOrder)
   })
 
   it("keeps the relay editor reset key insensitive to local reordering", async () => {

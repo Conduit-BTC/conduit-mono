@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 import {
   TEST_RELAY_URL,
@@ -11,6 +11,10 @@ import {
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 const screenshotDirectory = process.env.PLAYWRIGHT_NETWORK_UI_SCREENSHOT_DIR
+const accountNetworkLocalStateModuleUrl = `/@fs/${join(
+  process.cwd(),
+  "packages/core/src/protocol/account-network-local-state.ts"
+)}`
 const layouts = [
   { name: "desktop", viewport: { width: 1280, height: 720 } },
   { name: "mobile", viewport: { width: 390, height: 844 } },
@@ -42,6 +46,90 @@ async function openNetwork(
   return appUrl
 }
 
+async function expectMinimumTouchTarget(locator: Locator): Promise<void> {
+  const box = await locator.boundingBox()
+  expect(box, "expected a visible control with a bounding box").not.toBeNull()
+  expect(box!.width).toBeGreaterThanOrEqual(44)
+  expect(box!.height).toBeGreaterThanOrEqual(44)
+}
+
+test("account-local relay order reaches another storage-sharing tab without reload @market @merchant", async ({
+  page,
+  context,
+}) => {
+  const secondPage = await context.newPage()
+  await Promise.all([
+    page.goto(`${marketUrl}/products`),
+    secondPage.goto(`${marketUrl}/products`),
+  ])
+  const pubkey = getPublicKey(generateSecretKey())
+  const preferredRelayOrder = [
+    "wss://order-two.example",
+    "wss://order-one.example",
+  ]
+  const observedOrder = secondPage.evaluate(
+    async ({ moduleUrl, accountPubkey, expectedOrder }) => {
+      const localState = await import(/* @vite-ignore */ moduleUrl)
+      return await new Promise<string[]>((resolve, reject) => {
+        let unsubscribe = () => undefined
+        const timeout = window.setTimeout(() => {
+          unsubscribe()
+          reject(new Error("Timed out waiting for the shared relay order."))
+        }, 5_000)
+        unsubscribe = localState.subscribeAccountNetworkLocalState(
+          accountPubkey,
+          {
+            onChange(state: { preferredRelayOrder?: string[] } | undefined) {
+              if (
+                JSON.stringify(state?.preferredRelayOrder ?? []) !==
+                JSON.stringify(expectedOrder)
+              ) {
+                return
+              }
+              window.clearTimeout(timeout)
+              unsubscribe()
+              resolve([...(state?.preferredRelayOrder ?? [])])
+            },
+            onError(error: unknown) {
+              window.clearTimeout(timeout)
+              unsubscribe()
+              reject(error)
+            },
+          }
+        )
+      })
+    },
+    {
+      moduleUrl: accountNetworkLocalStateModuleUrl,
+      accountPubkey: pubkey,
+      expectedOrder: preferredRelayOrder,
+    }
+  )
+
+  await page.evaluate(
+    async ({ moduleUrl, accountPubkey, nextOrder }) => {
+      const localState = await import(/* @vite-ignore */ moduleUrl)
+      await localState.dexieAccountNetworkLocalStateRepository.update(
+        accountPubkey,
+        (current: unknown) =>
+          localState.replaceAccountNetworkPreferredRelayOrder(
+            current,
+            nextOrder,
+            Date.now()
+          )
+      )
+    },
+    {
+      moduleUrl: accountNetworkLocalStateModuleUrl,
+      accountPubkey: pubkey,
+      nextOrder: preferredRelayOrder,
+    }
+  )
+
+  expect(await observedOrder).toEqual(preferredRelayOrder)
+  await expect(secondPage).toHaveURL(`${marketUrl}/products`)
+})
+
 for (const app of ["market", "merchant"] as const) {
   for (const layout of layouts) {
     test(`${app} ${layout.name} warns before discarding unpublished relay edits @${app}`, async ({
@@ -49,6 +137,56 @@ for (const app of ["market", "merchant"] as const) {
     }) => {
       await page.setViewportSize(layout.viewport)
       const appUrl = await openNetwork(page, app)
+      const removeRelay = page.getByRole("button", {
+        name: `Remove ${TEST_RELAY_URL} from my whole setup`,
+      })
+      await expect(removeRelay).toBeEnabled({ timeout: 20_000 })
+      if (layout.name === "mobile") {
+        await expectMinimumTouchTarget(removeRelay)
+        await expectMinimumTouchTarget(
+          page.getByRole("button", { name: "Refresh" }).first()
+        )
+        await expectMinimumTouchTarget(
+          page.getByRole("button", { name: "Add relay" })
+        )
+        await expectMinimumTouchTarget(
+          page.getByRole("button", { name: "Review and publish" }).first()
+        )
+        const disclosureControls = page.locator("summary:visible")
+        const disclosureCount = await disclosureControls.count()
+        expect(disclosureCount).toBeGreaterThan(0)
+        for (let index = 0; index < disclosureCount; index += 1) {
+          await expectMinimumTouchTarget(disclosureControls.nth(index))
+        }
+      }
+      await removeRelay.click()
+      const removalDialog = page.getByRole("alertdialog")
+      await expect(
+        removalDialog.getByRole("heading", {
+          name: "Remove this relay from your whole setup?",
+        })
+      ).toBeVisible()
+      await expect(removalDialog).toContainText(
+        "Enable Publish on at least one relay."
+      )
+      await expect(removalDialog).toContainText(
+        "ends any recovery reads for this relay immediately"
+      )
+      const cancelRemoval = removalDialog.getByRole("button", {
+        name: "Cancel",
+      })
+      await expect(
+        removalDialog.getByRole("button", { name: "Proceed" })
+      ).toBeDisabled()
+      if (layout.name === "mobile") {
+        await expectMinimumTouchTarget(cancelRemoval)
+        await expectMinimumTouchTarget(
+          removalDialog.getByRole("button", { name: "Proceed" })
+        )
+      }
+      await cancelRemoval.click()
+      await expect(removeRelay).toBeFocused()
+
       const readRole = page.getByRole("button", {
         name: new RegExp(
           `^(Disable|Enable) Read for ${TEST_RELAY_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`
@@ -56,6 +194,7 @@ for (const app of ["market", "merchant"] as const) {
       })
 
       await expect(readRole).toBeEnabled({ timeout: 20_000 })
+      if (layout.name === "mobile") await expectMinimumTouchTarget(readRole)
       await readRole.click()
       await expect(readRole).toHaveAttribute("aria-pressed", "false")
       await expect(

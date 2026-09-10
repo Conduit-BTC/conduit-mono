@@ -207,6 +207,7 @@ export function MediaServerPreferencesSection({
           type="button"
           variant="outline"
           size="sm"
+          className="min-h-11"
           disabled={checking}
           onClick={onRetryLookup}
         >
@@ -219,7 +220,7 @@ export function MediaServerPreferencesSection({
     >
       <PreferenceSectionBody className="pt-0 sm:pt-0">
         <details className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5 sm:px-4">
-          <summary className="cursor-pointer text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
+          <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
             <span className="ml-1">Published preference</span>
           </summary>
           <div className="mt-3 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
@@ -279,6 +280,7 @@ export function MediaServerPreferencesSection({
                     type="button"
                     variant="ghost"
                     size="icon"
+                    className="min-h-11 min-w-11"
                     disabled={index === 0}
                     aria-label={"Move " + serverUrl + " earlier"}
                     title="Move earlier"
@@ -290,6 +292,7 @@ export function MediaServerPreferencesSection({
                     type="button"
                     variant="ghost"
                     size="icon"
+                    className="min-h-11 min-w-11"
                     disabled={index === view.localServerUrls.length - 1}
                     aria-label={"Move " + serverUrl + " later"}
                     title="Move later"
@@ -301,6 +304,7 @@ export function MediaServerPreferencesSection({
                     type="button"
                     variant="ghost"
                     size="icon"
+                    className="min-h-11 min-w-11"
                     aria-label={"Remove " + serverUrl}
                     title="Remove from the local list"
                     onClick={() => removeServer(index)}
@@ -426,6 +430,7 @@ export function MediaServerPreferencesSection({
                   view.publishPhase === "publishing" ||
                   view.publishPhase === "confirming"
                 }
+                className="min-h-11"
                 onClick={() => void onRetryPublish()}
               >
                 <RotateCcw className="size-4" aria-hidden="true" />
@@ -438,6 +443,7 @@ export function MediaServerPreferencesSection({
               variant={view.dirty ? "primary" : "outline"}
               disabled={!view.canPublish}
               title={view.publishDisabledReason ?? undefined}
+              className="min-h-11"
               onClick={() => setPublishDialogOpen(true)}
             >
               <Upload className="size-4" aria-hidden="true" />
@@ -477,11 +483,12 @@ export function MediaServerPreferencesSection({
             <Button
               type="button"
               variant="outline"
+              className="min-h-11"
               onClick={closePublishDialog}
             >
               Keep editing
             </Button>
-            <Button type="button" onClick={confirmPublish}>
+            <Button type="button" className="min-h-11" onClick={confirmPublish}>
               <Upload className="size-4" aria-hidden="true" />
               Sign and publish
             </Button>

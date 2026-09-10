@@ -29,7 +29,9 @@ import {
   type AccountNetworkMutationAction,
   type AccountNetworkMutationResult,
   type AccountNetworkSignedKind,
+  type ReviewedAccountNetworkMutation,
 } from "../protocol/account-network-mutation"
+import { EVENT_KINDS } from "../protocol/kinds"
 import {
   completeLegacyRelaySettingsDraftMigration,
   type AccountNetworkPreferencesReconciliation,
@@ -37,6 +39,7 @@ import {
 import {
   buildAccountNetworkSettingsView,
   createCandidateNetworkRelayRow,
+  isAccountNetworkRelayRowOrderEligible,
   validateAccountNetworkDesiredRoles,
   type AccountNetworkDesiredRelayRoles,
   type AccountNetworkDesiredRolesValidation,
@@ -78,6 +81,7 @@ export type AccountNetworkSettingsOperationKind =
   | "redistribute"
   | "reorder"
   | "discard_legacy"
+  | "refresh"
   | null
 
 export interface AccountNetworkSettingsOperationView {
@@ -96,6 +100,31 @@ export interface AccountNetworkMediaServerController {
   onRetryLookup: ReturnType<typeof useMediaServerPreferences>["refetch"]
 }
 
+export type AccountNetworkReviewChangedObject =
+  | "Read and Publish relay preferences"
+  | "Private inbox relay preferences"
+  | "Local whole-relay removal policy"
+
+export interface PreparedAccountNetworkSettingsChange {
+  summary: {
+    signerRequestCount: 0 | 1 | 2
+    changedObjects: readonly AccountNetworkReviewChangedObject[]
+    warnings: readonly string[]
+  }
+  /** Execute this exact frozen review at most once. */
+  execute: () => Promise<void>
+}
+
+export type PrepareAccountNetworkSettingsChangeInput =
+  | {
+      type: "set_roles"
+      rows: readonly AccountNetworkDesiredRelayRoles[]
+    }
+  | {
+      type: "remove_relay"
+      relayUrl: string
+    }
+
 export interface AccountNetworkSettingsController {
   view: AccountNetworkSettingsView
   status: AccountNetworkPreferencesStatus
@@ -111,8 +140,9 @@ export interface AccountNetworkSettingsController {
   validate: (
     rows: readonly AccountNetworkDesiredRelayRoles[]
   ) => AccountNetworkDesiredRolesValidation
-  save: (rows: readonly AccountNetworkDesiredRelayRoles[]) => Promise<void>
-  removeRelay: (relayUrl: string) => Promise<void>
+  prepareChange: (
+    input: PrepareAccountNetworkSettingsChangeInput
+  ) => PreparedAccountNetworkSettingsChange
   retryPendingUpdate: (kind?: AccountNetworkSignedKind) => Promise<void>
   redistributeExactInboxDeclaration: () => Promise<void>
   reorderRelays: (relayUrls: readonly string[]) => Promise<void>
@@ -189,6 +219,35 @@ function actionFromRows(
       privateInbox: row.privateInboxEnabled,
     })),
     removedRelayUrls,
+  }
+}
+
+function preparedChangeSummary(
+  reviewed: ReviewedAccountNetworkMutation
+): PreparedAccountNetworkSettingsChange["summary"] {
+  if (reviewed.signerRequestCount < 0 || reviewed.signerRequestCount > 2) {
+    throw new Error("A Network review can require at most two signatures.")
+  }
+  const changedObjects: AccountNetworkReviewChangedObject[] = []
+  if (reviewed.changedKinds.includes(EVENT_KINDS.RELAY_LIST)) {
+    changedObjects.push("Read and Publish relay preferences")
+  }
+  if (reviewed.changedKinds.includes(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS)) {
+    changedObjects.push("Private inbox relay preferences")
+  }
+  if (reviewed.action.removedRelayUrls.length > 0) {
+    changedObjects.push("Local whole-relay removal policy")
+  }
+  return {
+    signerRequestCount: reviewed.signerRequestCount as 0 | 1 | 2,
+    changedObjects,
+    warnings: reviewed.warnings.flatMap((warning) =>
+      warning === "single_relay_no_redundancy"
+        ? [
+            "One Publish relay is valid, but adding another improves redundancy.",
+          ]
+        : []
+    ),
   }
 }
 
@@ -492,9 +551,15 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
       }),
     [accountPubkey, activeLocal?.state, baseView, reconciliation]
   )
+  const revisionRef = useRef(revision)
+
+  useLayoutEffect(() => {
+    revisionRef.current = revision
+  }, [revision])
 
   const mediaServerPreferences = useMediaServerPreferences(auth.pubkey, {
     enabled: session.relaySettingsReady,
+    authenticatedPubkey: auth.status === "connected" ? auth.pubkey : null,
     signer: auth.signer,
     authMethod: auth.method,
     authGeneration: auth.authGeneration,
@@ -596,40 +661,30 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     [activeLocal?.ready, activeLocal?.state, reconciliation]
   )
 
-  const runMutation = useCallback(
+  const executePreparedMutation = useCallback(
     async (
       kind: "save" | "remove",
-      action: AccountNetworkMutationAction
+      reviewed: ReviewedAccountNetworkMutation,
+      preparedRevision: string,
+      shouldContinue: () => boolean,
+      signer?: ReturnType<typeof createNdkNostrEventSigner>
     ): Promise<void> => {
       let lastPhase: AccountNetworkSettingsOperationPhase = "checking"
       setOperation({ kind, phase: "checking", message: null })
       try {
-        const ready = requireReviewState()
-        const reviewed = reviewAccountNetworkMutation(
-          ready.reconciliation,
-          action
-        )
-        if (!reviewed.evidenceReady) {
+        if (!shouldContinue()) {
           throw new Error(
-            "A complete fresh check of both signed Network preferences is required."
+            "The active account or signer changed after this Network review."
           )
         }
-        let shouldContinue: () => boolean
-        let signer: ReturnType<typeof createNdkNostrEventSigner> | undefined
-        if (reviewed.signerRequestCount > 0) {
-          const snapshot = captureAuth()
-          shouldContinue = authFenceFor(snapshot)
-          signer = createNdkNostrEventSigner(
-            snapshot.signer,
-            snapshot.pubkey,
-            snapshot.method
+        if (revisionRef.current !== preparedRevision) {
+          throw new Error(
+            "Network evidence changed after review. Review the current preferences again."
           )
-        } else {
-          const snapshot = captureAccount()
-          shouldContinue = accountFenceFor(snapshot)
         }
         const result = await publishAccountNetworkMutation({
           reviewed,
+          authenticatedPubkey: reviewed.pubkey,
           ...(signer ? { signer } : {}),
           dependencies: {
             shouldContinue,
@@ -641,7 +696,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         })
         if (!shouldContinue()) {
           throw new Error(
-            "The active signer changed during the Network update."
+            "The active account or signer changed during the Network update."
           )
         }
         setOperation({
@@ -660,59 +715,95 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         throw error
       }
     },
-    [
-      accountFenceFor,
-      accountPreferences,
-      authFenceFor,
-      captureAccount,
-      captureAuth,
-      requireReviewState,
-    ]
+    [accountPreferences]
   )
 
-  const save = useCallback(
-    async (rows: readonly AccountNetworkDesiredRelayRoles[]) => {
-      const validation = validate(rows)
-      if (!validation.valid) {
-        const error = new Error(validation.errors[0])
-        setOperation({
-          kind: "save",
-          phase: "error",
-          message: error.message,
-        })
-        throw error
-      }
-      await runMutation("save", actionFromRows(rows))
-    },
-    [runMutation, validate]
-  )
-
-  const removeRelay = useCallback(
-    async (relayUrl: string) => {
-      try {
-        const normalized = tryNormalizeRelayUrl(relayUrl)
+  const prepareChange = useCallback(
+    (
+      input: PrepareAccountNetworkSettingsChangeInput
+    ): PreparedAccountNetworkSettingsChange => {
+      const ready = requireReviewState()
+      let kind: "save" | "remove"
+      let desired: AccountNetworkDesiredRelayRoles[]
+      let action: AccountNetworkMutationAction
+      if (input.type === "set_roles") {
+        kind = "save"
+        desired = input.rows.map((row) => ({ ...row }))
+        action = actionFromRows(desired)
+      } else {
+        kind = "remove"
+        const normalized = tryNormalizeRelayUrl(input.relayUrl)
         if (!normalized.ok) throw new Error(normalized.error)
-        requireReviewState()
         if (!baseView.rows.some((row) => row.url === normalized.url)) {
           throw new Error("That relay is not part of the current Network view.")
         }
-        const desired = desiredRolesFromCommittedRows(
-          baseView.rows,
-          normalized.url
+        desired = desiredRolesFromCommittedRows(baseView.rows, normalized.url)
+        action = actionFromRows(desired, [normalized.url])
+      }
+
+      const validation = validate(desired)
+      if (!validation.valid) {
+        throw new Error(validation.errors[0])
+      }
+      const reviewed = reviewAccountNetworkMutation(
+        ready.reconciliation,
+        action
+      )
+      if (!reviewed.evidenceReady) {
+        throw new Error(
+          "A complete fresh check of both signed Network preferences is required."
         )
-        const validation = validate(desired)
-        if (!validation.valid) throw new Error(validation.errors[0])
-        await runMutation("remove", actionFromRows(desired, [normalized.url]))
-      } catch (error) {
-        setOperation({
-          kind: "remove",
-          phase: "error",
-          message: operationErrorMessage(error),
-        })
-        throw error
+      }
+      const summary = preparedChangeSummary(reviewed)
+      if (summary.changedObjects.length === 0) {
+        throw new Error("These Network preferences are already current.")
+      }
+      const preparedRevision = revision
+      let shouldContinue: () => boolean
+      let signer: ReturnType<typeof createNdkNostrEventSigner> | undefined
+      if (summary.signerRequestCount > 0) {
+        const snapshot = captureAuth()
+        shouldContinue = authFenceFor(snapshot)
+        signer = createNdkNostrEventSigner(
+          snapshot.signer,
+          snapshot.pubkey,
+          snapshot.method
+        )
+      } else {
+        const snapshot = captureAccount()
+        shouldContinue = accountFenceFor(snapshot)
+      }
+      let started = false
+      return {
+        summary,
+        execute: async () => {
+          if (started) {
+            throw new Error(
+              "Prepare this Network change again before retrying it."
+            )
+          }
+          started = true
+          await executePreparedMutation(
+            kind,
+            reviewed,
+            preparedRevision,
+            shouldContinue,
+            signer
+          )
+        },
       }
     },
-    [baseView.rows, requireReviewState, runMutation, validate]
+    [
+      accountFenceFor,
+      authFenceFor,
+      baseView.rows,
+      captureAccount,
+      captureAuth,
+      executePreparedMutation,
+      requireReviewState,
+      revision,
+      validate,
+    ]
   )
 
   const retryPendingUpdate = useCallback(
@@ -723,6 +814,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         const shouldContinue = accountFenceFor(snapshot)
         const result = await retryAccountNetworkMutation({
           pubkey: snapshot.pubkey,
+          authenticatedPubkey: snapshot.pubkey,
           kind,
           dependencies: {
             shouldContinue,
@@ -775,6 +867,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
       const shouldContinue = accountFenceFor(snapshot)
       const result = await redistributeAccountNetworkInboxDeclaration({
         pubkey: snapshot.pubkey,
+        authenticatedPubkey: snapshot.pubkey,
         dependencies: {
           shouldContinue,
           onPhase: (phase) =>
@@ -872,9 +965,15 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
       if (!current || !activeLocal.ready) {
         throw new Error("Local Network preferences are not ready.")
       }
-      const requested = [...new Set(relayUrls)]
+      const eligibleRelayUrls = baseView.rows
+        .filter(isAccountNetworkRelayRowOrderEligible)
+        .map((row) => row.url)
+      const eligibleRelayUrlSet = new Set(eligibleRelayUrls)
+      const requested = [...new Set(relayUrls)].filter((relayUrl) =>
+        eligibleRelayUrlSet.has(relayUrl)
+      )
       const requestedSet = new Set(requested)
-      const preserved = current.preferredRelayOrder.filter(
+      const preserved = eligibleRelayUrls.filter(
         (relayUrl) => !requestedSet.has(relayUrl)
       )
       try {
@@ -903,7 +1002,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         throw error
       }
     },
-    [accountFenceFor, activeLocal, captureAccount]
+    [accountFenceFor, activeLocal, baseView.rows, captureAccount]
   )
 
   const discardLegacyDraft = useCallback(async () => {
@@ -952,12 +1051,13 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
   ])
 
   const refresh = useCallback(async (): Promise<void> => {
-    accountPreferences.refetch()
-    const snapshot = captureAccount()
-    const shouldContinue = accountFenceFor(snapshot)
     const generation = ++scanGeneration.current
+    setOperation({ kind: "refresh", phase: "checking", message: null })
     setRelayInformationRefreshing(true)
     try {
+      await accountPreferences.refetch()
+      const snapshot = captureAccount()
+      const shouldContinue = accountFenceFor(snapshot)
       const stored =
         (await dexieAccountNetworkLocalStateRepository.get(snapshot.pubkey)) ??
         emptyAccountNetworkLocalState(snapshot.pubkey)
@@ -977,6 +1077,19 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         ready: true,
         error: null,
       })
+      setOperation({
+        kind: "refresh",
+        phase: "complete",
+        message: "Network relay information is current.",
+      })
+    } catch (error) {
+      if (generation === scanGeneration.current) {
+        setOperation({
+          kind: "refresh",
+          phase: "error",
+          message: `Network relay information could not be refreshed. ${operationErrorMessage(error)} Try again.`,
+        })
+      }
     } finally {
       if (generation === scanGeneration.current) {
         setRelayInformationRefreshing(false)
@@ -1011,8 +1124,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
       : null,
     addRelay,
     validate,
-    save,
-    removeRelay,
+    prepareChange,
     retryPendingUpdate,
     redistributeExactInboxDeclaration,
     reorderRelays,

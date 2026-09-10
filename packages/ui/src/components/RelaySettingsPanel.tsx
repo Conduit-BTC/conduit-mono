@@ -22,8 +22,8 @@ import {
 } from "lucide-react"
 import {
   areAccountNetworkRelayRowsReorderEquivalent,
-  countAccountNetworkChangedKinds,
   isAccountNetworkRelayCommerceRelevant,
+  isAccountNetworkRelayRowOrderEligible,
   orderAccountNetworkRelayRows,
   tryNormalizeRelayUrl,
   type AccountNetworkDesiredRelayRoles,
@@ -33,6 +33,7 @@ import {
   type AccountNetworkRole,
   type AccountNetworkSettingsController,
   type AccountNetworkSettingsOperationPhase,
+  type PreparedAccountNetworkSettingsChange,
 } from "@conduit/core"
 import { cn } from "../utils"
 import { Button } from "./Button"
@@ -96,18 +97,8 @@ function hasSignedOrPendingMembership(
   )
 }
 
-function discardReviewRows(
-  rows: readonly AccountNetworkRelayRowView[]
-): AccountNetworkRelayRowView[] {
-  const baseline = new Map(
-    baselineRolesFromRows(rows).map((entry) => [entry.url, entry])
-  )
-  return rows.map((row) => ({
-    ...row,
-    readEnabled: baseline.get(row.url)?.readEnabled ?? false,
-    publishEnabled: baseline.get(row.url)?.publishEnabled ?? false,
-    privateInboxEnabled: baseline.get(row.url)?.privateInboxEnabled ?? false,
-  }))
+function usesUnencryptedRelayTransport(relayUrl: string): boolean {
+  return relayUrl.trim().toLowerCase().startsWith("ws://")
 }
 
 function rolesDiffer(
@@ -135,6 +126,30 @@ function rolesDiffer(
     if (baseline.some((value, index) => value !== desired[index])) return true
   }
   return false
+}
+
+export async function persistRelayOrderPreference(input: {
+  nextRows: readonly AccountNetworkRelayRowView[]
+  persist: (relayUrls: readonly string[]) => Promise<void>
+  latestPreferredOrder: () => readonly string[]
+  updateRows: (
+    updater: (
+      current: AccountNetworkRelayRowView[]
+    ) => AccountNetworkRelayRowView[]
+  ) => void
+}): Promise<string | null> {
+  input.updateRows(() => [...input.nextRows])
+  try {
+    await input.persist(input.nextRows.map((row) => row.url))
+    return null
+  } catch (error) {
+    input.updateRows((current) =>
+      orderAccountNetworkRelayRows(current, input.latestPreferredOrder())
+    )
+    return error instanceof Error
+      ? error.message
+      : "Unable to save this relay order preference."
+  }
 }
 
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -205,7 +220,7 @@ function RoleToggle({
       disabled={disabled}
       onClick={(event) => onToggle(event.currentTarget)}
       className={cn(
-        "inline-flex min-h-10 items-center justify-center rounded-full border px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-40",
+        "inline-flex min-h-11 items-center justify-center rounded-full border px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-40",
         enabled
           ? "border-primary-400 bg-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] text-[var(--primary-500)]"
           : "border-[var(--border-overlay)] bg-transparent text-[var(--text-secondary)] hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]"
@@ -347,7 +362,7 @@ function searchEvidenceLabel(row: AccountNetworkRelayRowView): string {
 function RelayDetails({ row }: { row: AccountNetworkRelayRowView }) {
   return (
     <details className="ml-10 mt-3 border-t border-[var(--border)] pt-2">
-      <summary className="w-fit cursor-pointer text-sm font-medium text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
+      <summary className="inline-flex min-h-11 w-fit cursor-pointer items-center text-sm font-medium text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
         Relay details
         <span className="sr-only"> for {row.url}</span>
       </summary>
@@ -427,6 +442,7 @@ function relayRowState(
 
 function RelayOrderControls({
   row,
+  groupRef,
   operationBusy,
   canMoveEarlier,
   canMoveLater,
@@ -434,6 +450,7 @@ function RelayOrderControls({
   onMoveLater,
 }: {
   row: AccountNetworkRelayRowView
+  groupRef: (element: HTMLDivElement | null) => void
   operationBusy: boolean
   canMoveEarlier: boolean
   canMoveLater: boolean
@@ -443,6 +460,8 @@ function RelayOrderControls({
   if (!canMoveEarlier && !canMoveLater) return null
   return (
     <div
+      ref={groupRef}
+      tabIndex={-1}
       role="group"
       aria-label={`Order preference for ${row.url}`}
       className="flex items-center gap-1"
@@ -456,6 +475,7 @@ function RelayOrderControls({
           title="Move earlier"
           disabled={operationBusy}
           onClick={onMoveEarlier}
+          className="min-h-11 min-w-11"
         >
           <ArrowUp className="size-4" aria-hidden="true" />
         </Button>
@@ -469,6 +489,7 @@ function RelayOrderControls({
           title="Move later"
           disabled={operationBusy}
           onClick={onMoveLater}
+          className="min-h-11 min-w-11"
         >
           <ArrowDown className="size-4" aria-hidden="true" />
         </Button>
@@ -489,21 +510,30 @@ function RelayRoleControls({
   onToggle: (role: AccountNetworkRole, trigger: HTMLButtonElement) => void
 }) {
   const inboxLimitReached = inboxCount >= 3
-  return (["read", "publish", "private_inbox"] as const).map((role) => (
-    <RoleToggle
-      key={role}
-      row={row}
-      role={role}
-      disabled={
-        mutationDisabled ||
-        (role === "private_inbox" &&
-          !row.privateInboxEnabled &&
-          inboxLimitReached)
-      }
-      inboxLimitReached={inboxLimitReached}
-      onToggle={(trigger) => onToggle(role, trigger)}
-    />
-  ))
+  const showInboxLimit = inboxLimitReached && !row.privateInboxEnabled
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2">
+        {(["read", "publish", "private_inbox"] as const).map((role) => (
+          <RoleToggle
+            key={role}
+            row={row}
+            role={role}
+            disabled={
+              mutationDisabled || (role === "private_inbox" && showInboxLimit)
+            }
+            inboxLimitReached={inboxLimitReached}
+            onToggle={(trigger) => onToggle(role, trigger)}
+          />
+        ))}
+      </div>
+      {showInboxLimit ? (
+        <p className="mt-1 text-pretty text-xs leading-5 text-[var(--text-muted)]">
+          Private inbox limit reached (3).
+        </p>
+      ) : null}
+    </div>
+  )
 }
 
 function RelayRow({
@@ -515,6 +545,7 @@ function RelayRow({
   inboxCount,
   canMoveEarlier,
   canMoveLater,
+  orderGroupRef,
   onToggle,
   onRemove,
   onMoveEarlier,
@@ -528,6 +559,7 @@ function RelayRow({
   inboxCount: number
   canMoveEarlier: boolean
   canMoveLater: boolean
+  orderGroupRef: (element: HTMLDivElement | null) => void
   onToggle: (role: AccountNetworkRole, trigger: HTMLButtonElement) => void
   onRemove: (trigger: HTMLButtonElement) => void
   onMoveEarlier: () => void
@@ -576,6 +608,7 @@ function RelayRow({
         <div className="flex flex-wrap items-center gap-2 lg:max-w-[23rem] lg:justify-end">
           <RelayOrderControls
             row={row}
+            groupRef={orderGroupRef}
             operationBusy={operationBusy}
             canMoveEarlier={canMoveEarlier}
             canMoveLater={canMoveLater}
@@ -596,11 +629,24 @@ function RelayRow({
             title={removalTitle}
             disabled={wholeSetupRemoval ? mutationDisabled : operationBusy}
             onClick={(event) => onRemove(event.currentTarget)}
+            className="min-h-11 min-w-11"
           >
             <Trash2 className="size-4" aria-hidden="true" />
           </Button>
         </div>
       </div>
+      {usesUnencryptedRelayTransport(row.url) ? (
+        <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5">
+          <p className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+            <Info className="size-4 shrink-0" aria-hidden="true" />
+            <span>Unencrypted connection</span>
+          </p>
+          <p className="mt-1 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
+            Transport encryption is absent. Use this relay only when you control
+            it or explicitly trust the relay and network path.
+          </p>
+        </div>
+      ) : null}
       {row.recoveryReadOnly ? (
         <p className="ml-10 mt-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
           Conduit reads this previous inbox during the 7-day recovery window.
@@ -690,7 +736,7 @@ function PublishedRelayPreferences({
   return (
     <div>
       <details className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:p-4">
-        <summary className="cursor-pointer text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
+        <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
           Published preferences
         </summary>
         <div className="mt-3">
@@ -748,6 +794,7 @@ function PendingUpdateSummary({
             type="button"
             variant="outline"
             size="sm"
+            className="min-h-11"
             disabled={
               relayDraftDirty || operationIsBusy(controller.operation.phase)
             }
@@ -776,12 +823,18 @@ function PendingUpdateSummary({
                 {delivery.label}
               </span>
               <StatusPill
-                variant={delivery.unresolvedCount === 0 ? "success" : "warning"}
+                variant={
+                  delivery.confirmationState === "exact_confirmed"
+                    ? "success"
+                    : "warning"
+                }
                 noIcon
               >
-                {delivery.unresolvedCount === 0
+                {delivery.confirmationState === "exact_confirmed"
                   ? "Exact event confirmed"
-                  : "Exact readback pending"}
+                  : delivery.confirmationState === "policy_blocked"
+                    ? "Targets excluded"
+                    : "Exact readback pending"}
               </StatusPill>
             </div>
             <p className="mt-1 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
@@ -806,6 +859,9 @@ function operationMessage(
   fallback: string | null
 ): string | null {
   if (fallback) return fallback
+  if (kind === "refresh" && phase === "checking") {
+    return "Refreshing relay information."
+  }
   if (kind === "discard_legacy" && phase === "staging") {
     return "Discarding the older local relay role draft."
   }
@@ -829,23 +885,76 @@ function operationIsBusy(phase: AccountNetworkSettingsOperationPhase): boolean {
   return !["idle", "complete", "error"].includes(phase)
 }
 
+export function getRelayRemovalReviewCopy(
+  summary: PreparedAccountNetworkSettingsChange["summary"] | null
+): {
+  signerRequestCount: 0 | 1 | 2 | null
+  signerMessage: string
+  changedObjects: readonly string[]
+  warnings: readonly string[]
+} {
+  if (!summary) {
+    return {
+      signerRequestCount: null,
+      signerMessage:
+        "Save or discard the other unpublished relay changes before Conduit prepares the exact removal review.",
+      changedObjects: [],
+      warnings: [],
+    }
+  }
+  if (summary.signerRequestCount === 0) {
+    return {
+      signerRequestCount: 0,
+      signerMessage:
+        "This action needs zero signer requests. Conduit will save the local removal cutoff before any network work.",
+      changedObjects: summary.changedObjects,
+      warnings: summary.warnings,
+    }
+  }
+  return {
+    signerRequestCount: summary.signerRequestCount,
+    signerMessage: `Your external signer will show exactly ${summary.signerRequestCount} signer ${summary.signerRequestCount === 1 ? "request" : "requests"}. Conduit applies the removal only after every required signature and exact event is safely staged.`,
+    changedObjects: summary.changedObjects,
+    warnings: summary.warnings,
+  }
+}
+
+function PreparedReviewWarnings({ warnings }: { warnings: readonly string[] }) {
+  if (warnings.length === 0) return null
+  return (
+    <ul className="space-y-2 text-pretty text-sm leading-6 text-warning">
+      {warnings.map((warning) => (
+        <li key={warning} className="flex items-start gap-2">
+          <AlertTriangle className="mt-1 size-4 shrink-0" aria-hidden="true" />
+          <span>{warning}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 export function RelayRemovalDialog({
   relayUrl,
+  preparedChange,
   instruction,
   errorMessage,
   busy,
   returnFocusRef,
+  fallbackFocusRef,
   onCancel,
   onProceed,
 }: {
   relayUrl: string | null
+  preparedChange: PreparedAccountNetworkSettingsChange | null
   instruction: string | null
   errorMessage: string | null
   busy: boolean
   returnFocusRef?: RefObject<HTMLButtonElement | null>
+  fallbackFocusRef?: RefObject<HTMLHeadingElement | null>
   onCancel: () => void
   onProceed: () => void
 }) {
+  const review = getRelayRemovalReviewCopy(preparedChange?.summary ?? null)
   return (
     <AlertDialog
       open={relayUrl !== null}
@@ -855,9 +964,12 @@ export function RelayRemovalDialog({
     >
       <AlertDialogContent
         onCloseAutoFocus={(event) => {
-          if (!returnFocusRef?.current?.isConnected) return
+          const focusTarget = returnFocusRef?.current?.isConnected
+            ? returnFocusRef.current
+            : fallbackFocusRef?.current
+          if (!focusTarget) return
           event.preventDefault()
-          returnFocusRef.current.focus()
+          focusTarget.focus()
         }}
       >
         <AlertDialogHeader>
@@ -865,16 +977,23 @@ export function RelayRemovalDialog({
             Remove this relay from your whole setup?
           </AlertDialogTitle>
           <AlertDialogDescription className="text-pretty leading-6">
-            After any required signer requests are safely staged, Conduit will
-            stop reading, publishing, and checking it for private messages. This
-            also ends any recovery reads for this relay immediately. Stale
-            clients may still send messages there, and those messages can be
-            missed.
+            {review.signerMessage} Conduit will stop reading, publishing, and
+            checking this relay for private messages. This also ends any
+            recovery reads for this relay immediately. Stale clients may still
+            send messages there, and those messages can be missed.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="break-all rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 font-mono text-sm text-[var(--text-primary)]">
           {relayUrl}
         </div>
+        {review.changedObjects.length > 0 ? (
+          <ul className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]">
+            {review.changedObjects.map((changedObject) => (
+              <li key={changedObject}>{changedObject}</li>
+            ))}
+          </ul>
+        ) : null}
+        <PreparedReviewWarnings warnings={review.warnings} />
         {instruction ? (
           <p role="alert" className="text-pretty text-sm text-warning">
             {instruction}
@@ -891,14 +1010,16 @@ export function RelayRemovalDialog({
             variant="outline"
             disabled={busy}
             onClick={onCancel}
+            className="min-h-11"
           >
             Cancel
           </Button>
           <Button
             type="button"
             variant="destructive"
-            disabled={busy || Boolean(instruction)}
+            disabled={busy || Boolean(instruction) || !preparedChange}
             onClick={onProceed}
+            className="min-h-11"
           >
             Proceed
           </Button>
@@ -959,13 +1080,19 @@ export function UnpublishedRelayChangesDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <Button type="button" variant="outline" onClick={onKeepEditing}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onKeepEditing}
+            className="min-h-11"
+          >
             {operationInProgress ? "Stay on this page" : "Keep editing"}
           </Button>
           {!operationInProgress ? (
             <Button
               type="button"
               variant="destructive"
+              className="min-h-11"
               onClick={() => {
                 returnFocusRef.current = null
                 onLeave()
@@ -982,21 +1109,20 @@ export function UnpublishedRelayChangesDialog({
 
 function removalInstructionForReview(
   relayUrl: string | null,
-  dirty: boolean,
-  baselineRoles: readonly AccountNetworkDesiredRelayRoles[],
-  controller: AccountNetworkSettingsController
+  hasUnpublishedChanges: boolean,
+  preparationError: string | null
 ): string | null {
   if (!relayUrl) return null
-  if (dirty) {
-    return "Save or discard your other reviewed role changes before removing this relay."
+  if (hasUnpublishedChanges) {
+    return "Save or discard your other unpublished relay changes before removing this relay."
   }
-  const removalRoles = baselineRoles.filter((roles) => roles.url !== relayUrl)
-  return controller.validate(removalRoles).errors[0] ?? null
+  return preparationError
 }
 
 function useRelaySettingsReview(
   controller: AccountNetworkSettingsController,
-  onUnpublishedRelayChangesChange?: (hasUnpublishedChanges: boolean) => void
+  onUnpublishedRelayChangesChange?: (hasUnpublishedChanges: boolean) => void,
+  removalFallbackFocusRef?: RefObject<HTMLHeadingElement | null>
 ) {
   const [rows, setRows] = useState<AccountNetworkRelayRowView[]>(
     () => controller.view.rows
@@ -1009,8 +1135,19 @@ function useRelaySettingsReview(
   )
   const removalTriggerRef = useRef<HTMLButtonElement | null>(null)
   const publishButtonRef = useRef<HTMLButtonElement | null>(null)
+  const addRelayInputRef = useRef<HTMLInputElement | null>(null)
+  const relayOrderGroupRefs = useRef(new Map<string, HTMLDivElement>())
+  const reorderInFlightRef = useRef(false)
+  const [reordering, setReordering] = useState(false)
   const [localActionError, setLocalActionError] = useState<string | null>(null)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
+  const [preparedPublishChange, setPreparedPublishChange] =
+    useState<PreparedAccountNetworkSettingsChange | null>(null)
+  const [preparedRemovalChange, setPreparedRemovalChange] =
+    useState<PreparedAccountNetworkSettingsChange | null>(null)
+  const [removalPreparationError, setRemovalPreparationError] = useState<
+    string | null
+  >(null)
 
   const baselineRoles = useMemo(
     () => baselineRolesFromRows(controller.view.rows),
@@ -1036,6 +1173,26 @@ function useRelaySettingsReview(
       rows.map((row) => row.url)
     )
   }, [controller.view.rows, rows])
+  const controllerPreferredOrder = useMemo(
+    () => controller.view.rows.map((row) => row.url),
+    [controller.view.rows]
+  )
+  const controllerPreferredOrderRef = useRef(controllerPreferredOrder)
+  useEffect(() => {
+    controllerPreferredOrderRef.current = controllerPreferredOrder
+  }, [controllerPreferredOrder])
+  useEffect(() => {
+    if (reordering) return
+    setRows((current) => {
+      const next = orderAccountNetworkRelayRows(
+        current,
+        controllerPreferredOrder
+      )
+      return next.every((row, index) => row.url === current[index]?.url)
+        ? current
+        : next
+    })
+  }, [controllerPreferredOrder, reordering])
   const desiredRoles = useMemo(
     () => desiredRolesFromRows(presentationRows),
     [presentationRows]
@@ -1063,11 +1220,14 @@ function useRelaySettingsReview(
     }
     return relayUrls
   }, [controller.view.rows])
-  const changedKindCount = countAccountNetworkChangedKinds(
-    baselineRoles,
-    desiredRoles
-  )
-  const dirty = changedKindCount > 0
+  const relayListChanged = rolesDiffer(baselineRoles, desiredRoles, (roles) => [
+    roles.readEnabled,
+    roles.publishEnabled,
+  ])
+  const inboxChanged = rolesDiffer(baselineRoles, desiredRoles, (roles) => [
+    roles.privateInboxEnabled,
+  ])
+  const dirty = relayListChanged || inboxChanged
   const controllerRowUrls = new Set(controller.view.rows.map((row) => row.url))
   const hasLocalCandidate = rows.some(
     (row) => row.candidate && !controllerRowUrls.has(row.url)
@@ -1081,13 +1241,16 @@ function useRelaySettingsReview(
       !row.privateInboxEnabled
   )
   const hasUnpublishedChanges = dirty || hasLocalCandidate
-  const relayListChanged = rolesDiffer(baselineRoles, desiredRoles, (roles) => [
-    roles.readEnabled,
-    roles.publishEnabled,
-  ])
-  const inboxChanged = rolesDiffer(baselineRoles, desiredRoles, (roles) => [
-    roles.privateInboxEnabled,
-  ])
+  const desiredInboxAvailable = desiredRoles.some(
+    (roles) => roles.privateInboxEnabled
+  )
+  const signedRepairAvailable =
+    controller.view.relayList.state !== "declared" ||
+    (desiredInboxAvailable &&
+      !["declared", "distribution_pending"].includes(
+        controller.view.inbox.state
+      ))
+  const reviewAvailable = dirty || signedRepairAvailable
   const validation = controller.validate(desiredRoles)
   const validationErrors = hasUnconfiguredLocalCandidate
     ? ["Choose at least one role for each added relay or discard it."]
@@ -1097,15 +1260,14 @@ function useRelaySettingsReview(
   const pendingRetry = controller.view.pendingExactDeliveries.some(
     (delivery) => delivery.retryAvailable
   )
-  const busy = operationIsBusy(controller.operation.phase)
+  const busy = operationIsBusy(controller.operation.phase) || reordering
   const metadataReady = controller.status === "ready" && !busy
   const mutationReady = metadataReady && !pendingRetry
   const inboxCount = rows.filter((row) => row.privateInboxEnabled).length
   const removalInstruction = removalInstructionForReview(
     relayPendingRemoval,
-    dirty,
-    baselineRoles,
-    controller
+    hasUnpublishedChanges,
+    removalPreparationError
   )
   const operationText = operationMessage(
     controller.operation.kind,
@@ -1121,6 +1283,31 @@ function useRelaySettingsReview(
     () => () => onUnpublishedRelayChangesChange?.(false),
     [onUnpublishedRelayChangesChange]
   )
+
+  function openRelayRemovalReview(
+    relayUrl: string,
+    trigger: HTMLButtonElement
+  ): void {
+    controller.clearOperation()
+    setLocalActionError(null)
+    removalTriggerRef.current = trigger
+    setRemovalPreparationError(null)
+    setPreparedRemovalChange(null)
+    if (!hasUnpublishedChanges) {
+      try {
+        setPreparedRemovalChange(
+          controller.prepareChange({ type: "remove_relay", relayUrl })
+        )
+      } catch (error) {
+        setRemovalPreparationError(
+          error instanceof Error
+            ? error.message
+            : "This removal could not be prepared."
+        )
+      }
+    }
+    setRelayPendingRemoval(relayUrl)
+  }
 
   function toggleRole(
     url: string,
@@ -1140,8 +1327,7 @@ function useRelaySettingsReview(
         Number(currentRow.privateInboxEnabled) ===
         1
     ) {
-      removalTriggerRef.current = trigger
-      setRelayPendingRemoval(url)
+      openRelayRemovalReview(url, trigger)
       return
     }
     setRows((current) =>
@@ -1162,6 +1348,7 @@ function useRelaySettingsReview(
   }
 
   async function moveRelay(url: string, offset: -1 | 1): Promise<void> {
+    if (reorderInFlightRef.current) return
     const index = presentationRows.findIndex((row) => row.url === url)
     const targetIndex = index + offset
     if (
@@ -1174,22 +1361,50 @@ function useRelaySettingsReview(
     const target = presentationRows[targetIndex]
     const source = presentationRows[index]
     if (!target || !source) return
-    if (!areAccountNetworkRelayRowsReorderEquivalent(source, target)) return
+    if (
+      !isAccountNetworkRelayRowOrderEligible(source) ||
+      !isAccountNetworkRelayRowOrderEligible(target) ||
+      !areAccountNetworkRelayRowsReorderEquivalent(source, target)
+    ) {
+      return
+    }
 
     const nextRows = [...presentationRows]
     nextRows[index] = target
     nextRows[targetIndex] = source
+    reorderInFlightRef.current = true
+    setReordering(true)
     setLocalActionError(null)
-    setRows(nextRows)
     try {
-      await controller.reorderRelays(nextRows.map((row) => row.url))
-    } catch (error) {
-      setRows(presentationRows)
-      setLocalActionError(
-        error instanceof Error
-          ? error.message
-          : "Unable to save this relay order preference."
-      )
+      const errorMessage = await persistRelayOrderPreference({
+        nextRows,
+        persist: controller.reorderRelays,
+        latestPreferredOrder: () => controllerPreferredOrderRef.current,
+        updateRows: setRows,
+      })
+      setLocalActionError(errorMessage)
+    } finally {
+      reorderInFlightRef.current = false
+      setReordering(false)
+      requestAnimationFrame(() => {
+        const group = relayOrderGroupRefs.current.get(url)
+        const focusTarget =
+          group?.querySelector<HTMLButtonElement>("button:not(:disabled)") ??
+          group ??
+          removalFallbackFocusRef?.current
+        focusTarget?.focus({ preventScroll: true })
+      })
+    }
+  }
+
+  function setRelayOrderGroupRef(
+    url: string,
+    element: HTMLDivElement | null
+  ): void {
+    if (element) {
+      relayOrderGroupRefs.current.set(url, element)
+    } else {
+      relayOrderGroupRefs.current.delete(url)
     }
   }
 
@@ -1232,17 +1447,35 @@ function useRelaySettingsReview(
     row: AccountNetworkRelayRowView,
     trigger: HTMLButtonElement
   ): void {
+    const durableRow = controller.view.rows.find(
+      (candidate) => candidate.url === row.url
+    )
+    if (
+      durableRow?.candidate &&
+      [
+        durableRow.readState,
+        durableRow.publishState,
+        durableRow.privateInboxState,
+      ].includes("draft")
+    ) {
+      setLocalActionError(
+        "Use Discard older draft to remove these imported relay choices from Conduit storage."
+      )
+      trigger.focus({ preventScroll: true })
+      return
+    }
     if (!wholeSetupRelayUrls.has(row.url)) {
       setRows((current) =>
         current.filter((candidate) => candidate.url !== row.url)
       )
       setLocalActionError(null)
       controller.clearOperation()
+      requestAnimationFrame(() =>
+        addRelayInputRef.current?.focus({ preventScroll: true })
+      )
       return
     }
-    controller.clearOperation()
-    removalTriggerRef.current = trigger
-    setRelayPendingRemoval(row.url)
+    openRelayRemovalReview(row.url, trigger)
   }
 
   function requestPublish(): void {
@@ -1251,49 +1484,76 @@ function useRelaySettingsReview(
       setLocalActionError(validationError)
       return
     }
-    if (changedKindCount === 0) return
-    setPublishDialogOpen(true)
+    if (!reviewAvailable) return
+    try {
+      setPreparedPublishChange(
+        controller.prepareChange({ type: "set_roles", rows: desiredRoles })
+      )
+      setPublishDialogOpen(true)
+    } catch (error) {
+      setLocalActionError(
+        error instanceof Error
+          ? error.message
+          : "This Network change could not be prepared."
+      )
+    }
   }
 
   function closePublishDialog(): void {
     setPublishDialogOpen(false)
+    setPreparedPublishChange(null)
     requestAnimationFrame(() =>
       publishButtonRef.current?.focus({ preventScroll: true })
     )
   }
 
   async function confirmPublish(): Promise<void> {
+    const prepared = preparedPublishChange
+    if (!prepared) return
     setPublishDialogOpen(false)
     setLocalActionError(null)
-    if (validationError) {
-      setLocalActionError(validationError)
-      return
-    }
     try {
-      await controller.save(desiredRoles)
+      await prepared.execute()
     } catch {
       // The controller exposes the actionable error beside this action.
+    } finally {
+      setPreparedPublishChange(null)
     }
   }
 
   function discardReview(): void {
     setPublishDialogOpen(false)
-    setRows(discardReviewRows(controller.view.rows))
+    setPreparedPublishChange(null)
+    setRows(controller.view.rows)
     setLocalActionError(null)
     controller.clearOperation()
+    requestAnimationFrame(() =>
+      removalFallbackFocusRef?.current?.focus({ preventScroll: true })
+    )
   }
 
   function cancelRemoval(): void {
     setRelayPendingRemoval(null)
+    setPreparedRemovalChange(null)
+    setRemovalPreparationError(null)
   }
 
   async function proceedRemoval(): Promise<void> {
-    if (!relayPendingRemoval) return
+    if (!relayPendingRemoval || !preparedRemovalChange) return
     try {
-      await controller.removeRelay(relayPendingRemoval)
+      await preparedRemovalChange.execute()
       setRelayPendingRemoval(null)
+      setPreparedRemovalChange(null)
+      setRemovalPreparationError(null)
+      requestAnimationFrame(() => {
+        const focusTarget = removalTriggerRef.current?.isConnected
+          ? removalTriggerRef.current
+          : removalFallbackFocusRef?.current
+        focusTarget?.focus({ preventScroll: true })
+      })
     } catch {
       // The controller exposes the actionable error beside this action.
+      setPreparedRemovalChange(null)
     }
   }
 
@@ -1306,14 +1566,15 @@ function useRelaySettingsReview(
     relayPendingRemoval,
     removalTriggerRef,
     publishButtonRef,
+    addRelayInputRef,
+    removalFallbackFocusRef,
     publishDialogOpen,
+    preparedPublishChange,
+    preparedRemovalChange,
     editedRelayUrls,
     wholeSetupRelayUrls,
-    changedKindCount,
-    dirty,
     hasUnpublishedChanges,
-    relayListChanged,
-    inboxChanged,
+    reviewAvailable,
     validationError,
     validationWarnings,
     busy,
@@ -1325,6 +1586,7 @@ function useRelaySettingsReview(
     setNewRelayUrl,
     toggleRole,
     moveRelay,
+    setRelayOrderGroupRef,
     addRelay,
     requestRelayRemoval,
     requestPublish,
@@ -1338,10 +1600,18 @@ function useRelaySettingsReview(
 
 type RelaySettingsReview = ReturnType<typeof useRelaySettingsReview>
 
-function NetworkHeader() {
+function NetworkHeader({
+  focusRef,
+}: {
+  focusRef: RefObject<HTMLHeadingElement | null>
+}) {
   return (
     <header>
-      <h1 className="text-balance font-display text-4xl font-semibold text-[var(--text-primary)] sm:text-5xl">
+      <h1
+        ref={focusRef}
+        tabIndex={-1}
+        className="text-balance font-display text-4xl font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 sm:text-5xl"
+      >
         Network
       </h1>
       <p className="mt-3 max-w-2xl text-pretty text-base leading-7 text-[var(--text-secondary)]">
@@ -1377,6 +1647,7 @@ function LegacyInboxRecoverySection({
         <Button
           type="button"
           variant="outline"
+          className="min-h-11"
           disabled={busy || relayDraftDirty}
           title={
             relayDraftDirty
@@ -1442,6 +1713,7 @@ function LegacyRelayDraftSection({
         <Button
           type="button"
           variant="outline"
+          className="min-h-11"
           disabled={busy || discarding}
           onClick={() => {
             setError(null)
@@ -1478,6 +1750,7 @@ function LegacyRelayDraftSection({
             <Button
               type="button"
               variant="outline"
+              className="min-h-11"
               disabled={discarding}
               onClick={() => setDialogOpen(false)}
             >
@@ -1486,6 +1759,7 @@ function LegacyRelayDraftSection({
             <Button
               type="button"
               variant="destructive"
+              className="min-h-11"
               disabled={discarding}
               onClick={() => void discardLegacyDraft()}
             >
@@ -1509,6 +1783,7 @@ function AddRelaySection({ review }: { review: RelaySettingsReview }) {
       </label>
       <div className="mt-2 flex flex-col gap-2 sm:flex-row">
         <Input
+          ref={review.addRelayInputRef}
           id="account-network-relay-url"
           aria-describedby={
             review.addError ? "account-network-relay-error" : undefined
@@ -1559,11 +1834,16 @@ function RelayListSection({ review }: { review: RelaySettingsReview }) {
             const previous = review.rows[index - 1]
             const next = review.rows[index + 1]
             const canMoveEarlier = Boolean(
+              isAccountNetworkRelayRowOrderEligible(row) &&
               previous &&
+              isAccountNetworkRelayRowOrderEligible(previous) &&
               areAccountNetworkRelayRowsReorderEquivalent(row, previous)
             )
             const canMoveLater = Boolean(
-              next && areAccountNetworkRelayRowsReorderEquivalent(row, next)
+              isAccountNetworkRelayRowOrderEligible(row) &&
+              next &&
+              isAccountNetworkRelayRowOrderEligible(next) &&
+              areAccountNetworkRelayRowsReorderEquivalent(row, next)
             )
             return (
               <RelayRow
@@ -1576,6 +1856,9 @@ function RelayListSection({ review }: { review: RelaySettingsReview }) {
                 inboxCount={review.inboxCount}
                 canMoveEarlier={canMoveEarlier}
                 canMoveLater={canMoveLater}
+                orderGroupRef={(element) =>
+                  review.setRelayOrderGroupRef(row.url, element)
+                }
                 onToggle={(role, trigger) =>
                   review.toggleRole(row.url, role, trigger)
                 }
@@ -1635,10 +1918,14 @@ function OperationNotice({
 function NetworkReviewSummary({ review }: { review: RelaySettingsReview }) {
   const title = review.hasUnpublishedChanges
     ? "Unpublished changes"
-    : "No unpublished changes"
+    : review.reviewAvailable
+      ? "Signed preference repair available"
+      : "No unpublished changes"
   const description = review.hasUnpublishedChanges
     ? "Publish or discard these relay edits before refreshing or leaving this page."
-    : "Edit a relay role or add a relay to prepare an update."
+    : review.reviewAvailable
+      ? "Review the exact signed preferences needed to restore the current Network frontiers."
+      : "Edit a relay role or add a relay to prepare an update."
   return (
     <div className="flex min-w-0 items-start gap-2">
       {review.hasUnpublishedChanges ? (
@@ -1668,7 +1955,7 @@ function NetworkReviewSummary({ review }: { review: RelaySettingsReview }) {
 
 function NetworkReviewActions({ review }: { review: RelaySettingsReview }) {
   const validationVisible = Boolean(
-    review.validationError && review.hasUnpublishedChanges
+    review.validationError && review.reviewAvailable
   )
   return (
     <div className="flex flex-col gap-2 sm:items-end">
@@ -1677,6 +1964,7 @@ function NetworkReviewActions({ review }: { review: RelaySettingsReview }) {
           <Button
             type="button"
             variant="ghost"
+            className="min-h-11"
             disabled={review.busy}
             onClick={review.discardReview}
           >
@@ -1692,10 +1980,11 @@ function NetworkReviewActions({ review }: { review: RelaySettingsReview }) {
           }
           disabled={
             !review.mutationReady ||
-            review.changedKindCount === 0 ||
+            !review.reviewAvailable ||
             Boolean(review.validationError)
           }
           onClick={review.requestPublish}
+          className="min-h-11"
         >
           <Upload className="size-4" aria-hidden="true" />
           Review and publish
@@ -1746,8 +2035,10 @@ function PublishNetworkReviewDialog({
 }: {
   review: RelaySettingsReview
 }) {
+  const summary = review.preparedPublishChange?.summary
+  if (!summary) return null
   const signerRequestLabel =
-    review.changedKindCount === 1 ? "request" : "requests"
+    summary.signerRequestCount === 1 ? "request" : "requests"
   return (
     <AlertDialog
       open={review.publishDialogOpen}
@@ -1755,46 +2046,48 @@ function PublishNetworkReviewDialog({
         if (!open) review.closePublishDialog()
       }}
     >
-      <AlertDialogContent>
+      <AlertDialogContent
+        onCloseAutoFocus={(event) => {
+          const publishButton = review.publishButtonRef.current
+          const focusTarget =
+            publishButton?.isConnected && !publishButton.disabled
+              ? publishButton
+              : review.removalFallbackFocusRef?.current
+          if (!focusTarget) return
+          event.preventDefault()
+          focusTarget.focus()
+        }}
+      >
         <AlertDialogHeader>
           <AlertDialogTitle className="text-balance">
             Publish these Network changes?
           </AlertDialogTitle>
           <AlertDialogDescription className="text-pretty leading-6">
-            Your external signer will show {review.changedKindCount}{" "}
+            Your external signer will show {summary.signerRequestCount}{" "}
             {signerRequestLabel}. The signed preferences publish and confirm
             independently.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <ul className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]">
-          {review.relayListChanged ? (
-            <li>
-              <span className="font-semibold">Read and Publish</span>
-              <span className="text-[var(--text-secondary)]">
-                {" "}
-                relay preferences
-              </span>
-            </li>
-          ) : null}
-          {review.inboxChanged ? (
-            <li>
-              <span className="font-semibold">Private inbox</span>
-              <span className="text-[var(--text-secondary)]">
-                {" "}
-                relay preferences
-              </span>
-            </li>
-          ) : null}
+          {summary.changedObjects.map((changedObject) => (
+            <li key={changedObject}>{changedObject}</li>
+          ))}
         </ul>
+        <PreparedReviewWarnings warnings={summary.warnings} />
         <AlertDialogFooter>
           <Button
             type="button"
             variant="outline"
             onClick={review.closePublishDialog}
+            className="min-h-11"
           >
             Keep editing
           </Button>
-          <Button type="button" onClick={() => void review.confirmPublish()}>
+          <Button
+            type="button"
+            onClick={() => void review.confirmPublish()}
+            className="min-h-11"
+          >
             <Upload className="size-4" aria-hidden="true" />
             Sign and publish
           </Button>
@@ -1848,6 +2141,7 @@ function RelayPreferencesSection({
           type="button"
           variant="outline"
           size="sm"
+          className="min-h-11"
           disabled={refreshDisabled}
           title={
             review.hasUnpublishedChanges
@@ -1897,16 +2191,21 @@ function RelayPreferencesSection({
 function RelayPreferencesEditor({
   controller,
   onUnpublishedRelayChangesChange,
-}: RelaySettingsPanelProps) {
+  removalFallbackFocusRef,
+}: RelaySettingsPanelProps & {
+  removalFallbackFocusRef: RefObject<HTMLHeadingElement | null>
+}) {
   const review = useRelaySettingsReview(
     controller,
-    onUnpublishedRelayChangesChange
+    onUnpublishedRelayChangesChange,
+    removalFallbackFocusRef
   )
   return (
     <>
       <RelayPreferencesSection controller={controller} review={review} />
       <RelayRemovalDialog
         relayUrl={review.relayPendingRemoval}
+        preparedChange={review.preparedRemovalChange}
         instruction={review.removalInstruction}
         errorMessage={
           controller.operation.kind === "remove" &&
@@ -1917,6 +2216,7 @@ function RelayPreferencesEditor({
         }
         busy={review.busy}
         returnFocusRef={review.removalTriggerRef}
+        fallbackFocusRef={removalFallbackFocusRef}
         onCancel={review.cancelRemoval}
         onProceed={() => void review.proceedRemoval()}
       />
@@ -1954,6 +2254,7 @@ export function RelaySettingsPanel({
   onUnpublishedRelayChangesChange,
 }: RelaySettingsPanelProps) {
   const editorRevision = getRelaySettingsEditorRevision(controller)
+  const removalFallbackFocusRef = useRef<HTMLHeadingElement | null>(null)
   return (
     <section
       className={cn(
@@ -1962,11 +2263,12 @@ export function RelaySettingsPanel({
       )}
     >
       <div className="space-y-6">
-        <NetworkHeader />
+        <NetworkHeader focusRef={removalFallbackFocusRef} />
         <RelayPreferencesEditor
           key={editorRevision}
           controller={controller}
           onUnpublishedRelayChangesChange={onUnpublishedRelayChangesChange}
+          removalFallbackFocusRef={removalFallbackFocusRef}
         />
         {controller.mediaServers ? (
           <MediaServerPreferencesSection {...controller.mediaServers} />

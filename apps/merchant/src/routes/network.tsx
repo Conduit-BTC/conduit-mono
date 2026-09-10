@@ -140,7 +140,7 @@ function NetworkPage() {
                 <Button
                   type="button"
                   variant="outline"
-                  className="w-full shrink-0 sm:w-auto"
+                  className="min-h-11 w-full shrink-0 sm:w-auto"
                   onClick={returnToProductDraft}
                 >
                   Return to product draft

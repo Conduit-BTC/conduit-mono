@@ -94,6 +94,7 @@ describe("shared media server preference UI", () => {
     )
     expect(html).toContain('aria-label="Move https://two.conduit.market later"')
     expect(html).toContain('aria-label="Remove https://one.conduit.market"')
+    expect(html).toContain("min-h-11 min-w-11")
     expect(html).toContain("Draft saved on this device; not published.")
     expect(html).not.toContain("media-server-url-help")
     expect(html).not.toContain('aria-describedby="media-server-url-error"')
@@ -258,8 +259,14 @@ describe("shared media server preference UI", () => {
         throw new Error("not used")
       },
       validate: () => ({ valid: false, errors: [], warnings: [] }),
-      save: async () => undefined,
-      removeRelay: async () => undefined,
+      prepareChange: () => ({
+        summary: {
+          signerRequestCount: 0,
+          changedObjects: [],
+          warnings: [],
+        },
+        execute: async () => undefined,
+      }),
       retryPendingUpdate: async () => undefined,
       redistributeExactInboxDeclaration: async () => undefined,
       reorderRelays: async () => undefined,
