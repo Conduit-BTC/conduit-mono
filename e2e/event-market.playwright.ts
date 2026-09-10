@@ -1426,6 +1426,94 @@ test("event membership and retry completions stay bound to their initiating even
   )
 })
 
+test("keeps other membership actions available after an acknowledged update @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Membership Reconciliation",
+    organizerHandoffEnabled: true,
+  })
+  const firstProduct = createMerchantProductEvent({
+    dTag: "membership-reconciliation-first",
+    title: "Synthetic first pending product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const secondProduct = createMerchantProductEvent({
+    dTag: "membership-reconciliation-second",
+    title: "Synthetic second pending product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 2,
+  })
+  relay.seed(firstProduct, secondProduct)
+  await page.getByRole("button", { name: "Refresh evidence" }).click()
+
+  const participationRow = (title: string) =>
+    page
+      .getByTestId("organizer-product-preview")
+      .filter({ hasText: title })
+      .locator("..")
+  const firstRow = participationRow("Synthetic first pending product")
+  const secondRow = participationRow("Synthetic second pending product")
+  await expect(firstRow.getByRole("button", { name: "Accept" })).toBeEnabled()
+  await expect(secondRow.getByRole("button", { name: "Accept" })).toBeEnabled()
+
+  const membershipAck = relay.holdNextPublicationAck(
+    (event) =>
+      event.kind === 30405 &&
+      eventCoordinate(event) === market.collectionCoordinate &&
+      event.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === eventCoordinate(firstProduct)
+      )
+  )
+  await firstRow.getByRole("button", { name: "Accept" }).click()
+  await membershipAck.captured
+  await expect(firstRow.getByText("Accepted", { exact: true })).toBeVisible()
+  await expect(secondRow.getByRole("button", { name: "Accept" })).toBeDisabled()
+
+  const redundantRead = relay.holdNextRelayRequest((request) =>
+    request.filters.some(
+      (filter) =>
+        filter.authors?.includes(ORGANIZER_PUBKEY) &&
+        filter.kinds?.includes(30405)
+    )
+  )
+  let secondMembershipAck: HeldPublicationAck | undefined
+  try {
+    membershipAck.release()
+    await redundantRead.captured
+    const secondAccept = secondRow.getByRole("button", { name: "Accept" })
+    await expect(secondAccept).toBeEnabled({ timeout: 5_000 })
+    secondMembershipAck = relay.holdNextPublicationAck(
+      (event) =>
+        event.kind === 30405 &&
+        eventCoordinate(event) === market.collectionCoordinate &&
+        event.tags.some(
+          (tag) => tag[0] === "a" && tag[1] === eventCoordinate(secondProduct)
+        )
+    )
+    await secondAccept.click()
+    const nextCollection = await secondMembershipAck.captured
+    expect(nextCollection.tags).toContainEqual([
+      "a",
+      eventCoordinate(firstProduct),
+    ])
+    expect(nextCollection.tags).toContainEqual([
+      "a",
+      eventCoordinate(secondProduct),
+    ])
+  } finally {
+    secondMembershipAck?.release()
+    redundantRead.release()
+  }
+})
+
 test("a late old collection retry ACK preserves a newer same-coordinate update @merchant", async ({
   page,
 }) => {

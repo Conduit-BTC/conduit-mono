@@ -781,9 +781,6 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   ])
 
   async function refreshMarketQueries(reference?: string): Promise<void> {
-    await queryClient.invalidateQueries({
-      queryKey: ["merchant-organizer-event-markets", organizerPubkey],
-    })
     if (reference) {
       await queryClient.invalidateQueries({
         queryKey: [
@@ -793,6 +790,9 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         ],
       })
     }
+    await queryClient.invalidateQueries({
+      queryKey: ["merchant-organizer-event-markets", organizerPubkey],
+    })
   }
 
   function rememberDelivery(
@@ -925,7 +925,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
           rememberDelivery(reference, record)
         },
       }),
-    onSuccess: async (delivery, input) => {
+    onSuccess: (delivery, input) => {
       const reference = organizerEventMarketReferenceWithDeliveryRelayHints(
         input.reference,
         delivery
@@ -945,7 +945,10 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         reference
       updateInitiatingEventSelection(input.reference, nextReference)
       rememberDelivery(reference, delivery)
-      await refreshMarketQueries(input.reference)
+      // The exact signed-frontier gate independently prevents conflicting
+      // writes. Keep broad relay reconciliation in the background so it
+      // cannot leave every remaining membership action pending.
+      void refreshMarketQueries(input.reference)
     },
   })
 
