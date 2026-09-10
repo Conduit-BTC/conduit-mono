@@ -11,6 +11,15 @@ import {
   type ProductSupportZapDependencies,
 } from "../packages/core/src/protocol/product-support-zap"
 import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
+import {
+  validateLightningInvoiceForPayment,
+  validateZapInvoiceDescriptionBinding,
+} from "../packages/core/src/protocol/lightning"
+import {
+  bolt11DescriptionHashField,
+  bolt11PaymentHashField,
+  makeBolt11Fixture,
+} from "./support/bolt11-fixture"
 
 const SHOPPER_SECRET = generateSecretKey()
 const MERCHANT_SECRET = generateSecretKey()
@@ -622,5 +631,55 @@ describe("product support zap invoice preparation", () => {
         deps
       )
     ).rejects.toThrow("invoice amount does not match")
+  })
+
+  it("rejects a valid description-bound invoice that exceeds level-M QR capacity", async () => {
+    let oversizedInvoice = ""
+    const deps = dependencies({
+      fetchZapInvoice: mock(
+        async (
+          _callback: string,
+          _amountMsats: number,
+          zapRequestJson: string
+        ) => {
+          oversizedInvoice = makeBolt11Fixture({
+            hrp: "lnbc210n",
+            fields: [
+              bolt11PaymentHashField(),
+              bolt11DescriptionHashField(zapRequestJson),
+              ...Array.from({ length: 3 }, () => ({
+                tag: "s",
+                words: new Array<number>(1_023).fill(1),
+              })),
+            ],
+          })
+          expect(
+            validateZapInvoiceDescriptionBinding({
+              invoice: oversizedInvoice,
+              zapRequestJson,
+            })
+          ).toMatchObject({ ok: true })
+          return { invoice: oversizedInvoice }
+        }
+      ),
+      validateLightningInvoiceForPayment,
+    })
+
+    await expect(
+      prepareProductSupportZapInvoice(
+        {
+          signer: signer(),
+          shopperPubkey: SHOPPER_PUBKEY,
+          recipientPubkey: MERCHANT_PUBKEY,
+          productAddress: PRODUCT_ADDRESS,
+          amountSats: 21,
+          relayUrls: ["wss://relay.example"],
+        },
+        deps
+      )
+    ).rejects.toThrow("too large to display as a QR code")
+    expect(new TextEncoder().encode(oversizedInvoice).length).toBeGreaterThan(
+      2_331
+    )
   })
 })

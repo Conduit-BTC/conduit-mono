@@ -5,6 +5,7 @@ import {
   fetchLnurlPayMetadata,
   fetchZapInvoice,
   isValidLud16Address,
+  normalizeLightningInvoice,
   validateLightningInvoiceForPayment,
   type LnurlPayMetadata,
 } from "./lightning"
@@ -22,6 +23,7 @@ import {
 export const PRODUCT_SUPPORT_ZAP_NOTE_MAX_CODE_POINTS = 280
 const PRODUCT_SUPPORT_ZAP_MAX_RECEIPT_RELAYS = 8
 const PRODUCT_SUPPORT_ZAP_MAX_LNURL_LENGTH = 5_000
+const PRODUCT_SUPPORT_ZAP_QR_LEVEL_M_MAX_BYTES = 2_331
 
 export type ProductSupportZapPublicField =
   | "zap_request_type"
@@ -421,6 +423,14 @@ export async function prepareProductSupportZapInvoice(
   })
   if (!invoiceValidation.ok) {
     throw new Error(invoiceValidation.reason)
+  }
+  if (
+    new TextEncoder().encode(normalizeLightningInvoice(invoice)).length >
+    PRODUCT_SUPPORT_ZAP_QR_LEVEL_M_MAX_BYTES
+  ) {
+    throw new Error(
+      "The Lightning provider returned an invoice that is too large to display as a QR code."
+    )
   }
   const confirmedLud16 = await resolveProductSupportPaymentAddress(
     input.recipientPubkey,
