@@ -1304,6 +1304,7 @@ async function deliverPendingKind(input: {
         ownerSelectedRelayUrls,
         input.dependencies
       )
+      assertContinue(input.dependencies.shouldContinue)
       if (eligible[0] !== relayUrl) continue
       let status: ExclusiveRelayPublishStatus
       try {
@@ -1314,8 +1315,16 @@ async function deliverPendingKind(input: {
           authenticatedPubkey: input.authenticatedPubkey,
           accountPubkey: input.pubkey,
           ownerSelectedRelayUrls,
+          shouldContinue: input.dependencies.shouldContinue,
         })
-      } catch {
+      } catch (error) {
+        assertContinue(input.dependencies.shouldContinue)
+        if (
+          error instanceof NostrSignerError &&
+          error.code === "authority_changed"
+        ) {
+          throw error
+        }
         status = "timed_out"
       }
       publishObservations.push({ relayUrl, status })

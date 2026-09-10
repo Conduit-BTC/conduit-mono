@@ -533,6 +533,72 @@ describe("explicit kind 10063 publication", () => {
     ).toEqual([publishRelayUrl])
   })
 
+  it("forwards live authority to exact owner ws I/O without recording a stale attempt", async () => {
+    const storage = new MemoryStorage()
+    const ownerWsRelay = "ws://owner-session-race.example"
+    let sessionCurrent = true
+    const shouldContinue = () => sessionCurrent
+    let forwardedShouldContinue: (() => boolean) | undefined
+    const staleAttemptUrls: string[] = []
+    let exactReadBackCalls = 0
+    const dependencies: PublishMediaServerPreferencesDependencies = {
+      authenticatedPubkey: OWNER,
+      storage,
+      now: () => NOW,
+      readRelayUrls: [ownerWsRelay],
+      publishRelayUrls: [ownerWsRelay],
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+      shouldContinue,
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: createRelaySettingsFromPreferences([
+          {
+            url: ownerWsRelay,
+            readEnabled: true,
+            writeEnabled: true,
+          },
+        ]),
+        signedRelayListAuthoritative: true,
+      }),
+      publishToRelay: async (input) => {
+        forwardedShouldContinue = input.shouldContinue
+        sessionCurrent = false
+        if (input.shouldContinue?.() === false) {
+          throw new Error("simulated exact publish cancellation")
+        }
+        staleAttemptUrls.push(input.relayUrl)
+        return "acked"
+      },
+      fetchEvents: async (filter, options) => {
+        if (filter.ids?.length) exactReadBackCalls += 1
+        return readResult({ relayUrls: options.relayUrls })
+      },
+    }
+    const resolution = await readMediaServerPreferences(OWNER, dependencies)
+
+    await expect(
+      publishMediaServerPreferences({
+        owner: OWNER,
+        serverUrls: ["https://media.conduit.market"],
+        signer: signer(),
+        reviewed: toReviewedMediaServerEvidence(resolution),
+        dependencies,
+      })
+    ).rejects.toMatchObject({ code: "authority_changed" })
+
+    expect(forwardedShouldContinue).toBe(shouldContinue)
+    expect(staleAttemptUrls).toEqual([])
+    expect(exactReadBackCalls).toBe(0)
+    expect(loadMediaServerPreferenceRecord(OWNER, storage)).toMatchObject({
+      pending: {
+        publishRelayUrls: [ownerWsRelay],
+        ownerSelectedRelayUrls: [ownerWsRelay],
+        acknowledgedRelayUrls: [],
+        rejectedRelayUrls: [],
+        timedOutRelayUrls: [],
+      },
+    })
+  })
+
   it("drops staged owner ws authority after logout while preserving exact wss retry bytes", async () => {
     const storage = new MemoryStorage()
     const ownerWsRelay = "ws://owner-logout.example"

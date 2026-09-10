@@ -338,6 +338,7 @@ interface ExecutionOptions {
     kind: number
     relayUrl: string
     attempt: number
+    shouldContinue?: () => boolean
   }) => PublishBehavior
   readbackBehavior?: (input: {
     kind: number
@@ -449,6 +450,7 @@ function createExecutionHarness(
           kind: input.signedEvent.kind,
           relayUrl: input.relayUrl,
           attempt,
+          shouldContinue: input.shouldContinue,
         }) ?? "acked"
       if (behavior === "throw") throw new Error("publish unavailable")
       return behavior
@@ -712,6 +714,99 @@ describe("account network mutation", () => {
       )
     ).toBe(false)
     expect(signer.signedDrafts).toHaveLength(1)
+  })
+
+  it("does not record durable owner ws attempts when authority changes during eligibility or publication", async () => {
+    const fixture = createFixture()
+    const ownerWs = "ws://owner-eligibility-race.example"
+    const relays = baselineRoles()
+      .map((relay) => ({ ...relay, publish: false }))
+      .concat({
+        url: ownerWs,
+        read: false,
+        publish: true,
+        privateInbox: false,
+      })
+    let shouldFlipAuthority = false
+    let authorityCurrent = true
+    let cancelInsidePublisher = false
+    const execution = createExecutionHarness(fixture, {
+      planForKind: (kind) =>
+        kind === EVENT_KINDS.RELAY_LIST ? [ownerWs] : [PLAN_A],
+      filterEligibleRelayUrls: (relayUrls, ownerSelectedRelayUrls) => {
+        if (shouldFlipAuthority) authorityCurrent = false
+        return relayUrls.filter(
+          (relayUrl) =>
+            relayUrl.startsWith("wss://") ||
+            ownerSelectedRelayUrls.includes(relayUrl)
+        )
+      },
+      publishBehavior: ({ shouldContinue }) => {
+        if (cancelInsidePublisher) {
+          authorityCurrent = false
+          if (shouldContinue?.() === false) {
+            throw new Error(
+              "Publish cancelled because the signer session changed."
+            )
+          }
+        }
+        return "timed_out"
+      },
+      readbackBehavior: () => "timed_out",
+    })
+    const signer = createSignerHarness({ log: execution.log })
+    const reviewed = reviewAccountNetworkMutation(
+      fixture.reconciliation,
+      action(relays)
+    )
+
+    await publishAccountNetworkMutation({
+      reviewed,
+      authenticatedPubkey: ACCOUNT,
+      signer: signer.signer,
+      dependencies: execution.dependencies,
+    })
+    const beforeRetry = await execution.baseRepository.get(ACCOUNT)
+    expect(
+      beforeRetry.ownerRelayList?.pendingDistribution?.relayOutcomes[0]
+        ?.publishAttemptCount
+    ).toBe(1)
+
+    execution.publishCalls.splice(0)
+    execution.readbackCalls.splice(0)
+    shouldFlipAuthority = true
+    execution.dependencies.shouldContinue = () => authorityCurrent
+
+    await expect(
+      retryAccountNetworkMutation({
+        pubkey: ACCOUNT,
+        authenticatedPubkey: ACCOUNT,
+        kind: EVENT_KINDS.RELAY_LIST,
+        dependencies: execution.dependencies,
+      })
+    ).rejects.toMatchObject({ code: "authority_changed" })
+
+    expect(execution.publishCalls).toHaveLength(0)
+    expect(execution.readbackCalls).toHaveLength(0)
+    expect(await execution.baseRepository.get(ACCOUNT)).toEqual(beforeRetry)
+
+    shouldFlipAuthority = false
+    authorityCurrent = true
+    cancelInsidePublisher = true
+
+    await expect(
+      retryAccountNetworkMutation({
+        pubkey: ACCOUNT,
+        authenticatedPubkey: ACCOUNT,
+        kind: EVENT_KINDS.RELAY_LIST,
+        dependencies: execution.dependencies,
+      })
+    ).rejects.toMatchObject({ code: "authority_changed" })
+
+    expect(execution.publishCalls).toHaveLength(1)
+    expect(execution.publishCalls[0]?.relayUrl).toBe(ownerWs)
+    expect(execution.readbackCalls).toHaveLength(0)
+    expect(await execution.baseRepository.get(ACCOUNT)).toEqual(beforeRetry)
   })
 
   it("drops a staged owner ws relay after authentication changes while retaining wss retry", async () => {

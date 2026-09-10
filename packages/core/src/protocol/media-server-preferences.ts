@@ -1489,6 +1489,7 @@ async function deliverPendingPreference(input: {
           accountPubkey: input.owner,
           accountNetworkLocalStateRepository:
             input.dependencies.accountNetworkLocalStateRepository,
+          shouldContinue: input.dependencies.shouldContinue,
         })
         return [relayUrl, status] as const
       } catch {

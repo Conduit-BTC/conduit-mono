@@ -677,6 +677,53 @@ describe("planPublishRelays", () => {
     expect(publishes).toBe(0)
   })
 
+  it("cancels before final planner publication when account policy loading changes the session", async () => {
+    const relayUrl = "ws://owner-final-publish.example"
+    const ownerRelayListEvidenceRepository =
+      await durableOwnerRelayListRepository([["r", relayUrl, "write"]])
+    let current = true
+    let durableReads = 0
+    let publishes = 0
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => {
+        durableReads += 1
+        if (durableReads === 2) current = false
+        return accountNetworkState(pubkey, [])
+      },
+    }
+    __setRelayPublishTestOverrides({
+      ownerRelayListEvidenceRepository,
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        signedRelayListAuthoritative: true,
+        primaryRelayUrls: [relayUrl],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(
+        signedTestEvent({
+          publish: async () => {
+            publishes += 1
+            return new Set()
+          },
+        }),
+        {
+          intent: "author_event",
+          authorPubkey: AUTHOR_PUBKEY,
+          authenticatedPubkey: AUTHOR_PUBKEY,
+          accountPubkey: AUTHOR_PUBKEY,
+          accountNetworkLocalStateRepository: repository,
+          shouldContinue: () => current,
+        }
+      )
+    ).rejects.toThrow("signer session changed")
+    expect(durableReads).toBe(2)
+    expect(publishes).toBe(0)
+  })
+
   it("keeps a primary-accepted publish successful when the session changes before broadcast", async () => {
     const primaryRelay = "wss://primary.conduit.market"
     const broadcastRelay = "wss://broadcast.conduit.market"
@@ -989,6 +1036,41 @@ describe("planPublishRelays", () => {
       expect(fakeWebSocket.sentEvents).toEqual([expectedEvent])
       expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
       expect(fakeWebSocket.counters).toEqual({ opened: 1, closed: 1 })
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
+  it("cancels an exact owner-selected publish when account policy loading changes the session", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket()
+    const relayUrl = "ws://owner-exact-publish.example"
+    const signedEvent = signedRawTestEvent({ kind: EVENT_KINDS.DELETION })
+    let current = true
+    let durableReads = 0
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => {
+        durableReads += 1
+        current = false
+        return accountNetworkState(pubkey, [])
+      },
+    }
+
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent,
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+          authenticatedPubkey: AUTHOR_PUBKEY,
+          ownerSelectedRelayUrls: [relayUrl],
+          accountPubkey: AUTHOR_PUBKEY,
+          accountNetworkLocalStateRepository: repository,
+          shouldContinue: () => current,
+        })
+      ).rejects.toThrow("signer session changed")
+      expect(durableReads).toBe(1)
+      expect(fakeWebSocket.counters.opened).toBe(0)
+      expect(fakeWebSocket.sentEvents).toEqual([])
     } finally {
       fakeWebSocket.restore()
     }

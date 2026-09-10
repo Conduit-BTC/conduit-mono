@@ -119,6 +119,14 @@ function hasAuthenticatedAuthorRelayContext(
   )
 }
 
+function assertPublishSessionCurrent(
+  shouldContinue: (() => boolean) | undefined
+): void {
+  if (shouldContinue?.() === false) {
+    throw new Error("Publish cancelled because the signer session changed.")
+  }
+}
+
 export interface PublishWithPlannerResult {
   plan: RelayWritePlan
   /** URLs the event was actually attempted on (primary + broadcast). */
@@ -463,6 +471,7 @@ async function publishToRelayUrls(input: {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  shouldContinue?: () => boolean
 }): Promise<{
   attemptedRelayUrls: string[]
   successfulRelayUrls: string[]
@@ -534,6 +543,7 @@ async function publishToRelayUrls(input: {
     }
   }
 
+  assertPublishSessionCurrent(input.shouldContinue)
   const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, input.ndk)
   let publishedUrls = new Set<string>()
   let explicitFailedUrls = new Set<string>()
@@ -625,6 +635,8 @@ interface ExactRelayTargetInput {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  /** Abort before opening the exact socket when the caller's session changed. */
+  shouldContinue?: () => boolean
 }
 
 export interface ExactRelayPublishInput extends ExactRelayTargetInput {
@@ -691,6 +703,7 @@ export async function publishSignedEventToRelay(
       "Refusing to publish because the exact relay is not eligible for this account."
     )
   }
+  assertPublishSessionCurrent(input.shouldContinue)
   const status = await publishSignedEventFrameToRelay({
     signedEvent: input.signedEvent,
     relayUrl,
@@ -826,11 +839,8 @@ export async function publishWithPlanner(
   assertSafeReplaceablePublish(event, input.replaceableSafety)
   assertValidSignedPublish(event, input)
 
-  const assertShouldContinue = () => {
-    if (input.shouldContinue?.() === false) {
-      throw new Error("Publish cancelled because the signer session changed.")
-    }
-  }
+  const assertShouldContinue = () =>
+    assertPublishSessionCurrent(input.shouldContinue)
 
   const basePlan = input.exclusiveRelayUrls
     ? await planPublishRelays(input)
@@ -942,6 +952,7 @@ export async function publishWithPlanner(
         ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
+        shouldContinue: input.shouldContinue,
       })
       attemptedRelayUrls = mergeUnique([
         attemptedRelayUrls,
@@ -994,6 +1005,7 @@ export async function publishWithPlanner(
     ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
   })
   attemptedRelayUrls = mergeUnique([
     attemptedRelayUrls,
@@ -1016,6 +1028,7 @@ export async function publishWithPlanner(
         ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
+        shouldContinue: input.shouldContinue,
       })
       attemptedRelayUrls = mergeUnique([
         attemptedRelayUrls,
@@ -1092,6 +1105,7 @@ export async function publishWithPlanner(
         ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
+        shouldContinue: input.shouldContinue,
       })
       attemptedRelayUrls = mergeUnique([
         attemptedRelayUrls,
@@ -1161,6 +1175,7 @@ export async function publishWithPlanner(
     ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
   })
   attemptedRelayUrls = mergeUnique([
     attemptedRelayUrls,
