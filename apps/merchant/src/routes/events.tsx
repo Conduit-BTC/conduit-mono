@@ -40,6 +40,7 @@ import {
   OrganizerEventMarketPanel,
 } from "../components/OrganizerEventMarketPanel"
 import {
+  getMerchantOrganizerEventCatalogView,
   listOrganizerEventMarkets,
   discoverFollowedEventMarkets,
   loadOrganizerEventMarketDeliveryOutbox,
@@ -51,11 +52,13 @@ import {
   parseOrganizerEventMarketReference,
   publishMerchantOrganizerEventMarket,
   publishMerchantOrganizerMembership,
+  retainMerchantOrganizerEventMarkets,
   resolveOrganizerEventMarket,
   resolveOrganizerEventMarketRead,
   retryMerchantOrganizerRecord,
   saveOrganizerEventMarketDelivery,
   type MerchantOrganizerEventMarket,
+  type MerchantOrganizerEventMarketsReadResult,
   type MerchantOrganizerParticipation,
   type MerchantOrganizerPublishResult,
   type MerchantOrganizerRecordDelivery,
@@ -682,13 +685,35 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       : []
   }, [handoffDeliveryRevision, organizerPubkey])
 
+  const marketsQueryKey = [
+    "merchant-organizer-event-markets",
+    organizerPubkey || "none",
+  ] as const
   const marketsQuery = useQuery({
-    queryKey: ["merchant-organizer-event-markets", organizerPubkey || "none"],
+    queryKey: marketsQueryKey,
     enabled: !!organizerPubkey,
-    queryFn: () => listOrganizerEventMarkets(organizerPubkey),
+    queryFn: async () => {
+      const result = await listOrganizerEventMarkets(organizerPubkey)
+      const retained =
+        queryClient.getQueryData<MerchantOrganizerEventMarketsReadResult>(
+          marketsQueryKey
+        )?.markets ?? []
+      return {
+        ...result,
+        markets: retainMerchantOrganizerEventMarkets(retained, result),
+      }
+    },
     refetchInterval: 30_000,
   })
-  const markets = useMemo(() => marketsQuery.data ?? [], [marketsQuery.data])
+  const markets = useMemo(
+    () => marketsQuery.data?.markets ?? [],
+    [marketsQuery.data?.markets]
+  )
+  const catalogView = getMerchantOrganizerEventCatalogView(
+    marketsQuery.data,
+    savedReferences.length,
+    marketsQuery.isError
+  )
 
   useEffect(() => {
     if (!organizerPubkey || markets.length === 0) return
@@ -1415,10 +1440,70 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
 
       {marketsQuery.isError && (
         <div className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--text-primary)]">
-          Organizer discovery is degraded. Saved references can still be opened
-          directly. No missing event is inferred from this relay failure.
+          <p>
+            Organizer discovery is degraded. Saved references can still be
+            opened directly. No missing event is inferred from this relay
+            failure.
+          </p>
+          <Button
+            type="button"
+            className="mt-3"
+            variant="outline"
+            disabled={marketsQuery.isFetching}
+            onClick={() => marketsQuery.refetch()}
+          >
+            Retry organizer discovery
+          </Button>
         </div>
       )}
+
+      {!marketsQuery.isError &&
+        catalogView.discoveryState === "partial" &&
+        catalogView.hasKnownReferences && (
+          <div
+            className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--text-primary)]"
+            role="status"
+          >
+            <p>
+              Organizer discovery checked only part of the planned relay view.
+              Available and saved events remain visible; no missing event is
+              inferred from the incomplete refresh.
+            </p>
+            <Button
+              type="button"
+              className="mt-3"
+              variant="outline"
+              disabled={marketsQuery.isFetching}
+              onClick={() => marketsQuery.refetch()}
+            >
+              Retry organizer discovery
+            </Button>
+          </div>
+        )}
+
+      {!marketsQuery.isError &&
+        catalogView.discoveryState === "unavailable" &&
+        catalogView.hasKnownReferences && (
+          <div
+            className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--text-primary)]"
+            role="status"
+          >
+            <p>
+              Organizer discovery is unavailable. Saved references and direct
+              catalog access remain available; no missing event is inferred from
+              this relay failure.
+            </p>
+            <Button
+              type="button"
+              className="mt-3"
+              variant="outline"
+              disabled={marketsQuery.isFetching}
+              onClick={() => marketsQuery.refetch()}
+            >
+              Retry organizer discovery
+            </Button>
+          </div>
+        )}
 
       {membershipMutation.isError && (
         <div
@@ -1609,8 +1694,65 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         </>
       )}
 
-      {!marketsQuery.isPending &&
-        allReferences.length === 0 &&
+      {!marketsQuery.isError &&
+        catalogView.emptyState === "partial" &&
+        !selectedMarket && (
+          <Card className="border-dashed" data-testid="my-events-partial-empty">
+            <CardContent className="flex flex-col items-center px-6 py-14 text-center">
+              <CalendarDays className="h-9 w-9 text-[var(--text-muted)]" />
+              <h2 className="mt-4 text-lg font-semibold text-[var(--text-primary)]">
+                No events found in the checked portion
+              </h2>
+              <p className="mt-2 max-w-lg text-sm leading-6 text-[var(--text-muted)]">
+                Relay discovery was incomplete, so no global absence is
+                inferred. Retry the read or open a catalog directly with its
+                naddr or share link.
+              </p>
+              <Button
+                type="button"
+                className="mt-5"
+                variant="outline"
+                disabled={marketsQuery.isFetching}
+                onClick={() => marketsQuery.refetch()}
+              >
+                Retry organizer discovery
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+      {!marketsQuery.isError &&
+        catalogView.emptyState === "unavailable" &&
+        !selectedMarket && (
+          <Card
+            className="border-dashed"
+            data-testid="my-events-unavailable-empty"
+          >
+            <CardContent className="flex flex-col items-center px-6 py-14 text-center">
+              <CalendarDays className="h-9 w-9 text-[var(--text-muted)]" />
+              <h2 className="mt-4 text-lg font-semibold text-[var(--text-primary)]">
+                Organizer discovery unavailable
+              </h2>
+              <p className="mt-2 max-w-lg text-sm leading-6 text-[var(--text-muted)]">
+                Relays did not complete this organizer read. No event absence is
+                inferred. Saved catalogs can still be reopened, or you can open
+                one directly with its naddr or share link.
+              </p>
+              <Button
+                type="button"
+                className="mt-5"
+                variant="outline"
+                disabled={marketsQuery.isFetching}
+                onClick={() => marketsQuery.refetch()}
+              >
+                Retry organizer discovery
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+      {!marketsQuery.isError &&
+        catalogView.emptyState === "complete" &&
         !selectedMarket && (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center px-6 py-14 text-center">
