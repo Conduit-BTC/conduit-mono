@@ -246,7 +246,7 @@ describe("candidate-first followed event-market discovery", () => {
     })
   })
 
-  it("retains a verified followed market when a partial live scan omits it", async () => {
+  it("retains a verified followed market across omitted live-scan states", async () => {
     const retainedCandidate = collectionEvent()
     const organizerInputs: string[] = []
     __setEventMarketTestOverrides({
@@ -265,32 +265,48 @@ describe("candidate-first followed event-market discovery", () => {
             ]
           : [],
     })
-    __setFollowedEventMarketDiscoveryTestOverrides({
-      readFollowLists: async () => followRead([ORGANIZER, "b".repeat(64)]),
-      readCollectionCandidates: async () =>
-        candidateRead({ relayStatus: "partial" }),
-      readOrganizerMarkets: async (input) => {
-        organizerInputs.push(input.organizerPubkey)
-        expect(input.candidateCollectionEvents).toEqual([retainedCandidate])
-        expect(input.relayHints).toEqual([RETAINED_RELAY])
-        return organizerRead([market(ORGANIZER, "catalog", "stale")], "partial")
-      },
-    })
+    const scenarios = [
+      { relayStatus: "success" as const, capped: false, scan: "complete" },
+      { relayStatus: "partial" as const, capped: false, scan: "partial" },
+      { relayStatus: "success" as const, capped: true, scan: "partial" },
+      { relayStatus: "failed" as const, capped: false, scan: "unavailable" },
+    ] as const
 
-    const result = await discoverFollowedOrganizerEventMarkets({
-      merchantPubkey: MERCHANT,
-    })
+    for (const scenario of scenarios) {
+      __resetFollowedEventMarketDiscoveryTestOverrides()
+      __setFollowedEventMarketDiscoveryTestOverrides({
+        readFollowLists: async () => followRead([ORGANIZER, "b".repeat(64)]),
+        readCollectionCandidates: async () =>
+          candidateRead({
+            relayStatus: scenario.relayStatus,
+            capped: scenario.capped,
+          }),
+        readOrganizerMarkets: async (input) => {
+          organizerInputs.push(input.organizerPubkey)
+          expect(input.candidateCollectionEvents).toEqual([retainedCandidate])
+          expect(input.relayHints).toEqual([RETAINED_RELAY])
+          return organizerRead(
+            [market(ORGANIZER, "catalog", "stale")],
+            "partial"
+          )
+        },
+      })
 
-    expect(result).toMatchObject({
-      state: "partial",
-      candidateScanState: "partial",
-      candidateCollectionCount: 1,
-      searchedOrganizerCount: 1,
-    })
-    expect(result.markets.map((item) => item.reference)).toEqual([
-      `30405:${ORGANIZER}:catalog`,
-    ])
-    expect(organizerInputs).toEqual([ORGANIZER])
+      const result = await discoverFollowedOrganizerEventMarkets({
+        merchantPubkey: MERCHANT,
+      })
+
+      expect(result).toMatchObject({
+        state: "partial",
+        candidateScanState: scenario.scan,
+        candidateCollectionCount: 1,
+        searchedOrganizerCount: 1,
+      })
+      expect(result.markets.map((item) => item.reference)).toEqual([
+        `30405:${ORGANIZER}:catalog`,
+      ])
+    }
+    expect(organizerInputs).toEqual(scenarios.map(() => ORGANIZER))
   })
 
   it("keeps a validated candidate visible while reporting partial relay coverage", async () => {

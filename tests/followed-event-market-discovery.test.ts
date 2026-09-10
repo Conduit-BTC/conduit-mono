@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import {
   __resetEventMarketTestOverrides,
   __resetFollowedEventMarketDiscoveryTestOverrides,
   __setEventMarketTestOverrides,
   __setFollowedEventMarketDiscoveryTestOverrides,
+  buildEventMarketCalendarDraft,
+  buildEventMarketCollectionDraft,
+  buildEventMarketPickupDraft,
   discoverFollowedOrganizerEventMarkets,
+  EVENT_KINDS,
   EventMarketDiscoveryBoundError,
   getOrganizerEventMarketsDetailed,
   type EventMarketRelayCoverage,
@@ -708,18 +713,62 @@ describe("organizer event-market read coverage", () => {
       { length: 6 },
       (_, index) => `wss://relay.damus.io/candidate-${index}`
     )
+    const calendarCoordinate = `${EVENT_KINDS.CALENDAR_TIME}:${ORGANIZER}:relay-calendar`
+    const pickupCoordinate = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER}:relay-pickup`
+    const calendar = finalizeEvent(
+      {
+        ...buildEventMarketCalendarDraft({
+          kind: EVENT_KINDS.CALENDAR_TIME,
+          dTag: "relay-calendar",
+          title: "Relay-priority event",
+          start: 1_800_000_000,
+          end: 1_800_003_600,
+        }),
+        created_at: 100,
+      },
+      ORGANIZER_SECRET
+    )
+    const pickup = finalizeEvent(
+      {
+        ...buildEventMarketPickupDraft({
+          dTag: "relay-pickup",
+          title: "Relay-priority pickup",
+          price: 0,
+          currency: "SATS",
+          countries: ["US"],
+          location: "Organizer booth",
+        }),
+        created_at: 101,
+      },
+      ORGANIZER_SECRET
+    )
+    const collection = finalizeEvent(
+      {
+        ...buildEventMarketCollectionDraft({
+          dTag: "relay-catalog",
+          title: "Relay-priority catalog",
+          eventCoordinate: calendarCoordinate,
+          pickupCoordinate,
+        }),
+        created_at: 102,
+      },
+      ORGANIZER_SECRET
+    )
     const observedRelaySets: string[][] = []
     configureRead({ relayListState: "network", relayUrls: organizerRelayUrls })
     __setEventMarketTestOverrides({
       fetchEventsFanoutDetailed: async (_filter, options) => {
         const relayUrls = [...(options.relayUrls ?? [])]
         observedRelaySets.push(relayUrls)
+        const events = relayUrls.includes(organizerRelayUrls[2]!)
+          ? [collection, pickup, calendar]
+          : [collection, pickup]
         return {
-          events: [],
+          events: events.map((event) => new NDKEvent(undefined, event)),
           relays: relayUrls.map((relayUrl) => ({
             relayUrl,
             status: "success" as const,
-            eventCount: 0,
+            eventCount: events.length,
           })),
           eventsVerified: true,
         }
@@ -730,16 +779,25 @@ describe("organizer event-market read coverage", () => {
       organizerPubkey: ORGANIZER,
       projection: "discovery",
       relayHints: candidateRelayUrls,
+      candidateCollectionEvents: [collection],
+      candidateCollectionSourceRelayUrlsById: new Map([
+        [collection.id, candidateRelayUrls],
+      ]),
+      nowMs: 1_799_000_000_000,
     })
 
     expect(observedRelaySets.length).toBeGreaterThan(0)
-    for (const relayUrls of observedRelaySets) {
-      expect(relayUrls.slice(0, organizerRelayUrls.length)).toEqual(
-        organizerRelayUrls
-      )
-      expect(relayUrls).toHaveLength(8)
-    }
+    const organizerReadRelays = observedRelaySets[0]!
+    expect(organizerReadRelays.slice(0, organizerRelayUrls.length)).toEqual(
+      organizerRelayUrls
+    )
+    expect(organizerReadRelays).toHaveLength(8)
     expect(result.relayHintTruncated).toBe(false)
     expect(result.state).toBe("complete")
+    expect(result.markets).toHaveLength(1)
+    expect(result.markets[0]).toMatchObject({
+      reference: `${EVENT_KINDS.PRODUCT_COLLECTION}:${ORGANIZER}:relay-catalog`,
+      state: "active",
+    })
   })
 })
