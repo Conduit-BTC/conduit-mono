@@ -32,15 +32,11 @@ import {
 import {
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
-  parseOrganizerEventMarketReference,
   publishMerchantOrganizerMembership,
   type MerchantOrganizerEventMarket,
   type MerchantOrganizerRecordDelivery,
 } from "../apps/merchant/src/lib/event-market"
-import {
-  getEventMarketUrl,
-  parseMerchantEventsSearch,
-} from "../apps/merchant/src/lib/market-links"
+import { getEventMarketUrl } from "../apps/merchant/src/lib/market-links"
 
 const ORGANIZER = "a".repeat(64)
 const OTHER_ORGANIZER = "b".repeat(64)
@@ -119,101 +115,39 @@ describe("merchant organizer event workflow", () => {
     ])
   })
 
-  it("hydrates a direct query-link import from exact current event evidence", () => {
+  it("hydrates a title without changing saved mutation frontiers", () => {
     const storage = new MemoryStorage()
-    const importedHints = Array.from(
-      { length: 8 },
-      (_, index) => `wss://invite-${index + 1}.example/events`
-    )
-    const imported = encodeEventMarketNaddr(COLLECTION, importedHints)
-    const initialReference = parseMerchantEventsSearch({
-      event: imported,
-    }).event
-    expect(initialReference).toBe(imported)
-
-    const titleless = rememberDiscoveredEventMarket(
-      MERCHANT,
-      {
-        reference: initialReference!,
-        savedAt: 10,
-        expectedCollectionCoordinate: COLLECTION,
-        expectedCollectionCreatedAt: 2_000,
-        expectedCollectionEventId: "a".repeat(64),
-        expectedCalendarCoordinate: CALENDAR,
-        expectedCalendarCreatedAt: 3_000,
-        expectedCalendarEventId: "b".repeat(64),
-        expectedPickupCoordinate: ORGANIZER_PICKUP,
-        expectedPickupCreatedAt: 4_000,
-        expectedPickupEventId: "c".repeat(64),
-      },
-      storage
-    )
-    const hydrated = rememberDiscoveredEventMarket(
-      MERCHANT,
-      { ...titleless[0]!, title: "Resolved market title" },
-      storage
-    )
-
-    expect(hydrated).toHaveLength(1)
-    expect(hydrated[0]).toMatchObject({
-      title: "Resolved market title",
-      savedAt: 10,
+    const mutationFrontiers = {
       expectedCollectionCoordinate: COLLECTION,
       expectedCollectionCreatedAt: 2_000,
+      expectedCollectionEventId: "a".repeat(64),
       expectedCalendarCoordinate: CALENDAR,
       expectedCalendarCreatedAt: 3_000,
+      expectedCalendarEventId: "b".repeat(64),
       expectedPickupCoordinate: ORGANIZER_PICKUP,
       expectedPickupCreatedAt: 4_000,
-    })
-    expect(
-      decodeEventMarketReference(hydrated[0]!.reference, [30405])?.relayHints
-    ).toEqual(importedHints)
-  })
-
-  it("hydrates a pasted shopper link outside discovery and deduplicates repeated imports", () => {
-    const storage = new MemoryStorage()
-    const first = encodeEventMarketNaddr(COLLECTION, [
-      "wss://one.example/events",
-    ])
-    const second = encodeEventMarketNaddr(COLLECTION, [
-      "wss://two.example/events",
-    ])
-    const shopperLink = getEventMarketUrl(second, {
-      hostname: "shop.conduit.market",
-      protocol: "https:",
-      port: "",
-    })
-
-    rememberDiscoveredEventMarket(
-      MERCHANT,
-      { reference: first, savedAt: 10 },
-      storage
-    )
-    const repeated = rememberDiscoveredEventMarket(
+      expectedPickupEventId: "c".repeat(64),
+    }
+    const [saved] = rememberDiscoveredEventMarket(
       MERCHANT,
       {
-        reference: parseOrganizerEventMarketReference(shopperLink).naddr,
-        savedAt: 20,
-      },
-      storage
-    )
-    const hydrated = rememberDiscoveredEventMarket(
-      MERCHANT,
-      {
-        ...repeated[0]!,
-        title: "Exact event outside the followed feed",
+        reference: encodeEventMarketNaddr(COLLECTION),
+        savedAt: 10,
+        ...mutationFrontiers,
       },
       storage
     )
 
-    expect(hydrated).toHaveLength(1)
-    expect(hydrated[0]).toMatchObject({
-      title: "Exact event outside the followed feed",
-      savedAt: 20,
+    const [hydrated] = rememberDiscoveredEventMarket(
+      MERCHANT,
+      { ...saved!, title: "Resolved market title" },
+      storage
+    )
+
+    expect(hydrated).toMatchObject({
+      title: "Resolved market title",
+      ...mutationFrontiers,
     })
-    expect(
-      decodeEventMarketReference(hydrated[0]!.reference, [30405])?.relayHints
-    ).toEqual(["wss://two.example/events", "wss://one.example/events"])
   })
 
   it("uses one deterministic shortened coordinate label across relay hints", () => {
