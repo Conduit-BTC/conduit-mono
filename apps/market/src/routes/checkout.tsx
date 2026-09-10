@@ -21,7 +21,6 @@ import {
   config,
   createOrderLifecycle,
   fetchLnurlPayMetadata,
-  formatNpub,
   getPriceSats,
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
@@ -87,6 +86,10 @@ import {
 } from "../components/PaymentTargetSelectContent"
 import { CheckoutAvailabilityNotice } from "../components/CheckoutAvailabilityNotice"
 import { CheckoutMerchantPaymentNotice } from "../components/CheckoutMerchantPaymentNotice"
+import {
+  EventActorName,
+  EventActorProvenance,
+} from "../components/EventActorIdentity"
 import { SignerSwitch } from "../components/SignerSwitch"
 import { type CartItem, useCart } from "../hooks/useCart"
 import {
@@ -97,10 +100,12 @@ import {
   type MerchantCartRefreshResult,
 } from "../hooks/useCartReadiness"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
+import { useEventActorIdentity } from "../hooks/useEventActorIdentity"
 import { useProductCartFulfillmentBatch } from "../hooks/useProductCartFulfillment"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets, type WalletRuntimeState } from "../hooks/useWallets"
 import { useShopperPresets } from "../hooks/useShopperPresets"
+import type { EventActorIdentityView } from "../lib/event-actor-identity"
 import {
   type NwcSessionBalanceState,
   type NwcSessionBudgetState,
@@ -744,12 +749,14 @@ function OrderSummary({
   merchantPubkey,
   btcUsdRate,
   availabilityByProductId,
+  pickupHandlerIdentity,
   formatPrice,
 }: {
   items: CartItem[]
   merchantPubkey: string
   btcUsdRate: PricingRateInput
   availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
+  pickupHandlerIdentity: EventActorIdentityView | null
   formatPrice: PriceFormatter
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey)
@@ -942,12 +949,17 @@ function OrderSummary({
         </div>
         <div className="mt-3 flex items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
           <span>
-            {pickupHandoff ? (
+            {pickupHandoff && pickupHandlerIdentity ? (
               <>
                 <span className="block">{pickupHandoff.label}</span>
-                <span className="mt-0.5 block font-mono text-xs text-[var(--text-muted)]">
-                  Signed by {formatNpub(pickupHandoff.handlerPubkey, 8)}
+                <span className="mt-0.5 block text-xs text-[var(--text-muted)]">
+                  Handled by <EventActorName identity={pickupHandlerIdentity} />
                 </span>
+                <EventActorProvenance
+                  pubkey={pickupHandoff.handlerPubkey}
+                  copyLabel="Copy pickup handler npub"
+                  className="mt-1 flex text-xs"
+                />
               </>
             ) : fulfillmentLane === "pickup" ? (
               "Event pickup"
@@ -1304,6 +1316,9 @@ function CheckoutPage() {
   const pickupHandoff = useMemo(
     () => getCartPickupHandoffSummary(checkoutItems),
     [checkoutItems]
+  )
+  const pickupHandlerIdentity = useEventActorIdentity(
+    pickupHandoff?.handlerPubkey
   )
   const mixedFulfillmentMessage =
     getMixedFulfillmentBlockingMessage(checkoutItems)
@@ -3895,15 +3910,28 @@ function CheckoutPage() {
                             {pickupHandoff?.label ?? "Signed event pickup"}
                           </div>
                           <div className="mt-1">
-                            {pickupHandoff
-                              ? `Signed by ${formatNpub(pickupHandoff.handlerPubkey, 10)}. `
-                              : null}
+                            {pickupHandoff && pickupHandlerIdentity ? (
+                              <>
+                                Handled by{" "}
+                                <EventActorName
+                                  identity={pickupHandlerIdentity}
+                                />
+                                .{" "}
+                              </>
+                            ) : null}
                             {paymentRequired
                               ? "No delivery address is requested. Signed pickup evidence and cost are checked again before payment."
                               : "No delivery address is requested. Signed pickup evidence and cost are checked again before order submission."}
                             {pickupHandoff
                               ? ` ${getCheckoutPickupPrivacyCopy(pickupHandoff, paymentRequired)}`
                               : null}
+                            {pickupHandoff ? (
+                              <EventActorProvenance
+                                pubkey={pickupHandoff.handlerPubkey}
+                                copyLabel="Copy pickup handler npub"
+                                className="mt-1 flex"
+                              />
+                            ) : null}
                           </div>
                         </div>
                       </div>
@@ -4188,9 +4216,13 @@ function CheckoutPage() {
                         {pickupHandoff?.label ?? "Event pickup"}
                       </div>
                       <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
-                        {pickupHandoff
-                          ? `The exact pickup author is ${formatNpub(pickupHandoff.handlerPubkey, 10)}. `
-                          : null}
+                        {pickupHandoff && pickupHandlerIdentity ? (
+                          <>
+                            Handled by{" "}
+                            <EventActorName identity={pickupHandlerIdentity} />
+                            .{" "}
+                          </>
+                        ) : null}
                         {paymentRequired
                           ? "No delivery address is included. Signed pickup evidence is refreshed before order submission and payment."
                           : "No delivery address is included. Signed pickup evidence is refreshed before order submission."}
@@ -4201,6 +4233,13 @@ function CheckoutPage() {
                           ? " Your email or phone remains in the merchant-only order for guest recovery."
                           : null}
                       </p>
+                      {pickupHandoff ? (
+                        <EventActorProvenance
+                          pubkey={pickupHandoff.handlerPubkey}
+                          copyLabel="Copy pickup handler npub"
+                          className="mt-1 flex text-xs"
+                        />
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -4615,6 +4654,7 @@ function CheckoutPage() {
           merchantPubkey={selectedMerchant!}
           btcUsdRate={btcUsdRate}
           availabilityByProductId={checkoutAvailability.availabilityByProductId}
+          pickupHandlerIdentity={pickupHandlerIdentity}
           formatPrice={shopperPricing.formatPrice}
         />
       </div>

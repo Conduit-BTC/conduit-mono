@@ -22,6 +22,15 @@ import {
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
+  EventActorName,
+  EventActorProvenance,
+} from "../../components/EventActorIdentity"
+import {
+  getEventActorIdentityView,
+  selectEventHandoffIdentity,
+  type EventActorIdentityView,
+} from "../../lib/event-actor-identity"
+import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
   getMerchantDisplayName,
@@ -64,6 +73,7 @@ function EventCatalogProductCard({
   catalog,
   purchaseReady,
   identity,
+  organizerIdentity,
   imageLoading,
   btcUsdRate,
   pricePreference,
@@ -73,6 +83,7 @@ function EventCatalogProductCard({
   catalog: EventCatalog
   purchaseReady: boolean
   identity: ReturnType<ReturnType<typeof useMerchantIdentities>["getIdentity"]>
+  organizerIdentity: EventActorIdentityView
   imageLoading: "eager" | "lazy"
   btcUsdRate: ReturnType<typeof useShopperPricing>["quote"]
   pricePreference: ReturnType<typeof useShopperPricing>["preference"]
@@ -110,6 +121,17 @@ function EventCatalogProductCard({
       : (entry.familyPickupFulfillments?.[selectedProduct.id] ?? null)
   const handoff = pickupFulfillment
     ? getPickupHandoffSummary(pickupFulfillment)
+    : null
+  const handlerIdentity = handoff
+    ? selectEventHandoffIdentity({
+        mode: handoff.mode,
+        handlerPubkey: handoff.handlerPubkey,
+        merchant: { pubkey: identity.pubkey, identity },
+        organizer: {
+          pubkey: catalog.organizerPubkey ?? "",
+          identity: organizerIdentity,
+        },
+      })
     : null
   const candidate = pickupFulfillment
     ? cartItemInputFromProductSelection(
@@ -205,15 +227,15 @@ function EventCatalogProductCard({
             </>
           )}
         </div>
-      ) : handoff ? (
+      ) : handoff && handlerIdentity ? (
         <details className="group/pickup rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-xs leading-5 text-[var(--text-secondary)]">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] [&::-webkit-details-marker]:hidden">
             <span className="min-w-0">
               <span className="block font-medium text-[var(--text-primary)]">
                 {handoff.label}
               </span>
-              <span className="block truncate font-mono">
-                Handled by {formatNpub(handoff.handlerPubkey, 10)}
+              <span className="block truncate">
+                Handled by <EventActorName identity={handlerIdentity} />
               </span>
             </span>
             <span className="flex shrink-0 items-center gap-1 font-medium text-[var(--text-primary)]">
@@ -227,9 +249,9 @@ function EventCatalogProductCard({
           <div className="border-t border-[var(--border)] px-3 py-2">
             <p>{getPickupHandoffPrivacyCopy(handoff)}</p>
             <div className="mt-2 flex justify-end">
-              <CopyButton
-                value={handoff.handlerPubkey}
-                label="Copy pickup handler npub"
+              <EventActorProvenance
+                pubkey={handoff.handlerPubkey}
+                copyLabel="Copy pickup handler npub"
               />
             </div>
           </div>
@@ -424,13 +446,23 @@ function EventCatalogPage() {
   const query = useEventMarket(collectionRef, shopperPricing.quote)
   const catalog = query.data
   const organizerPubkey = catalog?.organizerPubkey ?? ""
-  const { data: organizerProfile } = useProfile(organizerPubkey)
+  const organizerProfileQuery = useProfile(organizerPubkey, {
+    maxUnresolvedRefetches: 2,
+  })
+  const organizerProfile = organizerProfileQuery.data
   const organizerName = organizerPubkey
     ? getMerchantDisplayName(organizerProfile, organizerPubkey, {
         prefix: "Organizer",
       })
     : "Event organizer"
   const organizerNip05 = getProfileNip05(organizerProfile)
+  const organizerIdentity: EventActorIdentityView = organizerPubkey
+    ? getEventActorIdentityView({
+        pubkey: organizerPubkey,
+        profile: organizerProfile,
+        lookupSettled: organizerProfileQuery.lookupSettled,
+      })
+    : { displayName: "Event organizer", status: "pending" }
   const merchantPubkeys = useMemo(
     () =>
       Array.from(
@@ -738,6 +770,7 @@ function EventCatalogPage() {
                     catalog={catalog}
                     purchaseReady={!archived && catalog.purchaseReady}
                     identity={identity}
+                    organizerIdentity={organizerIdentity}
                     imageLoading={index < 3 ? "eager" : "lazy"}
                     btcUsdRate={shopperPricing.quote}
                     pricePreference={shopperPricing.preference}
