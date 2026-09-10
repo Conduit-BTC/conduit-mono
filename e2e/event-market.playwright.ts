@@ -1412,6 +1412,95 @@ test("event banners remain fully contained on every surface and viewport @market
   }
 })
 
+test("Market Events browses the same perspective on desktop, mobile, and keyboard @market", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(30_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Timeline Event",
+    organizerHandoffEnabled: true,
+  })
+
+  // Guests get the curated Conduit perspective without a signer prompt, even
+  // though this synthetic organizer is outside that perspective.
+  await page.evaluate(() => localStorage.clear())
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto(`${marketUrl}/events`)
+  await expect(page.getByRole("heading", { name: "Events" })).toBeVisible()
+  await expect(
+    page.getByRole("navigation", { name: "Market browse" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("group", { name: "Market perspective" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Conduit", exact: true })
+  ).toHaveAttribute("aria-pressed", "true")
+  await expect(
+    page.getByRole("button", { name: "Following", exact: true })
+  ).toBeDisabled()
+  await expect(
+    page.getByRole("dialog", { name: "Sign in to Conduit" })
+  ).toHaveCount(0)
+
+  relay.seed(
+    createFollowList(
+      "buyer",
+      [ORGANIZER_PUBKEY],
+      Math.floor(Date.now() / 1000) + 1
+    )
+  )
+  await page.setViewportSize({ width: 390, height: 844 })
+  await gotoAs(page, marketUrl, "/events", "buyer", {
+    source: "following",
+    window: "all",
+  })
+
+  const eventCard = page.getByRole("article").filter({
+    has: page.getByRole("heading", { name: "Synthetic Timeline Event" }),
+  })
+  await expect(eventCard).toBeVisible({ timeout: 60_000 })
+  await expect(eventCard.getByText("Synthetic Fixture Hall")).toBeVisible()
+  await expect(eventCard.getByText("Upcoming", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Following", exact: true })
+  ).toHaveAttribute("aria-pressed", "true")
+  const viewport = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }))
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth + 1)
+
+  const perspectiveButtons = page.getByRole("group", {
+    name: "Market perspective",
+  })
+  await perspectiveButtons
+    .getByRole("button", { name: "Conduit", exact: true })
+    .focus()
+  await page.keyboard.press("Tab")
+  await expect(
+    page.getByRole("button", { name: "Clear filters" })
+  ).toBeFocused()
+  await page.keyboard.press("Tab")
+  await expect(page.getByLabel("Date")).toBeFocused()
+
+  const viewLink = eventCard.getByRole("link", { name: "View" })
+  await viewLink.focus()
+  await expect(viewLink).toBeFocused()
+  await page.keyboard.press("Enter")
+  await expect(page).toHaveURL(
+    new RegExp(
+      `/events/${market.canonicalNaddr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`
+    )
+  )
+  await expect(
+    page.getByRole("heading", { name: "Synthetic Timeline Event" })
+  ).toBeVisible({ timeout: 60_000 })
+})
+
 test("event membership and retry completions stay bound to their initiating event @merchant", async ({
   page,
 }) => {

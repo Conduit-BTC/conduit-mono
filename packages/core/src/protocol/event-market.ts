@@ -161,6 +161,8 @@ export interface ParsedEventMarketCalendar {
   summary?: string
   image?: string
   locations: string[]
+  /** Signed NIP-52 topic tags, preserved for display and local filtering. */
+  topics?: string[]
   geohash?: string
   /** Inclusive start instant in epoch milliseconds. */
   start: number
@@ -804,6 +806,14 @@ export function parseEventMarketCalendarEvent(
     end = endMs ?? startMs
   }
 
+  const topics = Array.from(
+    new Set(
+      tagValues(event.tags, "t")
+        .map((topic) => topic.trim())
+        .filter(Boolean)
+    )
+  )
+
   return {
     coordinate: coordinate.coordinate,
     eventId: event.id.toLowerCase(),
@@ -818,6 +828,7 @@ export function parseEventMarketCalendarEvent(
     ...(summary ? { summary } : {}),
     ...(image ? { image } : {}),
     locations: tagValues(event.tags, "location").filter(Boolean),
+    ...(topics.length > 0 ? { topics } : {}),
     ...(geohash ? { geohash: geohash.toLowerCase() } : {}),
     start,
     end,

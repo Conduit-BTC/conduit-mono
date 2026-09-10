@@ -133,6 +133,8 @@ export interface DiscoverFollowedEventMarketsInput {
 export interface DiscoverPerspectiveEventMarketsInput {
   organizerPubkeys: readonly string[]
   perspective: Omit<EventMarketPerspectiveSnapshot, "authorCount">
+  /** Include valid ended markets for timeline/history views. */
+  includeEnded?: boolean
   authenticatedPubkey?: string | null
   nowMs?: number
   signal?: AbortSignal
@@ -1179,7 +1181,11 @@ export async function discoverPerspectiveEventMarkets(
       ) {
         continue
       }
-      if (calendarEndMs !== undefined && calendarEndMs <= effectiveNowMs) {
+      if (
+        !input.includeEnded &&
+        calendarEndMs !== undefined &&
+        calendarEndMs <= effectiveNowMs
+      ) {
         continue
       }
       if (
@@ -1192,6 +1198,7 @@ export async function discoverPerspectiveEventMarkets(
       }
       if (
         market.state !== "active" &&
+        !(input.includeEnded && market.state === "ended") &&
         market.state !== "partial" &&
         market.state !== "stale"
       ) {

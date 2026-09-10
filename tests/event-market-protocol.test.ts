@@ -165,7 +165,16 @@ describe("event-market protocol fixtures", () => {
     ])
 
     const timed = parseEventMarketCalendarEvent(
-      signDraft(ORGANIZER_SECRET, timedDraft)
+      signRaw({
+        kind: timedDraft.kind,
+        tags: [
+          ...timedDraft.tags,
+          ["t", "V4V"],
+          ["t", " Chicago "],
+          ["t", "V4V"],
+        ],
+        content: timedDraft.content,
+      })
     )
     expect(timed).toMatchObject({
       coordinate: `${EVENT_KINDS.CALENDAR_TIME}:${ORGANIZER_PUBKEY}:night-market`,
@@ -174,6 +183,7 @@ describe("event-market protocol fixtures", () => {
       startTzid: "America/New_York",
       endTzid: "America/New_York",
       geohash: "dr5reg",
+      topics: ["V4V", "Chicago"],
     })
   })
 
