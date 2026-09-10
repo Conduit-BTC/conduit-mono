@@ -565,6 +565,16 @@ export function isParticipationProductPreviewVerified(
   )
 }
 
+export function isParticipationProductAvailable(
+  item: MerchantOrganizerParticipation,
+  organizerPubkey: string
+): boolean {
+  return (
+    isParticipationProductPreviewVerified(item) &&
+    isParticipationHandoffVerified(item, organizerPubkey)
+  )
+}
+
 function resolvedEventMarketRelayHints(
   resolution: EventMarketResolution
 ): string[] {

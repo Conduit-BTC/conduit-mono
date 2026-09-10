@@ -28,6 +28,7 @@ import {
 } from "../apps/merchant/src/lib/event-market-workflow"
 import {
   isParticipationHandoffVerified,
+  isParticipationProductAvailable,
   isParticipationProductPreviewVerified,
   parseOrganizerEventMarketReference,
   publishMerchantOrganizerMembership,
@@ -2148,6 +2149,51 @@ describe("merchant organizer event workflow", () => {
           coordinate: `30402:${MERCHANT}:another-product`,
         },
       })
+    ).toBe(false)
+  })
+
+  it("counts a product as available only with exact preview and handoff evidence", () => {
+    const eventId = "e".repeat(64)
+    const request = {
+      productCoordinate: `30402:${MERCHANT}:bread`,
+      eventId,
+      createdAt: 1_000,
+      merchantPubkey: MERCHANT,
+      productPreview: {
+        coordinate: `30402:${MERCHANT}:bread`,
+        eventId,
+        createdAt: 1_000,
+        title: "Fresh bread",
+        priceStatus: "resolved" as const,
+        price: 25,
+        currency: "SAT",
+      },
+      fulfillmentStatus: "resolved" as const,
+      pickupCoordinate: MERCHANT_PICKUP,
+      pickupAuthorPubkey: MERCHANT,
+      handoffMode: "merchant_handoff" as const,
+      handlerPubkey: MERCHANT,
+      status: "accepted" as const,
+    }
+
+    expect(isParticipationProductAvailable(request, ORGANIZER)).toBe(true)
+    expect(
+      isParticipationProductAvailable(
+        { ...request, fulfillmentStatus: "ambiguous" },
+        ORGANIZER
+      )
+    ).toBe(false)
+    expect(
+      isParticipationProductAvailable(
+        {
+          ...request,
+          productPreview: {
+            ...request.productPreview,
+            eventId: "f".repeat(64),
+          },
+        },
+        ORGANIZER
+      )
     ).toBe(false)
   })
 
