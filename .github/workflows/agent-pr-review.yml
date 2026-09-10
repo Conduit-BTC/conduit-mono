@@ -561,6 +561,9 @@ jobs:
           next_evidence="$(trim_field "${BASH_REMATCH[3]}")"
           next_completion="$(trim_field "${BASH_REMATCH[4]}")"
           next_source="$(trim_field "${BASH_REMATCH[5]}")"
+          next_source="${next_source#\"}"
+          next_source="${next_source#“}"
+          next_source="$(trim_field "$next_source")"
           if [[ -z "$next_owner" || -z "$next_action" ||
             -z "$next_evidence" || -z "$next_completion" ||
             -z "$next_source" ]]; then
