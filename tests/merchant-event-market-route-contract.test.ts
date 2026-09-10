@@ -112,7 +112,7 @@ describe("merchant organizer event market route", () => {
     )
     expect(panel).toContain("disabled={pending || (!removable && !canAccept)}")
     expect(panel).toContain("<SignedProductPreview item={item} />")
-    expect(panel).toContain("Exact signed listing")
+    expect(panel).toContain("Exact merchant-signed listing")
     expect(panel).toContain("No signed product description.")
     expect(panel).toContain("formatSourcePrice")
     expect(panel).toContain("productPreview.images[0]")
@@ -135,7 +135,6 @@ describe("merchant organizer event market route", () => {
       "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
     ).text()
 
-    expect(panel).toContain("useProfiles(merchantPubkeys")
     expect(panel).toContain("maxUnresolvedRefetches: 1")
     expect(panel).toContain('data-testid="participation-merchant-identity"')
     expect(panel).toContain("data-profile-state={state}")

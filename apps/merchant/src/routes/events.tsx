@@ -1430,6 +1430,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
           />
           {selectedActionableMarket && (
             <OrganizerHandoffReceiptQueue
+              organizerPubkey={organizerPubkey}
               claims={handoffClaims}
               ackDeliveries={handoffAckDeliveries}
               merchandiseReads={handoffMerchandiseQuery.data ?? {}}

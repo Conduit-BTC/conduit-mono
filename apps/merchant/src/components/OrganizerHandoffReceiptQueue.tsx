@@ -1,8 +1,9 @@
+import { useMemo } from "react"
 import { Check, Loader2, RefreshCw } from "lucide-react"
 import {
   formatEventMarketPickupClaimCode,
-  formatNpub,
   isVerifiedEventMarketReceiptMerchandiseResolution,
+  useProfiles,
   type EventMarketHandoffAckGate,
   type EventMarketOrganizerClaim,
   type EventMarketReceiptMerchandiseResolution,
@@ -21,6 +22,8 @@ import {
   eventMarketHandoffRecipientAcknowledged,
   type StoredEventMarketHandoffDelivery,
 } from "../lib/event-market-handoff"
+import { groupEventActorRelayHints } from "../lib/event-actor-identity"
+import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 
 function stateLabel(state: EventMarketOrganizerClaim["state"]): string {
   switch (state) {
@@ -99,6 +102,7 @@ function publicGraphBlocker(
 }
 
 export function OrganizerHandoffReceiptQueue({
+  organizerPubkey,
   claims,
   ackDeliveries,
   merchandiseReads,
@@ -114,6 +118,7 @@ export function OrganizerHandoffReceiptQueue({
   onAcknowledge,
   onRefresh,
 }: {
+  organizerPubkey: string
   claims: readonly EventMarketOrganizerClaim[]
   ackDeliveries: readonly StoredEventMarketHandoffDelivery[]
   merchandiseReads: Readonly<Record<string, OrganizerHandoffMerchandiseRead>>
@@ -133,6 +138,33 @@ export function OrganizerHandoffReceiptQueue({
 }) {
   const discoveryDegraded =
     stale || decryptFailureCount > 0 || error || !discoveryEvidenceComplete
+  const merchantPubkeys = useMemo(
+    () =>
+      Array.from(
+        new Set(claims.map((claim) => claim.receipt.payload.merchantPubkey))
+      ),
+    [claims]
+  )
+  const merchantRelayHintsByPubkey = useMemo(
+    () =>
+      groupEventActorRelayHints(
+        claims.map((claim) => ({
+          pubkey: claim.receipt.payload.merchantPubkey,
+          relayUrls: merchandiseReads[
+            claim.receipt.id
+          ]?.resolution?.items.flatMap((item) => item.sourceRelayUrls),
+        }))
+      ),
+    [claims, merchandiseReads]
+  )
+  const merchantProfilesQuery = useProfiles(merchantPubkeys, {
+    authenticatedPubkey: organizerPubkey,
+    relayHintsByPubkey: merchantRelayHintsByPubkey,
+    enabled: merchantPubkeys.length > 0,
+    priority: "visible",
+    maxUnresolvedRefetches: 1,
+  })
+
   return (
     <Card data-testid="organizer-handoff-receipt-queue">
       <CardHeader>
@@ -219,9 +251,21 @@ export function OrganizerHandoffReceiptQueue({
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <div className="text-sm font-medium text-[var(--text-primary)]">
-                    Merchant {formatNpub(receipt.merchantPubkey, 8)}
+                  <div className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                    Merchant
                   </div>
+                  <EventActorName
+                    pubkey={receipt.merchantPubkey}
+                    profile={merchantProfilesQuery.getProfile(
+                      receipt.merchantPubkey
+                    )}
+                    className="mt-0.5 block text-sm"
+                  />
+                  <EventActorProvenance
+                    pubkey={receipt.merchantPubkey}
+                    copyLabel="Copy handoff merchant npub"
+                    className="mt-0.5 max-w-full text-xs"
+                  />
                   <div className="mt-1 text-xs text-[var(--text-muted)]">
                     Pickup code {safePickupClaimCode(receipt.claimRef)}
                   </div>

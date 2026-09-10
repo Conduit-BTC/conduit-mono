@@ -7,7 +7,7 @@ import {
   RefreshCw,
   Store,
 } from "lucide-react"
-import { formatNpub } from "@conduit/core"
+import { useProfile } from "@conduit/core"
 import {
   Badge,
   Button,
@@ -17,8 +17,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@conduit/ui"
-import type { MerchantOrganizerEventMarket } from "../lib/event-market"
+import {
+  getResolvedEventMarketRelayHints,
+  type MerchantOrganizerEventMarket,
+} from "../lib/event-market"
 import { getEventMarketUrl } from "../lib/market-links"
+import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { EventProductPublisherDialog } from "./EventProductPublisherDialog"
 
 function formatSchedule(market: MerchantOrganizerEventMarket): string {
@@ -72,7 +76,12 @@ export function MerchantEventMarketPanel({
   )
   const ownsMarket = merchantPubkey === market.organizerPubkey
   const publishable = market.state === "active" || market.state === "partial"
-
+  const organizerProfileQuery = useProfile(market.organizerPubkey, {
+    authenticatedPubkey: merchantPubkey,
+    relayHints: getResolvedEventMarketRelayHints(market.source),
+    priority: "visible",
+    maxUnresolvedRefetches: 1,
+  })
   return (
     <>
       <Card className="overflow-hidden">
@@ -153,8 +162,17 @@ export function MerchantEventMarketPanel({
                 <dt className="font-medium text-[var(--text-primary)]">
                   Organizer
                 </dt>
-                <dd className="mt-1 font-mono text-xs leading-6 text-[var(--text-secondary)]">
-                  {formatNpub(market.organizerPubkey, 12)}
+                <dd className="mt-1 min-w-0 leading-6">
+                  <EventActorName
+                    pubkey={market.organizerPubkey}
+                    profile={organizerProfileQuery.data}
+                    className="block text-sm"
+                  />
+                  <EventActorProvenance
+                    pubkey={market.organizerPubkey}
+                    copyLabel="Copy organizer npub"
+                    className="mt-0.5 max-w-full text-xs"
+                  />
                 </dd>
               </div>
             </div>

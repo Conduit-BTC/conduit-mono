@@ -9,6 +9,7 @@ import type {
 } from "@conduit/core"
 import {
   getMerchantPickupAuthorizationMessage,
+  getMerchantPickupOrganizerProfileRelayHints,
   verifyMerchantPickupOrderAuthorization,
   type MerchantPickupAuthorizationDependencies,
 } from "../apps/merchant/src/lib/order-pickup-authorization"
@@ -270,6 +271,26 @@ function cloneSnapshot(): OrderPickupFulfillmentSchema {
 }
 
 describe("Merchant pickup order authorization", () => {
+  it("carries verified event source relays into organizer profile hydration", async () => {
+    const resolution = market()
+    resolution.collection!.sourceRelayUrls = ["wss://collection.example"]
+    resolution.calendar!.sourceRelayUrls = ["wss://calendar.example"]
+    resolution.pickup!.sourceRelayUrls = ["wss://pickup.example"]
+    resolution.pickups = [resolution.pickup!]
+
+    const result = await verify(dependencies(resolution))
+
+    expect(getMerchantPickupOrganizerProfileRelayHints(result)).toEqual([
+      "wss://collection.example",
+      "wss://calendar.example",
+      "wss://pickup.example",
+    ])
+    expect(getMerchantPickupOrganizerProfileRelayHints(undefined)).toEqual([])
+    expect(
+      getMerchantPickupOrganizerProfileRelayHints({ status: "not_required" })
+    ).toEqual([])
+  })
+
   it("verifies exact current organizer, merchant product, and two-sided participation evidence", async () => {
     let verifiedMarket: EventMarketResolution | undefined
     const result = await verifyMerchantPickupOrderAuthorization(
