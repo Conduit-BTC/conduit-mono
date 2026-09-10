@@ -315,16 +315,18 @@ describe("merchant organizer event workflow", () => {
     )
     expect(anchored).toMatchObject({
       title: "Current exact title",
-      expectedCollectionCoordinate: COLLECTION,
-      expectedCollectionCreatedAt: 2_000,
-      expectedCollectionEventId: "b".repeat(64),
-      expectedCalendarCoordinate: CALENDAR,
-      expectedCalendarCreatedAt: 2_000,
-      expectedCalendarEventId: "c".repeat(64),
+      titleCollectionCoordinate: COLLECTION,
+      titleCollectionCreatedAt: 2_000,
+      titleCollectionEventId: "b".repeat(64),
+      titleCalendarCoordinate: CALENDAR,
+      titleCalendarCreatedAt: 2_000,
+      titleCalendarEventId: "c".repeat(64),
     })
     expect(
       organizerEventMarketHasSavedTitleEvidence(exactMarket, anchored)
     ).toBe(true)
+    expect(anchored?.expectedCollectionCreatedAt).toBeUndefined()
+    expect(anchored?.expectedCalendarCreatedAt).toBeUndefined()
 
     const olderListMarket = {
       ...exactMarket,
@@ -355,10 +357,10 @@ describe("merchant organizer event workflow", () => {
     expect(
       expectedOrganizerEventMarketTitleFrontiers(newerListMarket)
     ).toMatchObject({
-      expectedCollectionCreatedAt: 3_000,
-      expectedCollectionEventId: "f".repeat(64),
-      expectedCalendarCreatedAt: 3_000,
-      expectedCalendarEventId: "1".repeat(64),
+      titleCollectionCreatedAt: 3_000,
+      titleCollectionEventId: "f".repeat(64),
+      titleCalendarCreatedAt: 3_000,
+      titleCalendarEventId: "1".repeat(64),
     })
   })
 

@@ -143,6 +143,30 @@ function expectedEventMarketFrontiers(
   return Object.assign({}, ...records.map(expectedOrganizerEventMarketFrontier))
 }
 
+function titleEventMarketFrontiers(
+  records: readonly MerchantOrganizerRecordDelivery[]
+): Partial<SavedOrganizerEventMarketReference> {
+  const frontiers = expectedEventMarketFrontiers(records)
+  if (
+    !frontiers.expectedCollectionCoordinate ||
+    frontiers.expectedCollectionCreatedAt === undefined ||
+    !frontiers.expectedCollectionEventId ||
+    !frontiers.expectedCalendarCoordinate ||
+    frontiers.expectedCalendarCreatedAt === undefined ||
+    !frontiers.expectedCalendarEventId
+  ) {
+    return {}
+  }
+  return {
+    titleCollectionCoordinate: frontiers.expectedCollectionCoordinate,
+    titleCollectionCreatedAt: frontiers.expectedCollectionCreatedAt,
+    titleCollectionEventId: frontiers.expectedCollectionEventId,
+    titleCalendarCoordinate: frontiers.expectedCalendarCoordinate,
+    titleCalendarCreatedAt: frontiers.expectedCalendarCreatedAt,
+    titleCalendarEventId: frontiers.expectedCalendarEventId,
+  }
+}
+
 function EventsPage() {
   const { pubkey } = useAuth()
   const { event } = Route.useSearch()
@@ -978,6 +1002,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         reference,
         title: input.form.title,
         savedAt: Date.now(),
+        ...titleEventMarketFrontiers(result.records),
         ...expectedEventMarketFrontiers(result.records),
         replaceExpectedRecordFrontiers: true,
       })

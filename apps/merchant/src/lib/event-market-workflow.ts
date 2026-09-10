@@ -13,6 +13,14 @@ export interface SavedOrganizerEventMarketReference {
   reference: string
   title?: string
   savedAt: number
+  // Display provenance must stay separate from expected* mutation frontiers:
+  // learning a title must never unlock or block organizer actions.
+  titleCollectionCoordinate?: string
+  titleCollectionCreatedAt?: number
+  titleCollectionEventId?: string
+  titleCalendarCoordinate?: string
+  titleCalendarCreatedAt?: number
+  titleCalendarEventId?: string
   expectedCollectionCoordinate?: string
   expectedCollectionCreatedAt?: number
   expectedCollectionEventId?: string
@@ -465,28 +473,66 @@ function savedOrganizerEventMarketTitleFrontiers(
   collection: EventMarketRecordFrontier
   calendar: EventMarketRecordFrontier
 } | null {
-  const collection = savedExpectedFrontier(savedReference, "collection")
-  const calendar = savedExpectedFrontier(savedReference, "calendar")
+  if (!savedReference) return null
+  const collectionCreatedAt = savedReference.titleCollectionCreatedAt
+  const calendarCreatedAt = savedReference.titleCalendarCreatedAt
+  const collectionCoordinate = normalizedRecordCoordinate(
+    savedReference.titleCollectionCoordinate,
+    "collection"
+  )
+  const calendarCoordinate = normalizedRecordCoordinate(
+    savedReference.titleCalendarCoordinate,
+    "calendar"
+  )
+  const collectionEventId = normalizedEventId(
+    savedReference.titleCollectionEventId
+  )
+  const calendarEventId = normalizedEventId(savedReference.titleCalendarEventId)
   if (
-    !collection?.coordinate ||
-    !collection.eventId ||
-    !calendar?.coordinate ||
-    !calendar.eventId
+    collectionCreatedAt === undefined ||
+    calendarCreatedAt === undefined ||
+    !collectionCoordinate ||
+    !calendarCoordinate ||
+    !collectionEventId ||
+    !calendarEventId
   ) {
     return null
   }
-  return { collection, calendar }
+  return {
+    collection: {
+      coordinate: collectionCoordinate,
+      createdAt: collectionCreatedAt,
+      eventId: collectionEventId,
+    },
+    calendar: {
+      coordinate: calendarCoordinate,
+      createdAt: calendarCreatedAt,
+      eventId: calendarEventId,
+    },
+  }
+}
+
+function titleFrontierFields(
+  frontiers: {
+    collection: EventMarketRecordFrontier
+    calendar: EventMarketRecordFrontier
+  } | null
+): Partial<SavedOrganizerEventMarketReference> {
+  if (!frontiers) return {}
+  return {
+    titleCollectionCoordinate: frontiers.collection.coordinate,
+    titleCollectionCreatedAt: frontiers.collection.createdAt,
+    titleCollectionEventId: frontiers.collection.eventId,
+    titleCalendarCoordinate: frontiers.calendar.coordinate,
+    titleCalendarCreatedAt: frontiers.calendar.createdAt,
+    titleCalendarEventId: frontiers.calendar.eventId,
+  }
 }
 
 export function expectedOrganizerEventMarketTitleFrontiers(
   market: EventMarketFrontierCarrier | undefined
 ): Partial<SavedOrganizerEventMarketReference> {
-  const frontiers = organizerEventMarketTitleFrontiers(market)
-  if (!frontiers) return {}
-  return {
-    ...expectedFrontierFields("collection", frontiers.collection),
-    ...expectedFrontierFields("calendar", frontiers.calendar),
-  }
+  return titleFrontierFields(organizerEventMarketTitleFrontiers(market))
 }
 
 export function organizerEventMarketHasSavedTitleEvidence(
@@ -539,6 +585,12 @@ function normalizeSavedReference(
     reference?: unknown
     title?: unknown
     savedAt?: unknown
+    titleCollectionCreatedAt?: unknown
+    titleCollectionEventId?: unknown
+    titleCollectionCoordinate?: unknown
+    titleCalendarCreatedAt?: unknown
+    titleCalendarEventId?: unknown
+    titleCalendarCoordinate?: unknown
     expectedCollectionCreatedAt?: unknown
     expectedCollectionEventId?: unknown
     expectedCollectionCoordinate?: unknown
@@ -565,6 +617,32 @@ function normalizeSavedReference(
     typeof candidate.title === "string" && candidate.title.trim()
       ? candidate.title.trim()
       : undefined
+  const titleCollectionCreatedAt = normalizedCreatedAt(
+    candidate.titleCollectionCreatedAt
+  )
+  const titleCollectionEventId = normalizedEventId(
+    candidate.titleCollectionEventId
+  )
+  const titleCollectionCoordinate = normalizedRecordCoordinate(
+    candidate.titleCollectionCoordinate,
+    "collection"
+  )
+  const titleCalendarCreatedAt = normalizedCreatedAt(
+    candidate.titleCalendarCreatedAt
+  )
+  const titleCalendarEventId = normalizedEventId(candidate.titleCalendarEventId)
+  const titleCalendarCoordinate = normalizedRecordCoordinate(
+    candidate.titleCalendarCoordinate,
+    "calendar"
+  )
+  const hasCompleteTitleEvidence =
+    !!title &&
+    titleCollectionCreatedAt !== undefined &&
+    !!titleCollectionEventId &&
+    !!titleCollectionCoordinate &&
+    titleCalendarCreatedAt !== undefined &&
+    !!titleCalendarEventId &&
+    !!titleCalendarCoordinate
   const expectedCollectionCreatedAt = normalizedCreatedAt(
     candidate.expectedCollectionCreatedAt
   )
@@ -602,6 +680,16 @@ function normalizeSavedReference(
         : decoded.coordinate,
     title,
     savedAt: candidate.savedAt,
+    ...(hasCompleteTitleEvidence
+      ? {
+          titleCollectionCreatedAt,
+          titleCollectionEventId,
+          titleCollectionCoordinate,
+          titleCalendarCreatedAt,
+          titleCalendarEventId,
+          titleCalendarCoordinate,
+        }
+      : {}),
     ...(expectedCollectionCreatedAt !== undefined
       ? {
           expectedCollectionCreatedAt,
@@ -672,13 +760,24 @@ function mergeSavedReferences(
   )
   const expectedCalendar = mergeRecordFrontier(frontierReferences, "calendar")
   const expectedPickup = mergeRecordFrontier(frontierReferences, "pickup")
+  const titleSource = sorted.find((reference) => reference.title)
+  const titleEvidenceSource = titleSource
+    ? sorted.find(
+        (reference) =>
+          reference.title === titleSource.title &&
+          !!savedOrganizerEventMarketTitleFrontiers(reference)
+      )
+    : undefined
   return {
     reference:
       relayHints.length > 0
         ? encodeEventMarketNaddr(newest.coordinate, relayHints)
         : newest.coordinate,
-    title: newest.title ?? sorted.find((reference) => reference.title)?.title,
+    title: titleSource?.title,
     savedAt: newest.savedAt,
+    ...titleFrontierFields(
+      savedOrganizerEventMarketTitleFrontiers(titleEvidenceSource)
+    ),
     ...expectedFrontierFields("collection", expectedCollection),
     ...expectedFrontierFields("calendar", expectedCalendar),
     ...expectedFrontierFields("pickup", expectedPickup),
@@ -1021,9 +1120,25 @@ export function organizerEventMarketCanSupplySavedTitle(
     return false
   }
   const savedTitle = savedReference.title?.trim()
-  const savedTitleIsAnchored =
-    !!savedOrganizerEventMarketTitleFrontiers(savedReference)
+  const savedTitleFrontiers =
+    savedOrganizerEventMarketTitleFrontiers(savedReference)
+  const savedTitleIsAnchored = !!savedTitleFrontiers
   if (savedTitle && savedTitle !== market.title && !savedTitleIsAnchored) {
+    return false
+  }
+  if (
+    savedTitleFrontiers &&
+    !marketReachesExpectedFrontiers(
+      market,
+      {
+        reference: savedReference.reference,
+        savedAt: savedReference.savedAt,
+        ...expectedFrontierFields("collection", savedTitleFrontiers.collection),
+        ...expectedFrontierFields("calendar", savedTitleFrontiers.calendar),
+      },
+      ["collection", "calendar"]
+    )
+  ) {
     return false
   }
   return (

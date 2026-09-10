@@ -917,35 +917,35 @@ test("direct and pasted event imports hydrate one saved selector title under par
 
   const savedStorageKey = `conduit:merchant:discovered-event-markets:v1:${MERCHANT_PUBKEY}`
   const expectedTitleEvidence = {
-    expectedCollectionCoordinate: market.collectionCoordinate,
-    expectedCollectionCreatedAt: market.initialCollection.created_at * 1_000,
-    expectedCollectionEventId: market.initialCollection.id,
-    expectedCalendarCoordinate: market.calendarCoordinate,
-    expectedCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
-    expectedCalendarEventId: market.calendarEvent.id,
+    titleCollectionCoordinate: market.collectionCoordinate,
+    titleCollectionCreatedAt: market.initialCollection.created_at * 1_000,
+    titleCollectionEventId: market.initialCollection.id,
+    titleCalendarCoordinate: market.calendarCoordinate,
+    titleCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
+    titleCalendarEventId: market.calendarEvent.id,
   }
   const readSavedTitleEvidence = () =>
     page.evaluate((key) => {
       const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
         reference?: string
         title?: string
-        expectedCollectionCoordinate?: string
-        expectedCollectionCreatedAt?: number
-        expectedCollectionEventId?: string
-        expectedCalendarCoordinate?: string
-        expectedCalendarCreatedAt?: number
-        expectedCalendarEventId?: string
+        titleCollectionCoordinate?: string
+        titleCollectionCreatedAt?: number
+        titleCollectionEventId?: string
+        titleCalendarCoordinate?: string
+        titleCalendarCreatedAt?: number
+        titleCalendarEventId?: string
       }>
       return {
         count: saved.length,
         reference: saved[0]?.reference,
         title: saved[0]?.title,
-        expectedCollectionCoordinate: saved[0]?.expectedCollectionCoordinate,
-        expectedCollectionCreatedAt: saved[0]?.expectedCollectionCreatedAt,
-        expectedCollectionEventId: saved[0]?.expectedCollectionEventId,
-        expectedCalendarCoordinate: saved[0]?.expectedCalendarCoordinate,
-        expectedCalendarCreatedAt: saved[0]?.expectedCalendarCreatedAt,
-        expectedCalendarEventId: saved[0]?.expectedCalendarEventId,
+        titleCollectionCoordinate: saved[0]?.titleCollectionCoordinate,
+        titleCollectionCreatedAt: saved[0]?.titleCollectionCreatedAt,
+        titleCollectionEventId: saved[0]?.titleCollectionEventId,
+        titleCalendarCoordinate: saved[0]?.titleCalendarCoordinate,
+        titleCalendarCreatedAt: saved[0]?.titleCalendarCreatedAt,
+        titleCalendarEventId: saved[0]?.titleCalendarEventId,
       }
     }, savedStorageKey)
   await expect.poll(readSavedTitleEvidence).toEqual({
@@ -999,12 +999,12 @@ test("current exact resolution refreshes a saved title without replacing its evi
     reference: hintedReference,
     title: "Cached title before current resolution",
     savedAt,
-    expectedCollectionCoordinate: market.collectionCoordinate,
-    expectedCollectionCreatedAt: market.initialCollection.created_at * 1_000,
-    expectedCollectionEventId: market.initialCollection.id,
-    expectedCalendarCoordinate: market.calendarCoordinate,
-    expectedCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
-    expectedCalendarEventId: market.calendarEvent.id,
+    titleCollectionCoordinate: market.collectionCoordinate,
+    titleCollectionCreatedAt: market.initialCollection.created_at * 1_000,
+    titleCollectionEventId: market.initialCollection.id,
+    titleCalendarCoordinate: market.calendarCoordinate,
+    titleCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
+    titleCalendarEventId: market.calendarEvent.id,
   }
   await page.evaluate(
     ({ key, saved }) => localStorage.setItem(key, JSON.stringify([saved])),
