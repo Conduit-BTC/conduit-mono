@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import { useProfile, useProfiles } from "@conduit/core"
+import { useProfiles } from "@conduit/core"
 import {
   getEventActorIdentityView,
   type EventActorIdentityView,
@@ -49,11 +49,7 @@ export function EventActorIdentityProvider({
       setPubkeys((existing) => existing.filter((entry) => entry !== pubkey))
     }
   }, [])
-  const {
-    data: profiles,
-    hasProfile,
-    lookupSettled,
-  } = useProfiles(pubkeys, {
+  const { data: profiles } = useProfiles(pubkeys, {
     enabled: pubkeys.length > 0,
     priority: "visible",
     refetchUnresolvedMs: 5_000,
@@ -64,9 +60,8 @@ export function EventActorIdentityProvider({
       getEventActorIdentityView({
         pubkey,
         profile: profiles[pubkey],
-        lookupSettled: hasProfile(pubkey) || lookupSettled,
       }),
-    [hasProfile, lookupSettled, profiles]
+    [profiles]
   )
   const value = useMemo(
     () => ({ getIdentity, register }),
@@ -83,30 +78,26 @@ export function EventActorIdentityProvider({
 export function useEventActorIdentity(
   pubkey: string | null | undefined
 ): EventActorIdentityView | null {
-  const batch = useContext(EventActorIdentityBatchContext)
-  const register = batch?.register
-  const profileQuery = useProfile(pubkey, {
-    enabled: !!pubkey && !batch,
-    priority: "visible",
-    refetchUnresolvedMs: 5_000,
-    maxUnresolvedRefetches: 2,
-  })
+  const batch = useRequiredEventActorIdentityBatch()
+  const register = batch.register
 
   useEffect(() => {
-    if (!pubkey || !register) return
+    if (!pubkey) return
     return register(pubkey)
   }, [pubkey, register])
 
   return useMemo(
-    () =>
-      pubkey
-        ? (batch?.getIdentity(pubkey) ??
-          getEventActorIdentityView({
-            pubkey,
-            profile: profileQuery.data,
-            lookupSettled: profileQuery.lookupSettled,
-          }))
-        : null,
-    [batch, profileQuery.data, profileQuery.lookupSettled, pubkey]
+    () => (pubkey ? batch.getIdentity(pubkey) : null),
+    [batch, pubkey]
   )
+}
+
+function useRequiredEventActorIdentityBatch(): EventActorIdentityBatchContextValue {
+  const batch = useContext(EventActorIdentityBatchContext)
+  if (!batch) {
+    throw new Error(
+      "useEventActorIdentity must be used within EventActorIdentityProvider"
+    )
+  }
+  return batch
 }

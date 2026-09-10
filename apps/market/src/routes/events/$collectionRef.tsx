@@ -460,9 +460,8 @@ function EventCatalogPage() {
     ? getEventActorIdentityView({
         pubkey: organizerPubkey,
         profile: organizerProfile,
-        lookupSettled: organizerProfileQuery.lookupSettled,
       })
-    : { displayName: "Event organizer", status: "pending" }
+    : { displayName: "Event organizer" }
   const merchantPubkeys = useMemo(
     () =>
       Array.from(

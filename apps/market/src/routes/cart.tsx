@@ -27,7 +27,6 @@ import {
   recordBrowserTelemetryEvent,
   SHIPPING_COUNTRIES,
   useProfile,
-  useProfiles,
   type BtcUsdRateQuote,
   type CommercePriceLike,
   type PricingRateInput,
@@ -76,10 +75,6 @@ import { useWallets, type UseWalletsReturn } from "../hooks/useWallets"
 import { useShopperPresets } from "../hooks/useShopperPresets"
 import { getCartShippingDestinationEligibility } from "../lib/cart-shipping-options"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
-import {
-  getEventActorIdentityView,
-  type EventActorIdentityView,
-} from "../lib/event-actor-identity"
 import {
   getCartCostSummary,
   getCartItemStockForAvailability,
@@ -364,16 +359,9 @@ function RelatedProductRow({
     resolution?.status === "pickup"
       ? getPickupHandoffSummary(resolution.fulfillment)
       : null
-  const queriedRelatedPickupHandlerIdentity = useEventActorIdentity(
+  const relatedPickupHandlerIdentity = useEventActorIdentity(
     relatedPickupHandoff?.handlerPubkey
   )
-  const relatedPickupHandlerIdentity = relatedPickupHandoff
-    ? (queriedRelatedPickupHandlerIdentity ??
-      getEventActorIdentityView({
-        pubkey: relatedPickupHandoff.handlerPubkey,
-        lookupSettled: true,
-      }))
-    : null
   const cartCandidate = resolution
     ? resolution.status === "pickup"
       ? cartItemInputFromProductSelection(
@@ -567,7 +555,6 @@ function CartLineItem({
   availability,
   formatPrice,
   allowZeroPrice,
-  pickupHandlerIdentity,
   onIncrement,
   onDecrement,
   onRemove,
@@ -576,7 +563,6 @@ function CartLineItem({
   availability?: CartProductAvailability
   formatPrice: PriceFormatter
   allowZeroPrice: boolean
-  pickupHandlerIdentity?: EventActorIdentityView
   onIncrement: () => void
   onDecrement: () => void
   onRemove: () => void
@@ -612,13 +598,9 @@ function CartLineItem({
   )
   const unitPrice = formatPrice(item, zeroPriceOptions)
   const pickupHandoff = pickup ? getPickupHandoffSummary(pickup) : null
-  const effectivePickupHandlerIdentity = pickupHandoff
-    ? (pickupHandlerIdentity ??
-      getEventActorIdentityView({
-        pubkey: pickupHandoff.handlerPubkey,
-        lookupSettled: true,
-      }))
-    : null
+  const pickupHandlerIdentity = useEventActorIdentity(
+    pickupHandoff?.handlerPubkey
+  )
 
   return (
     <div
@@ -674,10 +656,10 @@ function CartLineItem({
           <div className="mt-2 flex items-start gap-2 text-xs leading-5 text-[var(--text-secondary)]">
             <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-secondary-400" />
             <div>
-              {pickupHandoff && effectivePickupHandlerIdentity ? (
+              {pickupHandoff && pickupHandlerIdentity ? (
                 <div className="font-medium text-[var(--text-primary)]">
                   {pickupHandoff.label} · handled by{" "}
-                  <EventActorName identity={effectivePickupHandlerIdentity} />
+                  <EventActorName identity={pickupHandlerIdentity} />
                   <EventActorProvenance
                     pubkey={pickupHandoff.handlerPubkey}
                     copyLabel="Copy pickup handler npub"
@@ -779,48 +761,6 @@ function MerchantCartCard({
   onRemove: (item: CartItem) => void
 }) {
   const { data: profile } = useProfile(group.merchantPubkey)
-  const pickupHandlerPubkeys = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          group.items.flatMap((item) => {
-            if (item.fulfillment?.type !== "pickup") return []
-            const handoff = getPickupHandoffSummary(item.fulfillment)
-            return handoff ? [handoff.handlerPubkey] : []
-          })
-        )
-      ),
-    [group.items]
-  )
-  const {
-    data: pickupHandlerProfileData,
-    hasProfile: hasPickupHandlerProfile,
-    lookupSettled: pickupHandlerLookupSettled,
-  } = useProfiles(pickupHandlerPubkeys, {
-    priority: "visible",
-    refetchUnresolvedMs: 5_000,
-    maxUnresolvedRefetches: 2,
-  })
-  const pickupHandlerIdentities = useMemo(
-    () =>
-      Object.fromEntries(
-        pickupHandlerPubkeys.map((pubkey) => [
-          pubkey,
-          getEventActorIdentityView({
-            pubkey,
-            profile: pickupHandlerProfileData[pubkey],
-            lookupSettled:
-              hasPickupHandlerProfile(pubkey) || pickupHandlerLookupSettled,
-          }),
-        ])
-      ) as Record<string, EventActorIdentityView>,
-    [
-      hasPickupHandlerProfile,
-      pickupHandlerLookupSettled,
-      pickupHandlerProfileData,
-      pickupHandlerPubkeys,
-    ]
-  )
   const summary = getCartSummaryPrice(group.items, btcUsdRate, formatPrice)
   const pricing = buildCheckoutPricingIntent(group.items, btcUsdRate)
   const allowZeroPrice = pricing.status === "ok" && !pricing.paymentRequired
@@ -952,30 +892,18 @@ function MerchantCartCard({
         {expanded && (
           <div id={detailsId} className="mt-5 border-t border-[var(--border)]">
             <div className="divide-y divide-[var(--border)]">
-              {group.items.map((item) => {
-                const handoff =
-                  item.fulfillment?.type === "pickup"
-                    ? getPickupHandoffSummary(item.fulfillment)
-                    : null
-
-                return (
-                  <CartLineItem
-                    key={getCartItemKey(item)}
-                    item={item}
-                    availability={availabilityByProductId.get(item.productId)}
-                    formatPrice={formatPrice}
-                    allowZeroPrice={allowZeroPrice}
-                    pickupHandlerIdentity={
-                      handoff
-                        ? pickupHandlerIdentities[handoff.handlerPubkey]
-                        : undefined
-                    }
-                    onIncrement={() => onIncrement(item)}
-                    onDecrement={() => onDecrement(item)}
-                    onRemove={() => onRemove(item)}
-                  />
-                )
-              })}
+              {group.items.map((item) => (
+                <CartLineItem
+                  key={getCartItemKey(item)}
+                  item={item}
+                  availability={availabilityByProductId.get(item.productId)}
+                  formatPrice={formatPrice}
+                  allowZeroPrice={allowZeroPrice}
+                  onIncrement={() => onIncrement(item)}
+                  onDecrement={() => onDecrement(item)}
+                  onRemove={() => onRemove(item)}
+                />
+              ))}
             </div>
           </div>
         )}

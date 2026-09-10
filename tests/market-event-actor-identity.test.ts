@@ -1,11 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { formatNpub, pubkeyToNpub } from "@conduit/core"
+import { formatNpub } from "@conduit/core"
 import { EventActorName } from "../apps/market/src/components/EventActorIdentity"
 import {
   getEventActorIdentityView,
-  getEventActorProvenance,
   selectEventHandoffIdentity,
   type EventActorIdentityView,
 } from "../apps/market/src/lib/event-actor-identity"
@@ -23,46 +22,26 @@ describe("Market event actor identity", () => {
           displayName: "Staci",
           name: "staci",
         },
-        lookupSettled: true,
-        fallbackPrefix: "Pickup handler",
       })
-    ).toEqual({ displayName: "Staci", status: "resolved" })
+    ).toEqual({ displayName: "Staci" })
   })
 
-  it("uses the exact identity fallback while profile lookup is pending", () => {
+  it("uses the shortened exact npub when profile metadata is unavailable", () => {
     expect(
       getEventActorIdentityView({
         pubkey: handlerPubkey,
-        lookupSettled: false,
-        fallbackPrefix: "Pickup handler",
       })
     ).toEqual({
-      displayName: `Pickup handler ${formatNpub(handlerPubkey, 8)}`,
-      status: "pending",
-    })
-  })
-
-  it("keeps the shortened npub fallback after an empty lookup settles", () => {
-    expect(
-      getEventActorIdentityView({
-        pubkey: handlerPubkey,
-        lookupSettled: true,
-        fallbackPrefix: "Pickup handler",
-      })
-    ).toEqual({
-      displayName: `Pickup handler ${formatNpub(handlerPubkey, 8)}`,
-      status: "fallback",
+      displayName: formatNpub(handlerPubkey, 8),
     })
   })
 
   it("selects and renders the exact handler identity for both handoff modes", () => {
     const merchant: EventActorIdentityView = {
       displayName: "Staci",
-      status: "resolved",
     }
     const organizer: EventActorIdentityView = {
       displayName: "Bowser",
-      status: "resolved",
     }
 
     const merchantHandoff = selectEventHandoffIdentity({
@@ -99,16 +78,6 @@ describe("Market event actor identity", () => {
     ).toBe(formatNpub(organizerPubkey, 8))
   })
 
-  it("keeps exact npub profile and copy provenance behind the friendly name", () => {
-    for (const pubkey of [handlerPubkey, organizerPubkey]) {
-      const provenance = getEventActorProvenance(pubkey)
-
-      expect(provenance.displayNpub).toBe(formatNpub(pubkey, 8))
-      expect(provenance.profileRef).toBe(pubkeyToNpub(pubkey))
-      expect(pubkeyToNpub(provenance.copyValue)).toBe(pubkeyToNpub(pubkey))
-    }
-  })
-
   it("uses the shared identity treatment across shopper pickup surfaces", async () => {
     const surfaces = await Promise.all(
       [
@@ -132,11 +101,31 @@ describe("Market event actor identity", () => {
     const identityHook = await Bun.file(
       "apps/market/src/hooks/useEventActorIdentity.ts"
     ).text()
+    const identityModel = await Bun.file(
+      "apps/market/src/lib/event-actor-identity.ts"
+    ).text()
     const root = await Bun.file("apps/market/src/routes/__root.tsx").text()
+    const cart = surfaces[3]
 
     expect(identityComponent).toContain("<CopyButton")
+    expect(identityComponent).toContain(
+      "params={{ profileRef: pubkeyToNpub(pubkey) }}"
+    )
+    expect(identityComponent).toContain("{formatNpub(pubkey, 8)}")
+    expect(identityComponent).toContain("<CopyButton value={pubkey}")
     expect(identityHook).toContain("useProfiles(pubkeys")
-    expect(identityHook).toContain("enabled: !!pubkey && !batch")
+    expect(identityHook).not.toContain("useProfile(")
+    expect(identityHook).toContain(
+      "useEventActorIdentity must be used within EventActorIdentityProvider"
+    )
+    expect(identityModel).not.toContain("lookupSettled")
+    expect(identityModel).not.toContain("fallbackPrefix")
+    expect(identityModel).not.toContain("getEventActorProvenance")
+    expect(cart).not.toContain("pickupHandlerPubkeys")
+    expect(cart).not.toContain("pickupHandlerIdentity={")
+    expect(cart).toContain(
+      "const pickupHandlerIdentity = useEventActorIdentity("
+    )
     expect(root).toContain("<EventActorIdentityProvider>")
 
     expect(surfaces.join("\n")).not.toMatch(

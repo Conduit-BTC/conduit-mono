@@ -1,13 +1,7 @@
-import {
-  formatNpub,
-  getProfileName,
-  pubkeyToNpub,
-  type Profile,
-} from "@conduit/core"
+import { formatNpub, getProfileName, type Profile } from "@conduit/core"
 
 export type EventActorIdentityView = {
   displayName: string
-  status: "resolved" | "pending" | "fallback"
 }
 
 export function selectEventHandoffIdentity(input: {
@@ -22,38 +16,14 @@ export function selectEventHandoffIdentity(input: {
     ? expected.identity
     : getEventActorIdentityView({
         pubkey: input.handlerPubkey,
-        lookupSettled: true,
       })
-}
-
-export function getEventActorProvenance(pubkey: string): {
-  copyValue: string
-  displayNpub: string
-  profileRef: string
-} {
-  return {
-    copyValue: pubkey,
-    displayNpub: formatNpub(pubkey, 8),
-    profileRef: pubkeyToNpub(pubkey),
-  }
 }
 
 export function getEventActorIdentityView(input: {
   pubkey: string
   profile?: Profile
-  lookupSettled: boolean
-  fallbackPrefix?: string
 }): EventActorIdentityView {
-  const profileName = getProfileName(input.profile)
-  if (profileName) {
-    return { displayName: profileName, status: "resolved" }
-  }
-
-  const npub = formatNpub(input.pubkey, 8)
   return {
-    displayName: input.fallbackPrefix
-      ? `${input.fallbackPrefix} ${npub}`
-      : npub,
-    status: input.lookupSettled ? "fallback" : "pending",
+    displayName: getProfileName(input.profile) ?? formatNpub(input.pubkey, 8),
   }
 }

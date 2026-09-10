@@ -873,9 +873,8 @@ function OrderDetail({
       getEventActorIdentityView({
         pubkey,
         profile: eventActorProfiles.data[pubkey],
-        lookupSettled: eventActorProfiles.lookupSettled,
       }),
-    [eventActorProfiles.data, eventActorProfiles.lookupSettled]
+    [eventActorProfiles.data]
   )
   const [busy, setBusy] = useState(false)
   const [privateFallbackOpen, setPrivateFallbackOpen] = useState(false)

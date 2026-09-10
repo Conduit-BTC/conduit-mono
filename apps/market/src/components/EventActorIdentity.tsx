@@ -1,8 +1,6 @@
 import { Link } from "@tanstack/react-router"
-import {
-  getEventActorProvenance,
-  type EventActorIdentityView,
-} from "../lib/event-actor-identity"
+import { formatNpub, pubkeyToNpub } from "@conduit/core"
+import { type EventActorIdentityView } from "../lib/event-actor-identity"
 import { CopyButton } from "./CopyButton"
 
 export function EventActorName({
@@ -32,20 +30,18 @@ export function EventActorProvenance({
   copyLabel: string
   className?: string
 }) {
-  const provenance = getEventActorProvenance(pubkey)
-
   return (
     <span
       className={`inline-flex min-w-0 items-center gap-2 font-mono text-[var(--text-muted)] ${className}`}
     >
       <Link
         to="/u/$profileRef"
-        params={{ profileRef: provenance.profileRef }}
+        params={{ profileRef: pubkeyToNpub(pubkey) }}
         className="truncate underline-offset-2 hover:text-[var(--text-primary)] hover:underline"
       >
-        {provenance.displayNpub}
+        {formatNpub(pubkey, 8)}
       </Link>
-      <CopyButton value={provenance.copyValue} label={copyLabel} />
+      <CopyButton value={pubkey} label={copyLabel} />
     </span>
   )
 }
