@@ -295,8 +295,10 @@ function AccountControl({
 
 export function MarketHeader() {
   const { pubkey, status, disconnect } = useAuth()
+  const authenticatedPubkey = status === "connected" ? pubkey : null
   const { data: profile } = useProfile(pubkey, {
-    authenticatedPubkey: pubkey,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
   })
   const cart = useCart()
   const navigate = useNavigate()

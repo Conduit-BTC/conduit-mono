@@ -13,6 +13,7 @@ import type { AccountNetworkLocalStateRepository } from "./account-network-local
 import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { getNdk } from "./ndk"
+import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import {
   getRelayLists,
   getRelayListsDetailed,
@@ -21,6 +22,7 @@ import {
 } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import { publishWithPlanner } from "./relay-publish"
+import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
 import {
   fetchSignedEventsFanoutDetailed,
   type RelayReadSourceStatus,
@@ -130,6 +132,13 @@ export interface FollowListReadOptions {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  /** Injectable durable owner-authority reader for deterministic tests. */
+  readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
+}
+
+export interface MerchantTrustSocialReadOptions extends FollowListReadOptions {
+  /** Explicit signed-in account; never inferred from the viewed subjects. */
+  authenticatedPubkey?: string | null
 }
 
 const FOLLOW_LIST_FUTURE_TOLERANCE_SECONDS = 5 * 60
@@ -592,13 +601,33 @@ export function buildMerchantTrustSocialSummary({
   }
 }
 
+async function readAuthenticatedOwnerRelaySettings(
+  authenticatedPubkey: string | null,
+  accountPubkey: string | null,
+  options: FollowListReadOptions
+) {
+  if (!authenticatedPubkey || authenticatedPubkey !== accountPubkey) {
+    return null
+  }
+  try {
+    return await (
+      options.readAccountRelaySettingsPlanningSnapshot ??
+      readDurableAccountRelaySettingsPlanningSnapshot
+    )(authenticatedPubkey)
+  } catch {
+    return null
+  }
+}
+
 export async function readLatestFollowLists(
   {
     pubkeys,
     authenticatedPubkey,
+    accountPubkey,
   }: {
     pubkeys: readonly string[]
     authenticatedPubkey?: string | null
+    accountPubkey?: string | null
   },
   options: FollowListReadOptions = {}
 ): Promise<FollowListReadResult> {
@@ -623,9 +652,28 @@ export async function readLatestFollowLists(
   const normalizedAuthenticatedPubkey = normalizeHexPubkey(
     authenticatedPubkey ?? undefined
   )
+  const normalizedAccountPubkey = normalizeHexPubkey(
+    accountPubkey ?? authenticatedPubkey ?? undefined
+  )
+  const ownerSettingsSnapshot = await readAuthenticatedOwnerRelaySettings(
+    normalizedAuthenticatedPubkey,
+    normalizedAccountPubkey,
+    options
+  )
+  const ownerReadRelayUrls = normalizeOwnerSelectedRelayUrls(
+    ownerSettingsSnapshot?.settings.entries.flatMap((entry) =>
+      entry.readEnabled ? [entry.url] : []
+    ) ?? []
+  )
+  const ownerWriteRelayUrls = normalizeOwnerSelectedRelayUrls(
+    ownerSettingsSnapshot?.settings.entries.flatMap((entry) =>
+      entry.writeEnabled ? [entry.url] : []
+    ) ?? []
+  )
   const relayLookupOptions = {
-    allowInsecureRelayUrlsForPubkey: authenticatedPubkey,
-    accountPubkey: normalizedAuthenticatedPubkey,
+    accountPubkey: normalizedAccountPubkey,
+    authenticatedPubkey: normalizedAuthenticatedPubkey,
+    ownerSelectedRelayUrls: ownerReadRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     skipCache: options.refreshRelayLists,
@@ -669,12 +717,23 @@ export async function readLatestFollowLists(
   const authors = await Promise.all(
     normalizedPubkeys.map(async (pubkey): Promise<FollowListAuthorRead> => {
       const relayListState = relayListStates.get(pubkey) ?? "lookup-unavailable"
+      const isAuthenticatedOwner = pubkey === normalizedAuthenticatedPubkey
+      const ownerSelectedRelayUrls = Array.from(
+        new Set([
+          ...ownerReadRelayUrls,
+          ...(isAuthenticatedOwner ? ownerWriteRelayUrls : []),
+        ])
+      )
       const authorPlan = planRelayReads({
         intent: "contact_lists",
         authors: [pubkey],
         relayLists,
         authenticatedPubkey,
+        ownerSelectedRelayUrls,
         maxRelays,
+        settings: ownerSettingsSnapshot?.settings,
+        signedRelayListAuthoritative:
+          ownerSettingsSnapshot?.signedRelayListAuthoritative,
         // Health is an availability signal, not permission to omit an
         // author's declared write relay from a replacement-sensitive read.
         skipHealthFilter: true,
@@ -705,6 +764,13 @@ export async function readLatestFollowLists(
           ...nonHinted,
         ])
       ).slice(0, maxRelays)
+      const plannedRelaySet = new Set(plannedRelayUrls)
+      const plannedOwnerSelectedRelayUrls = Array.from(
+        new Set([
+          ...(authorPlan.ownerSelectedRelayUrls ?? []),
+          ...(basePlan.ownerSelectedRelayUrls ?? []),
+        ])
+      ).filter((relayUrl) => plannedRelaySet.has(relayUrl))
 
       if (plannedRelayUrls.length === 0) {
         return await preserveStrongestOwnFollowList(
@@ -738,7 +804,9 @@ export async function readLatestFollowLists(
           },
           {
             relayUrls: plannedRelayUrls,
-            accountPubkey: normalizedAuthenticatedPubkey,
+            accountPubkey: normalizedAccountPubkey,
+            authenticatedPubkey: normalizedAuthenticatedPubkey,
+            ownerSelectedRelayUrls: plannedOwnerSelectedRelayUrls,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
             connectTimeoutMs: FOLLOW_LIST_CONNECT_TIMEOUT_MS,
@@ -899,12 +967,16 @@ export async function fetchMerchantTrustSocialSummary(
     merchantPubkey: string
     viewerPubkey: string
   },
-  options: FollowListReadOptions = {}
+  options: MerchantTrustSocialReadOptions = {}
 ): Promise<MerchantTrustSocialReadResult> {
+  const normalizedAccountPubkey = normalizeHexPubkey(
+    options.authenticatedPubkey ?? undefined
+  )
   const read = await readLatestFollowLists(
     {
       pubkeys: [viewerPubkey, merchantPubkey],
-      authenticatedPubkey: viewerPubkey,
+      authenticatedPubkey: normalizedAccountPubkey,
+      accountPubkey: normalizedAccountPubkey,
     },
     options
   )

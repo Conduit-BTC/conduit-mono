@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import { nip19 } from "nostr-tools"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -537,6 +538,77 @@ function saturatedCollectionDiscoveryHarness(input: {
 afterEach(() => __resetEventMarketTestOverrides())
 
 describe("event-market retained evidence", () => {
+  it("never turns a remote naddr loopback hint into signed-in relay I/O", async () => {
+    const remoteLoopbackRelay = "ws://127.0.0.1:4789"
+    const ownerRelay = "ws://owner-network.example:4848"
+    const attemptedRelayUrls: string[] = []
+    const ownerSelectedRelayUrls: string[] = []
+    const authenticatedPubkeys: Array<string | null | undefined> = []
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: {
+          version: 1,
+          updatedAt: 1,
+          entries: [
+            {
+              url: ownerRelay,
+              readEnabled: true,
+              writeEnabled: false,
+              section: "public",
+              capabilities: {
+                nip11: false,
+                search: false,
+                dm: false,
+                auth: false,
+                commerce: false,
+              },
+              warnings: {
+                dmWithoutAuth: false,
+                staleRelayInfo: false,
+                unreachable: false,
+                commercePartialSupport: false,
+              },
+            },
+          ],
+        },
+        signedRelayListAuthoritative: true,
+      }),
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        attemptedRelayUrls.push(...(options.relayUrls ?? []))
+        ownerSelectedRelayUrls.push(...(options.ownerSelectedRelayUrls ?? []))
+        authenticatedPubkeys.push(options.authenticatedPubkey)
+        return {
+          events: [],
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+    const remoteReference = nip19.naddrEncode({
+      kind: EVENT_KINDS.PRODUCT_COLLECTION,
+      pubkey: ORGANIZER,
+      identifier: "catalog",
+      relays: [remoteLoopbackRelay],
+    })
+
+    await getEventMarket({
+      reference: remoteReference,
+      authenticatedPubkey: MERCHANT,
+    })
+
+    expect(attemptedRelayUrls).toContain(ownerRelay)
+    expect(ownerSelectedRelayUrls).toContain(ownerRelay)
+    expect(attemptedRelayUrls).not.toContain(remoteLoopbackRelay)
+    expect(authenticatedPubkeys.every((value) => value === MERCHANT)).toBe(true)
+  })
+
   it("keeps a large valid event visible in the discovery-card projection", async () => {
     const productCoordinates = Array.from(
       { length: 65 },

@@ -751,22 +751,27 @@ export function organizerEventMarketReferencesMatch(
 }
 
 export async function listOrganizerEventMarkets(
-  organizerPubkey: string
+  organizerPubkey: string,
+  authenticatedPubkey: string | null = null
 ): Promise<MerchantOrganizerEventMarket[]> {
   const result = await getOrganizerEventMarkets({
     organizerPubkey,
-    authenticatedPubkey: organizerPubkey,
+    authenticatedPubkey,
   })
   return projectMarketList(result)
 }
 
 export async function discoverFollowedEventMarkets(
   merchantPubkey: string,
-  options: { signal?: AbortSignal; nowMs?: number } = {}
+  options: {
+    authenticatedPubkey?: string | null
+    signal?: AbortSignal
+    nowMs?: number
+  } = {}
 ): Promise<MerchantEventMarketDiscovery> {
   const discovery = await discoverFollowedOrganizerEventMarkets({
     merchantPubkey,
-    authenticatedPubkey: merchantPubkey,
+    authenticatedPubkey: options.authenticatedPubkey,
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
   })
@@ -779,7 +784,7 @@ export async function discoverFollowedEventMarkets(
 export async function resolveOrganizerEventMarketRead(
   reference: string,
   organizerPubkey?: string,
-  authenticatedPubkey: string | null = organizerPubkey ?? null,
+  authenticatedPubkey: string | null = null,
   signal?: AbortSignal
 ): Promise<MerchantOrganizerEventMarketRead> {
   const parsedReference = parseOrganizerEventMarketReference(reference)
@@ -884,7 +889,7 @@ export async function resolveOrganizerEventMarketRead(
 export async function resolveOrganizerEventMarket(
   reference: string,
   organizerPubkey?: string,
-  authenticatedPubkey: string | null = organizerPubkey ?? null,
+  authenticatedPubkey: string | null = null,
   signal?: AbortSignal
 ): Promise<MerchantOrganizerEventMarket> {
   const result = await resolveOrganizerEventMarketRead(
@@ -909,6 +914,7 @@ function randomDTagSuffix(): string {
 
 export async function publishMerchantOrganizerEventMarket(input: {
   organizerPubkey: string
+  authenticatedPubkey?: string | null
   form: OrganizerEventMarketFormValues
   existing?: MerchantOrganizerEventMarket | null
   onSignedRecord?: (
@@ -1000,6 +1006,7 @@ export async function publishMerchantOrganizerEventMarket(input: {
   }
   const result = await publishOrganizerEventMarket({
     organizerPubkey: input.organizerPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
     calendar,
     pickup,
     collection,
@@ -1099,6 +1106,7 @@ export function reconcileMerchantOrganizerCollectionEvidence(
 
 export async function publishMerchantOrganizerMembership(input: {
   organizerPubkey: string
+  authenticatedPubkey?: string | null
   market: MerchantOrganizerEventMarket
   item: MerchantOrganizerParticipation
   action: OrganizerCollectionMembershipAction
@@ -1163,6 +1171,7 @@ export async function publishMerchantOrganizerMembership(input: {
   }
   const result = await publishOrganizerCollectionUpdate({
     organizerPubkey: input.organizerPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
     collection,
     previousCreatedAt: market.collectionCreatedAt,
     onSignedEvent: async (record) => {
@@ -1177,6 +1186,7 @@ export async function publishMerchantOrganizerMembership(input: {
 
 export async function retryMerchantOrganizerRecord(input: {
   organizerPubkey: string
+  authenticatedPubkey?: string | null
   record: MerchantOrganizerRecordDelivery
 }): Promise<MerchantOrganizerRecordDelivery> {
   if (!input.record.signedEvent) {
@@ -1184,6 +1194,7 @@ export async function retryMerchantOrganizerRecord(input: {
   }
   const result = await retryOrganizerEventMarketRecord({
     organizerPubkey: input.organizerPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
     signedEvent: input.record.signedEvent,
   })
   return projectDeliveryRecord(result)

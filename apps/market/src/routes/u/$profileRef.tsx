@@ -2,7 +2,12 @@ import { useMemo } from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
-import { formatNpub, pubkeyToNpub, useProfile } from "@conduit/core"
+import {
+  formatNpub,
+  pubkeyToNpub,
+  useConduitSession,
+  useProfile,
+} from "@conduit/core"
 import { Globe, Store, UserRound, Zap } from "lucide-react"
 import {
   MerchantAvatarFallback,
@@ -20,17 +25,30 @@ export const Route = createFileRoute("/u/$profileRef")({
 })
 
 function PublicProfilePage() {
+  const session = useConduitSession()
+  const authenticatedPubkey =
+    session.mode === "signed_in" ? session.pubkey : null
+  const accountPubkey = authenticatedPubkey
   const { profileRef } = Route.useParams()
   const resolved = useMemo(
     () => resolveProfileReference(profileRef),
     [profileRef]
   )
   const pubkey = resolved?.pubkey
-  const profileQuery = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey, {
+    accountPubkey,
+    authenticatedPubkey,
+  })
   const productsQuery = useQuery({
-    queryKey: ["public-profile-storefront", pubkey ?? "none"],
+    queryKey: [
+      "public-profile-storefront",
+      pubkey ?? "none",
+      authenticatedPubkey ?? "anonymous",
+      session.relayScope ?? "no-relay-scope",
+    ],
     enabled: !!pubkey,
-    queryFn: () => fetchStoreProducts(pubkey!),
+    queryFn: () =>
+      fetchStoreProducts(pubkey!, accountPubkey, authenticatedPubkey),
   })
 
   if (!pubkey) {

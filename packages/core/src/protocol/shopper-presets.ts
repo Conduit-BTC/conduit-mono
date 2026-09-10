@@ -22,13 +22,20 @@ import {
   getNdk,
 } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
+import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import {
   publishWithPlanner,
   type PublishWithPlannerResult,
 } from "./relay-publish"
-import { getCommerceWriteRelayUrls, normalizeRelayUrl } from "./relay-settings"
+import {
+  getCommerceWriteRelayUrls,
+  normalizeOwnerSelectedRelayUrls,
+  normalizeRelayUrl,
+  normalizeSecureOrIsolatedE2eRelayUrls,
+  tryNormalizeRelayUrl,
+} from "./relay-settings"
 
 export const SHOPPER_PRESETS_D_TAG = "conduit/shopper-presets"
 export const SHOPPER_PRESETS_FORMAT = "nostr-shopper-presets"
@@ -203,6 +210,10 @@ export type ShopperPresetsProtocolDependencies = {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  /** Explicit authenticated account. The requested preset owner is not proof. */
+  authenticatedPubkey?: string | null
+  /** Injectable durable owner-authority reader for deterministic tests. */
+  readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
   readRelayUrls?: readonly string[]
   now?: () => number
   randomBytes?: (length: number) => Uint8Array
@@ -215,6 +226,65 @@ function normalizePubkey(pubkey: string): string {
     throw new Error("Connected shopper identity is invalid.")
   }
   return normalized
+}
+
+function authenticatedShopperOwner(
+  owner: string,
+  authenticatedPubkey: string | null | undefined
+): string | null {
+  if (!authenticatedPubkey) return null
+  try {
+    return normalizePubkey(authenticatedPubkey) === owner ? owner : null
+  } catch {
+    return null
+  }
+}
+
+async function readShopperRelayAuthority(
+  owner: string,
+  dependencies: ShopperPresetsProtocolDependencies
+) {
+  const authenticatedPubkey = authenticatedShopperOwner(
+    owner,
+    dependencies.authenticatedPubkey
+  )
+  if (!authenticatedPubkey) return null
+
+  try {
+    return await (
+      dependencies.readAccountRelaySettingsPlanningSnapshot ??
+      readDurableAccountRelaySettingsPlanningSnapshot
+    )(owner)
+  } catch {
+    return null
+  }
+}
+
+function applyShopperRelayTransportAuthority(
+  relayUrls: readonly string[],
+  ownerSelectedRelayUrls: readonly string[]
+): string[] {
+  const ownerSelected = new Set(
+    normalizeOwnerSelectedRelayUrls(ownerSelectedRelayUrls)
+  )
+  const remotelyEligible = new Set(
+    normalizeSecureOrIsolatedE2eRelayUrls(relayUrls)
+  )
+  const accepted: string[] = []
+  const seen = new Set<string>()
+  for (const rawRelayUrl of relayUrls) {
+    const normalized = tryNormalizeRelayUrl(rawRelayUrl)
+    if (!normalized.ok || seen.has(normalized.url)) continue
+    if (
+      !remotelyEligible.has(normalized.url) &&
+      !ownerSelected.has(normalized.url)
+    ) {
+      continue
+    }
+    seen.add(normalized.url)
+    accepted.push(normalized.url)
+  }
+  return accepted
 }
 
 function byteLength(value: string): number {
@@ -469,6 +539,19 @@ export async function fetchShopperPresets(
   dependencies: ShopperPresetsProtocolDependencies = {}
 ): Promise<ShopperPresetsReadResult> {
   const owner = normalizePubkey(pubkey)
+  const authenticatedOwnerPubkey = authenticatedShopperOwner(
+    owner,
+    dependencies.authenticatedPubkey
+  )
+  const ownerSettingsSnapshot = await readShopperRelayAuthority(
+    owner,
+    dependencies
+  )
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
+    ownerSettingsSnapshot?.settings.entries.flatMap((entry) =>
+      entry.readEnabled || entry.writeEnabled ? [entry.url] : []
+    ) ?? []
+  )
   const resolveRelayLists = dependencies.getRelayLists ?? getRelayLists
   const relayListDiscoveryUrls = Array.from(
     new Set([
@@ -479,8 +562,9 @@ export async function fetchShopperPresets(
   const relayLists = await resolveRelayLists([owner], {
     cacheOnly: false,
     relayUrls: relayListDiscoveryUrls,
-    allowInsecureRelayUrlsForPubkey: owner,
     accountPubkey: owner,
+    authenticatedPubkey: authenticatedOwnerPubkey,
+    ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       dependencies.accountNetworkLocalStateRepository,
   })
@@ -488,20 +572,32 @@ export async function fetchShopperPresets(
     intent: "general",
     authors: [owner],
     relayLists,
-    authenticatedPubkey: owner,
+    authenticatedPubkey: authenticatedOwnerPubkey,
+    ownerSelectedRelayUrls,
     maxRelays: 12,
+    settings: ownerSettingsSnapshot?.settings,
+    signedRelayListAuthoritative:
+      ownerSettingsSnapshot?.signedRelayListAuthoritative,
   })
-  const relayUrls = dependencies.readRelayUrls
-    ? Array.from(new Set(dependencies.readRelayUrls))
-    : Array.from(
-        new Set([
-          ...config.appWriteRelayUrls,
-          ...plan.hintRelayUrls,
-          ...getCommerceWriteRelayUrls(),
-          ...plan.relayUrls,
-          ...config.corePublicFallbackRelayUrls,
-        ])
-      ).slice(0, SHOPPER_PRESETS_MAX_READ_RELAYS)
+  const plannedRelayUrls = dependencies.readRelayUrls
+    ? dependencies.readRelayUrls
+    : [
+        ...config.appWriteRelayUrls,
+        ...plan.hintRelayUrls,
+        ...getCommerceWriteRelayUrls({
+          settings: ownerSettingsSnapshot?.settings,
+        }),
+        ...plan.relayUrls,
+        ...config.corePublicFallbackRelayUrls,
+      ]
+  const relayUrls = applyShopperRelayTransportAuthority(
+    plannedRelayUrls,
+    ownerSelectedRelayUrls
+  ).slice(0, SHOPPER_PRESETS_MAX_READ_RELAYS)
+  const executableRelaySet = new Set(relayUrls)
+  const executableOwnerSelectedRelayUrls = ownerSelectedRelayUrls.filter(
+    (relayUrl) => executableRelaySet.has(relayUrl)
+  )
   if (relayUrls.length === 0)
     return { state: "unavailable", reason: "relay_read" }
 
@@ -517,6 +613,8 @@ export async function fetchShopperPresets(
     result = await fetchEvents(filter, {
       relayUrls,
       accountPubkey: owner,
+      authenticatedPubkey: authenticatedOwnerPubkey,
+      ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
       accountNetworkLocalStateRepository:
         dependencies.accountNetworkLocalStateRepository,
       connectTimeoutMs: SHOPPER_PRESETS_CONNECT_TIMEOUT_MS,
@@ -560,6 +658,7 @@ async function verifyShopperPresetsConvergence({
   eventId,
   createdAt,
   relayUrls,
+  ownerSelectedRelayUrls,
   fetchEvents,
   accountNetworkLocalStateRepository,
   waitForRetry,
@@ -568,6 +667,7 @@ async function verifyShopperPresetsConvergence({
   eventId: string
   createdAt: number
   relayUrls: readonly string[]
+  ownerSelectedRelayUrls: readonly string[]
   fetchEvents: typeof fetchEventsFanoutDetailed
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
@@ -597,6 +697,8 @@ async function verifyShopperPresetsConvergence({
         {
           relayUrls: targets,
           accountPubkey: owner,
+          authenticatedPubkey: owner,
+          ownerSelectedRelayUrls,
           accountNetworkLocalStateRepository,
           connectTimeoutMs: SHOPPER_PRESETS_CONNECT_TIMEOUT_MS,
           fetchTimeoutMs: SHOPPER_PRESETS_FETCH_TIMEOUT_MS,
@@ -696,8 +798,14 @@ export async function publishShopperPresets({
   if (!signer) {
     throw new Error("Connect a signer before syncing shopper presets.")
   }
+  await requireMatchingSigner(owner, signer)
 
-  const current = await fetchShopperPresets(owner, { ...dependencies, ndk })
+  const authenticatedDependencies = {
+    ...dependencies,
+    authenticatedPubkey: owner,
+    ndk,
+  }
+  const current = await fetchShopperPresets(owner, authenticatedDependencies)
   if (current.state === "unavailable") {
     throw new Error(
       "A complete fresh preset read is required before publishing."
@@ -728,7 +836,6 @@ export async function publishShopperPresets({
   event.created_at = createdAt
   event.tags = appendConduitClientTag([["d", SHOPPER_PRESETS_D_TAG]], appId)
   event.content = serializeShopperPresetsEnvelope(envelope)
-  await requireMatchingSigner(owner, signer)
   await event.sign(signer)
 
   const publishEvent = dependencies.publishEvent ?? publishWithPlanner
@@ -743,11 +850,22 @@ export async function publishShopperPresets({
     deliveryMode: "standard",
   })
 
+  const ownerSettingsSnapshot = await readShopperRelayAuthority(
+    owner,
+    authenticatedDependencies
+  )
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
+    ownerSettingsSnapshot?.settings.entries.flatMap((entry) =>
+      entry.readEnabled || entry.writeEnabled ? [entry.url] : []
+    ) ?? []
+  )
+
   const convergence = await verifyShopperPresetsConvergence({
     owner,
     eventId: event.id,
     createdAt,
     relayUrls: publish.successfulRelayUrls,
+    ownerSelectedRelayUrls,
     fetchEvents: dependencies.fetchEvents ?? fetchEventsFanoutDetailed,
     accountNetworkLocalStateRepository:
       dependencies.accountNetworkLocalStateRepository,

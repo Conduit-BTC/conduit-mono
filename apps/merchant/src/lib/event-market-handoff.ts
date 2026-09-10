@@ -13,6 +13,7 @@ import {
   publishEventMarketFulfillmentRevocation,
   publishEventMarketHandoffAck,
   publishEventMarketReadyReceipt,
+  readRetainedInboxDeclaration,
   resolveEventMarketHandoffAckGate,
   retryEventMarketPrivateDelivery,
   RelayPublishDiagnosticsError,
@@ -753,6 +754,7 @@ export function buildOrganizerReadyReceiptPayload(
 
 export async function resolveOrganizerHandoffMerchandise(input: {
   organizerPubkey: string
+  authenticatedPubkey?: string | null
   claim: EventMarketOrganizerClaim
 }): Promise<EventMarketReceiptMerchandiseResolution> {
   const organizer = input.organizerPubkey.trim().toLowerCase()
@@ -761,7 +763,7 @@ export async function resolveOrganizerHandoffMerchandise(input: {
   }
   return getEventMarketReceiptMerchandise({
     receipt: input.claim.receipt.payload,
-    authenticatedPubkey: organizer,
+    authenticatedPubkey: input.authenticatedPubkey,
   })
 }
 
@@ -952,8 +954,18 @@ async function retryStoredDelivery(
   transport?: EventMarketPrivateTransportOptions
 ): Promise<StoredEventMarketHandoffDelivery> {
   try {
+    const retainedOwnerDeclaration = transport?.senderInboxRelays
+      ? null
+      : await readRetainedInboxDeclaration(principalPubkey)
+    const ownerSelectedSenderInboxRelayUrls =
+      transport?.senderInboxRelays ??
+      (retainedOwnerDeclaration?.state === "declared"
+        ? retainedOwnerDeclaration.relayUrls
+        : [])
     const result = await retryEventMarketPrivateDelivery({
       record: stored.record,
+      authenticatedOwnerPubkey: transport?.authenticatedPubkey,
+      ownerSelectedSenderInboxRelayUrls,
       deliveryProgress: stored.deliveryProgress,
       recipientInboxRelays: transport?.recipientInboxRelays,
       senderInboxRelays: transport?.senderInboxRelays,

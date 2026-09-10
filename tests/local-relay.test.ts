@@ -1,22 +1,28 @@
 import { describe, expect, it } from "bun:test"
-import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 import {
   __resetInboxDeclarationCache,
   applyE2eRelayIsolation,
   config,
+  createInMemoryAccountNetworkMutationRepository,
   createInMemoryAccountNetworkLocalStateRepository,
   createInMemoryInboxDeclarationEvidenceRepository,
+  createInMemoryOwnerRelayListEvidenceRepository,
+  emptyAccountNetworkLocalState,
   EVENT_KINDS,
   getInboxRelayCandidates,
   inboxDeclarationPublishRelayUrls,
   inboxDiscoveryRelayUrls,
   inspectOwnPrivateMessageRelayReadiness,
   planCompatibilityOrderRelays,
-  publishPrivateMessageRelayDeclaration,
+  publishAccountNetworkMutation,
+  publishSignedEventToRelay,
+  reconcileAccountNetworkPreferences,
   resolveInboxDeclaration,
+  reviewAccountNetworkMutation,
   selectPrivateMessageDeliveryRoute,
   sharedInboxDiscoveryRelayUrls,
+  fetchSignedEventsFanoutDetailed,
 } from "@conduit/core"
 
 import {
@@ -626,20 +632,99 @@ describe("local Bun relay", () => {
       ])
 
       const recipientSecretKey = generateSecretKey()
-      const recipientSigner = new NDKPrivateKeySigner(recipientSecretKey)
-      const recipientPubkey = (await recipientSigner.user()).pubkey
-      const declaration = await publishPrivateMessageRelayDeclaration({
-        pubkey: recipientPubkey,
-        signer: recipientSigner,
-        relayUrls: [relayUrl],
-        frontierCreatedAt: null,
-        expectedFrontierEventId: null,
-        nowMs: () => 11_000,
-        evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
-        accountNetworkLocalStateRepository:
-          createInMemoryAccountNetworkLocalStateRepository(),
-        getDiscoveryRelayUrls: () => [relayUrl],
+      const recipientPubkey = signedEvent({
+        createdAt: 1,
+        secretKey: recipientSecretKey,
+      }).pubkey
+      const ownerEvidenceRepository =
+        createInMemoryOwnerRelayListEvidenceRepository()
+      const inboxEvidenceRepository =
+        createInMemoryInboxDeclarationEvidenceRepository()
+      const localStateRepository =
+        createInMemoryAccountNetworkLocalStateRepository()
+      const reconciliation = await reconcileAccountNetworkPreferences(
+        recipientPubkey,
+        {
+          relayUrls: [relayUrl],
+          ownerRelayList: { evidenceRepository: ownerEvidenceRepository },
+          inboxDeclaration: { evidenceRepository: inboxEvidenceRepository },
+          localStateRepository,
+        }
+      )
+      const retainedOwnerEvidence =
+        await ownerEvidenceRepository.get(recipientPubkey)
+      const retainedInboxEvidence =
+        await inboxEvidenceRepository.get(recipientPubkey)
+      const mutationRepository = createInMemoryAccountNetworkMutationRepository(
+        [
+          {
+            pubkey: recipientPubkey,
+            snapshot: {
+              ...(retainedOwnerEvidence
+                ? { ownerRelayList: retainedOwnerEvidence }
+                : {}),
+              ...(retainedInboxEvidence
+                ? { inboxDeclaration: retainedInboxEvidence }
+                : {}),
+              localState:
+                (await localStateRepository.get(recipientPubkey)) ??
+                emptyAccountNetworkLocalState(recipientPubkey, () => 0),
+            },
+          },
+        ]
+      )
+      const reviewed = reviewAccountNetworkMutation(reconciliation, {
+        type: "set_roles",
+        relays: [
+          {
+            url: relayUrl,
+            read: true,
+            publish: true,
+            privateInbox: true,
+          },
+        ],
       })
+      const result = await publishAccountNetworkMutation({
+        reviewed,
+        signer: {
+          authMethod: "nip07",
+          async getPublicKey() {
+            return recipientPubkey
+          },
+          async signEvent(event) {
+            return finalizeEvent(event, recipientSecretKey)
+          },
+        },
+        dependencies: {
+          repository: mutationRepository,
+          reconcile: async () => reconciliation,
+          resolveRelayPlan: () => [relayUrl],
+          filterEligibleRelayUrls: async (_pubkey, relayUrls) => [...relayUrls],
+          publishToRelay: async (input) =>
+            await publishSignedEventToRelay({
+              ...input,
+              accountNetworkLocalStateRepository: localStateRepository,
+            }),
+          fetchEvents: async (filter, options) =>
+            await fetchSignedEventsFanoutDetailed(filter, {
+              ...options,
+              accountNetworkLocalStateRepository: localStateRepository,
+            }),
+          now: () => 11_000,
+        },
+      })
+      const declarationCheckpoint = result.checkpoints.find(
+        (checkpoint) => checkpoint.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+      )
+      const declaration = declarationCheckpoint?.signedEvent
+      expect(declaration).toBeDefined()
+      expect(declarationCheckpoint?.pending).toBe(false)
+      expect(declarationCheckpoint?.relayOutcomes).toEqual([])
+      expect(
+        relay.store
+          .query([{ kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS] }])
+          .map((event) => event.id)
+      ).toContain(declaration!.id)
 
       __resetInboxDeclarationCache()
       const readbackRepository =
@@ -652,7 +737,7 @@ describe("local Bun relay", () => {
         }
       )
       expect(declarationReadback.state).toBe("declared")
-      expect(declarationReadback.eventId).toBe(declaration.id)
+      expect(declarationReadback.eventId).toBe(declaration!.id)
       expect(declarationReadback.relayUrls).toEqual([relayUrl])
       const ownReadiness = await inspectOwnPrivateMessageRelayReadiness(
         recipientPubkey,
@@ -664,7 +749,7 @@ describe("local Bun relay", () => {
       expect(ownReadiness.state).toBe("ready")
       expect(
         ownReadiness.state === "ready" ? ownReadiness.eventId : undefined
-      ).toBe(declaration.id)
+      ).toBe(declaration!.id)
 
       const declaredRoute = selectPrivateMessageDeliveryRoute({
         rumorKind: EVENT_KINDS.ORDER,

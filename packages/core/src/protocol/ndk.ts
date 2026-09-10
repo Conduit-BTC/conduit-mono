@@ -12,6 +12,7 @@ import { config } from "../config"
 import {
   getConfiguredIsolatedE2eRelayUrl,
   getGeneralReadRelayUrls,
+  normalizeSecureOrIsolatedE2eRelayUrls,
   setActiveRelaySettingsScope,
   tryNormalizeRelayUrl,
 } from "./relay-settings"
@@ -36,6 +37,16 @@ export interface FetchEventsFanoutOptions {
    * treated as the active account.
    */
   accountPubkey?: string | null
+  /**
+   * Active authenticated account. It must exactly match `accountPubkey` before
+   * an owner-selected ws:// target can reach final I/O.
+   */
+  authenticatedPubkey?: string | null
+  /**
+   * Exact read-target subset selected by that authenticated account owner.
+   * Remote/discovered relay hints must never populate this field.
+   */
+  ownerSelectedRelayUrls?: readonly string[]
   /** Injectable durable-state reader for deterministic boundary tests. */
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
@@ -1003,7 +1014,11 @@ async function fetchEventsFromRelay(
   connections: Map<string, RelayConnection>,
   options: Pick<
     FetchEventsFanoutOptions,
-    "accountPubkey" | "accountNetworkLocalStateRepository" | "signal"
+    | "accountPubkey"
+    | "authenticatedPubkey"
+    | "ownerSelectedRelayUrls"
+    | "accountNetworkLocalStateRepository"
+    | "signal"
   >
 ): Promise<{
   relayUrl: string
@@ -1018,11 +1033,14 @@ async function fetchEventsFromRelay(
     acquiredRelayReadSlot = true
     throwIfAborted(options.signal)
     if (options.accountPubkey === undefined || options.accountPubkey === null) {
-      admittedRelayUrl = relayUrl
+      admittedRelayUrl =
+        normalizeSecureOrIsolatedE2eRelayUrls([relayUrl])[0] ?? null
     } else {
       const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
         accountPubkey: options.accountPubkey,
+        authenticatedPubkey: options.authenticatedPubkey,
         candidateRelayUrls: [relayUrl],
+        ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
         repository: options.accountNetworkLocalStateRepository,
       })
       admittedRelayUrl = eligibleRelayUrls[0] ?? null
@@ -1402,10 +1420,10 @@ export function refreshNdkRelaySettingsWhenIdle(scope?: string | null): void {
     setActiveRelaySettingsScope(scope)
   }
 
-  // A same-session signed projection can arrive while normal app reads are
-  // already using the locally hydrated plan. Future NDK publishes resolve an
-  // explicit plan at call time, so rebuilding this offline compatibility
-  // instance is unnecessary and could interrupt a signer or publish already
-  // using it. Identity transitions still revoke it through disconnectNdk().
+  // A same-session settings refresh can arrive while normal app reads are in
+  // flight. Each later planned operation rechecks its account exclusions at
+  // the final I/O boundary, so rebuilding this compatibility instance is
+  // unnecessary and could interrupt active signer or relay work. Identity
+  // transitions still revoke it through disconnectNdk().
   refreshRelayConnectionsWhenIdle()
 }

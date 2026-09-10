@@ -50,11 +50,20 @@ export async function authorizeCurrentCheckoutItems(input: {
   refreshedProducts: readonly Product[]
   readShippingOptions: CheckoutShippingOptionReader
   rateInput?: PricingRateInput
+  accountPubkey?: string | null
+  authenticatedPubkey?: string | null
   resolveProductFulfillment?: CheckoutProductFulfillmentResolver
   authorizePickupHandlers?: CheckoutPickupHandlerAuthorizer
 }): Promise<CheckoutAuthorizationResult> {
   const resolveFulfillment =
-    input.resolveProductFulfillment ?? resolveProductCartFulfillment
+    input.resolveProductFulfillment ??
+    ((product, rateInput) =>
+      resolveProductCartFulfillment(
+        product,
+        rateInput,
+        undefined,
+        input.authenticatedPubkey
+      ))
   const fulfillmentResolutions = await Promise.all(
     input.refreshedProducts.map(async (product) => {
       if (getProductEventMarketCandidates(product).length === 0) {
@@ -127,9 +136,14 @@ export async function authorizeCurrentCheckoutItems(input: {
     return { status: "changed" }
   }
 
-  await (input.authorizePickupHandlers ?? assertCartPickupHandlerReady)(
-    prepared.items
-  )
+  const authorizePickupHandlers =
+    input.authorizePickupHandlers ??
+    ((items: readonly CartItem[]) =>
+      assertCartPickupHandlerReady(items, undefined, {
+        requestingAccountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.authenticatedPubkey,
+      }))
+  await authorizePickupHandlers(prepared.items)
 
   return { status: "ok", items: prepared.items }
 }

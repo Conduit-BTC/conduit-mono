@@ -222,7 +222,10 @@ export function useMarketBrowseModel({
     () => Array.from(new Set(visibleProducts.map((product) => product.pubkey))),
     [visibleProducts]
   )
+  const authenticatedPubkey = status === "connected" ? pubkey : null
   const merchantIdentities = useMerchantIdentities({
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
     allMerchantPubkeys,
     // Hydrate off-screen merchants (the rest of the store dropdown) in parallel
     // with product streaming instead of waiting for hydration to settle, so the

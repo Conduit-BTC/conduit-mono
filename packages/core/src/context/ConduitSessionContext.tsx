@@ -14,14 +14,13 @@ import {
   refreshNdkRelaySettingsWhenIdle,
 } from "../protocol/ndk"
 import {
-  canRelaySettingsChangeControlRuntime,
   getActiveRelaySettingsScope,
+  isAccountRelaySettingsScope,
   subscribeRelaySettingsChanges,
   setActiveRelaySettingsScope,
 } from "../protocol/relay-settings"
 import {
   closeAllProtectedRelayConnections,
-  closeProtectedRelayConnectionsWhenIdle,
 } from "../protocol/relay-executor"
 import {
   isConduitRelaySettingsReady,
@@ -30,13 +29,17 @@ import {
   type ConduitSession,
 } from "../protocol/session"
 import type { Profile } from "../types"
-import { useAccountNetworkPreferences } from "../hooks/useAccountNetworkPreferences"
+import {
+  useAccountNetworkPreferences,
+  type UseAccountNetworkPreferencesResult,
+} from "../hooks/useAccountNetworkPreferences"
 import { useProfile } from "../hooks/useProfile"
 import { useAuth } from "./AuthContext"
 
 export interface ConduitSessionContextValue extends ConduitSession {
   identityReady: boolean
   relaySettingsReady: boolean
+  accountNetworkPreferences: UseAccountNetworkPreferencesResult
 }
 
 export interface ConduitSessionProviderProps {
@@ -192,22 +195,22 @@ export function ConduitSessionProvider({
   ])
 
   useEffect(() => {
-    return subscribeRelaySettingsChanges((scope, source) => {
+    return subscribeRelaySettingsChanges((scope) => {
       if (!scope || scope !== activeScopeRef.current) return
-      if (!canRelaySettingsChangeControlRuntime(scope, source)) return
-      if (source === "signed_projection") {
-        closeProtectedRelayConnectionsWhenIdle()
-        refreshNdkRelaySettingsWhenIdle(scope)
-      } else {
-        refreshNdkRelaySettings(scope)
-      }
+      if (isAccountRelaySettingsScope(scope)) return
+      refreshNdkRelaySettings(scope)
       if (profileRefreshReadyRef.current) void refetchProfile()
     })
   }, [refetchProfile])
 
   const value = useMemo<ConduitSessionContextValue>(
-    () => ({ ...session, identityReady, relaySettingsReady }),
-    [identityReady, relaySettingsReady, session]
+    () => ({
+      ...session,
+      identityReady,
+      relaySettingsReady,
+      accountNetworkPreferences,
+    }),
+    [accountNetworkPreferences, identityReady, relaySettingsReady, session]
   )
 
   return (

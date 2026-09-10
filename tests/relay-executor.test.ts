@@ -630,6 +630,32 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     ])
   })
 
+  it("admits owner inbox ws without allowing remote ws into protected I/O", async () => {
+    const ownerWs = "ws://owner-inbox.example"
+    const remoteWs = "ws://remote-inbox.example"
+    const harness = new FakeRelayHarness()
+      .at(ownerWs, {
+        onSend: (socket, frame) => {
+          if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+        },
+      })
+      .at(remoteWs, {})
+    const { authorization } = authorize()
+
+    const inbox = await readProtectedInbox({
+      principalPubkey: PUBKEY_A,
+      relayUrls: [ownerWs, remoteWs],
+      ownerSelectedRelayUrls: [ownerWs],
+      limit: 10,
+      authorization,
+      accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),
+      executor: createExecutor(harness),
+    })
+
+    expect(inbox.coverage).toBe("complete")
+    expect(harness.sockets.map((socket) => socket.url)).toEqual([ownerWs])
+  })
+
   it("distinguishes authentication timeout from query timeout", async () => {
     const protectedHarness = new FakeRelayHarness().at(
       "wss://protected.example",

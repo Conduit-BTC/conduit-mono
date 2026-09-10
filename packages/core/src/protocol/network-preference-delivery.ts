@@ -89,8 +89,7 @@ export function applyNetworkPreferenceDistributionOutcomes(
       next.publishAttemptCount += 1
       next.publishAttemptedAt = update.observedAt
       if (
-        PUBLISH_STRENGTH[publish.status] >=
-        PUBLISH_STRENGTH[next.publishStatus]
+        PUBLISH_STRENGTH[publish.status] >= PUBLISH_STRENGTH[next.publishStatus]
       ) {
         next.publishStatus = publish.status
       }

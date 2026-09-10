@@ -1,16 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { NDKSigner } from "@nostr-dev-kit/ndk"
+import {
+  publishAccountNetworkMutation,
+  reorderAccountNetworkRelays,
+  retryAccountNetworkMutation,
+  reviewAccountNetworkMutation,
+  type AccountNetworkMutationDependencies,
+  type AccountNetworkRelayRoles,
+  type ReviewedAccountNetworkMutation,
+} from "../protocol/account-network-mutation"
+import { normalizeAccountNetworkPubkey } from "../protocol/account-network-local-state"
+import type { AccountNetworkPreferencesReconciliation } from "../protocol/network-preferences"
+import { createNdkNostrEventSigner } from "../protocol/ndk-nostr-event-signer"
+import { NostrSignerError } from "../protocol/nostr-event-signer"
 import {
   assertSafeNip65RelayList,
-  canRelaySettingsChangeControlRuntime,
   createRelaySettingsFromPreferences,
   getPublishableRelaySettingsEntries,
   getRelaySettingsStorageKey,
-  hasRelaySettingsDraft,
   hasManualRelaySettings,
   isAccountRelaySettingsScope,
   loadRelaySettings,
-  loadRelaySettingsPresentation,
   mergeRelayPreferencesIntoSettings,
   mergeNip65RelayUrls,
   readNip07RelayPreferences,
@@ -19,7 +29,6 @@ import {
   RELAY_SETTINGS_STORAGE_VERSION,
   saveRelaySettings,
   scanRelaySettingsEntry,
-  serializeNip65RelayTags,
   subscribeRelaySettingsChanges,
   tryNormalizeRelayUrl,
   updateRelaySettingsEntry,
@@ -29,8 +38,6 @@ import {
 } from "../protocol/relay-settings"
 import { getRelayList } from "../protocol/relay-list"
 import { EVENT_KINDS } from "../protocol/kinds"
-import { getNdk } from "../protocol/ndk"
-import { publishWithPlanner } from "../protocol/relay-publish"
 import {
   closeAllProtectedRelayConnections,
   closeProtectedRelayConnectionsForRelay,
@@ -38,6 +45,8 @@ import {
   subscribeRelayAuthenticationEvidence,
   type RelayAuthEvidenceState,
 } from "../protocol/relay-executor"
+import { useAuth } from "../context/AuthContext"
+import { useConduitSession } from "../context/ConduitSessionContext"
 
 export type RelayAuthDisplayEvidence = RelayAuthEvidenceState | "advertised"
 
@@ -77,6 +86,16 @@ export interface UseRelaySettingsResult {
   publishRelayList: () => Promise<void>
 }
 
+interface AccountMutationAuthority {
+  authGeneration: number
+  method: "nip07" | "nip46" | null
+  pubkey: string | null
+  relayScope: string | null
+  sessionPubkey: string | null
+  signer: NDKSigner | null
+  status: string
+}
+
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unable to update relays"
 }
@@ -91,6 +110,30 @@ function createEmptyRelaySettings(): RelaySettingsState {
     entries: [],
     updatedAt: Date.now(),
   }
+}
+
+/** Legacy view adapter; signed authority stays in the reconciliation model. */
+export function createAccountRelaySettingsPresentation(
+  reconciliation: AccountNetworkPreferencesReconciliation | null
+): RelaySettingsState {
+  if (!reconciliation) return createEmptyRelaySettings()
+  if (reconciliation.legacyReviewCandidate) {
+    return structuredClone(reconciliation.legacyReviewCandidate.draft)
+  }
+  const positionByUrl = new Map(
+    reconciliation.projection.rows.map((row) => [row.url, row.position])
+  )
+  const preferences = [...reconciliation.ownerRelayList.preferences].sort(
+    (left, right) =>
+      (positionByUrl.get(left.url) ?? Number.MAX_SAFE_INTEGER) -
+        (positionByUrl.get(right.url) ?? Number.MAX_SAFE_INTEGER) ||
+      left.url.localeCompare(right.url)
+  )
+  const settings = createRelaySettingsFromPreferences(preferences, "published")
+  settings.updatedAt =
+    reconciliation.ownerRelayList.current?.observedAt ??
+    reconciliation.ownerRelayList.lookup.observedAt
+  return settings
 }
 
 export function prepareRelaySettingsContextPresentation(
@@ -109,13 +152,128 @@ function hasNoRelaySettings(settings: RelaySettingsState): boolean {
   return settings.entries.length === 0
 }
 
+function currentInboxRelayUrls(
+  reconciliation: AccountNetworkPreferencesReconciliation
+): string[] {
+  if (reconciliation.inboxDeclaration.state === "distribution_pending") {
+    return [...(reconciliation.inboxDeclaration.pendingRelayUrls ?? [])]
+  }
+  return reconciliation.inboxDeclaration.state === "declared"
+    ? [...reconciliation.inboxDeclaration.relayUrls]
+    : []
+}
+
+function rolesForRelayListReview(
+  reconciliation: AccountNetworkPreferencesReconciliation,
+  settings: RelaySettingsState
+): AccountNetworkRelayRoles[] {
+  const rolesByUrl = new Map<string, AccountNetworkRelayRoles>()
+  for (const entry of getPublishableRelaySettingsEntries(settings.entries)) {
+    rolesByUrl.set(entry.url, {
+      url: entry.url,
+      read: entry.readEnabled,
+      publish: entry.writeEnabled,
+      privateInbox: false,
+    })
+  }
+  for (const relayUrl of currentInboxRelayUrls(reconciliation)) {
+    const current = rolesByUrl.get(relayUrl)
+    rolesByUrl.set(relayUrl, {
+      url: relayUrl,
+      read: current?.read ?? false,
+      publish: current?.publish ?? false,
+      privateInbox: true,
+    })
+  }
+  return [...rolesByUrl.values()]
+}
+
+/** Review a NIP-65-only edit while preserving the current kind:10050 set. */
+export function reviewRelaySettingsAccountMutation(
+  reconciliation: AccountNetworkPreferencesReconciliation,
+  settings: RelaySettingsState
+): ReviewedAccountNetworkMutation {
+  const reviewed = reviewAccountNetworkMutation(reconciliation, {
+    type: "set_roles",
+    relays: rolesForRelayListReview(reconciliation, settings),
+  })
+  if (
+    reviewed.changedKinds.includes(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS) ||
+    reviewed.signerRequestCount > 1
+  ) {
+    throw new Error(
+      "Private inbox evidence changed. Refresh Network settings before publishing the relay list."
+    )
+  }
+  return reviewed
+}
+
+export function shouldRetryRelaySettingsAccountMutation(
+  reconciliation: AccountNetworkPreferencesReconciliation,
+  reviewed: ReviewedAccountNetworkMutation
+): boolean {
+  return Boolean(
+    reconciliation.ownerRelayList.pendingDistribution &&
+    !reviewed.changedKinds.includes(EVENT_KINDS.RELAY_LIST)
+  )
+}
+
+function sameAccountMutationAuthority(
+  current: AccountMutationAuthority,
+  expected: AccountMutationAuthority
+): boolean {
+  return (
+    current.authGeneration === expected.authGeneration &&
+    current.method === expected.method &&
+    current.pubkey === expected.pubkey &&
+    current.relayScope === expected.relayScope &&
+    current.sessionPubkey === expected.sessionPubkey &&
+    current.signer === expected.signer &&
+    current.status === expected.status
+  )
+}
+
 export function useRelaySettings(
   scope?: string | null,
   options: UseRelaySettingsOptions = {}
 ): UseRelaySettingsResult {
+  const auth = useAuth()
+  const session = useConduitSession()
   const pubkey = options.pubkey?.trim() || null
   const enabled = options.enabled ?? true
   const bootstrapRelayList = options.bootstrapRelayList ?? true
+  const accountScoped = isAccountRelaySettingsScope(scope)
+  const normalizedPubkey = pubkey ? normalizeAccountNetworkPubkey(pubkey) : null
+  const normalizedAuthenticatedPubkey = auth.pubkey
+    ? normalizeAccountNetworkPubkey(auth.pubkey)
+    : null
+  const ownerRelayListAuthenticatedPubkey =
+    auth.status === "connected" &&
+    normalizedPubkey !== null &&
+    normalizedAuthenticatedPubkey === normalizedPubkey
+      ? normalizedPubkey
+      : null
+  const accountReconciliation = session.accountNetworkPreferences.reconciliation
+  const accountContextMatches = Boolean(
+    accountScoped &&
+    pubkey &&
+    session.mode === "signed_in" &&
+    session.pubkey === pubkey &&
+    session.relayScope === scope?.trim() &&
+    (!accountReconciliation ||
+      (accountReconciliation.projection.pubkey === pubkey &&
+        accountReconciliation.projection.relayScope === scope?.trim()))
+  )
+  const accountReconciliationRef = useRef(accountReconciliation)
+  const authorityRef = useRef<AccountMutationAuthority>({
+    authGeneration: auth.authGeneration,
+    method: auth.method,
+    pubkey: auth.pubkey,
+    relayScope: session.relayScope,
+    sessionPubkey: session.pubkey,
+    signer: auth.signer,
+    status: auth.status,
+  })
   const relaySettingsContextKey = JSON.stringify([
     enabled,
     bootstrapRelayList,
@@ -128,9 +286,17 @@ export function useRelaySettings(
     relaySettingsContextKey
   )
   const [settings, setSettings] = useState<RelaySettingsState>(() =>
-    loadRelaySettingsPresentation(scope)
+    accountScoped
+      ? createAccountRelaySettingsPresentation(
+          accountContextMatches ? accountReconciliation : null
+        )
+      : loadRelaySettings(scope)
   )
   const settingsRef = useRef(settings)
+  const accountDraftDirtyRef = useRef(false)
+  const accountDraftRelayListEventIdRef = useRef<string | null>(
+    accountReconciliation?.ownerRelayList.current?.signedEvent.id ?? null
+  )
   const previousReadableRelayUrlsRef = useRef(
     new Set(
       settings.entries
@@ -142,22 +308,47 @@ export function useRelaySettings(
   const [scanningUrls, setScanningUrls] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [isLoadingPublishedRelayList, setIsLoadingPublishedRelayList] =
-    useState(
-      enabled &&
-        bootstrapRelayList &&
-        !!pubkey &&
-        hasNoRelaySettings(loadRelaySettingsPresentation(scope))
-    )
+    useState(() => {
+      const initial = accountScoped
+        ? createAccountRelaySettingsPresentation(
+            accountContextMatches ? accountReconciliation : null
+          )
+        : loadRelaySettings(scope)
+      return (
+        enabled && bootstrapRelayList && !!pubkey && hasNoRelaySettings(initial)
+      )
+    })
   const [publishedRelayListUpdatedAt, setPublishedRelayListUpdatedAt] =
     useState<number | null>(null)
   const [publishingRelayList, setPublishingRelayList] = useState(false)
   const [publishError, setPublishError] = useState<string | null>(null)
   const [authEvidenceRevision, setAuthEvidenceRevision] = useState(0)
   const contextReady = initializedContextKey === relaySettingsContextKey
-  const localSettingsControlConnections = canRelaySettingsChangeControlRuntime(
-    scope,
-    "local_draft"
-  )
+  const localSettingsControlConnections = !accountScoped
+
+  useEffect(() => {
+    accountReconciliationRef.current = accountReconciliation
+  }, [accountReconciliation])
+
+  useEffect(() => {
+    authorityRef.current = {
+      authGeneration: auth.authGeneration,
+      method: auth.method,
+      pubkey: auth.pubkey,
+      relayScope: session.relayScope,
+      sessionPubkey: session.pubkey,
+      signer: auth.signer,
+      status: auth.status,
+    }
+  }, [
+    auth.authGeneration,
+    auth.method,
+    auth.pubkey,
+    auth.signer,
+    auth.status,
+    session.pubkey,
+    session.relayScope,
+  ])
 
   useEffect(
     () =>
@@ -204,20 +395,37 @@ export function useRelaySettings(
   }, [localSettingsControlConnections, settings.entries])
 
   useEffect(() => {
-    if (previousContextKeyRef.current !== relaySettingsContextKey) {
+    if (
+      localSettingsControlConnections &&
+      previousContextKeyRef.current !== relaySettingsContextKey
+    ) {
       closeAllProtectedRelayConnections()
-      previousContextKeyRef.current = relaySettingsContextKey
     }
+    previousContextKeyRef.current = relaySettingsContextKey
     currentContextKeyRef.current = relaySettingsContextKey
     setInitializedContextKey(relaySettingsContextKey)
     setScanningUrls([])
     setError(null)
+    accountDraftDirtyRef.current = false
+    accountDraftRelayListEventIdRef.current =
+      accountReconciliationRef.current?.ownerRelayList.current?.signedEvent
+        .id ?? null
     if (!enabled) {
       setIsLoadingPublishedRelayList(false)
       return
     }
+    if (accountScoped && !accountContextMatches) {
+      const next = createEmptyRelaySettings()
+      settingsRef.current = next
+      setSettings(next)
+      setError("The active Network account changed. Reload and try again.")
+      setIsLoadingPublishedRelayList(false)
+      return
+    }
 
-    const loaded = loadRelaySettingsPresentation(scope)
+    const loaded = accountScoped
+      ? createAccountRelaySettingsPresentation(accountReconciliationRef.current)
+      : loadRelaySettings(scope)
     const next = loaded
     settingsRef.current = next
     setSettings(next)
@@ -226,42 +434,106 @@ export function useRelaySettings(
     } else {
       setIsLoadingPublishedRelayList(false)
     }
-  }, [bootstrapRelayList, enabled, pubkey, relaySettingsContextKey, scope])
+  }, [
+    accountContextMatches,
+    accountScoped,
+    bootstrapRelayList,
+    enabled,
+    pubkey,
+    relaySettingsContextKey,
+    localSettingsControlConnections,
+    scope,
+  ])
+
+  useEffect(() => {
+    if (!accountScoped || !enabled || !contextReady || !accountReconciliation) {
+      return
+    }
+    if (
+      accountReconciliation.projection.pubkey !== pubkey ||
+      accountReconciliation.projection.relayScope !== scope?.trim()
+    ) {
+      return
+    }
+    const nextEventId =
+      accountReconciliation.ownerRelayList.current?.signedEvent.id ?? null
+    if (
+      accountDraftDirtyRef.current &&
+      accountDraftRelayListEventIdRef.current === nextEventId
+    ) {
+      return
+    }
+    const evidenceChangedWhileEditing = accountDraftDirtyRef.current
+    const next = createAccountRelaySettingsPresentation(accountReconciliation)
+    accountDraftDirtyRef.current = false
+    accountDraftRelayListEventIdRef.current = nextEventId
+    settingsRef.current = next
+    setSettings(next)
+    setPublishedRelayListUpdatedAt(
+      accountReconciliation.ownerRelayList.current?.signedEvent.created_at ??
+        null
+    )
+    if (evidenceChangedWhileEditing) {
+      setError(
+        "The published relay list changed while you were editing. Review the refreshed settings and try again."
+      )
+    }
+  }, [
+    accountReconciliation,
+    accountScoped,
+    contextReady,
+    enabled,
+    pubkey,
+    scope,
+  ])
 
   useEffect(() => {
     if (!enabled || !contextReady) return
     if (typeof window === "undefined") return
+    if (accountScoped) return
 
     const storageKey = getRelaySettingsStorageKey(scope)
     function handleStorage(event: StorageEvent): void {
       if (event.key !== storageKey) return
-      const next = loadRelaySettingsPresentation(scope)
+      const next = loadRelaySettings(scope)
       settingsRef.current = next
       setSettings(next)
     }
 
     window.addEventListener("storage", handleStorage)
     return () => window.removeEventListener("storage", handleStorage)
-  }, [contextReady, enabled, pubkey, scope])
+  }, [accountScoped, contextReady, enabled, pubkey, scope])
 
   useEffect(() => {
     if (!enabled || !contextReady) return
+    if (accountScoped) return
     return subscribeRelaySettingsChanges((changedScope) => {
       const targetScope = scope?.trim() || null
       if (changedScope !== targetScope) return
-      const next = loadRelaySettingsPresentation(scope)
+      const next = loadRelaySettings(scope)
       settingsRef.current = next
       setSettings(next)
     })
-  }, [contextReady, enabled, pubkey, scope])
+  }, [accountScoped, contextReady, enabled, pubkey, scope])
 
   const persist = useCallback(
     (update: (current: RelaySettingsState) => RelaySettingsState): void => {
-      const next = saveRelaySettings(update(settingsRef.current), scope)
+      const updated = update(settingsRef.current)
+      const next = accountScoped
+        ? { ...updated, updatedAt: Date.now() }
+        : saveRelaySettings(updated, scope)
+      if (accountScoped) {
+        if (!accountDraftDirtyRef.current) {
+          accountDraftRelayListEventIdRef.current =
+            accountReconciliationRef.current?.ownerRelayList.current
+              ?.signedEvent.id ?? null
+        }
+        accountDraftDirtyRef.current = true
+      }
       settingsRef.current = next
       setSettings(next)
     },
-    [scope]
+    [accountScoped, scope]
   )
 
   const persistImportedPreferences = useCallback(
@@ -277,12 +549,15 @@ export function useRelaySettings(
               preferences,
               source
             )
-      const next = saveRelaySettings(base, scope)
+      const next = accountScoped
+        ? { ...base, updatedAt: Date.now() }
+        : saveRelaySettings(base, scope)
+      if (accountScoped) accountDraftDirtyRef.current = true
       settingsRef.current = next
       setSettings(next)
       return next
     },
-    [scope]
+    [accountScoped, scope]
   )
 
   const scanImportedRelayUrls = useCallback(
@@ -324,7 +599,7 @@ export function useRelaySettings(
 
   useEffect(() => {
     if (!enabled || !contextReady) return
-    if (isAccountRelaySettingsScope(scope) && !hasRelaySettingsDraft(scope)) {
+    if (accountScoped && !accountReconciliation?.legacyReviewCandidate) {
       return
     }
 
@@ -340,14 +615,22 @@ export function useRelaySettings(
     autoScannedStaleKeyRef.current = staleKey
 
     void scanImportedRelayUrls(staleUrls)
-  }, [contextReady, enabled, scanImportedRelayUrls, scope, settings.entries])
+  }, [
+    accountScoped,
+    accountReconciliation,
+    contextReady,
+    enabled,
+    scanImportedRelayUrls,
+    scope,
+    settings.entries,
+  ])
 
   useEffect(() => {
     if (!enabled || !bootstrapRelayList || !contextReady) return
     // Signed-in account reconciliation is owned by the session hook. This
     // compatibility hook may present that projection, but must not copy it or
     // signer preferences into an authoritative-looking local draft.
-    if (isAccountRelaySettingsScope(scope)) {
+    if (accountScoped) {
       setIsLoadingPublishedRelayList(false)
       return
     }
@@ -373,6 +656,7 @@ export function useRelaySettings(
         const cachedRelayList = await getRelayList(pubkey, {
           cacheOnly: true,
           allowInsecureRelayUrlsForPubkey: pubkey,
+          authenticatedPubkey: ownerRelayListAuthenticatedPubkey,
         })
         if (cancelled) return
 
@@ -402,6 +686,7 @@ export function useRelaySettings(
         const relayList = await getRelayList(pubkey, {
           skipCache: true,
           allowInsecureRelayUrlsForPubkey: pubkey,
+          authenticatedPubkey: ownerRelayListAuthenticatedPubkey,
           relayUrls:
             relayListSearchUrls.length > 0 ? relayListSearchUrls : undefined,
         })
@@ -431,8 +716,10 @@ export function useRelaySettings(
     }
   }, [
     bootstrapRelayList,
+    accountScoped,
     contextReady,
     enabled,
+    ownerRelayListAuthenticatedPubkey,
     persistImportedPreferences,
     pubkey,
     scanImportedRelayUrls,
@@ -524,7 +811,43 @@ export function useRelaySettings(
 
   function reorderRelay(sourceUrl: string, targetUrl: string): void {
     setError(null)
-    persist((current) => reorderCommerceRelay(current, sourceUrl, targetUrl))
+    const next = reorderCommerceRelay(settingsRef.current, sourceUrl, targetUrl)
+    persist(() => next)
+    if (!accountScoped || !pubkey) return
+    if (
+      session.mode !== "signed_in" ||
+      session.pubkey !== pubkey ||
+      session.relayScope !== scope?.trim()
+    ) {
+      setError("The active Network account changed. Reload and try again.")
+      return
+    }
+    const preferredRelayOrder = [
+      ...next.entries
+        .filter((entry) => entry.section === "commerce")
+        .sort((left, right) => {
+          return (
+            (left.commercePriority ?? Number.MAX_SAFE_INTEGER) -
+            (right.commercePriority ?? Number.MAX_SAFE_INTEGER)
+          )
+        }),
+      ...next.entries.filter((entry) => entry.section !== "commerce"),
+    ].map((entry) => entry.url)
+    const reorderContextKey = relaySettingsContextKey
+    void reorderAccountNetworkRelays({
+      pubkey,
+      relayUrls: preferredRelayOrder,
+    })
+      .then(() => {
+        if (currentContextKeyRef.current === reorderContextKey) {
+          session.accountNetworkPreferences.refetch()
+        }
+      })
+      .catch((reorderError: unknown) => {
+        if (currentContextKeyRef.current === reorderContextKey) {
+          setError(getErrorMessage(reorderError))
+        }
+      })
   }
 
   function resetRelaySettings(): void {
@@ -533,9 +856,7 @@ export function useRelaySettings(
     if (localSettingsControlConnections) {
       closeAllProtectedRelayConnections()
     }
-    const next = saveRelaySettings(createEmptyRelaySettings(), scope)
-    settingsRef.current = next
-    setSettings(next)
+    persist(() => createEmptyRelaySettings())
   }
 
   function restoreDefaultRelaySettings(): void {
@@ -544,9 +865,7 @@ export function useRelaySettings(
     if (localSettingsControlConnections) {
       closeAllProtectedRelayConnections()
     }
-    const next = saveRelaySettings(createEmptyRelaySettings(), scope)
-    settingsRef.current = next
-    setSettings(next)
+    persist(() => createEmptyRelaySettings())
   }
 
   function includeDefaultRelays(): void {
@@ -562,6 +881,29 @@ export function useRelaySettings(
 
     try {
       if (!pubkey) throw new Error("Connect a signer before publishing relays")
+      if (!accountScoped) {
+        throw new Error(
+          "Published relay lists require signed-in account Network settings."
+        )
+      }
+      const accountNetworkPreferences = session.accountNetworkPreferences
+      const reconciliation = accountNetworkPreferences.reconciliation
+      if (
+        session.mode !== "signed_in" ||
+        session.pubkey !== pubkey ||
+        session.relayScope !== scope?.trim() ||
+        reconciliation?.projection.pubkey !== pubkey ||
+        reconciliation.projection.relayScope !== scope?.trim()
+      ) {
+        throw new Error(
+          "The active Network account changed. Reload and try again."
+        )
+      }
+      if (accountNetworkPreferences.status !== "ready") {
+        throw new Error(
+          "Network evidence is still refreshing. Wait for the current account check and try again."
+        )
+      }
 
       const publishableEntries = getPublishableRelaySettingsEntries(
         settingsRef.current.entries
@@ -573,37 +915,73 @@ export function useRelaySettings(
       }
 
       assertSafeNip65RelayList(publishableEntries)
-
-      const ndk = getNdk()
-      if (!ndk.signer) throw new Error("Signer not connected")
-
-      const user = await ndk.signer.user()
-      if (user.pubkey !== pubkey) {
-        throw new Error("Active signer does not match this relay list")
+      const reviewed = reviewRelaySettingsAccountMutation(
+        reconciliation,
+        settingsRef.current
+      )
+      const expectedAuthority = { ...authorityRef.current }
+      const shouldContinue = (): boolean =>
+        currentContextKeyRef.current === relaySettingsContextKey &&
+        sameAccountMutationAuthority(authorityRef.current, expectedAuthority)
+      if (
+        expectedAuthority.status !== "connected" ||
+        expectedAuthority.pubkey !== pubkey ||
+        expectedAuthority.sessionPubkey !== pubkey ||
+        expectedAuthority.relayScope !== scope?.trim()
+      ) {
+        throw new NostrSignerError("authority_changed")
       }
-
-      const event = new NDKEvent(ndk)
-      event.kind = EVENT_KINDS.RELAY_LIST
-      event.created_at = Math.floor(Date.now() / 1000)
-      event.content = ""
-      event.tags = serializeNip65RelayTags(publishableEntries)
-
-      await event.sign(ndk.signer)
-      if (!event.sig?.trim()) {
-        throw new Error("Signer did not return a signature")
+      const dependencies: AccountNetworkMutationDependencies = {
+        shouldContinue,
       }
-      await publishWithPlanner(event, {
-        intent: "author_event",
-        authorPubkey: pubkey,
-        authenticatedPubkey: pubkey,
-        skipHealthFilter: true,
-      })
-      setPublishedRelayListUpdatedAt(event.created_at ?? null)
+      const retryExactPending = shouldRetryRelaySettingsAccountMutation(
+        reconciliation,
+        reviewed
+      )
+      const result = retryExactPending
+        ? await retryAccountNetworkMutation({
+            pubkey,
+            authenticatedPubkey: pubkey,
+            kind: EVENT_KINDS.RELAY_LIST,
+            dependencies,
+          })
+        : await publishAccountNetworkMutation({
+            reviewed,
+            authenticatedPubkey: pubkey,
+            ...(reviewed.signerRequestCount > 0
+              ? {
+                  signer:
+                    expectedAuthority.signer && expectedAuthority.method
+                      ? createNdkNostrEventSigner(
+                          expectedAuthority.signer,
+                          pubkey,
+                          expectedAuthority.method
+                        )
+                      : undefined,
+                }
+              : {}),
+            dependencies,
+          })
+      if (!shouldContinue()) throw new NostrSignerError("authority_changed")
+      const relayListCheckpoint = result.checkpoints.find(
+        (checkpoint) => checkpoint.kind === EVENT_KINDS.RELAY_LIST
+      )
+      accountDraftDirtyRef.current = false
+      accountDraftRelayListEventIdRef.current =
+        relayListCheckpoint?.signedEvent.id ??
+        reconciliation.ownerRelayList.current?.signedEvent.id ??
+        null
+      setPublishedRelayListUpdatedAt(
+        relayListCheckpoint?.signedEvent.created_at ??
+          reconciliation.ownerRelayList.current?.signedEvent.created_at ??
+          null
+      )
     } catch (publishListError) {
       const message = getErrorMessage(publishListError)
       setPublishError(message)
       throw publishListError
     } finally {
+      if (accountScoped) session.accountNetworkPreferences.refetch()
       setPublishingRelayList(false)
     }
   }
@@ -611,15 +989,18 @@ export function useRelaySettings(
   const presentation = prepareRelaySettingsContextPresentation(
     settings,
     authEvidenceByUrl,
-    contextReady
+    contextReady && (!accountScoped || accountContextMatches)
   )
-  if (!contextReady) {
+  if (!contextReady || (accountScoped && !accountContextMatches)) {
     const noop = () => undefined
     const noopAsync = async () => undefined
     return {
       ...presentation,
       scanningUrls: [],
-      error: null,
+      error:
+        accountScoped && !accountContextMatches
+          ? "The active Network account changed. Reload and try again."
+          : null,
       isLoadingPublishedRelayList: true,
       publishedRelayListUpdatedAt: null,
       publishingRelayList: false,

@@ -1,6 +1,10 @@
 import { useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
-import type { PricingRateInput, Product } from "@conduit/core"
+import {
+  useConduitSession,
+  type PricingRateInput,
+  type Product,
+} from "@conduit/core"
 import {
   getProductEventMarketCandidates,
   resolveProductCartFulfillment,
@@ -38,15 +42,25 @@ export function useProductCartFulfillment(
   product: Product | null | undefined,
   rateInput: PricingRateInput = null
 ) {
+  const session = useConduitSession()
+  const authenticatedPubkey =
+    session.mode === "signed_in" ? session.pubkey : null
   const candidates = product ? getProductEventMarketCandidates(product) : []
   const requiresEventResolution = candidates.length > 0
   const query = useQuery({
     queryKey: [
       "product-cart-fulfillment",
+      session.relayScope ?? "no-relay-scope",
       ...(product ? productFulfillmentKey(product) : [null]),
       rateVersion(rateInput),
     ],
-    queryFn: () => resolveProductCartFulfillment(product!, rateInput),
+    queryFn: () =>
+      resolveProductCartFulfillment(
+        product!,
+        rateInput,
+        undefined,
+        authenticatedPubkey
+      ),
     enabled: !!product && requiresEventResolution,
     staleTime: 0,
     refetchOnMount: "always",
@@ -69,19 +83,28 @@ export function useProductCartFulfillmentBatch(
   products: readonly Product[],
   rateInput: PricingRateInput = null
 ) {
+  const session = useConduitSession()
+  const authenticatedPubkey =
+    session.mode === "signed_in" ? session.pubkey : null
   const candidateProducts = products.filter(
     (product) => getProductEventMarketCandidates(product).length > 0
   )
   const query = useQuery({
     queryKey: [
       "product-cart-fulfillment-batch",
+      session.relayScope ?? "no-relay-scope",
       candidateProducts.map(productFulfillmentKey),
       rateVersion(rateInput),
     ],
     queryFn: async () => {
       const resolutions = await Promise.all(
         candidateProducts.map((product) =>
-          resolveProductCartFulfillment(product, rateInput)
+          resolveProductCartFulfillment(
+            product,
+            rateInput,
+            undefined,
+            authenticatedPubkey
+          )
         )
       )
       return resolutions

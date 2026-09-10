@@ -127,13 +127,17 @@ function MerchantThreadRow({
   active,
   onClick,
   formatAmount,
+  accountPubkey,
 }: {
   conversation: BuyerConversation
   active: boolean
   onClick: () => void
   formatAmount: OrderAmountFormatter
+  accountPubkey: string | null
 }) {
   const { data: profile } = useProfile(conversation.merchantPubkey, {
+    accountPubkey,
+    authenticatedPubkey: accountPubkey,
     maxUnresolvedRefetches: 1,
   })
   const merchantName = getMerchantDisplayName(
@@ -193,12 +197,16 @@ function DmThreadRow({
   conversation,
   active,
   onClick,
+  accountPubkey,
 }: {
   conversation: DirectConversationSummary
   active: boolean
   onClick: () => void
+  accountPubkey: string | null
 }) {
   const { data: profile } = useProfile(conversation.counterpartyPubkey, {
+    accountPubkey,
+    authenticatedPubkey: accountPubkey,
     maxUnresolvedRefetches: 1,
   })
   const name = getMerchantDisplayName(profile, conversation.counterpartyPubkey)
@@ -369,6 +377,8 @@ function MessagesPage() {
     [conversations]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
+    accountPubkey: signerConnected ? pubkey : null,
+    authenticatedPubkey: signerConnected ? pubkey : null,
     enabled: signerConnected && merchantPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
@@ -440,6 +450,8 @@ function MessagesPage() {
       (conversation) => conversation.id === search.thread
     ) ?? null
   const selectedProfile = useProfile(selectedConversation?.merchantPubkey, {
+    accountPubkey: signerConnected ? pubkey : null,
+    authenticatedPubkey: signerConnected ? pubkey : null,
     maxUnresolvedRefetches: 1,
   })
   const merchantName = selectedConversation
@@ -487,6 +499,7 @@ function MessagesPage() {
         rumor,
         senderPubkey: pubkey,
         accountPubkey: pubkey,
+        authenticatedPubkey: signerConnected ? pubkey : null,
         recipientPubkey: selectedConversation.merchantPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.ORDER,
@@ -560,6 +573,8 @@ function MessagesPage() {
     [dmConversations]
   )
   const dmProfilesQuery = useProfiles(dmCounterpartyPubkeys, {
+    accountPubkey: signerConnected ? pubkey : null,
+    authenticatedPubkey: signerConnected ? pubkey : null,
     enabled: signerConnected && dmCounterpartyPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
@@ -614,6 +629,8 @@ function MessagesPage() {
         conversation.transport === selectedDmTransport
     ) ?? null
   const selectedDmProfile = useProfile(selectedDmPubkey ?? undefined, {
+    accountPubkey: signerConnected ? pubkey : null,
+    authenticatedPubkey: signerConnected ? pubkey : null,
     maxUnresolvedRefetches: 1,
   })
   const selectedDmName = selectedDmPubkey
@@ -704,6 +721,7 @@ function MessagesPage() {
         rumor,
         senderPubkey: pubkey,
         accountPubkey: pubkey,
+        authenticatedPubkey: signerConnected ? pubkey : null,
         recipientPubkey: counterpartyPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
@@ -937,6 +955,7 @@ function MessagesPage() {
                         <DmThreadRow
                           key={conversation.id}
                           conversation={conversation}
+                          accountPubkey={signerConnected ? pubkey : null}
                           active={
                             conversation.counterpartyPubkey ===
                               selectedDmPubkey &&
@@ -985,6 +1004,7 @@ function MessagesPage() {
                             >
                               <DmThreadRow
                                 conversation={conversation}
+                                accountPubkey={signerConnected ? pubkey : null}
                                 active={
                                   conversation.counterpartyPubkey ===
                                     selectedDmPubkey &&
@@ -1029,6 +1049,7 @@ function MessagesPage() {
                           <DmThreadRow
                             key={conversation.id}
                             conversation={conversation}
+                            accountPubkey={signerConnected ? pubkey : null}
                             active={
                               conversation.counterpartyPubkey ===
                                 selectedDmPubkey &&
@@ -1272,6 +1293,7 @@ function MessagesPage() {
                       <MerchantThreadRow
                         key={conversation.id}
                         conversation={conversation}
+                        accountPubkey={signerConnected ? pubkey : null}
                         active={conversation.id === selectedConversation?.id}
                         onClick={() =>
                           navigate({
@@ -1324,6 +1346,7 @@ function MessagesPage() {
                           >
                             <MerchantThreadRow
                               conversation={conversation}
+                              accountPubkey={signerConnected ? pubkey : null}
                               active={
                                 conversation.id === selectedConversation?.id
                               }
@@ -1374,6 +1397,7 @@ function MessagesPage() {
                         <MerchantThreadRow
                           key={conversation.id}
                           conversation={conversation}
+                          accountPubkey={signerConnected ? pubkey : null}
                           active={conversation.id === selectedConversation?.id}
                           onClick={() => {
                             void navigate({

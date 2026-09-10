@@ -56,6 +56,8 @@ function newerSignedDelivery(
 export async function acceptOwnEventProduct(
   input: {
     merchantPubkey: string
+    /** Active authenticated account; never inferred from the organizer. */
+    authenticatedPubkey: string | null
     marketReference: string
     productCoordinate: string
     signedAcceptance?: MerchantOrganizerRecordDelivery | null
@@ -74,7 +76,7 @@ export async function acceptOwnEventProduct(
   const market = await dependencies.resolve(
     input.marketReference,
     organizer,
-    organizer
+    input.authenticatedPubkey
   )
   const item = market.participation.find(
     (candidate) => candidate.productCoordinate === input.productCoordinate
@@ -145,6 +147,7 @@ export async function acceptOwnEventProduct(
     }
     delivery = await dependencies.retry({
       organizerPubkey: organizer,
+      authenticatedPubkey: input.authenticatedPubkey,
       record: retryAcceptance,
     })
   } else if (
@@ -154,6 +157,7 @@ export async function acceptOwnEventProduct(
   } else {
     delivery = await dependencies.publish({
       organizerPubkey: organizer,
+      authenticatedPubkey: input.authenticatedPubkey,
       market: reconciledMarket,
       item,
       action: "accept",

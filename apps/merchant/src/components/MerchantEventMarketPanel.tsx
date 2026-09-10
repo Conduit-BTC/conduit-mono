@@ -57,11 +57,13 @@ function stateBadge(market: MerchantOrganizerEventMarket) {
 
 export function MerchantEventMarketPanel({
   merchantPubkey,
+  authenticatedPubkey,
   market,
   refreshing,
   onRefresh,
 }: {
   merchantPubkey: string
+  authenticatedPubkey: string | null
   market: MerchantOrganizerEventMarket
   refreshing: boolean
   onRefresh: () => void | Promise<void>
@@ -224,6 +226,7 @@ export function MerchantEventMarketPanel({
         key={`${publisherOpen ? "open" : "closed"}:${market.collectionCoordinate}`}
         open={publisherOpen}
         merchantPubkey={merchantPubkey}
+        authenticatedPubkey={authenticatedPubkey}
         market={market}
         onOpenChange={setPublisherOpen}
         onPublished={async (accepted) => {

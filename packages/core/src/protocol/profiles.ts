@@ -143,6 +143,7 @@ export async function fetchProfile(
   pubkey: string,
   opts?: {
     authenticatedPubkey?: string | null
+    accountPubkey?: string | null
     skipCache?: boolean
     priority?: "visible" | "background"
   }
@@ -150,6 +151,7 @@ export async function fetchProfile(
   const result = await getProfiles({
     pubkeys: [pubkey],
     authenticatedPubkey: opts?.authenticatedPubkey,
+    accountPubkey: opts?.accountPubkey,
     skipCache: opts?.skipCache,
     priority: opts?.priority,
   })

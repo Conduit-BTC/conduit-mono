@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 
 import {
+  applyAccountNetworkRelayExclusion,
+  createInMemoryAccountNetworkLocalStateRepository,
   disconnectNdk,
   EVENT_KINDS,
   getNdk,
@@ -177,6 +179,8 @@ describe("buyer order publishing", () => {
       "merchant-pubkey",
       "buyer-pubkey",
       {
+        accountPubkey: "buyer-pubkey",
+        authenticatedPubkey: "buyer-pubkey",
         publishPrivateMessageFn: async (input) => {
           calls.push(input as unknown as Record<string, unknown>)
           if (input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE) {
@@ -218,6 +222,8 @@ describe("buyer order publishing", () => {
     expect(orderCall?.recipientPubkey).toBe("merchant-pubkey")
     expect(orderCall?.signer).toBe(signer)
     expect(orderCall?.selfCopy).toBe(true)
+    expect(orderCall?.accountPubkey).toBe("buyer-pubkey")
+    expect(orderCall?.authenticatedPubkey).toBe("buyer-pubkey")
     expect(orderCall?.signerInteraction).toBe("external")
     expect(orderCall?.validatedOrderScope).toMatchObject({
       rumorId: "order-rumor",
@@ -228,6 +234,8 @@ describe("buyer order publishing", () => {
 
     const companionCall = calls[1]
     expect(companionCall?.senderPubkey).toBe("buyer-pubkey")
+    expect(companionCall?.accountPubkey).toBe("buyer-pubkey")
+    expect(companionCall?.authenticatedPubkey).toBe("buyer-pubkey")
     expect(companionCall?.recipientPubkey).toBe("merchant-pubkey")
     expect(companionCall?.signer).toBe(signer)
     expect(companionCall?.selfCopy).toBe(false)
@@ -273,6 +281,75 @@ describe("buyer order publishing", () => {
       deliveryRoute: "declared_inbox",
     })
     expect(await result.companionNotification).toBe("sent")
+  })
+
+  it("filters a whole-removed relay from both signed-in order sends", async () => {
+    const buyerPubkey = "a".repeat(64)
+    const merchantPubkey = "b".repeat(64)
+    const excludedRelayUrl = "wss://removed-order.conduit.market"
+    const eligibleRelayUrl = "wss://eligible-order.conduit.market"
+    const repository = createInMemoryAccountNetworkLocalStateRepository(
+      [],
+      () => 100
+    )
+    await repository.update(buyerPubkey, (state) =>
+      applyAccountNetworkRelayExclusion(state, {
+        relayUrl: excludedRelayUrl,
+        relayListFrontier: { eventId: null, createdAt: null },
+        inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        committedAt: 100,
+      })
+    )
+    const openedRelayUrls: string[] = []
+    const signer = {
+      user: async () => ({ pubkey: buyerPubkey }),
+    }
+    const rumor = orderRumor({
+      tags: [
+        ["p", merchantPubkey],
+        ["type", "order"],
+        ["order", "guest-order"],
+      ],
+    })
+
+    const result = await publishBuyerOrderMessage(
+      rumor,
+      { signer } as never,
+      merchantPubkey,
+      { kind: "signed_in", pubkey: buyerPubkey, signer: signer as never },
+      {
+        accountPubkey: buyerPubkey,
+        cacheBuyerOrderRumorFn: async () => null,
+        publishPrivateMessageFn: async (input) =>
+          await publishPrivateMessage({
+            ...input,
+            accountNetworkLocalStateRepository: repository,
+            recipientInboxRelays: [excludedRelayUrl, eligibleRelayUrl],
+            inspectOwnInboxReadiness: async () => ({
+              state: "ready",
+              eventId: "c".repeat(64),
+              relayUrls: [eligibleRelayUrl],
+              stale: false,
+              distributionRepairable: false,
+            }),
+            giftWrapFn: (async (_rumor, recipient) => ({
+              id: `wrap-${recipient.pubkey}`,
+            })) as never,
+            publishFn: (async (_event, options) => {
+              openedRelayUrls.push(...(options.exclusiveRelayUrls ?? []))
+              return {
+                successfulRelayUrls: [...(options.exclusiveRelayUrls ?? [])],
+                failedRelayUrls: [],
+              }
+            }) as never,
+          }),
+      }
+    )
+
+    expect(await result.companionNotification).toBe("sent")
+    expect(openedRelayUrls.length).toBeGreaterThan(0)
+    expect(openedRelayUrls).not.toContain(excludedRelayUrl)
+    expect(openedRelayUrls).toContain(eligibleRelayUrl)
   })
 
   it("URL-encodes the order id and excludes sensitive order payload fields", async () => {
@@ -404,6 +481,7 @@ describe("buyer order publishing", () => {
     expect(orderCall?.senderPubkey).toBe("guest-pubkey")
     expect(orderCall?.signer).toBe(guestSigner)
     expect(orderCall?.selfCopy).toBe(false)
+    expect(orderCall?.accountPubkey).toBeNull()
     expect(orderCall?.signerInteraction).toBe("application_owned")
     expect(orderCall?.validatedOrderScope).toMatchObject({
       rumorId: "order-rumor",
@@ -417,6 +495,7 @@ describe("buyer order publishing", () => {
     expect(companionCall?.recipientPubkey).toBe("merchant-pubkey")
     expect(companionCall?.signer).toBe(guestSigner)
     expect(companionCall?.selfCopy).toBe(false)
+    expect(companionCall?.accountPubkey).toBeNull()
     expect(companionCall?.signerInteraction).toBe("application_owned")
     expect(companionCall?.validatedOrderScope).toBeUndefined()
     expect(companionCall?.validatedGuestOrderCompanionScope).toMatchObject({

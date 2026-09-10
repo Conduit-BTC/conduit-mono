@@ -46,6 +46,8 @@ export type MerchantPickupAuthorizationResult =
 export interface MerchantPickupAuthorizationInput {
   items: OrderSummary["items"]
   merchantPubkey: string
+  /** Active authenticated account; never inferred from merchantPubkey. */
+  authenticatedPubkey?: string | null
   /** Limit verification to coherent order lines for one stock mutation. */
   targetProductCoordinate?: string
   nowMs?: number
@@ -333,6 +335,9 @@ export async function verifyMerchantPickupOrderAuthorization(
   if (pickupItems.length === 0) return { status: "not_required" }
 
   const merchantPubkey = input.merchantPubkey.trim().toLowerCase()
+  const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
+  const authenticatedMerchantPubkey =
+    authenticatedPubkey === merchantPubkey ? authenticatedPubkey : null
   const snapshot = pickupItems[0]?.fulfillment
   if (
     !snapshot ||
@@ -356,7 +361,7 @@ export async function verifyMerchantPickupOrderAuthorization(
     resolution = await dependencies.getEventMarket({
       reference: snapshot.collection.coordinate,
       expectedOrganizerPubkey: snapshot.organizerPubkey,
-      authenticatedPubkey: merchantPubkey,
+      authenticatedPubkey: authenticatedMerchantPubkey,
     })
   } catch {
     return { status: "unverified", reason: "network_unavailable" }
@@ -397,6 +402,7 @@ export async function verifyMerchantPickupOrderAuthorization(
   try {
     productResult = await dependencies.getProductsByIds(productCoordinates, {
       includeMarketHidden: true,
+      authenticatedPubkey: authenticatedMerchantPubkey,
     })
   } catch {
     return { status: "unverified", reason: "network_unavailable" }

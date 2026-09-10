@@ -136,8 +136,6 @@ export interface RelaySettingsPlanningSnapshot {
   signedRelayListAuthoritative: boolean
 }
 
-export type RelaySettingsChangeSource = "local_draft" | "signed_projection"
-
 export type InboxRelayInfoProbeStatus = "succeeded" | "failed" | "unknown"
 export type InboxRelayProtectedMessageCapabilityEvidence =
   "advertised" | "known" | "unknown"
@@ -193,19 +191,7 @@ const EMPTY_WARNINGS: RelayWarnings = {
 }
 
 let activeRelaySettingsScope: string | null = null
-const relaySettingsListeners = new Set<
-  (scope: string | null, source: RelaySettingsChangeSource) => void
->()
-interface AccountRelaySettingsProjectionRecord {
-  settings: RelaySettingsState
-  signedRelayListAuthoritative: boolean
-}
-
-const accountRelaySettingsProjections = new Map<
-  string,
-  AccountRelaySettingsProjectionRecord
->()
-
+const relaySettingsListeners = new Set<(scope: string | null) => void>()
 function now(): number {
   return Date.now()
 }
@@ -467,19 +453,11 @@ function getPlanningSnapshot(
     }
   }
   const scope = options.scope ?? options.storageKey ?? activeRelaySettingsScope
-  const accountProjection = scope
-    ? accountRelaySettingsProjections.get(scope)
-    : undefined
-  if (accountProjection) {
-    return {
-      settings: normalizeRelaySettingsState(accountProjection.settings),
-      signedRelayListAuthoritative:
-        options.signedRelayListAuthoritative ??
-        accountProjection.signedRelayListAuthoritative,
-    }
-  }
   // An unsigned account draft must never govern active reads or writes. Empty
-  // settings let each planner apply its explicit app fallback policy.
+  // settings let each planner apply its explicit app fallback policy. Signed
+  // account membership is bound explicitly from durable owner evidence at the
+  // account-aware planning call sites; account draft storage is deliberately
+  // unable to affect routing.
   if (isAccountRelaySettingsScope(scope)) {
     return {
       settings: createEmptyRelaySettingsState(),
@@ -610,6 +588,28 @@ export function getConfiguredIsolatedE2eRelayUrl(): string | null {
 }
 
 /**
+ * Normalize relays that the authenticated account explicitly selected in
+ * Network settings. Unlike remote relay hints, this authority may include an
+ * unencrypted ws:// transport. Mock E2E mode remains hermetically isolated.
+ */
+export function normalizeOwnerSelectedRelayUrls(
+  relayUrls: readonly string[]
+): string[] {
+  if (config.e2eRelayIsolationEnabled) {
+    const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+    if (!isolatedRelayUrl) return []
+    return relayUrls.some((relayUrl) => {
+      const normalized = tryNormalizeRelayUrl(relayUrl)
+      return normalized.ok && normalized.url === isolatedRelayUrl
+    })
+      ? [isolatedRelayUrl]
+      : []
+  }
+
+  return uniqueRelayUrls(relayUrls)
+}
+
+/**
  * Preserve the hermetic loopback relay only in the explicit mock E2E mode.
  * Production and ordinary development retain the secure-wss-only invariant.
  */
@@ -632,9 +632,11 @@ export function normalizeSecureOrIsolatedE2eRelayUrls(
 
 /**
  * Normalize relay URLs learned from untrusted provenance or protocol hints.
- * Public WSS destinations are accepted directly. A private/local destination
- * is accepted only when the current authenticated planner already selected
- * the same canonical relay URL.
+ * Public WSS destinations are accepted directly. A private/local WSS
+ * destination is accepted only when the current authenticated planner already
+ * selected the same canonical relay URL. An unencrypted ws:// hint is never
+ * accepted here, even when its URL matches an owner-selected relay: remote
+ * evidence must not be able to cause insecure fanout.
  */
 export function normalizeUntrustedRelayHintsForContext(input: {
   relayUrls: readonly string[]
@@ -654,6 +656,7 @@ export function normalizeUntrustedRelayHintsForContext(input: {
   for (const rawRelayUrl of input.relayUrls) {
     const normalized = tryNormalizeRelayUrl(rawRelayUrl)
     if (!normalized.ok) continue
+    if (normalized.url.startsWith("ws://")) continue
     if (
       !normalizePublicWebSocketUrl(normalized.url) &&
       !approvedRelayUrls.has(normalized.url)
@@ -1124,17 +1127,6 @@ export function isAccountRelaySettingsScope(scope?: string | null): boolean {
   return scope?.trim().startsWith("account:") === true
 }
 
-/**
- * Account-scoped local settings are an unpublished presentation draft. Only
- * an installed signed projection may reconfigure live account connections.
- */
-export function canRelaySettingsChangeControlRuntime(
-  scope: string | null | undefined,
-  source: RelaySettingsChangeSource
-): boolean {
-  return !isAccountRelaySettingsScope(scope) || source === "signed_projection"
-}
-
 export function hasRelaySettingsDraft(scope?: string | null): boolean {
   if (typeof window === "undefined") return false
   try {
@@ -1172,69 +1164,16 @@ export function setActiveRelaySettingsScope(scope?: string | null): void {
   activeRelaySettingsScope = scope?.trim() || null
 }
 
-/**
- * Install the runtime projection derived from account reconciliation.
- *
- * It is intentionally process-only. The authority flag records whether an
- * exact signed kind-10002 frontier governs an empty Read set; durable authority
- * remains the retained signed event, and localStorage remains a draft.
- */
-export function setAccountRelaySettingsProjection(
-  scope: string,
-  state: RelaySettingsState,
-  options: { signedRelayListAuthoritative?: boolean } = {}
-): void {
-  const normalizedScope = scope.trim()
-  if (!normalizedScope || !isAccountRelaySettingsScope(normalizedScope)) {
-    throw new Error("Signed relay projections require an account scope")
-  }
-  const normalized = normalizeRelaySettingsState(state)
-  const existing = accountRelaySettingsProjections.get(normalizedScope)
-  const signedRelayListAuthoritative =
-    options.signedRelayListAuthoritative ?? true
-  accountRelaySettingsProjections.set(normalizedScope, {
-    settings: normalized,
-    signedRelayListAuthoritative,
-  })
-  // Observation time may advance when the exact signed frontier is seen
-  // again. Reconfigure live connections only when the ordered, planner-facing
-  // relay projection itself changes.
-  if (
-    JSON.stringify(existing?.settings.entries ?? []) !==
-      JSON.stringify(normalized.entries) ||
-    (existing?.signedRelayListAuthoritative ?? false) !==
-      signedRelayListAuthoritative
-  ) {
-    notifyRelaySettingsChanged(normalizedScope, "signed_projection")
-  }
-}
-
-export function getAccountRelaySettingsProjection(
-  scope: string
-): RelaySettingsState | null {
-  const projection = accountRelaySettingsProjections.get(scope.trim())
-  return projection ? structuredClone(projection.settings) : null
-}
-
-export function __resetAccountRelaySettingsProjectionsForTests(): void {
-  accountRelaySettingsProjections.clear()
-}
-
 export function subscribeRelaySettingsChanges(
-  listener: (scope: string | null, source: RelaySettingsChangeSource) => void
+  listener: (scope: string | null) => void
 ): () => void {
   relaySettingsListeners.add(listener)
   return () => relaySettingsListeners.delete(listener)
 }
 
-function notifyRelaySettingsChanged(
-  scope: string | null | undefined,
-  source: RelaySettingsChangeSource
-): void {
+function notifyRelaySettingsChanged(scope: string | null | undefined): void {
   const normalizedScope = scope?.trim() || null
-  relaySettingsListeners.forEach((listener) =>
-    listener(normalizedScope, source)
-  )
+  relaySettingsListeners.forEach((listener) => listener(normalizedScope))
 }
 
 export function normalizeRelaySettingsState(
@@ -1319,29 +1258,10 @@ export function loadRelaySettings(scope?: string | null): RelaySettingsState {
 }
 
 /**
- * Transitional presentation bridge for the existing Network routes.
- *
- * A stored account draft is a complete explicit draft snapshot. Without one,
- * the page renders the signed runtime projection directly, without copying it
- * into localStorage or making local state authoritative for planners.
+ * Legacy non-account planning Adapter. Account scopes intentionally return an
+ * empty, non-authoritative snapshot; account-aware callers bind durable signed
+ * evidence directly.
  */
-export function loadRelaySettingsPresentation(
-  scope?: string | null
-): RelaySettingsState {
-  const normalizedScope = scope?.trim() || null
-  if (!normalizedScope || !isAccountRelaySettingsScope(normalizedScope)) {
-    return loadRelaySettings(normalizedScope)
-  }
-  if (hasRelaySettingsDraft(normalizedScope)) {
-    return loadRelaySettings(normalizedScope)
-  }
-  const projection = accountRelaySettingsProjections.get(normalizedScope)
-  return projection
-    ? normalizeRelaySettingsState(projection.settings)
-    : createEmptyRelaySettingsState()
-}
-
-/** Load the signed runtime projection when available, otherwise local state. */
 export function loadRelaySettingsForPlan(
   scope?: string | null
 ): RelaySettingsState {
@@ -1375,7 +1295,7 @@ export function saveRelaySettings(
     )
   }
 
-  notifyRelaySettingsChanged(scope, "local_draft")
+  notifyRelaySettingsChanged(scope)
 
   return normalized
 }
@@ -1632,9 +1552,9 @@ function getInboxProtectedMessageRuntimeEvidence(
 }
 
 /**
- * Build the secure inbox relay presentation model from local settings and the
- * current signed declaration. Declared relays and configured relays remain in
- * the model even when they are disabled, unscanned, or currently unreachable.
+ * Build the authenticated owner's inbox relay presentation model from local
+ * settings and their current signed declaration. Owner-selected ws:// relays
+ * remain visible/selectable; this presentation helper grants no network I/O.
  */
 export function getInboxRelayCandidates(
   entries: readonly RelaySettingsEntry[],
@@ -1647,13 +1567,13 @@ export function getInboxRelayCandidates(
   >()
 
   for (const relayUrl of declaredRelayUrls) {
-    const normalized = normalizeSecureOrIsolatedE2eRelayUrls([relayUrl])[0]
+    const normalized = normalizeOwnerSelectedRelayUrls([relayUrl])[0]
     if (!normalized) continue
     byUrl.set(normalized, { declared: true, retained: false })
   }
 
   for (const relayUrl of retainedRelayUrls) {
-    const normalized = normalizeSecureOrIsolatedE2eRelayUrls([relayUrl])[0]
+    const normalized = normalizeOwnerSelectedRelayUrls([relayUrl])[0]
     if (!normalized) continue
     const existing = byUrl.get(normalized)
     byUrl.set(normalized, {
@@ -1664,7 +1584,7 @@ export function getInboxRelayCandidates(
   }
 
   for (const entry of entries) {
-    const normalized = normalizeSecureOrIsolatedE2eRelayUrls([entry.url])[0]
+    const normalized = normalizeOwnerSelectedRelayUrls([entry.url])[0]
     if (!normalized) continue
     const existing = byUrl.get(normalized)
     byUrl.set(normalized, {

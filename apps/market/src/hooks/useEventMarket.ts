@@ -7,6 +7,8 @@ export function useEventMarket(
   rateInput: PricingRateInput = null
 ) {
   const session = useConduitSession()
+  const authenticatedPubkey =
+    session.mode === "signed_in" ? session.pubkey : null
   const rateVersion =
     rateInput && typeof rateInput === "object" ? rateInput.fetchedAt : null
   return useQuery({
@@ -16,7 +18,8 @@ export function useEventMarket(
       collectionRef,
       rateVersion,
     ],
-    queryFn: () => loadEventCatalog(collectionRef, rateInput),
+    queryFn: () =>
+      loadEventCatalog(collectionRef, rateInput, authenticatedPubkey),
     enabled: session.relaySettingsReady,
     staleTime: 0,
     refetchOnMount: "always",

@@ -61,7 +61,11 @@ export function MerchantPaymentAutomationProvider({
 }) {
   const { pubkey, status } = useAuth()
   const queryClient = useQueryClient()
-  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
+  const authenticatedPubkey = status === "connected" ? pubkey : null
+  const profileQuery = useProfile(pubkey, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+  })
   const nwc = useNwcConnection()
   const confirmedEvidenceRef = useRef(new Set<string>())
   const runningRef = useRef(false)
@@ -168,6 +172,7 @@ export function MerchantPaymentAutomationProvider({
             payload: { status: "paid" },
             delivery: candidate.delivery,
             signerInteraction: "background_external",
+            authenticatedPubkey: signerConnected ? pubkey : null,
           })
         },
       })

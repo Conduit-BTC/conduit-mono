@@ -1505,6 +1505,25 @@ describe("Market event adapter", () => {
     expect(result.fulfillment.option.coordinate).toBe(pickupCoordinate)
   })
 
+  it("passes an explicit viewer account through nested catalog resolution", async () => {
+    const viewer = "c".repeat(64)
+    const listing = product()
+    let receivedAccount: string | null | undefined
+
+    const result = await resolveProductCartFulfillment(
+      listing,
+      null,
+      async (_reference, _rateInput, authenticatedPubkey) => {
+        receivedAccount = authenticatedPubkey
+        return catalog(listing)
+      },
+      viewer
+    )
+
+    expect(result.status).toBe("pickup")
+    expect(receivedAccount).toBe(viewer)
+  })
+
   it("resolves a direct organizer pickup that exactly matches the collection", async () => {
     const listing = product()
     const result = await resolveProductCartFulfillment(

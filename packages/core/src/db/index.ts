@@ -317,16 +317,10 @@ export interface OwnerRelayListEventEvidence {
 }
 
 export type NetworkPreferencePublishStatus =
-  | "pending"
-  | "acked"
-  | "rejected"
-  | "timed_out"
+  "pending" | "acked" | "rejected" | "timed_out"
 
 export type NetworkPreferenceReadbackStatus =
-  | "pending"
-  | "observed"
-  | "absent"
-  | "timed_out"
+  "pending" | "observed" | "absent" | "timed_out"
 
 /** Content-free delivery evidence for one immutable signed-event target. */
 export interface NetworkPreferenceRelayOutcome {
@@ -434,9 +428,19 @@ export type InboxDeclarationEventEvidence =
 export interface PendingInboxDeclarationDistribution {
   signedEvent: SignedPublicNostrEvent
   publishRelayUrls: string[]
+  /** Canonical shared subset used to confirm a locally owned recovery batch. */
+  confirmationRelayUrls?: string[]
   /** Older exact checkpoints may omit per-relay outcomes until first retry. */
   relayOutcomes?: NetworkPreferenceRelayOutcome[]
   stagedAt: number
+}
+
+/** One immutable shared-set readback attempt for an inbox recovery batch. */
+export interface InboxDeclarationCutoverConfirmationAttempt {
+  relayUrls: string[]
+  completedRelayUrls?: string[]
+  observedRelayUrls?: string[]
+  stagedAt?: number
 }
 
 /**
@@ -447,6 +451,18 @@ export interface InboxDeclarationCutoverRecovery {
   policyVersion: number
   replacementEventId: string
   relayUrls: string[]
+  /** Signature of the exact locally staged replacement event. */
+  replacementEventSig?: string
+  /** Immutable shared-set attempts; exact completion of any one starts grace. */
+  confirmationAttempts?: InboxDeclarationCutoverConfirmationAttempt[]
+  /** @deprecated Legacy singleton confirmation plan accepted for up-conversion. */
+  confirmationRelayUrls?: string[]
+  /** @deprecated Legacy singleton completion evidence. */
+  completedRelayUrls?: string[]
+  /** @deprecated Legacy singleton exact-observation evidence. */
+  observedRelayUrls?: string[]
+  /** Prior-relay or confirmation-attempt URLs blocked by whole removal. */
+  policyBlockedRelayUrls?: string[]
   readbackObservedAt?: number
   expiresAt?: number
 }
@@ -464,6 +480,9 @@ export interface InboxDeclarationEvidenceRecord {
   current: InboxDeclarationEventEvidence
   lastUsable?: DeclaredInboxDeclarationEventEvidence
   pendingDistribution?: PendingInboxDeclarationDistribution
+  /** Canonical independent recovery batches, keyed by replacement event id. */
+  cutoverRecoveries?: InboxDeclarationCutoverRecovery[]
+  /** @deprecated Legacy singleton accepted only for durable up-conversion. */
   cutoverRecovery?: InboxDeclarationCutoverRecovery
   latestLookup?: InboxDeclarationLookupEvidence
   cachedAt: number

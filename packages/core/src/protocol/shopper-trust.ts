@@ -25,9 +25,14 @@ import {
   type FetchEventsFanoutResult,
   verifySignedPublicNostrEvents,
 } from "./ndk"
+import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
-import { tryNormalizeRelayUrl } from "./relay-settings"
+import {
+  normalizeOwnerSelectedRelayUrls,
+  normalizeSecureOrIsolatedE2eRelayUrls,
+  tryNormalizeRelayUrl,
+} from "./relay-settings"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
 const HEX_PUBKEY = /^[0-9a-f]{64}$/i
@@ -131,6 +136,11 @@ export interface GetShopperTrustEvidenceOptions {
   onProgress?: (snapshot: ShopperTrustEvidence) => void
   relayUrls?: string[]
   resolveRelayLists?: ShopperTrustResolveRelayLists
+  /** Explicit signed-in account whose whole-relay exclusions gate final I/O. */
+  authenticatedPubkey?: string | null
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  /** Injectable durable owner-authority reader for deterministic tests. */
+  readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
   /** Override the public fallback portion of the relay plan (test seam). */
   baseRelayUrls?: readonly string[]
   /** Cancel obsolete reads when the selected order changes. */
@@ -871,18 +881,89 @@ function reportWasDeleted(
   )
 }
 
+type ShopperTrustOwnerRelayAuthority = {
+  settings: Awaited<
+    ReturnType<typeof readDurableAccountRelaySettingsPlanningSnapshot>
+  >["settings"]
+  signedRelayListAuthoritative: boolean
+  readRelayUrls: string[]
+  writeRelayUrls: string[]
+}
+
+async function readShopperTrustOwnerRelayAuthority(
+  accountPubkey: string | null,
+  options: GetShopperTrustEvidenceOptions
+): Promise<ShopperTrustOwnerRelayAuthority | null> {
+  if (!accountPubkey) return null
+  try {
+    const snapshot = await (
+      options.readAccountRelaySettingsPlanningSnapshot ??
+      readDurableAccountRelaySettingsPlanningSnapshot
+    )(accountPubkey)
+    return {
+      settings: snapshot.settings,
+      signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
+      readRelayUrls: normalizeOwnerSelectedRelayUrls(
+        snapshot.settings.entries.flatMap((entry) =>
+          entry.readEnabled ? [entry.url] : []
+        )
+      ),
+      writeRelayUrls: normalizeOwnerSelectedRelayUrls(
+        snapshot.settings.entries.flatMap((entry) =>
+          entry.writeEnabled ? [entry.url] : []
+        )
+      ),
+    }
+  } catch {
+    return null
+  }
+}
+
+function applyShopperTrustRelayAuthority(
+  relayUrls: readonly string[],
+  ownerSelectedRelayUrls: readonly string[]
+): string[] {
+  const ownerSelected = new Set(
+    normalizeOwnerSelectedRelayUrls(ownerSelectedRelayUrls)
+  )
+  const remotelyEligible = new Set(
+    normalizeSecureOrIsolatedE2eRelayUrls(relayUrls)
+  )
+  const accepted: string[] = []
+  const seen = new Set<string>()
+  for (const rawRelayUrl of relayUrls) {
+    const normalized = tryNormalizeRelayUrl(rawRelayUrl)
+    if (!normalized.ok || seen.has(normalized.url)) continue
+    if (
+      !remotelyEligible.has(normalized.url) &&
+      !ownerSelected.has(normalized.url)
+    ) {
+      continue
+    }
+    seen.add(normalized.url)
+    accepted.push(normalized.url)
+  }
+  return accepted
+}
+
 async function resolveRelayUrls(
   merchantPubkey: string,
   shopperPubkey: string,
   resolveRelayLists: ShopperTrustResolveRelayLists,
   baseRelayUrlsOverride?: readonly string[],
+  accountPubkey?: string | null,
+  ownerRelayAuthority?: ShopperTrustOwnerRelayAuthority | null,
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"],
   signal?: AbortSignal
 ): Promise<{ relayUrls: string[]; completeRelayHints: boolean }> {
   let relayLists = new Map()
   let lookupFailed = false
   try {
     relayLists = await resolveRelayLists([merchantPubkey, shopperPubkey], {
-      allowInsecureRelayUrlsForPubkey: merchantPubkey,
+      accountPubkey,
+      authenticatedPubkey: accountPubkey,
+      ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
+      accountNetworkLocalStateRepository,
       signal,
     })
   } catch (error) {
@@ -895,29 +976,60 @@ async function resolveRelayUrls(
     baseRelayUrlsOverride ??
     planRelayReads({
       intent: "shopper_trust",
-      authenticatedPubkey: merchantPubkey,
+      authenticatedPubkey: accountPubkey,
+      ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
       maxRelays: SHOPPER_TRUST_RELAY_CAP,
+      settings: ownerRelayAuthority?.settings,
+      signedRelayListAuthoritative:
+        ownerRelayAuthority?.signedRelayListAuthoritative,
     }).relayUrls
   const merchantRelays = relayLists.get(merchantPubkey)
   const shopperRelays = relayLists.get(shopperPubkey)
+  const shopperWriteRelayUrls = applyShopperTrustRelayAuthority(
+    shopperRelays?.writeRelayUrls ?? [],
+    accountPubkey === shopperPubkey
+      ? (ownerRelayAuthority?.writeRelayUrls ?? [])
+      : []
+  )
+  const shopperReadRelayUrls = applyShopperTrustRelayAuthority(
+    shopperRelays?.readRelayUrls ?? [],
+    accountPubkey === shopperPubkey
+      ? (ownerRelayAuthority?.readRelayUrls ?? [])
+      : []
+  )
+  const merchantWriteRelayUrls = applyShopperTrustRelayAuthority(
+    merchantRelays?.writeRelayUrls ?? [],
+    accountPubkey === merchantPubkey
+      ? (ownerRelayAuthority?.writeRelayUrls ?? [])
+      : []
+  )
   const requiredRelayHints = [merchantRelays, shopperRelays]
   const hasRequiredRelayHints =
-    (merchantRelays?.writeRelayUrls.length ?? 0) > 0 &&
-    (shopperRelays?.writeRelayUrls.length ?? 0) > 0 &&
-    (shopperRelays?.readRelayUrls.length ?? 0) > 0
+    merchantWriteRelayUrls.length > 0 &&
+    shopperWriteRelayUrls.length > 0 &&
+    shopperReadRelayUrls.length > 0
 
   // Keep the cap fair across the shopper outbox/inbox, merchant outbox, and
   // public fallback. A long merchant relay list must not crowd every shopper
   // or public relay out of the plan.
+  const ownerSelectedRelayUrls = [
+    ...(ownerRelayAuthority?.readRelayUrls ?? []),
+    ...(accountPubkey === merchantPubkey || accountPubkey === shopperPubkey
+      ? (ownerRelayAuthority?.writeRelayUrls ?? [])
+      : []),
+  ]
   return {
-    relayUrls: interleaveRelayGroups(
-      [
-        shopperRelays?.writeRelayUrls ?? [],
-        shopperRelays?.readRelayUrls ?? [],
-        merchantRelays?.writeRelayUrls ?? [],
-        baseRelayUrls,
-      ],
-      SHOPPER_TRUST_RELAY_CAP
+    relayUrls: applyShopperTrustRelayAuthority(
+      interleaveRelayGroups(
+        [
+          shopperWriteRelayUrls,
+          shopperReadRelayUrls,
+          merchantWriteRelayUrls,
+          baseRelayUrls,
+        ],
+        SHOPPER_TRUST_RELAY_CAP
+      ),
+      ownerSelectedRelayUrls
     ),
     completeRelayHints:
       !lookupFailed &&
@@ -933,6 +1045,9 @@ async function resolveAuthorReadRelayPlan(
   authors: readonly string[],
   fallbackRelayUrls: readonly string[],
   resolveRelayLists: ShopperTrustResolveRelayLists,
+  accountPubkey?: string | null,
+  ownerRelayAuthority?: ShopperTrustOwnerRelayAuthority | null,
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"],
   signal?: AbortSignal
 ): Promise<{ relayUrls: string[]; completeAuthorHints: boolean }> {
   if (authors.length === 0) {
@@ -950,6 +1065,10 @@ async function resolveAuthorReadRelayPlan(
   try {
     relayLists = await resolveRelayLists(authors, {
       relayUrls: fallbackRelayUrls,
+      accountPubkey,
+      authenticatedPubkey: accountPubkey,
+      ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
+      accountNetworkLocalStateRepository,
       signal,
     })
   } catch (error) {
@@ -958,8 +1077,17 @@ async function resolveAuthorReadRelayPlan(
     // Missing NIP-65 data degrades the observation to the bounded fallback.
   }
 
-  const authorHintGroups = authors.map(
-    (author) => relayLists.get(author)?.writeRelayUrls ?? []
+  const ownerSelectedRelayUrls = [
+    ...(ownerRelayAuthority?.readRelayUrls ?? []),
+    ...(accountPubkey && authors.includes(accountPubkey)
+      ? (ownerRelayAuthority?.writeRelayUrls ?? [])
+      : []),
+  ]
+  const authorHintGroups = authors.map((author) =>
+    applyShopperTrustRelayAuthority(
+      relayLists.get(author)?.writeRelayUrls ?? [],
+      author === accountPubkey ? ownerSelectedRelayUrls : []
+    )
   )
   const selectedHints = interleaveRelayGroups(
     authorHintGroups,
@@ -979,9 +1107,12 @@ async function resolveAuthorReadRelayPlan(
     })
 
   return {
-    relayUrls: interleaveRelayGroups(
-      [selectedHints, fallbackRelayUrls],
-      AUTHOR_READ_RELAY_CAP
+    relayUrls: applyShopperTrustRelayAuthority(
+      interleaveRelayGroups(
+        [selectedHints, fallbackRelayUrls],
+        AUTHOR_READ_RELAY_CAP
+      ),
+      ownerSelectedRelayUrls
     ),
     completeAuthorHints,
   }
@@ -1045,6 +1176,19 @@ export async function getShopperTrustEvidence(
   if (!merchantPubkey || !shopperPubkey) {
     throw new Error("Shopper trust evidence requires valid public keys.")
   }
+  const accountPubkey = options.authenticatedPubkey
+    ? normalizePubkey(options.authenticatedPubkey)
+    : null
+  const ownerRelayAuthority = await readShopperTrustOwnerRelayAuthority(
+    accountPubkey,
+    options
+  )
+  const initialOwnerSelectedRelayUrls = [
+    ...(ownerRelayAuthority?.readRelayUrls ?? []),
+    ...(accountPubkey === merchantPubkey || accountPubkey === shopperPubkey
+      ? (ownerRelayAuthority?.writeRelayUrls ?? [])
+      : []),
+  ]
 
   const now = options.now?.() ?? Date.now()
   const nowSeconds = Math.floor(now / 1_000)
@@ -1071,17 +1215,56 @@ export async function getShopperTrustEvidence(
 
   const resolveRelayLists = options.resolveRelayLists ?? getRelayLists
   const initialRelayPlan = options.relayUrls
-    ? { relayUrls: options.relayUrls, completeRelayHints: true }
+    ? {
+        relayUrls: applyShopperTrustRelayAuthority(
+          options.relayUrls,
+          initialOwnerSelectedRelayUrls
+        ),
+        completeRelayHints: true,
+      }
     : await resolveRelayUrls(
         merchantPubkey,
         shopperPubkey,
         resolveRelayLists,
         options.baseRelayUrls,
+        accountPubkey,
+        ownerRelayAuthority,
+        options.accountNetworkLocalStateRepository,
         signal
       )
   const { relayUrls } = initialRelayPlan
   throwIfTrustAborted(signal)
-  const fetchEvents = options.fetchEvents ?? fetchEventsFanoutDetailed
+  const baseFetchEvents = options.fetchEvents ?? fetchEventsFanoutDetailed
+  const fetchEvents: ShopperTrustFetchEvents = async (
+    filter,
+    readOptions = {}
+  ) => {
+    const filterAuthors = new Set(
+      (filter.authors ?? []).map((pubkey) => pubkey.toLowerCase())
+    )
+    const ownerSelectedRelayUrls = [
+      ...(ownerRelayAuthority?.readRelayUrls ?? []),
+      ...(accountPubkey && filterAuthors.has(accountPubkey)
+        ? (ownerRelayAuthority?.writeRelayUrls ?? [])
+        : []),
+    ]
+    const relayUrls = applyShopperTrustRelayAuthority(
+      readOptions.relayUrls ?? [],
+      ownerSelectedRelayUrls
+    )
+    const executableRelaySet = new Set(relayUrls)
+    return await baseFetchEvents(filter, {
+      ...readOptions,
+      relayUrls,
+      accountPubkey,
+      authenticatedPubkey: accountPubkey,
+      ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls(
+        ownerSelectedRelayUrls
+      ).filter((relayUrl) => executableRelaySet.has(relayUrl)),
+      accountNetworkLocalStateRepository:
+        options.accountNetworkLocalStateRepository,
+    })
+  }
 
   if (relayUrls.length === 0) {
     if (cachedEvidence) return cachedEvidence
@@ -1206,6 +1389,9 @@ export async function getShopperTrustEvidence(
             candidatePubkeys,
             relayUrls,
             resolveRelayLists,
+            accountPubkey,
+            ownerRelayAuthority,
+            options.accountNetworkLocalStateRepository,
             signal
           )
   throwIfTrustAborted(signal)
@@ -1282,6 +1468,9 @@ export async function getShopperTrustEvidence(
             reporterPubkeys,
             relayUrls,
             resolveRelayLists,
+            accountPubkey,
+            ownerRelayAuthority,
+            options.accountNetworkLocalStateRepository,
             signal
           )
   throwIfTrustAborted(signal)
@@ -1320,6 +1509,9 @@ export async function getShopperTrustEvidence(
             reportDeletionAuthors,
             relayUrls,
             resolveRelayLists,
+            accountPubkey,
+            ownerRelayAuthority,
+            options.accountNetworkLocalStateRepository,
             signal
           )
   throwIfTrustAborted(signal)

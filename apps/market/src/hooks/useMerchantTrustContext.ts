@@ -48,9 +48,7 @@ export function getMerchantProfileAuthenticatedPubkey(
 ): string | undefined {
   const normalizedMerchant = normalizePubkey(merchantPubkey)
   const normalizedViewer = normalizePubkey(viewerPubkey)
-  return normalizedMerchant && normalizedMerchant === normalizedViewer
-    ? normalizedViewer
-    : undefined
+  return normalizedMerchant && normalizedViewer ? normalizedViewer : undefined
 }
 
 export function useMerchantTrustContext({
@@ -72,6 +70,7 @@ export function useMerchantTrustContext({
       merchantPubkey,
       viewerPubkey
     ),
+    accountPubkey: viewerPubkey,
     relayHints: profileRelayHints,
     requireCompleteEvidence: requireCompleteProfileEvidence,
     evidenceScope: requireCompleteProfileEvidence ? "payment" : undefined,
@@ -105,7 +104,7 @@ export function useMerchantTrustContext({
           merchantPubkey: merchantPubkey!,
           viewerPubkey: viewerPubkey!,
         },
-        { signal }
+        { signal, authenticatedPubkey: viewerPubkey }
       ),
   })
 

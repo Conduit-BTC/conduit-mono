@@ -25,9 +25,10 @@ export const Route = createFileRoute("/network")({
 })
 
 function NetworkPage() {
-  const { pubkey, signer, method, authGeneration } = useAuth()
+  const { pubkey, signer, method, authGeneration, status } = useAuth()
   const session = useConduitSession()
   const navigate = useNavigate()
+  const authenticatedPubkey = status === "connected" ? pubkey : null
   const autoReturnStartedRef = useRef(false)
   const [hasProductDraftReturn, setHasProductDraftReturn] = useState(false)
   const [productDraftReturnError, setProductDraftReturnError] = useState<
@@ -43,6 +44,7 @@ function NetworkPage() {
   })
   const mediaServerPreferences = useMediaServerPreferences(pubkey, {
     enabled: session.relaySettingsReady,
+    authenticatedPubkey,
     signer,
     authMethod: method,
     authGeneration,

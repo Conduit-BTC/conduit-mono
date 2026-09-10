@@ -25,6 +25,7 @@ import {
   assertSafeNip65RelayTags,
   getConfiguredIsolatedE2eRelayUrl,
   loadRelaySettingsPlanningSnapshot,
+  normalizeOwnerSelectedRelayUrls,
   normalizeSecureOrIsolatedE2eRelayUrls,
   normalizeUntrustedRelayHintsForContext,
   tryNormalizeRelayUrl,
@@ -38,7 +39,8 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
-import { getAccountRelayScope } from "./session"
+import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
+import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import {
   publishSignedEventFrameToRelay,
   type ExactRelayWriteStatus,
@@ -83,6 +85,12 @@ export interface PublishWithPlannerInput {
    * fanout for protocols such as NIP-17 that define an exclusive relay set.
    */
   exclusiveRelayUrls?: readonly string[]
+  /**
+   * Exact exclusive-target subset backed by this authenticated owner's own
+   * Network selection. Recipient or discovered relay URLs must never populate
+   * this field.
+   */
+  ownerSelectedRelayUrls?: readonly string[]
   /** Fetch missing NIP-65 hints before planning instead of cache-only lookup. */
   refreshRelayLists?: boolean
   /**
@@ -177,6 +185,7 @@ interface RelayPublishTestOverrides {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  ownerRelayListEvidenceRepository?: OwnerRelayListEvidenceRepository
 }
 
 let testOverrides: RelayPublishTestOverrides = {}
@@ -446,6 +455,10 @@ async function publishToRelayUrls(input: {
   requiredRelayCount: number
   timeoutMs: number
   accountPubkey?: string | null
+  /** Active account required to exercise owner-selected ws:// authority. */
+  authenticatedPubkey?: string | null
+  /** Exact target subset selected by the authenticated account owner. */
+  ownerSelectedRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
@@ -488,15 +501,17 @@ async function publishToRelayUrls(input: {
           })
         ).map((operation) => operation.value)
   const relayUrls =
-    orderedCandidateRelayUrls.length === 0 ||
-    input.accountPubkey === undefined ||
-    input.accountPubkey === null
-      ? orderedCandidateRelayUrls
-      : await filterEligibleAccountRelayUrls({
-          accountPubkey: input.accountPubkey,
-          candidateRelayUrls: orderedCandidateRelayUrls,
-          repository: accountNetworkLocalStateRepository,
-        })
+    orderedCandidateRelayUrls.length === 0
+      ? []
+      : input.accountPubkey === undefined || input.accountPubkey === null
+        ? normalizeSecureOrIsolatedE2eRelayUrls(orderedCandidateRelayUrls)
+        : await filterEligibleAccountRelayUrls({
+            accountPubkey: input.accountPubkey,
+            authenticatedPubkey: input.authenticatedPubkey,
+            candidateRelayUrls: orderedCandidateRelayUrls,
+            ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+            repository: accountNetworkLocalStateRepository,
+          })
 
   // NDKEvent.publish() reads the instance from the event itself even when the
   // relay set was built with an NDK instance. Gift-wrap helpers can return an
@@ -599,8 +614,10 @@ export type ExclusiveRelayPublishStatus = ExactRelayWriteStatus
 interface ExactRelayTargetInput {
   relayUrl: string
   authorPubkey: string
-  /** Preserve an authenticated author's intentional local `ws://` target. */
+  /** Authenticated account whose authority is being exercised. */
   authenticatedPubkey?: string | null
+  /** Exact target subset selected by that authenticated account owner. */
+  ownerSelectedRelayUrls?: readonly string[]
   /** Explicit account for last-mile whole-relay exclusion enforcement. */
   accountPubkey?: string | null
   /** Injectable durable-state reader for deterministic boundary tests. */
@@ -623,16 +640,20 @@ function resolveExactRelayTarget(input: ExactRelayTargetInput): string {
     }
     return normalized.url
   }
-  const allowAuthenticatedAuthorLocalRelay = hasAuthenticatedAuthorRelayContext(
-    {
+  const allowAuthenticatedOwnerSelectedRelay =
+    hasAuthenticatedAuthorRelayContext({
       authorPubkey: input.authorPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
-    }
-  )
+    }) &&
+    input.accountPubkey?.trim().toLowerCase() ===
+      input.authenticatedPubkey?.trim().toLowerCase() &&
+    normalizeOwnerSelectedRelayUrls(
+      input.ownerSelectedRelayUrls ?? []
+    ).includes(normalized.ok ? normalized.url : "")
   if (
     !normalized.ok ||
     (!normalizePublicWebSocketUrl(normalized.url) &&
-      !allowAuthenticatedAuthorLocalRelay)
+      !allowAuthenticatedOwnerSelectedRelay)
   ) {
     throw new Error("Expected one valid public or authenticated relay target.")
   }
@@ -659,7 +680,9 @@ export async function publishSignedEventToRelay(
       : (
           await filterEligibleAccountRelayUrls({
             accountPubkey: input.accountPubkey,
+            authenticatedPubkey: input.authenticatedPubkey,
             candidateRelayUrls: [candidateRelayUrl],
+            ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
             repository: input.accountNetworkLocalStateRepository,
           })
         )[0]
@@ -687,9 +710,19 @@ export async function planPublishRelays(
   input: PublishWithPlannerInput
 ): Promise<RelayWritePlan> {
   if (input.exclusiveRelayUrls) {
-    const primaryRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
-      input.exclusiveRelayUrls
-    )
+    const ownerSelectedRelayUrls =
+      hasAuthenticatedAuthorRelayContext(input) &&
+      input.accountPubkey?.trim().toLowerCase() ===
+        input.authenticatedPubkey?.trim().toLowerCase()
+        ? normalizeOwnerSelectedRelayUrls(input.ownerSelectedRelayUrls ?? [])
+        : []
+    const ownerSelectedSet = new Set(ownerSelectedRelayUrls)
+    const primaryRelayUrls = mergeUnique([
+      normalizeSecureOrIsolatedE2eRelayUrls(input.exclusiveRelayUrls),
+      normalizeOwnerSelectedRelayUrls(input.exclusiveRelayUrls).filter(
+        (relayUrl) => ownerSelectedSet.has(relayUrl)
+      ),
+    ])
     return {
       intent: input.intent,
       primaryRelayUrls,
@@ -709,21 +742,45 @@ export async function planPublishRelays(
     )
   )
 
+  const settingsSnapshot = input.authenticatedPubkey
+    ? await readDurableAccountRelaySettingsPlanningSnapshot(
+        input.authenticatedPubkey,
+        {
+          evidenceRepository: testOverrides.ownerRelayListEvidenceRepository,
+        }
+      )
+    : loadRelaySettingsPlanningSnapshot()
+  const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
+  const policyAccount = input.accountPubkey?.trim().toLowerCase()
+  const hasAuthenticatedOwnerContext = Boolean(
+    authenticatedOwner && authenticatedOwner === policyAccount
+  )
+  const ownerSelectedReadRelayUrls = hasAuthenticatedOwnerContext
+    ? normalizeOwnerSelectedRelayUrls(
+        settingsSnapshot.settings.entries.flatMap((entry) =>
+          entry.readEnabled ? [entry.url] : []
+        )
+      )
+    : []
+  const ownerSelectedPlanningRelayUrls = hasAuthenticatedOwnerContext
+    ? normalizeOwnerSelectedRelayUrls(
+        settingsSnapshot.settings.entries.flatMap((entry) =>
+          entry.readEnabled || entry.writeEnabled ? [entry.url] : []
+        )
+      )
+    : []
   const relayLists =
     hintPubkeys.length > 0
       ? await getRelayLists(hintPubkeys, {
           cacheOnly: input.refreshRelayLists !== true,
           allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
           accountPubkey: input.accountPubkey,
+          authenticatedPubkey: input.authenticatedPubkey,
+          ownerSelectedRelayUrls: ownerSelectedReadRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
         })
       : undefined
-  const settingsSnapshot = loadRelaySettingsPlanningSnapshot(
-    input.authenticatedPubkey
-      ? getAccountRelayScope(input.authenticatedPubkey)
-      : undefined
-  )
 
   return planRelayWrites({
     intent: input.intent,
@@ -731,6 +788,7 @@ export async function planPublishRelays(
     recipientPubkeys: input.recipientPubkeys,
     relayLists,
     authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: ownerSelectedPlanningRelayUrls,
     settings: settingsSnapshot.settings,
     signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
     maxPrimaryRelays: input.deliveryMode === "critical" ? 0 : undefined,
@@ -779,6 +837,34 @@ export async function publishWithPlanner(
     : testOverrides.planPublishRelays
       ? await testOverrides.planPublishRelays(input)
       : await planPublishRelays(input)
+  const ownerSelectedPublishRelayUrls =
+    !input.authenticatedPubkey ||
+    input.accountPubkey?.trim().toLowerCase() !==
+      input.authenticatedPubkey.trim().toLowerCase() ||
+    !hasAuthenticatedAuthorRelayContext(input)
+      ? []
+      : input.exclusiveRelayUrls
+        ? (() => {
+            const exclusiveRelayUrls = new Set(
+              normalizeOwnerSelectedRelayUrls(input.exclusiveRelayUrls)
+            )
+            return normalizeOwnerSelectedRelayUrls(
+              input.ownerSelectedRelayUrls ?? []
+            ).filter((relayUrl) => exclusiveRelayUrls.has(relayUrl))
+          })()
+        : normalizeOwnerSelectedRelayUrls(
+            (
+              await readDurableAccountRelaySettingsPlanningSnapshot(
+                input.authenticatedPubkey,
+                {
+                  evidenceRepository:
+                    testOverrides.ownerRelayListEvidenceRepository,
+                }
+              )
+            ).settings.entries.flatMap((entry) =>
+              entry.writeEnabled ? [entry.url] : []
+            )
+          )
   assertShouldContinue()
   const extraPrimaryRelayUrls = input.exclusiveRelayUrls
     ? []
@@ -852,6 +938,8 @@ export async function publishWithPlanner(
             ? CRITICAL_RETRY_PUBLISH_TIMEOUT_MS
             : STANDARD_PUBLISH_TIMEOUT_MS,
         accountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.authenticatedPubkey,
+        ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
       })
@@ -902,6 +990,8 @@ export async function publishWithPlanner(
     requiredRelayCount: plan.primaryRelayUrls.length > 0 ? 1 : 0,
     timeoutMs: publishTimeoutMs,
     accountPubkey: input.accountPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
   })
@@ -922,6 +1012,8 @@ export async function publishWithPlanner(
         requiredRelayCount: 1,
         timeoutMs: CRITICAL_RETRY_PUBLISH_TIMEOUT_MS,
         accountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.authenticatedPubkey,
+        ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
       })
@@ -996,6 +1088,8 @@ export async function publishWithPlanner(
             ? CRITICAL_RETRY_PUBLISH_TIMEOUT_MS
             : STANDARD_PUBLISH_TIMEOUT_MS,
         accountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.authenticatedPubkey,
+        ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
       })
@@ -1063,6 +1157,8 @@ export async function publishWithPlanner(
     requiredRelayCount: plan.broadcastRelayUrls.length > 0 ? 1 : 0,
     timeoutMs: publishTimeoutMs,
     accountPubkey: input.accountPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
   })

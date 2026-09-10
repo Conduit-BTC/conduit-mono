@@ -70,10 +70,14 @@ type MerchantDashboardStats = {
 }
 
 async function fetchDashboardStats(
-  pubkey: string
+  pubkey: string,
+  accountPubkey: string,
+  authenticatedPubkey: string
 ): Promise<MerchantDashboardStats> {
   const storefront = await getMerchantStorefront({
     merchantPubkey: pubkey,
+    accountPubkey,
+    authenticatedPubkey,
     sort: "updated_at_desc",
     includeMarketHidden: true,
   })
@@ -335,7 +339,7 @@ function DashboardPage() {
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard-live", pubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => fetchDashboardStats(pubkey!),
+    queryFn: () => fetchDashboardStats(pubkey!, pubkey!, pubkey!),
     refetchInterval: 30_000,
   })
   const cachedStatsQuery = useQuery({
@@ -440,6 +444,8 @@ function DashboardPage() {
     [latestConversations]
   )
   const buyerProfilesQuery = useProfiles(buyerPubkeys, {
+    accountPubkey: signerConnected ? pubkey : null,
+    authenticatedPubkey: signerConnected ? pubkey : null,
     enabled: signerConnected && buyerPubkeys.length > 0,
   })
 

@@ -17,7 +17,11 @@ import {
   type SignedPublicNostrEvent,
 } from "./signed-event"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanout, getEventSourceRelayUrls } from "./ndk"
+import {
+  fetchEventsFanout,
+  getEventSourceRelayUrls,
+  type FetchEventsFanoutOptions,
+} from "./ndk"
 
 // ─── LNURL / Zap helpers ──────────────────────────────────────────────────────
 
@@ -1475,6 +1479,8 @@ export async function waitForZapReceipt({
   expectedInvoice,
   lnurlNostrPubkey,
   relayUrls,
+  accountPubkey,
+  accountNetworkLocalStateRepository,
   receiptNotAfterSeconds,
   timeoutMs = 5_000,
 }: {
@@ -1486,6 +1492,8 @@ export async function waitForZapReceipt({
   expectedInvoice: string
   lnurlNostrPubkey: string
   relayUrls: string[]
+  accountPubkey?: string | null
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   receiptNotAfterSeconds?: number
   timeoutMs?: number
 }): Promise<NDKEvent | null> {
@@ -1505,6 +1513,8 @@ export async function waitForZapReceipt({
       },
       {
         relayUrls,
+        accountPubkey,
+        accountNetworkLocalStateRepository,
         connectTimeoutMs: 1_500,
         fetchTimeoutMs: 2_000,
       }

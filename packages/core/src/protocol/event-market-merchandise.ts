@@ -1,9 +1,11 @@
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import type { EventMarketReadyReceiptSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
+import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import {
   fetchEventsFanoutDetailed,
   getEventSourceRelayUrls,
+  type FetchEventsFanoutOptions,
   type FetchEventsFanoutResult,
 } from "./ndk"
 import {
@@ -15,6 +17,7 @@ import {
 import { parseProductEvent } from "./products"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
+import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
 import { EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT } from "./event-market"
 import {
   isValidSignedPublicNostrEvent,
@@ -293,6 +296,8 @@ function rawEvents(result: FetchEventsFanoutResult): {
 export interface GetEventMarketReceiptMerchandiseInput {
   receipt: EventMarketReadyReceiptSchema
   authenticatedPubkey?: string | null
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
   signal?: AbortSignal
 }
 
@@ -307,17 +312,50 @@ export async function getEventMarketReceiptMerchandise(
     throw new Error("Receipt merchandise exceeds the bounded read budget.")
   }
   const merchant = input.receipt.merchantPubkey.toLowerCase()
+  const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
+  const hasAuthenticatedOwner = Boolean(
+    authenticatedPubkey && /^[0-9a-f]{64}$/.test(authenticatedPubkey)
+  )
+  let ownerSettingsSnapshot: Awaited<
+    ReturnType<typeof readDurableAccountRelaySettingsPlanningSnapshot>
+  > | null = null
+  if (hasAuthenticatedOwner) {
+    try {
+      ownerSettingsSnapshot = await (
+        input.readAccountRelaySettingsPlanningSnapshot ??
+        readDurableAccountRelaySettingsPlanningSnapshot
+      )(authenticatedPubkey!)
+    } catch {
+      // Missing durable owner evidence grants no ws:// transport authority.
+    }
+  }
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
+    ownerSettingsSnapshot?.settings.entries.flatMap((entry) =>
+      entry.readEnabled ||
+      (merchant === authenticatedPubkey && entry.writeEnabled)
+        ? [entry.url]
+        : []
+    ) ?? []
+  )
   const lookup = testOverrides.getRelayLists ?? getRelayLists
   const relayLists = await lookup([merchant], {
     signal: input.signal,
-    allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
   })
   const plan = planRelayReads({
     intent: "author_products",
     authors: [merchant],
     relayLists,
-    authenticatedPubkey: input.authenticatedPubkey,
+    authenticatedPubkey,
+    ownerSelectedRelayUrls,
     maxRelays: MAX_RECEIPT_READ_RELAYS,
+    settings: ownerSettingsSnapshot?.settings,
+    signedRelayListAuthoritative:
+      ownerSettingsSnapshot?.signedRelayListAuthoritative,
   })
   const relayUrls = plan.relayUrls.slice(0, MAX_RECEIPT_READ_RELAYS)
   const productIds = Array.from(
@@ -360,6 +398,13 @@ export async function getEventMarketReceiptMerchandise(
       batch.map((filter) =>
         fetch(filter, {
           relayUrls: remainingRelayUrls,
+          accountPubkey: authenticatedPubkey,
+          authenticatedPubkey,
+          ownerSelectedRelayUrls: (plan.ownerSelectedRelayUrls ?? []).filter(
+            (relayUrl) => remainingRelayUrls.includes(relayUrl)
+          ),
+          accountNetworkLocalStateRepository:
+            input.accountNetworkLocalStateRepository,
           signal: input.signal,
           reuseRelayConnections: true,
         })

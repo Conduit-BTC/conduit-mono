@@ -62,7 +62,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 function ShippingPage() {
-  const { pubkey } = useAuth()
+  const { pubkey, status: authStatus } = useAuth()
   const [initialConfig] = useState<ShippingConfig>(() =>
     loadShippingConfig(pubkey)
   )
@@ -71,10 +71,13 @@ function ShippingPage() {
     useState<ShippingConfig>(initialConfig)
   const [saveState, setSaveState] = useState<SaveState>({ status: "idle" })
   const remoteShippingQuery = useQuery({
-    queryKey: ["merchant-shipping-options", pubkey ?? "none"],
+    queryKey: ["merchant-shipping-options", pubkey ?? "none", authStatus],
     enabled: !!pubkey,
     queryFn: () =>
-      getShippingOptionsByCoordinates([getShippingOptionAddress(pubkey!)]),
+      getShippingOptionsByCoordinates([getShippingOptionAddress(pubkey!)], {
+        accountPubkey: pubkey,
+        authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+      }),
     staleTime: 60_000,
   })
 

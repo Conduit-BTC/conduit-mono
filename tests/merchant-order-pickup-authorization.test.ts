@@ -270,6 +270,67 @@ function cloneSnapshot(): OrderPickupFulfillmentSchema {
 }
 
 describe("Merchant pickup order authorization", () => {
+  it("carries the authenticated merchant through both final evidence reads", async () => {
+    let eventMarketAccount: string | null | undefined
+    let productAccount: string | null | undefined
+
+    const result = await verifyMerchantPickupOrderAuthorization(
+      {
+        items: orderItems(),
+        merchantPubkey: merchant,
+        authenticatedPubkey: merchant,
+      },
+      {
+        getEventMarket: async (input) => {
+          eventMarketAccount = input.authenticatedPubkey
+          return market()
+        },
+        getProductsByIds: async (_coordinates, options = {}) => {
+          productAccount = options.authenticatedPubkey
+          return products()
+        },
+      }
+    )
+
+    expect(result.status).toBe("verified")
+    expect(eventMarketAccount).toBe(merchant)
+    expect(productAccount).toBe(merchant)
+  })
+
+  it("does not infer read authority from the merchant under absent or stale authentication", async () => {
+    const observed: Array<
+      [string | null | undefined, string | null | undefined]
+    > = []
+    const deps: MerchantPickupAuthorizationDependencies = {
+      getEventMarket: async (input) => {
+        observed.push([input.authenticatedPubkey, undefined])
+        return market()
+      },
+      getProductsByIds: async (_coordinates, options = {}) => {
+        observed[observed.length - 1]![1] = options.authenticatedPubkey
+        return products()
+      },
+    }
+
+    await verifyMerchantPickupOrderAuthorization(
+      { items: orderItems(), merchantPubkey: merchant },
+      deps
+    )
+    await verifyMerchantPickupOrderAuthorization(
+      {
+        items: orderItems(),
+        merchantPubkey: merchant,
+        authenticatedPubkey: organizer,
+      },
+      deps
+    )
+
+    expect(observed).toEqual([
+      [null, null],
+      [null, null],
+    ])
+  })
+
   it("verifies exact current organizer, merchant product, and two-sided participation evidence", async () => {
     let verifiedMarket: EventMarketResolution | undefined
     const result = await verifyMerchantPickupOrderAuthorization(

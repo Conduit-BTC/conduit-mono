@@ -21,6 +21,7 @@ import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event
 
 const OWNER_SECRET = generateSecretKey()
 const OWNER = getPublicKey(OWNER_SECRET)
+const OTHER = getPublicKey(generateSecretKey())
 
 function relayEvent(input: {
   createdAt: number
@@ -54,9 +55,7 @@ function lookup(input: {
   }
 }
 
-function pendingRelayOutcome(
-  relayUrl: string
-): NetworkPreferenceRelayOutcome {
+function pendingRelayOutcome(relayUrl: string): NetworkPreferenceRelayOutcome {
   return {
     relayUrl,
     publishStatus: "pending",
@@ -74,6 +73,108 @@ beforeEach(() => {
 })
 
 describe("owner kind-10002 evidence", () => {
+  it("admits only the exact authenticated owner's selected ws lookup target", async () => {
+    const ownerWsRelay = "ws://owner-selected.example"
+    const remoteWsRelay = "ws://remote-derived.example"
+    const secureRelay = "wss://relay.damus.io"
+    const calls: Array<{
+      relayUrls: string[]
+      accountPubkey?: string | null
+      authenticatedPubkey?: string | null
+      ownerSelectedRelayUrls: string[]
+    }> = []
+    const fetchEventsWithDiagnostics = async (
+      _filter: unknown,
+      options: {
+        relayUrls: string[]
+        accountPubkey?: string | null
+        authenticatedPubkey?: string | null
+        ownerSelectedRelayUrls?: readonly string[]
+      }
+    ) => {
+      calls.push({
+        relayUrls: [...options.relayUrls],
+        accountPubkey: options.accountPubkey,
+        authenticatedPubkey: options.authenticatedPubkey,
+        ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+      })
+      return {
+        events: [] as never,
+        attemptedRelayUrls: [...options.relayUrls],
+        successfulRelayUrls: [...options.relayUrls],
+        failedRelayUrls: [],
+      }
+    }
+
+    await resolveOwnerRelayList(OWNER, {
+      relayUrls: [remoteWsRelay, ownerWsRelay, secureRelay],
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      ownerSelectedRelayUrls: [ownerWsRelay],
+      evidenceRepository: repository,
+      fetchEventsWithDiagnostics: fetchEventsWithDiagnostics as never,
+    })
+    await resolveOwnerRelayList(OTHER, {
+      relayUrls: [remoteWsRelay, ownerWsRelay, secureRelay],
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      ownerSelectedRelayUrls: [ownerWsRelay],
+      evidenceRepository: createInMemoryOwnerRelayListEvidenceRepository(),
+      fetchEventsWithDiagnostics: fetchEventsWithDiagnostics as never,
+    })
+
+    expect(calls).toEqual([
+      {
+        relayUrls: [ownerWsRelay, secureRelay],
+        accountPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        ownerSelectedRelayUrls: [ownerWsRelay],
+      },
+      {
+        relayUrls: [secureRelay],
+        accountPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        ownerSelectedRelayUrls: [],
+      },
+    ])
+  })
+
+  it("retains ws distribution only when the exact owner event selected it", () => {
+    const ownerWs = "ws://owner-selected.example"
+    const remoteWs = "ws://remote-derived.example"
+    const signedEvent = relayEvent({
+      createdAt: 100,
+      tags: [["r", ownerWs, "write"]],
+    })
+
+    const staged = applyOwnerRelayListDistributionStage(undefined, {
+      pubkey: OWNER,
+      signedEvent,
+      publishRelayUrls: [ownerWs, "wss://relay.damus.io"],
+      relayOutcomes: [
+        pendingRelayOutcome(ownerWs),
+        pendingRelayOutcome("wss://relay.damus.io"),
+      ],
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+    expect(staged.pendingDistribution?.publishRelayUrls).toEqual([
+      ownerWs,
+      "wss://relay.damus.io",
+    ])
+
+    expect(() =>
+      applyOwnerRelayListDistributionStage(undefined, {
+        pubkey: OWNER,
+        signedEvent,
+        publishRelayUrls: [remoteWs],
+        relayOutcomes: [pendingRelayOutcome(remoteWs)],
+        expectedCurrentEventId: null,
+        stagedAt: 1_000,
+      })
+    ).toThrow("requires publish targets")
+  })
+
   it("keeps exact per-relay outcomes immutable while retrying only unresolved work", () => {
     const signedEvent = relayEvent({
       createdAt: 100,
@@ -215,9 +316,7 @@ describe("owner kind-10002 evidence", () => {
 
     const retained = await getOwnerRelayListEvidence(OWNER, repository)
 
-    expect(retained?.pendingDistribution).toEqual(
-      staged.pendingDistribution
-    )
+    expect(retained?.pendingDistribution).toEqual(staged.pendingDistribution)
     expect(retained?.current?.signedEvent).toEqual(structuredClone(signedEvent))
   })
 

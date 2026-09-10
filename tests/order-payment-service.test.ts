@@ -2076,6 +2076,7 @@ describe("runOrderPayment", () => {
 
   it("uses current durable truth after a receipt observer wait", async () => {
     const orderId = "deferred-receipt-timeout-race"
+    const accountPubkey = "b".repeat(64)
     let current = lifecycle({
       orderId,
       checkoutMode: "anonymous_public_zap",
@@ -2099,23 +2100,29 @@ describe("runOrderPayment", () => {
       releaseWait = resolve
     })
 
-    const observation = observeOrderPublicZapReceipt(orderId, undefined, {
-      getOrderLifecycle: async () => current,
-      waitForZapReceipt: async () => {
-        waitStarted = true
-        return receiptWait
+    const observation = observeOrderPublicZapReceipt(
+      orderId,
+      undefined,
+      {
+        getOrderLifecycle: async () => current,
+        waitForZapReceipt: async (input) => {
+          expect(input.accountPubkey).toBe(accountPubkey)
+          waitStarted = true
+          return receiptWait
+        },
+        recordOrderPaymentReceiptTimeout: async () => {
+          timeoutCalls += 1
+          if (
+            current.paymentStatus === "paid" ||
+            current.zapReceiptStatus === "observed"
+          ) {
+            return { status: "preserved", lifecycle: current }
+          }
+          throw new Error("must preserve stronger evidence")
+        },
       },
-      recordOrderPaymentReceiptTimeout: async () => {
-        timeoutCalls += 1
-        if (
-          current.paymentStatus === "paid" ||
-          current.zapReceiptStatus === "observed"
-        ) {
-          return { status: "preserved", lifecycle: current }
-        }
-        throw new Error("must preserve stronger evidence")
-      },
-    })
+      accountPubkey
+    )
 
     for (let index = 0; index < 5 && !waitStarted; index += 1) {
       await Promise.resolve()

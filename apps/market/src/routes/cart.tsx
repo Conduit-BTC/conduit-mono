@@ -26,6 +26,7 @@ import {
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   SHIPPING_COUNTRIES,
+  useConduitSession,
   useProfile,
   type BtcUsdRateQuote,
   type CommercePriceLike,
@@ -193,15 +194,26 @@ async function fetchSuggestedProducts(
   merchantPubkey: string | undefined,
   excludedIds: string[],
   preferredTags: string[],
-  source: "cache" | "live" = "live"
+  source: "cache" | "live" = "live",
+  accountPubkey?: string | null,
+  authenticatedPubkey?: string | null
 ): Promise<SuggestedProduct[]> {
   const result = merchantPubkey
     ? source === "cache"
       ? await getCachedMerchantStorefront({ merchantPubkey, limit: 48 })
-      : await getMerchantStorefront({ merchantPubkey, limit: 48 })
+      : await getMerchantStorefront({
+          merchantPubkey,
+          limit: 48,
+          accountPubkey,
+          authenticatedPubkey,
+        })
     : source === "cache"
       ? await getCachedMarketplaceProducts({ limit: 120 })
-      : await getMarketplaceProducts({ limit: 120 })
+      : await getMarketplaceProducts({
+          limit: 120,
+          accountPubkey,
+          authenticatedPubkey,
+        })
 
   const excludedSet = new Set(excludedIds)
   const preferredTagSet = new Set(
@@ -249,12 +261,19 @@ async function fetchSuggestedProducts(
 
 function MerchantIdentity({
   merchantPubkey,
+  accountPubkey,
+  authenticatedPubkey,
   className = "",
 }: {
   merchantPubkey: string
+  accountPubkey: string | null
+  authenticatedPubkey: string | null
   className?: string
 }) {
-  const { data: profile } = useProfile(merchantPubkey)
+  const { data: profile } = useProfile(merchantPubkey, {
+    accountPubkey,
+    authenticatedPubkey,
+  })
   const merchantName = getMerchantDisplayName(profile, merchantPubkey)
   const nip05 = getProfileNip05(profile)
   const [copied, setCopied] = useState(false)
@@ -328,10 +347,14 @@ function RelatedProductRow({
   suggestion,
   formatPrice,
   btcUsdRate,
+  accountPubkey,
+  authenticatedPubkey,
 }: {
   suggestion: SuggestedProduct
   formatPrice: PriceFormatter
   btcUsdRate: PricingRateInput
+  accountPubkey: string | null
+  authenticatedPubkey: string | null
 }) {
   const { product, family } = suggestion
   const cart = useCart()
@@ -386,7 +409,10 @@ function RelatedProductRow({
   const price = formatPrice(selectedProduct, {
     allowZero: resolution?.status === "pickup",
   })
-  const { data: profile } = useProfile(product.pubkey)
+  const { data: profile } = useProfile(product.pubkey, {
+    accountPubkey,
+    authenticatedPubkey,
+  })
   const merchantName = getProfileName(profile)
   const merchantLabel = merchantName ?? formatNpub(product.pubkey, 6)
   const soldOut = selectedProduct.stock === 0
@@ -706,6 +732,8 @@ function CartLineItem({
 
 function MerchantCartCard({
   group,
+  accountPubkey,
+  authenticatedPubkey,
   readiness,
   wallets,
   expanded,
@@ -720,6 +748,8 @@ function MerchantCartCard({
   onRemove,
 }: {
   group: MerchantCartGroup
+  accountPubkey: string | null
+  authenticatedPubkey: string | null
   readiness: MerchantCartReadiness | undefined
   wallets: UseWalletsReturn
   expanded: boolean
@@ -733,7 +763,10 @@ function MerchantCartCard({
   onDecrement: (item: CartItem) => void
   onRemove: (item: CartItem) => void
 }) {
-  const { data: profile } = useProfile(group.merchantPubkey)
+  const { data: profile } = useProfile(group.merchantPubkey, {
+    accountPubkey,
+    authenticatedPubkey,
+  })
   const summary = getCartSummaryPrice(group.items, btcUsdRate, formatPrice)
   const pricing = buildCheckoutPricingIntent(group.items, btcUsdRate)
   const allowZeroPrice = pricing.status === "ok" && !pricing.paymentRequired
@@ -787,6 +820,8 @@ function MerchantCartCard({
         <div className="flex items-start justify-between gap-4">
           <MerchantIdentity
             merchantPubkey={group.merchantPubkey}
+            accountPubkey={accountPubkey}
+            authenticatedPubkey={authenticatedPubkey}
             className="flex-1"
           />
           <Button
@@ -886,6 +921,10 @@ function MerchantCartCard({
 }
 
 function CartPage() {
+  const session = useConduitSession()
+  const authenticatedPubkey =
+    session.mode === "signed_in" ? session.pubkey : null
+  const accountPubkey = authenticatedPubkey
   const cart = useCart()
   const wallets = useWallets()
   const cartReadiness = useCartReadiness(cart.items)
@@ -997,6 +1036,8 @@ function CartPage() {
     expandedMerchant ?? "all",
     relatedExcludedProductIds.slice().sort().join(":"),
     preferredTags.slice().sort().join(":"),
+    authenticatedPubkey ?? "anonymous",
+    session.relayScope ?? "no-relay-scope",
   ] as const
 
   const cachedRelatedProductsQuery = useQuery({
@@ -1007,7 +1048,9 @@ function CartPage() {
         expandedMerchant,
         relatedExcludedProductIds,
         preferredTags,
-        "cache"
+        "cache",
+        accountPubkey,
+        authenticatedPubkey
       ),
     staleTime: 15_000,
   })
@@ -1021,7 +1064,9 @@ function CartPage() {
         expandedMerchant,
         relatedExcludedProductIds,
         preferredTags,
-        "live"
+        "live",
+        accountPubkey,
+        authenticatedPubkey
       ),
   })
   const relatedProducts =
@@ -1227,6 +1272,8 @@ function CartPage() {
               <MerchantCartCard
                 key={group.merchantPubkey}
                 group={group}
+                accountPubkey={accountPubkey}
+                authenticatedPubkey={authenticatedPubkey}
                 readiness={cartReadiness.byMerchant.get(group.merchantPubkey)}
                 wallets={wallets}
                 expanded={expanded}
@@ -1348,6 +1395,8 @@ function CartPage() {
                   <RelatedProductRow
                     key={product.id}
                     suggestion={suggestion}
+                    accountPubkey={accountPubkey}
+                    authenticatedPubkey={authenticatedPubkey}
                     formatPrice={shopperPricing.formatPrice}
                     btcUsdRate={shopperPricing.quote}
                   />

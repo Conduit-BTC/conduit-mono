@@ -97,6 +97,99 @@ function installEoseWebSocket(): {
 }
 
 describe("NDK network boundary", () => {
+  it("opens owner-selected ws relays only with exact owner provenance", async () => {
+    const ownerWs = "ws://owner-selected.example"
+    const remoteWs = "ws://remote-derived.example"
+    const opened = installEoseWebSocket()
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => accountNetworkState(pubkey, []),
+    }
+
+    try {
+      const ownerRead = await fetchEventsFanoutDetailed(
+        { kinds: [1] },
+        {
+          relayUrls: [ownerWs, remoteWs],
+          accountPubkey: ACCOUNT_A,
+          authenticatedPubkey: ACCOUNT_A,
+          ownerSelectedRelayUrls: [ownerWs],
+          accountNetworkLocalStateRepository: repository,
+          reuseRelayConnections: false,
+        }
+      )
+      expect(ownerRead.relays.map(({ relayUrl }) => relayUrl)).toEqual([
+        ownerWs,
+      ])
+
+      await fetchEventsFanoutDetailed(
+        { kinds: [1] },
+        {
+          relayUrls: [ownerWs],
+          accountPubkey: ACCOUNT_A,
+          authenticatedPubkey: ACCOUNT_B,
+          ownerSelectedRelayUrls: [ownerWs],
+          accountNetworkLocalStateRepository: repository,
+          reuseRelayConnections: false,
+        }
+      )
+      await fetchEventsFanoutDetailed(
+        { kinds: [1] },
+        {
+          relayUrls: [ownerWs],
+          accountPubkey: ACCOUNT_A,
+          authenticatedPubkey: ACCOUNT_A,
+          accountNetworkLocalStateRepository: repository,
+          reuseRelayConnections: false,
+        }
+      )
+      await fetchEventsFanoutDetailed(
+        { kinds: [1] },
+        {
+          relayUrls: [ownerWs],
+          ownerSelectedRelayUrls: [ownerWs],
+          reuseRelayConnections: false,
+        }
+      )
+
+      const excludedRepository: Pick<
+        AccountNetworkLocalStateRepository,
+        "get"
+      > = {
+        get: async (pubkey) => accountNetworkState(pubkey, [ownerWs]),
+      }
+      await fetchEventsFanoutDetailed(
+        { kinds: [1] },
+        {
+          relayUrls: [ownerWs],
+          accountPubkey: ACCOUNT_A,
+          authenticatedPubkey: ACCOUNT_A,
+          ownerSelectedRelayUrls: [ownerWs],
+          accountNetworkLocalStateRepository: excludedRepository,
+          reuseRelayConnections: false,
+        }
+      )
+      await fetchEventsFanoutDetailed(
+        { kinds: [1] },
+        {
+          relayUrls: [ownerWs],
+          accountPubkey: ACCOUNT_A,
+          authenticatedPubkey: ACCOUNT_A,
+          ownerSelectedRelayUrls: [ownerWs],
+          accountNetworkLocalStateRepository: {
+            get: async () => {
+              throw new Error("durable policy unavailable")
+            },
+          },
+          reuseRelayConnections: false,
+        }
+      )
+
+      expect(opened.openedUrls).toEqual([ownerWs])
+    } finally {
+      opened.restore()
+    }
+  })
+
   it("applies whole-relay exclusions only to the explicit account", async () => {
     const relayUrl = "wss://stale-read-plan.conduit.market"
     const opened = installEoseWebSocket()

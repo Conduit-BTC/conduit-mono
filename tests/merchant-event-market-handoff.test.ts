@@ -988,7 +988,7 @@ describe("merchant organizer handoff workflow", () => {
     const sourceOrder = order(2_000, "alternating-self-order")
     const recipientRelay = "wss://organizer-inbox.relay.dev"
     const senderRelays = [
-      "wss://merchant-primary.relay.dev",
+      "ws://merchant-primary.relay.dev",
       "wss://merchant-backup.relay.dev",
     ]
     const initial = await issueOrganizerReadyReceipt({
@@ -1000,6 +1000,7 @@ describe("merchant organizer handoff workflow", () => {
       signer: merchantSigner,
       storage,
       transport: {
+        authenticatedPubkey: MERCHANT,
         accountNetworkLocalStateRepository:
           allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: [recipientRelay],
@@ -1011,8 +1012,8 @@ describe("merchant organizer handoff workflow", () => {
           return options.recipientPubkeys?.[0] === MERCHANT
             ? plannerResult({
                 attempted: relays,
-                successful: [senderRelays[0]!],
-                failed: [senderRelays[1]!],
+                successful: [senderRelays[1]!],
+                failed: [senderRelays[0]!],
               })
             : plannerResult({
                 attempted: relays,
@@ -1024,7 +1025,10 @@ describe("merchant organizer handoff workflow", () => {
     })
     expect(initial.selfCopy.status).toBe("partial_success")
 
-    const retryTargets: string[][] = []
+    const retryTargets: Array<{
+      relayUrls: string[]
+      ownerSelectedRelayUrls: string[]
+    }> = []
     const retried = await issueOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
       order: sourceOrder,
@@ -1034,13 +1038,17 @@ describe("merchant organizer handoff workflow", () => {
       signer: {} as never,
       storage,
       transport: {
+        authenticatedPubkey: MERCHANT,
         accountNetworkLocalStateRepository:
           allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: [recipientRelay],
         senderInboxRelays: senderRelays,
         publishFn: (async (_event, options) => {
           const relays = options.exclusiveRelayUrls ?? []
-          retryTargets.push([...relays])
+          retryTargets.push({
+            relayUrls: [...relays],
+            ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+          })
           return plannerResult({
             attempted: relays,
             successful: relays,
@@ -1050,7 +1058,12 @@ describe("merchant organizer handoff workflow", () => {
       },
     })
 
-    expect(retryTargets).toEqual([[senderRelays[1]!]])
+    expect(retryTargets).toEqual([
+      {
+        relayUrls: [senderRelays[0]!],
+        ownerSelectedRelayUrls: [senderRelays[0]!],
+      },
+    ])
     expect(retried.selfCopy).toEqual({
       status: "full_success",
       acknowledgedCount: 2,

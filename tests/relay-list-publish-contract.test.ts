@@ -2,35 +2,42 @@ import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
 
 describe("relay-list publish contract", () => {
-  it("asks the signer to sign before relay network publishing", async () => {
-    const content = await readFile(
+  it("delegates account signing and publishing to the shared mutation owner", async () => {
+    const relayHook = await readFile(
       "packages/core/src/hooks/useRelaySettings.ts",
       "utf8"
     )
-    const publishStart = content.indexOf("async function publishRelayList")
-    expect(publishStart).toBeGreaterThan(-1)
-
-    const publishBody = content.slice(publishStart)
-    const signingIndex = publishBody.indexOf("await event.sign(ndk.signer)")
-    const signatureCheckIndex = publishBody.indexOf(
-      'throw new Error("Signer did not return a signature")'
+    const inboxHook = await readFile(
+      "packages/core/src/hooks/useInboxDeclaration.ts",
+      "utf8"
     )
-    const publishableIndex = publishBody.indexOf(
-      "getPublishableRelaySettingsEntries"
-    )
-    const publishIndex = publishBody.indexOf("await publishWithPlanner(event")
-    const ndkIndex = publishBody.indexOf("const ndk = getNdk()")
-    const loadingIndex = publishBody.indexOf("setPublishingRelayList(true)")
 
-    expect(publishBody).not.toContain("requireNdkConnected")
-    expect(ndkIndex).toBeGreaterThan(-1)
-    expect(loadingIndex).toBeGreaterThan(-1)
-    expect(publishableIndex).toBeGreaterThan(-1)
-    expect(publishableIndex).toBeLessThan(signingIndex)
-    expect(signingIndex).toBeGreaterThan(ndkIndex)
-    expect(signingIndex).toBeLessThan(publishIndex)
-    expect(signatureCheckIndex).toBeGreaterThan(signingIndex)
-    expect(signatureCheckIndex).toBeLessThan(publishIndex)
-    expect(loadingIndex).toBeLessThan(ndkIndex)
+    expect(relayHook).toContain("reviewRelaySettingsAccountMutation")
+    expect(relayHook).toContain("publishAccountNetworkMutation")
+    expect(relayHook).toContain("retryAccountNetworkMutation")
+    expect(relayHook).toContain("createNdkNostrEventSigner")
+    expect(relayHook).not.toContain("new NDKEvent")
+    expect(relayHook).not.toContain("publishWithPlanner")
+    expect(relayHook).not.toContain("event.sign(")
+    expect(relayHook).not.toContain("loadRelaySettingsPresentation")
+    expect(relayHook).not.toContain("setAccountRelaySettingsProjection")
+    expect(relayHook).not.toContain("runtimeRelaySettings")
+    expect(relayHook).toContain(
+      "localSettingsControlConnections &&\n      previousContextKeyRef.current"
+    )
+    expect(relayHook).toContain(
+      "const next = accountScoped\n        ? { ...updated, updatedAt: Date.now() }\n        : saveRelaySettings(updated, scope)"
+    )
+
+    expect(inboxHook).toContain("reviewInboxDeclarationAccountMutation")
+    expect(inboxHook).toContain("publishAccountNetworkMutation")
+    expect(inboxHook).toContain("retryAccountNetworkMutation")
+    expect(inboxHook).toContain("redistributeAccountNetworkInboxDeclaration")
+    expect(inboxHook).not.toContain("publishPrivateMessageRelayDeclaration")
+    expect(inboxHook).not.toContain(
+      "redistributePrivateMessageRelayDeclaration"
+    )
+    expect(inboxHook).not.toContain("getNdk()")
+    expect(inboxHook).not.toContain("subscribeRelaySettingsChanges")
   })
 })

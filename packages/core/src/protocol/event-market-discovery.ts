@@ -8,6 +8,7 @@ import {
   extractFollowPubkeys,
   readLatestFollowLists,
   type FollowListCoverageState,
+  type FollowListReadOptions,
   type FollowListReadResult,
 } from "./follows"
 
@@ -39,6 +40,7 @@ export interface FollowedEventMarketDiscoveryResult {
 export interface DiscoverFollowedEventMarketsInput {
   merchantPubkey: string
   authenticatedPubkey?: string | null
+  accountNetworkLocalStateRepository?: FollowListReadOptions["accountNetworkLocalStateRepository"]
   nowMs?: number
   signal?: AbortSignal
 }
@@ -178,11 +180,13 @@ export async function discoverFollowedOrganizerEventMarkets(
   const followRead: FollowListReadResult = await readFollowLists(
     {
       pubkeys: [merchantPubkey],
-      authenticatedPubkey: input.authenticatedPubkey ?? merchantPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
     },
     {
       signal: input.signal,
       now: () => effectiveNowMs,
+      accountNetworkLocalStateRepository:
+        input.accountNetworkLocalStateRepository,
     }
   )
   throwIfAborted(input.signal)
@@ -253,7 +257,9 @@ export async function discoverFollowedOrganizerEventMarkets(
             status: "fulfilled",
             value: await readOrganizerMarkets({
               organizerPubkey,
-              authenticatedPubkey: input.authenticatedPubkey ?? merchantPubkey,
+              authenticatedPubkey: input.authenticatedPubkey,
+              accountNetworkLocalStateRepository:
+                input.accountNetworkLocalStateRepository,
               nowMs: effectiveNowMs,
               projection: "discovery",
               signal: organizerController.signal,

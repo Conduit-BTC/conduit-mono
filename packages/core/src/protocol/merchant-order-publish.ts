@@ -25,6 +25,8 @@ export interface PublishMerchantOrderMessageInput {
   payload: Record<string, unknown>
   tags?: string[][]
   delivery: MerchantOrderDelivery
+  /** Active authenticated account; never inferred from merchantPubkey. */
+  authenticatedPubkey?: string | null
   /** Background automation skips foreground-only interactive coordination. */
   signerInteraction?: "external" | "background_external"
 }
@@ -128,6 +130,7 @@ export async function publishMerchantOrderMessage(
     rumor,
     senderPubkey: input.merchantPubkey,
     accountPubkey: input.merchantPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
     recipientPubkey: target.recipientPubkey,
     signer: ndk.signer,
     rumorKind: EVENT_KINDS.ORDER,

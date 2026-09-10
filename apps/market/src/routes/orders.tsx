@@ -830,10 +830,12 @@ function OrderDetail({
   row,
   buyerPubkey,
   guestIdentity,
+  authenticatedPubkey,
 }: {
   row: OrderRow
   buyerPubkey: string
   guestIdentity?: GuestOrderSigningIdentity | null
+  authenticatedPubkey?: string | null
 }) {
   const { vm, headerStatus } = row
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
@@ -842,6 +844,8 @@ function OrderDetail({
   const formatSats = (sats: number) =>
     shopperPricing.formatSatsAmount(sats).primary
   const { data: profile } = useProfile(row.merchantPubkey, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
     maxUnresolvedRefetches: 1,
   })
   const merchantName = getMerchantDisplayName(profile, row.merchantPubkey)
@@ -897,9 +901,18 @@ function OrderDetail({
   ])
 
   const productsQuery = useQuery({
-    queryKey: ["selected-order-products", row.merchantPubkey],
+    queryKey: [
+      "selected-order-products",
+      row.merchantPubkey,
+      authenticatedPubkey ?? "guest",
+    ],
     enabled: !!row.merchantPubkey,
-    queryFn: () => fetchStoreProducts(row.merchantPubkey),
+    queryFn: () =>
+      fetchStoreProducts(
+        row.merchantPubkey,
+        authenticatedPubkey,
+        authenticatedPubkey
+      ),
   })
   const productsById = useMemo(() => {
     const map = new Map<
@@ -979,6 +992,8 @@ function OrderDetail({
     return {
       orderId: vm.orderId,
       buyerPubkey,
+      accountPubkey: authenticatedPubkey,
+      authenticatedPubkey,
       buyerIdentity: guestIdentity ?? undefined,
       merchantPubkey: row.merchantPubkey,
       merchantLud16: lc.merchantLightningAddress ?? null,
@@ -1040,10 +1055,14 @@ function OrderDetail({
   async function retryPayment(): Promise<void> {
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
-      row.lifecycle?.merchantPubkey ?? row.merchantPubkey
+      row.lifecycle?.merchantPubkey ?? row.merchantPubkey,
+      authenticatedPubkey
     )
     if (!pickupFreshness.fresh) throw new Error(pickupFreshness.reason)
-    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [])
+    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [], undefined, {
+      requestingAccountPubkey: authenticatedPubkey,
+      authenticatedPubkey,
+    })
 
     const ctx = await persistTargetAndBuildServiceCtx()
     if (ctx.zapMode !== "anonymous_public_zap") {
@@ -1077,10 +1096,14 @@ function OrderDetail({
   async function continuePrivateFallback(): Promise<void> {
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
-      row.lifecycle?.merchantPubkey ?? row.merchantPubkey
+      row.lifecycle?.merchantPubkey ?? row.merchantPubkey,
+      authenticatedPubkey
     )
     if (!pickupFreshness.fresh) throw new Error(pickupFreshness.reason)
-    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [])
+    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [], undefined, {
+      requestingAccountPubkey: authenticatedPubkey,
+      authenticatedPubkey,
+    })
     const ctx = await persistTargetAndBuildServiceCtx()
     setPrivateFallbackOpen(false)
     await runOrderPrivateFallback(ctx)
@@ -1146,7 +1169,9 @@ function OrderDetail({
       vm.orderId,
       guestIdentity ?? undefined,
       unboundPaidInvoice,
-      merchantInvoiceReopenEvidence
+      merchantInvoiceReopenEvidence,
+      authenticatedPubkey ?? null,
+      authenticatedPubkey ?? null
     )
   }
 
@@ -1222,7 +1247,11 @@ function OrderDetail({
         rumor,
         ndk,
         row.merchantPubkey,
-        buyerPubkey
+        buyerPubkey,
+        {
+          accountPubkey: authenticatedPubkey ?? null,
+          authenticatedPubkey: authenticatedPubkey ?? null,
+        }
       )
     },
     onSuccess: async () => {
@@ -1486,7 +1515,12 @@ function OrderDetail({
                 disabled={busy}
                 onClick={() =>
                   void withBusy(() =>
-                    resendOrderProof(vm.orderId, guestIdentity ?? undefined)
+                    resendOrderProof(
+                      vm.orderId,
+                      guestIdentity ?? undefined,
+                      authenticatedPubkey ?? null,
+                      authenticatedPubkey ?? null
+                    )
                   )
                 }
               >
@@ -2090,7 +2124,13 @@ function OrdersPage() {
           guestIdentity?.orderId === lifecycle.orderId
             ? guestIdentity
             : undefined
-        void observeOrderPublicZapReceipt(lifecycle.orderId, identity)
+        void observeOrderPublicZapReceipt(
+          lifecycle.orderId,
+          identity,
+          {},
+          signerConnected ? activeBuyerPubkey : null,
+          signerConnected ? activeBuyerPubkey : null
+        )
       }
     }
 
@@ -2101,7 +2141,7 @@ function OrdersPage() {
       window.removeEventListener("focus", resumeReceiptObservers)
       document.removeEventListener("visibilitychange", resumeReceiptObservers)
     }
-  }, [guestIdentity, lifecycles])
+  }, [activeBuyerPubkey, guestIdentity, lifecycles, signerConnected])
 
   // Merge lifecycle records and relay conversations by orderId.
   const orders = useMemo<OrderRow[]>(() => {
@@ -2149,6 +2189,8 @@ function OrdersPage() {
     [orders]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
+    accountPubkey: signerConnected ? activeBuyerPubkey : null,
+    authenticatedPubkey: signerConnected ? activeBuyerPubkey : null,
     enabled: merchantPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
@@ -2398,6 +2440,7 @@ function OrdersPage() {
                 row={selectedRow}
                 buyerPubkey={activeBuyerPubkey}
                 guestIdentity={guestIdentity}
+                authenticatedPubkey={signerConnected ? activeBuyerPubkey : null}
               />
             ) : (
               <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">

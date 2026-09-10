@@ -122,12 +122,17 @@ export function useAccountNetworkPreferences(
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setState((current) => ({
       ...current,
       status: "reconciling",
       error: null,
     }))
-    void reconcileAccountNetworkPreferences(contextKey)
+    void reconcileAccountNetworkPreferences(contextKey, {
+      requestingAccountPubkey: contextKey,
+      authenticatedPubkey: contextKey,
+      signal: controller.signal,
+    })
       .then((reconciliation) => {
         if (cancelled) return
         setState({
@@ -154,6 +159,7 @@ export function useAccountNetworkPreferences(
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [
     contextKey,

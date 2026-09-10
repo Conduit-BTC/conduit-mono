@@ -734,17 +734,22 @@ function EventProductManagementSummary({
 }
 
 async function fetchMerchantProducts(
-  merchantPubkey: string
+  merchantPubkey: string,
+  accountPubkey: string,
+  authenticatedPubkey: string | null
 ): Promise<CommerceResult<MerchantProduct[]>> {
   const result = await getMerchantStorefront({
     merchantPubkey,
+    accountPubkey,
+    authenticatedPubkey,
     sort: "updated_at_desc",
     includeMarketHidden: true,
   })
   const shippingOptions = await getShippingOptionsByCoordinates(
     result.data.flatMap((record) =>
       record.product.shippingOptionId ? [record.product.shippingOptionId] : []
-    )
+    ),
+    { accountPubkey, authenticatedPubkey }
   )
   return {
     data: result.data.map((record) => {
@@ -802,7 +807,8 @@ async function publishProduct(
   ) => Promise<void>,
   existing?: MerchantProductFamily,
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void,
-  onSignerRequestsComplete?: () => void
+  onSignerRequestsComplete?: () => void,
+  authenticatedPubkey?: string | null
 ): Promise<PublishWithPlannerResult> {
   const localPickup = form.fulfillment === "local_pickup"
   const presetShippingConfig = loadShippingConfig(merchantPubkey)
@@ -872,7 +878,9 @@ async function publishProduct(
       )
     }
     const eventMarket = await resolveOrganizerEventMarket(
-      form.eventMarketReference
+      form.eventMarketReference,
+      undefined,
+      authenticatedPubkey
     )
     verifiedLocalPickupMarket = eventMarket
     localPickupEvidenceVerified = true
@@ -1002,6 +1010,7 @@ async function publishProduct(
   if (merchantBoothPickupInput) {
     await ensureMerchantBoothPickup({
       ...merchantBoothPickupInput,
+      authenticatedPubkey,
       onSignerRequest: () => {
         signerRequestOffset = 1
         onSignerRequest?.({
@@ -1015,6 +1024,7 @@ async function publishProduct(
 
   return signAndPublishProductWriteBundle({
     merchantPubkey,
+    authenticatedPubkey,
     listings,
     deletions,
     onSignerRequest: (progress) =>
@@ -1072,8 +1082,10 @@ async function deleteProduct(
     })),
     clientAppId: "merchant",
   })
-  const currentWriteRelayUrls =
-    await planCurrentProductDeletionWriteRelays(merchantPubkey)
+  const currentWriteRelayUrls = await planCurrentProductDeletionWriteRelays(
+    merchantPubkey,
+    signerPubkey
+  )
 
   const deletion = new NDKEvent(ndk)
   deletion.kind = EVENT_KINDS.DELETION
@@ -1095,7 +1107,9 @@ async function deleteProduct(
   try {
     await onSignedLocal(deletion, deliveryJob.id)
     return {
-      delivery: await deliverQueuedProductDeletion(deliveryJob.id),
+      delivery: await deliverQueuedProductDeletion(deliveryJob.id, {
+        authenticatedPubkey: signerPubkey,
+      }),
       deliveryJobId: deliveryJob.id,
     }
   } catch (error) {
@@ -1115,6 +1129,7 @@ function ProductsPage() {
     disconnect,
   } = useAuth()
   const session = useConduitSession()
+  const authenticatedPubkey = authStatus === "connected" ? pubkey : null
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const btcUsdRateQuery = useBtcUsdRate()
@@ -1182,35 +1197,55 @@ function ProductsPage() {
   })
 
   const productsQuery = useQuery({
-    queryKey: ["merchant-products-live", pubkey ?? "none"],
+    queryKey: ["merchant-products-live", pubkey ?? "none", authStatus],
     enabled: !!pubkey,
-    queryFn: () => fetchMerchantProducts(pubkey!),
+    queryFn: () =>
+      fetchMerchantProducts(
+        pubkey!,
+        pubkey!,
+        authStatus === "connected" ? pubkey : null
+      ),
     refetchInterval: 15_000,
   })
   const localPickupQuery = useQuery({
     queryKey: [
       "merchant-product-event-market",
+      session.relayScope ?? "no-relay-scope",
+      authenticatedPubkey ?? "disconnected",
       form.eventMarketReference || "none",
     ],
     enabled:
       productDialogOpen &&
       form.fulfillment === "local_pickup" &&
       !!form.eventMarketReference,
-    queryFn: () => resolveOrganizerEventMarket(form.eventMarketReference),
+    queryFn: () =>
+      resolveOrganizerEventMarket(
+        form.eventMarketReference,
+        undefined,
+        authenticatedPubkey
+      ),
     retry: false,
     staleTime: 15_000,
   })
   const organizerEventMarketsQuery = useQuery({
-    queryKey: ["merchant-product-organizer-events", pubkey ?? "none"],
+    queryKey: [
+      "merchant-product-organizer-events",
+      session.relayScope ?? "no-relay-scope",
+      pubkey ?? "none",
+      authenticatedPubkey ?? "disconnected",
+    ],
     enabled:
       productDialogOpen && form.fulfillment === "local_pickup" && !!pubkey,
-    queryFn: () => listOrganizerEventMarkets(pubkey!),
+    queryFn: () => listOrganizerEventMarkets(pubkey!, authenticatedPubkey),
     retry: false,
     staleTime: 15_000,
   })
   const organizerInboxQuery = useQuery({
     queryKey: [
       "merchant-product-organizer-inbox",
+      session.relayScope ?? "no-relay-scope",
+      pubkey ?? "anonymous",
+      authStatus,
       localPickupQuery.data?.organizerPubkey ?? "none",
     ],
     enabled:
@@ -1218,7 +1253,10 @@ function ProductsPage() {
       form.fulfillment === "local_pickup" &&
       !!localPickupQuery.data?.organizerPubkey,
     queryFn: () =>
-      resolveEventMarketOrganizerInbox(localPickupQuery.data!.organizerPubkey),
+      resolveEventMarketOrganizerInbox(localPickupQuery.data!.organizerPubkey, {
+        requestingAccountPubkey: pubkey,
+        authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+      }),
     retry: false,
     staleTime: 30_000,
   })
@@ -1311,14 +1349,16 @@ function ProductsPage() {
   const eventProductMarketsQuery = useQuery({
     queryKey: [
       "merchant-product-event-context",
+      session.relayScope ?? "no-relay-scope",
       pubkey ?? "none",
+      authenticatedPubkey ?? "disconnected",
       eventProductCollectionCoordinates,
     ],
     enabled: !!pubkey && eventProductCollectionCoordinates.length > 0,
     queryFn: async () => {
       const markets = await Promise.allSettled(
         eventProductCollectionCoordinates.map((reference) =>
-          resolveOrganizerEventMarket(reference, undefined, pubkey!)
+          resolveOrganizerEventMarket(reference, undefined, authenticatedPubkey)
         )
       )
       return Object.fromEntries(
@@ -1467,7 +1507,10 @@ function ProductsPage() {
       if (payload.signedBundle) {
         return deliverSignedProductWriteBundle(
           payload.signedBundle,
-          payload.merchantPubkey
+          payload.merchantPubkey,
+          {
+            authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+          }
         )
       }
 
@@ -1494,7 +1537,8 @@ function ProductsPage() {
         () => {
           setProductSignerProgress(null)
           setProductSignerRequestsComplete(true)
-        }
+        },
+        authStatus === "connected" ? pubkey : null
       )
     },
     onMutate: (payload) => {
@@ -1582,7 +1626,9 @@ function ProductsPage() {
     mutationFn: async (payload: ProductDeleteMutationPayload) => {
       if (payload.deliveryJobId) {
         return {
-          delivery: await deliverQueuedProductDeletion(payload.deliveryJobId),
+          delivery: await deliverQueuedProductDeletion(payload.deliveryJobId, {
+            authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+          }),
           deliveryJobId: payload.deliveryJobId,
         }
       }
@@ -2289,7 +2335,11 @@ function ProductsPage() {
       projection.verification === "required" &&
       projection.eventMarketReference
     ) {
-      void resolveOrganizerEventMarket(projection.eventMarketReference)
+      void resolveOrganizerEventMarket(
+        projection.eventMarketReference,
+        undefined,
+        authenticatedPubkey
+      )
         .then((market) => {
           if (editFulfillmentRequestRef.current !== requestId) return
           const hydrated = getProductFulfillmentProjection(item.product, market)

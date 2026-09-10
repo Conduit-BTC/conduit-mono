@@ -24,17 +24,27 @@ function uniqueRelayUrls(urls: readonly string[]): string[] {
 async function publishProductDeletionRelay(
   input: Parameters<ProductDeletionRelayPublisher>[0]
 ): Promise<Awaited<ReturnType<ProductDeletionRelayPublisher>>> {
+  let authenticatedPubkey = input.authenticatedPubkey
+  try {
+    if (
+      authenticatedPubkey &&
+      input.isAuthenticatedPubkeyCurrent?.(authenticatedPubkey) === false
+    ) {
+      authenticatedPubkey = null
+    }
+  } catch {
+    authenticatedPubkey = null
+  }
   return {
     status: await publishSignedEventToRelay({
       signedEvent: input.signedEvent,
       relayUrl: input.relayUrl,
       authorPubkey: input.signedEvent.pubkey,
       accountPubkey: input.accountPubkey,
+      authenticatedPubkey,
+      ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
-      authenticatedPubkey: input.roles.includes("author_write")
-        ? input.signedEvent.pubkey
-        : null,
     }),
   }
 }
@@ -48,12 +58,14 @@ async function restoreLocalDeletionEvidence(
 }
 
 export async function planCurrentProductDeletionWriteRelays(
-  merchantPubkey: string
+  merchantPubkey: string,
+  authenticatedPubkey: string | null
 ): Promise<string[]> {
   const plan = await planPublishRelays({
     intent: "author_event",
     authorPubkey: merchantPubkey,
-    authenticatedPubkey: merchantPubkey,
+    authenticatedPubkey,
+    accountPubkey: merchantPubkey,
     refreshRelayLists: true,
     deliveryMode: "critical",
     skipHealthFilter: true,
@@ -198,14 +210,19 @@ export async function resumePendingProductDeletionDeliveries(
   }
 }
 
-export function startProductDeletionDeliveryWorker(): () => void {
+export function startProductDeletionDeliveryWorker(
+  authenticatedPubkey: string | null = null
+): () => void {
   if (typeof window === "undefined") return () => {}
 
   let stopped = false
   let active: Promise<void> | null = null
   const run = () => {
     if (stopped || active) return
-    active = resumePendingProductDeletionDeliveries()
+    active = resumePendingProductDeletionDeliveries({
+      authenticatedPubkey,
+      isAuthenticatedPubkeyCurrent: () => !stopped,
+    })
       .catch(() => {
         // The durable job remains queued. A later timer/online/focus event
         // retries without requiring another signature.

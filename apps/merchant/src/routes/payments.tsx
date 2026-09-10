@@ -40,8 +40,12 @@ export const Route = createFileRoute("/payments")({
 })
 
 function PaymentsPage() {
-  const { pubkey } = useAuth()
-  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
+  const { pubkey, status } = useAuth()
+  const authenticatedPubkey = status === "connected" ? pubkey : null
+  const profileQuery = useProfile(pubkey, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+  })
   const updateMutation = useUpdateProfile("merchant")
 
   const profile = profileQuery.data

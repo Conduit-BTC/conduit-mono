@@ -16,6 +16,9 @@ describe("merchant shopper trust route contract", () => {
     expect(source).toContain("profileState={selectedBuyerProfileState}")
     expect(source).toContain("onRefresh={shopperTrustQuery.refetch}")
     expect(source).toContain("relayScope: session.relayScope")
+    expect(source).toContain(
+      "authenticatedPubkey: signerConnected ? pubkey : null"
+    )
 
     const trustCardPosition = source.indexOf("<ShopperTrustCard")
     const shippingPosition = source.indexOf(
@@ -45,5 +48,7 @@ describe("merchant shopper trust route contract", () => {
     expect(source).toContain("queryFn: async ({ signal }) =>")
     expect(source).toContain("signal,")
     expect(source).toContain("if (signal.aborted) return")
+    expect(source).toContain("authenticatedPubkey,")
+    expect(source).not.toContain("authenticatedPubkey: merchantPubkey")
   })
 })

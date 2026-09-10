@@ -35,6 +35,11 @@ import {
   mergeEventSourceRelayUrls,
 } from "./ndk"
 import {
+  getCommittedLegacyRelayReadRecovery,
+  readDurableAccountRelaySettingsPlanningSnapshot,
+} from "./network-preferences"
+import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
+import {
   deriveInboxReadCoverage,
   planInboxReadRelays,
   resolveInboxDeclaration,
@@ -107,14 +112,13 @@ import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
   loadRelaySettingsPlanningSnapshot,
+  normalizeOwnerSelectedRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
   normalizePublicRelayHints,
-  normalizeSecureOrIsolatedE2eRelayUrls,
   normalizeUntrustedRelayHintsForContext,
 } from "./relay-settings"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
-import { getAccountRelayScope } from "./session"
 import {
   readProtectedInbox,
   type ProtectedInboxAuthSummary,
@@ -251,6 +255,8 @@ export interface MarketplaceProductsQuery {
   merchantPubkey?: string
   authorPubkeys?: string[]
   authenticatedPubkey?: string | null
+  /** Final-I/O account exclusions without changing generic discovery scope. */
+  accountPubkey?: string | null
   textQuery?: string
   tags?: string[]
   sort?: CommerceSortMode
@@ -262,6 +268,8 @@ export interface MarketplaceProductsQuery {
 export interface MerchantStorefrontQuery {
   merchantPubkey: string
   authenticatedPubkey?: string | null
+  /** Final-I/O account exclusions without changing merchant-hint authority. */
+  accountPubkey?: string | null
   textQuery?: string
   tag?: string
   sort?: CommerceSortMode
@@ -277,6 +285,8 @@ export interface ProductDetailQuery {
   productId: string
   revalidateCanonical?: boolean
   includeMarketHidden?: boolean
+  /** Final-I/O account exclusions for this generic exact product read. */
+  authenticatedPubkey?: string | null
 }
 
 export interface ProductsByIdsOptions {
@@ -288,11 +298,21 @@ export interface ProductsByIdsOptions {
    * unsupported, pending, and external decisions remain filtered.
    */
   includeMerchantHiddenProductIds?: readonly string[]
+  /**
+   * Signed-in account whose durable whole-relay exclusions apply at final I/O.
+   * Its explicit Network choices may join this generic product lookup without
+   * displacing the bounded public commerce discovery set.
+   */
+  authenticatedPubkey?: string | null
 }
 
 export interface ProfileBatchQuery {
   pubkeys: string[]
   authenticatedPubkey?: string | null
+  /** Final-I/O account exclusions without changing profile hint authority. */
+  accountPubkey?: string | null
+  /** Cancels queued or in-flight profile I/O when the caller's session changes. */
+  signal?: AbortSignal
   skipCache?: boolean
   /** Require relay-coverage diagnostics before absence is treated as current. */
   requireCompleteEvidence?: boolean
@@ -411,6 +431,7 @@ type CommerceTestOverrides = {
     options: ReadProtectedInboxOptions
   ) => ReturnType<typeof readProtectedInbox>
   accountNetworkLocalStateRepository?: ReadProtectedInboxOptions["accountNetworkLocalStateRepository"]
+  ownerRelayListEvidenceRepository?: OwnerRelayListEvidenceRepository
   giftUnwrap?: (
     event: NDKEvent,
     signer: NDKSigner
@@ -617,6 +638,8 @@ function hasCommerceFetchTestOverride(): boolean {
 type CommerceReadRelayPlan = {
   relayUrls: string[]
   parkedRelayUrls: string[]
+  /** Exact planned subset backed by this authenticated owner's settings. */
+  ownerSelectedRelayUrls: string[]
 }
 
 async function planCommerceReadRelayPlan(input: {
@@ -624,18 +647,25 @@ async function planCommerceReadRelayPlan(input: {
   authors?: readonly string[]
   recipients?: readonly string[]
   authenticatedPubkey?: string | null
+  /** Account policy for final hint discovery without changing read authority. */
+  accountPubkey?: string | null
   maxRelays?: number
   relayHintMode?: "auto" | "skip" | "force"
   /** Untrusted hints that must independently resolve to public WSS targets. */
   extraRelayUrls?: readonly string[]
   /** Hints belonging to the exact authenticated author. */
   authenticatedAuthorRelayUrls?: readonly string[]
+  signal?: AbortSignal
 }): Promise<CommerceReadRelayPlan> {
-  const settingsSnapshot = loadRelaySettingsPlanningSnapshot(
-    input.authenticatedPubkey
-      ? getAccountRelayScope(input.authenticatedPubkey)
-      : undefined
-  )
+  const accountPubkey = input.accountPubkey ?? input.authenticatedPubkey
+  const settingsSnapshot = input.authenticatedPubkey
+    ? await readDurableAccountRelaySettingsPlanningSnapshot(
+        input.authenticatedPubkey,
+        {
+          evidenceRepository: testOverrides.ownerRelayListEvidenceRepository,
+        }
+      )
+    : loadRelaySettingsPlanningSnapshot()
   const hintPubkeys = Array.from(
     new Set(
       [...(input.authors ?? []), ...(input.recipients ?? [])]
@@ -654,6 +684,19 @@ async function planCommerceReadRelayPlan(input: {
     fallbackRelayUrls: config.defaultRelays,
     signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
   })
+  const normalizedAuthenticatedPubkey = input.authenticatedPubkey
+    ?.trim()
+    .toLowerCase()
+  const normalizedPolicyAccount = accountPubkey?.trim().toLowerCase()
+  const ownerSelectedRelayListLookupUrls =
+    normalizedAuthenticatedPubkey &&
+    normalizedAuthenticatedPubkey === normalizedPolicyAccount
+      ? normalizeOwnerSelectedRelayUrls(
+          settingsSnapshot.settings.entries.flatMap((entry) =>
+            entry.readEnabled ? [entry.url] : []
+          )
+        ).filter((relayUrl) => relayListLookupRelayUrls.includes(relayUrl))
+      : []
   const relayLists = shouldFetchRelayHints
     ? await getRelayLists(
         hintPubkeys,
@@ -661,16 +704,22 @@ async function planCommerceReadRelayPlan(input: {
           ? {
               cacheOnly: true,
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
-              accountPubkey: input.authenticatedPubkey,
+              accountPubkey,
+              authenticatedPubkey: input.authenticatedPubkey,
+              ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
               accountNetworkLocalStateRepository:
                 testOverrides.accountNetworkLocalStateRepository,
+              signal: input.signal,
             }
           : {
               relayUrls: relayListLookupRelayUrls,
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
-              accountPubkey: input.authenticatedPubkey,
+              accountPubkey,
+              authenticatedPubkey: input.authenticatedPubkey,
+              ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
               accountNetworkLocalStateRepository:
                 testOverrides.accountNetworkLocalStateRepository,
+              signal: input.signal,
             }
       )
     : undefined
@@ -681,6 +730,18 @@ async function planCommerceReadRelayPlan(input: {
     recipients: input.recipients,
     relayLists,
     authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls(
+      settingsSnapshot.settings.entries.flatMap((entry) =>
+        entry.readEnabled ||
+        (hintPubkeys.some(
+          (pubkey) =>
+            pubkey.trim().toLowerCase() === normalizedAuthenticatedPubkey
+        ) &&
+          entry.writeEnabled)
+          ? [entry.url]
+          : []
+      )
+    ),
     maxRelays: input.maxRelays,
     settings: settingsSnapshot.settings,
     signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
@@ -730,6 +791,25 @@ async function planCommerceReadRelayPlan(input: {
     ? normalizePublicOrIsolatedE2eRelayHints(expandedRelayUrls)
     : expandedRelayUrls
   const executableRelayUrlSet = new Set(executableRelayUrls)
+  const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
+  const policyAccount = accountPubkey?.trim().toLowerCase()
+  const includesAuthenticatedOwner = Boolean(
+    authenticatedOwner &&
+    [...(input.authors ?? []), ...(input.recipients ?? [])].some(
+      (pubkey) => pubkey.trim().toLowerCase() === authenticatedOwner
+    )
+  )
+  const ownerSelectedRelayUrls =
+    authenticatedOwner && authenticatedOwner === policyAccount
+      ? normalizeOwnerSelectedRelayUrls(
+          settingsSnapshot.settings.entries.flatMap((entry) =>
+            entry.readEnabled ||
+            (includesAuthenticatedOwner && entry.writeEnabled)
+              ? [entry.url]
+              : []
+          )
+        ).filter((relayUrl) => executableRelayUrlSet.has(relayUrl))
+      : []
 
   if (
     config.e2eRelayIsolationEnabled ||
@@ -742,6 +822,7 @@ async function planCommerceReadRelayPlan(input: {
       parkedRelayUrls: plan.parkedRelayUrls.filter(
         (relayUrl) => !executableRelayUrlSet.has(relayUrl)
       ),
+      ownerSelectedRelayUrls,
     }
   }
 
@@ -749,16 +830,18 @@ async function planCommerceReadRelayPlan(input: {
   switch (input.intent) {
     case "commerce_products":
     case "author_products":
-      return { relayUrls: commerceReadRelayUrls(), parkedRelayUrls: [] }
+      return {
+        relayUrls: commerceReadRelayUrls(),
+        parkedRelayUrls: [],
+        ownerSelectedRelayUrls: [],
+      }
     default:
-      return { relayUrls: publicReadRelayUrls(), parkedRelayUrls: [] }
+      return {
+        relayUrls: publicReadRelayUrls(),
+        parkedRelayUrls: [],
+        ownerSelectedRelayUrls: [],
+      }
   }
-}
-
-async function planCommerceReadRelays(
-  input: Parameters<typeof planCommerceReadRelayPlan>[0]
-): Promise<string[]> {
-  return (await planCommerceReadRelayPlan(input)).relayUrls
 }
 
 async function runFetchEventsFanout(
@@ -1080,7 +1163,9 @@ async function streamProductRecordChunks(input: {
   baseFilter: NDKFilter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
+  ownerSelectedRelayUrls: string[]
   authenticatedPubkey?: string | null
+  accountPubkey?: string | null
   readPolicy?: CommerceReadPolicy
   merged: Map<string, NDKEvent>
   deletionTimestamps?: DeletionTimestamps
@@ -1114,7 +1199,9 @@ async function streamProductRecordChunks(input: {
           chunkFilter,
           {
             relayUrls: input.relayUrls,
-            accountPubkey: input.authenticatedPubkey,
+            ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+            accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
+            authenticatedPubkey: input.authenticatedPubkey,
             accountNetworkLocalStateRepository:
               testOverrides.accountNetworkLocalStateRepository,
             connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
@@ -2687,6 +2774,8 @@ async function fetchProductDeletionTimestamps(
     readPolicy?: CommerceReadPolicy
     fallbackWhenEmpty?: boolean
     authenticatedPubkey?: string | null
+    /** Final-I/O exclusions without changing generic relay planning authority. */
+    accountPubkey?: string | null
     fetchEvents?: typeof runFetchEventsFanout
     onSkippedRelayUrls?: (relayUrls: readonly string[]) => void
   } = {}
@@ -2736,6 +2825,7 @@ async function fetchProductDeletionTimestamps(
         intent: "author_products",
         authors: authorChunk,
         authenticatedPubkey: options.authenticatedPubkey,
+        accountPubkey: options.accountPubkey,
         maxRelays: options.readPolicy?.maxRelays,
       })
       const authenticatedOwnerSourceRelayUrls =
@@ -2777,7 +2867,13 @@ async function fetchProductDeletionTimestamps(
             async (relayUrls) =>
               await (options.fetchEvents ?? runFetchEventsFanout)(filter, {
                 relayUrls,
-                accountPubkey: options.authenticatedPubkey,
+                ownerSelectedRelayUrls:
+                  deletionRelayPlan.ownerSelectedRelayUrls.filter((relayUrl) =>
+                    relayUrls.includes(relayUrl)
+                  ),
+                accountPubkey:
+                  options.accountPubkey ?? options.authenticatedPubkey,
+                authenticatedPubkey: options.authenticatedPubkey,
                 accountNetworkLocalStateRepository:
                   testOverrides.accountNetworkLocalStateRepository,
                 connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
@@ -2841,7 +2937,9 @@ async function fetchDeletionTimestampsForProductRecords(
   records: readonly CommerceProductRecord[],
   authorPubkeys: readonly string[] = uniqueStrings(
     records.map((record) => record.product.pubkey)
-  )
+  ),
+  accountPubkey?: string | null,
+  authenticatedPubkey?: string | null
 ): Promise<DeletionTimestamps> {
   const recordCandidates = records.map(deletionCandidateFromRecord)
   const candidateAuthors = new Set(
@@ -2854,7 +2952,11 @@ async function fetchDeletionTimestampsForProductRecords(
         .filter((authorPubkey) => !candidateAuthors.has(authorPubkey))
         .map((pubkey) => ({ pubkey })),
     ],
-    { fallbackWhenEmpty: true }
+    {
+      fallbackWhenEmpty: true,
+      accountPubkey,
+      authenticatedPubkey,
+    }
   )
 }
 
@@ -3037,6 +3139,8 @@ async function fetchPublicProductRecords(query: {
   deletionFallbackWhenEmpty?: boolean
   parentAddresses?: string[]
   authenticatedPubkey?: string | null
+  /** Final-I/O exclusions without changing generic relay planning authority. */
+  accountPubkey?: string | null
   limit?: number
   readPolicy?: CommerceReadPolicy
   onTransportStatus?: (degraded: boolean, capped: boolean) => void
@@ -3051,19 +3155,22 @@ async function fetchPublicProductRecords(query: {
   if (query.dTags) filter["#d"] = query.dTags
   if (query.parentAddresses) filter["#a"] = query.parentAddresses
 
-  const relayUrls = await planCommerceReadRelays({
+  const relayPlan = await planCommerceReadRelayPlan({
     intent:
       query.authors && query.authors.length > 0
         ? "author_products"
         : "commerce_products",
     authors: query.authors,
     authenticatedPubkey: query.authenticatedPubkey,
+    accountPubkey: query.accountPubkey,
     maxRelays: query.readPolicy?.maxRelays,
   })
 
   const result = await runFetchEventsFanoutDetailed(filter, {
-    relayUrls,
-    accountPubkey: query.authenticatedPubkey,
+    relayUrls: relayPlan.relayUrls,
+    ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+    accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
+    authenticatedPubkey: query.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       testOverrides.accountNetworkLocalStateRepository,
     connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
@@ -3080,6 +3187,7 @@ async function fetchPublicProductRecords(query: {
       readPolicy: query.deletionReadPolicy ?? query.readPolicy,
       fallbackWhenEmpty: query.deletionFallbackWhenEmpty,
       authenticatedPubkey: query.authenticatedPubkey,
+      accountPubkey: query.accountPubkey,
     }
   )
   return dedupeProductEvents(result.events, deletionTimestamps)
@@ -3093,6 +3201,7 @@ async function fetchPublicProductRecordsProgressive(
     deletionCandidates?: CommerceProductRecord[]
     parentAddresses?: string[]
     authenticatedPubkey?: string | null
+    accountPubkey?: string | null
     limit?: number
     readPolicy?: CommerceReadPolicy
     onTransportStatus?: (degraded: boolean, capped: boolean) => void
@@ -3118,13 +3227,14 @@ async function fetchPublicProductRecordsProgressive(
     query.authors && query.authors.length > 0
       ? chunkStrings(uniqueStrings(query.authors), PRODUCT_AUTHOR_CHUNK_SIZE)
       : [undefined]
-  const relayUrls = await planCommerceReadRelays({
+  const relayPlan = await planCommerceReadRelayPlan({
     intent:
       query.authors && query.authors.length > 0
         ? "author_products"
         : "commerce_products",
     authors: query.authors,
     authenticatedPubkey: query.authenticatedPubkey,
+    accountPubkey: query.accountPubkey,
     maxRelays: query.readPolicy?.maxRelays,
     relayHintMode: "skip",
   })
@@ -3135,21 +3245,24 @@ async function fetchPublicProductRecordsProgressive(
   )
   const shouldExpandRelayHints =
     query.authors && query.authors.length > BROAD_AUTHOR_HINT_LIMIT
-  const expandedRelayUrlsPromise = shouldExpandRelayHints
-    ? planCommerceReadRelays({
+  const expandedRelayPlanPromise = shouldExpandRelayHints
+    ? planCommerceReadRelayPlan({
         intent: "author_products",
         authors: query.authors,
         authenticatedPubkey: query.authenticatedPubkey,
+        accountPubkey: query.accountPubkey,
         maxRelays: query.readPolicy?.maxRelays,
         relayHintMode: "force",
       })
-    : Promise.resolve(relayUrls)
+    : Promise.resolve(relayPlan)
 
   await streamProductRecordChunks({
     baseFilter: filter,
     authorChunks,
-    relayUrls,
+    relayUrls: relayPlan.relayUrls,
+    ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
     authenticatedPubkey: query.authenticatedPubkey,
+    accountPubkey: query.accountPubkey,
     readPolicy: query.readPolicy,
     merged,
     deletionTimestamps: initialDeletionTimestamps,
@@ -3157,16 +3270,20 @@ async function fetchPublicProductRecordsProgressive(
     onTransportStatus: query.onTransportStatus,
   })
 
-  const expandedRelayUrls = await expandedRelayUrlsPromise
-  const expansionRelayUrls = expandedRelayUrls.filter(
-    (relayUrl) => !relayUrls.includes(relayUrl)
+  const expandedRelayPlan = await expandedRelayPlanPromise
+  const expansionRelayUrls = expandedRelayPlan.relayUrls.filter(
+    (relayUrl) => !relayPlan.relayUrls.includes(relayUrl)
   )
   if (expansionRelayUrls.length > 0) {
     await streamProductRecordChunks({
       baseFilter: filter,
       authorChunks,
       relayUrls: expansionRelayUrls,
+      ownerSelectedRelayUrls: expandedRelayPlan.ownerSelectedRelayUrls.filter(
+        (relayUrl) => expansionRelayUrls.includes(relayUrl)
+      ),
       authenticatedPubkey: query.authenticatedPubkey,
+      accountPubkey: query.accountPubkey,
       readPolicy: query.readPolicy,
       merged,
       deletionTimestamps: initialDeletionTimestamps,
@@ -3184,6 +3301,7 @@ async function fetchPublicProductRecordsProgressive(
     {
       readPolicy: query.readPolicy,
       authenticatedPubkey: query.authenticatedPubkey,
+      accountPubkey: query.accountPubkey,
     }
   )
   const resolved = dedupeProductEvents(mergedEvents, deletionTimestamps)
@@ -3317,6 +3435,7 @@ export async function getMarketplaceProducts(
           ? uniqueStrings(authorPubkeys)
           : undefined,
       authenticatedPubkey: query.authenticatedPubkey,
+      accountPubkey: query.accountPubkey,
       deletionCandidates: cached,
       limit: rawEventLimit,
       readPolicy: query.readPolicy,
@@ -3463,6 +3582,7 @@ export async function getMarketplaceProductsProgressive(
           ? uniqueStrings(authorPubkeys)
           : undefined,
       authenticatedPubkey: query.authenticatedPubkey,
+      accountPubkey: query.accountPubkey,
       deletionCandidates: cached,
       limit: rawEventLimit,
       readPolicy: query.readPolicy,
@@ -3563,6 +3683,7 @@ export async function getMerchantStorefront(
     const liveRecords = await fetchPublicProductRecords({
       authors: [query.merchantPubkey],
       authenticatedPubkey: query.authenticatedPubkey,
+      accountPubkey: query.accountPubkey,
       limit: rawEventLimit,
       readPolicy: query.readPolicy,
       deletionCandidates: cached,
@@ -3777,7 +3898,9 @@ function findProductDetailRecord(
 }
 
 async function fetchVariationGroupRecords(
-  target: CommerceProductRecord
+  target: CommerceProductRecord,
+  accountPubkey?: string | null,
+  authenticatedPubkey?: string | null
 ): Promise<{
   records: CommerceProductRecord[]
   degraded: boolean
@@ -3808,6 +3931,8 @@ async function fetchVariationGroupRecords(
       ? fetchPublicProductRecords({
           authors: [parsedParent.pubkey],
           dTags: [parsedParent.d],
+          accountPubkey,
+          authenticatedPubkey,
           limit: 10,
           onTransportStatus: (degraded, capped) => {
             transportDegraded ||= degraded
@@ -3818,6 +3943,8 @@ async function fetchVariationGroupRecords(
     fetchPublicProductRecords({
       authors: [parsedParent.pubkey],
       parentAddresses: [parentAddress],
+      accountPubkey,
+      authenticatedPubkey,
       limit: PRODUCT_VARIATION_EVENT_LIMIT,
       onTransportStatus: (degraded, capped) => {
         transportDegraded ||= degraded
@@ -3922,6 +4049,8 @@ export async function getProductDetail(
       const direct = await fetchPublicProductRecords({
         authors: [address.pubkey],
         dTags: [address.d],
+        accountPubkey: query.authenticatedPubkey,
+        authenticatedPubkey: query.authenticatedPubkey,
         deletionCandidates: cached,
         limit: 10,
         onTransportStatus: (degraded, capped) => {
@@ -3944,12 +4073,18 @@ export async function getProductDetail(
       const targetCandidate =
         locallyMerged.find((item) => item.addressId === addressId) ?? null
       const groupRead = targetCandidate
-        ? await fetchVariationGroupRecords(targetCandidate)
+        ? await fetchVariationGroupRecords(
+            targetCandidate,
+            query.authenticatedPubkey,
+            query.authenticatedPubkey
+          )
         : { records: [], degraded: false, capped: false }
       const relayDeletionTimestamps =
         await fetchDeletionTimestampsForProductRecords(
           [...cached, ...direct, ...groupRead.records],
-          [address.pubkey]
+          [address.pubkey],
+          query.authenticatedPubkey,
+          query.authenticatedPubkey
         )
       const deletionTimestamps = mergeDeletionTimestamps(
         relayDeletionTimestamps,
@@ -4024,6 +4159,8 @@ export async function getProductDetail(
       const storefront = await getMerchantStorefront({
         merchantPubkey: address.pubkey,
         includeMarketHidden: query.includeMarketHidden,
+        accountPubkey: query.authenticatedPubkey,
+        authenticatedPubkey: query.authenticatedPubkey,
       })
       const fallbackRecord =
         storefront.data.find(
@@ -4054,6 +4191,8 @@ export async function getProductDetail(
       let directReadCapped = false
       const records = await fetchPublicProductRecords({
         ids: [decodedId],
+        accountPubkey: query.authenticatedPubkey,
+        authenticatedPubkey: query.authenticatedPubkey,
         deletionCandidates: cached,
         onTransportStatus: (degraded, capped) => {
           directReadDegraded ||= degraded
@@ -4062,7 +4201,11 @@ export async function getProductDetail(
       })
       const target = records[0] ?? null
       const groupRead = target
-        ? await fetchVariationGroupRecords(target)
+        ? await fetchVariationGroupRecords(
+            target,
+            query.authenticatedPubkey,
+            query.authenticatedPubkey
+          )
         : { records: [], degraded: false, capped: false }
       const fetched = [...records, ...groupRead.records]
       const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
@@ -4070,7 +4213,12 @@ export async function getProductDetail(
         uniqueStrings(fetched.map((record) => record.product.pubkey))
       )
       const relayDeletionTimestamps =
-        await fetchDeletionTimestampsForProductRecords(fetched)
+        await fetchDeletionTimestampsForProductRecords(
+          fetched,
+          undefined,
+          query.authenticatedPubkey,
+          query.authenticatedPubkey
+        )
       const deletionTimestamps = mergeDeletionTimestamps(
         relayDeletionTimestamps,
         localDeletionTimestamps
@@ -4313,6 +4461,8 @@ export async function getProductsByIds(
       const relayPlan = await planCommerceReadRelayPlan({
         intent: "author_products",
         authors: [author],
+        authenticatedPubkey: options.authenticatedPubkey,
+        accountPubkey: options.authenticatedPubkey,
       })
       const result = await runFetchEventsFanoutWithDiagnostics(
         {
@@ -4322,6 +4472,11 @@ export async function getProductsByIds(
         },
         {
           relayUrls: relayPlan.relayUrls,
+          ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+          accountPubkey: options.authenticatedPubkey,
+          authenticatedPubkey: options.authenticatedPubkey,
+          accountNetworkLocalStateRepository:
+            testOverrides.accountNetworkLocalStateRepository,
           connectTimeoutMs: 4_000,
           fetchTimeoutMs: 8_000,
         }
@@ -4394,7 +4549,9 @@ export async function getProductsByIds(
   }
   const groupTargets = Array.from(groupTargetsByParent.values())
   const groupFetches = await Promise.allSettled(
-    groupTargets.map(fetchVariationGroupRecords)
+    groupTargets.map((target) =>
+      fetchVariationGroupRecords(target, options.authenticatedPubkey)
+    )
   )
   const groupRecords = groupFetches.flatMap((result) =>
     result.status === "fulfilled" ? result.value.records : []
@@ -4435,6 +4592,7 @@ export async function getProductsByIds(
             ...cachedByAuthors.map(deletionCandidateFromRecord),
           ],
           {
+            accountPubkey: options.authenticatedPubkey,
             fetchEvents: fetchDeletionEventsWithCoverage,
             onSkippedRelayUrls: (relayUrls) => {
               deletionPlanSkippedRelay ||= relayUrls.length > 0
@@ -4653,6 +4811,7 @@ export async function getAtomicProductDetail(
 
   const result = await getProductsByIds([addressId], {
     includeMarketHidden: query.includeMarketHidden,
+    authenticatedPubkey: query.authenticatedPubkey,
   })
   return {
     data: result.data.find((record) => record.addressId === addressId) ?? null,
@@ -4775,6 +4934,8 @@ export async function getProfiles(
       intent: "profiles",
       authors: missing,
       authenticatedPubkey: query.authenticatedPubkey,
+      accountPubkey: query.accountPubkey,
+      signal: query.signal,
       maxRelays: query.readPolicy?.maxRelays ?? (visible ? 8 : 4),
       extraRelayUrls: sourceRelayHints.publicRelayUrls,
       authenticatedAuthorRelayUrls:
@@ -4787,9 +4948,12 @@ export async function getProfiles(
     }
     const fanoutOptions = {
       relayUrls: relayPlan.relayUrls,
-      accountPubkey: query.authenticatedPubkey,
+      ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+      accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
+      authenticatedPubkey: query.authenticatedPubkey,
       accountNetworkLocalStateRepository:
         testOverrides.accountNetworkLocalStateRepository,
+      signal: query.signal,
       connectTimeoutMs:
         query.readPolicy?.connectTimeoutMs ?? (visible ? 1_500 : 3_000),
       fetchTimeoutMs:
@@ -5109,7 +5273,9 @@ async function readEventMarketInboxRelay(
       },
       {
         relayUrls: [relayUrl],
+        ownerSelectedRelayUrls: [relayUrl],
         accountPubkey: principalPubkey,
+        authenticatedPubkey: principalPubkey,
         accountNetworkLocalStateRepository:
           testOverrides.accountNetworkLocalStateRepository,
         connectTimeoutMs: 4_000,
@@ -5169,7 +5335,9 @@ async function readEventMarketInboxRelay(
       },
       {
         relayUrls: [relayUrl],
+        ownerSelectedRelayUrls: [relayUrl],
         accountPubkey: principalPubkey,
+        authenticatedPubkey: principalPubkey,
         accountNetworkLocalStateRepository:
           testOverrides.accountNetworkLocalStateRepository,
         connectTimeoutMs: 4_000,
@@ -5596,7 +5764,7 @@ async function fetchEventMarketPrivateMessagesStrict(
   }
   const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
   assertInboxSyncAuthority(authorization)
-  const relayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+  const relayUrls = normalizeOwnerSelectedRelayUrls(
     declaration.state === "declared" ? declaration.relayUrls : []
   )
   if (relayUrls.length === 0) {
@@ -5656,7 +5824,7 @@ async function resolvePrincipalInboxDeclaration(
   if (testOverrides.resolveInboxRelayUrls) {
     try {
       const relays = await testOverrides.resolveInboxRelayUrls(principalPubkey)
-      const secure = normalizeSecureOrIsolatedE2eRelayUrls(relays)
+      const secure = normalizeOwnerSelectedRelayUrls(relays)
       return {
         pubkey: principalPubkey,
         state: secure.length > 0 ? "declared" : "not_observed",
@@ -5678,8 +5846,11 @@ async function resolvePrincipalInboxDeclaration(
     fetchEventsWithDiagnostics: runFetchEventsFanoutWithDiagnostics,
     allowLocalRelayUrlsForPubkey: principalPubkey,
     requestingAccountPubkey: principalPubkey,
+    authenticatedPubkey: principalPubkey,
     accountNetworkLocalStateRepository:
       testOverrides.accountNetworkLocalStateRepository,
+    ownerRelayListEvidenceRepository:
+      testOverrides.ownerRelayListEvidenceRepository,
   })
 }
 
@@ -5709,6 +5880,8 @@ async function fetchNewInboxWraps(
   const readPlan = planInboxReadRelays({
     declaration,
     authenticatedPubkey: principalPubkey,
+    migrationRecoveryRelayUrls:
+      getCommittedLegacyRelayReadRecovery(principalPubkey)?.readRelayUrls ?? [],
     maxRelays: DM_INBOX_READ_FANOUT,
   })
 
@@ -5718,7 +5891,9 @@ async function fetchNewInboxWraps(
   ) {
     const result = await runFetchEventsFanoutWithDiagnostics(filter, {
       relayUrls: readPlan.relayUrls,
+      ownerSelectedRelayUrls: readPlan.ownerSelectedRelayUrls,
       accountPubkey: principalPubkey,
+      authenticatedPubkey: principalPubkey,
       accountNetworkLocalStateRepository:
         testOverrides.accountNetworkLocalStateRepository,
       connectTimeoutMs: 4_000,
@@ -5746,6 +5921,7 @@ async function fetchNewInboxWraps(
   )({
     principalPubkey,
     relayUrls: readPlan.relayUrls,
+    ownerSelectedRelayUrls: readPlan.ownerSelectedRelayUrls,
     limit,
     authorization,
     accountNetworkLocalStateRepository:
@@ -5955,7 +6131,7 @@ async function runLegacyDmSync(
   authorization: ProtectedReadAuthorization | null,
   sessionPrincipalKey: string
 ): Promise<LegacyDmSyncResult> {
-  const relayUrls = await planCommerceReadRelays({
+  const relayPlan = await planCommerceReadRelayPlan({
     intent: "legacy_dm",
     authors: [principalPubkey],
     recipients: [principalPubkey],
@@ -5970,8 +6146,10 @@ async function runLegacyDmSync(
         limit: 400,
       },
       {
-        relayUrls,
+        relayUrls: relayPlan.relayUrls,
+        ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
         accountPubkey: principalPubkey,
+        authenticatedPubkey: principalPubkey,
         accountNetworkLocalStateRepository:
           testOverrides.accountNetworkLocalStateRepository,
         connectTimeoutMs: 4_000,
@@ -5985,8 +6163,10 @@ async function runLegacyDmSync(
         limit: 400,
       },
       {
-        relayUrls,
+        relayUrls: relayPlan.relayUrls,
+        ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
         accountPubkey: principalPubkey,
+        authenticatedPubkey: principalPubkey,
         accountNetworkLocalStateRepository:
           testOverrides.accountNetworkLocalStateRepository,
         connectTimeoutMs: 4_000,

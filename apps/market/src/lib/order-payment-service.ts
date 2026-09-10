@@ -256,6 +256,10 @@ export function buildLifecycleResendProofContentJson(
 export interface OrderPaymentContext {
   orderId: string
   buyerPubkey: string
+  /** Signed-in account for final-I/O exclusions; absent for guest orders. */
+  accountPubkey?: string | null
+  /** Active authenticated account for owner-selected ws:// authority. */
+  authenticatedPubkey?: string | null
   buyerIdentity?: BuyerOrderSigningIdentity
   merchantPubkey: string
   merchantLud16: string | null
@@ -741,7 +745,9 @@ async function deliverReceiptLinkedProof(
     zapReceiptId: string
   },
   buyerIdentity?: BuyerOrderSigningIdentity,
-  proofDeliveryClaimId?: string
+  proofDeliveryClaimId?: string,
+  accountPubkey?: string | null,
+  authenticatedPubkey?: string | null
 ): Promise<void> {
   if (lifecycle.proofDeliveryStatus === "sent") return
 
@@ -786,7 +792,11 @@ async function deliverReceiptLinkedProof(
         ndk,
         locked.merchantPubkey,
         buyerIdentity ?? locked.buyerPubkey,
-        { signerInteraction: "background_external" }
+        {
+          signerInteraction: "background_external",
+          accountPubkey,
+          authenticatedPubkey,
+        }
       )
       proofPublished = true
     } catch {
@@ -820,7 +830,9 @@ async function deliverReceiptLinkedProof(
 export async function observeOrderPublicZapReceipt(
   orderId: string,
   buyerIdentity?: BuyerOrderSigningIdentity,
-  dependencyOverrides: Partial<OrderReceiptObservationDependencies> = {}
+  dependencyOverrides: Partial<OrderReceiptObservationDependencies> = {},
+  accountPubkey?: string | null,
+  authenticatedPubkey?: string | null
 ): Promise<void> {
   const dependencies = {
     ...defaultOrderReceiptObservationDependencies,
@@ -843,7 +855,10 @@ export async function observeOrderPublicZapReceipt(
           zapRequestId: string
           zapReceiptId: string
         },
-        buyerIdentity
+        buyerIdentity,
+        undefined,
+        accountPubkey,
+        authenticatedPubkey
       )
       return
     }
@@ -866,6 +881,7 @@ export async function observeOrderPublicZapReceipt(
         expectedInvoice: lifecycle.invoice,
         lnurlNostrPubkey: lifecycle.zapReceiptPubkey,
         relayUrls: lifecycle.zapReceiptRelayUrls,
+        accountPubkey,
         receiptNotAfterSeconds: Math.floor(
           lifecycle.zapReceiptObservationDeadline / 1000
         ),
@@ -918,7 +934,9 @@ export async function observeOrderPublicZapReceipt(
             zapReceiptId: string
           },
           buyerIdentity,
-          proofDeliveryClaimId
+          proofDeliveryClaimId,
+          accountPubkey,
+          authenticatedPubkey
         )
       }
       return
@@ -944,7 +962,13 @@ export async function observeOrderPublicZapReceipt(
     ) {
       const timer = setTimeout(() => {
         receiptRescanTimers.delete(orderId)
-        void observeOrderPublicZapReceipt(orderId, buyerIdentity, dependencies)
+        void observeOrderPublicZapReceipt(
+          orderId,
+          buyerIdentity,
+          dependencies,
+          accountPubkey,
+          authenticatedPubkey
+        )
       }, ZAP_RECEIPT_RESCAN_DELAY_MS)
       receiptRescanTimers.set(orderId, timer)
     }
@@ -1419,7 +1443,13 @@ async function runOrderPaymentInternal(
           { running: false, stage: null }
         )
         if (isPublicZap && zapRequestId) {
-          void observeOrderPublicZapReceipt(orderId, ctx.buyerIdentity)
+          void observeOrderPublicZapReceipt(
+            orderId,
+            ctx.buyerIdentity,
+            {},
+            ctx.accountPubkey,
+            ctx.authenticatedPubkey
+          )
         }
         return runtimeStates.get(orderId)!
       }
@@ -1506,7 +1536,11 @@ async function runOrderPaymentInternal(
           ndk,
           ctx.merchantPubkey,
           ctx.buyerIdentity ?? ctx.buyerPubkey,
-          { signerInteraction: "background_external" }
+          {
+            signerInteraction: "background_external",
+            accountPubkey: ctx.accountPubkey,
+            authenticatedPubkey: ctx.authenticatedPubkey,
+          }
         )
         proofPublished = true
         deliveryNotice = getDeliveryNotice(proofDelivery, "Payment proof")
@@ -1545,7 +1579,13 @@ async function runOrderPaymentInternal(
 
       if (validatedInvoice.request.shouldWaitForZapReceipt && zapRequestId) {
         emit(orderId, { stage: "checking_receipt" })
-        void observeOrderPublicZapReceipt(orderId, ctx.buyerIdentity)
+        void observeOrderPublicZapReceipt(
+          orderId,
+          ctx.buyerIdentity,
+          {},
+          ctx.accountPubkey,
+          ctx.authenticatedPubkey
+        )
       }
 
       emit(orderId, { running: false, stage: null })
@@ -1726,7 +1766,9 @@ export async function runOrderPrivateFallback(
  */
 export async function resendOrderProof(
   orderId: string,
-  buyerIdentity?: BuyerOrderSigningIdentity
+  buyerIdentity?: BuyerOrderSigningIdentity,
+  accountPubkey?: string | null,
+  authenticatedPubkey?: string | null
 ): Promise<OrderPaymentRuntimeState | undefined> {
   const lifecycle = await getOrderLifecycle(orderId)
   if (
@@ -1771,7 +1813,11 @@ export async function resendOrderProof(
         ndk,
         locked.merchantPubkey,
         buyerIdentity ?? locked.buyerPubkey,
-        { signerInteraction: "background_external" }
+        {
+          signerInteraction: "background_external",
+          accountPubkey,
+          authenticatedPubkey,
+        }
       )
       proofPublished = true
     } catch {
@@ -1813,7 +1859,9 @@ export async function submitExternalPaymentProof(
   orderId: string,
   buyerIdentity?: BuyerOrderSigningIdentity,
   merchantInvoiceAction?: MerchantInvoicePaymentAction,
-  reopenEvidence?: MerchantInvoiceReopenEvidence
+  reopenEvidence?: MerchantInvoiceReopenEvidence,
+  accountPubkey?: string | null,
+  authenticatedPubkey?: string | null
 ): Promise<OrderPaymentRuntimeState | undefined> {
   if (inFlight.has(orderId)) return runtimeStates.get(orderId)
   inFlight.add(orderId)
@@ -1899,7 +1947,11 @@ export async function submitExternalPaymentProof(
         ndk,
         locked.merchantPubkey,
         buyerIdentity ?? locked.buyerPubkey,
-        { signerInteraction: "background_external" }
+        {
+          signerInteraction: "background_external",
+          accountPubkey,
+          authenticatedPubkey,
+        }
       )
       proofPublished = true
     } catch {

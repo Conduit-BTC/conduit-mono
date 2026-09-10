@@ -281,8 +281,8 @@ describe("NIP-78 shopper presets", () => {
     expect(result).toEqual({ state: "not_found" })
     expect(relayListOptions).toMatchObject({
       cacheOnly: false,
-      allowInsecureRelayUrlsForPubkey: pubkey,
     })
+    expect(relayListOptions?.allowInsecureRelayUrlsForPubkey).toBeUndefined()
     expect(relayListOptions!.relayUrls).toEqual([
       ...config.appWriteRelayUrls,
       ...config.corePublicFallbackRelayUrls,
@@ -293,6 +293,72 @@ describe("NIP-78 shopper presets", () => {
     })
     expect(fetchOptions!.relayUrls![0]).toBe(config.appWriteRelayUrls[0])
     expect(fetchOptions!.relayUrls!.length).toBeLessThanOrEqual(6)
+  })
+
+  it("admits only the authenticated owner's selected ws relay", async () => {
+    const { pubkey } = await signerFixture()
+    const ownerRelay = "ws://owner-network.example:4848"
+    const remoteRelay = "ws://remote-hint.example:4848"
+    let observedRelayUrls: readonly string[] = []
+    let observedOwnerSelectedRelayUrls: readonly string[] = []
+    let observedRelayListAuthenticatedPubkey: string | null | undefined
+    let observedFetchAuthenticatedPubkey: string | null | undefined
+
+    const result = await fetchShopperPresets(pubkey, {
+      authenticatedPubkey: pubkey,
+      readRelayUrls: [ownerRelay, remoteRelay],
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: {
+          version: 1,
+          updatedAt: 1,
+          entries: [
+            {
+              url: ownerRelay,
+              readEnabled: true,
+              writeEnabled: false,
+              section: "public",
+              capabilities: {
+                nip11: false,
+                search: false,
+                dm: false,
+                auth: false,
+                commerce: false,
+              },
+              warnings: {
+                dmWithoutAuth: false,
+                staleRelayInfo: false,
+                unreachable: false,
+                commercePartialSupport: false,
+              },
+            },
+          ],
+        },
+        signedRelayListAuthoritative: true,
+      }),
+      getRelayLists: async (_pubkeys, options) => {
+        observedRelayListAuthenticatedPubkey = options?.authenticatedPubkey
+        return new Map()
+      },
+      fetchEvents: async (_filter, options) => {
+        observedRelayUrls = options.relayUrls ?? []
+        observedOwnerSelectedRelayUrls = options.ownerSelectedRelayUrls ?? []
+        observedFetchAuthenticatedPubkey = options.authenticatedPubkey
+        return relayResult(
+          [],
+          observedRelayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success",
+            eventCount: 0,
+          }))
+        )
+      },
+    })
+
+    expect(result).toEqual({ state: "not_found" })
+    expect(observedRelayUrls).toEqual([ownerRelay])
+    expect(observedOwnerSelectedRelayUrls).toEqual([ownerRelay])
+    expect(observedRelayListAuthenticatedPubkey).toBe(pubkey)
+    expect(observedFetchAuthenticatedPubkey).toBe(pubkey)
   })
 
   it("fails closed when the newest replacement has an invalid envelope", async () => {

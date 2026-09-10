@@ -67,6 +67,29 @@ about each relay.
 - **Private inbox:** Other NIP-17 clients may deliver the user's private
   messages through this relay.
 
+### Authority-scoped transport eligibility
+
+For an authenticated owner's own account activity, a relay explicitly selected
+in Network may use `ws://` or `wss://`. This includes a new selection and an
+existing relay in that owner's Network configuration. A `ws://` selection does
+not block Review or Save, but the shared UI identifies it as **Unencrypted
+connection** and calmly explains that transport encryption is absent and it
+should be used only when the owner controls the relay or explicitly trusts the
+relay and network path.
+
+The exception follows the active owner's explicit Network authority, not the
+URL alone. Conduit must never automatically contact a `ws://` URL learned from
+remote discovery, metadata, event hints, cache provenance, compatibility or
+fallback configuration, or another account's signed declaration. In
+particular, a recipient's `ws://` `kind:10050` relay is not an eligible delivery
+target for the sender. Remote `wss://` relays remain eligible under the normal
+routing, evidence, validity, and whole-relay-exclusion rules.
+
+Keeping or displaying a remote `ws://` URL as evidence does not authorize a
+connection. Every executor must reapply the active-account and explicit
+Network-selection test immediately before final I/O. This is a narrow Network
+Settings and inbox-recovery rule, not a generic transport abstraction.
+
 ### Evidence-labelled capabilities
 
 - **Configured:** supplied by Conduit's versioned compatibility configuration.
@@ -217,14 +240,24 @@ retryable; no partial local record becomes account authority or active signed
 state.
 
 An existing inbox-recovery record is not signed account truth. It is limited to
-the previously committed secure read relays, never authorizes writes or
+the previously committed private-inbox read relays, never authorizes writes or
 publication, and is not shown as current membership. An ordinary replacement
-moves those URLs into the versioned inbox cutover lane. The seven-day read-only
-grace begins only after exact shared-set readback establishes a usable
-`kind:10050` replacement with one to three secure relays. A signed or merely
-staged `kind:10002`, an unconfirmed or unusable `kind:10050`, signer refusal, or
-cancellation does not start or end that grace. Whole-relay removal terminates
-recovery for the removed URL immediately after the atomic local commit.
+moves those URLs into an independent recovery batch owned by that locally staged
+`kind:10050` replacement. The batch's seven-day read-only grace begins only
+after exact shared-set readback establishes its owning replacement with one to
+three eligible inbox relays. Stronger signed evidence, including a replacement produced
+by another client, preserves existing batches but creates none without a
+matching locally staged immutable replacement plan. A signed or merely staged
+`kind:10002`, an unconfirmed or unusable `kind:10050`, signer refusal, or
+cancellation does not start or end a batch's grace. Signer-free redistribution
+of the same exact event may append an inbox-only immutable confirmation attempt
+for the current shared set. Any one complete unblocked attempt starts the batch
+clock exactly once; later attempts or observations never reset it. Whole-relay
+removal filters the removed URL from every batch's active recovery set
+immediately after the atomic local commit. The immutable confirmation plan retains the URL only as
+policy-blocked historical evidence, which cannot be queried or reactivated by
+the batch. A persisted legacy singleton cutover record up-converts to one batch
+without changing its relay URLs or established readback and expiry timestamps.
 
 The recovery record and marker are account-and-device-scoped and survive
 restart for their bounded migration lifecycle. Neither becomes signed account
@@ -252,6 +285,11 @@ There is one **Add Relay** action next to the flat list. It:
 Adding a candidate does not silently publish, run signed probes, or declare it
 healthy. A missing or unreachable NIP-11 document may be shown as unavailable
 metadata without inventing a successful capability result.
+
+Entering a `ws://` candidate is an explicit owner selection for this bounded
+Network workflow, so metadata discovery may use it for the authenticated
+owner's own account. The unencrypted-connection notice remains informational
+through Review and Save.
 
 ### NIP-11 limits
 
@@ -347,6 +385,10 @@ Each normalized relay appears once. A row may show:
 - freshness, partial-result, or availability warnings when supported by
   evidence.
 
+A row whose normalized URL uses `ws://` also shows **Unencrypted connection**
+and the transport-trust guidance above. The notice does not disable its role
+controls, Review, or Save.
+
 Media-server preferences remain a separate section because Blossom servers
 are not Nostr relays and are outside `kind:10002` and `kind:10050`.
 
@@ -385,9 +427,14 @@ publication nor runtime cutover.
 The desired configuration must retain at least one Publish relay. One Publish
 relay is valid but receives a redundancy warning. A reviewed change must not
 eliminate the last usable Private inbox without selecting a replacement, and
-private inbox declarations retain NIP-17's one-to-three relay guidance. The UI
-gives one direct replacement instruction rather than an elaborate dependency
-analysis.
+private inbox declarations retain NIP-17's one-to-three relay guidance. An
+account that already has no usable Private inbox may still change Read or
+Publish roles. Removing a current Private inbox always requires selecting a
+current replacement, even when a different recovery-only read route survives.
+For an account that is already signed-empty, the guard also prevents an action
+from removing its final recovery-only read route, but does not force inbox setup
+for an unrelated Read or Publish change. The UI gives one direct replacement instruction
+rather than an elaborate dependency analysis.
 
 ### Private inbox cutover
 
@@ -396,19 +443,36 @@ removal. After every event required by the reviewed action is signed and durably
 staged:
 
 - new gift-wrap writes target the pending `kind:10050` declaration;
-- the previous valid inboxes remain a hidden read-only recovery lane;
+- the previous valid inboxes enter an independent read-only recovery batch owned
+  by that locally staged replacement;
 - those previous inboxes are not current membership and never authorize a new
   write;
 - an exact readback of the pending event from the bounded shared discovery set
-  starts a seven-day, versioned stale-sender grace period;
-- the recovery lane closes after that grace period expires.
+  starts that batch's seven-day, versioned stale-sender grace period;
+- reads union every batch whose exact readback is pending or whose own grace has
+  not expired.
 
-The grace-policy version, readback evidence, and expiry are stored with the
-pending cutover. Until exact readback, previous inboxes remain read-only and the
-grace clock has not started. A relay explicitly removed from the user's whole
-setup is excluded immediately from this recovery lane after every required
-exact checkpoint is staged, even before ACK or readback. This privacy cutoff
-intentionally accepts that messages from stale clients can be missed.
+The owning replacement identity, grace-policy version, readback evidence, and
+expiry are stored with each batch. Until that replacement's exact readback, its
+previous inboxes remain read-only and its clock has not started. A stronger
+signed frontier, including one produced by another client, preserves existing
+batches but creates none without a matching locally staged immutable replacement
+plan. A signer-free redistribution of the same exact event may append an
+inbox-only immutable confirmation attempt for the current shared set. An attempt
+completes only after the exact event is observed on at least one target, every
+target has a conclusive result, and no target has become policy-blocked. A
+whole-relay removal never retroactively shrinks or completes that historical
+attempt; the same exact event may be redistributed signer-free to add a fresh
+attempt for the then-current unblocked shared set. Any one completed attempt
+starts the batch clock exactly once; later attempts or observations never reset
+it. An explicitly removed relay is
+filtered from every batch's active recovery set immediately after the atomic
+local commit, even before ACK or readback. Its immutable confirmation-plan entry
+remains only as policy-blocked historical evidence and cannot be queried or
+reactivated.
+This privacy cutoff intentionally accepts that messages from stale clients can
+be missed. Persisted legacy singleton cutover records up-convert to one batch
+without resetting any established readback or expiry.
 
 ### Add the Conduit relay
 
@@ -434,7 +498,7 @@ Dismissing the prompt changes no signed preference.
 ## Mutation and Distribution Contract
 
 An account update is one user action over two independently replaceable event
-frontiers. Before any relay write, the coordinator must:
+frontiers. Before any relay write, the account Network mutation module must:
 
 1. Reconcile both frontiers again at action time.
 2. Reject or pause destructive replacement when current safe frontiers cannot
@@ -450,6 +514,11 @@ pending cutover above while the UI shows that network confirmation is pending.
 If any required signer request is cancelled or fails, no event is published, no
 pending projection is activated, and existing recovery behavior remains
 unchanged.
+
+Before opening any relay connection, each final executor filters the immutable
+plan again through the authority-scoped transport rule. Earlier normalization,
+discovery, signed-event validation, retained evidence, or plan construction does
+not authorize automatic contact with a remotely supplied `ws://` URL.
 
 Each signed event is then published and read back independently. Outcomes must
 distinguish at least:
@@ -512,12 +581,18 @@ inbox reads may require NIP-42 authentication, but public declarations and
 relay lists do not.
 
 During an ordinary fully signed and staged inbox change, new writes use the
-pending declaration. Reads temporarily include the previous valid inboxes as a
-hidden read-only recovery lane. Exact shared-set readback starts the seven-day
-stale-sender grace period. A whole-relay removal excludes its URL from reads,
-writes, and recovery immediately after every required exact checkpoint is
-staged; general NIP-65 membership never substitutes for this narrowly defined
-cutover lane.
+pending declaration. The locally staged replacement owns an independent batch
+of previous valid inboxes. Reads union all batches awaiting their own exact
+shared-set readback or still within their own seven-day stale-sender grace. A
+stronger signed frontier, including one produced by another client, preserves
+existing batches but creates no batch without a local immutable replacement
+plan. If replacement B creates a batch for inbox A and replacement C is staged
+before B's grace expires, C creates another batch for inbox B. Reads include
+both A and B until their owning batches independently confirm and expire;
+confirmation or redistribution for C cannot reset, truncate, or delete B's
+batch for A. A whole-relay removal filters its URL from reads, writes, and every
+batch immediately after the atomic local commit; general NIP-65 membership
+never substitutes for this narrowly defined cutover policy.
 
 Conduit follows the declared one-to-three inbox relays when available. An empty,
 malformed, stale, partial, or unavailable declaration remains a distinct state;
@@ -655,9 +730,10 @@ Permitted local records are implementation evidence, not settings:
 - causal whole-relay exclusions that gate every later account operation;
 - a signer-free preferred order limited to otherwise eligible and equivalent
   Conduit operations;
-- bounded account-and-device-scoped legacy inbox-read recovery records that
-  survive incomplete migration and restart, then flow into the seven-day
-  cutover after exact shared-set readback of a usable `kind:10050` replacement;
+- independent account-and-device-scoped inbox-recovery batches, each owned by a
+  locally staged immutable `kind:10050` replacement plan and carrying its own
+  exact shared-set readback and seven-day expiry state; legacy singleton records
+  up-convert to one such batch;
 - durable account-and-device-scoped migration discard tombstones that survive
   restart for the legacy migration reader's lifetime and prevent discarded
   legacy NIP-65 role drafts from being re-imported.

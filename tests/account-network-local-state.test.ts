@@ -103,12 +103,12 @@ describe("account network local state", () => {
         version: ACCOUNT_NETWORK_LOCAL_STATE_VERSION + 1,
       })
     ).toThrow("Unsupported account network state version")
-    expect(() =>
+    expect(
       normalizeAccountNetworkLocalState({
         ...empty,
-        preferredRelayOrder: ["ws://127.0.0.1:7777"],
-      })
-    ).toThrow("secure relay URL")
+        preferredRelayOrder: ["ws://owner-relay.example/"],
+      }).preferredRelayOrder
+    ).toEqual(["ws://owner-relay.example"])
   })
 
   it("keeps repository reads and writes isolated by normalized account", async () => {
@@ -190,6 +190,51 @@ describe("account network local state", () => {
       await filterEligibleAccountRelayUrls({
         accountPubkey: "invalid",
         candidateRelayUrls: [RELAY_A],
+        repository,
+      })
+    ).toEqual([])
+  })
+
+  it("admits only the exact owner-selected ws subset at the final I/O seam", async () => {
+    const ownerWs = "ws://owner-relay.example"
+    const remoteWs = "ws://remote-hint.example"
+    const repository = createInMemoryAccountNetworkLocalStateRepository()
+
+    expect(
+      await filterEligibleAccountRelayUrls({
+        accountPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        candidateRelayUrls: [ownerWs, remoteWs, RELAY_B],
+        ownerSelectedRelayUrls: [ownerWs],
+        repository,
+      })
+    ).toEqual([ownerWs, RELAY_B])
+    expect(
+      await filterEligibleAccountRelayUrls({
+        accountPubkey: OWNER,
+        authenticatedPubkey: OTHER,
+        candidateRelayUrls: [ownerWs, RELAY_B],
+        ownerSelectedRelayUrls: [ownerWs],
+        repository,
+      })
+    ).toEqual([RELAY_B])
+    expect(
+      await filterEligibleAccountRelayUrls({
+        accountPubkey: OWNER,
+        candidateRelayUrls: [ownerWs, remoteWs],
+        repository,
+      })
+    ).toEqual([])
+
+    await repository.update(OWNER, (state) =>
+      excludeRelay(state, { relayUrl: ownerWs, committedAt: 200 })
+    )
+    expect(
+      await filterEligibleAccountRelayUrls({
+        accountPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        candidateRelayUrls: [ownerWs],
+        ownerSelectedRelayUrls: [ownerWs],
         repository,
       })
     ).toEqual([])

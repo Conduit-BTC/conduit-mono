@@ -258,9 +258,11 @@ describe("NIP-02 merchant trust helpers", () => {
 
   it("plans merchant trust reads without accepting the merchant's local relay", async () => {
     const viewerLocalRelay = "ws://127.0.0.1:7777"
+    const merchantInsecureRelay = "ws://merchant.example:4848"
     const merchantPrivateRelay = "wss://127.0.0.1:7447"
     const merchantPublicRelay = "wss://merchant.conduit.market"
     const attemptedByAuthor = new Map<string, string[]>()
+    const ownerSelectedByAuthor = new Map<string, readonly string[]>()
     const viewerEvent = followListEvent({
       secret: viewerSecret,
       createdAt: 100,
@@ -275,6 +277,7 @@ describe("NIP-02 merchant trust helpers", () => {
     const summary = await fetchMerchantTrustSocialSummary(
       { merchantPubkey, viewerPubkey },
       {
+        authenticatedPubkey: viewerPubkey,
         now: () => 100_000,
         resolveRelayLists: async () =>
           new Map([
@@ -287,13 +290,49 @@ describe("NIP-02 merchant trust helpers", () => {
               relayList(
                 merchantPubkey,
                 [],
-                [merchantPrivateRelay, merchantPublicRelay]
+                [
+                  merchantInsecureRelay,
+                  merchantPrivateRelay,
+                  merchantPublicRelay,
+                ]
               ),
             ],
           ]),
+        readAccountRelaySettingsPlanningSnapshot: async () => ({
+          settings: {
+            version: 1,
+            updatedAt: 1,
+            entries: [
+              {
+                url: viewerLocalRelay,
+                readEnabled: true,
+                writeEnabled: true,
+                section: "public",
+                capabilities: {
+                  nip11: false,
+                  search: false,
+                  dm: false,
+                  auth: false,
+                  commerce: false,
+                },
+                warnings: {
+                  dmWithoutAuth: false,
+                  staleRelayInfo: false,
+                  unreachable: false,
+                  commercePartialSupport: false,
+                },
+              },
+            ],
+          },
+          signedRelayListAuthoritative: true,
+        }),
         fetchEvents: async (filter, options) => {
           const author = filter.authors?.[0] ?? ""
           attemptedByAuthor.set(author, options?.relayUrls ?? [])
+          ownerSelectedByAuthor.set(
+            author,
+            options?.ownerSelectedRelayUrls ?? []
+          )
           const event = author === viewerPubkey ? viewerEvent : merchantEvent
           return {
             events: [event],
@@ -313,9 +352,13 @@ describe("NIP-02 merchant trust helpers", () => {
     )
 
     expect(attemptedByAuthor.get(viewerPubkey)).toContain(viewerLocalRelay)
+    expect(ownerSelectedByAuthor.get(viewerPubkey)).toContain(viewerLocalRelay)
     expect(attemptedByAuthor.get(merchantPubkey)).toContain(merchantPublicRelay)
     expect(attemptedByAuthor.get(merchantPubkey)).not.toContain(
       merchantPrivateRelay
+    )
+    expect(attemptedByAuthor.get(merchantPubkey)).not.toContain(
+      merchantInsecureRelay
     )
     expect(attemptedByAuthor.get(viewerPubkey)?.length).toBeGreaterThan(1)
     expect(attemptedByAuthor.get(merchantPubkey)?.length).toBeGreaterThan(1)
@@ -326,6 +369,63 @@ describe("NIP-02 merchant trust helpers", () => {
       mutualFollowCount: 1,
       readState: "available",
     })
+  })
+
+  it("does not infer the social-viewer subject as the signed-in account", async () => {
+    const observed: Array<{
+      accountPubkey?: string | null
+      allowInsecureRelayUrlsForPubkey?: string | null
+    }> = []
+    const read = async (authenticatedPubkey?: string | null) =>
+      await fetchMerchantTrustSocialSummary(
+        { merchantPubkey, viewerPubkey },
+        {
+          authenticatedPubkey,
+          now: () => 100_000,
+          resolveRelayLists: async (pubkeys, options) => {
+            observed.push({
+              accountPubkey: options?.accountPubkey,
+              allowInsecureRelayUrlsForPubkey:
+                options?.allowInsecureRelayUrlsForPubkey,
+            })
+            return new Map(
+              pubkeys.map((pubkey) => [
+                pubkey,
+                relayList(pubkey, [], ["wss://public.example"]),
+              ])
+            )
+          },
+          fetchEvents: async (_filter, options) => ({
+            events: [],
+            eventSourceRelayUrls: {},
+            relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 0,
+            })),
+            eventsVerified: true,
+          }),
+        }
+      )
+
+    await read()
+    await read(mutualPubkey)
+    await read(viewerPubkey)
+
+    expect(observed).toEqual([
+      {
+        accountPubkey: null,
+        allowInsecureRelayUrlsForPubkey: undefined,
+      },
+      {
+        accountPubkey: mutualPubkey,
+        allowInsecureRelayUrlsForPubkey: undefined,
+      },
+      {
+        accountPubkey: viewerPubkey,
+        allowInsecureRelayUrlsForPubkey: undefined,
+      },
+    ])
   })
 
   it("keeps a parked author relay in replacement-sensitive coverage", async () => {

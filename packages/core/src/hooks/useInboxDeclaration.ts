@@ -1,28 +1,32 @@
-import { useEffect, useMemo } from "react"
+import { useEffect, useMemo, useRef } from "react"
+import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   inspectOwnPrivateMessageRelayReadiness,
-  publishPrivateMessageRelayDeclaration,
-  redistributePrivateMessageRelayDeclaration,
-  redistributePrivateMessageRelayDeclarationAcrossPlans,
   type OwnPrivateMessageRelayReadiness,
 } from "../protocol/messaging"
-import { areSameSignedInboxDeclarationEvent } from "../protocol/inbox-declaration-evidence"
-import { getNdk } from "../protocol/ndk"
 import {
-  getCachedInboxDeclarationEvidence,
-  inboxDeclarationPublishRelayUrls,
+  publishAccountNetworkMutation,
+  redistributeAccountNetworkInboxDeclaration,
+  retryAccountNetworkMutation,
+  reviewAccountNetworkMutation,
+  type AccountNetworkMutationDependencies,
+  type AccountNetworkMutationResult,
+  type AccountNetworkRelayRoles,
+  type ReviewedAccountNetworkMutation,
+} from "../protocol/account-network-mutation"
+import { EVENT_KINDS } from "../protocol/kinds"
+import type { AccountNetworkPreferencesReconciliation } from "../protocol/network-preferences"
+import { createNdkNostrEventSigner } from "../protocol/ndk-nostr-event-signer"
+import { NostrSignerError } from "../protocol/nostr-event-signer"
+import {
   invalidateInboxDeclaration,
-  MAX_DECLARED_INBOX_WRITE_RELAYS,
-  readRetainedInboxDeclarationEvidence,
-  resolveInboxDeclaration,
   sharedInboxDiscoveryRelayUrls,
   type InboxDeclarationResolution,
 } from "../protocol/private-message-routing"
-import {
-  normalizeSecureOrIsolatedE2eRelayUrls,
-  subscribeRelaySettingsChanges,
-} from "../protocol/relay-settings"
+import { normalizeSecureOrIsolatedE2eRelayUrls } from "../protocol/relay-settings"
+import { useAuth } from "../context/AuthContext"
+import { useConduitSession } from "../context/ConduitSessionContext"
 
 /**
  * NIP-17 inbox declaration readiness + repair (CND-208).
@@ -158,15 +162,189 @@ export interface UseInboxDeclarationResult {
   resetPublishState: () => void
 }
 
+interface AccountMutationAuthority {
+  authGeneration: number
+  method: "nip07" | "nip46" | null
+  pubkey: string | null
+  relayScope: string | null
+  sessionPubkey: string | null
+  signer: NDKSigner | null
+  status: string
+}
+
+function sameAccountMutationAuthority(
+  current: AccountMutationAuthority,
+  expected: AccountMutationAuthority
+): boolean {
+  return (
+    current.authGeneration === expected.authGeneration &&
+    current.method === expected.method &&
+    current.pubkey === expected.pubkey &&
+    current.relayScope === expected.relayScope &&
+    current.sessionPubkey === expected.sessionPubkey &&
+    current.signer === expected.signer &&
+    current.status === expected.status
+  )
+}
+
+function rolesForInboxDeclarationReview(
+  reconciliation: AccountNetworkPreferencesReconciliation,
+  inboxRelayUrls: readonly string[]
+): AccountNetworkRelayRoles[] {
+  const rolesByUrl = new Map<string, AccountNetworkRelayRoles>()
+  for (const preference of reconciliation.ownerRelayList.preferences) {
+    rolesByUrl.set(preference.url, {
+      url: preference.url,
+      read: preference.readEnabled,
+      publish: preference.writeEnabled,
+      privateInbox: false,
+    })
+  }
+  for (const relayUrl of inboxRelayUrls) {
+    const current = rolesByUrl.get(relayUrl)
+    rolesByUrl.set(relayUrl, {
+      url: relayUrl,
+      read: current?.read ?? false,
+      publish: current?.publish ?? false,
+      privateInbox: true,
+    })
+  }
+  return [...rolesByUrl.values()]
+}
+
+/** Review a kind:10050-only edit while preserving the current NIP-65 roles. */
+export function reviewInboxDeclarationAccountMutation(
+  reconciliation: AccountNetworkPreferencesReconciliation,
+  relayUrls: readonly string[]
+): ReviewedAccountNetworkMutation {
+  const reviewed = reviewAccountNetworkMutation(reconciliation, {
+    type: "set_roles",
+    relays: rolesForInboxDeclarationReview(reconciliation, relayUrls),
+  })
+  if (
+    reviewed.changedKinds.includes(EVENT_KINDS.RELAY_LIST) ||
+    reviewed.signerRequestCount > 1
+  ) {
+    throw new Error(
+      "Publish the current relay list first, then review the Private inbox change again."
+    )
+  }
+  return reviewed
+}
+
+export type InboxDeclarationAccountMutationPlan =
+  | { type: "publish"; reviewed: ReviewedAccountNetworkMutation }
+  | { type: "redistribute" }
+  | { type: "retry" }
+
+export function planInboxDeclarationAccountMutation(input: {
+  reconciliation: AccountNetworkPreferencesReconciliation
+  readiness: OwnPrivateMessageRelayReadiness | undefined
+  relayUrls: readonly string[]
+}): InboxDeclarationAccountMutationPlan {
+  const currentRelayUrls =
+    input.reconciliation.inboxDeclaration.state === "distribution_pending"
+      ? (input.reconciliation.inboxDeclaration.pendingRelayUrls ?? [])
+      : input.reconciliation.inboxDeclaration.state === "declared"
+        ? input.reconciliation.inboxDeclaration.relayUrls
+        : []
+  const current = [
+    ...normalizeSecureOrIsolatedE2eRelayUrls(currentRelayUrls),
+  ].sort()
+  const selected = [
+    ...normalizeSecureOrIsolatedE2eRelayUrls(input.relayUrls),
+  ].sort()
+  const inboxUnchanged =
+    current.length === selected.length &&
+    current.every((relayUrl, index) => relayUrl === selected[index])
+  if (
+    inboxUnchanged &&
+    input.reconciliation.inboxDeclaration.state === "distribution_pending"
+  ) {
+    return { type: "retry" }
+  }
+  if (
+    inboxUnchanged &&
+    input.readiness &&
+    "distributionRepairable" in input.readiness &&
+    input.readiness.distributionRepairable &&
+    (input.readiness.state === "ready" ||
+      input.readiness.state === "distribution_pending")
+  ) {
+    if (
+      input.readiness.eventId !== input.reconciliation.inboxDeclaration.eventId
+    ) {
+      throw new Error(
+        "Private inbox evidence changed after this action was reviewed. Review the current state and try again."
+      )
+    }
+    return { type: "redistribute" }
+  }
+  return {
+    type: "publish",
+    reviewed: reviewInboxDeclarationAccountMutation(
+      input.reconciliation,
+      input.relayUrls
+    ),
+  }
+}
+
+function inboxMutationConfirmed(result: AccountNetworkMutationResult): boolean {
+  const checkpoint = result.checkpoints.find(
+    (entry) => entry.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+  )
+  return !checkpoint?.pending
+}
+
 export function useInboxDeclaration(
   pubkey: string | null | undefined,
   options: UseInboxDeclarationOptions = {}
 ): UseInboxDeclarationResult {
+  const auth = useAuth()
+  const session = useConduitSession()
+  const authorityRef = useRef<AccountMutationAuthority>({
+    authGeneration: auth.authGeneration,
+    method: auth.method,
+    pubkey: auth.pubkey,
+    relayScope: session.relayScope,
+    sessionPubkey: session.pubkey,
+    signer: auth.signer,
+    status: auth.status,
+  })
   const queryClient = useQueryClient()
   const queryKey = useMemo(
     () => [INBOX_DECLARATION_QUERY_KEY, pubkey ?? "none"],
     [pubkey]
   )
+  const mutationContextKey = JSON.stringify([
+    pubkey ?? null,
+    options.relayScope?.trim() ?? null,
+  ])
+  const mutationContextKeyRef = useRef(mutationContextKey)
+
+  useEffect(() => {
+    authorityRef.current = {
+      authGeneration: auth.authGeneration,
+      method: auth.method,
+      pubkey: auth.pubkey,
+      relayScope: session.relayScope,
+      sessionPubkey: session.pubkey,
+      signer: auth.signer,
+      status: auth.status,
+    }
+  }, [
+    auth.authGeneration,
+    auth.method,
+    auth.pubkey,
+    auth.signer,
+    auth.status,
+    session.pubkey,
+    session.relayScope,
+  ])
+
+  useEffect(() => {
+    mutationContextKeyRef.current = mutationContextKey
+  }, [mutationContextKey])
 
   const readinessQuery = useQuery({
     queryKey,
@@ -177,195 +355,87 @@ export function useInboxDeclaration(
     refetchIntervalInBackground: false,
   })
 
-  useEffect(() => {
-    if (!pubkey || !(options.enabled ?? true)) return
-    const relayScope = options.relayScope?.trim() || null
-    return subscribeRelaySettingsChanges((changedScope) => {
-      if (changedScope !== relayScope) return
-      invalidateInboxDeclaration(pubkey)
-      void queryClient.invalidateQueries({ queryKey })
-    })
-  }, [options.enabled, options.relayScope, pubkey, queryClient, queryKey])
-
   const publishMutation = useMutation({
-    mutationFn: async (intent: {
-      relayUrls: readonly string[]
-      reviewedEventId: string | null
-      reviewedState: OwnPrivateMessageRelayReadiness["state"] | null
-      reviewedStale: boolean
-      reviewedDistributionRepairable: boolean
-    }) => {
-      const { relayUrls } = intent
+    mutationFn: async (intent: { relayUrls: readonly string[] }) => {
       if (!pubkey) throw new Error("Signer not connected")
-      const ndk = getNdk()
-
-      const sharedRelayUrls = sharedInboxDiscoveryRelayUrls()
-      // Reconcile network, durable, and process evidence at the explicit click
-      // boundary. Render-time readiness may have been superseded by another
-      // tab and must never authorize a stale replacement or redistribution.
-      const readiness = await inspectOwnPrivateMessageRelayReadiness(pubkey, {
-        relayUrls: sharedRelayUrls,
+      const accountNetworkPreferences = session.accountNetworkPreferences
+      const reconciliation = accountNetworkPreferences.reconciliation
+      if (
+        session.mode !== "signed_in" ||
+        session.pubkey !== pubkey ||
+        session.relayScope !== options.relayScope?.trim() ||
+        reconciliation?.projection.pubkey !== pubkey ||
+        reconciliation.projection.relayScope !== options.relayScope?.trim()
+      ) {
+        throw new Error(
+          "The active Network account changed. Reload and try again."
+        )
+      }
+      if (accountNetworkPreferences.status !== "ready") {
+        throw new Error(
+          "Network evidence is still refreshing. Wait for the current account check and try again."
+        )
+      }
+      const plan = planInboxDeclarationAccountMutation({
+        reconciliation,
+        readiness: readinessQuery.data,
+        relayUrls: intent.relayUrls,
       })
+      const expectedAuthority = { ...authorityRef.current }
+      const expectedContextKey = mutationContextKey
+      const shouldContinue = (): boolean =>
+        mutationContextKeyRef.current === expectedContextKey &&
+        sameAccountMutationAuthority(authorityRef.current, expectedAuthority)
       if (
-        readiness.state === "lookup_partial" ||
-        readiness.state === "lookup_unavailable"
+        expectedAuthority.status !== "connected" ||
+        expectedAuthority.pubkey !== pubkey ||
+        expectedAuthority.sessionPubkey !== pubkey ||
+        expectedAuthority.relayScope !== options.relayScope?.trim()
       ) {
-        throw new Error(
-          "Private inbox evidence changed or is unavailable. Retry the readiness check."
-        )
+        throw new NostrSignerError("authority_changed")
       }
-      if (
-        readiness.state === "distribution_pending" &&
-        !readiness.distributionRepairable
-      ) {
-        throw new Error(
-          "The pending declaration cannot be retried until shared discovery completes."
-        )
+      const dependencies: AccountNetworkMutationDependencies = {
+        shouldContinue,
       }
-      if (
-        (readiness.state === "ready" ||
-          readiness.state === "signed_empty" ||
-          readiness.state === "malformed") &&
-        readiness.stale &&
-        !readiness.distributionRepairable
-      ) {
-        throw new Error(
-          "The retained declaration is stale. Retry the readiness check before publishing."
-        )
-      }
-
-      const evidence = getCachedInboxDeclarationEvidence(pubkey)
-      const currentEventId = evidence?.current.signedEvent.id ?? null
-      const inspectedEventId = "eventId" in readiness ? readiness.eventId : null
-      const currentStale = "stale" in readiness ? readiness.stale : false
-      const currentDistributionRepairable =
-        "distributionRepairable" in readiness
-          ? readiness.distributionRepairable
-          : false
-      if (
-        intent.reviewedEventId !== currentEventId ||
-        inspectedEventId !== currentEventId ||
-        intent.reviewedState !== readiness.state ||
-        intent.reviewedStale !== currentStale ||
-        intent.reviewedDistributionRepairable !== currentDistributionRepairable
-      ) {
-        throw new Error(
-          "Private inbox evidence changed after this action was reviewed. Review the current state and try again."
-        )
-      }
-
-      let expectedRelayUrls = [...relayUrls]
-      let publishedEvent: Awaited<
-        ReturnType<typeof publishPrivateMessageRelayDeclaration>
-      >
-      const exactRedistribution = Boolean(
-        (readiness?.state === "ready" ||
-          readiness?.state === "distribution_pending") &&
-        readiness.distributionRepairable
-      )
-      if (exactRedistribution) {
-        const durableEvidence =
-          await readRetainedInboxDeclarationEvidence(pubkey)
-        if (
-          !evidence ||
-          !durableEvidence ||
-          durableEvidence.current.state !== "declared" ||
-          durableEvidence.current.signedEvent.id !== currentEventId ||
-          !areSameSignedInboxDeclarationEvent(
-            evidence.current.signedEvent,
-            durableEvidence.current.signedEvent
-          )
-        ) {
-          throw new Error(
-            "The retained declaration is unavailable. Retry the readiness check."
-          )
-        }
-        const effectiveRelays = normalizeSecureOrIsolatedE2eRelayUrls(
-          durableEvidence.current.secureRelayUrls
-        ).slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS)
-        const selected = [
-          ...normalizeSecureOrIsolatedE2eRelayUrls(relayUrls),
-        ].sort()
-        const effective = [...effectiveRelays].sort()
-        if (
-          selected.length !== effective.length ||
-          selected.some((relayUrl, index) => relayUrl !== effective[index])
-        ) {
-          throw new Error(
-            "Redistribution must preserve the retained declaration relay set"
-          )
-        }
-        const pendingPublishRelayUrls =
-          durableEvidence.pendingDistribution?.publishRelayUrls
-        const processPending = evidence.pendingDistribution
-        if (
-          readiness.state === "distribution_pending" &&
-          (Boolean(processPending) !== Boolean(pendingPublishRelayUrls) ||
-            (processPending &&
-              pendingPublishRelayUrls &&
-              (!areSameSignedInboxDeclarationEvent(
-                processPending.signedEvent,
-                durableEvidence.pendingDistribution?.signedEvent
-              ) ||
-                processPending.publishRelayUrls.length !==
-                  pendingPublishRelayUrls.length ||
-                processPending.publishRelayUrls.some(
-                  (relayUrl, index) =>
-                    relayUrl !== pendingPublishRelayUrls[index]
-                ))))
-        ) {
-          throw new Error(
-            "The retained declaration is unavailable. Retry the readiness check."
-          )
-        }
-        publishedEvent = pendingPublishRelayUrls
-          ? await redistributePrivateMessageRelayDeclarationAcrossPlans({
-              pubkey,
-              signedEvent: durableEvidence.current.signedEvent,
-              ndk,
-              storedPublishRelayUrls: pendingPublishRelayUrls,
-              currentSharedRelayUrls: sharedRelayUrls,
-            })
-          : await redistributePrivateMessageRelayDeclaration({
-              pubkey,
-              signedEvent: durableEvidence.current.signedEvent,
-              ndk,
-              publishRelayUrls: inboxDeclarationPublishRelayUrls(),
-            })
-        expectedRelayUrls = [...durableEvidence.current.secureRelayUrls]
-      } else {
-        if (!ndk.signer) throw new Error("Signer not connected")
-        if (readiness.state !== "not_observed" && !evidence) {
-          throw new Error(
-            "The retained declaration frontier is unavailable. Retry the readiness check."
-          )
-        }
-        publishedEvent = await publishPrivateMessageRelayDeclaration({
+      let result: AccountNetworkMutationResult
+      if (plan.type === "retry") {
+        result = await retryAccountNetworkMutation({
           pubkey,
-          signer: ndk.signer,
-          ndk,
-          relayUrls,
-          frontierCreatedAt: evidence?.current.signedEvent.created_at ?? null,
-          expectedFrontierEventId: currentEventId,
+          authenticatedPubkey: pubkey,
+          kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+          dependencies,
+        })
+      } else if (plan.type === "redistribute") {
+        result = await redistributeAccountNetworkInboxDeclaration({
+          pubkey,
+          authenticatedPubkey: pubkey,
+          dependencies,
+        })
+      } else {
+        result = await publishAccountNetworkMutation({
+          reviewed: plan.reviewed,
+          authenticatedPubkey: pubkey,
+          ...(plan.reviewed.signerRequestCount > 0
+            ? {
+                signer:
+                  expectedAuthority.signer && expectedAuthority.method
+                    ? createNdkNostrEventSigner(
+                        expectedAuthority.signer,
+                        pubkey,
+                        expectedAuthority.method
+                      )
+                    : undefined,
+              }
+            : {}),
+          dependencies,
         })
       }
-
-      // Read back fresh before reporting confirmed; a publish ACK alone does
-      // not prove the declaration is discoverable. The publish primed the
-      // declaration cache, so a degraded lookup falls back to it instead of
-      // failing a publish that relays already accepted.
-      const resolution = await resolveInboxDeclaration(pubkey, {
-        freshnessMs: 0,
-        relayUrls: sharedRelayUrls,
-        sharedConfirmationRelayUrls: sharedRelayUrls,
-        allowLocalRelayUrlsForPubkey: pubkey,
-      })
-      return verifyDeclarationReadBack(resolution, {
-        eventId: publishedEvent.id,
-        relayUrls: expectedRelayUrls,
-      })
+      if (!shouldContinue()) throw new NostrSignerError("authority_changed")
+      return { confirmed: inboxMutationConfirmed(result) }
     },
     onSettled: async () => {
+      if (pubkey) invalidateInboxDeclaration(pubkey)
+      session.accountNetworkPreferences.refetch()
       await queryClient.invalidateQueries({ queryKey })
     },
   })
@@ -422,18 +492,7 @@ export function useInboxDeclaration(
       void readinessQuery.refetch()
     },
     publishDeclaration: (relayUrls) => {
-      publishMutation.mutate({
-        relayUrls,
-        reviewedEventId:
-          readiness && "eventId" in readiness ? readiness.eventId : null,
-        reviewedState: readiness?.state ?? null,
-        reviewedStale:
-          readiness && "stale" in readiness ? readiness.stale : false,
-        reviewedDistributionRepairable:
-          readiness && "distributionRepairable" in readiness
-            ? readiness.distributionRepairable
-            : false,
-      })
+      publishMutation.mutate({ relayUrls })
     },
     publishing: publishMutation.isPending,
     publishError:

@@ -20,7 +20,6 @@ import {
   emptyAccountNetworkLocalState,
   getAccountRelayScope,
   getCommittedLegacyRelayReadRecovery,
-  getInboxMigrationRecoveryRelayUrls,
   getRelaySettingsStorageKey,
   hydrateAccountNetworkPreferences,
   migrateLegacyRelaySettingsDraft,
@@ -29,7 +28,6 @@ import {
   planInboxReadRelays,
   reconcileAccountNetworkPreferences,
   removeLegacyRelayReadRecoveryRelayUrls,
-  setInboxMigrationRecoveryRelayUrls,
   sharedInboxDiscoveryRelayUrls,
   type InboxDeclarationEvidenceRecord,
   type InboxDeclarationResolution,
@@ -338,7 +336,6 @@ describe("legacy account Network migration", () => {
       storage.getItem(getRelaySettingsStorageKey(ACCOUNT_SCOPE))
     ).toBeNull()
     expect(await localStateRepository.get(OWNER)).toBeUndefined()
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
     expect(
       storage
         .entries()
@@ -752,6 +749,7 @@ describe("legacy account Network migration", () => {
         declaration: hydrated.inboxDeclaration,
         authenticatedPubkey: OWNER,
         compatibilityRelayUrls: [],
+        migrationRecoveryRelayUrls: hydrated.legacyInboxRecoveryRelayUrls,
       }).relaySources[RELAY_A]
     ).toBe("migration_recovery")
 
@@ -866,7 +864,7 @@ describe("legacy account Network migration", () => {
       })),
       observedAt: 2_000,
     })
-    expect(confirmed.cutoverRecovery?.readbackObservedAt).toBe(2_000)
+    expect(confirmed.cutoverRecoveries?.[0]?.readbackObservedAt).toBe(2_000)
     const inboxRepository = createInMemoryInboxDeclarationEvidenceRepository([
       confirmed,
     ])
@@ -956,7 +954,6 @@ describe("legacy account Network migration", () => {
 
     expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
     expect(reconciled.legacyInboxRecoveryRelayUrls).toEqual([])
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
     expect(
       planInboxReadRelays({
         declaration: reconciled.inboxDeclaration,
@@ -975,7 +972,6 @@ describe("legacy account Network migration", () => {
   it("persistently prunes whole-removed relays from legacy recovery", () => {
     const storage = new MemoryStorage()
     seedCommittedCompatibility(storage, [RELAY_A, RELAY_B])
-    setInboxMigrationRecoveryRelayUrls(OWNER, [RELAY_A, RELAY_B])
 
     expect(
       removeLegacyRelayReadRecoveryRelayUrls({
@@ -988,7 +984,6 @@ describe("legacy account Network migration", () => {
       version: 1,
       readRelayUrls: [RELAY_B],
     })
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([RELAY_B])
     const recoveryRaw = storage.getItem(
       `conduit:network-legacy-read-recovery:v1:${OWNER}`
     )!
@@ -1006,7 +1001,6 @@ describe("legacy account Network migration", () => {
       })
     ).toBe("cleared")
     expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
     expect(
       storage.getItem(getRelaySettingsStorageKey(ACCOUNT_SCOPE))
     ).not.toBeNull()
@@ -1015,7 +1009,6 @@ describe("legacy account Network migration", () => {
   it("keeps exclusions and filters final reads when durable legacy pruning retries", async () => {
     const storage = new OneMigrationMarkerWriteFailureStorage()
     seedCommittedCompatibility(storage, [RELAY_A, RELAY_B])
-    setInboxMigrationRecoveryRelayUrls(OWNER, [RELAY_A, RELAY_B])
     const previousOwner = signedEvent(10002, 100, [["r", RELAY_B]])
     const replacementOwner = signedEvent(10002, 101, [["r", RELAY_A]])
     let localState = emptyAccountNetworkLocalState(OWNER, () => 100)
@@ -1066,7 +1059,17 @@ describe("legacy account Network migration", () => {
       readRelayUrls: [RELAY_A, RELAY_B],
     })
     expect(reconciliation.legacyInboxRecoveryRelayUrls).toEqual([RELAY_B])
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([RELAY_B])
+    expect(
+      planInboxReadRelays({
+        declaration: reconciliation.inboxDeclaration,
+        authenticatedPubkey: OWNER,
+        compatibilityRelayUrls: [],
+        migrationRecoveryRelayUrls: reconciliation.legacyInboxRecoveryRelayUrls,
+      })
+    ).toMatchObject({
+      relayUrls: [RELAY_B],
+      relaySources: { [RELAY_B]: "migration_recovery" },
+    })
   })
 
   it("reads only an already-committed NIP-17 compatibility marker during cleanup", async () => {
@@ -1094,6 +1097,6 @@ describe("legacy account Network migration", () => {
       version: 1,
       readRelayUrls: [RELAY_A],
     })
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([RELAY_A])
+    expect(reconciliation.legacyInboxRecoveryRelayUrls).toEqual([RELAY_A])
   })
 })

@@ -742,17 +742,24 @@ function CheckoutMerchantIdentityLink({
 function OrderSummary({
   items,
   merchantPubkey,
+  accountPubkey,
+  authenticatedPubkey,
   btcUsdRate,
   availabilityByProductId,
   formatPrice,
 }: {
   items: CartItem[]
   merchantPubkey: string
+  accountPubkey: string | null
+  authenticatedPubkey: string | null
   btcUsdRate: PricingRateInput
   availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
   formatPrice: PriceFormatter
 }) {
-  const { data: merchantProfile } = useProfile(merchantPubkey)
+  const { data: merchantProfile } = useProfile(merchantPubkey, {
+    accountPubkey,
+    authenticatedPubkey,
+  })
   const merchantName = getMerchantDisplayName(merchantProfile, merchantPubkey)
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0)
   const fulfillmentLane = getCartFulfillmentLane(items)
@@ -1270,8 +1277,13 @@ function CheckoutPage() {
       selectedMerchant,
       shippingOptionCoordinates,
       shippingRevisionKey,
+      session.relayScope ?? "no-relay-scope",
     ],
-    queryFn: () => getShippingOptionsByCoordinates(shippingOptionCoordinates),
+    queryFn: () =>
+      getShippingOptionsByCoordinates(shippingOptionCoordinates, {
+        accountPubkey: signedBuyerPubkey,
+        authenticatedPubkey: signedBuyerPubkey,
+      }),
     enabled:
       !!selectedMerchant &&
       !isAllDigital &&
@@ -1323,12 +1335,16 @@ function CheckoutPage() {
     queryKey: [
       "event-market-organizer-inbox",
       session.relayScope ?? "no-relay-scope",
+      draftOwnerIdentity ?? "anonymous",
       pickupHandoff?.mode === "organizer_handoff"
         ? pickupHandoff.handlerPubkey
         : "not-required",
     ],
     queryFn: () =>
-      resolveEventMarketOrganizerInbox(pickupHandoff!.handlerPubkey),
+      resolveEventMarketOrganizerInbox(pickupHandoff!.handlerPubkey, {
+        requestingAccountPubkey: draftOwnerIdentity,
+        authenticatedPubkey: draftOwnerIdentity,
+      }),
     enabled:
       session.relaySettingsReady && pickupHandoff?.mode === "organizer_handoff",
     staleTime: 0,
@@ -1962,6 +1978,8 @@ function CheckoutPage() {
         refreshedProducts: refreshResult.products,
         readShippingOptions: getShippingOptionsByCoordinates,
         rateInput,
+        accountPubkey: draftOwnerIdentity,
+        authenticatedPubkey: draftOwnerIdentity,
       })
     } catch (error) {
       recordCheckoutStepResult({
@@ -2379,7 +2397,10 @@ function CheckoutPage() {
       setStep("sending")
 
       const [delivery] = await Promise.all([
-        publishBuyerOrderMessage(rumor, ndk, selectedMerchant, buyerIdentity),
+        publishBuyerOrderMessage(rumor, ndk, selectedMerchant, buyerIdentity, {
+          accountPubkey: signedBuyerPubkey,
+          authenticatedPubkey: draftOwnerIdentity,
+        }),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
       orderDelivered = true
@@ -2701,10 +2722,8 @@ function CheckoutPage() {
       const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
       const refreshedProfileResult = await getProfiles({
         pubkeys: [selectedMerchant],
-        authenticatedPubkey:
-          selectedMerchant === signedBuyerPubkey
-            ? signedBuyerPubkey
-            : undefined,
+        accountPubkey: signedBuyerPubkey,
+        authenticatedPubkey: signedBuyerPubkey,
         skipCache: true,
         requireCompleteEvidence: true,
         evidenceScope: "payment",
@@ -2897,7 +2916,11 @@ function CheckoutPage() {
         orderRumor,
         ndk,
         selectedMerchant,
-        buyerIdentity
+        buyerIdentity,
+        {
+          accountPubkey: signedBuyerPubkey,
+          authenticatedPubkey: draftOwnerIdentity,
+        }
       )
       orderDelivered = true
       clearCheckoutShippingSession()
@@ -2987,6 +3010,8 @@ function CheckoutPage() {
       const serviceCtx: OrderPaymentContext = {
         orderId,
         buyerPubkey,
+        accountPubkey: signedBuyerPubkey,
+        authenticatedPubkey: draftOwnerIdentity,
         buyerIdentity: guestIdentity ?? undefined,
         merchantPubkey: selectedMerchant,
         merchantLud16: currentMerchantLud16,
@@ -4613,6 +4638,8 @@ function CheckoutPage() {
         <OrderSummary
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
+          accountPubkey={draftOwnerIdentity}
+          authenticatedPubkey={draftOwnerIdentity}
           btcUsdRate={btcUsdRate}
           availabilityByProductId={checkoutAvailability.availabilityByProductId}
           formatPrice={shopperPricing.formatPrice}

@@ -5,6 +5,7 @@ import {
   readRetainedOwnerRelayList,
   resolveOwnerRelayList,
   type OwnerRelayListResolution,
+  type OwnerRelayListEvidenceRepository,
   type OwnerRelayListEvidenceRecord,
   type ResolveOwnerRelayListOptions,
 } from "./owner-relay-list-evidence"
@@ -24,13 +25,10 @@ import {
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
 import {
-  clearInboxMigrationRecoveryRelayUrls,
   MAX_DECLARED_INBOX_WRITE_RELAYS,
   MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS,
-  getInboxMigrationRecoveryRelayUrls,
   readRetainedInboxDeclaration,
   resolveInboxDeclaration,
-  setInboxMigrationRecoveryRelayUrls,
   sharedInboxDiscoveryRelayUrls,
   type InboxDeclarationResolution,
   type ResolveInboxDeclarationOptions,
@@ -38,13 +36,13 @@ import {
 import {
   createRelaySettingsFromPreferences,
   getRelaySettingsStorageKey,
-  loadRelaySettings,
+  normalizeOwnerSelectedRelayUrls,
   normalizeSecureOrIsolatedE2eRelayUrls,
   normalizeRelaySettingsState,
-  setAccountRelaySettingsProjection,
   tryNormalizeRelayUrl,
   type RelaySettingsEntry,
   type RelayScanResult,
+  type RelaySettingsPlanningSnapshot,
   type RelaySettingsState,
 } from "./relay-settings"
 import { getAccountRelayScope, getLegacySignedInRelayScopes } from "./session"
@@ -54,7 +52,7 @@ const LEGACY_READ_RECOVERY_KEY_PREFIX =
   "conduit:network-legacy-read-recovery:v1"
 export const LEGACY_RELAY_READ_RECOVERY_VERSION = 1
 
-export type NetworkRoleMembership = "published" | "pending" | "draft" | null
+export type NetworkRoleMembership = "published" | "pending" | null
 
 export interface NetworkPreferenceRow {
   url: string
@@ -62,8 +60,6 @@ export interface NetworkPreferenceRow {
   read: NetworkRoleMembership
   write: NetworkRoleMembership
   privateInbox: NetworkRoleMembership
-  draftRead: boolean
-  draftWrite: boolean
 }
 
 export interface AccountNetworkPreferencesProjection {
@@ -74,7 +70,6 @@ export interface AccountNetworkPreferencesProjection {
   relayListStale: boolean
   inboxState: InboxDeclarationResolution["state"]
   inboxStale: boolean
-  runtimeRelaySettings: RelaySettingsState
 }
 
 export interface LegacyRelayReadRecoveryRecord {
@@ -135,6 +130,8 @@ export interface AccountNetworkPreferencesReconciliation {
   projection: AccountNetworkPreferencesProjection
   ownerRelayList: OwnerRelayListResolution
   inboxDeclaration: InboxDeclarationResolution
+  /** Exact canonical whole-relay exclusion set observed for this reconciliation. */
+  localExcludedRelayUrls: string[]
   legacyMigration: LegacyRelaySettingsMigrationStatus
   legacyReviewCandidate: LegacyRelaySettingsReviewCandidate | null
   /** Exact committed migration recovery input for the next reviewed change. */
@@ -158,6 +155,10 @@ export interface ReconcileAccountNetworkPreferencesOptions {
   localStateRepository?: AccountNetworkLocalStateRepository
   /** Account whose local cutoff gates the reconciliation relay attempts. */
   requestingAccountPubkey?: string | null
+  /** Active authenticated account for owner-selected ws:// read authority. */
+  authenticatedPubkey?: string | null
+  /** Cancels queued or in-flight reconciliation I/O on session change. */
+  signal?: AbortSignal
 }
 
 export interface HydrateAccountNetworkPreferencesOptions {
@@ -188,10 +189,6 @@ function browserStorage(): LegacyRelaySettingsStorage | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function createEmptyRelaySettings(): RelaySettingsState {
-  return { version: 1, entries: [], updatedAt: 0 }
 }
 
 /** Deterministic integrity token; this is not a cryptographic claim. */
@@ -225,26 +222,6 @@ function parseRelaySettingsStorageValue(
     })
   } catch {
     return null
-  }
-}
-
-function readRelaySettingsFromStorage(
-  scope: string,
-  storage: LegacyRelaySettingsStorage
-): RelaySettingsState {
-  try {
-    const raw = storage.getItem(getRelaySettingsStorageKey(scope))
-    const settings = parseRelaySettingsStorageValue(raw)
-    return settings
-      ? normalizeRelaySettingsState({
-          ...settings,
-          entries: settings.entries.filter(
-            (entry) => entry.source !== "default"
-          ),
-        })
-      : createEmptyRelaySettings()
-  } catch {
-    return createEmptyRelaySettings()
   }
 }
 
@@ -486,6 +463,59 @@ function hasEligibleSignedOwnerProjection(
       resolution.current.state === "signed_empty" ||
       (resolution.current.state === "malformed" && resolution.lastUsable))
   )
+}
+
+function relaySettingsFromOwnerEvidence(
+  resolution: OwnerRelayListResolution
+): RelaySettingsState {
+  const settings = createRelaySettingsFromPreferences(
+    resolution.preferences,
+    "published"
+  )
+  settings.updatedAt =
+    resolution.current?.observedAt ?? resolution.lookup.observedAt
+  return settings
+}
+
+/**
+ * Bind account planners to retained, validated, durable kind-10002 evidence.
+ *
+ * This Adapter performs no relay I/O and creates no second authority. Missing
+ * or unreadable evidence yields a non-authoritative empty snapshot so the pure
+ * planner can apply its explicit bootstrap policy. A validated signed-empty
+ * frontier remains authoritative and therefore suppresses membership fallback.
+ */
+export async function readDurableAccountRelaySettingsPlanningSnapshot(
+  pubkey: string,
+  options: { evidenceRepository?: OwnerRelayListEvidenceRepository } = {}
+): Promise<RelaySettingsPlanningSnapshot> {
+  const normalizedPubkey = normalizeOwnerRelayListPubkey(pubkey)
+  if (!normalizedPubkey) {
+    return {
+      settings: createRelaySettingsFromPreferences([], "published"),
+      signedRelayListAuthoritative: false,
+    }
+  }
+  let retained: OwnerRelayListResolution | null = null
+  try {
+    retained = await readRetainedOwnerRelayList(normalizedPubkey, {
+      evidenceRepository: options.evidenceRepository,
+      durableOnly: true,
+    })
+  } catch {
+    // Durable storage can be unavailable in browser privacy modes. Without a
+    // validated retained frontier there is no positive account membership;
+    // callers retain only their explicit code-owned bootstrap policy.
+  }
+  const signedRelayListAuthoritative = Boolean(
+    retained && hasEligibleSignedOwnerProjection(retained)
+  )
+  return {
+    settings: retained
+      ? relaySettingsFromOwnerEvidence(retained)
+      : createRelaySettingsFromPreferences([], "published"),
+    signedRelayListAuthoritative,
+  }
 }
 
 function hasMigrationAuthoritativeOwnerReplacement(
@@ -793,7 +823,6 @@ export function clearLegacyRelayReadRecovery(input: {
     if (!persistAndVerify(storage, markerKey, settledMarkerRaw)) {
       return "retryable"
     }
-    clearInboxMigrationRecoveryRelayUrls(pubkey)
     if (recoveryRaw !== null && !removeAndVerify(storage, recoveryKey)) {
       return "retryable"
     }
@@ -827,11 +856,6 @@ export function removeLegacyRelayReadRecoveryRelayUrls(input: {
   )
   if (removedRelayUrls.size === 0) return "already_clear"
 
-  const processRelayUrls = getInboxMigrationRecoveryRelayUrls(pubkey).filter(
-    (relayUrl) => !removedRelayUrls.has(relayUrl)
-  )
-  setInboxMigrationRecoveryRelayUrls(pubkey, processRelayUrls)
-
   const storage = input.storage ?? browserStorage()
   if (!storage) return "not_applicable"
 
@@ -844,7 +868,6 @@ export function removeLegacyRelayReadRecoveryRelayUrls(input: {
     if (markerRaw !== null && !marker) return "retryable"
     if (!marker?.recoveryFingerprint) {
       if (recoveryRaw !== null) return "retryable"
-      clearInboxMigrationRecoveryRelayUrls(pubkey)
       return "already_clear"
     }
     if (
@@ -859,7 +882,6 @@ export function removeLegacyRelayReadRecoveryRelayUrls(input: {
     const readRelayUrls = recovery.readRelayUrls.filter(
       (relayUrl) => !removedRelayUrls.has(relayUrl)
     )
-    setInboxMigrationRecoveryRelayUrls(pubkey, readRelayUrls)
     if (readRelayUrls.length === recovery.readRelayUrls.length) {
       return "already_clear"
     }
@@ -885,7 +907,8 @@ export function removeLegacyRelayReadRecoveryRelayUrls(input: {
     })
     if (!persistAndVerify(storage, markerKey, nextMarkerRaw)) {
       // Best-effort rollback keeps the prior committed pair readable. The
-      // process lane remains filtered until the durable update is retried.
+      // current reconciliation remains filtered until the durable update is
+      // retried.
       persistAndVerify(storage, recoveryKey, recoveryRaw)
       return "retryable"
     }
@@ -1051,9 +1074,6 @@ async function migrateLegacyRelaySettingsDraftWithCandidate(
         repository,
         updatedAt,
       })
-      if (!marker?.recoveryFingerprint) {
-        clearInboxMigrationRecoveryRelayUrls(pubkey)
-      }
       if (
         storage.getItem(recoveryKey) !== null &&
         !marker?.recoveryFingerprint &&
@@ -1277,7 +1297,6 @@ export function projectAccountNetworkPreferences(input: {
   relayScope: string
   ownerRelayList: OwnerRelayListResolution
   inboxDeclaration: InboxDeclarationResolution
-  draft?: RelaySettingsState
 }): AccountNetworkPreferencesProjection {
   const rows = new Map<string, NetworkPreferenceRow>()
   const ensureRow = (url: string): NetworkPreferenceRow => {
@@ -1289,8 +1308,6 @@ export function projectAccountNetworkPreferences(input: {
       read: null,
       write: null,
       privateInbox: null,
-      draftRead: false,
-      draftWrite: false,
     }
     rows.set(url, row)
     return row
@@ -1308,22 +1325,6 @@ export function projectAccountNetworkPreferences(input: {
   for (const relayUrl of inbox.relayUrls) {
     ensureRow(relayUrl).privateInbox = inbox.membership
   }
-  for (const entry of input.draft?.entries ?? []) {
-    const row = ensureRow(entry.url)
-    row.draftRead = entry.readEnabled
-    row.draftWrite = entry.writeEnabled
-    if (row.read === null && entry.readEnabled) row.read = "draft"
-    if (row.write === null && entry.writeEnabled) row.write = "draft"
-  }
-
-  const runtimeRelaySettings = createRelaySettingsFromPreferences(
-    input.ownerRelayList.preferences,
-    "published"
-  )
-  runtimeRelaySettings.updatedAt =
-    input.ownerRelayList.current?.observedAt ??
-    input.ownerRelayList.lookup.observedAt
-
   return {
     pubkey: input.pubkey,
     relayScope: input.relayScope,
@@ -1332,7 +1333,6 @@ export function projectAccountNetworkPreferences(input: {
     relayListStale: input.ownerRelayList.stale,
     inboxState: input.inboxDeclaration.state,
     inboxStale: input.inboxDeclaration.stale,
-    runtimeRelaySettings,
   }
 }
 
@@ -1415,9 +1415,9 @@ async function applyFreshAuthoritativeNetworkReadds(input: {
 }
 
 /**
- * Install validated process authority from durable/local state before a
- * signed-in relay scope becomes ready. This performs no relay I/O; the fresh
- * reconciliation remains a separate background step.
+ * Load validated durable/local state into a session-owned reconciliation
+ * projection before a signed-in relay scope becomes ready. This performs no
+ * relay I/O; the fresh reconciliation remains a separate background step.
  */
 export async function hydrateAccountNetworkPreferences(
   pubkey: string,
@@ -1456,8 +1456,9 @@ export async function hydrateAccountNetworkPreferences(
     retainedInboxDeclaration ??
     unavailableInboxDeclaration(normalizedPubkey, observedAt)
   const storage = options.storage ?? browserStorage()
-  const excludedRelayUrls =
+  const excludedRelayUrls = (
     retainedLocalState?.exclusions.map((exclusion) => exclusion.relayUrl) ?? []
+  ).sort()
   const legacyRecoveryPruneStatus =
     storage && excludedRelayUrls.length > 0
       ? removeLegacyRelayReadRecoveryRelayUrls({
@@ -1474,32 +1475,17 @@ export async function hydrateAccountNetworkPreferences(
   const legacyInboxRecoveryRelayUrls = (
     legacyReadRecovery?.readRelayUrls ?? []
   ).filter((relayUrl) => !excludedRelayUrlSet.has(relayUrl))
-  const draft = storage
-    ? readRelaySettingsFromStorage(accountScope, storage)
-    : loadRelaySettings(accountScope)
   const projection = projectAccountNetworkPreferences({
     pubkey: normalizedPubkey,
     relayScope: accountScope,
     ownerRelayList,
     inboxDeclaration,
-    draft,
   })
-  setInboxMigrationRecoveryRelayUrls(
-    normalizedPubkey,
-    legacyInboxRecoveryRelayUrls
-  )
-  setAccountRelaySettingsProjection(
-    accountScope,
-    projection.runtimeRelaySettings,
-    {
-      signedRelayListAuthoritative:
-        hasEligibleSignedOwnerProjection(ownerRelayList),
-    }
-  )
   return {
     projection,
     ownerRelayList,
     inboxDeclaration,
+    localExcludedRelayUrls: excludedRelayUrls,
     legacyMigration:
       legacyRecoveryPruneStatus === "retryable"
         ? "retryable"
@@ -1534,25 +1520,49 @@ export async function reconcileAccountNetworkPreferences(
     dexieInboxDeclarationEvidenceRepository
   const localStateRepository =
     options.localStateRepository ?? dexieAccountNetworkLocalStateRepository
+  const authenticatedOwnerPubkey = normalizeOwnerRelayListPubkey(
+    options.authenticatedPubkey ?? ""
+  )
+  const ownerPlanningSnapshot =
+    authenticatedOwnerPubkey === normalizedPubkey
+      ? await readDurableAccountRelaySettingsPlanningSnapshot(
+          normalizedPubkey,
+          { evidenceRepository: ownerEvidenceRepository }
+        )
+      : null
+  const ownerSelectedRelayUrls =
+    authenticatedOwnerPubkey === normalizedPubkey
+      ? normalizeOwnerSelectedRelayUrls([
+          ...(options.ownerRelayList?.ownerSelectedRelayUrls ?? []),
+          ...(ownerPlanningSnapshot?.settings.entries.flatMap((entry) =>
+            entry.readEnabled || entry.writeEnabled ? [entry.url] : []
+          ) ?? []),
+        ])
+      : []
 
   const [ownerRelayList, inboxDeclaration] = await Promise.all([
     resolveOwner(normalizedPubkey, {
       ...options.ownerRelayList,
-      relayUrls,
+      relayUrls: [...ownerSelectedRelayUrls, ...relayUrls],
       requestingAccountPubkey:
         options.requestingAccountPubkey ?? normalizedPubkey,
+      authenticatedPubkey: options.authenticatedPubkey,
+      ownerSelectedRelayUrls,
       accountNetworkLocalStateRepository:
         options.ownerRelayList?.accountNetworkLocalStateRepository ??
         localStateRepository,
+      signal: options.signal,
     }),
     resolveInbox(normalizedPubkey, {
       ...options.inboxDeclaration,
       relayUrls,
       requestingAccountPubkey:
         options.requestingAccountPubkey ?? normalizedPubkey,
+      authenticatedPubkey: options.authenticatedPubkey,
       accountNetworkLocalStateRepository:
         options.inboxDeclaration?.accountNetworkLocalStateRepository ??
         localStateRepository,
+      signal: options.signal,
       allowLocalRelayUrlsForPubkey: normalizedPubkey,
       // A fresh signer connection is a reconciliation boundary, even when a
       // process-local kind-10050 resolution is still inside its normal TTL.
@@ -1596,8 +1606,9 @@ export async function reconcileAccountNetworkPreferences(
       )
       .catch(() => null),
   ])
-  const excludedRelayUrls =
+  const excludedRelayUrls = (
     retainedLocalState?.exclusions.map((exclusion) => exclusion.relayUrl) ?? []
+  ).sort()
   const legacyRecoveryPruneStatus =
     storage && excludedRelayUrls.length > 0
       ? removeLegacyRelayReadRecoveryRelayUrls({
@@ -1675,32 +1686,26 @@ export async function reconcileAccountNetworkPreferences(
   const legacyInboxRecoveryRelayUrls = (
     legacyReadRecovery?.readRelayUrls ?? []
   ).filter((relayUrl) => !excludedRelayUrlSet.has(relayUrl))
-  const draft = storage
-    ? readRelaySettingsFromStorage(accountScope, storage)
-    : loadRelaySettings(accountScope)
   const projection = projectAccountNetworkPreferences({
     pubkey: normalizedPubkey,
     relayScope: accountScope,
     ownerRelayList,
     inboxDeclaration,
-    draft,
   })
-  setInboxMigrationRecoveryRelayUrls(
-    normalizedPubkey,
-    legacyInboxRecoveryRelayUrls
-  )
-  setAccountRelaySettingsProjection(
-    accountScope,
-    projection.runtimeRelaySettings,
-    {
-      signedRelayListAuthoritative:
-        hasEligibleSignedOwnerProjection(ownerRelayList),
-    }
-  )
+  const committedLocalState = await localStateRepository
+    .get(normalizedPubkey)
+    .then((state) =>
+      state ? normalizeAccountNetworkLocalState(state, normalizedPubkey) : null
+    )
+    .catch(() => null)
+  const localExcludedRelayUrls = (
+    committedLocalState?.exclusions.map((exclusion) => exclusion.relayUrl) ?? []
+  ).sort()
   return {
     projection,
     ownerRelayList,
     inboxDeclaration,
+    localExcludedRelayUrls,
     legacyMigration: legacyMigrationResult.status,
     legacyReviewCandidate: legacyMigrationResult.legacyReviewCandidate,
     legacyInboxRecoveryRelayUrls,

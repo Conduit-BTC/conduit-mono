@@ -63,9 +63,11 @@ function RequiredMark() {
 }
 
 function ProfilePage() {
-  const { pubkey } = useAuth()
+  const { pubkey, status } = useAuth()
+  const authenticatedPubkey = status === "connected" ? pubkey : null
   const profileQuery = useProfile(pubkey, {
-    authenticatedPubkey: pubkey,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
     requireCompleteEvidence: true,
     evidenceScope: "profile_edit",
     maxUnresolvedRefetches: 2,

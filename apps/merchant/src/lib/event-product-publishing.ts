@@ -138,10 +138,13 @@ export function eventProductFormFromTemplate(
 }
 
 export async function listEventProductTemplates(
-  merchantPubkey: string
+  merchantPubkey: string,
+  authenticatedPubkey: string | null
 ): Promise<EventProductTemplate[]> {
   const result = await getMerchantStorefront({
     merchantPubkey,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
     sort: "updated_at_desc",
     includeMarketHidden: true,
   })
@@ -191,6 +194,7 @@ export function validateEventProductPublishForm(
 
 export async function publishEventProduct(input: {
   merchantPubkey: string
+  authenticatedPubkey: string | null
   marketReference: string
   form: EventProductPublishFormValues
   onSignedLocal?: (event: NDKEvent) => void | Promise<void>
@@ -204,7 +208,7 @@ export async function publishEventProduct(input: {
   const market = await resolveOrganizerEventMarket(
     input.marketReference,
     undefined,
-    input.merchantPubkey
+    input.authenticatedPubkey
   )
   const dTag = createFreshEventProductDTag(
     input.form.title,
@@ -221,6 +225,7 @@ export async function publishEventProduct(input: {
           merchantPickupCoordinate: (
             await ensureMerchantBoothPickup({
               authorPubkey: input.merchantPubkey,
+              authenticatedPubkey: input.authenticatedPubkey,
               dTag: `${dTag}-event-pickup`,
               title: "Merchant pickup",
               location: input.form.merchantPickupLocation.trim(),
@@ -265,6 +270,7 @@ export async function publishEventProduct(input: {
   })
   const delivery = await signAndPublishProductListing({
     merchantPubkey: input.merchantPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
     product,
     dTag,
     fulfillmentIntent: { kind: "coordinate_after_order" },
@@ -283,7 +289,10 @@ export async function publishEventProduct(input: {
 
 export async function retryEventProductDelivery(
   event: NDKEvent,
-  merchantPubkey: string
+  merchantPubkey: string,
+  authenticatedPubkey?: string | null
 ): Promise<PublishWithPlannerResult> {
-  return deliverSignedProductEvent(event, merchantPubkey)
+  return deliverSignedProductEvent(event, merchantPubkey, {
+    authenticatedPubkey,
+  })
 }

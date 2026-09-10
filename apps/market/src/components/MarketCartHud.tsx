@@ -44,7 +44,8 @@ export type MarketCartHudProps = {
 
 export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const navigate = useNavigate()
-  const { pubkey } = useAuth()
+  const { pubkey, status } = useAuth()
+  const authenticatedPubkey = status === "connected" ? pubkey : null
   const cart = useCart()
   const shopperPricing = useShopperPricing()
   const groups = useMemo(() => groupCartItems(cart.items), [cart.items])
@@ -53,6 +54,8 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     [groups]
   )
   const profiles = useProfiles(merchantPubkeys, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
     priority: "visible",
     maxUnresolvedRefetches: 2,
   })

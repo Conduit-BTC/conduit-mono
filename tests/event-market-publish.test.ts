@@ -479,4 +479,41 @@ describe("organizer event-market publishing", () => {
     })
     expect(published[0]?.tags).toEqual(signed.tags)
   })
+
+  it("requires explicit matching authentication for owner relay authority on retry", async () => {
+    const signed = finalizeEvent(
+      {
+        kind: EVENT_KINDS.SHIPPING_OPTION,
+        created_at: 1_900_000_000,
+        tags: [["d", "pickup-auth"]],
+        content: "",
+      },
+      ORGANIZER_SECRET
+    )
+    const authenticatedPubkeys: Array<string | null | undefined> = []
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      publishWithPlanner: async (_event, options) => {
+        authenticatedPubkeys.push(options.authenticatedPubkey)
+        return publishResult(true)
+      },
+    })
+
+    await retryOrganizerEventMarketRecord({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      signedEvent: signed,
+    })
+    await retryOrganizerEventMarketRecord({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      authenticatedPubkey: OTHER_PUBKEY,
+      signedEvent: signed,
+    })
+    await retryOrganizerEventMarketRecord({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      authenticatedPubkey: ORGANIZER_PUBKEY,
+      signedEvent: signed,
+    })
+
+    expect(authenticatedPubkeys).toEqual([null, null, ORGANIZER_PUBKEY])
+  })
 })

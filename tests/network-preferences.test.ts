@@ -5,10 +5,8 @@ import {
   getPublicKey,
 } from "nostr-tools/pure"
 import {
-  __resetAccountRelaySettingsProjectionsForTests,
   __resetInboxDeclarationCache,
   __resetOwnerRelayListEvidenceForTests,
-  canRelaySettingsChangeControlRuntime,
   clearLegacyRelayReadRecovery,
   config,
   createInMemoryAccountNetworkLocalStateRepository,
@@ -17,35 +15,34 @@ import {
   createRelaySettingsFromPreferences,
   DEFAULT_READ_FANOUT,
   getAccountRelayScope,
-  getAccountRelaySettingsProjection,
   getCommittedLegacyRelayReadRecovery,
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
   getGeneralWriteRelayUrls,
-  getInboxMigrationRecoveryRelayUrls,
   getPublishableRelaySettingsEntries,
   hasRelaySettingsDraft,
+  hydrateAccountNetworkPreferences,
   getRelaySettingsStorageKey,
   getSignedInRelayScope,
   loadRelaySettingsForPlan,
-  loadRelaySettingsPresentation,
   migrateLegacyRelaySettingsDraft,
   normalizeOwnerRelayListPubkey,
   planInboxReadRelays,
   planRelayReads,
+  planRelayWrites,
   planRelaysWithSnapshot,
   prepareAccountNetworkPreferencesPresentation,
   projectAccountNetworkPreferences,
+  readDurableAccountRelaySettingsPlanningSnapshot,
   reconcileAccountNetworkPreferences,
   reconcileOwnerRelayListEvidence,
   resolveConduitSession,
   saveRelaySettings,
   serializeNip65RelayTags,
   setActiveRelaySettingsScope,
-  setAccountRelaySettingsProjection,
-  setInboxMigrationRecoveryRelayUrls,
   subscribeRelaySettingsChanges,
   type InboxDeclarationResolution,
+  type OwnerRelayListEvidenceRecord,
   type OwnerRelayListEvidenceRepository,
   type OwnerRelayListResolution,
 } from "@conduit/core"
@@ -53,6 +50,7 @@ import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event
 
 const OWNER_SECRET = generateSecretKey()
 const OWNER = getPublicKey(OWNER_SECRET)
+const OTHER = getPublicKey(generateSecretKey())
 const ACCOUNT_SCOPE = `account:${OWNER}`
 
 class MemoryStorage {
@@ -274,6 +272,30 @@ function signedOwnerResolution(): OwnerRelayListResolution {
   })
 }
 
+async function retainOwnerResolution(
+  resolution: OwnerRelayListResolution
+): Promise<OwnerRelayListEvidenceRepository> {
+  const repository = createInMemoryOwnerRelayListEvidenceRepository()
+  const eventEvidence = [resolution.lastUsable, resolution.current].filter(
+    (evidence): evidence is NonNullable<OwnerRelayListResolution["current"]> =>
+      Boolean(evidence)
+  )
+  await reconcileOwnerRelayListEvidence(
+    {
+      pubkey: OWNER,
+      observations: eventEvidence.map((evidence) => ({
+        signedEvent: evidence.signedEvent,
+        sourceRelayUrls: evidence.sourceRelayUrls,
+        observedAt: evidence.observedAt,
+        completeObservedAt: evidence.completeObservedAt,
+      })),
+      lookup: resolution.lookup,
+    },
+    repository
+  )
+  return repository
+}
+
 function inboxResolution(
   overrides: Partial<InboxDeclarationResolution> = {}
 ): InboxDeclarationResolution {
@@ -290,7 +312,6 @@ function inboxResolution(
 const originalWindow = globalThis.window
 
 beforeEach(() => {
-  __resetAccountRelaySettingsProjectionsForTests()
   __resetInboxDeclarationCache()
   __resetOwnerRelayListEvidenceForTests()
   setActiveRelaySettingsScope(null)
@@ -301,13 +322,81 @@ afterEach(() => {
     value: originalWindow,
     configurable: true,
   })
-  __resetAccountRelaySettingsProjectionsForTests()
   __resetInboxDeclarationCache()
   __resetOwnerRelayListEvidenceForTests()
   setActiveRelaySettingsScope(null)
 })
 
 describe("account Network preferences", () => {
+  it("returns canonical committed exclusions and refreshes them after authoritative re-adds", async () => {
+    const localStateRepository =
+      createInMemoryAccountNetworkLocalStateRepository()
+    await localStateRepository.update(OWNER, (current) => ({
+      ...current,
+      exclusions: [
+        {
+          relayUrl: "wss://signed.example",
+          committedAt: 2,
+          relayListFrontier: { eventId: null, createdAt: null },
+          inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        },
+        {
+          relayUrl: "wss://another-removed.example",
+          committedAt: 1,
+          relayListFrontier: { eventId: null, createdAt: null },
+          inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        },
+      ],
+    }))
+
+    const hydrated = await hydrateAccountNetworkPreferences(OWNER, {
+      storage: new MemoryStorage(),
+      localStateRepository,
+    })
+    expect(hydrated.localExcludedRelayUrls).toEqual([
+      "wss://another-removed.example",
+      "wss://signed.example",
+    ])
+
+    const signedOwner = signedOwnerResolution()
+    const observedSignedOwner: OwnerRelayListResolution = {
+      ...signedOwner,
+      observation: {
+        coverage: "complete",
+        attemptedRelayUrls: ["wss://discovery.example"],
+        successfulRelayUrls: ["wss://discovery.example"],
+        failedRelayUrls: [],
+        cappedRelayUrls: [],
+        eventId: signedOwner.current!.signedEvent.id,
+        eventSourceRelayUrls: ["wss://discovery.example"],
+      },
+    }
+    const ownerEvidence: OwnerRelayListEvidenceRecord = {
+      pubkey: normalizeOwnerRelayListPubkey(OWNER)!,
+      current: signedOwner.current!,
+      lastUsable: signedOwner.current!,
+      latestLookup: signedOwner.lookup,
+      cachedAt: 1_000,
+    }
+    const reconciliation = await reconcileAccountNetworkPreferences(OWNER, {
+      storage: new MemoryStorage(),
+      localStateRepository,
+      ownerRelayList: {
+        evidenceRepository: createInMemoryOwnerRelayListEvidenceRepository([
+          ownerEvidence,
+        ]),
+      },
+      inboxDeclaration: {
+        evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
+      },
+      resolveOwner: async () => observedSignedOwner,
+      resolveInbox: async () => inboxResolution(),
+    })
+    expect(reconciliation.localExcludedRelayUrls).toEqual([
+      "wss://another-removed.example",
+    ])
+  })
+
   it("uses one signed-in scope for Market and Merchant", () => {
     const market = resolveConduitSession({ appId: "market", pubkey: OWNER })
     const merchant = resolveConduitSession({ appId: "merchant", pubkey: OWNER })
@@ -320,28 +409,15 @@ describe("account Network preferences", () => {
     )
   })
 
-  it("keeps account drafts presentation-only for live relay connections", () => {
-    expect(
-      canRelaySettingsChangeControlRuntime(ACCOUNT_SCOPE, "local_draft")
-    ).toBe(false)
-    expect(
-      canRelaySettingsChangeControlRuntime(ACCOUNT_SCOPE, "signed_projection")
-    ).toBe(true)
-    expect(
-      canRelaySettingsChangeControlRuntime("market:guest", "local_draft")
-    ).toBe(true)
-    expect(canRelaySettingsChangeControlRuntime(null, "local_draft")).toBe(true)
-  })
-
-  it("distinguishes account draft notifications from signed runtime projections", () => {
+  it("emits account draft notifications without granting runtime authority", () => {
     const storage = new MemoryStorage()
     Object.defineProperty(globalThis, "window", {
       value: { localStorage: storage },
       configurable: true,
     })
-    const changes: Array<[string | null, string]> = []
-    const unsubscribe = subscribeRelaySettingsChanges((scope, source) => {
-      changes.push([scope, source])
+    const changes: Array<string | null> = []
+    const unsubscribe = subscribeRelaySettingsChanges((scope) => {
+      changes.push(scope)
     })
 
     try {
@@ -356,94 +432,14 @@ describe("account Network preferences", () => {
         "manual"
       )
       saveRelaySettings(settings, ACCOUNT_SCOPE)
-      setAccountRelaySettingsProjection(ACCOUNT_SCOPE, settings)
     } finally {
       unsubscribe()
     }
 
-    expect(changes).toEqual([
-      [ACCOUNT_SCOPE, "local_draft"],
-      [ACCOUNT_SCOPE, "signed_projection"],
-    ])
-  })
-
-  it("keeps exact signed membership re-observation silent while notifying on a role change", () => {
-    const changes: Array<[string | null, string]> = []
-    const unsubscribe = subscribeRelaySettingsChanges((scope, source) => {
-      changes.push([scope, source])
-    })
-    const initial = {
-      ...createRelaySettingsFromPreferences(
-        [
-          {
-            url: "wss://signed.example",
-            readEnabled: true,
-            writeEnabled: true,
-          },
-        ],
-        "published"
-      ),
-      updatedAt: 100,
-    }
-
-    try {
-      setAccountRelaySettingsProjection(ACCOUNT_SCOPE, initial)
-      setAccountRelaySettingsProjection(ACCOUNT_SCOPE, {
-        ...initial,
-        updatedAt: 200,
-      })
-      expect(getAccountRelaySettingsProjection(ACCOUNT_SCOPE)?.updatedAt).toBe(
-        200
-      )
-      setAccountRelaySettingsProjection(
-        ACCOUNT_SCOPE,
-        createRelaySettingsFromPreferences(
-          [
-            {
-              url: "wss://signed.example",
-              readEnabled: false,
-              writeEnabled: true,
-            },
-          ],
-          "published"
-        )
-      )
-    } finally {
-      unsubscribe()
-    }
-
-    expect(changes).toEqual([
-      [ACCOUNT_SCOPE, "signed_projection"],
-      [ACCOUNT_SCOPE, "signed_projection"],
-    ])
-  })
-
-  it("keeps an initial fallback-equivalent projection silent and notifies when it gains signed authority", () => {
-    const changes: string[] = []
-    const unsubscribe = subscribeRelaySettingsChanges((_scope, source) => {
-      changes.push(source)
-    })
-    const empty = createRelaySettingsFromPreferences([], "published")
-
-    try {
-      setAccountRelaySettingsProjection(ACCOUNT_SCOPE, empty, {
-        signedRelayListAuthoritative: false,
-      })
-      setAccountRelaySettingsProjection(
-        ACCOUNT_SCOPE,
-        { ...empty, updatedAt: empty.updatedAt + 1 },
-        { signedRelayListAuthoritative: false }
-      )
-      setAccountRelaySettingsProjection(
-        ACCOUNT_SCOPE,
-        { ...empty, updatedAt: empty.updatedAt + 2 },
-        { signedRelayListAuthoritative: true }
-      )
-    } finally {
-      unsubscribe()
-    }
-
-    expect(changes).toEqual(["signed_projection"])
+    expect(changes).toEqual([ACCOUNT_SCOPE])
+    expect(
+      getGeneralWriteRelayUrls({ scope: ACCOUNT_SCOPE, fallbackRelayUrls: [] })
+    ).toEqual([])
   })
 
   it("defers legacy cleanup on partial evidence and leaves complete-absence roles at their sole source", async () => {
@@ -633,7 +629,7 @@ describe("account Network preferences", () => {
         (entry) => entry.url
       )
     ).toEqual(["wss://legacy-draft.example"])
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
+    expect(reconciliation.legacyInboxRecoveryRelayUrls).toEqual([])
   })
 
   it("does not reinterpret untouched NIP-65 roles as inbox recovery", async () => {
@@ -660,17 +656,11 @@ describe("account Network preferences", () => {
         (row) => row.read !== "published" && row.write !== "published"
       )
     ).toBe(true)
-    expect(reconciliation.projection.runtimeRelaySettings.entries).toEqual([])
     expect(
       getGeneralReadRelayUrls({ scope: ACCOUNT_SCOPE, fallbackRelayUrls: [] })
     ).toEqual([])
     expect(
       getGeneralWriteRelayUrls({ scope: ACCOUNT_SCOPE, fallbackRelayUrls: [] })
-    ).toEqual([])
-    expect(
-      getPublishableRelaySettingsEntries(
-        reconciliation.projection.runtimeRelaySettings.entries
-      )
     ).toEqual([])
     const plan = planInboxReadRelays({
       declaration: inboxResolution(),
@@ -717,8 +707,7 @@ describe("account Network preferences", () => {
       expect(storage.getItem(legacyKey)).not.toBeNull()
       expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
       expect(reconciliation.projection.rows).toEqual([])
-      expect(reconciliation.projection.runtimeRelaySettings.entries).toEqual([])
-      expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
+      expect(reconciliation.legacyInboxRecoveryRelayUrls).toEqual([])
       expect(
         planInboxReadRelays({
           declaration: inboxResolution(),
@@ -758,7 +747,7 @@ describe("account Network preferences", () => {
       resolveInbox: async () => inboxResolution(),
     })
     expect(deferred.legacyMigration).toBe("deferred")
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
+    expect(deferred.legacyInboxRecoveryRelayUrls).toEqual([])
 
     expect(
       clearLegacyRelayReadRecovery({
@@ -768,7 +757,6 @@ describe("account Network preferences", () => {
       })
     ).toBe("cleared")
     expect(storage.getItem(legacyKey)).toBeNull()
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
 
     const afterClear = await reconcileAccountNetworkPreferences(OWNER, {
       relayUrls: ["wss://shared.example"],
@@ -785,7 +773,7 @@ describe("account Network preferences", () => {
     })
     expect(afterClear.legacyMigration).toBe("already_complete")
     expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
+    expect(afterClear.legacyInboxRecoveryRelayUrls).toEqual([])
     expect(
       planInboxReadRelays({
         declaration: inboxResolution(),
@@ -836,7 +824,7 @@ describe("account Network preferences", () => {
     expect(reconciliation.legacyMigration).toBe("already_complete")
     expect(storage.getItem(legacyKey)).toBeNull()
     expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
+    expect(reconciliation.legacyInboxRecoveryRelayUrls).toEqual([])
   })
 
   it("lets signed state supersede an uncommitted legacy review candidate", async () => {
@@ -891,13 +879,10 @@ describe("account Network preferences", () => {
     expect(
       storage.getItem(getRelaySettingsStorageKey(ACCOUNT_SCOPE))
     ).toBeNull()
-    expect(
-      signed.projection.runtimeRelaySettings.entries.map((entry) => entry.url)
-    ).toEqual(["wss://signed.example"])
     expect(signed.projection.rows.map((row) => row.url)).toEqual([
       "wss://signed.example",
     ])
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
+    expect(signed.legacyInboxRecoveryRelayUrls).toEqual([])
     expect(
       planInboxReadRelays({
         declaration: inboxResolution(),
@@ -1014,10 +999,9 @@ describe("account Network preferences", () => {
       ownerRelayList,
       inboxDeclaration: inboxResolution(),
     })
-    setInboxMigrationRecoveryRelayUrls(OWNER, ["wss://signed.example"])
-    setAccountRelaySettingsProjection(
-      ACCOUNT_SCOPE,
-      projection.runtimeRelaySettings
+    const signedSettings = createRelaySettingsFromPreferences(
+      ownerRelayList.preferences,
+      "published"
     )
 
     expect(projection.rows).toEqual([
@@ -1032,16 +1016,9 @@ describe("account Network preferences", () => {
     ).toEqual([])
     expect(
       getGeneralWriteRelayUrls({ scope: ACCOUNT_SCOPE, fallbackRelayUrls: [] })
-    ).toEqual(["wss://signed.example"])
-    expect(loadRelaySettingsPresentation(ACCOUNT_SCOPE).entries).toEqual([
-      expect.objectContaining({
-        url: "wss://signed.example",
-        readEnabled: false,
-        writeEnabled: true,
-      }),
-    ])
+    ).toEqual([])
     const publishable = getPublishableRelaySettingsEntries(
-      projection.runtimeRelaySettings.entries
+      signedSettings.entries
     )
     expect(publishable).toEqual([
       expect.objectContaining({
@@ -1056,6 +1033,7 @@ describe("account Network preferences", () => {
     const inboxPlan = planInboxReadRelays({
       declaration: inboxResolution(),
       authenticatedPubkey: OWNER,
+      migrationRecoveryRelayUrls: ["wss://signed.example"],
       compatibilityRelayUrls: [],
     })
     expect(inboxPlan.relayUrls).toEqual(["wss://signed.example"])
@@ -1064,22 +1042,27 @@ describe("account Network preferences", () => {
     })
   })
 
-  it("does not infer an inbox route from a signed NIP-65 Read relay", () => {
-    const signedRead = createRelaySettingsFromPreferences(
-      [
+  it("does not infer an inbox route from a signed NIP-65 Read relay", async () => {
+    const signedRead = signedRelayListResolution({
+      state: "declared",
+      tags: [["r", "wss://signed-read.example", "read"]],
+      preferences: [
         {
           url: "wss://signed-read.example",
           readEnabled: true,
           writeEnabled: false,
         },
       ],
-      "published"
+    })
+    const settingsSnapshot =
+      await readDurableAccountRelaySettingsPlanningSnapshot(OWNER, {
+        evidenceRepository: await retainOwnerResolution(signedRead),
+      })
+    expect(settingsSnapshot.settings.entries.map((entry) => entry.url)).toEqual(
+      ["wss://signed-read.example"]
     )
-    setAccountRelaySettingsProjection(ACCOUNT_SCOPE, signedRead)
     setActiveRelaySettingsScope(ACCOUNT_SCOPE)
-    expect(getGeneralReadRelayUrls({ fallbackRelayUrls: [] })).toEqual([
-      "wss://signed-read.example",
-    ])
+    expect(getGeneralReadRelayUrls({ fallbackRelayUrls: [] })).toEqual([])
 
     const beforeRecovery = planInboxReadRelays({
       declaration: inboxResolution(),
@@ -1088,10 +1071,10 @@ describe("account Network preferences", () => {
     })
     expect(beforeRecovery.relayUrls).toEqual([])
 
-    setInboxMigrationRecoveryRelayUrls(OWNER, ["wss://signed-read.example"])
     const afterRecovery = planInboxReadRelays({
       declaration: inboxResolution(),
       authenticatedPubkey: OWNER,
+      migrationRecoveryRelayUrls: ["wss://signed-read.example"],
       compatibilityRelayUrls: [],
     })
     expect(afterRecovery.relayUrls).toEqual(["wss://signed-read.example"])
@@ -1101,41 +1084,48 @@ describe("account Network preferences", () => {
   })
 
   it("keeps signed-empty account reads empty while public commerce discovery remains available", async () => {
-    const storage = new MemoryStorage()
-    await reconcileAccountNetworkPreferences(OWNER, {
-      relayUrls: ["wss://shared.example"],
-      storage,
-      resolveOwner: async () =>
-        signedRelayListResolution({
-          state: "signed_empty",
-          tags: [],
-          preferences: [],
-        }),
-      resolveInbox: async () => inboxResolution(),
+    const signedEmpty = signedRelayListResolution({
+      state: "signed_empty",
+      tags: [],
+      preferences: [],
     })
+    const settingsSnapshot =
+      await readDurableAccountRelaySettingsPlanningSnapshot(OWNER, {
+        evidenceRepository: await retainOwnerResolution(signedEmpty),
+      })
 
     const fallback = ["wss://bootstrap.example"]
     expect(
       getGeneralReadRelayUrls({
-        scope: ACCOUNT_SCOPE,
+        settings: settingsSnapshot.settings,
+        signedRelayListAuthoritative:
+          settingsSnapshot.signedRelayListAuthoritative,
         fallbackRelayUrls: fallback,
       })
     ).toEqual([])
     expect(
       getCommerceReadRelayUrls({
-        scope: ACCOUNT_SCOPE,
+        settings: settingsSnapshot.settings,
+        signedRelayListAuthoritative:
+          settingsSnapshot.signedRelayListAuthoritative,
         fallbackRelayUrls: fallback,
       })
     ).toEqual([])
     expect(
-      planRelaysWithSnapshot(ACCOUNT_SCOPE).planReads({
+      planRelayReads({
         intent: "general",
+        settings: settingsSnapshot.settings,
+        signedRelayListAuthoritative:
+          settingsSnapshot.signedRelayListAuthoritative,
         skipHealthFilter: true,
       }).relayUrls
     ).toEqual([])
     expect(
-      planRelaysWithSnapshot(ACCOUNT_SCOPE).planReads({
+      planRelayReads({
         intent: "commerce_products",
+        settings: settingsSnapshot.settings,
+        signedRelayListAuthoritative:
+          settingsSnapshot.signedRelayListAuthoritative,
         skipHealthFilter: true,
       }).relayUrls
     ).toContain(config.commerceDiscoveryRelayUrls[0])
@@ -1148,40 +1138,42 @@ describe("account Network preferences", () => {
   })
 
   it("keeps a signed Write-only relay list empty for generic reads", async () => {
-    const storage = new MemoryStorage()
     const writeOnlyUrl = "wss://write-only.example"
-    await reconcileAccountNetworkPreferences(OWNER, {
-      relayUrls: ["wss://shared.example"],
-      storage,
-      resolveOwner: async () =>
-        signedRelayListResolution({
-          state: "declared",
-          tags: [["r", writeOnlyUrl, "write"]],
-          preferences: [
-            {
-              url: writeOnlyUrl,
-              readEnabled: false,
-              writeEnabled: true,
-            },
-          ],
-        }),
-      resolveInbox: async () => inboxResolution(),
+    const writeOnly = signedRelayListResolution({
+      state: "declared",
+      tags: [["r", writeOnlyUrl, "write"]],
+      preferences: [
+        {
+          url: writeOnlyUrl,
+          readEnabled: false,
+          writeEnabled: true,
+        },
+      ],
     })
+    const settingsSnapshot =
+      await readDurableAccountRelaySettingsPlanningSnapshot(OWNER, {
+        evidenceRepository: await retainOwnerResolution(writeOnly),
+      })
 
     expect(
       getGeneralReadRelayUrls({
-        scope: ACCOUNT_SCOPE,
+        settings: settingsSnapshot.settings,
+        signedRelayListAuthoritative:
+          settingsSnapshot.signedRelayListAuthoritative,
         fallbackRelayUrls: ["wss://bootstrap.example"],
       })
     ).toEqual([])
     expect(
       getGeneralWriteRelayUrls({
-        scope: ACCOUNT_SCOPE,
+        settings: settingsSnapshot.settings,
         fallbackRelayUrls: [],
       })
     ).toEqual([writeOnlyUrl])
-    const commerceRelayUrls = planRelaysWithSnapshot(ACCOUNT_SCOPE).planReads({
+    const commerceRelayUrls = planRelayReads({
       intent: "commerce_products",
+      settings: settingsSnapshot.settings,
+      signedRelayListAuthoritative:
+        settingsSnapshot.signedRelayListAuthoritative,
       skipHealthFilter: true,
     }).relayUrls
     expect(commerceRelayUrls).toContain(config.commerceDiscoveryRelayUrls[0])
@@ -1251,25 +1243,32 @@ describe("account Network preferences", () => {
       resolveOwner: async () => malformed,
       resolveInbox: async () => inboxResolution(),
     })
+    const settingsSnapshot =
+      await readDurableAccountRelaySettingsPlanningSnapshot(OWNER, {
+        evidenceRepository: await retainOwnerResolution(malformed),
+      })
 
     expect(reconciliation.projection.relayListState).toBe("malformed")
     expect(reconciliation.projection.relayListStale).toBe(true)
-    expect(
-      reconciliation.projection.runtimeRelaySettings.entries.map(
-        (entry) => entry.url
-      )
-    ).toEqual(["wss://signed.example"])
+    expect(settingsSnapshot.settings.entries.map((entry) => entry.url)).toEqual(
+      ["wss://signed.example"]
+    )
     expect(
       getGeneralReadRelayUrls({
-        scope: ACCOUNT_SCOPE,
+        settings: settingsSnapshot.settings,
+        signedRelayListAuthoritative:
+          settingsSnapshot.signedRelayListAuthoritative,
         fallbackRelayUrls: ["wss://bootstrap.example"],
       })
     ).toEqual(["wss://signed.example"])
     expect(
-      planRelaysWithSnapshot(ACCOUNT_SCOPE).planWrites({
+      planRelayWrites({
         intent: "author_event",
         authorPubkey: OWNER,
         authenticatedPubkey: OWNER,
+        settings: settingsSnapshot.settings,
+        signedRelayListAuthoritative:
+          settingsSnapshot.signedRelayListAuthoritative,
         relayLists: new Map([
           [
             OWNER,
@@ -1342,8 +1341,7 @@ describe("account Network preferences", () => {
 
   it("keeps the recovery lane active until its clear tombstone is verified", () => {
     const storage = new FaultInjectingStorage()
-    const legacyKey = seedLegacyRelaySettings(storage)
-    setInboxMigrationRecoveryRelayUrls(OWNER, ["wss://legacy-read.example"])
+    const draftKey = seedCommittedLegacyCompatibility(storage)
     storage.arm({ operation: "set", call: 1 })
 
     expect(
@@ -1353,10 +1351,10 @@ describe("account Network preferences", () => {
         storage,
       })
     ).toBe("retryable")
-    expect(storage.getItem(legacyKey)).not.toBeNull()
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([
-      "wss://legacy-read.example",
-    ])
+    expect(storage.getItem(draftKey)).toBeNull()
+    expect(
+      getCommittedLegacyRelayReadRecovery(OWNER, storage)?.readRelayUrls
+    ).toEqual(["wss://legacy-read.example"])
 
     expect(
       clearLegacyRelayReadRecovery({
@@ -1365,11 +1363,11 @@ describe("account Network preferences", () => {
         storage,
       })
     ).toBe("cleared")
-    expect(storage.getItem(legacyKey)).toBeNull()
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
+    expect(storage.getItem(draftKey)).toBeNull()
+    expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
   })
 
-  it("drops the process recovery lane once the tombstone commits even if legacy cleanup retries", () => {
+  it("drops durable recovery once the tombstone commits even if legacy cleanup retries", () => {
     const storage = new FaultInjectingStorage()
     const draftKey = seedCommittedLegacyCompatibility(storage)
     storage.setItem(
@@ -1387,7 +1385,6 @@ describe("account Network preferences", () => {
         )
       )
     )
-    setInboxMigrationRecoveryRelayUrls(OWNER, ["wss://legacy-read.example"])
     seedLegacyRelaySettings(storage)
     storage.arm({ operation: "remove", call: 2 })
 
@@ -1399,7 +1396,6 @@ describe("account Network preferences", () => {
       })
     ).toBe("retryable")
     expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
     expect(storage.getItem(draftKey)).not.toBeNull()
 
     storage.clearFault()
@@ -1421,16 +1417,6 @@ describe("account Network preferences", () => {
         state: "distribution_pending",
         pendingRelayUrls: ["wss://signed.example", "wss://inbox.example"],
       }),
-      draft: createRelaySettingsFromPreferences(
-        [
-          {
-            url: "wss://draft.example",
-            readEnabled: true,
-            writeEnabled: false,
-          },
-        ],
-        "manual"
-      ),
     })
     expect(projection.rows).toEqual([
       {
@@ -1439,8 +1425,6 @@ describe("account Network preferences", () => {
         read: "published",
         write: "published",
         privateInbox: "pending",
-        draftRead: false,
-        draftWrite: false,
       },
       {
         url: "wss://inbox.example",
@@ -1448,17 +1432,6 @@ describe("account Network preferences", () => {
         read: null,
         write: null,
         privateInbox: "pending",
-        draftRead: false,
-        draftWrite: false,
-      },
-      {
-        url: "wss://draft.example",
-        position: 2,
-        read: "draft",
-        write: null,
-        privateInbox: null,
-        draftRead: true,
-        draftWrite: false,
       },
     ])
   })
@@ -1468,11 +1441,28 @@ describe("account Network preferences", () => {
     let ownerCalls = 0
     let inboxCalls = 0
     const inboxFreshness: Array<number | undefined> = []
+    const ownerSignals: Array<AbortSignal | undefined> = []
+    const inboxSignals: Array<AbortSignal | undefined> = []
+    const inboxAccountContexts: Array<{
+      requestingAccountPubkey?: string | null
+      authenticatedPubkey?: string | null
+    }> = []
+    const ownerAccountContexts: Array<{
+      requestingAccountPubkey?: string | null
+      authenticatedPubkey?: string | null
+      ownerSelectedRelayUrls: string[]
+    }> = []
     const relayPlans: string[][] = []
     const resolveOwner: NonNullable<
       Parameters<typeof reconcileAccountNetworkPreferences>[1]
     >["resolveOwner"] = async (_pubkey, options) => {
       ownerCalls += 1
+      ownerSignals.push(options.signal)
+      ownerAccountContexts.push({
+        requestingAccountPubkey: options.requestingAccountPubkey,
+        authenticatedPubkey: options.authenticatedPubkey,
+        ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+      })
       relayPlans.push([...(options.relayUrls ?? [])])
       return signedOwnerResolution()
     }
@@ -1480,22 +1470,55 @@ describe("account Network preferences", () => {
       Parameters<typeof reconcileAccountNetworkPreferences>[1]
     >["resolveInbox"] = async (_pubkey, options) => {
       inboxCalls += 1
+      inboxSignals.push(options.signal)
       inboxFreshness.push(options.freshnessMs)
+      inboxAccountContexts.push({
+        requestingAccountPubkey: options.requestingAccountPubkey,
+        authenticatedPubkey: options.authenticatedPubkey,
+      })
       relayPlans.push([...(options.relayUrls ?? [])])
       return inboxResolution()
     }
 
+    const signal = new AbortController().signal
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await reconcileAccountNetworkPreferences(OWNER, {
         relayUrls: ["wss://shared.example"],
         storage,
         resolveOwner,
         resolveInbox,
+        requestingAccountPubkey: OWNER,
+        authenticatedPubkey: OTHER,
+        signal,
       })
     }
     expect(ownerCalls).toBe(2)
     expect(inboxCalls).toBe(2)
     expect(inboxFreshness).toEqual([0, 0])
+    expect(ownerSignals).toEqual([signal, signal])
+    expect(inboxSignals).toEqual([signal, signal])
+    expect(ownerAccountContexts).toEqual([
+      {
+        requestingAccountPubkey: OWNER,
+        authenticatedPubkey: OTHER,
+        ownerSelectedRelayUrls: [],
+      },
+      {
+        requestingAccountPubkey: OWNER,
+        authenticatedPubkey: OTHER,
+        ownerSelectedRelayUrls: [],
+      },
+    ])
+    expect(inboxAccountContexts).toEqual([
+      {
+        requestingAccountPubkey: OWNER,
+        authenticatedPubkey: OTHER,
+      },
+      {
+        requestingAccountPubkey: OWNER,
+        authenticatedPubkey: OTHER,
+      },
+    ])
     expect(relayPlans).toEqual([
       ["wss://shared.example"],
       ["wss://shared.example"],
@@ -1504,7 +1527,7 @@ describe("account Network preferences", () => {
     ])
   })
 
-  it("keeps unsigned account drafts out of runtime while bridging signed state into the existing page", () => {
+  it("routes only durable signed membership while keeping account drafts presentation-only", async () => {
     const storage = new MemoryStorage()
     Object.defineProperty(globalThis, "window", {
       value: { localStorage: storage },
@@ -1527,32 +1550,34 @@ describe("account Network preferences", () => {
       getGeneralWriteRelayUrls({ scope: ACCOUNT_SCOPE, fallbackRelayUrls: [] })
     ).toEqual([])
 
-    const signed = createRelaySettingsFromPreferences(
-      [
-        {
-          url: "wss://signed.example",
-          readEnabled: true,
-          writeEnabled: true,
-        },
-      ],
-      "published"
-    )
-    setAccountRelaySettingsProjection(ACCOUNT_SCOPE, signed)
-    expect(getAccountRelaySettingsProjection(ACCOUNT_SCOPE)?.entries).toEqual(
-      signed.entries
-    )
+    const withoutEvidence =
+      await readDurableAccountRelaySettingsPlanningSnapshot(OWNER, {
+        evidenceRepository: createInMemoryOwnerRelayListEvidenceRepository(),
+      })
+    expect(withoutEvidence.settings.entries).toEqual([])
+    expect(withoutEvidence.signedRelayListAuthoritative).toBe(false)
+
+    const signed = signedOwnerResolution()
+    const signedSnapshot =
+      await readDurableAccountRelaySettingsPlanningSnapshot(OWNER, {
+        evidenceRepository: await retainOwnerResolution(signed),
+      })
+    expect(signedSnapshot.settings.entries.map((entry) => entry.url)).toEqual([
+      "wss://signed.example",
+    ])
+    expect(signedSnapshot.signedRelayListAuthoritative).toBe(true)
+    expect(
+      getGeneralWriteRelayUrls({
+        settings: signedSnapshot.settings,
+        fallbackRelayUrls: [],
+      })
+    ).toEqual(["wss://signed.example"])
     expect(
       getGeneralWriteRelayUrls({ scope: ACCOUNT_SCOPE, fallbackRelayUrls: [] })
-    ).toEqual(["wss://signed.example"])
-    expect(loadRelaySettingsPresentation(ACCOUNT_SCOPE).entries[0]?.url).toBe(
-      "wss://draft.example"
-    )
+    ).toEqual([])
 
     storage.removeItem(getRelaySettingsStorageKey(ACCOUNT_SCOPE))
     expect(hasRelaySettingsDraft(ACCOUNT_SCOPE)).toBe(false)
-    expect(loadRelaySettingsPresentation(ACCOUNT_SCOPE).entries[0]?.url).toBe(
-      "wss://signed.example"
-    )
     expect(
       storage.getItem(getRelaySettingsStorageKey(ACCOUNT_SCOPE))
     ).toBeNull()
@@ -1563,23 +1588,12 @@ describe("account Network preferences", () => {
     )
   })
 
-  it("does not let a malformed local draft hide a signed projection", () => {
+  it("treats malformed account drafts as neither presentation nor routing state", () => {
     const storage = new MemoryStorage()
     Object.defineProperty(globalThis, "window", {
       value: { localStorage: storage },
       configurable: true,
     })
-    const signed = createRelaySettingsFromPreferences(
-      [
-        {
-          url: "wss://signed.example",
-          readEnabled: false,
-          writeEnabled: true,
-        },
-      ],
-      "published"
-    )
-    setAccountRelaySettingsProjection(ACCOUNT_SCOPE, signed)
     const draftKey = getRelaySettingsStorageKey(ACCOUNT_SCOPE)
     storage.setItem(
       draftKey,
@@ -1595,22 +1609,18 @@ describe("account Network preferences", () => {
     )
 
     expect(hasRelaySettingsDraft(ACCOUNT_SCOPE)).toBe(false)
-    expect(loadRelaySettingsPresentation(ACCOUNT_SCOPE).entries).toEqual(
-      signed.entries
-    )
     expect(
       getGeneralWriteRelayUrls({ scope: ACCOUNT_SCOPE, fallbackRelayUrls: [] })
-    ).toEqual(["wss://signed.example"])
+    ).toEqual([])
 
     storage.setItem(
       draftKey,
       JSON.stringify({ version: 1, updatedAt: 1, entries: [] })
     )
     expect(hasRelaySettingsDraft(ACCOUNT_SCOPE)).toBe(true)
-    expect(loadRelaySettingsPresentation(ACCOUNT_SCOPE).entries).toEqual([])
     expect(
       getGeneralWriteRelayUrls({ scope: ACCOUNT_SCOPE, fallbackRelayUrls: [] })
-    ).toEqual(["wss://signed.example"])
+    ).toEqual([])
   })
 
   it("never exposes account A readiness during an A-to-B render transition", () => {

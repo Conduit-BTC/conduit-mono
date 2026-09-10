@@ -4,6 +4,7 @@ import {
   resolveEventMarketOrganizerInbox,
   resolveOrderPickupHandoffAuthority,
   type EventMarketOrganizerInboxResolution,
+  type ResolveInboxDeclarationOptions,
 } from "@conduit/core"
 import type { CartItem, CartPickupFulfillment } from "./cart-model"
 
@@ -104,18 +105,26 @@ export function getOrganizerInboxBlockingMessage(
 }
 
 type OrganizerInboxResolver = (
-  organizerPubkey: string
+  organizerPubkey: string,
+  options?: Pick<
+    ResolveInboxDeclarationOptions,
+    "requestingAccountPubkey" | "authenticatedPubkey"
+  >
 ) => Promise<EventMarketOrganizerInboxResolution>
 
 /** Merchant handoff needs no organizer inbox; organizer handoff fails closed. */
 export async function assertCartPickupHandlerReady(
   items: readonly Pick<CartItem, "fulfillment">[],
-  resolveInbox: OrganizerInboxResolver = resolveEventMarketOrganizerInbox
+  resolveInbox: OrganizerInboxResolver = resolveEventMarketOrganizerInbox,
+  accountContext: Pick<
+    ResolveInboxDeclarationOptions,
+    "requestingAccountPubkey" | "authenticatedPubkey"
+  > = {}
 ): Promise<void> {
   const handoff = getCartPickupHandoffSummary(items)
   if (!handoff || handoff.mode !== "organizer_handoff") return
 
-  const resolution = await resolveInbox(handoff.handlerPubkey)
+  const resolution = await resolveInbox(handoff.handlerPubkey, accountContext)
   if (resolution.state === "blocked") {
     throw new Error(getOrganizerInboxBlockingMessage(resolution))
   }

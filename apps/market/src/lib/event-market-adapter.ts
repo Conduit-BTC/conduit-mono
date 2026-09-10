@@ -95,7 +95,8 @@ export type ProductCartFulfillmentResolution =
 
 type EventCatalogLoader = (
   reference: string,
-  rateInput?: PricingRateInput
+  rateInput?: PricingRateInput,
+  authenticatedPubkey?: string | null
 ) => Promise<EventCatalog>
 
 function unavailableCatalog(
@@ -711,7 +712,8 @@ export function projectEventCatalogHydration({
 
 async function hydrateAcceptedProducts(
   resolution: EventMarketResolution,
-  rateInput: PricingRateInput
+  rateInput: PricingRateInput,
+  authenticatedPubkey?: string | null
 ): Promise<
   Pick<
     EventCatalog,
@@ -733,6 +735,7 @@ async function hydrateAcceptedProducts(
 
   const result = await getProductsByIds(requested, {
     includeMerchantHiddenProductIds: requested,
+    authenticatedPubkey,
   })
   return projectEventCatalogHydration({
     resolution,
@@ -743,7 +746,8 @@ async function hydrateAcceptedProducts(
 
 export async function loadEventCatalog(
   reference: string,
-  rateInput: PricingRateInput = null
+  rateInput: PricingRateInput = null,
+  authenticatedPubkey?: string | null
 ): Promise<EventCatalog> {
   const decoded = decodeEventMarketReference(reference, [EVENT_COLLECTION_KIND])
   if (!decoded) return unavailableCatalog(reference, "malformed")
@@ -752,7 +756,10 @@ export async function loadEventCatalog(
     decoded.coordinate,
     decoded.relayHints
   )
-  const resolution = await getEventMarket({ reference: canonicalNaddr })
+  const resolution = await getEventMarket({
+    reference: canonicalNaddr,
+    authenticatedPubkey,
+  })
   const base: EventCatalog = {
     state: resolution.state,
     reference: resolution.reference,
@@ -778,7 +785,11 @@ export async function loadEventCatalog(
     return base
   }
 
-  const hydrated = await hydrateAcceptedProducts(resolution, rateInput)
+  const hydrated = await hydrateAcceptedProducts(
+    resolution,
+    rateInput,
+    authenticatedPubkey
+  )
   return {
     ...base,
     ...hydrated,
@@ -908,7 +919,8 @@ function blockedProductResolution(
 export async function resolveProductCartFulfillment(
   product: Product,
   rateInput: PricingRateInput = null,
-  loadCatalog: EventCatalogLoader = loadEventCatalog
+  loadCatalog: EventCatalogLoader = loadEventCatalog,
+  authenticatedPubkey?: string | null
 ): Promise<ProductCartFulfillmentResolution> {
   if (product.format === "digital") {
     return { status: "standard", type: "digital", product }
@@ -924,7 +936,11 @@ export async function resolveProductCartFulfillment(
       try {
         return {
           candidate,
-          catalog: await loadCatalog(candidate.canonicalNaddr, rateInput),
+          catalog: await loadCatalog(
+            candidate.canonicalNaddr,
+            rateInput,
+            authenticatedPubkey
+          ),
         }
       } catch {
         return {
@@ -1114,13 +1130,15 @@ export function pickupItemMatchesCanonicalSnapshot(
  */
 export async function verifyPickupFulfillmentFreshness(
   item: PickupFreshnessPickupItem,
-  expectedMerchantPubkey?: string
+  expectedMerchantPubkey?: string,
+  authenticatedPubkey?: string | null
 ): Promise<PickupFreshnessResult> {
   const snapshot = item.fulfillment
   const reference = encodeEventMarketNaddr(snapshot.collection.coordinate)
   const resolution = await getEventMarket({
     reference,
     expectedOrganizerPubkey: snapshot.organizerPubkey,
+    authenticatedPubkey,
   })
   if (resolution.state !== "active" && resolution.state !== "partial") {
     return {
@@ -1132,6 +1150,7 @@ export async function verifyPickupFulfillmentFreshness(
 
   const productResult = await getProductsByIds([item.productId], {
     includeMerchantHiddenProductIds: [item.productId],
+    authenticatedPubkey,
   })
   const freshRecord = productResult.data.find(
     (record) => record.product.id === item.productId
@@ -1165,7 +1184,8 @@ export async function verifyPickupFulfillmentFreshness(
 
 export async function verifyPickupCartFreshness(
   items: ReadonlyArray<PickupFreshnessItem>,
-  expectedMerchantPubkey?: string
+  expectedMerchantPubkey?: string,
+  authenticatedPubkey?: string | null
 ): Promise<PickupFreshnessResult> {
   const pickupItems = items.filter(
     (item): item is PickupFreshnessPickupItem =>
@@ -1173,7 +1193,11 @@ export async function verifyPickupCartFreshness(
   )
   const results = await Promise.all(
     pickupItems.map((item) =>
-      verifyPickupFulfillmentFreshness(item, expectedMerchantPubkey)
+      verifyPickupFulfillmentFreshness(
+        item,
+        expectedMerchantPubkey,
+        authenticatedPubkey
+      )
     )
   )
   return results.find((result) => !result.fresh) ?? { fresh: true }

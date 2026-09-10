@@ -28,6 +28,7 @@ import {
   getRelayBucketConfigs,
   loadRelaySettings,
   mergeRelayPreferencesIntoSettings,
+  normalizeOwnerSelectedRelayUrls,
   normalizeSecureRelayUrls,
   normalizeSecureOrIsolatedE2eRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
@@ -335,6 +336,23 @@ describe("relay settings protocol helpers", () => {
 
     expect(normalizeSecureRelayUrls(inputs)).toEqual(expected)
     expect(secureRelayUrls(inputs)).toEqual(expected)
+  })
+
+  it("separates owner-selected ws authority from remote relay hints", () => {
+    const ownerWs = "ws://relay.owner.example/path"
+    const remoteWs = "ws://relay.remote.example"
+    const remoteWss = "wss://relay.damus.io"
+
+    expect(
+      normalizeOwnerSelectedRelayUrls([`${ownerWs}/`, ownerWs, remoteWss])
+    ).toEqual([ownerWs, remoteWss])
+    expect(
+      normalizeUntrustedRelayHintsForContext({
+        relayUrls: [ownerWs, remoteWs, remoteWss],
+        approvedRelayUrls: [ownerWs],
+        allowApprovedPrivate: true,
+      })
+    ).toEqual([remoteWss])
   })
 
   it("parses and serializes NIP-65 read/write relay tags", () => {
@@ -704,6 +722,17 @@ describe("relay settings protocol helpers", () => {
     ).toEqual([
       {
         url: "wss://previous.example",
+        configured: false,
+        enabled: false,
+        declared: false,
+        retained: true,
+        selectable: true,
+        relayInfoProbe: "unknown",
+        protectedMessageCapabilityEvidence: "unknown",
+        protectedMessageRuntimeEvidence: "unknown",
+      },
+      {
+        url: "ws://unsafe.example",
         configured: false,
         enabled: false,
         declared: false,

@@ -630,6 +630,7 @@ function MobileOrdersScroller({
 function OrdersPage() {
   const { pubkey, status } = useAuth()
   const session = useConduitSession()
+  const authenticatedPubkey = status === "connected" ? pubkey : null
   const navigate = useNavigate()
   const { order: selectedFromUrl, queue: queueFromUrl } = Route.useSearch()
   const selectedQueueFromUrl = queueFromUrl ?? "all"
@@ -637,7 +638,8 @@ function OrdersPage() {
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const queryClient = useQueryClient()
   const merchantProfileQuery = useProfile(pubkey, {
-    authenticatedPubkey: pubkey,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
   })
   const merchantInvoiceModule = useMemo(
     () => createDefaultMerchantInvoiceModule(),
@@ -817,6 +819,8 @@ function OrdersPage() {
     [conversations]
   )
   const buyerProfilesQuery = useProfiles(buyerPubkeys, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
     enabled:
       signerConnected && !isOrdersInitialHydration && buyerPubkeys.length > 0,
     priority: "background",
@@ -845,10 +849,18 @@ function OrdersPage() {
   }, [conversations])
 
   const orderProductsQuery = useQuery({
-    queryKey: ["order-products", allOrderProductIds],
+    queryKey: [
+      "order-products",
+      session.relayScope ?? "no-relay-scope",
+      authenticatedPubkey ?? "anonymous",
+      allOrderProductIds,
+    ],
     enabled: signerConnected && allOrderProductIds.length > 0,
     queryFn: () =>
-      getProductsByIds(allOrderProductIds, { includeMarketHidden: true }),
+      getProductsByIds(allOrderProductIds, {
+        includeMarketHidden: true,
+        authenticatedPubkey,
+      }),
     staleTime: 5 * 60_000,
   })
 
@@ -1281,6 +1293,7 @@ function OrdersPage() {
       verifyMerchantPickupOrderAuthorization({
         items: orderSummary!.items,
         merchantPubkey: pubkey!,
+        authenticatedPubkey: signerConnected ? pubkey : null,
       }),
     staleTime: 15_000,
     refetchInterval: 30_000,
@@ -1417,6 +1430,7 @@ function OrdersPage() {
     const result = await verifyMerchantPickupOrderAuthorization({
       items: orderSummary.items,
       merchantPubkey: pubkey,
+      authenticatedPubkey: signerConnected ? pubkey : null,
     })
     queryClient.setQueriesData(
       {
@@ -1436,6 +1450,7 @@ function OrdersPage() {
     pubkey,
     queryClient,
     selected?.id,
+    signerConnected,
     snapshottedOrderFulfillment.hasPickupClaim,
   ])
   const orderActions = selected
@@ -1547,6 +1562,7 @@ function OrdersPage() {
         session.relaySettingsReady &&
         !isOrdersInitialHydration,
       relayScope: session.relayScope,
+      authenticatedPubkey: signerConnected ? pubkey : null,
     }
   )
   const selectedBuyerNip05 = selectedBuyerProfile?.nip05?.trim()
@@ -1627,7 +1643,8 @@ function OrdersPage() {
         })
         const delivery = await deliverSignedProductEvent(
           payload.signedEvent,
-          pubkey
+          pubkey,
+          { authenticatedPubkey: signerConnected ? pubkey : null }
         )
         return {
           delivery,
@@ -1676,6 +1693,7 @@ function OrdersPage() {
         const verification = await verifyMerchantPickupOrderAuthorization({
           items: payload.orderItems,
           merchantPubkey: pubkey,
+          authenticatedPubkey: signerConnected ? pubkey : null,
           targetProductCoordinate: payload.adjustment.addressId,
         })
         const verifiedProduct =
@@ -1706,6 +1724,8 @@ function OrdersPage() {
       const fulfillmentIntent = await resolveStockUpdateFulfillmentIntent({
         product: publicationRecord.product,
         productAddressId: payload.adjustment.addressId,
+        accountPubkey: pubkey,
+        authenticatedPubkey: status === "connected" ? pubkey : null,
         orderHasPickupClaim: hasPickupClaim,
         ...(pickupFulfillment ? { verifiedPickup: pickupFulfillment } : {}),
       })
@@ -1907,6 +1927,7 @@ function OrdersPage() {
             note: invoiceNote.trim() || undefined,
             delivery: operationalDelivery,
             source: resolveInvoiceSelection(source),
+            authenticatedPubkey: signerConnected ? pubkey : null,
           })
         } catch {
           // Provider errors can contain invoices, addresses, relay responses,
@@ -1935,7 +1956,10 @@ function OrdersPage() {
           if (!selectedInvoiceScope) {
             throw new Error("No conversation selected")
           }
-          return await merchantInvoiceModule.retryDelivery(selectedInvoiceScope)
+          return await merchantInvoiceModule.retryDelivery({
+            ...selectedInvoiceScope,
+            authenticatedPubkey: signerConnected ? pubkey : null,
+          })
         } catch {
           throw new Error(
             "Could not redeliver the saved invoice. Refresh and try again."
@@ -1991,6 +2015,9 @@ function OrdersPage() {
           authorizationConfirmed,
           market,
           signer: ndk.signer,
+          transport: {
+            authenticatedPubkey: signerConnected ? pubkey : null,
+          },
         })
       }),
     onSuccess: async (delivery) => {
@@ -2012,7 +2039,10 @@ function OrdersPage() {
   const confirmPaymentMutation = useMutation({
     mutationFn: (input: MerchantPaymentConfirmationInput) =>
       runExclusiveOrderAction(orderActionLockRef, () =>
-        confirmMerchantPayment(input)
+        confirmMerchantPayment({
+          ...input,
+          authenticatedPubkey: signerConnected ? pubkey : null,
+        })
       ),
     onSuccess: async (result, input) => {
       setHandoffDeliveryRevision((revision) => revision + 1)
@@ -2061,6 +2091,9 @@ function OrdersPage() {
           merchantPubkey: pubkey,
           orderId: selected.orderId,
           signer: ndk.signer,
+          transport: {
+            authenticatedPubkey: signerConnected ? pubkey : null,
+          },
           matchingAckReceiptIds: new Set(
             (currentAck.currentAckRead.data?.data ?? []).map((ack) =>
               ack.payload.readyReceiptId.toLowerCase()
@@ -2157,6 +2190,9 @@ function OrdersPage() {
               merchantPubkey: pubkey,
               orderId: actionConversation.orderId,
               signer: ndk.signer,
+              transport: {
+                authenticatedPubkey: signerConnected ? pubkey : null,
+              },
               matchingAckReceiptIds: new Set(
                 (currentAck?.currentAckRead.data?.data ?? []).map((ack) =>
                   ack.payload.readyReceiptId.toLowerCase()
@@ -2205,6 +2241,7 @@ function OrdersPage() {
           payload: { status: nextStatus },
           delivery: operationalDelivery,
           signerInteraction: "external",
+          authenticatedPubkey: signerConnected ? pubkey : null,
         })
         if (
           nextStatus === "complete" &&
@@ -2247,6 +2284,7 @@ function OrdersPage() {
           payload: input.transition.payload,
           delivery: input.delivery,
           signerInteraction: "external",
+          authenticatedPubkey: signerConnected ? pubkey : null,
         })
       }),
     onSuccess: async (_data, input) => {
@@ -2294,6 +2332,7 @@ function OrdersPage() {
           },
           delivery: operationalDelivery,
           signerInteraction: "external",
+          authenticatedPubkey: signerConnected ? pubkey : null,
         })
       }),
     onSuccess: async () => {
@@ -2325,6 +2364,7 @@ function OrdersPage() {
         },
         delivery: operationalDelivery,
         signerInteraction: "external",
+        authenticatedPubkey: signerConnected ? pubkey : null,
       })
     },
     onSuccess: async () => {

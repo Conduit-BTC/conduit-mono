@@ -8,6 +8,7 @@ import {
 import { EVENT_KINDS } from "./kinds"
 import {
   getConfiguredIsolatedE2eRelayUrl,
+  normalizeOwnerSelectedRelayUrls,
   normalizeRelaySettingsState,
   RELAY_SETTINGS_STORAGE_VERSION,
   tryNormalizeRelayUrl,
@@ -106,16 +107,9 @@ function normalizeAccountRelayUrl(value: unknown, label: string): string {
   if (typeof value !== "string") {
     throw new Error(`${label} must be a relay URL`)
   }
-  const normalized = tryNormalizeRelayUrl(value)
-  const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
-  if (
-    !normalized.ok ||
-    (!normalized.url.startsWith("wss://") &&
-      normalized.url !== isolatedRelayUrl)
-  ) {
-    throw new Error(`${label} must be a secure relay URL`)
-  }
-  return normalized.url
+  const normalized = normalizeOwnerSelectedRelayUrls([value])[0]
+  if (!normalized) throw new Error(`${label} must be a valid relay URL`)
+  return normalized
 }
 
 function normalizeRelayUrlsStrict(value: unknown, label: string): string[] {
@@ -135,18 +129,27 @@ function normalizeRelayUrlsStrict(value: unknown, label: string): string[] {
   return normalized
 }
 
-function normalizeCandidateRelayUrls(relayUrls: readonly string[]): string[] {
+function normalizeCandidateRelayUrls(
+  relayUrls: readonly string[],
+  ownerSelectedRelayUrls: readonly string[] = []
+): string[] {
+  const ownerSelected = new Set(
+    normalizeOwnerSelectedRelayUrls(ownerSelectedRelayUrls)
+  )
+  const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
   const seen = new Set<string>()
   const normalized: string[] = []
   for (const relayUrl of relayUrls) {
-    try {
-      const accepted = normalizeAccountRelayUrl(relayUrl, "Relay URL")
-      if (seen.has(accepted)) continue
-      seen.add(accepted)
-      normalized.push(accepted)
-    } catch {
-      // Candidate plans can contain invalid untrusted hints. Ignore them.
-    }
+    const candidate = tryNormalizeRelayUrl(relayUrl)
+    if (!candidate.ok) continue
+    const accepted = candidate.url
+    const isSecure = accepted.startsWith("wss://")
+    const isIsolatedE2eRelay = accepted === isolatedRelayUrl
+    const isOwnerSelected = ownerSelected.has(accepted)
+    if (!isSecure && !isIsolatedE2eRelay && !isOwnerSelected) continue
+    if (seen.has(accepted)) continue
+    seen.add(accepted)
+    normalized.push(accepted)
   }
   return normalized
 }
@@ -571,7 +574,7 @@ function explicitRelayUrlsForEvent(event: SignedPublicNostrEvent): Set<string> {
       }
     }
   }
-  return new Set(normalizeCandidateRelayUrls(relayUrls))
+  return new Set(normalizeOwnerSelectedRelayUrls(relayUrls))
 }
 
 function isStrictlyStrongerFrontier(
@@ -691,11 +694,25 @@ export function replaceAccountNetworkRelayScans(
 
 export async function filterEligibleAccountRelayUrls(input: {
   accountPubkey: string
+  /** Active authenticated account. Required to admit owner-selected ws://. */
+  authenticatedPubkey?: string | null
   candidateRelayUrls: readonly string[]
+  /**
+   * Exact candidate subset whose provenance is the authenticated owner's
+   * explicit Network selection. Never populate this from remote relay hints.
+   */
+  ownerSelectedRelayUrls?: readonly string[]
   repository?: Pick<AccountNetworkLocalStateRepository, "get">
 }): Promise<string[]> {
   const accountPubkey = normalizeAccountNetworkPubkey(input.accountPubkey)
   if (!accountPubkey) return []
+  const authenticatedPubkey = input.authenticatedPubkey
+    ? normalizeAccountNetworkPubkey(input.authenticatedPubkey)
+    : null
+  const ownerSelectedRelayUrls =
+    authenticatedPubkey === accountPubkey
+      ? input.ownerSelectedRelayUrls
+      : undefined
   const repository = input.repository ?? dexieAccountNetworkLocalStateRepository
 
   try {
@@ -707,9 +724,10 @@ export async function filterEligibleAccountRelayUrls(input: {
     const excluded = new Set(
       state?.exclusions.map((exclusion) => exclusion.relayUrl) ?? []
     )
-    return normalizeCandidateRelayUrls(input.candidateRelayUrls).filter(
-      (relayUrl) => !excluded.has(relayUrl)
-    )
+    return normalizeCandidateRelayUrls(
+      input.candidateRelayUrls,
+      ownerSelectedRelayUrls
+    ).filter((relayUrl) => !excluded.has(relayUrl))
   } catch {
     // Durable local policy is the authority for whole-relay contact cutoffs.
     return []
@@ -757,10 +775,12 @@ export async function orderEquivalentAccountRelayOperations<T>(input: {
         localIndex,
       }))
       .sort((left, right) => {
-        const leftUrl = normalizeCandidateRelayUrls([
+        // Ordering only ranks otherwise eligible operations. Canonicalize
+        // owner-stored ws:// preferences here without granting I/O authority.
+        const leftUrl = normalizeOwnerSelectedRelayUrls([
           left.operation.relayUrl,
         ])[0]
-        const rightUrl = normalizeCandidateRelayUrls([
+        const rightUrl = normalizeOwnerSelectedRelayUrls([
           right.operation.relayUrl,
         ])[0]
         const leftRank = leftUrl === undefined ? undefined : rank.get(leftUrl)

@@ -18,6 +18,7 @@ import {
   type FetchEventsFanoutDiagnosticsResult,
 } from "./ndk"
 import {
+  normalizeOwnerSelectedRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
   tryNormalizeRelayUrl,
   type RelayPreference,
@@ -134,7 +135,13 @@ export interface ResolveOwnerRelayListOptions {
   evidenceRepository?: OwnerRelayListEvidenceRepository
   /** Account on whose behalf this discovery I/O is admitted. */
   requestingAccountPubkey?: string | null
+  /** Active authenticated account; the requested owner grants no authority. */
+  authenticatedPubkey?: string | null
+  /** Exact lookup targets explicitly selected by that authenticated owner. */
+  ownerSelectedRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  /** Cancels queued or in-flight lookup I/O when account authority changes. */
+  signal?: AbortSignal
   now?: () => number
 }
 
@@ -183,6 +190,39 @@ function normalizeSourceRelayUrls(urls: readonly string[]): string[] {
   return normalizePublicOrIsolatedE2eRelayHints(urls).sort()
 }
 
+function normalizeDistributionRelayUrls(
+  pubkey: NormalizedOwnerRelayListPubkey,
+  signedEvent: SignedPublicNostrEvent,
+  relayUrls: readonly string[]
+): string[] {
+  assertOwnerRelayListEvent(pubkey, signedEvent)
+  const ownerWriteRelayUrls = new Set(
+    normalizeOwnerSelectedRelayUrls(
+      parseOwnerRelayPreferences(signedEvent.tags).preferences.flatMap(
+        (preference) => (preference.writeEnabled ? [preference.url] : [])
+      )
+    )
+  )
+  const remoteOrCodeOwnedRelayUrls = new Set(
+    normalizePublicOrIsolatedE2eRelayHints(relayUrls)
+  )
+  const seen = new Set<string>()
+  const normalized: string[] = []
+  for (const relayUrl of relayUrls) {
+    const candidate = tryNormalizeRelayUrl(relayUrl)
+    if (!candidate.ok || seen.has(candidate.url)) continue
+    if (
+      !remoteOrCodeOwnedRelayUrls.has(candidate.url) &&
+      !ownerWriteRelayUrls.has(candidate.url)
+    ) {
+      continue
+    }
+    seen.add(candidate.url)
+    normalized.push(candidate.url)
+  }
+  return normalized
+}
+
 function sameSignedEvent(
   left: SignedPublicNostrEvent | undefined,
   right: SignedPublicNostrEvent | undefined
@@ -215,7 +255,8 @@ function normalizeRelayOutcomes(
     "timed_out",
   ])
   return outcomes.map((outcome, index) => {
-    const relayUrl = normalizeSourceRelayUrls([outcome.relayUrl])[0]
+    const normalized = tryNormalizeRelayUrl(outcome.relayUrl)
+    const relayUrl = normalized.ok ? normalized.url : undefined
     if (
       !relayUrl ||
       relayUrl !== publishRelayUrls[index] ||
@@ -252,7 +293,11 @@ function normalizePendingDistribution(
       "Owner relay-list pending bytes must match the retained frontier"
     )
   }
-  const publishRelayUrls = normalizeSourceRelayUrls(pending.publishRelayUrls)
+  const publishRelayUrls = normalizeDistributionRelayUrls(
+    pubkey,
+    pending.signedEvent,
+    pending.publishRelayUrls
+  )
   if (publishRelayUrls.length === 0) {
     throw new Error("Owner relay-list pending work requires publish targets")
   }
@@ -640,7 +685,11 @@ export function applyOwnerRelayListDistributionStage(
     input.stagedAt ?? now(),
     "Owner relay-list distribution stagedAt"
   )
-  const publishRelayUrls = normalizeSourceRelayUrls(input.publishRelayUrls)
+  const publishRelayUrls = normalizeDistributionRelayUrls(
+    pubkey,
+    input.signedEvent,
+    input.publishRelayUrls
+  )
   if (publishRelayUrls.length === 0) {
     throw new Error("Owner relay-list pending work requires publish targets")
   }
@@ -958,23 +1007,25 @@ function normalizeDiagnostics(
   result: FetchEventsFanoutDiagnosticsResult,
   plannedRelayUrls: readonly string[]
 ): FetchEventsFanoutDiagnosticsResult {
-  const planned = normalizePublicOrIsolatedE2eRelayHints(plannedRelayUrls)
+  // The plan was authority-filtered before final I/O. Preserve an admitted
+  // owner-selected ws:// target while discarding any unplanned diagnostics.
+  const planned = normalizeOwnerSelectedRelayUrls(plannedRelayUrls)
   const plannedSet = new Set(planned)
   const attemptedSet = new Set(
-    normalizePublicOrIsolatedE2eRelayHints([
+    normalizeOwnerSelectedRelayUrls([
       ...result.attemptedRelayUrls,
       ...result.successfulRelayUrls,
       ...result.failedRelayUrls,
     ]).filter((url) => plannedSet.has(url))
   )
   const successfulSet = new Set(
-    normalizePublicOrIsolatedE2eRelayHints(result.successfulRelayUrls).filter(
-      (url) => plannedSet.has(url)
+    normalizeOwnerSelectedRelayUrls(result.successfulRelayUrls).filter((url) =>
+      plannedSet.has(url)
     )
   )
   const failedSet = new Set(
-    normalizePublicOrIsolatedE2eRelayHints(result.failedRelayUrls).filter(
-      (url) => plannedSet.has(url)
+    normalizeOwnerSelectedRelayUrls(result.failedRelayUrls).filter((url) =>
+      plannedSet.has(url)
     )
   )
   for (const relayUrl of planned) {
@@ -985,9 +1036,57 @@ function normalizeDiagnostics(
     attemptedRelayUrls: planned.filter((url) => attemptedSet.has(url)),
     successfulRelayUrls: planned.filter((url) => successfulSet.has(url)),
     failedRelayUrls: planned.filter((url) => failedSet.has(url)),
-    cappedRelayUrls: normalizePublicOrIsolatedE2eRelayHints(
+    cappedRelayUrls: normalizeOwnerSelectedRelayUrls(
       result.cappedRelayUrls ?? []
     ).filter((url) => plannedSet.has(url)),
+  }
+}
+
+function ownerAuthorizedLookupRelayPlan(input: {
+  ownerPubkey: NormalizedOwnerRelayListPubkey
+  requestingAccountPubkey?: string | null
+  authenticatedPubkey?: string | null
+  candidateRelayUrls: readonly string[]
+  ownerSelectedRelayUrls?: readonly string[]
+}): {
+  accountPubkey: NormalizedOwnerRelayListPubkey | null
+  authenticatedPubkey: NormalizedOwnerRelayListPubkey | null
+  relayUrls: string[]
+  ownerSelectedRelayUrls: string[]
+} {
+  const authenticatedPubkey = normalizeOwnerRelayListPubkey(
+    input.authenticatedPubkey ?? ""
+  )
+  const requestedAccountPubkey = normalizeOwnerRelayListPubkey(
+    input.requestingAccountPubkey ?? ""
+  )
+  const accountPubkey =
+    input.requestingAccountPubkey === undefined ||
+    input.requestingAccountPubkey === null
+      ? authenticatedPubkey
+      : requestedAccountPubkey
+  const hasOwnerAuthority =
+    authenticatedPubkey === input.ownerPubkey &&
+    accountPubkey === authenticatedPubkey
+  const candidates = normalizeOwnerSelectedRelayUrls(input.candidateRelayUrls)
+  const candidateSet = new Set(candidates)
+  const ownerSelectedRelayUrls = hasOwnerAuthority
+    ? normalizeOwnerSelectedRelayUrls(
+        input.ownerSelectedRelayUrls ?? []
+      ).filter((relayUrl) => candidateSet.has(relayUrl))
+    : []
+  const secureRelayUrls = new Set(
+    normalizePublicOrIsolatedE2eRelayHints(candidates)
+  )
+  const ownerSelectedRelayUrlSet = new Set(ownerSelectedRelayUrls)
+  return {
+    accountPubkey,
+    authenticatedPubkey,
+    relayUrls: candidates.filter(
+      (relayUrl) =>
+        secureRelayUrls.has(relayUrl) || ownerSelectedRelayUrlSet.has(relayUrl)
+    ),
+    ownerSelectedRelayUrls,
   }
 }
 
@@ -1139,9 +1238,14 @@ export async function resolveOwnerRelayList(
   if (!normalized) throw new Error("Owner relay-list lookup requires a pubkey")
   const now = options.now ?? Date.now
   const observedAt = now()
-  const relayUrls = normalizePublicOrIsolatedE2eRelayHints(
-    options.relayUrls ?? accountNetworkDiscoveryRelayUrls()
-  )
+  const lookupPlan = ownerAuthorizedLookupRelayPlan({
+    ownerPubkey: normalized,
+    requestingAccountPubkey: options.requestingAccountPubkey,
+    authenticatedPubkey: options.authenticatedPubkey,
+    candidateRelayUrls: options.relayUrls ?? accountNetworkDiscoveryRelayUrls(),
+    ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+  })
+  const relayUrls = lookupPlan.relayUrls
   const fetchEvents =
     options.fetchEventsWithDiagnostics ?? fetchEventsFanoutWithDiagnostics
   let result: FetchEventsFanoutDiagnosticsResult
@@ -1163,15 +1267,19 @@ export async function resolveOwnerRelayList(
         },
         {
           relayUrls,
-          accountPubkey: options.requestingAccountPubkey,
+          accountPubkey: lookupPlan.accountPubkey,
+          authenticatedPubkey: lookupPlan.authenticatedPubkey,
+          ownerSelectedRelayUrls: lookupPlan.ownerSelectedRelayUrls,
           accountNetworkLocalStateRepository:
             options.accountNetworkLocalStateRepository,
+          signal: options.signal,
           connectTimeoutMs: 4_000,
           fetchTimeoutMs: 6_000,
           skipHealthFilter: true,
         }
       )
-    } catch {
+    } catch (error) {
+      if (options.signal?.aborted) throw error
       result = {
         events: [],
         attemptedRelayUrls: [...relayUrls],

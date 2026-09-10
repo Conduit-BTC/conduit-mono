@@ -71,6 +71,8 @@ export interface MediaServerPreferencesView {
 
 export interface UseMediaServerPreferencesOptions {
   enabled?: boolean
+  /** Explicit signed-in account; the requested preference owner is not proof. */
+  authenticatedPubkey?: string | null
   signer?: NDKSigner | null
   authMethod?: "nip07" | "nip46" | null
   authGeneration?: number
@@ -252,6 +254,8 @@ export function useMediaServerPreferences(
   options: UseMediaServerPreferencesOptions = {}
 ): UseMediaServerPreferencesResult {
   const normalizedOwner = owner?.trim().toLowerCase() || null
+  const normalizedAuthenticatedPubkey =
+    options.authenticatedPubkey?.trim().toLowerCase() || null
   const enabled = !!normalizedOwner && (options.enabled ?? true)
   const authGenerationRef = useRef(options.authGeneration ?? 0)
   const [draft, setDraft] = useState<DraftState>(() =>
@@ -284,14 +288,18 @@ export function useMediaServerPreferences(
     () => [
       MEDIA_SERVER_PREFERENCES_QUERY_KEY,
       normalizedOwner ?? "none",
+      normalizedAuthenticatedPubkey ?? "anonymous",
       lookupRevision,
     ],
-    [lookupRevision, normalizedOwner]
+    [lookupRevision, normalizedAuthenticatedPubkey, normalizedOwner]
   )
   const query = useQuery({
     queryKey,
     enabled,
-    queryFn: () => readMediaServerPreferences(normalizedOwner!),
+    queryFn: () =>
+      readMediaServerPreferences(normalizedOwner!, {
+        authenticatedPubkey: normalizedAuthenticatedPubkey,
+      }),
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
@@ -505,6 +513,7 @@ export function useMediaServerPreferences(
         signer,
         reviewed: toReviewedMediaServerEvidence(resolution),
         dependencies: {
+          authenticatedPubkey: normalizedAuthenticatedPubkey,
           shouldContinue: () => authGenerationRef.current === generation,
           onPhase: setPublishPhaseForOwner,
         },
@@ -523,6 +532,7 @@ export function useMediaServerPreferences(
     activeDraft.serverUrls,
     applyResult,
     normalizedOwner,
+    normalizedAuthenticatedPubkey,
     options.authGeneration,
     options.authMethod,
     options.signer,
@@ -544,6 +554,7 @@ export function useMediaServerPreferences(
       const result = await retryMediaServerPreferencesPublish({
         owner: normalizedOwner,
         dependencies: {
+          authenticatedPubkey: normalizedAuthenticatedPubkey,
           shouldContinue: () => authGenerationRef.current === generation,
           onPhase: setPublishPhaseForOwner,
         },
@@ -562,6 +573,7 @@ export function useMediaServerPreferences(
     applyResult,
     busy,
     normalizedOwner,
+    normalizedAuthenticatedPubkey,
     options.authGeneration,
     setPublishPhaseForOwner,
   ])

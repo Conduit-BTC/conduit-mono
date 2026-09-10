@@ -42,7 +42,7 @@ import {
   reduceEventMarketOrganizerClaims,
   resolveEventMarketHandoffAckGate,
   resolveEventMarketOrganizerInbox,
-  retryEventMarketPrivateDelivery,
+  retryEventMarketPrivateDelivery as retryEventMarketPrivateDeliveryCore,
   validateEventMarketReadyReceipt,
   type EventMarketPrivateDeliveryRecord,
   type EventMarketReadyReceiptSchema,
@@ -77,6 +77,30 @@ const EVIDENCE_CREATED_AT = 1_700_000_000_000
 const ISSUED_AT = 1_700_000_100
 const allowAllAccountNetworkLocalStateRepository = {
   get: async () => undefined,
+}
+
+type RetryEventMarketPrivateDeliveryInput = Parameters<
+  typeof retryEventMarketPrivateDeliveryCore
+>[0]
+
+function retryEventMarketPrivateDelivery(
+  input: Omit<
+    RetryEventMarketPrivateDeliveryInput,
+    "authenticatedOwnerPubkey" | "ownerSelectedSenderInboxRelayUrls"
+  > &
+    Partial<
+      Pick<
+        RetryEventMarketPrivateDeliveryInput,
+        "authenticatedOwnerPubkey" | "ownerSelectedSenderInboxRelayUrls"
+      >
+    >
+) {
+  return retryEventMarketPrivateDeliveryCore({
+    ...input,
+    authenticatedOwnerPubkey: input.authenticatedOwnerPubkey ?? MERCHANT,
+    ownerSelectedSenderInboxRelayUrls:
+      input.ownerSelectedSenderInboxRelayUrls ?? [],
+  })
 }
 const PRODUCT_EVENT = finalizeEvent(
   {
@@ -1057,6 +1081,7 @@ describe("event-market private handoff delivery", () => {
 
     const result = await retryEventMarketPrivateDelivery({
       record: readyDeliveryRecord(),
+      ownerSelectedSenderInboxRelayUrls: [isolatedRelayUrl],
       recipientInboxRelays: [otherLoopbackRelayUrl, isolatedRelayUrl],
       senderInboxRelays: [isolatedRelayUrl, otherLoopbackRelayUrl],
       publishFn: (async (_event, options) => {
@@ -1083,6 +1108,92 @@ describe("event-market private handoff delivery", () => {
         publishFn: (async () => successfulDelivery([])) as never,
       })
     ).rejects.toThrow("recipient inbox is not currently usable")
+  })
+
+  it("retries owner ws self-copies without admitting recipient or unselected ws targets", async () => {
+    const recipientSecureRelay = "wss://organizer.inbox.relay.dev"
+    const recipientWsRelay = "ws://organizer.inbox.relay.dev"
+    const ownerWsRelay = "ws://merchant.inbox.relay.dev"
+    const unselectedOwnerWsRelay = "ws://other-merchant.inbox.relay.dev"
+    const ownerSecureRelay = "wss://merchant.inbox.relay.dev"
+    const calls: Array<{
+      relayUrls: string[]
+      ownerSelectedRelayUrls: string[]
+    }> = []
+    const record = readyDeliveryRecord()
+
+    const result = await retryEventMarketPrivateDelivery({
+      record,
+      authenticatedOwnerPubkey: MERCHANT,
+      ownerSelectedSenderInboxRelayUrls: [ownerWsRelay],
+      recipientInboxRelays: [recipientWsRelay, recipientSecureRelay],
+      senderInboxRelays: [
+        ownerWsRelay,
+        unselectedOwnerWsRelay,
+        ownerSecureRelay,
+      ],
+      publishFn: (async (_event, options) => {
+        const relayUrls = [...(options.exclusiveRelayUrls ?? [])]
+        calls.push({
+          relayUrls,
+          ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+        })
+        return successfulDelivery(relayUrls)
+      }) as never,
+    })
+
+    expect(calls).toEqual([
+      {
+        relayUrls: [recipientSecureRelay],
+        ownerSelectedRelayUrls: [],
+      },
+      {
+        relayUrls: [ownerWsRelay, ownerSecureRelay],
+        ownerSelectedRelayUrls: [ownerWsRelay],
+      },
+    ])
+    expect(result.deliveryProgress.recipientAcknowledgedRelayRefs).toHaveLength(
+      1
+    )
+    expect(result.deliveryProgress.selfAcknowledgedRelayRefs).toHaveLength(2)
+    expect(JSON.stringify(result.deliveryProgress)).not.toContain("ws://")
+
+    const mismatchedOwnerCalls: Array<{
+      relayUrls: string[]
+      ownerSelectedRelayUrls: string[]
+      authenticatedPubkey: string | null | undefined
+    }> = []
+    const mismatchedResult = await retryEventMarketPrivateDeliveryCore({
+      record,
+      authenticatedOwnerPubkey: ORGANIZER,
+      ownerSelectedSenderInboxRelayUrls: [ownerWsRelay],
+      recipientInboxRelays: [recipientSecureRelay],
+      senderInboxRelays: [ownerWsRelay, ownerSecureRelay],
+      publishFn: (async (_event, options) => {
+        const relayUrls = [...(options.exclusiveRelayUrls ?? [])]
+        mismatchedOwnerCalls.push({
+          relayUrls,
+          ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+          authenticatedPubkey: options.authenticatedPubkey,
+        })
+        return successfulDelivery(relayUrls)
+      }) as never,
+    })
+
+    expect(mismatchedOwnerCalls).toEqual([
+      {
+        relayUrls: [recipientSecureRelay],
+        ownerSelectedRelayUrls: [],
+        authenticatedPubkey: null,
+      },
+      {
+        relayUrls: [ownerSecureRelay],
+        ownerSelectedRelayUrls: [],
+        authenticatedPubkey: null,
+      },
+    ])
+    expect(mismatchedResult.recipientStatus).toBe("full_success")
+    expect(mismatchedResult.selfDeliveryStatus).toBe("full_success")
   })
 
   it("retains the exact retry record before a zero-ACK failure", async () => {

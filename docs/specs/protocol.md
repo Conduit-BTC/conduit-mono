@@ -360,16 +360,37 @@ particular, a recipient's kind `10002` event may inform bounded discovery or
 rank an already eligible compatibility target, but it never supplies a
 gift-wrap write target.
 
+Transport eligibility remains authority-scoped after declaration resolution.
+An authenticated owner may explicitly select `ws://` or `wss://` relays in
+Network for eligible activity on that owner's own account, including an
+existing selection. A `ws://` relay learned from remote discovery, metadata,
+event hints, cache provenance, fallback configuration, or a recipient's or
+other account's signed declaration must never be contacted automatically.
+Therefore a remote recipient's `ws://` `kind:10050` tag remains signed evidence
+but is not a delivery target; remote `wss://` tags remain eligible under the
+normal routing, evidence, validity, and whole-relay-exclusion rules. Every
+executor reapplies this authority test immediately before final I/O.
+
 After every event required by an ordinary Network update is signed and durably
 staged, gift-wrap writes use the pending `kind:10050` declaration immediately.
-The previous valid inbox set becomes a hidden read-only recovery lane until the
-exact pending event is read back from the bounded shared discovery set and a
-bounded, versioned stale-sender grace period expires. That prior set is not
-current membership and never authorizes writes. An explicit whole-setup relay
-removal instead cuts that URL out of all reads and writes immediately after all
-required signatures are staged, even before ACK or readback. An unsigned draft,
-cancelled signer flow, or missing signature changes no route and removes no
-recovery behavior.
+Each locally staged ordinary `kind:10050` replacement owns an independent
+read-only recovery batch containing the previous valid inbox set. Each batch's
+seven-day, versioned stale-sender clock starts only when that replacement is read
+back exactly from its bounded shared discovery set. A stronger signed frontier,
+including one produced by another client, preserves existing batches but creates
+none without a matching locally staged immutable replacement plan. Signer-free
+redistribution of the same exact event may append an inbox-only immutable
+confirmation attempt for the current shared set. Any one complete attempt
+starts the owning batch's clock exactly once; later attempts and observations
+never reset it. A whole-relay removal that policy-blocks any target leaves that
+historical attempt incomplete; signer-free redistribution of the same exact
+event may create a fresh attempt for the then-current unblocked shared set.
+Recovery batches are not current membership and
+never authorize writes. An explicit
+whole-relay removal instead filters that URL from all reads, writes, and
+recovery batches immediately after the atomic local commit, even before ACK or
+readback. An unsigned draft, cancelled signer flow, or missing signature changes
+no route and removes no recovery behavior.
 
 Declaration evidence is durable, account-scoped, and monotonic. The shared
 protocol boundary retains the exact validated signed kind `10050` event, its
@@ -393,8 +414,10 @@ The current frontier and the last usable declared relay set are retained
 separately. Declaration resolution exposes signed frontier states and bounded
 observation-only states:
 
-- `declared`: the winning signed event contains at least one usable secure
-  `wss://` relay tag;
+- `declared`: the winning signed event contains at least one structurally usable
+  `ws://` or `wss://` relay tag. This state records signed declaration evidence;
+  it does not bypass the authority-scoped final-I/O rule, so a remote `ws://`
+  tag may be retained without being contacted;
 - `signed_empty`: the winning cryptographically valid signed event contains no
   `relay` tags, preserving an explicit signed no-inbox state separately from
   malformed input; it is not a usable NIP-17 declaration;
@@ -431,11 +454,14 @@ any future reserved fail-closed conflict, are retry-only and never authorize
 that repair.
 
 Gift-wrap reads are permissive: the principal reads the union of their valid
-current or pending declared inboxes, eligible hidden cutover-recovery inboxes,
-an active bounded legacy migration-recovery record, and the bounded
-Conduit-operated compatibility read set. Whole-setup removals are excluded as
-soon as all required signatures are staged. General NIP-65 membership never
-adds an inbox read target. Read results carry coverage
+current or pending declared inboxes, every recovery batch awaiting its own exact
+readback or still within its own seven-day grace, eligible retained last-usable
+inboxes, an active bounded legacy migration-recovery record, and the bounded
+Conduit-operated compatibility read set. Whole-relay removals are excluded from
+every batch's active recovery set as soon as the atomic local commit completes.
+The immutable confirmation plan retains the URL only as policy-blocked
+historical evidence; the batch never queries or reactivates it. General NIP-65
+membership never adds an inbox read target. Read results carry coverage
 (`complete | partial | unavailable`) and source provenance; an all-failed read
 must never be reported as an authoritative empty inbox.
 
@@ -443,12 +469,14 @@ Legacy NIP-65 roles never create NIP-17 evidence. A bounded read-only secure-IN
 recovery record explicitly committed by an older build is handled independently
 of NIP-65 draft import and never authorizes writes. An ordinary replacement
 carries those relays into the cutover lane; its seven-day read-only grace begins
-only after a usable `kind:10050` replacement with one to three secure relays is
+only after a usable `kind:10050` replacement with one to three eligible inbox relays is
 read back exactly from its complete shared relay set. Signing or durable staging
 alone does not start or end that grace. Explicit whole-relay removal is the only
 early-termination path and ends recovery for that URL at the atomic local
 commit. A migration discard tombstone applies only to a discarded legacy
-NIP-65 role draft.
+NIP-65 role draft. A persisted legacy singleton cutover record up-converts to
+one recovery batch without changing its relay URLs or any established readback
+and expiry timestamps.
 
 Shared acceleration, cache, index, and routing systems may derive only from
 relay-visible state and must remain rebuildable rather than becoming hidden

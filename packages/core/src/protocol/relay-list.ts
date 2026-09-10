@@ -61,6 +61,10 @@ export interface RelayListLookupOptions {
   allowInsecureRelayUrlsForPubkey?: string | null
   /** Account whose durable whole-relay exclusions govern this network lookup. */
   accountPubkey?: string | null
+  /** Active authenticated account for owner-selected final-I/O admission. */
+  authenticatedPubkey?: string | null
+  /** Exact lookup-target subset selected by that authenticated account owner. */
+  ownerSelectedRelayUrls?: readonly string[]
   /** Injectable durable policy reader for the final per-relay I/O gate. */
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   /** Override `Date.now()` (test seam). */
@@ -137,11 +141,13 @@ export function isInsecureRelayUrl(url: string): boolean {
 
 function allowsInsecureRelayUrls(
   listPubkey: string,
-  allowedPubkey: string | null | undefined
+  allowedPubkey: string | null | undefined,
+  authenticatedPubkey: string | null | undefined
 ): boolean {
   const owner = comparisonPubkey(listPubkey)
   const allowed = comparisonPubkey(allowedPubkey)
-  return !!owner && owner === allowed
+  const authenticated = comparisonPubkey(authenticatedPubkey)
+  return !!owner && owner === allowed && owner === authenticated
 }
 
 function publicRelayHintUrls(urls: readonly string[]): string[] {
@@ -150,12 +156,16 @@ function publicRelayHintUrls(urls: readonly string[]): string[] {
 
 export function filterRelayListForContext(
   list: RelayList,
-  options: Pick<RelayListLookupOptions, "allowInsecureRelayUrlsForPubkey"> = {}
+  options: Pick<
+    RelayListLookupOptions,
+    "allowInsecureRelayUrlsForPubkey" | "authenticatedPubkey"
+  > = {}
 ): RelayList {
   if (
     allowsInsecureRelayUrls(
       list.pubkey,
-      options.allowInsecureRelayUrlsForPubkey
+      options.allowInsecureRelayUrlsForPubkey,
+      options.authenticatedPubkey
     )
   ) {
     return list
@@ -376,13 +386,19 @@ async function runFetch(
   relayUrls: readonly string[],
   options: Pick<
     RelayListLookupOptions,
-    "accountPubkey" | "accountNetworkLocalStateRepository" | "signal"
+    | "accountPubkey"
+    | "authenticatedPubkey"
+    | "ownerSelectedRelayUrls"
+    | "accountNetworkLocalStateRepository"
+    | "signal"
   >
 ): Promise<NDKEvent[]> {
   const impl = testOverrides.fetchEventsFanout ?? fetchEventsFanout
   return (await impl(filter, {
     relayUrls: relayUrls.length > 0 ? [...relayUrls] : undefined,
     accountPubkey: options.accountPubkey,
+    authenticatedPubkey: options.authenticatedPubkey,
+    ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
@@ -396,7 +412,11 @@ async function runFetchDetailed(
   relayUrls: readonly string[],
   options: Pick<
     RelayListLookupOptions,
-    "accountPubkey" | "accountNetworkLocalStateRepository" | "signal"
+    | "accountPubkey"
+    | "authenticatedPubkey"
+    | "ownerSelectedRelayUrls"
+    | "accountNetworkLocalStateRepository"
+    | "signal"
   >
 ): Promise<FetchEventsFanoutResult> {
   if (relayUrls.length === 0) {
@@ -406,6 +426,8 @@ async function runFetchDetailed(
     return await testOverrides.fetchEventsFanoutDetailed(filter, {
       relayUrls: [...relayUrls],
       accountPubkey: options.accountPubkey,
+      authenticatedPubkey: options.authenticatedPubkey,
+      ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
       connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
@@ -418,6 +440,8 @@ async function runFetchDetailed(
     const events = await testOverrides.fetchEventsFanout(filter, {
       relayUrls: [...relayUrls],
       accountPubkey: options.accountPubkey,
+      authenticatedPubkey: options.authenticatedPubkey,
+      ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
       connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
@@ -438,6 +462,8 @@ async function runFetchDetailed(
   return await fetchEventsFanoutDetailed(filter, {
     relayUrls: [...relayUrls],
     accountPubkey: options.accountPubkey,
+    authenticatedPubkey: options.authenticatedPubkey,
+    ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,

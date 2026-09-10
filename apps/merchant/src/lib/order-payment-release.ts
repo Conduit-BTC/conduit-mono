@@ -19,6 +19,8 @@ export interface MerchantPaymentConfirmationInput {
   order: OrderSchema | null
   /** Separate, explicit readiness and organizer-release consent. */
   authorizeOrganizerRelease: boolean
+  /** Active authenticated account; never inferred from merchantPubkey. */
+  authenticatedPubkey?: string | null
 }
 
 type ReleaseResult = "delivered" | "needs_attention"
@@ -38,6 +40,7 @@ const defaults: PaymentConfirmationDependencies = {
       payload: { status: "paid" },
       delivery: input.delivery,
       signerInteraction: "external",
+      authenticatedPubkey: input.authenticatedPubkey,
     })
   },
   async release(input) {
@@ -46,6 +49,7 @@ const defaults: PaymentConfirmationDependencies = {
     const authorization = await verifyMerchantPickupOrderAuthorization({
       items: input.order.items,
       merchantPubkey: input.merchantPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
       onVerifiedMarket: (verified) => {
         market = verified
       },
@@ -64,6 +68,9 @@ const defaults: PaymentConfirmationDependencies = {
       authorizationConfirmed: input.authorizeOrganizerRelease,
       market,
       signer,
+      transport: {
+        authenticatedPubkey: input.authenticatedPubkey,
+      },
     })
     return eventMarketHandoffDeliveryNeedsRetry(delivery)
       ? "needs_attention"

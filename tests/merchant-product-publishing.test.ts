@@ -479,6 +479,48 @@ describe("merchant product event delivery", () => {
     ).toBe(false)
   })
 
+  it("does not infer owner relay authority from a signed product author", async () => {
+    const authenticatedPubkeys: Array<string | null | undefined> = []
+    const relayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async (input) => {
+        authenticatedPubkeys.push(input.authenticatedPubkey)
+        return {
+          intent: "author_event",
+          primaryRelayUrls: [relayUrl],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+
+    await deliverSignedProductEvent(
+      makeSignedProductEvent({
+        dTag: "auth-absent",
+        acceptedRelayUrl: relayUrl,
+      }),
+      MERCHANT_PUBKEY
+    )
+    await deliverSignedProductEvent(
+      makeSignedProductEvent({
+        dTag: "auth-owner",
+        acceptedRelayUrl: relayUrl,
+      }),
+      MERCHANT_PUBKEY,
+      { authenticatedPubkey: MERCHANT_PUBKEY }
+    )
+    await deliverSignedProductEvent(
+      makeSignedProductEvent({
+        dTag: "auth-stale",
+        acceptedRelayUrl: relayUrl,
+      }),
+      MERCHANT_PUBKEY,
+      { authenticatedPubkey: getPublicKey(OTHER_MERCHANT_SECRET) }
+    )
+
+    expect(authenticatedPubkeys).toEqual([null, MERCHANT_PUBKEY, null])
+  })
+
   it("retains a fallback-only listing ACK for an immediate deletion", async () => {
     const fallbackRelayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
     const event = makeSignedProductEvent({

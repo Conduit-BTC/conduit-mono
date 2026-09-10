@@ -22,6 +22,7 @@ import {
   type ListingSafetyEvaluation,
   type PreparedProductFamily,
   type Product,
+  useConduitSession,
 } from "@conduit/core"
 import {
   getCatalogAuthorKey,
@@ -74,6 +75,8 @@ type ProgressiveListQuery =
       merchantPubkey?: string
       perspectivePubkey?: string | null
       authenticatedPubkey?: string | null
+      /** Signed-in account used only for final-I/O whole-relay exclusions. */
+      accountPubkey?: string | null
       seedAuthorPubkeys?: string[]
       textQuery?: string
       tags?: string[]
@@ -85,6 +88,8 @@ type ProgressiveListQuery =
       scope: "storefront"
       merchantPubkey: string
       authenticatedPubkey?: string | null
+      /** Signed-in account used only for final-I/O whole-relay exclusions. */
+      accountPubkey?: string | null
       textQuery?: string
       tag?: string
       sort?: SortOption
@@ -232,6 +237,7 @@ async function fetchNetworkList(
       merchantPubkey: input.merchantPubkey,
       authorPubkeys,
       authenticatedPubkey: input.authenticatedPubkey,
+      accountPubkey: input.accountPubkey,
       textQuery: readsPerspectiveCatalog ? undefined : input.textQuery,
       tags: readsPerspectiveCatalog ? undefined : input.tags,
       sort: readsPerspectiveCatalog ? "newest" : input.sort,
@@ -243,6 +249,7 @@ async function fetchNetworkList(
   return await getMerchantStorefront({
     merchantPubkey: input.merchantPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
+    accountPubkey: input.accountPubkey,
     textQuery: input.textQuery,
     tag: input.tag,
     sort: input.sort,
@@ -266,6 +273,9 @@ export function useProgressiveProducts(
       ? normalizePubkey(input.perspectivePubkey)
       : null
   const authenticatedPubkey = normalizePubkey(input.authenticatedPubkey)
+  const finalIoAccountPubkey = normalizePubkey(
+    input.accountPubkey ?? input.authenticatedPubkey
+  )
   const usesPerspectiveGraph =
     input.scope === "marketplace" && !!perspectivePubkey
   const firstDegreeDiscoveryEnabled =
@@ -451,8 +461,9 @@ export function useProgressiveProducts(
           "network"
         ),
         catalogAuthorKey,
+        finalIoAccountPubkey ?? "guest",
       ]),
-    [catalogAuthorKey, input]
+    [catalogAuthorKey, finalIoAccountPubkey, input]
   )
   const discoveryKey = useMemo(
     () => JSON.stringify([catalogDiscoveryKey, refreshNonce]),
@@ -511,6 +522,7 @@ export function useProgressiveProducts(
       ...getProductCatalogQueryKey(input as ProductCatalogReadInput, "network"),
       "catalog",
       catalogAuthorKey,
+      finalIoAccountPubkey ?? "guest",
     ],
     queryFn: () => fetchNetworkList(input, catalogAuthorPubkeys),
     enabled: queryEnabled && catalogReady && !streamsNetwork,
@@ -747,6 +759,7 @@ export function useProgressiveProducts(
           sort: catalogSort,
           limit: input.limit,
           authenticatedPubkey,
+          accountPubkey: finalIoAccountPubkey,
           readPolicy,
         },
         (result) => {
@@ -806,6 +819,7 @@ export function useProgressiveProducts(
     marketplaceTags,
     perspectiveMarketplaceRead,
     authenticatedPubkey,
+    finalIoAccountPubkey,
     streamsNetwork,
   ])
 
@@ -967,6 +981,9 @@ export function useProgressiveProductDetail(productId: string): {
   error: unknown
   refetch: () => void
 } {
+  const session = useConduitSession()
+  const authenticatedPubkey =
+    session.mode === "signed_in" ? session.pubkey : null
   const cachedQuery = useQuery({
     queryKey: ["progressive-product", "cache", productId],
     queryFn: () =>
@@ -978,8 +995,18 @@ export function useProgressiveProductDetail(productId: string): {
   })
 
   const networkQuery = useQuery({
-    queryKey: ["progressive-product", "network", productId],
-    queryFn: () => getProductDetail({ productId, includeMarketHidden: true }),
+    queryKey: [
+      "progressive-product",
+      "network",
+      session.relayScope ?? "no-relay-scope",
+      productId,
+    ],
+    queryFn: () =>
+      getProductDetail({
+        productId,
+        includeMarketHidden: true,
+        authenticatedPubkey,
+      }),
     staleTime: 20_000,
   })
 

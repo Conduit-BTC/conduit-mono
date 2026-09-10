@@ -156,6 +156,8 @@ function MessagesPage() {
     [conversations]
   )
   const profilesQuery = useProfiles(counterpartyPubkeys, {
+    accountPubkey: signerConnected ? pubkey : null,
+    authenticatedPubkey: signerConnected ? pubkey : null,
     enabled: signerConnected && counterpartyPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
@@ -311,6 +313,7 @@ function MessagesPage() {
         rumor,
         senderPubkey: pubkey,
         accountPubkey: pubkey,
+        authenticatedPubkey: signerConnected ? pubkey : null,
         recipientPubkey: counterpartyPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,

@@ -31,6 +31,11 @@ export interface ProtectedInboxReadResult {
 export interface ReadProtectedInboxOptions {
   principalPubkey: string
   relayUrls: string[]
+  /**
+   * Exact relay subset backed by this authenticated owner's own inbox or
+   * Network selection. Compatibility and remote evidence must not populate it.
+   */
+  ownerSelectedRelayUrls?: readonly string[]
   limit: number
   authorization: ProtectedReadAuthorization | null
   accountNetworkLocalStateRepository?: Pick<
@@ -144,7 +149,9 @@ export async function readProtectedInbox(
   // reads without interrupting work that was already admitted.
   const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
     accountPubkey: principalPubkey,
+    authenticatedPubkey: options.authorization.expectedPubkey,
     candidateRelayUrls: options.relayUrls,
+    ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
     repository: options.accountNetworkLocalStateRepository,
   })
   if (eligibleRelayUrls.length === 0) {
