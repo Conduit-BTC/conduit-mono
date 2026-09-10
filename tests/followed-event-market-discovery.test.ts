@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import {
   __resetEventMarketTestOverrides,
@@ -207,6 +207,13 @@ function organizerRead(
 afterEach(() => {
   __resetFollowedEventMarketDiscoveryTestOverrides()
   __resetEventMarketTestOverrides()
+})
+
+beforeEach(() => {
+  __setEventMarketTestOverrides({
+    loadCachedEvidence: async () => [],
+    loadCachedCollectionEvidence: async () => [],
+  })
 })
 
 describe("followed organizer event-market discovery", () => {
@@ -690,5 +697,49 @@ describe("organizer event-market read coverage", () => {
     expect(result.markets).toEqual([])
     expect(result.relayHintTruncated).toBe(true)
     expect(result.state).toBe("partial")
+  })
+
+  it("keeps organizer write relays ahead of candidate source hints", async () => {
+    const organizerRelayUrls = Array.from(
+      { length: 3 },
+      (_, index) => `wss://relay.damus.io/organizer-${index}`
+    )
+    const candidateRelayUrls = Array.from(
+      { length: 6 },
+      (_, index) => `wss://relay.damus.io/candidate-${index}`
+    )
+    const observedRelaySets: string[][] = []
+    configureRead({ relayListState: "network", relayUrls: organizerRelayUrls })
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        const relayUrls = [...(options.relayUrls ?? [])]
+        observedRelaySets.push(relayUrls)
+        return {
+          events: [],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+
+    const result = await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      projection: "discovery",
+      relayHints: candidateRelayUrls,
+    })
+
+    expect(observedRelaySets.length).toBeGreaterThan(0)
+    for (const relayUrls of observedRelaySets) {
+      expect(relayUrls.slice(0, organizerRelayUrls.length)).toEqual(
+        organizerRelayUrls
+      )
+      expect(relayUrls).toHaveLength(8)
+    }
+    expect(result.relayHintTruncated).toBe(false)
+    expect(result.state).toBe("complete")
   })
 })

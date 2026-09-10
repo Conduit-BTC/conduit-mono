@@ -2076,6 +2076,11 @@ export interface OrganizerEventMarketsReadResult {
   relayHintTruncated: boolean
 }
 
+export interface RetainedEventMarketCollectionEvidence {
+  events: SignedPublicNostrEvent[]
+  eventSourceRelayUrls: Record<string, string[]>
+}
+
 export class EventMarketDiscoveryBoundError extends Error {
   readonly code = "event_market_discovery_bound"
 
@@ -2098,6 +2103,9 @@ interface EventMarketTestOverrides {
   }) => Promise<SignedPublicNostrEvent>
   loadCachedEvidence?: (
     organizerPubkey: string
+  ) => Promise<CachedEventMarketEvidence[]>
+  loadCachedCollectionEvidence?: (
+    organizerPubkeys: readonly string[]
   ) => Promise<CachedEventMarketEvidence[]>
   persistCachedEvidence?: (input: {
     organizerPubkey: string
@@ -2194,11 +2202,22 @@ async function eventMarketReadPlanDetailed(input: {
     authenticatedPubkey: input.authenticatedPubkey,
     maxRelays: EVENT_MARKET_MAX_RELAY_HINTS,
   })
+  const parkedRelays = new Set(
+    plan.parkedRelayUrls.map((relayUrl) => relayUrl.toLowerCase())
+  )
+  const usableOrganizerHints = plan.hintRelayUrls.filter(
+    (relayUrl) => !parkedRelays.has(relayUrl.toLowerCase())
+  )
+  const relayUrls = mergeRelayUrls(
+    usableOrganizerHints,
+    input.relayHints ?? [],
+    plan.relayUrls
+  )
   const selectedRelays = new Set(
-    plan.relayUrls.map((relayUrl) => relayUrl.toLowerCase())
+    relayUrls.map((relayUrl) => relayUrl.toLowerCase())
   )
   return {
-    relayUrls: mergeRelayUrls(input.relayHints ?? [], plan.relayUrls),
+    relayUrls,
     relayListState,
     relayHintTruncated: plan.hintRelayUrls.some(
       (relayUrl) => !selectedRelays.has(relayUrl.toLowerCase())
@@ -3193,6 +3212,83 @@ async function loadCachedEventMarketEvidence(
     })
   } catch {
     return []
+  }
+}
+
+/**
+ * Read only already-verified collection candidates retained for the current
+ * follow perspective. This never opens a relay connection and does not treat
+ * cached evidence as current authorization; exact organizer hydration still
+ * resolves revisions, deletions, calendar linkage, and freshness.
+ */
+export async function getRetainedEventMarketCollectionEvidence(input: {
+  organizerPubkeys: readonly string[]
+  signal?: AbortSignal
+}): Promise<RetainedEventMarketCollectionEvidence> {
+  const organizerPubkeys = Array.from(
+    new Set(
+      input.organizerPubkeys.flatMap((value) => {
+        const pubkey = normalizePubkey(value)
+        return pubkey ? [pubkey] : []
+      })
+    )
+  ).sort()
+  const organizerPubkeySet = new Set(organizerPubkeys)
+  const eventsById = new Map<string, SignedPublicNostrEvent>()
+  const sourceRelayUrlsById = new Map<string, string[]>()
+  if (input.signal?.aborted) {
+    const error = new Error("The operation was aborted.")
+    error.name = "AbortError"
+    throw error
+  }
+  const rows = await (async () => {
+    if (eventMarketTestOverrides.loadCachedCollectionEvidence) {
+      return eventMarketTestOverrides.loadCachedCollectionEvidence(
+        organizerPubkeys
+      )
+    }
+    try {
+      return await db.eventMarketEvidence
+        .where("kind")
+        .equals(EVENT_KINDS.PRODUCT_COLLECTION)
+        .and((row) => organizerPubkeySet.has(row.organizerPubkey))
+        .toArray()
+    } catch {
+      return []
+    }
+  })()
+  if (input.signal?.aborted) {
+    const error = new Error("The operation was aborted.")
+    error.name = "AbortError"
+    throw error
+  }
+  for (const row of rows) {
+    const organizerPubkey = normalizePubkey(row.organizerPubkey)
+    const event = row.signedEvent
+    if (
+      !organizerPubkey ||
+      !organizerPubkeySet.has(organizerPubkey) ||
+      row.kind !== EVENT_KINDS.PRODUCT_COLLECTION ||
+      event.kind !== EVENT_KINDS.PRODUCT_COLLECTION ||
+      event.pubkey.toLowerCase() !== organizerPubkey ||
+      !isValidSignedPublicNostrEvent(event)
+    ) {
+      continue
+    }
+    const eventId = event.id.toLowerCase()
+    eventsById.set(eventId, event)
+    sourceRelayUrlsById.set(
+      eventId,
+      mergeRelayUrls(
+        sourceRelayUrlsById.get(eventId) ?? [],
+        row.sourceRelayUrls
+      )
+    )
+  }
+
+  return {
+    events: Array.from(eventsById.values()).sort(compareAddressableEvents),
+    eventSourceRelayUrls: Object.fromEntries(sourceRelayUrlsById),
   }
 }
 
