@@ -118,6 +118,11 @@ function candidateRead(
     capped?: boolean
   } = {}
 ) {
+  const relayStatus = input.relayStatus ?? "success"
+  const eventsVerified = input.eventsVerified ?? true
+  const capped = input.capped ?? false
+  const complete = relayStatus === "success" && eventsVerified && !capped
+  const failed = relayStatus === "failed"
   return {
     events,
     eventSourceRelayUrls: Object.fromEntries(
@@ -126,13 +131,27 @@ function candidateRead(
     relays: [
       {
         relayUrl: RELAY,
-        status: input.relayStatus ?? "success",
+        status: relayStatus,
         eventCount: events.length,
       },
     ],
-    eventsVerified: input.eventsVerified ?? true,
+    eventsVerified,
     plannedRelayCount: 1,
-    capped: input.capped ?? false,
+    capped,
+    coverage: {
+      plannedRelayUrls: [RELAY],
+      authorChunkCount: 1,
+      plannedReadCount: 1,
+      reads: [],
+      completeReadCount: complete ? 1 : 0,
+      partialReadCount: !complete && !failed ? 1 : 0,
+      failedReadCount: failed ? 1 : 0,
+      mainPageCount: 1,
+      boundaryPageCount: 0,
+      saturatedPageCount: capped ? 1 : 0,
+      pageBudgetExhaustedReadCount: capped ? 1 : 0,
+      verificationTruncatedReadCount: eventsVerified ? 0 : 1,
+    },
   }
 }
 

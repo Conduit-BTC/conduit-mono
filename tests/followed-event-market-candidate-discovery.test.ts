@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+  type Filter,
+} from "nostr-tools"
 import {
   __resetFollowedEventMarketDiscoveryTestOverrides,
   __resetEventMarketTestOverrides,
   __setEventMarketTestOverrides,
   __setFollowedEventMarketDiscoveryTestOverrides,
   discoverFollowedOrganizerEventMarkets,
+  discoverPerspectiveEventMarkets,
   FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT,
   type EventMarketRelayCoverage,
   type EventMarketResolution,
@@ -94,6 +100,11 @@ function candidateRead(
   } = {}
 ) {
   const events = input.events ?? []
+  const relayStatus = input.relayStatus ?? "success"
+  const eventsVerified = input.eventsVerified ?? true
+  const capped = input.capped ?? false
+  const complete = relayStatus === "success" && eventsVerified && !capped
+  const failed = relayStatus === "failed"
   return {
     events,
     eventSourceRelayUrls: Object.fromEntries(
@@ -102,13 +113,27 @@ function candidateRead(
     relays: [
       {
         relayUrl: RELAY,
-        status: input.relayStatus ?? "success",
+        status: relayStatus,
         eventCount: events.length,
       },
     ],
-    eventsVerified: input.eventsVerified ?? true,
+    eventsVerified,
     plannedRelayCount: 1,
-    capped: input.capped ?? false,
+    capped,
+    coverage: {
+      plannedRelayUrls: [RELAY],
+      authorChunkCount: 1,
+      plannedReadCount: 1,
+      reads: [],
+      completeReadCount: complete ? 1 : 0,
+      partialReadCount: !complete && !failed ? 1 : 0,
+      failedReadCount: failed ? 1 : 0,
+      mainPageCount: 1,
+      boundaryPageCount: 0,
+      saturatedPageCount: capped ? 1 : 0,
+      pageBudgetExhaustedReadCount: capped ? 1 : 0,
+      verificationTruncatedReadCount: eventsVerified ? 0 : 1,
+    },
   }
 }
 
@@ -360,11 +385,365 @@ describe("candidate-first followed event-market discovery", () => {
     expect(result.markets).toHaveLength(1)
   })
 
-  it("bounds the candidate frontier independently of follow-list size", () => {
+  it("keeps each candidate relay page within the client read budget", () => {
     expect(FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT).toBeGreaterThan(16)
     expect(FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT).toBeLessThanOrEqual(
       256
     )
+  })
+
+  it("scopes relay reads to every selected perspective author in bounded chunks", async () => {
+    const selectedAuthors = Array.from({ length: 65 }, (_, index) =>
+      (index + 1).toString(16).padStart(64, "0")
+    )
+    const filters: Filter[] = []
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      collectionCandidateRelayUrls: [RELAY],
+      fetchCollectionCandidateEvents: async (filter, options) => {
+        filters.push(filter)
+        expect(options.relayUrls).toEqual([RELAY])
+        return {
+          events: [],
+          eventSourceRelayUrls: {},
+          relays: [{ relayUrl: RELAY, status: "success", eventCount: 0 }],
+          eventsVerified: true,
+        }
+      },
+    })
+
+    const result = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: selectedAuthors,
+      perspective: {
+        source: "conduit",
+        coverage: "complete",
+        eventObserved: false,
+        snapshotState: "curated",
+        truncated: false,
+      },
+    })
+
+    expect(result.state).toBe("complete_empty")
+    expect(result.perspective).toMatchObject({
+      source: "conduit",
+      authorCount: 65,
+      snapshotState: "curated",
+    })
+    expect(result.candidateScanCoverage).toMatchObject({
+      authorChunkCount: 2,
+      plannedReadCount: 2,
+      completeReadCount: 2,
+    })
+    expect(result.candidateScanCoverage.reads).toEqual([
+      expect.objectContaining({
+        relayUrl: RELAY,
+        authorChunkIndex: 0,
+        authorCount: 64,
+        state: "complete",
+      }),
+      expect.objectContaining({
+        relayUrl: RELAY,
+        authorChunkIndex: 1,
+        authorCount: 1,
+        state: "complete",
+      }),
+    ])
+    expect(filters.map((filter) => filter.authors?.length)).toEqual([64, 1])
+    expect(new Set(filters.flatMap((filter) => filter.authors ?? []))).toEqual(
+      new Set(selectedAuthors)
+    )
+    expect(filters.every((filter) => filter.since === undefined)).toBe(true)
+  })
+
+  it("paginates descending and closes an equal-created-at boundary without a global frontier cutoff", async () => {
+    const newer = Array.from({ length: 128 }, (_, index) =>
+      collectionEvent({ dTag: `newer-${index}`, createdAt: 1_000 - index })
+    )
+    const boundaryA = collectionEvent({
+      dTag: "boundary-a",
+      createdAt: 500,
+    })
+    const boundaryB = collectionEvent({
+      dTag: "boundary-b",
+      createdAt: 500,
+    })
+    const older = collectionEvent({ dTag: "older", createdAt: 400 })
+    const filters: Filter[] = []
+    let candidateEventCount = 0
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      collectionCandidateRelayUrls: [RELAY],
+      fetchCollectionCandidateEvents: async (filter) => {
+        filters.push(filter)
+        const events =
+          filter.since === 500
+            ? [boundaryA, boundaryB]
+            : filter.until === 499
+              ? [older]
+              : [...newer, boundaryA]
+        return {
+          events,
+          eventSourceRelayUrls: Object.fromEntries(
+            events.map((event) => [event.id, [RELAY]])
+          ),
+          relays: [
+            { relayUrl: RELAY, status: "success", eventCount: events.length },
+          ],
+          eventsVerified: true,
+        }
+      },
+      readOrganizerMarkets: async (input) => {
+        candidateEventCount = input.candidateCollectionEvents?.length ?? 0
+        return organizerRead([market(ORGANIZER, "older")])
+      },
+    })
+
+    const result = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: {
+        source: "conduit",
+        coverage: "complete",
+        eventObserved: false,
+        snapshotState: "curated",
+        truncated: false,
+      },
+    })
+
+    expect(result.state).toBe("complete")
+    expect(result.candidateCollectionCount).toBe(131)
+    expect(candidateEventCount).toBe(131)
+    expect(result.candidateScanCoverage).toMatchObject({
+      mainPageCount: 2,
+      boundaryPageCount: 1,
+      saturatedPageCount: 1,
+      pageBudgetExhaustedReadCount: 0,
+    })
+    expect(result.candidateScanCoverage.reads[0].pages).toEqual([
+      expect.objectContaining({
+        pageIndex: 0,
+        mainRelayStatus: "success",
+        mainCompletedAtEose: true,
+        saturated: true,
+        boundaryCreatedAt: 500,
+        boundaryRelayStatus: "success",
+        boundaryCompletedAtEose: true,
+        boundarySaturated: false,
+      }),
+      expect.objectContaining({
+        pageIndex: 1,
+        until: 499,
+        mainRelayStatus: "success",
+        mainCompletedAtEose: true,
+        saturated: false,
+      }),
+    ])
+    expect(filters[0]).toMatchObject({
+      kinds: [30405],
+      authors: [ORGANIZER],
+      limit: FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT + 1,
+    })
+    expect(filters[0].since).toBeUndefined()
+    expect(filters[1]).toMatchObject({ since: 500, until: 500 })
+    expect(filters[2]).toMatchObject({ until: 499 })
+    expect(filters[2].since).toBeUndefined()
+  })
+
+  it("reports exhausted page coverage as partial while preserving verified positives", async () => {
+    const pageEvents = [400, 300, 200, 100].map((createdAt) =>
+      collectionEvent({ dTag: `page-${createdAt}`, createdAt })
+    )
+    let mainPageIndex = 0
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      collectionCandidateRelayUrls: [RELAY],
+      fetchCollectionCandidateEvents: async (filter) => {
+        const boundaryRead = filter.since !== undefined
+        const event = boundaryRead
+          ? pageEvents.find(
+              (candidate) => candidate.created_at === filter.since
+            )!
+          : pageEvents[mainPageIndex++]
+        return {
+          events: [event],
+          eventSourceRelayUrls: { [event.id]: [RELAY] },
+          relays: [
+            {
+              relayUrl: RELAY,
+              status: "success",
+              eventCount: boundaryRead
+                ? 1
+                : FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT + 1,
+            },
+          ],
+          eventsVerified: true,
+        }
+      },
+      readOrganizerMarkets: async () =>
+        organizerRead([market(ORGANIZER, "page-400")]),
+    })
+
+    const result = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: {
+        source: "combined",
+        coverage: "complete",
+        eventObserved: true,
+        snapshotState: "network",
+        truncated: false,
+      },
+    })
+
+    expect(result.state).toBe("partial")
+    expect(result.truncated).toBe(true)
+    expect(result.markets).toHaveLength(1)
+    expect(result.candidateScanCoverage).toMatchObject({
+      mainPageCount: 4,
+      boundaryPageCount: 4,
+      saturatedPageCount: 4,
+      pageBudgetExhaustedReadCount: 1,
+      partialReadCount: 1,
+    })
+  })
+
+  it("treats a saturated equal-created-at boundary as partial without dropping its positive", async () => {
+    const candidate = collectionEvent({ createdAt: 500 })
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      collectionCandidateRelayUrls: [RELAY],
+      fetchCollectionCandidateEvents: async (filter) => {
+        const boundaryRead = filter.since === 500
+        return {
+          events: [candidate],
+          eventSourceRelayUrls: { [candidate.id]: [RELAY] },
+          relays: [
+            {
+              relayUrl: RELAY,
+              status: "success",
+              eventCount: boundaryRead
+                ? 513
+                : FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT + 1,
+            },
+          ],
+          eventsVerified: true,
+        }
+      },
+      readOrganizerMarkets: async () => organizerRead([market(ORGANIZER)]),
+    })
+
+    const result = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: {
+        source: "conduit",
+        coverage: "complete",
+        eventObserved: false,
+        snapshotState: "curated",
+        truncated: false,
+      },
+    })
+
+    expect(result.state).toBe("partial")
+    expect(result.truncated).toBe(true)
+    expect(result.markets).toHaveLength(1)
+    expect(result.candidateScanCoverage).toMatchObject({
+      boundaryPageCount: 1,
+      partialReadCount: 1,
+      pageBudgetExhaustedReadCount: 0,
+    })
+    expect(result.candidateScanCoverage.reads[0].pages[0]).toMatchObject({
+      boundaryCreatedAt: 500,
+      boundaryRelayStatus: "success",
+      boundarySaturated: true,
+    })
+  })
+
+  it("records relay-by-chunk failure without hiding a positive from a complete relay", async () => {
+    const secondRelay = "wss://event-candidates-backup.test"
+    const candidate = collectionEvent()
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      collectionCandidateRelayUrls: [RELAY, secondRelay],
+      fetchCollectionCandidateEvents: async (_filter, options) => {
+        const relayUrl = options.relayUrls[0]!
+        const succeeded = relayUrl === RELAY
+        return {
+          events: succeeded ? [candidate] : [],
+          eventSourceRelayUrls: succeeded ? { [candidate.id]: [RELAY] } : {},
+          relays: [
+            {
+              relayUrl,
+              status: succeeded ? "success" : "failed",
+              eventCount: succeeded ? 1 : 0,
+            },
+          ],
+          eventsVerified: true,
+        }
+      },
+      readOrganizerMarkets: async () => organizerRead([market(ORGANIZER)]),
+    })
+
+    const result = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: {
+        source: "conduit",
+        coverage: "complete",
+        eventObserved: false,
+        snapshotState: "curated",
+        truncated: false,
+      },
+    })
+
+    expect(result.state).toBe("partial")
+    expect(result.markets).toHaveLength(1)
+    expect(result.candidateScanCoverage).toMatchObject({
+      plannedReadCount: 2,
+      completeReadCount: 1,
+      failedReadCount: 1,
+    })
+    expect(
+      result.candidateScanCoverage.reads.map((read) => read.state)
+    ).toEqual(["complete", "failed"])
+  })
+
+  it("keeps individually verified positives when another candidate was rejected", async () => {
+    const candidate = collectionEvent()
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readFollowLists: async () => followRead([ORGANIZER]),
+      readCollectionCandidates: async () =>
+        candidateRead({ events: [candidate], eventsVerified: false }),
+      readOrganizerMarkets: async () => organizerRead([market(ORGANIZER)]),
+    })
+
+    const result = await discoverFollowedOrganizerEventMarkets({
+      merchantPubkey: MERCHANT,
+    })
+
+    expect(result.state).toBe("partial")
+    expect(result.candidateScanState).toBe("partial")
+    expect(result.markets).toHaveLength(1)
+  })
+
+  it("uses one shared candidate path for following, conduit, and combined perspectives", async () => {
+    const candidate = collectionEvent()
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async (input) => {
+        expect(input.organizerPubkeys).toEqual([ORGANIZER])
+        return candidateRead({ events: [candidate] })
+      },
+      readOrganizerMarkets: async () => organizerRead([market(ORGANIZER)]),
+    })
+
+    for (const source of ["following", "conduit", "combined"] as const) {
+      const result = await discoverPerspectiveEventMarkets({
+        organizerPubkeys: [ORGANIZER],
+        perspective: {
+          source,
+          coverage: "complete",
+          eventObserved: source !== "conduit",
+          snapshotState: source === "conduit" ? "curated" : "network",
+          truncated: false,
+        },
+      })
+      expect(result.state).toBe("complete")
+      expect(result.perspective.source).toBe(source)
+      expect(result.markets.map((item) => item.reference)).toEqual([
+        `30405:${ORGANIZER}:catalog`,
+      ])
+    }
   })
 
   it("keeps invalid event-market linkage out of the visible feed", async () => {
