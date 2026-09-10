@@ -13,6 +13,8 @@ import {
   getEventMarketPrivateMessageList,
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
+  decodeProductReference,
+  encodeProductNaddr,
   getConversationDetail,
   getFollowPubkeys,
   getAtomicProductDetail,
@@ -299,6 +301,37 @@ function makeSignedProductEvent(params: {
   return new NDKEvent(undefined, signed)
 }
 
+function makeSignedGammaProductEvent(params: {
+  secretKey?: Uint8Array
+  dTag: string
+  createdAt: number
+  title: string
+  type: "variable" | "variation"
+  parentProductId?: string
+  size?: string
+}): NDKEvent {
+  const signed = finalizeEvent(
+    {
+      kind: EVENT_KINDS.PRODUCT,
+      created_at: params.createdAt,
+      content: `${params.title} description`,
+      tags: [
+        ["d", params.dTag],
+        ["title", params.title],
+        ["price", "25000", "SATS"],
+        ["type", params.type, "physical"],
+        ["visibility", "public"],
+        ...(params.parentProductId ? [["a", params.parentProductId]] : []),
+        ...(params.size ? [["spec", "size", params.size]] : []),
+        ["stock", "5"],
+        ["image", "https://cdn.conduit.market/conduit-test/product.png"],
+      ],
+    },
+    params.secretKey ?? MERCHANT_A_SECRET
+  )
+  return new NDKEvent(undefined, signed)
+}
+
 function composeCheckoutAvailability(
   result: Awaited<ReturnType<typeof getProductsByIds>>,
   input: {
@@ -444,6 +477,845 @@ afterEach(async () => {
 })
 
 describe("commerce gateway", () => {
+  it("uses a safe naddr source hint for an otherwise undiscoverable product", async () => {
+    const sourceRelayUrl = "wss://source-only.conduit.market"
+    const unsafeRelayUrl = "ws://127.0.0.1:7447"
+    const product = makeSignedProductEvent({
+      dTag: "source-hinted-detail",
+      createdAt: 100,
+      title: "Source Hinted Detail",
+    })
+    const addressId = `30402:${product.pubkey}:source-hinted-detail`
+    const productId = encodeProductNaddr(addressId, [
+      unsafeRelayUrl,
+      sourceRelayUrl,
+    ])
+    const productRelayAttempts: string[][] = []
+    attachEventSourceRelayUrl(product, unsafeRelayUrl)
+    attachEventSourceRelayUrl(product, sourceRelayUrl)
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const relayUrls = options?.relayUrls ?? []
+        productRelayAttempts.push([...relayUrls])
+        return relayUrls.includes(sourceRelayUrl) ? ([product] as never) : []
+      },
+    })
+
+    const result = await getProductDetail({ productId })
+
+    expect(result.data?.addressId).toBe(addressId)
+    expect(
+      productRelayAttempts.some((relayUrls) => relayUrls[0] === sourceRelayUrl)
+    ).toBe(true)
+    expect(productRelayAttempts.flat()).not.toContain(unsafeRelayUrl)
+
+    productRelayAttempts.length = 0
+    const cartRevalidation = await getProductsByIds([addressId])
+
+    expect(cartRevalidation.diagnostics).toEqual([
+      {
+        productId: addressId,
+        addressId,
+        issue: null,
+        coverage: { listing: "complete", deletion: "complete" },
+      },
+    ])
+    expect(
+      productRelayAttempts.some((relayUrls) => relayUrls[0] === sourceRelayUrl)
+    ).toBe(true)
+    expect(productRelayAttempts.flat()).not.toContain(unsafeRelayUrl)
+  })
+
+  it("caps final hinted detail, parent and sibling plans at six relays", async () => {
+    const previousDiscovery = config.commerceDiscoveryRelayUrls
+    const source = "wss://bounded-source.conduit.market"
+    const pubkey = "f".repeat(64)
+    const parentAddress = `30402:${pubkey}:bounded-parent`
+    const childAddress = `30402:${pubkey}:bounded-child`
+    const events = [
+      makeGammaProductEvent({
+        pubkey,
+        id: "bounded-parent-event",
+        dTag: "bounded-parent",
+        createdAt: 100,
+        title: "Bounded parent",
+        type: "variable",
+      }),
+      makeGammaProductEvent({
+        pubkey,
+        id: "bounded-child-event",
+        dTag: "bounded-child",
+        createdAt: 101,
+        title: "Bounded child",
+        type: "variation",
+        parentProductId: parentAddress,
+        size: "Only",
+      }),
+    ]
+    const attempts: Array<{ relays: string[]; family: boolean }> = []
+    config.commerceDiscoveryRelayUrls = Array.from(
+      { length: 10 },
+      (_, index) => `wss://discovery-${index}.conduit.market`
+    )
+    try {
+      __setCommerceTestOverrides({
+        fetchEventsFanout: async (filter, options) => {
+          if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+          attempts.push({
+            relays: [...(options?.relayUrls ?? [])],
+            family: !!filter["#a"],
+          })
+          return events.filter(
+            (event) =>
+              (!filter["#d"] ||
+                event.tags.some(
+                  (tag) =>
+                    tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                )) &&
+              (!filter["#a"] ||
+                event.tags.some(
+                  (tag) =>
+                    tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+                ))
+          ) as never
+        },
+      })
+      const result = await getProductDetail({
+        productId: encodeProductNaddr(childAddress, [source]),
+      })
+      expect(result.data?.addressId).toBe(parentAddress)
+      expect(attempts).toHaveLength(3)
+      expect(attempts.some((attempt) => attempt.family)).toBe(true)
+      for (const attempt of attempts) {
+        expect(attempt.relays.length).toBeLessThanOrEqual(6)
+        expect(attempt.relays[0]).toBe(source)
+      }
+    } finally {
+      config.commerceDiscoveryRelayUrls = previousDiscovery
+    }
+  })
+
+  it("keeps the current naddr source ahead of older cached provenance", async () => {
+    const currentSourceRelayUrl = "wss://current-share-source.conduit.market"
+    const cachedSourceRelayUrls = Array.from(
+      { length: 4 },
+      (_, index) => `wss://old-share-source-${index}.conduit.market`
+    )
+    const cachedProduct = makeSignedProductEvent({
+      dTag: "reshared-source-hint",
+      createdAt: 100,
+      title: "Reshared Source Hint",
+    })
+    for (const relayUrl of cachedSourceRelayUrls) {
+      attachEventSourceRelayUrl(cachedProduct, relayUrl)
+    }
+    await cacheSignedProductListingEvent(cachedProduct)
+    const liveProduct = new NDKEvent(undefined, cachedProduct.rawEvent())
+    attachEventSourceRelayUrl(liveProduct, currentSourceRelayUrl)
+    const addressId = `30402:${liveProduct.pubkey}:reshared-source-hint`
+    const productRelayAttempts: string[][] = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        productRelayAttempts.push(relayUrls)
+        return relayUrls.includes(currentSourceRelayUrl)
+          ? ([liveProduct] as never)
+          : []
+      },
+    })
+
+    const detail = await getProductDetail({
+      productId: encodeProductNaddr(addressId, [currentSourceRelayUrl]),
+    })
+    const resharedNaddr = encodeProductNaddr(
+      detail.data!.addressId,
+      detail.data!.sourceRelayUrls
+    )
+
+    expect(detail.data?.sourceRelayUrls?.[0]).toBe(currentSourceRelayUrl)
+    expect(decodeProductReference(resharedNaddr)?.relayHints?.[0]).toBe(
+      currentSourceRelayUrl
+    )
+
+    productRelayAttempts.length = 0
+    const cartRevalidation = await getProductsByIds([addressId])
+
+    expect(cartRevalidation.diagnostics[0]?.issue).toBeNull()
+    expect(
+      productRelayAttempts.some((relayUrls) =>
+        relayUrls.includes(currentSourceRelayUrl)
+      )
+    ).toBe(true)
+  })
+
+  it("keeps the winning revision source ahead of losing live provenance", async () => {
+    const winningSourceRelayUrl = "wss://winning-share-source.conduit.market"
+    const losingSourceRelayUrls = Array.from(
+      { length: 4 },
+      (_, index) => `wss://losing-share-source-${index}.conduit.market`
+    )
+    const newerCachedProduct = makeSignedProductEvent({
+      dTag: "winning-source-hint",
+      createdAt: 200,
+      title: "Current Product Terms",
+    })
+    attachEventSourceRelayUrl(newerCachedProduct, winningSourceRelayUrl)
+    await cacheSignedProductListingEvent(newerCachedProduct)
+    const olderLiveProduct = makeSignedProductEvent({
+      dTag: "winning-source-hint",
+      createdAt: 100,
+      title: "Stale Product Terms",
+    })
+    for (const relayUrl of losingSourceRelayUrls) {
+      attachEventSourceRelayUrl(olderLiveProduct, relayUrl)
+    }
+    const addressId = `30402:${newerCachedProduct.pubkey}:winning-source-hint`
+    const productRelayAttempts: string[][] = []
+    let revalidating = false
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        productRelayAttempts.push(relayUrls)
+        if (!revalidating) return [olderLiveProduct] as never
+        return relayUrls.includes(winningSourceRelayUrl)
+          ? ([newerCachedProduct] as never)
+          : ([olderLiveProduct] as never)
+      },
+    })
+
+    const detail = await getProductDetail({
+      productId: encodeProductNaddr(addressId, losingSourceRelayUrls),
+    })
+    const resharedNaddr = encodeProductNaddr(
+      detail.data!.addressId,
+      detail.data!.sourceRelayUrls
+    )
+
+    expect(detail.data?.eventId).toBe(newerCachedProduct.id)
+    expect(detail.data?.product.title).toBe("Current Product Terms")
+    expect(decodeProductReference(resharedNaddr)?.relayHints?.[0]).toBe(
+      winningSourceRelayUrl
+    )
+
+    revalidating = true
+    productRelayAttempts.length = 0
+    const cartRevalidation = await getProductsByIds([addressId])
+
+    expect(cartRevalidation.data[0]?.eventId).toBe(newerCachedProduct.id)
+    expect(cartRevalidation.diagnostics[0]?.issue).toBeNull()
+    expect(
+      productRelayAttempts.some((relayUrls) =>
+        relayUrls.includes(winningSourceRelayUrl)
+      )
+    ).toBe(true)
+  })
+
+  it("combines same-author product hints into one bounded batch read", async () => {
+    const firstRelayUrl = "wss://first-product-source.conduit.market"
+    const secondRelayUrl = "wss://second-product-source.conduit.market"
+    const first = makeSignedProductEvent({
+      dTag: "first-hinted-product",
+      createdAt: 100,
+      title: "First hinted product",
+    })
+    const second = makeSignedProductEvent({
+      dTag: "second-hinted-product",
+      createdAt: 101,
+      title: "Second hinted product",
+    })
+    attachEventSourceRelayUrl(first, firstRelayUrl)
+    attachEventSourceRelayUrl(second, secondRelayUrl)
+    const firstAddress = `30402:${first.pubkey}:first-hinted-product`
+    const secondAddress = `30402:${second.pubkey}:second-hinted-product`
+    const attempts: Array<{ dTags: string[]; relayUrls: string[] }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const dTags = filter["#d"] ?? []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        attempts.push({ dTags: [...dTags], relayUrls })
+        return [
+          ...(dTags.includes("first-hinted-product") &&
+          relayUrls.includes(firstRelayUrl)
+            ? [first]
+            : []),
+          ...(dTags.includes("second-hinted-product") &&
+          relayUrls.includes(secondRelayUrl)
+            ? [second]
+            : []),
+        ] as never
+      },
+    })
+
+    const result = await getProductsByIds([
+      encodeProductNaddr(firstAddress, [firstRelayUrl]),
+      encodeProductNaddr(secondAddress, [secondRelayUrl]),
+    ])
+
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      [firstAddress, secondAddress].sort()
+    )
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]?.dTags.sort()).toEqual(
+      ["first-hinted-product", "second-hinted-product"].sort()
+    )
+    expect(attempts[0]?.relayUrls.slice(0, 2)).toEqual([
+      firstRelayUrl,
+      secondRelayUrl,
+    ])
+  })
+
+  it("caps many distinct product hints and reports uncovered coordinates as partial", async () => {
+    const products = Array.from({ length: 10 }, (_, index) => {
+      const relayUrl = `wss://batch-source-${index}.conduit.market`
+      const product = makeSignedProductEvent({
+        dTag: `batch-product-${index}`,
+        createdAt: 100 + index,
+        title: `Batch product ${index}`,
+      })
+      attachEventSourceRelayUrl(product, relayUrl)
+      return {
+        product,
+        relayUrl,
+        addressId: `30402:${product.pubkey}:batch-product-${index}`,
+      }
+    })
+    for (const { product } of products) {
+      await cacheSignedProductListingEvent(product)
+    }
+    const attempts: Array<{ dTags: string[]; relayUrls: string[] }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const dTags = filter["#d"] ?? []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        attempts.push({ dTags: [...dTags], relayUrls })
+        return products
+          .filter(
+            ({ product, relayUrl }) =>
+              dTags.includes(product.dTag ?? "") && relayUrls.includes(relayUrl)
+          )
+          .map(({ product }) => product) as never
+      },
+    })
+
+    const result = await getProductsByIds(
+      products.map(({ addressId }) => addressId)
+    )
+
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]?.dTags).toHaveLength(products.length)
+    expect(attempts[0]?.relayUrls.length).toBeLessThanOrEqual(6)
+    expect(
+      result.diagnostics.filter(
+        (diagnostic) => diagnostic.issue === "lookup_partial"
+      )
+    ).toHaveLength(4)
+  })
+
+  it("combines non-overlapping sibling hints for one complete family read", async () => {
+    const firstRelayUrl = "wss://small-variation-source.conduit.market"
+    const secondRelayUrl = "wss://large-variation-source.conduit.market"
+    const parentAddress = `30402:${MERCHANT_A_PUBKEY}:split-source-shirt`
+    const parent = makeSignedGammaProductEvent({
+      dTag: "split-source-shirt",
+      createdAt: 100,
+      title: "Split source shirt",
+      type: "variable",
+    })
+    const small = makeSignedGammaProductEvent({
+      dTag: "split-source-shirt-s",
+      createdAt: 101,
+      title: "Split source shirt - S",
+      type: "variation",
+      parentProductId: parentAddress,
+      size: "S",
+    })
+    const large = makeSignedGammaProductEvent({
+      dTag: "split-source-shirt-l",
+      createdAt: 102,
+      title: "Split source shirt - L",
+      type: "variation",
+      parentProductId: parentAddress,
+      size: "L",
+    })
+    const smallAddress = `30402:${MERCHANT_A_PUBKEY}:split-source-shirt-s`
+    const largeAddress = `30402:${MERCHANT_A_PUBKEY}:split-source-shirt-l`
+    const attempts: Array<{
+      dTags?: string[]
+      parentAddresses?: string[]
+      relayUrls: string[]
+    }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        attempts.push({
+          dTags: filter["#d"],
+          parentAddresses: filter["#a"],
+          relayUrls,
+        })
+        if (
+          !relayUrls.includes(firstRelayUrl) ||
+          !relayUrls.includes(secondRelayUrl)
+        ) {
+          return []
+        }
+        return [parent, small, large].filter(
+          (event) =>
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        ) as never
+      },
+    })
+
+    const result = await getProductsByIds([
+      encodeProductNaddr(smallAddress, [firstRelayUrl]),
+      encodeProductNaddr(largeAddress, [secondRelayUrl]),
+    ])
+
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      [smallAddress, largeAddress].sort()
+    )
+    expect(
+      result.diagnostics.every((diagnostic) => diagnostic.issue === null)
+    ).toBe(true)
+    expect(attempts).toHaveLength(3)
+    expect(
+      attempts.every(
+        ({ relayUrls }) =>
+          relayUrls.includes(firstRelayUrl) &&
+          relayUrls.includes(secondRelayUrl)
+      )
+    ).toBe(true)
+    expect(
+      attempts.some(({ dTags }) => dTags?.includes("split-source-shirt"))
+    ).toBe(true)
+    expect(
+      attempts.some(({ parentAddresses }) =>
+        parentAddresses?.includes(parentAddress)
+      )
+    ).toBe(true)
+  })
+
+  it("isolates a malformed variation target from a valid family batch", async () => {
+    const merchantBPubkey = getPublicKey(MERCHANT_B_SECRET)
+    const validParentAddress = `30402:${MERCHANT_A_PUBKEY}:valid-batch-shirt`
+    const crossAuthorParentAddress = `30402:${merchantBPubkey}:foreign-shirt`
+    const validParent = makeSignedGammaProductEvent({
+      dTag: "valid-batch-shirt",
+      createdAt: 100,
+      title: "Valid batch shirt",
+      type: "variable",
+    })
+    const validVariation = makeSignedGammaProductEvent({
+      dTag: "valid-batch-shirt-s",
+      createdAt: 101,
+      title: "Valid batch shirt - S",
+      type: "variation",
+      parentProductId: validParentAddress,
+      size: "S",
+    })
+    const malformedVariation = makeSignedGammaProductEvent({
+      dTag: "cross-author-shirt",
+      createdAt: 102,
+      title: "Cross-author shirt",
+      type: "variation",
+      parentProductId: crossAuthorParentAddress,
+      size: "M",
+    })
+    const validVariationAddress = `30402:${MERCHANT_A_PUBKEY}:valid-batch-shirt-s`
+    const malformedVariationAddress = `30402:${MERCHANT_A_PUBKEY}:cross-author-shirt`
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        return [validParent, validVariation, malformedVariation].filter(
+          (event) =>
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        ) as never
+      },
+    })
+
+    const result = await getProductsByIds([
+      validVariationAddress,
+      malformedVariationAddress,
+    ])
+    const diagnostics = new Map(
+      result.diagnostics.map((diagnostic) => [
+        diagnostic.addressId,
+        diagnostic.issue,
+      ])
+    )
+
+    expect(result.data.map((record) => record.addressId)).toEqual([
+      validVariationAddress,
+    ])
+    expect(diagnostics.get(validVariationAddress)).toBeNull()
+    expect(diagnostics.get(malformedVariationAddress)).not.toBeNull()
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("chunks large variation-family reads and isolates a failed author chunk", async () => {
+    const families = Array.from({ length: 65 }, (_, index) => {
+      const pubkey = (index + 1).toString(16).padStart(64, "0")
+      const parentDTag = `large-family-${index}`
+      const childDTag = `${parentDTag}-child`
+      const parentAddress = `30402:${pubkey}:${parentDTag}`
+      const childAddress = `30402:${pubkey}:${childDTag}`
+      return {
+        pubkey,
+        parentDTag,
+        parentAddress,
+        childAddress,
+        parent: makeGammaProductEvent({
+          pubkey,
+          id: `batch-parent-${index}`,
+          dTag: parentDTag,
+          createdAt: 100 + index * 2,
+          title: `Large family ${index}`,
+          type: "variable",
+        }),
+        child: makeGammaProductEvent({
+          pubkey,
+          id: `batch-child-${index}`,
+          dTag: childDTag,
+          createdAt: 101 + index * 2,
+          title: `Large family ${index} child`,
+          type: "variation",
+          parentProductId: parentAddress,
+          size: "Only",
+        }),
+      }
+    })
+    const failedAuthor = families.at(-1)!.pubkey
+    const allEvents = families.flatMap(({ parent, child }) => [parent, child])
+    const familyFilters: Array<{
+      authors: string[]
+      kind: "parent" | "child"
+    }> = []
+    let activeFamilyReads = 0
+    let maxActiveFamilyReads = 0
+
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return {
+            events: [],
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: relayUrls,
+            failedRelayUrls: [],
+            cappedRelayUrls: [],
+          }
+        }
+
+        const authors = [...(filter.authors ?? [])]
+        if (authors.length > 64) {
+          throw new Error("relay rejected oversized authors filter")
+        }
+        const parentRead = (filter["#d"] ?? []).some((dTag) =>
+          families.some((family) => family.parentDTag === dTag)
+        )
+        const childRead = (filter["#a"] ?? []).length > 0
+        const familyRead = parentRead || childRead
+        if (familyRead) {
+          familyFilters.push({
+            authors,
+            kind: parentRead ? "parent" : "child",
+          })
+          activeFamilyReads += 1
+          maxActiveFamilyReads = Math.max(
+            maxActiveFamilyReads,
+            activeFamilyReads
+          )
+          await new Promise((resolve) => setTimeout(resolve, 1))
+          activeFamilyReads -= 1
+        }
+
+        if (familyRead && authors.includes(failedAuthor)) {
+          return {
+            events: [],
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: [],
+            failedRelayUrls: relayUrls,
+            cappedRelayUrls: [],
+          }
+        }
+
+        const events = allEvents.filter(
+          (event) =>
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        )
+        return {
+          events,
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProductsByIds(
+      families.map(({ childAddress }) => childAddress)
+    )
+    const diagnostics = new Map(
+      result.diagnostics.map((diagnostic) => [
+        diagnostic.addressId,
+        diagnostic.issue,
+      ])
+    )
+
+    expect(familyFilters).toHaveLength(4)
+    expect(familyFilters.filter(({ kind }) => kind === "parent")).toHaveLength(
+      2
+    )
+    expect(familyFilters.filter(({ kind }) => kind === "child")).toHaveLength(2)
+    expect(familyFilters.every(({ authors }) => authors.length <= 64)).toBe(
+      true
+    )
+    expect(maxActiveFamilyReads).toBeLessThanOrEqual(4)
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      families
+        .slice(0, -1)
+        .map(({ childAddress }) => childAddress)
+        .sort()
+    )
+    expect(
+      families
+        .slice(0, -1)
+        .every(({ childAddress }) => diagnostics.get(childAddress) === null)
+    ).toBe(true)
+    expect(diagnostics.get(families.at(-1)!.childAddress)).toBe(
+      "lookup_partial"
+    )
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it.each([120, 201])(
+    "isolates saturated family coverage with %i heavy variations",
+    async (heavyCount) => {
+      const pubkey = "e".repeat(64)
+      const families = ["heavy", "small"].map((name, familyIndex) => {
+        const parentAddress = `30402:${pubkey}:saturation-${name}`
+        return {
+          parentAddress,
+          parent: makeGammaProductEvent({
+            pubkey,
+            id: `parent-${name}`,
+            dTag: `saturation-${name}`,
+            createdAt: 100,
+            title: name,
+            type: "variable",
+          }),
+          children: Array.from(
+            { length: familyIndex === 0 ? heavyCount : 120 },
+            (_, index) =>
+              makeGammaProductEvent({
+                pubkey,
+                id: `${name}-${index}`,
+                dTag: `saturation-${name}-${index}`,
+                createdAt: 101 + index,
+                title: `${name} ${index}`,
+                type: "variation",
+                parentProductId: parentAddress,
+                size: String(index),
+              })
+          ),
+        }
+      })
+      const allEvents = families.flatMap(({ parent, children }) => [
+        parent,
+        ...children,
+      ])
+      const familyQueries: string[][] = []
+      __setCommerceTestOverrides({
+        fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+          const relayUrls = [...(options?.relayUrls ?? [])]
+          const matched = !filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+            ? []
+            : allEvents.filter(
+                (event) =>
+                  (!filter.authors || filter.authors.includes(event.pubkey)) &&
+                  (!filter["#d"] ||
+                    event.tags.some(
+                      (tag) =>
+                        tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                    )) &&
+                  (!filter["#a"] ||
+                    event.tags.some(
+                      (tag) =>
+                        tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+                    ))
+              )
+          if (filter.kinds?.includes(EVENT_KINDS.PRODUCT) && filter["#a"])
+            familyQueries.push(filter["#a"])
+          const capped =
+            filter.limit !== undefined && matched.length >= filter.limit
+          return {
+            events: matched.slice(0, filter.limit) as never,
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: relayUrls,
+            failedRelayUrls: [],
+            cappedRelayUrls: capped ? relayUrls : [],
+          }
+        },
+      })
+      const selected = families.map(({ parentAddress }) => `${parentAddress}-0`)
+      const result = await getProductsByIds(selected)
+      const diagnostics = new Map(
+        result.diagnostics.map((item) => [item.addressId, item.issue])
+      )
+      expect(diagnostics.get(selected[1]!)).toBeNull()
+      expect(diagnostics.get(selected[0]!)).toBeNull()
+      expect(
+        result.diagnostics.find((item) => item.addressId === selected[1])
+          ?.coverage?.listing
+      ).toBe("complete")
+      expect(
+        result.diagnostics.find((item) => item.addressId === selected[0])
+          ?.coverage?.listing
+      ).toBe(heavyCount >= 200 ? "partial" : "complete")
+      expect(familyQueries).toEqual([
+        families.map(({ parentAddress }) => parentAddress),
+        [families[0]!.parentAddress],
+        [families[1]!.parentAddress],
+      ])
+      expect(result.meta.degraded).toBe(heavyCount >= 200)
+    }
+  )
+
+  it("keeps a selected variation's source hint in parent and sibling reads", async () => {
+    const sourceRelayUrl = "wss://variation-source.conduit.market"
+    const cachedSourceRelayUrls = Array.from(
+      { length: 4 },
+      (_, index) => `wss://variation-cache-${index}.conduit.market`
+    )
+    const parentAddress = `30402:${MERCHANT_A_PUBKEY}:hinted-shirt`
+    const parent = makeSignedGammaProductEvent({
+      dTag: "hinted-shirt",
+      createdAt: 100,
+      title: "Hinted shirt",
+      type: "variable",
+    })
+    const selectedCached = makeSignedGammaProductEvent({
+      dTag: "hinted-shirt-s",
+      createdAt: 101,
+      title: "Hinted shirt - S",
+      type: "variation",
+      parentProductId: parentAddress,
+      size: "S",
+    })
+    for (const relayUrl of cachedSourceRelayUrls) {
+      attachEventSourceRelayUrl(selectedCached, relayUrl)
+    }
+    await cacheSignedProductListingEvent(selectedCached)
+    const selected = new NDKEvent(undefined, selectedCached.rawEvent())
+    attachEventSourceRelayUrl(selected, sourceRelayUrl)
+    const sibling = makeSignedGammaProductEvent({
+      dTag: "hinted-shirt-m",
+      createdAt: 102,
+      title: "Hinted shirt - M",
+      type: "variation",
+      parentProductId: parentAddress,
+      size: "M",
+    })
+    const attempts: Array<{
+      dTags?: string[]
+      parentAddresses?: string[]
+      relayUrls: string[]
+    }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const relayUrls = options?.relayUrls ?? []
+        attempts.push({
+          dTags: filter["#d"],
+          parentAddresses: filter["#a"],
+          relayUrls: [...relayUrls],
+        })
+        if (relayUrls[0] !== sourceRelayUrl) return []
+        return [parent, selected, sibling].filter(
+          (event) =>
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        ) as never
+      },
+    })
+
+    const selectedAddress = `30402:${MERCHANT_A_PUBKEY}:hinted-shirt-s`
+    const result = await getProductDetail({
+      productId: encodeProductNaddr(selectedAddress, [sourceRelayUrl]),
+    })
+
+    expect(result.data?.addressId).toBe(parentAddress)
+    expect(
+      result.data?.family?.children.map((record) => record.addressId).sort()
+    ).toEqual(
+      [`30402:${MERCHANT_A_PUBKEY}:hinted-shirt-m`, selectedAddress].sort()
+    )
+    expect(
+      attempts.some(
+        (attempt) =>
+          attempt.dTags?.includes("hinted-shirt-s") &&
+          attempt.relayUrls[0] === sourceRelayUrl
+      )
+    ).toBe(true)
+    expect(
+      attempts.some(
+        (attempt) =>
+          attempt.dTags?.includes("hinted-shirt") &&
+          attempt.relayUrls[0] === sourceRelayUrl
+      )
+    ).toBe(true)
+    expect(
+      attempts.some(
+        (attempt) =>
+          attempt.parentAddresses?.includes(parentAddress) &&
+          attempt.relayUrls[0] === sourceRelayUrl
+      )
+    ).toBe(true)
+  })
+
   it("groups reachable Gamma variations while hiding orphan and foreign children", async () => {
     const merchantPubkey = MERCHANT_A_PUBKEY
     const foreignPubkey = getPublicKey(MERCHANT_B_SECRET)
@@ -843,7 +1715,7 @@ describe("commerce gateway", () => {
     expect(result.meta.degraded).toBe(true)
   })
 
-  it("partitions exact product batches by author without Cartesian collisions", async () => {
+  it("schedules every exact author without Cartesian collisions or unbounded concurrency", async () => {
     const merchants = Array.from({ length: 11 }, (_, index) =>
       getPublicKey(new Uint8Array(32).fill(index + 1))
     )
@@ -872,20 +1744,32 @@ describe("commerce gateway", () => {
       )
     )
     const productFilters: Array<Record<string, unknown>> = []
+    const relayFanouts: number[] = []
+    let activeReads = 0
+    let maxConcurrentReads = 0
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchEventsFanout: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
-        productFilters.push(filter as Record<string, unknown>)
-        const matches = [...crossEvents, ...wantedEvents].filter(
-          (event) =>
-            (!filter.authors || filter.authors.includes(event.pubkey)) &&
-            (!filter["#d"] ||
-              event.tags.some(
-                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
-              ))
-        )
-        return matches.slice(0, filter.limit ?? matches.length) as never
+        activeReads += 1
+        maxConcurrentReads = Math.max(maxConcurrentReads, activeReads)
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          productFilters.push(filter as Record<string, unknown>)
+          relayFanouts.push(options?.relayUrls?.length ?? 0)
+          const matches = [...crossEvents, ...wantedEvents].filter(
+            (event) =>
+              (!filter.authors || filter.authors.includes(event.pubkey)) &&
+              (!filter["#d"] ||
+                event.tags.some(
+                  (tag) =>
+                    tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                ))
+          )
+          return matches.slice(0, filter.limit ?? matches.length) as never
+        } finally {
+          activeReads -= 1
+        }
       },
     })
 
@@ -909,6 +1793,10 @@ describe("commerce gateway", () => {
           filter.limit === undefined
       )
     ).toBe(true)
+    expect(result.diagnostics.every(({ issue }) => issue === null)).toBe(true)
+    expect(maxConcurrentReads).toBeLessThanOrEqual(2)
+    expect(relayFanouts.every((relayCount) => relayCount <= 6)).toBe(true)
+    expect(result.meta.capped).toBe(false)
   })
 
   it("keeps a family stale until every cached sibling has live group coverage", async () => {

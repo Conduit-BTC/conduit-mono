@@ -245,9 +245,12 @@ type ProductSort = "updated_desc" | "title_asc" | "price_asc" | "price_desc"
 type EditFulfillmentResolution =
   "ready" | "resolving" | "unresolved" | "verifying_pickup"
 
-function getShareableProductUrl(productAddressId: string): string | null {
+function getShareableProductUrl(
+  productAddressId: string,
+  sourceRelayUrls: readonly string[]
+): string | null {
   try {
-    return getProductUrl(productAddressId)
+    return getProductUrl(productAddressId, sourceRelayUrls)
   } catch {
     return null
   }
@@ -2838,7 +2841,10 @@ function ProductsPage() {
 
             const isActive =
               item.safety.state === "active" || isConstrainedVariationFamily
-            const productUrl = getShareableProductUrl(item.addressId)
+            const productUrl = getShareableProductUrl(
+              item.addressId,
+              item.sourceRelayUrls
+            )
 
             return (
               <div key={item.addressId} className="grid gap-2">

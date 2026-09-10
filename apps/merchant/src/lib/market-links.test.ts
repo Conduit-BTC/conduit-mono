@@ -1,4 +1,8 @@
-import { encodeEventMarketNaddr, pubkeyToNpub } from "@conduit/core"
+import {
+  decodeProductReference,
+  encodeEventMarketNaddr,
+  pubkeyToNpub,
+} from "@conduit/core"
 import {
   getEventMarketUrl,
   getProfileUrl,
@@ -10,6 +14,7 @@ import {
 declare function test(name: string, fn: () => void): void
 declare function expect(actual: unknown): {
   toBe(expected: unknown): void
+  toEqual(expected: unknown): void
 }
 
 const pubkey = "0".repeat(64)
@@ -35,8 +40,13 @@ test("builds canonical event catalog links on the Market app", () => {
 
 test("builds canonical buyer-facing product links on the Market app", () => {
   const addressId = `30402:${pubkey}:product-one`
-  const productUrl = new URL(getProductUrl(addressId))
+  const sourceRelayUrl = "wss://merchant-source.conduit.market"
+  const productUrl = new URL(getProductUrl(addressId, [sourceRelayUrl]))
 
   expect(productUrl.origin).toBe("https://shop.conduit.market")
   expect(productUrl.pathname.startsWith("/products/naddr1")).toBe(true)
+  expect(
+    decodeProductReference(productUrl.pathname.replace("/products/", ""))
+      ?.relayHints
+  ).toEqual([sourceRelayUrl])
 })

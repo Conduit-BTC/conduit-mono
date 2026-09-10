@@ -4,6 +4,7 @@ import {
   decodeProductReference,
   encodeProductNaddr,
   isConduitMarketOrigin,
+  MAX_PRODUCT_RELAY_HINTS,
 } from "@conduit/core"
 
 const MERCHANT_PUBKEY = "a".repeat(64)
@@ -20,6 +21,82 @@ describe("product share links", () => {
       dTag: "summer/tea:large",
       addressId: PRODUCT_ADDRESS,
     })
+  })
+
+  it("normalizes, bounds, and preserves public source relay hints", () => {
+    const overlongRelayUrl = `wss://relay.damus.io/${"a".repeat(256)}`
+    const sourceRelayUrls = [
+      "WSS://RELAY.DAMUS.IO/",
+      "https://nos.lol/",
+      "wss://relay.damus.io",
+      "ws://127.0.0.1:7777",
+      overlongRelayUrl,
+      "wss://relay.primal.net/",
+      "wss://relay.nostr.band/",
+      "wss://relay.snort.social/",
+    ]
+    const expectedRelayHints = [
+      "wss://relay.damus.io",
+      "wss://nos.lol",
+      "wss://relay.primal.net",
+      "wss://relay.nostr.band",
+    ]
+    const naddr = encodeProductNaddr(PRODUCT_ADDRESS, sourceRelayUrls)
+    const rebuiltNaddr = encodeProductNaddr(naddr)
+    const preferredNaddr = encodeProductNaddr(naddr, [
+      "wss://relay.snort.social/",
+    ])
+    const url = buildMarketProductShareUrl(
+      "https://shop.conduit.market",
+      PRODUCT_ADDRESS,
+      sourceRelayUrls
+    )
+
+    expect(MAX_PRODUCT_RELAY_HINTS).toBe(4)
+    expect(decodeProductReference(naddr)?.relayHints).toEqual(
+      expectedRelayHints
+    )
+    expect(decodeProductReference(rebuiltNaddr)?.relayHints).toEqual(
+      expectedRelayHints
+    )
+    expect(decodeProductReference(preferredNaddr)?.relayHints).toEqual([
+      "wss://relay.snort.social",
+      ...expectedRelayHints.slice(0, 3),
+    ])
+    expect(
+      decodeProductReference(new URL(url).pathname.replace("/products/", ""))
+        ?.relayHints
+    ).toEqual(expectedRelayHints)
+  })
+
+  it("rejects parsed userinfo without materializing a credential-bearing URL", () => {
+    expect(
+      decodeProductReference(
+        encodeProductNaddr(PRODUCT_ADDRESS, [
+          "wss://userinfo-rejection.conduit.market/control",
+        ])
+      )?.relayHints
+    ).toEqual(["wss://userinfo-rejection.conduit.market/control"])
+    const descriptor = Object.getOwnPropertyDescriptor(
+      URL.prototype,
+      "username"
+    )!
+    Object.defineProperty(URL.prototype, "username", {
+      ...descriptor,
+      get() {
+        return this.hostname === "userinfo-rejection.conduit.market"
+          ? "present"
+          : descriptor.get!.call(this)
+      },
+    })
+    try {
+      const naddr = encodeProductNaddr(PRODUCT_ADDRESS, [
+        "wss://userinfo-rejection.conduit.market",
+      ])
+      expect(decodeProductReference(naddr)?.relayHints).toBeUndefined()
+    } finally {
+      Object.defineProperty(URL.prototype, "username", descriptor)
+    }
   })
 
   it("preserves literal percent sequences before URI-decoding fallback", () => {

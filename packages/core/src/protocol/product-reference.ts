@@ -1,8 +1,10 @@
 import { nip19 } from "@nostr-dev-kit/ndk"
 
 import { EVENT_KINDS } from "./kinds"
+import { normalizePublicOrIsolatedE2eRelayHints } from "./relay-settings"
 
 const PRODUCT_ADDRESS_PATTERN = /^30402:([0-9a-f]{64}):([\s\S]+)$/i
+export const MAX_PRODUCT_RELAY_HINTS = 4
 const MAX_NIP19_TLV_VALUE_BYTES = 255
 
 export interface ProductAddressReference {
@@ -10,6 +12,17 @@ export interface ProductAddressReference {
   authorPubkey: string
   dTag: string
   addressId: string
+  relayHints?: string[]
+}
+
+function normalizeProductRelayHints(relayUrls: readonly string[]): string[] {
+  return normalizePublicOrIsolatedE2eRelayHints(relayUrls)
+    .filter(
+      (relayUrl) =>
+        new TextEncoder().encode(relayUrl).byteLength <=
+        MAX_NIP19_TLV_VALUE_BYTES
+    )
+    .slice(0, MAX_PRODUCT_RELAY_HINTS)
 }
 
 function parseProductAddressReference(
@@ -58,11 +71,15 @@ export function decodeProductReference(
       }
 
       const authorPubkey = decoded.data.pubkey.toLowerCase()
+      const relayHints = normalizeProductRelayHints(
+        Array.isArray(decoded.data.relays) ? decoded.data.relays : []
+      )
       return {
         kind: EVENT_KINDS.PRODUCT,
         authorPubkey,
         dTag: decoded.data.identifier,
         addressId: `${EVENT_KINDS.PRODUCT}:${authorPubkey}:${decoded.data.identifier}`,
+        ...(relayHints.length > 0 ? { relayHints } : {}),
       }
     } catch {
       return null
@@ -73,7 +90,10 @@ export function decodeProductReference(
 }
 
 /** Encode a stable, human-shareable NIP-19 reference for a product address. */
-export function encodeProductNaddr(value: string): string {
+export function encodeProductNaddr(
+  value: string,
+  sourceRelayUrls: readonly string[] = []
+): string {
   const reference = decodeProductReference(value)
   if (!reference) {
     throw new Error("Product share link requires a valid kind-30402 address.")
@@ -84,11 +104,15 @@ export function encodeProductNaddr(value: string): string {
   ) {
     throw new Error("Product identifier must not exceed 255 UTF-8 bytes.")
   }
+  const relayHints = normalizeProductRelayHints([
+    ...sourceRelayUrls,
+    ...(reference.relayHints ?? []),
+  ])
 
   return nip19.naddrEncode({
     kind: reference.kind,
     pubkey: reference.authorPubkey,
     identifier: reference.dTag,
-    relays: [],
+    relays: relayHints,
   })
 }

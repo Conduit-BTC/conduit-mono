@@ -1,7 +1,11 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { nip19 } from "@nostr-dev-kit/ndk"
 
-import { installTestSigner, TEST_MERCHANT_PUBKEY } from "./helpers/auth"
+import {
+  installTestSigner,
+  TEST_MERCHANT_PUBKEY,
+  TEST_RELAY_URL,
+} from "./helpers/auth"
 
 const marketUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
@@ -18,18 +22,21 @@ const RED_ADDRESS = `30402:${TEST_MERCHANT_PUBKEY}:${RED_D_TAG}`
 const PARENT_TITLE = "Shareable Pocket Relay"
 const RED_TITLE = "Shareable Pocket Relay — Red"
 
-function productUrl(addressId: string): string {
+function productUrl(
+  addressId: string,
+  relayHints: readonly string[] = []
+): string {
   const [, pubkey, ...dTagParts] = addressId.split(":")
   return `${marketUrl}/products/${nip19.naddrEncode({
     kind: 30_402,
     pubkey: pubkey!,
     identifier: dTagParts.join(":"),
-    relays: [],
+    relays: [...relayHints],
   })}`
 }
 
 const PARENT_URL = productUrl(PARENT_ADDRESS)
-const RED_URL = productUrl(RED_ADDRESS)
+const RED_URL = productUrl(RED_ADDRESS, [TEST_RELAY_URL])
 
 async function installShareCaptures(page: Page): Promise<void> {
   await page.addInitScript(() => {
@@ -88,6 +95,7 @@ async function seedCachedProductFamily(page: Page): Promise<void> {
       redDTag,
       parentTitle,
       redTitle,
+      testRelayUrl,
     }) =>
       new Promise<void>((resolve, reject) => {
         const request = indexedDB.open("conduit")
@@ -170,6 +178,7 @@ async function seedCachedProductFamily(page: Page): Promise<void> {
               specifications: [{ key: "color", value: "Red" }],
               eventId: "3".repeat(64),
               eventCreatedAt: 102,
+              sourceRelayUrls: [testRelayUrl],
             },
           ]
           const store = transaction.objectStore("products")
@@ -189,6 +198,7 @@ async function seedCachedProductFamily(page: Page): Promise<void> {
       redDTag: RED_D_TAG,
       parentTitle: PARENT_TITLE,
       redTitle: RED_TITLE,
+      testRelayUrl: TEST_RELAY_URL,
     }
   )
 }

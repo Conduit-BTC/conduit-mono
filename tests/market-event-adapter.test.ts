@@ -384,6 +384,59 @@ describe("Market event adapter", () => {
     expect(projection.products[0]!.pickupFulfillment).not.toBeNull()
   })
 
+  it("projects every accepted product beyond the transport author chunk size", () => {
+    const records = Array.from({ length: 65 }, (_, index) => {
+      const author = (index + 1).toString(16).padStart(64, "0")
+      const coordinate = `30402:${author}:event-product-${index}`
+      return commerceRecord(
+        product({
+          id: coordinate,
+          pubkey: author,
+          title: `Event product ${index}`,
+        }),
+        { eventId: String(index + 1).repeat(64) }
+      )
+    })
+    const resolution = marketWithAcceptedRecords(records)
+    const projection = projectEventCatalogHydration({
+      resolution,
+      result: {
+        data: records,
+        diagnostics: records.map((record) => ({
+          productId: record.addressId,
+          addressId: record.addressId,
+          issue: null,
+          coverage: { listing: "complete", deletion: "complete" },
+        })),
+        meta: {
+          source: "commerce",
+          stale: false,
+          degraded: false,
+          capped: false,
+          capabilities: {
+            sortModes: [],
+            textSearch: false,
+            protectedSummaries: false,
+            canonicalFreshness: true,
+            cursorPagination: false,
+          },
+          fetchedAt: 1,
+        },
+      },
+    })
+
+    expect(projection.productReadState).toBe("ready")
+    expect(projection.acceptedProductCount).toBe(records.length)
+    expect(projection.unresolvedProductCoordinates).toEqual([])
+    expect(projection.products).toHaveLength(records.length)
+    expect(
+      projection.products.every(
+        ({ evidenceState, pickupFulfillment }) =>
+          evidenceState === "live" && pickupFulfillment !== null
+      )
+    ).toBe(true)
+  })
+
   it("preserves unresolved acceptance under an unavailable read without inventing product details", () => {
     const projection = projectEventCatalogHydration({
       resolution: market("partial"),

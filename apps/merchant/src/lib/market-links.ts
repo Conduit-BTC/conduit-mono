@@ -42,8 +42,15 @@ export function getProfileUrl(pubkey: string): string {
   return `${inferMarketOrigin()}/u/${encodeURIComponent(pubkeyToNpub(pubkey))}`
 }
 
-export function getProductUrl(productAddressId: string): string {
-  return buildMarketProductShareUrl(inferMarketOrigin(), productAddressId)
+export function getProductUrl(
+  productAddressId: string,
+  sourceRelayUrls: readonly string[] = []
+): string {
+  return buildMarketProductShareUrl(
+    inferMarketOrigin(),
+    productAddressId,
+    sourceRelayUrls
+  )
 }
 
 export function getEventMarketUrl(
