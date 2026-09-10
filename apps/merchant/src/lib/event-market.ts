@@ -34,6 +34,7 @@ import {
   type OrganizerEventMarketFormValues,
 } from "./event-market-form"
 import {
+  normalizeOrganizerEventMarketTitle,
   updateOrganizerCollectionProducts,
   type OrganizerCollectionMembershipAction,
 } from "./event-market-workflow"
@@ -601,7 +602,10 @@ function projectEventMarket(
     pickupCoordinate,
     pickupCoordinates,
     naddr,
-    title: calendar.title ?? collection?.title ?? "Event evidence unavailable",
+    title:
+      normalizeOrganizerEventMarketTitle(calendar.title) ??
+      normalizeOrganizerEventMarketTitle(collection?.title) ??
+      "Event evidence unavailable",
     summary: calendar.summary ?? collection?.summary,
     imageUrl: calendar.image ?? collection?.image,
     eventLocation: calendar.locations[0],

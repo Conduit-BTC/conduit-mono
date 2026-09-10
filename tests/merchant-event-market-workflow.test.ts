@@ -16,6 +16,7 @@ import {
   isPreferredOrganizerEventMarketListResolution,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
+  normalizeOrganizerEventMarketTitle,
   organizerEventMarketCanSupplySavedTitle,
   organizerEventMarketDeletionRetiresDelivery,
   organizerEventMarketHasSavedTitleEvidence,
@@ -327,6 +328,18 @@ describe("merchant organizer event workflow", () => {
     ).toBe(true)
     expect(anchored?.expectedCollectionCreatedAt).toBeUndefined()
     expect(anchored?.expectedCalendarCreatedAt).toBeUndefined()
+    expect(
+      organizerEventMarketHasSavedTitleEvidence(
+        { ...exactMarket, title: "  Current exact title  " },
+        anchored
+      )
+    ).toBe(true)
+    expect(
+      organizerEventMarketCanSupplySavedTitle(
+        { ...exactMarket, title: "  Current exact title  " },
+        anchored
+      )
+    ).toBe(true)
 
     const olderListMarket = {
       ...exactMarket,
@@ -362,6 +375,14 @@ describe("merchant organizer event workflow", () => {
       titleCalendarCreatedAt: 3_000,
       titleCalendarEventId: "1".repeat(64),
     })
+  })
+
+  it("normalizes event titles to one stable nonblank value", () => {
+    expect(normalizeOrganizerEventMarketTitle("  Event title  ")).toBe(
+      "Event title"
+    )
+    expect(normalizeOrganizerEventMarketTitle("   ")).toBeUndefined()
+    expect(normalizeOrganizerEventMarketTitle(undefined)).toBeUndefined()
   })
 
   it("keeps the in-session reference when browser storage rejects writes", () => {

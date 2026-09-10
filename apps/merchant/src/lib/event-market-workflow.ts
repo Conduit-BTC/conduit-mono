@@ -9,6 +9,14 @@ import {
 
 export type OrganizerCollectionMembershipAction = "accept" | "remove"
 
+export function normalizeOrganizerEventMarketTitle(
+  value: unknown
+): string | undefined {
+  if (typeof value !== "string") return undefined
+  const title = value.trim()
+  return title || undefined
+}
+
 export interface SavedOrganizerEventMarketReference {
   reference: string
   title?: string
@@ -542,9 +550,20 @@ export function organizerEventMarketHasSavedTitleEvidence(
 ): boolean {
   const frontiers = organizerEventMarketTitleFrontiers(market)
   const savedFrontiers = savedOrganizerEventMarketTitleFrontiers(savedReference)
-  if (!market || !savedReference || !frontiers || !savedFrontiers) return false
+  const marketTitle = normalizeOrganizerEventMarketTitle(market?.title)
+  const savedTitle = normalizeOrganizerEventMarketTitle(savedReference?.title)
+  if (
+    !market ||
+    !savedReference ||
+    !frontiers ||
+    !savedFrontiers ||
+    !marketTitle ||
+    !savedTitle
+  ) {
+    return false
+  }
   return (
-    savedReference.title === market.title &&
+    savedTitle === marketTitle &&
     savedFrontiers.collection.coordinate === frontiers.collection.coordinate &&
     savedFrontiers.collection.createdAt === frontiers.collection.createdAt &&
     savedFrontiers.collection.eventId === frontiers.collection.eventId &&
@@ -613,10 +632,7 @@ function normalizeSavedReference(
     return null
   }
 
-  const title =
-    typeof candidate.title === "string" && candidate.title.trim()
-      ? candidate.title.trim()
-      : undefined
+  const title = normalizeOrganizerEventMarketTitle(candidate.title)
   const titleCollectionCreatedAt = normalizedCreatedAt(
     candidate.titleCollectionCreatedAt
   )
@@ -1119,11 +1135,13 @@ export function organizerEventMarketCanSupplySavedTitle(
   ) {
     return false
   }
-  const savedTitle = savedReference.title?.trim()
+  const marketTitle = normalizeOrganizerEventMarketTitle(market.title)
+  const savedTitle = normalizeOrganizerEventMarketTitle(savedReference.title)
+  if (!marketTitle) return false
   const savedTitleFrontiers =
     savedOrganizerEventMarketTitleFrontiers(savedReference)
   const savedTitleIsAnchored = !!savedTitleFrontiers
-  if (savedTitle && savedTitle !== market.title && !savedTitleIsAnchored) {
+  if (savedTitle && savedTitle !== marketTitle && !savedTitleIsAnchored) {
     return false
   }
   if (
@@ -1143,7 +1161,7 @@ export function organizerEventMarketCanSupplySavedTitle(
   }
   return (
     !savedTitle ||
-    savedReference.title === market.title ||
+    savedTitle === marketTitle ||
     isPreferredOrganizerEventMarketListResolution(market)
   )
 }

@@ -892,7 +892,7 @@ test("direct and pasted event imports hydrate one saved selector title under par
   await installSyntheticEnvironment(page, relay)
   const eventTitle = "Synthetic imported title hydration"
   const market = await publishOrganizerMarket(page, relay, {
-    title: eventTitle,
+    title: `  ${eventTitle}  `,
     organizerHandoffEnabled: false,
   })
   const unrelatedFollowedPubkeys = Array.from({ length: 17 }, (_, index) =>
