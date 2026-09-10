@@ -546,6 +546,7 @@ export function OrganizerEventMarketPanel({
   refreshing,
   membershipPending,
   actionsDisabled,
+  deliveryRetryDisabled,
   retryingRecord,
   onCopy,
   onEdit,
@@ -559,6 +560,7 @@ export function OrganizerEventMarketPanel({
   refreshing: boolean
   membershipPending: boolean
   actionsDisabled: boolean
+  deliveryRetryDisabled: boolean
   retryingRecord: MerchantOrganizerRecordDelivery["record"] | null
   onCopy: (url: string) => void
   onEdit: () => void
@@ -825,7 +827,7 @@ export function OrganizerEventMarketPanel({
       <OrganizerEventMarketDeliveryList
         deliveries={deliveries}
         retryingRecord={retryingRecord}
-        actionsDisabled={actionsDisabled}
+        actionsDisabled={deliveryRetryDisabled}
         onRetryDelivery={onRetryDelivery}
       />
 

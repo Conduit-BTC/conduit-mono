@@ -1474,6 +1474,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
               !selectedMembershipActionableMarket ||
               organizerAuthorityMutationPending
             }
+            deliveryRetryDisabled={organizerAuthorityMutationPending}
             retryingRecord={
               retryMutation.isPending
                 ? (retryMutation.variables?.record.record ?? null)

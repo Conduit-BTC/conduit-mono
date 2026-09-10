@@ -1518,6 +1518,132 @@ test("keeps consecutive membership actions available while acknowledged collecti
   }
 })
 
+test("keeps exact collection retry available while rejected membership readback is stale @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Rejected Membership Retry",
+    organizerHandoffEnabled: true,
+  })
+  const requestedProduct = createMerchantProductEvent({
+    dTag: "rejected-membership-retry",
+    title: "Synthetic rejected membership product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  relay.seed(requestedProduct)
+  await page.getByRole("button", { name: "Refresh evidence" }).click()
+
+  const participationRow = page
+    .getByTestId("organizer-product-preview")
+    .filter({ hasText: "Synthetic rejected membership product" })
+    .locator("..")
+  const acceptProduct = participationRow.getByRole("button", {
+    name: "Accept",
+    exact: true,
+  })
+  await expect(acceptProduct).toBeEnabled()
+
+  const membershipPublishStart = relay.publications.length
+  relay.rejectKind(30405, true)
+  await acceptProduct.click()
+  const findRejectedCollection = () =>
+    uniquePublishedEvents(
+      relay.publications.slice(membershipPublishStart)
+    ).find(
+      (event) =>
+        event.kind === 30405 &&
+        eventCoordinate(event) === market.collectionCoordinate &&
+        event.tags.some(
+          (tag) =>
+            tag[0] === "a" && tag[1] === eventCoordinate(requestedProduct)
+        )
+    )
+  await expect
+    .poll(() => findRejectedCollection()?.id, { timeout: 30_000 })
+    .not.toBeUndefined()
+  const rejectedCollection = findRejectedCollection()!
+  await expect(
+    page.getByText(
+      "No relay acknowledged the signed collection event record.",
+      { exact: true }
+    )
+  ).toBeVisible({ timeout: 30_000 })
+  relay.rejectKind(30405, false)
+
+  const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
+  const deliveryStorageKey = `conduit:merchant:event-market-delivery:v1:${ORGANIZER_PUBKEY}`
+  await expect
+    .poll(() =>
+      page.evaluate(
+        ({ savedKey, deliveryKey, eventId }) => {
+          const references = JSON.parse(
+            localStorage.getItem(savedKey) ?? "[]"
+          ) as Array<{ expectedCollectionEventId?: string }>
+          const deliveries = JSON.parse(
+            localStorage.getItem(deliveryKey) ?? "[]"
+          ) as Array<{
+            delivery?: {
+              acknowledgedCount?: number
+              signedEvent?: { id?: string }
+            }
+          }>
+          return {
+            expectedCollectionEventId: references[0]?.expectedCollectionEventId,
+            acknowledgedCount: deliveries.find(
+              (entry) => entry.delivery?.signedEvent?.id === eventId
+            )?.delivery?.acknowledgedCount,
+          }
+        },
+        {
+          savedKey: savedStorageKey,
+          deliveryKey: deliveryStorageKey,
+          eventId: rejectedCollection.id,
+        }
+      )
+    )
+    .toEqual({
+      expectedCollectionEventId: rejectedCollection.id,
+      acknowledgedCount: 0,
+    })
+
+  await page.reload()
+  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  await selectOrganizerMarket(page, "Synthetic Rejected Membership Retry")
+  await expect(
+    page.getByText("Showing earlier signed event evidence", { exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(acceptProduct).toBeDisabled()
+  await expect(
+    page.getByRole("button", { name: "Update event", exact: true })
+  ).toBeDisabled()
+  await expect(
+    page.getByRole("heading", { name: "Organizer handoff queue", exact: true })
+  ).toHaveCount(0)
+
+  const retryDelivery = page.getByRole("button", {
+    name: "Retry delivery",
+    exact: true,
+  })
+  await expect(retryDelivery).toBeEnabled()
+  const retryPublishStart = relay.publications.length
+  await retryDelivery.click()
+  await expect
+    .poll(
+      () =>
+        relay.publications
+          .slice(retryPublishStart)
+          .map((publication) => publication.event.id),
+      { timeout: 30_000 }
+    )
+    .toContain(rejectedCollection.id)
+})
+
 test("a late old collection retry ACK preserves a newer same-coordinate update @merchant", async ({
   page,
 }) => {
