@@ -79,15 +79,6 @@ export type PrepareProductSupportZapInvoiceInput = {
   isCurrent?: () => boolean
 }
 
-export type PreparedProductSupportZapInvoice = {
-  invoice: string
-  amountMsats: number
-  productAddress: string
-  receiptPubkey: string
-  receiptRelayUrls: string[]
-  zapRequest: SignedPublicNostrEvent
-}
-
 export interface ProductSupportZapDependencies {
   getProfiles: typeof getProfiles
   fetchLnurlPayMetadata: typeof fetchLnurlPayMetadata
@@ -100,12 +91,6 @@ const defaultDependencies: ProductSupportZapDependencies = {
   fetchLnurlPayMetadata,
   fetchZapInvoice,
   validateLightningInvoiceForPayment,
-}
-
-function formatPublicFieldList(fields: readonly string[]): string {
-  if (fields.length === 1) return fields[0]!
-  if (fields.length === 2) return `${fields[0]} and ${fields[1]}`
-  return `${fields.slice(0, -1).join(", ")}, and ${fields.at(-1)}`
 }
 
 export function getProductSupportZapDisclosure(input: {
@@ -135,7 +120,7 @@ export function getProductSupportZapDisclosure(input: {
 
   return {
     publicFields,
-    preSubmitCopy: `Creating the invoice sends a signed public zap request to the merchant's Lightning provider, even if you never pay it. The request includes ${formatPublicFieldList(fieldLabels)}. It never includes cart, order, shipping, or customer details. If paid, the provider may publish that request inside a public zap receipt on Nostr.`,
+    preSubmitCopy: `Creating the invoice sends a signed public zap request to the merchant's Lightning provider, even if you never pay it. The request includes ${new Intl.ListFormat("en", { type: "conjunction" }).format(fieldLabels)}. It never includes cart, order, shipping, or customer details. If paid, the provider may publish that request inside a public zap receipt on Nostr.`,
   }
 }
 
@@ -382,7 +367,7 @@ export async function resolveProductSupportPaymentAddress(
 export async function prepareProductSupportZapInvoice(
   input: PrepareProductSupportZapInvoiceInput,
   dependencies: ProductSupportZapDependencies = defaultDependencies
-): Promise<PreparedProductSupportZapInvoice> {
+): Promise<string> {
   assertProductSupportRequestCurrent(input.isCurrent)
   const shopperPubkey = requireAccountPubkey(input.shopperPubkey, "shopper")
   const activeSignerPubkey = normalizePubkey(await input.signer.getPublicKey())
@@ -399,7 +384,7 @@ export async function prepareProductSupportZapInvoice(
   assertProductSupportRequestCurrent(input.isCurrent)
   const metadata = await dependencies.fetchLnurlPayMetadata(lud16)
   assertProductSupportRequestCurrent(input.isCurrent)
-  const receiptPubkey = validateZapMetadata(metadata, amountMsats)
+  validateZapMetadata(metadata, amountMsats)
   const draft = buildProductSupportZapRequest({
     shopperPubkey,
     recipientPubkey: input.recipientPubkey,
@@ -448,12 +433,5 @@ export async function prepareProductSupportZapInvoice(
     )
   }
 
-  return {
-    invoice,
-    amountMsats,
-    productAddress: draft.tags.find((tag) => tag[0] === "a")![1]!,
-    receiptPubkey,
-    receiptRelayUrls: draft.tags.find((tag) => tag[0] === "relays")!.slice(1),
-    zapRequest,
-  }
+  return invoice
 }

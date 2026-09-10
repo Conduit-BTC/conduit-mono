@@ -1,5 +1,5 @@
 import { Check, Copy, ExternalLink, Zap } from "lucide-react"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   config,
   getProductSupportZapDisclosure,
@@ -52,11 +52,8 @@ export function ProductSupportZap({
   const [error, setError] = useState<string | null>(null)
   const [preparing, setPreparing] = useState(false)
   const [copied, setCopied] = useState(false)
-  const noteLength = useMemo(() => Array.from(note).length, [note])
-  const disclosure = useMemo(
-    () => getProductSupportZapDisclosure({ note }),
-    [note]
-  )
+  const noteLength = Array.from(note).length
+  const disclosure = getProductSupportZapDisclosure({ note })
   const lightningAddress = lud16?.trim() ?? ""
   const signerReady =
     auth.status === "connected" &&
@@ -155,7 +152,7 @@ export function ProductSupportZap({
     setInvoice(null)
     setCopied(false)
     try {
-      const result = await prepareProductSupportZapInvoice({
+      const preparedInvoice = await prepareProductSupportZapInvoice({
         signer: createNdkNostrEventSigner(signer, shopperPubkey, authMethod),
         shopperPubkey,
         recipientPubkey: selectedMerchantPubkey,
@@ -165,7 +162,7 @@ export function ProductSupportZap({
         relayUrls: config.zapRelayUrls,
         isCurrent: isCurrent,
       })
-      if (isCurrent()) setInvoice(result.invoice)
+      if (isCurrent()) setInvoice(preparedInvoice)
     } catch (cause) {
       if (isCurrent()) {
         setError(

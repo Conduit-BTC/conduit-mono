@@ -334,7 +334,7 @@ describe("product support payment profile evidence", () => {
 describe("product support zap invoice preparation", () => {
   it("signs the exact public request and asks for a description-bound invoice", async () => {
     const deps = dependencies()
-    const result = await prepareProductSupportZapInvoice(
+    const invoice = await prepareProductSupportZapInvoice(
       {
         signer: signer(),
         shopperPubkey: SHOPPER_PUBKEY,
@@ -348,14 +348,7 @@ describe("product support zap invoice preparation", () => {
       deps
     )
 
-    expect(result).toMatchObject({
-      invoice: "lnbc1bound",
-      amountMsats: 21_000,
-      productAddress: PRODUCT_ADDRESS,
-      receiptPubkey: PROVIDER_PUBKEY,
-      receiptRelayUrls: ["wss://relay.example"],
-    })
-    expect(result.zapRequest.content).toBe("nice mug")
+    expect(invoice).toBe("lnbc1bound")
     expect(deps.getProfiles).toHaveBeenCalledTimes(2)
     expect(deps.getProfiles).toHaveBeenNthCalledWith(1, {
       pubkeys: [MERCHANT_PUBKEY],
@@ -375,7 +368,18 @@ describe("product support zap invoice preparation", () => {
       expect.any(String),
       "lnurl1product"
     )
-    expect(JSON.parse(zapRequestJson ?? "{}")).toEqual(result.zapRequest)
+    expect(JSON.parse(zapRequestJson ?? "{}")).toMatchObject({
+      kind: 9734,
+      pubkey: SHOPPER_PUBKEY,
+      content: "nice mug",
+      tags: expect.arrayContaining([
+        ["p", MERCHANT_PUBKEY],
+        ["a", PRODUCT_ADDRESS],
+        ["amount", "21000"],
+        ["lnurl", "lnurl1product"],
+        ["relays", "wss://relay.example"],
+      ]),
+    })
     expect(deps.validateLightningInvoiceForPayment).toHaveBeenCalledWith({
       invoice: "lnbc1bound",
       expectedAmountMsats: 21_000,
@@ -418,16 +422,9 @@ describe("product support zap invoice preparation", () => {
   it("fails before signing when the endpoint cannot issue public zaps", async () => {
     const sign = mock(signer().signEvent)
     const deps = dependencies({
-      fetchLnurlPayMetadata: mock(async () => ({
-        payRequestUrl: "https://pay.example/.well-known/lnurlp/merchant",
-        lnurl: "lnurl1product",
-        callback: "https://pay.example/zap",
-        minSendable: 1_000,
-        maxSendable: 1_000_000,
-        tag: "payRequest",
-        allowsNostr: false,
-        metadata: "[]",
-      })),
+      fetchLnurlPayMetadata: mock(async () =>
+        lnurlMetadata({ allowsNostr: false })
+      ),
     })
 
     await expect(
@@ -449,17 +446,9 @@ describe("product support zap invoice preparation", () => {
 
   it("fails closed for invalid provider identity or an out-of-range amount", async () => {
     const invalidProvider = dependencies({
-      fetchLnurlPayMetadata: mock(async () => ({
-        payRequestUrl: "https://pay.example/.well-known/lnurlp/merchant",
-        lnurl: "lnurl1product",
-        callback: "https://pay.example/zap",
-        minSendable: 1_000,
-        maxSendable: 1_000_000,
-        tag: "payRequest",
-        allowsNostr: true,
-        nostrPubkey: "f".repeat(64),
-        metadata: "[]",
-      })),
+      fetchLnurlPayMetadata: mock(async () =>
+        lnurlMetadata({ nostrPubkey: "f".repeat(64) })
+      ),
     })
     const input = {
       signer: signer(),
@@ -475,17 +464,9 @@ describe("product support zap invoice preparation", () => {
     ).rejects.toThrow("receipt key")
 
     const outOfRange = dependencies({
-      fetchLnurlPayMetadata: mock(async () => ({
-        payRequestUrl: "https://pay.example/.well-known/lnurlp/merchant",
-        lnurl: "lnurl1product",
-        callback: "https://pay.example/zap",
-        minSendable: 50_000,
-        maxSendable: 100_000,
-        tag: "payRequest",
-        allowsNostr: true,
-        nostrPubkey: PROVIDER_PUBKEY,
-        metadata: "[]",
-      })),
+      fetchLnurlPayMetadata: mock(async () =>
+        lnurlMetadata({ minSendable: 50_000, maxSendable: 100_000 })
+      ),
     })
     await expect(
       prepareProductSupportZapInvoice(input, outOfRange)
