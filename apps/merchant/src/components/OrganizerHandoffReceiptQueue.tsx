@@ -22,7 +22,10 @@ import {
   eventMarketHandoffRecipientAcknowledged,
   type StoredEventMarketHandoffDelivery,
 } from "../lib/event-market-handoff"
-import { groupEventActorRelayHints } from "../lib/event-actor-identity"
+import {
+  groupEventActorRelayHints,
+  normalizeEventActorPubkey,
+} from "../lib/event-actor-identity"
 import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 
 function stateLabel(state: EventMarketOrganizerClaim["state"]): string {
@@ -138,24 +141,31 @@ export function OrganizerHandoffReceiptQueue({
 }) {
   const discoveryDegraded =
     stale || decryptFailureCount > 0 || error || !discoveryEvidenceComplete
-  const merchantPubkeys = useMemo(
+  const merchantIdentityPubkeyByReceiptId = useMemo(
     () =>
-      Array.from(
-        new Set(claims.map((claim) => claim.receipt.payload.merchantPubkey))
+      new Map(
+        claims.map((claim) => [
+          claim.receipt.id,
+          normalizeEventActorPubkey(claim.receipt.payload.merchantPubkey),
+        ])
       ),
     [claims]
+  )
+  const merchantPubkeys = useMemo(
+    () => Array.from(new Set(merchantIdentityPubkeyByReceiptId.values())),
+    [merchantIdentityPubkeyByReceiptId]
   )
   const merchantRelayHintsByPubkey = useMemo(
     () =>
       groupEventActorRelayHints(
         claims.map((claim) => ({
-          pubkey: claim.receipt.payload.merchantPubkey,
+          pubkey: merchantIdentityPubkeyByReceiptId.get(claim.receipt.id),
           relayUrls: merchandiseReads[
             claim.receipt.id
           ]?.resolution?.items.flatMap((item) => item.sourceRelayUrls),
         }))
       ),
-    [claims, merchandiseReads]
+    [claims, merchandiseReads, merchantIdentityPubkeyByReceiptId]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
     authenticatedPubkey: organizerPubkey,
@@ -225,6 +235,9 @@ export function OrganizerHandoffReceiptQueue({
 
         {claims.map((claim) => {
           const receipt = claim.receipt.payload
+          const merchantIdentityPubkey = merchantIdentityPubkeyByReceiptId.get(
+            claim.receipt.id
+          )!
           const pending = pendingReceiptId === claim.receipt.id
           const ackDelivery = ackDeliveries.find(
             (delivery) =>
@@ -257,7 +270,7 @@ export function OrganizerHandoffReceiptQueue({
                   <EventActorName
                     pubkey={receipt.merchantPubkey}
                     profile={merchantProfilesQuery.getProfile(
-                      receipt.merchantPubkey
+                      merchantIdentityPubkey
                     )}
                     className="mt-0.5 block text-sm"
                   />

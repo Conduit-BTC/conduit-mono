@@ -11,13 +11,19 @@ export interface OrganizerEventActorProfileLookupPlan {
   organizerRelayHintsByPubkey: Record<string, string[]>
 }
 
+export function normalizeEventActorPubkey(pubkey: string): string {
+  return pubkey.trim().toLowerCase()
+}
+
 export function groupEventActorRelayHints(
   entries: readonly EventActorRelayHintEntry[]
 ): Record<string, string[]> {
   const result: Record<string, string[]> = {}
 
   for (const entry of entries) {
-    const pubkey = entry.pubkey?.trim().toLowerCase()
+    const pubkey = entry.pubkey
+      ? normalizeEventActorPubkey(entry.pubkey)
+      : undefined
     if (!pubkey) continue
     const relayUrls = result[pubkey] ?? []
     const seen = new Set(relayUrls)
@@ -43,11 +49,13 @@ export function planOrganizerEventActorProfileLookups(input: {
   participantPubkeys: readonly (string | null | undefined)[]
   organizerRelayUrls: readonly string[]
 }): OrganizerEventActorProfileLookupPlan {
-  const organizerPubkey = input.organizerPubkey.trim().toLowerCase()
+  const organizerPubkey = normalizeEventActorPubkey(input.organizerPubkey)
   const participantPubkeys = Array.from(
     new Set(
       input.participantPubkeys
-        .map((pubkey) => pubkey?.trim().toLowerCase())
+        .map((pubkey) =>
+          pubkey ? normalizeEventActorPubkey(pubkey) : undefined
+        )
         .filter(
           (pubkey): pubkey is string => !!pubkey && pubkey !== organizerPubkey
         )

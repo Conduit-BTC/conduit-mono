@@ -83,6 +83,7 @@ import {
   EventActorName,
   EventActorProvenance,
 } from "../components/EventActorIdentity"
+import { normalizeEventActorPubkey } from "../lib/event-actor-identity"
 import { OrderCardScroller } from "../components/OrderCardScroller"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
 import { OrderItemsCard } from "../components/OrderItemsCard"
@@ -387,7 +388,10 @@ function PickupFulfillmentCard({
   const publicPlace =
     pickup.option.location ??
     (pickup.option.geohash ? `Geohash ${pickup.option.geohash}` : null)
-  const organizerProfileQuery = useProfile(pickup.organizerPubkey, {
+  const organizerIdentityPubkey = normalizeEventActorPubkey(
+    pickup.organizerPubkey
+  )
+  const organizerProfileQuery = useProfile(organizerIdentityPubkey, {
     authenticatedPubkey,
     relayHints: organizerProfileRelayHints,
     priority: "visible",

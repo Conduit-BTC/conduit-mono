@@ -261,6 +261,10 @@ describe("merchant organizer event market route", () => {
       "requiresShipping: orderFulfillment.requiresShipping"
     )
     expect(orders).toContain("<PickupFulfillmentCard")
+    expect(orders).toContain(
+      "const organizerIdentityPubkey = normalizeEventActorPubkey("
+    )
+    expect(orders).toContain("useProfile(organizerIdentityPubkey")
     expect(orders).toContain('data-testid="merchant-order-pickup"')
     expect(orders).toContain('data-testid="merchant-order-pickup-unverified"')
     expect(orders).toContain(
@@ -372,6 +376,13 @@ describe("merchant organizer event market route", () => {
     expect(queue).toContain("Mark handed out")
     expect(queue).toContain("formatEventMarketPickupClaimCode")
     expect(queue).toContain("safePickupClaimCode")
+    expect(queue).toContain("merchantIdentityPubkeyByReceiptId")
+    expect(queue).toContain(
+      "normalizeEventActorPubkey(claim.receipt.payload.merchantPubkey)"
+    )
+    expect(queue).toContain(
+      "merchantProfilesQuery.getProfile(\n                      merchantIdentityPubkey"
+    )
     expect(queue).toContain("Product details unavailable")
     expect(queue).toContain("Exact signed product evidence")
     expect(queue).toContain("isVerifiedEventMarketReceiptMerchandiseResolution")
