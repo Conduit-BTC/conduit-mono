@@ -18,6 +18,7 @@ import {
   getProfileName,
   normalizeCurrencyCode,
   pubkeyToNpub,
+  useProfile,
   useProfiles,
   type Profile,
   type ProductImage,
@@ -57,7 +58,10 @@ import {
   getMerchantProfileState,
   type MerchantProfileState,
 } from "../lib/event-market-participation-identity"
-import { planOrganizerEventActorProfileLookups } from "../lib/event-actor-identity"
+import {
+  getOrganizerEventParticipantPubkeys,
+  normalizeEventActorPubkey,
+} from "../lib/event-actor-identity"
 import {
   EventActorName,
   EventActorProvenance,
@@ -584,36 +588,31 @@ export function OrganizerEventMarketPanel({
   const organizerOnlyProducts = market.participation.filter(
     (item) => item.status === "organizer_only"
   )
-  const eventActorProfileLookupPlan = useMemo(
+  const organizerIdentityPubkey = normalizeEventActorPubkey(
+    market.organizerPubkey
+  )
+  const participantPubkeys = useMemo(
     () =>
-      planOrganizerEventActorProfileLookups({
+      getOrganizerEventParticipantPubkeys({
         organizerPubkey: market.organizerPubkey,
         participantPubkeys: market.participation.flatMap((item) => [
           item.merchantPubkey,
           item.handlerPubkey,
         ]),
-        organizerRelayUrls: getResolvedEventMarketRelayHints(market.source),
       }),
-    [market.organizerPubkey, market.participation, market.source]
+    [market.organizerPubkey, market.participation]
   )
-  const organizerProfileQuery = useProfiles(
-    eventActorProfileLookupPlan.organizerPubkeys,
-    {
-      authenticatedPubkey: market.organizerPubkey,
-      relayHintsByPubkey:
-        eventActorProfileLookupPlan.organizerRelayHintsByPubkey,
-      priority: "visible",
-      maxUnresolvedRefetches: 1,
-    }
-  )
-  const participantProfilesQuery = useProfiles(
-    eventActorProfileLookupPlan.participantPubkeys,
-    {
-      authenticatedPubkey: market.organizerPubkey,
-      priority: "visible",
-      maxUnresolvedRefetches: 1,
-    }
-  )
+  const organizerProfileQuery = useProfile(organizerIdentityPubkey, {
+    authenticatedPubkey: market.organizerPubkey,
+    relayHints: getResolvedEventMarketRelayHints(market.source),
+    priority: "visible",
+    maxUnresolvedRefetches: 1,
+  })
+  const participantProfilesQuery = useProfiles(participantPubkeys, {
+    authenticatedPubkey: market.organizerPubkey,
+    priority: "visible",
+    maxUnresolvedRefetches: 1,
+  })
 
   function profileQueryForActor(pubkey: string) {
     return pubkey.trim().toLowerCase() === market.organizerPubkey.toLowerCase()

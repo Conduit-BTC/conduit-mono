@@ -141,31 +141,30 @@ export function OrganizerHandoffReceiptQueue({
 }) {
   const discoveryDegraded =
     stale || decryptFailureCount > 0 || error || !discoveryEvidenceComplete
-  const merchantIdentityPubkeyByReceiptId = useMemo(
+  const merchantPubkeys = useMemo(
     () =>
-      new Map(
-        claims.map((claim) => [
-          claim.receipt.id,
-          normalizeEventActorPubkey(claim.receipt.payload.merchantPubkey),
-        ])
+      Array.from(
+        new Set(
+          claims.map((claim) =>
+            normalizeEventActorPubkey(claim.receipt.payload.merchantPubkey)
+          )
+        )
       ),
     [claims]
-  )
-  const merchantPubkeys = useMemo(
-    () => Array.from(new Set(merchantIdentityPubkeyByReceiptId.values())),
-    [merchantIdentityPubkeyByReceiptId]
   )
   const merchantRelayHintsByPubkey = useMemo(
     () =>
       groupEventActorRelayHints(
         claims.map((claim) => ({
-          pubkey: merchantIdentityPubkeyByReceiptId.get(claim.receipt.id),
+          pubkey: normalizeEventActorPubkey(
+            claim.receipt.payload.merchantPubkey
+          ),
           relayUrls: merchandiseReads[
             claim.receipt.id
           ]?.resolution?.items.flatMap((item) => item.sourceRelayUrls),
         }))
       ),
-    [claims, merchandiseReads, merchantIdentityPubkeyByReceiptId]
+    [claims, merchandiseReads]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
     authenticatedPubkey: organizerPubkey,
@@ -235,9 +234,9 @@ export function OrganizerHandoffReceiptQueue({
 
         {claims.map((claim) => {
           const receipt = claim.receipt.payload
-          const merchantIdentityPubkey = merchantIdentityPubkeyByReceiptId.get(
-            claim.receipt.id
-          )!
+          const merchantIdentityPubkey = normalizeEventActorPubkey(
+            receipt.merchantPubkey
+          )
           const pending = pendingReceiptId === claim.receipt.id
           const ackDelivery = ackDeliveries.find(
             (delivery) =>

@@ -376,7 +376,6 @@ describe("merchant organizer event market route", () => {
     expect(queue).toContain("Mark handed out")
     expect(queue).toContain("formatEventMarketPickupClaimCode")
     expect(queue).toContain("safePickupClaimCode")
-    expect(queue).toContain("merchantIdentityPubkeyByReceiptId")
     expect(queue).toContain(
       "normalizeEventActorPubkey(claim.receipt.payload.merchantPubkey)"
     )

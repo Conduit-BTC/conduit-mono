@@ -5,12 +5,6 @@ export interface EventActorRelayHintEntry {
   relayUrls: readonly string[] | undefined
 }
 
-export interface OrganizerEventActorProfileLookupPlan {
-  organizerPubkeys: string[]
-  participantPubkeys: string[]
-  organizerRelayHintsByPubkey: Record<string, string[]>
-}
-
 export function normalizeEventActorPubkey(pubkey: string): string {
   return pubkey.trim().toLowerCase()
 }
@@ -44,13 +38,12 @@ export function groupEventActorRelayHints(
  * use their own NIP-65 and cached product-source evidence in the shared profile
  * reader.
  */
-export function planOrganizerEventActorProfileLookups(input: {
+export function getOrganizerEventParticipantPubkeys(input: {
   organizerPubkey: string
   participantPubkeys: readonly (string | null | undefined)[]
-  organizerRelayUrls: readonly string[]
-}): OrganizerEventActorProfileLookupPlan {
+}): string[] {
   const organizerPubkey = normalizeEventActorPubkey(input.organizerPubkey)
-  const participantPubkeys = Array.from(
+  return Array.from(
     new Set(
       input.participantPubkeys
         .map((pubkey) =>
@@ -61,14 +54,6 @@ export function planOrganizerEventActorProfileLookups(input: {
         )
     )
   )
-
-  return {
-    organizerPubkeys: organizerPubkey ? [organizerPubkey] : [],
-    participantPubkeys,
-    organizerRelayHintsByPubkey: groupEventActorRelayHints([
-      { pubkey: organizerPubkey, relayUrls: input.organizerRelayUrls },
-    ]),
-  }
 }
 
 export function getEventActorDisplayName(

@@ -15,9 +15,9 @@ import {
 import { EventPickupHandlerIdentity } from "../apps/merchant/src/components/EventActorIdentity"
 import {
   getEventActorDisplayName,
+  getOrganizerEventParticipantPubkeys,
   groupEventActorRelayHints,
   normalizeEventActorPubkey,
-  planOrganizerEventActorProfileLookups,
 } from "../apps/merchant/src/lib/event-actor-identity"
 
 const actorPubkey = "a".repeat(64)
@@ -258,19 +258,12 @@ describe("Merchant event actor identity", () => {
       (_, index) => `wss://event-${index + 1}.conduit.market`
     )
     const participantRelayUrl = "wss://participant-profile.conduit.market"
-    const lookupPlan = planOrganizerEventActorProfileLookups({
+    const participantPubkeys = getOrganizerEventParticipantPubkeys({
       organizerPubkey: actorPubkey,
       participantPubkeys: [actorPubkey, otherPubkey, otherPubkey.toUpperCase()],
-      organizerRelayUrls,
     })
 
-    expect(lookupPlan).toEqual({
-      organizerPubkeys: [actorPubkey],
-      participantPubkeys: [otherPubkey],
-      organizerRelayHintsByPubkey: {
-        [actorPubkey]: organizerRelayUrls,
-      },
-    })
+    expect(participantPubkeys).toEqual([otherPubkey])
 
     __setRelayListTestOverrides({
       loadCached: async (pubkey) =>
@@ -324,15 +317,17 @@ describe("Merchant event actor identity", () => {
     })
 
     const organizerProfiles = await getProfiles({
-      pubkeys: lookupPlan.organizerPubkeys,
+      pubkeys: [actorPubkey],
       authenticatedPubkey: actorPubkey,
-      relayHintsByPubkey: lookupPlan.organizerRelayHintsByPubkey,
+      relayHintsByPubkey: {
+        [actorPubkey]: organizerRelayUrls,
+      },
       priority: "visible",
       skipCache: true,
       readPolicy: { maxRelays: 8 },
     })
     const participantProfiles = await getProfiles({
-      pubkeys: lookupPlan.participantPubkeys,
+      pubkeys: participantPubkeys,
       authenticatedPubkey: actorPubkey,
       priority: "visible",
       skipCache: true,
