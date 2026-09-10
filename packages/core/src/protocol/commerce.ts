@@ -3844,15 +3844,22 @@ async function fetchVariationGroupRecordBatch(
   records: CommerceProductRecord[]
   degraded: boolean
   capped: boolean
+  invalidTargetAddressIds: ReadonlySet<string>
 }> {
   if (targets.length === 0) {
-    return { records: [], degraded: false, capped: false }
+    return {
+      records: [],
+      degraded: false,
+      capped: false,
+      invalidTargetAddressIds: new Set(),
+    }
   }
 
   const authors: string[] = []
   const parentAddresses: string[] = []
   const parentDTags: string[] = []
   const knownRelayHints: string[] = []
+  const invalidTargetAddressIds = new Set<string>()
   for (const target of targets) {
     const parentAddress = getVariationParentAddress(target)
     const parsedParent = parentAddress ? parseAddress(parentAddress) : null
@@ -3862,7 +3869,8 @@ async function fetchVariationGroupRecordBatch(
       parsedParent.kind !== EVENT_KINDS.PRODUCT ||
       parsedParent.pubkey !== target.product.pubkey
     ) {
-      return { records: [], degraded: true, capped: false }
+      invalidTargetAddressIds.add(target.addressId)
+      continue
     }
     authors.push(parsedParent.pubkey)
     parentAddresses.push(parentAddress)
@@ -3871,6 +3879,15 @@ async function fetchVariationGroupRecordBatch(
       ...(relayHintsByParent.get(parentAddress) ?? []),
       ...(target.sourceRelayUrls ?? [])
     )
+  }
+
+  if (authors.length === 0) {
+    return {
+      records: [],
+      degraded: false,
+      capped: false,
+      invalidTargetAddressIds,
+    }
   }
 
   try {
@@ -3953,9 +3970,15 @@ async function fetchVariationGroupRecordBatch(
         mergeProductAvailabilityCoverage(parentCoverage, variationCoverage) !==
           "complete" || capped,
       capped,
+      invalidTargetAddressIds,
     }
   } catch {
-    return { records: [], degraded: true, capped: false }
+    return {
+      records: [],
+      degraded: true,
+      capped: false,
+      invalidTargetAddressIds,
+    }
   }
 }
 
@@ -4704,7 +4727,9 @@ export async function getProductsByIds(
     hasCompleteLiveVariationGroupCoverage({
       target,
       groupRead: {
-        ...groupRead,
+        degraded:
+          groupRead.degraded ||
+          groupRead.invalidTargetAddressIds.has(target.addressId),
         records: filterDeletedProductRecords(
           groupRead.records,
           deletionTimestamps

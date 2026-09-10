@@ -817,6 +817,72 @@ describe("commerce gateway", () => {
     ).toBe(true)
   })
 
+  it("isolates a malformed variation target from a valid family batch", async () => {
+    const merchantBPubkey = getPublicKey(MERCHANT_B_SECRET)
+    const validParentAddress = `30402:${MERCHANT_A_PUBKEY}:valid-batch-shirt`
+    const crossAuthorParentAddress = `30402:${merchantBPubkey}:foreign-shirt`
+    const validParent = makeSignedGammaProductEvent({
+      dTag: "valid-batch-shirt",
+      createdAt: 100,
+      title: "Valid batch shirt",
+      type: "variable",
+    })
+    const validVariation = makeSignedGammaProductEvent({
+      dTag: "valid-batch-shirt-s",
+      createdAt: 101,
+      title: "Valid batch shirt - S",
+      type: "variation",
+      parentProductId: validParentAddress,
+      size: "S",
+    })
+    const malformedVariation = makeSignedGammaProductEvent({
+      dTag: "cross-author-shirt",
+      createdAt: 102,
+      title: "Cross-author shirt",
+      type: "variation",
+      parentProductId: crossAuthorParentAddress,
+      size: "M",
+    })
+    const validVariationAddress = `30402:${MERCHANT_A_PUBKEY}:valid-batch-shirt-s`
+    const malformedVariationAddress = `30402:${MERCHANT_A_PUBKEY}:cross-author-shirt`
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        return [validParent, validVariation, malformedVariation].filter(
+          (event) =>
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        ) as never
+      },
+    })
+
+    const result = await getProductsByIds([
+      validVariationAddress,
+      malformedVariationAddress,
+    ])
+    const diagnostics = new Map(
+      result.diagnostics.map((diagnostic) => [
+        diagnostic.addressId,
+        diagnostic.issue,
+      ])
+    )
+
+    expect(result.data.map((record) => record.addressId)).toEqual([
+      validVariationAddress,
+    ])
+    expect(diagnostics.get(validVariationAddress)).toBeNull()
+    expect(diagnostics.get(malformedVariationAddress)).not.toBeNull()
+    expect(result.meta.degraded).toBe(true)
+  })
+
   it("keeps a selected variation's source hint in parent and sibling reads", async () => {
     const sourceRelayUrl = "wss://variation-source.conduit.market"
     const cachedSourceRelayUrls = Array.from(
