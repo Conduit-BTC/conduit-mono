@@ -1580,7 +1580,8 @@ test("a late old collection retry ACK preserves a newer same-coordinate update @
   const updatedCollection = updatedRecords.find(
     (event) =>
       event.kind === 30405 &&
-      eventCoordinate(event) === market.collectionCoordinate
+      eventCoordinate(event) === market.collectionCoordinate &&
+      event.id !== market.initialCollection.id
   )
   expect(updatedCollection).toBeTruthy()
   expect(updatedCollection!.created_at).toBeGreaterThan(
