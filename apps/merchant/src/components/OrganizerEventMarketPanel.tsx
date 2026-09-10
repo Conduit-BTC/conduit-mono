@@ -57,7 +57,7 @@ import {
   getMerchantProfileState,
   type MerchantProfileState,
 } from "../lib/event-market-participation-identity"
-import { groupEventActorRelayHints } from "../lib/event-actor-identity"
+import { planOrganizerEventActorProfileLookups } from "../lib/event-actor-identity"
 import {
   EventActorName,
   EventActorProvenance,
@@ -584,41 +584,56 @@ export function OrganizerEventMarketPanel({
   const organizerOnlyProducts = market.participation.filter(
     (item) => item.status === "organizer_only"
   )
-  const eventActorPubkeys = useMemo(
+  const eventActorProfileLookupPlan = useMemo(
     () =>
-      Array.from(
-        new Set([
-          market.organizerPubkey,
-          ...market.participation.flatMap((item) =>
-            [item.merchantPubkey, item.handlerPubkey].filter(
-              (pubkey): pubkey is string => !!pubkey
-            )
-          ),
-        ])
-      ),
-    [market.organizerPubkey, market.participation]
+      planOrganizerEventActorProfileLookups({
+        organizerPubkey: market.organizerPubkey,
+        participantPubkeys: market.participation.flatMap((item) => [
+          item.merchantPubkey,
+          item.handlerPubkey,
+        ]),
+        organizerRelayUrls: getResolvedEventMarketRelayHints(market.source),
+      }),
+    [market.organizerPubkey, market.participation, market.source]
   )
-  const eventActorRelayHintsByPubkey = useMemo(() => {
-    const relayUrls = getResolvedEventMarketRelayHints(market.source)
-    return groupEventActorRelayHints(
-      eventActorPubkeys.map((pubkey) => ({ pubkey, relayUrls }))
-    )
-  }, [eventActorPubkeys, market.source])
-  const eventActorProfilesQuery = useProfiles(eventActorPubkeys, {
-    authenticatedPubkey: market.organizerPubkey,
-    relayHintsByPubkey: eventActorRelayHintsByPubkey,
-    priority: "visible",
-    maxUnresolvedRefetches: 1,
-  })
+  const organizerProfileQuery = useProfiles(
+    eventActorProfileLookupPlan.organizerPubkeys,
+    {
+      authenticatedPubkey: market.organizerPubkey,
+      relayHintsByPubkey:
+        eventActorProfileLookupPlan.organizerRelayHintsByPubkey,
+      priority: "visible",
+      maxUnresolvedRefetches: 1,
+    }
+  )
+  const participantProfilesQuery = useProfiles(
+    eventActorProfileLookupPlan.participantPubkeys,
+    {
+      authenticatedPubkey: market.organizerPubkey,
+      priority: "visible",
+      maxUnresolvedRefetches: 1,
+    }
+  )
+
+  function profileQueryForActor(pubkey: string) {
+    return pubkey.trim().toLowerCase() === market.organizerPubkey.toLowerCase()
+      ? organizerProfileQuery
+      : participantProfilesQuery
+  }
+
+  function eventActorProfile(pubkey: string): Profile | undefined {
+    return profileQueryForActor(pubkey).getProfile(pubkey.trim().toLowerCase())
+  }
 
   function merchantProfileState(
     pubkey: string | undefined
   ): MerchantProfileState {
     if (!pubkey) return "unresolved"
+    const profileQuery = profileQueryForActor(pubkey)
     return getMerchantProfileState({
-      hasProfile: eventActorProfilesQuery.hasProfile(pubkey),
-      lookupSettled: eventActorProfilesQuery.lookupSettled,
-      error: eventActorProfilesQuery.error,
+      hasProfile: profileQuery.hasProfile(pubkey.trim().toLowerCase()),
+      lookupSettled: profileQuery.lookupSettled,
+      error: profileQuery.error,
     })
   }
 
@@ -700,9 +715,7 @@ export function OrganizerEventMarketPanel({
             <div className="mt-1 min-w-0">
               <EventActorName
                 pubkey={market.organizerPubkey}
-                profile={eventActorProfilesQuery.getProfile(
-                  market.organizerPubkey
-                )}
+                profile={eventActorProfile(market.organizerPubkey)}
                 className="block text-sm"
               />
               <EventActorProvenance
@@ -882,9 +895,7 @@ export function OrganizerEventMarketPanel({
                     item={item}
                     merchantProfile={
                       item.merchantPubkey
-                        ? eventActorProfilesQuery.getProfile(
-                            item.merchantPubkey
-                          )
+                        ? eventActorProfile(item.merchantPubkey)
                         : undefined
                     }
                     merchantProfileState={merchantProfileState(
@@ -892,7 +903,7 @@ export function OrganizerEventMarketPanel({
                     )}
                     handlerProfile={
                       item.handlerPubkey
-                        ? eventActorProfilesQuery.getProfile(item.handlerPubkey)
+                        ? eventActorProfile(item.handlerPubkey)
                         : undefined
                     }
                     organizerPubkey={market.organizerPubkey}
@@ -924,9 +935,7 @@ export function OrganizerEventMarketPanel({
                     item={item}
                     merchantProfile={
                       item.merchantPubkey
-                        ? eventActorProfilesQuery.getProfile(
-                            item.merchantPubkey
-                          )
+                        ? eventActorProfile(item.merchantPubkey)
                         : undefined
                     }
                     merchantProfileState={merchantProfileState(
@@ -934,7 +943,7 @@ export function OrganizerEventMarketPanel({
                     )}
                     handlerProfile={
                       item.handlerPubkey
-                        ? eventActorProfilesQuery.getProfile(item.handlerPubkey)
+                        ? eventActorProfile(item.handlerPubkey)
                         : undefined
                     }
                     organizerPubkey={market.organizerPubkey}
@@ -970,9 +979,7 @@ export function OrganizerEventMarketPanel({
                     item={item}
                     merchantProfile={
                       item.merchantPubkey
-                        ? eventActorProfilesQuery.getProfile(
-                            item.merchantPubkey
-                          )
+                        ? eventActorProfile(item.merchantPubkey)
                         : undefined
                     }
                     merchantProfileState={merchantProfileState(
@@ -980,7 +987,7 @@ export function OrganizerEventMarketPanel({
                     )}
                     handlerProfile={
                       item.handlerPubkey
-                        ? eventActorProfilesQuery.getProfile(item.handlerPubkey)
+                        ? eventActorProfile(item.handlerPubkey)
                         : undefined
                     }
                     organizerPubkey={market.organizerPubkey}

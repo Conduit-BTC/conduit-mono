@@ -1,15 +1,29 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { formatNpub, pubkeyToNpub } from "@conduit/core"
+import {
+  __resetCommerceTestOverrides,
+  __resetRelayListTestOverrides,
+  __setCommerceTestOverrides,
+  __setRelayListTestOverrides,
+  formatNpub,
+  getProfiles,
+  pubkeyToNpub,
+} from "@conduit/core"
 import { EventPickupHandlerIdentity } from "../apps/merchant/src/components/EventActorIdentity"
 import {
   getEventActorDisplayName,
   groupEventActorRelayHints,
+  planOrganizerEventActorProfileLookups,
 } from "../apps/merchant/src/lib/event-actor-identity"
 
 const actorPubkey = "a".repeat(64)
 const otherPubkey = "b".repeat(64)
+
+afterEach(() => {
+  __resetCommerceTestOverrides()
+  __resetRelayListTestOverrides()
+})
 
 describe("Merchant event actor identity", () => {
   it("prefers a hydrated profile name without changing signed provenance", () => {
@@ -104,5 +118,107 @@ describe("Merchant event actor identity", () => {
       ],
       [otherPubkey]: ["wss://merchant.example"],
     })
+  })
+
+  it("keeps organizer event relays separate from participant profile reads", async () => {
+    const organizerRelayUrls = Array.from(
+      { length: 7 },
+      (_, index) => `wss://event-${index + 1}.conduit.market`
+    )
+    const participantRelayUrl = "wss://participant-profile.conduit.market"
+    const lookupPlan = planOrganizerEventActorProfileLookups({
+      organizerPubkey: actorPubkey,
+      participantPubkeys: [actorPubkey, otherPubkey, otherPubkey.toUpperCase()],
+      organizerRelayUrls,
+    })
+
+    expect(lookupPlan).toEqual({
+      organizerPubkeys: [actorPubkey],
+      participantPubkeys: [otherPubkey],
+      organizerRelayHintsByPubkey: {
+        [actorPubkey]: organizerRelayUrls,
+      },
+    })
+
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) =>
+        pubkey === otherPubkey
+          ? {
+              pubkey,
+              readRelayUrls: [],
+              writeRelayUrls: [participantRelayUrl],
+              eventCreatedAt: 1,
+              cachedAt: Date.now(),
+            }
+          : undefined,
+    })
+    const observedRelayPlans = new Map<string, string[]>()
+    __setCommerceTestOverrides({
+      getCachedProducts: async () => [],
+      getCachedProfiles: async (pubkeys) => pubkeys.map(() => undefined),
+      putCachedProfiles: async () => {},
+      fetchEventsFanout: async (filter, options) => {
+        const pubkey = filter.authors?.[0]
+        if (!pubkey) return []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        observedRelayPlans.set(pubkey, relayUrls)
+        if (
+          pubkey === actorPubkey &&
+          organizerRelayUrls.every((relayUrl) => relayUrls.includes(relayUrl))
+        ) {
+          return [
+            {
+              id: "organizer-profile",
+              pubkey,
+              created_at: 10,
+              content: JSON.stringify({ display_name: "Event organizer" }),
+              tags: [],
+            } as never,
+          ]
+        }
+        if (pubkey === otherPubkey && relayUrls.includes(participantRelayUrl)) {
+          return [
+            {
+              id: "participant-profile",
+              pubkey,
+              created_at: 10,
+              content: JSON.stringify({ display_name: "Event merchant" }),
+              tags: [],
+            } as never,
+          ]
+        }
+        return []
+      },
+    })
+
+    const organizerProfiles = await getProfiles({
+      pubkeys: lookupPlan.organizerPubkeys,
+      authenticatedPubkey: actorPubkey,
+      relayHintsByPubkey: lookupPlan.organizerRelayHintsByPubkey,
+      priority: "visible",
+      skipCache: true,
+      readPolicy: { maxRelays: 8 },
+    })
+    const participantProfiles = await getProfiles({
+      pubkeys: lookupPlan.participantPubkeys,
+      authenticatedPubkey: actorPubkey,
+      priority: "visible",
+      skipCache: true,
+      readPolicy: { maxRelays: 8 },
+    })
+
+    expect(observedRelayPlans.get(actorPubkey)).toEqual(
+      expect.arrayContaining(organizerRelayUrls)
+    )
+    expect(observedRelayPlans.get(otherPubkey)).toContain(participantRelayUrl)
+    for (const relayUrl of organizerRelayUrls) {
+      expect(observedRelayPlans.get(otherPubkey)).not.toContain(relayUrl)
+    }
+    expect(organizerProfiles.data[actorPubkey]?.displayName).toBe(
+      "Event organizer"
+    )
+    expect(participantProfiles.data[otherPubkey]?.displayName).toBe(
+      "Event merchant"
+    )
   })
 })

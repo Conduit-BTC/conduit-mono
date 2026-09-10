@@ -5,6 +5,12 @@ export interface EventActorRelayHintEntry {
   relayUrls: readonly string[] | undefined
 }
 
+export interface OrganizerEventActorProfileLookupPlan {
+  organizerPubkeys: string[]
+  participantPubkeys: string[]
+  organizerRelayHintsByPubkey: Record<string, string[]>
+}
+
 export function groupEventActorRelayHints(
   entries: readonly EventActorRelayHintEntry[]
 ): Record<string, string[]> {
@@ -24,6 +30,37 @@ export function groupEventActorRelayHints(
   }
 
   return result
+}
+
+/**
+ * Keep organizer event-graph relays out of participant profile reads. Those
+ * relays prove the organizer-owned event graph; participant profiles instead
+ * use their own NIP-65 and cached product-source evidence in the shared profile
+ * reader.
+ */
+export function planOrganizerEventActorProfileLookups(input: {
+  organizerPubkey: string
+  participantPubkeys: readonly (string | null | undefined)[]
+  organizerRelayUrls: readonly string[]
+}): OrganizerEventActorProfileLookupPlan {
+  const organizerPubkey = input.organizerPubkey.trim().toLowerCase()
+  const participantPubkeys = Array.from(
+    new Set(
+      input.participantPubkeys
+        .map((pubkey) => pubkey?.trim().toLowerCase())
+        .filter(
+          (pubkey): pubkey is string => !!pubkey && pubkey !== organizerPubkey
+        )
+    )
+  )
+
+  return {
+    organizerPubkeys: organizerPubkey ? [organizerPubkey] : [],
+    participantPubkeys,
+    organizerRelayHintsByPubkey: groupEventActorRelayHints([
+      { pubkey: organizerPubkey, relayUrls: input.organizerRelayUrls },
+    ]),
+  }
 }
 
 export function getEventActorDisplayName(
