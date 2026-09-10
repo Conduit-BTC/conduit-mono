@@ -1,6 +1,8 @@
+import type { Filter } from "nostr-tools"
 import {
   EventMarketDiscoveryBoundError,
   getOrganizerEventMarketsDetailed,
+  parseAddressableCoordinate,
   type EventMarketResolution,
   type OrganizerEventMarketsReadResult,
 } from "./event-market"
@@ -11,24 +13,42 @@ import {
   type FollowListReadOptions,
   type FollowListReadResult,
 } from "./follows"
+import { EVENT_KINDS } from "./kinds"
+import {
+  fetchSignedEventsFanoutDetailed,
+  type SignedEventRelayReadResult,
+} from "./relay-reader"
+import { planRelayReads } from "./relay-planner"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
 /**
- * Client execution-safety budget for one followed-organizer event feed read.
- * This is not a Nostr or Open Markets protocol limit. A larger follow list is
- * reported as a partial view and direct event imports remain available.
+ * Client execution-safety budget for one public collection-candidate read.
+ * This is not a Nostr or Open Markets protocol limit. Saturation is reported
+ * as a partial view and direct event imports remain available.
  */
-export const FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT = 16
+export const FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT = 128
+const FOLLOWED_EVENT_MARKET_CANDIDATE_READ_LIMIT =
+  FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT + 1
+const FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT = 6
 const FOLLOWED_EVENT_MARKET_READ_CONCURRENCY = 4
 const FOLLOWED_EVENT_MARKET_READ_DEADLINE_MS = 20_000
 
 export type FollowedEventMarketDiscoveryState =
   "complete" | "complete_empty" | "partial" | "unavailable"
 
+export type FollowedEventMarketCandidateScanState =
+  "complete" | "partial" | "unavailable"
+
 export interface FollowedEventMarketDiscoveryResult {
   markets: EventMarketResolution[]
   state: FollowedEventMarketDiscoveryState
   followListCoverage: FollowListCoverageState
   followedOrganizerCount: number
+  candidateCollectionCount: number
+  candidateScanState: FollowedEventMarketCandidateScanState
   searchedOrganizerCount: number
   failedOrganizerCount: number
   boundedOrganizerCount: number
@@ -48,6 +68,7 @@ export interface DiscoverFollowedEventMarketsInput {
 
 interface FollowedEventMarketDiscoveryTestOverrides {
   readFollowLists?: typeof readLatestFollowLists
+  readCollectionCandidates?: typeof readEventMarketCollectionCandidates
   readOrganizerMarkets?: typeof getOrganizerEventMarketsDetailed
   organizerReadDeadlineMs?: number
 }
@@ -93,6 +114,220 @@ function sortCurrentMarkets(
   })
 }
 
+interface EventMarketCollectionCandidateReadResult extends SignedEventRelayReadResult {
+  plannedRelayCount: number
+  capped: boolean
+}
+
+interface EventMarketCollectionCandidate {
+  coordinate: string
+  organizerPubkey: string
+  event: SignedPublicNostrEvent
+  relayHints: string[]
+}
+
+interface EventMarketOrganizerCandidates {
+  organizerPubkey: string
+  coordinates: Set<string>
+  events: SignedPublicNostrEvent[]
+  relayHints: string[]
+  sourceRelayUrlsById: Map<string, readonly string[]>
+}
+
+function candidateReadReachedLimit(
+  result: SignedEventRelayReadResult
+): boolean {
+  return (
+    result.events.length >= FOLLOWED_EVENT_MARKET_CANDIDATE_READ_LIMIT ||
+    result.relays.some(
+      (relay) =>
+        relay.status !== "failed" &&
+        relay.eventCount + (relay.rejectedEventCount ?? 0) >=
+          FOLLOWED_EVENT_MARKET_CANDIDATE_READ_LIMIT
+    )
+  )
+}
+
+async function readEventMarketCollectionCandidates(input: {
+  authenticatedPubkey?: string | null
+  nowMs: number
+  signal?: AbortSignal
+}): Promise<EventMarketCollectionCandidateReadResult> {
+  const plan = planRelayReads({
+    intent: "commerce_products",
+    authenticatedPubkey: input.authenticatedPubkey,
+    maxRelays: FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT,
+    now: input.nowMs,
+  })
+  if (plan.relayUrls.length === 0) {
+    return {
+      events: [],
+      eventSourceRelayUrls: {},
+      relays: [],
+      eventsVerified: true,
+      plannedRelayCount: 0,
+      capped: false,
+    }
+  }
+  const result = await fetchSignedEventsFanoutDetailed(
+    {
+      kinds: [EVENT_KINDS.PRODUCT_COLLECTION],
+      limit: FOLLOWED_EVENT_MARKET_CANDIDATE_READ_LIMIT,
+    } satisfies Filter,
+    {
+      relayUrls: plan.relayUrls,
+      signal: input.signal,
+      reuseRelayConnections: true,
+    }
+  )
+  return {
+    ...result,
+    plannedRelayCount: plan.relayUrls.length,
+    capped: candidateReadReachedLimit(result),
+  }
+}
+
+function candidateScanState(
+  read: EventMarketCollectionCandidateReadResult
+): FollowedEventMarketCandidateScanState {
+  const usableRelayCount = read.relays.filter(
+    (relay) => relay.status === "success" || relay.status === "partial"
+  ).length
+  if (read.plannedRelayCount === 0 || usableRelayCount === 0) {
+    return "unavailable"
+  }
+  if (
+    read.eventsVerified !== true ||
+    read.capped ||
+    read.relays.length < read.plannedRelayCount ||
+    read.relays.some((relay) => relay.status !== "success")
+  ) {
+    return "partial"
+  }
+  return "complete"
+}
+
+function newerAddressableEvent(
+  candidate: SignedPublicNostrEvent,
+  current: SignedPublicNostrEvent
+): boolean {
+  if (candidate.created_at !== current.created_at) {
+    return candidate.created_at > current.created_at
+  }
+  return candidate.id.toLowerCase() < current.id.toLowerCase()
+}
+
+function collectionCandidateFrontier(input: {
+  read: EventMarketCollectionCandidateReadResult
+  followedOrganizerPubkeys: ReadonlySet<string>
+}): {
+  organizers: EventMarketOrganizerCandidates[]
+  candidateCollectionCount: number
+  malformedFollowedCandidateObserved: boolean
+  truncated: boolean
+} {
+  const candidatesByCoordinate = new Map<
+    string,
+    EventMarketCollectionCandidate
+  >()
+  let malformedFollowedCandidateObserved = false
+
+  if (input.read.eventsVerified === true) {
+    for (const event of input.read.events) {
+      if (event.kind !== EVENT_KINDS.PRODUCT_COLLECTION) continue
+      const organizerPubkey = normalizePubkey(event.pubkey)
+      if (
+        !organizerPubkey ||
+        !input.followedOrganizerPubkeys.has(organizerPubkey)
+      ) {
+        continue
+      }
+      if (!isValidSignedPublicNostrEvent(event)) {
+        malformedFollowedCandidateObserved = true
+        continue
+      }
+      const dTags = event.tags
+        .filter((tag) => tag[0] === "d" && typeof tag[1] === "string")
+        .map((tag) => tag[1]!)
+      if (dTags.length !== 1) {
+        malformedFollowedCandidateObserved = true
+        continue
+      }
+      const coordinate = parseAddressableCoordinate(
+        `${EVENT_KINDS.PRODUCT_COLLECTION}:${organizerPubkey}:${dTags[0]}`,
+        [EVENT_KINDS.PRODUCT_COLLECTION]
+      )
+      if (!coordinate) {
+        malformedFollowedCandidateObserved = true
+        continue
+      }
+      const relayHints = Array.from(
+        new Set([
+          ...(input.read.eventSourceRelayUrls[event.id] ?? []),
+          ...(input.read.eventSourceRelayUrls[event.id.toLowerCase()] ?? []),
+        ])
+      )
+      const current = candidatesByCoordinate.get(coordinate.coordinate)
+      if (!current || newerAddressableEvent(event, current.event)) {
+        candidatesByCoordinate.set(coordinate.coordinate, {
+          coordinate: coordinate.coordinate,
+          organizerPubkey,
+          event,
+          relayHints,
+        })
+      } else if (current.event.id === event.id && relayHints.length > 0) {
+        current.relayHints = Array.from(
+          new Set([...current.relayHints, ...relayHints])
+        )
+      }
+    }
+  }
+
+  const orderedCandidates = Array.from(candidatesByCoordinate.values()).sort(
+    (left, right) => {
+      if (left.event.created_at !== right.event.created_at) {
+        return right.event.created_at - left.event.created_at
+      }
+      return left.event.id.localeCompare(right.event.id)
+    }
+  )
+  const candidateFrontierTruncated =
+    orderedCandidates.length > FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT
+  const selectedCandidates = orderedCandidates.slice(
+    0,
+    FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT
+  )
+  const candidatesByOrganizer = new Map<
+    string,
+    EventMarketOrganizerCandidates
+  >()
+  for (const candidate of selectedCandidates) {
+    const existing = candidatesByOrganizer.get(candidate.organizerPubkey) ?? {
+      organizerPubkey: candidate.organizerPubkey,
+      coordinates: new Set<string>(),
+      events: [],
+      relayHints: [],
+      sourceRelayUrlsById: new Map<string, readonly string[]>(),
+    }
+    existing.coordinates.add(candidate.coordinate)
+    existing.events.push(candidate.event)
+    existing.relayHints = Array.from(
+      new Set([...existing.relayHints, ...candidate.relayHints])
+    )
+    existing.sourceRelayUrlsById.set(candidate.event.id, candidate.relayHints)
+    candidatesByOrganizer.set(candidate.organizerPubkey, existing)
+  }
+
+  return {
+    organizers: Array.from(candidatesByOrganizer.values()).sort((left, right) =>
+      left.organizerPubkey.localeCompare(right.organizerPubkey)
+    ),
+    candidateCollectionCount: selectedCandidates.length,
+    malformedFollowedCandidateObserved,
+    truncated: candidateFrontierTruncated,
+  }
+}
+
 function isBoundedDiscoveryError(reason: unknown): boolean {
   return (
     reason instanceof EventMarketDiscoveryBoundError ||
@@ -133,6 +368,7 @@ function resultState(input: {
   marketCount: number
   followCoverage: FollowListCoverageState
   hasFollowSnapshot: boolean
+  candidateScanState: FollowedEventMarketCandidateScanState
   organizerReads: readonly PromiseSettledResult<OrganizerEventMarketsReadResult>[]
   truncated: boolean
   hasDegradedMarket: boolean
@@ -142,6 +378,7 @@ function resultState(input: {
     input.organizerReads.every(readIsUnavailable)
   if (
     (input.followCoverage === "unavailable" && !input.hasFollowSnapshot) ||
+    (input.marketCount === 0 && input.candidateScanState === "unavailable") ||
     (input.marketCount === 0 && allOrganizerReadsUnavailable)
   ) {
     return "unavailable"
@@ -152,6 +389,7 @@ function resultState(input: {
   )
   const complete =
     input.followCoverage === "complete" &&
+    input.candidateScanState === "complete" &&
     organizerReadsComplete &&
     !input.truncated &&
     !input.hasDegradedMarket
@@ -169,6 +407,8 @@ export async function discoverFollowedOrganizerEventMarkets(
       state: "unavailable",
       followListCoverage: "unavailable",
       followedOrganizerCount: 0,
+      candidateCollectionCount: 0,
+      candidateScanState: "unavailable",
       searchedOrganizerCount: 0,
       failedOrganizerCount: 0,
       boundedOrganizerCount: 0,
@@ -202,14 +442,36 @@ export async function discoverFollowedOrganizerEventMarkets(
   const followedOrganizers = extractFollowPubkeys(followAuthor?.event?.tags)
     .filter((pubkey) => pubkey !== merchantPubkey)
     .sort()
-  const selectedOrganizers = followedOrganizers.slice(
-    0,
-    FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT
-  )
   const followListTruncated =
-    followedOrganizers.length > FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT ||
-    followAuthor?.capped === true ||
-    followAuthor?.relayHintTruncated === true
+    followAuthor?.capped === true || followAuthor?.relayHintTruncated === true
+  const followedOrganizerSet = new Set(followedOrganizers)
+  const readCollectionCandidates =
+    testOverrides.readCollectionCandidates ??
+    readEventMarketCollectionCandidates
+  const candidateRead =
+    followedOrganizers.length === 0
+      ? ({
+          events: [],
+          eventSourceRelayUrls: {},
+          relays: [],
+          eventsVerified: true,
+          plannedRelayCount: 0,
+          capped: false,
+        } satisfies EventMarketCollectionCandidateReadResult)
+      : await readCollectionCandidates({
+          authenticatedPubkey: input.authenticatedPubkey ?? merchantPubkey,
+          nowMs: effectiveNowMs,
+          signal: input.signal,
+        })
+  throwIfAborted(input.signal)
+  const resolvedCandidateScanState =
+    followedOrganizers.length === 0
+      ? "complete"
+      : candidateScanState(candidateRead)
+  const candidateFrontier = collectionCandidateFrontier({
+    read: candidateRead,
+    followedOrganizerPubkeys: followedOrganizerSet,
+  })
   const readOrganizerMarkets =
     testOverrides.readOrganizerMarkets ?? getOrganizerEventMarketsDetailed
   const organizerReads: PromiseSettledResult<OrganizerEventMarketsReadResult>[] =
@@ -241,12 +503,12 @@ export async function discoverFollowedOrganizerEventMarkets(
   try {
     for (
       let index = 0;
-      index < selectedOrganizers.length;
+      index < candidateFrontier.organizers.length;
       index += FOLLOWED_EVENT_MARKET_READ_CONCURRENCY
     ) {
       throwIfAborted(input.signal, input.shouldContinue)
       if (deadlineReached) break
-      const batch = selectedOrganizers.slice(
+      const batch = candidateFrontier.organizers.slice(
         index,
         index + FOLLOWED_EVENT_MARKET_READ_CONCURRENCY
       )
@@ -255,18 +517,22 @@ export async function discoverFollowedOrganizerEventMarkets(
         number,
         PromiseSettledResult<OrganizerEventMarketsReadResult>
       >()
-      const reads = batch.map(async (organizerPubkey, batchIndex) => {
+      const reads = batch.map(async (candidate, batchIndex) => {
         let result: PromiseSettledResult<OrganizerEventMarketsReadResult>
         try {
           result = {
             status: "fulfilled",
             value: await readOrganizerMarkets({
-              organizerPubkey,
+              organizerPubkey: candidate.organizerPubkey,
               authenticatedPubkey: input.authenticatedPubkey,
               accountNetworkLocalStateRepository:
                 input.accountNetworkLocalStateRepository,
               nowMs: effectiveNowMs,
               projection: "discovery",
+              relayHints: candidate.relayHints,
+              candidateCollectionEvents: candidate.events,
+              candidateCollectionSourceRelayUrlsById:
+                candidate.sourceRelayUrlsById,
               signal: organizerController.signal,
               shouldContinue: input.shouldContinue,
             }),
@@ -325,19 +591,31 @@ export async function discoverFollowedOrganizerEventMarkets(
   ).length
   const truncated =
     followListTruncated ||
+    candidateRead.capped ||
+    candidateFrontier.truncated ||
     boundedOrganizerCount > 0 ||
     deadlineReached ||
-    searchedOrganizerCount < selectedOrganizers.length
+    searchedOrganizerCount < candidateFrontier.organizers.length
 
-  const selectedOrganizerSet = new Set(selectedOrganizers)
+  const candidateCoordinates = new Set(
+    candidateFrontier.organizers.flatMap((candidate) => [
+      ...candidate.coordinates,
+    ])
+  )
   const marketsByCoordinate = new Map<string, EventMarketResolution>()
-  let hasDegradedMarket = false
+  let hasDegradedMarket =
+    candidateFrontier.malformedFollowedCandidateObserved ||
+    candidateRead.eventsVerified !== true
   for (const read of organizerReads) {
     if (read.status !== "fulfilled") continue
     for (const market of read.value.markets) {
       const organizerPubkey = normalizePubkey(market.organizerPubkey)
       const calendarEndMs = market.calendar?.end
-      if (!organizerPubkey || !selectedOrganizerSet.has(organizerPubkey)) {
+      if (
+        !organizerPubkey ||
+        !followedOrganizerSet.has(organizerPubkey) ||
+        !candidateCoordinates.has(market.reference)
+      ) {
         continue
       }
       if (calendarEndMs !== undefined && calendarEndMs <= effectiveNowMs) {
@@ -373,12 +651,15 @@ export async function discoverFollowedOrganizerEventMarkets(
       marketCount: markets.length,
       followCoverage: followListCoverage,
       hasFollowSnapshot: !!followAuthor?.event,
+      candidateScanState: resolvedCandidateScanState,
       organizerReads,
       truncated,
       hasDegradedMarket,
     }),
     followListCoverage,
     followedOrganizerCount: followedOrganizers.length,
+    candidateCollectionCount: candidateFrontier.candidateCollectionCount,
+    candidateScanState: resolvedCandidateScanState,
     searchedOrganizerCount,
     failedOrganizerCount: organizerReads.filter(readIsUnavailable).length,
     boundedOrganizerCount,

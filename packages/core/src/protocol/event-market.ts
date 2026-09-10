@@ -2061,6 +2061,18 @@ export interface GetOrganizerEventMarketsInput {
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  /** Relay hints observed with already-verified collection candidates. */
+  relayHints?: readonly string[]
+  /**
+   * Already-verified candidate collections from the bounded public discovery
+   * scan. They are revalidated here and only seed exact organizer resolution;
+   * they do not bypass calendar linkage, deletion, or authorship checks.
+   */
+  candidateCollectionEvents?: readonly SignedPublicNostrEvent[]
+  candidateCollectionSourceRelayUrlsById?: ReadonlyMap<
+    string,
+    readonly string[]
+  >
   /**
    * Discovery cards only need the organizer collection, calendar, and
    * organizer-authored pickup graph. The exact selected-event read hydrates
@@ -4021,6 +4033,33 @@ function collectionCoordinatesFromEvidence(
   return Array.from(coordinates).sort()
 }
 
+function candidateCollectionEvidence(input: {
+  organizerPubkey: string
+  events?: readonly SignedPublicNostrEvent[]
+  sourceRelayUrlsById?: ReadonlyMap<string, readonly string[]>
+}): ReturnType<typeof rawSignedEvents> {
+  const events: SignedPublicNostrEvent[] = []
+  const sourceRelayUrlsById = new Map<string, string[]>()
+  for (const event of input.events ?? []) {
+    if (
+      event.kind !== EVENT_KINDS.PRODUCT_COLLECTION ||
+      event.pubkey.toLowerCase() !== input.organizerPubkey ||
+      !isValidSignedPublicNostrEvent(event)
+    ) {
+      continue
+    }
+    events.push(event)
+    sourceRelayUrlsById.set(
+      event.id.toLowerCase(),
+      mergeRelayUrls(
+        input.sourceRelayUrlsById?.get(event.id) ?? [],
+        input.sourceRelayUrlsById?.get(event.id.toLowerCase()) ?? []
+      )
+    )
+  }
+  return { events, sourceRelayUrlsById }
+}
+
 export async function getOrganizerEventMarketsDetailed(
   input: GetOrganizerEventMarketsInput
 ): Promise<OrganizerEventMarketsReadResult> {
@@ -4037,6 +4076,7 @@ export async function getOrganizerEventMarketsDetailed(
   }
   const readPlan = await eventMarketReadPlanDetailed({
     organizerPubkey,
+    relayHints: input.relayHints,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
@@ -4059,7 +4099,14 @@ export async function getOrganizerEventMarketsDetailed(
     }),
     loadCachedEventMarketEvidence(organizerPubkey),
   ])
-  const broadLiveRecords = rawSignedEvents(recordResult)
+  const broadLiveRecords = mergeRawSignedEventGroups(
+    rawSignedEvents(recordResult),
+    candidateCollectionEvidence({
+      organizerPubkey,
+      events: input.candidateCollectionEvents,
+      sourceRelayUrlsById: input.candidateCollectionSourceRelayUrlsById,
+    })
+  )
   const authorReadReachedCap = eventMarketAuthorReadReachedCap(recordResult)
   const collectionDiscoveryRelayUrls = authorReadReachedCap
     ? [...relayUrls]

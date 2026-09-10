@@ -800,6 +800,32 @@ describe("event-market retained evidence", () => {
     expectLiveAuthority()
   })
 
+  it("uses a verified candidate collection when the organizer read omits it", async () => {
+    const [calendar, pickup, collection] = graph()
+    const harness = cacheHarness()
+    harness.setFetch([calendar!, pickup!], "success")
+
+    const result = await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      nowMs: 1_750_000_000_000,
+      projection: "discovery",
+      relayHints: [ORGANIZER_RELAY],
+      candidateCollectionEvents: [collection!],
+      candidateCollectionSourceRelayUrlsById: new Map([
+        [collection!.id, [ORGANIZER_RELAY]],
+      ]),
+    })
+
+    expect(result.state).toBe("complete")
+    expect(result.markets).toHaveLength(1)
+    expect(result.markets[0]).toMatchObject({
+      state: "active",
+      collection: { coordinate: COLLECTION },
+      calendar: { coordinate: CALENDAR },
+      pickup: { coordinate: PICKUP },
+    })
+  })
+
   it("keeps a large valid event visible in the discovery-card projection", async () => {
     const productCoordinates = Array.from(
       { length: 65 },
