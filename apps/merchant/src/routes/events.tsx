@@ -63,6 +63,7 @@ import {
 } from "../lib/event-market"
 import type { OrganizerEventMarketFormValues } from "../lib/event-market-form"
 import {
+  assertOrganizerEventMarketHandoffCurrent,
   findSavedOrganizerEventMarketReference,
   expectedOrganizerEventMarketFrontier,
   expectedOrganizerEventMarketFrontiersAfterMembership,
@@ -697,7 +698,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   )
   const selectedReferenceResolutionPending =
     shouldResolveSelectedReference && selectedMarketQuery.isPending
-  const selectedActionableMarket =
+  const selectedMembershipActionableMarket =
     !selectedReferenceResolutionPending &&
     selectedPresentedMarket &&
     organizerEventMarketReachesExpectedFrontiers(
@@ -706,20 +707,30 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     )
       ? selectedPresentedMarket
       : null
+  const selectedHandoffActionableMarket =
+    !selectedReferenceResolutionPending &&
+    selectedMarket &&
+    organizerEventMarketReachesExpectedFrontiers(
+      selectedMarket,
+      selectedSavedReference
+    )
+      ? selectedMarket
+      : null
   const handoffReceiptsQuery = useQuery({
     queryKey: [
       "merchant-organizer-handoff-receipts",
       organizerPubkey || "none",
-      selectedActionableMarket?.collectionCoordinate ?? "none",
+      selectedHandoffActionableMarket?.collectionCoordinate ?? "none",
     ],
     enabled:
       !!organizerPubkey &&
-      !!selectedActionableMarket &&
-      selectedActionableMarket.organizerPubkey === organizerPubkey,
+      !!selectedHandoffActionableMarket &&
+      selectedHandoffActionableMarket.organizerPubkey === organizerPubkey,
     queryFn: () =>
       readEventMarketReadyReceipts({
         organizerPubkey,
-        collectionCoordinate: selectedActionableMarket!.collectionCoordinate,
+        collectionCoordinate:
+          selectedHandoffActionableMarket!.collectionCoordinate,
       }),
     retry: false,
     refetchInterval: 30_000,
@@ -736,13 +747,13 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     queryKey: [
       "merchant-organizer-handoff-merchandise",
       organizerPubkey || "none",
-      selectedActionableMarket?.collectionCoordinate ?? "none",
+      selectedHandoffActionableMarket?.collectionCoordinate ?? "none",
       handoffClaimIds || "none",
     ],
     enabled:
       !!organizerPubkey &&
-      !!selectedActionableMarket &&
-      selectedActionableMarket.organizerPubkey === organizerPubkey &&
+      !!selectedHandoffActionableMarket &&
+      selectedHandoffActionableMarket.organizerPubkey === organizerPubkey &&
       handoffClaims.length > 0,
     queryFn: async () => {
       const entries = await Promise.all(
@@ -772,13 +783,15 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     refetchInterval: 30_000,
   })
   const handoffAckReadinessByReceiptId = useMemo(() => {
-    if (!handoffReceiptsQuery.data || !selectedActionableMarket) return {}
+    if (!handoffReceiptsQuery.data || !selectedHandoffActionableMarket) {
+      return {}
+    }
     return Object.fromEntries(
       handoffClaims.map((claim) => [
         claim.receipt.id,
         resolveOrganizerHandoffAckReadiness({
           claim,
-          market: selectedActionableMarket.source,
+          market: selectedHandoffActionableMarket.source,
           merchandise:
             handoffMerchandiseQuery.data?.[claim.receipt.id]?.resolution,
         }),
@@ -788,7 +801,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     handoffClaims,
     handoffMerchandiseQuery.data,
     handoffReceiptsQuery.data,
-    selectedActionableMarket,
+    selectedHandoffActionableMarket,
   ])
 
   async function refreshMarketQueries(reference: string): Promise<void> {
@@ -1045,6 +1058,15 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         handoffReceiptsQuery.refetch(),
         resolveOrganizerEventMarket(selectedReference, organizerPubkey),
       ])
+      const latestSavedReference =
+        findSavedOrganizerEventMarketReference(
+          loadSavedOrganizerEventMarkets(organizerPubkey),
+          selectedReference
+        ) ?? selectedSavedReference
+      assertOrganizerEventMarketHandoffCurrent(
+        freshMarket,
+        latestSavedReference
+      )
       const receiptRead = receiptReadResult.data
       if (!receiptRead) {
         throw new Error("Current organizer receipt evidence is unavailable.")
@@ -1107,7 +1129,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       ? null
       : selectedMarketQuery.error
   const selectedMarketBehindExpectedFrontier =
-    !!selectedPresentedMarket && !selectedActionableMarket
+    !!selectedPresentedMarket && !selectedMembershipActionableMarket
   const deliveries = selectedReference
     ? (deliveriesByReference[selectedIdentity?.coordinate ?? ""] ?? [])
     : []
@@ -1157,8 +1179,8 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   }
 
   function openEdit(): void {
-    if (!selectedActionableMarket) return
-    setEditingMarket(selectedActionableMarket)
+    if (!selectedMembershipActionableMarket) return
+    setEditingMarket(selectedMembershipActionableMarket)
     setPublishState("idle")
     setPublishError("")
     setEditorOpen(true)
@@ -1411,7 +1433,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
               marketsQuery.isFetching || selectedMarketQuery.isFetching
             }
             membershipPending={membershipMutation.isPending}
-            actionsDisabled={!selectedActionableMarket}
+            actionsDisabled={!selectedMembershipActionableMarket}
             retryingRecord={
               retryMutation.isPending
                 ? (retryMutation.variables?.record.record ?? null)
@@ -1423,17 +1445,19 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
               void refreshMarketQueries(selectedReference)
             }}
             onMembership={(item, action) => {
-              if (!selectedActionableMarket || !selectedReference) return
+              if (!selectedMembershipActionableMarket || !selectedReference) {
+                return
+              }
               membershipMutation.mutate({
                 item,
                 action,
-                market: selectedActionableMarket,
+                market: selectedMembershipActionableMarket,
                 reference: selectedReference,
               })
             }}
             onRetryDelivery={retryDelivery}
           />
-          {selectedActionableMarket && (
+          {selectedHandoffActionableMarket && (
             <OrganizerHandoffReceiptQueue
               claims={handoffClaims}
               ackDeliveries={handoffAckDeliveries}

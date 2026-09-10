@@ -2849,6 +2849,61 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   })
   await expect(acknowledge).toBeEnabled({ timeout: 30_000 })
 
+  const removalAck = relay.holdNextPublicationAck(
+    (event) =>
+      event.kind === 30405 &&
+      eventCoordinate(event) === market.collectionCoordinate &&
+      !event.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === ORGANIZER_PRODUCT_COORDINATE
+      )
+  )
+  const participationRow = page
+    .getByTestId("organizer-product-preview")
+    .filter({ hasText: ORGANIZER_PRODUCT_TITLE })
+    .locator("..")
+  const removeProduct = participationRow.getByRole("button", {
+    name: "Remove",
+    exact: true,
+  })
+  await expect(removeProduct).toBeEnabled({ timeout: 30_000 })
+  const staleHandoffPublishStart = relay.publications.length
+  await removeProduct.click()
+  const removedCollection = await removalAck.captured
+  relay.remove(removedCollection)
+  expect(removedCollection.created_at).toBeGreaterThan(
+    acceptedCollection.created_at
+  )
+  removalAck.release()
+  await expect(queue).toHaveCount(0, { timeout: 30_000 })
+  expect(
+    uniquePrivatePublications(
+      decryptPrivatePublications(
+        relay.publications,
+        MERCHANT_SECRET,
+        staleHandoffPublishStart
+      )
+    ).filter((message) => rumorType(message.rumor) === "organizer_handoff_ack")
+  ).toEqual([])
+
+  const restoreAck = relay.holdNextPublicationAck(
+    (event) =>
+      event.kind === 30405 &&
+      eventCoordinate(event) === market.collectionCoordinate &&
+      event.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === ORGANIZER_PRODUCT_COORDINATE
+      )
+  )
+  const acceptAgain = participationRow.getByRole("button", {
+    name: "Accept",
+    exact: true,
+  })
+  await expect(acceptAgain).toBeEnabled({ timeout: 30_000 })
+  await acceptAgain.click()
+  await restoreAck.captured
+  restoreAck.release()
+  await expect(queue).toBeVisible({ timeout: 30_000 })
+  await expect(acknowledge).toBeEnabled({ timeout: 30_000 })
+
   const ackPublishStart = relay.publications.length
   await acknowledge.click()
   await expect(

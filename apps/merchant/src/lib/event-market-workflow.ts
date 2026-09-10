@@ -927,6 +927,17 @@ export function organizerEventMarketReachesExpectedFrontiers(
   return marketReachesExpectedFrontiers(market, savedReference)
 }
 
+export function assertOrganizerEventMarketHandoffCurrent(
+  market: EventMarketFrontierCarrier | undefined,
+  savedReference: SavedOrganizerEventMarketReference | undefined
+): void {
+  if (!organizerEventMarketReachesExpectedFrontiers(market, savedReference)) {
+    throw new Error(
+      "The latest signed event records are not yet readable. Refresh the event before handing out items."
+    )
+  }
+}
+
 type OrganizerEventMarketCandidate = EventMarketFrontierCarrier & {
   state: string
   collectionCoordinate: string
