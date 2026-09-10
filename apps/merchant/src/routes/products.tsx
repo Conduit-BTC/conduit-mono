@@ -3059,7 +3059,7 @@ function ProductsPage() {
                   market={localPickupQuery.data}
                   organizerInboxState={organizerInboxState}
                   availableMarkets={(
-                    organizerEventMarketsQuery.data ?? []
+                    organizerEventMarketsQuery.data?.markets ?? []
                   ).filter((market) => market.state === "active")}
                   resolving={localPickupQuery.isFetching}
                   readFailed={localPickupQuery.isError}
