@@ -18,7 +18,6 @@ import {
   INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
   mergeInboxDeclarationEvidence,
   recordInboxDeclarationCutoverRecoveryReadback,
-  stageInboxDeclarationDistribution,
   type NetworkPreferenceRelayOutcome,
 } from "@conduit/core/protocol/inbox-declaration-evidence"
 import { readRetainedInboxDeclaration } from "@conduit/core/protocol/private-message-routing"
@@ -990,22 +989,20 @@ describe("durable inbox declaration evidence", () => {
   })
 
   it("keeps staged bytes and cutover pending until exact shared-set confirmation", async () => {
-    const repository = createInMemoryInboxDeclarationEvidenceRepository()
     const signedEvent = declarationEvent({ createdAt: 100 })
-
-    const staged = await stageInboxDeclarationDistribution(
-      {
-        pubkey: ACCOUNT_A,
-        signedEvent,
-        publishRelayUrls: ["wss://shared-b.example", "wss://shared-a.example"],
-        previousRelayUrls: ["wss://previous.example"],
-        cutoverPolicyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
-        cutoverGraceMs: INBOX_DECLARATION_CUTOVER_GRACE_MS,
-        expectedCurrentEventId: null,
-        stagedAt: 1_000,
-      },
-      repository
-    )
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: ACCOUNT_A,
+      signedEvent,
+      publishRelayUrls: ["wss://shared-b.example", "wss://shared-a.example"],
+      previousRelayUrls: ["wss://previous.example"],
+      cutoverPolicyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      cutoverGraceMs: INBOX_DECLARATION_CUTOVER_GRACE_MS,
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+    const repository = createInMemoryInboxDeclarationEvidenceRepository([
+      staged,
+    ])
 
     expect(staged.current.signedEvent).toEqual(signedEvent)
     expect(staged.lastUsable).toBeUndefined()
@@ -1108,7 +1105,6 @@ describe("durable inbox declaration evidence", () => {
   })
 
   it("rejects a same-id stage with different signed bytes or targets", async () => {
-    const repository = createInMemoryInboxDeclarationEvidenceRepository()
     const first = declarationEvent({ createdAt: 100 })
     const second = {
       ...first,
@@ -1123,27 +1119,24 @@ describe("durable inbox declaration evidence", () => {
     expect(second.id).toBe(first.id)
     expect(second.sig).not.toBe(first.sig)
 
-    await stageInboxDeclarationDistribution(
-      {
+    const firstStage = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: ACCOUNT_A,
+      signedEvent: first,
+      publishRelayUrls: ["wss://shared-a.example"],
+      expectedCurrentEventId: null,
+    })
+    expect(() =>
+      applyInboxDeclarationDistributionStage(firstStage, {
         pubkey: ACCOUNT_A,
-        signedEvent: first,
-        publishRelayUrls: ["wss://shared-a.example"],
-        expectedCurrentEventId: null,
-      },
-      repository
-    )
-    await expect(
-      stageInboxDeclarationDistribution(
-        {
-          pubkey: ACCOUNT_A,
-          signedEvent: second,
-          publishRelayUrls: ["wss://shared-b.example"],
-          expectedCurrentEventId: first.id,
-        },
-        repository
-      )
-    ).rejects.toMatchObject({ code: "staged_event_lost_frontier" })
+        signedEvent: second,
+        publishRelayUrls: ["wss://shared-b.example"],
+        expectedCurrentEventId: first.id,
+      })
+    ).toThrow(expect.objectContaining({ code: "staged_event_lost_frontier" }))
 
+    const repository = createInMemoryInboxDeclarationEvidenceRepository([
+      firstStage,
+    ])
     const retained = await getInboxDeclarationEvidence(ACCOUNT_A, repository)
     expect(retained?.pendingDistribution?.signedEvent).toEqual(first)
     expect(retained?.pendingDistribution?.publishRelayUrls).toEqual([
@@ -1228,17 +1221,13 @@ describe("durable inbox declaration evidence", () => {
   })
 
   it("rejects mutated retained pending bytes and target plans", async () => {
-    const seed = createInMemoryInboxDeclarationEvidenceRepository()
     const signedEvent = declarationEvent({ createdAt: 100 })
-    const staged = await stageInboxDeclarationDistribution(
-      {
-        pubkey: ACCOUNT_A,
-        signedEvent,
-        publishRelayUrls: ["wss://shared-a.example"],
-        expectedCurrentEventId: null,
-      },
-      seed
-    )
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: ACCOUNT_A,
+      signedEvent,
+      publishRelayUrls: ["wss://shared-a.example"],
+      expectedCurrentEventId: null,
+    })
     const alternateSignature = bytesToHex(
       schnorr.sign(
         hexToBytes(signedEvent.id),
@@ -1269,7 +1258,6 @@ describe("durable inbox declaration evidence", () => {
   })
 
   it("retains an older usable route behind a newer pending declaration", async () => {
-    const repository = createInMemoryInboxDeclarationEvidenceRepository()
     const pending = declarationEvent({
       createdAt: 200,
       tags: [["relay", "wss://new-inbox.example"]],
@@ -1279,15 +1267,15 @@ describe("durable inbox declaration evidence", () => {
       tags: [["relay", "wss://prior-inbox.example"]],
     })
 
-    await stageInboxDeclarationDistribution(
-      {
-        pubkey: ACCOUNT_A,
-        signedEvent: pending,
-        publishRelayUrls: ["wss://shared.example"],
-        expectedCurrentEventId: null,
-      },
-      repository
-    )
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: ACCOUNT_A,
+      signedEvent: pending,
+      publishRelayUrls: ["wss://shared.example"],
+      expectedCurrentEventId: null,
+    })
+    const repository = createInMemoryInboxDeclarationEvidenceRepository([
+      staged,
+    ])
     const merged = await mergeInboxDeclarationEvidence(
       {
         pubkey: ACCOUNT_A,

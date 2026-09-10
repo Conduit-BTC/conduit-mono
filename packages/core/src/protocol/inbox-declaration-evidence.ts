@@ -148,13 +148,6 @@ export interface InboxDeclarationEvidenceRepository {
   ): Promise<InboxDeclarationEvidenceRecord>
 }
 
-export interface InboxDeclarationDistributionRepository extends InboxDeclarationEvidenceRepository {
-  /** Atomically persist an exact signed event and immutable publish plan. */
-  stageDistribution(
-    input: StageInboxDeclarationDistributionInput
-  ): Promise<InboxDeclarationEvidenceRecord>
-}
-
 export function normalizeInboxDeclarationEvidencePubkey(
   pubkey: string
 ): NormalizedInboxDeclarationPubkey | null {
@@ -1865,7 +1858,7 @@ function sameOrderedStrings(
 
 function createDexieRepository(
   now: () => number = Date.now
-): InboxDeclarationDistributionRepository {
+): InboxDeclarationEvidenceRepository {
   const recordCutoverRecoveryReadback = async (
     input: RecordInboxDeclarationCutoverRecoveryReadbackInput
   ): Promise<InboxDeclarationEvidenceRecord> => {
@@ -1933,32 +1926,6 @@ function createDexieRepository(
     })
   }
 
-  const stageDistribution = async (
-    input: StageInboxDeclarationDistributionInput
-  ): Promise<InboxDeclarationEvidenceRecord> => {
-    const pubkey = normalizeInboxDeclarationEvidencePubkey(input.pubkey)
-    if (!pubkey) {
-      throw new Error("Inbox declaration evidence requires a valid hex pubkey")
-    }
-    return db.transaction("rw", db.inboxDeclarationEvidence, async () => {
-      const existing = await db.inboxDeclarationEvidence.get(pubkey)
-      const finalRecord = applyInboxDeclarationDistributionStage(
-        existing,
-        input,
-        now
-      )
-      if (
-        !existing ||
-        JSON.stringify(existing) !== JSON.stringify(finalRecord)
-      ) {
-        await db.inboxDeclarationEvidence.put(
-          cloneInboxDeclarationEvidenceRecord(finalRecord)
-        )
-      }
-      return cloneInboxDeclarationEvidenceRecord(finalRecord)
-    })
-  }
-
   return {
     async get(pubkey) {
       return db.transaction("rw", db.inboxDeclarationEvidence, async () => {
@@ -1975,7 +1942,6 @@ function createDexieRepository(
     merge: (input) => mergeBatch([input]),
     mergeBatch,
     recordCutoverRecoveryReadback,
-    stageDistribution,
   }
 }
 
@@ -1989,7 +1955,7 @@ export const dexieInboxDeclarationEvidenceRepository = createDexieRepository()
 export function createInMemoryInboxDeclarationEvidenceRepository(
   initial: readonly InboxDeclarationEvidenceRecord[] = [],
   now: () => number = Date.now
-): InboxDeclarationDistributionRepository {
+): InboxDeclarationEvidenceRepository {
   const records = new Map<
     NormalizedInboxDeclarationPubkey,
     InboxDeclarationEvidenceRecord
@@ -2042,19 +2008,6 @@ export function createInMemoryInboxDeclarationEvidenceRepository(
     return cloneInboxDeclarationEvidenceRecord(merged)
   }
 
-  const stageDistribution = async (
-    input: StageInboxDeclarationDistributionInput
-  ): Promise<InboxDeclarationEvidenceRecord> => {
-    const pubkey = normalizeInboxDeclarationEvidencePubkey(input.pubkey)
-    if (!pubkey) {
-      throw new Error("Inbox declaration evidence requires a valid hex pubkey")
-    }
-    const existing = records.get(pubkey)
-    const merged = applyInboxDeclarationDistributionStage(existing, input, now)
-    records.set(pubkey, cloneInboxDeclarationEvidenceRecord(merged))
-    return cloneInboxDeclarationEvidenceRecord(merged)
-  }
-
   return {
     async get(pubkey) {
       const record = records.get(pubkey)
@@ -2064,7 +2017,6 @@ export function createInMemoryInboxDeclarationEvidenceRepository(
     merge: (input) => mergeBatch([input]),
     mergeBatch,
     recordCutoverRecoveryReadback,
-    stageDistribution,
   }
 }
 
@@ -2101,14 +2053,5 @@ export async function recordInboxDeclarationCutoverRecoveryReadback(
   repository: InboxDeclarationEvidenceRepository = dexieInboxDeclarationEvidenceRepository
 ): Promise<InboxDeclarationEvidenceRecord> {
   const record = await repository.recordCutoverRecoveryReadback(input)
-  return cloneInboxDeclarationEvidenceRecord(record)
-}
-
-/** Persist exact signed work before its first network delivery attempt. */
-export async function stageInboxDeclarationDistribution(
-  input: StageInboxDeclarationDistributionInput,
-  repository: InboxDeclarationDistributionRepository = dexieInboxDeclarationEvidenceRepository
-): Promise<InboxDeclarationEvidenceRecord> {
-  const record = await repository.stageDistribution(input)
   return cloneInboxDeclarationEvidenceRecord(record)
 }
