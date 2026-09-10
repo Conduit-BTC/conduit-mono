@@ -507,6 +507,74 @@ describe("network settings view", () => {
     ])
   })
 
+  it("does not let an excluded target retroactively complete a mixed immutable plan", () => {
+    const relayOutcomes = [
+      {
+        relayUrl: "wss://observed.example",
+        publishStatus: "acked" as const,
+        publishAttemptCount: 1,
+        readbackStatus: "observed" as const,
+        readbackAttemptCount: 1,
+      },
+      {
+        relayUrl: "wss://removed.example",
+        publishStatus: "pending" as const,
+        publishAttemptCount: 0,
+        readbackStatus: "pending" as const,
+        readbackAttemptCount: 0,
+      },
+    ]
+    const view = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        owner: {
+          pendingDistribution: {
+            signedEvent: { id: "owner-event" },
+            publishRelayUrls: [
+              "wss://observed.example",
+              "wss://removed.example",
+            ],
+            relayOutcomes,
+            stagedAt: 1,
+          },
+        },
+        inbox: {
+          state: "distribution_pending",
+          relayUrls: [],
+          pendingRelayUrls: ["wss://observed.example"],
+          pendingPublishRelayUrls: [
+            "wss://observed.example",
+            "wss://removed.example",
+          ],
+          pendingRelayOutcomes: relayOutcomes,
+        },
+      }),
+      localState: localState({
+        exclusions: [exclusion("wss://removed.example")],
+      }),
+    })
+
+    expect(view.pendingExactDeliveries).toEqual([
+      expect.objectContaining({
+        kind: 10002,
+        confirmationState: "policy_blocked",
+        eligibleTargetCount: 1,
+        exactReadbackCount: 1,
+        unresolvedCount: 0,
+        excludedTargetCount: 1,
+        retryAvailable: false,
+      }),
+      expect.objectContaining({
+        kind: 10050,
+        confirmationState: "policy_blocked",
+        eligibleTargetCount: 1,
+        exactReadbackCount: 1,
+        unresolvedCount: 0,
+        excludedTargetCount: 1,
+        retryAvailable: false,
+      }),
+    ])
+  })
+
   it("applies preferred order only inside the same eligibility and capability group", () => {
     const configured = row("wss://configured.example", {
       capability: {
@@ -716,6 +784,35 @@ describe("network settings view", () => {
       }
     )
     expect(declaredInboxToggledOff.errors).toContain(
+      ACCOUNT_NETWORK_LAST_INBOX_REPLACEMENT_MESSAGE
+    )
+
+    const distinctRecoveryDoesNotReplaceCurrentInbox =
+      validateAccountNetworkDesiredRoles(
+        [
+          {
+            url: "wss://first.example",
+            readEnabled: true,
+            publishEnabled: true,
+            privateInboxEnabled: false,
+          },
+          {
+            url: "wss://recovery-only.example",
+            readEnabled: false,
+            publishEnabled: false,
+            privateInboxEnabled: false,
+          },
+        ],
+        {
+          reconciliation: reconciliation({
+            inbox: {
+              cutoverRecoveryRelayUrls: ["wss://recovery-only.example"],
+            },
+          }),
+          localState: localState(),
+        }
+      )
+    expect(distinctRecoveryDoesNotReplaceCurrentInbox.errors).toContain(
       ACCOUNT_NETWORK_LAST_INBOX_REPLACEMENT_MESSAGE
     )
 

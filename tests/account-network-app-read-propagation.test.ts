@@ -117,11 +117,13 @@ describe("app account-network read propagation", () => {
   })
 
   it("threads explicit owner authority through media preference I/O", async () => {
-    const [hook, marketNetwork, merchantNetwork] = await Promise.all([
-      source("packages/core/src/hooks/useMediaServerPreferences.ts"),
-      source("apps/market/src/routes/network.tsx"),
-      source("apps/merchant/src/routes/network.tsx"),
-    ])
+    const [hook, controller, marketNetwork, merchantNetwork] =
+      await Promise.all([
+        source("packages/core/src/hooks/useMediaServerPreferences.ts"),
+        source("packages/core/src/hooks/useAccountNetworkSettings.ts"),
+        source("apps/market/src/routes/network.tsx"),
+        source("apps/merchant/src/routes/network.tsx"),
+      ])
 
     expect(
       hook.match(/authenticatedPubkey: normalizedAuthenticatedPubkey/g)
@@ -133,14 +135,11 @@ describe("app account-network read propagation", () => {
       "useLayoutEffect(() => {\n    authGenerationRef.current = options.authGeneration ?? 0"
     )
     expect(hook).toContain('normalizedAuthenticatedPubkey ?? "anonymous"')
-    expect(marketNetwork).toContain(
-      'const authenticatedPubkey = status === "connected" ? pubkey : null'
+    expect(controller).toContain(
+      'authenticatedPubkey: auth.status === "connected" ? auth.pubkey : null'
     )
-    expect(marketNetwork).toContain("authenticatedPubkey,")
-    expect(merchantNetwork).toContain(
-      'const authenticatedPubkey = status === "connected" ? pubkey : null'
-    )
-    expect(merchantNetwork).toContain("authenticatedPubkey,")
+    expect(marketNetwork).toContain("useAccountNetworkSettings()")
+    expect(merchantNetwork).toContain("useAccountNetworkSettings()")
   })
 
   it("aborts background account reconciliation when live authority changes", async () => {

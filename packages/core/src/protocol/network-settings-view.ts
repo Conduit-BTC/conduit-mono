@@ -451,12 +451,14 @@ export function buildAccountNetworkSettingsView(input: {
       exactSources.has(url)
     ).length
     const unresolvedCount = eligibleTargets.length - exactReadbackCount
+    const excludedTargetCount = targets.size - eligibleTargets.length
     pendingExactDeliveries.push({
       kind: 10002,
       label: "Read and Publish",
       eventId: owner.pendingDistribution.signedEvent.id,
       confirmationState:
-        eligibleTargets.length === 0
+        eligibleTargets.length === 0 ||
+        (unresolvedCount === 0 && excludedTargetCount > 0)
           ? "policy_blocked"
           : unresolvedCount === 0
             ? "exact_confirmed"
@@ -464,7 +466,7 @@ export function buildAccountNetworkSettingsView(input: {
       eligibleTargetCount: eligibleTargets.length,
       exactReadbackCount,
       unresolvedCount,
-      excludedTargetCount: targets.size - eligibleTargets.length,
+      excludedTargetCount,
       retryAvailable: unresolvedCount > 0,
     })
   }
@@ -484,12 +486,14 @@ export function buildAccountNetworkSettingsView(input: {
       exactSources.has(url)
     ).length
     const unresolvedCount = eligibleTargets.length - exactReadbackCount
+    const excludedTargetCount = targets.size - eligibleTargets.length
     pendingExactDeliveries.push({
       kind: 10050,
       label: "Private inbox",
       eventId: inbox.eventId,
       confirmationState:
-        eligibleTargets.length === 0
+        eligibleTargets.length === 0 ||
+        (unresolvedCount === 0 && excludedTargetCount > 0)
           ? "policy_blocked"
           : unresolvedCount === 0
             ? "exact_confirmed"
@@ -497,7 +501,7 @@ export function buildAccountNetworkSettingsView(input: {
       eligibleTargetCount: eligibleTargets.length,
       exactReadbackCount,
       unresolvedCount,
-      excludedTargetCount: targets.size - eligibleTargets.length,
+      excludedTargetCount,
       retryAvailable: unresolvedCount > 0,
     })
   }
@@ -650,14 +654,18 @@ export function validateAccountNetworkDesiredRoles(
   const usableInboxCount = currentUsableInboxUrls(
     context.reconciliation
   ).filter((url) => !excluded.has(url)).length
+  const currentInboxCount = currentActiveInboxUrls(
+    context.reconciliation
+  ).filter((url) => !excluded.has(url)).length
   const reviewedRelayUrls = new Set(desired.map((row) => row.url))
   const recoveryInboxCount = currentRecoveryOnlyInboxUrls(
     context.reconciliation
   ).filter((url) => !excluded.has(url) && reviewedRelayUrls.has(url)).length
   if (
-    usableInboxCount > 0 &&
-    desiredInboxCount === 0 &&
-    recoveryInboxCount === 0
+    (currentInboxCount > 0 && desiredInboxCount === 0) ||
+    (usableInboxCount > 0 &&
+      desiredInboxCount === 0 &&
+      recoveryInboxCount === 0)
   ) {
     errors.push(ACCOUNT_NETWORK_LAST_INBOX_REPLACEMENT_MESSAGE)
   }

@@ -60,13 +60,24 @@ describe("account Network settings controller contract", () => {
     expect(preparation).toContain("reviewAccountNetworkMutation(")
     expect(execution).toContain("publishAccountNetworkMutation({")
     expect(execution).toContain("reviewed,")
-    expect(execution).toContain("authenticatedPubkey: reviewed.pubkey")
+    expect(execution).toContain("authenticatedPubkey,")
+    expect(execution).not.toContain("authenticatedPubkey: reviewed.pubkey")
     expect(preparation).toContain("createNdkNostrEventSigner(")
     expect(controllerSource).toContain('type: "set_roles"')
     expect(controllerSource).toContain("removedRelayUrls,")
     expect(preparation).toContain("if (summary.signerRequestCount > 0)")
     expect(preparation).toContain("const snapshot = captureAuth()")
     expect(preparation).toContain("const snapshot = captureAccount()")
+    expect(
+      preparation.match(/authenticatedPubkey = snapshot\.pubkey/g)
+    ).toHaveLength(2)
+    expect(preparation).toContain("authenticatedPubkey !== reviewed.pubkey")
+    expect(preparation).toContain(
+      "The reviewed Network account does not match the active account."
+    )
+    expect(
+      preparation.indexOf("authenticatedPubkey !== reviewed.pubkey")
+    ).toBeLessThan(preparation.indexOf("let started = false"))
     expect(preparation).toContain("let started = false")
     expect(preparation).toContain("if (started)")
     expect(execution).toContain("revisionRef.current !== preparedRevision")

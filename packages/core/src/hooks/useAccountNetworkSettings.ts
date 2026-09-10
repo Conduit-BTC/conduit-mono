@@ -665,6 +665,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     async (
       kind: "save" | "remove",
       reviewed: ReviewedAccountNetworkMutation,
+      authenticatedPubkey: string,
       preparedRevision: string,
       shouldContinue: () => boolean,
       signer?: ReturnType<typeof createNdkNostrEventSigner>
@@ -684,7 +685,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         }
         const result = await publishAccountNetworkMutation({
           reviewed,
-          authenticatedPubkey: reviewed.pubkey,
+          authenticatedPubkey,
           ...(signer ? { signer } : {}),
           dependencies: {
             shouldContinue,
@@ -761,8 +762,10 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
       const preparedRevision = revision
       let shouldContinue: () => boolean
       let signer: ReturnType<typeof createNdkNostrEventSigner> | undefined
+      let authenticatedPubkey: string
       if (summary.signerRequestCount > 0) {
         const snapshot = captureAuth()
+        authenticatedPubkey = snapshot.pubkey
         shouldContinue = authFenceFor(snapshot)
         signer = createNdkNostrEventSigner(
           snapshot.signer,
@@ -771,7 +774,13 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         )
       } else {
         const snapshot = captureAccount()
+        authenticatedPubkey = snapshot.pubkey
         shouldContinue = accountFenceFor(snapshot)
+      }
+      if (authenticatedPubkey !== reviewed.pubkey) {
+        throw new Error(
+          "The reviewed Network account does not match the active account."
+        )
       }
       let started = false
       return {
@@ -786,6 +795,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
           await executePreparedMutation(
             kind,
             reviewed,
+            authenticatedPubkey,
             preparedRevision,
             shouldContinue,
             signer
