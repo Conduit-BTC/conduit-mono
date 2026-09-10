@@ -42,6 +42,7 @@ import {
 import { type OrganizerCollectionMembershipAction } from "../lib/event-market-workflow"
 import {
   isParticipationHandoffVerified,
+  isParticipationProductAvailable,
   isParticipationProductPreviewVerified,
   type MerchantOrganizerEventMarket,
   type MerchantOrganizerParticipation,
@@ -555,8 +556,8 @@ export function OrganizerEventMarketPanel({
   const organizerOnlyProducts = market.participation.filter(
     (item) => item.status === "organizer_only"
   )
-  const availableProducts = acceptedProducts.filter(
-    isParticipationProductPreviewVerified
+  const availableProducts = acceptedProducts.filter((item) =>
+    isParticipationProductAvailable(item, market.organizerPubkey)
   )
   const actionability = getEventActionabilityPresentation({
     state: market.state,

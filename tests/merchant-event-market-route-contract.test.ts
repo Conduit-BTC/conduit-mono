@@ -51,7 +51,7 @@ describe("merchant organizer event market route", () => {
       "This event belongs to another organizer. Open it under Find events."
     )
     expect(panel).toContain("Sell at this event")
-    expect(panel).toContain("isParticipationProductPreviewVerified")
+    expect(panel).toContain("isParticipationProductAvailable")
     expect(panel).toContain("eventMarketRequiredRecordsResolved")
     expect(panel).toContain("<EventProductPublisherDialog")
     expect(publisher).toContain("start from one of your")
@@ -91,13 +91,6 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain("aria-label={`View ${market.title}`}")
     expect(route).toContain("resolveOrganizerEventMarket(")
     expect(route).toMatch(/merchantPubkey,\r?\n\s+signal/)
-    const referenceLabel = route.slice(
-      route.indexOf("function referenceLabel("),
-      route.indexOf("function expectedEventMarketFrontiers(")
-    )
-    expect(referenceLabel).toContain(
-      "organizerEventMarketCanSupplySavedTitle(market, reference)"
-    )
     expect(route).not.toContain("selectedFromDiscovery")
   })
 

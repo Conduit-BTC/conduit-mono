@@ -309,6 +309,7 @@ describe("candidate-first followed event-market discovery", () => {
         readOrganizerMarkets: async (input) => {
           organizerInputs.push(input.organizerPubkey)
           expect(input.candidateCollectionEvents).toEqual([retainedCandidate])
+          expect(input.candidateCollectionLiveEventIds).toEqual(new Set())
           expect(input.relayHints).toEqual([RETAINED_RELAY])
           return organizerRead(
             [market(ORGANIZER, "catalog", "stale")],
@@ -332,6 +333,40 @@ describe("candidate-first followed event-market discovery", () => {
       ])
     }
     expect(organizerInputs).toEqual(scenarios.map(() => ORGANIZER))
+  })
+
+  it("keeps exact live provenance when retained and live revisions share a coordinate", async () => {
+    const liveCandidate = collectionEvent({ createdAt: 100 })
+    const retainedCandidate = collectionEvent({ createdAt: 200 })
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readFollowLists: async () => followRead([ORGANIZER]),
+      readCollectionCandidates: async () =>
+        candidateRead({ events: [liveCandidate] }),
+      readRetainedCollectionCandidates: async () => ({
+        events: [retainedCandidate],
+        eventSourceRelayUrls: {
+          [retainedCandidate.id]: [RETAINED_RELAY],
+        },
+      }),
+      readOrganizerMarkets: async (input) => {
+        expect(
+          new Set(input.candidateCollectionEvents?.map((event) => event.id))
+        ).toEqual(new Set([liveCandidate.id, retainedCandidate.id]))
+        expect(input.candidateCollectionLiveEventIds).toEqual(
+          new Set([liveCandidate.id])
+        )
+        return organizerRead([market(ORGANIZER, "catalog", "stale")], "partial")
+      },
+    })
+
+    const result = await discoverFollowedOrganizerEventMarkets({
+      merchantPubkey: MERCHANT,
+    })
+
+    expect(result.state).toBe("partial")
+    expect(result.markets).toEqual([
+      expect.objectContaining({ state: "stale" }),
+    ])
   })
 
   it("keeps a validated candidate visible while reporting partial relay coverage", async () => {
