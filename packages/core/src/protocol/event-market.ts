@@ -476,9 +476,9 @@ function normalizeLocations(values: readonly string[] | undefined): string[] {
 
 function addDisplayTags(
   tags: string[][],
-  input: EventMarketDisplayDraftInput
+  input: EventMarketDisplayDraftInput,
+  summary: string | undefined
 ): void {
-  const summary = normalizeOptionalText(input.summary, "Summary", 1_000)
   const image = normalizeOptionalText(input.image, "Image", 2_048)
   const geohash = normalizeOptionalText(input.geohash, "Geohash", 32)
   if (geohash && !GEOHASH.test(geohash)) throw new Error("Geohash is invalid.")
@@ -499,7 +499,8 @@ export function buildEventMarketCalendarDraft(
     ["d", dTag],
     ["title", title],
   ]
-  addDisplayTags(tags, input)
+  const summary = normalizeOptionalText(input.summary, "Summary", 1_000)
+  addDisplayTags(tags, input, summary)
 
   if (input.kind === EVENT_KINDS.CALENDAR_DATE) {
     const start = input.start.trim()
@@ -540,7 +541,9 @@ export function buildEventMarketCalendarDraft(
   return {
     kind: input.kind,
     content:
-      normalizeOptionalText(input.content, "Calendar content", 10_000) ?? "",
+      normalizeOptionalText(input.content, "Calendar content", 10_000) ??
+      summary ??
+      "",
     tags,
   }
 }
