@@ -53,7 +53,7 @@ async function expectMinimumTouchTarget(locator: Locator): Promise<void> {
   expect(box!.height).toBeGreaterThanOrEqual(44)
 }
 
-test("account-local relay order reaches another storage-sharing tab without reload @market @merchant", async ({
+test("account-local relay preference reaches another storage-sharing tab without reload @market @merchant", async ({
   page,
   context,
 }) => {
@@ -63,10 +63,10 @@ test("account-local relay order reaches another storage-sharing tab without relo
     secondPage.goto(`${marketUrl}/products`),
   ])
   const pubkey = getPublicKey(generateSecretKey())
-  const preferredRelayOrder = [
-    "wss://order-two.example",
-    "wss://order-one.example",
-  ]
+  // Mock browser mode intentionally admits only the isolated relay. The
+  // multi-relay permutation semantics are covered by the local-state and view
+  // tests; this browser seam verifies that the preference crosses tabs.
+  const preferredRelayOrder = [TEST_RELAY_URL]
   const observedOrder = secondPage.evaluate(
     async ({ moduleUrl, accountPubkey, expectedOrder }) => {
       const localState = await import(/* @vite-ignore */ moduleUrl)
