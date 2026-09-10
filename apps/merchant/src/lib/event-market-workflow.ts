@@ -575,7 +575,7 @@ function normalizeSavedReference(
   }
 }
 
-function mergeSavedReferences(
+function mergeNormalizedSavedReferences(
   references: readonly NormalizedSavedOrganizerEventMarketReference[]
 ): SavedOrganizerEventMarketReference {
   const sorted = [...references].sort(
@@ -620,6 +620,27 @@ function mergeSavedReferences(
   }
 }
 
+/** Merge saved/imported views without dropping relay hints or signed frontiers. */
+export function mergeSavedOrganizerEventMarketReferences(
+  references: readonly SavedOrganizerEventMarketReference[]
+): SavedOrganizerEventMarketReference[] {
+  const byCoordinate = new Map<
+    string,
+    NormalizedSavedOrganizerEventMarketReference[]
+  >()
+  for (const reference of references) {
+    const normalized = normalizeSavedReference(reference)
+    if (!normalized) continue
+    byCoordinate.set(normalized.coordinate, [
+      ...(byCoordinate.get(normalized.coordinate) ?? []),
+      normalized,
+    ])
+  }
+  return Array.from(byCoordinate.values())
+    .map(mergeNormalizedSavedReferences)
+    .sort((left, right) => right.savedAt - left.savedAt)
+}
+
 function loadSavedReferences(
   storageKey: string,
   storage: Pick<Storage, "getItem">,
@@ -650,7 +671,7 @@ function loadSavedReferences(
       ])
     }
     return Array.from(byCoordinate.values())
-      .map(mergeSavedReferences)
+      .map(mergeNormalizedSavedReferences)
       .sort((left, right) => right.savedAt - left.savedAt)
   } catch {
     return []
@@ -681,7 +702,7 @@ function rememberSavedReference(
     const existing = normalizeSavedReference(item)
     return existing?.coordinate === normalized.coordinate ? [existing] : []
   })
-  const merged = mergeSavedReferences([normalized, ...sameIdentity])
+  const merged = mergeNormalizedSavedReferences([normalized, ...sameIdentity])
   const next = [
     merged,
     ...current.filter((item) => {

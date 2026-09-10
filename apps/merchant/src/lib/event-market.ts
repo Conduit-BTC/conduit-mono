@@ -614,7 +614,7 @@ function boundedEventMarketShareRelayHints(
   return result
 }
 
-function projectEventMarket(
+export function projectEventMarket(
   resolution: EventMarketResolution
 ): MerchantOrganizerEventMarket | null {
   const { calendar, collection, pickup } = resolution
@@ -710,7 +710,7 @@ function projectEventMarket(
   }
 }
 
-function projectMarketList(
+export function projectMarketList(
   values: readonly EventMarketResolution[]
 ): MerchantOrganizerEventMarket[] {
   return values.flatMap((resolution) => {

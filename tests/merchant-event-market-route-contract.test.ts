@@ -31,6 +31,9 @@ describe("merchant organizer event market route", () => {
 
   it("separates event discovery from ownership and publishes from the event", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const timeline = await Bun.file(
+      "apps/merchant/src/components/MerchantEventsTimeline.tsx"
+    ).text()
     const panel = await Bun.file(
       "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
     ).text()
@@ -41,10 +44,13 @@ describe("merchant organizer event market route", () => {
       "apps/merchant/src/lib/event-product-publishing.ts"
     ).text()
 
-    expect(route).toContain(
-      '<TabsTrigger value="find">Find events</TabsTrigger>'
-    )
-    expect(route).toContain('<TabsTrigger value="mine">My events</TabsTrigger>')
+    expect(route).toContain("<MerchantEventsTimeline")
+    expect(route).not.toContain("<TabsTrigger")
+    expect(timeline).toContain("Network perspective")
+    expect(timeline).toContain('organizing: "Organizing"')
+    expect(timeline).toContain('selling: "Selling at"')
+    expect(timeline).toContain('saved: "Saved"')
+    expect(timeline).toContain("<EventMarketCard")
     expect(route).toContain("discoverFollowedEventMarkets")
     expect(route).toContain("loadSavedDiscoveredEventMarkets")
     expect(route).toContain(
@@ -64,6 +70,12 @@ describe("merchant organizer event market route", () => {
 
   it("shows explicit bounded discovery states and exact-hydrates a selected event", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const timeline = await Bun.file(
+      "apps/merchant/src/components/MerchantEventsTimeline.tsx"
+    ).text()
+    const timelineHook = await Bun.file(
+      "apps/merchant/src/hooks/useMerchantEventTimeline.ts"
+    ).text()
     const adapter = await Bun.file(
       "apps/merchant/src/lib/event-market.ts"
     ).text()
@@ -80,15 +92,24 @@ describe("merchant organizer event market route", () => {
     expect(core).toContain("FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT = 128")
     expect(core).toContain("kinds: [EVENT_KINDS.PRODUCT_COLLECTION]")
     expect(core).not.toContain("FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT")
-    expect(route).toContain('discoveryQuery.data?.state === "partial"')
-    expect(route).toContain('discoveryQuery.data?.state === "unavailable"')
-    expect(route).toContain('discoveryQuery.data?.state === "complete_empty"')
-    expect(route).toContain("Retry event discovery")
-    expect(route).toContain(
-      "Checking event collections on bounded commerce relays"
+    expect(timelineHook).toContain("discoverPerspectiveEventMarkets({")
+    expect(timelineHook).toContain("includeEnded: true")
+    expect(timelineHook).toContain("resolveEventMarketPerspectiveAuthorPubkeys")
+    expect(timelineHook).toContain("resolveRelationshipMarkets(")
+    expect(timelineHook).toContain(
+      "if (authorPubkeys !== undefined) void refreshPerspective()"
     )
-    expect(route).toMatch(/No global\s+event absence is inferred/)
-    expect(route).toContain("aria-label={`View ${market.title}`}")
+    expect(timelineHook).toContain("sellingCollectionCoordinates")
+    expect(timelineHook).toContain("listOrganizerEventMarkets")
+    expect(timelineHook).not.toContain("ORGANIZER_LIMIT")
+    expect(core).toContain("candidate-first relay scans")
+    expect(core).toContain("readEventMarketCollectionCandidates")
+    expect(timeline).toContain("getOrganizerDiscoveryPresentation")
+    expect(timeline).toContain("Retry event discovery")
+    expect(timeline).toContain("bounded view does not prove")
+    expect(timeline).toMatch(
+      /Existing verified events remain\s+available; retry before inferring/
+    )
     expect(route).toContain("resolveOrganizerEventMarket(")
     expect(route).toMatch(/merchantPubkey,\r?\n\s+signal/)
     const referenceLabel = route.slice(
@@ -99,6 +120,25 @@ describe("merchant organizer event market route", () => {
       "organizerEventMarketCanSupplySavedTitle(market, reference)"
     )
     expect(route).not.toContain("selectedFromDiscovery")
+  })
+
+  it("keeps exact selections URL-backed and prevents stale organizer actions", async () => {
+    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const panel = await Bun.file(
+      "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
+    ).text()
+
+    expect(route.match(/onSelected={openEvent}/g)).toHaveLength(2)
+    expect(route).toContain("onSelected?.(selected)")
+    expect(route).toContain("onSelected?.(reference)")
+    expect(route).toContain(
+      "shouldResolveSelectedReference && selectedMarketQuery.isFetching"
+    )
+    expect(route).toContain("!selectedReferenceResolutionPending &&")
+    expect(route).toContain("enabled: !!organizerPubkey && !embedded")
+    expect(route).toContain("compact")
+    expect(panel).toContain("compact = false")
+    expect(panel).toContain("{compact ? (")
   })
 
   it("exposes signer, delivery, bounded discovery, and organizer acceptance workflows", async () => {
@@ -143,7 +183,9 @@ describe("merchant organizer event market route", () => {
     expect(
       route.match(/findSavedOrganizerEventMarketReference/g)?.length
     ).toBeGreaterThanOrEqual(4)
-    expect(route).not.toContain("setSelectedReference(reference)")
+    expect(route).toContain(
+      "setSelectedReference(reference)\n                onSelected?.(reference)"
+    )
   })
 
   it("hydrates merchant identity without changing organizer acceptance authority", async () => {
