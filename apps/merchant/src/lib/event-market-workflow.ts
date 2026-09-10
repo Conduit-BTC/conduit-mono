@@ -788,13 +788,6 @@ function mergeSavedReferences(
       const candidateFrontiers =
         savedOrganizerEventMarketTitleFrontiers(candidate)!
       const currentFrontiers = savedOrganizerEventMarketTitleFrontiers(current)!
-      const collectionComparison = compareEventMarketRecordFrontier(
-        candidateFrontiers.collection,
-        currentFrontiers.collection
-      )
-      if (collectionComparison !== 0) {
-        return collectionComparison > 0 ? candidate : current
-      }
       if (
         candidateFrontiers.calendar.coordinate ===
         currentFrontiers.calendar.coordinate
@@ -806,6 +799,13 @@ function mergeSavedReferences(
         if (calendarComparison !== 0) {
           return calendarComparison > 0 ? candidate : current
         }
+      }
+      const collectionComparison = compareEventMarketRecordFrontier(
+        candidateFrontiers.collection,
+        currentFrontiers.collection
+      )
+      if (collectionComparison !== 0) {
+        return collectionComparison > 0 ? candidate : current
       }
       return candidate.savedAt > current.savedAt ? candidate : current
     }, undefined) ?? sorted.find((reference) => reference.title)

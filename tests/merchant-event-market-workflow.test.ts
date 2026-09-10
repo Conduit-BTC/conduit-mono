@@ -445,6 +445,27 @@ describe("merchant organizer event workflow", () => {
       ...anchoredTitleEvidence,
     })
 
+    const [afterCrossedFrontierWrite] = rememberDiscoveredEventMarket(
+      MERCHANT,
+      {
+        reference,
+        title: "Newer collection with stale calendar title",
+        savedAt: 35,
+        titleCollectionCoordinate: COLLECTION,
+        titleCollectionCreatedAt: 3_000,
+        titleCollectionEventId: "f".repeat(64),
+        titleCalendarCoordinate: CALENDAR,
+        titleCalendarCreatedAt: 1_000,
+        titleCalendarEventId: "1".repeat(64),
+      },
+      storage
+    )
+    expect(afterCrossedFrontierWrite).toMatchObject({
+      title: "Current exact title",
+      savedAt: 35,
+      ...anchoredTitleEvidence,
+    })
+
     const replacementCalendar = `31923:${ORGANIZER}:replacement-calendar`
     const [afterNewerProvenWrite] = rememberDiscoveredEventMarket(
       MERCHANT,
@@ -453,11 +474,11 @@ describe("merchant organizer event workflow", () => {
         title: "Newer relinked title",
         savedAt: 40,
         titleCollectionCoordinate: COLLECTION,
-        titleCollectionCreatedAt: 3_000,
-        titleCollectionEventId: "f".repeat(64),
+        titleCollectionCreatedAt: 4_000,
+        titleCollectionEventId: "2".repeat(64),
         titleCalendarCoordinate: replacementCalendar,
         titleCalendarCreatedAt: 500,
-        titleCalendarEventId: "1".repeat(64),
+        titleCalendarEventId: "3".repeat(64),
       },
       storage
     )
@@ -465,11 +486,11 @@ describe("merchant organizer event workflow", () => {
       title: "Newer relinked title",
       savedAt: 40,
       titleCollectionCoordinate: COLLECTION,
-      titleCollectionCreatedAt: 3_000,
-      titleCollectionEventId: "f".repeat(64),
+      titleCollectionCreatedAt: 4_000,
+      titleCollectionEventId: "2".repeat(64),
       titleCalendarCoordinate: replacementCalendar,
       titleCalendarCreatedAt: 500,
-      titleCalendarEventId: "1".repeat(64),
+      titleCalendarEventId: "3".repeat(64),
     })
   })
 
