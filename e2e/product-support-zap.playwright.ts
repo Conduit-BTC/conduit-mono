@@ -30,6 +30,63 @@ const productUrl = `${marketUrl}/products/${nip19.naddrEncode({
   relays: [],
 })}`
 
+type SupportSignerWindow = typeof window & {
+  __supportSignAttempts?: number
+  __supportSignSettled?: boolean
+  __resolveSupportSign?: () => void
+  nostr?: {
+    signEvent: (
+      event: Record<string, unknown>
+    ) => Promise<Record<string, unknown>>
+  }
+}
+
+async function installStalledSupportSigner(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    window.addEventListener("DOMContentLoaded", () => {
+      const targetWindow = window as SupportSignerWindow
+      const signer = targetWindow.nostr
+      if (!signer) return
+      const originalSignEvent = signer.signEvent.bind(signer)
+      signer.signEvent = (event) => {
+        targetWindow.__supportSignAttempts =
+          (targetWindow.__supportSignAttempts ?? 0) + 1
+        targetWindow.__supportSignSettled = false
+        return new Promise((resolve, reject) => {
+          targetWindow.__resolveSupportSign = () =>
+            void originalSignEvent(event).then((signedEvent) => {
+              targetWindow.__supportSignSettled = true
+              resolve(signedEvent)
+            }, reject)
+        })
+      }
+    })
+  })
+}
+
+async function waitForSupportSignAttempt(page: Page): Promise<void> {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as SupportSignerWindow).__supportSignAttempts ?? 0
+      )
+    )
+    .toBe(1)
+}
+
+async function releaseSupportSign(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    ;(window as SupportSignerWindow).__resolveSupportSign?.()
+  })
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as SupportSignerWindow).__supportSignSettled ?? false
+      )
+    )
+    .toBe(true)
+}
+
 async function seedSupportProduct(page: Page): Promise<void> {
   await page.evaluate(
     ({ address, dTag, pubkey, title, relayUrl }) =>
@@ -124,30 +181,7 @@ test("a stalled product-support signer can be dismissed without retaining a late
     ),
   ])
   await installTestSigner(page, buyerPubkey, { secretKey: buyerSecretKey })
-  await page.addInitScript(() => {
-    const targetWindow = window as typeof window & {
-      __supportSignAttempts?: number
-      __resolveSupportSign?: () => void
-      nostr?: {
-        signEvent: (
-          event: Record<string, unknown>
-        ) => Promise<Record<string, unknown>>
-      }
-    }
-    window.addEventListener("DOMContentLoaded", () => {
-      const signer = targetWindow.nostr
-      if (!signer) return
-      const originalSignEvent = signer.signEvent.bind(signer)
-      signer.signEvent = (event) => {
-        targetWindow.__supportSignAttempts =
-          (targetWindow.__supportSignAttempts ?? 0) + 1
-        return new Promise((resolve, reject) => {
-          targetWindow.__resolveSupportSign = () =>
-            void originalSignEvent(event).then(resolve, reject)
-        })
-      }
-    })
-  })
+  await installStalledSupportSigner(page)
   await page.route("https://merchant-fixture.dev/**", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -169,26 +203,14 @@ test("a stalled product-support signer can be dismissed without retaining a late
   await expect(page.getByRole("heading", { name: productTitle })).toBeVisible()
   await page.getByRole("button", { name: "Support product" }).click()
   await page.getByRole("button", { name: "Create zap invoice" }).click()
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (window as typeof window & { __supportSignAttempts?: number })
-            .__supportSignAttempts ?? 0
-      )
-    )
-    .toBe(1)
+  await waitForSupportSignAttempt(page)
 
   const dialog = page.getByRole("dialog")
   await expect(dialog).toContainText("Preparing invoice…")
   await dialog.getByRole("button", { name: "Cancel" }).click()
   await expect(dialog).not.toBeVisible()
 
-  await page.evaluate(() => {
-    ;(
-      window as typeof window & { __resolveSupportSign?: () => void }
-    ).__resolveSupportSign?.()
-  })
+  await releaseSupportSign(page)
   await page.waitForTimeout(100)
   await page.getByRole("button", { name: "Support product" }).click()
   await expect(page.getByRole("dialog")).not.toContainText("Invoice ready")
@@ -198,4 +220,66 @@ test("a stalled product-support signer can be dismissed without retaining a late
   await expect(
     page.getByRole("button", { name: "Create zap invoice" })
   ).toBeEnabled()
+})
+
+test("leaving the product route stops a stalled support request before the provider callback @market", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const createdAt = Math.floor(Date.now() / 1_000)
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt,
+        tags: [],
+        content: JSON.stringify({
+          display_name: "Support Merchant",
+          lud16: "support@merchant-fixture.dev",
+        }),
+      },
+      merchantSecretKey
+    ),
+  ])
+  await installTestSigner(page, buyerPubkey, { secretKey: buyerSecretKey })
+  await installStalledSupportSigner(page)
+  let callbackRequests = 0
+  await page.route("https://merchant-fixture.dev/**", async (route) => {
+    if (new URL(route.request().url()).pathname === "/callback") {
+      callbackRequests += 1
+      await route.abort()
+      return
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        tag: "payRequest",
+        callback: "https://merchant-fixture.dev/callback",
+        minSendable: 1_000,
+        maxSendable: 100_000_000,
+        allowsNostr: true,
+        nostrPubkey: receiptPubkey,
+        metadata: JSON.stringify([["text/plain", "support"]]),
+      }),
+    })
+  })
+
+  await page.goto(`${marketUrl}/products`)
+  await seedSupportProduct(page)
+  await page.goto(productUrl)
+  await page.getByRole("button", { name: "Support product" }).click()
+  await page.getByRole("button", { name: "Create zap invoice" }).click()
+  await waitForSupportSignAttempt(page)
+
+  await page
+    .locator('a[href="/products"]')
+    .first()
+    .evaluate((link) => {
+      ;(link as HTMLAnchorElement).click()
+    })
+  await expect(page).toHaveURL(/\/products\/?$/)
+
+  await releaseSupportSign(page)
+  await page.waitForTimeout(100)
+  expect(callbackRequests).toBe(0)
 })

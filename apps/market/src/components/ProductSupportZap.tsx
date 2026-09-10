@@ -94,6 +94,10 @@ export function ProductSupportZap({
     setInvoice(null)
     setError(null)
     setCopied(false)
+
+    return () => {
+      preparationSequenceRef.current += 1
+    }
   }, [
     auth.method,
     auth.pubkey,
