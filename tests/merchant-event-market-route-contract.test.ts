@@ -72,12 +72,15 @@ describe("merchant organizer event market route", () => {
     expect(adapter).toContain("discoverFollowedOrganizerEventMarkets")
     expect(core).toContain('projection: "discovery"')
     expect(core).toContain("FOLLOWED_EVENT_MARKET_READ_CONCURRENCY = 4")
+    expect(core).toContain("FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT = 128")
+    expect(core).toContain("kinds: [EVENT_KINDS.PRODUCT_COLLECTION]")
+    expect(core).not.toContain("FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT")
     expect(route).toContain('discoveryQuery.data?.state === "partial"')
     expect(route).toContain('discoveryQuery.data?.state === "unavailable"')
     expect(route).toContain('discoveryQuery.data?.state === "complete_empty"')
     expect(route).toContain("Retry event discovery")
     expect(route).toContain(
-      "Checking followed organizers on their planned relays"
+      "Checking event collections on bounded commerce relays"
     )
     expect(route).toContain("no global event absence is inferred")
     expect(route).toContain("aria-label={`View ${market.title}`}")
