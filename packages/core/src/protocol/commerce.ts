@@ -3844,6 +3844,7 @@ async function fetchVariationGroupRecordBatch(
   degraded: boolean
   capped: boolean
   invalidTargetAddressIds: ReadonlySet<string>
+  degradedParentAddresses: ReadonlySet<string>
 }> {
   if (targets.length === 0) {
     return {
@@ -3851,13 +3852,17 @@ async function fetchVariationGroupRecordBatch(
       degraded: false,
       capped: false,
       invalidTargetAddressIds: new Set(),
+      degradedParentAddresses: new Set(),
     }
   }
 
-  const authors: string[] = []
-  const parentAddresses: string[] = []
-  const parentDTags: string[] = []
-  const knownRelayHints: string[] = []
+  const validTargets: Array<{
+    target: CommerceProductRecord
+    author: string
+    parentAddress: string
+    parentDTag: string
+    relayHints: string[]
+  }> = []
   const invalidTargetAddressIds = new Set<string>()
   for (const target of targets) {
     const parentAddress = getVariationParentAddress(target)
@@ -3871,113 +3876,180 @@ async function fetchVariationGroupRecordBatch(
       invalidTargetAddressIds.add(target.addressId)
       continue
     }
-    authors.push(parsedParent.pubkey)
-    parentAddresses.push(parentAddress)
-    if (target.product.type === "variation") parentDTags.push(parsedParent.d)
-    knownRelayHints.push(
-      ...(relayHintsByParent.get(parentAddress) ?? []),
-      ...(target.sourceRelayUrls ?? [])
-    )
+    validTargets.push({
+      target,
+      author: parsedParent.pubkey,
+      parentAddress,
+      parentDTag: parsedParent.d,
+      relayHints: normalizePublicOrIsolatedE2eRelayHints(
+        uniqueStrings([
+          ...(relayHintsByParent.get(parentAddress) ?? []),
+          ...(target.sourceRelayUrls ?? []),
+        ])
+      ),
+    })
   }
 
-  if (authors.length === 0) {
+  if (validTargets.length === 0) {
     return {
       records: [],
       degraded: false,
       capped: false,
       invalidTargetAddressIds,
+      degradedParentAddresses: new Set(),
     }
   }
 
-  try {
-    // A checkout batch performs at most two family fanouts (parents and
-    // children), independent of item count. Known hints from every requested
-    // family member participate in the one capped relay plan.
-    const normalizedRelayHints = normalizePublicOrIsolatedE2eRelayHints(
-      uniqueStrings(knownRelayHints)
-    )
-    const relayPlan = await planCommerceReadRelayPlan({
-      intent: "author_products",
-      authors: uniqueStrings(authors),
-      extraRelayUrls: normalizedRelayHints,
-      relayHintMode: "force",
-      maxRelays: DEFAULT_READ_FANOUT,
-    })
-    const fetchOptions = {
-      relayUrls: relayPlan.relayUrls,
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 8_000,
-    }
-    const [parentRead, variationRead] = await Promise.all([
-      parentDTags.length > 0
-        ? runFetchEventsFanoutWithDiagnostics(
+  const authorChunks = chunkStrings(
+    uniqueStrings(validTargets.map((target) => target.author)),
+    PRODUCT_AUTHOR_CHUNK_SIZE
+  )
+  const chunkReads = await mapWithConcurrency(
+    authorChunks,
+    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    async (authors) => {
+      const authorSet = new Set(authors)
+      const chunkTargets = validTargets.filter((target) =>
+        authorSet.has(target.author)
+      )
+      const parentAddresses = uniqueStrings(
+        chunkTargets.map((target) => target.parentAddress)
+      )
+      const parentDTags = uniqueStrings(
+        chunkTargets.flatMap((target) =>
+          target.target.product.type === "variation" ? [target.parentDTag] : []
+        )
+      )
+      const normalizedRelayHints = normalizePublicOrIsolatedE2eRelayHints(
+        uniqueStrings(chunkTargets.flatMap((target) => target.relayHints))
+      )
+      const degradedParentAddresses = new Set<string>()
+      const cappedParentAddresses = new Set<string>()
+
+      try {
+        // Each transport-safe author chunk performs at most two family
+        // fanouts. Chunks stay concurrency-bounded while every requested
+        // family is eventually scheduled.
+        const relayPlan = await planCommerceReadRelayPlan({
+          intent: "author_products",
+          authors,
+          extraRelayUrls: normalizedRelayHints,
+          relayHintMode: "force",
+          maxRelays: DEFAULT_READ_FANOUT,
+        })
+        const fetchOptions = {
+          relayUrls: relayPlan.relayUrls,
+          connectTimeoutMs: 4_000,
+          fetchTimeoutMs: 8_000,
+        }
+        const [parentRead, variationRead] = await Promise.all([
+          parentDTags.length > 0
+            ? runFetchEventsFanoutWithDiagnostics(
+                {
+                  kinds: [EVENT_KINDS.PRODUCT],
+                  authors,
+                  "#d": parentDTags,
+                  limit: PRODUCT_VARIATION_EVENT_LIMIT,
+                },
+                fetchOptions
+              ).catch(() => null)
+            : Promise.resolve(null),
+          runFetchEventsFanoutWithDiagnostics(
             {
               kinds: [EVENT_KINDS.PRODUCT],
-              authors: uniqueStrings(authors),
-              "#d": uniqueStrings(parentDTags),
+              authors,
+              "#a": parentAddresses,
               limit: PRODUCT_VARIATION_EVENT_LIMIT,
             },
             fetchOptions
-          ).catch(() => null)
-        : Promise.resolve(null),
-      runFetchEventsFanoutWithDiagnostics(
-        {
-          kinds: [EVENT_KINDS.PRODUCT],
-          authors: uniqueStrings(authors),
-          "#a": uniqueStrings(parentAddresses),
-          limit: PRODUCT_VARIATION_EVENT_LIMIT,
-        },
-        fetchOptions
-      ).catch(() => null),
-    ])
-    const consideredRelayUrls = uniqueStrings([
-      ...relayPlan.relayUrls,
-      ...relayPlan.parkedRelayUrls,
-    ])
-    const expectedRelayUrls = uniqueStrings([
-      ...consideredRelayUrls,
-      ...normalizedRelayHints,
-    ])
-    const variationCoverage = variationRead
-      ? productAvailabilityCoverageFromFanout(variationRead, expectedRelayUrls)
-      : "unavailable"
-    const parentCoverage =
-      parentDTags.length === 0
-        ? "complete"
-        : parentRead
-          ? productAvailabilityCoverageFromFanout(parentRead, expectedRelayUrls)
-          : "unavailable"
-    const capped =
-      normalizedRelayHints.some(
-        (relayUrl) => !consideredRelayUrls.includes(relayUrl)
-      ) ||
-      (parentRead?.cappedRelayUrls?.length ?? 0) > 0 ||
-      (variationRead?.cappedRelayUrls?.length ?? 0) > 0
-    const records = (() => {
-      try {
-        return dedupeProductEvents([
-          ...(parentRead?.events ?? []),
-          ...(variationRead?.events ?? []),
+          ).catch(() => null),
         ])
+        const consideredRelayUrls = uniqueStrings([
+          ...relayPlan.relayUrls,
+          ...relayPlan.parkedRelayUrls,
+        ])
+        const parentReadCapped = (parentRead?.cappedRelayUrls?.length ?? 0) > 0
+        const variationReadCapped =
+          (variationRead?.cappedRelayUrls?.length ?? 0) > 0
+
+        for (const target of chunkTargets) {
+          const expectedRelayUrls = uniqueStrings([
+            ...consideredRelayUrls,
+            ...target.relayHints,
+          ])
+          const variationCoverage = variationRead
+            ? productAvailabilityCoverageFromFanout(
+                variationRead,
+                expectedRelayUrls
+              )
+            : "unavailable"
+          const parentCoverage =
+            target.target.product.type === "variable"
+              ? "complete"
+              : parentRead
+                ? productAvailabilityCoverageFromFanout(
+                    parentRead,
+                    expectedRelayUrls
+                  )
+                : "unavailable"
+          const capped =
+            target.relayHints.some(
+              (relayUrl) => !consideredRelayUrls.includes(relayUrl)
+            ) ||
+            parentReadCapped ||
+            variationReadCapped
+          if (capped) cappedParentAddresses.add(target.parentAddress)
+          if (
+            capped ||
+            mergeProductAvailabilityCoverage(
+              parentCoverage,
+              variationCoverage
+            ) !== "complete"
+          ) {
+            degradedParentAddresses.add(target.parentAddress)
+          }
+        }
+
+        return {
+          records: (() => {
+            try {
+              return dedupeProductEvents([
+                ...(parentRead?.events ?? []),
+                ...(variationRead?.events ?? []),
+              ])
+            } catch {
+              return []
+            }
+          })(),
+          degradedParentAddresses,
+          cappedParentAddresses,
+        }
       } catch {
-        return []
+        return {
+          records: [] as CommerceProductRecord[],
+          degradedParentAddresses: new Set(parentAddresses),
+          cappedParentAddresses,
+        }
       }
-    })()
-    return {
-      records,
-      degraded:
-        mergeProductAvailabilityCoverage(parentCoverage, variationCoverage) !==
-          "complete" || capped,
-      capped,
-      invalidTargetAddressIds,
     }
-  } catch {
-    return {
-      records: [],
-      degraded: true,
-      capped: false,
-      invalidTargetAddressIds,
+  )
+  const degradedParentAddresses = new Set<string>()
+  const cappedParentAddresses = new Set<string>()
+  for (const chunkRead of chunkReads) {
+    for (const address of chunkRead.degradedParentAddresses) {
+      degradedParentAddresses.add(address)
     }
+    for (const address of chunkRead.cappedParentAddresses) {
+      cappedParentAddresses.add(address)
+    }
+  }
+  const records = chunkReads.flatMap((chunkRead) => chunkRead.records)
+  return {
+    records,
+    degraded: degradedParentAddresses.size > 0,
+    capped: cappedParentAddresses.size > 0,
+    invalidTargetAddressIds,
+    degradedParentAddresses,
   }
 }
 
@@ -4717,12 +4789,14 @@ export async function getProductsByIds(
     [...cachedByAuthors, ...directTargets],
     deletionTimestamps
   )
-  const completeVariationCoverageByGroup = groupTargets.map((target) =>
-    hasCompleteLiveVariationGroupCoverage({
+  const completeVariationCoverageByGroup = groupTargets.map((target) => {
+    const parentAddress = getVariationParentAddress(target)
+    return hasCompleteLiveVariationGroupCoverage({
       target,
       groupRead: {
         degraded:
-          groupRead.degraded ||
+          !parentAddress ||
+          groupRead.degradedParentAddresses.has(parentAddress) ||
           groupRead.invalidTargetAddressIds.has(target.addressId),
         records: filterDeletedProductRecords(
           groupRead.records,
@@ -4732,7 +4806,7 @@ export async function getProductsByIds(
       knownRecords,
       directRecords: liveDirectRecords,
     })
-  )
+  })
   const hasCompleteLiveVariationCoverage =
     completeVariationCoverageByGroup.every(Boolean)
   for (

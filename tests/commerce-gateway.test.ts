@@ -274,6 +274,7 @@ function makeSignedProductEvent(params: {
 }
 
 function makeSignedGammaProductEvent(params: {
+  secretKey?: Uint8Array
   dTag: string
   createdAt: number
   title: string
@@ -298,7 +299,7 @@ function makeSignedGammaProductEvent(params: {
         ["image", "https://cdn.conduit.market/conduit-test/product.png"],
       ],
     },
-    MERCHANT_A_SECRET
+    params.secretKey ?? MERCHANT_A_SECRET
   )
   return new NDKEvent(undefined, signed)
 }
@@ -880,6 +881,150 @@ describe("commerce gateway", () => {
     ])
     expect(diagnostics.get(validVariationAddress)).toBeNull()
     expect(diagnostics.get(malformedVariationAddress)).not.toBeNull()
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("chunks large variation-family reads and isolates a failed author chunk", async () => {
+    const families = Array.from({ length: 65 }, (_, index) => {
+      const signingSeed = new Uint8Array(32).fill(index + 3)
+      const pubkey = getPublicKey(signingSeed)
+      const parentDTag = `large-family-${index}`
+      const childDTag = `${parentDTag}-child`
+      const parentAddress = `30402:${pubkey}:${parentDTag}`
+      const childAddress = `30402:${pubkey}:${childDTag}`
+      return {
+        pubkey,
+        parentDTag,
+        parentAddress,
+        childAddress,
+        parent: makeSignedGammaProductEvent({
+          secretKey: signingSeed,
+          dTag: parentDTag,
+          createdAt: 100 + index * 2,
+          title: `Large family ${index}`,
+          type: "variable",
+        }),
+        child: makeSignedGammaProductEvent({
+          secretKey: signingSeed,
+          dTag: childDTag,
+          createdAt: 101 + index * 2,
+          title: `Large family ${index} child`,
+          type: "variation",
+          parentProductId: parentAddress,
+          size: "Only",
+        }),
+      }
+    })
+    const failedAuthor = families.at(-1)!.pubkey
+    const allEvents = families.flatMap(({ parent, child }) => [parent, child])
+    const familyFilters: Array<{
+      authors: string[]
+      kind: "parent" | "child"
+    }> = []
+    let activeFamilyReads = 0
+    let maxActiveFamilyReads = 0
+
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return {
+            events: [],
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: relayUrls,
+            failedRelayUrls: [],
+            cappedRelayUrls: [],
+          }
+        }
+
+        const authors = [...(filter.authors ?? [])]
+        if (authors.length > 64) {
+          throw new Error("relay rejected oversized authors filter")
+        }
+        const parentRead = (filter["#d"] ?? []).some((dTag) =>
+          families.some((family) => family.parentDTag === dTag)
+        )
+        const childRead = (filter["#a"] ?? []).length > 0
+        const familyRead = parentRead || childRead
+        if (familyRead) {
+          familyFilters.push({
+            authors,
+            kind: parentRead ? "parent" : "child",
+          })
+          activeFamilyReads += 1
+          maxActiveFamilyReads = Math.max(
+            maxActiveFamilyReads,
+            activeFamilyReads
+          )
+          await new Promise((resolve) => setTimeout(resolve, 1))
+          activeFamilyReads -= 1
+        }
+
+        if (familyRead && authors.includes(failedAuthor)) {
+          return {
+            events: [],
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: [],
+            failedRelayUrls: relayUrls,
+            cappedRelayUrls: [],
+          }
+        }
+
+        const events = allEvents.filter(
+          (event) =>
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        )
+        return {
+          events,
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProductsByIds(
+      families.map(({ childAddress }) => childAddress)
+    )
+    const diagnostics = new Map(
+      result.diagnostics.map((diagnostic) => [
+        diagnostic.addressId,
+        diagnostic.issue,
+      ])
+    )
+
+    expect(familyFilters).toHaveLength(4)
+    expect(familyFilters.filter(({ kind }) => kind === "parent")).toHaveLength(
+      2
+    )
+    expect(familyFilters.filter(({ kind }) => kind === "child")).toHaveLength(2)
+    expect(familyFilters.every(({ authors }) => authors.length <= 64)).toBe(
+      true
+    )
+    expect(maxActiveFamilyReads).toBeLessThanOrEqual(4)
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      families
+        .slice(0, -1)
+        .map(({ childAddress }) => childAddress)
+        .sort()
+    )
+    expect(
+      families
+        .slice(0, -1)
+        .every(({ childAddress }) => diagnostics.get(childAddress) === null)
+    ).toBe(true)
+    expect(diagnostics.get(families.at(-1)!.childAddress)).toBe(
+      "lookup_partial"
+    )
     expect(result.meta.degraded).toBe(true)
   })
 

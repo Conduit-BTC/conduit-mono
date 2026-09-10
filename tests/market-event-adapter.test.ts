@@ -384,8 +384,8 @@ describe("Market event adapter", () => {
     expect(projection.products[0]!.pickupFulfillment).not.toBeNull()
   })
 
-  it("projects every accepted product in a healthy seven-merchant hydration", () => {
-    const records = Array.from({ length: 7 }, (_, index) => {
+  it("projects every accepted product beyond the transport author chunk size", () => {
+    const records = Array.from({ length: 65 }, (_, index) => {
       const author = (index + 1).toString(16).padStart(64, "0")
       const coordinate = `30402:${author}:event-product-${index}`
       return commerceRecord(
