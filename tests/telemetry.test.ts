@@ -926,7 +926,7 @@ describe("browser telemetry", () => {
         action: "order_delivery",
         declarationClass: "not_observed",
         deliveryRoute: "compatibility_order",
-        ackOutcome: "partial",
+        ackOutcome: "unavailable",
         repairOutcome: "not_applicable",
         blockReason: "not_applicable",
       })
@@ -934,7 +934,7 @@ describe("browser telemetry", () => {
       action: "order_delivery",
       declaration_class: "not_observed",
       delivery_route: "compatibility_order",
-      ack_outcome: "partial",
+      ack_outcome: "unavailable",
       repair_outcome: "not_applicable",
       block_reason: "not_applicable",
     })

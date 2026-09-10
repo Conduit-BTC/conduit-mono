@@ -1085,12 +1085,25 @@ export async function publishPrivateMessage(
     ? createVisibilityGatedSigner(input.signer, waitForSignerVisibility)
     : input.signer
 
-  const wrappedToRecipient = await giftWrapFn(
-    input.rumor,
-    new NDKUser({ pubkey: input.recipientPubkey }),
-    giftWrapSigner,
-    wrapParams
-  )
+  let wrappedToRecipient: NDKEvent
+  try {
+    wrappedToRecipient = await giftWrapFn(
+      input.rumor,
+      new NDKUser({ pubkey: input.recipientPubkey }),
+      giftWrapSigner,
+      wrapParams
+    )
+  } catch (error) {
+    recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
+      action: "order_delivery",
+      declarationClass: recipientDeclaration.state,
+      deliveryRoute: recipientRoute.route,
+      ackOutcome: "unavailable",
+      repairOutcome: "not_applicable",
+      blockReason: "not_applicable",
+    })
+    throw error
+  }
 
   // The self-copy is a non-critical local-recovery leg: a signer failure while
   // wrapping it must never block the critical recipient delivery below.
@@ -1112,11 +1125,23 @@ export async function publishPrivateMessage(
     }
   }
 
-  await input.onWrapped?.({
-    rumorId: input.rumor.id,
-    wrappedToRecipient,
-    wrappedToSelf,
-  })
+  try {
+    await input.onWrapped?.({
+      rumorId: input.rumor.id,
+      wrappedToRecipient,
+      wrappedToSelf,
+    })
+  } catch (error) {
+    recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
+      action: "order_delivery",
+      declarationClass: recipientDeclaration.state,
+      deliveryRoute: recipientRoute.route,
+      ackOutcome: "unavailable",
+      repairOutcome: "not_applicable",
+      blockReason: "not_applicable",
+    })
+    throw error
+  }
 
   let recipientDelivery: PublishWithPlannerResult
   try {
@@ -1134,11 +1159,16 @@ export async function publishPrivateMessage(
     if (partial) {
       recipientDelivery = partial
     } else {
+      const ackOutcome =
+        error instanceof RelayPublishDiagnosticsError &&
+        error.diagnostics.attemptedRelayUrls.length > 0
+          ? "zero"
+          : "unavailable"
       recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
         action: "order_delivery",
         declarationClass: recipientDeclaration.state,
         deliveryRoute: recipientRoute.route,
-        ackOutcome: "zero",
+        ackOutcome,
         repairOutcome: "not_applicable",
         blockReason: "not_applicable",
       })

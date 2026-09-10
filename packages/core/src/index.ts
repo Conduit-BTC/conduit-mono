@@ -175,6 +175,7 @@ export {
   config,
   getRelayBucketConfigs,
   isRetiredDefaultRelayUrl,
+  resolveDmCompatibilityOrderRoutingEnabled,
   resolveE2eRelayIsolation,
   isMockPayments,
   isSignet,

@@ -204,7 +204,11 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
   gate passes. Repo-owned Signet Pages project names select the staging profile;
   other Pages builds remain branch-derived preview or production. Vite compiles
   the legacy `VITE_DM_BOOTSTRAP_WRITES` input from that profile rather than
-  trusting a Cloudflare dashboard override.
+  directly trusting a Cloudflare dashboard `VITE_*` override. Pages build
+  metadata and operator configuration remain part of the trusted release
+  boundary. At runtime, the lane fails closed when an official Shop or Sell host
+  receives a non-production profile or a Signet Pages host receives a
+  non-staging profile; ordinary Pages previews keep the compiled preview value.
 - QA manifest: `/.well-known/conduit-deployment.json` exposes only app/profile,
   source commit/branch, build time, public feature values, and their SHA-256
   digest.
@@ -274,6 +278,11 @@ the decision.
 - Manual gate: dedicated synthetic buyer and merchant identities must prove one
   declared-inbox receipt and one compatibility-route receipt in staging. The
   deployed manifest must report the staging profile and compatibility enabled.
+- Observation prerequisite: each exact Signet hostname must be explicitly
+  allowlisted for telemetry and configured with an approved site-specific
+  Plausible source or domain. Nonofficial hosts intentionally discard PostHog
+  configuration. Confirm one content-free `nip17_compatibility_result` event at
+  the provider before starting the staging observation clock.
 - Observation window: the first 24 hours after each environment activation,
   using only the fixed-label aggregate event documented in
   `docs/analytics/events.md`.
@@ -286,7 +295,10 @@ the decision.
 - Rollback action: change only
   `profiles.<environment>.publicFeatures.dmCompatibilityOrderRoutingEnabled` to
   `false`, rebuild, and verify the public deployment manifest. No dashboard
-  checkbox or relay-list edit is an activation or rollback mechanism.
+  `VITE_*` checkbox or relay-list edit is an activation or rollback mechanism.
+  Pages build metadata and operator configuration remain trusted release inputs;
+  the runtime host/profile guard limits accidental drift but does not replace
+  release access controls.
 
 ## Public references
 

@@ -6,8 +6,110 @@ import {
   resolveDeploymentProfile,
   selectDeploymentProfileName,
 } from "../scripts/vite/deployment_profile"
+import { resolveDmCompatibilityOrderRoutingEnabled } from "../packages/core/src/config"
 
 describe("deployment profiles", () => {
+  it("fails compatibility routing closed on official hosts outside production", () => {
+    for (const runtimeHostname of [
+      "shop.conduit.market",
+      "sell.conduit.market",
+    ]) {
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "preview",
+          runtimeHostname,
+        })
+      ).toBe(false)
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "staging",
+          runtimeHostname,
+        })
+      ).toBe(false)
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "production",
+          runtimeHostname,
+        })
+      ).toBe(true)
+    }
+
+    expect(
+      resolveDmCompatibilityOrderRoutingEnabled({
+        profileEnabled: false,
+        deploymentProfile: "production",
+        runtimeHostname: "SHOP.CONDUIT.MARKET.",
+      })
+    ).toBe(false)
+  })
+
+  it("requires the staging profile on Signet Pages hosts", () => {
+    for (const runtimeHostname of [
+      "conduit-market-signet.pages.dev",
+      "abc123.conduit-market-signet.pages.dev",
+      "feat-rollout.conduit-merchant-signet.pages.dev",
+    ]) {
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "staging",
+          runtimeHostname,
+        })
+      ).toBe(true)
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "preview",
+          runtimeHostname,
+        })
+      ).toBe(false)
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "production",
+          runtimeHostname,
+        })
+      ).toBe(false)
+    }
+  })
+
+  it("keeps ordinary Pages previews compatible with their compiled profile", () => {
+    expect(
+      resolveDmCompatibilityOrderRoutingEnabled({
+        profileEnabled: true,
+        deploymentProfile: "preview",
+        runtimeHostname: "abc123.conduit-market-coo.pages.dev",
+      })
+    ).toBe(true)
+    expect(
+      resolveDmCompatibilityOrderRoutingEnabled({
+        profileEnabled: false,
+        deploymentProfile: "preview",
+        runtimeHostname: "abc123.conduit-market-coo.pages.dev",
+      })
+    ).toBe(false)
+  })
+
+  it("fails a staging-misclassified bundle closed on the production host", () => {
+    const compiledProfile = selectDeploymentProfileName({
+      CF_PAGES: "1",
+      CF_PAGES_BRANCH: "main",
+      CF_PAGES_URL: "https://conduit-market-signet.pages.dev",
+    })
+
+    expect(compiledProfile).toBe("staging")
+    expect(
+      resolveDmCompatibilityOrderRoutingEnabled({
+        profileEnabled: true,
+        deploymentProfile: compiledProfile,
+        runtimeHostname: "shop.conduit.market",
+      })
+    ).toBe(false)
+  })
+
   it("enables compatibility order routing in preview and staging only", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",

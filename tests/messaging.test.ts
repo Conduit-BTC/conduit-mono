@@ -1597,6 +1597,122 @@ describe("publishPrivateMessage", () => {
     ])
   })
 
+  it("records recipient wrapping failures as unavailable after route selection", async () => {
+    const outcomes: unknown[] = []
+    let published = false
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://compatibility.conduit.market"],
+        },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
+        giftWrapFn: (async () => {
+          throw new Error("recipient wrap failed")
+        }) as never,
+        publishFn: (async () => {
+          published = true
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toThrow("recipient wrap failed")
+    expect(published).toBe(false)
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "unavailable",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
+  })
+
+  it("records durable wrap persistence failures as unavailable after route selection", async () => {
+    const outcomes: unknown[] = []
+    let published = false
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://compatibility.conduit.market"],
+        },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
+        giftWrapFn: (async () => wrap("recipient-wrap")) as never,
+        onWrapped: async () => {
+          throw new Error("durable wrap persistence failed")
+        },
+        publishFn: (async () => {
+          published = true
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toThrow("durable wrap persistence failed")
+    expect(published).toBe(false)
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "unavailable",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
+  })
+
+  it("records publisher failures without relay diagnostics as unavailable", async () => {
+    const outcomes: unknown[] = []
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://compatibility.conduit.market"],
+        },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
+        giftWrapFn: (async () => wrap("recipient-wrap")) as never,
+        publishFn: (async () => {
+          throw new Error("publisher failed before relay diagnostics")
+        }) as never,
+      })
+    ).rejects.toThrow("publisher failed before relay diagnostics")
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "unavailable",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
+  })
+
   it("keeps a declared inbox exclusive even when compatibility is enabled", async () => {
     const publishes: Array<readonly string[]> = []
     const outcomes: unknown[] = []

@@ -222,10 +222,14 @@ the `bug` and `user-reported` labels. Maintainers should triage these by:
   belongs to a repo-owned Signet project derives `staging`; other non-`main`
   branches derive `preview`, and `main` derives `production`. An unknown or
   incomplete profile fails during Vite config loading.
-- Cloudflare may rebuild the Git commit, but it cannot independently resolve
-  managed public feature state. CI builds the same explicit profile and checks
-  each emitted `/.well-known/conduit-deployment.json` for the expected profile,
-  source commit, feature value, and public-config digest.
+- Pages build metadata and operator configuration remain part of the trusted
+  release boundary. Dashboard `VITE_*` values do not directly resolve managed
+  public feature state. CI builds the same explicit profile and checks each
+  emitted `/.well-known/conduit-deployment.json` for the expected profile,
+  source commit, feature value, and public-config digest. At runtime,
+  compatibility routing fails closed if an official Shop or Sell host is not
+  compiled as `production`, or a Signet Pages host is not compiled as
+  `staging`; ordinary Pages previews keep their compiled preview behavior.
 
 ### Required checks before merge
 

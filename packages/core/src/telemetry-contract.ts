@@ -426,7 +426,7 @@ const browserTelemetryLabelValues = {
     "blocked",
     "not_applicable",
   ],
-  ack_outcome: ["zero", "partial", "positive", "not_applicable"],
+  ack_outcome: ["unavailable", "zero", "partial", "positive", "not_applicable"],
   repair_outcome: [
     "discoverable",
     "confirmation_pending",

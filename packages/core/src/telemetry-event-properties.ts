@@ -26,7 +26,7 @@ export type Nip17DeclarationTelemetryClass =
 export type Nip17DeliveryTelemetryRoute =
   "declared_inbox" | "compatibility_order" | "blocked" | "not_applicable"
 export type Nip17AckTelemetryOutcome =
-  "zero" | "partial" | "positive" | "not_applicable"
+  "unavailable" | "zero" | "partial" | "positive" | "not_applicable"
 export type Nip17RepairTelemetryOutcome =
   "discoverable" | "confirmation_pending" | "failed" | "not_applicable"
 export type Nip17BlockTelemetryReason =

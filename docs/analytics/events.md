@@ -28,6 +28,11 @@ Runtime telemetry events may only use these fields:
 - `result_count_bucket`
 - `amount_bucket`
 - `product_type`
+- `declaration_class`
+- `delivery_route`
+- `ack_outcome`
+- `repair_outcome`
+- `block_reason`
 
 ## Retention and Redaction
 
@@ -241,7 +246,10 @@ and no identifiers, relay URLs, payloads, errors, or free text.
 - `action=order_delivery` denominator: every validated kind-16 recipient send
   that reaches declaration route selection. Route-blocked attempts use
   `delivery_route=blocked` and a fixed `block_reason`; a selected strict or
-  compatibility route uses `ack_outcome=zero|partial|positive`.
+  compatibility route uses
+  `ack_outcome=unavailable|zero|partial|positive`. `unavailable` means the
+  attempt failed before relay acknowledgement evidence was available; `zero`
+  is reserved for relay diagnostics that show no successful acknowledgement.
 - `action=declaration_repair` denominator: every explicit Network declaration
   publish or exact-event redistribution. `repair_outcome` is `discoverable`,
   `confirmation_pending`, or `failed`; delivery and ACK fields are
