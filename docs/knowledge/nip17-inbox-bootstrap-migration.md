@@ -246,24 +246,25 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
 - Complete failure: zero ACKs throws delivery diagnostics and checkout cannot
   move to payment or claim the order was sent.
 
-## Removal gate
+## Review and removal gate
 
-The lane is removed by an explicit maintainer PR (no silent expiry) after:
+The lane never renews silently. After each named production observation window,
+the release maintainer reviews only the narrow evidence produced by this lane:
 
-- > = 99% of active merchants declared-ready for 28 consecutive days.
-- Bootstrap lane below 0.1% of order attempts for 28 days.
-- Zero confirmed fallback-only receipts for 14 days.
-- Zero declaration-related missing-order incidents across two supported
-  releases.
+- strict, compatibility, and blocked route counts over the validated-order
+  routing-decision denominator;
+- positive, partial, zero, and unavailable ACK classes over attempted delivery;
+- recipient-observed strict and compatibility confirmations recorded without
+  identities or message content; and
+- sanitized support-case counts that do not retain private payloads.
 
-Required aggregate measurements are declared-ready rate, route lane, ACK
-outcome, read source/coverage, and missing-order incident count. They are not
-all part of this narrow rollout slice: CND-219 adds declaration class, route,
-ACK, repair discoverability, and block-reason counters; broader read-source and
-incident measurement remains with CND-210. The removal gate is therefore not
-yet measurable and the lane must not be activated in production on the strength
-of this document alone. No identifiers or message content may enter these
-aggregates.
+The review records one explicit decision: remove the compatibility value in a
+reviewed deployment-profile change, or renew it through a named date with an
+owner and removal trigger. The fixed-label counters in this slice provide the
+route and ACK denominators; recipient-observed and support evidence is recorded
+at activation and during the field-review window. No generalized telemetry,
+merchant population tracking, identifiers, or message content is required for
+the decision.
 
 ## Activation and rollback
 
