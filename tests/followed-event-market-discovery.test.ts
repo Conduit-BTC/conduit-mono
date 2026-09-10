@@ -1,12 +1,17 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import {
   __resetEventMarketTestOverrides,
   __resetFollowedEventMarketDiscoveryTestOverrides,
   __setEventMarketTestOverrides,
   __setFollowedEventMarketDiscoveryTestOverrides,
+  buildEventMarketCalendarDraft,
+  buildEventMarketCollectionDraft,
+  buildEventMarketPickupDraft,
   discoverFollowedOrganizerEventMarkets,
+  EVENT_KINDS,
   EventMarketDiscoveryBoundError,
-  FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT,
   getOrganizerEventMarketsDetailed,
   type EventMarketRelayCoverage,
   type EventMarketResolution,
@@ -18,8 +23,10 @@ import {
 } from "@conduit/core"
 
 const MERCHANT = "a".repeat(64)
-const ORGANIZER = "b".repeat(64)
-const OTHER_ORGANIZER = "c".repeat(64)
+const ORGANIZER_SECRET = generateSecretKey()
+const ORGANIZER = getPublicKey(ORGANIZER_SECRET)
+const OTHER_ORGANIZER_SECRET = generateSecretKey()
+const OTHER_ORGANIZER = getPublicKey(OTHER_ORGANIZER_SECRET)
 const RELAY = "wss://event-discovery.test"
 const COMPLETE_COVERAGE: EventMarketRelayCoverage = {
   attemptedRelayCount: 1,
@@ -80,6 +87,71 @@ function followRead(input: {
     plannedRelayUrls: [RELAY],
     relays: [],
     eventsVerified: true,
+  }
+}
+
+function collectionCandidate(
+  secret = ORGANIZER_SECRET,
+  suffix = "catalog"
+): SignedPublicNostrEvent {
+  const organizerPubkey = getPublicKey(secret)
+  return finalizeEvent(
+    {
+      kind: 30405,
+      created_at: 1_800_000_000,
+      tags: [
+        ["d", suffix],
+        ["title", `Event ${suffix}`],
+        ["a", `31923:${organizerPubkey}:${suffix}`],
+      ],
+      content: "",
+    },
+    secret
+  )
+}
+
+function candidateRead(
+  events: SignedPublicNostrEvent[],
+  input: {
+    relayStatus?: "success" | "partial" | "failed"
+    eventsVerified?: boolean
+    capped?: boolean
+  } = {}
+) {
+  const relayStatus = input.relayStatus ?? "success"
+  const eventsVerified = input.eventsVerified ?? true
+  const capped = input.capped ?? false
+  const complete = relayStatus === "success" && eventsVerified && !capped
+  const failed = relayStatus === "failed"
+  return {
+    events,
+    eventSourceRelayUrls: Object.fromEntries(
+      events.map((event) => [event.id, [RELAY]])
+    ),
+    relays: [
+      {
+        relayUrl: RELAY,
+        status: relayStatus,
+        eventCount: events.length,
+      },
+    ],
+    eventsVerified,
+    plannedRelayCount: 1,
+    capped,
+    coverage: {
+      plannedRelayUrls: [RELAY],
+      authorChunkCount: 1,
+      plannedReadCount: 1,
+      reads: [],
+      completeReadCount: complete ? 1 : 0,
+      partialReadCount: !complete && !failed ? 1 : 0,
+      failedReadCount: failed ? 1 : 0,
+      mainPageCount: 1,
+      boundaryPageCount: 0,
+      saturatedPageCount: capped ? 1 : 0,
+      pageBudgetExhaustedReadCount: capped ? 1 : 0,
+      verificationTruncatedReadCount: eventsVerified ? 0 : 1,
+    },
   }
 }
 
@@ -161,12 +233,21 @@ afterEach(() => {
   __resetEventMarketTestOverrides()
 })
 
+beforeEach(() => {
+  __setEventMarketTestOverrides({
+    loadCachedEvidence: async () => [],
+    loadCachedCollectionEvidence: async () => [],
+  })
+})
+
 describe("followed organizer event-market discovery", () => {
   it("returns a current market from a followed organizer", async () => {
     const organizerInputs: string[] = []
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () =>
         followRead({ pubkeys: [ORGANIZER], eventObserved: true }),
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
       readOrganizerMarkets: async (input) => {
         organizerInputs.push(input.organizerPubkey)
         expect(input.projection).toBe("discovery")
@@ -230,6 +311,15 @@ describe("followed organizer event-market discovery", () => {
             coverage: scenario.coverage,
             eventObserved: scenario.eventObserved,
           }),
+        readCollectionCandidates: async () =>
+          candidateRead(scenario.eventObserved ? [collectionCandidate()] : [], {
+            relayStatus:
+              scenario.organizerState === "unavailable"
+                ? "failed"
+                : scenario.organizerState === "partial"
+                  ? "partial"
+                  : "success",
+          }),
         readOrganizerMarkets: async () =>
           organizerRead({ state: scenario.organizerState }),
       })
@@ -268,6 +358,11 @@ describe("followed organizer event-market discovery", () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () =>
         followRead({ pubkeys: [ORGANIZER, OTHER_ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(),
+          collectionCandidate(OTHER_ORGANIZER_SECRET),
+        ]),
       readOrganizerMarkets: async (input) =>
         input.organizerPubkey === ORGANIZER
           ? organizerRead({ markets: [market(ORGANIZER)] })
@@ -289,6 +384,8 @@ describe("followed organizer event-market discovery", () => {
   it("marks an active market partial when its organizer read is incomplete", async () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
       readOrganizerMarkets: async () =>
         organizerRead({
           markets: [market(ORGANIZER)],
@@ -308,6 +405,12 @@ describe("followed organizer event-market discovery", () => {
   it("treats ended, deleted, and unfollowed candidates as absent", async () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(ORGANIZER_SECRET, "ended"),
+          collectionCandidate(ORGANIZER_SECRET, "deleted"),
+          collectionCandidate(OTHER_ORGANIZER_SECRET, "unfollowed"),
+        ]),
       readOrganizerMarkets: async () =>
         organizerRead({
           markets: [
@@ -329,6 +432,12 @@ describe("followed organizer event-market discovery", () => {
   it("reports unusable followed-organizer evidence as degraded", async () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(ORGANIZER_SECRET, "malformed"),
+          collectionCandidate(ORGANIZER_SECRET, "conflicting"),
+          collectionCandidate(ORGANIZER_SECRET, "unsupported"),
+        ]),
       readOrganizerMarkets: async () =>
         organizerRead({
           markets: [
@@ -352,6 +461,8 @@ describe("followed organizer event-market discovery", () => {
       __resetFollowedEventMarketDiscoveryTestOverrides()
       __setFollowedEventMarketDiscoveryTestOverrides({
         readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+        readCollectionCandidates: async () =>
+          candidateRead([collectionCandidate()]),
         readOrganizerMarkets: async () =>
           organizerRead({ markets: [market(ORGANIZER, state)] }),
       })
@@ -375,6 +486,11 @@ describe("followed organizer event-market discovery", () => {
     )
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(ORGANIZER_SECRET, "ended"),
+          collectionCandidate(ORGANIZER_SECRET, "future"),
+        ]),
       readOrganizerMarkets: async (input) => {
         expect(input.nowMs).toBe(nowMs)
         return {
@@ -406,16 +522,17 @@ describe("followed organizer event-market discovery", () => {
     ])
   })
 
-  it("sorts and bounds followed authors with bounded concurrency", async () => {
-    const pubkeys = Array.from({ length: 20 }, (_, index) =>
-      (index + 1).toString(16).padStart(64, "0")
-    )
+  it("bounds candidate validation concurrency without truncating the follow list", async () => {
+    const secrets = Array.from({ length: 8 }, () => generateSecretKey())
+    const pubkeys = secrets.map(getPublicKey)
     const observed: string[] = []
     let active = 0
     let maxActive = 0
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () =>
         followRead({ pubkeys: [...pubkeys].reverse() }),
+      readCollectionCandidates: async () =>
+        candidateRead(secrets.map((secret) => collectionCandidate(secret))),
       readOrganizerMarkets: async (input) => {
         observed.push(input.organizerPubkey)
         active += 1
@@ -430,20 +547,18 @@ describe("followed organizer event-market discovery", () => {
       merchantPubkey: MERCHANT,
     })
 
-    expect(observed).toEqual(
-      [...pubkeys].sort().slice(0, FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT)
-    )
+    expect(observed).toEqual([...pubkeys].sort())
     expect(maxActive).toBeLessThanOrEqual(4)
-    expect(result.searchedOrganizerCount).toBe(
-      FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT
-    )
-    expect(result.truncated).toBe(true)
-    expect(result.state).toBe("partial")
+    expect(result.searchedOrganizerCount).toBe(pubkeys.length)
+    expect(result.truncated).toBe(false)
+    expect(result.state).toBe("complete_empty")
   })
 
   it("reports a bounded organizer frontier as partial and truncated", async () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
       readOrganizerMarkets: async () => {
         throw new EventMarketDiscoveryBoundError("bounded")
       },
@@ -467,6 +582,11 @@ describe("followed organizer event-market discovery", () => {
       organizerReadDeadlineMs: 5,
       readFollowLists: async () =>
         followRead({ pubkeys: [ORGANIZER, OTHER_ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(),
+          collectionCandidate(OTHER_ORGANIZER_SECRET),
+        ]),
       readOrganizerMarkets: async (input) => {
         if (input.organizerPubkey === ORGANIZER) {
           return organizerRead({ markets: [market(ORGANIZER)] })
@@ -609,5 +729,102 @@ describe("organizer event-market read coverage", () => {
     expect(result.markets).toEqual([])
     expect(result.relayHintTruncated).toBe(true)
     expect(result.state).toBe("partial")
+  })
+
+  it("keeps organizer write relays ahead of candidate source hints", async () => {
+    const organizerRelayUrls = Array.from(
+      { length: 3 },
+      (_, index) => `wss://relay.damus.io/organizer-${index}`
+    )
+    const candidateRelayUrls = Array.from(
+      { length: 6 },
+      (_, index) => `wss://relay.damus.io/candidate-${index}`
+    )
+    const calendarCoordinate = `${EVENT_KINDS.CALENDAR_TIME}:${ORGANIZER}:relay-calendar`
+    const pickupCoordinate = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER}:relay-pickup`
+    const calendar = finalizeEvent(
+      {
+        ...buildEventMarketCalendarDraft({
+          kind: EVENT_KINDS.CALENDAR_TIME,
+          dTag: "relay-calendar",
+          title: "Relay-priority event",
+          start: 1_800_000_000,
+          end: 1_800_003_600,
+        }),
+        created_at: 100,
+      },
+      ORGANIZER_SECRET
+    )
+    const pickup = finalizeEvent(
+      {
+        ...buildEventMarketPickupDraft({
+          dTag: "relay-pickup",
+          title: "Relay-priority pickup",
+          price: 0,
+          currency: "SATS",
+          countries: ["US"],
+          location: "Organizer booth",
+        }),
+        created_at: 101,
+      },
+      ORGANIZER_SECRET
+    )
+    const collection = finalizeEvent(
+      {
+        ...buildEventMarketCollectionDraft({
+          dTag: "relay-catalog",
+          title: "Relay-priority catalog",
+          eventCoordinate: calendarCoordinate,
+          pickupCoordinate,
+        }),
+        created_at: 102,
+      },
+      ORGANIZER_SECRET
+    )
+    const observedRelaySets: string[][] = []
+    configureRead({ relayListState: "network", relayUrls: organizerRelayUrls })
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        const relayUrls = [...(options.relayUrls ?? [])]
+        observedRelaySets.push(relayUrls)
+        const events = relayUrls.includes(organizerRelayUrls[2]!)
+          ? [collection, pickup, calendar]
+          : [collection, pickup]
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+
+    const result = await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      projection: "discovery",
+      relayHints: candidateRelayUrls,
+      candidateCollectionEvents: [collection],
+      candidateCollectionSourceRelayUrlsById: new Map([
+        [collection.id, candidateRelayUrls],
+      ]),
+      nowMs: 1_799_000_000_000,
+    })
+
+    expect(observedRelaySets.length).toBeGreaterThan(0)
+    const organizerReadRelays = observedRelaySets[0]!
+    expect(organizerReadRelays.slice(0, organizerRelayUrls.length)).toEqual(
+      organizerRelayUrls
+    )
+    expect(organizerReadRelays).toHaveLength(8)
+    expect(result.relayHintTruncated).toBe(false)
+    expect(result.state).toBe("complete")
+    expect(result.markets).toHaveLength(1)
+    expect(result.markets[0]).toMatchObject({
+      reference: `${EVENT_KINDS.PRODUCT_COLLECTION}:${ORGANIZER}:relay-catalog`,
+      state: "active",
+    })
   })
 })

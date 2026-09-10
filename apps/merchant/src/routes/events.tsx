@@ -264,10 +264,10 @@ function FindEventsPanel({
     ? getOrganizerDiscoveryPresentation({
         state: discoveryQuery.data.state,
         eventCount: discoveredMarkets.length,
-        followedOrganizerCount: discoveryQuery.data.followedOrganizerCount,
+        perspective: discoveryQuery.data.perspective,
+        candidateScanCoverage: discoveryQuery.data.candidateScanCoverage,
         searchedOrganizerCount: discoveryQuery.data.searchedOrganizerCount,
         incompleteOrganizerCount: discoveryQuery.data.incompleteOrganizerCount,
-        followListCoverage: discoveryQuery.data.followListCoverage,
       })
     : null
 
@@ -421,7 +421,7 @@ function FindEventsPanel({
                 <SelectValue
                   placeholder={
                     discoveryQuery.isPending
-                      ? "Checking followed organizers…"
+                      ? "Checking event collections…"
                       : "No events opened yet"
                   }
                 />
@@ -485,7 +485,7 @@ function FindEventsPanel({
           aria-live="polite"
         >
           <Loader2 className="h-4 w-4 animate-spin" />
-          Checking followed organizers on their planned relays…
+          Checking event collections on bounded commerce relays…
         </div>
       )}
 

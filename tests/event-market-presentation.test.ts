@@ -131,20 +131,27 @@ describe("relay read coverage presentation", () => {
   })
 })
 
-describe("followed-organizer discovery presentation", () => {
-  it("leads with found events and organizer-level partial facts", () => {
+describe("event-market discovery presentation", () => {
+  it("leads with found events and bounded relay-read facts", () => {
     expect(
       getOrganizerDiscoveryPresentation({
         state: "partial",
         eventCount: 2,
-        followedOrganizerCount: 5,
-        searchedOrganizerCount: 4,
+        perspective: {
+          source: "following",
+          authorCount: 5,
+          coverage: "complete",
+        },
+        candidateScanCoverage: {
+          plannedReadCount: 4,
+          completeReadCount: 3,
+        },
+        searchedOrganizerCount: 2,
         incompleteOrganizerCount: 1,
-        followListCoverage: "complete",
       })
     ).toEqual({
       message:
-        "Showing 2 events found so far. Checked 4 of 5 followed organizers; 1 check was incomplete.",
+        "Showing 2 events found so far. Completed 3 of 4 planned bounded relay collection reads. 1 discovered organizer check was incomplete.",
       role: "status",
       prominent: false,
     })
@@ -155,40 +162,61 @@ describe("followed-organizer discovery presentation", () => {
       getOrganizerDiscoveryPresentation({
         state: "partial",
         eventCount: 0,
-        followedOrganizerCount: 5,
-        searchedOrganizerCount: 4,
+        perspective: {
+          source: "following",
+          authorCount: 5,
+          coverage: "complete",
+        },
+        candidateScanCoverage: {
+          plannedReadCount: 4,
+          completeReadCount: 3,
+        },
+        searchedOrganizerCount: 2,
         incompleteOrganizerCount: 1,
-        followListCoverage: "complete",
       }).message
     ).toBe(
-      "No events found so far. Checked 4 of 5 followed organizers; 1 check was incomplete."
+      "No events found so far in the Following perspective; more may appear. Completed 3 of 4 planned bounded relay collection reads. 1 discovered organizer check was incomplete."
     )
     expect(
       getOrganizerDiscoveryPresentation({
         state: "complete_empty",
         eventCount: 0,
-        followedOrganizerCount: 5,
-        searchedOrganizerCount: 5,
+        perspective: {
+          source: "following",
+          authorCount: 5,
+          coverage: "complete",
+        },
+        candidateScanCoverage: {
+          plannedReadCount: 4,
+          completeReadCount: 4,
+        },
+        searchedOrganizerCount: 0,
         incompleteOrganizerCount: 0,
-        followListCoverage: "complete",
       }).message
     ).toBe(
-      "No events were found in the completed checks. Checked all 5 followed organizers."
+      "No events were found in the completed bounded relay reads for the Following perspective. Completed 4 of 4 planned bounded relay collection reads."
     )
   })
 
-  it("qualifies counts taken from an incomplete followed-organizer snapshot", () => {
+  it("qualifies an incomplete perspective snapshot", () => {
     expect(
       getOrganizerDiscoveryPresentation({
         state: "partial",
         eventCount: 2,
-        followedOrganizerCount: 5,
-        searchedOrganizerCount: 5,
+        perspective: {
+          source: "following",
+          authorCount: 5,
+          coverage: "limited",
+        },
+        candidateScanCoverage: {
+          plannedReadCount: 5,
+          completeReadCount: 5,
+        },
+        searchedOrganizerCount: 2,
         incompleteOrganizerCount: 0,
-        followListCoverage: "limited",
       }).message
     ).toBe(
-      "Showing 2 events found so far. Available followed-organizer snapshot listed 5 organizers; checked 5."
+      "Showing 2 events found so far. Completed 5 of 5 planned bounded relay collection reads. The available Following perspective snapshot may be incomplete."
     )
   })
 
@@ -197,10 +225,17 @@ describe("followed-organizer discovery presentation", () => {
       getOrganizerDiscoveryPresentation({
         state: "unavailable",
         eventCount: 0,
-        followedOrganizerCount: 5,
-        searchedOrganizerCount: 4,
+        perspective: {
+          source: "following",
+          authorCount: 5,
+          coverage: "unavailable",
+        },
+        candidateScanCoverage: {
+          plannedReadCount: 4,
+          completeReadCount: 0,
+        },
+        searchedOrganizerCount: 2,
         incompleteOrganizerCount: 4,
-        followListCoverage: "unavailable",
       })
     ).toMatchObject({ role: "alert", prominent: true })
   })

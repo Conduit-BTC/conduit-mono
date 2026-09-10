@@ -883,7 +883,7 @@ test("signed-out merchant participation preserves the exact event through auth @
   ).toBeVisible()
 })
 
-test("direct and pasted event imports hydrate one saved selector title under partial discovery @merchant", async ({
+test("direct and pasted event imports hydrate one saved selector title outside the selected perspective @merchant", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -909,7 +909,7 @@ test("direct and pasted event imports hydrate one saved selector title under par
   await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
   await expect(
     page.getByText(
-      /No events found so far\. Checked 16 of 17 followed organizers\./
+      /No events were found in the completed bounded relay reads for the Following perspective\./
     )
   ).toBeVisible({ timeout: 30_000 })
   await expect(page.locator("#discovered-event-selector")).toContainText(

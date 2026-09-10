@@ -1,8 +1,9 @@
 import type {
+  EventMarketCandidateReadCoverage,
+  EventMarketPerspectiveSnapshot,
   EventMarketRelayCoverage,
   EventMarketResolution,
   EventMarketResolutionState,
-  FollowListCoverageState,
   FollowedEventMarketDiscoveryState,
 } from "@conduit/core"
 
@@ -190,20 +191,46 @@ export type OrganizerDiscoveryPresentation = {
   prominent: boolean
 }
 
+function eventMarketPerspectiveLabel(
+  source: EventMarketPerspectiveSnapshot["source"]
+): string {
+  switch (source) {
+    case "conduit":
+      return "Conduit perspective"
+    case "combined":
+      return "Following + Conduit perspective"
+    case "following":
+    default:
+      return "Following perspective"
+  }
+}
+
 export function getOrganizerDiscoveryPresentation(input: {
   state: FollowedEventMarketDiscoveryState
   eventCount: number
-  followedOrganizerCount: number
+  perspective: Pick<
+    EventMarketPerspectiveSnapshot,
+    "source" | "authorCount" | "coverage"
+  >
+  candidateScanCoverage: Pick<
+    EventMarketCandidateReadCoverage,
+    "plannedReadCount" | "completeReadCount"
+  >
   searchedOrganizerCount: number
   incompleteOrganizerCount: number
-  followListCoverage: FollowListCoverageState
 }): OrganizerDiscoveryPresentation {
   const eventCount = Math.max(0, input.eventCount)
-  const followedOrganizerCount = Math.max(0, input.followedOrganizerCount)
-  const searchedOrganizerCount = Math.min(
-    followedOrganizerCount,
-    Math.max(0, input.searchedOrganizerCount)
+  const perspectiveLabel = eventMarketPerspectiveLabel(input.perspective.source)
+  const perspectiveAuthorCount = Math.max(0, input.perspective.authorCount)
+  const plannedReadCount = Math.max(
+    0,
+    input.candidateScanCoverage.plannedReadCount
   )
+  const completeReadCount = Math.min(
+    plannedReadCount,
+    Math.max(0, input.candidateScanCoverage.completeReadCount)
+  )
+  const searchedOrganizerCount = Math.max(0, input.searchedOrganizerCount)
   const incompleteOrganizerCount = Math.min(
     searchedOrganizerCount,
     Math.max(0, input.incompleteOrganizerCount)
@@ -211,8 +238,7 @@ export function getOrganizerDiscoveryPresentation(input: {
 
   if (input.state === "unavailable") {
     return {
-      message:
-        "Followed-organizer discovery is unavailable. Saved event links can still be opened directly.",
+      message: `Event discovery is unavailable for the ${perspectiveLabel}. Saved event links can still be opened directly.`,
       role: "alert",
       prominent: true,
     }
@@ -224,25 +250,25 @@ export function getOrganizerDiscoveryPresentation(input: {
         ? `Showing ${countLabel(eventCount, "event")}.`
         : `Showing ${countLabel(eventCount, "event")} found so far.`
       : input.state === "complete_empty"
-        ? "No events were found in the completed checks."
-        : "No events found so far."
-  const checked =
-    input.followListCoverage !== "complete"
-      ? followedOrganizerCount === 0
-        ? "No followed organizers were available in the current snapshot to check"
-        : `Available followed-organizer snapshot listed ${countLabel(followedOrganizerCount, "organizer")}; checked ${searchedOrganizerCount}`
-      : followedOrganizerCount === 0
-        ? "No followed organizers were available to check"
-        : searchedOrganizerCount === followedOrganizerCount
-          ? `Checked all ${countLabel(followedOrganizerCount, "followed organizer")}`
-          : `Checked ${searchedOrganizerCount} of ${followedOrganizerCount} followed organizers`
-  const incomplete =
+        ? `No events were found in the completed bounded relay reads for the ${perspectiveLabel}.`
+        : `No events found so far in the ${perspectiveLabel}; more may appear.`
+  const relayCoverage =
+    perspectiveAuthorCount === 0
+      ? `The ${perspectiveLabel} currently contains no public organizers to check.`
+      : plannedReadCount > 0
+        ? `Completed ${completeReadCount} of ${plannedReadCount} planned bounded relay collection reads.`
+        : "No bounded relay collection reads were planned."
+  const incompleteCandidateReads =
     incompleteOrganizerCount > 0
-      ? `; ${countLabel(incompleteOrganizerCount, "check")} ${incompleteOrganizerCount === 1 ? "was" : "were"} incomplete.`
-      : "."
+      ? ` ${countLabel(incompleteOrganizerCount, "discovered organizer check")} ${incompleteOrganizerCount === 1 ? "was" : "were"} incomplete.`
+      : ""
+  const perspectiveCoverage =
+    input.perspective.coverage === "complete"
+      ? ""
+      : ` The available ${perspectiveLabel} snapshot may be incomplete.`
 
   return {
-    message: `${outcome} ${checked}${incomplete}`,
+    message: `${outcome} ${relayCoverage}${incompleteCandidateReads}${perspectiveCoverage}`,
     role: "status",
     prominent: false,
   }
