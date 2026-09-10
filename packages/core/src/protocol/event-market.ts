@@ -474,22 +474,6 @@ function normalizeLocations(values: readonly string[] | undefined): string[] {
   return Array.from(result)
 }
 
-function addDisplayTags(
-  tags: string[][],
-  input: EventMarketDisplayDraftInput,
-  summary: string | undefined
-): void {
-  const image = normalizeOptionalText(input.image, "Image", 2_048)
-  const geohash = normalizeOptionalText(input.geohash, "Geohash", 32)
-  if (geohash && !GEOHASH.test(geohash)) throw new Error("Geohash is invalid.")
-  if (summary) tags.push(["summary", summary])
-  if (image) tags.push(["image", image])
-  for (const location of normalizeLocations(input.locations)) {
-    tags.push(["location", location])
-  }
-  if (geohash) tags.push(["g", geohash.toLowerCase()])
-}
-
 export function buildEventMarketCalendarDraft(
   input: EventMarketCalendarDraftInput
 ): EventMarketEventDraft {
@@ -500,7 +484,15 @@ export function buildEventMarketCalendarDraft(
     ["title", title],
   ]
   const summary = normalizeOptionalText(input.summary, "Summary", 1_000)
-  addDisplayTags(tags, input, summary)
+  const image = normalizeOptionalText(input.image, "Image", 2_048)
+  const geohash = normalizeOptionalText(input.geohash, "Geohash", 32)
+  if (geohash && !GEOHASH.test(geohash)) throw new Error("Geohash is invalid.")
+  if (summary) tags.push(["summary", summary])
+  if (image) tags.push(["image", image])
+  for (const location of normalizeLocations(input.locations)) {
+    tags.push(["location", location])
+  }
+  if (geohash) tags.push(["g", geohash.toLowerCase()])
 
   if (input.kind === EVENT_KINDS.CALENDAR_DATE) {
     const start = input.start.trim()
