@@ -960,6 +960,7 @@ export function useProgressiveProductDetail(productId: string): {
   isMarketVisible: boolean
   meta: CommerceQueryMeta | null
   profileRelayHintsByPubkey: Record<string, string[]>
+  sourceRelayUrls: string[]
   isInitialLoading: boolean
   isHydrating: boolean
   isRefreshPaused: boolean
@@ -991,12 +992,13 @@ export function useProgressiveProductDetail(productId: string): {
   const product = active?.data?.product ?? null
   const family = active?.data?.family ?? null
   const listingSafety = active?.data?.safety ?? null
+  const sourceRelayUrls = active?.data?.sourceRelayUrls ?? []
   const isMarketVisible = listingSafety
     ? isListingMarketVisible(listingSafety)
     : true
   const profileRelayHintsByPubkey =
-    product && active?.data?.sourceRelayUrls?.length
-      ? { [product.pubkey]: active.data.sourceRelayUrls }
+    product && sourceRelayUrls.length
+      ? { [product.pubkey]: sourceRelayUrls }
       : {}
   const refetchCachedDetail = cachedQuery.refetch
   const refetchNetworkDetail = networkQuery.refetch
@@ -1012,6 +1014,7 @@ export function useProgressiveProductDetail(productId: string): {
     isMarketVisible,
     meta: active?.meta ?? null,
     profileRelayHintsByPubkey,
+    sourceRelayUrls,
     isInitialLoading: isProductDetailInitialLoading({
       product,
       cachePending: cachedQuery.isPending,

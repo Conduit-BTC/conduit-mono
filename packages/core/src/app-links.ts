@@ -163,7 +163,8 @@ export function buildMerchantOrderReviewUrl(
 /** Build a stable Market product URL from a kind-30402 address coordinate. */
 export function buildMarketProductShareUrl(
   marketOrigin: string,
-  productAddressId: string
+  productAddressId: string,
+  sourceRelayUrls: readonly string[] = []
 ): string {
   let url: URL
   try {
@@ -175,7 +176,7 @@ export function buildMarketProductShareUrl(
     throw new Error("Product share URL requires a safe Market origin.")
   }
 
-  const naddr = encodeProductNaddr(productAddressId)
+  const naddr = encodeProductNaddr(productAddressId, sourceRelayUrls)
   url.pathname = `/products/${naddr}`
   return url.toString()
 }

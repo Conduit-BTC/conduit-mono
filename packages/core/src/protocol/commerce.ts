@@ -81,7 +81,10 @@ import {
   normalizeProductSummaryForDisplay,
   parseProductEvent,
 } from "./products"
-import { decodeProductReference } from "./product-reference"
+import {
+  decodeProductReference,
+  MAX_PRODUCT_RELAY_HINTS,
+} from "./product-reference"
 import {
   areProfileProjectionsEqual,
   mergeRicherProfile,
@@ -1830,9 +1833,10 @@ function selectCachedProductUpdates(
     }
     const candidateWins = shouldReplaceCachedProduct(existing, row)
     const winner = candidateWins ? row : existing
+    const loser = candidateWins ? existing : row
     const sourceRelayUrls = uniqueStrings([
-      ...(existing.sourceRelayUrls ?? []),
-      ...(row.sourceRelayUrls ?? []),
+      ...(winner.sourceRelayUrls ?? []),
+      ...(loser.sourceRelayUrls ?? []),
     ])
     const merged = {
       ...winner,
@@ -2976,14 +2980,14 @@ function mergeProductRecordSources(
   existing: CommerceProductRecord,
   candidate: CommerceProductRecord
 ): CommerceProductRecord {
-  const winner = shouldReplaceProductRecord(existing, candidate)
-    ? candidate
-    : existing
+  const candidateWins = shouldReplaceProductRecord(existing, candidate)
+  const winner = candidateWins ? candidate : existing
+  const loser = candidateWins ? existing : candidate
   return {
     ...winner,
     sourceRelayUrls: uniqueStrings([
-      ...(existing.sourceRelayUrls ?? []),
-      ...(candidate.sourceRelayUrls ?? []),
+      ...(winner.sourceRelayUrls ?? []),
+      ...(loser.sourceRelayUrls ?? []),
     ]),
   }
 }
@@ -3023,6 +3027,7 @@ async function fetchPublicProductRecords(query: {
   deletionFallbackWhenEmpty?: boolean
   parentAddresses?: string[]
   authenticatedPubkey?: string | null
+  extraRelayUrls?: readonly string[]
   limit?: number
   readPolicy?: CommerceReadPolicy
   onTransportStatus?: (degraded: boolean, capped: boolean) => void
@@ -3045,6 +3050,7 @@ async function fetchPublicProductRecords(query: {
     authors: query.authors,
     authenticatedPubkey: query.authenticatedPubkey,
     maxRelays: query.readPolicy?.maxRelays,
+    extraRelayUrls: query.extraRelayUrls,
   })
 
   const result = await runFetchEventsFanoutDetailed(filter, {
@@ -3677,20 +3683,26 @@ export async function getCachedMerchantStorefront(
 
 function parseAddress(
   productId: string
-): { kind: number; pubkey: string; d: string } | null {
+): { kind: number; pubkey: string; d: string; relayHints: string[] } | null {
   const reference = decodeProductReference(productId)
   if (!reference) return null
   return {
     kind: reference.kind,
     pubkey: reference.authorPubkey,
     d: reference.dTag,
+    relayHints: reference.relayHints ?? [],
   }
 }
 
 function getProductLookupIds(productId: string): {
   decodedId: string
   addressId: string | null
-  address: { kind: number; pubkey: string; d: string } | null
+  address: {
+    kind: number
+    pubkey: string
+    d: string
+    relayHints: string[]
+  } | null
 } {
   let decodedId = productId
   try {
@@ -3754,7 +3766,8 @@ function findProductDetailRecord(
 }
 
 async function fetchVariationGroupRecords(
-  target: CommerceProductRecord
+  target: CommerceProductRecord,
+  relayHints: readonly string[] = []
 ): Promise<{
   records: CommerceProductRecord[]
   degraded: boolean
@@ -3780,11 +3793,15 @@ async function fetchVariationGroupRecords(
 
   let transportDegraded = false
   let readCapped = false
+  const extraRelayUrls = normalizePublicOrIsolatedE2eRelayHints(
+    uniqueStrings([...relayHints, ...(target.sourceRelayUrls ?? [])])
+  ).slice(0, MAX_PRODUCT_RELAY_HINTS)
   const [parents, variations] = await Promise.all([
     target.product.type === "variation"
       ? fetchPublicProductRecords({
           authors: [parsedParent.pubkey],
           dTags: [parsedParent.d],
+          extraRelayUrls,
           limit: 10,
           onTransportStatus: (degraded, capped) => {
             transportDegraded ||= degraded
@@ -3795,6 +3812,7 @@ async function fetchVariationGroupRecords(
     fetchPublicProductRecords({
       authors: [parsedParent.pubkey],
       parentAddresses: [parentAddress],
+      extraRelayUrls,
       limit: PRODUCT_VARIATION_EVENT_LIMIT,
       onTransportStatus: (degraded, capped) => {
         transportDegraded ||= degraded
@@ -3899,6 +3917,7 @@ export async function getProductDetail(
       const direct = await fetchPublicProductRecords({
         authors: [address.pubkey],
         dTags: [address.d],
+        extraRelayUrls: address.relayHints,
         deletionCandidates: cached,
         limit: 10,
         onTransportStatus: (degraded, capped) => {
@@ -3921,7 +3940,7 @@ export async function getProductDetail(
       const targetCandidate =
         locallyMerged.find((item) => item.addressId === addressId) ?? null
       const groupRead = targetCandidate
-        ? await fetchVariationGroupRecords(targetCandidate)
+        ? await fetchVariationGroupRecords(targetCandidate, address.relayHints)
         : { records: [], degraded: false, capped: false }
       const relayDeletionTimestamps =
         await fetchDeletionTimestampsForProductRecords(
@@ -4239,8 +4258,14 @@ export async function getProductsByIds(
   const addresses = lookups
     .map((lookup) => lookup.address)
     .filter(
-      (address): address is { kind: number; pubkey: string; d: string } =>
-        address !== null
+      (
+        address
+      ): address is {
+        kind: number
+        pubkey: string
+        d: string
+        relayHints: string[]
+      } => address !== null
     )
 
   if (addresses.length === 0) {
@@ -4278,62 +4303,134 @@ export async function getProductsByIds(
     undefined,
     authors
   )
-  const dTagsByAuthor = new Map<string, string[]>()
+  const routeRelayHintsByAddress = new Map<string, string[]>()
+  const directReadTargetByAddress = new Map<
+    string,
+    {
+      addressId: string
+      author: string
+      dTag: string
+      relayHints: string[]
+    }
+  >()
   for (const address of addresses) {
-    const authorDTags = dTagsByAuthor.get(address.pubkey) ?? []
-    authorDTags.push(address.d)
-    dTagsByAuthor.set(address.pubkey, authorDTags)
-  }
-  const directReadEntries = Array.from(dTagsByAuthor.entries())
-  const directReads = await Promise.allSettled(
-    directReadEntries.map(async ([author, authorDTags]) => {
-      const relayPlan = await planCommerceReadRelayPlan({
-        intent: "author_products",
-        authors: [author],
+    const addressId = `${address.kind}:${address.pubkey}:${address.d}`
+    routeRelayHintsByAddress.set(
+      addressId,
+      normalizePublicOrIsolatedE2eRelayHints(
+        uniqueStrings([
+          ...(routeRelayHintsByAddress.get(addressId) ?? []),
+          ...address.relayHints,
+        ])
+      ).slice(0, MAX_PRODUCT_RELAY_HINTS)
+    )
+    if (!directReadTargetByAddress.has(addressId)) {
+      directReadTargetByAddress.set(addressId, {
+        addressId,
+        author: address.pubkey,
+        dTag: address.d,
+        relayHints: [],
       })
-      const result = await runFetchEventsFanoutWithDiagnostics(
-        {
-          kinds: [EVENT_KINDS.PRODUCT],
-          authors: [author],
-          "#d": uniqueStrings(authorDTags),
+    }
+  }
+  // Shared pages persist the relay that supplied the exact listing. Checkout
+  // later revalidates the canonical raw coordinate, so carry only the cached
+  // provenance for each requested coordinate into its bounded read plan.
+  for (const target of directReadTargetByAddress.values()) {
+    const cachedRelayUrls = cached.flatMap((record) =>
+      record.addressId === target.addressId
+        ? (record.sourceRelayUrls ?? [])
+        : []
+    )
+    target.relayHints = normalizePublicOrIsolatedE2eRelayHints(
+      uniqueStrings([
+        ...(routeRelayHintsByAddress.get(target.addressId) ?? []),
+        ...cachedRelayUrls,
+      ])
+    ).slice(0, MAX_PRODUCT_RELAY_HINTS)
+  }
+  const directReadEntries = Array.from(
+    Array.from(directReadTargetByAddress.values())
+      .reduce(
+        (entries, target) => {
+          const key = JSON.stringify([target.author, ...target.relayHints])
+          const existing = entries.get(key)
+          if (existing) {
+            existing.addressIds.push(target.addressId)
+            existing.dTags.push(target.dTag)
+          } else {
+            entries.set(key, {
+              author: target.author,
+              addressIds: [target.addressId],
+              dTags: [target.dTag],
+              relayHints: target.relayHints,
+            })
+          }
+          return entries
         },
-        {
-          relayUrls: relayPlan.relayUrls,
-          connectTimeoutMs: 4_000,
-          fetchTimeoutMs: 8_000,
-        }
+        new Map<
+          string,
+          {
+            author: string
+            addressIds: string[]
+            dTags: string[]
+            relayHints: string[]
+          }
+        >()
       )
-      return {
-        events: result.events,
-        coverage: productAvailabilityCoverageFromFanout(
-          result,
-          uniqueStrings([...relayPlan.relayUrls, ...relayPlan.parkedRelayUrls])
-        ),
+      .values()
+  )
+  const directReads = await mapWithConcurrency(
+    directReadEntries,
+    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    async (entry) => {
+      try {
+        const relayPlan = await planCommerceReadRelayPlan({
+          intent: "author_products",
+          authors: [entry.author],
+          extraRelayUrls: entry.relayHints,
+        })
+        const result = await runFetchEventsFanoutWithDiagnostics(
+          {
+            kinds: [EVENT_KINDS.PRODUCT],
+            authors: [entry.author],
+            "#d": uniqueStrings(entry.dTags),
+          },
+          {
+            relayUrls: relayPlan.relayUrls,
+            connectTimeoutMs: 4_000,
+            fetchTimeoutMs: 8_000,
+          }
+        )
+        return {
+          addressIds: entry.addressIds,
+          events: result.events,
+          coverage: productAvailabilityCoverageFromFanout(
+            result,
+            uniqueStrings([
+              ...relayPlan.relayUrls,
+              ...relayPlan.parkedRelayUrls,
+            ])
+          ),
+        }
+      } catch {
+        return {
+          addressIds: entry.addressIds,
+          events: [],
+          coverage: "unavailable" as ProductAvailabilityCoverage,
+        }
       }
-    })
+    }
   )
-  const fulfilledDirectReads = directReads.flatMap((result) =>
-    result.status === "fulfilled" ? [result.value] : []
-  )
-  const productEvents = fulfilledDirectReads.flatMap((result) => result.events)
-  const listingCoverageByAuthor = new Map<string, ProductAvailabilityCoverage>(
-    directReads.map(
-      (result, index) =>
-        [
-          directReadEntries[index]![0],
-          result.status === "fulfilled" ? result.value.coverage : "unavailable",
-        ] as const
-    )
-  )
+  const productEvents = directReads.flatMap((result) => result.events)
   const listingCoverageByAddress = new Map<string, ProductAvailabilityCoverage>(
-    addresses.map(
-      (address) =>
-        [
-          `${address.kind}:${address.pubkey}:${address.d}`,
-          listingCoverageByAuthor.get(address.pubkey) ?? "unavailable",
-        ] as const
-    )
+    Array.from(wanted, (addressId) => [addressId, "unavailable"] as const)
   )
+  for (const result of directReads) {
+    for (const addressId of result.addressIds) {
+      listingCoverageByAddress.set(addressId, result.coverage)
+    }
+  }
   listingCoverage = aggregateProductAvailabilityCoverage(
     Array.from(listingCoverageByAddress.values())
   )
@@ -4371,7 +4468,12 @@ export async function getProductsByIds(
   }
   const groupTargets = Array.from(groupTargetsByParent.values())
   const groupFetches = await Promise.allSettled(
-    groupTargets.map(fetchVariationGroupRecords)
+    groupTargets.map((target) =>
+      fetchVariationGroupRecords(
+        target,
+        routeRelayHintsByAddress.get(target.addressId)
+      )
+    )
   )
   const groupRecords = groupFetches.flatMap((result) =>
     result.status === "fulfilled" ? result.value.records : []
