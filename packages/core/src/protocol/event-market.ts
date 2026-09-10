@@ -2074,6 +2074,12 @@ export interface GetOrganizerEventMarketsInput {
     readonly string[]
   >
   /**
+   * Exact candidate revision ids observed by the current public discovery
+   * scan. Candidate collections omitted from this set remain usable retained
+   * evidence, but cannot be treated as current relay observations.
+   */
+  candidateCollectionLiveEventIds?: ReadonlySet<string>
+  /**
    * Discovery cards only need the organizer collection, calendar, and
    * organizer-authored pickup graph. The exact selected-event read hydrates
    * participant products and merchant-authored pickup frontiers.
@@ -4153,6 +4159,24 @@ function candidateCollectionEvidence(input: {
   return { events, sourceRelayUrlsById }
 }
 
+function signedEvidenceForIds(
+  evidence: ReturnType<typeof rawSignedEvents>,
+  eventIds: ReadonlySet<string>
+): ReturnType<typeof rawSignedEvents> {
+  const events = evidence.events.filter((event) =>
+    eventIds.has(event.id.toLowerCase())
+  )
+  return {
+    events,
+    sourceRelayUrlsById: new Map(
+      events.map((event) => {
+        const eventId = event.id.toLowerCase()
+        return [eventId, evidence.sourceRelayUrlsById.get(eventId) ?? []]
+      })
+    ),
+  }
+}
+
 export async function getOrganizerEventMarketsDetailed(
   input: GetOrganizerEventMarketsInput
 ): Promise<OrganizerEventMarketsReadResult> {
@@ -4192,13 +4216,31 @@ export async function getOrganizerEventMarketsDetailed(
     }),
     loadCachedEventMarketEvidence(organizerPubkey),
   ])
-  const broadLiveRecords = mergeRawSignedEventGroups(
-    rawSignedEvents(recordResult),
-    candidateCollectionEvidence({
-      organizerPubkey,
-      events: input.candidateCollectionEvents,
-      sourceRelayUrlsById: input.candidateCollectionSourceRelayUrlsById,
-    })
+  const rawOrganizerRecords = rawSignedEvents(recordResult)
+  const candidateCollectionRecords = candidateCollectionEvidence({
+    organizerPubkey,
+    events: input.candidateCollectionEvents,
+    sourceRelayUrlsById: input.candidateCollectionSourceRelayUrlsById,
+  })
+  const candidateRecordIds = new Set(
+    candidateCollectionRecords.events.map((event) => event.id.toLowerCase())
+  )
+  const candidateLiveEventIds = new Set(
+    Array.from(input.candidateCollectionLiveEventIds ?? candidateRecordIds)
+      .map((eventId) => eventId.toLowerCase())
+      .filter((eventId) => candidateRecordIds.has(eventId))
+  )
+  const liveCandidateCollectionRecords = signedEvidenceForIds(
+    candidateCollectionRecords,
+    candidateLiveEventIds
+  )
+  const broadResolutionRecords = mergeRawSignedEventGroups(
+    rawOrganizerRecords,
+    candidateCollectionRecords
+  )
+  const broadCurrentRecords = mergeRawSignedEventGroups(
+    rawOrganizerRecords,
+    liveCandidateCollectionRecords
   )
   const authorReadReachedCap = eventMarketAuthorReadReachedCap(recordResult)
   const collectionDiscoveryRelayUrls = authorReadReachedCap
@@ -4239,7 +4281,7 @@ export async function getOrganizerEventMarketsDetailed(
   const preliminaryOrganizerRecords = mergeCachedAndLiveEvidence({
     cached: cachedRecords,
     live: mergeRawSignedEventGroups(
-      broadLiveRecords,
+      broadResolutionRecords,
       collectionDiscoveryResult.live
     ),
   })
@@ -4292,7 +4334,7 @@ export async function getOrganizerEventMarketsDetailed(
   const recordsWithCollectionFrontiers = mergeCachedAndLiveEvidence({
     cached: cachedRecords,
     live: mergeRawSignedEventGroups(
-      broadLiveRecords,
+      broadResolutionRecords,
       collectionDiscoveryResult.live,
       rawCollectionFrontiers
     ),
@@ -4327,8 +4369,14 @@ export async function getOrganizerEventMarketsDetailed(
       })
     : { events: [], relays: [], eventsVerified: true }
   const rawCalendarFrontiers = rawSignedEvents(calendarFrontierResult)
-  const liveRecords = mergeRawSignedEventGroups(
-    broadLiveRecords,
+  const resolutionRecords = mergeRawSignedEventGroups(
+    broadResolutionRecords,
+    collectionDiscoveryResult.live,
+    rawCollectionFrontiers,
+    rawCalendarFrontiers
+  )
+  const currentRecords = mergeRawSignedEventGroups(
+    broadCurrentRecords,
     collectionDiscoveryResult.live,
     rawCollectionFrontiers,
     rawCalendarFrontiers
@@ -4341,13 +4389,13 @@ export async function getOrganizerEventMarketsDetailed(
   )
   await persistEventMarketEvidence({
     organizerPubkey,
-    events: liveRecords.events,
-    sourceRelayUrlsById: liveRecords.sourceRelayUrlsById,
+    events: currentRecords.events,
+    sourceRelayUrlsById: currentRecords.sourceRelayUrlsById,
     cachedAt: observedAt,
   })
   const organizerRecords = mergeCachedAndLiveEvidence({
     cached: cachedRecords,
-    live: liveRecords,
+    live: resolutionRecords,
   })
   const collectionCoordinates = collectionCoordinatesFromEvidence(
     organizerRecords.events,
@@ -4522,8 +4570,15 @@ export async function getOrganizerEventMarketsDetailed(
   )
   const records = mergeCachedAndLiveEvidence({
     cached: cachedRecords,
-    live: mergeRawSignedEventGroups(liveRecords, rawPickupFrontiers),
+    live: mergeRawSignedEventGroups(resolutionRecords, rawPickupFrontiers),
   })
+  const currentResolutionRecords = mergeRawSignedEventGroups(
+    currentRecords,
+    rawPickupFrontiers
+  )
+  const currentResolutionEventIds = new Set(
+    currentResolutionRecords.events.map((event) => event.id.toLowerCase())
+  )
   if (!discoveryProjection) {
     await persistEventMarketEvidence({
       organizerPubkey,
@@ -4568,15 +4623,14 @@ export async function getOrganizerEventMarketsDetailed(
           nowMs: input.nowMs,
           maxEvidenceAgeMs: input.maxEvidenceAgeMs,
           evidenceObservedAt:
-            liveRecords.events.length > 0 ||
-            rawPickupFrontiers.events.length > 0
+            currentResolutionRecords.events.length > 0
               ? observedAt
               : records.cachedObservedAt,
           includeParticipation: !discoveryProjection,
         }),
         records.sourceRelayUrlsById
       ),
-      records.liveEventIds
+      currentResolutionEventIds
     )
   })
   return {

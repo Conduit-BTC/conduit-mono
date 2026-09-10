@@ -1038,6 +1038,12 @@ export async function discoverPerspectiveEventMarkets(
     retainedCandidateFrontier,
     liveCandidateFrontier
   )
+  const liveCandidateEventIdsByOrganizer = new Map(
+    liveCandidateFrontier.organizers.map((candidate) => [
+      candidate.organizerPubkey,
+      new Set(candidate.events.map((event) => event.id.toLowerCase())),
+    ])
+  )
   const readOrganizerMarkets =
     testOverrides.readOrganizerMarkets ?? getOrganizerEventMarketsDetailed
   const organizerReads: PromiseSettledResult<OrganizerEventMarketsReadResult>[] =
@@ -1099,6 +1105,10 @@ export async function discoverPerspectiveEventMarkets(
               candidateCollectionEvents: candidate.events,
               candidateCollectionSourceRelayUrlsById:
                 candidate.sourceRelayUrlsById,
+              candidateCollectionLiveEventIds:
+                liveCandidateEventIdsByOrganizer.get(
+                  candidate.organizerPubkey
+                ) ?? new Set<string>(),
               signal: organizerController.signal,
               shouldContinue: input.shouldContinue,
             }),
