@@ -184,6 +184,7 @@ describe("followed organizer event-market discovery", () => {
       `30405:${ORGANIZER}:catalog`,
     ])
     expect(organizerInputs).toEqual([ORGANIZER])
+    expect(result.incompleteOrganizerCount).toBe(0)
   })
 
   it("distinguishes a complete empty follow view from partial and unavailable reads", async () => {
@@ -239,6 +240,9 @@ describe("followed organizer event-market discovery", () => {
       expect(result.state).toBe(scenario.expected)
       expect(result.markets).toEqual([])
       expect(result.followListEventObserved).toBe(scenario.eventObserved)
+      expect(result.incompleteOrganizerCount).toBe(
+        scenario.organizerState === "complete" ? 0 : 1
+      )
     }
   })
 
@@ -276,6 +280,7 @@ describe("followed organizer event-market discovery", () => {
 
     expect(result.state).toBe("partial")
     expect(result.failedOrganizerCount).toBe(1)
+    expect(result.incompleteOrganizerCount).toBe(1)
     expect(result.markets.map((item) => item.reference)).toEqual([
       `30405:${ORGANIZER}:catalog`,
     ])
@@ -297,6 +302,7 @@ describe("followed organizer event-market discovery", () => {
 
     expect(result.state).toBe("partial")
     expect(result.markets).toHaveLength(1)
+    expect(result.incompleteOrganizerCount).toBe(1)
   })
 
   it("treats ended, deleted, and unfollowed candidates as absent", async () => {
@@ -451,6 +457,7 @@ describe("followed organizer event-market discovery", () => {
       state: "partial",
       truncated: true,
       boundedOrganizerCount: 1,
+      incompleteOrganizerCount: 1,
       failedOrganizerCount: 0,
     })
   })
@@ -488,6 +495,7 @@ describe("followed organizer event-market discovery", () => {
       state: "partial",
       searchedOrganizerCount: 2,
       boundedOrganizerCount: 1,
+      incompleteOrganizerCount: 1,
       failedOrganizerCount: 0,
       truncated: true,
     })

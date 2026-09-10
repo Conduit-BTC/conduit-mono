@@ -760,7 +760,7 @@ async function publishOrganizerMarket(
   const publishStart = relay.publications.length
   await editor.getByRole("button", { name: "Publish event" }).click()
   await expect(editor).toBeHidden({ timeout: 30_000 })
-  await expect(page.getByText("Active", { exact: true })).toBeVisible()
+  await expect(page.getByText("Event loaded", { exact: true })).toBeVisible()
   await expect(
     page.getByRole("heading", { name: "Share this event" })
   ).toBeVisible()
@@ -908,13 +908,14 @@ test("direct and pasted event imports hydrate one saved selector title under par
 
   await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
   await expect(
-    page.getByText(/Event discovery is a partial relay view\./)
+    page.getByText(
+      /No events found so far\. Checked 16 of 17 followed organizers\./
+    )
   ).toBeVisible({ timeout: 30_000 })
   await expect(page.locator("#discovered-event-selector")).toContainText(
     eventTitle,
     { timeout: 30_000 }
   )
-
   const savedStorageKey = `conduit:merchant:discovered-event-markets:v1:${MERCHANT_PUBKEY}`
   await expect
     .poll(() =>
@@ -2448,6 +2449,15 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   expect(
     acceptedCollection.tags.filter((tag) => tag[0] === "shipping_option")
   ).toEqual([])
+  await expect(
+    page.getByTestId("organizer-event-actionability-status")
+  ).toContainText("1 product available.")
+  await expect(
+    page.getByTestId("organizer-event-actionability-status")
+  ).toHaveAttribute("role", "status")
+  await expect(
+    page.getByTestId("organizer-event-relay-read-coverage")
+  ).toBeVisible()
   await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
   await expect(
     page.getByRole("heading", {
@@ -2459,6 +2469,14 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   await expect(
     page.getByText(MERCHANT_PRODUCT_TITLE, { exact: true })
   ).toBeVisible()
+  await expect(page.getByTestId("event-actionability-status")).toContainText(
+    "1 product available."
+  )
+  await expect(page.getByTestId("event-actionability-status")).toHaveAttribute(
+    "role",
+    "status"
+  )
+  await expect(page.getByTestId("event-relay-read-coverage")).toBeVisible()
   const productCard = page
     .getByRole("listitem")
     .filter({ hasText: MERCHANT_PRODUCT_TITLE })

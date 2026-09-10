@@ -29,6 +29,8 @@ export interface FollowedEventMarketDiscoveryResult {
   followListCoverage: FollowListCoverageState
   followedOrganizerCount: number
   searchedOrganizerCount: number
+  /** Attempted organizer reads that did not finish with complete coverage. */
+  incompleteOrganizerCount: number
   failedOrganizerCount: number
   boundedOrganizerCount: number
   truncated: boolean
@@ -164,6 +166,7 @@ export async function discoverFollowedOrganizerEventMarkets(
       followListCoverage: "unavailable",
       followedOrganizerCount: 0,
       searchedOrganizerCount: 0,
+      incompleteOrganizerCount: 0,
       failedOrganizerCount: 0,
       boundedOrganizerCount: 0,
       truncated: false,
@@ -366,6 +369,11 @@ export async function discoverFollowedOrganizerEventMarkets(
     followListCoverage,
     followedOrganizerCount: followedOrganizers.length,
     searchedOrganizerCount,
+    incompleteOrganizerCount: organizerReads.filter(
+      (read) =>
+        read.status === "rejected" ||
+        (read.status === "fulfilled" && read.value.state !== "complete")
+    ).length,
     failedOrganizerCount: organizerReads.filter(readIsUnavailable).length,
     boundedOrganizerCount,
     truncated,

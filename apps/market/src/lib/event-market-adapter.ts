@@ -48,8 +48,10 @@ export type EventCatalog = {
   organizerPubkey?: string
   collection?: EventMarketResolution["collection"]
   calendar?: EventMarketResolution["calendar"]
+  pickupCoordinate?: EventMarketResolution["pickupCoordinate"]
   pickup?: EventMarketResolution["pickup"]
   pickups: EventMarketResolution["pickups"]
+  coverage?: EventMarketResolution["coverage"]
   products: EventCatalogProduct[]
   /** Organizer-accepted coordinates after stronger known negative evidence. */
   acceptedProductCount: number
@@ -760,8 +762,10 @@ export async function loadEventCatalog(
     organizerPubkey: resolution.organizerPubkey,
     collection: resolution.collection,
     calendar: resolution.calendar,
+    pickupCoordinate: resolution.pickupCoordinate,
     pickup: resolution.pickup,
     pickups: resolution.pickups,
+    coverage: resolution.coverage,
     products: [],
     acceptedProductCount: resolution.acceptedProductCoordinates.length,
     unresolvedProductCoordinates: [],

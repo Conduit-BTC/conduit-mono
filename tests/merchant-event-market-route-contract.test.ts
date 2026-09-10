@@ -51,6 +51,8 @@ describe("merchant organizer event market route", () => {
       "This event belongs to another organizer. Open it under Find events."
     )
     expect(panel).toContain("Sell at this event")
+    expect(panel).toContain("isParticipationProductPreviewVerified")
+    expect(panel).toContain("eventMarketRequiredRecordsResolved")
     expect(panel).toContain("<EventProductPublisherDialog")
     expect(publisher).toContain("start from one of your")
     expect(publisher).toContain("The original listing is never changed")
@@ -72,14 +74,15 @@ describe("merchant organizer event market route", () => {
     expect(adapter).toContain("discoverFollowedOrganizerEventMarkets")
     expect(core).toContain('projection: "discovery"')
     expect(core).toContain("FOLLOWED_EVENT_MARKET_READ_CONCURRENCY = 4")
-    expect(route).toContain('discoveryQuery.data?.state === "partial"')
+    expect(route).toContain("getOrganizerDiscoveryPresentation")
+    expect(route).toContain("incompleteOrganizerCount")
     expect(route).toContain('discoveryQuery.data?.state === "unavailable"')
     expect(route).toContain('discoveryQuery.data?.state === "complete_empty"')
     expect(route).toContain("Retry event discovery")
     expect(route).toContain(
       "Checking followed organizers on their planned relays"
     )
-    expect(route).toContain("no global event absence is inferred")
+    expect(route).toMatch(/No global\s+event absence is inferred/)
     expect(route).toContain("aria-label={`View ${market.title}`}")
     expect(route).toContain("resolveOrganizerEventMarket(")
     expect(route).toMatch(/merchantPubkey,\r?\n\s+signal/)
@@ -93,7 +96,7 @@ describe("merchant organizer event market route", () => {
     expect(route).not.toContain("selectedFromDiscovery")
   })
 
-  it("exposes signer, delivery, degraded evidence, and organizer acceptance workflows", async () => {
+  it("exposes signer, delivery, bounded discovery, and organizer acceptance workflows", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
     const editor = await Bun.file(
       "apps/merchant/src/components/OrganizerEventMarketEditor.tsx"
@@ -107,13 +110,14 @@ describe("merchant organizer event market route", () => {
       'if (record.record === "collection") setPublishState("publishing")'
     )
     expect(editor).toContain("Everything here is published publicly")
-    expect(route).toContain("Organizer discovery is degraded")
+    expect(route).toContain("Organizer discovery could not be completed")
     expect(route).toContain("No missing event is inferred")
     expect(panel).toContain("acknowledged")
     expect(panel).toContain("rejected")
     expect(panel).toContain("timed out")
     expect(panel).toContain("Retry delivery")
     expect(panel).toContain("Pending request")
+    expect(panel).toContain("label={actionability.label}")
     expect(panel).toContain(
       'removable ? "Remove" : canAccept ? "Accept" : "Cannot accept"'
     )

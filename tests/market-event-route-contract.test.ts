@@ -33,15 +33,24 @@ describe("Market event catalog route", () => {
   })
 
   it("shows degraded, deleted, conflict, archive, and unlinked-product states", async () => {
-    const route = await Bun.file(
-      "apps/market/src/routes/events/$collectionRef.tsx"
-    ).text()
+    const [route, presentation] = await Promise.all([
+      Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
+      Bun.file("packages/ui/src/event-market-presentation.ts").text(),
+    ])
 
-    expect(route).toContain("Archived event catalog")
-    expect(route).toContain("Event evidence is incomplete")
-    expect(route).toContain("Event relays are unavailable")
-    expect(route).toContain("Event catalog removed")
-    expect(route).toContain("Conflicting event evidence")
+    expect(route).toContain("getEventActionabilityPresentation")
+    expect(route).toContain("formatEventRelayReadCoverage")
+    expect(presentation).toContain("Event loaded")
+    expect(presentation).toContain("Event ended")
+    expect(presentation).toContain("Event unavailable")
+    expect(presentation).toContain("Event deleted")
+    expect(presentation).toContain("Event records conflict")
+    expect(presentation).toContain("Event records unresolved")
+    expect(route).toContain("eventMarketRequiredRecordsResolved(catalog)")
+    expect(route).toContain(
+      "requiredEventRecordsResolved,\n    catalog.products.length,\n    catalog.unresolvedProductCoordinates.length"
+    )
+    expect(route).toContain("Organizer handoff details are unresolved")
     expect(route).toContain("no current")
     expect(route).toContain("exact merchant pickup link")
     expect(route).toContain("Checkout is disabled")
@@ -65,12 +74,14 @@ describe("Market event catalog route", () => {
     ])
 
     expect(adapter).toContain("resolution.acceptedProductCoordinates")
+    expect(adapter).toContain("pickupCoordinate: resolution.pickupCoordinate")
     expect(adapter).not.toContain(
       "const requested = resolution.organizerProductCoordinates"
     )
     expect(adapter).toContain('evidenceState: live ? "live" : "retained"')
     expect(adapter).toContain("pickupFulfillment: live")
-    expect(route).toContain("Previously verified accepted products")
+    expect(route).toContain("Some accepted products are unresolved")
+    expect(route).toContain("details remain visible")
     expect(route).toContain("Accepted product details temporarily unavailable")
     expect(route).toContain("catalog.acceptedProductCount")
     expect(route).not.toContain("Missing products stay hidden")

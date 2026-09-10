@@ -33,13 +33,13 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  eventMarketRequiredRecordsResolved,
+  formatEventRelayReadCoverage,
+  getEventActionabilityPresentation,
   QRCodeSVG,
   StatusPill,
 } from "@conduit/ui"
-import {
-  getOrganizerEventMarketDisplayState,
-  type OrganizerCollectionMembershipAction,
-} from "../lib/event-market-workflow"
+import { type OrganizerCollectionMembershipAction } from "../lib/event-market-workflow"
 import {
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
@@ -56,34 +56,6 @@ import {
   getMerchantProfileState,
   type MerchantProfileState,
 } from "../lib/event-market-participation-identity"
-
-function statusMeta(state: MerchantOrganizerEventMarket["state"]): {
-  label: string
-  tone: "success" | "info" | "warning" | "error" | "neutral"
-} {
-  switch (state) {
-    case "active":
-      return { label: "Active", tone: "success" }
-    case "ended":
-      return { label: "Ended", tone: "neutral" }
-    case "deleted":
-      return { label: "Deleted", tone: "error" }
-    case "partial":
-      return { label: "Partial relay view", tone: "warning" }
-    case "stale":
-      return { label: "Saved evidence", tone: "warning" }
-    case "unavailable":
-      return { label: "Relays unavailable", tone: "error" }
-    case "missing":
-      return { label: "Missing records", tone: "warning" }
-    case "conflicting":
-      return { label: "Conflicting records", tone: "error" }
-    case "malformed":
-      return { label: "Malformed records", tone: "error" }
-    default:
-      return { label: "Unsupported records", tone: "error" }
-  }
-}
 
 function formatSchedule(market: MerchantOrganizerEventMarket): string {
   if (market.calendarKind === 31922) {
@@ -110,28 +82,34 @@ function formatSchedule(market: MerchantOrganizerEventMarket): string {
 }
 
 function RelayEvidenceNotice({
-  unavailable,
+  destructive,
+  label,
+  message,
   refreshing,
   onRefresh,
 }: {
-  unavailable: boolean
+  destructive: boolean
+  label: string
+  message: string
   refreshing: boolean
   onRefresh: () => void
 }) {
-  const Icon = unavailable ? WifiOff : AlertTriangle
+  const Icon = destructive ? AlertTriangle : WifiOff
   return (
     <div
+      role="alert"
       className={
-        unavailable
+        destructive
           ? "flex items-center justify-between gap-3 rounded-xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error"
           : "flex items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--text-primary)]"
       }
     >
-      <span className="flex items-center gap-2">
+      <span className="flex items-start gap-2">
         <Icon className="h-4 w-4 shrink-0" />
-        {unavailable
-          ? "Live event evidence is unavailable. Consequential actions remain blocked."
-          : "This is a degraded relay view. Verify current event evidence before acting."}
+        <span>
+          <span className="block font-semibold">{label}</span>
+          <span className="mt-1 block leading-5">{message}</span>
+        </span>
       </span>
       <Button
         type="button"
@@ -564,8 +542,6 @@ export function OrganizerEventMarketPanel({
   ) => void
   onRetryDelivery: (delivery: MerchantOrganizerRecordDelivery) => void
 }) {
-  const status = statusMeta(market.state)
-  const displayState = getOrganizerEventMarketDisplayState(market.state)
   const shopperUrl = getEventMarketUrl(market.naddr)
   const merchantUrl = getMerchantEventParticipationUrl(market.naddr)
   const showEdit = market.state === "active" || market.state === "ended"
@@ -579,6 +555,20 @@ export function OrganizerEventMarketPanel({
   const organizerOnlyProducts = market.participation.filter(
     (item) => item.status === "organizer_only"
   )
+  const availableProducts = acceptedProducts.filter(
+    isParticipationProductPreviewVerified
+  )
+  const actionability = getEventActionabilityPresentation({
+    state: market.state,
+    availableProductCount: availableProducts.length,
+    unresolvedProductCount:
+      organizerOnlyProducts.length +
+      (acceptedProducts.length - availableProducts.length),
+    requiredEventRecordsResolved: eventMarketRequiredRecordsResolved(
+      market.source
+    ),
+  })
+  const relayCoverage = formatEventRelayReadCoverage(market.source.coverage)
   const merchantPubkeys = useMemo(
     () => market.participation.map((item) => item.merchantPubkey),
     [market.participation]
@@ -602,9 +592,11 @@ export function OrganizerEventMarketPanel({
 
   return (
     <div className="space-y-5">
-      {(displayState === "degraded" || displayState === "unavailable") && (
+      {actionability.prominent && (
         <RelayEvidenceNotice
-          unavailable={displayState === "unavailable"}
+          destructive={actionability.tone === "destructive"}
+          label={actionability.label}
+          message={actionability.message}
           refreshing={refreshing}
           onRefresh={onRefresh}
         />
@@ -619,15 +611,35 @@ export function OrganizerEventMarketPanel({
           />
         )}
         <CardHeader>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <CardTitle className="text-2xl">{market.title}</CardTitle>
-              <CardDescription className="mt-2 max-w-2xl leading-6">
-                {market.summary ?? "No public event summary."}
-              </CardDescription>
-            </div>
-            <StatusPill variant={status.tone}>{status.label}</StatusPill>
+          <div>
+            <Badge variant={actionability.tone}>{actionability.label}</Badge>
+            <CardTitle className="mt-3 text-balance text-2xl">
+              {market.title}
+            </CardTitle>
+            <CardDescription className="mt-2 max-w-2xl text-pretty leading-6">
+              {market.summary ?? "No public event summary."}
+            </CardDescription>
           </div>
+          {!actionability.prominent ? (
+            <p
+              className="text-pretty text-sm font-medium text-[var(--text-secondary)]"
+              role={actionability.role}
+              aria-live="polite"
+              data-testid="organizer-event-actionability-status"
+            >
+              {actionability.message}
+            </p>
+          ) : null}
+          {relayCoverage ? (
+            <p
+              className="text-pretty text-xs tabular-nums text-[var(--text-muted)]"
+              role="status"
+              aria-label={`Relay read coverage: ${relayCoverage}`}
+              data-testid="organizer-event-relay-read-coverage"
+            >
+              {relayCoverage}
+            </p>
+          ) : null}
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 text-sm sm:grid-cols-2">
@@ -649,11 +661,13 @@ export function OrganizerEventMarketPanel({
               <div>
                 <div className="font-medium text-[var(--text-primary)]">
                   {market.pickupCoordinate
-                    ? market.pickupTitle
+                    ? market.source.pickup
+                      ? market.pickupTitle
+                      : "Organizer handoff unresolved"
                     : "Organizer handoff not offered"}
                 </div>
                 <div className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
-                  {market.pickupCoordinate ? (
+                  {market.pickupCoordinate && market.source.pickup ? (
                     <>
                       {market.pickupLocation ??
                         market.pickupGeohash ??
@@ -663,6 +677,8 @@ export function OrganizerEventMarketPanel({
                         ? "No added pickup fee"
                         : `${market.pickupPrice} ${market.pickupCurrency ?? "SAT"}`}
                     </>
+                  ) : market.pickupCoordinate ? (
+                    "Current organizer handoff terms could not be resolved."
                   ) : (
                     "Merchants can still offer their own pickup point."
                   )}
@@ -701,6 +717,16 @@ export function OrganizerEventMarketPanel({
               Refresh evidence
             </Button>
           </div>
+          {market.state === "partial" ? (
+            <div
+              className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]"
+              role="status"
+              aria-live="polite"
+            >
+              Event products remain visible. Updating the event or changing
+              product acceptance requires a complete current event read.
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

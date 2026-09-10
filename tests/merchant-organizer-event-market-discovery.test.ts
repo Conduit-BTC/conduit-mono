@@ -271,7 +271,9 @@ describe("Merchant organizer event discovery evidence", () => {
     const definitiveStart = route.indexOf(
       'catalogView.emptyState === "complete"'
     )
-    const definitiveCopy = route.indexOf("No organizer event markets yet")
+    const definitiveCopy = route.indexOf(
+      "No events found in the completed planned reads"
+    )
     const partialStart = route.indexOf('catalogView.emptyState === "partial"')
     const partialCopy = route.indexOf("No events found in the checked portion")
     const unavailableStart = route.indexOf(
@@ -280,7 +282,7 @@ describe("Merchant organizer event discovery evidence", () => {
 
     expect(partialStart).toBeGreaterThan(-1)
     expect(partialCopy).toBeGreaterThan(partialStart)
-    expect(route).toContain("no global absence is")
+    expect(route).toMatch(/No global\s+absence is/)
     expect(unavailableStart).toBeGreaterThan(-1)
     expect(definitiveStart).toBeGreaterThan(unavailableStart)
     expect(definitiveCopy).toBeGreaterThan(definitiveStart)
@@ -288,7 +290,7 @@ describe("Merchant organizer event discovery evidence", () => {
       "!marketsQuery.isError"
     )
     expect(route.slice(partialStart, definitiveStart)).not.toContain(
-      "No organizer event markets yet"
+      "No events found in the completed planned reads"
     )
     expect(route).toContain("Retry organizer discovery")
   })

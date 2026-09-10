@@ -15,6 +15,8 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  formatEventRelayReadCoverage,
+  getOrganizerDiscoveryPresentation,
   Input,
   Label,
   Select,
@@ -258,6 +260,16 @@ function FindEventsPanel({
     () => discoveryQuery.data?.markets ?? [],
     [discoveryQuery.data?.markets]
   )
+  const discoveryPresentation = discoveryQuery.data
+    ? getOrganizerDiscoveryPresentation({
+        state: discoveryQuery.data.state,
+        eventCount: discoveredMarkets.length,
+        followedOrganizerCount: discoveryQuery.data.followedOrganizerCount,
+        searchedOrganizerCount: discoveryQuery.data.searchedOrganizerCount,
+        incompleteOrganizerCount: discoveryQuery.data.incompleteOrganizerCount,
+        followListCoverage: discoveryQuery.data.followListCoverage,
+      })
+    : null
 
   useEffect(() => {
     if (!merchantPubkey || discoveredMarkets.length === 0) return
@@ -477,26 +489,31 @@ function FindEventsPanel({
         </div>
       )}
 
-      {discoveryQuery.data?.state === "partial" && (
-        <div
-          className="flex flex-col gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm leading-6 text-[var(--text-primary)] sm:flex-row sm:items-center sm:justify-between"
-          role="status"
-        >
-          <span>
-            Event discovery is a partial relay view. Open a known event link if
-            it is not listed; no missing event is inferred from this result.
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={discoveryQuery.isFetching}
-            onClick={() => void discoveryQuery.refetch()}
+      {discoveryPresentation &&
+        !discoveryPresentation.prominent &&
+        (discoveredMarkets.length > 0 || savedReferences.length > 0) && (
+          <div
+            className="flex flex-col gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
+            role={discoveryPresentation.role}
+            aria-live="polite"
+            data-testid="followed-event-discovery-status"
           >
-            Retry event discovery
-          </Button>
-        </div>
-      )}
+            <span className="text-pretty tabular-nums">
+              {discoveryPresentation.message}
+            </span>
+            {discoveryQuery.data?.state === "partial" ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={discoveryQuery.isFetching}
+                onClick={() => void discoveryQuery.refetch()}
+              >
+                Retry event discovery
+              </Button>
+            ) : null}
+          </div>
+        )}
 
       {(discoveryQuery.isError ||
         discoveryQuery.data?.state === "unavailable") && (
@@ -505,8 +522,8 @@ function FindEventsPanel({
           role="alert"
         >
           <span>
-            Followed-event discovery is unavailable. Saved event links can still
-            be opened directly.
+            {discoveryPresentation?.message ??
+              "Followed-organizer discovery is unavailable. Saved event links can still be opened directly."}
           </span>
           <Button
             type="button"
@@ -568,9 +585,15 @@ function FindEventsPanel({
                   : "No followed events found in this relay view"}
               </h2>
               <p className="mt-2 max-w-lg text-pretty text-sm leading-6 text-[var(--text-muted)]">
-                {discoveryQuery.data?.state === "complete_empty"
-                  ? "This bounded followed-organizer check completed. Paste a known event link above to open it directly; no global event absence is inferred."
-                  : "This bounded view is incomplete. Retry discovery or paste a known event link above; no missing event is inferred from this result."}
+                <span
+                  role={discoveryPresentation?.role ?? "status"}
+                  aria-live="polite"
+                  className="tabular-nums"
+                >
+                  {discoveryPresentation?.message ?? "No events found so far."}
+                </span>{" "}
+                Paste a known event link above to open it directly. No global
+                event absence is inferred.
               </p>
             </CardContent>
           </Card>
@@ -680,6 +703,9 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     marketsQuery.data,
     savedReferences.length,
     marketsQuery.isError
+  )
+  const organizerCatalogCoverage = formatEventRelayReadCoverage(
+    marketsQuery.data?.coverage
   )
 
   useEffect(() => {
@@ -1397,9 +1423,9 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       {marketsQuery.isError && (
         <div className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--text-primary)]">
           <p>
-            Organizer discovery is degraded. Saved references can still be
-            opened directly. No missing event is inferred from this relay
-            failure.
+            Organizer discovery could not be completed. Saved references can
+            still be opened directly. No missing event is inferred from this
+            relay failure.
           </p>
           <Button
             type="button"
@@ -1417,11 +1443,13 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         catalogView.discoveryState === "partial" &&
         catalogView.hasKnownReferences && (
           <div
-            className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--text-primary)]"
+            className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-secondary)]"
             role="status"
+            aria-live="polite"
           >
-            <p>
-              Organizer discovery checked only part of the planned relay view.
+            <p className="text-pretty tabular-nums">
+              {organizerCatalogCoverage ??
+                "The planned event relay read was incomplete."}{" "}
               Available and saved events remain visible; no missing event is
               inferred from the incomplete refresh.
             </p>
@@ -1660,9 +1688,12 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
                 No events found in the checked portion
               </h2>
               <p className="mt-2 max-w-lg text-sm leading-6 text-[var(--text-muted)]">
-                Relay discovery was incomplete, so no global absence is
-                inferred. Retry the read or open a catalog directly with its
-                naddr or share link.
+                <span role="status" aria-live="polite" className="tabular-nums">
+                  {organizerCatalogCoverage ??
+                    "The planned event relay read was incomplete."}
+                </span>{" "}
+                No global absence is inferred. Retry the read or open a catalog
+                directly with its naddr or share link.
               </p>
               <Button
                 type="button"
@@ -1714,11 +1745,21 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
             <CardContent className="flex flex-col items-center px-6 py-14 text-center">
               <CalendarDays className="h-9 w-9 text-[var(--text-muted)]" />
               <h2 className="mt-4 text-lg font-semibold text-[var(--text-primary)]">
-                No organizer event markets yet
+                No events found in the completed planned reads
               </h2>
               <p className="mt-2 max-w-lg text-sm leading-6 text-[var(--text-muted)]">
-                Start with an empty organizer catalog. Products are accepted
-                later by publishing a signed collection update.
+                {organizerCatalogCoverage ? (
+                  <span
+                    role="status"
+                    aria-live="polite"
+                    className="tabular-nums"
+                  >
+                    {organizerCatalogCoverage}{" "}
+                  </span>
+                ) : null}
+                This bounded read does not establish global event absence. Start
+                with an empty organizer catalog; products are accepted later by
+                publishing a signed collection update.
               </p>
               <Button type="button" className="mt-5" onClick={openCreate}>
                 <Plus />
