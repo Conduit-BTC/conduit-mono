@@ -9,9 +9,12 @@ import {
 import {
   __resetEventMarketTestOverrides,
   __setEventMarketTestOverrides,
+  applyE2eRelayIsolation,
   buildEventMarketCalendarDraft,
   buildEventMarketCollectionDraft,
   buildEventMarketPickupDraft,
+  config,
+  decodeEventMarketReference,
   EVENT_KINDS,
   getEventMarket,
   getOrganizerEventMarkets,
@@ -32,6 +35,7 @@ const MERCHANT_PICKUP = `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT}:booth`
 const PRODUCT = `${EVENT_KINDS.PRODUCT}:${MERCHANT}:coffee`
 const ORGANIZER_RELAY = "wss://organizer-write.example"
 const MERCHANT_RELAY = "wss://merchant-write.example"
+const originalConfig = structuredClone(config)
 
 function sign(
   draft: { kind: number; content: string; tags: string[][] },
@@ -535,7 +539,10 @@ function saturatedCollectionDiscoveryHarness(input: {
   }
 }
 
-afterEach(() => __resetEventMarketTestOverrides())
+afterEach(() => {
+  Object.assign(config, structuredClone(originalConfig))
+  __resetEventMarketTestOverrides()
+})
 
 describe("event-market retained evidence", () => {
   it("never turns a remote naddr loopback hint into signed-in relay I/O", async () => {
@@ -607,6 +614,65 @@ describe("event-market retained evidence", () => {
     expect(ownerSelectedRelayUrls).toContain(ownerRelay)
     expect(attemptedRelayUrls).not.toContain(remoteLoopbackRelay)
     expect(authenticatedPubkeys.every((value) => value === MERCHANT)).toBe(true)
+  })
+
+  it("keeps only the exact configured E2E loopback in the composed read plan", async () => {
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    const otherLoopbackRelayUrl = "ws://127.0.0.1:7788"
+    const remoteSecureRelayUrl = "wss://remote-hint.example"
+    const relayPlans: string[][] = []
+    const ownerSelectedRelayPlans: string[][] = []
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: { version: 1, updatedAt: 1, entries: [] },
+        signedRelayListAuthoritative: true,
+      }),
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        relayPlans.push([...(options.relayUrls ?? [])])
+        ownerSelectedRelayPlans.push([
+          ...(options.ownerSelectedRelayUrls ?? []),
+        ])
+        return {
+          events: [],
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+    const remoteReference = nip19.naddrEncode({
+      kind: EVENT_KINDS.PRODUCT_COLLECTION,
+      pubkey: ORGANIZER,
+      identifier: "catalog",
+      relays: [isolatedRelayUrl, otherLoopbackRelayUrl, remoteSecureRelayUrl],
+    })
+
+    expect(decodeEventMarketReference(remoteReference)?.relayHints).toEqual([
+      isolatedRelayUrl,
+    ])
+
+    await getEventMarket({
+      reference: remoteReference,
+      authenticatedPubkey: ORGANIZER,
+    })
+
+    expect(relayPlans.length).toBeGreaterThan(0)
+    expect(
+      relayPlans.every(
+        (relayUrls) =>
+          relayUrls.length === 1 && relayUrls[0] === isolatedRelayUrl
+      )
+    ).toBe(true)
+    expect(
+      ownerSelectedRelayPlans.every((relayUrls) => relayUrls.length === 0)
+    ).toBe(true)
   })
 
   it("keeps a large valid event visible in the discovery-card projection", async () => {

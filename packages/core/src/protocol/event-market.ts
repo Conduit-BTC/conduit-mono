@@ -33,7 +33,9 @@ import {
 } from "./relay-publish"
 import { planRelayReads } from "./relay-planner"
 import {
+  getConfiguredIsolatedE2eRelayUrl,
   normalizeOwnerSelectedRelayUrls,
+  normalizeSecureOrIsolatedE2eRelayUrls,
   tryNormalizeRelayUrl,
 } from "./relay-settings"
 import {
@@ -296,7 +298,7 @@ function normalizeRemoteRelayHint(value: string): string | null {
 function normalizeRelayHints(values: readonly string[] | undefined): string[] {
   const hints = new Set<string>()
   for (const value of values ?? []) {
-    const normalized = normalizeRemoteRelayHint(value)
+    const normalized = normalizeSecureOrIsolatedE2eRelayUrls([value])[0]
     if (normalized) hints.add(normalized)
     if (hints.size >= EVENT_MARKET_MAX_RELAY_HINTS) break
   }
@@ -2138,6 +2140,9 @@ function mergeRelayUrlsWithOwnerAuthority(
   ownerSelectedRelayUrls: readonly string[],
   ...groups: readonly (readonly string[])[]
 ): string[] {
+  if (getConfiguredIsolatedE2eRelayUrl()) {
+    return normalizeSecureOrIsolatedE2eRelayUrls(groups.flat())
+  }
   const ownerSelected = new Set(
     normalizeOwnerSelectedRelayUrls(ownerSelectedRelayUrls)
   )
