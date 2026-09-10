@@ -51,6 +51,7 @@ import {
   parseOrganizerEventMarketReference,
   publishMerchantOrganizerEventMarket,
   publishMerchantOrganizerMembership,
+  reconcileAcknowledgedMerchantOrganizerCollectionEvidence,
   resolveOrganizerEventMarket,
   resolveOrganizerEventMarketRead,
   retryMerchantOrganizerRecord,
@@ -684,16 +685,26 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     !("terminal" in selectedResolution)
       ? selectedResolution
       : null
+  const selectedPresentedMarket = useMemo(
+    () =>
+      selectedMarket
+        ? reconcileAcknowledgedMerchantOrganizerCollectionEvidence(
+            selectedMarket,
+            deliveriesByReference[selectedIdentity?.coordinate ?? ""] ?? []
+          )
+        : null,
+    [deliveriesByReference, selectedIdentity?.coordinate, selectedMarket]
+  )
   const selectedReferenceResolutionPending =
     shouldResolveSelectedReference && selectedMarketQuery.isPending
   const selectedActionableMarket =
     !selectedReferenceResolutionPending &&
-    selectedMarket &&
+    selectedPresentedMarket &&
     organizerEventMarketReachesExpectedFrontiers(
-      selectedMarket,
+      selectedPresentedMarket,
       selectedSavedReference
     )
-      ? selectedMarket
+      ? selectedPresentedMarket
       : null
   const handoffReceiptsQuery = useQuery({
     queryKey: [
@@ -780,19 +791,13 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     selectedActionableMarket,
   ])
 
-  async function refreshMarketQueries(reference?: string): Promise<void> {
+  async function refreshMarketQueries(reference: string): Promise<void> {
+    await queryClient.invalidateQueries({
+      queryKey: ["merchant-organizer-event-market", organizerPubkey, reference],
+    })
     await queryClient.invalidateQueries({
       queryKey: ["merchant-organizer-event-markets", organizerPubkey],
     })
-    if (reference) {
-      await queryClient.invalidateQueries({
-        queryKey: [
-          "merchant-organizer-event-market",
-          organizerPubkey,
-          reference,
-        ],
-      })
-    }
   }
 
   function rememberDelivery(
@@ -925,7 +930,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
           rememberDelivery(reference, record)
         },
       }),
-    onSuccess: async (delivery, input) => {
+    onSuccess: (delivery, input) => {
       const reference = organizerEventMarketReferenceWithDeliveryRelayHints(
         input.reference,
         delivery
@@ -945,7 +950,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         reference
       updateInitiatingEventSelection(input.reference, nextReference)
       rememberDelivery(reference, delivery)
-      await refreshMarketQueries(input.reference)
+      void refreshMarketQueries(nextReference)
     },
   })
 
@@ -1102,7 +1107,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       ? null
       : selectedMarketQuery.error
   const selectedMarketBehindExpectedFrontier =
-    !!selectedMarket && !selectedActionableMarket
+    !!selectedPresentedMarket && !selectedActionableMarket
   const deliveries = selectedReference
     ? (deliveriesByReference[selectedIdentity?.coordinate ?? ""] ?? [])
     : []
@@ -1399,7 +1404,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       {!selectedReadPending && !selectedReadError && selectedMarket && (
         <>
           <OrganizerEventMarketPanel
-            market={selectedMarket}
+            market={selectedPresentedMarket ?? selectedMarket}
             deliveries={deliveries}
             copiedUrl={copiedUrl}
             refreshing={
