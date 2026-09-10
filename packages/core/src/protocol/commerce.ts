@@ -141,11 +141,10 @@ const DM_INBOX_READ_FANOUT = 24
 // reject or truncate very large authors arrays. This is a transport batch
 // size, not a product truth cap.
 const PRODUCT_AUTHOR_CHUNK_SIZE = 64
+// Exact cart and event-catalog reads keep only this many author plans in flight.
+// Same-author items share one plan, while every requested author is eventually
+// scheduled so a healthy multi-merchant catalog is not silently truncated.
 const PRODUCT_AUTHOR_CHUNK_CONCURRENCY = 2
-// Exact cart reads stay bounded even when a malformed or cross-store payload
-// names the maximum number of distinct merchants. Same-author items share one
-// plan; overflow authors receive explicit unavailable diagnostics.
-const PRODUCT_BATCH_AUTHOR_READ_PLAN_LIMIT = DEFAULT_READ_FANOUT
 const PRODUCT_RAW_EVENT_LIMIT_DEFAULT = 600
 const PRODUCT_RAW_EVENT_LIMIT_FLOOR = 100
 const PRODUCT_RAW_EVENT_LIMIT_MAX = 1_200
@@ -4516,20 +4515,15 @@ export async function getProductsByIds(
       }, new Map<string, typeof directReadTargets>())
       .entries()
   )
-  const plannedDirectReadEntries = directReadEntries.slice(
-    0,
-    PRODUCT_BATCH_AUTHOR_READ_PLAN_LIMIT
-  )
-  let directReadCapped =
-    plannedDirectReadEntries.length < directReadEntries.length
+  let directReadCapped = false
   const directReads = await mapWithConcurrency(
-    plannedDirectReadEntries,
+    directReadEntries,
     PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
     async ([author, targets]) => {
       try {
         // Same-author coordinates share one filter and one bounded relay plan.
-        // This preserves exact author/d-tag pairing without letting a maximum
-        // cart produce an unbounded sequence of timeout waves.
+        // Bounded concurrency limits simultaneous relay work without dropping
+        // accepted event products when a catalog spans many merchants.
         const knownRelayHints = normalizePublicOrIsolatedE2eRelayHints(
           uniqueStrings(targets.flatMap((target) => target.relayHints))
         )

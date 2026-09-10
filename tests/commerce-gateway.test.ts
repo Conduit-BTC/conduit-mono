@@ -1381,7 +1381,7 @@ describe("commerce gateway", () => {
     expect(result.meta.degraded).toBe(true)
   })
 
-  it("caps exact author plans without Cartesian collisions", async () => {
+  it("schedules every exact author without Cartesian collisions or unbounded concurrency", async () => {
     const merchants = Array.from({ length: 11 }, (_, index) =>
       getPublicKey(new Uint8Array(32).fill(index + 1))
     )
@@ -1410,20 +1410,32 @@ describe("commerce gateway", () => {
       )
     )
     const productFilters: Array<Record<string, unknown>> = []
+    const relayFanouts: number[] = []
+    let activeReads = 0
+    let maxConcurrentReads = 0
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchEventsFanout: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
-        productFilters.push(filter as Record<string, unknown>)
-        const matches = [...crossEvents, ...wantedEvents].filter(
-          (event) =>
-            (!filter.authors || filter.authors.includes(event.pubkey)) &&
-            (!filter["#d"] ||
-              event.tags.some(
-                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
-              ))
-        )
-        return matches.slice(0, filter.limit ?? matches.length) as never
+        activeReads += 1
+        maxConcurrentReads = Math.max(maxConcurrentReads, activeReads)
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          productFilters.push(filter as Record<string, unknown>)
+          relayFanouts.push(options?.relayUrls?.length ?? 0)
+          const matches = [...crossEvents, ...wantedEvents].filter(
+            (event) =>
+              (!filter.authors || filter.authors.includes(event.pubkey)) &&
+              (!filter["#d"] ||
+                event.tags.some(
+                  (tag) =>
+                    tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                ))
+          )
+          return matches.slice(0, filter.limit ?? matches.length) as never
+        } finally {
+          activeReads -= 1
+        }
       },
     })
 
@@ -1432,14 +1444,11 @@ describe("commerce gateway", () => {
     )
     const exactFilters = productFilters.filter((filter) => "#d" in filter)
 
-    expect(result.data).toHaveLength(6)
+    expect(result.data).toHaveLength(merchants.length)
     expect(result.data.map((record) => record.product.title).sort()).toEqual(
-      wantedEvents
-        .slice(0, 6)
-        .map((_, index) => `Wanted ${index}`)
-        .sort()
+      wantedEvents.map((_, index) => `Wanted ${index}`).sort()
     )
-    expect(exactFilters).toHaveLength(6)
+    expect(exactFilters).toHaveLength(merchants.length)
     expect(
       exactFilters.every(
         (filter) =>
@@ -1450,12 +1459,10 @@ describe("commerce gateway", () => {
           filter.limit === undefined
       )
     ).toBe(true)
-    expect(
-      result.diagnostics
-        .slice(6)
-        .every((diagnostic) => diagnostic.issue === "lookup_unavailable")
-    ).toBe(true)
-    expect(result.meta.capped).toBe(true)
+    expect(result.diagnostics.every(({ issue }) => issue === null)).toBe(true)
+    expect(maxConcurrentReads).toBeLessThanOrEqual(2)
+    expect(relayFanouts.every((relayCount) => relayCount <= 6)).toBe(true)
+    expect(result.meta.capped).toBe(false)
   })
 
   it("keeps a family stale until every cached sibling has live group coverage", async () => {
