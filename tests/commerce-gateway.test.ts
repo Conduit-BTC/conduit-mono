@@ -620,7 +620,7 @@ describe("commerce gateway", () => {
     ).toBe(true)
   })
 
-  it("keeps distinct relay plans for products from the same author", async () => {
+  it("combines same-author product hints into one bounded batch read", async () => {
     const firstRelayUrl = "wss://first-product-source.conduit.market"
     const secondRelayUrl = "wss://second-product-source.conduit.market"
     const first = makeSignedProductEvent({
@@ -666,18 +666,153 @@ describe("commerce gateway", () => {
     expect(result.data.map((record) => record.addressId).sort()).toEqual(
       [firstAddress, secondAddress].sort()
     )
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]?.dTags.sort()).toEqual(
+      ["first-hinted-product", "second-hinted-product"].sort()
+    )
+    expect(attempts[0]?.relayUrls.slice(0, 2)).toEqual([
+      firstRelayUrl,
+      secondRelayUrl,
+    ])
+  })
+
+  it("caps many distinct product hints and reports uncovered coordinates as partial", async () => {
+    const products = Array.from({ length: 10 }, (_, index) => {
+      const relayUrl = `wss://batch-source-${index}.conduit.market`
+      const product = makeSignedProductEvent({
+        dTag: `batch-product-${index}`,
+        createdAt: 100 + index,
+        title: `Batch product ${index}`,
+      })
+      attachEventSourceRelayUrl(product, relayUrl)
+      return {
+        product,
+        relayUrl,
+        addressId: `30402:${product.pubkey}:batch-product-${index}`,
+      }
+    })
+    for (const { product } of products) {
+      await cacheSignedProductListingEvent(product)
+    }
+    const attempts: Array<{ dTags: string[]; relayUrls: string[] }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const dTags = filter["#d"] ?? []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        attempts.push({ dTags: [...dTags], relayUrls })
+        return products
+          .filter(
+            ({ product, relayUrl }) =>
+              dTags.includes(product.dTag ?? "") && relayUrls.includes(relayUrl)
+          )
+          .map(({ product }) => product) as never
+      },
+    })
+
+    const result = await getProductsByIds(
+      products.map(({ addressId }) => addressId)
+    )
+
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]?.dTags).toHaveLength(products.length)
+    expect(attempts[0]?.relayUrls.length).toBeLessThanOrEqual(6)
     expect(
-      attempts.some(
-        (attempt) =>
-          attempt.dTags.includes("first-hinted-product") &&
-          attempt.relayUrls[0] === firstRelayUrl
+      result.diagnostics.filter(
+        (diagnostic) => diagnostic.issue === "lookup_partial"
+      )
+    ).toHaveLength(4)
+  })
+
+  it("combines non-overlapping sibling hints for one complete family read", async () => {
+    const firstRelayUrl = "wss://small-variation-source.conduit.market"
+    const secondRelayUrl = "wss://large-variation-source.conduit.market"
+    const parentAddress = `30402:${MERCHANT_A_PUBKEY}:split-source-shirt`
+    const parent = makeSignedGammaProductEvent({
+      dTag: "split-source-shirt",
+      createdAt: 100,
+      title: "Split source shirt",
+      type: "variable",
+    })
+    const small = makeSignedGammaProductEvent({
+      dTag: "split-source-shirt-s",
+      createdAt: 101,
+      title: "Split source shirt - S",
+      type: "variation",
+      parentProductId: parentAddress,
+      size: "S",
+    })
+    const large = makeSignedGammaProductEvent({
+      dTag: "split-source-shirt-l",
+      createdAt: 102,
+      title: "Split source shirt - L",
+      type: "variation",
+      parentProductId: parentAddress,
+      size: "L",
+    })
+    const smallAddress = `30402:${MERCHANT_A_PUBKEY}:split-source-shirt-s`
+    const largeAddress = `30402:${MERCHANT_A_PUBKEY}:split-source-shirt-l`
+    const attempts: Array<{
+      dTags?: string[]
+      parentAddresses?: string[]
+      relayUrls: string[]
+    }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        attempts.push({
+          dTags: filter["#d"],
+          parentAddresses: filter["#a"],
+          relayUrls,
+        })
+        if (
+          !relayUrls.includes(firstRelayUrl) ||
+          !relayUrls.includes(secondRelayUrl)
+        ) {
+          return []
+        }
+        return [parent, small, large].filter(
+          (event) =>
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        ) as never
+      },
+    })
+
+    const result = await getProductsByIds([
+      encodeProductNaddr(smallAddress, [firstRelayUrl]),
+      encodeProductNaddr(largeAddress, [secondRelayUrl]),
+    ])
+
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      [smallAddress, largeAddress].sort()
+    )
+    expect(
+      result.diagnostics.every((diagnostic) => diagnostic.issue === null)
+    ).toBe(true)
+    expect(attempts).toHaveLength(3)
+    expect(
+      attempts.every(
+        ({ relayUrls }) =>
+          relayUrls.includes(firstRelayUrl) &&
+          relayUrls.includes(secondRelayUrl)
       )
     ).toBe(true)
     expect(
-      attempts.some(
-        (attempt) =>
-          attempt.dTags.includes("second-hinted-product") &&
-          attempt.relayUrls[0] === secondRelayUrl
+      attempts.some(({ dTags }) => dTags?.includes("split-source-shirt"))
+    ).toBe(true)
+    expect(
+      attempts.some(({ parentAddresses }) =>
+        parentAddresses?.includes(parentAddress)
       )
     ).toBe(true)
   })
@@ -1180,7 +1315,7 @@ describe("commerce gateway", () => {
     expect(result.meta.degraded).toBe(true)
   })
 
-  it("partitions exact product batches by author without Cartesian collisions", async () => {
+  it("caps exact author plans without Cartesian collisions", async () => {
     const merchants = Array.from({ length: 11 }, (_, index) =>
       getPublicKey(new Uint8Array(32).fill(index + 1))
     )
@@ -1231,11 +1366,14 @@ describe("commerce gateway", () => {
     )
     const exactFilters = productFilters.filter((filter) => "#d" in filter)
 
-    expect(result.data).toHaveLength(merchants.length)
+    expect(result.data).toHaveLength(6)
     expect(result.data.map((record) => record.product.title).sort()).toEqual(
-      wantedEvents.map((_, index) => `Wanted ${index}`).sort()
+      wantedEvents
+        .slice(0, 6)
+        .map((_, index) => `Wanted ${index}`)
+        .sort()
     )
-    expect(exactFilters).toHaveLength(merchants.length)
+    expect(exactFilters).toHaveLength(6)
     expect(
       exactFilters.every(
         (filter) =>
@@ -1246,6 +1384,12 @@ describe("commerce gateway", () => {
           filter.limit === undefined
       )
     ).toBe(true)
+    expect(
+      result.diagnostics
+        .slice(6)
+        .every((diagnostic) => diagnostic.issue === "lookup_unavailable")
+    ).toBe(true)
+    expect(result.meta.capped).toBe(true)
   })
 
   it("keeps a family stale until every cached sibling has live group coverage", async () => {
