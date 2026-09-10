@@ -397,8 +397,8 @@ export function buildAccountNetworkSettingsView(input: {
       projected.write,
       projected.privateInbox,
     ].some((state) => state === "published" || state === "pending")
-    row.readEnabled = projected.read !== null || projected.draftRead
-    row.publishEnabled = projected.write !== null || projected.draftWrite
+    row.readEnabled = projected.read !== null
+    row.publishEnabled = projected.write !== null
     row.privateInboxEnabled = projected.privateInbox !== null
     row.readState = projected.read
     row.publishState = projected.write

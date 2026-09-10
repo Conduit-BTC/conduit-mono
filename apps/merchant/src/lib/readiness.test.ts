@@ -288,7 +288,7 @@ test("selects only the exact Conduit default shipping option", () => {
 describe("merchant setup readiness", () => {
   test("requires a published or durably pending Publish role", () => {
     expect(isNetworkComplete([])).toBe(false)
-    expect(isNetworkComplete([{ write: null }, { write: "draft" }])).toBe(false)
+    expect(isNetworkComplete([{ write: null }])).toBe(false)
     expect(isNetworkComplete([{ write: "published" }])).toBe(true)
     expect(isNetworkComplete([{ write: "pending" }])).toBe(true)
   })

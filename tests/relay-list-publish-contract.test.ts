@@ -12,17 +12,34 @@ describe("relay-list publish contract", () => {
       "utf8"
     )
 
-    const reviewIndex = controller.indexOf(
-      "const reviewed = reviewAccountNetworkMutation("
+    const executionIndex = controller.indexOf(
+      "const executePreparedMutation = useCallback("
     )
     const publishIndex = controller.indexOf(
-      "await publishAccountNetworkMutation({"
+      "await publishAccountNetworkMutation({",
+      executionIndex
     )
-    const reviewedArgumentIndex = controller.indexOf("reviewed,", publishIndex)
+    const prepareIndex = controller.indexOf(
+      "const prepareChange = useCallback("
+    )
+    const reviewIndex = controller.indexOf(
+      "const reviewed = reviewAccountNetworkMutation(",
+      prepareIndex
+    )
+    const executeIndex = controller.indexOf(
+      "await executePreparedMutation(",
+      reviewIndex
+    )
 
+    expect(executionIndex).toBeGreaterThan(-1)
+    expect(publishIndex).toBeGreaterThan(executionIndex)
+    expect(prepareIndex).toBeGreaterThan(publishIndex)
     expect(reviewIndex).toBeGreaterThan(-1)
-    expect(publishIndex).toBeGreaterThan(reviewIndex)
-    expect(reviewedArgumentIndex).toBeGreaterThan(publishIndex)
+    expect(reviewIndex).toBeGreaterThan(prepareIndex)
+    expect(executeIndex).toBeGreaterThan(reviewIndex)
+    expect(controller.slice(executeIndex, executeIndex + 240)).toContain(
+      "reviewed,"
+    )
     expect(controller).toContain("createNdkNostrEventSigner(")
     expect(controller).not.toContain("publishWithPlanner")
     expect(mutationOwner).toContain("await input.signer.signEvent")

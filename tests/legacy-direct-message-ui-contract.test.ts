@@ -100,7 +100,13 @@ describe("legacy direct-message UI contract", () => {
     const hookSource = await Bun.file(
       "packages/core/src/hooks/useInboxDeclaration.ts"
     ).text()
-    expect(hookSource).toContain("session.accountNetworkPreferences")
+    const controllerSource = await Bun.file(
+      "packages/core/src/hooks/useAccountNetworkSettings.ts"
+    ).text()
+    expect(controllerSource).toContain("session.accountNetworkPreferences")
+    expect(hookSource).toContain(
+      "enabled: !!pubkey && (options.enabled ?? true)"
+    )
     expect(hookSource).toContain("invalidateInboxDeclaration(pubkey)")
     expect(hookSource).toContain("queryClient.invalidateQueries({ queryKey })")
     expect(hookSource).toContain('isLoading: status === "loading"')
@@ -122,10 +128,6 @@ describe("legacy direct-message UI contract", () => {
       expect(source).toContain("messagingReady")
     }
 
-    const controllerSource = await Bun.file(
-      "packages/core/src/hooks/useAccountNetworkSettings.ts"
-    ).text()
-    expect(controllerSource).toContain("session.accountNetworkPreferences")
     expect(controllerSource).toContain("auth.authGeneration")
     expect(controllerSource).toContain(
       "current.authGeneration === snapshot.generation"

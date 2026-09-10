@@ -9,7 +9,10 @@ import {
   type AccountNetworkRelayRowView,
 } from "../packages/core/src/protocol/network-settings-view"
 import type { AccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
-import type { AccountNetworkPreferencesReconciliation } from "../packages/core/src/protocol/network-preferences"
+import type {
+  AccountNetworkPreferencesReconciliation,
+  NetworkPreferenceRow,
+} from "../packages/core/src/protocol/network-preferences"
 import type { RelayScanResult } from "../packages/core/src/protocol/relay-settings"
 
 const PUBKEY = "a".repeat(64)
@@ -30,15 +33,7 @@ function localState(
 }
 
 function reconciliation(input?: {
-  rows?: Array<{
-    url: string
-    position: number
-    read: "published" | "pending" | "draft" | null
-    write: "published" | "pending" | "draft" | null
-    privateInbox: "published" | "pending" | "draft" | null
-    draftRead: boolean
-    draftWrite: boolean
-  }>
+  rows?: NetworkPreferenceRow[]
   owner?: Record<string, unknown>
   inbox?: Record<string, unknown>
   legacyInboxRecoveryRelayUrls?: string[]
@@ -54,8 +49,6 @@ function reconciliation(input?: {
           read: "published",
           write: "published",
           privateInbox: "published",
-          draftRead: false,
-          draftWrite: false,
         },
         {
           url: "wss://second.example",
@@ -63,8 +56,6 @@ function reconciliation(input?: {
           read: "published",
           write: null,
           privateInbox: null,
-          draftRead: false,
-          draftWrite: false,
         },
       ],
       relayListState: "declared",
@@ -228,8 +219,6 @@ describe("network settings view", () => {
             read: "published",
             write: "pending",
             privateInbox: "published",
-            draftRead: false,
-            draftWrite: false,
           },
         ],
         inbox: {
@@ -293,8 +282,6 @@ describe("network settings view", () => {
       read: "published" as const,
       write: "published" as const,
       privateInbox: null,
-      draftRead: false,
-      draftWrite: false,
     }))
     const view = buildAccountNetworkSettingsView({
       reconciliation: reconciliation({ rows }),
