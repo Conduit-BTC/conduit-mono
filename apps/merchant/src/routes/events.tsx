@@ -780,16 +780,10 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     selectedActionableMarket,
   ])
 
-  async function refreshMarketQueries(reference?: string): Promise<void> {
-    if (reference) {
-      await queryClient.invalidateQueries({
-        queryKey: [
-          "merchant-organizer-event-market",
-          organizerPubkey,
-          reference,
-        ],
-      })
-    }
+  async function refreshMarketQueries(reference: string): Promise<void> {
+    await queryClient.invalidateQueries({
+      queryKey: ["merchant-organizer-event-market", organizerPubkey, reference],
+    })
     await queryClient.invalidateQueries({
       queryKey: ["merchant-organizer-event-markets", organizerPubkey],
     })
