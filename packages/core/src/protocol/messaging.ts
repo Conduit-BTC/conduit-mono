@@ -718,7 +718,7 @@ export interface PublishPrivateMessageInput {
    * Explicit signed-in account whose durable whole-relay exclusions apply to
    * discovery and delivery. Omit for guest/public sends; this is never inferred
    * from the rumor author or recipient.
-  */
+   */
   accountPubkey?: string | null
   /**
    * Active authenticated account. Owner-selected ws:// authority is granted

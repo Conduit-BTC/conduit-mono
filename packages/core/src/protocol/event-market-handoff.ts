@@ -1381,14 +1381,11 @@ export async function retryEventMarketPrivateDelivery(input: {
     : createEventMarketPrivateDeliveryProgress(input.record)
   const recipientRelayUrls = input.recipientInboxRelays
     ? declaredInboxWriteRelayUrls(input.recipientInboxRelays)
-    : await strictInboxRelays(
-        input.record.recipientPubkey,
-        {
-          ...input.inboxDeclarationOptions,
-          requestingAccountPubkey: accountPubkey,
-          authenticatedPubkey: authenticatedOwnerPubkey,
-        }
-      )
+    : await strictInboxRelays(input.record.recipientPubkey, {
+        ...input.inboxDeclarationOptions,
+        requestingAccountPubkey: accountPubkey,
+        authenticatedPubkey: authenticatedOwnerPubkey,
+      })
   if (recipientRelayUrls.length === 0) {
     throw new Error("Private-message recipient inbox is not currently usable.")
   }
