@@ -66,10 +66,12 @@ import {
   expectedOrganizerEventMarketFrontier,
   expectedOrganizerEventMarketFrontiersAfterMembership,
   expectedOrganizerEventMarketFrontiersAfterRetry,
+  expectedOrganizerEventMarketTitleFrontiers,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
   organizerEventMarketCanSupplySavedTitle,
   organizerEventMarketDeletionRetiresDelivery,
+  organizerEventMarketHasSavedTitleEvidence,
   organizerEventMarketReachesExpectedFrontiers,
   organizerEventMarketRetryRemainsCurrent,
   rememberDiscoveredEventMarket,
@@ -267,7 +269,7 @@ function FindEventsPanel({
       )
       if (
         !existing ||
-        existing.title === market.title ||
+        organizerEventMarketHasSavedTitleEvidence(market, existing) ||
         !organizerEventMarketCanSupplySavedTitle(market, existing)
       ) {
         continue
@@ -275,6 +277,7 @@ function FindEventsPanel({
       next = rememberDiscoveredEventMarket(merchantPubkey, {
         ...existing,
         title: market.title,
+        ...expectedOrganizerEventMarketTitleFrontiers(market),
       })
       changed = true
     }
@@ -312,7 +315,10 @@ function FindEventsPanel({
     if (
       !selectedMarket ||
       !selectedSavedReference ||
-      selectedSavedReference.title === selectedMarket.title ||
+      organizerEventMarketHasSavedTitleEvidence(
+        selectedMarket,
+        selectedSavedReference
+      ) ||
       !organizerEventMarketCanSupplySavedTitle(
         selectedMarket,
         selectedSavedReference
@@ -323,6 +329,7 @@ function FindEventsPanel({
     const saved = rememberDiscoveredEventMarket(merchantPubkey, {
       ...selectedSavedReference,
       title: selectedMarket.title,
+      ...expectedOrganizerEventMarketTitleFrontiers(selectedMarket),
     })
     setSavedReferences(saved)
   }, [merchantPubkey, selectedMarket, selectedSavedReference])
@@ -344,6 +351,7 @@ function FindEventsPanel({
         reference: market.naddr,
         title: market.title,
         savedAt: market.collectionCreatedAt ?? 0,
+        ...expectedOrganizerEventMarketTitleFrontiers(market),
       })
     }
     return next
@@ -354,6 +362,7 @@ function FindEventsPanel({
       reference: market.naddr,
       title: market.title,
       savedAt: Date.now(),
+      ...expectedOrganizerEventMarketTitleFrontiers(market),
     })
     setSavedReferences(saved)
     setSelectedReference(
@@ -665,7 +674,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         next,
         market.collectionCoordinate
       )
-      if (existing?.title === market.title) continue
+      if (organizerEventMarketHasSavedTitleEvidence(market, existing)) continue
       if (
         existing &&
         !organizerEventMarketCanSupplySavedTitle(market, existing)
@@ -675,11 +684,16 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       next = rememberOrganizerEventMarket(
         organizerPubkey,
         existing
-          ? { ...existing, title: market.title }
+          ? {
+              ...existing,
+              title: market.title,
+              ...expectedOrganizerEventMarketTitleFrontiers(market),
+            }
           : {
               reference: market.collectionCoordinate,
               title: market.title,
               savedAt: market.collectionCreatedAt ?? Date.now(),
+              ...expectedOrganizerEventMarketTitleFrontiers(market),
             }
       )
     }
@@ -751,7 +765,10 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     if (
       !selectedMarket ||
       !selectedSavedReference ||
-      selectedSavedReference.title === selectedMarket.title ||
+      organizerEventMarketHasSavedTitleEvidence(
+        selectedMarket,
+        selectedSavedReference
+      ) ||
       !organizerEventMarketCanSupplySavedTitle(
         selectedMarket,
         selectedSavedReference
@@ -762,6 +779,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     const saved = rememberOrganizerEventMarket(organizerPubkey, {
       ...selectedSavedReference,
       title: selectedMarket.title,
+      ...expectedOrganizerEventMarketTitleFrontiers(selectedMarket),
     })
     setSavedReferences(saved)
   }, [organizerPubkey, selectedMarket, selectedSavedReference])
@@ -1177,6 +1195,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
           reference: market.collectionCoordinate,
           title: market.title,
           savedAt: market.collectionCreatedAt ?? 0,
+          ...expectedOrganizerEventMarketTitleFrontiers(market),
         })
       }
     }

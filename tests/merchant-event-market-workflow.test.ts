@@ -8,6 +8,7 @@ import {
   findSavedOrganizerEventMarketReference,
   expectedOrganizerEventMarketFrontiersAfterMembership,
   expectedOrganizerEventMarketFrontiersAfterRetry,
+  expectedOrganizerEventMarketTitleFrontiers,
   forgetOrganizerEventMarket,
   getDiscoveredEventMarketStorageKey,
   getOrganizerEventMarketDisplayState,
@@ -17,6 +18,7 @@ import {
   loadSavedOrganizerEventMarkets,
   organizerEventMarketCanSupplySavedTitle,
   organizerEventMarketDeletionRetiresDelivery,
+  organizerEventMarketHasSavedTitleEvidence,
   organizerEventMarketReachesExpectedFrontiers,
   organizerEventMarketRetryRemainsCurrent,
   rememberDiscoveredEventMarket,
@@ -232,7 +234,7 @@ describe("merchant organizer event workflow", () => {
     )
   })
 
-  it("only replaces a cached title from current evidence", () => {
+  it("does not replace an unanchored legacy title with a different relay title", () => {
     const saved = {
       reference: encodeEventMarketNaddr(COLLECTION),
       title: "Current cached title",
@@ -240,6 +242,11 @@ describe("merchant organizer event workflow", () => {
     }
     const staleMarket = {
       collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "b".repeat(64),
+      calendarCoordinate: CALENDAR,
+      calendarCreatedAt: 1_000,
+      calendarEventId: "c".repeat(64),
       state: "stale",
       title: "Older stale title",
     }
@@ -253,14 +260,106 @@ describe("merchant organizer event workflow", () => {
       false
     )
     expect(organizerEventMarketCanSupplySavedTitle(currentMarket, saved)).toBe(
-      true
+      false
     )
+    expect(
+      organizerEventMarketCanSupplySavedTitle(currentMarket, {
+        ...saved,
+        expectedCollectionCreatedAt: 1_000,
+        expectedCalendarCoordinate: CALENDAR,
+        expectedCalendarCreatedAt: 1_000,
+      })
+    ).toBe(false)
+    expect(
+      organizerEventMarketCanSupplySavedTitle(
+        { ...currentMarket, title: saved.title },
+        saved
+      )
+    ).toBe(true)
     expect(
       organizerEventMarketCanSupplySavedTitle(staleMarket, {
         ...saved,
         title: undefined,
       })
     ).toBe(true)
+  })
+
+  it("anchors an exact hydrated title before accepting newer list revisions", () => {
+    const storage = new MemoryStorage()
+    const imported = {
+      reference: encodeEventMarketNaddr(COLLECTION),
+      savedAt: 10,
+    }
+    const exactMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 2_000,
+      collectionEventId: "b".repeat(64),
+      calendarCoordinate: CALENDAR,
+      calendarCreatedAt: 2_000,
+      calendarEventId: "c".repeat(64),
+      state: "active",
+      title: "Current exact title",
+    }
+
+    expect(organizerEventMarketCanSupplySavedTitle(exactMarket, imported)).toBe(
+      true
+    )
+    const [anchored] = rememberDiscoveredEventMarket(
+      MERCHANT,
+      {
+        ...imported,
+        title: exactMarket.title,
+        ...expectedOrganizerEventMarketTitleFrontiers(exactMarket),
+      },
+      storage
+    )
+    expect(anchored).toMatchObject({
+      title: "Current exact title",
+      expectedCollectionCoordinate: COLLECTION,
+      expectedCollectionCreatedAt: 2_000,
+      expectedCollectionEventId: "b".repeat(64),
+      expectedCalendarCoordinate: CALENDAR,
+      expectedCalendarCreatedAt: 2_000,
+      expectedCalendarEventId: "c".repeat(64),
+    })
+    expect(
+      organizerEventMarketHasSavedTitleEvidence(exactMarket, anchored)
+    ).toBe(true)
+
+    const olderListMarket = {
+      ...exactMarket,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "d".repeat(64),
+      calendarCreatedAt: 1_000,
+      calendarEventId: "e".repeat(64),
+      title: "Older active list title",
+    }
+    expect(
+      organizerEventMarketCanSupplySavedTitle(olderListMarket, anchored)
+    ).toBe(false)
+    expect(
+      organizerEventMarketHasSavedTitleEvidence(olderListMarket, anchored)
+    ).toBe(false)
+
+    const newerListMarket = {
+      ...exactMarket,
+      collectionCreatedAt: 3_000,
+      collectionEventId: "f".repeat(64),
+      calendarCreatedAt: 3_000,
+      calendarEventId: "1".repeat(64),
+      title: "Newer signed title",
+    }
+    expect(
+      organizerEventMarketCanSupplySavedTitle(newerListMarket, anchored)
+    ).toBe(true)
+    expect(
+      expectedOrganizerEventMarketTitleFrontiers(newerListMarket)
+    ).toMatchObject({
+      expectedCollectionCreatedAt: 3_000,
+      expectedCollectionEventId: "f".repeat(64),
+      expectedCalendarCreatedAt: 3_000,
+      expectedCalendarEventId: "1".repeat(64),
+    })
   })
 
   it("keeps the in-session reference when browser storage rejects writes", () => {

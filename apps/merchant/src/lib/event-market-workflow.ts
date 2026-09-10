@@ -440,6 +440,74 @@ function expectedFrontierFields(
   }
 }
 
+function organizerEventMarketTitleFrontiers(
+  market: EventMarketFrontierCarrier | undefined
+): {
+  collection: EventMarketRecordFrontier
+  calendar: EventMarketRecordFrontier
+} | null {
+  const collection = carrierFrontier(market, "collection")
+  const calendar = carrierFrontier(market, "calendar")
+  if (
+    !collection?.coordinate ||
+    !collection.eventId ||
+    !calendar?.coordinate ||
+    !calendar.eventId
+  ) {
+    return null
+  }
+  return { collection, calendar }
+}
+
+function savedOrganizerEventMarketTitleFrontiers(
+  savedReference: SavedOrganizerEventMarketReference | undefined
+): {
+  collection: EventMarketRecordFrontier
+  calendar: EventMarketRecordFrontier
+} | null {
+  const collection = savedExpectedFrontier(savedReference, "collection")
+  const calendar = savedExpectedFrontier(savedReference, "calendar")
+  if (
+    !collection?.coordinate ||
+    !collection.eventId ||
+    !calendar?.coordinate ||
+    !calendar.eventId
+  ) {
+    return null
+  }
+  return { collection, calendar }
+}
+
+export function expectedOrganizerEventMarketTitleFrontiers(
+  market: EventMarketFrontierCarrier | undefined
+): Partial<SavedOrganizerEventMarketReference> {
+  const frontiers = organizerEventMarketTitleFrontiers(market)
+  if (!frontiers) return {}
+  return {
+    ...expectedFrontierFields("collection", frontiers.collection),
+    ...expectedFrontierFields("calendar", frontiers.calendar),
+  }
+}
+
+export function organizerEventMarketHasSavedTitleEvidence(
+  market:
+    (EventMarketFrontierCarrier & { state: string; title: string }) | undefined,
+  savedReference: SavedOrganizerEventMarketReference | undefined
+): boolean {
+  const frontiers = organizerEventMarketTitleFrontiers(market)
+  const savedFrontiers = savedOrganizerEventMarketTitleFrontiers(savedReference)
+  if (!market || !savedReference || !frontiers || !savedFrontiers) return false
+  return (
+    savedReference.title === market.title &&
+    savedFrontiers.collection.coordinate === frontiers.collection.coordinate &&
+    savedFrontiers.collection.createdAt === frontiers.collection.createdAt &&
+    savedFrontiers.collection.eventId === frontiers.collection.eventId &&
+    savedFrontiers.calendar.coordinate === frontiers.calendar.coordinate &&
+    savedFrontiers.calendar.createdAt === frontiers.calendar.createdAt &&
+    savedFrontiers.calendar.eventId === frontiers.calendar.eventId
+  )
+}
+
 export function shortenOrganizerEventMarketReference(
   reference: string
 ): string {
@@ -943,15 +1011,23 @@ export function organizerEventMarketCanSupplySavedTitle(
     (EventMarketFrontierCarrier & { state: string; title: string }) | undefined,
   savedReference: SavedOrganizerEventMarketReference | undefined
 ): boolean {
+  const titleFrontiers = organizerEventMarketTitleFrontiers(market)
   if (
     !market ||
     !savedReference ||
+    !titleFrontiers ||
     !marketReachesExpectedFrontiers(market, savedReference)
   ) {
     return false
   }
+  const savedTitle = savedReference.title?.trim()
+  const savedTitleIsAnchored =
+    !!savedOrganizerEventMarketTitleFrontiers(savedReference)
+  if (savedTitle && savedTitle !== market.title && !savedTitleIsAnchored) {
+    return false
+  }
   return (
-    !savedReference.title?.trim() ||
+    !savedTitle ||
     savedReference.title === market.title ||
     isPreferredOrganizerEventMarketListResolution(market)
   )

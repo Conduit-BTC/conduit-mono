@@ -916,16 +916,44 @@ test("direct and pasted event imports hydrate one saved selector title under par
   )
 
   const savedStorageKey = `conduit:merchant:discovered-event-markets:v1:${MERCHANT_PUBKEY}`
-  await expect
-    .poll(() =>
-      page.evaluate((key) => {
-        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
-          title?: string
-        }>
-        return { count: saved.length, title: saved[0]?.title }
-      }, savedStorageKey)
-    )
-    .toEqual({ count: 1, title: eventTitle })
+  const expectedTitleEvidence = {
+    expectedCollectionCoordinate: market.collectionCoordinate,
+    expectedCollectionCreatedAt: market.initialCollection.created_at * 1_000,
+    expectedCollectionEventId: market.initialCollection.id,
+    expectedCalendarCoordinate: market.calendarCoordinate,
+    expectedCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
+    expectedCalendarEventId: market.calendarEvent.id,
+  }
+  const readSavedTitleEvidence = () =>
+    page.evaluate((key) => {
+      const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+        reference?: string
+        title?: string
+        expectedCollectionCoordinate?: string
+        expectedCollectionCreatedAt?: number
+        expectedCollectionEventId?: string
+        expectedCalendarCoordinate?: string
+        expectedCalendarCreatedAt?: number
+        expectedCalendarEventId?: string
+      }>
+      return {
+        count: saved.length,
+        reference: saved[0]?.reference,
+        title: saved[0]?.title,
+        expectedCollectionCoordinate: saved[0]?.expectedCollectionCoordinate,
+        expectedCollectionCreatedAt: saved[0]?.expectedCollectionCreatedAt,
+        expectedCollectionEventId: saved[0]?.expectedCollectionEventId,
+        expectedCalendarCoordinate: saved[0]?.expectedCalendarCoordinate,
+        expectedCalendarCreatedAt: saved[0]?.expectedCalendarCreatedAt,
+        expectedCalendarEventId: saved[0]?.expectedCalendarEventId,
+      }
+    }, savedStorageKey)
+  await expect.poll(readSavedTitleEvidence).toEqual({
+    count: 1,
+    reference: market.canonicalNaddr,
+    title: eventTitle,
+    ...expectedTitleEvidence,
+  })
 
   await gotoAs(page, merchantUrl, "/events", "merchant")
   const shopperLink = `${marketUrl}/events/${market.canonicalNaddr}`
@@ -937,16 +965,12 @@ test("direct and pasted event imports hydrate one saved selector title under par
   )
   await page.getByLabel("Event naddr or link").fill(market.canonicalNaddr)
   await page.getByRole("button", { name: "Open", exact: true }).click()
-  await expect
-    .poll(() =>
-      page.evaluate((key) => {
-        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
-          title?: string
-        }>
-        return { count: saved.length, title: saved[0]?.title }
-      }, savedStorageKey)
-    )
-    .toEqual({ count: 1, title: eventTitle })
+  await expect.poll(readSavedTitleEvidence).toEqual({
+    count: 1,
+    reference: market.canonicalNaddr,
+    title: eventTitle,
+    ...expectedTitleEvidence,
+  })
 })
 
 test("current exact resolution refreshes a saved title without replacing its evidence @merchant", async ({
