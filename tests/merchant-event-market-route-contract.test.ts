@@ -83,6 +83,13 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain("aria-label={`View ${market.title}`}")
     expect(route).toContain("resolveOrganizerEventMarket(")
     expect(route).toMatch(/merchantPubkey,\r?\n\s+signal/)
+    const referenceLabel = route.slice(
+      route.indexOf("function referenceLabel("),
+      route.indexOf("function expectedEventMarketFrontiers(")
+    )
+    expect(referenceLabel).toContain(
+      "organizerEventMarketCanSupplySavedTitle(market, reference)"
+    )
     expect(route).not.toContain("selectedFromDiscovery")
   })
 

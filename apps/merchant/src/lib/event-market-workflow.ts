@@ -440,6 +440,17 @@ function expectedFrontierFields(
   }
 }
 
+export function shortenOrganizerEventMarketReference(
+  reference: string
+): string {
+  const decoded = decodeEventMarketReference(reference, [30405])
+  const canonicalReference = decoded
+    ? encodeEventMarketNaddr(decoded.coordinate)
+    : reference.trim()
+  if (canonicalReference.length <= 28) return canonicalReference
+  return `${canonicalReference.slice(0, 16)}…${canonicalReference.slice(-8)}`
+}
+
 export function getOrganizerEventMarketStorageKey(
   organizerPubkey: string
 ): string {
@@ -925,6 +936,25 @@ export function organizerEventMarketReachesExpectedFrontiers(
   savedReference: SavedOrganizerEventMarketReference | undefined
 ): boolean {
   return marketReachesExpectedFrontiers(market, savedReference)
+}
+
+export function organizerEventMarketCanSupplySavedTitle(
+  market:
+    (EventMarketFrontierCarrier & { state: string; title: string }) | undefined,
+  savedReference: SavedOrganizerEventMarketReference | undefined
+): boolean {
+  if (
+    !market ||
+    !savedReference ||
+    !marketReachesExpectedFrontiers(market, savedReference)
+  ) {
+    return false
+  }
+  return (
+    !savedReference.title?.trim() ||
+    savedReference.title === market.title ||
+    isPreferredOrganizerEventMarketListResolution(market)
+  )
 }
 
 type OrganizerEventMarketCandidate = EventMarketFrontierCarrier & {

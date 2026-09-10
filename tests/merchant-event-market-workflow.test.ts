@@ -15,23 +15,29 @@ import {
   isPreferredOrganizerEventMarketListResolution,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
+  organizerEventMarketCanSupplySavedTitle,
   organizerEventMarketDeletionRetiresDelivery,
   organizerEventMarketReachesExpectedFrontiers,
   organizerEventMarketRetryRemainsCurrent,
   rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
   selectOrganizerEventMarketResolution,
+  shortenOrganizerEventMarketReference,
   shouldResolveOrganizerEventMarketReference,
   updateOrganizerCollectionProducts,
 } from "../apps/merchant/src/lib/event-market-workflow"
 import {
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
+  parseOrganizerEventMarketReference,
   publishMerchantOrganizerMembership,
   type MerchantOrganizerEventMarket,
   type MerchantOrganizerRecordDelivery,
 } from "../apps/merchant/src/lib/event-market"
-import { getEventMarketUrl } from "../apps/merchant/src/lib/market-links"
+import {
+  getEventMarketUrl,
+  parseMerchantEventsSearch,
+} from "../apps/merchant/src/lib/market-links"
 
 const ORGANIZER = "a".repeat(64)
 const OTHER_ORGANIZER = "b".repeat(64)
@@ -108,6 +114,153 @@ describe("merchant organizer event workflow", () => {
     expect(loadSavedOrganizerEventMarkets(ORGANIZER, storage)).toEqual([
       { reference: COLLECTION, title: "Updated", savedAt: 20 },
     ])
+  })
+
+  it("hydrates a direct query-link import from exact current event evidence", () => {
+    const storage = new MemoryStorage()
+    const importedHints = Array.from(
+      { length: 8 },
+      (_, index) => `wss://invite-${index + 1}.example/events`
+    )
+    const imported = encodeEventMarketNaddr(COLLECTION, importedHints)
+    const initialReference = parseMerchantEventsSearch({
+      event: imported,
+    }).event
+    expect(initialReference).toBe(imported)
+
+    const titleless = rememberDiscoveredEventMarket(
+      MERCHANT,
+      {
+        reference: initialReference!,
+        savedAt: 10,
+        expectedCollectionCoordinate: COLLECTION,
+        expectedCollectionCreatedAt: 2_000,
+        expectedCollectionEventId: "a".repeat(64),
+        expectedCalendarCoordinate: CALENDAR,
+        expectedCalendarCreatedAt: 3_000,
+        expectedCalendarEventId: "b".repeat(64),
+        expectedPickupCoordinate: ORGANIZER_PICKUP,
+        expectedPickupCreatedAt: 4_000,
+        expectedPickupEventId: "c".repeat(64),
+      },
+      storage
+    )
+    const hydrated = rememberDiscoveredEventMarket(
+      MERCHANT,
+      { ...titleless[0]!, title: "Resolved market title" },
+      storage
+    )
+
+    expect(hydrated).toHaveLength(1)
+    expect(hydrated[0]).toMatchObject({
+      title: "Resolved market title",
+      savedAt: 10,
+      expectedCollectionCoordinate: COLLECTION,
+      expectedCollectionCreatedAt: 2_000,
+      expectedCalendarCoordinate: CALENDAR,
+      expectedCalendarCreatedAt: 3_000,
+      expectedPickupCoordinate: ORGANIZER_PICKUP,
+      expectedPickupCreatedAt: 4_000,
+    })
+    expect(
+      decodeEventMarketReference(hydrated[0]!.reference, [30405])?.relayHints
+    ).toEqual(importedHints)
+  })
+
+  it("hydrates a pasted shopper link outside discovery and deduplicates repeated imports", () => {
+    const storage = new MemoryStorage()
+    const first = encodeEventMarketNaddr(COLLECTION, [
+      "wss://one.example/events",
+    ])
+    const second = encodeEventMarketNaddr(COLLECTION, [
+      "wss://two.example/events",
+    ])
+    const shopperLink = getEventMarketUrl(second, {
+      hostname: "shop.conduit.market",
+      protocol: "https:",
+      port: "",
+    })
+
+    rememberDiscoveredEventMarket(
+      MERCHANT,
+      { reference: first, savedAt: 10 },
+      storage
+    )
+    const repeated = rememberDiscoveredEventMarket(
+      MERCHANT,
+      {
+        reference: parseOrganizerEventMarketReference(shopperLink).naddr,
+        savedAt: 20,
+      },
+      storage
+    )
+    const hydrated = rememberDiscoveredEventMarket(
+      MERCHANT,
+      {
+        ...repeated[0]!,
+        title: "Exact event outside the followed feed",
+      },
+      storage
+    )
+
+    expect(hydrated).toHaveLength(1)
+    expect(hydrated[0]).toMatchObject({
+      title: "Exact event outside the followed feed",
+      savedAt: 20,
+    })
+    expect(
+      decodeEventMarketReference(hydrated[0]!.reference, [30405])?.relayHints
+    ).toEqual(["wss://two.example/events", "wss://one.example/events"])
+  })
+
+  it("uses one deterministic shortened coordinate label across relay hints", () => {
+    const first = encodeEventMarketNaddr(COLLECTION, [
+      "wss://one.example/events",
+    ])
+    const second = encodeEventMarketNaddr(COLLECTION, [
+      "wss://two.example/events",
+    ])
+
+    expect(shortenOrganizerEventMarketReference(first)).toBe(
+      shortenOrganizerEventMarketReference(second)
+    )
+    expect(shortenOrganizerEventMarketReference(first)).toContain("…")
+    expect(shortenOrganizerEventMarketReference(first)).not.toBe(
+      shortenOrganizerEventMarketReference(
+        encodeEventMarketNaddr(OTHER_COLLECTION)
+      )
+    )
+  })
+
+  it("only replaces a cached title from current evidence", () => {
+    const saved = {
+      reference: encodeEventMarketNaddr(COLLECTION),
+      title: "Current cached title",
+      savedAt: 10,
+    }
+    const staleMarket = {
+      collectionCoordinate: COLLECTION,
+      state: "stale",
+      title: "Older stale title",
+    }
+    const currentMarket = {
+      ...staleMarket,
+      state: "active",
+      title: "Current resolved title",
+    }
+
+    expect(organizerEventMarketCanSupplySavedTitle(staleMarket, saved)).toBe(
+      false
+    )
+    expect(organizerEventMarketCanSupplySavedTitle(currentMarket, saved)).toBe(
+      true
+    )
+    expect(
+      organizerEventMarketCanSupplySavedTitle(staleMarket, {
+        ...saved,
+        title: undefined,
+      })
+    ).toBe(true)
   })
 
   it("keeps the in-session reference when browser storage rejects writes", () => {

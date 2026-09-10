@@ -68,12 +68,14 @@ import {
   expectedOrganizerEventMarketFrontiersAfterRetry,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
+  organizerEventMarketCanSupplySavedTitle,
   organizerEventMarketDeletionRetiresDelivery,
   organizerEventMarketReachesExpectedFrontiers,
   organizerEventMarketRetryRemainsCurrent,
   rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
   selectOrganizerEventMarketResolution,
+  shortenOrganizerEventMarketReference,
   shouldResolveOrganizerEventMarketReference,
   type OrganizerCollectionMembershipAction,
   type SavedOrganizerEventMarketReference,
@@ -121,14 +123,15 @@ function referenceLabel(
   markets: readonly MerchantOrganizerEventMarket[]
 ): string {
   return (
-    markets.find((market) =>
-      organizerEventMarketReferencesMatch(
-        market.collectionCoordinate,
-        reference.reference
-      )
+    markets.find(
+      (market) =>
+        organizerEventMarketReferencesMatch(
+          market.collectionCoordinate,
+          reference.reference
+        ) && organizerEventMarketCanSupplySavedTitle(market, reference)
     )?.title ??
     reference.title ??
-    "Saved event market"
+    shortenOrganizerEventMarketReference(reference.reference)
   )
 }
 
@@ -252,11 +255,40 @@ function FindEventsPanel({
     () => discoveryQuery.data?.markets ?? [],
     [discoveryQuery.data?.markets]
   )
+
+  useEffect(() => {
+    if (!merchantPubkey || discoveredMarkets.length === 0) return
+    let next = loadSavedDiscoveredEventMarkets(merchantPubkey)
+    let changed = false
+    for (const market of discoveredMarkets) {
+      const existing = findSavedOrganizerEventMarketReference(
+        next,
+        market.collectionCoordinate
+      )
+      if (
+        !existing ||
+        existing.title === market.title ||
+        !organizerEventMarketCanSupplySavedTitle(market, existing)
+      ) {
+        continue
+      }
+      next = rememberDiscoveredEventMarket(merchantPubkey, {
+        ...existing,
+        title: market.title,
+      })
+      changed = true
+    }
+    if (changed) setSavedReferences(next)
+  }, [discoveredMarkets, merchantPubkey])
+
   const selectedReference =
     selectedReferenceOverride ||
     discoveredMarkets[0]?.naddr ||
     savedReferences[0]?.reference ||
     ""
+  const selectedSavedReference = selectedReference
+    ? findSavedOrganizerEventMarketReference(savedReferences, selectedReference)
+    : undefined
 
   const selectedMarketQuery = useQuery({
     queryKey: [
@@ -275,6 +307,25 @@ function FindEventsPanel({
     retry: false,
   })
   const selectedMarket = selectedMarketQuery.data ?? null
+
+  useEffect(() => {
+    if (
+      !selectedMarket ||
+      !selectedSavedReference ||
+      selectedSavedReference.title === selectedMarket.title ||
+      !organizerEventMarketCanSupplySavedTitle(
+        selectedMarket,
+        selectedSavedReference
+      )
+    ) {
+      return
+    }
+    const saved = rememberDiscoveredEventMarket(merchantPubkey, {
+      ...selectedSavedReference,
+      title: selectedMarket.title,
+    })
+    setSavedReferences(saved)
+  }, [merchantPubkey, selectedMarket, selectedSavedReference])
 
   const allReferences = useMemo(() => {
     const next = [...savedReferences]
@@ -366,7 +417,12 @@ function FindEventsPanel({
                     key={reference.reference}
                     value={reference.reference}
                   >
-                    {referenceLabel(reference, discoveredMarkets)}
+                    {referenceLabel(
+                      reference,
+                      selectedMarket
+                        ? [selectedMarket, ...discoveredMarkets]
+                        : discoveredMarkets
+                    )}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -605,21 +661,27 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     if (!organizerPubkey || markets.length === 0) return
     let next = loadSavedOrganizerEventMarkets(organizerPubkey)
     for (const market of markets) {
+      const existing = findSavedOrganizerEventMarketReference(
+        next,
+        market.collectionCoordinate
+      )
+      if (existing?.title === market.title) continue
       if (
-        next.some((reference) =>
-          organizerEventMarketReferencesMatch(
-            reference.reference,
-            market.collectionCoordinate
-          )
-        )
+        existing &&
+        !organizerEventMarketCanSupplySavedTitle(market, existing)
       ) {
         continue
       }
-      next = rememberOrganizerEventMarket(organizerPubkey, {
-        reference: market.collectionCoordinate,
-        title: market.title,
-        savedAt: market.collectionCreatedAt ?? Date.now(),
-      })
+      next = rememberOrganizerEventMarket(
+        organizerPubkey,
+        existing
+          ? { ...existing, title: market.title }
+          : {
+              reference: market.collectionCoordinate,
+              title: market.title,
+              savedAt: market.collectionCreatedAt ?? Date.now(),
+            }
+      )
     }
     setSavedReferences(next)
   }, [markets, organizerPubkey])
@@ -684,6 +746,26 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     !("terminal" in selectedResolution)
       ? selectedResolution
       : null
+
+  useEffect(() => {
+    if (
+      !selectedMarket ||
+      !selectedSavedReference ||
+      selectedSavedReference.title === selectedMarket.title ||
+      !organizerEventMarketCanSupplySavedTitle(
+        selectedMarket,
+        selectedSavedReference
+      )
+    ) {
+      return
+    }
+    const saved = rememberOrganizerEventMarket(organizerPubkey, {
+      ...selectedSavedReference,
+      title: selectedMarket.title,
+    })
+    setSavedReferences(saved)
+  }, [organizerPubkey, selectedMarket, selectedSavedReference])
+
   const selectedReferenceResolutionPending =
     shouldResolveSelectedReference && selectedMarketQuery.isPending
   const selectedActionableMarket =
@@ -866,11 +948,17 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       setPublishError("")
       setPublishState("awaiting_signature")
     },
-    onSuccess: async (result: MerchantOrganizerPublishResult) => {
+    onSuccess: async (
+      result: MerchantOrganizerPublishResult,
+      input: {
+        form: OrganizerEventMarketFormValues
+        existing: MerchantOrganizerEventMarket | null
+      }
+    ) => {
       const reference = result.naddr
       const saved = rememberOrganizerEventMarket(organizerPubkey, {
         reference,
-        title: editingMarket?.title,
+        title: input.form.title,
         savedAt: Date.now(),
         ...expectedEventMarketFrontiers(result.records),
         replaceExpectedRecordFrontiers: true,
@@ -1221,7 +1309,10 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
                     key={reference.reference}
                     value={reference.reference}
                   >
-                    {referenceLabel(reference, markets)}
+                    {referenceLabel(
+                      reference,
+                      selectedMarket ? [selectedMarket, ...markets] : markets
+                    )}
                   </SelectItem>
                 ))}
               </SelectContent>

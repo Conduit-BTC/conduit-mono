@@ -883,6 +883,180 @@ test("signed-out merchant participation preserves the exact event through auth @
   ).toBeVisible()
 })
 
+test("direct and pasted event imports hydrate one saved selector title under partial discovery @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const eventTitle = "Synthetic imported title hydration"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: eventTitle,
+    organizerHandoffEnabled: false,
+  })
+  const unrelatedFollowedPubkeys = Array.from({ length: 17 }, (_, index) =>
+    (index + 1).toString(16).padStart(64, "0")
+  )
+  relay.seed(
+    createFollowList(
+      "merchant",
+      unrelatedFollowedPubkeys,
+      market.initialCollection.created_at + 1
+    )
+  )
+
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  await expect(
+    page.getByText(/Event discovery is a partial relay view\./)
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator("#discovered-event-selector")).toContainText(
+    eventTitle,
+    { timeout: 30_000 }
+  )
+
+  const savedStorageKey = `conduit:merchant:discovered-event-markets:v1:${MERCHANT_PUBKEY}`
+  await expect
+    .poll(() =>
+      page.evaluate((key) => {
+        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+          title?: string
+        }>
+        return { count: saved.length, title: saved[0]?.title }
+      }, savedStorageKey)
+    )
+    .toEqual({ count: 1, title: eventTitle })
+
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  const shopperLink = `${marketUrl}/events/${market.canonicalNaddr}`
+  await page.getByLabel("Event naddr or link").fill(shopperLink)
+  await page.getByRole("button", { name: "Open", exact: true }).click()
+  await expect(page.locator("#discovered-event-selector")).toContainText(
+    eventTitle,
+    { timeout: 30_000 }
+  )
+  await page.getByLabel("Event naddr or link").fill(market.canonicalNaddr)
+  await page.getByRole("button", { name: "Open", exact: true }).click()
+  await expect
+    .poll(() =>
+      page.evaluate((key) => {
+        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+          title?: string
+        }>
+        return { count: saved.length, title: saved[0]?.title }
+      }, savedStorageKey)
+    )
+    .toEqual({ count: 1, title: eventTitle })
+})
+
+test("current exact resolution refreshes a saved title without replacing its evidence @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const eventTitle = "Synthetic current resolved title"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: eventTitle,
+    organizerHandoffEnabled: false,
+  })
+  const [, collectionPubkey, collectionIdentifier] =
+    market.collectionCoordinate.split(":")
+  const hintedReference = nip19.naddrEncode({
+    kind: 30405,
+    pubkey: collectionPubkey!,
+    identifier: collectionIdentifier!,
+    relays: [FIXTURE_RELAY, "wss://secondary.example/events"],
+  })
+  const savedStorageKey = `conduit:merchant:discovered-event-markets:v1:${MERCHANT_PUBKEY}`
+  const savedAt = 1_725_000_000_000
+  const expectedSaved = {
+    reference: hintedReference,
+    title: "Cached title before current resolution",
+    savedAt,
+    expectedCollectionCoordinate: market.collectionCoordinate,
+    expectedCollectionCreatedAt: market.initialCollection.created_at * 1_000,
+    expectedCollectionEventId: market.initialCollection.id,
+    expectedCalendarCoordinate: market.calendarCoordinate,
+    expectedCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
+    expectedCalendarEventId: market.calendarEvent.id,
+  }
+  await page.evaluate(
+    ({ key, saved }) => localStorage.setItem(key, JSON.stringify([saved])),
+    { key: savedStorageKey, saved: expectedSaved }
+  )
+
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await expect(page.locator("#discovered-event-selector")).toContainText(
+    eventTitle,
+    { timeout: 30_000 }
+  )
+  await expect
+    .poll(() =>
+      page.evaluate((key) => {
+        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<
+          Record<string, unknown>
+        >
+        return saved[0]
+      }, savedStorageKey)
+    )
+    .toEqual({ ...expectedSaved, title: eventTitle })
+})
+
+test("successful event rename keeps the new title cached @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const initialTitle = "Synthetic event before rename"
+  const renamedTitle = "Synthetic event after rename"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: initialTitle,
+    organizerHandoffEnabled: false,
+  })
+
+  const updateStart = relay.publications.length
+  await page.getByRole("button", { name: "Update event", exact: true }).click()
+  const editor = page.getByRole("dialog", { name: "Update event market" })
+  await editor
+    .getByRole("textbox", { name: "Title Required", exact: true })
+    .fill(renamedTitle)
+  await editor.getByRole("button", { name: "Publish update" }).click()
+  await expect(editor).toBeHidden({ timeout: 30_000 })
+
+  const updatedCalendar = uniquePublishedEvents(
+    relay.publications.slice(updateStart)
+  ).find((event) => event.kind === market.calendarEvent.kind)
+  expect(updatedCalendar).toBeTruthy()
+  expect(eventCoordinate(updatedCalendar!)).toBe(market.calendarCoordinate)
+  await expect(page.locator("#event-market-selector")).toContainText(
+    renamedTitle,
+    { timeout: 30_000 }
+  )
+
+  const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
+  await expect
+    .poll(() =>
+      page.evaluate((key) => {
+        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+          title?: string
+        }>
+        return { count: saved.length, title: saved[0]?.title }
+      }, savedStorageKey)
+    )
+    .toEqual({ count: 1, title: renamedTitle })
+
+  await page.reload()
+  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  await expect(page.locator("#event-market-selector")).toContainText(
+    renamedTitle,
+    { timeout: 30_000 }
+  )
+})
+
 async function publishMerchantProductFromEvent(
   page: Page,
   relay: RelayHarness,
