@@ -5,7 +5,6 @@ import {
   encodeEventMarketNaddr,
 } from "@conduit/core"
 import {
-  assertOrganizerEventMarketHandoffCurrent,
   findSavedOrganizerEventMarketReference,
   expectedOrganizerEventMarketFrontiersAfterMembership,
   expectedOrganizerEventMarketFrontiersAfterRetry,
@@ -1240,47 +1239,6 @@ describe("merchant organizer event workflow", () => {
         selectedReference
       )
     ).toBe(false)
-  })
-
-  it("blocks handoff until the latest signed collection frontier is readable", () => {
-    const savedReference = {
-      reference: encodeEventMarketNaddr(COLLECTION, []),
-      savedAt: 20,
-      expectedCollectionCoordinate: COLLECTION,
-      expectedCollectionCreatedAt: 2_000,
-      expectedCollectionEventId: "b".repeat(64),
-      expectedCalendarCoordinate: CALENDAR,
-      expectedCalendarCreatedAt: 1_000,
-      expectedCalendarEventId: "c".repeat(64),
-      expectedPickupCoordinate: ORGANIZER_PICKUP,
-      expectedPickupCreatedAt: 1_000,
-      expectedPickupEventId: "d".repeat(64),
-    }
-    const staleMarket = {
-      collectionCoordinate: COLLECTION,
-      collectionCreatedAt: 1_000,
-      collectionEventId: "a".repeat(64),
-      calendarCoordinate: CALENDAR,
-      calendarCreatedAt: 1_000,
-      calendarEventId: "c".repeat(64),
-      pickupCoordinate: ORGANIZER_PICKUP,
-      pickupCreatedAt: 1_000,
-      pickupEventId: "d".repeat(64),
-    }
-
-    expect(() =>
-      assertOrganizerEventMarketHandoffCurrent(staleMarket, savedReference)
-    ).toThrow("latest signed event records are not yet readable")
-    expect(() =>
-      assertOrganizerEventMarketHandoffCurrent(
-        {
-          ...staleMarket,
-          collectionCreatedAt: 2_000,
-          collectionEventId: "b".repeat(64),
-        },
-        savedReference
-      )
-    ).not.toThrow()
   })
 
   it("merges signed calendar, pickup, and collection frontiers for one saved event", () => {

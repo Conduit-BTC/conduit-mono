@@ -106,6 +106,7 @@ type HeldRelayRequest = {
 }
 
 type RelayRequest = {
+  clientId?: string
   relayUrl: string
   subscriptionId: string
   filters: RelayFilter[]
@@ -267,7 +268,7 @@ function createRelayHarness() {
     events(): SignedEvent[] {
       return Array.from(eventsById.values())
     },
-    async install(page: Page): Promise<void> {
+    async install(page: Page, clientId?: string): Promise<void> {
       await page.routeWebSocket(FIXTURE_RELAY, (socket) => {
         socket.onMessage((message) => {
           if (typeof message !== "string") return
@@ -278,6 +279,7 @@ function createRelayHarness() {
             const subscriptionId = frame[1]
             const filters = frame.slice(2).filter(isRelayFilter)
             const request: RelayRequest = {
+              ...(clientId ? { clientId } : {}),
               relayUrl: socket.url(),
               subscriptionId,
               filters: structuredClone(filters),
@@ -663,9 +665,10 @@ function captureBrowserErrors(page: Page): {
 
 async function installSyntheticEnvironment(
   page: Page,
-  relay: RelayHarness
+  relay: RelayHarness,
+  relayClientId?: string
 ): Promise<void> {
-  await relay.install(page)
+  await relay.install(page, relayClientId)
   await installSyntheticSigner(page)
   await page.route("https://event-market-e2e.conduit.market/**", (route) =>
     route.fulfill({
@@ -2448,6 +2451,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
 })
 
 test("organizer handoff completes a private order receipt and exact ACK flow @market @merchant", async ({
+  browser,
   page,
 }) => {
   test.setTimeout(300_000)
@@ -2461,7 +2465,7 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     createInboxDeclaration("merchant", declarationTime + 1),
     createInboxDeclaration("buyer", declarationTime + 2)
   )
-  await installSyntheticEnvironment(page, relay)
+  await installSyntheticEnvironment(page, relay, "acknowledger")
 
   const market = await publishOrganizerMarket(page, relay, {
     title: "Synthetic Organizer Handoff Market",
@@ -2810,6 +2814,45 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
 
   relay.seed(...createCappedInboxNoise(ORGANIZER_PUBKEY, 400))
 
+  const organizerEventMarketStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
+  const savedOrganizerEventMarkets = await page.evaluate(
+    (storageKey) => localStorage.getItem(storageKey),
+    organizerEventMarketStorageKey
+  )
+  const concurrentContext = await browser.newContext()
+  const concurrentPage = await concurrentContext.newPage()
+  const concurrentBrowserErrors = captureBrowserErrors(concurrentPage)
+  await installSyntheticEnvironment(concurrentPage, relay, "mutator")
+  await concurrentPage.addInitScript(
+    ({ storageKey, savedReferences }) => {
+      if (savedReferences) localStorage.setItem(storageKey, savedReferences)
+    },
+    {
+      storageKey: organizerEventMarketStorageKey,
+      savedReferences: savedOrganizerEventMarkets,
+    }
+  )
+  await gotoAs(concurrentPage, merchantUrl, "/events", "organizer")
+  await concurrentPage
+    .getByRole("tab", { name: "My events", exact: true })
+    .click()
+  const concurrentParticipationRow = concurrentPage
+    .getByTestId("organizer-product-preview")
+    .filter({ hasText: ORGANIZER_PRODUCT_TITLE })
+    .locator("..")
+  const concurrentRemoveProduct = concurrentParticipationRow.getByRole(
+    "button",
+    { name: "Remove", exact: true }
+  )
+  await expect(concurrentRemoveProduct).toBeEnabled({ timeout: 30_000 })
+  await expect(
+    concurrentPage
+      .getByTestId("organizer-handoff-receipt-queue")
+      .locator("article")
+      .filter({ hasText: pickupCode })
+      .getByRole("button", { name: "Mark handed out", exact: true })
+  ).toBeEnabled({ timeout: 30_000 })
+
   await gotoAs(page, merchantUrl, "/events", "organizer")
   await page.getByRole("tab", { name: "My events", exact: true }).click()
   const queue = page.getByTestId("organizer-handoff-receipt-queue")
@@ -2849,14 +2892,6 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   })
   await expect(acknowledge).toBeEnabled({ timeout: 30_000 })
 
-  const removalAck = relay.holdNextPublicationAck(
-    (event) =>
-      event.kind === 30405 &&
-      eventCoordinate(event) === market.collectionCoordinate &&
-      !event.tags.some(
-        (tag) => tag[0] === "a" && tag[1] === ORGANIZER_PRODUCT_COORDINATE
-      )
-  )
   const participationRow = page
     .getByTestId("organizer-product-preview")
     .filter({ hasText: ORGANIZER_PRODUCT_TITLE })
@@ -2866,15 +2901,103 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     exact: true,
   })
   await expect(removeProduct).toBeEnabled({ timeout: 30_000 })
+
+  let acknowledgementReceiptReadStarted = false
+  const merchandiseRead = relay.holdNextRelayRequest((request) => {
+    if (request.clientId !== "acknowledger") return false
+    if (
+      request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(1059) &&
+          filter["#p"]?.includes(ORGANIZER_PUBKEY)
+      )
+    ) {
+      acknowledgementReceiptReadStarted = true
+      return false
+    }
+    return (
+      acknowledgementReceiptReadStarted &&
+      request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(30402) && filter.ids?.includes(productEvent.id)
+      )
+    )
+  })
   const staleHandoffPublishStart = relay.publications.length
-  await removeProduct.click()
+  await acknowledge.click()
+  await merchandiseRead.captured
+  await expect(
+    queuedClaim.getByRole("button", {
+      name: "Sending exact update...",
+      exact: true,
+    })
+  ).toBeDisabled()
+  await expect(removeProduct).toBeDisabled()
+  await expect(
+    page.getByRole("button", { name: "Update event", exact: true })
+  ).toBeDisabled()
+
+  const removalAck = relay.holdNextPublicationAck(
+    (event) =>
+      event.kind === 30405 &&
+      eventCoordinate(event) === market.collectionCoordinate &&
+      !event.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === ORGANIZER_PRODUCT_COORDINATE
+      )
+  )
+  await concurrentRemoveProduct.click()
   const removedCollection = await removalAck.captured
-  relay.remove(removedCollection)
   expect(removedCollection.created_at).toBeGreaterThan(
     acceptedCollection.created_at
   )
+  const removedSavedOrganizerEventMarkets = await concurrentPage.evaluate(
+    (storageKey) => localStorage.getItem(storageKey),
+    organizerEventMarketStorageKey
+  )
+  expect(removedSavedOrganizerEventMarkets).toBeTruthy()
+  await page.evaluate(
+    ({ storageKey, savedReferences }) => {
+      if (savedReferences) localStorage.setItem(storageKey, savedReferences)
+    },
+    {
+      storageKey: organizerEventMarketStorageKey,
+      savedReferences: removedSavedOrganizerEventMarkets,
+    }
+  )
+  await expect
+    .poll(() =>
+      page.evaluate(
+        ({ organizerPubkey, eventId }) => {
+          const raw = localStorage.getItem(
+            `conduit:merchant:event-markets:v1:${organizerPubkey}`
+          )
+          if (!raw) return false
+          const saved = JSON.parse(raw) as Array<{
+            expectedCollectionEventId?: string
+          }>
+          return saved.some(
+            (reference) => reference.expectedCollectionEventId === eventId
+          )
+        },
+        {
+          organizerPubkey: ORGANIZER_PUBKEY,
+          eventId: removedCollection.id,
+        }
+      )
+    )
+    .toBe(true)
+  relay.remove(removedCollection)
   removalAck.release()
-  await expect(queue).toHaveCount(0, { timeout: 30_000 })
+  const acceptAgain = concurrentParticipationRow.getByRole("button", {
+    name: "Accept",
+    exact: true,
+  })
+  await expect(acceptAgain).toBeEnabled({ timeout: 30_000 })
+
+  merchandiseRead.release()
+  await expect(
+    queue.getByText(/latest signed event records are not yet readable/i)
+  ).toBeVisible({ timeout: 30_000 })
   expect(
     uniquePrivatePublications(
       decryptPrivatePublications(
@@ -2893,14 +3016,20 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
         (tag) => tag[0] === "a" && tag[1] === ORGANIZER_PRODUCT_COORDINATE
       )
   )
-  const acceptAgain = participationRow.getByRole("button", {
-    name: "Accept",
-    exact: true,
-  })
-  await expect(acceptAgain).toBeEnabled({ timeout: 30_000 })
   await acceptAgain.click()
-  await restoreAck.captured
+  const restoredCollection = await restoreAck.captured
+  expect(restoredCollection.created_at).toBeGreaterThan(
+    removedCollection.created_at
+  )
   restoreAck.release()
+  await expect(
+    concurrentParticipationRow.getByText("Accepted", { exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  expect(concurrentBrowserErrors.pageErrors).toEqual([])
+  expect(concurrentBrowserErrors.consoleErrors).toEqual([])
+  await concurrentContext.close()
+
+  await page.getByRole("button", { name: "Refresh evidence" }).click()
   await expect(queue).toBeVisible({ timeout: 30_000 })
   await expect(acknowledge).toBeEnabled({ timeout: 30_000 })
 
