@@ -2,6 +2,7 @@ import type { Filter } from "nostr-tools"
 import {
   EventMarketDiscoveryBoundError,
   getOrganizerEventMarketsDetailed,
+  getRetainedEventMarketCollectionEvidence,
   parseAddressableCoordinate,
   type EventMarketResolution,
   type OrganizerEventMarketsReadResult,
@@ -69,6 +70,7 @@ export interface DiscoverFollowedEventMarketsInput {
 interface FollowedEventMarketDiscoveryTestOverrides {
   readFollowLists?: typeof readLatestFollowLists
   readCollectionCandidates?: typeof readEventMarketCollectionCandidates
+  readRetainedCollectionCandidates?: typeof getRetainedEventMarketCollectionEvidence
   readOrganizerMarkets?: typeof getOrganizerEventMarketsDetailed
   organizerReadDeadlineMs?: number
 }
@@ -328,6 +330,63 @@ function collectionCandidateFrontier(input: {
   }
 }
 
+function mergeCandidateFrontiers(
+  ...frontiers: ReadonlyArray<ReturnType<typeof collectionCandidateFrontier>>
+): ReturnType<typeof collectionCandidateFrontier> {
+  const organizers = new Map<string, EventMarketOrganizerCandidates>()
+  for (const frontier of frontiers) {
+    for (const candidate of frontier.organizers) {
+      const current = organizers.get(candidate.organizerPubkey) ?? {
+        organizerPubkey: candidate.organizerPubkey,
+        coordinates: new Set<string>(),
+        events: [],
+        relayHints: [],
+        sourceRelayUrlsById: new Map<string, readonly string[]>(),
+      }
+      for (const coordinate of candidate.coordinates) {
+        current.coordinates.add(coordinate)
+      }
+      const eventsById = new Map(
+        current.events.map((event) => [event.id.toLowerCase(), event])
+      )
+      for (const event of candidate.events) {
+        eventsById.set(event.id.toLowerCase(), event)
+      }
+      current.events = Array.from(eventsById.values())
+      current.relayHints = Array.from(
+        new Set([...current.relayHints, ...candidate.relayHints])
+      )
+      for (const [eventId, relayUrls] of candidate.sourceRelayUrlsById) {
+        current.sourceRelayUrlsById.set(
+          eventId,
+          Array.from(
+            new Set([
+              ...(current.sourceRelayUrlsById.get(eventId) ?? []),
+              ...relayUrls,
+            ])
+          )
+        )
+      }
+      organizers.set(candidate.organizerPubkey, current)
+    }
+  }
+
+  const orderedOrganizers = Array.from(organizers.values()).sort(
+    (left, right) => left.organizerPubkey.localeCompare(right.organizerPubkey)
+  )
+  return {
+    organizers: orderedOrganizers,
+    candidateCollectionCount: orderedOrganizers.reduce(
+      (count, candidate) => count + candidate.coordinates.size,
+      0
+    ),
+    malformedFollowedCandidateObserved: frontiers.some(
+      (frontier) => frontier.malformedFollowedCandidateObserved
+    ),
+    truncated: frontiers.some((frontier) => frontier.truncated),
+  }
+}
+
 function isBoundedDiscoveryError(reason: unknown): boolean {
   return (
     reason instanceof EventMarketDiscoveryBoundError ||
@@ -468,10 +527,35 @@ export async function discoverFollowedOrganizerEventMarkets(
     followedOrganizers.length === 0
       ? "complete"
       : candidateScanState(candidateRead)
-  const candidateFrontier = collectionCandidateFrontier({
+  const liveCandidateFrontier = collectionCandidateFrontier({
     read: candidateRead,
     followedOrganizerPubkeys: followedOrganizerSet,
   })
+  const readRetainedCollectionCandidates =
+    testOverrides.readRetainedCollectionCandidates ??
+    getRetainedEventMarketCollectionEvidence
+  const retainedCandidateRead =
+    followedOrganizers.length === 0
+      ? { events: [], eventSourceRelayUrls: {} }
+      : await readRetainedCollectionCandidates({
+          organizerPubkeys: followedOrganizers,
+          signal: input.signal,
+        })
+  throwIfAborted(input.signal)
+  const retainedCandidateFrontier = collectionCandidateFrontier({
+    read: {
+      ...retainedCandidateRead,
+      relays: [],
+      eventsVerified: true,
+      plannedRelayCount: 0,
+      capped: false,
+    },
+    followedOrganizerPubkeys: followedOrganizerSet,
+  })
+  const candidateFrontier = mergeCandidateFrontiers(
+    retainedCandidateFrontier,
+    liveCandidateFrontier
+  )
   const readOrganizerMarkets =
     testOverrides.readOrganizerMarkets ?? getOrganizerEventMarketsDetailed
   const organizerReads: PromiseSettledResult<OrganizerEventMarketsReadResult>[] =
@@ -602,6 +686,11 @@ export async function discoverFollowedOrganizerEventMarkets(
       ...candidate.coordinates,
     ])
   )
+  const liveCandidateCoordinates = new Set(
+    liveCandidateFrontier.organizers.flatMap((candidate) => [
+      ...candidate.coordinates,
+    ])
+  )
   const marketsByCoordinate = new Map<string, EventMarketResolution>()
   let hasDegradedMarket =
     candidateFrontier.malformedFollowedCandidateObserved ||
@@ -637,6 +726,9 @@ export async function discoverFollowedOrganizerEventMarkets(
         continue
       }
       if (market.state === "partial" || market.state === "stale") {
+        hasDegradedMarket = true
+      }
+      if (!liveCandidateCoordinates.has(market.reference)) {
         hasDegradedMarket = true
       }
       marketsByCoordinate.set(market.reference, market)

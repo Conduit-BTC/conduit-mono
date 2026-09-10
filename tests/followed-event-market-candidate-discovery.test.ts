@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import {
   __resetFollowedEventMarketDiscoveryTestOverrides,
+  __resetEventMarketTestOverrides,
+  __setEventMarketTestOverrides,
   __setFollowedEventMarketDiscoveryTestOverrides,
   discoverFollowedOrganizerEventMarkets,
   FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT,
@@ -17,6 +19,7 @@ const ORGANIZER_SECRET = generateSecretKey()
 const ORGANIZER = getPublicKey(ORGANIZER_SECRET)
 const UNFOLLOWED_SECRET = generateSecretKey()
 const RELAY = "wss://event-candidates.test"
+const RETAINED_RELAY = "wss://retained-event-candidate.test"
 const COMPLETE_COVERAGE: EventMarketRelayCoverage = {
   attemptedRelayCount: 1,
   completeRelayCount: 1,
@@ -153,8 +156,16 @@ function organizerRead(
   }
 }
 
+beforeEach(() => {
+  __setEventMarketTestOverrides({
+    loadCachedEvidence: async () => [],
+    loadCachedCollectionEvidence: async () => [],
+  })
+})
+
 afterEach(() => {
   __resetFollowedEventMarketDiscoveryTestOverrides()
+  __resetEventMarketTestOverrides()
 })
 
 describe("candidate-first followed event-market discovery", () => {
@@ -233,6 +244,53 @@ describe("candidate-first followed event-market discovery", () => {
       candidateCollectionCount: 0,
       searchedOrganizerCount: 0,
     })
+  })
+
+  it("retains a verified followed market when a partial live scan omits it", async () => {
+    const retainedCandidate = collectionEvent()
+    const organizerInputs: string[] = []
+    __setEventMarketTestOverrides({
+      loadCachedCollectionEvidence: async (organizerPubkeys) =>
+        organizerPubkeys.includes(ORGANIZER)
+          ? [
+              {
+                id: retainedCandidate.id,
+                organizerPubkey: ORGANIZER,
+                kind: retainedCandidate.kind,
+                addressId: "catalog",
+                signedEvent: retainedCandidate,
+                sourceRelayUrls: [RETAINED_RELAY],
+                cachedAt: 1_800_000_000_000,
+              },
+            ]
+          : [],
+    })
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readFollowLists: async () => followRead([ORGANIZER, "b".repeat(64)]),
+      readCollectionCandidates: async () =>
+        candidateRead({ relayStatus: "partial" }),
+      readOrganizerMarkets: async (input) => {
+        organizerInputs.push(input.organizerPubkey)
+        expect(input.candidateCollectionEvents).toEqual([retainedCandidate])
+        expect(input.relayHints).toEqual([RETAINED_RELAY])
+        return organizerRead([market(ORGANIZER, "catalog", "stale")], "partial")
+      },
+    })
+
+    const result = await discoverFollowedOrganizerEventMarkets({
+      merchantPubkey: MERCHANT,
+    })
+
+    expect(result).toMatchObject({
+      state: "partial",
+      candidateScanState: "partial",
+      candidateCollectionCount: 1,
+      searchedOrganizerCount: 1,
+    })
+    expect(result.markets.map((item) => item.reference)).toEqual([
+      `30405:${ORGANIZER}:catalog`,
+    ])
+    expect(organizerInputs).toEqual([ORGANIZER])
   })
 
   it("keeps a validated candidate visible while reporting partial relay coverage", async () => {
