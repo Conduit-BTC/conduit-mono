@@ -1176,11 +1176,19 @@ export function organizerEventMarketCanSupplySavedTitle(
   savedReference: SavedOrganizerEventMarketReference | undefined
 ): boolean {
   const titleFrontiers = organizerEventMarketTitleFrontiers(market)
+  // Pickup readiness gates actions, not signed collection/calendar labels.
+  const titleCandidate = market && { ...market, pickupCoordinate: undefined }
   if (
     !market ||
     !savedReference ||
     !titleFrontiers ||
-    !marketReachesExpectedFrontiers(market, savedReference)
+    !marketReachesExpectedFrontiers(
+      titleCandidate,
+      savedReference,
+      expectedEventMarketRecords(savedReference).filter(
+        (record) => record !== "pickup"
+      )
+    )
   ) {
     return false
   }
@@ -1196,7 +1204,7 @@ export function organizerEventMarketCanSupplySavedTitle(
   if (
     savedTitleFrontiers &&
     !marketReachesExpectedFrontiers(
-      market,
+      titleCandidate,
       {
         reference: savedReference.reference,
         savedAt: savedReference.savedAt,
