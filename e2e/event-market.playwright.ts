@@ -3395,6 +3395,13 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     ).filter((message) => rumorType(message.rumor) === "organizer_handoff_ack")
   ).toEqual([])
 
+  // The stale-read phase is complete. Make the removed graph observable before
+  // the independent organizer starts a new edit; cached-only child evidence
+  // must not be used as fresh authority for the recovery phase.
+  relay.seed(removedCollection)
+  await concurrentPage.getByRole("button", { name: "Refresh evidence" }).click()
+  await expect(acceptAgain).toBeEnabled({ timeout: 30_000 })
+
   const restoreAck = relay.holdNextPublicationAck(
     (event) =>
       event.kind === 30405 &&
