@@ -3253,6 +3253,76 @@ test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @
   ).toBe(false)
 })
 
+test("event availability copy excludes retained products without pickup authority @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic availability evidence",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "availability-evidence",
+    title: "Synthetic availability product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  await acceptMerchantProduct(page, relay, product, market.collectionCoordinate)
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const card = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic availability product" })
+  await expect(page.getByTestId("event-actionability-status")).toContainText(
+    "1 product available."
+  )
+  await expect(
+    card.getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled()
+
+  // Exercise the route's retained-catalog contract at the query boundary.
+  // Signed parsing and action authority have separate Core/adapter coverage;
+  // this explicit projection fixture proves the prominent copy uses the same
+  // availability evidence as the cards, including unresolved required records.
+  await page.route("**/src/hooks/useEventMarket.ts*", async (route) => {
+    const response = await route.fetch()
+    const source = await response.text()
+    const renamed = source.replace(
+      "import { loadEventCatalog }",
+      "import { loadEventCatalog as loadOriginalEventCatalog }"
+    )
+    expect(renamed).not.toBe(source)
+    await route.fulfill({
+      response,
+      body: `${renamed}
+const loadEventCatalog = async (...args) => {
+  const catalog = await loadOriginalEventCatalog(...args);
+  return { ...catalog, state: "partial", pickup: undefined, pickups: [],
+    products: catalog.products.map(entry => ({ ...entry, evidenceState: "retained", pickupFulfillment: null, familyPickupFulfillments: {} })) };
+};`,
+    })
+  })
+  const publicationCount = relay.publications.length
+  await page.reload()
+  const warning = page
+    .getByRole("alert")
+    .filter({ hasText: "Event records unresolved" })
+  await expect(warning).toContainText("0 products available.")
+  await expect(warning).toContainText(
+    "1 product remains unresolved and unavailable."
+  )
+  await expect(card).toBeVisible()
+  await expect(
+    card.getByRole("button", { name: "Pickup unavailable", exact: true })
+  ).toBeDisabled()
+  await expect(
+    card.getByRole("button", { name: "Add", exact: true })
+  ).toHaveCount(0)
+  expect(relay.publications).toHaveLength(publicationCount)
+})
+
 test("organizer offer off publishes an empty catalog and permits booth handoff @market @merchant", async ({
   page,
 }) => {
