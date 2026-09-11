@@ -6,9 +6,111 @@ import {
   resolveDeploymentProfile,
   selectDeploymentProfileName,
 } from "../scripts/vite/deployment_profile"
+import { resolveDmCompatibilityOrderRoutingEnabled } from "../packages/core/src/config"
 
 describe("deployment profiles", () => {
-  it("enables compatibility order routing in preview only", () => {
+  it("fails compatibility routing closed on official hosts outside production", () => {
+    for (const runtimeHostname of [
+      "shop.conduit.market",
+      "sell.conduit.market",
+    ]) {
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "preview",
+          runtimeHostname,
+        })
+      ).toBe(false)
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "staging",
+          runtimeHostname,
+        })
+      ).toBe(false)
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "production",
+          runtimeHostname,
+        })
+      ).toBe(true)
+    }
+
+    expect(
+      resolveDmCompatibilityOrderRoutingEnabled({
+        profileEnabled: false,
+        deploymentProfile: "production",
+        runtimeHostname: "SHOP.CONDUIT.MARKET.",
+      })
+    ).toBe(false)
+  })
+
+  it("requires the staging profile on Signet Pages hosts", () => {
+    for (const runtimeHostname of [
+      "conduit-market-signet.pages.dev",
+      "abc123.conduit-market-signet.pages.dev",
+      "feat-rollout.conduit-merchant-signet.pages.dev",
+    ]) {
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "staging",
+          runtimeHostname,
+        })
+      ).toBe(true)
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "preview",
+          runtimeHostname,
+        })
+      ).toBe(false)
+      expect(
+        resolveDmCompatibilityOrderRoutingEnabled({
+          profileEnabled: true,
+          deploymentProfile: "production",
+          runtimeHostname,
+        })
+      ).toBe(false)
+    }
+  })
+
+  it("keeps ordinary Pages previews compatible with their compiled profile", () => {
+    expect(
+      resolveDmCompatibilityOrderRoutingEnabled({
+        profileEnabled: true,
+        deploymentProfile: "preview",
+        runtimeHostname: "abc123.conduit-market-coo.pages.dev",
+      })
+    ).toBe(true)
+    expect(
+      resolveDmCompatibilityOrderRoutingEnabled({
+        profileEnabled: false,
+        deploymentProfile: "preview",
+        runtimeHostname: "abc123.conduit-market-coo.pages.dev",
+      })
+    ).toBe(false)
+  })
+
+  it("fails a staging-misclassified bundle closed on the production host", () => {
+    const compiledProfile = selectDeploymentProfileName({
+      CF_PAGES: "1",
+      CF_PAGES_BRANCH: "main",
+      CF_PAGES_URL: "https://conduit-market-signet.pages.dev",
+    })
+
+    expect(compiledProfile).toBe("staging")
+    expect(
+      resolveDmCompatibilityOrderRoutingEnabled({
+        profileEnabled: true,
+        deploymentProfile: compiledProfile,
+        runtimeHostname: "shop.conduit.market",
+      })
+    ).toBe(false)
+  })
+
+  it("enables compatibility order routing in preview and staging only", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",
     })
@@ -23,16 +125,30 @@ describe("deployment profiles", () => {
     expect(production.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
       false
     )
-    expect(staging.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
-      false
-    )
+    expect(staging.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(true)
   })
 
-  it("selects Cloudflare preview and production without dashboard feature vars", () => {
+  it("keeps rollback to one explicit staging profile value", () => {
+    const profiles = loadPagesProfiles()
+    const rollback = structuredClone(profiles)
+    rollback.profiles.staging.publicFeatures.dmCompatibilityOrderRoutingEnabled = false
+
+    const parsed = parsePagesProfiles(rollback)
+    expect(
+      parsed.profiles.staging.publicFeatures.dmCompatibilityOrderRoutingEnabled
+    ).toBe(false)
+    expect(
+      parsed.profiles.production.publicFeatures
+        .dmCompatibilityOrderRoutingEnabled
+    ).toBe(false)
+  })
+
+  it("selects mainnet Cloudflare preview and production without dashboard feature vars", () => {
     expect(
       selectDeploymentProfileName({
         CF_PAGES: "1",
         CF_PAGES_BRANCH: "feat/private-order-routing",
+        CF_PAGES_URL: "https://abc123.conduit-market-coo.pages.dev",
         VITE_DM_BOOTSTRAP_WRITES: "false",
       })
     ).toBe("preview")
@@ -40,6 +156,7 @@ describe("deployment profiles", () => {
       selectDeploymentProfileName({
         CF_PAGES: "1",
         CF_PAGES_BRANCH: "main",
+        CF_PAGES_URL: "https://conduit-market-coo.pages.dev",
         VITE_DM_BOOTSTRAP_WRITES: "true",
       })
     ).toBe("production")
@@ -47,9 +164,35 @@ describe("deployment profiles", () => {
       selectDeploymentProfileName({
         CF_PAGES: "1",
         CF_PAGES_BRANCH: "feat/private-order-routing",
+        CF_PAGES_URL: "https://abc123.conduit-market-coo.pages.dev",
         CONDUIT_DEPLOYMENT_PROFILE: "production",
       })
     ).toThrow("Cloudflare branch requires preview")
+  })
+
+  it("selects staging only for the repo-owned Signet Pages projects", () => {
+    expect(
+      selectDeploymentProfileName({
+        CF_PAGES: "1",
+        CF_PAGES_BRANCH: "main",
+        CF_PAGES_URL: "https://conduit-market-signet.pages.dev",
+      })
+    ).toBe("staging")
+    expect(
+      selectDeploymentProfileName({
+        CF_PAGES: "1",
+        CF_PAGES_BRANCH: "feat/rollout-smoke",
+        CF_PAGES_URL: "https://abc123.conduit-merchant-signet.pages.dev",
+      })
+    ).toBe("staging")
+    expect(() =>
+      selectDeploymentProfileName({
+        CF_PAGES: "1",
+        CF_PAGES_BRANCH: "main",
+        CF_PAGES_URL: "https://conduit-market-signet.pages.dev",
+        CONDUIT_DEPLOYMENT_PROFILE: "production",
+      })
+    ).toThrow("Cloudflare branch requires staging")
   })
 
   it("rejects a missing preview feature value but accepts explicit false", () => {

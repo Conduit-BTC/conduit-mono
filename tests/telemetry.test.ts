@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test"
 import {
   applyPlausibleInitOptions,
   buildMerchantSetupStepResultTelemetryProperties,
+  buildNip17CompatibilityResultTelemetryProperties,
   buildPaymentAttemptResultTelemetryProperties,
   buildProductDetailActionTelemetryProperties,
   buildProductPublishResultTelemetryProperties,
@@ -919,6 +920,24 @@ describe("browser telemetry", () => {
       product_type: "physical",
       surface: "product_detail",
     })
+
+    expect(
+      buildNip17CompatibilityResultTelemetryProperties({
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "unavailable",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      })
+    ).toEqual({
+      action: "order_delivery",
+      declaration_class: "not_observed",
+      delivery_route: "compatibility_order",
+      ack_outcome: "unavailable",
+      repair_outcome: "not_applicable",
+      block_reason: "not_applicable",
+    })
   })
 
   it("drops events with invalid or event-incompatible properties", () => {
@@ -1033,6 +1052,22 @@ describe("browser telemetry", () => {
           surface: "https://example.com/cart",
           status: "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
         },
+      })
+    ).toBeNull()
+
+    expect(
+      sanitizeTelemetryEventProperties({
+        app: "market",
+        eventName: "nip17_compatibility_result",
+        properties: {
+          action: "order_delivery",
+          declaration_class: "not_observed",
+          delivery_route: "compatibility_order",
+          ack_outcome: "positive",
+          repair_outcome: "not_applicable",
+          block_reason: "not_applicable",
+          order_id: "private-order-id",
+        } as Record<string, string>,
       })
     ).toBeNull()
   })

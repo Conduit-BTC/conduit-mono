@@ -4,17 +4,20 @@
     "market": {
       "package": "@conduit/market",
       "outputDirectory": "apps/market/dist",
-      "cloudflareProject": "conduit-market"
+      "cloudflareProject": "conduit-market",
+      "cloudflareStagingProject": "conduit-market-signet"
     },
     "merchant": {
       "package": "@conduit/merchant",
       "outputDirectory": "apps/merchant/dist",
-      "cloudflareProject": "conduit-merchant"
+      "cloudflareProject": "conduit-merchant",
+      "cloudflareStagingProject": "conduit-merchant-signet"
     },
     "store-builder": {
       "package": "@conduit/store-builder",
       "outputDirectory": "apps/store-builder/dist",
-      "cloudflareProject": null
+      "cloudflareProject": null,
+      "cloudflareStagingProject": null
     }
   },
   "profiles": {
@@ -36,7 +39,7 @@
       "releaseChannel": "staging",
       "lightningNetwork": "signet",
       "publicFeatures": {
-        "dmCompatibilityOrderRoutingEnabled": false
+        "dmCompatibilityOrderRoutingEnabled": true
       }
     }
   }

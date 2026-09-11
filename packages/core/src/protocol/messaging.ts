@@ -7,6 +7,14 @@ import {
 } from "@nostr-dev-kit/ndk"
 import { buildMerchantOrderReviewUrl } from "../app-links"
 import type { OrderRelayDeliveryRecord, OrderRelayDeliveryStatus } from "../db"
+import {
+  recordBrowserTelemetryEvent,
+  type ConduitTelemetryApp,
+} from "../telemetry"
+import {
+  buildNip17CompatibilityResultTelemetryProperties,
+  type Nip17CompatibilityResultTelemetryInput,
+} from "../telemetry-event-properties"
 import type { InboxDeclarationEvidenceRepository } from "./inbox-declaration-evidence"
 import { EVENT_KINDS } from "./kinds"
 import {
@@ -794,6 +802,12 @@ export interface PublishPrivateMessageInput {
   resolveCompatibilityRecipientReadRelays?: (
     pubkey: string
   ) => Promise<readonly string[]>
+  /** Browser app emitting the fixed-label CND-219 rollout counter. */
+  telemetryApp?: ConduitTelemetryApp
+  /** Content-free test/adapter seam; exceptions are ignored. */
+  onNip17CompatibilityOutcome?: (
+    outcome: Nip17CompatibilityResultTelemetryInput
+  ) => void
 }
 
 function createVisibilityGatedSigner(
@@ -922,6 +936,25 @@ export class PrivateMessageRelayReadinessError extends Error {
   }
 }
 
+function recordValidatedOrderCompatibilityOutcome(
+  input: PublishPrivateMessageInput,
+  validatedOrder: boolean,
+  outcome: Nip17CompatibilityResultTelemetryInput
+): void {
+  if (!validatedOrder) return
+  try {
+    input.onNip17CompatibilityOutcome?.(outcome)
+  } catch {
+    // Diagnostics are best-effort and must never affect message delivery.
+  }
+  if (!input.telemetryApp) return
+  recordBrowserTelemetryEvent({
+    app: input.telemetryApp,
+    eventName: "nip17_compatibility_result",
+    properties: buildNip17CompatibilityResultTelemetryProperties(outcome),
+  })
+}
+
 /**
  * Gift-wrap a rumor to the recipient (critical) and optionally to the sender as
  * a self-copy (non-critical), publishing both through the shared relay planner.
@@ -1041,7 +1074,7 @@ export async function publishPrivateMessage(
     maxCompatibilityRelays: input.compatibilityOrderRoute?.maxRelays,
   })
   if (recipientRoute.route === "blocked") {
-    throw new PrivateMessageRelayReadinessError(
+    const readinessReason: PrivateMessageRelayReadinessReason =
       recipientRoute.blockedReason === "declaration_malformed"
         ? "recipient_declaration_malformed"
         : recipientRoute.blockedReason === "declaration_signed_empty"
@@ -1049,7 +1082,15 @@ export async function publishPrivateMessage(
           : recipientRoute.blockedReason === "declaration_distribution_pending"
             ? "recipient_declaration_distribution_pending"
             : (recipientRoute.blockedReason ?? "recipient_not_ready")
-    )
+    recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
+      action: "order_delivery",
+      declarationClass: recipientDeclaration.state,
+      deliveryRoute: "blocked",
+      ackOutcome: "not_applicable",
+      repairOutcome: "not_applicable",
+      blockReason: readinessReason,
+    })
+    throw new PrivateMessageRelayReadinessError(readinessReason)
   }
 
   let senderRoute: ReturnType<typeof selectPrivateMessageDeliveryRoute> | null =
@@ -1121,12 +1162,25 @@ export async function publishPrivateMessage(
     ? createVisibilityGatedSigner(input.signer, waitForSignerVisibility)
     : input.signer
 
-  const wrappedToRecipient = await giftWrapFn(
-    input.rumor,
-    new NDKUser({ pubkey: input.recipientPubkey }),
-    giftWrapSigner,
-    wrapParams
-  )
+  let wrappedToRecipient: NDKEvent
+  try {
+    wrappedToRecipient = await giftWrapFn(
+      input.rumor,
+      new NDKUser({ pubkey: input.recipientPubkey }),
+      giftWrapSigner,
+      wrapParams
+    )
+  } catch (error) {
+    recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
+      action: "order_delivery",
+      declarationClass: recipientDeclaration.state,
+      deliveryRoute: recipientRoute.route,
+      ackOutcome: "unavailable",
+      repairOutcome: "not_applicable",
+      blockReason: "not_applicable",
+    })
+    throw error
+  }
 
   // The self-copy is a non-critical local-recovery leg: a signer failure while
   // wrapping it must never block the critical recipient delivery below.
@@ -1148,11 +1202,23 @@ export async function publishPrivateMessage(
     }
   }
 
-  await input.onWrapped?.({
-    rumorId: input.rumor.id,
-    wrappedToRecipient,
-    wrappedToSelf,
-  })
+  try {
+    await input.onWrapped?.({
+      rumorId: input.rumor.id,
+      wrappedToRecipient,
+      wrappedToSelf,
+    })
+  } catch (error) {
+    recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
+      action: "order_delivery",
+      declarationClass: recipientDeclaration.state,
+      deliveryRoute: recipientRoute.route,
+      ackOutcome: "unavailable",
+      repairOutcome: "not_applicable",
+      blockReason: "not_applicable",
+    })
+    throw error
+  }
 
   let recipientDelivery: PublishWithPlannerResult
   try {
@@ -1180,13 +1246,37 @@ export async function publishPrivateMessage(
   } catch (error) {
     if (input.shouldContinue?.() === false) throw error
     const partial = recoverPartialRelayPublishDiagnostics(error)
-    if (!partial) throw error
-    recipientDelivery = partial
+    if (partial) {
+      recipientDelivery = partial
+    } else {
+      const ackOutcome =
+        error instanceof RelayPublishDiagnosticsError &&
+        error.diagnostics.attemptedRelayUrls.length > 0
+          ? "zero"
+          : "unavailable"
+      recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
+        action: "order_delivery",
+        declarationClass: recipientDeclaration.state,
+        deliveryRoute: recipientRoute.route,
+        ackOutcome,
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      })
+      throw error
+    }
   }
   if (
     Array.isArray(recipientDelivery.successfulRelayUrls) &&
     recipientDelivery.successfulRelayUrls.length === 0
   ) {
+    recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
+      action: "order_delivery",
+      declarationClass: recipientDeclaration.state,
+      deliveryRoute: recipientRoute.route,
+      ackOutcome: "zero",
+      repairOutcome: "not_applicable",
+      blockReason: "not_applicable",
+    })
     throw new Error("Recipient delivery completed without a relay ACK.")
   }
   const deliveryStatus =
@@ -1194,6 +1284,14 @@ export async function publishPrivateMessage(
     recipientDelivery.failedRelayUrls.length > 0
       ? "partial_success"
       : "full_success"
+  recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
+    action: "order_delivery",
+    declarationClass: recipientDeclaration.state,
+    deliveryRoute: recipientRoute.route,
+    ackOutcome: deliveryStatus === "partial_success" ? "partial" : "positive",
+    repairOutcome: "not_applicable",
+    blockReason: "not_applicable",
+  })
   const orderRelayDelivery =
     input.rumorKind === EVENT_KINDS.ORDER
       ? buildOrderRelayDeliveryRecord({

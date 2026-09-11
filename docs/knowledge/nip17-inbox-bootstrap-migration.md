@@ -1,8 +1,9 @@
 # NIP-17 Inbox Bootstrap Migration (CND-208)
 
-Status: active migration exception; preview enabled, production and staging
-disabled. Owner: Conduit maintainers. Started: 2026-08. Next review: 2026-09-09
-and before any production activation.
+Status: active migration exception; preview enabled, the staging source profile
+enabled for deployment, and production disabled. Hosted staging activation and
+the reviewed synthetic smoke remain pending. Owner: Conduit release maintainer.
+Started: 2026-08. Next review: 2026-09-12 and before production activation.
 
 ## Why this exists
 
@@ -176,8 +177,8 @@ internal inconsistency after canonical ordering.
 
 This convergence work does not widen compatibility to general DMs, arbitrary
 relays, plaintext delivery, or unvalidated sender/recipient relationships. The
-compatibility-lane removal metrics below remain unimplemented and keep that lane
-out of production.
+bounded rollout counters below are implemented, but field evidence and the
+required staging smoke still keep the compatibility lane out of production.
 
 Relay-side recipient auth enforcement remains client-first rollout work and is
 not implied by this document. NIP-11 advertisement alone is not proof that a
@@ -204,10 +205,16 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
 - Order provenance: `orderLifecycles.orderDeliveryRoute`
   (`declared_inbox` | `compatibility_order`), with the exact encrypted wrap and
   per-relay outcomes in `orderLifecycles.orderRelayDelivery`
-- Public build policy: `deploy/pages-profiles.json`. Preview enables the lane;
-  production and staging are independently false by default. Vite compiles the
-  legacy `VITE_DM_BOOTSTRAP_WRITES` input from that profile rather than trusting
-  a Cloudflare dashboard override.
+- Public build policy: `deploy/pages-profiles.json`. Preview and staging enable
+  the lane; production remains independently false until the reviewed smoke
+  gate passes. Repo-owned Signet Pages project names select the staging profile;
+  other Pages builds remain branch-derived preview or production. Vite compiles
+  the legacy `VITE_DM_BOOTSTRAP_WRITES` input from that profile rather than
+  directly trusting a Cloudflare dashboard `VITE_*` override. Pages build
+  metadata and operator configuration remain part of the trusted release
+  boundary. At runtime, the lane fails closed when an official Shop or Sell host
+  receives a non-production profile or a Signet Pages host receives a
+  non-staging profile; ordinary Pages previews keep the compiled preview value.
 - QA manifest: `/.well-known/conduit-deployment.json` exposes only app/profile,
   source commit/branch, build time, public feature values, and their SHA-256
   digest.
@@ -253,21 +260,55 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
 - Complete failure: zero ACKs throws delivery diagnostics and checkout cannot
   move to payment or claim the order was sent.
 
-## Removal gate
+## Review and removal gate
 
-The lane is removed by an explicit maintainer PR (no silent expiry) after:
+The lane never renews silently. After each named production observation window,
+the release maintainer reviews only the narrow evidence produced by this lane:
 
-- > = 99% of active merchants declared-ready for 28 consecutive days.
-- Bootstrap lane below 0.1% of order attempts for 28 days.
-- Zero confirmed fallback-only receipts for 14 days.
-- Zero declaration-related missing-order incidents across two supported
-  releases.
+- strict, compatibility, and blocked route counts over the validated-order
+  routing-decision denominator;
+- positive, partial, zero, and unavailable ACK classes over attempted delivery;
+- recipient-observed strict and compatibility confirmations recorded without
+  identities or message content; and
+- sanitized support-case counts that do not retain private payloads.
 
-Required aggregate measurements are declared-ready rate, route lane, ACK
-outcome, read source/coverage, and missing-order incident count. They are not
-yet implemented, so the removal gate is not measurable and the lane must not be
-activated in production on the strength of this document alone. No identifiers
-or message content may enter these aggregates.
+The review records one explicit decision: remove the compatibility value in a
+reviewed deployment-profile change, or renew it through a named date with an
+owner and removal trigger. The fixed-label counters in this slice provide the
+route and ACK denominators; recipient-observed and support evidence is recorded
+at activation and during the field-review window. No generalized telemetry,
+merchant population tracking, identifiers, or message content is required for
+the decision.
+
+## Activation and rollback
+
+- Staging source-profile enablement and Signet Pages selection prepared:
+  2026-09-09. Hosted staging activation has not yet been verified. Production
+  activation: not active.
+- Manual gate: dedicated synthetic buyer and merchant identities must prove one
+  declared-inbox receipt and one compatibility-route receipt in staging. The
+  deployed manifest must report the staging profile and compatibility enabled.
+- Observation prerequisite: each exact Signet hostname must be explicitly
+  allowlisted for telemetry and configured with an approved site-specific
+  Plausible source or domain. Nonofficial hosts intentionally discard PostHog
+  configuration. Confirm one content-free `nip17_compatibility_result` event at
+  the provider before starting the staging observation clock.
+- Observation window: the first 24 hours after each environment activation,
+  using only the fixed-label aggregate event documented in
+  `docs/analytics/events.md`.
+- Rollback owner: the Conduit release maintainer performing the activation.
+- Rollback trigger: any strict declaration routed through compatibility, any
+  kind-14 or unvalidated write reaching compatibility, any plaintext exposure,
+  or failure of either synthetic receipt. After production activation, also
+  roll back if the 24-hour zero-ACK share is at least twice the staging baseline
+  with at least 20 eligible delivery attempts.
+- Rollback action: change only
+  `profiles.<environment>.publicFeatures.dmCompatibilityOrderRoutingEnabled` to
+  `false`, rebuild, and verify the public deployment manifest. No dashboard
+  `VITE_*` checkbox or relay-list edit is an activation or rollback mechanism.
+  Pages build metadata and operator configuration remain trusted release inputs;
+  the runtime host/profile guard limits accidental drift but does not replace
+  release access controls.
 
 ## Public references
 

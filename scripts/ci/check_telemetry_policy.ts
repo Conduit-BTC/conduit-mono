@@ -22,6 +22,11 @@ export const allowedTelemetryProperties = new Set([
   "result_count_bucket",
   "amount_bucket",
   "product_type",
+  "declaration_class",
+  "delivery_route",
+  "ack_outcome",
+  "repair_outcome",
+  "block_reason",
 ])
 
 export const allowedProviderTelemetryEventNames = new Set([
