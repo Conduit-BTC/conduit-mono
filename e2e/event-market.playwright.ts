@@ -1040,6 +1040,35 @@ test("direct and pasted event imports hydrate one saved selector title outside t
   })
 })
 
+test("commerce discovery finds an organizer beyond the former author cap @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const title = "Synthetic discovered commerce event"
+  const market = await publishOrganizerMarket(page, relay, {
+    title,
+    organizerHandoffEnabled: false,
+  })
+  const unrelated = Array.from({ length: 17 }, (_, index) =>
+    (index + 1).toString(16).padStart(64, "0")
+  )
+  relay.seed(
+    createFollowList(
+      "merchant",
+      [...unrelated, ORGANIZER_PUBKEY],
+      market.initialCollection.created_at + 1
+    )
+  )
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await expect(
+    page.getByRole("button", { name: `View ${title}`, exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await page.getByRole("button", { name: `View ${title}`, exact: true }).click()
+  await expect(page.locator("#discovered-event-selector")).toContainText(title)
+})
+
 test("current exact resolution refreshes a saved title without replacing its evidence @merchant", async ({
   page,
 }) => {

@@ -489,6 +489,71 @@ describe("candidate-first followed event-market discovery", () => {
     expect(filters.every((filter) => filter.since === undefined)).toBe(true)
   })
 
+  it("carries only explicit owner relay transport authority into candidate reads", async () => {
+    const ownerRelay = "ws://127.0.0.1:4888"
+    const disabledRelay = "ws://127.0.0.1:4889"
+    const readRelays: string[] = []
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readAccountRelaySettingsPlanningSnapshot: async (account) => {
+        expect(account).toBe(MERCHANT)
+        return {
+          settings: {
+            version: 1,
+            updatedAt: 1,
+            entries: [ownerRelay, disabledRelay].map((url, index) => ({
+              url,
+              readEnabled: index === 0,
+              writeEnabled: false,
+              section: "commerce" as const,
+              capabilities: {
+                nip11: false,
+                search: false,
+                dm: false,
+                auth: false,
+                commerce: false,
+              },
+              warnings: {
+                dmWithoutAuth: false,
+                staleRelayInfo: false,
+                unreachable: false,
+                commercePartialSupport: false,
+              },
+            })),
+          },
+          signedRelayListAuthoritative: true,
+        }
+      },
+      fetchCollectionCandidateEvents: async (_filter, options) => {
+        readRelays.push(...options.relayUrls)
+        expect(options.ownerSelectedRelayUrls).toEqual([ownerRelay])
+        expect(options.authenticatedPubkey).toBe(MERCHANT)
+        return {
+          events: [],
+          eventSourceRelayUrls: {},
+          relays: options.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+    await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      authenticatedPubkey: MERCHANT,
+      perspective: {
+        source: "conduit",
+        coverage: "complete",
+        eventObserved: false,
+        snapshotState: "curated",
+        truncated: false,
+      },
+    })
+    expect(readRelays).toContain(ownerRelay)
+    expect(readRelays).not.toContain(disabledRelay)
+  })
+
   it("stops after account authority changes during a candidate page", async () => {
     let active = true
     let calls = 0
