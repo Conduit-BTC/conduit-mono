@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react"
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import {
   ArrowRight,
@@ -14,6 +14,12 @@ import {
 } from "@conduit/core"
 import {
   Button,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   EventMarketCard,
   getOrganizerDiscoveryPresentation,
 } from "@conduit/ui"
@@ -72,13 +78,14 @@ export const Route = createFileRoute("/events/")({
   },
 })
 
-const selectClassName =
-  "h-10 min-w-0 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--text-primary)] outline-none transition-colors focus:border-primary-500 focus:ring-2 focus:ring-primary-500/25"
-
 function EventsTimelinePage() {
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
-  const { status } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const connected = status === "connected"
   const discovery = useEventTimeline(search.source ?? "combined")
   const updateSearch = useCallback(
@@ -120,6 +127,9 @@ function EventsTimelinePage() {
     [filteredMarkets]
   )
   const organizerIdentities = useMerchantIdentities({
+    accountPubkey: connected ? pubkey : null,
+    authenticatedPubkey: connected ? pubkey : null,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     allMerchantPubkeys: allOrganizerPubkeys,
     visibleMerchantPubkeys: visibleOrganizerPubkeys,
     relayHintsByPubkey: discovery.profileRelayHintsByPubkey,
@@ -198,78 +208,101 @@ function EventsTimelinePage() {
           ) : null}
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <label className="grid gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
-            Date
-            <select
-              className={selectClassName}
+          <div className="grid gap-1.5">
+            <Label htmlFor="event-date-filter">Date</Label>
+            <Select
               value={search.window ?? "upcoming"}
-              onChange={(event) =>
+              onValueChange={(value) =>
                 updateSearch({
                   window:
-                    event.target.value === "upcoming"
+                    value === "upcoming"
                       ? undefined
-                      : (event.target.value as EventTimelineWindow),
+                      : (value as EventTimelineWindow),
                 })
               }
             >
-              {EVENT_TIMELINE_WINDOWS.map((window) => (
-                <option key={window} value={window}>
-                  {WINDOW_LABELS[window]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
-            Organizer
-            <select
-              className={selectClassName}
-              value={search.organizer ?? ""}
-              onChange={(event) =>
-                updateSearch({ organizer: event.target.value || undefined })
+              <SelectTrigger id="event-date-filter">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EVENT_TIMELINE_WINDOWS.map((window) => (
+                  <SelectItem key={window} value={window}>
+                    {WINDOW_LABELS[window]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="event-organizer-filter">Organizer</Label>
+            <Select
+              value={search.organizer ?? "all"}
+              onValueChange={(value) =>
+                updateSearch({ organizer: value === "all" ? undefined : value })
               }
             >
-              <option value="">All organizers</option>
-              {facets.organizers.map((organizerPubkey) => (
-                <option key={organizerPubkey} value={organizerPubkey}>
-                  {organizerIdentities.getIdentity(organizerPubkey).displayName}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
-            Location
-            <select
-              className={selectClassName}
-              value={search.location ?? ""}
-              onChange={(event) =>
-                updateSearch({ location: event.target.value || undefined })
+              <SelectTrigger id="event-organizer-filter">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All organizers</SelectItem>
+                {facets.organizers.map((organizerPubkey) => (
+                  <SelectItem key={organizerPubkey} value={organizerPubkey}>
+                    {
+                      organizerIdentities.getIdentity(organizerPubkey)
+                        .displayName
+                    }
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="event-location-filter">Location</Label>
+            <Select
+              value={search.location ? `value:${search.location}` : "all"}
+              onValueChange={(value) =>
+                updateSearch({
+                  location: value === "all" ? undefined : value.slice(6),
+                })
               }
             >
-              <option value="">All locations</option>
-              {facets.locations.map((location) => (
-                <option key={location} value={location}>
-                  {location}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
-            Topic
-            <select
-              className={selectClassName}
-              value={search.topic ?? ""}
-              onChange={(event) =>
-                updateSearch({ topic: event.target.value || undefined })
+              <SelectTrigger id="event-location-filter">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All locations</SelectItem>
+                {facets.locations.map((location) => (
+                  <SelectItem key={location} value={`value:${location}`}>
+                    {location}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="event-topic-filter">Topic</Label>
+            <Select
+              value={search.topic ? `value:${search.topic}` : "all"}
+              onValueChange={(value) =>
+                updateSearch({
+                  topic: value === "all" ? undefined : value.slice(6),
+                })
               }
             >
-              <option value="">All topics</option>
-              {facets.topics.map((topic) => (
-                <option key={topic} value={topic}>
-                  {topic}
-                </option>
-              ))}
-            </select>
-          </label>
+              <SelectTrigger id="event-topic-filter">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All topics</SelectItem>
+                {facets.topics.map((topic) => (
+                  <SelectItem key={topic} value={`value:${topic}`}>
+                    {topic}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </section>
 
