@@ -3,7 +3,7 @@ import {
   discoverFollowedOrganizerEventMarkets,
   encodeEventMarketNaddr,
   getEventMarket,
-  getOrganizerEventMarkets,
+  getOrganizerEventMarketsDetailed,
   isValidSignedPublicNostrEvent,
   normalizeRelayUrl,
   normalizeSecureOrIsolatedE2eRelayUrls,
@@ -16,6 +16,7 @@ import {
   type OrganizerEventMarketCollectionPublishInput,
   type OrganizerEventMarketPickupPublishInput,
   type OrganizerEventMarketPublishResult,
+  type OrganizerEventMarketsReadResult,
   type OrganizerEventMarketSignedEvent,
   type OrganizerEventMarketSignedRecord,
   type SignedPublicNostrEvent,
@@ -34,6 +35,7 @@ import {
   type OrganizerEventMarketFormValues,
 } from "./event-market-form"
 import {
+  normalizeOrganizerEventMarketTitle,
   updateOrganizerCollectionProducts,
   type OrganizerCollectionMembershipAction,
 } from "./event-market-workflow"
@@ -133,6 +135,87 @@ export type MerchantEventMarketDiscovery = Omit<
   "markets"
 > & {
   markets: MerchantOrganizerEventMarket[]
+}
+
+export type MerchantOrganizerEventMarketsReadResult = Omit<
+  OrganizerEventMarketsReadResult,
+  "markets"
+> & {
+  markets: MerchantOrganizerEventMarket[]
+  /** Unprojected Core resolutions retain terminal and malformed evidence. */
+  resolutions: EventMarketResolution[]
+}
+
+export type MerchantOrganizerEventCatalogEmptyState =
+  "complete" | "partial" | "unavailable" | null
+
+export interface MerchantOrganizerEventCatalogView {
+  discoveryState: MerchantOrganizerEventMarketsReadResult["state"] | "loading"
+  emptyState: MerchantOrganizerEventCatalogEmptyState
+  hasKnownReferences: boolean
+}
+
+export function getMerchantOrganizerEventCatalogView(
+  result: MerchantOrganizerEventMarketsReadResult | undefined,
+  retainedReferenceCount: number,
+  readFailed = false
+): MerchantOrganizerEventCatalogView {
+  const hasKnownReferences =
+    retainedReferenceCount > 0 || (result?.markets.length ?? 0) > 0
+  if (!result) {
+    return {
+      discoveryState: "loading",
+      emptyState: null,
+      hasKnownReferences,
+    }
+  }
+  return {
+    discoveryState: result.state,
+    emptyState: hasKnownReferences || readFailed ? null : result.state,
+    hasKnownReferences,
+  }
+}
+
+const INVALIDATING_RETAINED_MARKET_STATES = new Set<EventMarketResolutionState>(
+  ["deleted", "malformed", "conflicting", "unsupported"]
+)
+
+export function retainMerchantOrganizerEventMarkets(
+  retained: readonly MerchantOrganizerEventMarket[],
+  result: MerchantOrganizerEventMarketsReadResult
+): MerchantOrganizerEventMarket[] {
+  if (result.state === "complete") return result.markets
+
+  const projectedCoordinates = new Set(
+    result.markets.map((market) => market.collectionCoordinate)
+  )
+  const invalidatedCoordinates = new Set<string>()
+  for (const resolution of result.resolutions) {
+    if (
+      resolution.collectionCoordinate &&
+      INVALIDATING_RETAINED_MARKET_STATES.has(resolution.state)
+    ) {
+      invalidatedCoordinates.add(resolution.collectionCoordinate)
+    }
+  }
+  const next = [...result.markets]
+  for (const market of retained) {
+    if (
+      projectedCoordinates.has(market.collectionCoordinate) ||
+      invalidatedCoordinates.has(market.collectionCoordinate)
+    ) {
+      continue
+    }
+    next.push({
+      ...market,
+      state: "stale",
+      source: {
+        ...market.source,
+        state: "stale",
+      },
+    })
+  }
+  return next
 }
 
 const EVENT_MARKET_DELIVERY_OUTBOX_PREFIX =
@@ -483,6 +566,16 @@ export function isParticipationProductPreviewVerified(
   )
 }
 
+export function isParticipationProductAvailable(
+  item: MerchantOrganizerParticipation,
+  organizerPubkey: string
+): boolean {
+  return (
+    isParticipationProductPreviewVerified(item) &&
+    isParticipationHandoffVerified(item, organizerPubkey)
+  )
+}
+
 function resolvedEventMarketRelayHints(
   resolution: EventMarketResolution
 ): string[] {
@@ -601,7 +694,10 @@ function projectEventMarket(
     pickupCoordinate,
     pickupCoordinates,
     naddr,
-    title: calendar.title ?? collection?.title ?? "Event evidence unavailable",
+    title:
+      normalizeOrganizerEventMarketTitle(calendar.title) ??
+      normalizeOrganizerEventMarketTitle(collection?.title) ??
+      "Event evidence unavailable",
     summary: calendar.summary ?? collection?.summary,
     imageUrl: calendar.image ?? collection?.image,
     eventLocation: calendar.locations[0],
@@ -755,14 +851,24 @@ export async function listOrganizerEventMarkets(
   authenticatedPubkey: string | null = null,
   signal?: AbortSignal,
   shouldContinue?: () => boolean
-): Promise<MerchantOrganizerEventMarket[]> {
-  const result = await getOrganizerEventMarkets({
+): Promise<MerchantOrganizerEventMarketsReadResult> {
+  const result = await getOrganizerEventMarketsDetailed({
     organizerPubkey,
     authenticatedPubkey,
     ...(signal ? { signal } : {}),
     ...(shouldContinue ? { shouldContinue } : {}),
   })
-  return projectMarketList(result)
+  return projectOrganizerEventMarketsReadResult(result)
+}
+
+export function projectOrganizerEventMarketsReadResult(
+  result: OrganizerEventMarketsReadResult
+): MerchantOrganizerEventMarketsReadResult {
+  return {
+    ...result,
+    markets: projectMarketList(result.markets),
+    resolutions: result.markets,
+  }
 }
 
 export async function discoverFollowedEventMarkets(

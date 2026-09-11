@@ -152,7 +152,10 @@ import {
   resolveOrganizerEventMarket,
   type MerchantOrganizerEventMarket,
 } from "../lib/event-market"
-import { rememberDiscoveredEventMarket } from "../lib/event-market-workflow"
+import {
+  expectedOrganizerEventMarketTitleFrontiers,
+  rememberDiscoveredEventMarket,
+} from "../lib/event-market-workflow"
 import { ensureMerchantBoothPickup } from "../lib/event-market-pickup"
 import {
   getMerchantProductEventContext,
@@ -2714,9 +2717,17 @@ function ProductsPage() {
                     eventTitle={eventMarket?.title}
                     onOpenEvent={() => {
                       if (!pubkey) return
+                      const titleFrontiers =
+                        expectedOrganizerEventMarketTitleFrontiers(eventMarket)
                       rememberDiscoveredEventMarket(pubkey, {
                         reference: eventProductContext.naddr,
-                        title: eventMarket?.title,
+                        ...(titleFrontiers.titleCollectionEventId &&
+                        titleFrontiers.titleCalendarEventId
+                          ? {
+                              title: eventMarket?.title,
+                              ...titleFrontiers,
+                            }
+                          : {}),
                         savedAt: Date.now(),
                       })
                       const eventUrl = new URL(
@@ -3153,7 +3164,7 @@ function ProductsPage() {
                   market={localPickupQuery.data}
                   organizerInboxState={organizerInboxState}
                   availableMarkets={(
-                    organizerEventMarketsQuery.data ?? []
+                    organizerEventMarketsQuery.data?.markets ?? []
                   ).filter((market) => market.state === "active")}
                   resolving={localPickupQuery.isFetching}
                   readFailed={localPickupQuery.isError}

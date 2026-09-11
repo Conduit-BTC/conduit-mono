@@ -16,8 +16,14 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  eventMarketRequiredRecordsResolved,
+  formatEventRelayReadCoverage,
+  getEventActionabilityPresentation,
 } from "@conduit/ui"
-import type { MerchantOrganizerEventMarket } from "../lib/event-market"
+import {
+  isParticipationProductAvailable,
+  type MerchantOrganizerEventMarket,
+} from "../lib/event-market"
 import { getEventMarketUrl } from "../lib/market-links"
 import { EventProductPublisherDialog } from "./EventProductPublisherDialog"
 
@@ -45,14 +51,47 @@ function formatSchedule(market: MerchantOrganizerEventMarket): string {
   }
 }
 
-function stateBadge(market: MerchantOrganizerEventMarket) {
-  if (market.state === "active") {
-    return <Badge variant="success">Active event</Badge>
+function actionabilityClassName(
+  presentation: ReturnType<typeof getEventActionabilityPresentation>
+): string {
+  if (!presentation.prominent) {
+    return "text-pretty text-sm font-medium text-[var(--text-secondary)]"
   }
-  if (market.state === "ended") {
-    return <Badge variant="secondary">Ended</Badge>
+  return presentation.tone === "destructive"
+    ? "rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-pretty text-sm font-medium text-error"
+    : "rounded-lg border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-pretty text-sm font-medium text-[var(--text-primary)]"
+}
+
+function getMerchantProductAvailability(market: MerchantOrganizerEventMarket): {
+  availableProductCount: number
+  unresolvedProductCount: number
+} {
+  const acceptedProducts = market.participation.filter(
+    (item) => item.status === "accepted"
+  )
+  const organizerOnlyProductCount = market.participation.filter(
+    (item) => item.status === "organizer_only"
+  ).length
+  const availableProductCount = acceptedProducts.filter((item) =>
+    isParticipationProductAvailable(item, market.organizerPubkey)
+  ).length
+
+  return {
+    availableProductCount,
+    unresolvedProductCount:
+      organizerOnlyProductCount +
+      (acceptedProducts.length - availableProductCount),
   }
-  return <Badge variant="warning">Evidence degraded</Badge>
+}
+
+function getPickupSummary(market: MerchantOrganizerEventMarket): string {
+  if (!market.pickupCoordinate) {
+    return "Merchants hand out from their own pickup point."
+  }
+  if (!market.source.pickup) {
+    return "Organizer handoff details are unresolved. Your exact merchant pickup evidence still controls whether your product can be handed out safely."
+  }
+  return "Organizer handoff is available, or you can hand out from your own pickup point."
 }
 
 export function MerchantEventMarketPanel({
@@ -76,6 +115,17 @@ export function MerchantEventMarketPanel({
   )
   const ownsMarket = merchantPubkey === market.organizerPubkey
   const publishable = market.state === "active" || market.state === "partial"
+  const { availableProductCount, unresolvedProductCount } =
+    getMerchantProductAvailability(market)
+  const actionability = getEventActionabilityPresentation({
+    state: market.state,
+    availableProductCount,
+    unresolvedProductCount,
+    requiredEventRecordsResolved: eventMarketRequiredRecordsResolved(
+      market.source
+    ),
+  })
+  const relayCoverage = formatEventRelayReadCoverage(market.source.coverage)
 
   return (
     <>
@@ -90,9 +140,29 @@ export function MerchantEventMarketPanel({
         <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              {stateBadge(market)}
+              <Badge variant={actionability.tone}>{actionability.label}</Badge>
               <Badge variant="outline">Published by organizer</Badge>
             </div>
+            <p
+              className={actionabilityClassName(actionability)}
+              role={actionability.role}
+              data-testid="merchant-event-actionability-status"
+            >
+              {actionability.prominent ? (
+                <span className="sr-only">{actionability.label}: </span>
+              ) : null}
+              {actionability.message}
+            </p>
+            {relayCoverage ? (
+              <p
+                className="mt-1 text-pretty text-xs tabular-nums text-[var(--text-muted)]"
+                role="status"
+                aria-label={`Relay read coverage: ${relayCoverage}`}
+                data-testid="merchant-event-relay-read-coverage"
+              >
+                {relayCoverage}
+              </p>
+            ) : null}
             <CardTitle className="text-balance text-2xl">
               {market.title}
             </CardTitle>
@@ -169,9 +239,7 @@ export function MerchantEventMarketPanel({
                   Pickup
                 </dt>
                 <dd className="mt-1 leading-6 text-[var(--text-secondary)]">
-                  {market.pickupCoordinate
-                    ? "Organizer handoff is available, or you can hand out from your own pickup point."
-                    : "Merchants hand out from their own pickup point."}
+                  {getPickupSummary(market)}
                 </dd>
               </div>
             </div>
