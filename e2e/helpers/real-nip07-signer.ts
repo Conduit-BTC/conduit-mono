@@ -3,6 +3,7 @@ import { nip44 } from "nostr-tools"
 import {
   finalizeEvent,
   generateSecretKey,
+  getEventHash,
   getPublicKey,
   verifyEvent,
   type Event,
@@ -12,6 +13,15 @@ import {
 export type RuntimeSignerIdentity = Readonly<{
   pubkey: string
 }>
+
+export type RuntimePrivateRumor = {
+  content: string
+  created_at: number
+  id: string
+  kind: number
+  pubkey: string
+  tags: string[][]
+}
 
 export type RealTestSignerOptions = {
   rememberAuth?: boolean
@@ -152,6 +162,86 @@ export function decryptRuntimeTestPayload(
     peerPubkey
   )
   return nip44.v2.decrypt(ciphertext, conversationKey)
+}
+
+/**
+ * Parse one canonical NIP-59 envelope for the hermetic commerce oracle.
+ *
+ * The optional wrapper-key set belongs to one bounded inbox observation. A
+ * repeated key throws instead of silently dropping a delivery so the smoke
+ * cannot remain green when production reuses a disposable wrapper identity.
+ */
+export function parseCanonicalRuntimePrivateRumor(input: {
+  recipient: RuntimeSignerIdentity
+  sender: RuntimeSignerIdentity
+  seenWrapperPubkeys?: Set<string>
+  wrap: Event
+}): RuntimePrivateRumor | null {
+  const { recipient, sender, seenWrapperPubkeys, wrap } = input
+  try {
+    if (wrap.kind !== 1_059 || !verifyEvent(wrap)) return null
+    if (
+      wrap.pubkey === recipient.pubkey ||
+      wrap.pubkey === sender.pubkey ||
+      wrap.tags.length !== 1 ||
+      wrap.tags[0]?.[0] !== "p" ||
+      wrap.tags[0]?.[1] !== recipient.pubkey
+    ) {
+      return null
+    }
+    if (seenWrapperPubkeys?.has(wrap.pubkey)) {
+      throw new Error("E2E_COM_NIP59_WRAPPER_KEY_REUSED")
+    }
+    seenWrapperPubkeys?.add(wrap.pubkey)
+
+    const seal = JSON.parse(
+      decryptRuntimeTestPayload(recipient, wrap.pubkey, wrap.content)
+    ) as Event
+    if (
+      seal.kind !== 13 ||
+      !verifyEvent(seal) ||
+      seal.pubkey !== sender.pubkey ||
+      seal.tags.length !== 0
+    ) {
+      return null
+    }
+
+    const rumor = JSON.parse(
+      decryptRuntimeTestPayload(recipient, seal.pubkey, seal.content)
+    ) as RuntimePrivateRumor & { sig?: unknown }
+    if (
+      !rumor ||
+      Object.prototype.hasOwnProperty.call(rumor, "sig") ||
+      typeof rumor.id !== "string" ||
+      typeof rumor.pubkey !== "string" ||
+      typeof rumor.created_at !== "number" ||
+      typeof rumor.kind !== "number" ||
+      typeof rumor.content !== "string" ||
+      !Array.isArray(rumor.tags)
+    ) {
+      return null
+    }
+    const rumorRecipients = rumor.tags.filter(([name]) => name === "p")
+    if (
+      rumor.kind !== 16 ||
+      rumor.pubkey !== sender.pubkey ||
+      rumor.pubkey !== seal.pubkey ||
+      rumorRecipients.length !== 1 ||
+      rumorRecipients[0]?.[1] !== recipient.pubkey ||
+      rumor.id !== getEventHash(rumor)
+    ) {
+      return null
+    }
+    return rumor
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "E2E_COM_NIP59_WRAPPER_KEY_REUSED"
+    ) {
+      throw error
+    }
+    return null
+  }
 }
 
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import type { Page } from "@playwright/test"
-import { SimplePool } from "nostr-tools"
-import { verifyEvent } from "nostr-tools/pure"
+import { getEventHash, SimplePool } from "nostr-tools"
+import { verifyEvent, type Event, type UnsignedEvent } from "nostr-tools/pure"
 
 import { decodeLightningInvoiceAmount } from "@conduit/core"
 
@@ -16,8 +16,10 @@ import {
   disposeRuntimeSignerIdentity,
   encryptRuntimeTestPayload,
   installRealTestSigner,
+  parseCanonicalRuntimePrivateRumor,
   readAuthenticatedGiftWraps,
   signRuntimeTestEvent,
+  type RuntimeSignerIdentity,
 } from "../e2e/helpers/real-nip07-signer"
 import { startRelayServer } from "../scripts/dev/relay_bun"
 
@@ -47,7 +49,157 @@ function startTestRelay() {
   throw new Error("Unable to bind an ephemeral test relay port")
 }
 
+function createPrivateGiftWrapFixture(input: {
+  createdAt?: number
+  recipient: RuntimeSignerIdentity
+  sender: RuntimeSignerIdentity
+  sealTags?: string[][]
+  signedRumor?: boolean
+  wrapper: RuntimeSignerIdentity
+}): Event {
+  const createdAt = input.createdAt ?? 1_800_000_000
+  const rumorTemplate: UnsignedEvent = {
+    content: "runner-only private fixture",
+    created_at: createdAt,
+    kind: 16,
+    pubkey: input.sender.pubkey,
+    tags: [["p", input.recipient.pubkey]],
+  }
+  const rumor = input.signedRumor
+    ? signRuntimeTestEvent(input.sender, rumorTemplate)
+    : { ...rumorTemplate, id: getEventHash(rumorTemplate) }
+  const seal = signRuntimeTestEvent(input.sender, {
+    content: encryptRuntimeTestPayload(
+      input.sender,
+      input.recipient.pubkey,
+      JSON.stringify(rumor)
+    ),
+    created_at: createdAt + 1,
+    kind: 13,
+    tags: input.sealTags ?? [],
+  })
+  return signRuntimeTestEvent(input.wrapper, {
+    content: encryptRuntimeTestPayload(
+      input.wrapper,
+      input.recipient.pubkey,
+      JSON.stringify(seal)
+    ),
+    created_at: createdAt + 2,
+    kind: 1_059,
+    tags: [["p", input.recipient.pubkey]],
+  })
+}
+
 describe("real NIP-07 test signer", () => {
+  it("rejects non-canonical NIP-59 envelope fixtures", () => {
+    const sender = createRuntimeSignerIdentity()
+    const recipient = createRuntimeSignerIdentity()
+    const canonicalWrapper = createRuntimeSignerIdentity()
+    const taggedSealWrapper = createRuntimeSignerIdentity()
+    const signedRumorWrapper = createRuntimeSignerIdentity()
+
+    try {
+      const parse = (wrap: Event) =>
+        parseCanonicalRuntimePrivateRumor({ recipient, sender, wrap })
+
+      expect(
+        parse(
+          createPrivateGiftWrapFixture({
+            recipient,
+            sender,
+            wrapper: canonicalWrapper,
+          })
+        )
+      ).not.toBeNull()
+      expect(
+        parse(
+          createPrivateGiftWrapFixture({
+            recipient,
+            sealTags: [["p", recipient.pubkey]],
+            sender,
+            wrapper: taggedSealWrapper,
+          })
+        )
+      ).toBeNull()
+      expect(
+        parse(
+          createPrivateGiftWrapFixture({
+            recipient,
+            sender,
+            signedRumor: true,
+            wrapper: signedRumorWrapper,
+          })
+        )
+      ).toBeNull()
+      expect(
+        parse(
+          createPrivateGiftWrapFixture({
+            recipient,
+            sender,
+            wrapper: sender,
+          })
+        )
+      ).toBeNull()
+      expect(
+        parse(
+          createPrivateGiftWrapFixture({
+            recipient,
+            sender,
+            wrapper: recipient,
+          })
+        )
+      ).toBeNull()
+    } finally {
+      disposeRuntimeSignerIdentity(sender)
+      disposeRuntimeSignerIdentity(recipient)
+      disposeRuntimeSignerIdentity(canonicalWrapper)
+      disposeRuntimeSignerIdentity(taggedSealWrapper)
+      disposeRuntimeSignerIdentity(signedRumorWrapper)
+    }
+  })
+
+  it("fails the NIP-59 oracle when a wrapper key is reused", () => {
+    const sender = createRuntimeSignerIdentity()
+    const recipient = createRuntimeSignerIdentity()
+    const wrapper = createRuntimeSignerIdentity()
+    const seenWrapperPubkeys = new Set<string>()
+
+    try {
+      const first = createPrivateGiftWrapFixture({
+        recipient,
+        sender,
+        wrapper,
+      })
+      const second = createPrivateGiftWrapFixture({
+        createdAt: 1_800_000_100,
+        recipient,
+        sender,
+        wrapper,
+      })
+
+      expect(
+        parseCanonicalRuntimePrivateRumor({
+          recipient,
+          sender,
+          seenWrapperPubkeys,
+          wrap: first,
+        })
+      ).not.toBeNull()
+      expect(() =>
+        parseCanonicalRuntimePrivateRumor({
+          recipient,
+          sender,
+          seenWrapperPubkeys,
+          wrap: second,
+        })
+      ).toThrow("E2E_COM_NIP59_WRAPPER_KEY_REUSED")
+    } finally {
+      disposeRuntimeSignerIdentity(sender)
+      disposeRuntimeSignerIdentity(recipient)
+      disposeRuntimeSignerIdentity(wrapper)
+    }
+  })
+
   it("uses neutral page bindings and explicitly disposes runner-held keys", async () => {
     const identity = createRuntimeSignerIdentity()
     const secondIdentity = createRuntimeSignerIdentity()

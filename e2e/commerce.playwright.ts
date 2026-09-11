@@ -1,6 +1,6 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test"
-import { getEventHash, nip19 } from "nostr-tools"
-import { verifyEvent, type Event } from "nostr-tools/pure"
+import { nip19 } from "nostr-tools"
+import { verifyEvent } from "nostr-tools/pure"
 
 import {
   publishTestRelayEvents,
@@ -13,9 +13,9 @@ import {
 } from "./helpers/deterministic-nwc-wallet"
 import {
   createRuntimeSignerIdentity,
-  decryptRuntimeTestPayload,
   disposeRuntimeSignerIdentity,
   installRealTestSigner,
+  parseCanonicalRuntimePrivateRumor,
   readAuthenticatedGiftWraps,
   signRuntimeTestEvent,
   type RuntimeSignerIdentity,
@@ -30,15 +30,6 @@ const merchantUrl = `http://127.0.0.1:${
 const merchantName = "Hermetic Merchant"
 const merchantLud16 = "merchant@commerce-smoke.invalid"
 const productImageUrl = "https://cdn.conduit.market/commerce-smoke-product.svg"
-
-type PrivateRumor = {
-  content: string
-  created_at: number
-  id: string
-  kind: number
-  pubkey: string
-  tags: string[][]
-}
 
 test.use({ screenshot: "off", trace: "off", video: "off" })
 
@@ -125,61 +116,6 @@ async function publishPrivateInbox(
     .toBe(true)
 }
 
-function parsePrivateRumor(
-  recipient: RuntimeSignerIdentity,
-  sender: RuntimeSignerIdentity,
-  wrap: Event
-): PrivateRumor | null {
-  try {
-    if (wrap.kind !== 1059 || !verifyEvent(wrap)) return null
-    const wrapRecipients = wrap.tags.filter(([name]) => name === "p")
-    if (
-      wrapRecipients.length !== 1 ||
-      wrapRecipients[0]?.[1] !== recipient.pubkey
-    ) {
-      return null
-    }
-    const seal = JSON.parse(
-      decryptRuntimeTestPayload(recipient, wrap.pubkey, wrap.content)
-    ) as Event
-    if (
-      seal.kind !== 13 ||
-      !verifyEvent(seal) ||
-      seal.pubkey !== sender.pubkey
-    ) {
-      return null
-    }
-    const rumor = JSON.parse(
-      decryptRuntimeTestPayload(recipient, seal.pubkey, seal.content)
-    ) as PrivateRumor
-    if (
-      !rumor ||
-      typeof rumor.id !== "string" ||
-      typeof rumor.pubkey !== "string" ||
-      typeof rumor.created_at !== "number" ||
-      typeof rumor.kind !== "number" ||
-      typeof rumor.content !== "string" ||
-      !Array.isArray(rumor.tags)
-    ) {
-      return null
-    }
-    const rumorRecipients = rumor.tags.filter(([name]) => name === "p")
-    if (
-      rumor.kind !== 16 ||
-      rumor.pubkey !== sender.pubkey ||
-      rumor.pubkey !== seal.pubkey ||
-      rumorRecipients.length !== 1 ||
-      rumorRecipients[0]?.[1] !== recipient.pubkey ||
-      rumor.id !== getEventHash(rumor)
-    ) {
-      return null
-    }
-    return rumor
-  } catch {
-    return null
-  }
-}
-
 async function privateRumorCount(input: {
   orderId: string
   recipient: RuntimeSignerIdentity
@@ -192,9 +128,15 @@ async function privateRumorCount(input: {
     TEST_RELAY_URL
   )
   const rumorIds = new Set<string>()
+  const seenWrapperPubkeys = new Set<string>()
 
   for (const wrap of wraps) {
-    const rumor = parsePrivateRumor(input.recipient, input.sender, wrap)
+    const rumor = parseCanonicalRuntimePrivateRumor({
+      recipient: input.recipient,
+      sender: input.sender,
+      seenWrapperPubkeys,
+      wrap,
+    })
     if (!rumor) continue
     if (
       !rumor.tags.some(
@@ -240,9 +182,15 @@ async function privateRumorDiagnostics(input: {
     type: 0,
     order: 0,
   }
+  const seenWrapperPubkeys = new Set<string>()
 
   for (const wrap of wraps) {
-    const rumor = parsePrivateRumor(input.recipient, input.sender, wrap)
+    const rumor = parseCanonicalRuntimePrivateRumor({
+      recipient: input.recipient,
+      sender: input.sender,
+      seenWrapperPubkeys,
+      wrap,
+    })
     if (!rumor) continue
     counts.parsed += 1
     counts.bound += 1
