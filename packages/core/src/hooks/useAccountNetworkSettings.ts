@@ -998,11 +998,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
           ready: true,
           error: null,
         })
-        setOperation({
-          kind: "reorder",
-          phase: "complete",
-          message: "Conduit's relay order was saved without a signer request.",
-        })
+        setOperation(EMPTY_OPERATION)
       } catch (error) {
         setOperation({
           kind: "reorder",

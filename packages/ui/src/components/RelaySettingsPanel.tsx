@@ -12,6 +12,7 @@ import {
   ArrowDown,
   ArrowUp,
   CheckCircle2,
+  ChevronDown,
   Info,
   Plus,
   RefreshCw,
@@ -361,10 +362,14 @@ function searchEvidenceLabel(row: AccountNetworkRelayRowView): string {
 
 function RelayDetails({ row }: { row: AccountNetworkRelayRowView }) {
   return (
-    <details className="ml-10 mt-3 border-t border-[var(--border)] pt-2">
-      <summary className="inline-flex min-h-11 w-fit cursor-pointer items-center text-sm font-medium text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
+    <details className="group/relay-details ml-10 mt-3 border-t border-[var(--border)] pt-2">
+      <summary className="inline-flex min-h-11 w-fit cursor-pointer list-none items-center gap-1.5 text-sm font-medium text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 [&::-webkit-details-marker]:hidden">
         Relay details
         <span className="sr-only"> for {row.url}</span>
+        <ChevronDown
+          className="size-4 shrink-0 transition-transform duration-200 group-open/relay-details:rotate-180"
+          aria-hidden="true"
+        />
       </summary>
       <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
         {row.recoveryReadOnly ? (
@@ -735,9 +740,13 @@ function PublishedRelayPreferences({
   const failed = controller.status === "error"
   return (
     <div>
-      <details className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:p-4">
-        <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
-          Published preferences
+      <details className="group/published-preferences rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:p-4">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 [&::-webkit-details-marker]:hidden">
+          <span>Published preferences</span>
+          <ChevronDown
+            className="size-4 shrink-0 transition-transform duration-200 group-open/published-preferences:rotate-180"
+            aria-hidden="true"
+          />
         </summary>
         <div className="mt-3">
           <div className="grid gap-3">

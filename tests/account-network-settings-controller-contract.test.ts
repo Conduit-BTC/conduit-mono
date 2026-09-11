@@ -140,6 +140,8 @@ describe("account Network settings controller contract", () => {
     expect(reorder).toContain("reorderAccountNetworkRelays({")
     expect(reorder).toContain(".filter(isAccountNetworkRelayRowOrderEligible)")
     expect(reorder).not.toContain("current.preferredRelayOrder.filter(")
+    expect(reorder).toContain("setOperation(EMPTY_OPERATION)")
+    expect(reorder).not.toContain("relay order was saved")
     for (const operation of [retry, redistribute, reorder]) {
       expect(operation).not.toContain("captureAuth(")
       expect(operation).not.toContain("createNdkNostrEventSigner(")

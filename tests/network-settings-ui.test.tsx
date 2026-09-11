@@ -378,6 +378,22 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup).not.toContain("timed out")
   })
 
+  it("shows visible disclosure affordances for published preferences and relay details", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [relayRow("wss://relay.example")],
+        })}
+      />
+    )
+
+    expect(markup).toContain("Published preferences")
+    expect(markup).toContain("Relay details")
+    expect(markup.match(/lucide-chevron-down/g)).toHaveLength(2)
+    expect(markup).toContain("group-open/relay-details:rotate-180")
+    expect(markup).toContain("group-open/published-preferences:rotate-180")
+  })
+
   it("never labels an all-excluded exact plan as confirmed", () => {
     const markup = renderToStaticMarkup(
       <RelaySettingsPanel
