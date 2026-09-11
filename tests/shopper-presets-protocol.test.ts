@@ -462,6 +462,8 @@ describe("NIP-78 shopper presets", () => {
         readRelayUrls: ["wss://relay.example", "wss://offline.example"],
         now: () => nowMs,
         shouldContinue,
+        // Keep this plaintext-leak fixture stable; production uses secure randomness.
+        randomBytes: (length) => new Uint8Array(length).fill(7),
         getRelayLists: async (_pubkeys, options) => {
           expect(options?.shouldContinue).toBe(shouldContinue)
           return new Map()
