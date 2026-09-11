@@ -48,7 +48,7 @@ describe("Market event catalog route", () => {
     expect(presentation).toContain("Event records unresolved")
     expect(route).toContain("eventMarketRequiredRecordsResolved(catalog)")
     expect(route).toContain(
-      "requiredEventRecordsResolved,\n    catalog.products.length,\n    catalog.unresolvedProductCoordinates.length"
+      "requiredEventRecordsResolved,\n    productAvailability.availableProductCount,\n    productAvailability.unresolvedProductCount"
     )
     expect(route).toContain("Organizer handoff details are unresolved")
     expect(route).toContain("no current")

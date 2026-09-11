@@ -44,6 +44,10 @@ const FOLLOWED_EVENT_MARKET_CANDIDATE_AUTHOR_CHUNK_SIZE = 64
 const FOLLOWED_EVENT_MARKET_CANDIDATE_PAGE_LIMIT = 4
 const FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT = 6
 const FOLLOWED_EVENT_MARKET_CANDIDATE_READ_CONCURRENCY = 4
+// Shared client execution limits, independent of perspective size. These do
+// not establish global absence or limit valid Nostr authors or events.
+const FOLLOWED_EVENT_MARKET_CANDIDATE_REQUEST_LIMIT = 128
+const FOLLOWED_EVENT_MARKET_CANDIDATE_DEADLINE_MS = 20_000
 const FOLLOWED_EVENT_MARKET_READ_CONCURRENCY = 4
 const FOLLOWED_EVENT_MARKET_READ_DEADLINE_MS = 20_000
 
@@ -227,6 +231,11 @@ export interface EventMarketCandidateReadCoverage {
   plannedRelayUrls: string[]
   authorChunkCount: number
   plannedReadCount: number
+  /** Actual main and boundary requests across every relay/author unit. */
+  requestCount: number
+  /** Planned relay/author units that were not started within the global budget. */
+  skippedReadCount: number
+  executionBoundedReadCount: number
   reads: EventMarketCandidateAuthorChunkCoverage[]
   completeReadCount: number
   partialReadCount: number
@@ -320,6 +329,8 @@ interface FollowedEventMarketDiscoveryTestOverrides {
   collectionCandidateRelayUrls?: readonly string[]
   readRetainedCollectionCandidates?: typeof getRetainedEventMarketCollectionEvidence
   readOrganizerMarkets?: typeof getOrganizerEventMarketsDetailed
+  candidateReadDeadlineMs?: number
+  candidateReadRequestLimit?: number
   organizerReadDeadlineMs?: number
 }
 
@@ -400,6 +411,7 @@ interface EventMarketCandidateReadUnitResult {
   capped: boolean
   rejectedEventCount: number
   eventsVerified: boolean
+  executionBounded: boolean
   pages: EventMarketCandidatePageCoverage[]
 }
 
@@ -500,7 +512,11 @@ async function readEventMarketCollectionCandidateUnit(input: {
 
   const buildResult = (
     state: EventMarketCandidateReadUnitResult["state"],
-    inputState: { pageBudgetExhausted?: boolean; capped?: boolean } = {}
+    inputState: {
+      pageBudgetExhausted?: boolean
+      capped?: boolean
+      executionBounded?: boolean
+    } = {}
   ): EventMarketCandidateReadUnitResult => ({
     relayUrl: input.relayUrl,
     authorChunkIndex: input.authorChunkIndex,
@@ -519,6 +535,7 @@ async function readEventMarketCollectionCandidateUnit(input: {
     pageBudgetExhausted: inputState.pageBudgetExhausted === true,
     verificationTruncated,
     capped: inputState.capped === true,
+    executionBounded: inputState.executionBounded === true,
     rejectedEventCount,
     eventsVerified,
     pages,
@@ -548,6 +565,9 @@ async function readEventMarketCollectionCandidateUnit(input: {
         }
       )
     } catch (error) {
+      if (isBoundedDiscoveryError(error)) {
+        return buildResult("partial", { capped: true, executionBounded: true })
+      }
       if (isAbortError(error)) throw error
       return buildResult(mainPageCount === 0 ? "failed" : "partial")
     }
@@ -626,6 +646,9 @@ async function readEventMarketCollectionCandidateUnit(input: {
         }
       )
     } catch (error) {
+      if (isBoundedDiscoveryError(error)) {
+        return buildResult("partial", { capped: true, executionBounded: true })
+      }
       if (isAbortError(error)) throw error
       pageCoverage.boundaryRelayStatus = "failed"
       pageCoverage.boundaryCompletedAtEose = false
@@ -701,14 +724,110 @@ async function readEventMarketCollectionCandidateUnit(input: {
   })
 }
 
-async function readEventMarketCollectionCandidates(input: {
-  organizerPubkeys: readonly string[]
-  authenticatedPubkey?: string | null
-  nowMs: number
+function createCandidateReadBudget(input: {
   signal?: AbortSignal
-  accountNetworkLocalStateRepository?: DiscoveryReadAuthority["accountNetworkLocalStateRepository"]
   shouldContinue?: () => boolean
-}): Promise<EventMarketCollectionCandidateReadResult> {
+}) {
+  const controller = new AbortController()
+  const bounded = () =>
+    new EventMarketDiscoveryBoundError(
+      "Perspective event candidates reached their client execution budget."
+    )
+  const limit =
+    testOverrides.candidateReadRequestLimit ??
+    FOLLOWED_EVENT_MARKET_CANDIDATE_REQUEST_LIMIT
+  const requestLimit = Number.isFinite(limit)
+    ? Math.max(1, Math.floor(limit))
+    : FOLLOWED_EVENT_MARKET_CANDIDATE_REQUEST_LIMIT
+  const configuredDeadline =
+    testOverrides.candidateReadDeadlineMs ??
+    FOLLOWED_EVENT_MARKET_CANDIDATE_DEADLINE_MS
+  const deadlineMs = Number.isFinite(configuredDeadline)
+    ? Math.max(1, Math.floor(configuredDeadline))
+    : FOLLOWED_EVENT_MARKET_CANDIDATE_DEADLINE_MS
+  let requestCount = 0
+  let deadlineReached = false
+  let resolveStop: () => void = () => undefined
+  const stopped = new Promise<void>((resolve) => {
+    resolveStop = resolve
+  })
+  const stop = () => {
+    resolveStop()
+    controller.abort()
+  }
+  const deadline = setTimeout(() => {
+    deadlineReached = true
+    stop()
+  }, deadlineMs)
+  input.signal?.addEventListener("abort", stop, { once: true })
+  // A session fence may change without an AbortSignal. Stop even a reader
+  // that does not cooperate with the predicate or its linked signal.
+  const authorityCheck = input.shouldContinue
+    ? setInterval(() => {
+        if (input.shouldContinue?.() === false) stop()
+      }, 25)
+    : undefined
+  return {
+    signal: controller.signal,
+    requestLimit,
+    get requestCount() {
+      return requestCount
+    },
+    get exhausted() {
+      return deadlineReached || requestCount >= requestLimit
+    },
+    async run<T>(read: () => Promise<T>, countRequest = false): Promise<T> {
+      throwIfAborted(input.signal, input.shouldContinue)
+      if (deadlineReached || (countRequest && requestCount >= requestLimit))
+        throw bounded()
+      if (countRequest) requestCount += 1
+      try {
+        const value = await Promise.race([
+          read(),
+          stopped.then(() => {
+            throwIfAborted(input.signal, input.shouldContinue)
+            throw bounded()
+          }),
+        ])
+        throwIfAborted(input.signal, input.shouldContinue)
+        return value
+      } catch (error) {
+        throwIfAborted(input.signal, input.shouldContinue)
+        if (deadlineReached) throw bounded()
+        throw error
+      }
+    },
+    close() {
+      stop()
+      clearTimeout(deadline)
+      if (authorityCheck !== undefined) clearInterval(authorityCheck)
+      input.signal?.removeEventListener("abort", stop)
+    },
+  }
+}
+
+async function readEventMarketCollectionCandidates(
+  input: Parameters<typeof readEventMarketCollectionCandidatesWithinBudget>[0]
+): Promise<EventMarketCollectionCandidateReadResult> {
+  const budget = createCandidateReadBudget(input)
+  try {
+    return await readEventMarketCollectionCandidatesWithinBudget(input, budget)
+  } finally {
+    budget.close()
+  }
+}
+
+async function readEventMarketCollectionCandidatesWithinBudget(
+  input: {
+    organizerPubkeys: readonly string[]
+    authenticatedPubkey?: string | null
+    nowMs: number
+    signal?: AbortSignal
+    accountNetworkLocalStateRepository?: DiscoveryReadAuthority["accountNetworkLocalStateRepository"]
+    shouldContinue?: () => boolean
+  },
+  budget: ReturnType<typeof createCandidateReadBudget>
+): Promise<EventMarketCollectionCandidateReadResult> {
   const organizerPubkeys = Array.from(
     new Set(
       input.organizerPubkeys
@@ -729,10 +848,12 @@ async function readEventMarketCollectionCandidates(input: {
     | undefined
   if (authenticatedPubkey) {
     try {
-      ownerSnapshot = await (
-        testOverrides.readAccountRelaySettingsPlanningSnapshot ??
-        readDurableAccountRelaySettingsPlanningSnapshot
-      )(authenticatedPubkey)
+      ownerSnapshot = await budget.run(() =>
+        (
+          testOverrides.readAccountRelaySettingsPlanningSnapshot ??
+          readDurableAccountRelaySettingsPlanningSnapshot
+        )(authenticatedPubkey)
+      )
     } catch {
       // Missing owner evidence grants no additional relay transport authority.
       throwIfAborted(input.signal, input.shouldContinue)
@@ -767,6 +888,9 @@ async function readEventMarketCollectionCandidates(input: {
     plannedRelayUrls,
     authorChunkCount: authorChunks.length,
     plannedReadCount: plannedRelayUrls.length * authorChunks.length,
+    requestCount: 0,
+    skippedReadCount: 0,
+    executionBoundedReadCount: 0,
     reads: [],
     completeReadCount: 0,
     partialReadCount: 0,
@@ -788,33 +912,47 @@ async function readEventMarketCollectionCandidates(input: {
       coverage: emptyCoverage,
     }
   }
-  const tasks = plannedRelayUrls.flatMap((relayUrl) =>
-    authorChunks.map((authorPubkeys, authorChunkIndex) => ({
-      relayUrl,
-      authorPubkeys,
-      authorChunkIndex,
-    }))
+  const tasks = Array.from(
+    { length: Math.min(emptyCoverage.plannedReadCount, budget.requestLimit) },
+    (_, index) => {
+      const authorChunkIndex = index % authorChunks.length
+      return {
+        relayUrl: plannedRelayUrls[Math.floor(index / authorChunks.length)],
+        authorPubkeys: authorChunks[authorChunkIndex],
+        authorChunkIndex,
+      }
+    }
   )
   const fetchEvents =
     testOverrides.fetchCollectionCandidateEvents ??
     fetchSignedEventsFanoutDetailed
-  const unitResults = await mapWithConcurrency({
-    values: tasks,
-    concurrency: FOLLOWED_EVENT_MARKET_CANDIDATE_READ_CONCURRENCY,
-    worker: async (task) =>
-      await readEventMarketCollectionCandidateUnit({
-        ...task,
-        signal: input.signal,
-        authority: {
-          authenticatedPubkey,
-          ownerSelectedRelayUrls,
-          accountNetworkLocalStateRepository:
-            input.accountNetworkLocalStateRepository,
-          shouldContinue: input.shouldContinue,
-        },
-        fetchEvents,
-      }),
-  })
+  const unitResults = (
+    await mapWithConcurrency({
+      values: tasks,
+      concurrency: FOLLOWED_EVENT_MARKET_CANDIDATE_READ_CONCURRENCY,
+      worker: async (task) => {
+        if (budget.exhausted) return undefined
+        return await readEventMarketCollectionCandidateUnit({
+          ...task,
+          signal: input.signal,
+          authority: {
+            authenticatedPubkey,
+            ownerSelectedRelayUrls,
+            accountNetworkLocalStateRepository:
+              input.accountNetworkLocalStateRepository,
+            shouldContinue: input.shouldContinue,
+          },
+          fetchEvents: (filter, options) =>
+            budget.run(
+              () => fetchEvents(filter, { ...options, signal: budget.signal }),
+              true
+            ),
+        })
+      },
+    })
+  ).filter(
+    (unit): unit is EventMarketCandidateReadUnitResult => unit !== undefined
+  )
   const eventsById = new Map<string, SignedPublicNostrEvent>()
   const sourceRelayUrlsById = new Map<string, Set<string>>()
   for (const unit of unitResults) {
@@ -832,6 +970,11 @@ async function readEventMarketCollectionCandidates(input: {
   }
   const coverage: EventMarketCandidateReadCoverage = {
     ...emptyCoverage,
+    requestCount: budget.requestCount,
+    skippedReadCount: emptyCoverage.plannedReadCount - unitResults.length,
+    executionBoundedReadCount: unitResults.filter(
+      (unit) => unit.executionBounded
+    ).length,
     reads: unitResults.map((unit) => ({
       relayUrl: unit.relayUrl,
       authorChunkIndex: unit.authorChunkIndex,
@@ -878,11 +1021,14 @@ async function readEventMarketCollectionCandidates(input: {
       const relayUnits = unitResults.filter(
         (unit) => unit.relayUrl === relayUrl
       )
-      const state = relayUnits.every((unit) => unit.state === "complete")
-        ? "success"
-        : relayUnits.every((unit) => unit.state === "failed")
-          ? "failed"
-          : "partial"
+      const state =
+        relayUnits.length === authorChunks.length &&
+        relayUnits.every((unit) => unit.state === "complete")
+          ? "success"
+          : relayUnits.length > 0 &&
+              relayUnits.every((unit) => unit.state === "failed")
+            ? "failed"
+            : "partial"
       const eventIds = new Set(
         relayUnits.flatMap((unit) => unit.events.map((event) => event.id))
       )
@@ -898,7 +1044,8 @@ async function readEventMarketCollectionCandidates(input: {
     }),
     eventsVerified: unitResults.every((unit) => unit.eventsVerified),
     plannedRelayCount: plannedRelayUrls.length,
-    capped: unitResults.some((unit) => unit.capped),
+    capped:
+      coverage.skippedReadCount > 0 || unitResults.some((unit) => unit.capped),
     coverage,
   }
 }
@@ -906,6 +1053,11 @@ async function readEventMarketCollectionCandidates(input: {
 function candidateScanState(
   read: EventMarketCollectionCandidateReadResult
 ): FollowedEventMarketCandidateScanState {
+  if (
+    read.coverage.skippedReadCount > 0 ||
+    read.coverage.executionBoundedReadCount > 0
+  )
+    return "partial"
   const usableReadCount =
     read.coverage.completeReadCount + read.coverage.partialReadCount
   if (read.plannedRelayCount === 0 || usableReadCount === 0) {
@@ -1167,6 +1319,9 @@ function emptyCandidateReadCoverage(): EventMarketCandidateReadCoverage {
     plannedRelayUrls: [],
     authorChunkCount: 0,
     plannedReadCount: 0,
+    requestCount: 0,
+    skippedReadCount: 0,
+    executionBoundedReadCount: 0,
     reads: [],
     completeReadCount: 0,
     partialReadCount: 0,
