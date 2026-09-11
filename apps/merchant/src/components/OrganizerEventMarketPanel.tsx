@@ -277,11 +277,13 @@ function DeliveryRow({
   delivery,
   retrying,
   blocked,
+  actionsDisabled,
   onRetry,
 }: {
   delivery: MerchantOrganizerRecordDelivery
   retrying: boolean
   blocked: boolean
+  actionsDisabled: boolean
   onRetry: (delivery: MerchantOrganizerRecordDelivery) => void
 }) {
   const needsRetry =
@@ -317,7 +319,7 @@ function DeliveryRow({
           type="button"
           size="sm"
           variant="outline"
-          disabled={retrying || blocked}
+          disabled={retrying || blocked || actionsDisabled}
           onClick={() => onRetry(delivery)}
         >
           <RefreshCw className={retrying ? "animate-spin" : ""} />
@@ -331,10 +333,12 @@ function DeliveryRow({
 export function OrganizerEventMarketDeliveryList({
   deliveries,
   retryingRecord,
+  actionsDisabled,
   onRetryDelivery,
 }: {
   deliveries: MerchantOrganizerRecordDelivery[]
   retryingRecord: MerchantOrganizerRecordDelivery["record"] | null
+  actionsDisabled: boolean
   onRetryDelivery: (delivery: MerchantOrganizerRecordDelivery) => void
 }) {
   if (deliveries.length === 0) return null
@@ -359,6 +363,7 @@ export function OrganizerEventMarketDeliveryList({
             key={delivery.record}
             delivery={delivery}
             retrying={retryingRecord === delivery.record}
+            actionsDisabled={actionsDisabled}
             blocked={
               delivery.record === "collection" &&
               (!prerequisiteAcknowledged("calendar") ||
@@ -544,6 +549,7 @@ export function OrganizerEventMarketPanel({
   refreshing,
   membershipPending,
   actionsDisabled,
+  deliveryRetryDisabled,
   retryingRecord,
   onCopy,
   onEdit,
@@ -560,6 +566,7 @@ export function OrganizerEventMarketPanel({
   refreshing: boolean
   membershipPending: boolean
   actionsDisabled: boolean
+  deliveryRetryDisabled: boolean
   retryingRecord: MerchantOrganizerRecordDelivery["record"] | null
   onCopy: (url: string) => void
   onEdit: () => void
@@ -828,6 +835,7 @@ export function OrganizerEventMarketPanel({
       <OrganizerEventMarketDeliveryList
         deliveries={deliveries}
         retryingRecord={retryingRecord}
+        actionsDisabled={deliveryRetryDisabled}
         onRetryDelivery={onRetryDelivery}
       />
 
