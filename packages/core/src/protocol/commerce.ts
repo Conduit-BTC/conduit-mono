@@ -440,6 +440,7 @@ type LegacyDmSyncResult = {
 
 type CommerceTestOverrides = {
   allowMissingProtectedReadAuthorization?: boolean
+  getRelayLists?: typeof getRelayLists
   fetchEventsFanout?: typeof fetchEventsFanout
   fetchEventsFanoutWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
@@ -726,7 +727,7 @@ async function planCommerceReadRelayPlan(input: {
   const relayLists =
     input.relayLists ??
     (shouldFetchRelayHints
-      ? await getRelayLists(
+      ? await (testOverrides.getRelayLists ?? getRelayLists)(
           hintPubkeys,
           hasCommerceFetchTestOverride()
             ? {
@@ -813,10 +814,10 @@ async function planCommerceReadRelayPlan(input: {
         ...plan.relayUrls,
         ...fallbackRelayUrls,
       ])
-  const expandedRelayUrls =
-    input.maxRelays === undefined
-      ? plannedRelayUrls
-      : plannedRelayUrls.slice(0, input.maxRelays)
+  const effectiveMaxRelays = input.maxRelays ?? DEFAULT_READ_FANOUT
+  const clampRelayFanout = (relayUrls: string[]): string[] =>
+    effectiveMaxRelays <= 0 ? relayUrls : relayUrls.slice(0, effectiveMaxRelays)
+  const expandedRelayUrls = clampRelayFanout(plannedRelayUrls)
   const executableRelayUrls = config.e2eRelayIsolationEnabled
     ? normalizePublicOrIsolatedE2eRelayHints(expandedRelayUrls)
     : expandedRelayUrls
@@ -861,22 +862,32 @@ async function planCommerceReadRelayPlan(input: {
   // Defensive fallback: legacy resolution paths.
   switch (input.intent) {
     case "commerce_products":
-    case "author_products":
+    case "author_products": {
+      const relayUrls = clampRelayFanout(commerceReadRelayUrls())
+      const relayUrlSet = new Set(relayUrls)
       return {
-        relayUrls: commerceReadRelayUrls(),
-        parkedRelayUrls: [],
-        hintRelayUrls: [],
+        relayUrls,
+        parkedRelayUrls: plan.parkedRelayUrls.filter(
+          (relayUrl) => !relayUrlSet.has(relayUrl)
+        ),
+        hintRelayUrls: plan.hintRelayUrls,
         ownerSelectedRelayUrls: [],
         relayLists,
       }
-    default:
+    }
+    default: {
+      const relayUrls = clampRelayFanout(publicReadRelayUrls())
+      const relayUrlSet = new Set(relayUrls)
       return {
-        relayUrls: publicReadRelayUrls(),
-        parkedRelayUrls: [],
-        hintRelayUrls: [],
+        relayUrls,
+        parkedRelayUrls: plan.parkedRelayUrls.filter(
+          (relayUrl) => !relayUrlSet.has(relayUrl)
+        ),
+        hintRelayUrls: plan.hintRelayUrls,
         ownerSelectedRelayUrls: [],
         relayLists,
       }
+    }
   }
 }
 
@@ -4110,17 +4121,29 @@ async function fetchVariationGroupRecordBatch(
   }
 
   const allAuthors = uniqueStrings(validTargets.map((target) => target.author))
-  // Resolve NIP-65 once for the complete bounded request. Narrow plans below
-  // reuse this result, avoiding one relay-list network read per family.
-  const sharedRelayPlan = await planCommerceReadRelayPlan({
-    intent: "author_products",
-    authors: allAuthors,
-    authenticatedPubkey: options.authenticatedPubkey,
-    accountPubkey: options.authenticatedPubkey,
-    shouldContinue: options.shouldContinue,
-    relayHintMode: "force",
-    maxRelays: DEFAULT_READ_FANOUT,
-  })
+  // Resolve NIP-65 once per transport-safe author chunk. Narrow plans below
+  // reuse the combined result, avoiding both oversized author filters and one
+  // relay-list network read per family.
+  const relayListPlans = await mapWithConcurrency(
+    chunkStrings(allAuthors, PRODUCT_AUTHOR_CHUNK_SIZE),
+    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    async (authors) =>
+      await planCommerceReadRelayPlan({
+        intent: "author_products",
+        authors,
+        authenticatedPubkey: options.authenticatedPubkey,
+        accountPubkey: options.authenticatedPubkey,
+        shouldContinue: options.shouldContinue,
+        relayHintMode: "force",
+        maxRelays: DEFAULT_READ_FANOUT,
+      })
+  )
+  const sharedRelayLists = new Map<string, RelayList>()
+  for (const relayListPlan of relayListPlans) {
+    for (const [pubkey, relayList] of relayListPlan.relayLists) {
+      sharedRelayLists.set(pubkey, relayList)
+    }
+  }
   const targetsByFamilyPlan = new Map<string, typeof validTargets>()
   for (const target of validTargets) {
     const key = JSON.stringify([target.author, target.plannedRelayHints])
@@ -4142,7 +4165,7 @@ async function fetchVariationGroupRecordBatch(
         extraRelayUrls: familyTargets[0]!.plannedRelayHints,
         relayHintMode: "force",
         maxRelays: DEFAULT_READ_FANOUT,
-        relayLists: sharedRelayPlan.relayLists,
+        relayLists: sharedRelayLists,
       }),
     })
   )
@@ -4930,38 +4953,104 @@ export async function getProductsByIds(
   const listingCoverageByAddress = new Map<string, ProductAvailabilityCoverage>(
     Array.from(wanted, (addressId) => [addressId, "unavailable"] as const)
   )
-  const directReadEntries = Array.from(
-    directReadTargets
-      .reduce((entries, target) => {
-        const targets = entries.get(target.author) ?? []
-        targets.push(target)
-        entries.set(target.author, targets)
-        return entries
-      }, new Map<string, typeof directReadTargets>())
-      .entries()
+  const directRelayListPlans = await mapWithConcurrency(
+    chunkStrings(authors, PRODUCT_AUTHOR_CHUNK_SIZE),
+    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    async (authorChunk) =>
+      await planCommerceReadRelayPlan({
+        intent: "author_products",
+        authors: authorChunk,
+        authenticatedPubkey: options.authenticatedPubkey,
+        accountPubkey: options.authenticatedPubkey,
+        shouldContinue: options.shouldContinue,
+        relayHintMode: "force",
+        maxRelays: DEFAULT_READ_FANOUT,
+      })
   )
+  const directRelayLists = new Map<string, RelayList>()
+  for (const relayListPlan of directRelayListPlans) {
+    for (const [pubkey, relayList] of relayListPlan.relayLists) {
+      directRelayLists.set(pubkey, relayList)
+    }
+  }
+  type DirectTargetGroup = {
+    targets: typeof directReadTargets
+    relayHints: string[]
+  }
+  const directTargetGroupsByAuthor = new Map<string, DirectTargetGroup[]>()
+  for (const target of directReadTargets) {
+    const authorGroups = directTargetGroupsByAuthor.get(target.author) ?? []
+    const compatibleGroup = authorGroups.find(
+      (group) =>
+        (target.relayHints.length === 0
+          ? group.relayHints.length === 0
+          : group.relayHints.length > 0) &&
+        uniqueStrings([...group.relayHints, ...target.relayHints]).length <=
+          MAX_PRODUCT_RELAY_HINTS
+    )
+    if (compatibleGroup) {
+      compatibleGroup.targets.push(target)
+      compatibleGroup.relayHints = uniqueStrings([
+        ...compatibleGroup.relayHints,
+        ...target.relayHints,
+      ])
+    } else {
+      authorGroups.push({ targets: [target], relayHints: target.relayHints })
+    }
+    directTargetGroupsByAuthor.set(target.author, authorGroups)
+  }
+  const directTargetGroups = Array.from(
+    directTargetGroupsByAuthor.values()
+  ).flat()
+  const plannedDirectTargetGroups = await mapWithConcurrency(
+    directTargetGroups,
+    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    async (group) => ({
+      targets: group.targets,
+      relayPlan: await planCommerceReadRelayPlan({
+        intent: "author_products",
+        authors: [group.targets[0]!.author],
+        authenticatedPubkey: options.authenticatedPubkey,
+        accountPubkey: options.authenticatedPubkey,
+        shouldContinue: options.shouldContinue,
+        extraRelayUrls: group.relayHints,
+        relayHintMode: "force",
+        maxRelays: DEFAULT_READ_FANOUT,
+        relayLists: directRelayLists,
+      }),
+    })
+  )
+  type DirectReadBatch = {
+    targets: typeof directReadTargets
+    relayPlan: CommerceReadRelayPlan
+  }
+  const compatibleDirectReadBatches = new Map<string, DirectReadBatch>()
+  for (const plannedGroup of plannedDirectTargetGroups) {
+    const key = JSON.stringify([
+      plannedGroup.targets[0]!.author,
+      plannedGroup.relayPlan.relayUrls,
+      plannedGroup.relayPlan.parkedRelayUrls,
+      plannedGroup.relayPlan.hintRelayUrls,
+      plannedGroup.relayPlan.ownerSelectedRelayUrls,
+    ])
+    const existing = compatibleDirectReadBatches.get(key)
+    if (existing) existing.targets.push(...plannedGroup.targets)
+    else compatibleDirectReadBatches.set(key, plannedGroup)
+  }
+  const directReadEntries = Array.from(compatibleDirectReadBatches.values())
   let directReadCapped = false
   const directReads = await mapWithConcurrency(
     directReadEntries,
     PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
-    async ([author, targets]) => {
+    async ({ targets, relayPlan }) => {
       try {
-        // Same-author coordinates share one filter and one bounded relay plan.
-        // Bounded concurrency limits simultaneous relay work without dropping
-        // accepted event products when a catalog spans many merchants.
+        const author = targets[0]!.author
+        // Same-author coordinates only share a read when their complete relay
+        // plans are compatible. Distinct source perspectives remain isolated
+        // so one six-relay cap cannot discard another coordinate's only hint.
         const knownRelayHints = normalizePublicOrIsolatedE2eRelayHints(
           uniqueStrings(targets.flatMap((target) => target.relayHints))
         )
-        const relayPlan = await planCommerceReadRelayPlan({
-          intent: "author_products",
-          authors: [author],
-          authenticatedPubkey: options.authenticatedPubkey,
-          accountPubkey: options.authenticatedPubkey,
-          shouldContinue: options.shouldContinue,
-          extraRelayUrls: knownRelayHints,
-          relayHintMode: "force",
-          maxRelays: DEFAULT_READ_FANOUT,
-        })
         const result = await runFetchEventsFanoutWithDiagnostics(
           {
             kinds: [EVENT_KINDS.PRODUCT],
@@ -4985,18 +5074,28 @@ export async function getProductsByIds(
           ...relayPlan.parkedRelayUrls,
         ])
         const consideredRelayUrlSet = new Set(consideredRelayUrls)
+        const completeRelayHints = uniqueStrings([
+          ...knownRelayHints,
+          ...relayPlan.hintRelayUrls,
+        ])
         return {
           targets,
           events: result.events,
-          capped: knownRelayHints.some(
-            (relayUrl) => !consideredRelayUrlSet.has(relayUrl)
-          ),
+          capped:
+            (result.cappedRelayUrls?.length ?? 0) > 0 ||
+            completeRelayHints.some(
+              (relayUrl) => !consideredRelayUrlSet.has(relayUrl)
+            ),
           coverageByAddress: new Map(
             targets.map((target) => [
               target.addressId,
               productAvailabilityCoverageFromFanout(
                 result,
-                uniqueStrings([...consideredRelayUrls, ...target.relayHints])
+                uniqueStrings([
+                  ...consideredRelayUrls,
+                  ...target.relayHints,
+                  ...relayPlan.hintRelayUrls,
+                ])
               ),
             ])
           ),
