@@ -726,6 +726,8 @@ async function publishOrganizerMarket(
   options: {
     title: string
     organizerHandoffEnabled: boolean
+    beforePublish?: (start: number) => void
+    afterEditorClosed?: () => Promise<void>
   }
 ): Promise<PublishedOrganizerMarket> {
   await gotoAs(page, merchantUrl, "/events", "organizer")
@@ -780,8 +782,10 @@ async function publishOrganizerMarket(
   }
 
   const publishStart = relay.publications.length
+  options.beforePublish?.(publishStart)
   await editor.getByRole("button", { name: "Publish event" }).click()
   await expect(editor).toBeHidden({ timeout: 30_000 })
+  if (options.afterEditorClosed) await options.afterEditorClosed()
   await expect(page.getByText("Event loaded", { exact: true })).toBeVisible()
   await expect(
     page.getByRole("heading", { name: "Share this event" })
@@ -1811,6 +1815,89 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   await expect(
     page.getByRole("heading", { name: "Synthetic Timeline Event" })
   ).toBeVisible({ timeout: 60_000 })
+})
+
+test("late publish completion preserves a newly selected event @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const eventA = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Race Event A",
+    organizerHandoffEnabled: true,
+  })
+  await expect
+    .poll(
+      () =>
+        new URL(page.url()).searchParams.get("event") === eventA.canonicalNaddr
+    )
+    .toBe(true)
+  let held: HeldRelayRequest
+  await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Race Event B",
+    organizerHandoffEnabled: false,
+    beforePublish: (start) => {
+      held = relay.holdRelayRequests((request) => {
+        const collection = relay.publications
+          .slice(start)
+          .find((entry) => entry.event.kind === 30405)?.event
+        if (!collection) return false
+        return request.filters.some((filter) =>
+          eventMatchesFilter(collection, filter)
+        )
+      })
+    },
+    afterEditorClosed: async () => {
+      await held.captured
+      await page
+        .getByRole("button", {
+          name: "Manage Synthetic Race Event A",
+          exact: true,
+        })
+        .click()
+      await expect
+        .poll(
+          () =>
+            new URL(page.url()).searchParams.get("event") ===
+            eventA.canonicalNaddr
+        )
+        .toBe(true)
+      await expect(
+        page.getByRole("heading", {
+          name: "Synthetic Race Event A",
+          exact: true,
+        })
+      ).toHaveCount(2)
+      held.release()
+      // The account mutation stays pending through the final publish callback.
+      // Wait for it to settle before proving the newer selection is retained.
+      await expect(
+        page.getByRole("button", { name: "Create event", exact: true }).first()
+      ).toBeEnabled()
+      await expect
+        .poll(
+          () =>
+            new URL(page.url()).searchParams.get("event") ===
+            eventA.canonicalNaddr
+        )
+        .toBe(true)
+      await expect(
+        page.getByRole("heading", {
+          name: "Synthetic Race Event A",
+          exact: true,
+        })
+      ).toHaveCount(2)
+      // Reopen B so the shared publication helper can verify its saved records.
+      await page
+        .getByRole("button", {
+          name: "Manage Synthetic Race Event B",
+          exact: true,
+        })
+        .click()
+    },
+  })
 })
 
 test("event membership and retry completions stay bound to their initiating event @merchant", async ({
