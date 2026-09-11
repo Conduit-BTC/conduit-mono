@@ -32,6 +32,8 @@ import {
   type AccountNetworkSignedKind,
   type ReviewedAccountNetworkMutation,
 } from "../protocol/account-network-mutation"
+import type { ConduitTelemetryApp } from "../telemetry"
+import { observeAccountNetworkInboxRepair } from "../protocol/account-network-telemetry"
 import { EVENT_KINDS } from "../protocol/kinds"
 import { type AccountNetworkPreferencesReconciliation } from "../protocol/network-preferences"
 import {
@@ -401,7 +403,9 @@ function scopedRevision(input: {
   })
 }
 
-export function useAccountNetworkSettings(): AccountNetworkSettingsController {
+export function useAccountNetworkSettings(
+  options: { telemetryApp?: ConduitTelemetryApp } = {}
+): AccountNetworkSettingsController {
   const auth = useAuth()
   const session = useConduitSession()
   const queryClient = useQueryClient()
@@ -671,17 +675,26 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
             "Network evidence changed after review. Review the current preferences again."
           )
         }
-        const result = await publishAccountNetworkMutation({
-          reviewed,
-          authenticatedPubkey,
-          ...(signer ? { signer } : {}),
-          dependencies: {
-            shouldContinue,
-            onPhase: (phase) => {
-              lastPhase = phase
-              setOperation({ kind, phase, message: null })
-            },
-          },
+        const result = await observeAccountNetworkInboxRepair({
+          app: options.telemetryApp,
+          includesInbox:
+            reviewed.changedKinds.includes(
+              EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+            ) && reviewed.action.relays.some((relay) => relay.privateInbox),
+          shouldContinue,
+          operation: () =>
+            publishAccountNetworkMutation({
+              reviewed,
+              authenticatedPubkey,
+              ...(signer ? { signer } : {}),
+              dependencies: {
+                shouldContinue,
+                onPhase: (phase) => {
+                  lastPhase = phase
+                  setOperation({ kind, phase, message: null })
+                },
+              },
+            }),
         })
         if (!shouldContinue()) {
           throw new Error(
@@ -705,7 +718,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         throw error
       }
     },
-    [accountPreferences, refreshInboxDeclarationReadiness]
+    [accountPreferences, refreshInboxDeclarationReadiness, options.telemetryApp]
   )
 
   const prepareChange = useCallback(
@@ -811,15 +824,25 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
       try {
         const snapshot = captureAccount()
         const shouldContinue = accountFenceFor(snapshot)
-        const result = await retryAccountNetworkMutation({
-          pubkey: snapshot.pubkey,
-          authenticatedPubkey: snapshot.pubkey,
-          kind,
-          dependencies: {
-            shouldContinue,
-            onPhase: (phase) =>
-              setOperation({ kind: "retry", phase, message: null }),
-          },
+        const result = await observeAccountNetworkInboxRepair({
+          app: options.telemetryApp,
+          includesInbox:
+            kind !== EVENT_KINDS.RELAY_LIST &&
+            baseView.pendingExactDeliveries.some(
+              (pending) => pending.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+            ),
+          shouldContinue,
+          operation: () =>
+            retryAccountNetworkMutation({
+              pubkey: snapshot.pubkey,
+              authenticatedPubkey: snapshot.pubkey,
+              kind,
+              dependencies: {
+                shouldContinue,
+                onPhase: (phase) =>
+                  setOperation({ kind: "retry", phase, message: null }),
+              },
+            }),
         })
         if (!shouldContinue()) {
           throw new Error(
@@ -848,6 +871,8 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
       accountPreferences,
       captureAccount,
       refreshInboxDeclarationReadiness,
+      baseView.pendingExactDeliveries,
+      options.telemetryApp,
     ]
   )
 
@@ -870,14 +895,20 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
       }
       const snapshot = captureAccount()
       const shouldContinue = accountFenceFor(snapshot)
-      const result = await redistributeAccountNetworkInboxDeclaration({
-        pubkey: snapshot.pubkey,
-        authenticatedPubkey: snapshot.pubkey,
-        dependencies: {
-          shouldContinue,
-          onPhase: (phase) =>
-            setOperation({ kind: "redistribute", phase, message: null }),
-        },
+      const result = await observeAccountNetworkInboxRepair({
+        app: options.telemetryApp,
+        includesInbox: true,
+        shouldContinue,
+        operation: () =>
+          redistributeAccountNetworkInboxDeclaration({
+            pubkey: snapshot.pubkey,
+            authenticatedPubkey: snapshot.pubkey,
+            dependencies: {
+              shouldContinue,
+              onPhase: (phase) =>
+                setOperation({ kind: "redistribute", phase, message: null }),
+            },
+          }),
       })
       if (!shouldContinue()) {
         throw new Error(
@@ -907,6 +938,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     reconciliation,
     baseView.pendingExactDeliveries,
     refreshInboxDeclarationReadiness,
+    options.telemetryApp,
   ])
 
   const addRelay = useCallback(

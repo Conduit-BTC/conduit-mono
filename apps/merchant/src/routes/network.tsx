@@ -28,7 +28,9 @@ export const Route = createFileRoute("/network")({
 
 function NetworkPage() {
   const { pubkey } = useAuth()
-  const networkSettings = useAccountNetworkSettings()
+  const networkSettings = useAccountNetworkSettings({
+    telemetryApp: "merchant",
+  })
   const navigate = useNavigate()
   const autoReturnStartedRef = useRef(false)
   const [hasProductDraftReturn, setHasProductDraftReturn] = useState(false)

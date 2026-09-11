@@ -201,7 +201,9 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
   gift-unwrap edges; exact file names follow the implementation slice.
 - Network-owned readiness, repair, and pending cutover: one shared core/UI
   Network feature rendered by thin Market and Merchant `network.tsx` route
-  shells.
+  shells. Repair observations wrap the existing mutation/retry/redistribution
+  operations in `useAccountNetworkSettings`; `useInboxDeclaration` remains
+  read-only. The observation adapter owns no signing, relay I/O, or persistence.
 - Order provenance: `orderLifecycles.orderDeliveryRoute`
   (`declared_inbox` | `compatibility_order`), with the exact encrypted wrap and
   per-relay outcomes in `orderLifecycles.orderRelayDelivery`

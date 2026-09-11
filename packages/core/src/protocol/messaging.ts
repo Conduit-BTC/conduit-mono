@@ -802,7 +802,7 @@ export interface PublishPrivateMessageInput {
   resolveCompatibilityRecipientReadRelays?: (
     pubkey: string
   ) => Promise<readonly string[]>
-  /** Browser app emitting the fixed-label CND-219 rollout counter. */
+  /** Browser app emitting the fixed-label compatibility rollout counter. */
   telemetryApp?: ConduitTelemetryApp
   /** Content-free test/adapter seam; exceptions are ignored. */
   onNip17CompatibilityOutcome?: (
@@ -941,7 +941,7 @@ function recordValidatedOrderCompatibilityOutcome(
   validatedOrder: boolean,
   outcome: Nip17CompatibilityResultTelemetryInput
 ): void {
-  if (!validatedOrder) return
+  if (!validatedOrder || input.shouldContinue?.() === false) return
   try {
     input.onNip17CompatibilityOutcome?.(outcome)
   } catch {

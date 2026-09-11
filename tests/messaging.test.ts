@@ -4,7 +4,7 @@ import {
   NDKPrivateKeySigner,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
-import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
+import { finalizeEvent, getEventHash, getPublicKey } from "nostr-tools/pure"
 import {
   __resetInboxRelayCache,
   applyAccountNetworkRelayExclusion,
@@ -1536,6 +1536,92 @@ describe("publishPrivateMessage", () => {
       "Sender self-copy reached only part of its inbox relay set."
     )
   })
+
+  for (const declared of [true, false]) {
+    it(`delivers an encrypted synthetic order through ${declared ? "strict" : "bounded compatibility"} routing for recipient decryption`, async () => {
+      const senderSigner = NDKPrivateKeySigner.generate()
+      const recipientSigner = NDKPrivateKeySigner.generate()
+      const unrelatedSigner = NDKPrivateKeySigner.generate()
+      const sender = await senderSigner.user()
+      const recipient = await recipientSigner.user()
+      const unsigned = {
+        kind: EVENT_KINDS.ORDER,
+        pubkey: sender.pubkey,
+        created_at: 1_000,
+        tags: [
+          ["p", recipient.pubkey],
+          ["type", "message"],
+          ["order", "synthetic-rollout"],
+        ],
+        content: JSON.stringify({ note: "Synthetic rollout receipt" }),
+      }
+      const order = new NDKEvent(undefined, {
+        ...unsigned,
+        id: getEventHash(unsigned),
+      })
+      const target = declared
+        ? "wss://recipient.inbox.conduit.market"
+        : "wss://compatibility.example"
+      let staged: NDKEvent | null = null
+      let received: NDKEvent | null = null
+      const outcomes: unknown[] = []
+      const delivered = await publishPrivateMessage({
+        rumor: order,
+        senderPubkey: sender.pubkey,
+        recipientPubkey: recipient.pubkey,
+        signer: senderSigner,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: declared ? [target] : [],
+        validatedOrderScope: createValidatedOrderRouteScope({
+          rumor: order,
+          orderId: "synthetic-rollout",
+          senderPubkey: sender.pubkey,
+          recipientPubkey: recipient.pubkey,
+        }),
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://compatibility.example"],
+          maxRelays: 1,
+        },
+        resolveCompatibilityRecipientReadRelays: async () => [],
+        onWrapped: async ({ wrappedToRecipient }) => {
+          staged = wrappedToRecipient
+        },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
+        publishFn: (async (event, options) => {
+          expect(event).toBe(staged)
+          expect(options.exclusiveRelayUrls).toEqual([target])
+          received = event
+          return { successfulRelayUrls: [target], failedRelayUrls: [] }
+        }) as never,
+      })
+      expect(delivered.deliveryRoute).toBe(
+        declared ? "declared_inbox" : "compatibility_order"
+      )
+      expect(received).not.toBeNull()
+      const receipt = await unwrapGiftWrap(received!, recipientSigner)
+      expect(receipt.status).toBe("ok")
+      if (receipt.status === "ok") {
+        expect(receipt.category).toBe("order")
+        expect(receipt.rumor.id).toBe(order.id)
+        expect(receipt.rumor.pubkey).toBe(sender.pubkey)
+      }
+      expect((await unwrapGiftWrap(received!, unrelatedSigner)).status).toBe(
+        "decrypt_failed"
+      )
+      expect(outcomes).toEqual([
+        {
+          action: "order_delivery",
+          declarationClass: declared ? "declared" : "not_observed",
+          deliveryRoute: declared ? "declared_inbox" : "compatibility_order",
+          ackOutcome: "positive",
+          repairOutcome: "not_applicable",
+          blockReason: "not_applicable",
+        },
+      ])
+    })
+  }
 
   it("attaches an NDK instance before the real gift-wrap encryption path", async () => {
     const senderSigner = NDKPrivateKeySigner.generate()

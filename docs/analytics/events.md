@@ -250,10 +250,14 @@ and no identifiers, relay URLs, payloads, errors, or free text.
   `ack_outcome=unavailable|zero|partial|positive`. `unavailable` means the
   attempt failed before relay acknowledgement evidence was available; `zero`
   is reserved for relay diagnostics that show no successful acknowledgement.
-- `action=declaration_repair` denominator: every explicit Network declaration
-  publish or exact-event redistribution. `repair_outcome` is `discoverable`,
-  `confirmation_pending`, or `failed`; delivery and ACK fields are
-  `not_applicable`.
+- `action=declaration_repair` denominator: explicit unified Network inbox
+  setup/update, exact retry, or redistribution attempts that keep a usable
+  inbox. No-ops, successful signed withdrawals, unrelated relay-list updates,
+  and outcomes after account cancellation are excluded. `repair_outcome` is
+  `discoverable` only after the current mutation owner completes exact
+  confirmation, otherwise `confirmation_pending` or `failed`; delivery and
+  ACK fields are `not_applicable`. Failures before a resulting checkpoint use
+  `declaration_class=unknown`; no account or signed-event details are emitted.
 - Rollout observation uses a rolling 24-hour window per deployment profile.
   Event counts are aggregate attempts, not users, merchants, or orders. No
   identity may be reconstructed or correlated from these counters.
