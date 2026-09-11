@@ -91,7 +91,7 @@ describe("legacy direct-message UI contract", () => {
     const hookSource = await Bun.file(
       "packages/core/src/hooks/useInboxDeclaration.ts"
     ).text()
-    expect(hookSource).toContain("subscribeRelaySettingsChanges")
+    expect(hookSource).toContain("session.accountNetworkPreferences")
     expect(hookSource).toContain("invalidateInboxDeclaration(pubkey)")
     expect(hookSource).toContain("queryClient.invalidateQueries({ queryKey })")
     expect(hookSource).toContain('isLoading: status === "loading"')

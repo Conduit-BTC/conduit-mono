@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
   buildProfileUpdatePayload,
@@ -86,14 +86,24 @@ function Field({
 }
 
 function ProfilePage() {
-  const { pubkey } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const authenticatedPubkey = status === "connected" ? pubkey : null
   const profileQuery = useProfile(pubkey, {
-    authenticatedPubkey: pubkey,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     requireCompleteEvidence: true,
     evidenceScope: "profile_edit",
     maxUnresolvedRefetches: 2,
   })
-  const updateMutation = useUpdateProfile("market")
+  const updateMutation = useUpdateProfile("market", {
+    authenticatedPubkey,
+    authGeneration,
+  })
   const [editingPubkey, setEditingPubkey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_FORM)

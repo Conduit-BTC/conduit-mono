@@ -75,24 +75,39 @@ Invariants:
 - An unsigned draft, cancelled signer sequence, or missing required signature
   changes no route and removes no existing recovery behavior. After all events
   required by an ordinary Network update are signed and durably staged, new
-  gift-wrap writes use the pending declaration. Previous valid inboxes remain a
-  hidden read-only recovery lane until exact pending-event readback from the
-  bounded shared discovery set and expiry of a bounded, versioned stale-sender
-  grace period. They are not current membership and never authorize writes.
+  gift-wrap writes use the pending declaration. Each locally staged ordinary
+  `kind:10050` replacement owns an independent recovery batch of the previous
+  valid inboxes. Its own seven-day, versioned stale-sender clock starts only
+  after that replacement's exact readback from its bounded shared discovery
+  set. Reads union every batch awaiting readback or still within its own grace.
+  Stronger signed evidence, including a replacement produced by another client,
+  preserves existing batches but creates none without a matching locally staged
+  immutable replacement plan. A signer-free redistribution of the same exact
+  staged event may append an inbox-only immutable confirmation attempt for the
+  then-current shared set. Completion of any one attempt starts the owning
+  batch's clock exactly once; later attempts or observations never reset it. If
+  whole-removal policy-blocks one of an attempt's targets, that historical
+  attempt stays incomplete instead of shrinking; a fresh same-event attempt may
+  be added for the current shared set. Recovery batches are not current
+  membership and never authorize writes.
 - A relay explicitly removed from the user's whole setup is excluded from every
   active read and write immediately after all required signatures are staged,
-  before ACK or readback. The proceed/cancel warning states that stale clients
-  may still send there and those messages can be missed.
+  before ACK or readback. Each recovery batch retains its immutable confirmation
+  plan but records the removed URL as policy-blocked historical evidence, so the
+  batch cannot query or reactivate it. The proceed/cancel warning states that
+  stale clients may still send there and those messages can be missed.
 - Legacy NIP-65 draft import begins only after complete bounded discovery
   establishes scoped absence for `kind:10002`; valid signed NIP-65 suppresses
-  that import. Capturing bounded read-only secure-IN recovery is independent and
-  occurs even when signed `kind:10002` exists. Migration persists and verifies
-  every eligible replacement record before retiring legacy keys. Incomplete
-  migration retains or recovers the prior read path and remains retryable;
-  partial new records are not authority. The recovery lane never writes or
-  publishes and ends only after a usable `kind:10050` replacement with one to
-  three secure relays is fully signed and durably staged, or after explicit
-  discard recorded by a durable local migration tombstone.
+  that import. Legacy NIP-65 roles are never reinterpreted as NIP-17 inbox
+  evidence. Builds that already committed an explicit bounded secure-IN
+  recovery record retain it read-only while it converges; new migration runs do
+  not create one from role drafts. The recovery lane never writes or publishes.
+  An ordinary replacement moves those URLs into the versioned cutover lane: its
+  seven-day grace starts only after exact shared-set readback of a usable
+  `kind:10050` replacement. Whole-relay removal ends recovery for that URL
+  immediately after the atomic local commit across every batch. A persisted
+  legacy singleton cutover record up-converts to one recovery batch without
+  changing its relay URLs or any established readback and expiry timestamps.
 - Relay-settings changes expire evidence freshness and trigger rediscovery; they
   do not delete the account-scoped frontier or its last-usable relay set.
 - Only an exact-event observation from a completed bounded relay plan advances
@@ -213,15 +228,22 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
 - Ordinary signed/staged update from `[declared-a]` to `[declared-b]`: writes use
   `declared-b`; reads retain `declared-a` invisibly until exact shared-set
   readback and stale-sender grace expiry.
-- Whole-setup removal of `declared-a`: after every required signature is staged,
-  no read or write uses `declared-a`, even while ACK/readback is pending. The
-  warning explains that stale-client sends there can be missed.
+- Overlapping ordinary update from `[declared-b]` to `[declared-c]`: the second
+  locally staged replacement owns a new batch for `declared-b`; reads union the
+  still-pending or unexpired batches for `declared-a` and `declared-b`, while
+  writes follow `declared-c`. Observing a stronger replacement from another
+  client preserves those batches but creates no new one without a matching local
+  immutable plan.
+- Whole-relay removal of `declared-a`: after every required signature is staged,
+  no read, write, or recovery batch uses `declared-a`, even while ACK/readback is
+  pending. The warning explains that stale-client sends there can be missed.
 - Legacy local migration when signed NIP-65 already exists: suppress draft
-  import, persist and verify the bounded read-only inbox-recovery record, then
-  retire the old key. Signer cancellation or an unrelated NIP-65 update keeps
-  recovery reads; no legacy relay becomes a write target. Only a usable, fully
-  signed and durably staged kind `10050` replacement or explicit discard with a
-  durable migration tombstone ends that recovery.
+  import and retire the obsolete role source after its migration marker is
+  durable. If an older build already committed an explicit bounded inbox
+  recovery record, retain it as read-only evidence; never infer one from the
+  NIP-65 draft. A usable replacement keeps those reads through the seven-day
+  cutover that starts after exact shared-set readback. Whole-relay removal ends
+  recovery for that URL immediately.
 - Complete-empty or partial rediscovery after a valid declaration: the retained
   frontier becomes stale/degraded but remains the declared route; it is not
   deleted.

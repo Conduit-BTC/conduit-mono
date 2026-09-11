@@ -313,7 +313,7 @@ test("cancelled or failed inbox setup keeps the exact local draft @merchant", as
   await choosePrivateInboxSetup(page)
   await page.getByRole("button", { name: "Publish inbox declaration" }).click()
   await expect(
-    page.getByText("Test private inbox signing failure", { exact: true })
+    page.getByText("Nostr signer failed: unavailable", { exact: true })
   ).toBeVisible({ timeout: 15_000 })
   await expect(
     page.getByRole("button", { name: "Return to product draft" })

@@ -695,7 +695,7 @@ test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", asy
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 170,
+      nativeVersion: 180,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,

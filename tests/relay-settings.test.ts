@@ -28,6 +28,7 @@ import {
   getRelayBucketConfigs,
   loadRelaySettings,
   mergeRelayPreferencesIntoSettings,
+  normalizeOwnerSelectedRelayUrls,
   normalizeSecureRelayUrls,
   normalizeSecureOrIsolatedE2eRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
@@ -335,6 +336,23 @@ describe("relay settings protocol helpers", () => {
 
     expect(normalizeSecureRelayUrls(inputs)).toEqual(expected)
     expect(secureRelayUrls(inputs)).toEqual(expected)
+  })
+
+  it("separates owner-selected ws authority from remote relay hints", () => {
+    const ownerWs = "ws://relay.owner.example/path"
+    const remoteWs = "ws://relay.remote.example"
+    const remoteWss = "wss://relay.damus.io"
+
+    expect(
+      normalizeOwnerSelectedRelayUrls([`${ownerWs}/`, ownerWs, remoteWss])
+    ).toEqual([ownerWs, remoteWss])
+    expect(
+      normalizeUntrustedRelayHintsForContext({
+        relayUrls: [ownerWs, remoteWs, remoteWss],
+        approvedRelayUrls: [ownerWs],
+        allowApprovedPrivate: true,
+      })
+    ).toEqual([remoteWss])
   })
 
   it("parses and serializes NIP-65 read/write relay tags", () => {
@@ -713,6 +731,17 @@ describe("relay settings protocol helpers", () => {
         protectedMessageCapabilityEvidence: "unknown",
         protectedMessageRuntimeEvidence: "unknown",
       },
+      {
+        url: "ws://unsafe.example",
+        configured: false,
+        enabled: false,
+        declared: false,
+        retained: true,
+        selectable: true,
+        relayInfoProbe: "unknown",
+        protectedMessageCapabilityEvidence: "unknown",
+        protectedMessageRuntimeEvidence: "unknown",
+      },
     ])
   })
 
@@ -1071,7 +1100,7 @@ describe("relay settings protocol helpers", () => {
     ).toEqual(["wss://fallback.example"])
   })
 
-  it("blocks unsafe tiny NIP-65 publishes", () => {
+  it("allows one active relay when it is a Publish relay", () => {
     expect(() =>
       assertSafeNip65RelayList(
         createRelaySettingsFromPreferences([
@@ -1082,7 +1111,7 @@ describe("relay settings protocol helpers", () => {
           },
         ]).entries
       )
-    ).toThrow("Refusing to publish a tiny NIP-65 relay list")
+    ).not.toThrow()
 
     expect(() =>
       assertSafeNip65RelayList(
@@ -1102,7 +1131,7 @@ describe("relay settings protocol helpers", () => {
     ).not.toThrow()
   })
 
-  it("blocks NIP-65 publishes without an OUT relay", () => {
+  it("blocks NIP-65 publishes without a Publish relay", () => {
     expect(() =>
       assertSafeNip65RelayList(
         createRelaySettingsFromPreferences([
@@ -1118,7 +1147,7 @@ describe("relay settings protocol helpers", () => {
           },
         ]).entries
       )
-    ).toThrow("without an OUT relay")
+    ).toThrow("without a Publish relay")
   })
 
   it("applies safe defaults when creating an entry from a scan", () => {

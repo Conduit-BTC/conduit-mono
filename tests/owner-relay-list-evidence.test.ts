@@ -6,11 +6,14 @@ import {
 } from "nostr-tools/pure"
 import {
   __resetOwnerRelayListEvidenceForTests,
+  applyOwnerRelayListDistributionOutcomes,
+  applyOwnerRelayListDistributionStage,
   applyOwnerRelayListEvidenceReconciliation,
   createInMemoryOwnerRelayListEvidenceRepository,
   getOwnerRelayListEvidence,
   reconcileOwnerRelayListEvidence,
   resolveOwnerRelayList,
+  type NetworkPreferenceRelayOutcome,
   type OwnerRelayListEvidenceRepository,
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
@@ -18,6 +21,7 @@ import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event
 
 const OWNER_SECRET = generateSecretKey()
 const OWNER = getPublicKey(OWNER_SECRET)
+const OTHER = getPublicKey(generateSecretKey())
 
 function relayEvent(input: {
   createdAt: number
@@ -51,6 +55,16 @@ function lookup(input: {
   }
 }
 
+function pendingRelayOutcome(relayUrl: string): NetworkPreferenceRelayOutcome {
+  return {
+    relayUrl,
+    publishStatus: "pending",
+    publishAttemptCount: 0,
+    readbackStatus: "pending",
+    readbackAttemptCount: 0,
+  }
+}
+
 let repository: OwnerRelayListEvidenceRepository
 
 beforeEach(() => {
@@ -59,6 +73,314 @@ beforeEach(() => {
 })
 
 describe("owner kind-10002 evidence", () => {
+  it("admits only the exact authenticated owner's selected ws lookup target", async () => {
+    const ownerWsRelay = "ws://owner-selected.example"
+    const remoteWsRelay = "ws://remote-derived.example"
+    const secureRelay = "wss://relay.damus.io"
+    const calls: Array<{
+      relayUrls: string[]
+      accountPubkey?: string | null
+      authenticatedPubkey?: string | null
+      ownerSelectedRelayUrls: string[]
+    }> = []
+    const fetchEventsWithDiagnostics = async (
+      _filter: unknown,
+      options: {
+        relayUrls: string[]
+        accountPubkey?: string | null
+        authenticatedPubkey?: string | null
+        ownerSelectedRelayUrls?: readonly string[]
+      }
+    ) => {
+      calls.push({
+        relayUrls: [...options.relayUrls],
+        accountPubkey: options.accountPubkey,
+        authenticatedPubkey: options.authenticatedPubkey,
+        ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+      })
+      return {
+        events: [] as never,
+        attemptedRelayUrls: [...options.relayUrls],
+        successfulRelayUrls: [...options.relayUrls],
+        failedRelayUrls: [],
+      }
+    }
+
+    await resolveOwnerRelayList(OWNER, {
+      relayUrls: [remoteWsRelay, ownerWsRelay, secureRelay],
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      ownerSelectedRelayUrls: [ownerWsRelay],
+      evidenceRepository: repository,
+      fetchEventsWithDiagnostics: fetchEventsWithDiagnostics as never,
+    })
+    await resolveOwnerRelayList(OTHER, {
+      relayUrls: [remoteWsRelay, ownerWsRelay, secureRelay],
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      ownerSelectedRelayUrls: [ownerWsRelay],
+      evidenceRepository: createInMemoryOwnerRelayListEvidenceRepository(),
+      fetchEventsWithDiagnostics: fetchEventsWithDiagnostics as never,
+    })
+
+    expect(calls).toEqual([
+      {
+        relayUrls: [ownerWsRelay, secureRelay],
+        accountPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        ownerSelectedRelayUrls: [ownerWsRelay],
+      },
+      {
+        relayUrls: [secureRelay],
+        accountPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        ownerSelectedRelayUrls: [],
+      },
+    ])
+  })
+
+  it("preserves a live authority failure from the final owner lookup seam", async () => {
+    let authorityCurrent = true
+    const shouldContinue = () => authorityCurrent
+    const authorityError = new Error("authority changed")
+    let fetchCalls = 0
+
+    const lookup = resolveOwnerRelayList(OWNER, {
+      relayUrls: ["ws://owner-selected.example"],
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      ownerSelectedRelayUrls: ["ws://owner-selected.example"],
+      shouldContinue,
+      evidenceRepository: repository,
+      fetchEventsWithDiagnostics: (async (_filter, options) => {
+        fetchCalls += 1
+        expect(options.shouldContinue).toBe(shouldContinue)
+        authorityCurrent = false
+        expect(options.shouldContinue?.()).toBe(false)
+        throw authorityError
+      }) as never,
+    })
+
+    await expect(lookup).rejects.toBe(authorityError)
+    expect(fetchCalls).toBe(1)
+  })
+
+  it("retains ws distribution only when the exact owner event selected it", () => {
+    const ownerWs = "ws://owner-selected.example"
+    const remoteWs = "ws://remote-derived.example"
+    const signedEvent = relayEvent({
+      createdAt: 100,
+      tags: [["r", ownerWs, "write"]],
+    })
+
+    const staged = applyOwnerRelayListDistributionStage(undefined, {
+      pubkey: OWNER,
+      signedEvent,
+      publishRelayUrls: [ownerWs, "wss://relay.damus.io"],
+      relayOutcomes: [
+        pendingRelayOutcome(ownerWs),
+        pendingRelayOutcome("wss://relay.damus.io"),
+      ],
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+    expect(staged.pendingDistribution?.publishRelayUrls).toEqual([
+      ownerWs,
+      "wss://relay.damus.io",
+    ])
+
+    expect(() =>
+      applyOwnerRelayListDistributionStage(undefined, {
+        pubkey: OWNER,
+        signedEvent,
+        publishRelayUrls: [remoteWs],
+        relayOutcomes: [pendingRelayOutcome(remoteWs)],
+        expectedCurrentEventId: null,
+        stagedAt: 1_000,
+      })
+    ).toThrow("requires publish targets")
+  })
+
+  it("keeps exact per-relay outcomes immutable while retrying only unresolved work", () => {
+    const signedEvent = relayEvent({
+      createdAt: 100,
+      tags: [["r", "wss://owner.example"]],
+    })
+    const exactSignedBytes = structuredClone(signedEvent)
+    const relayOutcomes = [
+      pendingRelayOutcome("wss://nos.lol"),
+      pendingRelayOutcome("wss://relay.damus.io"),
+    ]
+    const staged = applyOwnerRelayListDistributionStage(undefined, {
+      pubkey: OWNER,
+      signedEvent,
+      publishRelayUrls: ["wss://nos.lol", "wss://relay.damus.io"],
+      relayOutcomes,
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+
+    signedEvent.tags[0]![1] = "wss://caller-mutation.example"
+    relayOutcomes[0]!.publishStatus = "rejected"
+    expect(staged.pendingDistribution).toEqual({
+      signedEvent: exactSignedBytes,
+      publishRelayUrls: ["wss://nos.lol", "wss://relay.damus.io"],
+      relayOutcomes: [
+        pendingRelayOutcome("wss://nos.lol"),
+        pendingRelayOutcome("wss://relay.damus.io"),
+      ],
+      stagedAt: 1_000,
+    })
+
+    const firstAttempt = applyOwnerRelayListDistributionOutcomes(staged, {
+      publish: [
+        { relayUrl: "wss://relay.damus.io", status: "timed_out" },
+        { relayUrl: "wss://nos.lol", status: "acked" },
+      ],
+      observedAt: 1_100,
+    })
+    expect(firstAttempt.current?.signedEvent).toEqual(exactSignedBytes)
+    expect(firstAttempt.pendingDistribution).toEqual({
+      signedEvent: exactSignedBytes,
+      publishRelayUrls: ["wss://nos.lol", "wss://relay.damus.io"],
+      relayOutcomes: [
+        {
+          relayUrl: "wss://nos.lol",
+          publishStatus: "acked",
+          publishAttemptCount: 1,
+          publishAttemptedAt: 1_100,
+          readbackStatus: "pending",
+          readbackAttemptCount: 0,
+        },
+        {
+          relayUrl: "wss://relay.damus.io",
+          publishStatus: "timed_out",
+          publishAttemptCount: 1,
+          publishAttemptedAt: 1_100,
+          readbackStatus: "pending",
+          readbackAttemptCount: 0,
+        },
+      ],
+      stagedAt: 1_000,
+    })
+    expect(staged.pendingDistribution?.relayOutcomes).toEqual([
+      pendingRelayOutcome("wss://nos.lol"),
+      pendingRelayOutcome("wss://relay.damus.io"),
+    ])
+
+    const retried = applyOwnerRelayListDistributionOutcomes(firstAttempt, {
+      publish: [
+        { relayUrl: "wss://nos.lol", status: "rejected" },
+        { relayUrl: "wss://relay.damus.io", status: "acked" },
+      ],
+      observedAt: 1_200,
+    })
+    expect(retried.current?.signedEvent).toEqual(exactSignedBytes)
+    expect(retried.pendingDistribution?.signedEvent).toEqual(exactSignedBytes)
+    expect(retried.pendingDistribution?.publishRelayUrls).toEqual(
+      staged.pendingDistribution?.publishRelayUrls
+    )
+    expect(retried.pendingDistribution?.stagedAt).toBe(1_000)
+    expect(retried.pendingDistribution?.relayOutcomes).toEqual([
+      {
+        relayUrl: "wss://nos.lol",
+        publishStatus: "acked",
+        publishAttemptCount: 1,
+        publishAttemptedAt: 1_100,
+        readbackStatus: "pending",
+        readbackAttemptCount: 0,
+      },
+      {
+        relayUrl: "wss://relay.damus.io",
+        publishStatus: "acked",
+        publishAttemptCount: 2,
+        publishAttemptedAt: 1_200,
+        readbackStatus: "pending",
+        readbackAttemptCount: 0,
+      },
+    ])
+  })
+
+  it("clears exact pending bytes after shared-target readback", () => {
+    const signedEvent = relayEvent({ createdAt: 100 })
+    const exactSignedBytes = structuredClone(signedEvent)
+    const staged = applyOwnerRelayListDistributionStage(undefined, {
+      pubkey: OWNER,
+      signedEvent,
+      publishRelayUrls: ["wss://relay.primal.net"],
+      relayOutcomes: [pendingRelayOutcome("wss://relay.primal.net")],
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+
+    const confirmed = applyOwnerRelayListDistributionOutcomes(staged, {
+      readback: [
+        {
+          relayUrl: "wss://relay.primal.net",
+          status: "observed",
+        },
+      ],
+      observedAt: 2_000,
+    })
+
+    expect(confirmed.current?.signedEvent).toEqual(exactSignedBytes)
+    expect(confirmed.pendingDistribution).toBeUndefined()
+  })
+
+  it("retains exact pending bytes when durable evidence is reloaded after restart", async () => {
+    const signedEvent = relayEvent({ createdAt: 100 })
+    const staged = applyOwnerRelayListDistributionStage(undefined, {
+      pubkey: OWNER,
+      signedEvent,
+      publishRelayUrls: ["wss://relay.primal.net"],
+      relayOutcomes: [pendingRelayOutcome("wss://relay.primal.net")],
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+    repository = createInMemoryOwnerRelayListEvidenceRepository([staged])
+    __resetOwnerRelayListEvidenceForTests()
+
+    const retained = await getOwnerRelayListEvidence(OWNER, repository)
+
+    expect(retained?.pendingDistribution).toEqual(staged.pendingDistribution)
+    expect(retained?.current?.signedEvent).toEqual(structuredClone(signedEvent))
+  })
+
+  it("lets stronger same-kind evidence supersede pending distribution", () => {
+    const pending = relayEvent({
+      createdAt: 100,
+      tags: [["r", "wss://pending.example"]],
+    })
+    const stronger = relayEvent({
+      createdAt: 101,
+      tags: [["r", "wss://stronger.example"]],
+    })
+    const exactStrongerBytes = structuredClone(stronger)
+    const staged = applyOwnerRelayListDistributionStage(undefined, {
+      pubkey: OWNER,
+      signedEvent: pending,
+      publishRelayUrls: ["wss://relay.primal.net"],
+      relayOutcomes: [pendingRelayOutcome("wss://relay.primal.net")],
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+
+    const superseded = applyOwnerRelayListEvidenceReconciliation(staged, {
+      pubkey: OWNER,
+      observations: [
+        {
+          signedEvent: stronger,
+          sourceRelayUrls: ["wss://relay.primal.net"],
+          observedAt: 2_000,
+        },
+      ],
+      lookup: lookup({ observedAt: 2_000, event: stronger }),
+    })
+
+    expect(superseded.current?.signedEvent).toEqual(exactStrongerBytes)
+    expect(superseded.pendingDistribution).toBeUndefined()
+  })
+
   it("retains exact signed bytes and applies the NIP-01 frontier tie-break", async () => {
     const first = relayEvent({
       createdAt: 100,

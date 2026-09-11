@@ -208,20 +208,39 @@ describe("Market pickup handoff", () => {
 
   it("accepts only a current usable organizer inbox", async () => {
     let lookedUpPubkey = ""
+    let lookupContext:
+      | {
+          requestingAccountPubkey?: string | null
+          authenticatedPubkey?: string | null
+          shouldContinue?: () => boolean
+        }
+      | undefined
+    const shouldContinue = () => true
     await expect(
       assertCartPickupHandlerReady(
         [{ fulfillment: pickupFulfillment("organizer_handoff") }],
-        async (organizerPubkey) => {
+        async (organizerPubkey, options) => {
           lookedUpPubkey = organizerPubkey
+          lookupContext = options
           return {
             state: "ready",
             organizerPubkey,
             relayUrls: ["wss://inbox.example"],
           }
+        },
+        {
+          requestingAccountPubkey: MERCHANT,
+          authenticatedPubkey: MERCHANT,
+          shouldContinue,
         }
       )
     ).resolves.toBeUndefined()
     expect(lookedUpPubkey).toBe(ORGANIZER)
+    expect(lookupContext).toEqual({
+      requestingAccountPubkey: MERCHANT,
+      authenticatedPubkey: MERCHANT,
+      shouldContinue,
+    })
 
     await expect(
       assertCartPickupHandlerReady(

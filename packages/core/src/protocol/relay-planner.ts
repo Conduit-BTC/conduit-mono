@@ -30,6 +30,9 @@ import {
   getGeneralReadRelayUrls,
   getGeneralWriteRelayUrls,
   loadRelaySettingsPlanningSnapshot,
+  normalizeOwnerSelectedRelayUrls,
+  normalizeSecureOrIsolatedE2eRelayUrls,
+  tryNormalizeRelayUrl,
   type RelayPlanOptions,
   type RelaySettingsState,
 } from "./relay-settings"
@@ -80,6 +83,11 @@ export interface RelayReadPlanInput {
   relayLists?: ReadonlyMap<string, RelayList>
   /** Authenticated pubkey whose own NIP-65 local relays may be used. */
   authenticatedPubkey?: string | null
+  /**
+   * Exact relay subset backed by that authenticated owner's durable Network
+   * selection. Remote NIP-65 lists and relay hints must never populate this.
+   */
+  ownerSelectedRelayUrls?: readonly string[]
   /** Maximum number of relays to query (bounded fanout). */
   maxRelays?: number
   /** Skip per-relay health filtering (test seam / last-resort retries). */
@@ -100,6 +108,8 @@ export interface RelayReadPlan {
   parkedRelayUrls: string[]
   /** Relays that came from per-author NIP-65 hints. */
   hintRelayUrls: string[]
+  /** Exact executable subset authorized by the authenticated owner. */
+  ownerSelectedRelayUrls?: string[]
 }
 
 export interface RelayWritePlanInput {
@@ -112,6 +122,8 @@ export interface RelayWritePlanInput {
   relayLists?: ReadonlyMap<string, RelayList>
   /** Authenticated pubkey whose own NIP-65 local relays may be used. */
   authenticatedPubkey?: string | null
+  /** Exact relay subset backed by that authenticated owner's Network choice. */
+  ownerSelectedRelayUrls?: readonly string[]
   /** Cap the primary relay count. */
   maxPrimaryRelays?: number
   /** Cap the broadcast relay count (best-effort, beyond primary). */
@@ -206,21 +218,34 @@ function defaultRecipientWriteFallbackRelayUrls(): string[] {
 function hintReadRelaysForAuthors(
   authors: readonly string[],
   relayLists: ReadonlyMap<string, RelayList> | undefined,
-  authenticatedPubkey: string | null | undefined
+  authenticatedPubkey: string | null | undefined,
+  ownerSelectedRelayUrls: readonly string[] = []
 ): string[] {
   if (!relayLists || authors.length === 0) return []
+  const authenticatedOwner = authenticatedPubkey?.trim().toLowerCase()
+  const ownerSelected = new Set(
+    normalizeOwnerSelectedRelayUrls(ownerSelectedRelayUrls)
+  )
   const out: string[] = []
   for (const pubkey of authors) {
     const rawList = relayLists.get(pubkey)
-    const list = rawList
-      ? filterRelayListForContext(rawList, {
-          allowInsecureRelayUrlsForPubkey: authenticatedPubkey,
-        })
-      : undefined
-    if (!list) continue
+    if (!rawList) continue
+    const isAuthenticatedOwner =
+      pubkey.trim().toLowerCase() === authenticatedOwner
     // Reads target where the author *writes*. For DM inbox reads, the
     // caller passes recipients instead and uses `hintReadRelaysForRecipients`.
-    out.push(...list.writeRelayUrls)
+    out.push(
+      ...(isAuthenticatedOwner
+        ? normalizeSecureOrIsolatedE2eRelayUrls(rawList.writeRelayUrls)
+        : filterRelayListForContext(rawList).writeRelayUrls)
+    )
+    if (isAuthenticatedOwner) {
+      out.push(
+        ...rawList.writeRelayUrls.filter((relayUrl) =>
+          ownerSelected.has(relayUrl)
+        )
+      )
+    }
   }
   return out
 }
@@ -228,19 +253,32 @@ function hintReadRelaysForAuthors(
 function hintReadRelaysForRecipients(
   recipients: readonly string[],
   relayLists: ReadonlyMap<string, RelayList> | undefined,
-  authenticatedPubkey: string | null | undefined
+  authenticatedPubkey: string | null | undefined,
+  ownerSelectedRelayUrls: readonly string[] = []
 ): string[] {
   if (!relayLists || recipients.length === 0) return []
+  const authenticatedOwner = authenticatedPubkey?.trim().toLowerCase()
+  const ownerSelected = new Set(
+    normalizeOwnerSelectedRelayUrls(ownerSelectedRelayUrls)
+  )
   const out: string[] = []
   for (const pubkey of recipients) {
     const rawList = relayLists.get(pubkey)
-    const list = rawList
-      ? filterRelayListForContext(rawList, {
-          allowInsecureRelayUrlsForPubkey: authenticatedPubkey,
-        })
-      : undefined
-    if (!list) continue
-    out.push(...list.readRelayUrls)
+    if (!rawList) continue
+    const isAuthenticatedOwner =
+      pubkey.trim().toLowerCase() === authenticatedOwner
+    out.push(
+      ...(isAuthenticatedOwner
+        ? normalizeSecureOrIsolatedE2eRelayUrls(rawList.readRelayUrls)
+        : filterRelayListForContext(rawList).readRelayUrls)
+    )
+    if (isAuthenticatedOwner) {
+      out.push(
+        ...rawList.readRelayUrls.filter((relayUrl) =>
+          ownerSelected.has(relayUrl)
+        )
+      )
+    }
   }
   return out
 }
@@ -249,13 +287,51 @@ function hasRecipientReadRelays(input: {
   pubkey: string
   relayLists: ReadonlyMap<string, RelayList> | undefined
   authenticatedPubkey: string | null | undefined
+  ownerSelectedRelayUrls?: readonly string[]
 }): boolean {
   const rawList = input.relayLists?.get(input.pubkey)
   if (!rawList) return false
-  const list = filterRelayListForContext(rawList, {
-    allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
-  })
-  return list.readRelayUrls.length > 0
+  const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
+  const isAuthenticatedOwner =
+    input.pubkey.trim().toLowerCase() === authenticatedOwner
+  const eligibleWssRelayUrls = isAuthenticatedOwner
+    ? normalizeSecureOrIsolatedE2eRelayUrls(rawList.readRelayUrls)
+    : filterRelayListForContext(rawList).readRelayUrls
+  if (eligibleWssRelayUrls.length > 0) {
+    return true
+  }
+  if (!isAuthenticatedOwner) return false
+  const ownerSelected = new Set(
+    normalizeOwnerSelectedRelayUrls(input.ownerSelectedRelayUrls ?? [])
+  )
+  return rawList.readRelayUrls.some((relayUrl) => ownerSelected.has(relayUrl))
+}
+
+function applyReadTransportAuthority(
+  relayUrls: readonly string[],
+  ownerSelectedRelayUrls: readonly string[]
+): string[] {
+  const ownerSelected = new Set(
+    normalizeOwnerSelectedRelayUrls(ownerSelectedRelayUrls)
+  )
+  const remotelyEligible = new Set(
+    normalizeSecureOrIsolatedE2eRelayUrls(relayUrls)
+  )
+  const accepted: string[] = []
+  const seen = new Set<string>()
+  for (const rawRelayUrl of relayUrls) {
+    const normalized = tryNormalizeRelayUrl(rawRelayUrl)
+    if (!normalized.ok || seen.has(normalized.url)) continue
+    if (
+      !remotelyEligible.has(normalized.url) &&
+      !ownerSelected.has(normalized.url)
+    ) {
+      continue
+    }
+    seen.add(normalized.url)
+    accepted.push(normalized.url)
+  }
+  return accepted
 }
 
 function applyHealthFilter(
@@ -296,8 +372,13 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
       relayUrls: [isolatedRelayUrl],
       parkedRelayUrls: [],
       hintRelayUrls: [],
+      ownerSelectedRelayUrls: [],
     }
   }
+
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
+    input.ownerSelectedRelayUrls ?? []
+  )
 
   const baseRelays = (() => {
     switch (input.intent) {
@@ -365,31 +446,44 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
   const authorHints = hintReadRelaysForAuthors(
     authorHintPubkeys,
     input.relayLists,
-    input.authenticatedPubkey
+    input.authenticatedPubkey,
+    ownerSelectedRelayUrls
   )
   const recipientHints = hintReadRelaysForRecipients(
     input.recipients ?? [],
     input.relayLists,
-    input.authenticatedPubkey
+    input.authenticatedPubkey,
+    ownerSelectedRelayUrls
   )
-  const hintRelayUrls = dedupeOrdered([
-    ...authenticatedOwnerAuthorHints,
-    ...authorHints,
-    ...recipientHints,
-  ])
+  const hintRelayUrls = applyReadTransportAuthority(
+    dedupeOrdered([
+      ...authenticatedOwnerAuthorHints,
+      ...authorHints,
+      ...recipientHints,
+    ]),
+    ownerSelectedRelayUrls
+  )
 
-  const ordered = dedupeOrdered([...hintRelayUrls, ...baseRelays])
+  const ordered = applyReadTransportAuthority(
+    dedupeOrdered([...hintRelayUrls, ...baseRelays]),
+    ownerSelectedRelayUrls
+  )
   const { kept, parked } = applyHealthFilter(
     ordered,
     input.skipHealthFilter,
     input.now
   )
 
+  const relayUrls = clampFanout(kept, input.maxRelays ?? DEFAULT_READ_FANOUT)
+  const executableRelayUrls = new Set(relayUrls)
   return {
     intent: input.intent,
-    relayUrls: clampFanout(kept, input.maxRelays ?? DEFAULT_READ_FANOUT),
+    relayUrls,
     parkedRelayUrls: parked,
     hintRelayUrls,
+    ownerSelectedRelayUrls: ownerSelectedRelayUrls.filter((relayUrl) =>
+      executableRelayUrls.has(relayUrl)
+    ),
   }
 }
 
@@ -453,7 +547,8 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
       : hintReadRelaysForAuthors(
           input.authorPubkey ? [input.authorPubkey] : [],
           input.relayLists,
-          input.authenticatedPubkey
+          input.authenticatedPubkey,
+          input.ownerSelectedRelayUrls
         )
     const ordered = dedupeOrdered(
       hasReconciledOwnerProjection
@@ -482,7 +577,8 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
   const recipientHints = hintReadRelaysForRecipients(
     recipients,
     input.relayLists,
-    input.authenticatedPubkey
+    input.authenticatedPubkey,
+    input.ownerSelectedRelayUrls
   )
 
   // Recipients with no cached list contribute nothing. Use the shared
@@ -495,6 +591,7 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
         pubkey,
         relayLists: input.relayLists,
         authenticatedPubkey: input.authenticatedPubkey,
+        ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
       })
   )
     ? defaultRecipientWriteFallbackRelayUrls()

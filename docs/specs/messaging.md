@@ -108,6 +108,15 @@ The boundary provides:
   Kind `10002` never supplies a gift-wrap write target. A `signed_empty` or
   `malformed` declaration is an explicit blocking state that the client never
   overrides with retained relay tags.
+- **Authority-scoped transport.** An authenticated owner may explicitly select
+  a `ws://` or `wss://` relay in Network for eligible operations on that
+  owner's own account. A `ws://` URL learned from discovery, metadata, event
+  hints, cached provenance, fallback configuration, or a recipient's or other
+  account's declaration is never contacted automatically. A remote recipient's
+  `ws://` kind-10050 tag remains declaration evidence but is filtered from
+  delivery; remote `wss://` targets remain subject to the normal routing,
+  evidence, validity, and exclusion rules. The executor enforces this again
+  immediately before final I/O.
 - **Typed routing states (`protocol/private-message-routing.ts`).** Declaration
   discovery distinguishes signed frontier states (`declared`, `signed_empty`,
   `malformed`) from bounded observation outcomes (`not_observed`,
@@ -139,13 +148,23 @@ The boundary provides:
 - **Pending declaration cutover.** An unsigned draft, cancelled signer flow, or
   missing required signature changes no route and removes no recovery behavior.
   After every required event is signed and durably staged, new writes use the
-  pending declaration. For an ordinary Private inbox role change, previous valid
-  inboxes remain a hidden read-only lane until exact pending-event readback from
-  the bounded shared discovery set and expiry of a bounded, versioned
-  stale-sender grace period. They are not current membership and never authorize
-  writes. Explicit whole-setup removal excludes its URL from reads and writes
-  immediately after staging, before ACK or readback, accepting the warned risk
-  of missing stale-client sends.
+  pending declaration. Each locally staged ordinary `kind:10050` replacement
+  owns an independent recovery batch containing the previous valid inboxes. A
+  batch's own seven-day, versioned stale-sender clock starts only after that
+  replacement's exact readback from its bounded shared discovery set. Stronger
+  signed evidence, including a replacement produced by another client, preserves
+  every existing batch but creates none without a matching locally staged
+  immutable replacement plan. Signer-free redistribution of the same exact event
+  may append an inbox-only immutable confirmation attempt for the current shared
+  set. Any one complete attempt starts the owning batch's clock exactly once;
+  later attempts and observations never reset it. A whole-relay removal that
+  policy-blocks any target leaves that historical attempt incomplete rather than
+  shrinking it retroactively. A fresh signer-free attempt for the same exact
+  event may complete against the then-current unblocked shared set. Recovery
+  batches are not current membership and never authorize writes. Explicit
+  whole-relay removal filters its URL from every batch immediately after the
+  atomic local commit, before ACK or readback, accepting the warned risk of
+  missing stale-client sends.
 - **Cross-client declaration discovery.** Declaration publish and repair use a
   bounded shared discovery set that unrelated Conduit clients query. Repair is
   confirmed only after the exact signed event is observed from that shared set;
@@ -157,22 +176,29 @@ The boundary provides:
   `signed_empty`/`malformed`, partial, and unavailable observations, plus any
   future reserved fail-closed conflict, remain retry-only.
 - **Permissive inbox reads.** The principal's gift-wrap read plan is the union
-  of their current or pending declared inboxes, eligible retained last-usable or
-  cutover-recovery inboxes, an active bounded legacy migration-recovery record,
-  and the bounded Conduit compatibility read set. A fully staged whole-setup
-  removal is excluded immediately. General NIP-65 membership never adds an
-  inbox read target. Wraps are deduplicated by outer wrapper and inner rumor ids,
-  and found or cached messages stay visible under partial failure. Reads report
-  `complete`, `partial`, or `unavailable` coverage and an explicit source such as
-  `declared`, `pending_declared`, `cutover_recovery`, `migration_recovery`,
-  `compatibility`, `mixed`, or `cache`.
-- **Legacy inbox-read recovery.** Capturing the bounded read-only secure-IN
-  recovery record is independent of NIP-65 draft import. A valid signed
-  `kind:10002` suppresses the draft but does not end recovery. The record is not
-  current membership and never authorizes writes. It ends only after a usable
-  `kind:10050` replacement with one to three secure relays is fully signed and
-  durably staged, or after explicit discard recorded by a durable local
-  migration tombstone.
+  of their current or pending declared inboxes, every recovery batch awaiting
+  its own exact readback or still within its own seven-day grace, eligible
+  retained last-usable inboxes, an active bounded legacy migration-recovery
+  record, and the bounded Conduit compatibility read set. A committed
+  whole-relay removal is excluded immediately from every batch. General NIP-65
+  membership never adds an inbox read target. Wraps are deduplicated by outer
+  wrapper and inner rumor ids, and found or cached messages stay visible under
+  partial failure. Reads report `complete`, `partial`, or `unavailable` coverage
+  and an explicit source such as `declared`, `pending_declared`,
+  `cutover_recovery`, `migration_recovery`, `compatibility`, `mixed`, or `cache`.
+- **Legacy inbox-read recovery.** Legacy NIP-65 roles never create NIP-17
+  evidence. A bounded read-only secure-IN recovery record explicitly committed
+  by an older build is handled independently of NIP-65 draft import. It is not
+  current membership and never authorizes writes. An ordinary replacement
+  carries those relays into the cutover lane; its seven-day read-only grace
+  begins only after a usable `kind:10050` replacement with one to three secure
+  relays is read back exactly from its complete shared relay set. Signing or
+  durable staging alone does not start or end that grace. Explicit whole-relay
+  removal is the only early-termination path and ends recovery for that URL at
+  the atomic local commit. A migration discard tombstone applies only to a
+  discarded legacy NIP-65 role draft. A persisted legacy singleton cutover
+  record up-converts to one recovery batch without changing its relay URLs or
+  any established readback and expiry timestamps.
 - **Protected inbox execution.** The shared inbox path executes the principal's
   own `kind:1059`, `#p`-scoped filters through the NDK-neutral protected relay
   executor. The explicit account/session authorization boundary accepts only
@@ -287,6 +313,11 @@ material, wallet credentials or recovery material, or wallet balances.
   declaration; only validated kind-16 order sends may use the flagged bounded
   compatibility plan, and kind-14 is excluded from it. One relay ACK is a
   successful partial delivery; zero ACKs is an explicit failure.
+- Allow an authenticated owner's explicit new or existing Network `ws://`
+  selection for eligible operations on that owner's account, with a
+  non-blocking **Unencrypted connection** notice. Filter remotely learned,
+  recipient, and other-account `ws://` URLs again at final I/O while leaving
+  otherwise eligible remote `wss://` routes unchanged.
 - Declaration discovery separates `not_observed`, `lookup_partial`,
   `lookup_unavailable`, `signed_empty`, and `malformed`; permissive reads keep
   retained and partial results visible with coverage and source provenance.

@@ -18,8 +18,9 @@ export const Route = createFileRoute("/network")({
 })
 
 function SettingsPage() {
-  const { pubkey, signer, method, authGeneration } = useAuth()
+  const { pubkey, signer, method, authGeneration, status } = useAuth()
   const session = useConduitSession()
+  const authenticatedPubkey = status === "connected" ? pubkey : null
   const relaySettings = useRelaySettings(session.relayScope, {
     pubkey,
     bootstrapRelayList: false,
@@ -30,6 +31,7 @@ function SettingsPage() {
   })
   const mediaServerPreferences = useMediaServerPreferences(pubkey, {
     enabled: session.relaySettingsReady,
+    authenticatedPubkey,
     signer,
     authMethod: method,
     authGeneration,

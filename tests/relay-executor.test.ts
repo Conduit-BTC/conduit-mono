@@ -21,11 +21,19 @@ import {
   type RelayWebSocket,
 } from "../packages/core/src/protocol/relay-executor"
 import { readProtectedInbox } from "../packages/core/src/protocol/protected-inbox-read"
+import {
+  applyAccountNetworkRelayExclusion,
+  createInMemoryAccountNetworkLocalStateRepository,
+} from "../packages/core/src/protocol/account-network-local-state"
 
 const PRIVATE_KEY_A = new Uint8Array(32).fill(1)
 const PRIVATE_KEY_B = new Uint8Array(32).fill(2)
 const PUBKEY_A = getPublicKey(PRIVATE_KEY_A)
 const PUBKEY_B = getPublicKey(PRIVATE_KEY_B)
+
+function emptyAccountNetworkPolicy() {
+  return createInMemoryAccountNetworkLocalStateRepository()
+}
 
 type RelayFrame = unknown[]
 
@@ -574,6 +582,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       relayUrls: ["wss://protected.example"],
       limit: 10,
       authorization,
+      accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),
       executor: createExecutor(summaryHarness),
     })
     expect(inbox.auth).toMatchObject({
@@ -583,6 +592,68 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       failedCount: 1,
       failure: "authentication_required",
     })
+  })
+
+  it("rechecks whole-relay exclusions before admitting a protected inbox read", async () => {
+    const removedRelayUrl = "wss://removed-protected.example"
+    const retainedRelayUrl = "wss://retained-protected.example"
+    const harness = new FakeRelayHarness()
+      .at(removedRelayUrl, {})
+      .at(retainedRelayUrl, {
+        onSend: (socket, frame) => {
+          if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+        },
+      })
+    const repository = emptyAccountNetworkPolicy()
+    await repository.update(PUBKEY_A, (current) =>
+      applyAccountNetworkRelayExclusion(current, {
+        relayUrl: removedRelayUrl,
+        relayListFrontier: { eventId: null, createdAt: null },
+        inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        committedAt: 1,
+      })
+    )
+    const { authorization } = authorize()
+
+    const inbox = await readProtectedInbox({
+      principalPubkey: PUBKEY_A,
+      relayUrls: [removedRelayUrl, retainedRelayUrl],
+      limit: 10,
+      authorization,
+      accountNetworkLocalStateRepository: repository,
+      executor: createExecutor(harness),
+    })
+
+    expect(inbox.coverage).toBe("complete")
+    expect(harness.sockets.map((socket) => socket.url)).toEqual([
+      retainedRelayUrl,
+    ])
+  })
+
+  it("admits owner inbox ws without allowing remote ws into protected I/O", async () => {
+    const ownerWs = "ws://owner-inbox.example"
+    const remoteWs = "ws://remote-inbox.example"
+    const harness = new FakeRelayHarness()
+      .at(ownerWs, {
+        onSend: (socket, frame) => {
+          if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+        },
+      })
+      .at(remoteWs, {})
+    const { authorization } = authorize()
+
+    const inbox = await readProtectedInbox({
+      principalPubkey: PUBKEY_A,
+      relayUrls: [ownerWs, remoteWs],
+      ownerSelectedRelayUrls: [ownerWs],
+      limit: 10,
+      authorization,
+      accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),
+      executor: createExecutor(harness),
+    })
+
+    expect(inbox.coverage).toBe("complete")
+    expect(harness.sockets.map((socket) => socket.url)).toEqual([ownerWs])
   })
 
   it("distinguishes authentication timeout from query timeout", async () => {
@@ -1506,6 +1577,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       relayUrls: ["wss://protected.example"],
       limit: 10,
       authorization,
+      accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),
       executor,
     })
 
@@ -2078,6 +2150,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       relayUrls: ["wss://protected.example"],
       limit: 10,
       authorization,
+      accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),
       executor: createExecutor(summaryHarness),
     })
     expect(inbox.auth).toMatchObject({
