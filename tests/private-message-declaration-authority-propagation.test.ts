@@ -31,7 +31,7 @@ describe("private-message declaration authority propagation", () => {
     expect(hook).toContain("queryFn: ({ signal })")
     expect(hook).toContain("signal,")
     expect(hook).toContain("!signal.aborted")
-    expect(hook).toContain("sameAccountMutationAuthority(")
+    expect(hook).toContain("sameAccountReadAuthority(")
     expect(hook).toContain(
       "useLayoutEffect(() => {\n    authorityRef.current = {"
     )
