@@ -70,7 +70,7 @@ describe("account Network inbox repair representation", () => {
     expect(controller).toContain("publishAccountNetworkMutation")
     expect(controller).toContain("redistributeAccountNetworkInboxDeclaration")
     expect(mutationOwner).toContain("previousInboxRelayUrls")
-    expect(mutationOwner).toContain("removeLegacyReadRecoveryRelayUrls")
+    expect(mutationOwner).toContain("applyInboxDeclarationCutoverExclusions")
   })
 
   it("keeps recovery and exact-readback status explicit in the shared panel", async () => {

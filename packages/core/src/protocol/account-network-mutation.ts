@@ -33,13 +33,8 @@ import {
   type NetworkPreferenceDistributionOutcomeUpdate,
 } from "./network-preference-delivery"
 import {
-  completeLegacyRelaySettingsDraftMigration,
   reconcileAccountNetworkPreferences,
-  removeLegacyRelayReadRecoveryRelayUrls,
   type AccountNetworkPreferencesReconciliation,
-  type CompleteLegacyRelaySettingsMigrationStatus,
-  type LegacyRelaySettingsReviewCandidate,
-  type LegacyRelayReadRecoveryRelayRemovalStatus,
   type ReconcileAccountNetworkPreferencesOptions,
 } from "./network-preferences"
 import { NostrSignerError, type NostrEventSigner } from "./nostr-event-signer"
@@ -123,8 +118,6 @@ export interface ReviewedAccountNetworkMutation {
   signerRequestCount: number
   warnings: AccountNetworkReviewWarning[]
   evidenceReady: boolean
-  /** Exact ephemeral legacy source approved by this same reviewed action. */
-  legacyReviewCandidate: LegacyRelaySettingsReviewCandidate | null
 }
 
 export type AccountNetworkMutationErrorCode =
@@ -205,18 +198,12 @@ export interface AccountNetworkMutationResult {
   status: "no_change" | "staged"
   checkpoints: AccountNetworkCheckpointResult[]
   localStateChanged: boolean
-  /** Cleanup result after the replacement kind:10002 checkpoint was staged. */
-  legacyMigrationCompletion: CompleteLegacyRelaySettingsMigrationStatus | null
-  /** Durable legacy inbox cleanup after an immediate whole-relay cutoff. */
-  legacyRecoveryRemoval: LegacyRelayReadRecoveryRelayRemovalStatus | null
 }
 
 export interface AccountNetworkMutationDependencies {
   repository?: AccountNetworkMutationRepository
   reconcile?: typeof reconcileAccountNetworkPreferences
   reconcileOptions?: ReconcileAccountNetworkPreferencesOptions
-  completeLegacyDraftMigration?: typeof completeLegacyRelaySettingsDraftMigration
-  removeLegacyReadRecoveryRelayUrls?: typeof removeLegacyRelayReadRecoveryRelayUrls
   resolveRelayPlan?: (input: {
     pubkey: string
     kind: AccountNetworkSignedKind
@@ -372,8 +359,7 @@ function currentInboxRelayUrls(
 function previousInboxRelayUrls(
   accountPubkey: string,
   resolution: InboxDeclarationResolution,
-  currentRelayUrls: readonly string[],
-  legacyInboxRecoveryRelayUrls: readonly string[]
+  currentRelayUrls: readonly string[]
 ): string[] {
   const activeRecoveryRelayUrls = new Set(
     normalizeAuthenticatedOwnerInboxRelayUrls(
@@ -387,22 +373,17 @@ function previousInboxRelayUrls(
     ...(resolution.retainedReadRelayUrls ?? []).filter(
       (relayUrl) => !activeRecoveryRelayUrls.has(relayUrl)
     ),
-    ...legacyInboxRecoveryRelayUrls.filter(
-      (relayUrl) => !activeRecoveryRelayUrls.has(relayUrl)
-    ),
   ])
 }
 
 function usableInboxRelayUrls(
   accountPubkey: string,
-  resolution: InboxDeclarationResolution,
-  legacyInboxRecoveryRelayUrls: readonly string[]
+  resolution: InboxDeclarationResolution
 ): string[] {
   return normalizeAuthenticatedOwnerInboxRelayUrls(accountPubkey, resolution, [
     ...currentInboxRelayUrls(accountPubkey, resolution),
     ...(resolution.retainedReadRelayUrls ?? []),
     ...(resolution.cutoverRecoveryRelayUrls ?? []),
-    ...legacyInboxRecoveryRelayUrls,
   ])
 }
 
@@ -585,14 +566,9 @@ export function reviewAccountNetworkMutation(
   const survivingRecoveryInboxRelayUrls = normalizeOwnerSelectedRelayUrls([
     ...(reconciliation.inboxDeclaration.retainedReadRelayUrls ?? []),
     ...(reconciliation.inboxDeclaration.cutoverRecoveryRelayUrls ?? []),
-    ...(reconciliation.legacyInboxRecoveryRelayUrls ?? []),
   ]).filter((relayUrl) => !removedRelayUrls.has(relayUrl))
   const hadUsableInbox =
-    usableInboxRelayUrls(
-      pubkey,
-      reconciliation.inboxDeclaration,
-      reconciliation.legacyInboxRecoveryRelayUrls ?? []
-    ).length > 0
+    usableInboxRelayUrls(pubkey, reconciliation.inboxDeclaration).length > 0
   const retainsUsableInbox =
     normalizeOwnerSelectedRelayUrls([
       ...desiredInbox,
@@ -640,8 +616,7 @@ export function reviewAccountNetworkMutation(
     previousInboxRelayUrls: previousInboxRelayUrls(
       pubkey,
       reconciliation.inboxDeclaration,
-      currentInbox,
-      reconciliation.legacyInboxRecoveryRelayUrls ?? []
+      currentInbox
     ),
     changedKinds,
     signerRequestCount: changedKinds.length,
@@ -653,9 +628,6 @@ export function reviewAccountNetworkMutation(
     evidenceReady:
       reconciliation.ownerRelayList.lookup.coverage === "complete" &&
       reconciliation.inboxDeclaration.observation?.coverage === "complete",
-    legacyReviewCandidate: reconciliation.legacyReviewCandidate
-      ? structuredClone(reconciliation.legacyReviewCandidate)
-      : null,
   }
 }
 
@@ -759,9 +731,7 @@ function checkpointForKind(
 function resultFromSnapshot(
   snapshot: AccountNetworkMutationSnapshot,
   kinds: readonly AccountNetworkSignedKind[],
-  localStateChanged: boolean,
-  legacyMigrationCompletion: CompleteLegacyRelaySettingsMigrationStatus | null = null,
-  legacyRecoveryRemoval: LegacyRelayReadRecoveryRelayRemovalStatus | null = null
+  localStateChanged: boolean
 ): AccountNetworkMutationResult {
   return {
     status: "staged",
@@ -784,8 +754,6 @@ function resultFromSnapshot(
         : []
     }),
     localStateChanged,
-    legacyMigrationCompletion,
-    legacyRecoveryRemoval,
   }
 }
 
@@ -1580,8 +1548,6 @@ async function publishUnderLock(input: {
       status: "no_change",
       checkpoints: [],
       localStateChanged: false,
-      legacyMigrationCompletion: null,
-      legacyRecoveryRemoval: null,
     }
   }
   assertContinue(input.dependencies.shouldContinue)
@@ -1597,35 +1563,6 @@ async function publishUnderLock(input: {
     stagedAt: now(),
   })
   assertContinue(input.dependencies.shouldContinue)
-  const legacyRecoveryRemoval =
-    currentReview.action.removedRelayUrls.length > 0
-      ? (
-          input.dependencies.removeLegacyReadRecoveryRelayUrls ??
-          removeLegacyRelayReadRecoveryRelayUrls
-        )({
-          pubkey: input.pubkey,
-          relayUrls: currentReview.action.removedRelayUrls,
-          storage: input.dependencies.reconcileOptions?.storage,
-        })
-      : null
-  let legacyMigrationCompletion: CompleteLegacyRelaySettingsMigrationStatus | null =
-    null
-  if (
-    currentReview.legacyReviewCandidate &&
-    currentReview.changedKinds.includes(EVENT_KINDS.RELAY_LIST)
-  ) {
-    const completeLegacyDraftMigration =
-      input.dependencies.completeLegacyDraftMigration ??
-      completeLegacyRelaySettingsDraftMigration
-    legacyMigrationCompletion = await completeLegacyDraftMigration({
-      candidate: currentReview.legacyReviewCandidate,
-      disposition: "publish_staged",
-      storage: input.dependencies.reconcileOptions?.storage,
-      localStateRepository:
-        input.dependencies.reconcileOptions?.localStateRepository,
-      now,
-    })
-  }
   await input.dependencies.refreshRuntime?.(input.pubkey)
 
   let delivered = staged
@@ -1641,9 +1578,7 @@ async function publishUnderLock(input: {
   return resultFromSnapshot(
     delivered,
     currentReview.changedKinds,
-    localStateChanged,
-    legacyMigrationCompletion,
-    legacyRecoveryRemoval
+    localStateChanged
   )
 }
 

@@ -1018,7 +1018,7 @@ describe("relay settings protocol helpers", () => {
         ],
         "published"
       ),
-      "test:relays"
+      "market:guest"
     )
 
     expect(settings.entries.map((relay) => relay.url)).toEqual([
@@ -1035,11 +1035,41 @@ describe("relay settings protocol helpers", () => {
     ).toEqual(["wss://published.example"])
   })
 
+  it("ignores signed-in local settings while preserving guest/default persistence", () => {
+    const storage = new MemoryStorage()
+    installWindowStorage(storage)
+    const pubkey = "a".repeat(64)
+    const settings = state([
+      entry("wss://unpublished.example", {
+        readEnabled: true,
+        writeEnabled: true,
+        source: "manual",
+      }),
+    ])
+    for (const scope of [
+      `account:${pubkey}`,
+      `market:${pubkey}`,
+      `merchant:${pubkey}`,
+    ]) {
+      const key = `conduit:relay-settings:v1:${scope}`
+      storage.setItem(key, JSON.stringify(settings))
+      expect(loadRelaySettings(scope).entries).toEqual([])
+      saveRelaySettings(state([]), scope)
+      expect(storage.getItem(key)).toBe(JSON.stringify(settings))
+    }
+    for (const scope of [undefined, "default", "market:guest"]) {
+      saveRelaySettings(settings, scope)
+      expect(
+        loadRelaySettings(scope).entries.map((relay) => relay.url)
+      ).toEqual(["wss://unpublished.example"])
+    }
+  })
+
   it("filters legacy default relays when loading personal relay settings", () => {
     const storage = new MemoryStorage()
     installWindowStorage(storage)
     storage.setItem(
-      "conduit:relay-settings:v1:test:legacy",
+      "conduit:relay-settings:v1:market:guest",
       JSON.stringify({
         version: 1,
         updatedAt: 1,
@@ -1058,7 +1088,7 @@ describe("relay settings protocol helpers", () => {
       })
     )
 
-    const loaded = loadRelaySettings("test:legacy")
+    const loaded = loadRelaySettings("market:guest")
 
     expect(loaded.entries.map((relay) => relay.url)).toEqual([
       "wss://user.example",
@@ -1074,7 +1104,7 @@ describe("relay settings protocol helpers", () => {
           source: "manual",
         }),
       ]),
-      "test:user-managed-default"
+      "market:guest"
     )
 
     expect(settings.entries).toHaveLength(1)

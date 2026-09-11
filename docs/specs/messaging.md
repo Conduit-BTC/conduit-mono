@@ -178,27 +178,18 @@ The boundary provides:
 - **Permissive inbox reads.** The principal's gift-wrap read plan is the union
   of their current or pending declared inboxes, every recovery batch awaiting
   its own exact readback or still within its own seven-day grace, eligible
-  retained last-usable inboxes, an active bounded legacy migration-recovery
-  record, and the bounded Conduit compatibility read set. A committed
-  whole-relay removal is excluded immediately from every batch. General NIP-65
+  retained last-usable inboxes, and the bounded Conduit compatibility read set.
+  A committed whole-relay removal is excluded immediately from every batch. General NIP-65
   membership never adds an inbox read target. Wraps are deduplicated by outer
   wrapper and inner rumor ids, and found or cached messages stay visible under
   partial failure. Reads report `complete`, `partial`, or `unavailable` coverage
   and an explicit source such as `declared`, `pending_declared`,
-  `cutover_recovery`, `migration_recovery`, `compatibility`, `mixed`, or `cache`.
-- **Legacy inbox-read recovery.** Legacy NIP-65 roles never create NIP-17
-  evidence. A bounded read-only secure-IN recovery record explicitly committed
-  by an older build is handled independently of NIP-65 draft import. It is not
-  current membership and never authorizes writes. An ordinary replacement
-  carries those relays into the cutover lane; its seven-day read-only grace
-  begins only after a usable `kind:10050` replacement with one to three secure
-  relays is read back exactly from its complete shared relay set. Signing or
-  durable staging alone does not start or end that grace. Explicit whole-relay
-  removal is the only early-termination path and ends recovery for that URL at
-  the atomic local commit. A migration discard tombstone applies only to a
-  discarded legacy NIP-65 role draft. A persisted legacy singleton cutover
-  record up-converts to one recovery batch without changing its relay URLs or
-  any established readback and expiry timestamps.
+  `cutover_recovery`, `compatibility`, `mixed`, or `cache`.
+- **Signed recovery boundary.** Unpublished legacy local Network settings and
+  migration records never supply inbox routes or recovery. A persisted
+  singleton cutover record from the current signed protocol up-converts to one
+  recovery batch without changing its relay URLs or any established readback
+  and expiry timestamps.
 - **Protected inbox execution.** The shared inbox path executes the principal's
   own `kind:1059`, `#p`-scoped filters through the NDK-neutral protected relay
   executor. The explicit account/session authorization boundary accepts only
@@ -263,9 +254,9 @@ Messaging surfaces must render explicit states, never silent gaps:
   Setup and repair are owned by the Network surface, and Messages/Orders link
   there instead of publishing declarations. A stale retained signed state shows
   a retry affordance; retained last-usable relays are labeled as historical
-  evidence rather than current write targets. Hidden cutover and migration
-  recovery lanes never appear as current membership or authorize writes. Only
-  complete shared-empty discovery exposes explicit redistribution of an
+  evidence rather than current write targets. Hidden cutover recovery never
+  appears as current membership or authorizes writes. Only complete shared-empty
+  discovery exposes explicit redistribution of an
   unchanged declaration.
 - **Decrypt failed** when one or more gift wraps could not be unwrapped: show a
   visible, retryable degraded affordance that reports how many messages need

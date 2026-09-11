@@ -34,18 +34,10 @@ function SettingsPage() {
     networkSettings.operation.phase
   )
 
-  const leaveAndDiscard = useCallback(async () => {
+  const leaveAndDiscard = useCallback(() => {
     if (blocker.status !== "blocked") return
-    if (networkSettings.legacyDraftReviewAvailable) {
-      try {
-        await networkSettings.discardLegacyDraft()
-      } catch {
-        blocker.reset()
-        return
-      }
-    }
     blocker.proceed()
-  }, [blocker, networkSettings])
+  }, [blocker])
 
   return (
     <>
@@ -63,7 +55,7 @@ function SettingsPage() {
         onKeepEditing={() => {
           if (blocker.status === "blocked") blocker.reset()
         }}
-        onLeave={() => void leaveAndDiscard()}
+        onLeave={leaveAndDiscard}
       />
     </>
   )

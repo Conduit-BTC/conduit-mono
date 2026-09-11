@@ -23,7 +23,7 @@ const layouts = [
 async function openNetwork(
   page: Page,
   app: "market" | "merchant"
-): Promise<string> {
+): Promise<{ appUrl: string; pubkey: string }> {
   const secretKey = generateSecretKey()
   const pubkey = getPublicKey(secretKey)
   await seedTestRelayIdentity(secretKey)
@@ -43,7 +43,7 @@ async function openNetwork(
   await expect(
     page.getByRole("heading", { name: "Network", exact: true })
   ).toBeVisible()
-  return appUrl
+  return { appUrl, pubkey }
 }
 
 async function expectMinimumTouchTarget(locator: Locator): Promise<void> {
@@ -132,11 +132,99 @@ test("account-local relay preference reaches another storage-sharing tab without
 
 for (const app of ["market", "merchant"] as const) {
   for (const layout of layouts) {
+    test(`${app} ${layout.name} reconstructs signed Network preferences despite obsolete local settings @${app}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize(layout.viewport)
+      const { pubkey } = await openNetwork(page, app)
+      const legacyRelayUrl = "wss://obsolete-local-network.example"
+      const legacySettings = JSON.stringify({
+        version: 1,
+        updatedAt: 1,
+        entries: [
+          {
+            url: legacyRelayUrl,
+            readEnabled: true,
+            writeEnabled: true,
+            section: "public",
+            source: "manual",
+            capabilities: {},
+            warnings: {},
+          },
+        ],
+      })
+      const obsoleteEntries = [
+        ...["market", "merchant", "account"].map((scope) => [
+          `conduit:relay-settings:v1:${scope}:${pubkey}`,
+          legacySettings,
+        ]),
+        [
+          `conduit:network-legacy-migration:v1:${pubkey}`,
+          JSON.stringify({
+            version: 1,
+            status: "prepared",
+            sourceFingerprint: "obsolete-source",
+          }),
+        ],
+        [
+          `conduit:network-legacy-read-recovery:v1:${pubkey}`,
+          JSON.stringify({
+            version: 1,
+            readRelayUrls: [legacyRelayUrl],
+            updatedAt: 1,
+          }),
+        ],
+      ]
+      await page.evaluate((entries) => {
+        for (const [key, value] of entries) localStorage.setItem(key, value)
+      }, obsoleteEntries)
+      await page.reload()
+
+      await expect(
+        page.getByRole("heading", { name: "Network", exact: true })
+      ).toBeVisible()
+      for (const role of ["Read", "Publish", "Private inbox"]) {
+        await expect(
+          page.getByRole("button", {
+            name: `Disable ${role} for ${TEST_RELAY_URL}`,
+            exact: true,
+          })
+        ).toHaveAttribute("aria-pressed", "true", { timeout: 20_000 })
+      }
+      await expect(page.getByText(legacyRelayUrl, { exact: true })).toHaveCount(
+        0
+      )
+      await expect(
+        page.getByText("Older relay role draft", { exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("button", { name: "Discard older draft" })
+      ).toHaveCount(0)
+      expect(
+        await page.evaluate(
+          (entries) => entries.map(([key]) => [key, localStorage.getItem(key)]),
+          obsoleteEntries
+        )
+      ).toEqual(obsoleteEntries)
+
+      if (screenshotDirectory) {
+        mkdirSync(screenshotDirectory, { recursive: true })
+        await page.screenshot({
+          path: join(
+            screenshotDirectory,
+            `${app}-${layout.name}-network-signed-reconstruction.png`
+          ),
+          fullPage: true,
+          animations: "disabled",
+        })
+      }
+    })
+
     test(`${app} ${layout.name} warns before discarding unpublished relay edits @${app}`, async ({
       page,
     }) => {
       await page.setViewportSize(layout.viewport)
-      const appUrl = await openNetwork(page, app)
+      const { appUrl } = await openNetwork(page, app)
       const removeRelay = page.getByRole("button", {
         name: `Remove ${TEST_RELAY_URL} from my whole setup`,
       })

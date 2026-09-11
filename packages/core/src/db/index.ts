@@ -508,7 +508,6 @@ export interface AccountNetworkRelayExclusion {
 export interface AccountNetworkLocalState {
   pubkey: string
   version: number
-  migrationVersion: number
   exclusions: AccountNetworkRelayExclusion[]
   preferredRelayOrder: string[]
   /** Existing capability vocabulary; observations are never signed authority. */
@@ -1126,8 +1125,8 @@ class ConduitDB extends Dexie {
     })
 
     this.version(18).stores({
-      // Local policy only: exclusions, signer-free order, capability evidence,
-      // and migration state. Signed account authority remains per kind.
+      // Local policy only: exclusions, signer-free order, and capability
+      // evidence. Signed account authority remains per kind.
       accountNetworkLocalState: "pubkey, updatedAt",
     })
   }

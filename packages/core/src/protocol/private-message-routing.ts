@@ -60,13 +60,7 @@ export type InboxReadCoverage = "complete" | "partial" | "unavailable"
 
 /** Where a private-message read relay came from. */
 export type InboxReadSource =
-  | "declared"
-  | "cutover_recovery"
-  | "local_in"
-  | "migration_recovery"
-  | "compatibility"
-  | "mixed"
-  | "cache"
+  "declared" | "cutover_recovery" | "compatibility" | "mixed" | "cache"
 
 /** Delivery lane for an outgoing private message. */
 export type PrivateMessageDeliveryRoute =
@@ -85,7 +79,6 @@ export const MAX_COMPATIBILITY_ORDER_RELAYS = 3
 export const MAX_DECLARED_INBOX_WRITE_RELAYS = 3
 export const MAX_SHARED_INBOX_DISCOVERY_RELAYS = 5
 export const MAX_INBOX_DISCOVERY_RELAYS = 8
-export const MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS = 16
 
 export interface PrivateMessageRelays {
   pubkey: string
@@ -1553,10 +1546,6 @@ export interface PlanInboxReadRelaysInput {
   declaration: InboxDeclarationResolution
   /** Exact authenticated inbox owner whose private/local relays may be read. */
   authenticatedPubkey?: string | null
-  /** Explicit bounded local-IN compatibility input; omitted in production. */
-  localReadRelayUrls?: readonly string[]
-  /** Explicit bounded read-only relays loaded from durable legacy recovery. */
-  migrationRecoveryRelayUrls?: readonly string[]
   /** Bounded compatibility reads; defaults to config.commerceDmFallbackRelayUrls. */
   compatibilityRelayUrls?: readonly string[]
   /**
@@ -1565,19 +1554,19 @@ export interface PlanInboxReadRelaysInput {
    */
   requiredCompatibilityRelayUrls?: readonly string[]
   /**
-   * Total fanout target for optional local/compatibility reads. Current,
-   * retained, recovery, migration, and required compatibility targets are
+   * Total fanout target for optional compatibility reads. Current,
+   * retained, recovery, and required compatibility targets are
    * never truncated to satisfy this target.
    */
   maxRelays?: number
 }
 
 /**
- * Permissive inbox read plan: union of declared/cached inbox relays, an
- * explicit owner-IN compatibility input, explicit migration recovery, and the bounded
- * compatibility read set. NIP-65 general reads are not inbox routes. Reads may
- * accept owner-scoped migration evidence; writes must not (see
- * selectPrivateMessageDeliveryRoute). This pure planner reads no process state.
+ * Permissive inbox read plan: union of declared/cached inbox relays,
+ * permanent cutover recovery, and the
+ * bounded compatibility read set. NIP-65 general reads are not inbox routes.
+ * Recovery is read-only; writes use selectPrivateMessageDeliveryRoute. This
+ * pure planner reads no process state.
  */
 export function planInboxReadRelays(
   input: PlanInboxReadRelaysInput
@@ -1602,16 +1591,6 @@ export function planInboxReadRelays(
   const cutoverRecovery = projectOwnerRelayUrls(
     input.declaration.cutoverRecoveryRelayUrls ?? []
   )
-  const migrationRecovery = allowOwnerLocalRelays
-    ? retainedRelayUrls(input.migrationRecoveryRelayUrls ?? []).slice(
-        0,
-        MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS
-      )
-    : []
-  const rawLocalIn = input.localReadRelayUrls ?? []
-  const localIn = allowOwnerLocalRelays
-    ? retainedRelayUrls(rawLocalIn)
-    : publicRelayHintUrls(rawLocalIn)
   const compatibility = publicRelayHintUrls(
     input.compatibilityRelayUrls ?? config.commerceDmFallbackRelayUrls
   )
@@ -1639,17 +1618,14 @@ export function planInboxReadRelays(
   add(declared, "declared")
   add(cutoverRecovery, "cutover_recovery")
   add(cachedFallback, "cache")
-  // Reserve the write/read overlap before optional local and public
-  // compatibility sources so a large local IN list cannot make an order
-  // unreadable in Conduit after a compatibility delivery.
+  // Reserve the write/read overlap before optional compatibility sources so
+  // the fanout target cannot omit an approved order-delivery destination.
   add(requiredCompatibility, "compatibility")
-  add(migrationRecovery, "migration_recovery")
   const optionalCapacity =
     input.maxRelays && input.maxRelays > 0
       ? Math.max(input.maxRelays - orderedUrls.length, 0)
       : Number.POSITIVE_INFINITY
   const optionalStart = orderedUrls.length
-  add(localIn, "local_in")
   add(remainingCompatibility, "compatibility")
   const relayUrls = [
     ...orderedUrls.slice(0, optionalStart),
@@ -1667,13 +1643,7 @@ export function planInboxReadRelays(
 
   const ownerSelectedRelayUrlSet = new Set(
     allowOwnerLocalRelays
-      ? retainedRelayUrls([
-          ...declared,
-          ...cutoverRecovery,
-          ...cachedFallback,
-          ...migrationRecovery,
-          ...localIn,
-        ])
+      ? retainedRelayUrls([...declared, ...cutoverRecovery, ...cachedFallback])
       : []
   )
   const ownerSelectedRelayUrls = relayUrls.filter((relayUrl) =>

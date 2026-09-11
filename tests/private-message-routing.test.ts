@@ -18,7 +18,6 @@ import {
   sharedInboxDiscoveryRelayUrls,
   invalidateInboxDeclaration,
   mergeInboxDeclarationEvidence,
-  MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS,
   planCompatibilityOrderRelays,
   planInboxReadRelays,
   primeInboxDeclarationCache,
@@ -1493,7 +1492,6 @@ describe("planInboxReadRelays", () => {
   it("limits canonical compatibility reads to the protected inbox defaults", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
-      localReadRelayUrls: [],
     })
 
     expect(plan.relayUrls).toEqual([
@@ -1502,10 +1500,9 @@ describe("planInboxReadRelays", () => {
     ])
   })
 
-  it("unions declared, local IN, and compatibility reads with sources", () => {
+  it("unions declared and compatibility reads with sources", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ relayUrls: ["wss://inbox.conduit.market"] }),
-      localReadRelayUrls: ["wss://local.conduit.market"],
       compatibilityRelayUrls: [
         "wss://compat.conduit.market",
         "wss://inbox.conduit.market",
@@ -1514,92 +1511,18 @@ describe("planInboxReadRelays", () => {
 
     expect(plan.relayUrls).toEqual([
       "wss://inbox.conduit.market",
-      "wss://local.conduit.market",
       "wss://compat.conduit.market",
     ])
     expect(plan.relaySources["wss://inbox.conduit.market"]).toBe("declared")
-    expect(plan.relaySources["wss://local.conduit.market"]).toBe("local_in")
     expect(plan.relaySources["wss://compat.conduit.market"]).toBe(
       "compatibility"
     )
     expect(plan.source).toBe("mixed")
   })
 
-  it("keeps compatibility reads when local settings are nonempty", () => {
-    const plan = planInboxReadRelays({
-      declaration: resolution({ state: "not_observed", relayUrls: [] }),
-      localReadRelayUrls: ["wss://local.conduit.market"],
-      compatibilityRelayUrls: ["wss://compat.conduit.market"],
-    })
-
-    expect(plan.relayUrls).toContain("wss://compat.conduit.market")
-    expect(plan.relayUrls).toContain("wss://local.conduit.market")
-  })
-
-  it("adds migration recovery only for the exact authenticated inbox owner", () => {
-    const localRecovery = "wss://127.0.0.1:7447"
-    const publicRecovery = "wss://legacy-inbox.conduit.market"
-    const declaration = resolution({ state: "not_observed", relayUrls: [] })
-
-    const ownerPlan = planInboxReadRelays({
-      declaration,
-      authenticatedPubkey: OWNER,
-      migrationRecoveryRelayUrls: [localRecovery, publicRecovery],
-      compatibilityRelayUrls: [],
-    })
-    expect(ownerPlan.relayUrls).toEqual([localRecovery, publicRecovery])
-    expect(ownerPlan.relaySources).toEqual({
-      [localRecovery]: "migration_recovery",
-      [publicRecovery]: "migration_recovery",
-    })
-    expect(ownerPlan.source).toBe("migration_recovery")
-
-    const otherPlan = planInboxReadRelays({
-      declaration,
-      authenticatedPubkey: getPublicKey(OTHER_SECRET),
-      migrationRecoveryRelayUrls: [localRecovery, publicRecovery],
-      compatibilityRelayUrls: [],
-    })
-    expect(otherPlan.relayUrls).toEqual([])
-
-    __resetInboxDeclarationCache()
-    const resetPlan = planInboxReadRelays({
-      declaration,
-      authenticatedPubkey: OWNER,
-      compatibilityRelayUrls: [],
-    })
-    expect(resetPlan.relayUrls).toEqual([])
-  })
-
-  it("bounds explicit migration recovery input before inbox planning", () => {
-    const oversized = Array.from(
-      { length: MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS + 4 },
-      (_, index) =>
-        `wss://migration-recovery-${String(index).padStart(2, "0")}.example`
-    )
-    const expected = oversized.slice(0, MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS)
-    const plan = planInboxReadRelays({
-      declaration: resolution({ state: "not_observed", relayUrls: [] }),
-      authenticatedPubkey: OWNER,
-      migrationRecoveryRelayUrls: oversized,
-      compatibilityRelayUrls: [],
-    })
-    expect(plan.relayUrls).toEqual(expected)
-    expect(
-      plan.relayUrls.every(
-        (relayUrl) => plan.relaySources[relayUrl] === "migration_recovery"
-      )
-    ).toBe(true)
-  })
-
   it("reserves approved compatibility write targets inside a capped read plan", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
-      localReadRelayUrls: [
-        "wss://local-one.conduit.market",
-        "wss://local-two.conduit.market",
-        "wss://local-three.conduit.market",
-      ],
       compatibilityRelayUrls: [
         "wss://commerce.conduit.market",
         "wss://inbox.conduit.market",
@@ -1619,7 +1542,7 @@ describe("planInboxReadRelays", () => {
       "wss://commerce.conduit.market",
       "wss://inbox.conduit.market",
       "wss://interop.conduit.market",
-      "wss://local-one.conduit.market",
+      "wss://public.conduit.market",
     ])
   })
 
@@ -1634,7 +1557,6 @@ describe("planInboxReadRelays", () => {
         state: "lookup_unavailable",
         relayUrls: [],
       }),
-      localReadRelayUrls: [],
       compatibilityRelayUrls: ["wss://compat.conduit.market"],
     })
 
@@ -1657,13 +1579,11 @@ describe("planInboxReadRelays", () => {
     const thirdPartyPlan = planInboxReadRelays({
       declaration,
       authenticatedPubkey: "different-owner",
-      localReadRelayUrls: [localRelay],
       compatibilityRelayUrls: [],
     })
     const ownerPlan = planInboxReadRelays({
       declaration,
       authenticatedPubkey: OWNER,
-      localReadRelayUrls: [localRelay],
       compatibilityRelayUrls: [],
     })
 
@@ -1674,14 +1594,16 @@ describe("planInboxReadRelays", () => {
   it("caps the plan at maxRelays preserving priority order", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ relayUrls: ["wss://inbox.conduit.market"] }),
-      localReadRelayUrls: ["wss://local.conduit.market"],
-      compatibilityRelayUrls: ["wss://compat.conduit.market"],
+      compatibilityRelayUrls: [
+        "wss://compat.conduit.market",
+        "wss://extra.conduit.market",
+      ],
       maxRelays: 2,
     })
 
     expect(plan.relayUrls).toEqual([
       "wss://inbox.conduit.market",
-      "wss://local.conduit.market",
+      "wss://compat.conduit.market",
     ])
   })
 
@@ -1698,7 +1620,6 @@ describe("planInboxReadRelays", () => {
         cutoverRecoveryRelayUrls: recoveryRelayUrls,
       }),
       authenticatedPubkey: OWNER,
-      migrationRecoveryRelayUrls: ["wss://migration-inbox.example"],
       compatibilityRelayUrls: ["wss://optional-compatibility.example"],
       maxRelays: 24,
     })
@@ -1707,7 +1628,6 @@ describe("planInboxReadRelays", () => {
       "wss://current-inbox.example",
       ...recoveryRelayUrls,
       "wss://retained-inbox.example",
-      "wss://migration-inbox.example",
     ])
     expect(plan.relayUrls).not.toContain("wss://optional-compatibility.example")
     expect(
@@ -1719,14 +1639,18 @@ describe("planInboxReadRelays", () => {
 
   it("admits ws only from an exact authenticated-owner read source", () => {
     const remotePlan = planInboxReadRelays({
-      declaration: resolution({ relayUrls: ["ws://inbox.conduit.market"] }),
-      localReadRelayUrls: ["ws://local.conduit.market"],
+      declaration: resolution({
+        relayUrls: ["ws://inbox.conduit.market"],
+        cutoverRecoveryRelayUrls: ["ws://local.conduit.market"],
+      }),
       compatibilityRelayUrls: ["wss://compat.conduit.market"],
     })
     const ownerPlan = planInboxReadRelays({
-      declaration: resolution({ relayUrls: ["ws://inbox.conduit.market"] }),
+      declaration: resolution({
+        relayUrls: ["ws://inbox.conduit.market"],
+        cutoverRecoveryRelayUrls: ["ws://local.conduit.market"],
+      }),
       authenticatedPubkey: OWNER,
-      localReadRelayUrls: ["ws://local.conduit.market"],
       compatibilityRelayUrls: [
         "ws://remote-compatibility.conduit.market",
         "wss://compat.conduit.market",
