@@ -1,7 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { CalendarDays, Loader2, Plus, Search } from "lucide-react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  useIsMutating,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query"
 import {
   getNdk,
   readEventMarketReadyReceipts,
@@ -179,6 +184,12 @@ function EventsPage() {
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
   const merchantPubkey = pubkey ?? ""
+  const organizerMutationPending =
+    useIsMutating({
+      predicate: (mutation) =>
+        mutation.options.scope?.id ===
+        `merchant-organizer-event-authority:${merchantPubkey}`,
+    }) > 0
   const [createRevision, setCreateRevision] = useState(0)
   const selectedOrganizerPubkey = useMemo(() => {
     if (!search.event) return null
@@ -262,6 +273,7 @@ function EventsPage() {
         }
         onOpen={openEvent}
         onCreate={createEvent}
+        createDisabled={organizerMutationPending}
       />
 
       {createRevision > 0 ? (

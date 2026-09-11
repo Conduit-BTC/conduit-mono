@@ -92,6 +92,7 @@ export function MerchantEventsTimeline({
   onSearchChange,
   onOpen,
   onCreate,
+  createDisabled = false,
 }: {
   merchantPubkey: string
   currentReference?: string
@@ -101,6 +102,7 @@ export function MerchantEventsTimeline({
   onSearchChange: (search: MerchantEventTimelineSearch) => void
   onOpen: (reference: string) => void
   onCreate: () => void
+  createDisabled?: boolean
 }) {
   const { pubkey, status, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -206,7 +208,7 @@ export function MerchantEventsTimeline({
             signed coordinates.
           </p>
         </div>
-        <Button type="button" onClick={onCreate}>
+        <Button type="button" onClick={onCreate} disabled={createDisabled}>
           <Plus aria-hidden="true" />
           Create event
         </Button>

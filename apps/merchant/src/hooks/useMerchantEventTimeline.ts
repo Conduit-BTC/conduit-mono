@@ -13,6 +13,7 @@ import {
   selectLatestFollowListEvent,
   useConduitSession,
   useAuth,
+  type EventMarketResolution,
   type EventMarketPerspectiveAuthorSource,
   type EventMarketPerspectiveSnapshot,
   type EventMarketPerspectiveSource,
@@ -25,7 +26,7 @@ import {
   listOrganizerEventMarkets,
   parseOrganizerEventMarketReference,
   projectMarketList,
-  resolveOrganizerEventMarket,
+  resolveOrganizerEventMarketResolution,
   retainMerchantOrganizerEventMarkets,
   type MerchantOrganizerEventMarket,
   type MerchantOrganizerEventMarketsReadResult,
@@ -89,8 +90,12 @@ async function resolveRelationshipMarkets(
   authenticatedPubkey: string | null,
   signal?: AbortSignal,
   shouldContinue?: () => boolean
-): Promise<{ markets: MerchantOrganizerEventMarket[]; failedCount: number }> {
-  const markets: MerchantOrganizerEventMarket[] = []
+): Promise<{
+  resolutions: EventMarketResolution[]
+  markets: MerchantOrganizerEventMarket[]
+  failedCount: number
+}> {
+  const resolutions: EventMarketResolution[] = []
   let failedCount = 0
   const concurrency = 4
   for (let index = 0; index < references.length; index += concurrency) {
@@ -99,7 +104,7 @@ async function resolveRelationshipMarkets(
     const batch = references.slice(index, index + concurrency)
     const results = await Promise.allSettled(
       batch.map((reference) =>
-        resolveOrganizerEventMarket(
+        resolveOrganizerEventMarketResolution(
           reference,
           undefined,
           authenticatedPubkey,
@@ -111,11 +116,20 @@ async function resolveRelationshipMarkets(
     if (signal?.aborted || shouldContinue?.() === false)
       throw new DOMException("Aborted", "AbortError")
     for (const result of results) {
-      if (result.status === "fulfilled") markets.push(result.value)
+      if (result.status === "fulfilled") resolutions.push(result.value)
       else failedCount += 1
     }
   }
-  return { markets, failedCount }
+  return {
+    resolutions,
+    markets: projectMarketList(resolutions),
+    failedCount:
+      failedCount +
+      resolutions.filter(
+        (resolution) =>
+          resolution.state === "unavailable" || resolution.state === "missing"
+      ).length,
+  }
 }
 
 export function useMerchantEventTimeline(input: {
@@ -529,11 +543,17 @@ export function useMerchantEventTimeline(input: {
         exactRelationshipMarkets: exactQuery.data?.markets ?? [],
         savedReferences,
         sellingCollectionCoordinates,
+        invalidatingResolutions: [
+          ...(perspectiveQuery.data?.markets ?? []),
+          ...(ownedQuery.data?.resolutions ?? []),
+          ...(exactQuery.data?.resolutions ?? []),
+        ],
       }),
     [
-      exactQuery.data?.markets,
+      exactQuery.data,
       merchantPubkey,
-      ownedQuery.data?.markets,
+      ownedQuery.data,
+      perspectiveQuery.data,
       perspectiveMarkets,
       savedReferences,
       sellingCollectionCoordinates,

@@ -77,6 +77,95 @@ function market(input: {
 }
 
 describe("Merchant event timeline", () => {
+  it("retires known invalid coordinates while incomplete reads retain positive cards", () => {
+    const positive = market({ suffix: "known", startMs: NOW + 3_600_000 })
+    const unrelated = market({ suffix: "other", startMs: NOW + 7_200_000 })
+    const input = {
+      merchantPubkey: MERCHANT,
+      perspectiveMarkets: [positive, unrelated],
+      ownedMarkets: [positive],
+      exactRelationshipMarkets: [],
+      savedReferences: [{ reference: positive.naddr, savedAt: NOW }],
+      sellingCollectionCoordinates: [positive.collectionCoordinate],
+    }
+    for (const state of ["malformed", "conflicting", "unsupported"] as const) {
+      const rows = mergeMerchantEventTimeline({
+        ...input,
+        invalidatingResolutions: [{ ...positive.source, state }],
+      })
+      expect(rows.map((row) => row.market.collectionCoordinate)).toEqual([
+        unrelated.collectionCoordinate,
+      ])
+    }
+    for (const state of ["partial", "unavailable", "missing"] as const) {
+      const rows = mergeMerchantEventTimeline({
+        ...input,
+        invalidatingResolutions: [{ ...positive.source, state }],
+      })
+      expect(rows.map((row) => row.market.collectionCoordinate)).toContain(
+        positive.collectionCoordinate
+      )
+    }
+    expect(input.savedReferences).toHaveLength(1)
+  })
+
+  it("reconciles an exact deletion against each candidate's signed frontier", () => {
+    const older = market({
+      suffix: "recreated",
+      startMs: NOW + 3_600_000,
+      collectionCreatedAt: 10,
+    })
+    const newer = market({
+      suffix: "recreated",
+      startMs: NOW + 3_600_000,
+      collectionCreatedAt: 30,
+    })
+    older.collectionEventId = "a".repeat(64)
+    newer.collectionEventId = "b".repeat(64)
+    const deletion = {
+      ...older.source,
+      state: "deleted" as const,
+      deletion: {
+        record: "collection" as const,
+        coordinate: older.collectionCoordinate,
+        createdAt: 10,
+        eventId: "a".repeat(64),
+        deletions: [
+          {
+            deletionEventId: "d".repeat(64),
+            deletionCreatedAt: 20,
+            authorPubkey: OTHER,
+            eventTargets: [],
+            addressableTargets: [older.collectionCoordinate],
+          },
+        ],
+      },
+    }
+    const base = {
+      merchantPubkey: MERCHANT,
+      ownedMarkets: [],
+      exactRelationshipMarkets: [],
+      savedReferences: [],
+      sellingCollectionCoordinates: [],
+      invalidatingResolutions: [deletion],
+    }
+    expect(
+      mergeMerchantEventTimeline({ ...base, perspectiveMarkets: [older] })
+    ).toEqual([])
+    expect(
+      mergeMerchantEventTimeline({ ...base, perspectiveMarkets: [newer] }).map(
+        (row) => row.market.collectionCreatedAt
+      )
+    ).toEqual([30])
+    expect(
+      mergeMerchantEventTimeline({
+        ...base,
+        perspectiveMarkets: [older],
+        exactRelationshipMarkets: [newer],
+      }).map((row) => row.market.collectionCreatedAt)
+    ).toEqual([30])
+  })
+
   it("unions exact relationships with perspective discovery and deduplicates coordinates", () => {
     const sharedNetwork = market({
       suffix: "shared",

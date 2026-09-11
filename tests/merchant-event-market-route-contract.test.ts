@@ -156,7 +156,7 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain("onSelected?.(selected)")
     expect(route).toContain("onSelected?.(reference)")
     expect(route).toContain(
-      "shouldResolveSelectedReference && selectedMarketQuery.isFetching"
+      "shouldResolveSelectedReference && selectedMarketQuery.isPending"
     )
     expect(route).toContain("!selectedReferenceResolutionPending &&")
     expect(route).toContain("enabled: !!organizerPubkey && !embedded")

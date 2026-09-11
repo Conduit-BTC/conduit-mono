@@ -180,6 +180,19 @@ const INVALIDATING_RETAINED_MARKET_STATES = new Set<EventMarketResolutionState>(
   ["deleted", "malformed", "conflicting", "unsupported"]
 )
 
+export function invalidatedOrganizerEventMarketCoordinates(
+  resolutions: readonly EventMarketResolution[]
+): Set<string> {
+  return new Set(
+    resolutions.flatMap((resolution) =>
+      resolution.collectionCoordinate &&
+      INVALIDATING_RETAINED_MARKET_STATES.has(resolution.state)
+        ? [resolution.collectionCoordinate]
+        : []
+    )
+  )
+}
+
 export function retainMerchantOrganizerEventMarkets(
   retained: readonly MerchantOrganizerEventMarket[],
   result: MerchantOrganizerEventMarketsReadResult
@@ -189,15 +202,9 @@ export function retainMerchantOrganizerEventMarkets(
   const projectedCoordinates = new Set(
     result.markets.map((market) => market.collectionCoordinate)
   )
-  const invalidatedCoordinates = new Set<string>()
-  for (const resolution of result.resolutions) {
-    if (
-      resolution.collectionCoordinate &&
-      INVALIDATING_RETAINED_MARKET_STATES.has(resolution.state)
-    ) {
-      invalidatedCoordinates.add(resolution.collectionCoordinate)
-    }
-  }
+  const invalidatedCoordinates = invalidatedOrganizerEventMarketCoordinates(
+    result.resolutions
+  )
   const next = [...result.markets]
   for (const market of retained) {
     if (
@@ -895,21 +902,28 @@ export async function discoverFollowedEventMarkets(
   }
 }
 
-export async function resolveOrganizerEventMarketRead(
+export async function resolveOrganizerEventMarketResolution(
   reference: string,
   organizerPubkey?: string,
   authenticatedPubkey: string | null = null,
   signal?: AbortSignal,
   shouldContinue?: () => boolean
-): Promise<MerchantOrganizerEventMarketRead> {
+): Promise<EventMarketResolution> {
   const parsedReference = parseOrganizerEventMarketReference(reference)
-  const result = await getEventMarket({
+  return getEventMarket({
     reference: parsedReference.naddr,
     ...(organizerPubkey ? { expectedOrganizerPubkey: organizerPubkey } : {}),
     authenticatedPubkey,
     ...(signal ? { signal } : {}),
     ...(shouldContinue ? { shouldContinue } : {}),
   })
+}
+
+export function projectOrganizerEventMarketDeletion(
+  result: EventMarketResolution,
+  reference: string
+): MerchantOrganizerEventMarketDeletion | null {
+  const parsedReference = parseOrganizerEventMarketReference(reference)
   if (
     result.state === "deleted" &&
     result.deletion &&
@@ -971,6 +985,26 @@ export async function resolveOrganizerEventMarketRead(
       naddr: parsedReference.naddr,
     }
   }
+  return null
+}
+
+export async function resolveOrganizerEventMarketRead(
+  reference: string,
+  organizerPubkey?: string,
+  authenticatedPubkey: string | null = null,
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
+): Promise<MerchantOrganizerEventMarketRead> {
+  const parsedReference = parseOrganizerEventMarketReference(reference)
+  const result = await resolveOrganizerEventMarketResolution(
+    reference,
+    organizerPubkey,
+    authenticatedPubkey,
+    signal,
+    shouldContinue
+  )
+  const deletion = projectOrganizerEventMarketDeletion(result, reference)
+  if (deletion) return deletion
   const normalized = projectEventMarket(result)
   if (
     !normalized ||

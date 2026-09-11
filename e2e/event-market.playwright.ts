@@ -1949,7 +1949,7 @@ test("keeps consecutive membership actions available while acknowledged collecti
   const firstCollection = await firstMembershipAck.captured
   relay.remove(firstCollection)
 
-  const staleExactRead = relay.holdNextRelayRequest((request) =>
+  const staleExactRead = relay.holdRelayRequests((request) =>
     request.filters.some(
       (filter) =>
         filter.authors?.includes(ORGANIZER_PUBKEY) &&
@@ -2445,6 +2445,21 @@ test("terminal event deletion removes the exact-record retry path @merchant", as
   ).toBeVisible({ timeout: 30_000 })
   await expect(retryDelivery).toHaveCount(0)
   expect(relay.publications).toHaveLength(publicationCount)
+  await page
+    .getByRole("button", { name: "Retry event discovery", exact: true })
+    .click()
+  await expect(
+    page.getByRole("button", {
+      name: "Manage Synthetic Deleted Retry Event",
+      exact: true,
+    })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("region", { name: "Event timeline" }).getByRole("heading", {
+      name: "Synthetic Deleted Retry Event",
+      exact: true,
+    })
+  ).toHaveCount(0)
 })
 
 test("organizer actions wait for an initial hinted read and use its newer collection @merchant", async ({
@@ -3589,7 +3604,7 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   await expect(removeProduct).toBeEnabled({ timeout: 30_000 })
 
   let acknowledgementReceiptReadStarted = false
-  const merchandiseRead = relay.holdNextRelayRequest((request) => {
+  const merchandiseRead = relay.holdRelayRequests((request) => {
     if (request.clientId !== "acknowledger") return false
     if (
       request.filters.some(

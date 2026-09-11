@@ -1,9 +1,14 @@
 import {
   decodeEventMarketReference,
   type EventMarketResolutionState,
+  type EventMarketResolution,
 } from "@conduit/core"
 import type { EventMarketCardStatusTone } from "@conduit/ui"
-import type { MerchantOrganizerEventMarket } from "./event-market"
+import {
+  invalidatedOrganizerEventMarketCoordinates,
+  projectOrganizerEventMarketDeletion,
+  type MerchantOrganizerEventMarket,
+} from "./event-market"
 import {
   findSavedOrganizerEventMarketReference,
   selectOrganizerEventMarketResolution,
@@ -78,6 +83,7 @@ export function mergeMerchantEventTimeline(input: {
   exactRelationshipMarkets: readonly MerchantOrganizerEventMarket[]
   savedReferences: readonly SavedOrganizerEventMarketReference[]
   sellingCollectionCoordinates: readonly string[]
+  invalidatingResolutions?: readonly EventMarketResolution[]
 }): MerchantEventTimelineItem[] {
   const normalizedMerchant = input.merchantPubkey.trim().toLowerCase()
   const savedByCoordinate = referenceMap(input.savedReferences)
@@ -85,12 +91,19 @@ export function mergeMerchantEventTimeline(input: {
     input.sellingCollectionCoordinates.map((value) => value.trim())
   )
   const byCoordinate = new Map<string, MerchantEventTimelineItem>()
+  const invalidatingResolutions = input.invalidatingResolutions ?? []
+  const invalidatedCoordinates = invalidatedOrganizerEventMarketCoordinates(
+    invalidatingResolutions.filter(
+      (resolution) => resolution.state !== "deleted"
+    )
+  )
 
   const include = (
     market: MerchantOrganizerEventMarket,
     candidateKind: "perspective" | "owned" | "exact"
   ) => {
     const coordinate = market.collectionCoordinate
+    if (invalidatedCoordinates.has(coordinate)) return
     const current = byCoordinate.get(coordinate)
     const savedReference =
       savedByCoordinate.get(coordinate) ??
@@ -98,6 +111,29 @@ export function mergeMerchantEventTimeline(input: {
         input.savedReferences,
         market.naddr
       )
+    for (const resolution of invalidatingResolutions) {
+      if (
+        resolution.state !== "deleted" ||
+        resolution.collectionCoordinate !== coordinate
+      )
+        continue
+      const deletion = projectOrganizerEventMarketDeletion(
+        resolution,
+        market.naddr
+      )
+      if (!deletion) continue
+      const reconciled = selectOrganizerEventMarketResolution(
+        market,
+        deletion,
+        savedReference
+      )
+      if (
+        reconciled &&
+        "terminal" in reconciled &&
+        reconciled.state === "deleted"
+      )
+        return
+    }
     const selected = current
       ? candidateKind === "exact"
         ? selectOrganizerEventMarketResolution(
