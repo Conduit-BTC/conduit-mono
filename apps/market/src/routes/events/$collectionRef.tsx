@@ -446,11 +446,12 @@ function EventCatalogPage() {
 
   const requiredEventRecordsResolved =
     eventMarketRequiredRecordsResolved(catalog)
+  const productAvailability = getEventCatalogProductAvailability(catalog)
   const stateCopy = getEventCatalogStateCopy(
     catalog.state,
     requiredEventRecordsResolved,
-    catalog.products.length,
-    catalog.unresolvedProductCoordinates.length
+    productAvailability.availableProductCount,
+    productAvailability.unresolvedProductCount
   )
   const canRenderRetainedEvidence =
     catalog.state === "ended" ||
@@ -490,7 +491,6 @@ function EventCatalogPage() {
   const eventLocations = calendar.locations.filter(Boolean)
   const calendarLocation = eventLocations.join(" · ")
   const archived = catalog.state === "ended"
-  const productAvailability = getEventCatalogProductAvailability(catalog)
   const actionability = getEventActionabilityPresentation({
     state: catalog.state,
     ...productAvailability,

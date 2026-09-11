@@ -124,6 +124,9 @@ function candidateRead(
       plannedRelayUrls: [RELAY],
       authorChunkCount: 1,
       plannedReadCount: 1,
+      requestCount: 1,
+      skippedReadCount: 0,
+      executionBoundedReadCount: 0,
       reads: [],
       completeReadCount: complete ? 1 : 0,
       partialReadCount: !complete && !failed ? 1 : 0,
@@ -427,6 +430,230 @@ describe("candidate-first followed event-market discovery", () => {
     )
   })
 
+  it("bounds total candidate work across relay and author chunks while retaining positives", async () => {
+    const authors = [
+      ...Array.from({ length: 192 }, (_, index) =>
+        (index + 1).toString(16).padStart(64, "0")
+      ),
+      ORGANIZER,
+    ]
+    const candidate = collectionEvent()
+    let requests = 0
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      candidateReadRequestLimit: 4,
+      collectionCandidateRelayUrls: [RELAY, RETAINED_RELAY],
+      fetchCollectionCandidateEvents: async (filter, options) => {
+        requests += 1
+        const events = filter.authors?.includes(ORGANIZER) ? [candidate] : []
+        const relayUrl = options.relayUrls[0]!
+        return {
+          events,
+          eventSourceRelayUrls: {},
+          eventsVerified: true,
+          relays: [{ relayUrl, status: "success", eventCount: events.length }],
+        }
+      },
+      readOrganizerMarkets: async () => organizerRead([market(ORGANIZER)]),
+    })
+    const result = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: authors,
+      perspective: {
+        source: "conduit",
+        coverage: "complete",
+        eventObserved: false,
+        snapshotState: "curated",
+        truncated: false,
+      },
+    })
+    expect(requests).toBe(4)
+    expect(result).toMatchObject({ state: "partial", truncated: true })
+    expect(result.markets).toHaveLength(1)
+    expect(result.candidateScanCoverage).toMatchObject({
+      plannedReadCount: 8,
+      requestCount: 4,
+      skippedReadCount: 4,
+    })
+  })
+
+  it("bounds a noncooperative candidate boundary read without losing its verified page", async () => {
+    const candidate = collectionEvent()
+    let readerSignal: AbortSignal | undefined
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      candidateReadDeadlineMs: 5,
+      collectionCandidateRelayUrls: [RELAY],
+      fetchCollectionCandidateEvents: async (filter, options) => {
+        readerSignal = options.signal
+        if (filter.since !== undefined) return new Promise(() => {})
+        return {
+          events: [candidate],
+          eventSourceRelayUrls: {},
+          eventsVerified: true,
+          relays: [{ relayUrl: RELAY, status: "success", eventCount: 129 }],
+        }
+      },
+      readOrganizerMarkets: async () => organizerRead([market(ORGANIZER)]),
+    })
+    let timeout: ReturnType<typeof setTimeout>
+    const result = await Promise.race([
+      discoverPerspectiveEventMarkets({
+        organizerPubkeys: [ORGANIZER],
+        perspective: {
+          source: "conduit",
+          coverage: "complete",
+          eventObserved: false,
+          snapshotState: "curated",
+          truncated: false,
+        },
+      }),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(() => resolve(undefined), 200)
+      }),
+    ]).finally(() => clearTimeout(timeout))
+    expect(result).toBeDefined()
+    expect(readerSignal?.aborted).toBe(true)
+    expect(result).toMatchObject({ state: "partial", truncated: true })
+    expect(result?.markets).toHaveLength(1)
+    expect(result?.candidateScanCoverage).toMatchObject({
+      requestCount: 2,
+      executionBoundedReadCount: 1,
+      partialReadCount: 1,
+    })
+  })
+
+  it("counts boundary requests against the shared work limit and retains the signed page", async () => {
+    const candidate = collectionEvent()
+    let requests = 0
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      candidateReadRequestLimit: 1,
+      collectionCandidateRelayUrls: [RELAY],
+      fetchCollectionCandidateEvents: async () => {
+        requests += 1
+        return {
+          events: [candidate],
+          eventSourceRelayUrls: {},
+          eventsVerified: true,
+          relays: [{ relayUrl: RELAY, status: "success", eventCount: 129 }],
+        }
+      },
+      readOrganizerMarkets: async () => organizerRead([market(ORGANIZER)]),
+    })
+    const result = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: {
+        source: "conduit",
+        coverage: "complete",
+        eventObserved: false,
+        snapshotState: "curated",
+        truncated: false,
+      },
+    })
+    expect(requests).toBe(1)
+    expect(result).toMatchObject({ state: "partial", truncated: true })
+    expect(result.markets).toHaveLength(1)
+    expect(result.candidateScanCoverage).toMatchObject({
+      requestCount: 1,
+      mainPageCount: 1,
+      boundaryPageCount: 0,
+      executionBoundedReadCount: 1,
+      partialReadCount: 1,
+    })
+  })
+
+  for (const cancellation of ["signal", "session"] as const) {
+    it(`aborts a noncooperative candidate read on ${cancellation} cancellation without hydration`, async () => {
+      const controller = new AbortController()
+      let active = true
+      let readerSignal: AbortSignal | undefined
+      let hydrationCalls = 0
+      let started: () => void = () => undefined
+      const readStarted = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      __setFollowedEventMarketDiscoveryTestOverrides({
+        collectionCandidateRelayUrls: [RELAY],
+        fetchCollectionCandidateEvents: async (_filter, options) => {
+          readerSignal = options.signal
+          started()
+          return new Promise(() => {})
+        },
+        readOrganizerMarkets: async () => {
+          hydrationCalls += 1
+          return organizerRead([])
+        },
+      })
+      const read = discoverPerspectiveEventMarkets({
+        organizerPubkeys: [ORGANIZER],
+        signal: controller.signal,
+        shouldContinue: () => active,
+        perspective: {
+          source: "conduit",
+          coverage: "complete",
+          eventObserved: false,
+          snapshotState: "curated",
+          truncated: false,
+        },
+      })
+      await readStarted
+      if (cancellation === "signal") controller.abort()
+      else active = false
+      let timeout: ReturnType<typeof setTimeout>
+      const outcome = await Promise.race([
+        read.then(
+          () => "resolved",
+          (error: unknown) => error
+        ),
+        new Promise<undefined>((resolve) => {
+          timeout = setTimeout(() => resolve(undefined), 200)
+        }),
+      ]).finally(() => clearTimeout(timeout))
+      expect(outcome).toMatchObject({ name: "AbortError" })
+      expect(readerSignal?.aborted).toBe(true)
+      expect(hydrationCalls).toBe(0)
+    })
+  }
+
+  it("aborts sibling candidate readers when one observes a revoked session before the poll", async () => {
+    let active = true
+    let siblingStarted: () => void = () => undefined
+    const sibling = new Promise<void>((resolve) => {
+      siblingStarted = resolve
+    })
+    const signals: AbortSignal[] = []
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      collectionCandidateRelayUrls: [RELAY, RETAINED_RELAY],
+      fetchCollectionCandidateEvents: async (_filter, options) => {
+        signals.push(options.signal!)
+        if (options.relayUrls[0] === RELAY) {
+          await sibling
+          active = false
+          return {
+            events: [],
+            eventSourceRelayUrls: {},
+            eventsVerified: true,
+            relays: [{ relayUrl: RELAY, status: "success", eventCount: 0 }],
+          }
+        }
+        siblingStarted()
+        return new Promise(() => {})
+      },
+    })
+    await expect(
+      discoverPerspectiveEventMarkets({
+        organizerPubkeys: [ORGANIZER],
+        shouldContinue: () => active,
+        perspective: {
+          source: "conduit",
+          coverage: "complete",
+          eventObserved: false,
+          snapshotState: "curated",
+          truncated: false,
+        },
+      })
+    ).rejects.toMatchObject({ name: "AbortError" })
+    expect(signals).toHaveLength(2)
+    expect(signals.every((signal) => signal.aborted)).toBe(true)
+  })
+
   it("scopes relay reads to every selected perspective author in bounded chunks", async () => {
     const selectedAuthors = Array.from({ length: 65 }, (_, index) =>
       (index + 1).toString(16).padStart(64, "0")
@@ -624,7 +851,8 @@ describe("candidate-first followed event-market discovery", () => {
       fetchCollectionCandidateEvents: async (filter, options) => {
         expect(options.authenticatedPubkey).toBe(MERCHANT)
         expect(options.accountPubkey).toBe(MERCHANT)
-        expect(options.signal).toBe(controller.signal)
+        expect(options.signal).toBeInstanceOf(AbortSignal)
+        expect(options.signal?.aborted).toBe(false)
         expect(options.shouldContinue).toBe(shouldContinue)
         expect(options.accountNetworkLocalStateRepository).toBe(repository)
         filters.push(filter)
