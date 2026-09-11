@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import { nip19 } from "nostr-tools"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -8,9 +9,12 @@ import {
 import {
   __resetEventMarketTestOverrides,
   __setEventMarketTestOverrides,
+  applyE2eRelayIsolation,
   buildEventMarketCalendarDraft,
   buildEventMarketCollectionDraft,
   buildEventMarketPickupDraft,
+  config,
+  decodeEventMarketReference,
   EVENT_KINDS,
   getEventMarket,
   getOrganizerEventMarkets,
@@ -31,6 +35,7 @@ const MERCHANT_PICKUP = `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT}:booth`
 const PRODUCT = `${EVENT_KINDS.PRODUCT}:${MERCHANT}:coffee`
 const ORGANIZER_RELAY = "wss://organizer-write.example"
 const MERCHANT_RELAY = "wss://merchant-write.example"
+const originalConfig = structuredClone(config)
 
 function sign(
   draft: { kind: number; content: string; tags: string[][] },
@@ -534,9 +539,267 @@ function saturatedCollectionDiscoveryHarness(input: {
   }
 }
 
-afterEach(() => __resetEventMarketTestOverrides())
+afterEach(() => {
+  Object.assign(config, structuredClone(originalConfig))
+  __resetEventMarketTestOverrides()
+})
 
 describe("event-market retained evidence", () => {
+  it("never turns a remote naddr loopback hint into signed-in relay I/O", async () => {
+    const remoteLoopbackRelay = "ws://127.0.0.1:4789"
+    const ownerRelay = "ws://owner-network.example:4848"
+    const attemptedRelayUrls: string[] = []
+    const ownerSelectedRelayUrls: string[] = []
+    const authenticatedPubkeys: Array<string | null | undefined> = []
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: {
+          version: 1,
+          updatedAt: 1,
+          entries: [
+            {
+              url: ownerRelay,
+              readEnabled: true,
+              writeEnabled: false,
+              section: "public",
+              capabilities: {
+                nip11: false,
+                search: false,
+                dm: false,
+                auth: false,
+                commerce: false,
+              },
+              warnings: {
+                dmWithoutAuth: false,
+                staleRelayInfo: false,
+                unreachable: false,
+                commercePartialSupport: false,
+              },
+            },
+          ],
+        },
+        signedRelayListAuthoritative: true,
+      }),
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        attemptedRelayUrls.push(...(options.relayUrls ?? []))
+        ownerSelectedRelayUrls.push(...(options.ownerSelectedRelayUrls ?? []))
+        authenticatedPubkeys.push(options.authenticatedPubkey)
+        return {
+          events: [],
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+    const remoteReference = nip19.naddrEncode({
+      kind: EVENT_KINDS.PRODUCT_COLLECTION,
+      pubkey: ORGANIZER,
+      identifier: "catalog",
+      relays: [remoteLoopbackRelay],
+    })
+
+    await getEventMarket({
+      reference: remoteReference,
+      authenticatedPubkey: MERCHANT,
+    })
+
+    expect(attemptedRelayUrls).toContain(ownerRelay)
+    expect(ownerSelectedRelayUrls).toContain(ownerRelay)
+    expect(attemptedRelayUrls).not.toContain(remoteLoopbackRelay)
+    expect(authenticatedPubkeys.every((value) => value === MERCHANT)).toBe(true)
+  })
+
+  it("keeps only the exact configured E2E loopback in the composed read plan", async () => {
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    const otherLoopbackRelayUrl = "ws://127.0.0.1:7788"
+    const remoteSecureRelayUrl = "wss://remote-hint.example"
+    const relayPlans: string[][] = []
+    const ownerSelectedRelayPlans: string[][] = []
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: { version: 1, updatedAt: 1, entries: [] },
+        signedRelayListAuthoritative: true,
+      }),
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        relayPlans.push([...(options.relayUrls ?? [])])
+        ownerSelectedRelayPlans.push([
+          ...(options.ownerSelectedRelayUrls ?? []),
+        ])
+        return {
+          events: [],
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+    const remoteReference = nip19.naddrEncode({
+      kind: EVENT_KINDS.PRODUCT_COLLECTION,
+      pubkey: ORGANIZER,
+      identifier: "catalog",
+      relays: [isolatedRelayUrl, otherLoopbackRelayUrl, remoteSecureRelayUrl],
+    })
+
+    expect(decodeEventMarketReference(remoteReference)?.relayHints).toEqual([
+      isolatedRelayUrl,
+    ])
+
+    await getEventMarket({
+      reference: remoteReference,
+      authenticatedPubkey: ORGANIZER,
+    })
+
+    expect(relayPlans.length).toBeGreaterThan(0)
+    expect(
+      relayPlans.every(
+        (relayUrls) =>
+          relayUrls.length === 1 && relayUrls[0] === isolatedRelayUrl
+      )
+    ).toBe(true)
+    expect(
+      ownerSelectedRelayPlans.every((relayUrls) => relayUrls.length === 0)
+    ).toBe(true)
+  })
+
+  it("threads live account authority through exact and organizer Event Market reads", async () => {
+    const ownerRelay = "ws://owner-event-market.example:4848"
+    const shouldContinue = () => true
+    const fanoutPredicates: Array<(() => boolean) | undefined> = []
+    const relayListPredicates: Array<(() => boolean) | undefined> = []
+    const [calendar, pickup, collection] = graph([PRODUCT])
+    const product = productRevision(103, true)
+    const relayListFor = (pubkey: string) => ({
+      pubkey,
+      readRelayUrls: [ORGANIZER_RELAY],
+      writeRelayUrls: [ORGANIZER_RELAY],
+      eventCreatedAt: 1,
+      cachedAt: Date.now(),
+    })
+
+    __setEventMarketTestOverrides({
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: {
+          version: 1,
+          updatedAt: 1,
+          entries: [
+            {
+              url: ownerRelay,
+              readEnabled: true,
+              writeEnabled: true,
+              section: "public",
+              capabilities: {
+                nip11: false,
+                search: false,
+                dm: false,
+                auth: false,
+                commerce: false,
+              },
+              warnings: {
+                dmWithoutAuth: false,
+                staleRelayInfo: false,
+                unreachable: false,
+                commercePartialSupport: false,
+              },
+            },
+          ],
+        },
+        signedRelayListAuthoritative: true,
+      }),
+      getRelayListsDetailed: async (pubkeys, options = {}) => {
+        relayListPredicates.push(options.shouldContinue)
+        return {
+          relayLists: new Map(
+            pubkeys.map((pubkey) => [pubkey, relayListFor(pubkey)])
+          ),
+          resolutionStates: new Map(
+            pubkeys.map((pubkey) => [pubkey, "network" as const])
+          ),
+        }
+      },
+      getRelayLists: async (pubkeys, options = {}) => {
+        relayListPredicates.push(options.shouldContinue)
+        return new Map(pubkeys.map((pubkey) => [pubkey, relayListFor(pubkey)]))
+      },
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        fanoutPredicates.push(options.shouldContinue)
+        const filter = rawFilter as TagFilter
+        const isBroadOrganizerRead =
+          (filter.kinds?.length ?? 0) > 1 &&
+          filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)
+        let events: SignedPublicNostrEvent[] = []
+        if (isBroadOrganizerRead) {
+          events = [calendar, pickup, collection]
+        } else if (
+          filter.kinds?.length === 1 &&
+          filter.kinds[0] === EVENT_KINDS.PRODUCT_COLLECTION
+        ) {
+          events = [collection]
+        } else if (
+          filter.kinds?.includes(EVENT_KINDS.CALENDAR_TIME) ||
+          filter.kinds?.includes(EVENT_KINDS.CALENDAR_DATE)
+        ) {
+          events = [calendar]
+        } else if (filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION)) {
+          events = [pickup]
+        } else if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          events = [product]
+        }
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: isBroadOrganizerRead ? 500 : events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+
+    const expectLiveAuthority = () => {
+      expect(fanoutPredicates.length).toBeGreaterThan(6)
+      expect(relayListPredicates.length).toBeGreaterThan(1)
+      expect(
+        fanoutPredicates.every((predicate) => predicate === shouldContinue)
+      ).toBe(true)
+      expect(
+        relayListPredicates.every((predicate) => predicate === shouldContinue)
+      ).toBe(true)
+    }
+
+    await getEventMarket({
+      reference: COLLECTION,
+      authenticatedPubkey: ORGANIZER,
+      shouldContinue,
+    })
+    expectLiveAuthority()
+
+    fanoutPredicates.length = 0
+    relayListPredicates.length = 0
+    await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      authenticatedPubkey: ORGANIZER,
+      shouldContinue,
+    })
+    expectLiveAuthority()
+  })
+
   it("keeps a large valid event visible in the discovery-card projection", async () => {
     const productCoordinates = Array.from(
       { length: 65 },

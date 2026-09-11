@@ -1,9 +1,7 @@
 import {
-  createDefaultRelaySettings,
   type InboxDeclarationStatus,
   type ParsedShippingOption,
   type Profile,
-  type RelaySettingsState,
 } from "@conduit/core"
 import {
   getNwcUriStorageKey,
@@ -12,6 +10,7 @@ import {
   getMerchantSetupReadiness,
   getMerchantPrivateInboxReadinessPresentation,
   hasNwcConfigured,
+  isNetworkComplete,
   isStoredShippingConfigAuthoritative,
   loadShippingConfig,
   parseShippingConfig,
@@ -45,12 +44,6 @@ const shippingConfig = {
       exclude: [],
     },
   ],
-}
-
-const emptyRelaySettings: RelaySettingsState = {
-  version: 1,
-  updatedAt: 1,
-  entries: [],
 }
 
 function withMockLocalStorage(run: (storage: Storage) => void): void {
@@ -293,11 +286,18 @@ test("selects only the exact Conduit default shipping option", () => {
 })
 
 describe("merchant setup readiness", () => {
+  test("requires a published or durably pending Publish role", () => {
+    expect(isNetworkComplete([])).toBe(false)
+    expect(isNetworkComplete([{ write: null }])).toBe(false)
+    expect(isNetworkComplete([{ write: "published" }])).toBe(true)
+    expect(isNetworkComplete([{ write: "pending" }])).toBe(true)
+  })
+
   test("marks fully configured merchants direct-payment ready", () => {
     const readiness = getMerchantSetupReadiness({
       profile: completeProfile,
       shippingConfig,
-      relaySettings: createDefaultRelaySettings(),
+      networkComplete: true,
       hasNwc: false,
     })
 
@@ -310,7 +310,7 @@ describe("merchant setup readiness", () => {
     const readiness = getMerchantSetupReadiness({
       profile: { ...completeProfile, lud16: "not-a-lightning-address" },
       shippingConfig,
-      relaySettings: createDefaultRelaySettings(),
+      networkComplete: true,
       hasNwc: false,
     })
 
@@ -323,7 +323,7 @@ describe("merchant setup readiness", () => {
     const readiness = getMerchantSetupReadiness({
       profile: { ...completeProfile, lud16: undefined },
       shippingConfig,
-      relaySettings: createDefaultRelaySettings(),
+      networkComplete: true,
       hasNwc: true,
     })
 
@@ -338,7 +338,7 @@ describe("merchant setup readiness", () => {
     const readiness = getMerchantSetupReadiness({
       profile: completeProfile,
       shippingConfig,
-      relaySettings: emptyRelaySettings,
+      networkComplete: false,
       hasNwc: false,
     })
 
@@ -351,7 +351,7 @@ describe("merchant setup readiness", () => {
     const readiness = getMerchantSetupReadiness({
       profile: null,
       shippingConfig,
-      relaySettings: createDefaultRelaySettings(),
+      networkComplete: true,
       profileCheckPending: true,
       paymentsCheckPending: true,
     })
@@ -369,7 +369,7 @@ describe("merchant setup readiness", () => {
     const readiness = getMerchantSetupReadiness({
       profile: completeProfile,
       shippingConfig: { countries: [] },
-      relaySettings: createDefaultRelaySettings(),
+      networkComplete: true,
       shippingCheckPending: true,
     })
 
@@ -383,7 +383,7 @@ describe("merchant setup readiness", () => {
     const readiness = getMerchantSetupReadiness({
       profile: completeProfile,
       shippingConfig,
-      relaySettings: createDefaultRelaySettings(),
+      networkComplete: true,
       privateInboxStatus: "not_observed",
       privateInboxCheckEnabled: true,
     })
@@ -401,7 +401,7 @@ describe("merchant setup readiness", () => {
     const readiness = getMerchantSetupReadiness({
       profile: completeProfile,
       shippingConfig,
-      relaySettings: createDefaultRelaySettings(),
+      networkComplete: true,
       privateInboxStatus: "ready",
       privateInboxStale: true,
       privateInboxCheckEnabled: true,
@@ -489,7 +489,7 @@ describe("merchant setup readiness", () => {
       const readiness = getMerchantSetupReadiness({
         profile: completeProfile,
         shippingConfig,
-        relaySettings: createDefaultRelaySettings(),
+        networkComplete: true,
         privateInboxStatus: testCase.status,
         privateInboxCheckEnabled: true,
       })

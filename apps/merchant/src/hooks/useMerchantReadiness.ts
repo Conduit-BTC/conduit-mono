@@ -1,7 +1,9 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react"
@@ -13,7 +15,6 @@ import {
   useConduitSession,
   useInboxDeclaration,
   useProfile,
-  useRelaySettings,
 } from "@conduit/core"
 import {
   getNwcUriStorageKey,
@@ -28,6 +29,7 @@ import {
   shippingOptionToConfig,
   shouldHydrateShippingConfig,
   isPaymentsComplete,
+  isNetworkComplete,
   isProfileComplete,
 } from "../lib/readiness"
 
@@ -97,10 +99,17 @@ function subscribeToMerchantReadinessStorage(
 }
 
 export function useMerchantReadiness() {
-  const { pubkey } = useAuth()
+  const { pubkey, status: authStatus, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const session = useConduitSession()
+  const authenticatedPubkey = authStatus === "connected" ? pubkey : null
   const profileQuery = useProfile(pubkey, {
-    authenticatedPubkey: pubkey,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     skipCache: true,
     staleTime: PROFILE_READINESS_POLL_MS,
     refetchUnresolvedMs: PROFILE_READINESS_POLL_MS,
@@ -112,10 +121,6 @@ export function useMerchantReadiness() {
   })
   const profile = profileQuery.data
   const refetchProfile = profileQuery.refetch
-  const { settings } = useRelaySettings(session.relayScope, {
-    pubkey,
-    bootstrapRelayList: false,
-  })
   const privateInboxCheckEnabled = !!pubkey && session.relaySettingsReady
   const privateInbox = useInboxDeclaration(pubkey, {
     enabled: privateInboxCheckEnabled,
@@ -157,10 +162,16 @@ export function useMerchantReadiness() {
   const hasAuthoritativeStoredShipping =
     isStoredShippingConfigAuthoritative(rawShippingConfig)
   const remoteShippingQuery = useQuery({
-    queryKey: ["merchant-shipping-options", pubkey ?? "none"],
+    queryKey: ["merchant-shipping-options", pubkey ?? "none", authStatus],
     enabled: !!pubkey && !hasAuthoritativeStoredShipping,
-    queryFn: () =>
-      getShippingOptionsByCoordinates([getShippingOptionAddress(pubkey!)]),
+    queryFn: ({ signal }) =>
+      getShippingOptionsByCoordinates([getShippingOptionAddress(pubkey!)], {
+        accountPubkey: pubkey,
+        authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
+      }),
     staleTime: 60_000,
   })
   const remoteShippingConfig = useMemo(() => {
@@ -181,6 +192,9 @@ export function useMerchantReadiness() {
     !!pubkey &&
     !hasAuthoritativeStoredShipping &&
     remoteShippingQuery.isFetching
+  const networkComplete = isNetworkComplete(
+    session.accountNetworkPreferences.reconciliation?.projection.rows ?? []
+  )
 
   useEffect(() => {
     if (!pubkey || !shouldHydrateRemoteShipping) return
@@ -221,7 +235,7 @@ export function useMerchantReadiness() {
   return getMerchantSetupReadiness({
     profile,
     shippingConfig: effectiveShippingConfig,
-    relaySettings: settings,
+    networkComplete,
     hasNwc,
     profileCheckPending,
     paymentsCheckPending,

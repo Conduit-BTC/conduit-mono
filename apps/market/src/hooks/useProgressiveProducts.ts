@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   type CommerceProductRecord,
@@ -22,6 +29,8 @@ import {
   type ListingSafetyEvaluation,
   type PreparedProductFamily,
   type Product,
+  useAuth,
+  useConduitSession,
 } from "@conduit/core"
 import {
   getCatalogAuthorKey,
@@ -74,6 +83,8 @@ type ProgressiveListQuery =
       merchantPubkey?: string
       perspectivePubkey?: string | null
       authenticatedPubkey?: string | null
+      /** Signed-in account used only for final-I/O whole-relay exclusions. */
+      accountPubkey?: string | null
       seedAuthorPubkeys?: string[]
       textQuery?: string
       tags?: string[]
@@ -85,6 +96,8 @@ type ProgressiveListQuery =
       scope: "storefront"
       merchantPubkey: string
       authenticatedPubkey?: string | null
+      /** Signed-in account used only for final-I/O whole-relay exclusions. */
+      accountPubkey?: string | null
       textQuery?: string
       tag?: string
       sort?: SortOption
@@ -223,7 +236,8 @@ async function fetchCachedList(
 async function fetchNetworkList(
   input: ProgressiveListQuery,
   authorPubkeys?: string[],
-  readPolicy?: CommerceReadPolicy
+  readPolicy?: CommerceReadPolicy,
+  shouldContinue?: () => boolean
 ) {
   if (input.scope === "marketplace") {
     const readsPerspectiveCatalog = isPerspectiveMarketplaceRead(input)
@@ -232,6 +246,8 @@ async function fetchNetworkList(
       merchantPubkey: input.merchantPubkey,
       authorPubkeys,
       authenticatedPubkey: input.authenticatedPubkey,
+      accountPubkey: input.accountPubkey,
+      shouldContinue,
       textQuery: readsPerspectiveCatalog ? undefined : input.textQuery,
       tags: readsPerspectiveCatalog ? undefined : input.tags,
       sort: readsPerspectiveCatalog ? "newest" : input.sort,
@@ -243,6 +259,8 @@ async function fetchNetworkList(
   return await getMerchantStorefront({
     merchantPubkey: input.merchantPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
+    accountPubkey: input.accountPubkey,
+    shouldContinue,
     textQuery: input.textQuery,
     tag: input.tag,
     sort: input.sort,
@@ -255,6 +273,11 @@ async function fetchNetworkList(
 export function useProgressiveProducts(
   input: ProgressiveListQuery
 ): ProgressiveProductsResult {
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const queryEnabled = input.enabled ?? true
   const perspectiveMarketplaceRead = isPerspectiveMarketplaceRead(input)
   const catalogSource: ProductCatalogSourceMode =
@@ -266,6 +289,9 @@ export function useProgressiveProducts(
       ? normalizePubkey(input.perspectivePubkey)
       : null
   const authenticatedPubkey = normalizePubkey(input.authenticatedPubkey)
+  const finalIoAccountPubkey = normalizePubkey(
+    input.accountPubkey ?? input.authenticatedPubkey
+  )
   const usesPerspectiveGraph =
     input.scope === "marketplace" && !!perspectivePubkey
   const firstDegreeDiscoveryEnabled =
@@ -290,10 +316,12 @@ export function useProgressiveProducts(
       perspectivePubkey,
       authenticatedPubkey,
     ],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       getFollowPubkeys({
         pubkey: perspectivePubkey!,
         authenticatedPubkey,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
       }),
     enabled: firstDegreeDiscoveryEnabled,
     staleTime: 60_000,
@@ -451,8 +479,9 @@ export function useProgressiveProducts(
           "network"
         ),
         catalogAuthorKey,
+        finalIoAccountPubkey ?? "guest",
       ]),
-    [catalogAuthorKey, input]
+    [catalogAuthorKey, finalIoAccountPubkey, input]
   )
   const discoveryKey = useMemo(
     () => JSON.stringify([catalogDiscoveryKey, refreshNonce]),
@@ -511,8 +540,15 @@ export function useProgressiveProducts(
       ...getProductCatalogQueryKey(input as ProductCatalogReadInput, "network"),
       "catalog",
       catalogAuthorKey,
+      finalIoAccountPubkey ?? "guest",
     ],
-    queryFn: () => fetchNetworkList(input, catalogAuthorPubkeys),
+    queryFn: ({ signal }) =>
+      fetchNetworkList(
+        input,
+        catalogAuthorPubkeys,
+        undefined,
+        () => !signal.aborted && authGenerationRef.current === authGeneration
+      ),
     enabled: queryEnabled && catalogReady && !streamsNetwork,
     staleTime: 20_000,
   })
@@ -655,6 +691,8 @@ export function useProgressiveProducts(
     }
 
     let cancelled = false
+    const shouldContinue = () =>
+      !cancelled && authGenerationRef.current === authGeneration
     let flushHandle: number | null = null
     let pendingResult: CommerceResult<CommerceProductRecord[]> | null = null
     const completionRead = perspectiveMarketplaceRead
@@ -712,13 +750,13 @@ export function useProgressiveProducts(
 
     const flushProgress = () => {
       flushHandle = null
-      if (cancelled || !pendingResult) return
+      if (!shouldContinue() || !pendingResult) return
       const result = pendingResult
       pendingResult = null
       applyResult(result, true)
     }
     const scheduleFlush = () => {
-      if (cancelled || flushHandle !== null) return
+      if (!shouldContinue() || flushHandle !== null) return
       flushHandle =
         typeof requestAnimationFrame === "function"
           ? requestAnimationFrame(flushProgress)
@@ -747,10 +785,12 @@ export function useProgressiveProducts(
           sort: catalogSort,
           limit: input.limit,
           authenticatedPubkey,
+          accountPubkey: finalIoAccountPubkey,
+          shouldContinue,
           readPolicy,
         },
         (result) => {
-          if (cancelled) return
+          if (!shouldContinue()) return
           pendingResult = result
           scheduleFlush()
         }
@@ -762,13 +802,13 @@ export function useProgressiveProducts(
         ? () => readCatalog(CATALOG_COMPLETION_READ_POLICY)
         : undefined,
       commitResult: (result, isFetching) => {
-        if (cancelled) return
+        if (!shouldContinue()) return
         cancelScheduledFlush()
         applyResult(result, isFetching)
       },
-      shouldContinue: () => !cancelled,
+      shouldContinue,
     }).catch((error) => {
-      if (cancelled) return
+      if (!shouldContinue()) return
       const lastPendingResult = pendingResult
       cancelScheduledFlush()
       if (lastPendingResult) applyResult(lastPendingResult, true)
@@ -806,6 +846,8 @@ export function useProgressiveProducts(
     marketplaceTags,
     perspectiveMarketplaceRead,
     authenticatedPubkey,
+    authGeneration,
+    finalIoAccountPubkey,
     streamsNetwork,
   ])
 
@@ -967,6 +1009,14 @@ export function useProgressiveProductDetail(productId: string): {
   error: unknown
   refetch: () => void
 } {
+  const session = useConduitSession()
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const authenticatedPubkey =
+    session.mode === "signed_in" ? session.pubkey : null
   const cachedQuery = useQuery({
     queryKey: ["progressive-product", "cache", productId],
     queryFn: () =>
@@ -978,8 +1028,20 @@ export function useProgressiveProductDetail(productId: string): {
   })
 
   const networkQuery = useQuery({
-    queryKey: ["progressive-product", "network", productId],
-    queryFn: () => getProductDetail({ productId, includeMarketHidden: true }),
+    queryKey: [
+      "progressive-product",
+      "network",
+      session.relayScope ?? "no-relay-scope",
+      productId,
+    ],
+    queryFn: ({ signal }) =>
+      getProductDetail({
+        productId,
+        includeMarketHidden: true,
+        authenticatedPubkey,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
+      }),
     staleTime: 20_000,
   })
 

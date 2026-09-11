@@ -1440,6 +1440,86 @@ describe("runOrderPayment", () => {
     }
   })
 
+  it("keeps paid state retryable when account authority changes before proof delivery", async () => {
+    const orderId = "proof-delivery-account-change"
+    const invoice = privateInvoice()
+    const shouldContinue = () => false
+    let stored = lifecycle({
+      orderId,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    let proofAttempts = 0
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    try {
+      const state = await runOrderPayment(
+        basePaymentContext({
+          orderId,
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "private_checkout",
+          shouldContinue,
+        }),
+        paymentDependencies({
+          fetchLnurlPayMetadata: async () => lnurlMetadata(),
+          requestCheckoutLnurlInvoice: async () => ({
+            invoice,
+            zapRelayUrls: [],
+            shouldWaitForZapReceipt: false,
+          }),
+          payCheckoutInvoice: async () => ({
+            status: "paid",
+            rail: "nwc",
+            preimage: "11".repeat(32),
+            paymentHash: "22".repeat(32),
+          }),
+          savePaymentAttempt: async () => {},
+          updatePaymentAttempt: async () => {},
+          publishBuyerOrderMessage: async (
+            _rumor,
+            _ndk,
+            _merchantPubkey,
+            _buyerIdentity,
+            dependencies
+          ) => {
+            proofAttempts += 1
+            expect(dependencies.shouldContinue).toBe(shouldContinue)
+            if (dependencies.shouldContinue?.() === false) {
+              throw new Error("Buyer account changed before delivery")
+            }
+            throw new Error("Expected account authority to stop delivery")
+          },
+        })
+      )
+
+      expect(proofAttempts).toBe(1)
+      expect(state.lifecycle).toMatchObject({
+        paymentStatus: "paid",
+        proofDeliveryStatus: "retry_needed",
+        paymentHash: "22".repeat(32),
+        preimage: "11".repeat(32),
+      })
+      expect(state.error).toBeNull()
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+    }
+  })
+
   it("keeps successful proof delivery sent when a receipt supersedes its claim", async () => {
     const orderId = "receipt-proof-delivery-race"
     const merchantPubkey = "b".repeat(64)
@@ -2076,6 +2156,7 @@ describe("runOrderPayment", () => {
 
   it("uses current durable truth after a receipt observer wait", async () => {
     const orderId = "deferred-receipt-timeout-race"
+    const accountPubkey = "b".repeat(64)
     let current = lifecycle({
       orderId,
       checkoutMode: "anonymous_public_zap",
@@ -2095,27 +2176,37 @@ describe("runOrderPayment", () => {
     let releaseWait!: (receipt: null) => void
     let waitStarted = false
     let timeoutCalls = 0
+    const shouldContinue = () => true
     const receiptWait = new Promise<null>((resolve) => {
       releaseWait = resolve
     })
 
-    const observation = observeOrderPublicZapReceipt(orderId, undefined, {
-      getOrderLifecycle: async () => current,
-      waitForZapReceipt: async () => {
-        waitStarted = true
-        return receiptWait
+    const observation = observeOrderPublicZapReceipt(
+      orderId,
+      undefined,
+      {
+        getOrderLifecycle: async () => current,
+        waitForZapReceipt: async (input) => {
+          expect(input.accountPubkey).toBe(accountPubkey)
+          expect(input.shouldContinue).toBe(shouldContinue)
+          waitStarted = true
+          return receiptWait
+        },
+        recordOrderPaymentReceiptTimeout: async () => {
+          timeoutCalls += 1
+          if (
+            current.paymentStatus === "paid" ||
+            current.zapReceiptStatus === "observed"
+          ) {
+            return { status: "preserved", lifecycle: current }
+          }
+          throw new Error("must preserve stronger evidence")
+        },
       },
-      recordOrderPaymentReceiptTimeout: async () => {
-        timeoutCalls += 1
-        if (
-          current.paymentStatus === "paid" ||
-          current.zapReceiptStatus === "observed"
-        ) {
-          return { status: "preserved", lifecycle: current }
-        }
-        throw new Error("must preserve stronger evidence")
-      },
-    })
+      accountPubkey,
+      accountPubkey,
+      shouldContinue
+    )
 
     for (let index = 0; index < 5 && !waitStarted; index += 1) {
       await Promise.resolve()

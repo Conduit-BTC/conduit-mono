@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
@@ -8,6 +8,7 @@ import {
 
 import {
   __resetEventMarketTestOverrides,
+  __resetRelayHealth,
   __setEventMarketTestOverrides,
   buildEventMarketCalendarDraft,
   buildEventMarketCollectionDraft,
@@ -258,7 +259,12 @@ async function resolveDeletionStarvationCase(tagName: "a" | "e") {
   }
 }
 
-afterEach(() => __resetEventMarketTestOverrides())
+beforeEach(() => __resetRelayHealth())
+
+afterEach(() => {
+  __resetEventMarketTestOverrides()
+  __resetRelayHealth()
+})
 
 describe("event-market exact product request frontiers", () => {
   it.each(["own-booth", "pickup"])(

@@ -4,6 +4,7 @@ import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
   closeAllProtectedRelayConnections,
+  createInMemoryAccountNetworkLocalStateRepository,
   getBuyerConversationList,
   getDirectMessageConversationList,
   getMerchantConversationList,
@@ -227,6 +228,10 @@ beforeEach(() => {
   signCalls = 0
   sockets.splice(0)
   __resetCommerceTestOverrides()
+  __setCommerceTestOverrides({
+    accountNetworkLocalStateRepository:
+      createInMemoryAccountNetworkLocalStateRepository(),
+  })
   __resetProtectedReadSigner()
   closeAllProtectedRelayConnections()
   Object.defineProperty(globalThis, "WebSocket", {

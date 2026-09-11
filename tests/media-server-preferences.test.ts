@@ -19,6 +19,9 @@ import {
   serializeBlossomServerListTags,
   type MediaServerPreferencesStorage,
 } from "../packages/core/src/protocol/media-server-preferences"
+import { planRelayReads } from "../packages/core/src/protocol/relay-planner"
+import { createRelaySettingsFromPreferences } from "../packages/core/src/protocol/relay-settings"
+import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
 import type { SignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
 
 const OWNER_KEY = generateSecretKey()
@@ -238,6 +241,229 @@ describe("kind 10063 replacement selection and evidence", () => {
       parseBlossomServerListTags(expectedTie.tags).serverUrls
     )
     expect(selected?.event.pubkey).not.toBe(OTHER_OWNER)
+  })
+
+  it("carries an exact authenticated owner ws selection through lookup, planning, and final I/O", async () => {
+    const ownerWsRelay = "ws://owner-selected.example"
+    const ownerWssRelay = "wss://owner-selected.example"
+    const remoteWsRelay = "ws://remote-source.example"
+    const lookupCalls: Array<{
+      relayUrls: readonly string[] | undefined
+      accountPubkey: string | null | undefined
+      authenticatedPubkey: string | null | undefined
+      ownerSelectedRelayUrls: readonly string[] | undefined
+      allowInsecureRelayUrlsForPubkey: string | null | undefined
+    }> = []
+    const plannerCalls: Array<{
+      authenticatedPubkey: string | null | undefined
+      ownerSelectedRelayUrls: readonly string[] | undefined
+      signedRelayListAuthoritative: boolean | undefined
+    }> = []
+    const finalReadCalls: Array<{
+      relayUrls: readonly string[]
+      accountPubkey: string | null | undefined
+      authenticatedPubkey: string | null | undefined
+      ownerSelectedRelayUrls: readonly string[] | undefined
+    }> = []
+
+    await readMediaServerPreferences(OWNER, {
+      authenticatedPubkey: OWNER,
+      storage: null,
+      readAccountRelaySettingsPlanningSnapshot: async (pubkey) => {
+        expect(pubkey).toBe(OWNER)
+        return {
+          settings: createRelaySettingsFromPreferences([
+            {
+              url: ownerWsRelay,
+              readEnabled: true,
+              writeEnabled: true,
+            },
+            {
+              url: ownerWssRelay,
+              readEnabled: true,
+              writeEnabled: false,
+            },
+          ]),
+          signedRelayListAuthoritative: true,
+        }
+      },
+      getRelayLists: async (_pubkeys, options = {}) => {
+        lookupCalls.push({
+          relayUrls: options.relayUrls,
+          accountPubkey: options.accountPubkey,
+          authenticatedPubkey: options.authenticatedPubkey,
+          ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+          allowInsecureRelayUrlsForPubkey:
+            options.allowInsecureRelayUrlsForPubkey,
+        })
+        return new Map([
+          [
+            OWNER,
+            {
+              pubkey: OWNER,
+              readRelayUrls: [remoteWsRelay],
+              writeRelayUrls: [remoteWsRelay],
+              eventCreatedAt: 100,
+              cachedAt: 100,
+            },
+          ],
+        ])
+      },
+      planReads: (input) => {
+        plannerCalls.push({
+          authenticatedPubkey: input.authenticatedPubkey,
+          ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+          signedRelayListAuthoritative: input.signedRelayListAuthoritative,
+        })
+        return planRelayReads(input)
+      },
+      fetchEvents: async (_filter, options) => {
+        finalReadCalls.push({
+          relayUrls: options.relayUrls,
+          accountPubkey: options.accountPubkey,
+          authenticatedPubkey: options.authenticatedPubkey,
+          ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+        })
+        return relayRead(
+          [],
+          options.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+          }))
+        )
+      },
+    })
+
+    expect(lookupCalls).toEqual([
+      {
+        relayUrls: [ownerWsRelay, ownerWssRelay],
+        accountPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
+        allowInsecureRelayUrlsForPubkey: OWNER,
+      },
+    ])
+    expect(plannerCalls).toEqual([
+      {
+        authenticatedPubkey: OWNER,
+        ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
+        signedRelayListAuthoritative: true,
+      },
+    ])
+    expect(finalReadCalls).toEqual([
+      {
+        relayUrls: [ownerWsRelay, ownerWssRelay],
+        accountPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
+      },
+    ])
+  })
+
+  it("does not grant remote ws authority without the matching authenticated owner", async () => {
+    const remoteWsRelay = "ws://remote-source.com"
+    const remoteWssRelay = "wss://remote-source.com"
+
+    for (const authenticatedPubkey of [undefined, OTHER_OWNER]) {
+      let authorityReads = 0
+      const lookupCalls: Array<{
+        accountPubkey: string | null | undefined
+        authenticatedPubkey: string | null | undefined
+        ownerSelectedRelayUrls: readonly string[] | undefined
+        allowInsecureRelayUrlsForPubkey: string | null | undefined
+      }> = []
+      const finalReadCalls: Array<{
+        relayUrls: readonly string[]
+        accountPubkey: string | null | undefined
+        authenticatedPubkey: string | null | undefined
+        ownerSelectedRelayUrls: readonly string[] | undefined
+      }> = []
+
+      await readMediaServerPreferences(OWNER, {
+        authenticatedPubkey,
+        storage: null,
+        readAccountRelaySettingsPlanningSnapshot: async () => {
+          authorityReads += 1
+          return {
+            settings: createRelaySettingsFromPreferences([
+              {
+                url: remoteWsRelay,
+                readEnabled: true,
+                writeEnabled: true,
+              },
+            ]),
+            signedRelayListAuthoritative: true,
+          }
+        },
+        getRelayLists: async (_pubkeys, options = {}) => {
+          lookupCalls.push({
+            accountPubkey: options.accountPubkey,
+            authenticatedPubkey: options.authenticatedPubkey,
+            ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+            allowInsecureRelayUrlsForPubkey:
+              options.allowInsecureRelayUrlsForPubkey,
+          })
+          return new Map([
+            [
+              OWNER,
+              {
+                pubkey: OWNER,
+                readRelayUrls: [remoteWsRelay],
+                writeRelayUrls: [remoteWsRelay, remoteWssRelay],
+                eventCreatedAt: 100,
+                cachedAt: 100,
+              },
+            ],
+          ])
+        },
+        fetchEvents: async (_filter, options) => {
+          finalReadCalls.push({
+            relayUrls: options.relayUrls,
+            accountPubkey: options.accountPubkey,
+            authenticatedPubkey: options.authenticatedPubkey,
+            ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+          })
+          return relayRead(
+            [],
+            options.relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+            }))
+          )
+        },
+      })
+
+      expect(authorityReads).toBe(0)
+      expect(lookupCalls).toEqual([
+        {
+          accountPubkey: authenticatedPubkey ?? null,
+          authenticatedPubkey: authenticatedPubkey ?? null,
+          ownerSelectedRelayUrls: [],
+          allowInsecureRelayUrlsForPubkey: undefined,
+        },
+      ])
+      expect(finalReadCalls).toHaveLength(1)
+      expect(finalReadCalls[0]?.accountPubkey).toBe(authenticatedPubkey ?? null)
+      expect(finalReadCalls[0]?.authenticatedPubkey).toBe(
+        authenticatedPubkey ?? null
+      )
+      expect(finalReadCalls[0]?.ownerSelectedRelayUrls).toEqual([])
+      expect(finalReadCalls[0]?.relayUrls).toContain(remoteWssRelay)
+      expect(finalReadCalls[0]?.relayUrls).not.toContain(remoteWsRelay)
+    }
+  })
+
+  it("does not downgrade a final-read authority change to unavailable evidence", async () => {
+    await expect(
+      readMediaServerPreferences(OWNER, {
+        authenticatedPubkey: OWNER,
+        storage: null,
+        readRelayUrls: ["wss://authority-change.example"],
+        fetchEvents: async () => {
+          throw new NostrSignerError("authority_changed")
+        },
+      })
+    ).rejects.toMatchObject({ code: "authority_changed" })
   })
 
   it("projects complete source and freshness evidence", async () => {
