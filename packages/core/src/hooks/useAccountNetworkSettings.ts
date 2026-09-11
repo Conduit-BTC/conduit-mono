@@ -7,6 +7,7 @@ import {
   useState,
 } from "react"
 import type { NDKSigner } from "@nostr-dev-kit/ndk"
+import { useQueryClient } from "@tanstack/react-query"
 import {
   useAuth,
   type AuthMethod,
@@ -50,6 +51,7 @@ import {
   type AccountNetworkSettingsView,
 } from "../protocol/network-settings-view"
 import { createNdkNostrEventSigner } from "../protocol/ndk-nostr-event-signer"
+import { invalidateInboxDeclaration } from "../protocol/private-message-routing"
 import {
   getRelayAuthenticationEvidence,
   subscribeRelayAuthenticationEvidence,
@@ -62,6 +64,7 @@ import {
   type RelayScanResult,
 } from "../protocol/relay-settings"
 import type { AccountNetworkPreferencesStatus } from "./useAccountNetworkPreferences"
+import { INBOX_DECLARATION_QUERY_KEY } from "./useInboxDeclaration"
 import { useMediaServerPreferences } from "./useMediaServerPreferences"
 
 export type AccountNetworkSettingsOperationPhase =
@@ -427,6 +430,7 @@ function scopedRevision(input: {
 export function useAccountNetworkSettings(): AccountNetworkSettingsController {
   const auth = useAuth()
   const session = useConduitSession()
+  const queryClient = useQueryClient()
   const accountPreferences = session.accountNetworkPreferences
   const accountPubkey =
     auth.status === "connected"
@@ -661,6 +665,16 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     [activeLocal?.ready, activeLocal?.state, reconciliation]
   )
 
+  const refreshInboxDeclarationReadiness = useCallback(
+    async (pubkey: string): Promise<void> => {
+      invalidateInboxDeclaration(pubkey)
+      await queryClient.invalidateQueries({
+        queryKey: [INBOX_DECLARATION_QUERY_KEY, pubkey],
+      })
+    },
+    [queryClient]
+  )
+
   const executePreparedMutation = useCallback(
     async (
       kind: "save" | "remove",
@@ -700,12 +714,13 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
             "The active account or signer changed during the Network update."
           )
         }
+        accountPreferences.refetch()
+        await refreshInboxDeclarationReadiness(authenticatedPubkey)
         setOperation({
           kind,
           phase: "complete",
           message: resultMessage(kind, result),
         })
-        accountPreferences.refetch()
       } catch (error) {
         if (lastPhase !== "checking") accountPreferences.refetch()
         setOperation({
@@ -716,7 +731,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         throw error
       }
     },
-    [accountPreferences]
+    [accountPreferences, refreshInboxDeclarationReadiness]
   )
 
   const prepareChange = useCallback(
@@ -837,12 +852,13 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
             "The active account changed during the Network retry."
           )
         }
+        accountPreferences.refetch()
+        await refreshInboxDeclarationReadiness(snapshot.pubkey)
         setOperation({
           kind: "retry",
           phase: "complete",
           message: resultMessage("retry", result),
         })
-        accountPreferences.refetch()
       } catch (error) {
         accountPreferences.refetch()
         setOperation({
@@ -853,7 +869,12 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         throw error
       }
     },
-    [accountFenceFor, accountPreferences, captureAccount]
+    [
+      accountFenceFor,
+      accountPreferences,
+      captureAccount,
+      refreshInboxDeclarationReadiness,
+    ]
   )
 
   const redistributeExactInboxDeclaration = useCallback(async () => {
@@ -889,12 +910,13 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
           "The active account changed during inbox redistribution."
         )
       }
+      accountPreferences.refetch()
+      await refreshInboxDeclarationReadiness(snapshot.pubkey)
       setOperation({
         kind: "redistribute",
         phase: "complete",
         message: resultMessage("redistribute", result),
       })
-      accountPreferences.refetch()
     } catch (error) {
       accountPreferences.refetch()
       setOperation({
@@ -910,6 +932,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     captureAccount,
     reconciliation,
     baseView.pendingExactDeliveries,
+    refreshInboxDeclarationReadiness,
   ])
 
   const addRelay = useCallback(

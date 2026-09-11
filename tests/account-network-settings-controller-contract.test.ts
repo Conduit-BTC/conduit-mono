@@ -150,6 +150,39 @@ describe("account Network settings controller contract", () => {
     expect(reorder).not.toContain("accountPreferences.refetch()")
   })
 
+  it("refreshes inbox readiness after every settled Network mutation path", () => {
+    const settlement = sourceBetween(
+      "const refreshInboxDeclarationReadiness = useCallback(",
+      "const executePreparedMutation = useCallback("
+    )
+    const execution = sourceBetween(
+      "const executePreparedMutation = useCallback(",
+      "const prepareChange = useCallback("
+    )
+    const retry = sourceBetween(
+      "const retryPendingUpdate = useCallback(",
+      "const redistributeExactInboxDeclaration = useCallback("
+    )
+    const redistribute = sourceBetween(
+      "const redistributeExactInboxDeclaration = useCallback(",
+      "const addRelay = useCallback("
+    )
+
+    expect(settlement).toContain("invalidateInboxDeclaration(pubkey)")
+    expect(settlement).toContain(
+      "queryKey: [INBOX_DECLARATION_QUERY_KEY, pubkey]"
+    )
+    expect(execution).toContain(
+      "await refreshInboxDeclarationReadiness(authenticatedPubkey)"
+    )
+    expect(retry).toContain(
+      "await refreshInboxDeclarationReadiness(snapshot.pubkey)"
+    )
+    expect(redistribute).toContain(
+      "await refreshInboxDeclarationReadiness(snapshot.pubkey)"
+    )
+  })
+
   it("does not turn local ordering into a reviewed-role revision", () => {
     const revision = sourceBetween(
       "function scopedRevision(",
