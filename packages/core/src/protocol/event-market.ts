@@ -487,10 +487,15 @@ function normalizeLocations(values: readonly string[] | undefined): string[] {
   return Array.from(result)
 }
 
-function addDisplayTags(
-  tags: string[][],
-  input: EventMarketDisplayDraftInput
-): void {
+export function buildEventMarketCalendarDraft(
+  input: EventMarketCalendarDraftInput
+): EventMarketEventDraft {
+  const dTag = normalizeDTag(input.dTag)
+  const title = normalizeRequiredText(input.title, "Calendar title", 200)
+  let tags: string[][] = [
+    ["d", dTag],
+    ["title", title],
+  ]
   const summary = normalizeOptionalText(input.summary, "Summary", 1_000)
   const image = normalizeOptionalText(input.image, "Image", 2_048)
   const geohash = normalizeOptionalText(input.geohash, "Geohash", 32)
@@ -501,18 +506,6 @@ function addDisplayTags(
     tags.push(["location", location])
   }
   if (geohash) tags.push(["g", geohash.toLowerCase()])
-}
-
-export function buildEventMarketCalendarDraft(
-  input: EventMarketCalendarDraftInput
-): EventMarketEventDraft {
-  const dTag = normalizeDTag(input.dTag)
-  const title = normalizeRequiredText(input.title, "Calendar title", 200)
-  let tags: string[][] = [
-    ["d", dTag],
-    ["title", title],
-  ]
-  addDisplayTags(tags, input)
 
   if (input.kind === EVENT_KINDS.CALENDAR_DATE) {
     const start = input.start.trim()
@@ -553,7 +546,9 @@ export function buildEventMarketCalendarDraft(
   return {
     kind: input.kind,
     content:
-      normalizeOptionalText(input.content, "Calendar content", 10_000) ?? "",
+      normalizeOptionalText(input.content, "Calendar content", 10_000) ??
+      summary ??
+      "",
     tags,
   }
 }
