@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef } from "react"
 import type { Product } from "@conduit/core"
 import {
   Select,
@@ -32,25 +32,16 @@ export function ProductVariationSelector({
   onOpenChange,
 }: ProductVariationSelectorProps) {
   const model = getProductVariationSelectorModel(family, selectedProduct)
-  const [openAxes, setOpenAxes] = useState<ReadonlySet<string>>(() => new Set())
-  const isOpen = openAxes.size > 0
-  const hasModel = model !== null
-  const onOpenChangeRef = useRef(onOpenChange)
-  onOpenChangeRef.current = onOpenChange
+  const openAxes = useRef(new Set<string>())
+  const modelKey = model?.axes.map((axis) => axis.key).join("\0") ?? null
 
   useEffect(() => {
-    onOpenChangeRef.current?.(hasModel && isOpen)
-  }, [hasModel, isOpen])
-
-  useEffect(() => {
-    if (!hasModel && openAxes.size > 0) {
-      setOpenAxes(new Set())
+    const axes = openAxes.current
+    return () => {
+      axes.clear()
+      onOpenChange?.(false)
     }
-  }, [hasModel, openAxes])
-
-  useEffect(() => {
-    return () => onOpenChangeRef.current?.(false)
-  }, [])
+  }, [modelKey, onOpenChange])
 
   if (!model) return null
 
@@ -75,16 +66,12 @@ export function ProductVariationSelector({
           <Select
             value={axis.selectedValue}
             onOpenChange={(open) => {
-              setOpenAxes((current) => {
-                if (current.has(axis.key) === open) return current
-                const next = new Set(current)
-                if (open) {
-                  next.add(axis.key)
-                } else {
-                  next.delete(axis.key)
-                }
-                return next
-              })
+              if (open) {
+                openAxes.current.add(axis.key)
+              } else {
+                openAxes.current.delete(axis.key)
+              }
+              onOpenChange?.(openAxes.current.size > 0)
             }}
             onValueChange={(value) => {
               const next = getProductSelectionForAxisValue(

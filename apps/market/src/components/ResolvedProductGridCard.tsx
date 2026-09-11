@@ -122,39 +122,41 @@ export function ResolvedProductGridCard({
           : null
 
   return (
-    <div className="flex h-full flex-col space-y-2">
-      <ProductGridCard
-        {...props}
-        className={["h-auto flex-1", className].filter(Boolean).join(" ")}
-        product={product}
-        family={family}
-        btcUsdRate={btcUsdRate}
-        selectedProductId={selectedProduct.id}
-        onSelectedProductChange={(selection) =>
-          setSelectedProductId(selection.id)
-        }
-        allowZeroPrice={resolution?.status === "pickup"}
-        cartQuantity={cartQuantity}
-        onAddToCart={add}
-        onIncrement={add}
-        onDecrement={decrement}
-        cartActionDisabled={blocked}
-        cartActionDisabledLabel={disabledLabel}
-      />
-      {notice ? (
-        <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-          <span>{notice}</span>{" "}
-          {candidate ? (
-            <Link
-              to="/events/$collectionRef"
-              params={{ collectionRef: candidate }}
-              className="font-medium text-secondary-400 hover:text-secondary-300"
-            >
-              View event catalog
-            </Link>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
+    <ProductGridCard
+      {...props}
+      className={className}
+      product={product}
+      family={family}
+      btcUsdRate={btcUsdRate}
+      selectedProductId={selectedProduct.id}
+      onSelectedProductChange={(selection) =>
+        setSelectedProductId(selection.id)
+      }
+      allowZeroPrice={resolution?.status === "pickup"}
+      cartQuantity={cartQuantity}
+      onAddToCart={add}
+      onIncrement={add}
+      onDecrement={decrement}
+      cartActionDisabled={blocked}
+      cartActionDisabledLabel={disabledLabel}
+      notice={
+        notice ? (
+          <>
+            <span>{notice}</span>{" "}
+            {candidate ? (
+              <Link
+                to="/events/$collectionRef"
+                params={{ collectionRef: candidate }}
+                className="font-medium text-secondary-400 hover:text-secondary-300"
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => event.stopPropagation()}
+              >
+                View event catalog
+              </Link>
+            ) : null}
+          </>
+        ) : null
+      }
+    />
   )
 }

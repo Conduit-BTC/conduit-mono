@@ -12,8 +12,12 @@ import {
   type Product,
 } from "@conduit/core"
 import { createRoot } from "react-dom/client"
+import { useState } from "react"
 
-import { ProductGridCard } from "../components/ProductGridCard"
+import {
+  ProductGridCard,
+  PRODUCT_GRID_CLASS_NAME,
+} from "../components/ProductGridCard"
 
 const MERCHANT_PUBKEY = "a".repeat(64)
 const FAMILY_ID = `30402:${MERCHANT_PUBKEY}:conduit-shirt`
@@ -42,7 +46,7 @@ function product(overrides: Partial<Product> = {}): Product {
     specifications: [],
     format: "physical",
     visibility: "public",
-    images: [],
+    images: [{ url: "https://cdn.conduit.market/variation-fixture.jpg" }],
     tags: ["shirt"],
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
@@ -95,35 +99,43 @@ export function mountProductVariationPanelHarness(
   })
 
   function ProductVariationPanelProbe() {
+    const [ready, setReady] = useState(true)
     return (
-      <ul
-        data-testid="product-variation-grid"
-        className="grid grid-cols-3 gap-4"
-      >
-        <li data-testid="variable-product-list-item">
-          <ProductGridCard
-            product={parent}
-            family={preparedFamily}
-            merchantName="Conduit Merchant"
-            onProductActivate={() => undefined}
-          />
-        </li>
-        <li data-testid="simple-product-sibling">
-          <ProductGridCard
-            product={sibling}
-            merchantName="Conduit Merchant"
-            onProductActivate={null}
-          />
-        </li>
-        <li data-testid="hydrating-variable-product-list-item">
-          <ProductGridCard
-            product={parent}
-            familyHydrating
-            merchantName="Conduit Merchant"
-            onProductActivate={() => undefined}
-          />
-        </li>
-      </ul>
+      <>
+        <button type="button" onClick={() => setReady((value) => !value)}>
+          Toggle variation availability
+        </button>
+        <ul
+          data-testid="product-variation-grid"
+          className={PRODUCT_GRID_CLASS_NAME}
+        >
+          <li data-testid="variable-product-list-item">
+            <ProductGridCard
+              product={parent}
+              family={ready ? preparedFamily : undefined}
+              familyHydrating={!ready}
+              merchantName="Conduit Merchant"
+              onProductActivate={() => undefined}
+            />
+          </li>
+          <li data-testid="simple-product-sibling">
+            <ProductGridCard
+              product={sibling}
+              merchantName="Conduit Merchant"
+              notice="Checking current signed event pickup evidence before this listing can be added."
+              onProductActivate={null}
+            />
+          </li>
+          <li data-testid="hydrating-variable-product-list-item">
+            <ProductGridCard
+              product={parent}
+              familyHydrating
+              merchantName="Conduit Merchant"
+              onProductActivate={() => undefined}
+            />
+          </li>
+        </ul>
+      </>
     )
   }
 

@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
+import { resolve } from "node:path"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const harnessUrl = "/src/test-fixtures/product-variation-panel-harness.tsx"
@@ -21,13 +22,22 @@ type PanelStyle = {
 }
 
 async function mountHarness(page: Page): Promise<void> {
+  await page.route(
+    "https://cdn.conduit.market/variation-fixture.jpg",
+    (route) =>
+      route.fulfill({
+        path: resolve("apps/market/public/images/placeholders/landscape.jpg"),
+        contentType: "image/jpeg",
+      })
+  )
   await page.goto(`${marketUrl}/products`)
   await page.evaluate(async (fixtureUrl) => {
     const container = document.createElement("div")
     container.id = "product-variation-panel-harness"
     container.style.position = "relative"
     container.style.zIndex = "100"
-    container.style.paddingBottom = "24rem"
+    container.style.padding = "clamp(1rem, 3vw, 3rem)"
+    container.style.paddingBottom = "10rem"
     document.body.append(container)
     const fixture = (await import(fixtureUrl)) as {
       mountProductVariationPanelHarness: (element: HTMLElement) => () => void
@@ -215,6 +225,23 @@ test("market product variation panel preserves grid geometry across desktop mous
   const panel = await variationPanel(variableItem)
 
   await expect(grid).toBeVisible()
+  const image = media.locator("img")
+  await expect(image).toBeVisible()
+  await expect
+    .poll(() => image.evaluate((element) => element.naturalWidth))
+    .toBeGreaterThan(0)
+  const notice = sibling.locator('[data-slot="product-notice"]')
+  await expect(notice).toContainText(
+    "Checking current signed event pickup evidence"
+  )
+  const [noticeBox, siblingBox] = await Promise.all([
+    geometry(notice),
+    geometry(sibling),
+  ])
+  expect(noticeBox.y).toBeGreaterThan(siblingBox.y)
+  expect(noticeBox.y + noticeBox.height).toBeLessThanOrEqual(
+    siblingBox.y + siblingBox.height
+  )
   await expect(chooseSize).toBeAttached()
   await variableCard.scrollIntoViewIfNeeded()
   await expect
@@ -284,6 +311,10 @@ test("market product variation panel preserves grid geometry across desktop mous
     await Promise.all([variableItem, sibling, grid].map(geometry))
   )
 
+  await page.locator("#product-variation-panel-harness").screenshot({
+    path: test.info().outputPath("variation-dark.png"),
+  })
+
   await chooseSize.click()
   await expect(chooseSize).toHaveAttribute("aria-expanded", "true")
   await expect(page.getByRole("listbox")).toBeVisible()
@@ -346,6 +377,9 @@ test("market product variation panel uses an opaque matching light overlay @mark
     await panelStyle(panel)
   )
   expectOpaquePanelCorners(expandedPanelStyle)
+  await page.locator("#product-variation-panel-harness").screenshot({
+    path: test.info().outputPath("variation-light.png"),
+  })
 })
 
 test("market product variation panel joins hydration controls on desktop hover @market", async ({
@@ -518,4 +552,26 @@ test("market product variation panel remains inline on narrow mobile @market", a
   await expect(chooseSize).toBeVisible()
   await expectInlinePanel(panel, variableCard)
   expect((await cardStyle(variableCard)).scale).toBe("none")
+})
+
+test("market variation panel clears an open portal when family availability changes @market", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mountHarness(page)
+  const item = page.getByTestId("variable-product-list-item")
+  const card = item.locator(":scope > div")
+  await card.hover()
+  await item.getByRole("combobox", { name: "Choose size" }).click()
+  await expect(page.getByRole("listbox")).toBeVisible()
+  await page.mouse.move(1430, 880)
+  await expect.poll(() => cardStyle(card)).toMatchObject({ scale: "1.12" })
+  await page
+    .getByRole("button", {
+      name: "Toggle variation availability",
+      includeHidden: true,
+    })
+    .evaluate((button) => button.click())
+  await expect(page.getByRole("listbox")).not.toBeAttached()
+  await expect.poll(() => cardStyle(card)).toMatchObject({ scale: "none" })
 })

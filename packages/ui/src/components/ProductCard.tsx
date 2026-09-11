@@ -31,6 +31,8 @@ export interface ProductCardProps {
   optionsClassName?: string
   /** Optional classes for the media wrapper. */
   mediaClassName?: string
+  /** Existing fulfillment or availability context kept inside the card. */
+  notice?: ReactNode
   action?: ReactNode
   onActivate?: () => void
   onMerchantActivate?: () => void
@@ -54,6 +56,7 @@ export function ProductCard({
   options,
   optionsClassName,
   mediaClassName,
+  notice,
   action,
   onActivate,
   onMerchantActivate,
@@ -186,6 +189,15 @@ export function ProductCard({
 
         {options ? (
           <div className={cn("pt-3", optionsClassName)}>{options}</div>
+        ) : null}
+
+        {notice ? (
+          <div
+            data-slot="product-notice"
+            className="mt-3 border-t border-[var(--border)] pt-3 text-xs leading-5 text-[var(--text-secondary)]"
+          >
+            {notice}
+          </div>
         ) : null}
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-3">

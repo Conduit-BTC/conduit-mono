@@ -12,7 +12,7 @@ import {
   ProductCartAction,
   cn,
 } from "@conduit/ui"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { getProductAddAvailability } from "../lib/cart-model"
 import {
   getDefaultProductSelection,
@@ -31,6 +31,7 @@ export type ProductGridCardProps = {
   family?: MarketProductFamily
   familyHydrating?: boolean
   className?: string
+  notice?: ReactNode
   selectedProductId?: string
   onSelectedProductChange?: (product: Product) => void
   merchantName?: string
@@ -57,6 +58,7 @@ export function ProductGridCard({
   family,
   familyHydrating = false,
   className,
+  notice,
   selectedProductId: controlledSelectedProductId,
   onSelectedProductChange,
   merchantName: merchantNameOverride,
@@ -159,6 +161,7 @@ export function ProductGridCard({
           "[@media(min-width:768px)_and_(hover:hover)]:z-30 [@media(min-width:768px)_and_(hover:hover)]:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:shadow-[var(--shadow-lg)]"
       )}
       title={product.title}
+      notice={notice}
       merchantName={merchantName}
       merchantNamePending={merchantNamePending}
       images={images}

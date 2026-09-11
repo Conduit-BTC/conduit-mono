@@ -54,10 +54,9 @@ describe("Market product grid layout", () => {
     )
 
     expect(content).toContain('className ?? "h-full"')
-    expect(resolvedCard).toContain('className="flex h-full flex-col space-y-2"')
-    expect(resolvedCard).toContain(
-      'className={["h-auto flex-1", className].filter(Boolean).join(" ")}'
-    )
+    expect(resolvedCard).toContain("notice={")
+    expect(resolvedCard).toContain("className={className}")
+    expect(resolvedCard).not.toContain('className="h-full space-y-2"')
     expect(eventRoute).toContain('className="h-auto"')
     expect(eventRoute).toContain(
       "`mt-6 ${PRODUCT_GRID_CLASS_NAME} items-start`"
@@ -151,8 +150,8 @@ describe("Market product grid layout", () => {
       'className="space-y-2 animate-pulse motion-reduce:animate-none"'
     )
     expect(selector).toContain("onOpenChange?: (open: boolean) => void")
-    expect(selector).toContain("onOpenChangeRef.current?.(hasModel && isOpen)")
-    expect(selector).toContain("onOpenChangeRef.current?.(false)")
+    expect(selector).toContain("onOpenChange?.(openAxes.current.size > 0)")
+    expect(selector).toContain("onOpenChange?.(false)")
     expect(selector).toContain("onOpenChange={(open) =>")
   })
 
