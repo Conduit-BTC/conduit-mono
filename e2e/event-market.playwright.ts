@@ -930,7 +930,7 @@ test("organizer discovery retries an unavailable refresh without losing saved ev
   relay.rejectReads(true)
   await page.reload()
   await page.getByRole("tab", { name: "My events", exact: true }).click()
-  await expect(page.locator("#organizer-event-selector")).toContainText(title)
+  await expect(page.locator("#event-market-selector")).toContainText(title)
   await expect(
     page.getByText(
       "Organizer discovery is unavailable. Saved references and direct",
@@ -946,7 +946,7 @@ test("organizer discovery retries an unavailable refresh without losing saved ev
       { exact: false }
     )
   ).toHaveCount(0)
-  await expect(page.locator("#organizer-event-selector")).toContainText(title)
+  await expect(page.locator("#event-market-selector")).toContainText(title)
 })
 
 test("direct and pasted event imports hydrate one saved selector title under partial discovery @merchant", async ({
