@@ -1085,9 +1085,40 @@ function newerAddressableEvent(
   return candidate.id.toLowerCase() < current.id.toLowerCase()
 }
 
+function claimsEventMarket(event: SignedPublicNostrEvent): boolean {
+  // Classify the claim, not its validity. Malformed and conflicting calendar
+  // links must still reach strict event-market resolution.
+  return event.tags.some(
+    (tag) => tag[0] === "a" && /^(31922|31923):/.test(tag[1]?.trim() ?? "")
+  )
+}
+
+function claimedEventMarketCoordinates(
+  events: readonly SignedPublicNostrEvent[]
+): ReadonlySet<string> {
+  const coordinates = new Set<string>()
+  for (const event of events) {
+    if (
+      event.kind !== EVENT_KINDS.PRODUCT_COLLECTION ||
+      !isValidSignedPublicNostrEvent(event) ||
+      !claimsEventMarket(event)
+    )
+      continue
+    const dTags = event.tags.filter((tag) => tag[0] === "d")
+    if (dTags.length !== 1) continue
+    const coordinate = parseAddressableCoordinate(
+      `${event.kind}:${event.pubkey}:${dTags[0]?.[1] ?? ""}`,
+      [EVENT_KINDS.PRODUCT_COLLECTION]
+    )
+    if (coordinate) coordinates.add(coordinate.coordinate)
+  }
+  return coordinates
+}
+
 function collectionCandidateFrontier(input: {
   read: EventMarketCollectionCandidateReadResult
   perspectiveOrganizerPubkeys: ReadonlySet<string>
+  eventClaimCoordinates: ReadonlySet<string>
 }): {
   organizers: EventMarketOrganizerCandidates[]
   candidateCollectionCount: number
@@ -1113,21 +1144,20 @@ function collectionCandidateFrontier(input: {
       malformedFollowedCandidateObserved = true
       continue
     }
-    const dTags = event.tags
-      .filter((tag) => tag[0] === "d" && typeof tag[1] === "string")
-      .map((tag) => tag[1]!)
-    if (dTags.length !== 1) {
+    const dTags = event.tags.filter((tag) => tag[0] === "d")
+    if (dTags.length !== 1 || typeof dTags[0]?.[1] !== "string") {
       malformedFollowedCandidateObserved = true
       continue
     }
     const coordinate = parseAddressableCoordinate(
-      `${EVENT_KINDS.PRODUCT_COLLECTION}:${organizerPubkey}:${dTags[0]}`,
+      `${EVENT_KINDS.PRODUCT_COLLECTION}:${organizerPubkey}:${dTags[0]![1]}`,
       [EVENT_KINDS.PRODUCT_COLLECTION]
     )
     if (!coordinate) {
       malformedFollowedCandidateObserved = true
       continue
     }
+    if (!input.eventClaimCoordinates.has(coordinate.coordinate)) continue
     const relayHints = Array.from(
       new Set([
         ...(input.read.eventSourceRelayUrls[event.id] ?? []),
@@ -1385,10 +1415,6 @@ export async function discoverPerspectiveEventMarkets(
     perspectiveOrganizers.length === 0
       ? "complete"
       : candidateScanState(candidateRead)
-  const liveCandidateFrontier = collectionCandidateFrontier({
-    read: candidateRead,
-    perspectiveOrganizerPubkeys: perspectiveOrganizerSet,
-  })
   const readRetainedCollectionCandidates =
     testOverrides.readRetainedCollectionCandidates ??
     getRetainedEventMarketCollectionEvidence
@@ -1400,6 +1426,18 @@ export async function discoverPerspectiveEventMarkets(
           signal: input.signal,
         })
   throwIfAborted(input.signal, input.shouldContinue)
+  // Classify before reducing either source's revisions. A newer signed
+  // collection that removes an observed event link must still supersede the
+  // older event claim, including when the two sources disagree.
+  const eventClaimCoordinates = claimedEventMarketCoordinates([
+    ...candidateRead.events,
+    ...retainedCandidateRead.events,
+  ])
+  const liveCandidateFrontier = collectionCandidateFrontier({
+    read: candidateRead,
+    perspectiveOrganizerPubkeys: perspectiveOrganizerSet,
+    eventClaimCoordinates,
+  })
   const retainedCandidateFrontier = collectionCandidateFrontier({
     read: {
       ...retainedCandidateRead,
@@ -1410,6 +1448,7 @@ export async function discoverPerspectiveEventMarkets(
       coverage: emptyCandidateReadCoverage(),
     },
     perspectiveOrganizerPubkeys: perspectiveOrganizerSet,
+    eventClaimCoordinates,
   })
   const candidateFrontier = mergeCandidateFrontiers(
     retainedCandidateFrontier,
