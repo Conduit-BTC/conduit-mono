@@ -2358,6 +2358,26 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   ])
   expect(product.tags).toContainEqual(["visibility", "hidden"])
 
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 0,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      content: JSON.stringify({ display_name: "Synthetic Pickup Host" }),
+    })
+  )
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          ;(
+            window as typeof window & { __pickupCopiedNpub?: string }
+          ).__pickupCopiedNpub = value
+        },
+      },
+    })
+  })
   await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
   const productCard = page
     .getByRole("listitem")
@@ -2365,6 +2385,28 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   await expect(
     productCard.getByText("Pickup from merchant booth", { exact: true })
   ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    productCard.getByText("Synthetic Pickup Host", { exact: true }).last()
+  ).toBeVisible({ timeout: 30_000 })
+  const pickupDetails = productCard
+    .locator("summary")
+    .filter({ hasText: "Handled by" })
+  await pickupDetails.focus()
+  await page.keyboard.press("Enter")
+  const handlerNpub = nip19.npubEncode(ORGANIZER_PUBKEY)
+  await expect(productCard.locator(`a[href="/u/${handlerNpub}"]`)).toBeVisible()
+  await productCard
+    .getByRole("button", { name: "Copy pickup handler npub" })
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __pickupCopiedNpub?: string })
+            .__pickupCopiedNpub
+      )
+    )
+    .toBe(handlerNpub)
   await productCard.getByRole("button", { name: "Add", exact: true }).click()
   await expect(
     page.getByText(
@@ -2372,12 +2414,33 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
       { exact: true }
     )
   ).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  await expect(
+    page.getByText("Synthetic Pickup Host", { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
+  await page
+    .getByRole("button", { name: "Copy pickup handler npub" })
+    .first()
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __pickupCopiedNpub?: string })
+            .__pickupCopiedNpub
+      )
+    )
+    .toBe(handlerNpub)
   await gotoAs(page, marketUrl, "/checkout", "buyer", {
     merchant: nip19.npubEncode(ORGANIZER_PUBKEY),
   })
   await expect(
     page.getByText("Pickup from merchant booth", { exact: true }).first()
   ).toBeVisible()
+  await expect(
+    page.getByText("Synthetic Pickup Host", { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
   await expect(page.getByRole("button", { name: /^Send order$/i })).toBeEnabled(
     { timeout: 30_000 }
   )
