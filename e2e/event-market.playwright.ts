@@ -1158,7 +1158,7 @@ test("commerce discovery finds an organizer beyond the former author cap @mercha
   ).toBeVisible()
 })
 
-test("direct event import saves signed title despite missing pickup and retains a newer pickup frontier after reload @merchant", async ({
+test("direct event import refreshes an anchored signed title despite missing pickup and retains its pickup frontier @merchant", async ({
   page,
   browser,
 }) => {
@@ -1241,19 +1241,59 @@ test("direct event import saves signed title despite missing pickup and retains 
         saved[0] = {
           ...saved[0],
           ...frontier,
-          title: "Previously observed signed title",
         }
         localStorage.setItem(key, JSON.stringify(saved))
       },
       { key: savedStorageKey, frontier: pickupFrontier }
     )
+    // An existing signed title anchor must advance with newer coherent
+    // collection/calendar evidence even while pickup is genuinely absent.
+    const renamedTitle = "Synthetic newer title with unresolved pickup"
+    const renamedCalendar = signEvent(ORGANIZER_SECRET, {
+      kind: market.calendarEvent.kind,
+      created_at: market.calendarEvent.created_at + 1,
+      tags: market.calendarEvent.tags.map((tag) =>
+        tag[0] === "title" ? ["title", renamedTitle] : tag
+      ),
+      content: market.calendarEvent.content,
+    })
+    const renamedCollection = signEvent(ORGANIZER_SECRET, {
+      kind: market.initialCollection.kind,
+      created_at: market.initialCollection.created_at + 1,
+      tags: market.initialCollection.tags.map((tag) =>
+        tag[0] === "title" ? ["title", renamedTitle] : tag
+      ),
+      content: market.initialCollection.content,
+    })
+    const renamedTitleEvidence = {
+      ...titleEvidence,
+      title: renamedTitle,
+      titleCollectionCreatedAt: renamedCollection.created_at * 1_000,
+      titleCollectionEventId: renamedCollection.id,
+      titleCalendarCreatedAt: renamedCalendar.created_at * 1_000,
+      titleCalendarEventId: renamedCalendar.id,
+    }
+    relay.seed(renamedCalendar, renamedCollection)
+    await merchantPage.reload()
+    await expect
+      .poll(readSaved, { timeout: 30_000 })
+      .toMatchObject({ ...renamedTitleEvidence, ...pickupFrontier })
+    await expect(
+      merchantPage.getByText(renamedTitle, { exact: true }).first()
+    ).toBeVisible()
+    await expect(
+      merchantPage.getByRole("button", { name: "Update event", exact: true })
+    ).toHaveCount(0)
+    expect(relay.publications).toHaveLength(publicationCount)
+
+    // Older pickup readback must not lower the retained action frontier either.
     relay.seed(pickup)
     await merchantPage.reload()
     await expect
       .poll(readSaved, { timeout: 30_000 })
-      .toMatchObject({ ...titleEvidence, ...pickupFrontier })
+      .toMatchObject({ ...renamedTitleEvidence, ...pickupFrontier })
     await expect(
-      merchantPage.getByText(eventTitle, { exact: true }).first()
+      merchantPage.getByText(renamedTitle, { exact: true }).first()
     ).toBeVisible()
     await expect(
       merchantPage.getByRole("button", { name: "Update event", exact: true })
