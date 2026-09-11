@@ -1524,10 +1524,10 @@ describe("planInboxReadRelays", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
       compatibilityRelayUrls: [
+        "wss://public.conduit.market",
         "wss://commerce.conduit.market",
         "wss://inbox.conduit.market",
         "wss://interop.conduit.market",
-        "wss://public.conduit.market",
       ],
       requiredCompatibilityRelayUrls: [
         "wss://commerce.conduit.market",
@@ -1535,14 +1535,13 @@ describe("planInboxReadRelays", () => {
         "wss://interop.conduit.market",
         "wss://not-in-read-set.conduit.market",
       ],
-      maxRelays: 4,
+      maxRelays: 3,
     })
 
     expect(plan.relayUrls).toEqual([
       "wss://commerce.conduit.market",
       "wss://inbox.conduit.market",
       "wss://interop.conduit.market",
-      "wss://public.conduit.market",
     ])
   })
 
