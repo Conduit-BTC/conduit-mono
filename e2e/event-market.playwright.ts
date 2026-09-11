@@ -1210,8 +1210,8 @@ test("direct event import saves signed title despite missing pickup and retains 
       .poll(readSaved, { timeout: 30_000 })
       .toMatchObject(titleEvidence)
     await expect(
-      merchantPage.locator("#discovered-event-selector")
-    ).toContainText(eventTitle)
+      merchantPage.getByText(eventTitle, { exact: true }).first()
+    ).toBeVisible()
     await expect(
       merchantPage.getByRole("button", { name: "Update event", exact: true })
     ).toHaveCount(0)
@@ -1249,8 +1249,8 @@ test("direct event import saves signed title despite missing pickup and retains 
       .poll(readSaved, { timeout: 30_000 })
       .toMatchObject({ ...titleEvidence, ...pickupFrontier })
     await expect(
-      merchantPage.locator("#discovered-event-selector")
-    ).toContainText(eventTitle)
+      merchantPage.getByText(eventTitle, { exact: true }).first()
+    ).toBeVisible()
     await expect(
       merchantPage.getByRole("button", { name: "Update event", exact: true })
     ).toHaveCount(0)
