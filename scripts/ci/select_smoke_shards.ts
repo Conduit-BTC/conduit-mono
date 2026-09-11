@@ -1,17 +1,60 @@
 import { spawnSync } from "node:child_process"
 
-export type SmokeShard = "market" | "merchant"
+export type SmokeShard = "market" | "merchant" | "commerce"
 
-const shardOrder: SmokeShard[] = ["market", "merchant"]
+const shardOrder: SmokeShard[] = ["market", "merchant", "commerce"]
 
-const bothShardSmokeInfrastructure = new Set([
+const allShardSmokeInfrastructure = new Set([
   "scripts/ci/select_smoke_shards.ts",
+  "scripts/ci/playwright_smoke_reporter.ts",
   "scripts/ci/validate_playwright_smoke_areas.ts",
+  "scripts/dev/run_playwright_web_server.ts",
   "tests/agent-review-handoff.test.ts",
   "tests/playwright-smoke-areas.test.ts",
   "tests/pr-evidence-contract.test.ts",
   "tests/select-smoke-shards.test.ts",
 ])
+
+const commerceOnlySmokeInfrastructure = new Set([
+  "tests/support/bolt11-fixture.ts",
+])
+
+const commerceCriticalPathTokens = [
+  "auth",
+  "cart",
+  "checkout",
+  "commerce",
+  "db",
+  "delivery",
+  "event",
+  "handoff",
+  "inbox",
+  "invoice",
+  "message",
+  "nostr",
+  "nwc",
+  "order",
+  "outbox",
+  "payment",
+  "pickup",
+  "product",
+  "proof",
+  "receipt",
+  "relay",
+  "signer",
+  "status",
+  "store",
+  "wallet",
+] as const
+
+function isCommerceCriticalAppPath(path: string): boolean {
+  const normalized = path.toLowerCase()
+  return commerceCriticalPathTokens.some((token) => normalized.includes(token))
+}
+
+function selectAllShards(selected: Set<SmokeShard>): void {
+  for (const shard of shardOrder) selected.add(shard)
+}
 
 function isPublicContextOnly(path: string): boolean {
   return (
@@ -39,13 +82,17 @@ export function selectSmokeShards(paths: readonly string[]): SmokeShard[] {
       path === "package.json" ||
       path === "bun.lock" ||
       path === "tsconfig.json" ||
-      bothShardSmokeInfrastructure.has(path) ||
+      allShardSmokeInfrastructure.has(path) ||
       path.startsWith("e2e/") ||
       path.startsWith("packages/core/") ||
       path.startsWith("packages/ui/")
     ) {
-      selected.add("market")
-      selected.add("merchant")
+      selectAllShards(selected)
+      continue
+    }
+
+    if (commerceOnlySmokeInfrastructure.has(path)) {
+      selected.add("commerce")
       continue
     }
 
@@ -55,11 +102,13 @@ export function selectSmokeShards(paths: readonly string[]): SmokeShard[] {
       path.startsWith("functions/")
     ) {
       selected.add("market")
+      if (isCommerceCriticalAppPath(path)) selected.add("commerce")
       continue
     }
 
     if (path.startsWith("apps/merchant/")) {
       selected.add("merchant")
+      if (isCommerceCriticalAppPath(path)) selected.add("commerce")
       continue
     }
 
@@ -67,9 +116,8 @@ export function selectSmokeShards(paths: readonly string[]): SmokeShard[] {
       continue
     }
 
-    // Unknown runtime or root configuration changes run both app smokes.
-    selected.add("market")
-    selected.add("merchant")
+    // Unknown runtime or root configuration changes run every critical shard.
+    selectAllShards(selected)
   }
 
   return shardOrder.filter((shard) => selected.has(shard))

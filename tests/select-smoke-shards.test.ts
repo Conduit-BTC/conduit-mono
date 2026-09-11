@@ -7,15 +7,31 @@ import {
 
 describe("path-aware smoke shard selection", () => {
   it("selects only the changed app for app-local runtime changes", () => {
+    expect(selectSmokeShards(["apps/market/src/routes/profile.tsx"])).toEqual([
+      "market",
+    ])
+    expect(selectSmokeShards(["apps/merchant/src/routes/profile.tsx"])).toEqual(
+      ["merchant"]
+    )
+  })
+
+  it("adds commerce for app-local paths that affect the cross-app flow", () => {
     expect(selectSmokeShards(["apps/market/src/routes/checkout.tsx"])).toEqual([
       "market",
+      "commerce",
     ])
     expect(
       selectSmokeShards(["apps/merchant/src/routes/products.tsx"])
-    ).toEqual(["merchant"])
+    ).toEqual(["merchant", "commerce"])
+    expect(
+      selectSmokeShards(["apps/merchant/src/lib/merchant-invoice.ts"])
+    ).toEqual(["merchant", "commerce"])
+    expect(
+      selectSmokeShards(["apps/market/src/routes/store/$pubkey.tsx"])
+    ).toEqual(["market", "commerce"])
   })
 
-  it("selects both apps for shared runtime and test-infrastructure changes", () => {
+  it("selects every shard for shared runtime and test infrastructure", () => {
     for (const path of [
       "packages/core/src/protocol/products.ts",
       "packages/ui/src/components/button.tsx",
@@ -23,25 +39,37 @@ describe("path-aware smoke shard selection", () => {
       "playwright.config.ts",
       ".github/workflows/ci.yml",
       "bun.lock",
+      "scripts/ci/playwright_smoke_reporter.ts",
       "scripts/ci/select_smoke_shards.ts",
       "scripts/ci/validate_playwright_smoke_areas.ts",
+      "scripts/dev/run_playwright_web_server.ts",
       "scripts/vite/build_info.ts",
       "tests/agent-review-handoff.test.ts",
       "tests/playwright-smoke-areas.test.ts",
       "tests/pr-evidence-contract.test.ts",
       "tests/select-smoke-shards.test.ts",
     ]) {
-      expect(selectSmokeShards([path])).toEqual(["market", "merchant"])
+      expect(selectSmokeShards([path])).toEqual([
+        "market",
+        "merchant",
+        "commerce",
+      ])
     }
   })
 
-  it("combines app-local changes in stable shard order", () => {
+  it("runs deterministic wallet fixtures in the commerce shard", () => {
+    expect(selectSmokeShards(["tests/support/bolt11-fixture.ts"])).toEqual([
+      "commerce",
+    ])
+  })
+
+  it("combines critical app-local changes in stable shard order", () => {
     expect(
       selectSmokeShards([
         "apps/merchant/src/routes/products.tsx",
         "apps/market/src/routes/checkout.tsx",
       ])
-    ).toEqual(["market", "merchant"])
+    ).toEqual(["market", "merchant", "commerce"])
   })
 
   it("does not install browsers for public context or unit-test-only changes", () => {
@@ -59,6 +87,7 @@ describe("path-aware smoke shard selection", () => {
     expect(selectSmokeShards(["vite.config.ts"])).toEqual([
       "market",
       "merchant",
+      "commerce",
     ])
   })
 

@@ -219,7 +219,7 @@ describe("pull request evidence contract", () => {
     }
   })
 
-  it("keeps the commerce shard reserved until its selector is implemented", () => {
+  it("documents the commerce shard transition and active authoring boundary", () => {
     expect(testingSpec).toContain(
       "`@commerce` remains reserved until AC-SELECT-2, tracked by CND-193, is"
     )
@@ -230,7 +230,10 @@ describe("pull request evidence contract", () => {
       "After AC-SELECT-2 is implemented, run `@commerce` for changes to:"
     )
     expect(contributing).toContain(
-      "Reserve `@commerce` for the cross-app\ncommerce shard defined in the testing specification."
+      "Use `@commerce` only for the hermetic\ncross-app flow that requires both Market and Merchant"
+    )
+    expect(contributing).toContain(
+      "Shared runtime changes and pushes to\n`main` run every critical shard"
     )
   })
 })

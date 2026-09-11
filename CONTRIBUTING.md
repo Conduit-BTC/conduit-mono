@@ -162,10 +162,10 @@ relay, or deployed-preview result.
 
 For each critical flow change, add or update the matching Playwright or smoke
 test. If that is not practical, state the uncovered criterion and require the
-named manual QA. New or changed smoke tests must declare an explicit
-`@market` or `@merchant` area. Reserve `@commerce` for the cross-app
-commerce shard defined in the testing specification. Do not use title
-capitalization as test ownership.
+named manual QA. New or changed smoke tests must declare an explicit `@market`,
+`@merchant`, or `@commerce` area. Use `@commerce` only for the hermetic
+cross-app flow that requires both Market and Merchant, as defined in the
+testing specification. Do not use title capitalization as test ownership.
 
 The author proposes one review and QA disposition:
 
@@ -276,11 +276,13 @@ requires the exact `Lean already. Ship.` line and zero inline comments.
 `FINDINGS` requires one or more actionable inline comments. `DELIVERY BLOCKED`
 fails the workflow.
 
-The required `e2e-smoke` check aggregates path-aware Market and Merchant
-Playwright shards. App-local changes run only that app's shard, shared runtime
-changes run both, docs-only changes skip browser installation, and pushes to
-`main` run both shards. Playwright area tags select the tests. CI rejects an
-untagged smoke test or a selected area that contains zero tests.
+The required `e2e-smoke` check aggregates path-aware Market, Merchant, and
+cross-app commerce Playwright shards. App-local changes keep their owning app
+shard and add commerce when they affect the shared checkout, order, product,
+messaging, relay, signer, or payment flow. Shared runtime changes and pushes to
+`main` run every critical shard; docs-only changes skip browser installation.
+Playwright area tags select the tests. CI rejects an untagged smoke test or a
+selected area that contains zero tests.
 
 ## Code Conventions
 
