@@ -126,7 +126,10 @@ describe("merchant organizer event market route", () => {
     expect(timelineHook).toContain("discoverPerspectiveEventMarkets({")
     expect(timelineHook).toContain("includeEnded: true")
     expect(timelineHook).toContain("resolveEventMarketPerspectiveAuthorPubkeys")
-    expect(timelineHook).toContain("resolveRelationshipMarkets(")
+    expect(timelineHook).toContain("hydrateMerchantEventRelationships({")
+    expect(timelineHook).toContain(
+      "prioritizeMerchantEventRelationshipReferences({"
+    )
     expect(timelineHook).toContain(
       "if (authorPubkeys !== undefined) void refreshPerspective()"
     )
@@ -207,8 +210,8 @@ describe("merchant organizer event market route", () => {
     expect(
       route.match(/findSavedOrganizerEventMarketReference/g)?.length
     ).toBeGreaterThanOrEqual(4)
-    expect(route).toContain(
-      "setSelectedReference(reference)\n                onSelected?.(reference)"
+    expect(route).toMatch(
+      /setSelectedReference\(reference\)\r?\n\s+onSelected\?\.\(reference\)/
     )
   })
 
