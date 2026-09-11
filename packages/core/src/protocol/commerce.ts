@@ -3284,6 +3284,7 @@ async function fetchPublicProductRecordsProgressive(
         shouldContinue: query.shouldContinue,
       })
     : Promise.resolve(relayPlan)
+  void expandedRelayPlanPromise.catch(() => undefined)
 
   await streamProductRecordChunks({
     baseFilter: filter,
