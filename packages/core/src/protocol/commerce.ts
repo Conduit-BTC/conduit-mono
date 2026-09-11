@@ -4036,7 +4036,6 @@ async function fetchVariationGroupRecordBatch(
   options: ProductsByIdsOptions = {}
 ): Promise<{
   records: CommerceProductRecord[]
-  degraded: boolean
   capped: boolean
   invalidTargetAddressIds: ReadonlySet<string>
   degradedParentAddresses: ReadonlySet<string>
@@ -4044,7 +4043,6 @@ async function fetchVariationGroupRecordBatch(
   if (targets.length === 0) {
     return {
       records: [],
-      degraded: false,
       capped: false,
       invalidTargetAddressIds: new Set(),
       degradedParentAddresses: new Set(),
@@ -4088,7 +4086,6 @@ async function fetchVariationGroupRecordBatch(
   if (validTargets.length === 0) {
     return {
       records: [],
-      degraded: false,
       capped: false,
       invalidTargetAddressIds,
       degradedParentAddresses: new Set(),
@@ -4304,7 +4301,6 @@ async function fetchVariationGroupRecordBatch(
   const records = chunkReads.flatMap((chunkRead) => chunkRead.records)
   return {
     records,
-    degraded: degradedParentAddresses.size > 0,
     capped: cappedParentAddresses.size > 0,
     invalidTargetAddressIds,
     degradedParentAddresses,
