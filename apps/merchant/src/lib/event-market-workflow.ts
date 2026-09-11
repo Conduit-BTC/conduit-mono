@@ -1195,11 +1195,10 @@ export function organizerEventMarketCanSupplySavedTitle(
   ) {
     return false
   }
-  return (
-    !savedTitle ||
-    savedTitle === marketTitle ||
-    isPreferredOrganizerEventMarketListResolution(market)
-  )
+  // The validated collection/calendar frontiers determine title freshness.
+  // Aggregate state also includes pickup evidence, which still gates actions
+  // but cannot veto a newer signed title.
+  return true
 }
 
 type OrganizerEventMarketCandidate = EventMarketFrontierCarrier & {
