@@ -152,6 +152,81 @@ describe("merchant organizer event workflow", () => {
     })
   })
 
+  it.each(["missing", "partial", "behind"] as const)(
+    "hydrates signed titles while optional pickup evidence is %s without authorizing actions",
+    (pickupState) => {
+      const storage = new MemoryStorage()
+      const market = {
+        collectionCoordinate: COLLECTION,
+        collectionCreatedAt: 2_000,
+        collectionEventId: "a".repeat(64),
+        calendarCoordinate: CALENDAR,
+        calendarCreatedAt: 3_000,
+        calendarEventId: "b".repeat(64),
+        pickupCoordinate: ORGANIZER_PICKUP,
+        ...(pickupState === "missing" ? {} : { pickupCreatedAt: 4_000 }),
+        ...(pickupState === "behind" ? { pickupEventId: "c".repeat(64) } : {}),
+        state: "partial",
+        title: "Current signed calendar title",
+      }
+      const saved = {
+        reference: encodeEventMarketNaddr(COLLECTION),
+        savedAt: 10,
+        expectedCollectionCreatedAt: 2_000,
+        expectedCollectionEventId: "a".repeat(64),
+        expectedCalendarCoordinate: CALENDAR,
+        expectedCalendarCreatedAt: 3_000,
+        expectedCalendarEventId: "b".repeat(64),
+        expectedPickupCoordinate: ORGANIZER_PICKUP,
+        expectedPickupCreatedAt: 5_000,
+        expectedPickupEventId: "d".repeat(64),
+      }
+
+      expect(organizerEventMarketCanSupplySavedTitle(market, saved)).toBe(true)
+      expect(organizerEventMarketReachesExpectedFrontiers(market, saved)).toBe(
+        false
+      )
+      const [hydrated] = rememberDiscoveredEventMarket(
+        MERCHANT,
+        {
+          ...saved,
+          title: market.title,
+          ...expectedOrganizerEventMarketTitleFrontiers(market),
+        },
+        storage
+      )
+      expect(hydrated).toMatchObject({
+        ...saved,
+        reference: COLLECTION,
+        title: market.title,
+      })
+      expect(organizerEventMarketCanSupplySavedTitle(market, hydrated)).toBe(
+        true
+      )
+      expect(
+        organizerEventMarketReachesExpectedFrontiers(market, hydrated)
+      ).toBe(false)
+      expect(
+        organizerEventMarketCanSupplySavedTitle(
+          {
+            ...market,
+            calendarCreatedAt: 2_999,
+          },
+          hydrated
+        )
+      ).toBe(false)
+      expect(
+        organizerEventMarketCanSupplySavedTitle(
+          {
+            ...market,
+            collectionCreatedAt: 1_999,
+          },
+          hydrated
+        )
+      ).toBe(false)
+    }
+  )
+
   it("uses one deterministic shortened coordinate label across relay hints", () => {
     const first = encodeEventMarketNaddr(COLLECTION, [
       "wss://one.example/events",
