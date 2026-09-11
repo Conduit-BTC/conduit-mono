@@ -1,8 +1,10 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { nip19 } from "@nostr-dev-kit/ndk"
+import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 
 import {
   installTestSigner,
+  publishTestRelayEvents,
   TEST_MERCHANT_PUBKEY,
   TEST_RELAY_URL,
 } from "./helpers/auth"
@@ -369,4 +371,39 @@ test("merchant copies the buyer-facing parent product link @merchant", async ({
   await expect(share).toContainText("Copied")
   await expect.poll(() => copiedProductUrl(page)).toBe(PARENT_URL)
   expect(await copiedProductUrl(page)).not.toBe(RED_URL)
+})
+
+test("a signed-out shopper opens and copies a cold relay-hinted product @market", async ({
+  page,
+}) => {
+  const product = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: Math.floor(Date.now() / 1000),
+      content: "Cold relay product fixture.",
+      tags: [
+        ["d", "cold-share-product"],
+        ["title", "Cold Share Product"],
+        ["price", "21", "SATS"],
+        ["type", "simple", "digital"],
+        ["visibility", "public"],
+        ["stock", "1"],
+        ["image", "https://blossom.conduit.market/shareable-product.png"],
+      ],
+    },
+    generateSecretKey()
+  )
+  await publishTestRelayEvents([product])
+  await installShareCaptures(page)
+  const url = productUrl(`30402:${product.pubkey}:cold-share-product`, [
+    TEST_RELAY_URL,
+  ])
+  await page.goto(url)
+  await expect(
+    page.getByRole("heading", { name: "Cold Share Product" })
+  ).toBeVisible()
+  const share = await getStableShareButton(page, "Share Cold Share Product")
+  await share.click()
+  await expect.poll(() => copiedProductUrl(page)).toBe(url)
+  await expect(share).toContainText("Copied")
 })
