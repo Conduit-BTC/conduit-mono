@@ -108,25 +108,31 @@ afterEach(() => {
 describe("event-market organizer merchandise evidence", () => {
   it("returns only display-safe title from the exact signed product revision", () => {
     const product = productEvent("coffee", "Fresh coffee")
+    const receipt = receiptFor([product])
+    const coverage = completeCoverage()
     const resolution = resolveEventMarketReceiptMerchandiseEvidence({
-      receipt: receiptFor([product]),
+      receipt,
       events: [product],
-      coverage: completeCoverage(),
+      coverage,
       sourceRelayUrlsById: new Map([[product.id, [RELAY_URL]]]),
     })
 
-    expect(resolution).toMatchObject({
+    expect(resolution).toEqual({
       state: "verified",
+      claimRef: receipt.claimRef,
+      merchantPubkey: MERCHANT,
+      organizerPubkey: ORGANIZER,
       items: [
         {
           state: "verified",
+          product: receipt.items[0]!.product,
           title: "Fresh coffee",
           quantity: 1,
           sourceRelayUrls: [RELAY_URL],
         },
       ],
+      coverage,
     })
-    expect(JSON.stringify(resolution)).not.toContain("1000")
   })
 
   it("fails closed on invalid exact metadata, signature, and missing coverage", () => {
