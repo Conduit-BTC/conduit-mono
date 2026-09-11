@@ -37,6 +37,23 @@ describe("ProductCard", () => {
     expect(html).toContain('referrerPolicy="no-referrer"')
   })
 
+  it("merges media wrapper classes without changing the default card media", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Rounded Media Product"
+        merchantName="Alice Store"
+        images={[{ url: "https://cdn.conduit.market/product.png" }]}
+        primaryPrice="25 sats"
+        mediaClassName="test-media-wrapper"
+      />
+    )
+
+    expect(html).toContain(
+      'class="relative aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)] test-media-wrapper"'
+    )
+    expect(html).not.toContain("rounded-t-xl")
+  })
+
   it("does not render a non-public image destination passed at the UI boundary", () => {
     for (const url of [
       "http://127.0.0.1/private.png",
@@ -104,6 +121,36 @@ describe("ProductCard", () => {
 
     expect(html).toContain("animate-pulse")
     expect(html).toContain(">Store npub1abc...xyz<")
+  })
+
+  it("merges options wrapper classes without making options behavior app-specific", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Option Product"
+        merchantName="Alice Store"
+        images={[]}
+        primaryPrice="25 sats"
+        options={<span>Size</span>}
+        optionsClassName="test-options-wrapper"
+      />
+    )
+
+    expect(html).toContain('class="pt-3 test-options-wrapper"')
+    expect(html).toContain(">Size<")
+  })
+
+  it("can disable image-only hover zoom for parent-level card motion", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Motion Product"
+        merchantName="Alice Store"
+        images={[{ url: "https://cdn.conduit.market/product.png" }]}
+        primaryPrice="25 sats"
+        disableImageHoverZoom
+      />
+    )
+
+    expect(html).not.toContain("group-hover:scale-105")
   })
 
   it("truncates product titles to one line without constraining title badges", () => {

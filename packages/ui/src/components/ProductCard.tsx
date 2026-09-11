@@ -21,10 +21,18 @@ export interface ProductCardProps {
   secondaryPrice?: string | null
   approximateUsdPrice?: string | null
   imageLoading?: "eager" | "lazy"
+  /** Disable the image-only hover zoom when a parent supplies card-level motion. */
+  disableImageHoverZoom?: boolean
   cartQuantity?: number
   soldOut?: boolean
   /** Optional product controls rendered between identity and price. */
   options?: ReactNode
+  /** Optional classes for the product controls wrapper. */
+  optionsClassName?: string
+  /** Optional classes for the media wrapper. */
+  mediaClassName?: string
+  /** Existing fulfillment or availability context kept inside the card. */
+  notice?: ReactNode
   action?: ReactNode
   onActivate?: () => void
   onMerchantActivate?: () => void
@@ -42,9 +50,13 @@ export function ProductCard({
   secondaryPrice,
   approximateUsdPrice,
   imageLoading = "lazy",
+  disableImageHoverZoom = false,
   cartQuantity = 0,
   soldOut = false,
   options,
+  optionsClassName,
+  mediaClassName,
+  notice,
   action,
   onActivate,
   onMerchantActivate,
@@ -91,7 +103,12 @@ export function ProductCard({
         onActivate()
       }}
     >
-      <div className="relative aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]">
+      <div
+        className={cn(
+          "relative aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]",
+          mediaClassName
+        )}
+      >
         {activeImage && !imageFailed ? (
           <>
             <div
@@ -108,7 +125,8 @@ export function ProductCard({
               width={640}
               height={480}
               className={cn(
-                "h-full w-full object-cover transition-[opacity,transform] duration-300 group-hover:scale-105",
+                "h-full w-full object-cover transition-[opacity,transform] duration-300",
+                !disableImageHoverZoom && "group-hover:scale-105",
                 imageLoaded ? "opacity-100" : "opacity-0",
                 soldOut && "grayscale group-hover:scale-100",
                 soldOut && imageLoaded && "opacity-55"
@@ -169,7 +187,20 @@ export function ProductCard({
           )}
         </div>
 
-        {options ? <div className="pt-3">{options}</div> : null}
+        {options ? (
+          <div className={cn("pt-3", optionsClassName)}>{options}</div>
+        ) : null}
+
+        {notice ? (
+          <div
+            data-slot="product-notice"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+            className="mt-3 border-t border-[var(--border)] pt-3 text-xs leading-5 text-[var(--text-secondary)]"
+          >
+            {notice}
+          </div>
+        ) : null}
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-3">
           <div className="min-w-0">
