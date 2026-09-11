@@ -11,10 +11,11 @@ import {
   ShieldCheck,
 } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   formatNpub,
   prepareProductCatalog,
+  useAuth,
   useConduitSession,
   useProfile,
   type Product,
@@ -417,6 +418,13 @@ function StatePanel({
 }
 
 function EventCatalogPage() {
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const shouldContinueAccountRead = () =>
+    authGenerationRef.current === authGeneration
   const { collectionRef } = Route.useParams()
   const shopperPricing = useShopperPricing()
   const session = useConduitSession()
@@ -424,7 +432,14 @@ function EventCatalogPage() {
   const query = useEventMarket(collectionRef, shopperPricing.quote)
   const catalog = query.data
   const organizerPubkey = catalog?.organizerPubkey ?? ""
-  const { data: organizerProfile } = useProfile(organizerPubkey)
+  const authenticatedPubkey =
+    session.mode === "signed_in" ? session.pubkey : null
+  const accountPubkey = authenticatedPubkey
+  const { data: organizerProfile } = useProfile(organizerPubkey, {
+    accountPubkey,
+    authenticatedPubkey,
+    shouldContinue: shouldContinueAccountRead,
+  })
   const organizerName = organizerPubkey
     ? getMerchantDisplayName(organizerProfile, organizerPubkey, {
         prefix: "Organizer",
@@ -439,6 +454,9 @@ function EventCatalogPage() {
     [catalog?.products]
   )
   const merchantIdentities = useMerchantIdentities({
+    accountPubkey,
+    authenticatedPubkey,
+    shouldContinue: shouldContinueAccountRead,
     allMerchantPubkeys: merchantPubkeys,
     visibleMerchantPubkeys: merchantPubkeys,
     relayHintsByPubkey: {},
@@ -545,7 +563,7 @@ function EventCatalogPage() {
           <img
             src={calendar.image ?? collection.image}
             alt=""
-            className="h-48 w-full border-b border-[var(--border)] object-cover sm:h-64"
+            className="h-48 w-full border-b border-[var(--border)] bg-[var(--surface-elevated)] object-contain sm:h-64"
           />
         ) : null}
         <div className="grid gap-8 p-6 sm:p-8 lg:grid-cols-[minmax(0,1fr)_20rem]">

@@ -268,12 +268,17 @@ describe("Market shopper preset integration", () => {
       { state: "unavailable", reason: "relay_read" },
       { state: "not_found" },
     ]
+    const authenticatedReads: Array<string | null | undefined> = []
     let fetchCount = 0
     let waitCount = 0
 
     const result = await fetchShopperPresetsForSession(
       "buyer",
-      async () => results[fetchCount++]!,
+      () => true,
+      async (_pubkey, dependencies) => {
+        authenticatedReads.push(dependencies?.authenticatedPubkey)
+        return results[fetchCount++]!
+      },
       async () => {
         waitCount += 1
       }
@@ -282,6 +287,34 @@ describe("Market shopper preset integration", () => {
     expect(result).toEqual({ state: "not_found" })
     expect(fetchCount).toBe(2)
     expect(waitCount).toBe(1)
+    expect(authenticatedReads).toEqual(["buyer", "buyer"])
+  })
+
+  it("does not retry owner relay I/O after cancellation or session loss", async () => {
+    for (const invalidation of ["cancel", "logout", "switch"] as const) {
+      const controller = new AbortController()
+      let authenticatedPubkey: string | null = "buyer"
+      const authenticatedReads: Array<string | null | undefined> = []
+
+      const result = await fetchShopperPresetsForSession(
+        "buyer",
+        () => !controller.signal.aborted && authenticatedPubkey === "buyer",
+        async (_pubkey, dependencies) => {
+          authenticatedReads.push(dependencies?.authenticatedPubkey)
+          return { state: "unavailable", reason: "relay_read" }
+        },
+        async () => {
+          if (invalidation === "cancel") {
+            controller.abort()
+          } else {
+            authenticatedPubkey = invalidation === "switch" ? "other" : null
+          }
+        }
+      )
+
+      expect(result).toEqual({ state: "unavailable", reason: "relay_read" })
+      expect(authenticatedReads).toEqual(["buyer"])
+    }
   })
 
   it("waits for the signed-in relay scope before the initial preset read", async () => {

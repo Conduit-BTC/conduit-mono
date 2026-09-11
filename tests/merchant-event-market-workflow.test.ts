@@ -28,6 +28,7 @@ import {
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
   publishMerchantOrganizerMembership,
+  reconcileAcknowledgedMerchantOrganizerCollectionEvidence,
   type MerchantOrganizerEventMarket,
   type MerchantOrganizerRecordDelivery,
 } from "../apps/merchant/src/lib/event-market"
@@ -1824,6 +1825,107 @@ describe("merchant organizer event workflow", () => {
         "remove"
       )
     ).toEqual([PRODUCT_TWO])
+  })
+
+  it("projects an acknowledged collection while exact relay readback is stale", () => {
+    const secret = generateSecretKey()
+    const organizer = getPublicKey(secret)
+    const collectionCoordinate = `30405:${organizer}:market`
+    const calendarCoordinate = `31923:${organizer}:market-calendar`
+    const firstProduct = `30402:${MERCHANT}:bread`
+    const secondProduct = `30402:${OTHER_ORGANIZER}:coffee`
+    const retainedEvent = finalizeEvent(
+      {
+        kind: 30405,
+        created_at: 2,
+        content: "Current collection",
+        tags: [
+          ["d", "market"],
+          ["title", "Current market"],
+          ["a", calendarCoordinate],
+          ["a", firstProduct],
+        ],
+      },
+      secret
+    )
+    const retainedCollection = {
+      record: "collection",
+      acknowledgedCount: 1,
+      rejectedCount: 0,
+      timedOutCount: 5,
+      signedEvent: retainedEvent,
+    } satisfies MerchantOrganizerRecordDelivery
+    const staleMarket = {
+      state: "partial",
+      organizerPubkey: organizer,
+      collectionCoordinate,
+      calendarCoordinate,
+      pickupCoordinates: [],
+      naddr: "naddr-test",
+      title: "Earlier relay market",
+      calendarKind: 31923,
+      start: 1,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "f".repeat(64),
+      productCoordinates: [],
+      participation: [
+        { productCoordinate: firstProduct, status: "pending" },
+        { productCoordinate: secondProduct, status: "pending" },
+      ],
+      source: {
+        collection: {
+          eventId: "f".repeat(64),
+          createdAt: 1_000,
+          content: "Earlier relay collection",
+        },
+      },
+    } as MerchantOrganizerEventMarket
+
+    expect(
+      reconcileAcknowledgedMerchantOrganizerCollectionEvidence(staleMarket, [
+        { ...retainedCollection, acknowledgedCount: 0 },
+      ])
+    ).toBe(staleMarket)
+
+    const reconciled = reconcileAcknowledgedMerchantOrganizerCollectionEvidence(
+      staleMarket,
+      [retainedCollection]
+    )
+
+    expect(reconciled).toMatchObject({
+      title: "Current market",
+      collectionCreatedAt: 2_000,
+      collectionEventId: retainedEvent.id,
+      productCoordinates: [firstProduct],
+      participation: [
+        { productCoordinate: secondProduct, status: "pending" },
+        { productCoordinate: firstProduct, status: "accepted" },
+      ],
+      source: {
+        collection: { eventId: retainedEvent.id },
+        organizerProductCoordinates: [firstProduct],
+      },
+    })
+
+    const newerRelayMarket = {
+      ...staleMarket,
+      collectionCreatedAt: 3_000,
+      collectionEventId: "e".repeat(64),
+      source: {
+        ...staleMarket.source,
+        collection: {
+          ...staleMarket.source.collection!,
+          eventId: "e".repeat(64),
+          createdAt: 3_000,
+        },
+      },
+    }
+    expect(
+      reconcileAcknowledgedMerchantOrganizerCollectionEvidence(
+        newerRelayMarket,
+        [retainedCollection]
+      )
+    ).toBe(newerRelayMarket)
   })
 
   it("refuses non-product references in organizer membership updates", () => {

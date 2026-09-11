@@ -382,7 +382,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expectMobileTouchTarget(page.locator('button[title="Cart"]'))
   })
 
-  test("network status pills stay compact in stacked mobile headers @market", async ({
+  test("network status and disclosure controls stay compact in stacked mobile headers @market", async ({
     page,
   }) => {
     const secretKey = generateSecretKey()
@@ -425,24 +425,18 @@ test.describe("CND-162 mobile browser baseline", () => {
     expect(iconBox!.height).toBeLessThanOrEqual(13)
 
     await page.goto(`${marketUrl}/network`)
-    await expect(
-      page.getByRole("heading", { name: "Network Settings" })
-    ).toBeVisible()
+    await expect(page.getByRole("heading", { name: "Network" })).toBeVisible()
 
-    const mediaServers = page.getByRole("region", { name: "Media servers" })
-    const mediaStatusPill = mediaServers.getByText("No list observed", {
-      exact: true,
-    })
-    await expect(mediaStatusPill).toBeVisible({ timeout: 20_000 })
-
-    const [sectionBox, mediaPillBox] = await Promise.all([
-      mediaServers.boundingBox(),
-      mediaStatusPill.boundingBox(),
-    ])
-    expect(sectionBox).not.toBeNull()
-    expect(mediaPillBox).not.toBeNull()
-    expect(mediaPillBox!.width).toBeLessThan(sectionBox!.width * 0.75)
-    expect(mediaPillBox!.height).toBeLessThanOrEqual(32)
+    const relaySettings = page.getByRole("region", { name: "Relays" })
+    const publishedPreferences = relaySettings
+      .locator("summary")
+      .filter({ hasText: "Published preferences" })
+    await expect(publishedPreferences).toBeVisible({ timeout: 20_000 })
+    await expect(publishedPreferences).toHaveCSS("min-height", "44px")
+    const disclosureIcon = publishedPreferences.locator("svg")
+    await expect(disclosureIcon).toBeVisible()
+    await expect(disclosureIcon).toHaveCSS("width", "16px")
+    await expect(disclosureIcon).toHaveCSS("height", "16px")
   })
 
   test("market checkout keeps form semantics and draft values after refresh @market", async ({

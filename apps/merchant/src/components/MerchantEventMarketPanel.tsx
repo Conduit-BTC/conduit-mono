@@ -57,11 +57,15 @@ function stateBadge(market: MerchantOrganizerEventMarket) {
 
 export function MerchantEventMarketPanel({
   merchantPubkey,
+  authenticatedPubkey,
+  shouldContinue,
   market,
   refreshing,
   onRefresh,
 }: {
   merchantPubkey: string
+  authenticatedPubkey: string | null
+  shouldContinue: () => boolean
   market: MerchantOrganizerEventMarket
   refreshing: boolean
   onRefresh: () => void | Promise<void>
@@ -80,7 +84,7 @@ export function MerchantEventMarketPanel({
           <img
             src={market.imageUrl}
             alt=""
-            className="h-48 w-full border-b border-[var(--border)] object-cover sm:h-60"
+            className="h-48 w-full border-b border-[var(--border)] bg-[var(--surface-elevated)] object-contain sm:h-60"
           />
         )}
         <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -224,6 +228,8 @@ export function MerchantEventMarketPanel({
         key={`${publisherOpen ? "open" : "closed"}:${market.collectionCoordinate}`}
         open={publisherOpen}
         merchantPubkey={merchantPubkey}
+        authenticatedPubkey={authenticatedPubkey}
+        shouldContinue={shouldContinue}
         market={market}
         onOpenChange={setPublisherOpen}
         onPublished={async (accepted) => {

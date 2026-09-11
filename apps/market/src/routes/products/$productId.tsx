@@ -9,6 +9,8 @@ import {
   isCommerceReadIncomplete,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
+  useAuth,
+  useConduitSession,
   useProfile,
   type ProductDetailTelemetryAction,
 } from "@conduit/core"
@@ -83,6 +85,15 @@ function getMarketProductShareUrl(productAddressId: string): string | null {
 }
 
 function ProductPage() {
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const session = useConduitSession()
+  const authenticatedPubkey =
+    session.mode === "signed_in" ? session.pubkey : null
+  const accountPubkey = authenticatedPubkey
   const cart = useCart()
   const { productId } = Route.useParams()
   const [selectedImageIndex, setSelectedImageIndex] = useState(0)
@@ -122,6 +133,9 @@ function ProductPage() {
   const productSoldOut = selectedProduct?.stock === 0
 
   const merchantProfile = useProfile(product?.pubkey, {
+    accountPubkey,
+    authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     relayHints: product
       ? productQuery.profileRelayHintsByPubkey[product.pubkey]
       : undefined,
@@ -132,6 +146,8 @@ function ProductPage() {
   const relatedProductsQuery = useProgressiveProducts({
     scope: "marketplace",
     merchantPubkey: product?.pubkey ?? "",
+    accountPubkey,
+    authenticatedPubkey,
     enabled: !!product && !productUnavailable,
     sort: "newest",
   })

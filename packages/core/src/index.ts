@@ -288,18 +288,23 @@ export {
   type UseShopperTrustEvidenceResult,
 } from "./hooks/useShopperTrustEvidence"
 export {
-  prepareRelaySettingsContextPresentation,
-  resolveRelayAuthDisplayEvidence,
-  useRelaySettings,
-  type UseRelaySettingsResult,
-} from "./hooks/useRelaySettings"
-export {
   prepareAccountNetworkPreferencesPresentation,
   useAccountNetworkPreferences,
   type AccountNetworkPreferencesState,
   type AccountNetworkPreferencesStatus,
   type UseAccountNetworkPreferencesResult,
 } from "./hooks/useAccountNetworkPreferences"
+export {
+  useAccountNetworkSettings,
+  type AccountNetworkMediaServerController,
+  type AccountNetworkReviewChangedObject,
+  type AccountNetworkSettingsController,
+  type AccountNetworkSettingsOperationKind,
+  type AccountNetworkSettingsOperationPhase,
+  type AccountNetworkSettingsOperationView,
+  type PreparedAccountNetworkSettingsChange,
+  type PrepareAccountNetworkSettingsChangeInput,
+} from "./hooks/useAccountNetworkSettings"
 export {
   INBOX_DECLARATION_QUERY_KEY,
   useInboxDeclaration,
@@ -316,4 +321,7 @@ export {
   type UseMediaServerPreferencesOptions,
   type UseMediaServerPreferencesResult,
 } from "./hooks/useMediaServerPreferences"
-export { useUpdateProfile } from "./hooks/useUpdateProfile"
+export {
+  useUpdateProfile,
+  type UseUpdateProfileOptions,
+} from "./hooks/useUpdateProfile"

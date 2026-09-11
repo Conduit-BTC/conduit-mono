@@ -236,6 +236,7 @@ export function OrganizerEventMarketEditor({
                   aria-invalid={!!errors.imageUrl}
                   aria-describedby={describedBy(
                     "event-market-image-help",
+                    "event-market-image-fit-help",
                     errors.imageUrl && "event-market-imageUrl-error"
                   )}
                 />
@@ -256,6 +257,15 @@ export function OrganizerEventMarketEditor({
                   and approve it with your Nostr signer. Copy the direct HTTPS
                   file URL shown after upload and paste it here. Nostrcheck is
                   an external host that supports Blossom and NIP-96.
+                </p>
+                <p
+                  id="event-market-image-fit-help"
+                  className="text-xs leading-5 text-[var(--text-muted)]"
+                >
+                  For predictable results, use a wide 3:1 banner, such as 1800
+                  by 600 px. Keep essential text and logos away from the outer
+                  edges. The published banner fits the complete image without
+                  cropping.
                 </p>
                 <FieldError field="imageUrl" errors={errors} />
               </div>

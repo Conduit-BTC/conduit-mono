@@ -1,9 +1,11 @@
-import { useMemo } from "react"
+import { useLayoutEffect, useMemo, useRef } from "react"
 import { useQueries, useQuery } from "@tanstack/react-query"
 import {
   fetchLnurlPayMetadata,
   getProductsByIds,
   isValidLud16Address,
+  useAuth,
+  useConduitSession,
 } from "@conduit/core"
 import {
   CART_READINESS_LEASE_MS,
@@ -70,13 +72,15 @@ const lnurlPreflightLimiter = createBoundedLimiter(
 export function merchantCartAvailabilityQueryKey(
   merchantPubkey: string,
   productIds: readonly string[],
-  merchantHiddenProductIds: readonly string[] = []
+  merchantHiddenProductIds: readonly string[] = [],
+  relayScope?: string | null
 ): readonly unknown[] {
   return [
     "merchant-cart-availability",
     merchantPubkey,
     productIds,
     merchantHiddenProductIds,
+    ...(relayScope ? [relayScope] : []),
   ]
 }
 
@@ -104,6 +108,14 @@ export function getCartMerchantHiddenProductIds(
  * `refreshing` without holding other merchants behind a global barrier.
  */
 export function useCartReadiness(items: CartItem[]): CartReadiness {
+  const session = useConduitSession()
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const authenticatedPubkey =
+    session.mode === "signed_in" ? session.pubkey : null
   const groups = useMemo(() => groupCartItems(items), [items])
   const queries = useQueries({
     queries: groups.map((group) => {
@@ -113,16 +125,21 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
       const merchantHiddenProductIds = getCartMerchantHiddenProductIds(
         group.items
       )
+      const readAuthGeneration = authGeneration
       return {
         queryKey: merchantCartAvailabilityQueryKey(
           group.merchantPubkey,
           productIds,
-          merchantHiddenProductIds
+          merchantHiddenProductIds,
+          session.relayScope
         ),
         queryFn: () =>
           readinessReadLimiter(() =>
             getProductsByIds(productIds, {
               includeMerchantHiddenProductIds: merchantHiddenProductIds,
+              authenticatedPubkey,
+              shouldContinue: () =>
+                authGenerationRef.current === readAuthGeneration,
             })
           ),
         enabled: productIds.length > 0,

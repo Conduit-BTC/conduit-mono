@@ -110,6 +110,7 @@ export function OrganizerHandoffReceiptQueue({
   discoveryEvidenceComplete,
   error,
   actionError,
+  actionsDisabled,
   pendingReceiptId,
   onAcknowledge,
   onRefresh,
@@ -127,6 +128,7 @@ export function OrganizerHandoffReceiptQueue({
   discoveryEvidenceComplete: boolean
   error: boolean
   actionError?: string
+  actionsDisabled: boolean
   pendingReceiptId: string | null
   onAcknowledge: (claim: EventMarketOrganizerClaim) => void
   onRefresh: () => void
@@ -293,6 +295,7 @@ export function OrganizerHandoffReceiptQueue({
                     size="sm"
                     disabled={
                       ackReadiness?.state !== "ready" ||
+                      actionsDisabled ||
                       pending ||
                       (!!ackDelivery && !ackNeedsRetry)
                     }

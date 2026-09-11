@@ -184,7 +184,7 @@ describe("planRelayReads", () => {
     expect(plan.relayUrls).not.toContain("ws://artshop:4848")
   })
 
-  it("allows insecure author relays from the authenticated user's own NIP-65", () => {
+  it("does not infer insecure owner authority from the account pubkey alone", () => {
     const state = settings([
       entry("wss://commerce.conduit.market", { section: "commerce" }),
     ])
@@ -205,10 +205,43 @@ describe("planRelayReads", () => {
       relayLists: lists,
       settings: state,
     })
-    expect(plan.hintRelayUrls).toEqual([
-      "ws://artshop:4848",
-      "wss://alice-write.conduit.market",
+    expect(plan.hintRelayUrls).toEqual(["wss://alice-write.conduit.market"])
+    expect(plan.relayUrls).not.toContain("ws://artshop:4848")
+    expect(plan.ownerSelectedRelayUrls).toEqual([])
+  })
+
+  it("retains an owner-selected ws relay only with exact owner provenance", () => {
+    const ownerRelay = "ws://artshop:4848"
+    const remoteRelay = "ws://remote-shop:4848"
+    const state = settings([
+      entry(ownerRelay, { readEnabled: true, writeEnabled: true }),
+      entry("wss://public.conduit.market"),
     ])
+    const lists = new Map<string, RelayList>([
+      [
+        "alice",
+        relayList(
+          "alice",
+          [],
+          [ownerRelay, remoteRelay, "wss://alice-write.conduit.market"]
+        ),
+      ],
+    ])
+
+    const plan = planRelayReads({
+      intent: "author_products",
+      authors: ["alice"],
+      authenticatedPubkey: "alice",
+      ownerSelectedRelayUrls: [ownerRelay],
+      relayLists: lists,
+      settings: state,
+      signedRelayListAuthoritative: true,
+    })
+
+    expect(plan.relayUrls).toContain(ownerRelay)
+    expect(plan.hintRelayUrls).toContain(ownerRelay)
+    expect(plan.ownerSelectedRelayUrls).toEqual([ownerRelay])
+    expect(plan.relayUrls).not.toContain(remoteRelay)
   })
 
   it("uses current signed Publish relays for authenticated self-author reads", () => {
@@ -389,6 +422,7 @@ describe("planRelayWrites", () => {
       relayUrls: [isolatedRelayUrl],
       parkedRelayUrls: [],
       hintRelayUrls: [],
+      ownerSelectedRelayUrls: [],
     })
     expect(
       planRelayWrites({
@@ -599,6 +633,7 @@ describe("planRelayWrites", () => {
     const plan = planRelayWrites({
       intent: "recipient_event",
       authenticatedPubkey: "alice",
+      ownerSelectedRelayUrls: ["ws://umbrel.local:4848"],
       recipientPubkeys: ["alice"],
       relayLists: lists,
       settings: state,
