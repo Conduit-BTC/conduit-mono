@@ -2354,9 +2354,12 @@ test("legacy saved event keeps a newer exact retry beyond an older coordinate de
       { timeout: 30_000 }
     )
     .toContain(newerCollection.id)
-  await expect(page.getByText("Active", { exact: true })).toBeVisible({
-    timeout: 30_000,
-  })
+  await expect(
+    page.getByTestId("organizer-event-actionability-status")
+  ).toHaveText("Event loaded", { timeout: 30_000 })
+  await expect(
+    page.getByRole("button", { name: "Update event", exact: true })
+  ).toBeEnabled({ timeout: 30_000 })
 })
 
 test("terminal event deletion removes the exact-record retry path @merchant", async ({
@@ -2611,9 +2614,9 @@ test("a newer external collection can replace its calendar without inheriting th
   relay.seed(replacementCalendar, replacementCollection)
   await page.getByRole("button", { name: "Refresh evidence" }).click()
 
-  await expect(page.getByText("Active", { exact: true })).toBeVisible({
-    timeout: 30_000,
-  })
+  await expect(
+    page.getByTestId("organizer-event-actionability-status")
+  ).toHaveText("Event loaded", { timeout: 30_000 })
   await expect(
     page.getByRole("button", { name: "Update event", exact: true })
   ).toBeEnabled({ timeout: 30_000 })
