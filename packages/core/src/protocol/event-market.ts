@@ -169,6 +169,8 @@ export interface ParsedEventMarketCalendar {
   summary?: string
   image?: string
   locations: string[]
+  /** Signed NIP-52 topic tags, preserved for display and local filtering. */
+  topics?: string[]
   geohash?: string
   /** Inclusive start instant in epoch milliseconds. */
   start: number
@@ -817,6 +819,14 @@ export function parseEventMarketCalendarEvent(
     end = endMs ?? startMs
   }
 
+  const topics = Array.from(
+    new Set(
+      tagValues(event.tags, "t")
+        .map((topic) => topic.trim())
+        .filter(Boolean)
+    )
+  )
+
   return {
     coordinate: coordinate.coordinate,
     eventId: event.id.toLowerCase(),
@@ -831,6 +841,7 @@ export function parseEventMarketCalendarEvent(
     ...(summary ? { summary } : {}),
     ...(image ? { image } : {}),
     locations: tagValues(event.tags, "location").filter(Boolean),
+    ...(topics.length > 0 ? { topics } : {}),
     ...(geohash ? { geohash: geohash.toLowerCase() } : {}),
     start,
     end,
@@ -2061,6 +2072,24 @@ export interface GetOrganizerEventMarketsInput {
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  /** Relay hints observed with already-verified collection candidates. */
+  relayHints?: readonly string[]
+  /**
+   * Already-verified candidate collections from the bounded public discovery
+   * scan. They are revalidated here and only seed exact organizer resolution;
+   * they do not bypass calendar linkage, deletion, or authorship checks.
+   */
+  candidateCollectionEvents?: readonly SignedPublicNostrEvent[]
+  candidateCollectionSourceRelayUrlsById?: ReadonlyMap<
+    string,
+    readonly string[]
+  >
+  /**
+   * Exact candidate revision ids observed by the current public discovery
+   * scan. Candidate collections omitted from this set remain usable retained
+   * evidence, but cannot be treated as current relay observations.
+   */
+  candidateCollectionLiveEventIds?: ReadonlySet<string>
   /**
    * Discovery cards only need the organizer collection, calendar, and
    * organizer-authored pickup graph. The exact selected-event read hydrates
@@ -2079,6 +2108,11 @@ export interface OrganizerEventMarketsReadResult {
   coverage: EventMarketRelayCoverage
   relayListState: RelayListResolutionState
   relayHintTruncated: boolean
+}
+
+export interface RetainedEventMarketCollectionEvidence {
+  events: SignedPublicNostrEvent[]
+  eventSourceRelayUrls: Record<string, string[]>
 }
 
 export class EventMarketDiscoveryBoundError extends Error {
@@ -2104,6 +2138,9 @@ interface EventMarketTestOverrides {
   }) => Promise<SignedPublicNostrEvent>
   loadCachedEvidence?: (
     organizerPubkey: string
+  ) => Promise<CachedEventMarketEvidence[]>
+  loadCachedCollectionEvidence?: (
+    organizerPubkeys: readonly string[]
   ) => Promise<CachedEventMarketEvidence[]>
   persistCachedEvidence?: (input: {
     organizerPubkey: string
@@ -2263,15 +2300,23 @@ async function eventMarketReadPlanDetailed(input: {
     signedRelayListAuthoritative:
       ownerSettingsSnapshot?.signedRelayListAuthoritative,
   })
+  const parkedRelays = new Set(
+    plan.parkedRelayUrls.map((relayUrl) => relayUrl.toLowerCase())
+  )
+  const usableOrganizerHints = plan.hintRelayUrls.filter(
+    (relayUrl) => !parkedRelays.has(relayUrl.toLowerCase())
+  )
+  const relayUrls = mergeRelayUrlsWithOwnerAuthority(
+    plan.ownerSelectedRelayUrls ?? [],
+    usableOrganizerHints,
+    input.relayHints ?? [],
+    plan.relayUrls
+  )
   const selectedRelays = new Set(
-    plan.relayUrls.map((relayUrl) => relayUrl.toLowerCase())
+    relayUrls.map((relayUrl) => relayUrl.toLowerCase())
   )
   return {
-    relayUrls: mergeRelayUrlsWithOwnerAuthority(
-      plan.ownerSelectedRelayUrls ?? [],
-      input.relayHints ?? [],
-      plan.relayUrls
-    ),
+    relayUrls,
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
     relayListState,
     relayHintTruncated: plan.hintRelayUrls.some(
@@ -3435,6 +3480,83 @@ async function loadCachedEventMarketEvidence(
   }
 }
 
+/**
+ * Read only already-verified collection candidates retained for the current
+ * follow perspective. This never opens a relay connection and does not treat
+ * cached evidence as current authorization; exact organizer hydration still
+ * resolves revisions, deletions, calendar linkage, and freshness.
+ */
+export async function getRetainedEventMarketCollectionEvidence(input: {
+  organizerPubkeys: readonly string[]
+  signal?: AbortSignal
+}): Promise<RetainedEventMarketCollectionEvidence> {
+  const organizerPubkeys = Array.from(
+    new Set(
+      input.organizerPubkeys.flatMap((value) => {
+        const pubkey = normalizePubkey(value)
+        return pubkey ? [pubkey] : []
+      })
+    )
+  ).sort()
+  const organizerPubkeySet = new Set(organizerPubkeys)
+  const eventsById = new Map<string, SignedPublicNostrEvent>()
+  const sourceRelayUrlsById = new Map<string, string[]>()
+  if (input.signal?.aborted) {
+    const error = new Error("The operation was aborted.")
+    error.name = "AbortError"
+    throw error
+  }
+  const rows = await (async () => {
+    if (eventMarketTestOverrides.loadCachedCollectionEvidence) {
+      return eventMarketTestOverrides.loadCachedCollectionEvidence(
+        organizerPubkeys
+      )
+    }
+    try {
+      return await db.eventMarketEvidence
+        .where("kind")
+        .equals(EVENT_KINDS.PRODUCT_COLLECTION)
+        .and((row) => organizerPubkeySet.has(row.organizerPubkey))
+        .toArray()
+    } catch {
+      return []
+    }
+  })()
+  if (input.signal?.aborted) {
+    const error = new Error("The operation was aborted.")
+    error.name = "AbortError"
+    throw error
+  }
+  for (const row of rows) {
+    const organizerPubkey = normalizePubkey(row.organizerPubkey)
+    const event = row.signedEvent
+    if (
+      !organizerPubkey ||
+      !organizerPubkeySet.has(organizerPubkey) ||
+      row.kind !== EVENT_KINDS.PRODUCT_COLLECTION ||
+      event.kind !== EVENT_KINDS.PRODUCT_COLLECTION ||
+      event.pubkey.toLowerCase() !== organizerPubkey ||
+      !isValidSignedPublicNostrEvent(event)
+    ) {
+      continue
+    }
+    const eventId = event.id.toLowerCase()
+    eventsById.set(eventId, event)
+    sourceRelayUrlsById.set(
+      eventId,
+      mergeRelayUrls(
+        sourceRelayUrlsById.get(eventId) ?? [],
+        row.sourceRelayUrls
+      )
+    )
+  }
+
+  return {
+    events: Array.from(eventsById.values()).sort(compareAddressableEvents),
+    eventSourceRelayUrls: Object.fromEntries(sourceRelayUrlsById),
+  }
+}
+
 async function persistEventMarketEvidence(input: {
   organizerPubkey: string
   events: readonly SignedPublicNostrEvent[]
@@ -4021,6 +4143,51 @@ function collectionCoordinatesFromEvidence(
   return Array.from(coordinates).sort()
 }
 
+function candidateCollectionEvidence(input: {
+  organizerPubkey: string
+  events?: readonly SignedPublicNostrEvent[]
+  sourceRelayUrlsById?: ReadonlyMap<string, readonly string[]>
+}): ReturnType<typeof rawSignedEvents> {
+  const events: SignedPublicNostrEvent[] = []
+  const sourceRelayUrlsById = new Map<string, string[]>()
+  for (const event of input.events ?? []) {
+    if (
+      event.kind !== EVENT_KINDS.PRODUCT_COLLECTION ||
+      event.pubkey.toLowerCase() !== input.organizerPubkey ||
+      !isValidSignedPublicNostrEvent(event)
+    ) {
+      continue
+    }
+    events.push(event)
+    sourceRelayUrlsById.set(
+      event.id.toLowerCase(),
+      mergeRelayUrls(
+        input.sourceRelayUrlsById?.get(event.id) ?? [],
+        input.sourceRelayUrlsById?.get(event.id.toLowerCase()) ?? []
+      )
+    )
+  }
+  return { events, sourceRelayUrlsById }
+}
+
+function signedEvidenceForIds(
+  evidence: ReturnType<typeof rawSignedEvents>,
+  eventIds: ReadonlySet<string>
+): ReturnType<typeof rawSignedEvents> {
+  const events = evidence.events.filter((event) =>
+    eventIds.has(event.id.toLowerCase())
+  )
+  return {
+    events,
+    sourceRelayUrlsById: new Map(
+      events.map((event) => {
+        const eventId = event.id.toLowerCase()
+        return [eventId, evidence.sourceRelayUrlsById.get(eventId) ?? []]
+      })
+    ),
+  }
+}
+
 export async function getOrganizerEventMarketsDetailed(
   input: GetOrganizerEventMarketsInput
 ): Promise<OrganizerEventMarketsReadResult> {
@@ -4037,6 +4204,7 @@ export async function getOrganizerEventMarketsDetailed(
   }
   const readPlan = await eventMarketReadPlanDetailed({
     organizerPubkey,
+    relayHints: input.relayHints,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
@@ -4059,7 +4227,32 @@ export async function getOrganizerEventMarketsDetailed(
     }),
     loadCachedEventMarketEvidence(organizerPubkey),
   ])
-  const broadLiveRecords = rawSignedEvents(recordResult)
+  const rawOrganizerRecords = rawSignedEvents(recordResult)
+  const candidateCollectionRecords = candidateCollectionEvidence({
+    organizerPubkey,
+    events: input.candidateCollectionEvents,
+    sourceRelayUrlsById: input.candidateCollectionSourceRelayUrlsById,
+  })
+  const candidateRecordIds = new Set(
+    candidateCollectionRecords.events.map((event) => event.id.toLowerCase())
+  )
+  const candidateLiveEventIds = new Set(
+    Array.from(input.candidateCollectionLiveEventIds ?? candidateRecordIds)
+      .map((eventId) => eventId.toLowerCase())
+      .filter((eventId) => candidateRecordIds.has(eventId))
+  )
+  const liveCandidateCollectionRecords = signedEvidenceForIds(
+    candidateCollectionRecords,
+    candidateLiveEventIds
+  )
+  const broadResolutionRecords = mergeRawSignedEventGroups(
+    rawOrganizerRecords,
+    candidateCollectionRecords
+  )
+  const broadCurrentRecords = mergeRawSignedEventGroups(
+    rawOrganizerRecords,
+    liveCandidateCollectionRecords
+  )
   const authorReadReachedCap = eventMarketAuthorReadReachedCap(recordResult)
   const collectionDiscoveryRelayUrls = authorReadReachedCap
     ? [...relayUrls]
@@ -4099,7 +4292,7 @@ export async function getOrganizerEventMarketsDetailed(
   const preliminaryOrganizerRecords = mergeCachedAndLiveEvidence({
     cached: cachedRecords,
     live: mergeRawSignedEventGroups(
-      broadLiveRecords,
+      broadResolutionRecords,
       collectionDiscoveryResult.live
     ),
   })
@@ -4152,7 +4345,7 @@ export async function getOrganizerEventMarketsDetailed(
   const recordsWithCollectionFrontiers = mergeCachedAndLiveEvidence({
     cached: cachedRecords,
     live: mergeRawSignedEventGroups(
-      broadLiveRecords,
+      broadResolutionRecords,
       collectionDiscoveryResult.live,
       rawCollectionFrontiers
     ),
@@ -4187,8 +4380,14 @@ export async function getOrganizerEventMarketsDetailed(
       })
     : { events: [], relays: [], eventsVerified: true }
   const rawCalendarFrontiers = rawSignedEvents(calendarFrontierResult)
-  const liveRecords = mergeRawSignedEventGroups(
-    broadLiveRecords,
+  const resolutionRecords = mergeRawSignedEventGroups(
+    broadResolutionRecords,
+    collectionDiscoveryResult.live,
+    rawCollectionFrontiers,
+    rawCalendarFrontiers
+  )
+  const currentRecords = mergeRawSignedEventGroups(
+    broadCurrentRecords,
     collectionDiscoveryResult.live,
     rawCollectionFrontiers,
     rawCalendarFrontiers
@@ -4201,13 +4400,13 @@ export async function getOrganizerEventMarketsDetailed(
   )
   await persistEventMarketEvidence({
     organizerPubkey,
-    events: liveRecords.events,
-    sourceRelayUrlsById: liveRecords.sourceRelayUrlsById,
+    events: currentRecords.events,
+    sourceRelayUrlsById: currentRecords.sourceRelayUrlsById,
     cachedAt: observedAt,
   })
   const organizerRecords = mergeCachedAndLiveEvidence({
     cached: cachedRecords,
-    live: liveRecords,
+    live: resolutionRecords,
   })
   const collectionCoordinates = collectionCoordinatesFromEvidence(
     organizerRecords.events,
@@ -4382,8 +4581,15 @@ export async function getOrganizerEventMarketsDetailed(
   )
   const records = mergeCachedAndLiveEvidence({
     cached: cachedRecords,
-    live: mergeRawSignedEventGroups(liveRecords, rawPickupFrontiers),
+    live: mergeRawSignedEventGroups(resolutionRecords, rawPickupFrontiers),
   })
+  const currentResolutionRecords = mergeRawSignedEventGroups(
+    currentRecords,
+    rawPickupFrontiers
+  )
+  const currentResolutionEventIds = new Set(
+    currentResolutionRecords.events.map((event) => event.id.toLowerCase())
+  )
   if (!discoveryProjection) {
     await persistEventMarketEvidence({
       organizerPubkey,
@@ -4428,15 +4634,14 @@ export async function getOrganizerEventMarketsDetailed(
           nowMs: input.nowMs,
           maxEvidenceAgeMs: input.maxEvidenceAgeMs,
           evidenceObservedAt:
-            liveRecords.events.length > 0 ||
-            rawPickupFrontiers.events.length > 0
+            currentResolutionRecords.events.length > 0
               ? observedAt
               : records.cachedObservedAt,
           includeParticipation: !discoveryProjection,
         }),
         records.sourceRelayUrlsById
       ),
-      records.liveEventIds
+      currentResolutionEventIds
     )
   })
   return {

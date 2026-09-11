@@ -6,7 +6,14 @@ import {
   normalizeExactEventCatalogNaddr,
   pubkeyToNpub,
   type ConduitBrowserLocation,
+  type EventMarketPerspectiveSource,
 } from "@conduit/core"
+import {
+  MERCHANT_EVENT_RELATIONSHIP_FILTERS,
+  MERCHANT_EVENT_TIMELINE_WINDOWS,
+  type MerchantEventRelationshipFilter,
+  type MerchantEventTimelineWindow,
+} from "./merchant-event-timeline"
 
 // Maps the current merchant host to its paired market origin so links open the
 // buyer/merchant profile on the market app (including preview + local dev).
@@ -65,6 +72,9 @@ export function getMerchantEventParticipationUrl(
 
 export interface MerchantEventsSearch {
   event?: string
+  source?: EventMarketPerspectiveSource
+  relation?: MerchantEventRelationshipFilter
+  window?: MerchantEventTimelineWindow
 }
 
 export interface MerchantAuthHandoffSearch extends MerchantEventsSearch {
@@ -75,12 +85,34 @@ export interface MerchantAuthHandoffSearch extends MerchantEventsSearch {
 export function parseMerchantEventsSearch(
   search: Record<string, unknown>
 ): MerchantEventsSearch {
-  const value = search.event
-  if (typeof value !== "string") return {}
-  try {
-    return { event: normalizeExactEventCatalogNaddr(value) }
-  } catch {
-    return {}
+  const source = ["following", "conduit", "combined"].includes(
+    search.source as string
+  )
+    ? (search.source as EventMarketPerspectiveSource)
+    : undefined
+  const relation = MERCHANT_EVENT_RELATIONSHIP_FILTERS.includes(
+    search.relation as MerchantEventRelationshipFilter
+  )
+    ? (search.relation as MerchantEventRelationshipFilter)
+    : undefined
+  const window = MERCHANT_EVENT_TIMELINE_WINDOWS.includes(
+    search.window as MerchantEventTimelineWindow
+  )
+    ? (search.window as MerchantEventTimelineWindow)
+    : undefined
+  let event: string | undefined
+  if (typeof search.event === "string") {
+    try {
+      event = normalizeExactEventCatalogNaddr(search.event)
+    } catch {
+      event = undefined
+    }
+  }
+  return {
+    ...(event ? { event } : {}),
+    ...(source ? { source } : {}),
+    ...(relation ? { relation } : {}),
+    ...(window ? { window } : {}),
   }
 }
 

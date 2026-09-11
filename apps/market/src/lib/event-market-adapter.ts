@@ -48,8 +48,10 @@ export type EventCatalog = {
   organizerPubkey?: string
   collection?: EventMarketResolution["collection"]
   calendar?: EventMarketResolution["calendar"]
+  pickupCoordinate?: EventMarketResolution["pickupCoordinate"]
   pickup?: EventMarketResolution["pickup"]
   pickups: EventMarketResolution["pickups"]
+  coverage?: EventMarketResolution["coverage"]
   products: EventCatalogProduct[]
   /** Organizer-accepted coordinates after stronger known negative evidence. */
   acceptedProductCount: number
@@ -57,6 +59,27 @@ export type EventCatalog = {
   unresolvedProductCoordinates: string[]
   productReadState: "not_requested" | "ready" | "partial" | "unavailable"
   purchaseReady: boolean
+}
+
+export function getEventCatalogProductAvailability(
+  catalog: Pick<EventCatalog, "products" | "unresolvedProductCoordinates">
+): {
+  availableProductCount: number
+  unresolvedProductCount: number
+} {
+  const availableProductCount = catalog.products.filter((entry) => {
+    if (entry.product.type !== "variable" && entry.pickupFulfillment !== null) {
+      return true
+    }
+    return Object.values(entry.familyPickupFulfillments ?? {}).some(Boolean)
+  }).length
+
+  return {
+    availableProductCount,
+    unresolvedProductCount:
+      catalog.unresolvedProductCoordinates.length +
+      (catalog.products.length - availableProductCount),
+  }
 }
 
 export type PickupFreshnessResult =
@@ -772,8 +795,10 @@ export async function loadEventCatalog(
     organizerPubkey: resolution.organizerPubkey,
     collection: resolution.collection,
     calendar: resolution.calendar,
+    pickupCoordinate: resolution.pickupCoordinate,
     pickup: resolution.pickup,
     pickups: resolution.pickups,
+    coverage: resolution.coverage,
     products: [],
     acceptedProductCount: resolution.acceptedProductCoordinates.length,
     unresolvedProductCoordinates: [],
