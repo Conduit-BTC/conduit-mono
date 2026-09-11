@@ -64,7 +64,10 @@ describe("Product legal routing contract", () => {
     expect(marketElse).toContain("<MarketPricingWarmup />")
 
     const merchantElse = merchantMain.slice(merchantMain.indexOf("} else {"))
-    expect(merchantElse).toContain("startProductDeletionDeliveryWorker")
+    expect(merchantElse).toContain("<ProductDeletionDeliveryWorker />")
+    expect(merchantMain).toContain(
+      "startProductDeletionDeliveryWorker(authenticatedPubkey)"
+    )
     expect(merchantElse).toContain("void pruneShopperTrustSnapshots()")
     expect(merchantElse).toContain("<AuthProvider")
     expect(merchantElse).toContain("<ConduitSessionProvider")

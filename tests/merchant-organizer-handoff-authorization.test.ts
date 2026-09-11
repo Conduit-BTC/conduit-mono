@@ -34,6 +34,9 @@ const COLLECTION = `30405:${ORGANIZER}:market`
 const CALENDAR = `31923:${ORGANIZER}:market-day`
 const PICKUP = `30406:${ORGANIZER}:organizer-pickup`
 const CREATED_AT = 1_700_000_000
+const allowAllAccountNetworkLocalStateRepository = {
+  get: async () => undefined,
+}
 
 const PRODUCT_EVENT = finalizeEvent(
   {
@@ -398,6 +401,8 @@ describe("merchant organizer handoff authorization", () => {
         signer: organizerSigner,
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: recipientRelays,
           senderInboxRelays: ["wss://organizer-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
@@ -431,6 +436,8 @@ describe("merchant organizer handoff authorization", () => {
       signer: {} as never,
       storage,
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: recipientRelays,
         senderInboxRelays: ["wss://organizer-inbox.relay.dev"],
         publishFn: (async (event, options) => {
@@ -486,6 +493,8 @@ describe("merchant organizer handoff authorization", () => {
         signer: organizerSigner,
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://merchant-inbox.relay.dev"],
           senderInboxRelays: senderRelays,
           giftWrapFn: (async (_rumor, recipient) =>
@@ -520,6 +529,8 @@ describe("merchant organizer handoff authorization", () => {
         signer: {} as never,
         storage,
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://merchant-inbox.relay.dev"],
           senderInboxRelays: senderRelays,
           publishFn: (async (event, options) => {

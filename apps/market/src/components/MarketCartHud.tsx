@@ -16,7 +16,15 @@ import {
   StatusPill,
   cn,
 } from "@conduit/ui"
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { useCart } from "../hooks/useCart"
 import {
   useCartLnurlPreflights,
@@ -44,7 +52,12 @@ export type MarketCartHudProps = {
 
 export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const navigate = useNavigate()
-  const { pubkey } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const authenticatedPubkey = status === "connected" ? pubkey : null
   const cart = useCart()
   const shopperPricing = useShopperPricing()
   const groups = useMemo(() => groupCartItems(cart.items), [cart.items])
@@ -53,6 +66,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     [groups]
   )
   const profiles = useProfiles(merchantPubkeys, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     priority: "visible",
     maxUnresolvedRefetches: 2,
   })

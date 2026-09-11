@@ -1,5 +1,10 @@
 import { db, type OrderLifecycle, type OrderRelayDeliveryStatus } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
+import {
+  filterEligibleAccountRelayUrls,
+  orderEquivalentAccountRelayOperations,
+  type AccountNetworkLocalStateRepository,
+} from "./account-network-local-state"
 import { publishSignedEventToRelay } from "./relay-publish"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
@@ -18,6 +23,11 @@ export interface OrderRelayDeliveryRepository {
 export type OrderRelayDeliveryPublisher = (input: {
   relayUrl: string
   signedEvent: SignedPublicNostrEvent
+  accountPubkey: string
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
 }) => Promise<OrderRelayDeliveryStatus>
 
 export interface RetryOrderRelayDeliveryOptions {
@@ -25,6 +35,10 @@ export interface RetryOrderRelayDeliveryOptions {
   publisher?: OrderRelayDeliveryPublisher
   now?: () => number
   leaseOwner?: string
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
 }
 
 const dexieRepository: OrderRelayDeliveryRepository = {
@@ -41,14 +55,16 @@ const dexieRepository: OrderRelayDeliveryRepository = {
     }),
 }
 
-async function defaultPublisher(input: {
-  relayUrl: string
-  signedEvent: SignedPublicNostrEvent
-}): Promise<OrderRelayDeliveryStatus> {
+async function defaultPublisher(
+  input: Parameters<OrderRelayDeliveryPublisher>[0]
+): Promise<OrderRelayDeliveryStatus> {
   return await publishSignedEventToRelay({
     signedEvent: input.signedEvent,
     relayUrl: input.relayUrl,
     authorPubkey: input.signedEvent.pubkey,
+    accountPubkey: input.accountPubkey,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
   })
 }
 
@@ -121,8 +137,24 @@ export async function retryOrderRelayDelivery(
       target.status !== "acked" &&
       normalizePublicWebSocketUrl(target.relayUrl) !== null
   )
+  const orderedOutstanding = await orderEquivalentAccountRelayOperations({
+    accountPubkey: claimed.buyerPubkey,
+    operations: outstanding.map((target) => ({
+      relayUrl: target.relayUrl,
+      equivalenceKey: "exact-order-delivery-retry",
+      value: target,
+    })),
+    repository: options.accountNetworkLocalStateRepository,
+  })
 
-  for (const target of outstanding) {
+  for (const { value: target } of orderedOutstanding) {
+    const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+      accountPubkey: claimed.buyerPubkey,
+      candidateRelayUrls: [target.relayUrl],
+      repository: options.accountNetworkLocalStateRepository,
+    })
+    if (eligibleRelayUrls.length === 0) continue
+
     const attemptedAt = now()
     let outcome: OrderRelayDeliveryStatus
     try {
@@ -132,8 +164,17 @@ export async function retryOrderRelayDelivery(
           ...signedEvent,
           tags: signedEvent.tags.map((tag) => [...tag]),
         },
+        accountPubkey: claimed.buyerPubkey,
+        accountNetworkLocalStateRepository:
+          options.accountNetworkLocalStateRepository,
       })
     } catch {
+      const stillEligible = await filterEligibleAccountRelayUrls({
+        accountPubkey: claimed.buyerPubkey,
+        candidateRelayUrls: [target.relayUrl],
+        repository: options.accountNetworkLocalStateRepository,
+      })
+      if (stillEligible.length === 0) continue
       outcome = "timed_out"
     }
     if (outcome === "pending") outcome = "timed_out"

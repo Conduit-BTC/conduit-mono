@@ -837,11 +837,16 @@ export function organizerEventMarketReferencesMatch(
 }
 
 export async function listOrganizerEventMarkets(
-  organizerPubkey: string
+  organizerPubkey: string,
+  authenticatedPubkey: string | null = null,
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
 ): Promise<MerchantOrganizerEventMarketsReadResult> {
   const result = await getOrganizerEventMarketsDetailed({
     organizerPubkey,
-    authenticatedPubkey: organizerPubkey,
+    authenticatedPubkey,
+    ...(signal ? { signal } : {}),
+    ...(shouldContinue ? { shouldContinue } : {}),
   })
   return projectOrganizerEventMarketsReadResult(result)
 }
@@ -858,12 +863,20 @@ export function projectOrganizerEventMarketsReadResult(
 
 export async function discoverFollowedEventMarkets(
   merchantPubkey: string,
-  options: { signal?: AbortSignal; nowMs?: number } = {}
+  options: {
+    authenticatedPubkey?: string | null
+    signal?: AbortSignal
+    shouldContinue?: () => boolean
+    nowMs?: number
+  } = {}
 ): Promise<MerchantEventMarketDiscovery> {
   const discovery = await discoverFollowedOrganizerEventMarkets({
     merchantPubkey,
-    authenticatedPubkey: merchantPubkey,
+    authenticatedPubkey: options.authenticatedPubkey,
     ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.shouldContinue
+      ? { shouldContinue: options.shouldContinue }
+      : {}),
     ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
   })
   return {
@@ -875,8 +888,9 @@ export async function discoverFollowedEventMarkets(
 export async function resolveOrganizerEventMarketRead(
   reference: string,
   organizerPubkey?: string,
-  authenticatedPubkey: string | null = organizerPubkey ?? null,
-  signal?: AbortSignal
+  authenticatedPubkey: string | null = null,
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
 ): Promise<MerchantOrganizerEventMarketRead> {
   const parsedReference = parseOrganizerEventMarketReference(reference)
   const result = await getEventMarket({
@@ -884,6 +898,7 @@ export async function resolveOrganizerEventMarketRead(
     ...(organizerPubkey ? { expectedOrganizerPubkey: organizerPubkey } : {}),
     authenticatedPubkey,
     ...(signal ? { signal } : {}),
+    ...(shouldContinue ? { shouldContinue } : {}),
   })
   if (
     result.state === "deleted" &&
@@ -980,14 +995,16 @@ export async function resolveOrganizerEventMarketRead(
 export async function resolveOrganizerEventMarket(
   reference: string,
   organizerPubkey?: string,
-  authenticatedPubkey: string | null = organizerPubkey ?? null,
-  signal?: AbortSignal
+  authenticatedPubkey: string | null = null,
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
 ): Promise<MerchantOrganizerEventMarket> {
   const result = await resolveOrganizerEventMarketRead(
     reference,
     organizerPubkey,
     authenticatedPubkey,
-    signal
+    signal,
+    shouldContinue
   )
   if ("terminal" in result) {
     throw new Error("The organizer event records were deleted.")
@@ -1005,6 +1022,8 @@ function randomDTagSuffix(): string {
 
 export async function publishMerchantOrganizerEventMarket(input: {
   organizerPubkey: string
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
   form: OrganizerEventMarketFormValues
   existing?: MerchantOrganizerEventMarket | null
   onSignedRecord?: (
@@ -1096,6 +1115,8 @@ export async function publishMerchantOrganizerEventMarket(input: {
   }
   const result = await publishOrganizerEventMarket({
     organizerPubkey: input.organizerPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
     calendar,
     pickup,
     collection,
@@ -1164,6 +1185,27 @@ export function reconcileMerchantOrganizerCollectionEvidence(
     return market
   }
 
+  const retainedProductCoordinates = new Set(
+    retainedCollection.productCoordinates
+  )
+  const requestedProductCoordinates = new Set<string>()
+  const pending: MerchantOrganizerParticipation[] = []
+  const accepted: MerchantOrganizerParticipation[] = []
+  for (const item of market.participation) {
+    if (item.status === "organizer_only") continue
+    requestedProductCoordinates.add(item.productCoordinate)
+    if (retainedProductCoordinates.has(item.productCoordinate)) {
+      accepted.push({ ...item, status: "accepted" })
+    } else {
+      pending.push({ ...item, status: "pending" })
+    }
+  }
+  const organizerOnly: MerchantOrganizerParticipation[] = []
+  for (const productCoordinate of retainedCollection.productCoordinates) {
+    if (requestedProductCoordinates.has(productCoordinate)) continue
+    organizerOnly.push({ productCoordinate, status: "organizer_only" })
+  }
+
   return {
     ...market,
     title: retainedCollection.title,
@@ -1178,7 +1220,9 @@ export function reconcileMerchantOrganizerCollectionEvidence(
         : undefined,
     pickupCoordinates: retainedCollection.pickupCoordinates,
     collectionCreatedAt: retainedCollection.createdAt,
+    collectionEventId: retainedCollection.eventId,
     productCoordinates: retainedCollection.productCoordinates,
+    participation: [...pending, ...accepted, ...organizerOnly],
     source: {
       ...market.source,
       collection: retainedCollection,
@@ -1193,8 +1237,22 @@ export function reconcileMerchantOrganizerCollectionEvidence(
   }
 }
 
+export function reconcileAcknowledgedMerchantOrganizerCollectionEvidence(
+  market: MerchantOrganizerEventMarket,
+  retainedDeliveries: readonly MerchantOrganizerRecordDelivery[]
+): MerchantOrganizerEventMarket {
+  return retainedDeliveries
+    .filter(
+      (delivery) =>
+        delivery.record === "collection" && delivery.acknowledgedCount > 0
+    )
+    .reduce(reconcileMerchantOrganizerCollectionEvidence, market)
+}
+
 export async function publishMerchantOrganizerMembership(input: {
   organizerPubkey: string
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
   market: MerchantOrganizerEventMarket
   item: MerchantOrganizerParticipation
   action: OrganizerCollectionMembershipAction
@@ -1259,6 +1317,8 @@ export async function publishMerchantOrganizerMembership(input: {
   }
   const result = await publishOrganizerCollectionUpdate({
     organizerPubkey: input.organizerPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
     collection,
     previousCreatedAt: market.collectionCreatedAt,
     onSignedEvent: async (record) => {
@@ -1273,6 +1333,8 @@ export async function publishMerchantOrganizerMembership(input: {
 
 export async function retryMerchantOrganizerRecord(input: {
   organizerPubkey: string
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
   record: MerchantOrganizerRecordDelivery
 }): Promise<MerchantOrganizerRecordDelivery> {
   if (!input.record.signedEvent) {
@@ -1280,6 +1342,8 @@ export async function retryMerchantOrganizerRecord(input: {
   }
   const result = await retryOrganizerEventMarketRecord({
     organizerPubkey: input.organizerPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
     signedEvent: input.record.signedEvent,
   })
   return projectDeliveryRecord(result)

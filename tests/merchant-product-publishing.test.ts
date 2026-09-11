@@ -54,6 +54,9 @@ const MERCHANT_SECRET = new Uint8Array(32).fill(4)
 const OTHER_MERCHANT_SECRET = new Uint8Array(32).fill(5)
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
+const allowAllAccountNetworkLocalStateRepository = {
+  get: async () => undefined,
+}
 
 function publishAndParse(
   product: ProductSchema,
@@ -263,6 +266,8 @@ beforeEach(() => {
     putCachedProductTombstones: async () => {},
   })
   __setRelayPublishTestOverrides({
+    accountNetworkLocalStateRepository:
+      allowAllAccountNetworkLocalStateRepository,
     planPublishRelays: async () => ({
       intent: "author_event",
       primaryRelayUrls: [],
@@ -279,6 +284,32 @@ afterEach(() => {
 })
 
 describe("merchant product event delivery", () => {
+  it("revalidates live account authority before product relay I/O", async () => {
+    const relayUrl = "wss://relay.example"
+    __setRelayPublishTestOverrides({
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: [relayUrl],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const event = new NDKEvent(undefined, makeSignedEvent(EVENT_KINDS.PRODUCT))
+    const publish = spyOn(event, "publish").mockResolvedValue(
+      new Set([{ url: `${relayUrl}/` }]) as never
+    )
+
+    await expect(
+      deliverSignedProductEvent(event, MERCHANT_PUBKEY, {
+        authenticatedPubkey: MERCHANT_PUBKEY,
+        shouldContinue: () => false,
+      })
+    ).rejects.toThrow("Signed product event could not be delivered")
+    expect(publish).toHaveBeenCalledTimes(0)
+  })
+
   it("counts only the approval-bearing events in each product change bundle", () => {
     const ordinary = {
       product: makeProduct("ordinary"),
@@ -474,6 +505,48 @@ describe("merchant product event delivery", () => {
     ).toBe(false)
   })
 
+  it("does not infer owner relay authority from a signed product author", async () => {
+    const authenticatedPubkeys: Array<string | null | undefined> = []
+    const relayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async (input) => {
+        authenticatedPubkeys.push(input.authenticatedPubkey)
+        return {
+          intent: "author_event",
+          primaryRelayUrls: [relayUrl],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+
+    await deliverSignedProductEvent(
+      makeSignedProductEvent({
+        dTag: "auth-absent",
+        acceptedRelayUrl: relayUrl,
+      }),
+      MERCHANT_PUBKEY
+    )
+    await deliverSignedProductEvent(
+      makeSignedProductEvent({
+        dTag: "auth-owner",
+        acceptedRelayUrl: relayUrl,
+      }),
+      MERCHANT_PUBKEY,
+      { authenticatedPubkey: MERCHANT_PUBKEY }
+    )
+    await deliverSignedProductEvent(
+      makeSignedProductEvent({
+        dTag: "auth-stale",
+        acceptedRelayUrl: relayUrl,
+      }),
+      MERCHANT_PUBKEY,
+      { authenticatedPubkey: getPublicKey(OTHER_MERCHANT_SECRET) }
+    )
+
+    expect(authenticatedPubkeys).toEqual([null, MERCHANT_PUBKEY, null])
+  })
+
   it("retains a fallback-only listing ACK for an immediate deletion", async () => {
     const fallbackRelayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
     const event = makeSignedProductEvent({
@@ -649,6 +722,8 @@ describe("merchant product event delivery", () => {
       },
       deletionDeliveryOptions: {
         repository: beforeReload,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         now: () => NOW,
         retryDelayMs: 1,
         restoreLocalEvidence: async () => {},
@@ -688,6 +763,8 @@ describe("merchant product event delivery", () => {
     const resumedEventIds: string[] = []
     await resumePendingProductDeletionDeliveries({
       repository: afterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
       now: () => NOW + 10_000,
       retryDelayMs: 1,
       deliveryLeaseOwner: "after-reload",
@@ -989,6 +1066,8 @@ describe("merchant product event delivery", () => {
         },
         deletionDeliveryOptions: {
           repository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           now: () => NOW,
           retryDelayMs: 1,
           restoreLocalEvidence: async () => {},
@@ -1010,6 +1089,8 @@ describe("merchant product event delivery", () => {
       const afterReload = new MemoryProductDeletionOutbox(durableStorage)
       await resumePendingProductDeletionDeliveries({
         repository: afterReload,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         now: () => NOW + 10_000,
         retryDelayMs: 1,
         deliveryLeaseOwner: "after-isolated-reload",
@@ -1066,6 +1147,8 @@ describe("merchant product event delivery", () => {
         },
         deletionDeliveryOptions: {
           repository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           restoreLocalEvidence: async () => {},
           publisher: async () => {
             deletionPublishAttempts += 1
@@ -1128,6 +1211,8 @@ describe("merchant product event delivery", () => {
           },
           deletionDeliveryOptions: {
             repository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
             restoreLocalEvidence: async () => {},
             publisher: async () => ({ status: "acked" }),
           },

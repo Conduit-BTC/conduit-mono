@@ -7,15 +7,14 @@
 import {
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   SHIPPING_COUNTRIES,
-  isRelaySetupIncomplete,
   isValidLud16Address,
   getNwcUriFingerprint,
   parseNwcUri,
   type InboxDeclarationStatus,
+  type NetworkPreferenceRow,
   type ParsedShippingOption,
   type NwcConnection,
   type Profile,
-  type RelaySettingsState,
 } from "@conduit/core"
 
 // ---------------------------------------------------------------------------
@@ -169,14 +168,18 @@ export function notifyMerchantReadinessStorageChange(): void {
   window.dispatchEvent(new Event(MERCHANT_READINESS_STORAGE_EVENT))
 }
 
-export function isNetworkComplete(settings: RelaySettingsState): boolean {
-  return !isRelaySetupIncomplete(settings)
+export function isNetworkComplete(
+  rows: readonly Pick<NetworkPreferenceRow, "write">[]
+): boolean {
+  return rows.some(
+    (row) => row.write === "published" || row.write === "pending"
+  )
 }
 
 export function getMerchantSetupReadiness({
   profile,
   shippingConfig,
-  relaySettings,
+  networkComplete = false,
   hasNwc = false,
   profileCheckPending = false,
   paymentsCheckPending = false,
@@ -187,7 +190,7 @@ export function getMerchantSetupReadiness({
 }: {
   profile: Profile | null | undefined
   shippingConfig: ShippingConfig
-  relaySettings: RelaySettingsState
+  networkComplete?: boolean
   hasNwc?: boolean
   profileCheckPending?: boolean
   paymentsCheckPending?: boolean
@@ -199,7 +202,6 @@ export function getMerchantSetupReadiness({
   const profileComplete = isProfileComplete(profile)
   const paymentsComplete = isPaymentsComplete(profile)
   const shippingComplete = isShippingComplete(shippingConfig)
-  const networkComplete = isNetworkComplete(relaySettings)
   const privateInboxComplete =
     privateInboxCheckEnabled && privateInboxStatus === "ready"
   const privateInboxCheckPending =
