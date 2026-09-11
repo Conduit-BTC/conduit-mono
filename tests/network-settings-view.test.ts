@@ -23,7 +23,6 @@ function localState(
   return {
     pubkey: PUBKEY,
     version: 1,
-    migrationVersion: 1,
     exclusions: [],
     preferredRelayOrder: [],
     relayScans: [],
@@ -36,7 +35,6 @@ function reconciliation(input?: {
   rows?: NetworkPreferenceRow[]
   owner?: Record<string, unknown>
   inbox?: Record<string, unknown>
-  legacyInboxRecoveryRelayUrls?: string[]
 }): AccountNetworkPreferencesReconciliation {
   return {
     projection: {
@@ -108,9 +106,6 @@ function reconciliation(input?: {
       },
       ...input?.inbox,
     },
-    legacyMigration: "not_applicable",
-    legacyReviewCandidate: null,
-    legacyInboxRecoveryRelayUrls: input?.legacyInboxRecoveryRelayUrls ?? [],
   } as unknown as AccountNetworkPreferencesReconciliation
 }
 
@@ -833,61 +828,6 @@ describe("network settings view", () => {
       }
     )
     expect(alreadyWithoutInbox.valid).toBe(true)
-
-    const recoveryPreservedDuringRoleChange =
-      validateAccountNetworkDesiredRoles(
-        [
-          {
-            url: "wss://only.example",
-            readEnabled: false,
-            publishEnabled: true,
-            privateInboxEnabled: false,
-          },
-          {
-            url: "wss://legacy-inbox.example",
-            readEnabled: false,
-            publishEnabled: false,
-            privateInboxEnabled: false,
-          },
-        ],
-        {
-          reconciliation: reconciliation({
-            inbox: {
-              state: "not_observed",
-              relayUrls: [],
-              eventId: undefined,
-            },
-            legacyInboxRecoveryRelayUrls: ["wss://legacy-inbox.example"],
-          }),
-          localState: localState(),
-        }
-      )
-    expect(recoveryPreservedDuringRoleChange).toEqual({
-      valid: true,
-      errors: [],
-      warnings: [ACCOUNT_NETWORK_SINGLE_PUBLISH_WARNING],
-    })
-
-    const legacyRecoveryWholeRemoval = validateAccountNetworkDesiredRoles(
-      [
-        {
-          url: "wss://only.example",
-          readEnabled: false,
-          publishEnabled: true,
-          privateInboxEnabled: false,
-        },
-      ],
-      {
-        reconciliation: reconciliation({
-          inbox: { state: "not_observed", relayUrls: [], eventId: undefined },
-          legacyInboxRecoveryRelayUrls: ["wss://legacy-inbox.example"],
-        }),
-        localState: localState(),
-      }
-    )
-    expect(legacyRecoveryWholeRemoval.errors).toContain(
-      ACCOUNT_NETWORK_LAST_INBOX_REPLACEMENT_MESSAGE
-    )
   })
 
   it("keeps a recovery union usable only while at least one recovery row remains", () => {

@@ -52,7 +52,6 @@ function controller(
     rows?: AccountNetworkRelayRowView[]
     pendingExactDeliveries?: AccountNetworkSettingsController["view"]["pendingExactDeliveries"]
     validation?: ReturnType<AccountNetworkSettingsController["validate"]>
-    legacyDraftReviewAvailable?: boolean
     exactInboxRedistributionAvailable?: boolean
   } = {}
 ): AccountNetworkSettingsController {
@@ -70,7 +69,6 @@ function controller(
     relayInformationRefreshing: false,
     exactInboxRedistributionAvailable:
       input.exactInboxRedistributionAvailable ?? false,
-    legacyDraftReviewAvailable: input.legacyDraftReviewAvailable ?? false,
     mediaServers: null,
     addRelay: async () => relayRow("wss://added.example"),
     validate: () =>
@@ -89,7 +87,6 @@ function controller(
     retryPendingUpdate: async () => undefined,
     redistributeExactInboxDeclaration: async () => undefined,
     reorderRelays: async () => undefined,
-    discardLegacyDraft: async () => undefined,
     refresh: async () => undefined,
     clearOperation: () => undefined,
   }
@@ -306,18 +303,6 @@ describe("RelaySettingsPanel account Network review", () => {
     )
   })
 
-  it("keeps legacy role-draft discard separate from inbox recovery", () => {
-    const markup = renderToStaticMarkup(
-      <RelaySettingsPanel
-        controller={controller({ legacyDraftReviewAvailable: true })}
-      />
-    )
-
-    expect(markup).toContain("Older relay role draft")
-    expect(markup).toContain("does not end private inbox recovery")
-    expect(markup).toContain("Discard older draft")
-  })
-
   it("offers signer-free redistribution for the exact retained inbox event", () => {
     const markup = renderToStaticMarkup(
       <RelaySettingsPanel
@@ -332,7 +317,7 @@ describe("RelaySettingsPanel account Network review", () => {
     )
   })
 
-  it("does not hide a durable legacy draft with a React-only discard", async () => {
+  it("resets unpublished edits to the current Network projection", async () => {
     const panelSource = await Bun.file(
       "packages/ui/src/components/RelaySettingsPanel.tsx"
     ).text()
@@ -341,9 +326,6 @@ describe("RelaySettingsPanel account Network review", () => {
     )?.[0]
 
     expect(discardReview).toContain("setRows(controller.view.rows)")
-    expect(panelSource).toContain(
-      "Use Discard older draft to remove these imported relay choices from Conduit storage."
-    )
     expect(panelSource).not.toContain("function discardReviewRows(")
   })
 

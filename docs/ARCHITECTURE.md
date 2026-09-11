@@ -244,7 +244,7 @@ Dexie is used for local-first persistence and recovery:
 | `relayLists`               | NIP-65 relay list cache                                     |
 | `ownerRelayListEvidence`   | Validated owner `kind:10002` frontier and delivery evidence |
 | `inboxDeclarationEvidence` | Validated `kind:10050` frontier, delivery, and recovery     |
-| `accountNetworkLocalState` | Unsigned exclusions, ordering, scans, and migration state   |
+| `accountNetworkLocalState` | Unsigned exclusions, ordering, and capability scans         |
 | `productSocialSummaries`   | Product trust/social summary cache                          |
 | `paymentAttempts`          | Buyer payment attempt history                               |
 | `wallets`                  | Non-secret local wallet descriptors/defaults                |
@@ -267,9 +267,10 @@ public key/signer method. Active account Network membership is not a
 localStorage setting: it is projected from validated signed `kind:10002` and
 `kind:10050` evidence. IndexedDB stores signed Network evidence, unsigned local
 Network policy, local order/message/payment records, caches, wallet descriptors,
-and provider-owned credential records. Legacy relay-setting values and their
-migration or inbox-recovery markers may remain only for bounded migration and
-read recovery; they never become current signed authority or write routing.
+and provider-owned credential records. Unpublished legacy local Network settings
+and their migration or inbox-recovery markers are ignored. Reconnect or reset
+reconstructs account membership from validated published signed evidence, with
+explicit Network setup or repair when valid published state is absent.
 
 A legacy single-wallet NWC record may be read only for transactional migration
 into `wallets` and `walletCredentials`; new wallet credentials must not be
@@ -295,8 +296,8 @@ immutable target plans are staged before network I/O so interrupted operations
 can retry without asking the signer to create a different replaceable event.
 
 Dexie retains signed frontier and delivery evidence plus unsigned local policy:
-causal whole-relay exclusions, capability observations, migration state, and a
-signer-free preferred order among otherwise eligible and equivalent operations.
+causal whole-relay exclusions, capability observations, and a signer-free
+preferred order among otherwise eligible and equivalent operations.
 Causal exclusions gate later operations until an authoritative re-add. Preferred
 order and capability observations never override signed membership, protocol
 routing, exclusions, validity, or evidence rules. Owner-selected `ws://` relays

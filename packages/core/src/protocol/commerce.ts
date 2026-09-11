@@ -35,10 +35,7 @@ import {
   getNdk,
   mergeEventSourceRelayUrls,
 } from "./ndk"
-import {
-  getCommittedLegacyRelayReadRecovery,
-  readDurableAccountRelaySettingsPlanningSnapshot,
-} from "./network-preferences"
+import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import {
   deriveInboxReadCoverage,
@@ -5944,7 +5941,7 @@ type InboxWrapFetchResult = {
 
 /**
  * Permissive inbox read (CND-208): union of declared/cached inbox relays,
- * account-scoped migration recovery, and the bounded compatibility read set.
+ * permanent cutover recovery, and the bounded compatibility read set.
  * General NIP-65 reads are not inbox routes. All-failed reads surface as
  * coverage "unavailable" instead of a healthy empty inbox.
  */
@@ -5966,8 +5963,6 @@ async function fetchNewInboxWraps(
   const readPlan = planInboxReadRelays({
     declaration,
     authenticatedPubkey: principalPubkey,
-    migrationRecoveryRelayUrls:
-      getCommittedLegacyRelayReadRecovery(principalPubkey)?.readRelayUrls ?? [],
     maxRelays: DM_INBOX_READ_FANOUT,
   })
 

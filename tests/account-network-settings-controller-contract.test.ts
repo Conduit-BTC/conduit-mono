@@ -128,7 +128,7 @@ describe("account Network settings controller contract", () => {
     )
     const reorder = sourceBetween(
       "const reorderRelays = useCallback(",
-      "const discardLegacyDraft = useCallback("
+      "const refresh = useCallback("
     )
 
     expect(retry).toContain("retryAccountNetworkMutation({")
@@ -220,16 +220,5 @@ describe("account Network settings controller contract", () => {
     expect(refresh).toContain("operationErrorMessage(error)")
     expect(refresh).toContain("Try again.")
     expect(refresh).not.toContain("throw error")
-  })
-
-  it("discards only the legacy NIP-65 role draft", () => {
-    const discard = sourceBetween(
-      "const discardLegacyDraft = useCallback(",
-      "const refresh = useCallback("
-    )
-    expect(discard).toContain("completeLegacyRelaySettingsDraftMigration({")
-    expect(discard).toContain('disposition: "discarded"')
-    expect(discard).not.toContain("removeLegacyRelayReadRecoveryRelayUrls")
-    expect(discard).not.toContain("clearLegacyInbox")
   })
 })

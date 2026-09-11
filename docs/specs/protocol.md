@@ -456,27 +456,22 @@ that repair.
 Gift-wrap reads are permissive: the principal reads the union of their valid
 current or pending declared inboxes, every recovery batch awaiting its own exact
 readback or still within its own seven-day grace, eligible retained last-usable
-inboxes, an active bounded legacy migration-recovery record, and the bounded
-Conduit-operated compatibility read set. Whole-relay removals are excluded from
-every batch's active recovery set as soon as the atomic local commit completes.
+inboxes, and the bounded Conduit-operated compatibility read set. Whole-relay
+removals are excluded from every batch's active recovery set as soon as the
+atomic local commit completes.
 The immutable confirmation plan retains the URL only as policy-blocked
 historical evidence; the batch never queries or reactivates it. General NIP-65
 membership never adds an inbox read target. Read results carry coverage
 (`complete | partial | unavailable`) and source provenance; an all-failed read
 must never be reported as an authoritative empty inbox.
 
-Legacy NIP-65 roles never create NIP-17 evidence. A bounded read-only secure-IN
-recovery record explicitly committed by an older build is handled independently
-of NIP-65 draft import and never authorizes writes. An ordinary replacement
-carries those relays into the cutover lane; its seven-day read-only grace begins
-only after a usable `kind:10050` replacement with one to three eligible inbox relays is
-read back exactly from its complete shared relay set. Signing or durable staging
-alone does not start or end that grace. Explicit whole-relay removal is the only
-early-termination path and ends recovery for that URL at the atomic local
-commit. A migration discard tombstone applies only to a discarded legacy
-NIP-65 role draft. A persisted legacy singleton cutover record up-converts to
-one recovery batch without changing its relay URLs or any established readback
-and expiry timestamps.
+Unpublished legacy local Network settings and migration records never supply
+inbox routes or recovery. Reconnect or reset reconstructs membership from
+validated published `kind:10002` and `kind:10050` evidence; Network provides
+explicit setup or repair when valid published state is absent. A persisted
+singleton cutover record from the current signed protocol up-converts to one
+recovery batch without changing its relay URLs or any established readback and
+expiry timestamps.
 
 Shared acceleration, cache, index, and routing systems may derive only from
 relay-visible state and must remain rebuildable rather than becoming hidden

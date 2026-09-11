@@ -27,8 +27,6 @@ export type {
 } from "../db"
 
 export const ACCOUNT_NETWORK_LOCAL_STATE_VERSION = 1
-export const ACCOUNT_NETWORK_LOCAL_STATE_MIGRATION_VERSION = 1
-export const ACCOUNT_NETWORK_LOCAL_STATE_UNMIGRATED_VERSION = 0
 
 const HEX_64 = /^[0-9a-f]{64}$/
 
@@ -310,15 +308,6 @@ export function normalizeAccountNetworkLocalState(
   if (version !== ACCOUNT_NETWORK_LOCAL_STATE_VERSION) {
     throw new Error(`Unsupported account network state version: ${version}`)
   }
-  const migrationVersion = assertVersion(
-    value.migrationVersion,
-    "Account network migration version"
-  )
-  if (migrationVersion > ACCOUNT_NETWORK_LOCAL_STATE_MIGRATION_VERSION) {
-    throw new Error(
-      `Unsupported account network migration version: ${migrationVersion}`
-    )
-  }
   if (!Array.isArray(value.exclusions)) {
     throw new Error("Account network exclusions must be an array")
   }
@@ -337,7 +326,6 @@ export function normalizeAccountNetworkLocalState(
   return {
     pubkey,
     version,
-    migrationVersion,
     exclusions,
     preferredRelayOrder: normalizeRelayUrlsStrict(
       value.preferredRelayOrder,
@@ -358,7 +346,6 @@ export function emptyAccountNetworkLocalState(
   return {
     pubkey: requireAccountPubkey(pubkey),
     version: ACCOUNT_NETWORK_LOCAL_STATE_VERSION,
-    migrationVersion: ACCOUNT_NETWORK_LOCAL_STATE_UNMIGRATED_VERSION,
     exclusions: [],
     preferredRelayOrder: [],
     relayScans: [],

@@ -120,11 +120,8 @@ persistence is limited to:
   evidence explicitly re-adds the URL;
 - a signer-free preferred relay order that can rank only otherwise eligible and
   equivalent Conduit operations;
-- bounded account-and-device-scoped legacy inbox-read recovery records that
-  persist across incomplete migration and restart until their lifecycle ends;
-- durable account-and-device-scoped migration discard tombstones that persist
-  across restart for the legacy migration reader's lifetime and prevent
-  discarded legacy NIP-65 role drafts from being re-imported.
+- independent account-and-device-scoped recovery batches owned by locally
+  staged `kind:10050` replacements, with exact readback and expiry evidence.
 
 None of these records may outrank a newer validated signed frontier. An unsigned
 draft does not change runtime behavior. Once every requested event is signed
@@ -134,52 +131,20 @@ visible. Signed membership converges through Nostr. Local ordering is shared
 only where Conduit storage is already shared; isolated devices do not gain a
 second synchronized ordering authority.
 
-### Legacy migration
+### Signed reconstruction
 
-Valid signed state always wins. Legacy app-scoped relay data is not merged into
-or allowed to override a signed frontier.
+Reconnect or reset reconstructs account membership from validated published
+`kind:10002` and `kind:10050` evidence. Unpublished legacy local Network settings,
+migration markers, and legacy inbox-read recovery records are disposable and
+ignored. They do not seed review drafts or affect reads, publishes, private
+inbox routing, recovery, or retries. When valid published state is absent,
+Network provides explicit setup or repair; partial or unavailable discovery
+remains unknown.
 
-Legacy NIP-65 draft import and legacy inbox-read recovery have separate gates:
-
-- Complete bounded scoped absence for `kind:10002` may seed a one-time
-  unpublished NIP-65 draft. Any valid signed `kind:10002` suppresses that draft
-  import.
-- Legacy NIP-65 roles are not inbox evidence. Only an explicit bounded
-  secure-IN recovery record already committed by an older build is retained as
-  read-only migration evidence; new migration runs never infer one from role
-  drafts. Signed NIP-65 state does not end an existing recovery lane.
-
-Migration persists and verifies every eligible replacement record before
-retiring the legacy key. An incomplete migration retains or recovers the prior
-read path and remains retryable; partial replacement records are neither
-authority nor active state.
-
-The recovery record and marker are account-and-device-scoped local migration
-evidence. Neither is signed account authority or current membership, and neither
-defines a write target or supplies publication input. An existing recovery
-record survives incomplete migration and restart. An ordinary replacement
-moves those URLs into an independent recovery batch owned by that locally staged
-`kind:10050` replacement. The batch's seven-day read-only grace begins only
-after exact shared-set readback establishes its owning replacement with one to
-three eligible inbox relays. Stronger signed evidence, including a replacement produced
-by another client, preserves existing batches but creates none without a
-matching locally staged immutable replacement plan. A signed or merely staged
-`kind:10002`, an unconfirmed or unusable `kind:10050`, cancellation, or signer
-refusal does not start or end a batch's grace. Signer-free redistribution of the
-same exact staged event may add an inbox-only immutable confirmation attempt for
-the current shared set. Any one complete attempt that observes the exact event,
-conclusively checks every target, and contains no policy-blocked target starts
-the batch clock once; later attempts and observations never reset it. A
-whole-relay removal leaves an affected historical attempt incomplete rather
-than shrinking it, while signer-free redistribution may add a fresh attempt for
-the same exact event and current shared set. Whole-relay removal filters the
-removed URL from every batch immediately after the atomic local commit. A
-persisted legacy singleton cutover record up-converts to one batch without
-changing its relay URLs or established readback and expiry timestamps.
-
-Malformed, partial, unavailable, stale, or a future reserved fail-closed
-conflict cannot trigger NIP-65 draft import. The replacement does not keep a
-dormant second settings authority for a later cleanup release.
+Stronger verified current signed evidence clears its causal exclusion without
+depending on legacy localStorage cleanup. Permanent signed evidence, exact
+pending checkpoints, and private-inbox cutover recovery retain their existing
+persistence and lifecycle.
 
 ## Flat List and Local Ordering
 
@@ -313,9 +278,11 @@ C's readback nor any later redistribution changes A's batch clock or expiry.
 A signer-free redistribution of the same exact staged event may append another
 immutable confirmation attempt to its existing batch when the shared set has
 changed. An attempt completes only after the exact event is observed on at least
-one target and every unblocked target has a conclusive result. Completion of any
-one attempt starts the batch clock exactly once. Later attempts or observations
-cannot restart it, and a policy-blocked URL can never satisfy an attempt.
+one target, every target has a conclusive result, and no target is policy-blocked.
+Whole-relay removal leaves an affected historical attempt incomplete rather
+than shrinking it; signer-free redistribution may add a fresh attempt for the
+same exact event and current shared set. Completion of any one attempt starts
+the batch clock exactly once. Later attempts or observations cannot restart it.
 
 Explicit whole-relay removal overrides this recovery behavior for the removed
 URL. After all required exact checkpoints are staged, that URL is excluded from

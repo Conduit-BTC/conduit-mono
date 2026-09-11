@@ -22,10 +22,9 @@ The latest validated signed frontier for each event kind is authoritative.
 Unsigned local desired roles are not account authority; the active review draft
 exists only in memory. Local persistence is limited to cached signed evidence,
 capability observations, exact signed-event retry checkpoints, causal
-whole-relay exclusions, a signer-free preferred order, bounded
-account-and-device-scoped legacy inbox-read recovery records, and durable
-migration discard tombstones that prevent discarded legacy NIP-65 role drafts
-from being re-imported.
+whole-relay exclusions, a signer-free preferred order, and independent
+account-and-device-scoped recovery batches for locally staged `kind:10050`
+replacements.
 
 Conduit groups the flat list by current membership and scoped capability
 evidence. A signer-free Conduit-local preference may order only otherwise
@@ -216,57 +215,19 @@ Nostr absence. Partial or unavailable discovery is unknown and must never be
 collapsed into absence. Cached signed evidence remains visible with honest
 stale or degraded status when a fresh attempt is incomplete.
 
-### Legacy migration
+### Signed reconstruction
 
-Valid signed state always wins. Legacy app-scoped relay data must never
-override, merge into, or silently republish a signed frontier.
+Reconnect or reset reconstructs account membership from validated published
+`kind:10002` and `kind:10050` evidence. Unpublished legacy local Network settings
+and their migration markers are disposable and ignored. They do not seed a
+review draft, recovery batch, retry, or relay I/O. If valid published state is
+absent, the user explicitly sets up or repairs their configuration in Network.
+Partial or unavailable discovery remains unknown, not absence.
 
-Legacy NIP-65 draft import and legacy inbox-read recovery are independent:
-
-- **NIP-65 draft import:** only complete bounded reconciliation that establishes
-  scoped absence for `kind:10002` may seed a one-time unpublished draft. Any
-  valid signed `kind:10002` suppresses this import; legacy values never merge
-  into signed NIP-65 state.
-- **Inbox-read recovery:** legacy NIP-65 roles are never treated as NIP-17
-  evidence. Only an explicit bounded secure-IN recovery record already
-  committed by an older build is retained read-only; a new migration run does
-  not create one from role drafts. A signed NIP-65 frontier does not cancel an
-  existing recovery lane.
-
-Cleanup uses a failure-safe sequence. Migration records the local migration
-version and, only when eligible, exposes the old NIP-65 roles as an ephemeral
-review candidate before retiring the legacy key. An incomplete migration stays
-retryable; no partial local record becomes account authority or active signed
-state.
-
-An existing inbox-recovery record is not signed account truth. It is limited to
-the previously committed private-inbox read relays, never authorizes writes or
-publication, and is not shown as current membership. An ordinary replacement
-moves those URLs into an independent recovery batch owned by that locally staged
-`kind:10050` replacement. The batch's seven-day read-only grace begins only
-after exact shared-set readback establishes its owning replacement with one to
-three eligible inbox relays. Stronger signed evidence, including a replacement produced
-by another client, preserves existing batches but creates none without a
-matching locally staged immutable replacement plan. A signed or merely staged
-`kind:10002`, an unconfirmed or unusable `kind:10050`, signer refusal, or
-cancellation does not start or end a batch's grace. Signer-free redistribution
-of the same exact event may append an inbox-only immutable confirmation attempt
-for the current shared set. Any one complete unblocked attempt starts the batch
-clock exactly once; later attempts or observations never reset it. Whole-relay
-removal filters the removed URL from every batch's active recovery set
-immediately after the atomic local commit. The immutable confirmation plan retains the URL only as
-policy-blocked historical evidence, which cannot be queried or reactivated by
-the batch. A persisted legacy singleton cutover record up-converts to one batch
-without changing its relay URLs or established readback and expiry timestamps.
-
-The recovery record and marker are account-and-device-scoped and survive
-restart for their bounded migration lifecycle. Neither becomes signed account
-authority or membership, defines a write target, or supplies publication
-input.
-
-Malformed, partial, unavailable, stale, or a future reserved fail-closed
-conflict cannot trigger NIP-65 draft import. No compatibility release keeps a
-second authoritative settings system alive.
+Current-protocol signed evidence, exact pending checkpoints, causal exclusions,
+and private-inbox cutover recovery retain their existing persistence and
+lifecycle. Stronger verified current signed authority can clear its causal
+exclusion without depending on legacy localStorage cleanup.
 
 ---
 
@@ -733,16 +694,13 @@ Permitted local records are implementation evidence, not settings:
 - independent account-and-device-scoped inbox-recovery batches, each owned by a
   locally staged immutable `kind:10050` replacement plan and carrying its own
   exact shared-set readback and seven-day expiry state; legacy singleton records
-  up-convert to one such batch;
-- durable account-and-device-scoped migration discard tombstones that survive
-  restart for the legacy migration reader's lifetime and prevent discarded
-  legacy NIP-65 role drafts from being re-imported.
+  up-convert to one such batch.
 
-No local record may outrank a newer validated signed frontier. The migration
-records are not signed account authority or membership and never define write
-targets or publication input. Signed membership converges through Nostr. Local
-ordering is shared only where Conduit storage is already shared; isolated
-devices do not gain another synchronized authority.
+No local record may outrank a newer validated signed frontier. Recovery batches
+are not current membership and never define write targets or publication input.
+Signed membership converges through Nostr. Local ordering is shared only where
+Conduit storage is already shared; isolated devices do not gain another
+synchronized authority.
 
 ---
 

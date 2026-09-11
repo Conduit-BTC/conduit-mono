@@ -871,9 +871,6 @@ function operationMessage(
   if (kind === "refresh" && phase === "checking") {
     return "Refreshing relay information."
   }
-  if (kind === "discard_legacy" && phase === "staging") {
-    return "Discarding the older local relay role draft."
-  }
   if (phase === "checking") return "Checking the current signed preferences."
   if (phase === "awaiting_signatures") {
     return "Complete each signer request. Nothing changes until every required signature is staged."
@@ -1631,7 +1628,7 @@ function NetworkHeader({
   )
 }
 
-function LegacyInboxRecoverySection({
+function InboxDistributionSection({
   controller,
   busy,
   relayDraftDirty,
@@ -1673,110 +1670,6 @@ function LegacyInboxRecoverySection({
           Retry exact declaration
         </Button>
       </div>
-    </div>
-  )
-}
-
-function LegacyRelayDraftSection({
-  controller,
-  busy,
-}: {
-  controller: AccountNetworkSettingsController
-  busy: boolean
-}) {
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [discarding, setDiscarding] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  if (!controller.legacyDraftReviewAvailable) return null
-
-  async function discardLegacyDraft(): Promise<void> {
-    setDiscarding(true)
-    setError(null)
-    try {
-      await controller.discardLegacyDraft()
-      setDialogOpen(false)
-    } catch (discardError) {
-      setError(
-        discardError instanceof Error
-          ? discardError.message
-          : "The older relay role draft could not be discarded."
-      )
-    } finally {
-      setDiscarding(false)
-    }
-  }
-
-  return (
-    <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h3 className="text-balance text-sm font-semibold text-[var(--text-primary)]">
-            Older relay role draft
-          </h3>
-          <p className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Review and publish these older Read and Publish choices, or discard
-            only this local draft. Discarding it does not end private inbox
-            recovery.
-          </p>
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          className="min-h-11"
-          disabled={busy || discarding}
-          onClick={() => {
-            setError(null)
-            setDialogOpen(true)
-          }}
-        >
-          <Trash2 className="size-4" aria-hidden="true" />
-          Discard older draft
-        </Button>
-      </div>
-      {error ? (
-        <p role="alert" className="mt-3 text-pretty text-sm text-error">
-          {error}
-        </p>
-      ) : null}
-      <AlertDialog
-        open={dialogOpen}
-        onOpenChange={(open) => {
-          if (!discarding) setDialogOpen(open)
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle className="text-balance">
-              Discard the older relay role draft?
-            </AlertDialogTitle>
-            <AlertDialogDescription className="text-pretty leading-6">
-              This removes only the unpublished legacy Read and Publish draft
-              from Conduit storage. It does not publish an event, ask your
-              signer, or end private inbox recovery.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              className="min-h-11"
-              disabled={discarding}
-              onClick={() => setDialogOpen(false)}
-            >
-              Keep draft
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              className="min-h-11"
-              disabled={discarding}
-              onClick={() => void discardLegacyDraft()}
-            >
-              {discarding ? "Discarding" : "Discard draft"}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   )
 }
@@ -2176,12 +2069,11 @@ function RelayPreferencesSection({
           controller={controller}
           relayDraftDirty={review.hasUnpublishedChanges}
         />
-        <LegacyInboxRecoverySection
+        <InboxDistributionSection
           controller={controller}
           busy={review.busy}
           relayDraftDirty={review.hasUnpublishedChanges}
         />
-        <LegacyRelayDraftSection controller={controller} busy={review.busy} />
       </PreferenceSectionBody>
       <PreferenceSectionDivider />
       <PreferenceSectionBody>
@@ -2252,7 +2144,6 @@ function getRelaySettingsEditorRevision(
 
   return JSON.stringify({
     revision: controller.revision,
-    legacyDraftReviewAvailable: controller.legacyDraftReviewAvailable,
     rows,
   })
 }

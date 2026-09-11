@@ -43,7 +43,7 @@ NIP-44/NIP-59 encrypted gift wraps are preserved end to end.
 | `declared` current frontier                                      | Declared inboxes + bounded compatibility reads                                          | Declared inboxes only                  |
 | Fully signed/staged ordinary pending declaration                 | Pending inboxes + hidden previous inboxes through exact readback and stale-sender grace | Pending inboxes only                   |
 | Fully signed/staged pending declaration with whole-setup removal | Pending inboxes; removed URL excluded immediately                                       | Pending inboxes; removed URL excluded  |
-| `not_observed`, validated kind 16 order                          | Active bounded legacy migration recovery + configured compatibility relays              | Bounded compatibility order plan       |
+| `not_observed`, validated kind 16 order                          | Configured compatibility relays                                                         | Bounded compatibility order plan       |
 | Retained `declared`; latest observation partial or unavailable   | Retained last-usable inboxes + compatibility reads; show degraded state                 | Retained declared inboxes only         |
 | `signed_empty` current frontier                                  | Retained last-usable inboxes may support recovery reads                                 | Block; do not override signed state    |
 | `malformed` current frontier                                     | Retained last-usable inboxes may support recovery reads; show ambiguity                 | Block; never infer user opt-out        |
@@ -96,18 +96,10 @@ Invariants:
   plan but records the removed URL as policy-blocked historical evidence, so the
   batch cannot query or reactivate it. The proceed/cancel warning states that
   stale clients may still send there and those messages can be missed.
-- Legacy NIP-65 draft import begins only after complete bounded discovery
-  establishes scoped absence for `kind:10002`; valid signed NIP-65 suppresses
-  that import. Legacy NIP-65 roles are never reinterpreted as NIP-17 inbox
-  evidence. Builds that already committed an explicit bounded secure-IN
-  recovery record retain it read-only while it converges; new migration runs do
-  not create one from role drafts. The recovery lane never writes or publishes.
-  An ordinary replacement moves those URLs into the versioned cutover lane: its
-  seven-day grace starts only after exact shared-set readback of a usable
-  `kind:10050` replacement. Whole-relay removal ends recovery for that URL
-  immediately after the atomic local commit across every batch. A persisted
-  legacy singleton cutover record up-converts to one recovery batch without
-  changing its relay URLs or any established readback and expiry timestamps.
+- Unpublished legacy local Network settings and migration records never supply
+  inbox routes or recovery. A persisted singleton cutover record from the
+  current signed protocol up-converts to one recovery batch without changing
+  its relay URLs or any established readback and expiry timestamps.
 - Relay-settings changes expire evidence freshness and trigger rediscovery; they
   do not delete the account-scoped frontier or its last-usable relay set.
 - Only an exact-event observation from a completed bounded relay plan advances
@@ -206,10 +198,9 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
   `packages/core/src/protocol/` (the NDK-neutral executor and explicit
   protected-inbox composition boundary). NDK remains only at named signer and
   gift-unwrap edges; exact file names follow the implementation slice.
-- Network-owned readiness, repair, pending cutover, and migration recovery: one
-  shared core/UI Network feature rendered by thin Market and Merchant
-  `network.tsx` route shells. The existing declaration hook and separate inbox
-  section are adapted or retired as that shared feature lands.
+- Network-owned readiness, repair, and pending cutover: one shared core/UI
+  Network feature rendered by thin Market and Merchant `network.tsx` route
+  shells.
 - Order provenance: `orderLifecycles.orderDeliveryRoute`
   (`declared_inbox` | `compatibility_order`), with the exact encrypted wrap and
   per-relay outcomes in `orderLifecycles.orderRelayDelivery`
@@ -237,13 +228,10 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
 - Whole-relay removal of `declared-a`: after every required signature is staged,
   no read, write, or recovery batch uses `declared-a`, even while ACK/readback is
   pending. The warning explains that stale-client sends there can be missed.
-- Legacy local migration when signed NIP-65 already exists: suppress draft
-  import and retire the obsolete role source after its migration marker is
-  durable. If an older build already committed an explicit bounded inbox
-  recovery record, retain it as read-only evidence; never infer one from the
-  NIP-65 draft. A usable replacement keeps those reads through the seven-day
-  cutover that starts after exact shared-set readback. Whole-relay removal ends
-  recovery for that URL immediately.
+- Reconnect or reset: reconstruct membership from validated published
+  `kind:10002` and `kind:10050` evidence. Unpublished legacy local settings and
+  migration records are ignored. If valid published state is absent, the user
+  explicitly sets up or repairs their configuration in Network.
 - Complete-empty or partial rediscovery after a valid declaration: the retained
   frontier becomes stale/degraded but remains the declared route; it is not
   deleted.

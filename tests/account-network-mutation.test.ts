@@ -86,7 +86,6 @@ interface FixtureOptions {
   inboxCreatedAt?: number
   inboxRelayUrls?: string[]
   cutoverRecoveryRelayUrls?: string[]
-  legacyInboxRecoveryRelayUrls?: string[]
 }
 
 function createFixture(options: FixtureOptions = {}): {
@@ -209,10 +208,7 @@ function createFixture(options: FixtureOptions = {}): {
     },
     ownerRelayList: ownerResolution,
     inboxDeclaration: inboxResolution,
-    legacyMigration: "already_complete",
-    legacyReviewCandidate: null,
     localExcludedRelayUrls: [],
-    legacyInboxRecoveryRelayUrls: options.legacyInboxRecoveryRelayUrls ?? [],
   }
   return {
     snapshot: {
@@ -1058,30 +1054,6 @@ describe("account network mutation", () => {
     ).toThrow("Choose a replacement")
   })
 
-  it("requires a replacement when only legacy recovery keeps the inbox usable", () => {
-    const fixture = createFixture({ legacyInboxRecoveryRelayUrls: [INBOX_A] })
-    fixture.reconciliation.inboxDeclaration = {
-      ...fixture.reconciliation.inboxDeclaration,
-      state: "not_observed",
-      relayUrls: [],
-      stale: false,
-      eventId: undefined,
-      eventCreatedAt: undefined,
-      sourceRelayUrls: undefined,
-      sharedSourceRelayUrls: undefined,
-    }
-
-    const withoutInbox = baselineRoles().filter(
-      (relay) => relay.url !== INBOX_A
-    )
-    expect(() =>
-      reviewAccountNetworkMutation(
-        fixture.reconciliation,
-        action(withoutInbox, [INBOX_A])
-      )
-    ).toThrow("Choose a replacement")
-  })
-
   it("requires a current replacement even when a different recovery-only inbox survives", () => {
     const fixture = createFixture({
       cutoverRecoveryRelayUrls: [INBOX_B],
@@ -1261,50 +1233,6 @@ describe("account network mutation", () => {
       execution.log.findIndex(
         (entry) => entry.startsWith("publish:") || entry.startsWith("readback:")
       )
-    )
-  })
-
-  it("retires an exact legacy review candidate only after kind:10002 staging", async () => {
-    const fixture = createFixture()
-    fixture.reconciliation.legacyMigration = "review_required"
-    fixture.reconciliation.legacyReviewCandidate = {
-      pubkey: ACCOUNT,
-      relayScope: `account:${ACCOUNT}`,
-      draft: {
-        version: 1,
-        entries: [],
-        updatedAt: 1,
-      },
-      sourceFingerprint: "fnv1a64:1:0000000000000001",
-      source: "legacy_app_scopes",
-    }
-    const execution = createExecutionHarness(fixture)
-    execution.dependencies.completeLegacyDraftMigration = async (input) => {
-      expect(input.candidate).toEqual(
-        fixture.reconciliation.legacyReviewCandidate
-      )
-      expect(input.disposition).toBe("publish_staged")
-      execution.log.push("migration:completed")
-      return "completed"
-    }
-    const signer = createSignerHarness({ log: execution.log })
-    const reviewed = reviewAccountNetworkMutation(
-      fixture.reconciliation,
-      action(ownerChangedRoles())
-    )
-
-    const result = await publishAccountNetworkMutation({
-      reviewed,
-      signer: signer.signer,
-      dependencies: execution.dependencies,
-    })
-
-    expect(result.legacyMigrationCompletion).toBe("completed")
-    expect(execution.log.indexOf("migration:completed")).toBeGreaterThan(
-      execution.log.indexOf("stage:committed")
-    )
-    expect(execution.log.indexOf("migration:completed")).toBeLessThan(
-      execution.log.findIndex((entry) => entry.startsWith("publish:"))
     )
   })
 
@@ -2028,7 +1956,6 @@ describe("account network mutation", () => {
       cutoverRecoveryRelayUrls: [removedRelayUrl],
     })
     const execution = createExecutionHarness(fixture)
-    const prunedLegacyRecoveryUrls: string[][] = []
     const reviewed = reviewAccountNetworkMutation(
       fixture.reconciliation,
       action(baselineRoles(), [removedRelayUrl])
@@ -2040,10 +1967,6 @@ describe("account network mutation", () => {
       reviewed,
       dependencies: {
         ...execution.dependencies,
-        removeLegacyReadRecoveryRelayUrls: (input) => {
-          prunedLegacyRecoveryUrls.push([...input.relayUrls])
-          return "updated"
-        },
       },
     })
     const retained = await execution.baseRepository.get(ACCOUNT)
@@ -2052,9 +1975,7 @@ describe("account network mutation", () => {
       status: "staged",
       checkpoints: [],
       localStateChanged: true,
-      legacyRecoveryRemoval: "updated",
     })
-    expect(prunedLegacyRecoveryUrls).toEqual([[removedRelayUrl]])
     expect(execution.publishCalls).toHaveLength(0)
     expect(execution.readbackCalls).toHaveLength(0)
     expect(retained.inboxDeclaration?.cutoverRecoveries).toEqual([

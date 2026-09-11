@@ -407,25 +407,10 @@ export function buildAccountNetworkSettingsView(input: {
     row.candidate = !hasCommittedRole
   }
 
-  for (const entry of input.reconciliation.legacyReviewCandidate?.draft
-    .entries ?? []) {
-    const row = ensureRow(entry.url)
-    if (!row) continue
-    if (row.readState === null && entry.readEnabled) {
-      row.readEnabled = true
-      row.readState = "draft"
-    }
-    if (row.publishState === null && entry.writeEnabled) {
-      row.publishEnabled = true
-      row.publishState = "draft"
-    }
-  }
-
   const inbox = input.reconciliation.inboxDeclaration
   for (const relayUrl of [
     ...(inbox.retainedReadRelayUrls ?? []),
     ...(inbox.cutoverRecoveryRelayUrls ?? []),
-    ...(input.reconciliation.legacyInboxRecoveryRelayUrls ?? []),
   ]) {
     const row = ensureRow(relayUrl)
     if (!row) continue
@@ -591,7 +576,6 @@ function currentRecoveryOnlyInboxUrls(
       [
         ...(inbox.retainedReadRelayUrls ?? []),
         ...(inbox.cutoverRecoveryRelayUrls ?? []),
-        ...(reconciliation.legacyInboxRecoveryRelayUrls ?? []),
       ].filter((url) => !active.has(url))
     ),
   ]

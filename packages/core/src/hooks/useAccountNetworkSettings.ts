@@ -33,10 +33,7 @@ import {
   type ReviewedAccountNetworkMutation,
 } from "../protocol/account-network-mutation"
 import { EVENT_KINDS } from "../protocol/kinds"
-import {
-  completeLegacyRelaySettingsDraftMigration,
-  type AccountNetworkPreferencesReconciliation,
-} from "../protocol/network-preferences"
+import { type AccountNetworkPreferencesReconciliation } from "../protocol/network-preferences"
 import {
   buildAccountNetworkSettingsView,
   createCandidateNetworkRelayRow,
@@ -78,14 +75,7 @@ export type AccountNetworkSettingsOperationPhase =
   | "error"
 
 export type AccountNetworkSettingsOperationKind =
-  | "save"
-  | "remove"
-  | "retry"
-  | "redistribute"
-  | "reorder"
-  | "discard_legacy"
-  | "refresh"
-  | null
+  "save" | "remove" | "retry" | "redistribute" | "reorder" | "refresh" | null
 
 export interface AccountNetworkSettingsOperationView {
   kind: AccountNetworkSettingsOperationKind
@@ -137,7 +127,6 @@ export interface AccountNetworkSettingsController {
   operation: AccountNetworkSettingsOperationView
   relayInformationRefreshing: boolean
   exactInboxRedistributionAvailable: boolean
-  legacyDraftReviewAvailable: boolean
   mediaServers: AccountNetworkMediaServerController | null
   addRelay: (url: string) => Promise<AccountNetworkRelayRowView>
   validate: (
@@ -149,7 +138,6 @@ export interface AccountNetworkSettingsController {
   retryPendingUpdate: (kind?: AccountNetworkSignedKind) => Promise<void>
   redistributeExactInboxDeclaration: () => Promise<void>
   reorderRelays: (relayUrls: readonly string[]) => Promise<void>
-  discardLegacyDraft: () => Promise<void>
   refresh: () => Promise<void>
   clearOperation: () => void
 }
@@ -352,24 +340,12 @@ function resultMessage(
     return "Your signed Network preferences already match this review."
   }
   if (kind === "remove" && result.checkpoints.length === 0) {
-    return result.legacyRecoveryRemoval === "retryable"
-      ? "The relay cutoff is active. Local recovery cleanup will retry."
-      : "The relay cutoff is active immediately."
+    return "The relay cutoff is active immediately."
   }
   const pending = result.checkpoints.some((checkpoint) => checkpoint.pending)
-  let message = pending
+  return pending
     ? "The exact signed preferences are staged. Some relay confirmation remains retryable."
     : "The exact signed preferences were confirmed on the planned relays."
-  if (
-    result.legacyMigrationCompletion === "source_changed" ||
-    result.legacyMigrationCompletion === "retryable"
-  ) {
-    message += " The old local relay draft still needs cleanup."
-  }
-  if (result.legacyRecoveryRemoval === "retryable") {
-    message += " The relay cutoff is active; local recovery cleanup will retry."
-  }
-  return message
 }
 
 function canRedistributeExactInbox(
@@ -418,8 +394,6 @@ function scopedRevision(input: {
           ] as const
       )
       .sort((left, right) => left[0].localeCompare(right[0])),
-    legacyDraft:
-      input.reconciliation?.legacyReviewCandidate?.sourceFingerprint ?? null,
     exclusions:
       input.localState?.exclusions
         .map((exclusion) => exclusion.relayUrl)
@@ -1034,51 +1008,6 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     [accountFenceFor, activeLocal, baseView.rows, captureAccount]
   )
 
-  const discardLegacyDraft = useCallback(async () => {
-    const candidate = reconciliation?.legacyReviewCandidate
-    if (!candidate) return
-    const snapshot = captureAccount()
-    const shouldContinue = accountFenceFor(snapshot)
-    setOperation({
-      kind: "discard_legacy",
-      phase: "staging",
-      message: null,
-    })
-    try {
-      const status = await completeLegacyRelaySettingsDraftMigration({
-        candidate,
-        disposition: "discarded",
-      })
-      if (!shouldContinue()) return
-      if (status === "source_changed" || status === "retryable") {
-        throw new Error(
-          status === "source_changed"
-            ? "The old local relay draft changed. Refresh and review it again."
-            : "The old local relay draft could not be discarded yet."
-        )
-      }
-      setOperation({
-        kind: "discard_legacy",
-        phase: "complete",
-        message: "The old unpublished relay draft was discarded.",
-      })
-      accountPreferences.refetch()
-    } catch (error) {
-      accountPreferences.refetch()
-      setOperation({
-        kind: "discard_legacy",
-        phase: "error",
-        message: operationErrorMessage(error),
-      })
-      throw error
-    }
-  }, [
-    accountFenceFor,
-    accountPreferences,
-    captureAccount,
-    reconciliation?.legacyReviewCandidate,
-  ])
-
   const refresh = useCallback(async (): Promise<void> => {
     const generation = ++scanGeneration.current
     setOperation({ kind: "refresh", phase: "checking", message: null })
@@ -1139,7 +1068,6 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         reconciliation,
         baseView.pendingExactDeliveries
       ),
-    legacyDraftReviewAvailable: Boolean(reconciliation?.legacyReviewCandidate),
     mediaServers: auth.pubkey
       ? {
           view: mediaServerPreferences.view,
@@ -1157,7 +1085,6 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     retryPendingUpdate,
     redistributeExactInboxDeclaration,
     reorderRelays,
-    discardLegacyDraft,
     refresh,
     clearOperation: () => setOperation(EMPTY_OPERATION),
   }

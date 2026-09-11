@@ -5,8 +5,6 @@ import {
   getPublicKey,
 } from "nostr-tools/pure"
 import {
-  ACCOUNT_NETWORK_LOCAL_STATE_MIGRATION_VERSION,
-  ACCOUNT_NETWORK_LOCAL_STATE_UNMIGRATED_VERSION,
   ACCOUNT_NETWORK_LOCAL_STATE_VERSION,
   applyAccountNetworkRelayExclusion,
   applyAuthoritativeAccountNetworkReadds,
@@ -79,15 +77,22 @@ function excludeRelay(
 }
 
 describe("account network local state", () => {
+  it("reads existing local policy without retaining obsolete migration metadata", () => {
+    const policy = excludeRelay(emptyAccountNetworkLocalState(OWNER, () => 10))
+    const historical = { ...policy, migrationVersion: 1 }
+    expect(normalizeAccountNetworkLocalState(historical, OWNER)).toEqual(policy)
+    expect(
+      normalizeAccountNetworkLocalState(historical, OWNER)
+    ).not.toHaveProperty("migrationVersion")
+  })
+
   it("strictly normalizes account identity, versions, and causal references", () => {
     const empty = emptyAccountNetworkLocalState(OWNER.toUpperCase(), () => 10)
     expect(empty).toMatchObject({
       pubkey: OWNER,
       version: ACCOUNT_NETWORK_LOCAL_STATE_VERSION,
-      migrationVersion: ACCOUNT_NETWORK_LOCAL_STATE_UNMIGRATED_VERSION,
       updatedAt: 10,
     })
-    expect(ACCOUNT_NETWORK_LOCAL_STATE_MIGRATION_VERSION).toBe(1)
 
     expect(() =>
       applyAccountNetworkRelayExclusion(empty, {

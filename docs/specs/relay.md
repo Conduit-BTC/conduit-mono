@@ -203,27 +203,12 @@ validity, or evidence rules.
 
 Every fresh signer connection reconciles both replaceable-event frontiers over
 a bounded discovery plan independent of legacy local preferences. Partial or
-unavailable coverage is unknown, not absence. Valid signed state always wins;
-legacy data may only seed a reviewed unpublished draft after complete bounded
-discovery establishes scoped absence for `kind:10002`.
+unavailable coverage is unknown, not absence. Reconnect or reset reconstructs
+account membership from validated published `kind:10002` and `kind:10050`
+evidence. Unpublished legacy local Network settings and migration records are
+ignored; they do not seed drafts, recovery, retries, or relay I/O. When valid
+published state is absent, Network provides explicit setup or repair.
 
-That draft-import gate is independent of legacy inbox-read recovery. Legacy
-NIP-65 roles never create NIP-17 evidence. A valid signed `kind:10002`
-suppresses draft import but does not end an explicit bounded read-only recovery
-record already committed by an older build. An ordinary replacement moves
-those URLs into an independent recovery batch owned by that locally staged
-`kind:10050` replacement. That batch's seven-day clock starts only after exact
-shared-set readback of its owning replacement. Stronger signed evidence,
-including a replacement produced by another client, preserves existing batches
-but creates none without a matching locally staged immutable replacement plan.
-A signer-free redistribution of the same exact event may append an inbox-only
-immutable confirmation attempt for the current shared set. An attempt completes
-only after the exact event is observed on at least one target, every target has
-a conclusive result, and no target has become policy-blocked. A whole-relay
-removal never retroactively shrinks or completes that historical attempt; the
-same exact event may be redistributed signer-free to add a fresh attempt for the
-then-current unblocked shared set. Any one completed attempt starts the batch
-clock exactly once; later attempts or observations never reset it.
 A persisted legacy singleton cutover record up-converts to one batch without
 resetting its established readback or expiry. Whole-relay removal filters the
 URL from every batch's active recovery set immediately while retaining it only
@@ -253,7 +238,13 @@ shared-set readback or still within its own seven-day grace. A stronger signed
 frontier, including one produced by another client, preserves those batches but
 does not create one without a local immutable replacement plan. Signer-free
 same-event redistribution may append an inbox-only immutable confirmation
-attempt, but any one complete attempt starts the owning batch's clock only once.
+attempt for the current shared set. An attempt completes only after the exact
+event is observed on at least one target, every target has a conclusive result,
+and no target has become policy-blocked. Whole-relay removal never
+retroactively shrinks or completes that historical attempt; redistribution may
+add a fresh attempt for the then-current unblocked shared set. Any one complete
+attempt starts the owning batch's clock only once, and later observations or
+attempts never reset it.
 For example, if replacement B starts recovery of inbox A and replacement C is
 staged before B's grace expires, C creates a separate batch for inbox B. Reads
 include A and B until each owning batch independently confirms and expires;

@@ -1112,10 +1112,6 @@ export function createRelaySettingsFromPreferences(
   )
 }
 
-export function hasManualRelaySettings(state: RelaySettingsState): boolean {
-  return state.entries.some((entry) => entry.source === "manual")
-}
-
 export function getRelaySettingsStorageKey(scope?: string | null): string {
   const normalizedScope = scope?.trim()
   return normalizedScope
@@ -1125,35 +1121,6 @@ export function getRelaySettingsStorageKey(scope?: string | null): string {
 
 export function isAccountRelaySettingsScope(scope?: string | null): boolean {
   return scope?.trim().startsWith("account:") === true
-}
-
-export function hasRelaySettingsDraft(scope?: string | null): boolean {
-  if (typeof window === "undefined") return false
-  try {
-    const raw = window.localStorage.getItem(getRelaySettingsStorageKey(scope))
-    if (raw === null) return false
-    const parsed = JSON.parse(raw) as unknown
-    if (!isRecord(parsed) || !Array.isArray(parsed.entries)) return false
-    if (
-      !parsed.entries.every(
-        (entry) =>
-          isRecord(entry) &&
-          typeof entry.url === "string" &&
-          typeof entry.readEnabled === "boolean" &&
-          typeof entry.writeEnabled === "boolean"
-      )
-    ) {
-      return false
-    }
-    const normalized = normalizeUserManagedRelaySettingsState({
-      version: Number(parsed.version) || RELAY_SETTINGS_STORAGE_VERSION,
-      updatedAt: Number(parsed.updatedAt) || now(),
-      entries: parsed.entries as unknown as RelaySettingsEntry[],
-    })
-    return normalized.entries.length === parsed.entries.length
-  } catch {
-    return false
-  }
 }
 
 export function getActiveRelaySettingsScope(): string | null {
@@ -1233,6 +1200,16 @@ export function normalizeRelaySettingsState(
 }
 
 export function loadRelaySettings(scope?: string | null): RelaySettingsState {
+  // Only guest/default preferences are local settings. Signed-in membership
+  // is reconstructed from validated Nostr evidence, never old scoped bytes.
+  const normalizedScope = scope?.trim()
+  if (
+    normalizedScope &&
+    normalizedScope !== "default" &&
+    normalizedScope !== "market:guest"
+  ) {
+    return createEmptyRelaySettingsState()
+  }
   if (typeof window === "undefined") return createEmptyRelaySettingsState()
 
   const key = getRelaySettingsStorageKey(scope)
@@ -1288,7 +1265,13 @@ export function saveRelaySettings(
     updatedAt: now(),
   })
 
-  if (typeof window !== "undefined") {
+  const normalizedScope = scope?.trim()
+  if (
+    typeof window !== "undefined" &&
+    (!normalizedScope ||
+      normalizedScope === "default" ||
+      normalizedScope === "market:guest")
+  ) {
     window.localStorage.setItem(
       getRelaySettingsStorageKey(scope),
       JSON.stringify(normalized)
