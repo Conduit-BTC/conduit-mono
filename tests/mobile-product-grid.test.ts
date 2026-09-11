@@ -55,7 +55,7 @@ describe("Market product grid layout", () => {
 
     expect(content).toContain('className ?? "h-full"')
     expect(resolvedCard).toContain("notice={")
-    expect(resolvedCard).toContain("className={className}")
+    expect(resolvedCard).toContain("{...props}")
     expect(resolvedCard).not.toContain('className="h-full space-y-2"')
     expect(eventRoute).toContain('className="h-auto"')
     expect(eventRoute).toContain(

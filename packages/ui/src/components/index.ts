@@ -147,6 +147,11 @@ export {
   type ProductCartActionProps,
 } from "./ProductCard"
 export {
+  EventMarketCard,
+  type EventMarketCardProps,
+  type EventMarketCardStatusTone,
+} from "./EventMarketCard"
+export {
   ClaveConnectButton,
   claveConnectUrl,
   type ClaveConnectButtonProps,

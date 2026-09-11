@@ -575,3 +575,34 @@ test("market variation panel clears an open portal when family availability chan
   await expect(page.getByRole("listbox")).not.toBeAttached()
   await expect.poll(() => cardStyle(card)).toMatchObject({ scale: "none" })
 })
+
+test("market integrated pickup provenance keeps keyboard actions inside the notice @market", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mountHarness(page)
+  const harness = page.locator("#product-variation-panel-harness")
+  const notice = page
+    .getByTestId("simple-product-sibling")
+    .locator('[data-slot="product-notice"]')
+  await expect(notice).toContainText("Fixture pickup handler")
+  const copy = notice.getByRole("button", { name: "Copy pickup handler npub" })
+  await copy.focus()
+  await page.keyboard.press("Enter")
+  await expect(copy).toHaveAccessibleName("Copied")
+  expect(
+    await harness.evaluate(
+      (element) => element.dataset.productActivations ?? "0"
+    )
+  ).toBe("0")
+  const profileLink = notice.getByRole("link")
+  await expect(profileLink).toHaveAttribute("href", /\/u\/npub1/)
+  await profileLink.focus()
+  await page.keyboard.press("Enter")
+  await expect(page.getByTestId("fixture-profile-page")).toBeVisible()
+  expect(
+    await harness.evaluate(
+      (element) => element.dataset.productActivations ?? "0"
+    )
+  ).toBe("0")
+})

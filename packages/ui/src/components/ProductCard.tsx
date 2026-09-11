@@ -194,6 +194,8 @@ export function ProductCard({
         {notice ? (
           <div
             data-slot="product-notice"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
             className="mt-3 border-t border-[var(--border)] pt-3 text-xs leading-5 text-[var(--text-secondary)]"
           >
             {notice}

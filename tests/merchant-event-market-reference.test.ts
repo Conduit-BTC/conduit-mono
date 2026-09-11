@@ -85,6 +85,26 @@ describe("merchant organizer event-market references", () => {
       })
     ).toEqual({})
     expect(parseMerchantEventsSearch({ event: [imported] })).toEqual({})
+    expect(
+      parseMerchantEventsSearch({
+        event: imported,
+        source: "following",
+        relation: "selling",
+        window: "30d",
+      })
+    ).toEqual({
+      event: imported,
+      source: "following",
+      relation: "selling",
+      window: "30d",
+    })
+    expect(
+      parseMerchantEventsSearch({
+        source: "unknown",
+        relation: "mine",
+        window: "forever",
+      })
+    ).toEqual({})
   })
 
   it("preserves only a validated event through the signed-out auth handoff", () => {

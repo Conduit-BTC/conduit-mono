@@ -38,7 +38,9 @@ describe("Market event product layout", () => {
     expect(event).toContain('<details className="group/pickup')
     expect(event).toContain("[&::-webkit-details-marker]:hidden")
     expect(event).toContain("getPickupHandoffPrivacyCopy(handoff)")
-    expect(event).toContain('label="Copy pickup handler npub"')
+    expect(event).toContain("<EventActorName")
+    expect(event).toContain("<EventActorProvenance")
+    expect(event).toContain('copyLabel="Copy pickup handler npub"')
   })
 
   it("allows floating variation panels outside the event catalog on hover-capable desktops", async () => {

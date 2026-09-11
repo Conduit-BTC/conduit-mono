@@ -19,6 +19,11 @@ import {
   PRODUCT_GRID_CLASS_NAME,
 } from "../components/ProductGridCard"
 
+import {
+  EventActorName,
+  EventActorProvenance,
+} from "../components/EventActorIdentity"
+
 const MERCHANT_PUBKEY = "a".repeat(64)
 const FAMILY_ID = `30402:${MERCHANT_PUBKEY}:conduit-shirt`
 
@@ -122,8 +127,24 @@ export function mountProductVariationPanelHarness(
             <ProductGridCard
               product={sibling}
               merchantName="Conduit Merchant"
-              notice="Checking current signed event pickup evidence before this listing can be added."
-              onProductActivate={null}
+              notice={
+                <>
+                  Checking current signed event pickup evidence before this
+                  listing can be added.
+                  <EventActorName
+                    identity={{ displayName: "Fixture pickup handler" }}
+                  />
+                  <EventActorProvenance
+                    pubkey={MERCHANT_PUBKEY}
+                    copyLabel="Copy pickup handler npub"
+                  />
+                </>
+              }
+              onProductActivate={() => {
+                container.dataset.productActivations = String(
+                  Number(container.dataset.productActivations ?? "0") + 1
+                )
+              }}
             />
           </li>
           <li data-testid="hydrating-variable-product-list-item">
@@ -145,8 +166,15 @@ export function mountProductVariationPanelHarness(
     path: "/products",
     component: ProductVariationPanelProbe,
   })
+  const profileRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/u/$profileRef",
+    component: () => (
+      <div data-testid="fixture-profile-page">Profile route</div>
+    ),
+  })
   const router = createRouter({
-    routeTree: rootRoute.addChildren([productRoute]),
+    routeTree: rootRoute.addChildren([productRoute, profileRoute]),
     history: createMemoryHistory({ initialEntries: ["/products"] }),
   })
   const root = createRoot(container)

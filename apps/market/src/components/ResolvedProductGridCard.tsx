@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link } from "@tanstack/react-router"
-import { formatNpub } from "@conduit/core"
 import { useCart } from "../hooks/useCart"
+import { useEventActorIdentity } from "../hooks/useEventActorIdentity"
 import { useProductCartFulfillment } from "../hooks/useProductCartFulfillment"
 import { isSameCartFulfillment, selectCartItem } from "../lib/cart-model"
 import {
@@ -13,10 +13,12 @@ import {
   getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
 } from "../lib/pickup-handoff"
+import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { ProductGridCard, type ProductGridCardProps } from "./ProductGridCard"
 
 type ResolvedProductGridCardProps = Omit<
   ProductGridCardProps,
+  | "notice"
   | "cartActionDisabled"
   | "cartActionDisabledLabel"
   | "cartQuantity"
@@ -31,7 +33,6 @@ export function ResolvedProductGridCard({
   product,
   family,
   btcUsdRate = null,
-  className,
   ...props
 }: ResolvedProductGridCardProps) {
   const cart = useCart()
@@ -80,6 +81,9 @@ export function ResolvedProductGridCard({
     resolution?.status === "pickup"
       ? getPickupHandoffSummary(resolution.fulfillment)
       : null
+  const pickupHandlerIdentity = useEventActorIdentity(
+    pickupHandoff?.handlerPubkey
+  )
   const cartQuantity = sameFulfillment ? existing.quantity : 0
   const blocked =
     fulfillment.isChecking ||
@@ -117,14 +121,12 @@ export function ResolvedProductGridCard({
       ? "This listing is already in your cart with different fulfillment. Remove that line before adding it here."
       : resolution?.status === "blocked"
         ? resolution.reason
-        : pickupHandoff
-          ? `${pickupHandoff.label}. Signed by ${formatNpub(pickupHandoff.handlerPubkey, 10)}. No delivery address is required. ${getPickupHandoffPrivacyCopy(pickupHandoff)}`
-          : null
+        : null
+  const showPickupNotice = !!pickupHandoff && !!pickupHandlerIdentity && !notice
 
   return (
     <ProductGridCard
       {...props}
-      className={className}
       product={product}
       family={family}
       btcUsdRate={btcUsdRate}
@@ -140,16 +142,30 @@ export function ResolvedProductGridCard({
       cartActionDisabled={blocked}
       cartActionDisabledLabel={disabledLabel}
       notice={
-        notice ? (
+        notice || showPickupNotice ? (
           <>
-            <span>{notice}</span>{" "}
+            {showPickupNotice && pickupHandoff && pickupHandlerIdentity ? (
+              <>
+                <span>
+                  {pickupHandoff.label}. Handled by{" "}
+                  <EventActorName identity={pickupHandlerIdentity} />. No
+                  delivery address is required.{" "}
+                  {getPickupHandoffPrivacyCopy(pickupHandoff)}
+                </span>
+                <EventActorProvenance
+                  pubkey={pickupHandoff.handlerPubkey}
+                  copyLabel="Copy pickup handler npub"
+                  className="mt-1 flex"
+                />{" "}
+              </>
+            ) : (
+              <span>{notice}</span>
+            )}{" "}
             {candidate ? (
               <Link
                 to="/events/$collectionRef"
                 params={{ collectionRef: candidate }}
                 className="font-medium text-secondary-400 hover:text-secondary-300"
-                onClick={(event) => event.stopPropagation()}
-                onKeyDown={(event) => event.stopPropagation()}
               >
                 View event catalog
               </Link>
