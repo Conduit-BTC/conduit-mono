@@ -581,14 +581,26 @@ test("market integrated pickup provenance keeps keyboard actions inside the noti
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await mountHarness(page)
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          document.documentElement.dataset.variationCopiedText = text
+        },
+      },
+    })
+  })
   const harness = page.locator("#product-variation-panel-harness")
   const notice = page
     .getByTestId("simple-product-sibling")
     .locator('[data-slot="product-notice"]')
   await expect(notice).toContainText("Fixture pickup handler")
-  const copy = notice.getByRole("button", { name: "Copy pickup handler npub" })
+  const copy = notice.getByRole("button")
+  await expect(copy).toHaveAccessibleName("Copy pickup handler npub")
   await copy.focus()
-  await page.keyboard.press("Enter")
+  await expect(copy).toBeFocused()
+  await copy.press("Enter")
   await expect(copy).toHaveAccessibleName("Copied")
   expect(
     await harness.evaluate(
@@ -597,6 +609,11 @@ test("market integrated pickup provenance keeps keyboard actions inside the noti
   ).toBe("0")
   const profileLink = notice.getByRole("link")
   await expect(profileLink).toHaveAttribute("href", /\/u\/npub1/)
+  expect(
+    await page.evaluate(
+      () => document.documentElement.dataset.variationCopiedText
+    )
+  ).toBe((await profileLink.getAttribute("href"))!.split("/").at(-1))
   await profileLink.focus()
   await page.keyboard.press("Enter")
   await expect(page.getByTestId("fixture-profile-page")).toBeVisible()
