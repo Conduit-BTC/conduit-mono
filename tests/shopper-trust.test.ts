@@ -160,13 +160,14 @@ function createCache(
 
 describe("shopper trust evidence", () => {
   it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, and invoice stores", () => {
-    expect(db.verno).toBe(17)
+    expect(db.verno).toBe(18)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
         "productDeletionOutbox",
         "inboxDeclarationEvidence",
         "ownerRelayListEvidence",
+        "accountNetworkLocalState",
         "ownContactListSnapshots",
         "eventMarketEvidence",
         "wallets",
@@ -177,6 +178,7 @@ describe("shopper trust evidence", () => {
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
     expect(db.ownerRelayListEvidence.schema.primKey.name).toBe("pubkey")
+    expect(db.accountNetworkLocalState.schema.primKey.name).toBe("pubkey")
     expect(db.ownContactListSnapshots.schema.primKey.name).toBe("pubkey")
     expect(db.eventMarketEvidence.schema.primKey.name).toBe("id")
     expect(db.wallets.schema.primKey.name).toBe("id")
@@ -1001,6 +1003,7 @@ describe("shopper trust evidence", () => {
         now: () => NOW_MS,
         resolveRelayLists,
         baseRelayUrls: [publicRelay],
+        authenticatedPubkey: MERCHANT_PUBKEY,
       }
     )
 
@@ -1018,7 +1021,175 @@ describe("shopper trust evidence", () => {
     expect(contactsRead?.relayUrls).toHaveLength(6)
     expect(contactsRead?.relayUrls).toContain(publicRelay)
     expect(contactsRead?.relayUrls).not.toContain(merchantWriteRelays[3])
-    expect(initialRelayAllowlist).toEqual([MERCHANT_PUBKEY])
+    expect(initialRelayAllowlist).toEqual([undefined])
+  })
+
+  it("uses an authenticated owner read relay without admitting remote ws hints", async () => {
+    const ownerRelay = "ws://owner-network.example:4848"
+    const remoteRelay = "ws://remote-shopper.example:4848"
+    const observed: Array<{
+      relayUrls: readonly string[]
+      ownerSelectedRelayUrls: readonly string[]
+      authenticatedPubkey?: string | null
+    }> = []
+    const relayListAuthenticatedPubkeys: Array<string | null | undefined> = []
+
+    await getShopperTrustEvidence(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        shopperPubkey: SHOPPER_PUBKEY,
+      },
+      {
+        authenticatedPubkey: MERCHANT_PUBKEY,
+        cache: createCache(),
+        forceRefresh: true,
+        now: () => NOW_MS,
+        readAccountRelaySettingsPlanningSnapshot: async () => ({
+          settings: {
+            version: 1,
+            updatedAt: 1,
+            entries: [
+              {
+                url: ownerRelay,
+                readEnabled: true,
+                writeEnabled: false,
+                section: "public",
+                capabilities: {
+                  nip11: false,
+                  search: false,
+                  dm: false,
+                  auth: false,
+                  commerce: false,
+                },
+                warnings: {
+                  dmWithoutAuth: false,
+                  staleRelayInfo: false,
+                  unreachable: false,
+                  commercePartialSupport: false,
+                },
+              },
+            ],
+          },
+          signedRelayListAuthoritative: true,
+        }),
+        resolveRelayLists: async (pubkeys, options) => {
+          relayListAuthenticatedPubkeys.push(options?.authenticatedPubkey)
+          return new Map(
+            pubkeys.map((pubkey) => [
+              pubkey,
+              relayList(pubkey, {
+                readRelayUrls: [remoteRelay],
+                writeRelayUrls: [remoteRelay],
+              }),
+            ])
+          )
+        },
+        fetchEvents: async (_filter, options) => {
+          const relayUrls = options?.relayUrls ?? []
+          observed.push({
+            relayUrls,
+            ownerSelectedRelayUrls: options?.ownerSelectedRelayUrls ?? [],
+            authenticatedPubkey: options?.authenticatedPubkey,
+          })
+          return {
+            events: [],
+            relays: relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 0,
+            })),
+            eventsVerified: true,
+          }
+        },
+      }
+    )
+
+    expect(observed.length).toBeGreaterThan(0)
+    expect(
+      observed.some(({ relayUrls }) => relayUrls.includes(ownerRelay))
+    ).toBe(true)
+    expect(
+      observed.some(({ ownerSelectedRelayUrls }) =>
+        ownerSelectedRelayUrls.includes(ownerRelay)
+      )
+    ).toBe(true)
+    expect(
+      observed.every(({ relayUrls }) => !relayUrls.includes(remoteRelay))
+    ).toBe(true)
+    expect(relayListAuthenticatedPubkeys).toHaveLength(2)
+    expect(
+      relayListAuthenticatedPubkeys.every((value) => value === MERCHANT_PUBKEY)
+    ).toBe(true)
+    expect(
+      observed.every(
+        ({ authenticatedPubkey }) => authenticatedPubkey === MERCHANT_PUBKEY
+      )
+    ).toBe(true)
+  })
+
+  it("does not infer the subject merchant as the authenticated relay-list owner", async () => {
+    const observed: Array<{
+      accountPubkey?: string | null
+      allowInsecureRelayUrlsForPubkey?: string | null
+    }> = []
+    const resolveRelayLists: ShopperTrustResolveRelayLists = async (
+      pubkeys,
+      options
+    ) => {
+      if (
+        pubkeys.includes(MERCHANT_PUBKEY) &&
+        pubkeys.includes(SHOPPER_PUBKEY)
+      ) {
+        observed.push({
+          accountPubkey: options?.accountPubkey,
+          allowInsecureRelayUrlsForPubkey:
+            options?.allowInsecureRelayUrlsForPubkey,
+        })
+      }
+      return new Map(pubkeys.map((pubkey) => [pubkey, relayList(pubkey)]))
+    }
+    const read = async (authenticatedPubkey?: string | null) =>
+      await getShopperTrustEvidence(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          shopperPubkey: SHOPPER_PUBKEY,
+        },
+        {
+          baseRelayUrls: ["wss://public.example"],
+          cache: createCache(),
+          fetchEvents: async (_filter, options) => ({
+            events: [],
+            relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 0,
+            })),
+          }),
+          forceRefresh: true,
+          now: () => NOW_MS,
+          resolveRelayLists,
+          authenticatedPubkey,
+        }
+      )
+
+    await read()
+    await read(CURRENT_FOLLOWER_PUBKEY)
+    await read(MERCHANT_PUBKEY)
+
+    expect(observed).toEqual([
+      {
+        accountPubkey: null,
+        allowInsecureRelayUrlsForPubkey: undefined,
+      },
+      {
+        accountPubkey: CURRENT_FOLLOWER_PUBKEY,
+        allowInsecureRelayUrlsForPubkey: undefined,
+      },
+      {
+        accountPubkey: MERCHANT_PUBKEY,
+        allowInsecureRelayUrlsForPubkey: undefined,
+      },
+    ])
   })
 
   it("marks observations partial when NIP-65 routing falls back to stale hints", async () => {

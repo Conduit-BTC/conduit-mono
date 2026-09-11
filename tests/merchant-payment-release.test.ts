@@ -44,11 +44,13 @@ describe("merchant payment and optional organizer release", () => {
 
   it("waits for the captured order's paid transition before release", async () => {
     const calls: string[] = []
-    const captured = structuredClone(input)
+    const shouldContinue = () => true
+    const captured = { ...structuredClone(input), shouldContinue }
     const result = await confirmMerchantPayment(captured, {
       publishPaid: async (target) => {
         expect(target.orderId).toBe("order-a")
         expect(target.delivery).toBe("buyer_and_self")
+        expect(target.shouldContinue).toBe(shouldContinue)
         calls.push("paid")
         // A UI selection change cannot change the in-flight release target.
         captured.order!.id = "order-b"
@@ -57,6 +59,7 @@ describe("merchant payment and optional organizer release", () => {
       release: async (target) => {
         expect(target.order!.id).toBe("order-a")
         expect(target.orderId).toBe("order-a")
+        expect(target.shouldContinue).toBe(shouldContinue)
         calls.push("release")
         return "delivered"
       },

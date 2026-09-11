@@ -63,24 +63,33 @@ describe("legacy direct-message UI contract", () => {
     expect(source).toContain('to: "/network"')
   })
 
-  it("keeps declaration publishing owned by Network settings", async () => {
+  it("keeps declaration mutation owned by the shared Network controller", async () => {
     for (const routePath of [
       "apps/market/src/routes/network.tsx",
       "apps/merchant/src/routes/network.tsx",
     ]) {
       const source = await Bun.file(routePath).text()
-      expect(source).toContain("useInboxDeclaration")
-      expect(source).toContain("privateInbox")
-      expect(source).toContain("getInboxRelayCandidates")
+      expect(source).toContain("useAccountNetworkSettings")
+      expect(source).not.toContain("useInboxDeclaration")
+      expect(source).not.toContain("publishPrivateMessageRelayDeclaration")
     }
+
+    const controller = await Bun.file(
+      "packages/core/src/hooks/useAccountNetworkSettings.ts"
+    ).text()
+    const readinessHook = await Bun.file(
+      "packages/core/src/hooks/useInboxDeclaration.ts"
+    ).text()
+    expect(controller).toContain("publishAccountNetworkMutation")
+    expect(controller).toContain("redistributeAccountNetworkInboxDeclaration")
+    expect(readinessHook).not.toContain("publishPrivateMessageRelayDeclaration")
+    expect(readinessHook).not.toContain("publishDeclaration:")
   })
 
   it("waits for first-login relay import before deciding inbox readiness", async () => {
     for (const routePath of [
       "apps/market/src/routes/messages.tsx",
-      "apps/market/src/routes/network.tsx",
       "apps/merchant/src/routes/messages.tsx",
-      "apps/merchant/src/routes/network.tsx",
       "apps/merchant/src/routes/orders.tsx",
     ]) {
       const source = await Bun.file(routePath).text()
@@ -91,7 +100,13 @@ describe("legacy direct-message UI contract", () => {
     const hookSource = await Bun.file(
       "packages/core/src/hooks/useInboxDeclaration.ts"
     ).text()
-    expect(hookSource).toContain("subscribeRelaySettingsChanges")
+    const controllerSource = await Bun.file(
+      "packages/core/src/hooks/useAccountNetworkSettings.ts"
+    ).text()
+    expect(controllerSource).toContain("session.accountNetworkPreferences")
+    expect(hookSource).toContain(
+      "enabled: !!pubkey && (options.enabled ?? true)"
+    )
     expect(hookSource).toContain("invalidateInboxDeclaration(pubkey)")
     expect(hookSource).toContain("queryClient.invalidateQueries({ queryKey })")
     expect(hookSource).toContain('isLoading: status === "loading"')
@@ -113,13 +128,9 @@ describe("legacy direct-message UI contract", () => {
       expect(source).toContain("messagingReady")
     }
 
-    const relaySettingsSource = await Bun.file(
-      "packages/core/src/hooks/useRelaySettings.ts"
-    ).text()
-    expect(relaySettingsSource).toContain("relaySettingsContextKey")
-    expect(relaySettingsSource).toContain("currentContextKeyRef.current")
-    expect(relaySettingsSource).toContain(
-      "currentContextKeyRef.current !== operationContextKey"
+    expect(controllerSource).toContain("auth.authGeneration")
+    expect(controllerSource).toContain(
+      "current.authGeneration === snapshot.generation"
     )
   })
 })

@@ -69,35 +69,34 @@ async function exerciseNetworkInboxDeclaration(
   ).toBeVisible({ timeout: 15_000 })
   await page.goto(`${appUrl}/network`)
 
-  await expect(
-    page.getByRole("heading", { name: "Network Settings" })
-  ).toBeVisible()
-  await expect(
-    page.getByText(
-      initialDeclaration === "empty"
-        ? "Restore your private inbox"
-        : "Finish private inbox setup",
-      { exact: true }
-    )
-  ).toBeVisible()
-  await expect(
-    page.getByRole("checkbox", { name: TEST_RELAY_URL })
-  ).toBeChecked()
-
-  const publishButton = page.getByRole("button", {
-    name: "Publish inbox declaration",
+  await expect(page.getByRole("heading", { name: "Network" })).toBeVisible()
+  const relaySettings = page.getByRole("region", { name: "Relays" })
+  const enablePrivateInbox = relaySettings.getByRole("button", {
+    name: `Enable Private inbox for ${TEST_RELAY_URL}`,
   })
-  await expect(publishButton).toBeEnabled()
-  await publishButton.click()
+  await expect(enablePrivateInbox).toBeEnabled({ timeout: 20_000 })
+  await enablePrivateInbox.click()
 
+  const reviewButton = relaySettings.getByRole("button", {
+    name: "Review and publish",
+  })
+  await expect(reviewButton).toBeEnabled()
+  await reviewButton.click()
+  const reviewDialog = page.getByRole("alertdialog")
   await expect(
-    page.getByText("Private inbox ready", { exact: true })
-  ).toBeVisible({ timeout: 15_000 })
-  await expect(
-    page.getByText("Inbox declaration published and confirmed.", {
-      exact: true,
+    reviewDialog.getByRole("heading", {
+      name: "Publish these Network changes?",
     })
   ).toBeVisible()
+  await expect(reviewDialog).toContainText("Private inbox")
+  await reviewDialog.getByRole("button", { name: "Sign and publish" }).click()
+
+  await expect(
+    page.getByText(
+      "The exact signed preferences were confirmed on the planned relays.",
+      { exact: true }
+    )
+  ).toBeVisible({ timeout: 20_000 })
 
   const declarations = await readTestRelayEvents({
     kinds: [10_050],

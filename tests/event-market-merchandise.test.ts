@@ -172,6 +172,194 @@ describe("event-market organizer merchandise evidence", () => {
     ).toBe("unavailable")
   })
 
+  it("keeps owner read ws authority separate from remote merchant hints", async () => {
+    const product = productEvent("coffee", "Fresh coffee")
+    const ownerRelay = "ws://owner-network.example:4848"
+    const remoteRelay = "ws://remote-merchant.example:4848"
+    const observedRelayUrls: string[] = []
+    const observedOwnerSelectedRelayUrls: string[] = []
+    const observedAuthenticatedPubkeys: Array<string | null | undefined> = []
+    const observedShouldContinue: Array<(() => boolean) | undefined> = []
+    const shouldContinue = () => true
+    let relayListAuthenticatedPubkey: string | null | undefined
+    let relayListShouldContinue: (() => boolean) | undefined
+    __setEventMarketMerchandiseTestOverrides({
+      getRelayLists: (async (_pubkeys, options) => {
+        relayListAuthenticatedPubkey = options?.authenticatedPubkey
+        relayListShouldContinue = options?.shouldContinue
+        return new Map([
+          [
+            MERCHANT,
+            {
+              pubkey: MERCHANT,
+              readRelayUrls: [],
+              writeRelayUrls: [remoteRelay],
+              eventCreatedAt: CREATED_AT,
+              lookupState: "network" as const,
+              cachedAt: Date.now(),
+            },
+          ],
+        ])
+      }) as never,
+      fetchEventsFanoutDetailed: (async (filter, options) => {
+        observedRelayUrls.push(...options.relayUrls)
+        observedOwnerSelectedRelayUrls.push(
+          ...(options.ownerSelectedRelayUrls ?? [])
+        )
+        observedAuthenticatedPubkeys.push(options.authenticatedPubkey)
+        observedShouldContinue.push(options.shouldContinue)
+        const events = filter.kinds?.includes(EVENT_KINDS.PRODUCT as never)
+          ? [product]
+          : []
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: options.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      }) as never,
+    })
+
+    const resolution = await getEventMarketReceiptMerchandise({
+      receipt: receiptFor([product]),
+      authenticatedPubkey: ORGANIZER,
+      shouldContinue,
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: {
+          version: 1,
+          updatedAt: 1,
+          entries: [
+            {
+              url: ownerRelay,
+              readEnabled: true,
+              writeEnabled: false,
+              section: "public",
+              capabilities: {
+                nip11: false,
+                search: false,
+                dm: false,
+                auth: false,
+                commerce: false,
+              },
+              warnings: {
+                dmWithoutAuth: false,
+                staleRelayInfo: false,
+                unreachable: false,
+                commercePartialSupport: false,
+              },
+            },
+          ],
+        },
+        signedRelayListAuthoritative: true,
+      }),
+    })
+
+    expect(resolution.state).toBe("verified")
+    expect(observedRelayUrls).toContain(ownerRelay)
+    expect(observedOwnerSelectedRelayUrls).toContain(ownerRelay)
+    expect(observedRelayUrls).not.toContain(remoteRelay)
+    expect(relayListAuthenticatedPubkey).toBe(ORGANIZER)
+    expect(relayListShouldContinue).toBe(shouldContinue)
+    expect(
+      observedAuthenticatedPubkeys.every((value) => value === ORGANIZER)
+    ).toBe(true)
+    expect(
+      observedShouldContinue.every((value) => value === shouldContinue)
+    ).toBe(true)
+  })
+
+  it("does not infer owner ws authority from a disconnected receipt target", async () => {
+    const product = productEvent("coffee", "Fresh coffee")
+    const ownerRelay = "ws://owner-network.example:4848"
+    const remoteMerchantRelay = "wss://merchant-products.vendor.dev"
+    const observedRelayUrls: string[] = []
+    const observedOwnerSelectedRelayUrls: string[] = []
+    const observedAuthenticatedPubkeys: Array<string | null | undefined> = []
+    let ownerSettingsReadCount = 0
+    __setEventMarketMerchandiseTestOverrides({
+      getRelayLists: (async () =>
+        new Map([
+          [
+            MERCHANT,
+            {
+              pubkey: MERCHANT,
+              readRelayUrls: [],
+              writeRelayUrls: [remoteMerchantRelay],
+              eventCreatedAt: CREATED_AT,
+              lookupState: "network" as const,
+              cachedAt: Date.now(),
+            },
+          ],
+        ])) as never,
+      fetchEventsFanoutDetailed: (async (filter, options) => {
+        observedRelayUrls.push(...options.relayUrls)
+        observedOwnerSelectedRelayUrls.push(
+          ...(options.ownerSelectedRelayUrls ?? [])
+        )
+        observedAuthenticatedPubkeys.push(options.authenticatedPubkey)
+        const events = filter.kinds?.includes(EVENT_KINDS.PRODUCT as never)
+          ? [product]
+          : []
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: options.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      }) as never,
+    })
+
+    const resolution = await getEventMarketReceiptMerchandise({
+      receipt: receiptFor([product]),
+      readAccountRelaySettingsPlanningSnapshot: async () => {
+        ownerSettingsReadCount += 1
+        return {
+          settings: {
+            version: 1,
+            updatedAt: 1,
+            entries: [
+              {
+                url: ownerRelay,
+                readEnabled: true,
+                writeEnabled: false,
+                section: "public",
+                capabilities: {
+                  nip11: false,
+                  search: false,
+                  dm: false,
+                  auth: false,
+                  commerce: false,
+                },
+                warnings: {
+                  dmWithoutAuth: false,
+                  staleRelayInfo: false,
+                  unreachable: false,
+                  commercePartialSupport: false,
+                },
+              },
+            ],
+          },
+          signedRelayListAuthoritative: true,
+        }
+      },
+    })
+
+    expect(resolution.state).toBe("verified")
+    expect(ownerSettingsReadCount).toBe(0)
+    expect(observedRelayUrls).toContain(remoteMerchantRelay)
+    expect(observedRelayUrls).not.toContain(ownerRelay)
+    expect(observedOwnerSelectedRelayUrls).not.toContain(ownerRelay)
+    expect(observedAuthenticatedPubkeys.every((value) => value == null)).toBe(
+      true
+    )
+  })
+
   it("uses one exact deletion target per bounded query so sibling floods cannot starve evidence", async () => {
     const sibling = productEvent("sibling", "Sibling item")
     const target = productEvent("target", "Target item")

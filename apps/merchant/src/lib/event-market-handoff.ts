@@ -13,6 +13,7 @@ import {
   publishEventMarketFulfillmentRevocation,
   publishEventMarketHandoffAck,
   publishEventMarketReadyReceipt,
+  readRetainedInboxDeclaration,
   resolveEventMarketHandoffAckGate,
   retryEventMarketPrivateDelivery,
   RelayPublishDiagnosticsError,
@@ -753,7 +754,10 @@ export function buildOrganizerReadyReceiptPayload(
 
 export async function resolveOrganizerHandoffMerchandise(input: {
   organizerPubkey: string
+  authenticatedPubkey?: string | null
   claim: EventMarketOrganizerClaim
+  shouldContinue?: () => boolean
+  signal?: AbortSignal
 }): Promise<EventMarketReceiptMerchandiseResolution> {
   const organizer = input.organizerPubkey.trim().toLowerCase()
   if (input.claim.receipt.payload.organizerPubkey.toLowerCase() !== organizer) {
@@ -761,7 +765,9 @@ export async function resolveOrganizerHandoffMerchandise(input: {
   }
   return getEventMarketReceiptMerchandise({
     receipt: input.claim.receipt.payload,
-    authenticatedPubkey: organizer,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+    signal: input.signal,
   })
 }
 
@@ -952,22 +958,35 @@ async function retryStoredDelivery(
   transport?: EventMarketPrivateTransportOptions
 ): Promise<StoredEventMarketHandoffDelivery> {
   try {
+    const retainedOwnerDeclaration = transport?.senderInboxRelays
+      ? null
+      : await readRetainedInboxDeclaration(principalPubkey)
+    const ownerSelectedSenderInboxRelayUrls =
+      transport?.senderInboxRelays ??
+      (retainedOwnerDeclaration?.state === "declared"
+        ? retainedOwnerDeclaration.relayUrls
+        : [])
     const result = await retryEventMarketPrivateDelivery({
       record: stored.record,
+      authenticatedOwnerPubkey: transport?.authenticatedPubkey,
+      ownerSelectedSenderInboxRelayUrls,
       deliveryProgress: stored.deliveryProgress,
       recipientInboxRelays: transport?.recipientInboxRelays,
       senderInboxRelays: transport?.senderInboxRelays,
+      shouldContinue: transport?.shouldContinue,
       publishFn: transport?.publishFn,
     })
     const delivered = stateFromRetryResult(stored, result)
     upsertDelivery(principalPubkey, delivered, storage)
     return delivered
   } catch (error) {
-    upsertDelivery(
-      principalPubkey,
-      stateFromDeliveryError(stored, error),
-      storage
-    )
+    if (transport?.shouldContinue?.() !== false) {
+      upsertDelivery(
+        principalPubkey,
+        stateFromDeliveryError(stored, error),
+        storage
+      )
+    }
     throw error
   }
 }
@@ -1048,7 +1067,7 @@ export async function issueOrganizerReadyReceipt(input: {
     })
   } catch (error) {
     const persisted = stored as StoredEventMarketHandoffDelivery | null
-    if (persisted) {
+    if (persisted && input.transport?.shouldContinue?.() !== false) {
       upsertDelivery(
         input.merchantPubkey,
         stateFromDeliveryError(persisted, error),
@@ -1121,7 +1140,7 @@ export async function acknowledgeOrganizerHandoff(input: {
     })
   } catch (error) {
     const persisted = stored as StoredEventMarketHandoffDelivery | null
-    if (persisted) {
+    if (persisted && input.transport?.shouldContinue?.() !== false) {
       upsertDelivery(
         input.organizerPubkey,
         stateFromDeliveryError(persisted, error),
@@ -1212,7 +1231,7 @@ export async function revokeOrganizerReadyReceipt(input: {
     })
   } catch (error) {
     const persisted = stored as StoredEventMarketHandoffDelivery | null
-    if (persisted) {
+    if (persisted && input.transport?.shouldContinue?.() !== false) {
       upsertDelivery(
         input.merchantPubkey,
         stateFromDeliveryError(persisted, error),
