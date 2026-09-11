@@ -1065,6 +1065,112 @@ test("commerce discovery finds an organizer beyond the former author cap @mercha
   await expect(page.locator("#discovered-event-selector")).toContainText(title)
 })
 
+test("direct event import saves signed title despite missing pickup and retains a newer pickup frontier after reload @merchant", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const eventTitle = "Synthetic title with unresolved pickup"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: eventTitle,
+    organizerHandoffEnabled: true,
+  })
+  const pickup = market.pickupEvent!
+  relay.remove(pickup)
+  const publicationCount = relay.publications.length
+  // A fresh context prevents the organizer's previous Dexie readback from
+  // supplying the deliberately missing pickup record to the merchant.
+  const merchantContext = await browser.newContext()
+  const merchantPage = await merchantContext.newPage()
+  merchantPage.setDefaultTimeout(25_000)
+  try {
+    await installSyntheticEnvironment(
+      merchantPage,
+      relay,
+      "missing-pickup-title"
+    )
+    await gotoAs(
+      merchantPage,
+      merchantUrl,
+      market.merchantParticipationPath,
+      "merchant"
+    )
+    const savedStorageKey = `conduit:merchant:discovered-event-markets:v1:${MERCHANT_PUBKEY}`
+    const readSaved = () =>
+      merchantPage.evaluate((key) => {
+        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<
+          Record<string, unknown>
+        >
+        return { count: saved.length, ...saved[0] }
+      }, savedStorageKey)
+    const titleEvidence = {
+      count: 1,
+      reference: market.canonicalNaddr,
+      title: eventTitle,
+      titleCollectionCoordinate: market.collectionCoordinate,
+      titleCollectionCreatedAt: market.initialCollection.created_at * 1_000,
+      titleCollectionEventId: market.initialCollection.id,
+      titleCalendarCoordinate: market.calendarCoordinate,
+      titleCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
+      titleCalendarEventId: market.calendarEvent.id,
+    }
+    await expect
+      .poll(readSaved, { timeout: 30_000 })
+      .toMatchObject(titleEvidence)
+    await expect(
+      merchantPage.locator("#discovered-event-selector")
+    ).toContainText(eventTitle)
+    await expect(
+      merchantPage.getByRole("button", { name: "Update event", exact: true })
+    ).toHaveCount(0)
+
+    // Retain an exact newer pickup frontier, while the relay can supply only
+    // the older signed pickup. This must not downgrade the saved action evidence.
+    const expectedPickup = signEvent(ORGANIZER_SECRET, {
+      kind: pickup.kind,
+      created_at: pickup.created_at + 10,
+      tags: pickup.tags,
+      content: pickup.content,
+    })
+    const pickupFrontier = {
+      expectedPickupCoordinate: market.pickupCoordinate,
+      expectedPickupCreatedAt: expectedPickup.created_at * 1_000,
+      expectedPickupEventId: expectedPickup.id,
+    }
+    await merchantPage.evaluate(
+      ({ key, frontier }) => {
+        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<
+          Record<string, unknown>
+        >
+        saved[0] = {
+          ...saved[0],
+          ...frontier,
+          title: "Previously observed signed title",
+        }
+        localStorage.setItem(key, JSON.stringify(saved))
+      },
+      { key: savedStorageKey, frontier: pickupFrontier }
+    )
+    relay.seed(pickup)
+    await merchantPage.reload()
+    await expect
+      .poll(readSaved, { timeout: 30_000 })
+      .toMatchObject({ ...titleEvidence, ...pickupFrontier })
+    await expect(
+      merchantPage.locator("#discovered-event-selector")
+    ).toContainText(eventTitle)
+    await expect(
+      merchantPage.getByRole("button", { name: "Update event", exact: true })
+    ).toHaveCount(0)
+    expect(relay.publications).toHaveLength(publicationCount)
+  } finally {
+    await merchantContext.close()
+  }
+})
+
 test("current exact resolution refreshes a saved title without replacing its evidence @merchant", async ({
   page,
 }) => {
