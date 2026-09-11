@@ -363,7 +363,7 @@ describe("signed account Network reconstruction", () => {
           inboxDeclarationFrontier: { eventId: oldInbox.id, createdAt: 100 },
         })
       }
-      await retained.localStateRepository.update(OWNER, () => local)
+      await retained.localStateRepository.replace(OWNER, local)
       const reconcile = (
         owner: SignedPublicNostrEvent,
         inbox: SignedPublicNostrEvent
