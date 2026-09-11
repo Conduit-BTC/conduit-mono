@@ -51,6 +51,7 @@ import {
   parseOrganizerEventMarketReference,
   publishMerchantOrganizerEventMarket,
   publishMerchantOrganizerMembership,
+  reconcileAcknowledgedMerchantOrganizerCollectionEvidence,
   resolveOrganizerEventMarket,
   resolveOrganizerEventMarketRead,
   retryMerchantOrganizerRecord,
@@ -601,6 +602,10 @@ function MyEventsPanel({
   shouldContinue: () => boolean
 }) {
   const queryClient = useQueryClient()
+  const organizerAuthorityMutationScope = useMemo(
+    () => ({ id: `merchant-organizer-event-authority:${organizerPubkey}` }),
+    [organizerPubkey]
+  )
   const [savedReferences, setSavedReferences] = useState<
     SavedOrganizerEventMarketReference[]
   >(() => loadSavedOrganizerEventMarkets(organizerPubkey))
@@ -734,9 +739,28 @@ function MyEventsPanel({
     !("terminal" in selectedResolution)
       ? selectedResolution
       : null
+  const selectedPresentedMarket = useMemo(
+    () =>
+      selectedMarket
+        ? reconcileAcknowledgedMerchantOrganizerCollectionEvidence(
+            selectedMarket,
+            deliveriesByReference[selectedIdentity?.coordinate ?? ""] ?? []
+          )
+        : null,
+    [deliveriesByReference, selectedIdentity?.coordinate, selectedMarket]
+  )
   const selectedReferenceResolutionPending =
     shouldResolveSelectedReference && selectedMarketQuery.isPending
-  const selectedActionableMarket =
+  const selectedMembershipActionableMarket =
+    !selectedReferenceResolutionPending &&
+    selectedPresentedMarket &&
+    organizerEventMarketReachesExpectedFrontiers(
+      selectedPresentedMarket,
+      selectedSavedReference
+    )
+      ? selectedPresentedMarket
+      : null
+  const selectedHandoffActionableMarket =
     !selectedReferenceResolutionPending &&
     selectedMarket &&
     organizerEventMarketReachesExpectedFrontiers(
@@ -749,16 +773,17 @@ function MyEventsPanel({
     queryKey: [
       "merchant-organizer-handoff-receipts",
       organizerPubkey || "none",
-      selectedActionableMarket?.collectionCoordinate ?? "none",
+      selectedHandoffActionableMarket?.collectionCoordinate ?? "none",
     ],
     enabled:
       !!organizerPubkey &&
-      !!selectedActionableMarket &&
-      selectedActionableMarket.organizerPubkey === organizerPubkey,
+      !!selectedHandoffActionableMarket &&
+      selectedHandoffActionableMarket.organizerPubkey === organizerPubkey,
     queryFn: () =>
       readEventMarketReadyReceipts({
         organizerPubkey,
-        collectionCoordinate: selectedActionableMarket!.collectionCoordinate,
+        collectionCoordinate:
+          selectedHandoffActionableMarket!.collectionCoordinate,
       }),
     retry: false,
     refetchInterval: 30_000,
@@ -776,13 +801,13 @@ function MyEventsPanel({
       "merchant-organizer-handoff-merchandise",
       organizerPubkey || "none",
       authenticatedPubkey ?? "disconnected",
-      selectedActionableMarket?.collectionCoordinate ?? "none",
+      selectedHandoffActionableMarket?.collectionCoordinate ?? "none",
       handoffClaimIds || "none",
     ],
     enabled:
       !!organizerPubkey &&
-      !!selectedActionableMarket &&
-      selectedActionableMarket.organizerPubkey === organizerPubkey &&
+      !!selectedHandoffActionableMarket &&
+      selectedHandoffActionableMarket.organizerPubkey === organizerPubkey &&
       handoffClaims.length > 0,
     queryFn: async ({ signal }) => {
       const entries = await Promise.all(
@@ -815,13 +840,15 @@ function MyEventsPanel({
     refetchInterval: 30_000,
   })
   const handoffAckReadinessByReceiptId = useMemo(() => {
-    if (!handoffReceiptsQuery.data || !selectedActionableMarket) return {}
+    if (!handoffReceiptsQuery.data || !selectedHandoffActionableMarket) {
+      return {}
+    }
     return Object.fromEntries(
       handoffClaims.map((claim) => [
         claim.receipt.id,
         resolveOrganizerHandoffAckReadiness({
           claim,
-          market: selectedActionableMarket.source,
+          market: selectedHandoffActionableMarket.source,
           merchandise:
             handoffMerchandiseQuery.data?.[claim.receipt.id]?.resolution,
         }),
@@ -831,22 +858,16 @@ function MyEventsPanel({
     handoffClaims,
     handoffMerchandiseQuery.data,
     handoffReceiptsQuery.data,
-    selectedActionableMarket,
+    selectedHandoffActionableMarket,
   ])
 
-  async function refreshMarketQueries(reference?: string): Promise<void> {
+  async function refreshMarketQueries(reference: string): Promise<void> {
+    await queryClient.invalidateQueries({
+      queryKey: ["merchant-organizer-event-market", organizerPubkey, reference],
+    })
     await queryClient.invalidateQueries({
       queryKey: ["merchant-organizer-event-markets", organizerPubkey],
     })
-    if (reference) {
-      await queryClient.invalidateQueries({
-        queryKey: [
-          "merchant-organizer-event-market",
-          organizerPubkey,
-          reference,
-        ],
-      })
-    }
   }
 
   function rememberDelivery(
@@ -873,6 +894,7 @@ function MyEventsPanel({
   }
 
   const publishMutation = useMutation({
+    scope: organizerAuthorityMutationScope,
     mutationFn: (input: {
       form: OrganizerEventMarketFormValues
       existing: MerchantOrganizerEventMarket | null
@@ -956,6 +978,7 @@ function MyEventsPanel({
   })
 
   const membershipMutation = useMutation({
+    scope: organizerAuthorityMutationScope,
     mutationFn: (input: OrganizerMembershipMutationInput) =>
       publishMerchantOrganizerMembership({
         organizerPubkey,
@@ -983,7 +1006,7 @@ function MyEventsPanel({
           rememberDelivery(reference, record)
         },
       }),
-    onSuccess: async (delivery, input) => {
+    onSuccess: (delivery, input) => {
       const reference = organizerEventMarketReferenceWithDeliveryRelayHints(
         input.reference,
         delivery
@@ -1003,11 +1026,12 @@ function MyEventsPanel({
         reference
       updateInitiatingEventSelection(input.reference, nextReference)
       rememberDelivery(reference, delivery)
-      await refreshMarketQueries(input.reference)
+      void refreshMarketQueries(nextReference)
     },
   })
 
   const retryMutation = useMutation({
+    scope: organizerAuthorityMutationScope,
     mutationFn: (input: OrganizerRetryMutationInput) =>
       retryMerchantOrganizerRecord({
         organizerPubkey,
@@ -1074,6 +1098,7 @@ function MyEventsPanel({
 
   function retryDelivery(record: MerchantOrganizerRecordDelivery): void {
     if (
+      organizerAuthorityMutationPending ||
       !selectedReference ||
       (selectedDeletion &&
         organizerEventMarketDeletionRetiresDelivery(selectedDeletion, record))
@@ -1090,22 +1115,15 @@ function MyEventsPanel({
   }
 
   const handoffAckMutation = useMutation({
+    scope: organizerAuthorityMutationScope,
     mutationFn: async (claim: EventMarketOrganizerClaim) => {
       const ndk = getNdk()
       if (!ndk.signer) throw new Error("Organizer signer is not connected.")
       if (!selectedReference) {
         throw new Error("Choose an organizer event before handing out items.")
       }
-      const [receiptReadResult, freshMarket] = await Promise.all([
-        handoffReceiptsQuery.refetch(),
-        resolveOrganizerEventMarket(
-          selectedReference,
-          organizerPubkey,
-          authenticatedPubkey,
-          undefined,
-          shouldContinue
-        ),
-      ])
+      const initiatingReference = selectedReference
+      const receiptReadResult = await handoffReceiptsQuery.refetch()
       const receiptRead = receiptReadResult.data
       if (!receiptRead) {
         throw new Error("Current organizer receipt evidence is unavailable.")
@@ -1122,6 +1140,28 @@ function MyEventsPanel({
         claim: freshClaim,
         shouldContinue,
       })
+      const freshMarket = await resolveOrganizerEventMarket(
+        initiatingReference,
+        organizerPubkey,
+        authenticatedPubkey,
+        undefined,
+        shouldContinue
+      )
+      const latestSavedReference =
+        findSavedOrganizerEventMarketReference(
+          loadSavedOrganizerEventMarkets(organizerPubkey),
+          initiatingReference
+        ) ?? selectedSavedReference
+      if (
+        !organizerEventMarketReachesExpectedFrontiers(
+          freshMarket,
+          latestSavedReference
+        )
+      ) {
+        throw new Error(
+          "The latest signed event records are not yet readable. Refresh the event before handing out items."
+        )
+      }
       return acknowledgeOrganizerHandoff({
         organizerPubkey,
         claim: freshClaim,
@@ -1142,6 +1182,16 @@ function MyEventsPanel({
       setHandoffDeliveryRevision((revision) => revision + 1)
     },
   })
+
+  const organizerAuthorityMutationPending =
+    publishMutation.isPending ||
+    membershipMutation.isPending ||
+    retryMutation.isPending ||
+    handoffAckMutation.isPending
+  const organizerMutationPendingOutsideHandoff =
+    publishMutation.isPending ||
+    membershipMutation.isPending ||
+    retryMutation.isPending
 
   const allReferences = useMemo(() => {
     const next = [...savedReferences]
@@ -1171,7 +1221,7 @@ function MyEventsPanel({
       ? null
       : selectedMarketQuery.error
   const selectedMarketBehindExpectedFrontier =
-    !!selectedMarket && !selectedActionableMarket
+    !!selectedPresentedMarket && !selectedMembershipActionableMarket
   const deliveries = selectedReference
     ? (deliveriesByReference[selectedIdentity?.coordinate ?? ""] ?? [])
     : []
@@ -1214,6 +1264,7 @@ function MyEventsPanel({
   }
 
   function openCreate(): void {
+    if (organizerAuthorityMutationPending) return
     setEditingMarket(null)
     setPublishState("dirty")
     setPublishError("")
@@ -1221,8 +1272,13 @@ function MyEventsPanel({
   }
 
   function openEdit(): void {
-    if (!selectedActionableMarket) return
-    setEditingMarket(selectedActionableMarket)
+    if (
+      organizerAuthorityMutationPending ||
+      !selectedMembershipActionableMarket
+    ) {
+      return
+    }
+    setEditingMarket(selectedMembershipActionableMarket)
     setPublishState("idle")
     setPublishError("")
     setEditorOpen(true)
@@ -1253,7 +1309,11 @@ function MyEventsPanel({
             coordinate pickup handoffs.
           </p>
         </div>
-        <Button type="button" onClick={openCreate}>
+        <Button
+          type="button"
+          disabled={organizerAuthorityMutationPending}
+          onClick={openCreate}
+        >
           <Plus />
           Create event
         </Button>
@@ -1338,6 +1398,7 @@ function MyEventsPanel({
       {!selectedMarket && retryableDeliveries.length > 0 && (
         <OrganizerEventMarketDeliveryList
           deliveries={retryableDeliveries}
+          actionsDisabled={organizerAuthorityMutationPending}
           retryingRecord={
             retryMutation.isPending
               ? (retryMutation.variables?.record.record ?? null)
@@ -1468,7 +1529,7 @@ function MyEventsPanel({
       {!selectedReadPending && !selectedReadError && selectedMarket && (
         <>
           <OrganizerEventMarketPanel
-            market={selectedMarket}
+            market={selectedPresentedMarket ?? selectedMarket}
             accountPubkey={organizerPubkey}
             authenticatedPubkey={authenticatedPubkey}
             shouldContinue={shouldContinue}
@@ -1477,8 +1538,12 @@ function MyEventsPanel({
             refreshing={
               marketsQuery.isFetching || selectedMarketQuery.isFetching
             }
-            membershipPending={membershipMutation.isPending}
-            actionsDisabled={!selectedActionableMarket}
+            membershipPending={organizerAuthorityMutationPending}
+            actionsDisabled={
+              !selectedMembershipActionableMarket ||
+              organizerAuthorityMutationPending
+            }
+            deliveryRetryDisabled={organizerAuthorityMutationPending}
             retryingRecord={
               retryMutation.isPending
                 ? (retryMutation.variables?.record.record ?? null)
@@ -1490,17 +1555,23 @@ function MyEventsPanel({
               void refreshMarketQueries(selectedReference)
             }}
             onMembership={(item, action) => {
-              if (!selectedActionableMarket || !selectedReference) return
+              if (
+                organizerAuthorityMutationPending ||
+                !selectedMembershipActionableMarket ||
+                !selectedReference
+              ) {
+                return
+              }
               membershipMutation.mutate({
                 item,
                 action,
-                market: selectedActionableMarket,
+                market: selectedMembershipActionableMarket,
                 reference: selectedReference,
               })
             }}
             onRetryDelivery={retryDelivery}
           />
-          {selectedActionableMarket && (
+          {selectedHandoffActionableMarket && (
             <OrganizerHandoffReceiptQueue
               claims={handoffClaims}
               ackDeliveries={handoffAckDeliveries}
@@ -1529,12 +1600,17 @@ function MyEventsPanel({
                     )
                   : undefined
               }
+              actionsDisabled={organizerMutationPendingOutsideHandoff}
               pendingReceiptId={
                 handoffAckMutation.isPending
                   ? (handoffAckMutation.variables?.receipt.id ?? null)
                   : null
               }
-              onAcknowledge={(claim) => handoffAckMutation.mutate(claim)}
+              onAcknowledge={(claim) => {
+                if (!organizerMutationPendingOutsideHandoff) {
+                  handoffAckMutation.mutate(claim)
+                }
+              }}
               onRefresh={() => {
                 void Promise.all([
                   handoffReceiptsQuery.refetch(),
@@ -1559,7 +1635,12 @@ function MyEventsPanel({
                 Start with an empty organizer catalog. Products are accepted
                 later by publishing a signed collection update.
               </p>
-              <Button type="button" className="mt-5" onClick={openCreate}>
+              <Button
+                type="button"
+                className="mt-5"
+                disabled={organizerAuthorityMutationPending}
+                onClick={openCreate}
+              >
                 <Plus />
                 Create event
               </Button>
