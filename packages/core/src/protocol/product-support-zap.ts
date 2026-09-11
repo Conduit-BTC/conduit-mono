@@ -9,7 +9,11 @@ import {
   validateLightningInvoiceForPayment,
   type LnurlPayMetadata,
 } from "./lightning"
-import { getProfiles, isCommerceReadIncomplete } from "./commerce"
+import {
+  getProfiles,
+  isCommerceReadIncomplete,
+  type ProfileBatchQuery,
+} from "./commerce"
 import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, buildConduitClientTag } from "./nip89"
 import type { NostrEventSigner, UnsignedNostrEvent } from "./nostr-event-signer"
@@ -330,12 +334,17 @@ export async function resolveProductSupportPaymentAddress(
   dependencies: Pick<
     ProductSupportZapDependencies,
     "getProfiles"
-  > = defaultDependencies
+  > = defaultDependencies,
+  readContext: Pick<
+    ProfileBatchQuery,
+    "accountPubkey" | "authenticatedPubkey" | "shouldContinue"
+  > = {}
 ): Promise<string> {
   const normalizedRecipient = requireAccountPubkey(recipientPubkey, "recipient")
   let result: Awaited<ReturnType<typeof getProfiles>>
   try {
     result = await dependencies.getProfiles({
+      ...readContext,
       pubkeys: [normalizedRecipient],
       skipCache: true,
       requireCompleteEvidence: true,
@@ -378,10 +387,16 @@ export async function prepareProductSupportZapInvoice(
     throw new Error("The connected signer does not match this support account.")
   }
 
+  const profileReadContext = {
+    accountPubkey: shopperPubkey,
+    authenticatedPubkey: shopperPubkey,
+    shouldContinue: input.isCurrent,
+  }
   const amountMsats = amountSatsToMsats(input.amountSats)
   const lud16 = await resolveProductSupportPaymentAddress(
     input.recipientPubkey,
-    dependencies
+    dependencies,
+    profileReadContext
   )
   assertProductSupportRequestCurrent(input.isCurrent)
   const metadata = await dependencies.fetchLnurlPayMetadata(lud16)
@@ -434,7 +449,8 @@ export async function prepareProductSupportZapInvoice(
   }
   const confirmedLud16 = await resolveProductSupportPaymentAddress(
     input.recipientPubkey,
-    dependencies
+    dependencies,
+    profileReadContext
   )
   assertProductSupportRequestCurrent(input.isCurrent)
   if (confirmedLud16 !== lud16) {

@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from "bun:test"
+import { afterEach, describe, expect, it, mock } from "bun:test"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 
 import {
@@ -10,6 +10,21 @@ import {
   resolveProductSupportPaymentAddress,
   type ProductSupportZapDependencies,
 } from "../packages/core/src/protocol/product-support-zap"
+import {
+  __resetCommerceTestOverrides,
+  __setCommerceTestOverrides,
+  getProfiles,
+} from "../packages/core/src/protocol/commerce"
+import {
+  __resetRelayListTestOverrides,
+  __setRelayListTestOverrides,
+} from "../packages/core/src/protocol/relay-list"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "../packages/core/src/protocol/owner-relay-list-evidence"
+import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
+import {
+  __resetNdkTestState,
+  fetchEventsFanoutDetailed,
+} from "../packages/core/src/protocol/ndk"
 import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
 import {
   validateLightningInvoiceForPayment,
@@ -360,6 +375,9 @@ describe("product support zap invoice preparation", () => {
     expect(invoice).toBe("lnbc1bound")
     expect(deps.getProfiles).toHaveBeenCalledTimes(2)
     expect(deps.getProfiles).toHaveBeenNthCalledWith(1, {
+      accountPubkey: SHOPPER_PUBKEY,
+      authenticatedPubkey: SHOPPER_PUBKEY,
+      shouldContinue: undefined,
       pubkeys: [MERCHANT_PUBKEY],
       skipCache: true,
       requireCompleteEvidence: true,
@@ -739,4 +757,209 @@ describe("product support zap invoice preparation", () => {
       2_331
     )
   })
+})
+
+describe("product support account profile authority", () => {
+  const allowedRelay = "wss://shopper-read.example"
+  const excludedRelay = "wss://shopper-excluded.example"
+
+  afterEach(() => {
+    __resetCommerceTestOverrides()
+    __resetRelayListTestOverrides()
+    __resetNdkTestState()
+  })
+
+  async function installProfileNetwork(empty = false) {
+    const repository = createInMemoryOwnerRelayListEvidenceRepository()
+    const signedEvent = finalizeEvent(
+      {
+        kind: 10002,
+        created_at: 1_700_000_000,
+        tags: empty
+          ? []
+          : [
+              ["r", allowedRelay, "read"],
+              ["r", excludedRelay, "read"],
+            ],
+        content: "",
+      },
+      SHOPPER_SECRET
+    )
+    await repository.reconcile({
+      pubkey: SHOPPER_PUBKEY,
+      observations: [
+        {
+          signedEvent,
+          sourceRelayUrls: [allowedRelay],
+          observedAt: Date.now(),
+          completeObservedAt: Date.now(),
+        },
+      ],
+      lookup: {
+        observedAt: Date.now(),
+        coverage: "complete",
+        hadEvent: true,
+        eventId: signedEvent.id,
+      },
+    })
+    __setRelayListTestOverrides({ loadCached: async () => undefined })
+    __setCommerceTestOverrides({
+      ownerRelayListEvidenceRepository: repository,
+      accountNetworkLocalStateRepository: {
+        get: async (pubkey) => ({
+          ...emptyAccountNetworkLocalState(pubkey),
+          exclusions: [
+            {
+              relayUrl: excludedRelay,
+              committedAt: Date.now(),
+              relayListFrontier: { eventId: null, createdAt: null },
+              inboxDeclarationFrontier: { eventId: null, createdAt: null },
+            },
+          ],
+        }),
+      },
+      getCachedProducts: async () => [],
+      getCachedProfiles: async () => [undefined],
+      putCachedProfiles: async () => undefined,
+      fetchEventsFanoutDetailed: (filter, options) =>
+        fetchEventsFanoutDetailed(filter, {
+          ...options,
+          reuseRelayConnections: false,
+        }),
+    })
+    const profile = finalizeEvent(
+      {
+        kind: 0,
+        created_at: 1_700_000_000,
+        tags: [],
+        content: JSON.stringify({ lud16: "merchant@example.com" }),
+      },
+      MERCHANT_SECRET
+    )
+    const original = Object.getOwnPropertyDescriptor(globalThis, "WebSocket")
+    const opened: string[] = []
+    class ProfileWebSocket {
+      static OPEN = 1
+      readyState = 0
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+      constructor(url: string) {
+        opened.push(url)
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.onopen?.(new Event("open"))
+        })
+      }
+      send(payload: string) {
+        const [type, subscription] = JSON.parse(payload)
+        if (type !== "REQ") return
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: JSON.stringify(["EVENT", subscription, profile]),
+          } as MessageEvent<string>)
+          this.onmessage?.({
+            data: JSON.stringify(["EOSE", subscription]),
+          } as MessageEvent<string>)
+        })
+      }
+      close() {
+        this.readyState = 3
+      }
+    }
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: ProfileWebSocket,
+    })
+    return {
+      opened,
+      restore: () => {
+        __resetNdkTestState()
+        if (original) Object.defineProperty(globalThis, "WebSocket", original)
+        else Reflect.deleteProperty(globalThis, "WebSocket")
+      },
+    }
+  }
+
+  function input(isCurrent = () => true) {
+    return {
+      signer: signer(),
+      shopperPubkey: SHOPPER_PUBKEY,
+      recipientPubkey: MERCHANT_PUBKEY,
+      productAddress: PRODUCT_ADDRESS,
+      amountSats: 21,
+      relayUrls: [allowedRelay],
+      isCurrent,
+    }
+  }
+
+  it("uses the shopper's signed read membership and exclusions for both confirmations", async () => {
+    const network = await installProfileNetwork()
+    try {
+      await expect(
+        prepareProductSupportZapInvoice(input(), dependencies({ getProfiles }))
+      ).resolves.toBe("lnbc1bound")
+      expect(network.opened).toEqual([allowedRelay, allowedRelay])
+    } finally {
+      network.restore()
+    }
+  })
+
+  it("does not substitute global relays for a signed empty shopper read set", async () => {
+    const network = await installProfileNetwork(true)
+    const deps = dependencies({ getProfiles })
+    try {
+      await expect(
+        prepareProductSupportZapInvoice(input(), deps)
+      ).rejects.toThrow("could not be confirmed")
+      expect(network.opened).toEqual([])
+      expect(deps.fetchLnurlPayMetadata).not.toHaveBeenCalled()
+    } finally {
+      network.restore()
+    }
+  })
+
+  it.each([1, 2])(
+    "starts no queued profile I/O after confirmation %i loses live authority",
+    async (confirmation) => {
+      const network = await installProfileNetwork()
+      const entered = deferred<void>()
+      const release = deferred<void>()
+      let current = true
+      let calls = 0
+      __setCommerceTestOverrides({
+        fetchEventsFanoutDetailed: async (filter, options) => {
+          calls += 1
+          if (calls === confirmation) {
+            entered.resolve()
+            await release.promise
+          }
+          return fetchEventsFanoutDetailed(filter, {
+            ...options,
+            reuseRelayConnections: false,
+          })
+        },
+      })
+      const deps = dependencies({ getProfiles })
+      const preparation = prepareProductSupportZapInvoice(
+        input(() => current),
+        deps
+      )
+      try {
+        await entered.promise
+        current = false
+        release.resolve()
+        await expect(preparation).rejects.toThrow()
+        expect(network.opened).toEqual(confirmation === 1 ? [] : [allowedRelay])
+        expect(deps.fetchLnurlPayMetadata).toHaveBeenCalledTimes(
+          confirmation - 1
+        )
+      } finally {
+        release.resolve()
+        network.restore()
+      }
+    }
+  )
 })
