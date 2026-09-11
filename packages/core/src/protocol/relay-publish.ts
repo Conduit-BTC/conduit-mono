@@ -25,6 +25,7 @@ import {
   assertSafeNip65RelayTags,
   getConfiguredIsolatedE2eRelayUrl,
   loadRelaySettingsPlanningSnapshot,
+  normalizeOwnerSelectedRelayUrls,
   normalizeSecureOrIsolatedE2eRelayUrls,
   normalizeUntrustedRelayHintsForContext,
   tryNormalizeRelayUrl,
@@ -38,12 +39,18 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
-import { getAccountRelayScope } from "./session"
+import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
+import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import {
   publishSignedEventFrameToRelay,
   type ExactRelayWriteStatus,
 } from "./relay-writer"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
+import {
+  filterEligibleAccountRelayUrls,
+  orderEquivalentAccountRelayOperations,
+  type AccountNetworkLocalStateRepository,
+} from "./account-network-local-state"
 
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
@@ -54,6 +61,17 @@ export interface PublishWithPlannerInput {
   authorPubkey?: string
   /** Authenticated pubkey whose own NIP-65 local relays may be used. */
   authenticatedPubkey?: string | null
+  /**
+   * Explicit account whose locally removed whole relays must be excluded at
+   * each network attempt. This is intentionally independent from the event
+   * author, recipients, and signer authority.
+   */
+  accountPubkey?: string | null
+  /** Injectable durable-state reader for deterministic boundary tests. */
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
   recipientPubkeys?: readonly string[]
   /**
    * Extra recipient relay hints (e.g. NIP-17 kind-10050 private-message inbox
@@ -67,6 +85,12 @@ export interface PublishWithPlannerInput {
    * fanout for protocols such as NIP-17 that define an exclusive relay set.
    */
   exclusiveRelayUrls?: readonly string[]
+  /**
+   * Exact exclusive-target subset backed by this authenticated owner's own
+   * Network selection. Recipient or discovered relay URLs must never populate
+   * this field.
+   */
+  ownerSelectedRelayUrls?: readonly string[]
   /** Fetch missing NIP-65 hints before planning instead of cache-only lookup. */
   refreshRelayLists?: boolean
   /**
@@ -93,6 +117,14 @@ function hasAuthenticatedAuthorRelayContext(
     /^[0-9a-f]{64}$/.test(authorPubkey) &&
     authorPubkey === authenticatedPubkey
   )
+}
+
+function assertPublishSessionCurrent(
+  shouldContinue: (() => boolean) | undefined
+): void {
+  if (shouldContinue?.() === false) {
+    throw new Error("Publish cancelled because the signer session changed.")
+  }
 }
 
 export interface PublishWithPlannerResult {
@@ -157,6 +189,11 @@ interface RelayPublishTestOverrides {
     input: PublishWithPlannerInput
   ) => Promise<RelayWritePlan>
   getNdk?: typeof getNdk
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
+  ownerRelayListEvidenceRepository?: OwnerRelayListEvidenceRepository
 }
 
 let testOverrides: RelayPublishTestOverrides = {}
@@ -425,14 +462,25 @@ async function publishToRelayUrls(input: {
   relayUrls: readonly string[]
   requiredRelayCount: number
   timeoutMs: number
+  accountPubkey?: string | null
+  /** Active account required to exercise owner-selected ws:// authority. */
+  authenticatedPubkey?: string | null
+  /** Exact target subset selected by the authenticated account owner. */
+  ownerSelectedRelayUrls?: readonly string[]
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
+  shouldContinue?: () => boolean
 }): Promise<{
+  attemptedRelayUrls: string[]
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
   relayFailureMessages: Record<string, string>
   rejectedRelayUrls: string[]
   thrown: unknown
 }> {
-  const relayUrls =
+  const candidateRelayUrls =
     config.e2eRelayIsolationEnabled && input.relayUrls.length > 0
       ? (() => {
           const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
@@ -444,6 +492,35 @@ async function publishToRelayUrls(input: {
           return [isolatedRelayUrl]
         })()
       : [...input.relayUrls]
+  const accountNetworkLocalStateRepository =
+    input.accountNetworkLocalStateRepository ??
+    testOverrides.accountNetworkLocalStateRepository
+  const orderedCandidateRelayUrls =
+    input.accountPubkey === undefined || input.accountPubkey === null
+      ? candidateRelayUrls
+      : (
+          await orderEquivalentAccountRelayOperations({
+            accountPubkey: input.accountPubkey,
+            operations: candidateRelayUrls.map((relayUrl) => ({
+              relayUrl,
+              equivalenceKey: "final-publish-fanout",
+              value: relayUrl,
+            })),
+            repository: accountNetworkLocalStateRepository,
+          })
+        ).map((operation) => operation.value)
+  const relayUrls =
+    orderedCandidateRelayUrls.length === 0
+      ? []
+      : input.accountPubkey === undefined || input.accountPubkey === null
+        ? normalizeSecureOrIsolatedE2eRelayUrls(orderedCandidateRelayUrls)
+        : await filterEligibleAccountRelayUrls({
+            accountPubkey: input.accountPubkey,
+            authenticatedPubkey: input.authenticatedPubkey,
+            candidateRelayUrls: orderedCandidateRelayUrls,
+            ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+            repository: accountNetworkLocalStateRepository,
+          })
 
   // NDKEvent.publish() reads the instance from the event itself even when the
   // relay set was built with an NDK instance. Gift-wrap helpers can return an
@@ -452,14 +529,21 @@ async function publishToRelayUrls(input: {
 
   if (relayUrls.length === 0) {
     return {
+      attemptedRelayUrls: [],
       successfulRelayUrls: [],
       failedRelayUrls: [],
       relayFailureMessages: {},
       rejectedRelayUrls: [],
-      thrown: null,
+      thrown:
+        candidateRelayUrls.length > 0 && input.accountPubkey != null
+          ? new Error(
+              "Refusing to publish because no account-eligible relay target remains."
+            )
+          : null,
     }
   }
 
+  assertPublishSessionCurrent(input.shouldContinue)
   const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, input.ndk)
   let publishedUrls = new Set<string>()
   let explicitFailedUrls = new Set<string>()
@@ -527,6 +611,7 @@ async function publishToRelayUrls(input: {
   )
 
   return {
+    attemptedRelayUrls: relayUrls,
     ...outcome,
     relayFailureMessages,
     rejectedRelayUrls: Array.from(rejectedRelayUrls),
@@ -539,8 +624,19 @@ export type ExclusiveRelayPublishStatus = ExactRelayWriteStatus
 interface ExactRelayTargetInput {
   relayUrl: string
   authorPubkey: string
-  /** Preserve an authenticated author's intentional local `ws://` target. */
+  /** Authenticated account whose authority is being exercised. */
   authenticatedPubkey?: string | null
+  /** Exact target subset selected by that authenticated account owner. */
+  ownerSelectedRelayUrls?: readonly string[]
+  /** Explicit account for last-mile whole-relay exclusion enforcement. */
+  accountPubkey?: string | null
+  /** Injectable durable-state reader for deterministic boundary tests. */
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
+  /** Abort before opening the exact socket when the caller's session changed. */
+  shouldContinue?: () => boolean
 }
 
 export interface ExactRelayPublishInput extends ExactRelayTargetInput {
@@ -556,16 +652,20 @@ function resolveExactRelayTarget(input: ExactRelayTargetInput): string {
     }
     return normalized.url
   }
-  const allowAuthenticatedAuthorLocalRelay = hasAuthenticatedAuthorRelayContext(
-    {
+  const allowAuthenticatedOwnerSelectedRelay =
+    hasAuthenticatedAuthorRelayContext({
       authorPubkey: input.authorPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
-    }
-  )
+    }) &&
+    input.accountPubkey?.trim().toLowerCase() ===
+      input.authenticatedPubkey?.trim().toLowerCase() &&
+    normalizeOwnerSelectedRelayUrls(
+      input.ownerSelectedRelayUrls ?? []
+    ).includes(normalized.ok ? normalized.url : "")
   if (
     !normalized.ok ||
     (!normalizePublicWebSocketUrl(normalized.url) &&
-      !allowAuthenticatedAuthorLocalRelay)
+      !allowAuthenticatedOwnerSelectedRelay)
   ) {
     throw new Error("Expected one valid public or authenticated relay target.")
   }
@@ -585,7 +685,25 @@ export async function publishSignedEventToRelay(
     intent: "author_event",
     authorPubkey: input.authorPubkey,
   })
-  const relayUrl = resolveExactRelayTarget(input)
+  const candidateRelayUrl = resolveExactRelayTarget(input)
+  const relayUrl =
+    input.accountPubkey === undefined || input.accountPubkey === null
+      ? candidateRelayUrl
+      : (
+          await filterEligibleAccountRelayUrls({
+            accountPubkey: input.accountPubkey,
+            authenticatedPubkey: input.authenticatedPubkey,
+            candidateRelayUrls: [candidateRelayUrl],
+            ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+            repository: input.accountNetworkLocalStateRepository,
+          })
+        )[0]
+  if (!relayUrl) {
+    throw new Error(
+      "Refusing to publish because the exact relay is not eligible for this account."
+    )
+  }
+  assertPublishSessionCurrent(input.shouldContinue)
   const status = await publishSignedEventFrameToRelay({
     signedEvent: input.signedEvent,
     relayUrl,
@@ -605,9 +723,19 @@ export async function planPublishRelays(
   input: PublishWithPlannerInput
 ): Promise<RelayWritePlan> {
   if (input.exclusiveRelayUrls) {
-    const primaryRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
-      input.exclusiveRelayUrls
-    )
+    const ownerSelectedRelayUrls =
+      hasAuthenticatedAuthorRelayContext(input) &&
+      input.accountPubkey?.trim().toLowerCase() ===
+        input.authenticatedPubkey?.trim().toLowerCase()
+        ? normalizeOwnerSelectedRelayUrls(input.ownerSelectedRelayUrls ?? [])
+        : []
+    const ownerSelectedSet = new Set(ownerSelectedRelayUrls)
+    const primaryRelayUrls = mergeUnique([
+      normalizeSecureOrIsolatedE2eRelayUrls(input.exclusiveRelayUrls),
+      normalizeOwnerSelectedRelayUrls(input.exclusiveRelayUrls).filter(
+        (relayUrl) => ownerSelectedSet.has(relayUrl)
+      ),
+    ])
     return {
       intent: input.intent,
       primaryRelayUrls,
@@ -627,18 +755,46 @@ export async function planPublishRelays(
     )
   )
 
+  const settingsSnapshot = input.authenticatedPubkey
+    ? await readDurableAccountRelaySettingsPlanningSnapshot(
+        input.authenticatedPubkey,
+        {
+          evidenceRepository: testOverrides.ownerRelayListEvidenceRepository,
+        }
+      )
+    : loadRelaySettingsPlanningSnapshot()
+  const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
+  const policyAccount = input.accountPubkey?.trim().toLowerCase()
+  const hasAuthenticatedOwnerContext = Boolean(
+    authenticatedOwner && authenticatedOwner === policyAccount
+  )
+  const ownerSelectedReadRelayUrls = hasAuthenticatedOwnerContext
+    ? normalizeOwnerSelectedRelayUrls(
+        settingsSnapshot.settings.entries.flatMap((entry) =>
+          entry.readEnabled ? [entry.url] : []
+        )
+      )
+    : []
+  const ownerSelectedPlanningRelayUrls = hasAuthenticatedOwnerContext
+    ? normalizeOwnerSelectedRelayUrls(
+        settingsSnapshot.settings.entries.flatMap((entry) =>
+          entry.readEnabled || entry.writeEnabled ? [entry.url] : []
+        )
+      )
+    : []
   const relayLists =
     hintPubkeys.length > 0
       ? await getRelayLists(hintPubkeys, {
           cacheOnly: input.refreshRelayLists !== true,
           allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+          accountPubkey: input.accountPubkey,
+          authenticatedPubkey: input.authenticatedPubkey,
+          ownerSelectedRelayUrls: ownerSelectedReadRelayUrls,
+          accountNetworkLocalStateRepository:
+            input.accountNetworkLocalStateRepository,
+          shouldContinue: input.shouldContinue,
         })
       : undefined
-  const settingsSnapshot = loadRelaySettingsPlanningSnapshot(
-    input.authenticatedPubkey
-      ? getAccountRelayScope(input.authenticatedPubkey)
-      : undefined
-  )
 
   return planRelayWrites({
     intent: input.intent,
@@ -646,6 +802,7 @@ export async function planPublishRelays(
     recipientPubkeys: input.recipientPubkeys,
     relayLists,
     authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: ownerSelectedPlanningRelayUrls,
     settings: settingsSnapshot.settings,
     signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
     maxPrimaryRelays: input.deliveryMode === "critical" ? 0 : undefined,
@@ -683,17 +840,42 @@ export async function publishWithPlanner(
   assertSafeReplaceablePublish(event, input.replaceableSafety)
   assertValidSignedPublish(event, input)
 
-  const assertShouldContinue = () => {
-    if (input.shouldContinue?.() === false) {
-      throw new Error("Publish cancelled because the signer session changed.")
-    }
-  }
+  const assertShouldContinue = () =>
+    assertPublishSessionCurrent(input.shouldContinue)
 
   const basePlan = input.exclusiveRelayUrls
     ? await planPublishRelays(input)
     : testOverrides.planPublishRelays
       ? await testOverrides.planPublishRelays(input)
       : await planPublishRelays(input)
+  const ownerSelectedPublishRelayUrls =
+    !input.authenticatedPubkey ||
+    input.accountPubkey?.trim().toLowerCase() !==
+      input.authenticatedPubkey.trim().toLowerCase() ||
+    !hasAuthenticatedAuthorRelayContext(input)
+      ? []
+      : input.exclusiveRelayUrls
+        ? (() => {
+            const exclusiveRelayUrls = new Set(
+              normalizeOwnerSelectedRelayUrls(input.exclusiveRelayUrls)
+            )
+            return normalizeOwnerSelectedRelayUrls(
+              input.ownerSelectedRelayUrls ?? []
+            ).filter((relayUrl) => exclusiveRelayUrls.has(relayUrl))
+          })()
+        : normalizeOwnerSelectedRelayUrls(
+            (
+              await readDurableAccountRelaySettingsPlanningSnapshot(
+                input.authenticatedPubkey,
+                {
+                  evidenceRepository:
+                    testOverrides.ownerRelayListEvidenceRepository,
+                }
+              )
+            ).settings.entries.flatMap((entry) =>
+              entry.writeEnabled ? [entry.url] : []
+            )
+          )
   assertShouldContinue()
   const extraPrimaryRelayUrls = input.exclusiveRelayUrls
     ? []
@@ -734,7 +916,7 @@ export async function publishWithPlanner(
   const plannedRelayUrls = Array.from(
     new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
   )
-  let attemptedRelayUrls = [...plannedRelayUrls]
+  let attemptedRelayUrls: string[] = []
   const authorFallbackAllowed =
     input.intent !== "author_event" ||
     plan.signedRelayListAuthoritative !== true
@@ -757,7 +939,6 @@ export async function publishWithPlanner(
     })
     if (fallbackRelayUrls.length > 0) {
       assertShouldContinue()
-      attemptedRelayUrls = fallbackRelayUrls
       const fallback = await publishToRelayUrls({
         event,
         ndk: testOverrides.getNdk ? testOverrides.getNdk() : getNdk(),
@@ -767,7 +948,17 @@ export async function publishWithPlanner(
           input.deliveryMode === "critical"
             ? CRITICAL_RETRY_PUBLISH_TIMEOUT_MS
             : STANDARD_PUBLISH_TIMEOUT_MS,
+        accountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.authenticatedPubkey,
+        ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+        accountNetworkLocalStateRepository:
+          input.accountNetworkLocalStateRepository,
+        shouldContinue: input.shouldContinue,
       })
+      attemptedRelayUrls = mergeUnique([
+        attemptedRelayUrls,
+        fallback.attemptedRelayUrls,
+      ])
       if (fallback.thrown) {
         throw createPublishDiagnosticsError({
           message:
@@ -810,7 +1001,17 @@ export async function publishWithPlanner(
     relayUrls: plan.primaryRelayUrls,
     requiredRelayCount: plan.primaryRelayUrls.length > 0 ? 1 : 0,
     timeoutMs: publishTimeoutMs,
+    accountPubkey: input.accountPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
   })
+  attemptedRelayUrls = mergeUnique([
+    attemptedRelayUrls,
+    primary.attemptedRelayUrls,
+  ])
 
   if (primary.thrown) {
     let retry: Awaited<ReturnType<typeof publishToRelayUrls>> | null = null
@@ -823,16 +1024,23 @@ export async function publishWithPlanner(
         relayUrls: primary.failedRelayUrls,
         requiredRelayCount: 1,
         timeoutMs: CRITICAL_RETRY_PUBLISH_TIMEOUT_MS,
+        accountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.authenticatedPubkey,
+        ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+        accountNetworkLocalStateRepository:
+          input.accountNetworkLocalStateRepository,
+        shouldContinue: input.shouldContinue,
       })
+      attemptedRelayUrls = mergeUnique([
+        attemptedRelayUrls,
+        retry.attemptedRelayUrls,
+      ])
 
       if (!retry.thrown) {
         const merged = mergePublishResults([primary, retry])
         return {
           plan,
-          attemptedRelayUrls: mergeUnique([
-            attemptedRelayUrls,
-            primary.failedRelayUrls,
-          ]),
+          attemptedRelayUrls,
           successfulRelayUrls: merged.successfulRelayUrls,
           failedRelayUrls: merged.failedRelayUrls,
           relayFailureMessages: merged.relayFailureMessages,
@@ -858,9 +1066,6 @@ export async function publishWithPlanner(
     const retryRelayFailureMessages = mergeRelayFailureMessages(
       retryResults.map((result) => result.relayFailureMessages)
     )
-    const retryFailedRelayUrls = mergeUnique(
-      retryResults.map((result) => result.failedRelayUrls)
-    )
     const retrySuccessfulRelayUrls = mergeUnique(
       retryResults.map((result) => result.successfulRelayUrls)
     )
@@ -870,10 +1075,7 @@ export async function publishWithPlanner(
       throw createPublishDiagnosticsError({
         message: "Could not publish to the required exclusive relay set.",
         plan,
-        attemptedRelayUrls: mergeUnique([
-          attemptedRelayUrls,
-          retryFailedRelayUrls,
-        ]),
+        attemptedRelayUrls,
         successfulRelayUrls: merged.successfulRelayUrls,
         failedRelayUrls: merged.failedRelayUrls,
         relayFailureMessages: merged.relayFailureMessages,
@@ -890,11 +1092,6 @@ export async function publishWithPlanner(
         fallbackRelayUrls,
         criticalRecipientFallbackRelayUrls,
       ])
-      attemptedRelayUrls = mergeUnique([
-        attemptedRelayUrls,
-        primary.failedRelayUrls,
-        fallbackAttemptRelayUrls,
-      ])
       const fallback = await publishToRelayUrls({
         event,
         ndk,
@@ -904,7 +1101,17 @@ export async function publishWithPlanner(
           input.deliveryMode === "critical"
             ? CRITICAL_RETRY_PUBLISH_TIMEOUT_MS
             : STANDARD_PUBLISH_TIMEOUT_MS,
+        accountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.authenticatedPubkey,
+        ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+        accountNetworkLocalStateRepository:
+          input.accountNetworkLocalStateRepository,
+        shouldContinue: input.shouldContinue,
       })
+      attemptedRelayUrls = mergeUnique([
+        attemptedRelayUrls,
+        fallback.attemptedRelayUrls,
+      ])
       const merged = mergePublishResults([...retryResults, fallback])
 
       if (!fallback.thrown) {
@@ -935,10 +1142,7 @@ export async function publishWithPlanner(
     throw createPublishDiagnosticsError({
       message: "Could not publish because no primary relay accepted the event.",
       plan,
-      attemptedRelayUrls: mergeUnique([
-        attemptedRelayUrls,
-        retryFailedRelayUrls,
-      ]),
+      attemptedRelayUrls,
       successfulRelayUrls:
         merged.successfulRelayUrls.length > 0
           ? merged.successfulRelayUrls
@@ -955,11 +1159,7 @@ export async function publishWithPlanner(
   if (input.shouldContinue?.() === false) {
     return {
       plan,
-      attemptedRelayUrls: mergeUnique([
-        plan.primaryRelayUrls,
-        primary.successfulRelayUrls,
-        primary.failedRelayUrls,
-      ]),
+      attemptedRelayUrls,
       successfulRelayUrls: primary.successfulRelayUrls,
       failedRelayUrls: primary.failedRelayUrls,
       relayFailureMessages: primary.relayFailureMessages,
@@ -971,7 +1171,17 @@ export async function publishWithPlanner(
     relayUrls: plan.broadcastRelayUrls,
     requiredRelayCount: plan.broadcastRelayUrls.length > 0 ? 1 : 0,
     timeoutMs: publishTimeoutMs,
+    accountPubkey: input.accountPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
   })
+  attemptedRelayUrls = mergeUnique([
+    attemptedRelayUrls,
+    broadcast.attemptedRelayUrls,
+  ])
 
   return {
     plan,

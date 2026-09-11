@@ -25,10 +25,14 @@ import {
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
   getEventSourceRelayUrls,
+  type FetchEventsFanoutOptions,
   type FetchEventsFanoutResult,
 } from "./ndk"
+import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
+import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
+import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
 import type { ConduitAppId } from "./nip89"
 import { appendConduitClientTag } from "./nip89"
 import {
@@ -61,7 +65,10 @@ export interface ShippingDeletionFallbackStorage {
 }
 
 export interface ShippingTestOverrides {
+  fetchEventsFanout?: typeof fetchEventsFanout
   fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
+  getRelayLists?: typeof getRelayLists
+  readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
   getCachedDeletionTombstones?: (
     targetIds: readonly string[]
   ) => Promise<CachedProductTombstone[]>
@@ -1486,37 +1493,186 @@ async function runShippingFetchEventsFanoutDetailed(
   return await impl(filter, options)
 }
 
+async function runShippingFetchEventsFanout(
+  filter: NDKFilter,
+  options: Parameters<typeof fetchEventsFanout>[1]
+): Promise<NDKEvent[]> {
+  const impl = shippingTestOverrides.fetchEventsFanout ?? fetchEventsFanout
+  return await impl(filter, options)
+}
+
+export interface ShippingOptionReadOptions {
+  /** Explicit account whose durable whole-relay exclusions govern final I/O. */
+  accountPubkey?: string | null
+  /** Active authenticated account; requested merchant authors grant no authority. */
+  authenticatedPubkey?: string | null
+  /** Injectable durable policy reader for deterministic boundary tests. */
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  /** Live caller authority, rechecked immediately before final relay I/O. */
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  /** Cancel obsolete account-scoped reads when their caller is replaced. */
+  signal?: AbortSignal
+}
+
+type ShippingOwnerRelayAuthority = {
+  authenticatedPubkey: string
+  settings: Awaited<
+    ReturnType<typeof readDurableAccountRelaySettingsPlanningSnapshot>
+  >["settings"]
+  signedRelayListAuthoritative: boolean
+  readRelayUrls: string[]
+  writeRelayUrls: string[]
+}
+
+async function readShippingOwnerRelayAuthority(
+  options: ShippingOptionReadOptions
+): Promise<ShippingOwnerRelayAuthority | null> {
+  const accountPubkey =
+    (options.accountPubkey ?? options.authenticatedPubkey)
+      ?.trim()
+      .toLowerCase() ?? ""
+  const authenticatedPubkey =
+    options.authenticatedPubkey?.trim().toLowerCase() ?? ""
+  if (
+    !HEX_64.test(accountPubkey) ||
+    !HEX_64.test(authenticatedPubkey) ||
+    accountPubkey !== authenticatedPubkey
+  ) {
+    return null
+  }
+  try {
+    const snapshot = await (
+      shippingTestOverrides.readAccountRelaySettingsPlanningSnapshot ??
+      readDurableAccountRelaySettingsPlanningSnapshot
+    )(authenticatedPubkey)
+    return {
+      authenticatedPubkey,
+      settings: snapshot.settings,
+      signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
+      readRelayUrls: normalizeOwnerSelectedRelayUrls(
+        snapshot.settings.entries.flatMap((entry) =>
+          entry.readEnabled ? [entry.url] : []
+        )
+      ),
+      writeRelayUrls: normalizeOwnerSelectedRelayUrls(
+        snapshot.settings.entries.flatMap((entry) =>
+          entry.writeEnabled ? [entry.url] : []
+        )
+      ),
+    }
+  } catch {
+    return null
+  }
+}
+
+function shippingOwnerSelectedRelayUrls(
+  authorPubkey: string,
+  authority: ShippingOwnerRelayAuthority | null
+): string[] {
+  return normalizeOwnerSelectedRelayUrls([
+    ...(authority?.readRelayUrls ?? []),
+    ...(authorPubkey.trim().toLowerCase() === authority?.authenticatedPubkey
+      ? (authority?.writeRelayUrls ?? [])
+      : []),
+  ])
+}
+
+async function getEligibleShippingReadRelayUrls(
+  relayUrls: readonly string[],
+  ownerSelectedRelayUrls: readonly string[],
+  options: ShippingOptionReadOptions
+): Promise<string[]> {
+  const accountPubkey = options.accountPubkey ?? options.authenticatedPubkey
+  if (accountPubkey === undefined || accountPubkey === null) {
+    return [...relayUrls]
+  }
+  return await filterEligibleAccountRelayUrls({
+    accountPubkey,
+    authenticatedPubkey: options.authenticatedPubkey,
+    candidateRelayUrls: relayUrls,
+    ownerSelectedRelayUrls,
+    repository: options.accountNetworkLocalStateRepository,
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Fetch
 // ---------------------------------------------------------------------------
 
 export async function getShippingOptions(
-  merchantPubkey: string
+  merchantPubkey: string,
+  options: ShippingOptionReadOptions = {}
 ): Promise<ParsedShippingOption[]> {
-  const relayLists = await getRelayLists([merchantPubkey], {
+  const ownerRelayAuthority = await readShippingOwnerRelayAuthority(options)
+  const ownerSelectedRelayUrls = shippingOwnerSelectedRelayUrls(
+    merchantPubkey,
+    ownerRelayAuthority
+  )
+  const relayListReadPlan = ownerRelayAuthority
+    ? planRelayReads({
+        intent: "relay_lists",
+        authenticatedPubkey: ownerRelayAuthority.authenticatedPubkey,
+        ownerSelectedRelayUrls: ownerRelayAuthority.readRelayUrls,
+        maxRelays: 12,
+        settings: ownerRelayAuthority.settings,
+        signedRelayListAuthoritative:
+          ownerRelayAuthority.signedRelayListAuthoritative,
+      })
+    : null
+  const resolveRelayLists = shippingTestOverrides.getRelayLists ?? getRelayLists
+  const relayLists = await resolveRelayLists([merchantPubkey], {
     cacheOnly: false,
+    ...(relayListReadPlan ? { relayUrls: relayListReadPlan.relayUrls } : {}),
+    accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
+    authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
+    ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
+    signal: options.signal,
   })
   const readPlan = planRelayReads({
     intent: "author_products",
     authors: [merchantPubkey],
     relayLists,
+    authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
+    ownerSelectedRelayUrls,
     maxRelays: 12,
+    settings: ownerRelayAuthority?.settings,
+    signedRelayListAuthoritative:
+      ownerRelayAuthority?.signedRelayListAuthoritative,
   })
+  const relayUrls = await getEligibleShippingReadRelayUrls(
+    readPlan.relayUrls,
+    readPlan.ownerSelectedRelayUrls ?? [],
+    options
+  )
+  const executableRelayUrls = new Set(relayUrls)
+  const executableOwnerSelectedRelayUrls = (
+    readPlan.ownerSelectedRelayUrls ?? []
+  ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
     authors: [merchantPubkey],
   }
 
-  const events = (await fetchEventsFanout(filter, {
-    relayUrls: readPlan.relayUrls,
-  })) as NDKEvent[]
+  const events = await runShippingFetchEventsFanout(filter, {
+    relayUrls,
+    accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
+    authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
+    ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
+    signal: options.signal,
+  })
   const coordinates = events.flatMap((event) => {
     const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]?.trim()
     return event.pubkey && dTag
       ? [getShippingOptionAddress(event.pubkey, dTag)]
       : []
   })
-  return await getShippingOptionsByCoordinates(coordinates)
+  return await getShippingOptionsByCoordinates(coordinates, options)
 }
 
 export function selectLatestShippingOptions(
@@ -1656,24 +1812,66 @@ async function mapWithConcurrency<T, TResult>(
 }
 
 export async function getShippingOptionsByCoordinates(
-  coordinates: readonly string[]
+  coordinates: readonly string[],
+  options: ShippingOptionReadOptions = {}
 ): Promise<ParsedShippingOption[]> {
   const batches = buildShippingOptionReadBatches(coordinates)
   if (batches.length === 0) return []
 
   const authors = Array.from(new Set(batches.map((batch) => batch.pubkey)))
-  const relayLists = await getRelayLists(authors, { cacheOnly: false })
+  const ownerRelayAuthority = await readShippingOwnerRelayAuthority(options)
+  const relayListReadPlan = ownerRelayAuthority
+    ? planRelayReads({
+        intent: "relay_lists",
+        authenticatedPubkey: ownerRelayAuthority.authenticatedPubkey,
+        ownerSelectedRelayUrls: ownerRelayAuthority.readRelayUrls,
+        maxRelays: 12,
+        settings: ownerRelayAuthority.settings,
+        signedRelayListAuthoritative:
+          ownerRelayAuthority.signedRelayListAuthoritative,
+      })
+    : null
+  const resolveRelayLists = shippingTestOverrides.getRelayLists ?? getRelayLists
+  const relayLists = await resolveRelayLists(authors, {
+    cacheOnly: false,
+    ...(relayListReadPlan ? { relayUrls: relayListReadPlan.relayUrls } : {}),
+    accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
+    authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
+    ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
+    signal: options.signal,
+  })
   const requested = new Set(batches.flatMap((batch) => batch.coordinates))
   const batchResults = await mapWithConcurrency(
     batches,
     SHIPPING_OPTION_READ_CONCURRENCY,
     async (batch) => {
+      const ownerSelectedRelayUrls = shippingOwnerSelectedRelayUrls(
+        batch.pubkey,
+        ownerRelayAuthority
+      )
       const readPlan = planRelayReads({
         intent: "author_products",
         authors: [batch.pubkey],
         relayLists,
+        authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
+        ownerSelectedRelayUrls,
         maxRelays: 12,
+        settings: ownerRelayAuthority?.settings,
+        signedRelayListAuthoritative:
+          ownerRelayAuthority?.signedRelayListAuthoritative,
       })
+      const relayUrls = await getEligibleShippingReadRelayUrls(
+        readPlan.relayUrls,
+        readPlan.ownerSelectedRelayUrls ?? [],
+        options
+      )
+      const executableRelayUrls = new Set(relayUrls)
+      const executableOwnerSelectedRelayUrls = (
+        readPlan.ownerSelectedRelayUrls ?? []
+      ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
       const observedShippingEvents = requireCompleteShippingRead(
         await runShippingFetchEventsFanoutDetailed(
           {
@@ -1682,9 +1880,18 @@ export async function getShippingOptionsByCoordinates(
             "#d": batch.dTags,
             limit: SHIPPING_OPTION_READ_LIMIT,
           },
-          { relayUrls: readPlan.relayUrls }
+          {
+            relayUrls,
+            accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
+            authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
+            ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+            accountNetworkLocalStateRepository:
+              options.accountNetworkLocalStateRepository,
+            shouldContinue: options.shouldContinue,
+            signal: options.signal,
+          }
         ),
-        readPlan.relayUrls,
+        relayUrls,
         SHIPPING_OPTION_READ_LIMIT
       )
       const { shippingEvents, retainedEventIds } =
@@ -1699,7 +1906,16 @@ export async function getShippingOptionsByCoordinates(
           "#a": batch.coordinates,
           limit: SHIPPING_DELETION_READ_LIMIT,
         },
-        { relayUrls: readPlan.relayUrls }
+        {
+          relayUrls,
+          accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
+          authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
+          ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+          accountNetworkLocalStateRepository:
+            options.accountNetworkLocalStateRepository,
+          shouldContinue: options.shouldContinue,
+          signal: options.signal,
+        }
       )
       await rememberObservedShippingDeletionEvidence(
         addressDeletionResult.events,
@@ -1707,7 +1923,7 @@ export async function getShippingOptionsByCoordinates(
       )
       requireCompleteShippingRead(
         addressDeletionResult,
-        readPlan.relayUrls,
+        relayUrls,
         SHIPPING_DELETION_READ_LIMIT
       )
       const eventIds = uniqueStrings([
@@ -1725,7 +1941,16 @@ export async function getShippingOptionsByCoordinates(
             "#e": eventIds,
             limit: SHIPPING_DELETION_READ_LIMIT,
           },
-          { relayUrls: readPlan.relayUrls }
+          {
+            relayUrls,
+            accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
+            authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
+            ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+            accountNetworkLocalStateRepository:
+              options.accountNetworkLocalStateRepository,
+            shouldContinue: options.shouldContinue,
+            signal: options.signal,
+          }
         )
         await rememberObservedShippingDeletionEvidence(
           eventDeletionResult.events,
@@ -1735,7 +1960,7 @@ export async function getShippingOptionsByCoordinates(
         )
         requireCompleteShippingRead(
           eventDeletionResult,
-          readPlan.relayUrls,
+          relayUrls,
           SHIPPING_DELETION_READ_LIMIT
         )
       }

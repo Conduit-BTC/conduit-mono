@@ -443,5 +443,15 @@ export async function prepareProductSupportZapInvoice(
     )
   }
 
+  // The invoice can expire while the final relay confirmation is pending.
+  const confirmedInvoiceValidation =
+    dependencies.validateLightningInvoiceForPayment({
+      invoice,
+      expectedAmountMsats: amountMsats,
+    })
+  if (!confirmedInvoiceValidation.ok) {
+    throw new Error(confirmedInvoiceValidation.reason)
+  }
+
   return invoice
 }

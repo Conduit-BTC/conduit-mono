@@ -121,20 +121,22 @@ export { Switch } from "./Switch"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
 export {
   RelaySettingsPanel,
-  type RelaySettingsPanelEntry,
+  UnpublishedRelayChangesDialog,
   type RelaySettingsPanelProps,
-  type RelaySettingsPanelState,
+  type UnpublishedRelayChangesDialogProps,
 } from "./RelaySettingsPanel"
-export {
-  MAX_INBOX_RELAY_SELECTION,
-  PrivateInboxSection,
-  type PrivateInboxSectionProps,
-  type PrivateInboxStatus,
-} from "./PrivateInboxSection"
 export {
   MediaServerPreferencesSection,
   type MediaServerPreferencesSectionProps,
 } from "./MediaServerPreferencesSection"
+export {
+  PreferenceSectionBody,
+  PreferenceSectionCard,
+  PreferenceSectionDivider,
+  PreferenceSectionFooter,
+  type PreferenceSectionCardProps,
+  type PreferenceSectionFooterProps,
+} from "./PreferenceSectionCard"
 export { Checkbox, type CheckboxProps } from "./Checkbox"
 export {
   ProductCard,

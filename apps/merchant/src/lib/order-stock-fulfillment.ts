@@ -90,14 +90,17 @@ export async function resolveStockUpdateFulfillmentIntent(
   input: {
     product: ProductSchema
     productAddressId: string
+    accountPubkey?: string | null
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
     orderHasPickupClaim?: boolean
     verifiedPickup?: OrderPickupFulfillmentSchema
   },
-  dependencies: {
+  dependencies?: {
     getShippingOptions: (
       coordinates: string[]
     ) => Promise<ParsedShippingOption[]>
-  } = { getShippingOptions: getShippingOptionsByCoordinates }
+  }
 ): Promise<ProductFulfillmentIntent> {
   const { product } = input
   if (product.format === "digital") return { kind: "digital" }
@@ -150,9 +153,15 @@ export async function resolveStockUpdateFulfillmentIntent(
   }
 
   if (product.shippingOptionId) {
-    const shippingOptions = await dependencies.getShippingOptions([
-      product.shippingOptionId,
-    ])
+    const shippingOptions = await (
+      dependencies?.getShippingOptions ??
+      ((coordinates: string[]) =>
+        getShippingOptionsByCoordinates(coordinates, {
+          accountPubkey: input.accountPubkey,
+          authenticatedPubkey: input.authenticatedPubkey,
+          shouldContinue: input.shouldContinue,
+        }))
+    )([product.shippingOptionId])
     const prepared = resolveProductFulfillment(product, shippingOptions)
     if (
       prepared.intent !== "fixed_standard" ||

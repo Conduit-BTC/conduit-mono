@@ -11,6 +11,11 @@ import {
   publishTestRelayEvents,
   TEST_RELAY_URL,
 } from "./helpers/auth"
+import {
+  bolt11DescriptionHashField,
+  bolt11PaymentHashField,
+  makeBolt11Fixture,
+} from "../tests/support/bolt11-fixture"
 
 const marketUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
@@ -283,3 +288,91 @@ test("leaving the product route stops a stalled support request before the provi
   await page.waitForTimeout(100)
   expect(callbackRequests).toBe(0)
 })
+
+for (const colorScheme of ["light", "dark"] as const) {
+  test(`an unpaid support invoice has readable status in ${colorScheme} theme @market`, async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(60_000)
+    await page.emulateMedia({ colorScheme })
+    await publishTestRelayEvents([
+      finalizeEvent(
+        {
+          kind: 0,
+          created_at: Math.floor(Date.now() / 1_000),
+          tags: [],
+          content: JSON.stringify({
+            display_name: "Support Merchant",
+            lud16: "support@merchant-fixture.dev",
+          }),
+        },
+        merchantSecretKey
+      ),
+    ])
+    await installTestSigner(page, buyerPubkey, { secretKey: buyerSecretKey })
+    let callbackRequests = 0
+    await page.route("https://merchant-fixture.dev/**", async (route) => {
+      const url = new URL(route.request().url())
+      if (url.pathname === "/callback") {
+        callbackRequests += 1
+        const request = url.searchParams.get("nostr") ?? ""
+        const zap = JSON.parse(request)
+        expect(zap.kind === 9734 && zap.content === "Public fixture note").toBe(
+          true
+        )
+        expect(
+          zap.tags.some(
+            (tag: string[]) => tag[0] === "a" && tag[1] === productAddress
+          )
+        ).toBe(true)
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            pr: makeBolt11Fixture({
+              hrp: "lnbc210n",
+              createdAt: Math.floor(Date.now() / 1_000),
+              fields: [
+                bolt11PaymentHashField(),
+                bolt11DescriptionHashField(request),
+              ],
+            }),
+          }),
+        })
+        return
+      }
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          tag: "payRequest",
+          callback: "https://merchant-fixture.dev/callback",
+          minSendable: 1_000,
+          maxSendable: 100_000_000,
+          allowsNostr: true,
+          nostrPubkey: receiptPubkey,
+          metadata: JSON.stringify([["text/plain", "support"]]),
+        }),
+      })
+    })
+
+    await page.goto(`${marketUrl}/products`)
+    await seedSupportProduct(page)
+    await page.goto(productUrl)
+    await page.getByRole("button", { name: "Support product" }).click()
+    await page.getByLabel("Public note (optional)").fill("Public fixture note")
+    await page.getByRole("button", { name: "Create zap invoice" }).click()
+    const status = page.getByRole("status").filter({ hasText: "Invoice ready" })
+    await expect(status).toHaveText(
+      "Invoice ready. Conduit has not sent or confirmed a payment."
+    )
+    await expect(page.locator("html")).toHaveAttribute(
+      "data-theme",
+      colorScheme === "light" ? "day-market" : "night-market"
+    )
+    await expect(
+      page.getByRole("link", { name: "Open in wallet" })
+    ).toBeVisible()
+    expect(callbackRequests).toBe(1)
+    // Capture only the state message; never attach invoice or request material.
+    await status.screenshot({ path: testInfo.outputPath("invoice-status.png") })
+  })
+}

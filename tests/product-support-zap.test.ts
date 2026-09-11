@@ -633,6 +633,63 @@ describe("product support zap invoice preparation", () => {
     ).rejects.toThrow("invoice amount does not match")
   })
 
+  it("rejects an invoice that expires during the final payment-profile confirmation", async () => {
+    const profileGate = deferred<ReturnType<typeof profileResult>>()
+    const confirmationStarted = deferred<void>()
+    const createdAt = 1_800_000_000
+    let nowSeconds = createdAt
+    let profileReads = 0
+    const validateInvoice = mock(
+      (input: Parameters<typeof validateLightningInvoiceForPayment>[0]) =>
+        validateLightningInvoiceForPayment({ ...input, nowSeconds })
+    )
+    const deps = dependencies({
+      getProfiles: mock(async () => {
+        profileReads += 1
+        if (profileReads === 1) return profileResult("merchant@example.com")
+        confirmationStarted.resolve()
+        return profileGate.promise
+      }),
+      fetchZapInvoice: mock(async (_callback, _amount, zapRequestJson) => {
+        const invoice = makeBolt11Fixture({
+          hrp: "lnbc210n",
+          createdAt,
+          fields: [
+            bolt11PaymentHashField(),
+            bolt11DescriptionHashField(zapRequestJson),
+            { tag: "x", words: [1] },
+          ],
+        })
+        expect(
+          validateZapInvoiceDescriptionBinding({ invoice, zapRequestJson })
+        ).toMatchObject({ ok: true })
+        return { invoice }
+      }),
+      validateLightningInvoiceForPayment: validateInvoice,
+    })
+    const preparation = prepareProductSupportZapInvoice(
+      {
+        signer: signer(),
+        shopperPubkey: SHOPPER_PUBKEY,
+        recipientPubkey: MERCHANT_PUBKEY,
+        productAddress: PRODUCT_ADDRESS,
+        amountSats: 21,
+        relayUrls: ["wss://relay.example"],
+        nowSeconds: createdAt,
+      },
+      deps
+    )
+
+    await confirmationStarted.promise
+    expect(validateInvoice.mock.results[0]?.value).toMatchObject({ ok: true })
+    nowSeconds = createdAt + 1
+    profileGate.resolve(profileResult("merchant@example.com"))
+
+    await expect(preparation).rejects.toThrow("expired")
+    expect(deps.fetchZapInvoice).toHaveBeenCalledTimes(1)
+    expect(validateInvoice).toHaveBeenCalledTimes(2)
+  })
+
   it("rejects a valid description-bound invoice that exceeds level-M QR capacity", async () => {
     let oversizedInvoice = ""
     const deps = dependencies({
