@@ -1089,6 +1089,27 @@ export function reconcileMerchantOrganizerCollectionEvidence(
     return market
   }
 
+  const retainedProductCoordinates = new Set(
+    retainedCollection.productCoordinates
+  )
+  const requestedProductCoordinates = new Set<string>()
+  const pending: MerchantOrganizerParticipation[] = []
+  const accepted: MerchantOrganizerParticipation[] = []
+  for (const item of market.participation) {
+    if (item.status === "organizer_only") continue
+    requestedProductCoordinates.add(item.productCoordinate)
+    if (retainedProductCoordinates.has(item.productCoordinate)) {
+      accepted.push({ ...item, status: "accepted" })
+    } else {
+      pending.push({ ...item, status: "pending" })
+    }
+  }
+  const organizerOnly: MerchantOrganizerParticipation[] = []
+  for (const productCoordinate of retainedCollection.productCoordinates) {
+    if (requestedProductCoordinates.has(productCoordinate)) continue
+    organizerOnly.push({ productCoordinate, status: "organizer_only" })
+  }
+
   return {
     ...market,
     title: retainedCollection.title,
@@ -1103,7 +1124,9 @@ export function reconcileMerchantOrganizerCollectionEvidence(
         : undefined,
     pickupCoordinates: retainedCollection.pickupCoordinates,
     collectionCreatedAt: retainedCollection.createdAt,
+    collectionEventId: retainedCollection.eventId,
     productCoordinates: retainedCollection.productCoordinates,
+    participation: [...pending, ...accepted, ...organizerOnly],
     source: {
       ...market.source,
       collection: retainedCollection,
@@ -1116,6 +1139,18 @@ export function reconcileMerchantOrganizerCollectionEvidence(
       organizerProductCoordinates: retainedCollection.productCoordinates,
     },
   }
+}
+
+export function reconcileAcknowledgedMerchantOrganizerCollectionEvidence(
+  market: MerchantOrganizerEventMarket,
+  retainedDeliveries: readonly MerchantOrganizerRecordDelivery[]
+): MerchantOrganizerEventMarket {
+  return retainedDeliveries
+    .filter(
+      (delivery) =>
+        delivery.record === "collection" && delivery.acknowledgedCount > 0
+    )
+    .reduce(reconcileMerchantOrganizerCollectionEvidence, market)
 }
 
 export async function publishMerchantOrganizerMembership(input: {
