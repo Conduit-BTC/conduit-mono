@@ -246,6 +246,8 @@ describe("followed organizer event-market discovery", () => {
     const followAccounts: Array<string | null | undefined> = []
     const organizerAccounts: Array<string | null | undefined> = []
     __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
       readFollowLists: async (query) => {
         followAccounts.push(query.authenticatedPubkey)
         return followRead({ pubkeys: [ORGANIZER] })
