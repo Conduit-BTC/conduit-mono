@@ -12,16 +12,12 @@ import {
   fetchEventsFanoutDetailed,
   getEventSourceRelayUrls,
   verifySignedPublicNostrEvents,
+  type FetchEventsFanoutOptions,
 } from "./ndk"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
-export interface RelayReadOptions {
+export interface RelayReadOptions extends FetchEventsFanoutOptions {
   relayUrls: string[]
-  connectTimeoutMs?: number
-  fetchTimeoutMs?: number
-  skipHealthFilter?: boolean
-  reuseRelayConnections?: boolean
-  signal?: AbortSignal
 }
 
 export interface RelayReadSourceStatus {

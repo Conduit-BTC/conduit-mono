@@ -15,9 +15,10 @@ The latest validated signed frontier for each kind is authoritative. Market and
 Merchant render the same shared projection and mutation workflow; their routes
 are navigation shells, not separate settings products.
 
-The combined UI does not create a combined protocol event. A reviewed change
-may require one or two signatures and produces one replacement event for each
-changed frontier.
+The combined UI does not create a combined protocol event. A reviewed signed
+role change may require one or two signatures and produces one replacement
+event for each changed frontier. Reordering otherwise equivalent relays is a
+Conduit-local preference and requires no signer request.
 
 ## Distinct Relay Data Sets
 
@@ -39,6 +40,29 @@ membership also must not be treated as a private-message fallback. NIP-17
 delivery follows the recipient's valid `kind:10050` declaration; named
 compatibility exceptions remain bounded by their own registries and removal
 gates.
+
+## Transport Authority Boundary
+
+Transport eligibility is authority-scoped. For an authenticated owner's own
+account activity, a relay that the owner explicitly selects in Network, whether
+newly added or already present in that account's Network configuration, may use
+`ws://` or `wss://`. A `ws://` selection remains eligible for Review and Save,
+but the shared UI labels it **Unencrypted connection** and explains that
+transport encryption is absent and the relay should be used only when the owner
+controls it or explicitly trusts the relay and network path.
+
+That permission is not transferable through discovery. Conduit must never
+automatically contact a `ws://` URL learned from NIP-11 metadata, event hints,
+cached provenance, fallback configuration, or another account's signed relay
+declaration, including a recipient's `kind:10050`. Remotely learned `wss://`
+relays remain eligible under the normal routing, evidence, validity, and
+whole-relay-exclusion rules.
+
+Parsing, retaining, or presenting a remote `ws://` URL does not authorize a
+connection. Every relay executor rechecks the active authenticated account and
+the URL's explicit Network-selection authority immediately before final I/O.
+This is a narrow Network Settings and inbox-routing rule, not a generic
+transport abstraction.
 
 ## Reconciliation Evidence
 
@@ -88,64 +112,46 @@ Device-local settings are neither a product concept nor an authority. Local
 persistence is limited to:
 
 - cached exact signed events with source and freshness;
-- unpublished drafts while a change is being reviewed;
+- one in-memory draft while a change is being reviewed; it is not persisted as
+  account authority;
 - capability observations with scope and observation time;
 - exact signed-event retry checkpoints with immutable target plans;
-- bounded account-and-device-scoped legacy inbox-read recovery records that
-  persist across incomplete migration and restart until their lifecycle ends;
-- durable account-and-device-scoped migration discard tombstones that persist
-  across restart for the legacy migration reader's lifetime and prevent
-  discarded recovery from being reconstructed.
+- causal whole-relay exclusions that block later I/O until stronger own signed
+  evidence explicitly re-adds the URL;
+- a signer-free preferred relay order that can rank only otherwise eligible and
+  equivalent Conduit operations;
+- independent account-and-device-scoped recovery batches owned by locally
+  staged `kind:10050` replacements, with exact readback and expiry evidence.
 
 None of these records may outrank a newer validated signed frontier. An unsigned
 draft does not change runtime behavior. Once every requested event is signed
 and its exact bytes and immutable target plan are durably staged, the runtime
 may honor the pending projection immediately while network confirmation remains
-visible. Cross-app convergence still comes from signed Nostr events, not shared
-browser storage.
+visible. Signed membership converges through Nostr. Local ordering is shared
+only where Conduit storage is already shared; isolated devices do not gain a
+second synchronized ordering authority.
 
-### Legacy migration
+### Signed reconstruction
 
-Valid signed state always wins. Legacy app-scoped relay data is not merged into
-or allowed to override a signed frontier.
+Reconnect or reset reconstructs account membership from validated published
+`kind:10002` and `kind:10050` evidence. Unpublished legacy local Network settings,
+migration markers, and legacy inbox-read recovery records are disposable and
+ignored. They do not seed review drafts or affect reads, publishes, private
+inbox routing, recovery, or retries. When valid published state is absent,
+Network provides explicit setup or repair; partial or unavailable discovery
+remains unknown.
 
-Legacy NIP-65 draft import and legacy inbox-read recovery have separate gates:
+Stronger verified current signed evidence clears its causal exclusion without
+depending on legacy localStorage cleanup. Permanent signed evidence, exact
+pending checkpoints, and private-inbox cutover recovery retain their existing
+persistence and lifecycle.
 
-- Complete bounded scoped absence for `kind:10002` may seed a one-time
-  unpublished NIP-65 draft. Any valid signed `kind:10002` suppresses that draft
-  import.
-- Normalized legacy secure-IN relays are captured as bounded read-only inbox
-  recovery regardless of the `kind:10002` frontier. Signed NIP-65 state does not
-  end that lane.
-
-Migration persists and verifies every eligible replacement record before
-retiring the legacy key. An incomplete migration retains or recovers the prior
-read path and remains retryable; partial replacement records are neither
-authority nor active state.
-
-The recovery record and tombstone are account-and-device-scoped local migration
-evidence. Neither is signed account authority or current membership, and neither
-defines a write target or supplies publication input. The recovery record
-survives incomplete migration and restart. It ends only after a usable
-`kind:10050` replacement with one to three secure relays is fully signed and
-durably staged, or after explicit discard recorded by a durable local migration
-tombstone. That tombstone survives restart for the lifetime of the legacy
-migration reader and prevents retained or reappearing legacy data from
-resurrecting privacy-sensitive recovery. A signed or staged `kind:10002`, an
-unusable `kind:10050`, cancellation, or signer refusal does not end recovery.
-Whole-setup removal records the equivalent explicit tombstone for the captured
-URL after all required signatures are staged.
-
-Malformed, partial, unavailable, stale, or a future reserved fail-closed
-conflict cannot trigger NIP-65 draft import. The replacement does not keep a
-dormant second settings authority for a later cleanup release.
-
-## Flat List and Automatic Ordering
+## Flat List and Local Ordering
 
 Each normalized relay appears once in one flat list. The row may expose Read,
 Publish, and Private inbox membership plus evidence-labelled capability badges.
 
-Conduit automatically orders rows using:
+Conduit first groups rows using:
 
 1. current configured commerce evidence;
 2. scoped observed commerce compatibility;
@@ -157,11 +163,17 @@ Only configured or scoped observed evidence can place a relay in a Commerce
 tier. Advertised relay-protocol capability is a weaker supporting tier or badge,
 not advertised commerce compatibility.
 
-Stable signed declaration order is the tie-breaker, followed by normalized URL
-when no signed position exists. There is no manual commerce ranking.
+Within otherwise eligible and equivalent groups, the user may set a
+Conduit-local preferred order without a signer request. The preference is shared
+where Conduit storage is shared and otherwise remains isolated to the device.
+Stable signed declaration order and normalized URL provide deterministic
+fallbacks when no local preference applies.
 
-This order is a Conduit display and execution convention. NIP-65 does not make
-tag order a cross-client priority, and ordering never changes event validity.
+This order is only a Conduit display and execution preference. It never changes
+protocol event ordering, signed authority, `kind:10050` routing, whole-relay
+exclusions, validity, or evidence rules. NIP-65 does not make tag order a
+cross-client priority, and Conduit does not create another synchronized
+authority merely to make local order portable.
 
 ## Capability Evidence Boundary
 
@@ -198,14 +210,14 @@ occur only after reviewed acceptance.
 
 ## Mutation and Retry Boundary
 
-One reviewed ordinary action may update `kind:10002`, `kind:10050`, or both.
-Explicit whole-setup removal always updates both kinds, even when the URL is
-present in only one current frontier. Before the first network write, the shared
-coordinator:
+One reviewed signed-role action may update `kind:10002`, `kind:10050`, or both.
+A local reorder updates neither. Explicit whole-relay removal clears the URL
+from every applicable desired role, but prepares only the signed frontiers whose
+semantics change. Before the first network write, the account Network mutation
+module:
 
 1. reconciles both frontiers;
-2. derives every changed event for an ordinary edit, or both replacement kinds
-   for whole-setup removal;
+2. derives every and only changed signed event;
 3. obtains all required signatures;
 4. stores the exact signed bytes and immutable relay target plans.
 
@@ -223,36 +235,64 @@ to be recomputed.
 Nostr has no atomic transaction across the two events or across relays.
 
 Removing a relay from the whole setup removes it from every applicable role in
-the desired projection and emits both replacement events. This is a deliberate
-exception to minimal changed-event selection and records complete-removal intent
-in both signed account objects. The action stops reads and writes through that
-URL immediately after all required signatures are staged, before ACK or
-readback. Its concise proceed/cancel warning states that stale clients may still
-send there and those messages can be missed. Cancel or a missing signature
-changes nothing and removes no recovery behavior.
+the desired projection and durably records a causal local exclusion. Only a
+frontier whose signed semantics change produces a replacement event. The action
+stops reads and writes through that URL immediately after every required exact
+signed checkpoint is staged, before ACK or readback. Its concise proceed/cancel
+warning states that stale clients may still send there and those messages can be
+missed. Cancel or a missing required signature changes nothing and removes no
+recovery behavior.
 
-One-kind membership still yields two whole-setup replacement events. Cancel or
-any missing signature yields neither publication nor runtime cutover.
-
-If removal would violate the minimum usable configuration, the UI gives one
-direct replacement instruction rather than a multi-step impact review.
+The desired configuration must retain at least one Publish relay. One Publish
+relay is valid but receives a redundancy warning. A reviewed change may not
+eliminate the last usable Private inbox without selecting a replacement. The UI
+gives one direct replacement instruction rather than a multi-step impact review.
+An account that already has no usable Private inbox may still change Read or
+Publish roles. Removing a current Private inbox always requires selecting a
+current replacement, even when a different recovery-only read route survives.
+For an account that is already signed-empty, the guard also prevents an action
+from removing its final recovery-only read route, but does not force inbox setup
+for an unrelated Read or Publish change.
 
 ### Private inbox cutover
 
 For an ordinary Private inbox role change, new writes use the fully signed and
-staged pending declaration. Previous valid inboxes remain a hidden read-only
-recovery lane. They are not shown as current membership and never authorize
-writes.
+staged pending declaration. Each locally staged replacement owns an independent
+batch of previous valid inboxes. They are not shown as current membership and
+never authorize writes.
 
-Exact readback of the pending event from the bounded shared discovery set starts
-a bounded, versioned stale-sender grace period. The recovery lane closes when
-that grace period expires. The pending record retains the policy version,
-readback evidence, and expiry.
+Exact readback of each replacement event from its bounded shared discovery set
+starts only that batch's seven-day, versioned stale-sender grace period. Reads
+union every batch awaiting its own readback or still within its own grace. Each
+batch retains its owning replacement identity, policy version, readback
+evidence, and expiry. Until its own exact readback, that batch remains read-only
+and its clock has not started. Stronger signed evidence, including a replacement
+produced by another client, preserves existing batches but creates none without
+a matching locally staged immutable replacement plan.
 
-Explicit whole-setup removal overrides this recovery behavior for the removed
-URL. After all required signatures are staged, that URL is excluded from active
-reads and writes immediately. This privacy cutoff accepts the warned risk of
-missing messages sent by stale clients.
+These windows may overlap. If replacement B creates a batch for inbox A and
+replacement C is staged while A's batch is still pending or unexpired, C creates
+a separate batch for inbox B. Reads union A and B as applicable, and neither
+C's readback nor any later redistribution changes A's batch clock or expiry.
+
+A signer-free redistribution of the same exact staged event may append another
+immutable confirmation attempt to its existing batch when the shared set has
+changed. An attempt completes only after the exact event is observed on at least
+one target, every target has a conclusive result, and no target is policy-blocked.
+Whole-relay removal leaves an affected historical attempt incomplete rather
+than shrinking it; signer-free redistribution may add a fresh attempt for the
+same exact event and current shared set. Completion of any one attempt starts
+the batch clock exactly once. Later attempts or observations cannot restart it.
+
+Explicit whole-relay removal overrides this recovery behavior for the removed
+URL. After all required exact checkpoints are staged, that URL is excluded from
+active reads, writes, and every batch's active recovery set immediately at the
+atomic local commit. The batch retains its immutable confirmation plan and
+records the URL as policy-blocked historical evidence; it is never queried or
+made eligible again by that batch. This privacy cutoff accepts the warned risk
+of missing messages sent by stale clients. Persisted legacy singleton cutover
+records up-convert to one batch without resetting any established readback or
+expiry.
 
 ## Conduit Relay Recommendation Boundary
 

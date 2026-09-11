@@ -106,15 +106,26 @@ const waitForColdStartRetry = () =>
 
 export async function fetchShopperPresetsForSession(
   pubkey: string,
+  isCurrentSession: () => boolean,
   fetchPreset: typeof fetchShopperPresets = fetchShopperPresets,
   wait: () => Promise<void> = waitForColdStartRetry
 ): Promise<ShopperPresetsReadResult> {
-  const first = await fetchPreset(pubkey)
+  if (!isCurrentSession()) {
+    return { state: "unavailable", reason: "relay_read" }
+  }
+  const first = await fetchPreset(pubkey, {
+    authenticatedPubkey: pubkey,
+    shouldContinue: isCurrentSession,
+  })
   if (first.state !== "unavailable" || first.reason !== "relay_read") {
     return first
   }
   await wait()
-  return fetchPreset(pubkey)
+  if (!isCurrentSession()) return first
+  return fetchPreset(pubkey, {
+    authenticatedPubkey: pubkey,
+    shouldContinue: isCurrentSession,
+  })
 }
 
 export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
@@ -165,7 +176,19 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
 
   const remote = useQuery({
     queryKey: shopperPresetsQueryKey(identityPubkey, relayScope),
-    queryFn: () => fetchShopperPresetsForSession(identityPubkey!),
+    queryFn: ({ signal }) => {
+      const expectedLifecycle = relayLifecycle
+      return fetchShopperPresetsForSession(
+        identityPubkey!,
+        () =>
+          !signal.aborted &&
+          relayLifecycleRef.current.relaySettingsReady &&
+          isCurrentShopperPresetsRelayLifecycle(
+            relayLifecycleRef.current,
+            expectedLifecycle
+          )
+      )
+    },
     enabled: !!identityPubkey && identityReady && relaySettingsReady,
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
@@ -458,6 +481,14 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
             password,
             appId: "market",
             acceptedRevision,
+            dependencies: {
+              authenticatedPubkey: identity,
+              shouldContinue: () =>
+                isCurrentShopperPresetsRelayLifecycle(
+                  relayLifecycleRef.current,
+                  lifecycle
+                ),
+            },
           })
           if (
             !isCurrentShopperPresetsRelayLifecycle(
@@ -547,7 +578,14 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     if (!identity) return
     setSyncState("syncing")
     try {
-      const result = await fetchShopperPresets(identity)
+      const result = await fetchShopperPresets(identity, {
+        authenticatedPubkey: identity,
+        shouldContinue: () =>
+          isCurrentShopperPresetsRelayLifecycle(
+            relayLifecycleRef.current,
+            lifecycle
+          ),
+      })
       if (
         !isCurrentShopperPresetsRelayLifecycle(
           relayLifecycleRef.current,

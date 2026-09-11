@@ -30,8 +30,9 @@ describe("About page routing and contributor contracts", () => {
     expect(publicBranch).not.toContain("<AuthProvider")
     expect(publicBranch).not.toContain("startProductDeletionDeliveryWorker()")
     expect(authenticatedBranch).toContain("<AuthProvider")
-    expect(authenticatedBranch).toContain(
-      "startProductDeletionDeliveryWorker()"
+    expect(authenticatedBranch).toContain("<ProductDeletionDeliveryWorker />")
+    expect(main).toContain(
+      "startProductDeletionDeliveryWorker(authenticatedPubkey)"
     )
     expect(rootDispatch).toContain("isMerchantPublicAboutPath(pathname)")
     expect(rootDispatch).toContain("<MerchantPublicAboutShell>")

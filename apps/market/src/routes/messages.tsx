@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   Badge,
   Button,
@@ -127,13 +127,20 @@ function MerchantThreadRow({
   active,
   onClick,
   formatAmount,
+  accountPubkey,
+  shouldContinue,
 }: {
   conversation: BuyerConversation
   active: boolean
   onClick: () => void
   formatAmount: OrderAmountFormatter
+  accountPubkey: string | null
+  shouldContinue?: () => boolean
 }) {
   const { data: profile } = useProfile(conversation.merchantPubkey, {
+    accountPubkey,
+    authenticatedPubkey: accountPubkey,
+    shouldContinue,
     maxUnresolvedRefetches: 1,
   })
   const merchantName = getMerchantDisplayName(
@@ -193,12 +200,19 @@ function DmThreadRow({
   conversation,
   active,
   onClick,
+  accountPubkey,
+  shouldContinue,
 }: {
   conversation: DirectConversationSummary
   active: boolean
   onClick: () => void
+  accountPubkey: string | null
+  shouldContinue?: () => boolean
 }) {
   const { data: profile } = useProfile(conversation.counterpartyPubkey, {
+    accountPubkey,
+    authenticatedPubkey: accountPubkey,
+    shouldContinue,
     maxUnresolvedRefetches: 1,
   })
   const name = getMerchantDisplayName(profile, conversation.counterpartyPubkey)
@@ -270,7 +284,13 @@ function MessagesPage() {
       },
       { settledSatsAreAuthoritative: true }
     )
-  const { pubkey, status } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const shouldContinueAccountRead = () =>
+    authGenerationRef.current === authGeneration
   const session = useConduitSession()
   const queryClient = useQueryClient()
   const search = Route.useSearch()
@@ -369,6 +389,9 @@ function MessagesPage() {
     [conversations]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
+    accountPubkey: signerConnected ? pubkey : null,
+    authenticatedPubkey: signerConnected ? pubkey : null,
+    shouldContinue: shouldContinueAccountRead,
     enabled: signerConnected && merchantPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
@@ -440,6 +463,9 @@ function MessagesPage() {
       (conversation) => conversation.id === search.thread
     ) ?? null
   const selectedProfile = useProfile(selectedConversation?.merchantPubkey, {
+    accountPubkey: signerConnected ? pubkey : null,
+    authenticatedPubkey: signerConnected ? pubkey : null,
+    shouldContinue: shouldContinueAccountRead,
     maxUnresolvedRefetches: 1,
   })
   const merchantName = selectedConversation
@@ -486,10 +512,13 @@ function MessagesPage() {
       const { selfCopyError } = await publishPrivateMessage({
         rumor,
         senderPubkey: pubkey,
+        accountPubkey: pubkey,
+        authenticatedPubkey: signerConnected ? pubkey : null,
         recipientPubkey: selectedConversation.merchantPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.ORDER,
         signerInteraction: "external",
+        shouldContinue: () => authGenerationRef.current === authGeneration,
         validatedOrderScope: createValidatedOrderRouteScope({
           rumor,
           orderId: selectedConversation.orderId,
@@ -559,6 +588,9 @@ function MessagesPage() {
     [dmConversations]
   )
   const dmProfilesQuery = useProfiles(dmCounterpartyPubkeys, {
+    accountPubkey: signerConnected ? pubkey : null,
+    authenticatedPubkey: signerConnected ? pubkey : null,
+    shouldContinue: shouldContinueAccountRead,
     enabled: signerConnected && dmCounterpartyPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
@@ -613,6 +645,9 @@ function MessagesPage() {
         conversation.transport === selectedDmTransport
     ) ?? null
   const selectedDmProfile = useProfile(selectedDmPubkey ?? undefined, {
+    accountPubkey: signerConnected ? pubkey : null,
+    authenticatedPubkey: signerConnected ? pubkey : null,
+    shouldContinue: shouldContinueAccountRead,
     maxUnresolvedRefetches: 1,
   })
   const selectedDmName = selectedDmPubkey
@@ -702,10 +737,13 @@ function MessagesPage() {
       const { selfCopyError } = await publishPrivateMessage({
         rumor,
         senderPubkey: pubkey,
+        accountPubkey: pubkey,
+        authenticatedPubkey: signerConnected ? pubkey : null,
         recipientPubkey: counterpartyPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         signerInteraction: "external",
+        shouldContinue: () => authGenerationRef.current === authGeneration,
       })
       optimisticDmQueue.markPublished(message.localId)
       if (selfCopyError) {
@@ -935,6 +973,8 @@ function MessagesPage() {
                         <DmThreadRow
                           key={conversation.id}
                           conversation={conversation}
+                          accountPubkey={signerConnected ? pubkey : null}
+                          shouldContinue={shouldContinueAccountRead}
                           active={
                             conversation.counterpartyPubkey ===
                               selectedDmPubkey &&
@@ -983,6 +1023,8 @@ function MessagesPage() {
                             >
                               <DmThreadRow
                                 conversation={conversation}
+                                accountPubkey={signerConnected ? pubkey : null}
+                                shouldContinue={shouldContinueAccountRead}
                                 active={
                                   conversation.counterpartyPubkey ===
                                     selectedDmPubkey &&
@@ -1027,6 +1069,8 @@ function MessagesPage() {
                           <DmThreadRow
                             key={conversation.id}
                             conversation={conversation}
+                            accountPubkey={signerConnected ? pubkey : null}
+                            shouldContinue={shouldContinueAccountRead}
                             active={
                               conversation.counterpartyPubkey ===
                                 selectedDmPubkey &&
@@ -1270,6 +1314,8 @@ function MessagesPage() {
                       <MerchantThreadRow
                         key={conversation.id}
                         conversation={conversation}
+                        accountPubkey={signerConnected ? pubkey : null}
+                        shouldContinue={shouldContinueAccountRead}
                         active={conversation.id === selectedConversation?.id}
                         onClick={() =>
                           navigate({
@@ -1322,6 +1368,8 @@ function MessagesPage() {
                           >
                             <MerchantThreadRow
                               conversation={conversation}
+                              accountPubkey={signerConnected ? pubkey : null}
+                              shouldContinue={shouldContinueAccountRead}
                               active={
                                 conversation.id === selectedConversation?.id
                               }
@@ -1372,6 +1420,8 @@ function MessagesPage() {
                         <MerchantThreadRow
                           key={conversation.id}
                           conversation={conversation}
+                          accountPubkey={signerConnected ? pubkey : null}
+                          shouldContinue={shouldContinueAccountRead}
                           active={conversation.id === selectedConversation?.id}
                           onClick={() => {
                             void navigate({

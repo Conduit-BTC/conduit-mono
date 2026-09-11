@@ -5,6 +5,7 @@ import type {
   ProductShippingOptionReference,
   ProductZapMessagePolicy,
 } from "../schemas"
+import type { RelayScanResult } from "../protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
 import type { WalletDescriptor, WalletProviderId } from "../wallets"
@@ -315,12 +316,39 @@ export interface OwnerRelayListEventEvidence {
   duplicateRelayTagCount: number
 }
 
+export type NetworkPreferencePublishStatus =
+  "pending" | "acked" | "rejected" | "timed_out"
+
+export type NetworkPreferenceReadbackStatus =
+  "pending" | "observed" | "absent" | "timed_out"
+
+/** Content-free delivery evidence for one immutable signed-event target. */
+export interface NetworkPreferenceRelayOutcome {
+  relayUrl: string
+  publishStatus: NetworkPreferencePublishStatus
+  publishAttemptCount: number
+  publishAttemptedAt?: number
+  readbackStatus: NetworkPreferenceReadbackStatus
+  readbackAttemptCount: number
+  readbackAttemptedAt?: number
+  observedAt?: number
+}
+
+/** Exact signed NIP-65 work retained until shared readback or supersession. */
+export interface PendingOwnerRelayListDistribution {
+  signedEvent: SignedPublicNostrEvent
+  publishRelayUrls: string[]
+  relayOutcomes: NetworkPreferenceRelayOutcome[]
+  stagedAt: number
+}
+
 export interface OwnerRelayListEvidenceRecord {
   pubkey: NormalizedOwnerRelayListPubkey
   /** Canonical NIP-01 frontier, including signed-empty or malformed events. */
   current?: OwnerRelayListEventEvidence
   /** Latest non-malformed signed projection retained when `current` is malformed. */
   lastUsable?: OwnerRelayListEventEvidence
+  pendingDistribution?: PendingOwnerRelayListDistribution
   latestLookup: OwnerRelayListLookupEvidence
   cachedAt: number
 }
@@ -400,7 +428,43 @@ export type InboxDeclarationEventEvidence =
 export interface PendingInboxDeclarationDistribution {
   signedEvent: SignedPublicNostrEvent
   publishRelayUrls: string[]
+  /** Canonical shared subset used to confirm a locally owned recovery batch. */
+  confirmationRelayUrls?: string[]
+  /** Older exact checkpoints may omit per-relay outcomes until first retry. */
+  relayOutcomes?: NetworkPreferenceRelayOutcome[]
   stagedAt: number
+}
+
+/** One immutable shared-set readback attempt for an inbox recovery batch. */
+export interface InboxDeclarationCutoverConfirmationAttempt {
+  relayUrls: string[]
+  completedRelayUrls?: string[]
+  observedRelayUrls?: string[]
+  stagedAt?: number
+}
+
+/**
+ * Hidden read-only inboxes retained while stale senders adopt a replacement.
+ * The seven-day clock starts only after exact shared-set readback.
+ */
+export interface InboxDeclarationCutoverRecovery {
+  policyVersion: number
+  replacementEventId: string
+  relayUrls: string[]
+  /** Signature of the exact locally staged replacement event. */
+  replacementEventSig?: string
+  /** Immutable shared-set attempts; exact completion of any one starts grace. */
+  confirmationAttempts?: InboxDeclarationCutoverConfirmationAttempt[]
+  /** @deprecated Legacy singleton confirmation plan accepted for up-conversion. */
+  confirmationRelayUrls?: string[]
+  /** @deprecated Legacy singleton completion evidence. */
+  completedRelayUrls?: string[]
+  /** @deprecated Legacy singleton exact-observation evidence. */
+  observedRelayUrls?: string[]
+  /** Prior-relay or confirmation-attempt URLs blocked by whole removal. */
+  policyBlockedRelayUrls?: string[]
+  readbackObservedAt?: number
+  expiresAt?: number
 }
 
 /**
@@ -416,8 +480,39 @@ export interface InboxDeclarationEvidenceRecord {
   current: InboxDeclarationEventEvidence
   lastUsable?: DeclaredInboxDeclarationEventEvidence
   pendingDistribution?: PendingInboxDeclarationDistribution
+  /** Canonical independent recovery batches, keyed by replacement event id. */
+  cutoverRecoveries?: InboxDeclarationCutoverRecovery[]
+  /** @deprecated Legacy singleton accepted only for durable up-conversion. */
+  cutoverRecovery?: InboxDeclarationCutoverRecovery
   latestLookup?: InboxDeclarationLookupEvidence
   cachedAt: number
+}
+
+export interface AccountNetworkFrontierReference {
+  eventId: string | null
+  createdAt: number | null
+}
+
+/** A local whole-relay cutoff tied to the signed frontiers it followed. */
+export interface AccountNetworkRelayExclusion {
+  relayUrl: string
+  committedAt: number
+  relayListFrontier: AccountNetworkFrontierReference
+  inboxDeclarationFrontier: AccountNetworkFrontierReference
+}
+
+/**
+ * Compact local policy shared by every Conduit surface using this database.
+ * It is not signed authority and contains no desired role representation.
+ */
+export interface AccountNetworkLocalState {
+  pubkey: string
+  version: number
+  exclusions: AccountNetworkRelayExclusion[]
+  preferredRelayOrder: string[]
+  /** Existing capability vocabulary; observations are never signed authority. */
+  relayScans: RelayScanResult[]
+  updatedAt: number
 }
 
 /**
@@ -835,6 +930,7 @@ class ConduitDB extends Dexie {
   orderMessages!: EntityTable<CachedOrderMessage, "id">
   relayLists!: EntityTable<CachedRelayList, "pubkey">
   ownerRelayListEvidence!: EntityTable<OwnerRelayListEvidenceRecord, "pubkey">
+  accountNetworkLocalState!: EntityTable<AccountNetworkLocalState, "pubkey">
   productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
   shopperTrustSnapshots!: EntityTable<CachedShopperTrustSnapshot, "id">
@@ -1026,6 +1122,12 @@ class ConduitDB extends Dexie {
       // Owner kind-10002 frontiers are durable account evidence, not the
       // prunable arbitrary-author relay hint cache in `relayLists`.
       ownerRelayListEvidence: "pubkey, cachedAt",
+    })
+
+    this.version(18).stores({
+      // Local policy only: exclusions, signer-free order, and capability
+      // evidence. Signed account authority remains per kind.
+      accountNetworkLocalState: "pubkey, updatedAt",
     })
   }
 }

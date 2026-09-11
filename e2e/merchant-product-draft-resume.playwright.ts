@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 import {
+  TEST_RELAY_URL,
   installTestSigner,
   readTestRelayEvents,
   seedTestRelayIdentity,
@@ -117,6 +118,28 @@ async function choosePrivateInboxSetup(page: Page): Promise<void> {
   await expect(page).toHaveURL(`${merchantUrl}/network`)
 }
 
+async function submitPrivateInboxChange(page: Page): Promise<void> {
+  const relaySettings = page.getByRole("region", { name: "Relays" })
+  const enablePrivateInbox = relaySettings.getByRole("button", {
+    name: `Enable Private inbox for ${TEST_RELAY_URL}`,
+  })
+  await expect(enablePrivateInbox).toBeEnabled({ timeout: 20_000 })
+  await enablePrivateInbox.click()
+
+  const reviewButton = relaySettings.getByRole("button", {
+    name: "Review and publish",
+  })
+  await expect(reviewButton).toBeEnabled()
+  await reviewButton.click()
+  const reviewDialog = page.getByRole("alertdialog")
+  await expect(
+    reviewDialog.getByRole("heading", {
+      name: "Publish these Network changes?",
+    })
+  ).toBeVisible()
+  await reviewDialog.getByRole("button", { name: "Sign and publish" }).click()
+}
+
 async function runCompleteJourney(
   page: Page,
   viewportName: "desktop" | "mobile"
@@ -207,7 +230,7 @@ async function runCompleteJourney(
     page.getByRole("button", { name: "Return to product draft" })
   ).toBeVisible()
 
-  await page.getByRole("button", { name: "Publish inbox declaration" }).click()
+  await submitPrivateInboxChange(page)
   await expect(page).toHaveURL(`${merchantUrl}/products`, { timeout: 20_000 })
 
   const reopenedDialog = await expectProductDraft(page)
@@ -311,14 +334,21 @@ test("cancelled or failed inbox setup keeps the exact local draft @merchant", as
   })
 
   await choosePrivateInboxSetup(page)
-  await page.getByRole("button", { name: "Publish inbox declaration" }).click()
+  await submitPrivateInboxChange(page)
   await expect(
-    page.getByText("Test private inbox signing failure", { exact: true })
+    page.getByText("Nostr signer failed: unavailable", { exact: true })
   ).toBeVisible({ timeout: 15_000 })
   await expect(
     page.getByRole("button", { name: "Return to product draft" })
   ).toBeVisible()
   await page.getByRole("button", { name: "Return to product draft" }).click()
+  const leaveDialog = page.getByRole("alertdialog")
+  await expect(
+    leaveDialog.getByRole("heading", {
+      name: "Leave with unpublished relay changes?",
+    })
+  ).toBeVisible()
+  await leaveDialog.getByRole("button", { name: "Leave and discard" }).click()
   await expectProductDraft(page, title)
 
   page.once("dialog", (dialog) => dialog.accept())

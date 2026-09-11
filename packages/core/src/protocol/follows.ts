@@ -9,9 +9,12 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { db, type CachedOwnContactListSnapshot } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
+import type { AccountNetworkLocalStateRepository } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { getNdk } from "./ndk"
+import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
+import { NostrSignerError } from "./nostr-event-signer"
 import {
   getRelayLists,
   getRelayListsDetailed,
@@ -20,6 +23,7 @@ import {
 } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import { publishWithPlanner } from "./relay-publish"
+import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
 import {
   fetchSignedEventsFanoutDetailed,
   type RelayReadSourceStatus,
@@ -125,6 +129,19 @@ export interface FollowListReadOptions {
   resolveRelayLists?: typeof getRelayLists
   resolveRelayListsDetailed?: typeof getRelayListsDetailed
   fetchEvents?: typeof fetchSignedEventsFanoutDetailed
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
+  /** Live caller authority for final account-scoped relay admission. */
+  shouldContinue?: () => boolean
+  /** Injectable durable owner-authority reader for deterministic tests. */
+  readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
+}
+
+export interface MerchantTrustSocialReadOptions extends FollowListReadOptions {
+  /** Explicit signed-in account; never inferred from the viewed subjects. */
+  authenticatedPubkey?: string | null
 }
 
 const FOLLOW_LIST_FUTURE_TOLERANCE_SECONDS = 5 * 60
@@ -587,13 +604,42 @@ export function buildMerchantTrustSocialSummary({
   }
 }
 
+async function readAuthenticatedOwnerRelaySettings(
+  authenticatedPubkey: string | null,
+  accountPubkey: string | null,
+  options: FollowListReadOptions
+) {
+  if (!authenticatedPubkey || authenticatedPubkey !== accountPubkey) {
+    return null
+  }
+  try {
+    return await (
+      options.readAccountRelaySettingsPlanningSnapshot ??
+      readDurableAccountRelaySettingsPlanningSnapshot
+    )(authenticatedPubkey)
+  } catch (error) {
+    if (options.shouldContinue?.() === false) {
+      throw new NostrSignerError("authority_changed")
+    }
+    if (
+      error instanceof NostrSignerError &&
+      error.code === "authority_changed"
+    ) {
+      throw error
+    }
+    return null
+  }
+}
+
 export async function readLatestFollowLists(
   {
     pubkeys,
     authenticatedPubkey,
+    accountPubkey,
   }: {
     pubkeys: readonly string[]
     authenticatedPubkey?: string | null
+    accountPubkey?: string | null
   },
   options: FollowListReadOptions = {}
 ): Promise<FollowListReadResult> {
@@ -615,8 +661,34 @@ export async function readLatestFollowLists(
     }
   }
 
+  const normalizedAuthenticatedPubkey = normalizeHexPubkey(
+    authenticatedPubkey ?? undefined
+  )
+  const normalizedAccountPubkey = normalizeHexPubkey(
+    accountPubkey ?? authenticatedPubkey ?? undefined
+  )
+  const ownerSettingsSnapshot = await readAuthenticatedOwnerRelaySettings(
+    normalizedAuthenticatedPubkey,
+    normalizedAccountPubkey,
+    options
+  )
+  const ownerReadRelayUrls = normalizeOwnerSelectedRelayUrls(
+    ownerSettingsSnapshot?.settings.entries.flatMap((entry) =>
+      entry.readEnabled ? [entry.url] : []
+    ) ?? []
+  )
+  const ownerWriteRelayUrls = normalizeOwnerSelectedRelayUrls(
+    ownerSettingsSnapshot?.settings.entries.flatMap((entry) =>
+      entry.writeEnabled ? [entry.url] : []
+    ) ?? []
+  )
   const relayLookupOptions = {
-    allowInsecureRelayUrlsForPubkey: authenticatedPubkey,
+    accountPubkey: normalizedAccountPubkey,
+    authenticatedPubkey: normalizedAuthenticatedPubkey,
+    ownerSelectedRelayUrls: ownerReadRelayUrls,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
     skipCache: options.refreshRelayLists,
     signal: options.signal,
   }
@@ -645,9 +717,6 @@ export async function readLatestFollowLists(
   }
   throwIfFollowReadAborted(options.signal)
   const fetchEvents = options.fetchEvents ?? fetchSignedEventsFanoutDetailed
-  const normalizedAuthenticatedPubkey = normalizeHexPubkey(
-    authenticatedPubkey ?? undefined
-  )
   const requestedMaxRelays = Math.floor(
     options.maxRelays ?? FOLLOW_LIST_MAX_RELAYS_PER_AUTHOR
   )
@@ -661,12 +730,23 @@ export async function readLatestFollowLists(
   const authors = await Promise.all(
     normalizedPubkeys.map(async (pubkey): Promise<FollowListAuthorRead> => {
       const relayListState = relayListStates.get(pubkey) ?? "lookup-unavailable"
+      const isAuthenticatedOwner = pubkey === normalizedAuthenticatedPubkey
+      const ownerSelectedRelayUrls = Array.from(
+        new Set([
+          ...ownerReadRelayUrls,
+          ...(isAuthenticatedOwner ? ownerWriteRelayUrls : []),
+        ])
+      )
       const authorPlan = planRelayReads({
         intent: "contact_lists",
         authors: [pubkey],
         relayLists,
         authenticatedPubkey,
+        ownerSelectedRelayUrls,
         maxRelays,
+        settings: ownerSettingsSnapshot?.settings,
+        signedRelayListAuthoritative:
+          ownerSettingsSnapshot?.signedRelayListAuthoritative,
         // Health is an availability signal, not permission to omit an
         // author's declared write relay from a replacement-sensitive read.
         skipHealthFilter: true,
@@ -697,6 +777,13 @@ export async function readLatestFollowLists(
           ...nonHinted,
         ])
       ).slice(0, maxRelays)
+      const plannedRelaySet = new Set(plannedRelayUrls)
+      const plannedOwnerSelectedRelayUrls = Array.from(
+        new Set([
+          ...(authorPlan.ownerSelectedRelayUrls ?? []),
+          ...(basePlan.ownerSelectedRelayUrls ?? []),
+        ])
+      ).filter((relayUrl) => plannedRelaySet.has(relayUrl))
 
       if (plannedRelayUrls.length === 0) {
         return await preserveStrongestOwnFollowList(
@@ -730,6 +817,12 @@ export async function readLatestFollowLists(
           },
           {
             relayUrls: plannedRelayUrls,
+            accountPubkey: normalizedAccountPubkey,
+            authenticatedPubkey: normalizedAuthenticatedPubkey,
+            ownerSelectedRelayUrls: plannedOwnerSelectedRelayUrls,
+            accountNetworkLocalStateRepository:
+              options.accountNetworkLocalStateRepository,
+            shouldContinue: options.shouldContinue,
             connectTimeoutMs: FOLLOW_LIST_CONNECT_TIMEOUT_MS,
             fetchTimeoutMs: FOLLOW_LIST_FETCH_TIMEOUT_MS,
             skipHealthFilter: true,
@@ -738,6 +831,15 @@ export async function readLatestFollowLists(
         )
       } catch (error) {
         if (options.signal?.aborted) throw error
+        if (options.shouldContinue?.() === false) {
+          throw new NostrSignerError("authority_changed")
+        }
+        if (
+          error instanceof NostrSignerError &&
+          error.code === "authority_changed"
+        ) {
+          throw error
+        }
         return await preserveStrongestOwnFollowList(
           {
             pubkey,
@@ -888,12 +990,16 @@ export async function fetchMerchantTrustSocialSummary(
     merchantPubkey: string
     viewerPubkey: string
   },
-  options: FollowListReadOptions = {}
+  options: MerchantTrustSocialReadOptions = {}
 ): Promise<MerchantTrustSocialReadResult> {
+  const normalizedAccountPubkey = normalizeHexPubkey(
+    options.authenticatedPubkey ?? undefined
+  )
   const read = await readLatestFollowLists(
     {
       pubkeys: [viewerPubkey, merchantPubkey],
-      authenticatedPubkey: viewerPubkey,
+      authenticatedPubkey: normalizedAccountPubkey,
+      accountPubkey: normalizedAccountPubkey,
     },
     options
   )
@@ -1113,6 +1219,14 @@ export async function publishContactListUpdate({
     {
       maxRelays: FOLLOW_LIST_MAX_RELAYS_PER_AUTHOR,
       refreshRelayLists: true,
+      shouldContinue: () => {
+        try {
+          assertCurrentSignerSession()
+          return true
+        } catch {
+          return false
+        }
+      },
     }
   )
   assertCurrentSignerSession()
@@ -1137,6 +1251,7 @@ export async function publishContactListUpdate({
       intent: "author_event",
       authorPubkey: normalizedOwnerPubkey,
       authenticatedPubkey: normalizedOwnerPubkey,
+      accountPubkey: normalizedOwnerPubkey,
       replaceableSafety,
       shouldContinue: () => {
         try {

@@ -241,18 +241,21 @@ pending -> invoiced -> paid -> processing -> shipped -> complete
 
 Dexie is used for local-first persistence and recovery:
 
-| Table                    | Purpose                                       |
-| ------------------------ | --------------------------------------------- |
-| `orders`                 | Buyer/merchant order records and local status |
-| `messages`               | Message cache                                 |
-| `products`               | Product cache                                 |
-| `profiles`               | Profile cache                                 |
-| `orderMessages`          | Order-linked message history                  |
-| `relayLists`             | NIP-65 relay list cache                       |
-| `productSocialSummaries` | Product trust/social summary cache            |
-| `paymentAttempts`        | Buyer payment attempt history                 |
-| `wallets`                | Non-secret local wallet descriptors/defaults  |
-| `walletCredentials`      | Device-local provider credential records      |
+| Table                      | Purpose                                                     |
+| -------------------------- | ----------------------------------------------------------- |
+| `orders`                   | Buyer/merchant order records and local status               |
+| `messages`                 | Message cache                                               |
+| `products`                 | Product cache                                               |
+| `profiles`                 | Profile cache                                               |
+| `orderMessages`            | Order-linked message history                                |
+| `relayLists`               | NIP-65 relay list cache                                     |
+| `ownerRelayListEvidence`   | Validated owner `kind:10002` frontier and delivery evidence |
+| `inboxDeclarationEvidence` | Validated `kind:10050` frontier, delivery, and recovery     |
+| `accountNetworkLocalState` | Unsigned exclusions, ordering, and capability scans         |
+| `productSocialSummaries`   | Product trust/social summary cache                          |
+| `paymentAttempts`          | Buyer payment attempt history                               |
+| `wallets`                  | Non-secret local wallet descriptors/defaults                |
+| `walletCredentials`        | Device-local provider credential records                    |
 
 Cache data is evidence for fast paint and recovery. It should not be presented as proof that relay discovery is complete.
 
@@ -266,29 +269,52 @@ wallet instance.
 
 ### localStorage
 
-localStorage is used for small local preferences, cart state, selected public
-key/signer method, and relay settings. IndexedDB stores local
-order/message/payment records, caches, wallet descriptors, and provider-owned
-credential records. A legacy single-wallet NWC record may be read only for
-transactional migration into `wallets` and `walletCredentials`; new wallet
-credentials must not be written to localStorage. Guest checkout and remote
-signer flows also use bounded session or encrypted browser-local storage as
-described in `docs/specs/protocol.md`. Sensitive contents must remain excluded
-from telemetry and diagnostics even when the browser, a counterparty, a signer,
-a wallet, a relay, or another user-selected provider processes them.
+localStorage is used for small local preferences, cart state, and the selected
+public key/signer method. Active account Network membership is not a
+localStorage setting: it is projected from validated signed `kind:10002` and
+`kind:10050` evidence. IndexedDB stores signed Network evidence, unsigned local
+Network policy, local order/message/payment records, caches, wallet descriptors,
+and provider-owned credential records. Unpublished legacy local Network settings
+and their migration or inbox-recovery markers are ignored. Reconnect or reset
+reconstructs account membership from validated published signed evidence, with
+explicit Network setup or repair when valid published state is absent.
+
+A legacy single-wallet NWC record may be read only for transactional migration
+into `wallets` and `walletCredentials`; new wallet credentials must not be
+written to localStorage. Guest checkout and remote signer flows also use bounded
+session or encrypted browser-local storage as described in
+`docs/specs/protocol.md`. Sensitive contents must remain excluded from telemetry
+and diagnostics even when the browser, a counterparty, a signer, a wallet, a
+relay, or another user-selected provider processes them.
 
 ---
 
 ## Relay Architecture
 
-Conduit treats relays as Nostr infrastructure, not fixed app roles.
+Conduit treats relays as Nostr infrastructure, not fixed app roles. Market and
+Merchant render the same account-level Network experience through a shared core
+controller and shared panel; app routes are navigation shells.
 
-User-facing relay settings expose:
+The Network screen projects two independent signed frontiers into one flat relay
+list. Read and Publish map to NIP-65 `kind:10002`; Private inbox maps to NIP-17
+`kind:10050`. The latest validated signed frontier for each kind is authoritative,
+while an unpublished review draft remains in memory. Exact signed bytes and
+immutable target plans are staged before network I/O so interrupted operations
+can retry without asking the signer to create a different replaceable event.
 
-- `IN`: relays Conduit may read from
-- `OUT`: relays Conduit may publish to
-- Commerce priority: Conduit-local ordering for commerce-compatible relays
-- Capability/warning indicators derived from NIP-11, probes, and local observations
+Dexie retains signed frontier and delivery evidence plus unsigned local policy:
+causal whole-relay exclusions, capability observations, and a signer-free
+preferred order among otherwise eligible and equivalent operations.
+Causal exclusions gate later operations until an authoritative re-add. Preferred
+order and capability observations never override signed membership, protocol
+routing, exclusions, validity, or evidence rules. Owner-selected `ws://` relays
+remain eligible for that owner's account activity and receive a non-blocking
+unencrypted-connection warning; remotely learned `ws://` targets are rejected
+again at final I/O.
+
+The durable authority, recovery, transport, and removal contracts are defined in
+[`docs/specs/relay.md`](./specs/relay.md) and the detailed
+[`Relay Architecture`](./specs/relay/conduit_relay_architecture.md).
 
 The current canonical fallback/reset relay list lives in `packages/core/src/config.ts`:
 
