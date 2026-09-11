@@ -1217,35 +1217,55 @@ async function preloadExactProductRelayLists(
   relayLists: Map<string, RelayList>
   unavailableAuthors: Set<string>
 }> {
-  const chunkResults = await mapWithConcurrency(
-    chunkStrings(authors, PRODUCT_AUTHOR_CHUNK_SIZE),
-    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
-    async (authorChunk) => {
-      try {
-        const relayPlan = await planCommerceReadRelayPlan({
-          intent: "author_products",
-          authors: authorChunk,
-          authenticatedPubkey: options.authenticatedPubkey,
-          accountPubkey: options.authenticatedPubkey,
-          shouldContinue: options.shouldContinue,
-          relayHintMode: "force",
-          maxRelays: DEFAULT_READ_FANOUT,
-        })
-        return {
+  type RelayListChunkResult = {
+    authors: string[]
+    relayLists: ReadonlyMap<string, RelayList>
+    unavailable: boolean
+  }
+  const resolveAuthorChunk = async (
+    authorChunk: string[]
+  ): Promise<RelayListChunkResult[]> => {
+    try {
+      const relayPlan = await planCommerceReadRelayPlan({
+        intent: "author_products",
+        authors: authorChunk,
+        authenticatedPubkey: options.authenticatedPubkey,
+        accountPubkey: options.authenticatedPubkey,
+        shouldContinue: options.shouldContinue,
+        relayHintMode: "force",
+        maxRelays: DEFAULT_READ_FANOUT,
+      })
+      return [
+        {
           authors: authorChunk,
           relayLists: relayPlan.relayLists,
           unavailable: false,
-        }
-      } catch (error) {
-        rethrowProductReadAuthorityChange(error, options.shouldContinue)
-        return {
+        },
+      ]
+    } catch (error) {
+      rethrowProductReadAuthorityChange(error, options.shouldContinue)
+      if (authorChunk.length > 1) {
+        const midpoint = Math.ceil(authorChunk.length / 2)
+        return [
+          ...(await resolveAuthorChunk(authorChunk.slice(0, midpoint))),
+          ...(await resolveAuthorChunk(authorChunk.slice(midpoint))),
+        ]
+      }
+      return [
+        {
           authors: authorChunk,
           relayLists: new Map<string, RelayList>(),
           unavailable: true,
-        }
-      }
+        },
+      ]
     }
+  }
+  const chunkResultGroups = await mapWithConcurrency(
+    chunkStrings(authors, PRODUCT_AUTHOR_CHUNK_SIZE),
+    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    resolveAuthorChunk
   )
+  const chunkResults = chunkResultGroups.flat()
   const relayLists = new Map<string, RelayList>()
   const unavailableAuthors = new Set<string>()
   for (const chunkResult of chunkResults) {

@@ -2218,6 +2218,75 @@ describe("commerce gateway", () => {
     expect(result.meta.capped).toBe(false)
   })
 
+  it("isolates one failed relay-list author without suppressing adjacent chunks", async () => {
+    const merchants = Array.from({ length: 65 }, (_, index) =>
+      getPublicKey(new Uint8Array(32).fill(index + 1))
+    )
+    const failedAuthor = merchants[17]!
+    const wantedEvents = merchants.map((pubkey, index) =>
+      makeProductEvent({
+        pubkey,
+        dTag: `isolated-item-${index}`,
+        id: `isolated-event-${index}`,
+        createdAt: 300 + index,
+        title: `Isolated ${index}`,
+      })
+    )
+    let activeRelayListReads = 0
+    let maxConcurrentRelayListReads = 0
+    let productReads = 0
+
+    __setCommerceTestOverrides({
+      getRelayLists: async (pubkeys) => {
+        activeRelayListReads += 1
+        maxConcurrentRelayListReads = Math.max(
+          maxConcurrentRelayListReads,
+          activeRelayListReads
+        )
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 1))
+          if (pubkeys.includes(failedAuthor)) {
+            throw new Error("one relay-list cache row is unavailable")
+          }
+          return new Map()
+        } finally {
+          activeRelayListReads -= 1
+        }
+      },
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        productReads += 1
+        return wantedEvents.filter(
+          (event) =>
+            filter.authors?.includes(event.pubkey) &&
+            event.tags.some(
+              (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+            )
+        ) as never
+      },
+    })
+
+    const result = await getProductsByIds(
+      merchants.map((pubkey, index) => `30402:${pubkey}:isolated-item-${index}`)
+    )
+
+    expect(result.data).toHaveLength(merchants.length - 1)
+    expect(result.diagnostics).toHaveLength(merchants.length)
+    expect(
+      result.diagnostics.filter(({ issue }) => issue === "lookup_unavailable")
+    ).toEqual([
+      expect.objectContaining({
+        addressId: `30402:${failedAuthor}:isolated-item-17`,
+      }),
+    ])
+    expect(
+      result.diagnostics.filter(({ issue }) => issue === null)
+    ).toHaveLength(merchants.length - 1)
+    expect(productReads).toBe(merchants.length - 1)
+    expect(maxConcurrentRelayListReads).toBeLessThanOrEqual(2)
+    expect(result.meta.degraded).toBe(true)
+  })
+
   it("keeps a family stale until every cached sibling has live group coverage", async () => {
     const merchantPubkey = MERCHANT_A_PUBKEY
     const parentProductId = `30402:${merchantPubkey}:coverage-shirt`
