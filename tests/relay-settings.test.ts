@@ -28,6 +28,7 @@ import {
   getRelayBucketConfigs,
   loadRelaySettings,
   mergeRelayPreferencesIntoSettings,
+  normalizeOwnerSelectedRelayUrls,
   normalizeSecureRelayUrls,
   normalizeSecureOrIsolatedE2eRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
@@ -335,6 +336,23 @@ describe("relay settings protocol helpers", () => {
 
     expect(normalizeSecureRelayUrls(inputs)).toEqual(expected)
     expect(secureRelayUrls(inputs)).toEqual(expected)
+  })
+
+  it("separates owner-selected ws authority from remote relay hints", () => {
+    const ownerWs = "ws://relay.owner.example/path"
+    const remoteWs = "ws://relay.remote.example"
+    const remoteWss = "wss://relay.damus.io"
+
+    expect(
+      normalizeOwnerSelectedRelayUrls([`${ownerWs}/`, ownerWs, remoteWss])
+    ).toEqual([ownerWs, remoteWss])
+    expect(
+      normalizeUntrustedRelayHintsForContext({
+        relayUrls: [ownerWs, remoteWs, remoteWss],
+        approvedRelayUrls: [ownerWs],
+        allowApprovedPrivate: true,
+      })
+    ).toEqual([remoteWss])
   })
 
   it("parses and serializes NIP-65 read/write relay tags", () => {
@@ -713,6 +731,17 @@ describe("relay settings protocol helpers", () => {
         protectedMessageCapabilityEvidence: "unknown",
         protectedMessageRuntimeEvidence: "unknown",
       },
+      {
+        url: "ws://unsafe.example",
+        configured: false,
+        enabled: false,
+        declared: false,
+        retained: true,
+        selectable: true,
+        relayInfoProbe: "unknown",
+        protectedMessageCapabilityEvidence: "unknown",
+        protectedMessageRuntimeEvidence: "unknown",
+      },
     ])
   })
 
@@ -989,7 +1018,7 @@ describe("relay settings protocol helpers", () => {
         ],
         "published"
       ),
-      "test:relays"
+      "market:guest"
     )
 
     expect(settings.entries.map((relay) => relay.url)).toEqual([
@@ -1006,11 +1035,41 @@ describe("relay settings protocol helpers", () => {
     ).toEqual(["wss://published.example"])
   })
 
+  it("ignores signed-in local settings while preserving guest/default persistence", () => {
+    const storage = new MemoryStorage()
+    installWindowStorage(storage)
+    const pubkey = "a".repeat(64)
+    const settings = state([
+      entry("wss://unpublished.example", {
+        readEnabled: true,
+        writeEnabled: true,
+        source: "manual",
+      }),
+    ])
+    for (const scope of [
+      `account:${pubkey}`,
+      `market:${pubkey}`,
+      `merchant:${pubkey}`,
+    ]) {
+      const key = `conduit:relay-settings:v1:${scope}`
+      storage.setItem(key, JSON.stringify(settings))
+      expect(loadRelaySettings(scope).entries).toEqual([])
+      saveRelaySettings(state([]), scope)
+      expect(storage.getItem(key)).toBe(JSON.stringify(settings))
+    }
+    for (const scope of [undefined, "default", "market:guest"]) {
+      saveRelaySettings(settings, scope)
+      expect(
+        loadRelaySettings(scope).entries.map((relay) => relay.url)
+      ).toEqual(["wss://unpublished.example"])
+    }
+  })
+
   it("filters legacy default relays when loading personal relay settings", () => {
     const storage = new MemoryStorage()
     installWindowStorage(storage)
     storage.setItem(
-      "conduit:relay-settings:v1:test:legacy",
+      "conduit:relay-settings:v1:market:guest",
       JSON.stringify({
         version: 1,
         updatedAt: 1,
@@ -1029,7 +1088,7 @@ describe("relay settings protocol helpers", () => {
       })
     )
 
-    const loaded = loadRelaySettings("test:legacy")
+    const loaded = loadRelaySettings("market:guest")
 
     expect(loaded.entries.map((relay) => relay.url)).toEqual([
       "wss://user.example",
@@ -1045,7 +1104,7 @@ describe("relay settings protocol helpers", () => {
           source: "manual",
         }),
       ]),
-      "test:user-managed-default"
+      "market:guest"
     )
 
     expect(settings.entries).toHaveLength(1)
@@ -1071,7 +1130,7 @@ describe("relay settings protocol helpers", () => {
     ).toEqual(["wss://fallback.example"])
   })
 
-  it("blocks unsafe tiny NIP-65 publishes", () => {
+  it("allows one active relay when it is a Publish relay", () => {
     expect(() =>
       assertSafeNip65RelayList(
         createRelaySettingsFromPreferences([
@@ -1082,7 +1141,7 @@ describe("relay settings protocol helpers", () => {
           },
         ]).entries
       )
-    ).toThrow("Refusing to publish a tiny NIP-65 relay list")
+    ).not.toThrow()
 
     expect(() =>
       assertSafeNip65RelayList(
@@ -1102,7 +1161,7 @@ describe("relay settings protocol helpers", () => {
     ).not.toThrow()
   })
 
-  it("blocks NIP-65 publishes without an OUT relay", () => {
+  it("blocks NIP-65 publishes without a Publish relay", () => {
     expect(() =>
       assertSafeNip65RelayList(
         createRelaySettingsFromPreferences([
@@ -1118,7 +1177,7 @@ describe("relay settings protocol helpers", () => {
           },
         ]).entries
       )
-    ).toThrow("without an OUT relay")
+    ).toThrow("without a Publish relay")
   })
 
   it("applies safe defaults when creating an entry from a scan", () => {

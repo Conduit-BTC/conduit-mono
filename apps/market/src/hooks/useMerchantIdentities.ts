@@ -7,6 +7,9 @@ import {
 import { splitMerchantHydrationTargets } from "../lib/clientHydration"
 
 interface UseMerchantIdentitiesInput {
+  accountPubkey?: string | null
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
   allMerchantPubkeys: string[]
   deferBackgroundHydration?: boolean
   visibleMerchantPubkeys: string[]
@@ -19,6 +22,9 @@ interface UseMerchantIdentitiesResult {
 }
 
 export function useMerchantIdentities({
+  accountPubkey,
+  authenticatedPubkey,
+  shouldContinue,
   allMerchantPubkeys,
   deferBackgroundHydration = false,
   visibleMerchantPubkeys,
@@ -35,6 +41,9 @@ export function useMerchantIdentities({
   const visibleMerchantProfiles = useProfiles(
     merchantHydrationTargets.visibleMerchantPubkeys,
     {
+      accountPubkey,
+      authenticatedPubkey,
+      shouldContinue,
       priority: "visible",
       relayHintsByPubkey,
       refetchUnresolvedMs: 5_000,
@@ -44,6 +53,9 @@ export function useMerchantIdentities({
   const backgroundMerchantProfiles = useProfiles(
     merchantHydrationTargets.backgroundMerchantPubkeys,
     {
+      accountPubkey,
+      authenticatedPubkey,
+      shouldContinue,
       enabled: !deferBackgroundHydration,
       priority: "background",
       relayHintsByPubkey,

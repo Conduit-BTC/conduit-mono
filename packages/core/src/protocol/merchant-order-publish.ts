@@ -25,6 +25,10 @@ export interface PublishMerchantOrderMessageInput {
   payload: Record<string, unknown>
   tags?: string[][]
   delivery: MerchantOrderDelivery
+  /** Active authenticated account; never inferred from merchantPubkey. */
+  authenticatedPubkey?: string | null
+  /** Live account session authority for declaration reads and relay writes. */
+  shouldContinue?: () => boolean
   /** Background automation skips foreground-only interactive coordination. */
   signerInteraction?: "external" | "background_external"
 }
@@ -127,6 +131,9 @@ export async function publishMerchantOrderMessage(
   const { selfCopyError, deliveryRoute } = await publishPrivateMessage({
     rumor,
     senderPubkey: input.merchantPubkey,
+    accountPubkey: input.merchantPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
     recipientPubkey: target.recipientPubkey,
     signer: ndk.signer,
     rumorKind: EVENT_KINDS.ORDER,

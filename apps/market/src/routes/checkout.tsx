@@ -11,7 +11,14 @@ import {
   Zap,
 } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
@@ -742,17 +749,27 @@ function CheckoutMerchantIdentityLink({
 function OrderSummary({
   items,
   merchantPubkey,
+  accountPubkey,
+  authenticatedPubkey,
+  shouldContinue,
   btcUsdRate,
   availabilityByProductId,
   formatPrice,
 }: {
   items: CartItem[]
   merchantPubkey: string
+  accountPubkey: string | null
+  authenticatedPubkey: string | null
+  shouldContinue?: () => boolean
   btcUsdRate: PricingRateInput
   availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
   formatPrice: PriceFormatter
 }) {
-  const { data: merchantProfile } = useProfile(merchantPubkey)
+  const { data: merchantProfile } = useProfile(merchantPubkey, {
+    accountPubkey,
+    authenticatedPubkey,
+    shouldContinue,
+  })
   const merchantName = getMerchantDisplayName(merchantProfile, merchantPubkey)
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0)
   const fulfillmentLane = getCartFulfillmentLane(items)
@@ -996,8 +1013,13 @@ function CheckoutPage() {
     restorePendingPubkey,
     signer,
     capabilities,
+    authGeneration,
     status: authStatus,
   } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const cart = useCart()
   const search = Route.useSearch()
   const navigate = useNavigate()
@@ -1128,6 +1150,9 @@ function CheckoutPage() {
   const authPending =
     authSignerReadiness === "pending" || restorePendingPubkey !== null
   const isGuestCheckout = !authPending && authSignerReadiness === "disconnected"
+  const shouldContinueBuyerSession = signedBuyerPubkey
+    ? () => authGenerationRef.current === authGeneration
+    : undefined
   const signerBlockedMessage =
     authSignerReadiness === "unavailable"
       ? "Your Nostr account is connected, but its signer is unavailable. Disconnect and reconnect it before sending this order. Nothing will be sent or paid until you reconnect."
@@ -1270,8 +1295,15 @@ function CheckoutPage() {
       selectedMerchant,
       shippingOptionCoordinates,
       shippingRevisionKey,
+      session.relayScope ?? "no-relay-scope",
     ],
-    queryFn: () => getShippingOptionsByCoordinates(shippingOptionCoordinates),
+    queryFn: ({ signal }) =>
+      getShippingOptionsByCoordinates(shippingOptionCoordinates, {
+        accountPubkey: signedBuyerPubkey,
+        authenticatedPubkey: signedBuyerPubkey,
+        shouldContinue: () => authGenerationRef.current === authGeneration,
+        signal,
+      }),
     enabled:
       !!selectedMerchant &&
       !isAllDigital &&
@@ -1323,12 +1355,19 @@ function CheckoutPage() {
     queryKey: [
       "event-market-organizer-inbox",
       session.relayScope ?? "no-relay-scope",
+      draftOwnerIdentity ?? "anonymous",
       pickupHandoff?.mode === "organizer_handoff"
         ? pickupHandoff.handlerPubkey
         : "not-required",
     ],
-    queryFn: () =>
-      resolveEventMarketOrganizerInbox(pickupHandoff!.handlerPubkey),
+    queryFn: ({ signal }) =>
+      resolveEventMarketOrganizerInbox(pickupHandoff!.handlerPubkey, {
+        requestingAccountPubkey: draftOwnerIdentity,
+        authenticatedPubkey: draftOwnerIdentity,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
+      }),
     enabled:
       session.relaySettingsReady && pickupHandoff?.mode === "organizer_handoff",
     staleTime: 0,
@@ -1960,8 +1999,16 @@ function CheckoutPage() {
         reviewedItems: checkoutItems,
         rawItems: rawCheckoutItems,
         refreshedProducts: refreshResult.products,
-        readShippingOptions: getShippingOptionsByCoordinates,
+        readShippingOptions: (coordinates) =>
+          getShippingOptionsByCoordinates(coordinates, {
+            accountPubkey: draftOwnerIdentity,
+            authenticatedPubkey: draftOwnerIdentity,
+            shouldContinue: () => authGenerationRef.current === authGeneration,
+          }),
         rateInput,
+        accountPubkey: draftOwnerIdentity,
+        authenticatedPubkey: draftOwnerIdentity,
+        shouldContinue: () => authGenerationRef.current === authGeneration,
       })
     } catch (error) {
       recordCheckoutStepResult({
@@ -2379,7 +2426,11 @@ function CheckoutPage() {
       setStep("sending")
 
       const [delivery] = await Promise.all([
-        publishBuyerOrderMessage(rumor, ndk, selectedMerchant, buyerIdentity),
+        publishBuyerOrderMessage(rumor, ndk, selectedMerchant, buyerIdentity, {
+          accountPubkey: signedBuyerPubkey,
+          authenticatedPubkey: draftOwnerIdentity,
+          shouldContinue: shouldContinueBuyerSession,
+        }),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
       orderDelivered = true
@@ -2701,14 +2752,13 @@ function CheckoutPage() {
       const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
       const refreshedProfileResult = await getProfiles({
         pubkeys: [selectedMerchant],
-        authenticatedPubkey:
-          selectedMerchant === signedBuyerPubkey
-            ? signedBuyerPubkey
-            : undefined,
+        accountPubkey: signedBuyerPubkey,
+        authenticatedPubkey: signedBuyerPubkey,
         skipCache: true,
         requireCompleteEvidence: true,
         evidenceScope: "payment",
         priority: "visible",
+        shouldContinue: () => authGenerationRef.current === authGeneration,
       })
       const refreshedProfileState = getMerchantPaymentProfileState({
         isLoading: false,
@@ -2897,7 +2947,12 @@ function CheckoutPage() {
         orderRumor,
         ndk,
         selectedMerchant,
-        buyerIdentity
+        buyerIdentity,
+        {
+          accountPubkey: signedBuyerPubkey,
+          authenticatedPubkey: draftOwnerIdentity,
+          shouldContinue: shouldContinueBuyerSession,
+        }
       )
       orderDelivered = true
       clearCheckoutShippingSession()
@@ -2987,6 +3042,9 @@ function CheckoutPage() {
       const serviceCtx: OrderPaymentContext = {
         orderId,
         buyerPubkey,
+        accountPubkey: signedBuyerPubkey,
+        authenticatedPubkey: draftOwnerIdentity,
+        shouldContinue: shouldContinueBuyerSession,
         buyerIdentity: guestIdentity ?? undefined,
         merchantPubkey: selectedMerchant,
         merchantLud16: currentMerchantLud16,
@@ -4613,6 +4671,9 @@ function CheckoutPage() {
         <OrderSummary
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
+          accountPubkey={draftOwnerIdentity}
+          authenticatedPubkey={draftOwnerIdentity}
+          shouldContinue={() => authGenerationRef.current === authGeneration}
           btcUsdRate={btcUsdRate}
           availabilityByProductId={checkoutAvailability.availabilityByProductId}
           formatPrice={shopperPricing.formatPrice}

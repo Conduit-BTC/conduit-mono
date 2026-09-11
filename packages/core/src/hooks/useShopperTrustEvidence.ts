@@ -9,6 +9,10 @@ import { subscribeRelaySettingsChanges } from "../protocol/relay-settings"
 export interface UseShopperTrustEvidenceOptions {
   enabled?: boolean
   relayScope?: string | null
+  /** Explicit signed-in account for durable final-I/O relay exclusions. */
+  authenticatedPubkey?: string | null
+  /** Live account authority for owner-selected relay reads. */
+  shouldContinue?: () => boolean
 }
 
 export interface UseShopperTrustEvidenceResult {
@@ -31,6 +35,8 @@ export function useShopperTrustEvidence(
   const forceRefreshRef = useRef(false)
   const merchantPubkey = pair?.merchantPubkey.trim().toLowerCase() ?? ""
   const shopperPubkey = pair?.shopperPubkey.trim().toLowerCase() ?? ""
+  const authenticatedPubkey =
+    options.authenticatedPubkey?.trim().toLowerCase() || null
   const relayScope = options.relayScope?.trim() || "none"
   const queryKey = useMemo(
     () =>
@@ -38,10 +44,11 @@ export function useShopperTrustEvidence(
         "shopper-trust",
         "v2",
         relayScope,
+        authenticatedPubkey ?? "anonymous",
         merchantPubkey,
         shopperPubkey,
       ] as const,
-    [merchantPubkey, relayScope, shopperPubkey]
+    [authenticatedPubkey, merchantPubkey, relayScope, shopperPubkey]
   )
   const enabled =
     (options.enabled ?? true) && !!merchantPubkey && !!shopperPubkey
@@ -58,13 +65,17 @@ export function useShopperTrustEvidence(
     queryFn: async ({ signal }) => {
       const forceRefresh = forceRefreshRef.current
       forceRefreshRef.current = false
+      const shouldContinue = () =>
+        !signal.aborted && (options.shouldContinue?.() ?? true)
       return getShopperTrustEvidence(
         { merchantPubkey, shopperPubkey },
         {
+          authenticatedPubkey,
           signal,
+          shouldContinue,
           forceRefresh,
           onProgress: (snapshot) => {
-            if (signal.aborted) return
+            if (!shouldContinue()) return
             queryClient.setQueryData(queryKey, snapshot)
           },
         }
