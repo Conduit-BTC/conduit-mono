@@ -25,6 +25,10 @@ type ProfilePriority = "visible" | "background"
 
 export interface UseProfilesOptions {
   authenticatedPubkey?: string | null
+  /** Signed-in account used only for final-I/O whole-relay exclusions. */
+  accountPubkey?: string | null
+  /** Live caller authority for final account-scoped relay admission. */
+  shouldContinue?: () => boolean
   evidenceScope?: "full_profile" | "payment" | "profile_edit"
   enabled?: boolean
   maxUnresolvedRefetches?: number
@@ -121,6 +125,9 @@ export function useProfiles(
   const authenticatedPerspective = getProfileQueryPerspectiveKey(
     options.authenticatedPubkey
   )
+  const accountPerspective = getProfileQueryPerspectiveKey(
+    options.accountPubkey ?? options.authenticatedPubkey
+  )
   const pubkeyKey = uniquePubkeys(pubkeys).join("\u0000")
   const unique = useMemo(
     () => (pubkeyKey ? pubkeyKey.split("\u0000") : []),
@@ -212,12 +219,18 @@ export function useProfiles(
       options.skipCache,
       options.requireCompleteEvidence,
       options.evidenceScope,
+      accountPerspective,
     ],
     enabled,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
+      const shouldContinue = () =>
+        !signal.aborted && (options.shouldContinue?.() ?? true)
       const result = await getProfiles({
         pubkeys: unique,
         authenticatedPubkey: options.authenticatedPubkey,
+        accountPubkey: options.accountPubkey,
+        shouldContinue,
+        signal,
         priority,
         skipCache: options.skipCache,
         requireCompleteEvidence: options.requireCompleteEvidence,

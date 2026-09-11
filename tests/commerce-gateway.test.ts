@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { NDKEvent, nip19 } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
-  __resetAccountRelaySettingsProjectionsForTests,
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
   cacheParsedOrderMessage,
@@ -29,10 +28,8 @@ import {
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
   applyE2eRelayIsolation,
-  createRelaySettingsFromPreferences,
-  getAccountRelayScope,
+  createInMemoryOwnerRelayListEvidenceRepository,
   recordRelayFailure,
-  setAccountRelaySettingsProjection,
   setActiveRelaySettingsScope,
 } from "@conduit/core"
 import { config, EVENT_KINDS } from "@conduit/core"
@@ -65,6 +62,37 @@ let cachedProductTombstones: CachedProductTombstone[] = []
 let cachedProfiles = new Map<string, CachedProfile>()
 let cachedOrderMessages: CachedOrderMessage[] = []
 const originalConfig = structuredClone(config)
+
+async function durableMerchantRelayListRepository(tags: string[][]) {
+  const repository = createInMemoryOwnerRelayListEvidenceRepository()
+  const signedEvent = finalizeEvent(
+    {
+      kind: EVENT_KINDS.RELAY_LIST,
+      created_at: Math.floor(FIXED_NOW / 1_000),
+      tags,
+      content: "",
+    },
+    MERCHANT_A_SECRET
+  )
+  await repository.reconcile({
+    pubkey: MERCHANT_A_PUBKEY,
+    observations: [
+      {
+        signedEvent,
+        sourceRelayUrls: ["wss://discovery.example"],
+        observedAt: FIXED_NOW,
+        completeObservedAt: FIXED_NOW,
+      },
+    ],
+    lookup: {
+      observedAt: FIXED_NOW,
+      coverage: "complete",
+      hadEvent: true,
+      eventId: signedEvent.id,
+    },
+  })
+  return repository
+}
 
 function makeFollowListRead(input: {
   pubkey: string
@@ -330,7 +358,6 @@ function makeSignedDeletionEvent(params: {
 }
 
 beforeEach(async () => {
-  __resetAccountRelaySettingsProjectionsForTests()
   __resetCommerceTestOverrides()
   __resetRelayHealth()
   __resetRelayListTestOverrides()
@@ -407,7 +434,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   Object.assign(config, structuredClone(originalConfig))
-  __resetAccountRelaySettingsProjectionsForTests()
   __resetCommerceTestOverrides()
   __resetRelayHealth()
   __resetRelayListTestOverrides()
@@ -4129,10 +4155,11 @@ describe("commerce gateway", () => {
 
   it("preserves signed owner authority through generic reads while keeping commerce discovery", async () => {
     const staleSelfRelayUrl = "wss://stale-self-cache.example"
-    const readOnlyRelayUrl = "wss://read-only-owner.example"
-    const writeOnlyRelayUrl = "wss://write-only-owner.example"
-    const accountScope = getAccountRelayScope(MERCHANT_A_PUBKEY)
+    const readOnlyRelayUrl = "ws://read-only-owner.example:4848"
+    const writeOnlyRelayUrl = "ws://write-only-owner.example:4848"
     const genericReadRelayPlans: string[][] = []
+    const genericReadOwnerSelections: string[][] = []
+    const genericReadAuthenticatedPubkeys: Array<string | null | undefined> = []
     let productReadRelayPlan: string[] = []
 
     __setRelayListTestOverrides({
@@ -4149,6 +4176,10 @@ describe("commerce gateway", () => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         if (filter.kinds?.includes(EVENT_KINDS.PROFILE)) {
           genericReadRelayPlans.push(relayUrls)
+          genericReadOwnerSelections.push([
+            ...(options?.ownerSelectedRelayUrls ?? []),
+          ])
+          genericReadAuthenticatedPubkeys.push(options?.authenticatedPubkey)
         }
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           productReadRelayPlan = relayUrls
@@ -4157,27 +4188,17 @@ describe("commerce gateway", () => {
       },
     })
 
-    const authoritativeSettings = [
-      createRelaySettingsFromPreferences([], "published"),
-      createRelaySettingsFromPreferences(
-        [
-          {
-            url: readOnlyRelayUrl,
-            readEnabled: true,
-            writeEnabled: false,
-          },
-          {
-            url: writeOnlyRelayUrl,
-            readEnabled: false,
-            writeEnabled: true,
-          },
-        ],
-        "published"
-      ),
+    const authoritativeTags = [
+      [],
+      [
+        ["r", readOnlyRelayUrl, "read"],
+        ["r", writeOnlyRelayUrl, "write"],
+      ],
     ]
-    for (const settings of authoritativeSettings) {
-      setAccountRelaySettingsProjection(accountScope, settings, {
-        signedRelayListAuthoritative: true,
+    for (const tags of authoritativeTags) {
+      __setCommerceTestOverrides({
+        ownerRelayListEvidenceRepository:
+          await durableMerchantRelayListRepository(tags),
       })
       await getProfiles({
         pubkeys: [MERCHANT_A_PUBKEY],
@@ -4191,12 +4212,15 @@ describe("commerce gateway", () => {
       [writeOnlyRelayUrl, readOnlyRelayUrl],
     ])
     expect(genericReadRelayPlans.flat()).not.toContain(staleSelfRelayUrl)
+    expect(genericReadOwnerSelections).toEqual([
+      [],
+      [readOnlyRelayUrl, writeOnlyRelayUrl],
+    ])
+    expect(genericReadAuthenticatedPubkeys).toEqual([
+      MERCHANT_A_PUBKEY,
+      MERCHANT_A_PUBKEY,
+    ])
 
-    setAccountRelaySettingsProjection(
-      accountScope,
-      createRelaySettingsFromPreferences([], "published"),
-      { signedRelayListAuthoritative: true }
-    )
     await getMarketplaceProducts({ sort: "newest" })
     expect(productReadRelayPlan).toContain(config.commerceDiscoveryRelayUrls[0])
   })
@@ -4209,6 +4233,8 @@ describe("commerce gateway", () => {
       getCachedProducts: async () => [],
       getCachedProfiles: async () => [],
       putCachedProfiles: async () => {},
+      ownerRelayListEvidenceRepository:
+        await durableMerchantRelayListRepository([]),
     })
     __setRelayListTestOverrides({
       loadCached: async (pubkey) => ({
@@ -4223,12 +4249,6 @@ describe("commerce gateway", () => {
         return { events: [], relays: [], eventsVerified: true }
       },
     })
-    setAccountRelaySettingsProjection(
-      getAccountRelayScope(MERCHANT_A_PUBKEY),
-      createRelaySettingsFromPreferences([], "published"),
-      { signedRelayListAuthoritative: true }
-    )
-
     await getProfiles({
       pubkeys: [MERCHANT_A_PUBKEY],
       authenticatedPubkey: MERCHANT_A_PUBKEY,

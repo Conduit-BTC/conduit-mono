@@ -81,10 +81,12 @@ function harness(
 ) {
   const published: unknown[] = []
   const retried: unknown[] = []
+  const resolved: unknown[][] = []
   const saved: unknown[] = []
   let reads = 0
   const deps = {
-    resolve: async () => {
+    resolve: async (...input: unknown[]) => {
+      resolved.push(input)
       reads++
       return current
     },
@@ -107,10 +109,11 @@ function harness(
     },
     load: () => (savedCollection ? { [COLLECTION]: [savedCollection] } : {}),
   }
-  return { deps, published, retried, saved, reads: () => reads }
+  return { deps, published, retried, resolved, saved, reads: () => reads }
 }
 const input = {
   merchantPubkey: OWNER,
+  authenticatedPubkey: OWNER,
   marketReference: COLLECTION,
   productCoordinate: PRODUCT,
 }
@@ -166,8 +169,35 @@ describe("organizer own-product acceptance", () => {
   it("accepts verified own pickup with a separate saved collection signature", async () => {
     const h = harness()
     expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)
+    expect(h.resolved).toEqual([
+      [COLLECTION, OWNER, OWNER, undefined, undefined],
+    ])
     expect(h.published).toHaveLength(1)
+    expect(h.published[0]).toEqual(
+      expect.objectContaining({
+        organizerPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+      })
+    )
     expect(h.saved).toHaveLength(2)
+  })
+  it("keeps authentication distinct from the organizer at read and publish seams", async () => {
+    const h = harness()
+    expect(
+      await acceptOwnEventProduct(
+        { ...input, authenticatedPubkey: OTHER },
+        h.deps
+      )
+    ).toBe(true)
+    expect(h.resolved).toEqual([
+      [COLLECTION, OWNER, OTHER, undefined, undefined],
+    ])
+    expect(h.published[0]).toEqual(
+      expect.objectContaining({
+        organizerPubkey: OWNER,
+        authenticatedPubkey: OTHER,
+      })
+    )
   })
   it("does not accept merely because the form was published", async () => {
     const h = harness({ ...market, participation: [] })
@@ -178,14 +208,35 @@ describe("organizer own-product acceptance", () => {
   })
   it("retries the same signed acceptance instead of creating a new revision", async () => {
     const h = harness()
+    const shouldContinue = () => true
     expect(
       await acceptOwnEventProduct(
-        { ...input, signedAcceptance: record },
+        { ...input, signedAcceptance: record, shouldContinue },
         h.deps
       )
     ).toBe(true)
     expect(h.published).toHaveLength(0)
-    expect(h.retried).toEqual([{ organizerPubkey: OWNER, record }])
+    expect(h.retried).toEqual([
+      {
+        organizerPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        shouldContinue,
+        record,
+      },
+    ])
+  })
+
+  it("keeps live session authority on the read and acceptance publish", async () => {
+    const h = harness()
+    const shouldContinue = () => true
+
+    expect(
+      await acceptOwnEventProduct({ ...input, shouldContinue }, h.deps)
+    ).toBe(true)
+    expect(h.resolved).toEqual([
+      [COLLECTION, OWNER, OWNER, undefined, shouldContinue],
+    ])
+    expect(h.published[0]).toEqual(expect.objectContaining({ shouldContinue }))
   })
   it("publishes from a newer collection instead of retrying an old acceptance", async () => {
     const h = harness({
@@ -214,7 +265,14 @@ describe("organizer own-product acceptance", () => {
     const h = harness(market, pending)
     expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)
     expect(h.published).toHaveLength(0)
-    expect(h.retried).toEqual([{ organizerPubkey: OWNER, record: pending }])
+    expect(h.retried).toEqual([
+      {
+        organizerPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        shouldContinue: undefined,
+        record: pending,
+      },
+    ])
   })
   it("publishes the next own product over a partially acknowledged current collection", async () => {
     const partialEvent = signedCollection([PRIOR_PRODUCT])

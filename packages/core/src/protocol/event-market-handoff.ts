@@ -41,7 +41,10 @@ import {
   resolveInboxDeclaration,
   type ResolveInboxDeclarationOptions,
 } from "./private-message-routing"
-import { normalizeSecureOrIsolatedE2eRelayUrls } from "./relay-settings"
+import {
+  normalizeOwnerSelectedRelayUrls,
+  normalizeSecureOrIsolatedE2eRelayUrls,
+} from "./relay-settings"
 import {
   publishWithPlanner,
   RelayPublishDiagnosticsError,
@@ -724,10 +727,13 @@ export type EventMarketPrivateTransportOptions = Pick<
   | "recipientInboxRelays"
   | "senderInboxRelays"
   | "resolveInboxRelays"
+  | "accountNetworkLocalStateRepository"
+  | "authenticatedPubkey"
   | "giftWrapFn"
   | "publishFn"
   | "waitForSignerVisibility"
   | "refreshRelayLists"
+  | "shouldContinue"
 >
 
 function hasExactOuterRecipient(
@@ -832,8 +838,10 @@ function assertValidEventMarketPrivateDeliveryRecord(
 const EVENT_MARKET_PRIVATE_RELAY_PROGRESS_LIMIT = 64
 const CANONICAL_HEX_64 = /^[0-9a-f]{64}$/
 
+// Progress is URL-free evidence, not contact authority. Preserve canonical
+// owner ws:// targets here; retry admission remains source-aware below.
 function eventMarketPrivateRelayTargetRef(relayUrl: string): string {
-  const normalized = normalizeSecureOrIsolatedE2eRelayUrls([relayUrl])[0]
+  const normalized = normalizeOwnerSelectedRelayUrls([relayUrl])[0]
   if (!normalized) {
     throw new Error("Event-market private relay target is invalid.")
   }
@@ -849,7 +857,7 @@ function eventMarketPrivateRelayTargetRef(relayUrl: string): string {
 function normalizedRelayTargetRefs(relayUrls: readonly string[]): string[] {
   return Array.from(
     new Set(
-      normalizeSecureOrIsolatedE2eRelayUrls(relayUrls).map((relayUrl) =>
+      normalizeOwnerSelectedRelayUrls(relayUrls).map((relayUrl) =>
         eventMarketPrivateRelayTargetRef(relayUrl)
       )
     )
@@ -1050,6 +1058,8 @@ async function publishEventMarketPrivatePayload(input: {
   const result = await publishPrivateMessage({
     rumor: input.rumor,
     senderPubkey: expectedSender(input.payload),
+    accountPubkey: expectedSender(input.payload),
+    authenticatedPubkey: input.transport?.authenticatedPubkey,
     recipientPubkey: expectedRecipient(input.payload),
     signer: input.signer,
     rumorKind: EVENT_KINDS.ORDER,
@@ -1215,6 +1225,11 @@ async function strictInboxRelays(
   return declaredInboxWriteRelayUrls(inbox.relayUrls)
 }
 
+interface AuthenticatedOwnerInboxRelayPlan {
+  relayUrls: string[]
+  ownerSelectedRelayUrls: string[]
+}
+
 function declaredInboxWriteRelayUrls(relayUrls: readonly string[]): string[] {
   return normalizeSecureOrIsolatedE2eRelayUrls(relayUrls).slice(
     0,
@@ -1222,12 +1237,62 @@ function declaredInboxWriteRelayUrls(relayUrls: readonly string[]): string[] {
   )
 }
 
+function authenticatedOwnerInboxRelayPlan(
+  relayUrls: readonly string[],
+  ownerSelectedRelayUrls: readonly string[]
+): AuthenticatedOwnerInboxRelayPlan {
+  const ownerSelected = new Set(
+    normalizeOwnerSelectedRelayUrls(ownerSelectedRelayUrls)
+  )
+  const secure = new Set(normalizeSecureOrIsolatedE2eRelayUrls(relayUrls))
+  const planned = normalizeOwnerSelectedRelayUrls(relayUrls)
+    .filter((relayUrl) => secure.has(relayUrl) || ownerSelected.has(relayUrl))
+    .slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS)
+  return {
+    relayUrls: planned,
+    ownerSelectedRelayUrls: planned.filter((relayUrl) =>
+      ownerSelected.has(relayUrl)
+    ),
+  }
+}
+
+async function strictAuthenticatedOwnerInboxRelayPlan(input: {
+  pubkey: string
+  accountPubkey: string
+  authenticatedOwnerPubkey: string | null
+  ownerSelectedRelayUrls: readonly string[]
+  options?: ResolveInboxDeclarationOptions
+}): Promise<AuthenticatedOwnerInboxRelayPlan> {
+  const declaration = await resolveInboxDeclaration(input.pubkey, {
+    ...input.options,
+    requestingAccountPubkey: input.accountPubkey,
+    authenticatedPubkey: input.authenticatedOwnerPubkey,
+    allowLocalRelayUrlsForPubkey: input.authenticatedOwnerPubkey,
+  })
+  if (declaration.state !== "declared") {
+    throw new Error("Sender inbox is not currently usable.")
+  }
+  return authenticatedOwnerInboxRelayPlan(
+    declaration.relayUrls,
+    input.ownerSelectedRelayUrls
+  )
+}
+
+function matchingAuthenticatedDeliveryOwner(
+  senderPubkey: string,
+  authenticatedOwnerPubkey: string | null | undefined
+): string | null {
+  const sender = senderPubkey.trim().toLowerCase()
+  const owner = authenticatedOwnerPubkey?.trim().toLowerCase() ?? ""
+  return HEX_64.test(owner) && owner === sender ? owner : null
+}
+
 function pendingRelayUrls(
   relayUrls: readonly string[],
   acknowledgedRefs: readonly string[]
 ): string[] {
   const acknowledged = new Set(acknowledgedRefs)
-  return normalizeSecureOrIsolatedE2eRelayUrls(relayUrls).filter(
+  return normalizeOwnerSelectedRelayUrls(relayUrls).filter(
     (relayUrl) => !acknowledged.has(eventMarketPrivateRelayTargetRef(relayUrl))
   )
 }
@@ -1238,11 +1303,9 @@ function mergeAcknowledgedRelayRefs(input: {
   successfulRelayUrls: readonly string[]
 }): string[] {
   const attempted = new Set(
-    normalizeSecureOrIsolatedE2eRelayUrls(input.attemptedRelayUrls)
+    normalizeOwnerSelectedRelayUrls(input.attemptedRelayUrls)
   )
-  const additions = normalizeSecureOrIsolatedE2eRelayUrls(
-    input.successfulRelayUrls
-  )
+  const additions = normalizeOwnerSelectedRelayUrls(input.successfulRelayUrls)
     .filter((relayUrl) => attempted.has(relayUrl))
     .map(eventMarketPrivateRelayTargetRef)
   const merged = Array.from(new Set([...input.existing, ...additions])).sort()
@@ -1262,7 +1325,7 @@ function deliveryLegStatus(
   ).filter((targetRef) => acknowledged.has(targetRef)).length
   if (acknowledgedCurrentCount === 0) return "zero_success"
   return acknowledgedCurrentCount ===
-    normalizeSecureOrIsolatedE2eRelayUrls(currentRelayUrls).length
+    normalizeOwnerSelectedRelayUrls(currentRelayUrls).length
     ? "full_success"
     : "partial_success"
 }
@@ -1291,14 +1354,34 @@ function recoverEventMarketPartialPublishDiagnostics(
 /** Retry persisted exact gift wraps without signing or re-encrypting. */
 export async function retryEventMarketPrivateDelivery(input: {
   record: EventMarketPrivateDeliveryRecord
+  /** Explicit current account; never inferred from the persisted descriptor. */
+  authenticatedOwnerPubkey?: string | null
+  /** Exact sender-inbox targets carrying authenticated owner provenance. */
+  ownerSelectedSenderInboxRelayUrls: readonly string[]
   deliveryProgress?: EventMarketPrivateDeliveryProgress
   recipientInboxRelays?: readonly string[]
   senderInboxRelays?: readonly string[]
   /** Shared declaration read seam for deterministic delivery tests/adapters. */
   inboxDeclarationOptions?: ResolveInboxDeclarationOptions
+  /** Live account authority for declaration reads and exact-wrap publishes. */
+  shouldContinue?: EventMarketPrivateTransportOptions["shouldContinue"]
   publishFn?: typeof publishWithPlanner
 }): Promise<RetryEventMarketPrivateDeliveryResult> {
   assertValidEventMarketPrivateDeliveryRecord(input.record)
+  const accountPubkey = input.record.senderPubkey.trim().toLowerCase()
+  const authenticatedOwnerPubkey = matchingAuthenticatedDeliveryOwner(
+    input.record.senderPubkey,
+    input.authenticatedOwnerPubkey
+  )
+  const ownerSelectedSenderInboxRelayUrls = authenticatedOwnerPubkey
+    ? input.ownerSelectedSenderInboxRelayUrls
+    : []
+  const shouldContinue =
+    input.shouldContinue ?? input.inboxDeclarationOptions?.shouldContinue
+  const inboxDeclarationOptions = {
+    ...input.inboxDeclarationOptions,
+    shouldContinue,
+  }
   let deliveryProgress = input.deliveryProgress
     ? parseEventMarketPrivateDeliveryProgress(
         input.deliveryProgress,
@@ -1307,10 +1390,11 @@ export async function retryEventMarketPrivateDelivery(input: {
     : createEventMarketPrivateDeliveryProgress(input.record)
   const recipientRelayUrls = input.recipientInboxRelays
     ? declaredInboxWriteRelayUrls(input.recipientInboxRelays)
-    : await strictInboxRelays(
-        input.record.recipientPubkey,
-        input.inboxDeclarationOptions
-      )
+    : await strictInboxRelays(input.record.recipientPubkey, {
+        ...inboxDeclarationOptions,
+        requestingAccountPubkey: accountPubkey,
+        authenticatedPubkey: authenticatedOwnerPubkey,
+      })
   if (recipientRelayUrls.length === 0) {
     throw new Error("Private-message recipient inbox is not currently usable.")
   }
@@ -1327,13 +1411,16 @@ export async function retryEventMarketPrivateDelivery(input: {
         {
           intent: "recipient_event",
           authorPubkey: input.record.senderPubkey,
-          authenticatedPubkey: input.record.senderPubkey,
+          authenticatedPubkey: authenticatedOwnerPubkey,
+          accountPubkey,
           recipientPubkeys: [input.record.recipientPubkey],
           exclusiveRelayUrls: pendingRecipientRelayUrls,
           deliveryMode: "critical",
+          shouldContinue,
         }
       )
     } catch (error) {
+      if (shouldContinue?.() === false) throw error
       const partial = recoverEventMarketPartialPublishDiagnostics(error)
       if (!partial) throw error
       recipientDelivery = partial
@@ -1358,12 +1445,19 @@ export async function retryEventMarketPrivateDelivery(input: {
   let selfCopyError: string | null = null
   if (input.record.signedSelfWrap) {
     try {
-      const senderRelayUrls = input.senderInboxRelays
-        ? declaredInboxWriteRelayUrls(input.senderInboxRelays)
-        : await strictInboxRelays(
-            input.record.senderPubkey,
-            input.inboxDeclarationOptions
+      const senderPlan = input.senderInboxRelays
+        ? authenticatedOwnerInboxRelayPlan(
+            input.senderInboxRelays,
+            ownerSelectedSenderInboxRelayUrls
           )
+        : await strictAuthenticatedOwnerInboxRelayPlan({
+            pubkey: input.record.senderPubkey,
+            accountPubkey,
+            authenticatedOwnerPubkey,
+            ownerSelectedRelayUrls: ownerSelectedSenderInboxRelayUrls,
+            options: inboxDeclarationOptions,
+          })
+      const senderRelayUrls = senderPlan.relayUrls
       if (senderRelayUrls.length === 0) {
         throw new Error("Sender inbox is not currently usable.")
       }
@@ -1378,13 +1472,19 @@ export async function retryEventMarketPrivateDelivery(input: {
             {
               intent: "recipient_event",
               authorPubkey: input.record.senderPubkey,
-              authenticatedPubkey: input.record.senderPubkey,
+              authenticatedPubkey: authenticatedOwnerPubkey,
+              accountPubkey,
               recipientPubkeys: [input.record.senderPubkey],
               exclusiveRelayUrls: pendingSelfRelayUrls,
+              ownerSelectedRelayUrls: senderPlan.ownerSelectedRelayUrls.filter(
+                (relayUrl) => pendingSelfRelayUrls.includes(relayUrl)
+              ),
               deliveryMode: "critical",
+              shouldContinue,
             }
           )
         } catch (error) {
+          if (shouldContinue?.() === false) throw error
           const partial = recoverEventMarketPartialPublishDiagnostics(error)
           if (!partial) throw error
           selfDelivery = partial
@@ -1404,6 +1504,7 @@ export async function retryEventMarketPrivateDelivery(input: {
       )
       selfCopyError = selfCopyErrorForStatus(selfDeliveryStatus)
     } catch (error) {
+      if (shouldContinue?.() === false) throw error
       selfCopyError =
         error instanceof Error
           ? error.message

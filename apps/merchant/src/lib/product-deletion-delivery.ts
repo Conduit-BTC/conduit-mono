@@ -8,6 +8,7 @@ import {
   persistProductDeletionDelivery,
   planPublishRelays,
   publishSignedEventToRelay,
+  normalizePublicWebSocketUrl,
   type ProductDeletionDeliveryOptions,
   type ProductDeletionDeliveryJob,
   type ProductDeletionRelayPublisher,
@@ -24,14 +25,36 @@ function uniqueRelayUrls(urls: readonly string[]): string[] {
 async function publishProductDeletionRelay(
   input: Parameters<ProductDeletionRelayPublisher>[0]
 ): Promise<Awaited<ReturnType<ProductDeletionRelayPublisher>>> {
+  let authenticatedPubkey = input.authenticatedPubkey
+  try {
+    if (
+      authenticatedPubkey &&
+      input.isAuthenticatedPubkeyCurrent?.(authenticatedPubkey) === false
+    ) {
+      authenticatedPubkey = null
+    }
+  } catch {
+    authenticatedPubkey = null
+  }
+  const requiresAuthenticatedOwnerAuthority =
+    !config.e2eRelayIsolationEnabled &&
+    !normalizePublicWebSocketUrl(input.relayUrl)
   return {
     status: await publishSignedEventToRelay({
       signedEvent: input.signedEvent,
       relayUrl: input.relayUrl,
       authorPubkey: input.signedEvent.pubkey,
-      authenticatedPubkey: input.roles.includes("author_write")
-        ? input.signedEvent.pubkey
-        : null,
+      accountPubkey: input.accountPubkey,
+      authenticatedPubkey,
+      ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+      accountNetworkLocalStateRepository:
+        input.accountNetworkLocalStateRepository,
+      shouldContinue:
+        requiresAuthenticatedOwnerAuthority && authenticatedPubkey
+          ? () =>
+              input.isAuthenticatedPubkeyCurrent?.(authenticatedPubkey) !==
+              false
+          : undefined,
     }),
   }
 }
@@ -45,15 +68,19 @@ async function restoreLocalDeletionEvidence(
 }
 
 export async function planCurrentProductDeletionWriteRelays(
-  merchantPubkey: string
+  merchantPubkey: string,
+  authenticatedPubkey: string | null,
+  shouldContinue?: () => boolean
 ): Promise<string[]> {
   const plan = await planPublishRelays({
     intent: "author_event",
     authorPubkey: merchantPubkey,
-    authenticatedPubkey: merchantPubkey,
+    authenticatedPubkey,
+    accountPubkey: merchantPubkey,
     refreshRelayLists: true,
     deliveryMode: "critical",
     skipHealthFilter: true,
+    shouldContinue,
   })
   return uniqueRelayUrls([
     ...plan.primaryRelayUrls,
@@ -124,6 +151,21 @@ export function productDeletionJobToPublishResult(
 export interface DeliverQueuedProductDeletionOptions extends ProductDeletionDeliveryOptions {
   publisher?: ProductDeletionRelayPublisher
   restoreLocalEvidence?: (job: ProductDeletionDeliveryJob) => Promise<void>
+  shouldContinue?: () => boolean
+}
+
+function bindAuthenticatedProductDeletionAuthority(
+  authenticatedPubkey: string | null | undefined,
+  shouldContinue: (() => boolean) | undefined,
+  isAuthenticatedPubkeyCurrent: ProductDeletionDeliveryOptions["isAuthenticatedPubkeyCurrent"]
+): ProductDeletionDeliveryOptions["isAuthenticatedPubkeyCurrent"] {
+  if (!authenticatedPubkey || !shouldContinue) {
+    return isAuthenticatedPubkeyCurrent
+  }
+  return (candidatePubkey) =>
+    candidatePubkey === authenticatedPubkey &&
+    (isAuthenticatedPubkeyCurrent?.(candidatePubkey) ?? true) &&
+    shouldContinue()
 }
 
 export async function deliverQueuedProductDeletion(
@@ -133,6 +175,7 @@ export async function deliverQueuedProductDeletion(
   const {
     publisher = publishProductDeletionRelay,
     restoreLocalEvidence = restoreLocalDeletionEvidence,
+    shouldContinue,
     ...deliveryOptions
   } = options
   const queuedJob = await getProductDeletionDelivery(jobId, deliveryOptions)
@@ -147,6 +190,11 @@ export async function deliverQueuedProductDeletion(
 
   const deliveredJob = await deliverProductDeletionJob(jobId, publisher, {
     ...deliveryOptions,
+    isAuthenticatedPubkeyCurrent: bindAuthenticatedProductDeletionAuthority(
+      deliveryOptions.authenticatedPubkey,
+      shouldContinue,
+      deliveryOptions.isAuthenticatedPubkeyCurrent
+    ),
     forceDeliveryLeaseRecovery: true,
   })
   return productDeletionJobToPublishResult(deliveredJob)
@@ -195,14 +243,19 @@ export async function resumePendingProductDeletionDeliveries(
   }
 }
 
-export function startProductDeletionDeliveryWorker(): () => void {
+export function startProductDeletionDeliveryWorker(
+  authenticatedPubkey: string | null = null
+): () => void {
   if (typeof window === "undefined") return () => {}
 
   let stopped = false
   let active: Promise<void> | null = null
   const run = () => {
     if (stopped || active) return
-    active = resumePendingProductDeletionDeliveries()
+    active = resumePendingProductDeletionDeliveries({
+      authenticatedPubkey,
+      isAuthenticatedPubkeyCurrent: () => !stopped,
+    })
       .catch(() => {
         // The durable job remains queued. A later timer/online/focus event
         // retries without requiring another signature.

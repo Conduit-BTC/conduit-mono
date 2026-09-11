@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
   Check,
@@ -63,14 +63,24 @@ function RequiredMark() {
 }
 
 function ProfilePage() {
-  const { pubkey } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const authenticatedPubkey = status === "connected" ? pubkey : null
   const profileQuery = useProfile(pubkey, {
-    authenticatedPubkey: pubkey,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     requireCompleteEvidence: true,
     evidenceScope: "profile_edit",
     maxUnresolvedRefetches: 2,
   })
-  const updateMutation = useUpdateProfile("merchant")
+  const updateMutation = useUpdateProfile("merchant", {
+    authenticatedPubkey,
+    authGeneration,
+  })
   const [editingPubkey, setEditingPubkey] = useState<string | null>(null)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_PROFILE_FORM)
   const editBaselineRef = useRef<ProfileFormValues | null>(null)

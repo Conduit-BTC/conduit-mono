@@ -159,13 +159,13 @@ describe("replaceable publish safety", () => {
     ).toBe(2)
   })
 
-  it("refuses empty, malformed, duplicate-only, or one-relay NIP-65 replacements", () => {
+  it("requires a Publish relay while allowing a single-relay replacement", () => {
     expect(() =>
       assertSafeReplaceablePublish({
         kind: EVENT_KINDS.RELAY_LIST,
         tags: [["r", "wss://only.example"]],
       })
-    ).toThrow(ReplaceablePublishSafetyError)
+    ).not.toThrow()
 
     expect(() =>
       assertSafeReplaceablePublish({
@@ -175,7 +175,14 @@ describe("replaceable publish safety", () => {
           ["r", "only.example", "write"],
         ],
       })
-    ).toThrow("tiny NIP-65 relay list")
+    ).not.toThrow()
+
+    expect(() =>
+      assertSafeReplaceablePublish({
+        kind: EVENT_KINDS.RELAY_LIST,
+        tags: [["r", "wss://read.example", "read"]],
+      })
+    ).toThrow("without a Publish relay")
 
     expect(() =>
       assertSafeReplaceablePublish({

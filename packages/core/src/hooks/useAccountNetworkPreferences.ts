@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react"
 import {
   hydrateAccountNetworkPreferences,
   reconcileAccountNetworkPreferences,
@@ -49,9 +55,12 @@ export function prepareAccountNetworkPreferencesPresentation(
 export function useAccountNetworkPreferences(
   pubkey: string | null,
   enabled: boolean,
-  freshEnabled = enabled
+  freshEnabled = enabled,
+  authGeneration = 0
 ): UseAccountNetworkPreferencesResult {
   const contextKey = enabled ? pubkey?.trim().toLowerCase() || null : null
+  const authGenerationRef = useRef(authGeneration)
+  const reconciliationControllerRef = useRef<AbortController | null>(null)
   const [retryRevision, setRetryRevision] = useState(0)
   const [state, setState] = useState<AccountNetworkPreferencesState>({
     contextKey: null,
@@ -60,6 +69,14 @@ export function useAccountNetworkPreferences(
     reconciliation: null,
     error: null,
   })
+
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+    return () => {
+      reconciliationControllerRef.current?.abort()
+      reconciliationControllerRef.current = null
+    }
+  }, [authGeneration, contextKey])
 
   useEffect(() => {
     if (!contextKey) {
@@ -122,14 +139,23 @@ export function useAccountNetworkPreferences(
     }
 
     let cancelled = false
+    const controller = new AbortController()
+    reconciliationControllerRef.current = controller
     setState((current) => ({
       ...current,
       status: "reconciling",
       error: null,
     }))
-    void reconcileAccountNetworkPreferences(contextKey)
+    void reconcileAccountNetworkPreferences(contextKey, {
+      requestingAccountPubkey: contextKey,
+      authenticatedPubkey: contextKey,
+      signal: controller.signal,
+      shouldContinue: () =>
+        !controller.signal.aborted &&
+        authGenerationRef.current === authGeneration,
+    })
       .then((reconciliation) => {
-        if (cancelled) return
+        if (cancelled || controller.signal.aborted) return
         setState({
           contextKey,
           status: "ready",
@@ -139,7 +165,7 @@ export function useAccountNetworkPreferences(
         })
       })
       .catch((error: unknown) => {
-        if (cancelled) return
+        if (cancelled || controller.signal.aborted) return
         setState((current) => ({
           ...current,
           contextKey,
@@ -154,8 +180,13 @@ export function useAccountNetworkPreferences(
 
     return () => {
       cancelled = true
+      if (reconciliationControllerRef.current === controller) {
+        reconciliationControllerRef.current = null
+      }
+      controller.abort()
     }
   }, [
+    authGeneration,
     contextKey,
     freshEnabled,
     retryRevision,

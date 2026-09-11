@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useLayoutEffect, useRef } from "react"
 import type { ConduitAppId } from "../protocol/nip89"
 import type { CommerceResult } from "../protocol/commerce"
 import type { ProfileMap } from "../protocol/profile-cache"
@@ -11,6 +12,11 @@ import {
   getProfileQueryPerspectiveKey,
   getProfileSingletonQueryKey,
 } from "./useProfiles"
+
+export interface UseUpdateProfileOptions {
+  authenticatedPubkey?: string | null
+  authGeneration?: number
+}
 
 export function updateProfileQueryCache(
   current: CommerceResult<ProfileMap> | undefined,
@@ -26,11 +32,36 @@ export function updateProfileQueryCache(
   }
 }
 
-export function useUpdateProfile(appId: ConduitAppId) {
+export function useUpdateProfile(
+  appId: ConduitAppId,
+  options: UseUpdateProfileOptions = {}
+) {
   const qc = useQueryClient()
+  const authenticatedPubkey =
+    options.authenticatedPubkey?.trim().toLowerCase() ?? null
+  const authorityRef = useRef({
+    authenticatedPubkey,
+    authGeneration: options.authGeneration,
+  })
+  useLayoutEffect(() => {
+    authorityRef.current = {
+      authenticatedPubkey,
+      authGeneration: options.authGeneration,
+    }
+  }, [authenticatedPubkey, options.authGeneration])
   return useMutation({
-    mutationFn: (profile: Omit<Profile, "pubkey">) =>
-      publishProfile(profile, appId),
+    mutationFn: (profile: Omit<Profile, "pubkey">) => {
+      const authGeneration = options.authGeneration
+      const shouldContinue = authenticatedPubkey
+        ? () =>
+            authorityRef.current.authenticatedPubkey === authenticatedPubkey &&
+            authorityRef.current.authGeneration === authGeneration
+        : undefined
+      return publishProfile(profile, appId, {
+        authenticatedPubkey,
+        shouldContinue,
+      })
+    },
     onError: (error) => {
       if (!(error instanceof ProfilePublishSupersededError)) return
       void qc.invalidateQueries({

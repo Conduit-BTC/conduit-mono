@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { AlertCircle } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
@@ -62,7 +62,11 @@ function getErrorMessage(error: unknown): string {
 }
 
 function ShippingPage() {
-  const { pubkey } = useAuth()
+  const { pubkey, status: authStatus, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const [initialConfig] = useState<ShippingConfig>(() =>
     loadShippingConfig(pubkey)
   )
@@ -71,10 +75,16 @@ function ShippingPage() {
     useState<ShippingConfig>(initialConfig)
   const [saveState, setSaveState] = useState<SaveState>({ status: "idle" })
   const remoteShippingQuery = useQuery({
-    queryKey: ["merchant-shipping-options", pubkey ?? "none"],
+    queryKey: ["merchant-shipping-options", pubkey ?? "none", authStatus],
     enabled: !!pubkey,
-    queryFn: () =>
-      getShippingOptionsByCoordinates([getShippingOptionAddress(pubkey!)]),
+    queryFn: ({ signal }) =>
+      getShippingOptionsByCoordinates([getShippingOptionAddress(pubkey!)], {
+        accountPubkey: pubkey,
+        authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
+      }),
     staleTime: 60_000,
   })
 

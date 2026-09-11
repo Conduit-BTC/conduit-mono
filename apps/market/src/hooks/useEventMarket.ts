@@ -1,5 +1,10 @@
+import { useLayoutEffect, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { useConduitSession, type PricingRateInput } from "@conduit/core"
+import {
+  useAuth,
+  useConduitSession,
+  type PricingRateInput,
+} from "@conduit/core"
 import { loadEventCatalog } from "../lib/event-market-adapter"
 
 export function useEventMarket(
@@ -7,6 +12,13 @@ export function useEventMarket(
   rateInput: PricingRateInput = null
 ) {
   const session = useConduitSession()
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const authenticatedPubkey =
+    session.mode === "signed_in" ? session.pubkey : null
   const rateVersion =
     rateInput && typeof rateInput === "object" ? rateInput.fetchedAt : null
   return useQuery({
@@ -16,7 +28,13 @@ export function useEventMarket(
       collectionRef,
       rateVersion,
     ],
-    queryFn: () => loadEventCatalog(collectionRef, rateInput),
+    queryFn: () =>
+      loadEventCatalog(
+        collectionRef,
+        rateInput,
+        authenticatedPubkey,
+        () => authGenerationRef.current === authGeneration
+      ),
     enabled: session.relaySettingsReady,
     staleTime: 0,
     refetchOnMount: "always",
