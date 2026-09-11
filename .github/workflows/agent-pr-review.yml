@@ -542,7 +542,7 @@ jobs:
           first_visible_line="$(awk 'NF { print; exit }' <<< "$visible_body")"
           second_visible_line="$(awk 'NF { count += 1; if (count == 2) { print; exit } }' <<< "$visible_body")"
           next_action_count="$(grep -Ec '^Next:' <<< "$visible_body" || true)"
-          next_action_pattern='^Next: ([^;]+) — ([^;]+); evidence: ([^;]+); done when: ([^;]+); source: ([^;]+)\.$'
+          next_action_pattern='^Next: ([^;]+) — ([^;]+); evidence: ([^;]+); done when: ([^;]+); source: ([^;]+)\.("|”)?$'
           if [[ "$next_action_count" != "1" ||
             ! "$second_visible_line" =~ $next_action_pattern ]]; then
             echo "The current-run review lacks one complete Next action." >&2
@@ -561,6 +561,9 @@ jobs:
           next_evidence="$(trim_field "${BASH_REMATCH[3]}")"
           next_completion="$(trim_field "${BASH_REMATCH[4]}")"
           next_source="$(trim_field "${BASH_REMATCH[5]}")"
+          next_source="${next_source#\"}"
+          next_source="${next_source#“}"
+          next_source="$(trim_field "$next_source")"
           if [[ -z "$next_owner" || -z "$next_action" ||
             -z "$next_evidence" || -z "$next_completion" ||
             -z "$next_source" ]]; then
