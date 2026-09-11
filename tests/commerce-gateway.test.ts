@@ -6622,6 +6622,31 @@ describe("getProductsByIds diagnostics", () => {
     expect(result.diagnostics[0]?.issue).toBe("product_missing")
   })
 
+  it("degrades relay-list planning failures to unavailable diagnostics", async () => {
+    let productReads = 0
+    __setCommerceTestOverrides({
+      getRelayLists: async () => {
+        throw new Error("relay-list cache unavailable")
+      },
+      fetchEventsFanoutWithDiagnostics: async () => {
+        productReads += 1
+        throw new Error("product reads should not start")
+      },
+    })
+
+    const result = await getProductsByIds([addressId])
+
+    expect(result.data).toHaveLength(0)
+    expect(result.diagnostics[0]).toMatchObject({
+      productId: addressId,
+      addressId,
+      issue: "lookup_unavailable",
+      coverage: { listing: "unavailable" },
+    })
+    expect(result.meta.degraded).toBe(true)
+    expect(productReads).toBe(0)
+  })
+
   it("keeps a partial read distinct from a missing listing", async () => {
     __setCommerceTestOverrides({
       fetchEventsFanoutWithDiagnostics: async () => ({
