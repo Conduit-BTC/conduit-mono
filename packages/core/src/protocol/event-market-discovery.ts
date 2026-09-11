@@ -11,14 +11,18 @@ import {
   extractFollowPubkeys,
   readLatestFollowLists,
   type FollowListCoverageState,
+  type FollowListReadOptions,
   type FollowListReadResult,
 } from "./follows"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchSignedEventsFanoutDetailed,
   type SignedEventRelayReadResult,
+  type RelayReadOptions,
 } from "./relay-reader"
 import { planRelayReads } from "./relay-planner"
+import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
+import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -285,11 +289,20 @@ export interface FollowedEventMarketDiscoveryResult extends PerspectiveEventMark
 export interface DiscoverFollowedEventMarketsInput {
   merchantPubkey: string
   authenticatedPubkey?: string | null
+  accountNetworkLocalStateRepository?: FollowListReadOptions["accountNetworkLocalStateRepository"]
   nowMs?: number
   signal?: AbortSignal
+  shouldContinue?: FollowListReadOptions["shouldContinue"]
 }
 
-export interface DiscoverPerspectiveEventMarketsInput {
+type DiscoveryReadAuthority = Pick<
+  RelayReadOptions,
+  | "authenticatedPubkey"
+  | "accountNetworkLocalStateRepository"
+  | "shouldContinue"
+>
+
+export interface DiscoverPerspectiveEventMarketsInput extends DiscoveryReadAuthority {
   organizerPubkeys: readonly string[]
   perspective: Omit<EventMarketPerspectiveSnapshot, "authorCount">
   /** Include valid ended markets for timeline/history views. */
@@ -300,6 +313,7 @@ export interface DiscoverPerspectiveEventMarketsInput {
 }
 
 interface FollowedEventMarketDiscoveryTestOverrides {
+  readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
   readFollowLists?: typeof readLatestFollowLists
   readCollectionCandidates?: typeof readEventMarketCollectionCandidates
   fetchCollectionCandidateEvents?: typeof fetchSignedEventsFanoutDetailed
@@ -326,8 +340,11 @@ function normalizePubkey(value: string | null | undefined): string | null {
   return normalized && /^[0-9a-f]{64}$/.test(normalized) ? normalized : null
 }
 
-function throwIfAborted(signal?: AbortSignal): void {
-  if (!signal?.aborted) return
+function throwIfAborted(
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
+): void {
+  if (!signal?.aborted && shouldContinue?.() !== false) return
   const error = new Error("The operation was aborted.")
   error.name = "AbortError"
   throw error
@@ -467,6 +484,8 @@ async function readEventMarketCollectionCandidateUnit(input: {
   authorChunkIndex: number
   signal?: AbortSignal
   fetchEvents: typeof fetchSignedEventsFanoutDetailed
+  authority: DiscoveryReadAuthority &
+    Pick<RelayReadOptions, "ownerSelectedRelayUrls">
 }): Promise<EventMarketCandidateReadUnitResult> {
   const eventsById = new Map<string, SignedPublicNostrEvent>()
   const sourceRelayUrlsById = new Map<string, Set<string>>()
@@ -510,7 +529,7 @@ async function readEventMarketCollectionCandidateUnit(input: {
     pageIndex < FOLLOWED_EVENT_MARKET_CANDIDATE_PAGE_LIMIT;
     pageIndex += 1
   ) {
-    throwIfAborted(input.signal)
+    throwIfAborted(input.signal, input.authority.shouldContinue)
     let pageRead: SignedEventRelayReadResult
     try {
       pageRead = await input.fetchEvents(
@@ -521,6 +540,8 @@ async function readEventMarketCollectionCandidateUnit(input: {
           limit: FOLLOWED_EVENT_MARKET_CANDIDATE_READ_LIMIT,
         } satisfies Filter,
         {
+          ...input.authority,
+          accountPubkey: input.authority.authenticatedPubkey,
           relayUrls: [input.relayUrl],
           signal: input.signal,
           reuseRelayConnections: true,
@@ -530,6 +551,7 @@ async function readEventMarketCollectionCandidateUnit(input: {
       if (isAbortError(error)) throw error
       return buildResult(mainPageCount === 0 ? "failed" : "partial")
     }
+    throwIfAborted(input.signal, input.authority.shouldContinue)
     mainPageCount += 1
     mergeCandidateReadEvents(
       eventsById,
@@ -596,6 +618,8 @@ async function readEventMarketCollectionCandidateUnit(input: {
           limit: FOLLOWED_EVENT_MARKET_CANDIDATE_BOUNDARY_READ_LIMIT,
         } satisfies Filter,
         {
+          ...input.authority,
+          accountPubkey: input.authority.authenticatedPubkey,
           relayUrls: [input.relayUrl],
           signal: input.signal,
           reuseRelayConnections: true,
@@ -610,6 +634,7 @@ async function readEventMarketCollectionCandidateUnit(input: {
       pageCoverage.boundarySaturated = false
       return buildResult("partial", { capped: true })
     }
+    throwIfAborted(input.signal, input.authority.shouldContinue)
     boundaryPageCount += 1
     mergeCandidateReadEvents(
       eventsById,
@@ -681,6 +706,8 @@ async function readEventMarketCollectionCandidates(input: {
   authenticatedPubkey?: string | null
   nowMs: number
   signal?: AbortSignal
+  accountNetworkLocalStateRepository?: DiscoveryReadAuthority["accountNetworkLocalStateRepository"]
+  shouldContinue?: () => boolean
 }): Promise<EventMarketCollectionCandidateReadResult> {
   const organizerPubkeys = Array.from(
     new Set(
@@ -693,13 +720,41 @@ async function readEventMarketCollectionCandidates(input: {
     organizerPubkeys,
     FOLLOWED_EVENT_MARKET_CANDIDATE_AUTHOR_CHUNK_SIZE
   )
+  throwIfAborted(input.signal, input.shouldContinue)
+  const authenticatedPubkey = normalizePubkey(input.authenticatedPubkey)
+  let ownerSnapshot:
+    | Awaited<
+        ReturnType<typeof readDurableAccountRelaySettingsPlanningSnapshot>
+      >
+    | undefined
+  if (authenticatedPubkey) {
+    try {
+      ownerSnapshot = await (
+        testOverrides.readAccountRelaySettingsPlanningSnapshot ??
+        readDurableAccountRelaySettingsPlanningSnapshot
+      )(authenticatedPubkey)
+    } catch {
+      // Missing owner evidence grants no additional relay transport authority.
+      throwIfAborted(input.signal, input.shouldContinue)
+    }
+  }
+  throwIfAborted(input.signal, input.shouldContinue)
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
+    ownerSnapshot?.settings.entries
+      .filter((entry) => entry.readEnabled)
+      .map((entry) => entry.url) ?? []
+  )
   const plannedRelayUrls = Array.from(
     new Set(
       (
         testOverrides.collectionCandidateRelayUrls ??
         planRelayReads({
           intent: "commerce_products",
-          authenticatedPubkey: input.authenticatedPubkey,
+          authenticatedPubkey,
+          ownerSelectedRelayUrls,
+          settings: ownerSnapshot?.settings,
+          signedRelayListAuthoritative:
+            ownerSnapshot?.signedRelayListAuthoritative,
           maxRelays: FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT,
           now: input.nowMs,
         }).relayUrls
@@ -750,6 +805,13 @@ async function readEventMarketCollectionCandidates(input: {
       await readEventMarketCollectionCandidateUnit({
         ...task,
         signal: input.signal,
+        authority: {
+          authenticatedPubkey,
+          ownerSelectedRelayUrls,
+          accountNetworkLocalStateRepository:
+            input.accountNetworkLocalStateRepository,
+          shouldContinue: input.shouldContinue,
+        },
         fetchEvents,
       }),
   })
@@ -1125,7 +1187,7 @@ function emptyCandidateReadCoverage(): EventMarketCandidateReadCoverage {
 export async function discoverPerspectiveEventMarkets(
   input: DiscoverPerspectiveEventMarketsInput
 ): Promise<PerspectiveEventMarketDiscoveryResult> {
-  throwIfAborted(input.signal)
+  throwIfAborted(input.signal, input.shouldContinue)
   const effectiveNowMs = input.nowMs ?? Date.now()
   const perspectiveOrganizers = Array.from(
     new Set(
@@ -1139,6 +1201,7 @@ export async function discoverPerspectiveEventMarkets(
     authorCount: perspectiveOrganizers.length,
   }
   const perspectiveOrganizerSet = new Set(perspectiveOrganizers)
+
   const readCollectionCandidates =
     testOverrides.readCollectionCandidates ??
     readEventMarketCollectionCandidates
@@ -1156,10 +1219,13 @@ export async function discoverPerspectiveEventMarkets(
       : await readCollectionCandidates({
           organizerPubkeys: perspectiveOrganizers,
           authenticatedPubkey: input.authenticatedPubkey,
+          accountNetworkLocalStateRepository:
+            input.accountNetworkLocalStateRepository,
+          shouldContinue: input.shouldContinue,
           nowMs: effectiveNowMs,
           signal: input.signal,
         })
-  throwIfAborted(input.signal)
+  throwIfAborted(input.signal, input.shouldContinue)
   const resolvedCandidateScanState =
     perspectiveOrganizers.length === 0
       ? "complete"
@@ -1178,7 +1244,7 @@ export async function discoverPerspectiveEventMarkets(
           organizerPubkeys: perspectiveOrganizers,
           signal: input.signal,
         })
-  throwIfAborted(input.signal)
+  throwIfAborted(input.signal, input.shouldContinue)
   const retainedCandidateFrontier = collectionCandidateFrontier({
     read: {
       ...retainedCandidateRead,
@@ -1234,7 +1300,7 @@ export async function discoverPerspectiveEventMarkets(
       index < candidateFrontier.organizers.length;
       index += FOLLOWED_EVENT_MARKET_READ_CONCURRENCY
     ) {
-      throwIfAborted(input.signal)
+      throwIfAborted(input.signal, input.shouldContinue)
       if (deadlineReached) break
       const batch = candidateFrontier.organizers.slice(
         index,
@@ -1253,6 +1319,8 @@ export async function discoverPerspectiveEventMarkets(
             value: await readOrganizerMarkets({
               organizerPubkey: candidate.organizerPubkey,
               authenticatedPubkey: input.authenticatedPubkey,
+              accountNetworkLocalStateRepository:
+                input.accountNetworkLocalStateRepository,
               nowMs: effectiveNowMs,
               projection: "discovery",
               relayHints: candidate.relayHints,
@@ -1264,6 +1332,7 @@ export async function discoverPerspectiveEventMarkets(
                   candidate.organizerPubkey
                 ) ?? new Set<string>(),
               signal: organizerController.signal,
+              shouldContinue: input.shouldContinue,
             }),
           }
         } catch (reason) {
@@ -1284,7 +1353,9 @@ export async function discoverPerspectiveEventMarkets(
       ])
 
       if (outcome.state === "stopped") {
-        if (outcome.reason === "caller") throwIfAborted(input.signal)
+        if (outcome.reason === "caller") {
+          throwIfAborted(input.signal, input.shouldContinue)
+        }
         organizerReads.push(
           ...batch.map((_, batchIndex) => {
             const result = completed.get(batchIndex)
@@ -1311,7 +1382,7 @@ export async function discoverPerspectiveEventMarkets(
     clearTimeout(deadline)
     input.signal?.removeEventListener("abort", abortForCaller)
   }
-  throwIfAborted(input.signal)
+  throwIfAborted(input.signal, input.shouldContinue)
 
   const boundedOrganizerCount = organizerReads.filter(
     (read) => read.status === "rejected" && isBoundedDiscoveryError(read.reason)
@@ -1444,20 +1515,23 @@ export async function discoverFollowedOrganizerEventMarkets(
     }
   }
 
-  throwIfAborted(input.signal)
+  throwIfAborted(input.signal, input.shouldContinue)
   const effectiveNowMs = input.nowMs ?? Date.now()
   const readFollowLists = testOverrides.readFollowLists ?? readLatestFollowLists
   const followRead: FollowListReadResult = await readFollowLists(
     {
       pubkeys: [merchantPubkey],
-      authenticatedPubkey: input.authenticatedPubkey ?? merchantPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
     },
     {
       signal: input.signal,
+      accountNetworkLocalStateRepository:
+        input.accountNetworkLocalStateRepository,
+      shouldContinue: input.shouldContinue,
       now: () => effectiveNowMs,
     }
   )
-  throwIfAborted(input.signal)
+  throwIfAborted(input.signal, input.shouldContinue)
 
   const followAuthor = followRead.authors.find(
     (candidate) => candidate.pubkey === merchantPubkey
@@ -1479,7 +1553,10 @@ export async function discoverFollowedOrganizerEventMarkets(
         followAuthor?.capped === true ||
         followAuthor?.relayHintTruncated === true,
     },
-    authenticatedPubkey: input.authenticatedPubkey ?? merchantPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
     nowMs: effectiveNowMs,
     signal: input.signal,
   })

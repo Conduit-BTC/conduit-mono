@@ -80,6 +80,7 @@ describe("event-market coordinates and naddr references", () => {
       "wss://Relay.Example/",
       "wss://relay.example",
       "ws://insecure.example",
+      "ws://127.0.0.1:4789",
     ])
     expect(
       decodeEventMarketReference(naddr, [EVENT_KINDS.PRODUCT_COLLECTION])

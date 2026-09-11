@@ -16,6 +16,10 @@ import {
   tryNormalizeRelayUrl,
 } from "./relay-settings"
 import { config } from "../config"
+import {
+  filterEligibleAccountRelayUrls,
+  type AccountNetworkLocalStateRepository,
+} from "./account-network-local-state"
 
 const DEFAULT_RETRY_DELAY_MS = 30_000
 const DEFAULT_DELIVERY_LEASE_MS = 30_000
@@ -49,6 +53,18 @@ export type ProductDeletionRelayPublisher = (input: {
   relayUrl: string
   roles: ProductDeletionRelayRole[]
   signedEvent: SignedPublicNostrEvent
+  /** The revalidated event author whose local whole-relay cutoff applies. */
+  accountPubkey: string
+  /** Active account allowed to exercise matching owner-selected ws:// authority. */
+  authenticatedPubkey: string | null
+  /** Optional live check for long-running background delivery. */
+  isAuthenticatedPubkeyCurrent?: (pubkey: string) => boolean
+  /** Exact target subset authorized by persisted `author_write` provenance. */
+  ownerSelectedRelayUrls: string[]
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
 }) => Promise<ProductDeletionPublisherResult>
 
 /**
@@ -68,6 +84,14 @@ export interface ProductDeletionOutboxRepository {
 
 export interface ProductDeletionDeliveryOptions {
   repository?: ProductDeletionOutboxRepository
+  /** Active account, if any. This never changes the persisted job author. */
+  authenticatedPubkey?: string | null
+  /** Recheck long-running worker auth before each relay admission. */
+  isAuthenticatedPubkeyCurrent?: (pubkey: string) => boolean
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
   now?: () => number
   retryDelayMs?: number
   deliveryLeaseOwner?: string
@@ -158,7 +182,7 @@ function isApprovedPersistedRelayTarget(
  * Build the exact, deterministic relay fanout plan recorded with a deletion.
  *
  * Author write targets are already approved by the authenticated planner, so
- * its intentional local `ws://` relays remain valid. Untrusted source hints
+ * its explicit owner-selected `ws://` relays remain valid. Untrusted source hints
  * must be public WSS or match that plan. The canonical Conduit target remains
  * mandatory and public-WSS-only except for the exact configured loopback relay
  * in explicit E2E isolation.
@@ -326,6 +350,20 @@ function getRetryDelayMs(options?: ProductDeletionDeliveryOptions): number {
   return Number.isFinite(configured) && configured >= 0
     ? Math.floor(configured)
     : DEFAULT_RETRY_DELAY_MS
+}
+
+function getCurrentAuthenticatedPubkey(
+  options: ProductDeletionDeliveryOptions
+): string | null {
+  const authenticatedPubkey = options.authenticatedPubkey ?? null
+  if (!authenticatedPubkey) return null
+  try {
+    return options.isAuthenticatedPubkeyCurrent?.(authenticatedPubkey) === false
+      ? null
+      : authenticatedPubkey
+  } catch {
+    return null
+  }
 }
 
 const defaultDeliveryLeaseOwner =
@@ -640,6 +678,12 @@ async function deliverProductDeletionJobUnlocked(
     options.forceDeliveryLeaseRecovery === true
   )
   if (claimed.deliveryLeaseOwner !== leaseOwner) return claimed
+  // The exact signed event is the durable identity for this signer-free retry.
+  // Revalidate it after the claim and use only its author as the policy account.
+  // Active auth may admit that author's exact owner-selected ws:// subset, but
+  // cannot replace the author or alter the immutable event and relay plan.
+  assertSignedDeletionEvent(claimed.signedEvent)
+  const accountPubkey = claimed.signedEvent.pubkey
 
   const outstandingRelayUrls = claimed.relayDelivery
     .filter((delivery) => delivery.status !== "acked")
@@ -653,15 +697,43 @@ async function deliverProductDeletionJobUnlocked(
   }
 
   try {
-    await markDeliveryRunStarted(
-      repository,
-      id,
-      leaseOwner,
-      getNow(options),
-      retryDelayMs
-    )
+    let deliveryRunStarted = false
 
     for (const relayUrl of outstandingRelayUrls) {
+      const authenticatedPubkey = getCurrentAuthenticatedPubkey(options)
+      const claimedTarget = claimed.relayPlan.find(
+        (target) => target.relayUrl === relayUrl
+      )
+      const claimedOwnerSelectedRelayUrls = claimedTarget?.roles.includes(
+        "author_write"
+      )
+        ? [relayUrl]
+        : []
+      const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+        accountPubkey,
+        authenticatedPubkey,
+        candidateRelayUrls: [relayUrl],
+        ownerSelectedRelayUrls: claimedOwnerSelectedRelayUrls,
+        repository: options.accountNetworkLocalStateRepository,
+      })
+      if (eligibleRelayUrls.length === 0) {
+        // Whole-relay removal is an admission cutoff, not delivery evidence.
+        // Keep the immutable target and its prior outcome/attempt count so an
+        // authoritative later re-add can resume the exact staged event.
+        continue
+      }
+
+      if (!deliveryRunStarted) {
+        await markDeliveryRunStarted(
+          repository,
+          id,
+          leaseOwner,
+          getNow(options),
+          retryDelayMs
+        )
+        deliveryRunStarted = true
+      }
+
       const attemptAt = getNow(options)
       const current = await markRelayAttemptStarted(
         repository,
@@ -681,9 +753,20 @@ async function deliverProductDeletionJobUnlocked(
         continue
       }
       const exactSignedEvent = cloneSignedEvent(current.signedEvent)
+      assertSignedDeletionEvent(exactSignedEvent)
+      if (!signedEventMatches(exactSignedEvent, claimed.signedEvent)) {
+        throw new Error(
+          "Product deletion delivery job signed event is immutable"
+        )
+      }
       const currentTarget = current.relayPlan.find(
         (target) => target.relayUrl === relayUrl
       )
+      const currentOwnerSelectedRelayUrls = currentTarget?.roles.includes(
+        "author_write"
+      )
+        ? [relayUrl]
+        : []
 
       let outcome: ProductDeletionPublisherResult
       if (!isApprovedPersistedRelayTarget(currentTarget)) {
@@ -697,8 +780,27 @@ async function deliverProductDeletionJobUnlocked(
             relayUrl,
             roles: [...currentTarget.roles],
             signedEvent: exactSignedEvent,
+            accountPubkey,
+            authenticatedPubkey,
+            isAuthenticatedPubkeyCurrent: options.isAuthenticatedPubkeyCurrent,
+            ownerSelectedRelayUrls: currentOwnerSelectedRelayUrls,
+            accountNetworkLocalStateRepository:
+              options.accountNetworkLocalStateRepository,
           })
         } catch {
+          const stillEligible = await filterEligibleAccountRelayUrls({
+            accountPubkey,
+            authenticatedPubkey: getCurrentAuthenticatedPubkey(options),
+            candidateRelayUrls: [relayUrl],
+            ownerSelectedRelayUrls: currentOwnerSelectedRelayUrls,
+            repository: options.accountNetworkLocalStateRepository,
+          })
+          if (stillEligible.length === 0) {
+            // The target became ineligible after this run admitted it but
+            // before the exact publisher could start. Do not convert a local
+            // cutoff (or an unavailable policy read) into relay failure truth.
+            continue
+          }
           outcome = { status: "timed_out" }
         }
       }

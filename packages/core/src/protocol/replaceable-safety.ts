@@ -114,6 +114,20 @@ export function countActiveRelayListTags(
   return relayUrls.size
 }
 
+export function countPublishRelayListTags(
+  tags: readonly string[][] | undefined
+): number {
+  const relayUrls = new Set<string>()
+  for (const tag of tags ?? []) {
+    if (tag[0] !== "r" || !tag[1] || tag[2]?.toLowerCase() === "read") {
+      continue
+    }
+    const url = normalizeRelayTagUrl(tag[1])
+    if (url) relayUrls.add(url)
+  }
+  return relayUrls.size
+}
+
 export function assertSafeReplaceablePublish(
   event: {
     kind?: number | null
@@ -146,10 +160,10 @@ export function assertSafeReplaceablePublish(
     }
 
     case EVENT_KINDS.RELAY_LIST: {
-      const relayCount = countActiveRelayListTags(event.tags)
-      if (relayCount <= 1) {
+      const publishRelayCount = countPublishRelayListTags(event.tags)
+      if (publishRelayCount < 1) {
         throw new ReplaceablePublishSafetyError(
-          "Refusing to publish a tiny NIP-65 relay list. Load or add at least two active relays before publishing."
+          "Refusing to publish a NIP-65 relay list without a Publish relay. Enable Publish on at least one relay before publishing."
         )
       }
       return

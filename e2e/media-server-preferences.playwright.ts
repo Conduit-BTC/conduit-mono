@@ -36,20 +36,22 @@ async function openNetwork(
     })
   ).toBeVisible({ timeout: 15_000 })
   await page.goto(`${appUrl}/network`)
-  await expect(
-    page.getByRole("heading", { name: "Network Settings" })
-  ).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Network" })).toBeVisible()
   const section = page.getByRole("region", { name: "Media servers" })
   await expect(section).toBeVisible()
+  await section
+    .locator("summary")
+    .filter({ hasText: "Published preference" })
+    .click()
   await expect(
-    section.getByText("No list observed", { exact: true })
+    section.getByText("No published preference found.", { exact: true })
   ).toBeVisible({ timeout: 20_000 })
   return pubkey
 }
 
 async function addServer(page: Page, serverUrl: string): Promise<void> {
   const section = page.getByRole("region", { name: "Media servers" })
-  const input = section.getByLabel("Add media server root")
+  const input = section.getByLabel("Add media server")
   await input.fill(serverUrl)
   await section.getByRole("button", { name: "Add server" }).click()
   await expect(input).toHaveValue("")
@@ -64,7 +66,7 @@ async function exerciseSharedSurface(
   const secretKey = generateSecretKey()
   const pubkey = await openNetwork(page, app, secretKey)
   const section = page.getByRole("region", { name: "Media servers" })
-  const input = section.getByLabel("Add media server root")
+  const input = section.getByLabel("Add media server")
 
   await input.fill("http://unsafe.conduit.market")
   await section.getByRole("button", { name: "Add server" }).click()
@@ -77,7 +79,9 @@ async function exerciseSharedSurface(
   await addServer(page, FIRST_SERVER)
   await addServer(page, SECOND_SERVER)
   await expect(
-    section.getByText("Unpublished local edits", { exact: true })
+    section.getByText("Draft saved on this device; not published.", {
+      exact: true,
+    })
   ).toBeVisible()
 
   const orderedList = section.getByRole("list", {
@@ -144,9 +148,6 @@ async function exerciseSharedSurface(
         "Signing was cancelled. Your local media server edits were retained.",
         { exact: true }
       )
-    ).toBeVisible()
-    await expect(
-      section.getByText("Unpublished local edits", { exact: true })
     ).toBeVisible()
     expect(
       await readTestRelayEvents({ kinds: [10_063], authors: [pubkey] })

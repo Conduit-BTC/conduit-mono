@@ -38,6 +38,24 @@ describe("Market Events timeline route", () => {
     expect(discovery).not.toContain("FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT")
   })
 
+  it("binds timeline and follow reads to the current authenticated session", async () => {
+    const hook = await Bun.file(
+      "apps/market/src/hooks/useEventTimeline.ts"
+    ).text()
+    expect(hook).toContain(
+      "const { pubkey, status, authGeneration } = useAuth()"
+    )
+    expect(hook).toContain('session.relayScope ?? "no-relay-scope"')
+    expect(hook).toMatch(
+      /"market-event-timeline",[\s\S]*?authenticatedPubkey,[\s\S]*?authGeneration,/
+    )
+    expect(
+      hook.match(
+        /!signal.aborted && authGenerationRef.current === authGeneration/g
+      )
+    ).toHaveLength(2)
+  })
+
   it("renders reusable cards with exact event links and no product-count claim", async () => {
     const [route, card] = await Promise.all([
       Bun.file("apps/market/src/routes/events/index.tsx").text(),

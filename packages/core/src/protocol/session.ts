@@ -57,12 +57,6 @@ export function getSignedInRelayScope(
   return getAccountRelayScope(pubkey)
 }
 
-/** App-scoped keys used before signed Network preferences became account-wide. */
-export function getLegacySignedInRelayScopes(pubkey: string): string[] {
-  const normalized = pubkey.trim().toLowerCase()
-  return [`market:${normalized}`, `merchant:${normalized}`]
-}
-
 export function getGuestRelayScope(appId: ConduitAppId): string | null {
   return appId === "market" ? "market:guest" : null
 }

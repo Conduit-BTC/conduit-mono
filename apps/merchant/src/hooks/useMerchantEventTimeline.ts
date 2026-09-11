@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   discoverPerspectiveEventMarkets,
@@ -12,6 +12,7 @@ import {
   resolveEventMarketPerspectiveAuthorPubkeys,
   selectLatestFollowListEvent,
   useConduitSession,
+  useAuth,
   type EventMarketPerspectiveAuthorSource,
   type EventMarketPerspectiveSnapshot,
   type EventMarketPerspectiveSource,
@@ -85,14 +86,16 @@ function combinedCoverage(
 
 async function resolveRelationshipMarkets(
   references: readonly string[],
-  authenticatedPubkey: string,
-  signal?: AbortSignal
+  authenticatedPubkey: string | null,
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
 ): Promise<{ markets: MerchantOrganizerEventMarket[]; failedCount: number }> {
   const markets: MerchantOrganizerEventMarket[] = []
   let failedCount = 0
   const concurrency = 4
   for (let index = 0; index < references.length; index += concurrency) {
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError")
+    if (signal?.aborted || shouldContinue?.() === false)
+      throw new DOMException("Aborted", "AbortError")
     const batch = references.slice(index, index + concurrency)
     const results = await Promise.allSettled(
       batch.map((reference) =>
@@ -100,10 +103,13 @@ async function resolveRelationshipMarkets(
           reference,
           undefined,
           authenticatedPubkey,
-          signal
+          signal,
+          shouldContinue
         )
       )
     )
+    if (signal?.aborted || shouldContinue?.() === false)
+      throw new DOMException("Aborted", "AbortError")
     for (const result of results) {
       if (result.status === "fulfilled") markets.push(result.value)
       else failedCount += 1
@@ -119,6 +125,17 @@ export function useMerchantEventTimeline(input: {
   storageRevision?: number
 }): MerchantEventTimelineDiscovery {
   const session = useConduitSession()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const authenticatedPubkey = status === "connected" ? pubkey : null
+  const queryScope = [
+    session.relayScope ?? "no-relay-scope",
+    authenticatedPubkey,
+    authGeneration,
+  ] as const
   const queryClient = useQueryClient()
   const merchantPubkey = normalizePubkey(input.merchantPubkey) ?? ""
   const followingEnabled =
@@ -129,11 +146,17 @@ export function useMerchantEventTimeline(input: {
     !!merchantPubkey
 
   const followingQuery = useQuery({
-    queryKey: ["merchant-event-perspective-follows", merchantPubkey || "none"],
-    queryFn: () =>
+    queryKey: [
+      "merchant-event-perspective-follows",
+      ...queryScope,
+      merchantPubkey || "none",
+    ],
+    queryFn: ({ signal }) =>
       getFollowPubkeys({
         pubkey: merchantPubkey,
-        authenticatedPubkey: merchantPubkey,
+        authenticatedPubkey,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
       }),
     enabled: followingEnabled,
     staleTime: 60_000,
@@ -146,6 +169,7 @@ export function useMerchantEventTimeline(input: {
   const retainedFollowingQuery = useQuery({
     queryKey: [
       "merchant-event-perspective-follows",
+      ...queryScope,
       "retained",
       merchantPubkey,
     ],
@@ -185,14 +209,17 @@ export function useMerchantEventTimeline(input: {
   const conduitQuery = useQuery({
     queryKey: [
       "merchant-event-perspective-follows",
+      ...queryScope,
       "conduit",
       CONDUIT_MARKET_PERSPECTIVE_PUBKEY,
       merchantPubkey || "none",
     ],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       getFollowPubkeys({
         pubkey: CONDUIT_MARKET_PERSPECTIVE_PUBKEY,
-        authenticatedPubkey: merchantPubkey,
+        authenticatedPubkey,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
       }),
     enabled: conduitEnabled,
     staleTime: 60_000,
@@ -324,6 +351,7 @@ export function useMerchantEventTimeline(input: {
   const perspectiveQuery = useQuery({
     queryKey: [
       "merchant-event-timeline-perspective",
+      ...queryScope,
       merchantPubkey || "none",
       input.source,
       authorKey,
@@ -337,8 +365,10 @@ export function useMerchantEventTimeline(input: {
         organizerPubkeys: authorPubkeys!,
         perspective,
         includeEnded: true,
-        authenticatedPubkey: merchantPubkey,
+        authenticatedPubkey,
         signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
       }),
     enabled:
       session.relaySettingsReady &&
@@ -351,11 +381,17 @@ export function useMerchantEventTimeline(input: {
   const ownedQueryKey = [
     "merchant-organizer-event-markets",
     merchantPubkey || "none",
+    ...queryScope,
   ] as const
   const ownedQuery = useQuery({
     queryKey: ownedQueryKey,
-    queryFn: async () => {
-      const result = await listOrganizerEventMarkets(merchantPubkey)
+    queryFn: async ({ signal }) => {
+      const result = await listOrganizerEventMarkets(
+        merchantPubkey,
+        authenticatedPubkey,
+        signal,
+        () => !signal.aborted && authGenerationRef.current === authGeneration
+      )
       const retained =
         queryClient.getQueryData<MerchantOrganizerEventMarketsReadResult>(
           ownedQueryKey
@@ -371,11 +407,17 @@ export function useMerchantEventTimeline(input: {
   })
 
   const productsQuery = useQuery({
-    queryKey: ["merchant-event-timeline-products", merchantPubkey || "none"],
-    queryFn: () =>
+    queryKey: [
+      "merchant-event-timeline-products",
+      ...queryScope,
+      merchantPubkey || "none",
+    ],
+    queryFn: ({ signal }) =>
       getMerchantStorefront({
         merchantPubkey,
-        authenticatedPubkey: merchantPubkey,
+        authenticatedPubkey,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
         includeMarketHidden: true,
         sort: "updated_at_desc",
       }),
@@ -435,11 +477,17 @@ export function useMerchantEventTimeline(input: {
   const exactQuery = useQuery({
     queryKey: [
       "merchant-event-timeline-relationships",
+      ...queryScope,
       merchantPubkey || "none",
       exactReferenceKey,
     ],
     queryFn: ({ signal }) =>
-      resolveRelationshipMarkets(exactReferences, merchantPubkey, signal),
+      resolveRelationshipMarkets(
+        exactReferences,
+        authenticatedPubkey,
+        signal,
+        () => !signal.aborted && authGenerationRef.current === authGeneration
+      ),
     enabled:
       session.relaySettingsReady &&
       !!merchantPubkey &&

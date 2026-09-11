@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   CalendarDays,
   Plus,
@@ -9,6 +9,7 @@ import {
 import {
   formatNpub,
   getProfileDisplayLabel,
+  useAuth,
   useProfiles,
   type EventMarketPerspectiveSource,
 } from "@conduit/core"
@@ -19,6 +20,11 @@ import {
   getOrganizerDiscoveryPresentation,
   Input,
   Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@conduit/ui"
 import { useMerchantEventTimeline } from "../hooks/useMerchantEventTimeline"
 import {
@@ -96,6 +102,12 @@ export function MerchantEventsTimeline({
   onOpen: (reference: string) => void
   onCreate: () => void
 }) {
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const authenticatedPubkey = status === "connected" ? pubkey : null
   const [storageRevision, setStorageRevision] = useState(0)
   const [importValue, setImportValue] = useState("")
   const [importError, setImportError] = useState("")
@@ -118,7 +130,9 @@ export function MerchantEventsTimeline({
     [visibleItems]
   )
   const profiles = useProfiles(organizerPubkeys, {
-    authenticatedPubkey: merchantPubkey,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     priority: "visible",
     maxUnresolvedRefetches: 1,
     relayHintsByPubkey: discovery.profileRelayHintsByPubkey,
@@ -224,51 +238,64 @@ export function MerchantEventsTimeline({
             </div>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Label className="grid gap-1.5 text-xs text-[var(--text-secondary)]">
-              <span className="flex items-center gap-1.5">
+            <div className="grid gap-1.5 text-xs text-[var(--text-secondary)]">
+              <Label
+                htmlFor="timeline-relationship-filter"
+                className="flex items-center gap-1.5"
+              >
                 <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
                 Relationship
-              </span>
-              <select
-                className="h-10 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/25"
+              </Label>
+              <Select
                 value={search.relation ?? "all"}
-                onChange={(event) =>
+                onValueChange={(value) =>
                   onSearchChange({
                     ...search,
-                    relation: event.target
-                      .value as MerchantEventRelationshipFilter,
+                    relation: value as MerchantEventRelationshipFilter,
                   })
                 }
               >
-                {MERCHANT_EVENT_RELATIONSHIP_FILTERS.map((relationship) => (
-                  <option key={relationship} value={relationship}>
-                    {RELATIONSHIP_LABELS[relationship]}
-                  </option>
-                ))}
-              </select>
-            </Label>
-            <Label className="grid gap-1.5 text-xs text-[var(--text-secondary)]">
-              <span className="flex items-center gap-1.5">
+                <SelectTrigger id="timeline-relationship-filter">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MERCHANT_EVENT_RELATIONSHIP_FILTERS.map((relationship) => (
+                    <SelectItem key={relationship} value={relationship}>
+                      {RELATIONSHIP_LABELS[relationship]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5 text-xs text-[var(--text-secondary)]">
+              <Label
+                htmlFor="timeline-date-filter"
+                className="flex items-center gap-1.5"
+              >
                 <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
                 Date
-              </span>
-              <select
-                className="h-10 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/25"
+              </Label>
+              <Select
                 value={search.window ?? "upcoming"}
-                onChange={(event) =>
+                onValueChange={(value) =>
                   onSearchChange({
                     ...search,
-                    window: event.target.value as MerchantEventTimelineWindow,
+                    window: value as MerchantEventTimelineWindow,
                   })
                 }
               >
-                {MERCHANT_EVENT_TIMELINE_WINDOWS.map((window) => (
-                  <option key={window} value={window}>
-                    {WINDOW_LABELS[window]}
-                  </option>
-                ))}
-              </select>
-            </Label>
+                <SelectTrigger id="timeline-date-filter">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MERCHANT_EVENT_TIMELINE_WINDOWS.map((window) => (
+                    <SelectItem key={window} value={window}>
+                      {WINDOW_LABELS[window]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
 

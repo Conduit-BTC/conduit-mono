@@ -6,27 +6,24 @@ import {
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
 import { buildMerchantOrderReviewUrl } from "../app-links"
-import { config, type ConduitConfig } from "../config"
 import type { OrderRelayDeliveryRecord, OrderRelayDeliveryStatus } from "../db"
-import {
-  getInboxDeclarationEvidence,
-  InboxDeclarationDistributionConflictError,
-  stageInboxDeclarationDistribution,
-  type InboxDeclarationDistributionRepository,
-  type InboxDeclarationEvidenceRepository,
-} from "./inbox-declaration-evidence"
+import type { InboxDeclarationEvidenceRepository } from "./inbox-declaration-evidence"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
   fetchEventsFanoutWithDiagnostics,
   getNdk,
+  type FetchEventsFanoutOptions,
 } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
+import {
+  filterEligibleAccountRelayUrls,
+  normalizeAccountNetworkPubkey,
+  type AccountNetworkLocalStateRepository,
+} from "./account-network-local-state"
 import { parseOrderMessageRumorEvent } from "./orders"
 import {
   __resetInboxDeclarationCache,
-  inboxDeclarationPublishRelayUrls,
-  primeInboxDeclarationEvidence,
   publicRelayHintUrls,
   readRetainedInboxDeclaration,
   resolveInboxDeclaration,
@@ -44,8 +41,8 @@ import {
 } from "./relay-publish"
 import { getRelayLists } from "./relay-list"
 import {
+  normalizeOwnerSelectedRelayUrls,
   normalizeSecureOrIsolatedE2eRelayUrls,
-  tryNormalizeRelayUrl,
 } from "./relay-settings"
 import { waitForVisibleDocument } from "./interactive-signer"
 import {
@@ -718,6 +715,25 @@ export interface PublishPrivateMessageInput {
   rumor: NDKEvent
   senderPubkey: string
   recipientPubkey: string
+  /**
+   * Explicit signed-in account whose durable whole-relay exclusions apply to
+   * discovery and delivery. Omit for guest/public sends; this is never inferred
+   * from the rumor author or recipient.
+   */
+  accountPubkey?: string | null
+  /**
+   * Active authenticated account. Owner-selected ws:// authority is granted
+   * only when this separately supplied identity, accountPubkey, and the
+   * signer-verified sender are the same account.
+   */
+  authenticatedPubkey?: string | null
+  /** Injectable durable-state reader for deterministic eligibility tests. */
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
+  /** Live caller authority for recipient and sender declaration reads. */
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signer: NDKSigner
   rumorKind: typeof EVENT_KINDS.DIRECT_MESSAGE | typeof EVENT_KINDS.ORDER
   /** Wrap a sender self-copy for local recovery. Default true. */
@@ -875,6 +891,7 @@ const ORDER_RELAY_RETRY_RETENTION_MS = 24 * 60 * 60 * 1_000
 export type PrivateMessageRelayReadinessReason =
   | "sender_not_ready"
   | "recipient_not_ready"
+  | "recipient_relays_excluded"
   | "recipient_lookup_failed"
   | "recipient_declaration_distribution_pending"
   | "recipient_declaration_signed_empty"
@@ -884,6 +901,8 @@ const READINESS_MESSAGES: Record<PrivateMessageRelayReadinessReason, string> = {
   sender_not_ready:
     "Your current NIP-17 inbox declaration is not ready for direct messages.",
   recipient_not_ready: "Recipient has not declared NIP-17 inbox relays.",
+  recipient_relays_excluded:
+    "Recipient inbox relays are excluded by your Network settings.",
   recipient_lookup_failed: "Recipient inbox relay discovery failed.",
   recipient_declaration_distribution_pending:
     "Recipient inbox declaration has not been confirmed on discovery relays.",
@@ -917,6 +936,16 @@ export async function publishPrivateMessage(
 
   const senderPubkey = input.senderPubkey.trim().toLowerCase()
   const recipientPubkey = input.recipientPubkey.trim().toLowerCase()
+  let accountPubkey: string | null = null
+  if (input.accountPubkey !== undefined && input.accountPubkey !== null) {
+    accountPubkey = normalizeAccountNetworkPubkey(input.accountPubkey)
+    if (!accountPubkey) {
+      throw new Error("Private message account pubkey is invalid")
+    }
+    if (accountPubkey !== senderPubkey) {
+      throw new Error("Private message account does not match sender")
+    }
+  }
   if (input.rumor.pubkey?.trim().toLowerCase() !== senderPubkey) {
     throw new Error("Private message rumor author does not match sender")
   }
@@ -924,6 +953,15 @@ export async function publishPrivateMessage(
   if (signerPubkey !== senderPubkey) {
     throw new Error("Private message signer does not match sender")
   }
+  const suppliedAuthenticatedPubkey = input.authenticatedPubkey
+    ? normalizeAccountNetworkPubkey(input.authenticatedPubkey)
+    : null
+  const authenticatedOwnerPubkey =
+    accountPubkey &&
+    suppliedAuthenticatedPubkey === accountPubkey &&
+    signerPubkey === accountPubkey
+      ? accountPubkey
+      : null
   if (
     recipientPubkey !== senderPubkey &&
     !input.rumor.tags.some(
@@ -960,11 +998,32 @@ export async function publishPrivateMessage(
     senderPubkey,
     recipientPubkey,
   })
-  const recipientDeclaration = await resolveDeclarationForSend(
+  const resolvedRecipientDeclaration = await resolveDeclarationForSend(
     input.recipientPubkey,
     input.recipientInboxRelays,
-    input.resolveInboxRelays
+    input.resolveInboxRelays,
+    false,
+    accountPubkey,
+    authenticatedOwnerPubkey,
+    input.accountNetworkLocalStateRepository,
+    input.shouldContinue
   )
+  const recipientDeclaration = await applyAccountRelayEligibilityToDeclaration(
+    resolvedRecipientDeclaration,
+    accountPubkey,
+    authenticatedOwnerPubkey,
+    input.accountNetworkLocalStateRepository
+  )
+  if (
+    resolvedRecipientDeclaration.state === "declared" &&
+    resolvedRecipientDeclaration.relayUrls.length > 0 &&
+    recipientDeclaration.relayUrls.length === 0
+  ) {
+    // Keep a valid kind:10050 declaration authoritative even when local policy
+    // excludes every target. Do not reinterpret it as missing and activate the
+    // non-standard compatibility lane.
+    throw new PrivateMessageRelayReadinessError("recipient_relays_excluded")
+  }
   const compatibilityRecipientReadRelays =
     validatedOrder && recipientDeclaration.state !== "declared"
       ? await resolveCompatibilityRecipientReadRelays(
@@ -1006,23 +1065,39 @@ export async function publishPrivateMessage(
     if (senderReadiness.state !== "ready") {
       throw new PrivateMessageRelayReadinessError("sender_not_ready")
     }
+    const senderRelayUrls = await filterRelayUrlsForAccount(
+      senderReadiness.relayUrls,
+      accountPubkey,
+      authenticatedOwnerPubkey,
+      input.accountNetworkLocalStateRepository,
+      senderReadiness.relayUrls
+    )
+    if (senderRelayUrls.length === 0) {
+      throw new PrivateMessageRelayReadinessError("sender_not_ready")
+    }
     senderRoute = selectPrivateMessageDeliveryRoute({
       rumorKind: input.rumorKind,
       declaration: {
         pubkey: senderPubkey,
         state: "declared",
-        relayUrls: senderReadiness.relayUrls,
+        relayUrls: senderRelayUrls,
         stale: senderReadiness.stale,
         fetchedAt: Date.now(),
       },
       validatedOrder: false,
+      authenticatedOwnerPubkey,
+      ownerSelectedRelayUrls: senderRelayUrls,
     })
   } else if (selfCopy) {
     const senderDeclaration = await resolveDeclarationForSend(
       input.senderPubkey,
       input.senderInboxRelays,
       input.resolveInboxRelays,
-      true
+      true,
+      accountPubkey,
+      authenticatedOwnerPubkey,
+      input.accountNetworkLocalStateRepository,
+      input.shouldContinue
     )
     // The compatibility lane is recipient-only: the non-critical sender self-copy
     // stays strict and fails soft instead of writing to compatibility relays.
@@ -1030,6 +1105,8 @@ export async function publishPrivateMessage(
       rumorKind: input.rumorKind,
       declaration: senderDeclaration,
       validatedOrder: false,
+      authenticatedOwnerPubkey,
+      ownerSelectedRelayUrls: senderDeclaration.relayUrls,
     })
   }
 
@@ -1082,13 +1159,26 @@ export async function publishPrivateMessage(
     recipientDelivery = await publishFn(wrappedToRecipient, {
       intent: "recipient_event",
       authorPubkey: input.senderPubkey,
-      authenticatedPubkey: input.senderPubkey,
+      authenticatedPubkey: authenticatedOwnerPubkey,
       recipientPubkeys: [input.recipientPubkey],
       exclusiveRelayUrls: recipientRoute.relayUrls,
+      shouldContinue: input.shouldContinue,
       refreshRelayLists,
       deliveryMode: "critical",
+      ...(accountPubkey
+        ? {
+            accountPubkey,
+            ...(input.accountNetworkLocalStateRepository
+              ? {
+                  accountNetworkLocalStateRepository:
+                    input.accountNetworkLocalStateRepository,
+                }
+              : {}),
+          }
+        : {}),
     })
   } catch (error) {
+    if (input.shouldContinue?.() === false) throw error
     const partial = recoverPartialRelayPublishDiagnostics(error)
     if (!partial) throw error
     recipientDelivery = partial
@@ -1122,13 +1212,27 @@ export async function publishPrivateMessage(
           selfDelivery = await publishFn(wrappedToSelf, {
             intent: "recipient_event",
             authorPubkey: input.senderPubkey,
-            authenticatedPubkey: input.senderPubkey,
+            authenticatedPubkey: authenticatedOwnerPubkey,
             recipientPubkeys: [input.senderPubkey],
             exclusiveRelayUrls: senderRoute.relayUrls,
+            ownerSelectedRelayUrls: senderRoute.ownerSelectedRelayUrls,
+            shouldContinue: input.shouldContinue,
             refreshRelayLists,
             deliveryMode: "critical",
+            ...(accountPubkey
+              ? {
+                  accountPubkey,
+                  ...(input.accountNetworkLocalStateRepository
+                    ? {
+                        accountNetworkLocalStateRepository:
+                          input.accountNetworkLocalStateRepository,
+                      }
+                    : {}),
+                }
+              : {}),
           })
         } catch (error) {
+          if (input.shouldContinue?.() === false) throw error
           const partial = recoverPartialRelayPublishDiagnostics(error)
           if (!partial) throw error
           selfDelivery = partial
@@ -1137,6 +1241,7 @@ export async function publishPrivateMessage(
         selfDeliveryStatus = summary.status
         selfCopyError = summary.error
       } catch (error) {
+        if (input.shouldContinue?.() === false) throw error
         selfCopyError =
           error instanceof Error ? error.message : "Self-copy publish failed"
       }
@@ -1295,7 +1400,14 @@ async function resolveDeclarationForSend(
   pubkey: string,
   knownRelayUrls: readonly string[] | undefined,
   legacySeam: ((pubkey: string) => Promise<string[]>) | undefined,
-  allowLocalRelayUrls = false
+  allowLocalRelayUrls = false,
+  requestingAccountPubkey: string | null = null,
+  authenticatedPubkey: string | null = null,
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >,
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
 ): Promise<InboxDeclarationResolution> {
   const key = pubkey.trim().toLowerCase()
   if (knownRelayUrls) {
@@ -1306,24 +1418,64 @@ async function resolveDeclarationForSend(
   }
   return resolveInboxDeclaration(pubkey, {
     allowLocalRelayUrlsForPubkey: allowLocalRelayUrls ? pubkey : null,
+    requestingAccountPubkey,
+    authenticatedPubkey,
+    accountNetworkLocalStateRepository,
+    shouldContinue,
   })
+}
+
+async function filterRelayUrlsForAccount(
+  relayUrls: readonly string[],
+  accountPubkey: string | null,
+  authenticatedPubkey: string | null,
+  repository?: Pick<AccountNetworkLocalStateRepository, "get">,
+  ownerSelectedRelayUrls: readonly string[] = []
+): Promise<string[]> {
+  return accountPubkey
+    ? await filterEligibleAccountRelayUrls({
+        accountPubkey,
+        authenticatedPubkey,
+        candidateRelayUrls: relayUrls,
+        ownerSelectedRelayUrls,
+        repository,
+      })
+    : [...relayUrls]
+}
+
+async function applyAccountRelayEligibilityToDeclaration(
+  declaration: InboxDeclarationResolution,
+  accountPubkey: string | null,
+  authenticatedPubkey: string | null,
+  repository?: Pick<AccountNetworkLocalStateRepository, "get">
+): Promise<InboxDeclarationResolution> {
+  if (declaration.state !== "declared" || !accountPubkey) return declaration
+  return {
+    ...declaration,
+    relayUrls: await filterRelayUrlsForAccount(
+      declaration.relayUrls,
+      accountPubkey,
+      authenticatedPubkey,
+      repository
+    ),
+  }
 }
 
 /**
  * Treat caller-supplied inbox relays as an authoritative declaration state.
- * A nonempty list with no secure relay is a malformed declaration: it must
- * block writes rather than downgrade to "not declared" and compatibility.
+ * Owner context may retain explicit ws:// selections; recipient context stays
+ * remote-safe. A nonempty unusable list is malformed rather than absent.
  */
 function declarationFromKnownRelays(
   pubkey: string,
   relayUrls: readonly string[],
   allowLocalRelayUrls: boolean
 ): InboxDeclarationResolution {
-  const secure = allowLocalRelayUrls
-    ? normalizeSecureOrIsolatedE2eRelayUrls(relayUrls)
+  const eligible = allowLocalRelayUrls
+    ? normalizeOwnerSelectedRelayUrls(relayUrls)
     : publicRelayHintUrls(relayUrls)
   const state =
-    secure.length > 0
+    eligible.length > 0
       ? "declared"
       : relayUrls.length > 0
         ? "malformed"
@@ -1331,7 +1483,7 @@ function declarationFromKnownRelays(
   return {
     pubkey,
     state,
-    relayUrls: secure,
+    relayUrls: eligible,
     stale: false,
     fetchedAt: Date.now(),
   }
@@ -1421,6 +1573,18 @@ export interface FetchInboxRelayOptions {
   fetchEventsWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   relayUrls?: string[]
   evidenceRepository?: InboxDeclarationEvidenceRepository
+  /** Account whose durable whole-relay exclusions govern declaration lookup. */
+  requestingAccountPubkey?: string | null
+  /** Active authenticated account for owner-selected ws:// read authority. */
+  authenticatedPubkey?: string | null
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
+  /** Cancels queued or in-flight declaration lookup I/O. */
+  signal?: AbortSignal
+  /** Live account session authority for declaration reads. */
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
 }
 
 export type OwnPrivateMessageRelayReadiness =
@@ -1585,6 +1749,12 @@ function toDeclarationOptions(
       : options.fetchEventsWithDiagnostics,
     relayUrls: options.relayUrls,
     evidenceRepository: options.evidenceRepository,
+    requestingAccountPubkey: options.requestingAccountPubkey,
+    authenticatedPubkey: options.authenticatedPubkey,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
+    signal: options.signal,
+    shouldContinue: options.shouldContinue,
   }
 }
 
@@ -1643,6 +1813,9 @@ export async function inspectOwnPrivateMessageRelayReadiness(
     // The signed relay set is rendered for its authenticated owner, so an
     // intentional local relay remains visible without becoming a peer target.
     allowLocalRelayUrlsForPubkey: pubkey,
+    requestingAccountPubkey: pubkey,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
   })
   const distributionRepairable = Boolean(
     resolution.stale &&
@@ -1654,343 +1827,4 @@ export async function inspectOwnPrivateMessageRelayReadiness(
     sharedPlanRelayUrls,
     distributionRepairable,
   })
-}
-
-export interface PublishPrivateMessageRelayDeclarationInput {
-  pubkey: string
-  signer: NDKSigner
-  ndk?: ReturnType<typeof getNdk>
-  /** Defaults to config.dmInboxDefaultRelayUrls. */
-  relayUrls?: readonly string[]
-  /** Current durable NIP-01 frontier captured at the explicit action boundary. */
-  frontierCreatedAt: number | null
-  /** Exact durable frontier reviewed before the explicit signing action. */
-  expectedFrontierEventId: string | null
-  /** Injectable wall clock in milliseconds (tests). */
-  nowMs?: () => number
-  relayConfig?: Pick<ConduitConfig, "dmInboxDefaultRelayUrls">
-  getSignerPubkey?: (signer: NDKSigner) => Promise<string>
-  signFn?: (event: NDKEvent, signer: NDKSigner) => Promise<string>
-  getDiscoveryRelayUrls?: () => readonly string[]
-  publishFn?: typeof publishWithPlanner
-  /** Durable evidence seam (tests/non-browser adapters). */
-  evidenceRepository?: InboxDeclarationDistributionRepository
-}
-
-export interface RedistributePrivateMessageRelayDeclarationInput {
-  pubkey: string
-  /** Exact previously validated event; redistribution never signs a replacement. */
-  signedEvent: SignedPublicNostrEvent
-  ndk?: ReturnType<typeof getNdk>
-  getDiscoveryRelayUrls?: () => readonly string[]
-  /** Exact durable targets from the first attempt, when one was staged. */
-  publishRelayUrls?: readonly string[]
-  publishFn?: typeof publishWithPlanner
-}
-
-export interface RedistributePrivateMessageRelayDeclarationAcrossPlansInput extends Omit<
-  RedistributePrivateMessageRelayDeclarationInput,
-  "publishRelayUrls" | "getDiscoveryRelayUrls"
-> {
-  /** Immutable targets durably recorded before the first attempt. */
-  storedPublishRelayUrls: readonly string[]
-  /** Current canonical shared-discovery targets used for fresh confirmation. */
-  currentSharedRelayUrls: readonly string[]
-}
-
-export const MAX_INBOX_DECLARATION_REPAIR_FUTURE_SKEW_SECONDS = 5 * 60
-
-export class InboxDeclarationPublishSafetyError extends Error {
-  readonly code = "future_frontier_outside_publish_window" as const
-  readonly frontierCreatedAt: number
-  readonly nowSeconds: number
-  readonly nextEligibleAt: number
-
-  constructor(input: { frontierCreatedAt: number; nowSeconds: number }) {
-    super(
-      "The retained inbox declaration is too far ahead of this device clock. Check the clock or retry later; no event was signed."
-    )
-    this.name = "InboxDeclarationPublishSafetyError"
-    this.frontierCreatedAt = input.frontierCreatedAt
-    this.nowSeconds = input.nowSeconds
-    this.nextEligibleAt =
-      input.frontierCreatedAt -
-      MAX_INBOX_DECLARATION_REPAIR_FUTURE_SKEW_SECONDS +
-      1
-  }
-}
-
-export function selectInboxDeclarationCreatedAt(input: {
-  frontierCreatedAt: number | null
-  nowMs?: () => number
-}): number {
-  const nowMs = (input.nowMs ?? Date.now)()
-  if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
-    throw new Error("Inbox declaration wall clock must be a valid timestamp")
-  }
-  const nowSeconds = Math.floor(nowMs / 1_000)
-  const frontierCreatedAt = input.frontierCreatedAt
-  if (
-    frontierCreatedAt !== null &&
-    (!Number.isSafeInteger(frontierCreatedAt) || frontierCreatedAt < 0)
-  ) {
-    throw new Error("Inbox declaration frontier must be a valid timestamp")
-  }
-  const createdAt =
-    frontierCreatedAt === null
-      ? nowSeconds
-      : Math.max(nowSeconds, frontierCreatedAt + 1)
-  if (
-    frontierCreatedAt !== null &&
-    createdAt > nowSeconds + MAX_INBOX_DECLARATION_REPAIR_FUTURE_SKEW_SECONDS
-  ) {
-    throw new InboxDeclarationPublishSafetyError({
-      frontierCreatedAt,
-      nowSeconds,
-    })
-  }
-  return createdAt
-}
-
-function requireSecureRelayUrls(
-  relayUrls: readonly string[],
-  label: string
-): string[] {
-  if (relayUrls.length === 0) {
-    throw new Error(`${label} must include at least one relay URL`)
-  }
-
-  const acceptedRelayUrls = new Set(
-    normalizeSecureOrIsolatedE2eRelayUrls(relayUrls)
-  )
-  const normalizedRelayUrls: string[] = []
-  const seen = new Set<string>()
-  for (const relayUrl of relayUrls) {
-    const normalized = tryNormalizeRelayUrl(relayUrl)
-    if (!normalized.ok || !acceptedRelayUrls.has(normalized.url)) {
-      throw new Error(
-        `${label} must contain only secure wss:// relay URLs or the configured isolated E2E relay`
-      )
-    }
-    if (seen.has(normalized.url)) continue
-    seen.add(normalized.url)
-    normalizedRelayUrls.push(normalized.url)
-  }
-  return normalizedRelayUrls
-}
-
-/**
- * Explicitly sign and publish the principal's replaceable NIP-17 inbox relay
- * declaration. Callers must invoke this from an intentional signing workflow.
- */
-export async function publishPrivateMessageRelayDeclaration(
-  input: PublishPrivateMessageRelayDeclarationInput
-): Promise<NDKEvent> {
-  const relayUrls = requireSecureRelayUrls(
-    input.relayUrls ?? (input.relayConfig ?? config).dmInboxDefaultRelayUrls,
-    "Private-message relay declaration"
-  )
-  const discoveryRelayUrls = requireSecureRelayUrls(
-    (
-      input.getDiscoveryRelayUrls ?? (() => inboxDeclarationPublishRelayUrls())
-    )(),
-    "Private-message relay discovery targets"
-  )
-  const durableEvidence = await getInboxDeclarationEvidence(
-    input.pubkey,
-    input.evidenceRepository
-  )
-  const durableFrontierEventId = durableEvidence?.current.signedEvent.id ?? null
-  if (durableFrontierEventId !== input.expectedFrontierEventId) {
-    throw new InboxDeclarationDistributionConflictError()
-  }
-  const durableFrontierCreatedAt =
-    durableEvidence?.current.signedEvent.created_at ?? null
-  const effectiveFrontierCreatedAt =
-    input.frontierCreatedAt === null
-      ? durableFrontierCreatedAt
-      : durableFrontierCreatedAt === null
-        ? input.frontierCreatedAt
-        : Math.max(input.frontierCreatedAt, durableFrontierCreatedAt)
-  const nowMs = (input.nowMs ?? Date.now)()
-  const createdAt = selectInboxDeclarationCreatedAt({
-    frontierCreatedAt: effectiveFrontierCreatedAt,
-    nowMs: () => nowMs,
-  })
-  const getSignerPubkey =
-    input.getSignerPubkey ?? (async (signer) => (await signer.user()).pubkey)
-  const signerPubkey = await getSignerPubkey(input.signer)
-  if (signerPubkey !== input.pubkey) {
-    throw new Error(
-      "Private-message relay declaration signer does not match pubkey"
-    )
-  }
-
-  const event = new NDKEvent(input.ndk ?? getNdk())
-  event.kind = EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
-  event.pubkey = input.pubkey
-  event.created_at = createdAt
-  event.tags = relayUrls.map((relayUrl) => ["relay", relayUrl])
-  event.content = ""
-
-  const signFn = input.signFn ?? ((event, signer) => event.sign(signer))
-  await signFn(event, input.signer)
-
-  const signedEvent = event.rawEvent() as SignedPublicNostrEvent
-  const expectedTags = relayUrls.map((relayUrl) => ["relay", relayUrl])
-  if (
-    !isValidSignedPublicNostrEvent(signedEvent) ||
-    signedEvent.pubkey !== input.pubkey ||
-    signedEvent.kind !== EVENT_KINDS.PRIVATE_MESSAGE_RELAYS ||
-    signedEvent.created_at !== createdAt ||
-    signedEvent.content !== "" ||
-    JSON.stringify(signedEvent.tags) !== JSON.stringify(expectedTags)
-  ) {
-    throw new Error(
-      "Private-message relay declaration signer returned an invalid event"
-    )
-  }
-  const mergedEvidence = await stageInboxDeclarationDistribution(
-    {
-      pubkey: input.pubkey,
-      signedEvent,
-      publishRelayUrls: discoveryRelayUrls,
-      expectedCurrentEventId: durableFrontierEventId,
-      stagedAt: nowMs,
-    },
-    input.evidenceRepository
-  )
-  primeInboxDeclarationEvidence(mergedEvidence, () => nowMs)
-
-  const delivery = await (input.publishFn ?? publishWithPlanner)(event, {
-    intent: "author_event",
-    authorPubkey: input.pubkey,
-    authenticatedPubkey: input.pubkey,
-    exclusiveRelayUrls: discoveryRelayUrls,
-    deliveryMode: "critical",
-  })
-  if (
-    Array.isArray(delivery.successfulRelayUrls) &&
-    delivery.successfulRelayUrls.length === 0
-  ) {
-    throw new Error(
-      "Inbox declaration distribution completed without a relay ACK."
-    )
-  }
-
-  return event
-}
-
-/**
- * Re-publish an exact retained declaration after shared discovery completed
- * without seeing it. This must never mint a newer replaceable event: a bounded
- * empty view cannot prove that another client has not published a newer one.
- */
-export async function redistributePrivateMessageRelayDeclaration(
-  input: RedistributePrivateMessageRelayDeclarationInput
-): Promise<NDKEvent> {
-  const signedEvent = input.signedEvent
-  if (
-    !isValidSignedPublicNostrEvent(signedEvent) ||
-    signedEvent.id !== signedEvent.id.toLowerCase() ||
-    signedEvent.pubkey !== input.pubkey ||
-    signedEvent.pubkey !== signedEvent.pubkey.toLowerCase() ||
-    signedEvent.sig !== signedEvent.sig.toLowerCase() ||
-    signedEvent.kind !== EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
-  ) {
-    throw new Error(
-      "Private-message relay redistribution requires the exact valid declaration"
-    )
-  }
-  const discoveryRelayUrls = requireSecureRelayUrls(
-    (input.publishRelayUrls
-      ? () => input.publishRelayUrls!
-      : (input.getDiscoveryRelayUrls ??
-          (() => inboxDeclarationPublishRelayUrls())))(),
-    "Private-message relay discovery targets"
-  )
-  const event = new NDKEvent(input.ndk ?? getNdk(), signedEvent)
-  const delivery = await (input.publishFn ?? publishWithPlanner)(event, {
-    intent: "author_event",
-    authorPubkey: input.pubkey,
-    authenticatedPubkey: input.pubkey,
-    exclusiveRelayUrls: discoveryRelayUrls,
-    deliveryMode: "critical",
-  })
-  if (
-    Array.isArray(delivery.successfulRelayUrls) &&
-    delivery.successfulRelayUrls.length === 0
-  ) {
-    throw new Error(
-      "Inbox declaration distribution completed without a relay ACK."
-    )
-  }
-  return event
-}
-
-/**
- * Retry the immutable staged plan, then independently cover the current shared
- * plan with the same signed bytes when configuration rotated. A dead old plan
- * cannot prevent recovery through healthy current shared relays.
- */
-export async function redistributePrivateMessageRelayDeclarationAcrossPlans(
-  input: RedistributePrivateMessageRelayDeclarationAcrossPlansInput
-): Promise<NDKEvent> {
-  const currentSharedRelayUrls = requireSecureRelayUrls(
-    input.currentSharedRelayUrls,
-    "Current private-message shared discovery targets"
-  )
-
-  let storedAttemptError: unknown
-  let storedPublishRelayUrls: string[] | null = null
-  try {
-    storedPublishRelayUrls = requireSecureRelayUrls(
-      input.storedPublishRelayUrls,
-      "Stored private-message relay discovery targets"
-    )
-  } catch (error) {
-    storedAttemptError = error
-  }
-
-  if (storedPublishRelayUrls) {
-    const storedPublishRelayUrlSet = new Set(storedPublishRelayUrls)
-    const currentPlanCovered = currentSharedRelayUrls.every((relayUrl) =>
-      storedPublishRelayUrlSet.has(relayUrl)
-    )
-    const samePlan =
-      currentPlanCovered &&
-      storedPublishRelayUrls.length === currentSharedRelayUrls.length
-    try {
-      const storedAttempt = await redistributePrivateMessageRelayDeclaration({
-        pubkey: input.pubkey,
-        signedEvent: input.signedEvent,
-        ndk: input.ndk,
-        publishRelayUrls: storedPublishRelayUrls,
-        publishFn: input.publishFn,
-      })
-      if (currentPlanCovered) return storedAttempt
-    } catch (error) {
-      storedAttemptError = error
-      if (samePlan) throw error
-    }
-  }
-
-  try {
-    return await redistributePrivateMessageRelayDeclaration({
-      pubkey: input.pubkey,
-      signedEvent: input.signedEvent,
-      ndk: input.ndk,
-      publishRelayUrls: currentSharedRelayUrls,
-      publishFn: input.publishFn,
-    })
-  } catch (currentAttemptError) {
-    if (storedAttemptError) {
-      throw new AggregateError(
-        [storedAttemptError, currentAttemptError],
-        "Inbox declaration retry failed on stored and current shared targets.",
-        { cause: currentAttemptError }
-      )
-    }
-    throw currentAttemptError
-  }
 }

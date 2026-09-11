@@ -29,6 +29,37 @@ describe("merchant organizer event market route", () => {
     expect(route.toLowerCase()).not.toContain("chicago")
   })
 
+  it("binds owner relay reads to the live Merchant session", async () => {
+    const [route, adapter, handoff, merchandise] = await Promise.all([
+      Bun.file("apps/merchant/src/routes/events.tsx").text(),
+      Bun.file("apps/merchant/src/lib/event-market.ts").text(),
+      Bun.file("apps/merchant/src/lib/event-market-handoff.ts").text(),
+      Bun.file("packages/core/src/protocol/event-market-merchandise.ts").text(),
+    ])
+
+    expect(route).toContain(
+      "const { pubkey, status, authGeneration } = useAuth()"
+    )
+    expect(route).toContain("authGenerationRef.current === authGeneration")
+    expect(route).toContain("queryFn: ({ signal }) =>")
+    expect(route).toContain("queryFn: async ({ signal }) =>")
+    expect(route).toContain("shouldContinue,")
+    expect(route).toMatch(
+      /publishMerchantOrganizerEventMarket\(\{\r?\n\s+organizerPubkey,\r?\n\s+authenticatedPubkey,\r?\n\s+shouldContinue,/
+    )
+    expect(route).toMatch(
+      /publishMerchantOrganizerMembership\(\{\r?\n\s+organizerPubkey,\r?\n\s+authenticatedPubkey,\r?\n\s+shouldContinue,/
+    )
+    expect(route).toMatch(
+      /retryMerchantOrganizerRecord\(\{\r?\n\s+organizerPubkey,\r?\n\s+authenticatedPubkey,\r?\n\s+shouldContinue,/
+    )
+    expect(adapter).toContain("...(signal ? { signal } : {})")
+    expect(adapter).toContain("...(shouldContinue ? { shouldContinue } : {})")
+    expect(handoff).toContain("shouldContinue: input.shouldContinue")
+    expect(handoff).toContain("signal: input.signal")
+    expect(merchandise).toContain("shouldContinue: input.shouldContinue")
+  })
+
   it("separates event discovery from ownership and publishes from the event", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
     const timeline = await Bun.file(
@@ -111,7 +142,7 @@ describe("merchant organizer event market route", () => {
       /Existing verified events remain\s+available; retry before inferring/
     )
     expect(route).toContain("resolveOrganizerEventMarket(")
-    expect(route).toMatch(/merchantPubkey,\r?\n\s+signal/)
+    expect(route).toMatch(/authenticatedPubkey,\r?\n\s+signal/)
     expect(route).not.toContain("selectedFromDiscovery")
   })
 

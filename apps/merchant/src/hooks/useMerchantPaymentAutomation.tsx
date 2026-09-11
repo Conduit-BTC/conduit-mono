@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -59,9 +60,18 @@ export function MerchantPaymentAutomationProvider({
 }: {
   children: ReactNode
 }) {
-  const { pubkey, status } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const queryClient = useQueryClient()
-  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
+  const authenticatedPubkey = status === "connected" ? pubkey : null
+  const profileQuery = useProfile(pubkey, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
+  })
   const nwc = useNwcConnection()
   const confirmedEvidenceRef = useRef(new Set<string>())
   const runningRef = useRef(false)
@@ -168,6 +178,8 @@ export function MerchantPaymentAutomationProvider({
             payload: { status: "paid" },
             delivery: candidate.delivery,
             signerInteraction: "background_external",
+            authenticatedPubkey: signerConnected ? pubkey : null,
+            shouldContinue: () => authGenerationRef.current === authGeneration,
           })
         },
       })
@@ -216,6 +228,7 @@ export function MerchantPaymentAutomationProvider({
       runningRef.current = false
     }
   }, [
+    authGeneration,
     canVerifyPayments,
     candidates,
     conversationReadUnavailable,
