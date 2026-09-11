@@ -198,8 +198,12 @@ describe("protected inbox prepared state", () => {
       source("packages/core/src/hooks/useAccountNetworkSettings.ts"),
     ])
 
-    expect(market).toContain("useAccountNetworkSettings()")
-    expect(merchant).toContain("useAccountNetworkSettings()")
+    expect(market).toMatch(
+      /useAccountNetworkSettings\(\{\s*telemetryApp: "market",?\s*\}\)/
+    )
+    expect(merchant).toMatch(
+      /useAccountNetworkSettings\(\{\s*telemetryApp: "merchant",?\s*\}\)/
+    )
     expect(market).not.toContain("useRelaySettings")
     expect(merchant).not.toContain("useRelaySettings")
     expect(market).not.toContain("useInboxDeclaration")
