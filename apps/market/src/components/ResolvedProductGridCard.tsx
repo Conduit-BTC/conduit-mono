@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link } from "@tanstack/react-router"
-import { formatNpub } from "@conduit/core"
 import { useCart } from "../hooks/useCart"
+import { useEventActorIdentity } from "../hooks/useEventActorIdentity"
 import { useProductCartFulfillment } from "../hooks/useProductCartFulfillment"
 import { isSameCartFulfillment, selectCartItem } from "../lib/cart-model"
 import {
@@ -13,6 +13,7 @@ import {
   getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
 } from "../lib/pickup-handoff"
+import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { ProductGridCard, type ProductGridCardProps } from "./ProductGridCard"
 
 type ResolvedProductGridCardProps = Omit<
@@ -79,6 +80,9 @@ export function ResolvedProductGridCard({
     resolution?.status === "pickup"
       ? getPickupHandoffSummary(resolution.fulfillment)
       : null
+  const pickupHandlerIdentity = useEventActorIdentity(
+    pickupHandoff?.handlerPubkey
+  )
   const cartQuantity = sameFulfillment ? existing.quantity : 0
   const blocked =
     fulfillment.isChecking ||
@@ -116,9 +120,8 @@ export function ResolvedProductGridCard({
       ? "This listing is already in your cart with different fulfillment. Remove that line before adding it here."
       : resolution?.status === "blocked"
         ? resolution.reason
-        : pickupHandoff
-          ? `${pickupHandoff.label}. Signed by ${formatNpub(pickupHandoff.handlerPubkey, 10)}. No delivery address is required. ${getPickupHandoffPrivacyCopy(pickupHandoff)}`
-          : null
+        : null
+  const showPickupNotice = !!pickupHandoff && !!pickupHandlerIdentity && !notice
 
   return (
     <div className="h-full space-y-2">
@@ -139,9 +142,25 @@ export function ResolvedProductGridCard({
         cartActionDisabled={blocked}
         cartActionDisabledLabel={disabledLabel}
       />
-      {notice ? (
+      {notice || showPickupNotice ? (
         <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-          <span>{notice}</span>{" "}
+          {showPickupNotice && pickupHandoff && pickupHandlerIdentity ? (
+            <>
+              <span>
+                {pickupHandoff.label}. Handled by{" "}
+                <EventActorName identity={pickupHandlerIdentity} />. No delivery
+                address is required.{" "}
+                {getPickupHandoffPrivacyCopy(pickupHandoff)}
+              </span>
+              <EventActorProvenance
+                pubkey={pickupHandoff.handlerPubkey}
+                copyLabel="Copy pickup handler npub"
+                className="mt-1 flex"
+              />{" "}
+            </>
+          ) : (
+            <span>{notice}</span>
+          )}{" "}
           {candidate ? (
             <Link
               to="/events/$collectionRef"

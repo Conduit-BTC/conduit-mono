@@ -3,6 +3,7 @@ export * from "./components"
 export * from "./hooks/useOptimisticConversationMessages"
 export { useTheme, type ThemeState } from "./hooks/useTheme"
 export { matchesConversationSearch } from "./conversation-search"
+export * from "./event-market-presentation"
 export * from "./theme"
 
 // Utils

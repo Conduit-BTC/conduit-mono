@@ -28,9 +28,8 @@ const MERCHANT_TEMPLATE_D_TAG = "synthetic-existing-product"
 const MERCHANT_TEMPLATE_COORDINATE = `30402:${MERCHANT_PUBKEY}:${MERCHANT_TEMPLATE_D_TAG}`
 const MERCHANT_TEMPLATE_TITLE = "Existing merchant mug"
 const MERCHANT_PRODUCT_TITLE = "Synthetic merchant booth mug"
-const FIXTURE_RELAY = `ws://127.0.0.1:${
-  process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"
-}`
+const FIXTURE_RELAY_PORT = process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"
+const FIXTURE_RELAY = `ws://127.0.0.1:${FIXTURE_RELAY_PORT}`
 const SYNTHETIC_IDENTITY_SEARCH_KEY = "__conduit_e2e_identity"
 const SYNTHETIC_IDENTITY_STORAGE_KEY = "conduit:e2e:identity"
 
@@ -210,12 +209,17 @@ function createRelayHarness() {
     predicate: (request: RelayRequest) => boolean
     capture: (request: RelayRequest) => void
     released: Promise<void>
+    captured: boolean
   } | null = null
   const rejectedKinds = new Set<number>()
+  let rejectReads = false
 
   return {
     publications,
     requests,
+    rejectReads(reject: boolean) {
+      rejectReads = reject
+    },
     holdNextPublicationAck(
       predicate: (event: SignedEvent) => boolean
     ): HeldPublicationAck {
@@ -233,21 +237,25 @@ function createRelayHarness() {
       heldPublicationAck = { predicate, capture, released }
       return { captured, release }
     },
-    holdNextRelayRequest(
+    holdRelayRequests(
       predicate: (request: RelayRequest) => boolean
     ): HeldRelayRequest {
       if (heldRelayRequest) {
-        throw new Error("A synthetic relay request is already held.")
+        throw new Error("Synthetic relay requests are already being held.")
       }
       let capture!: (request: RelayRequest) => void
-      let release!: () => void
+      let resolveRelease!: () => void
       const captured = new Promise<RelayRequest>((resolve) => {
         capture = resolve
       })
       const released = new Promise<void>((resolve) => {
-        release = resolve
+        resolveRelease = resolve
       })
-      heldRelayRequest = { predicate, capture, released }
+      const release = () => {
+        heldRelayRequest = null
+        resolveRelease()
+      }
+      heldRelayRequest = { predicate, capture, released, captured: false }
       return { captured, release }
     },
     rejectKind(kind: number, reject: boolean) {
@@ -287,6 +295,16 @@ function createRelayHarness() {
             }
             requests.push(request)
             const respond = () => {
+              if (rejectReads) {
+                socket.send(
+                  JSON.stringify([
+                    "CLOSED",
+                    subscriptionId,
+                    "error: synthetic read unavailable",
+                  ])
+                )
+                return
+              }
               const limitedMatchesById = new Map<string, SignedEvent>()
               for (const filter of filters) {
                 const filterMatches = Array.from(eventsById.values())
@@ -313,8 +331,10 @@ function createRelayHarness() {
             }
             const heldRequest = heldRelayRequest
             if (heldRequest?.predicate(request)) {
-              heldRelayRequest = null
-              heldRequest.capture(structuredClone(request))
+              if (!heldRequest.captured) {
+                heldRequest.captured = true
+                heldRequest.capture(structuredClone(request))
+              }
               void heldRequest.released.then(respond)
               return
             }
@@ -712,9 +732,8 @@ async function publishOrganizerMarket(
   await expect(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
   await expect(
-    page.getByRole("heading", { name: "My events", exact: true })
+    page.getByRole("heading", { name: "Event timeline", exact: true })
   ).toBeVisible()
   await page.getByRole("button", { name: "Create event" }).first().click()
   const editor = page.getByRole("dialog", { name: "Create event market" })
@@ -763,7 +782,7 @@ async function publishOrganizerMarket(
   const publishStart = relay.publications.length
   await editor.getByRole("button", { name: "Publish event" }).click()
   await expect(editor).toBeHidden({ timeout: 30_000 })
-  await expect(page.getByText("Active", { exact: true })).toBeVisible()
+  await expect(page.getByText("Event loaded", { exact: true })).toBeVisible()
   await expect(
     page.getByRole("heading", { name: "Share this event" })
   ).toBeVisible()
@@ -886,6 +905,363 @@ test("signed-out merchant participation preserves the exact event through auth @
   ).toBeVisible()
 })
 
+test("Merchant event timeline supports perspective, relationship, mobile, and keyboard flows @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const eventTitle = "Synthetic Merchant Timeline Event"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: eventTitle,
+    organizerHandoffEnabled: false,
+  })
+  relay.seed(
+    createFollowList(
+      "merchant",
+      [ORGANIZER_PUBKEY],
+      market.initialCollection.created_at + 1
+    )
+  )
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+
+  const timeline = page.getByRole("region", { name: "Event timeline" })
+  await expect(timeline).toBeVisible()
+  await expect(
+    timeline.getByRole("group", { name: "Event network perspective" })
+  ).toBeVisible()
+  await expect(
+    timeline.getByRole("button", { name: "Combined", exact: true })
+  ).toHaveAttribute("aria-pressed", "true")
+  const relationshipFilter = timeline.getByRole("combobox", {
+    name: "Relationship",
+    exact: true,
+  })
+  await expect(relationshipFilter).toBeVisible()
+  await expect(
+    timeline.getByRole("combobox", { name: "Date", exact: true })
+  ).toBeVisible()
+
+  const sellHere = timeline.getByRole("button", {
+    name: `Sell here ${eventTitle}`,
+    exact: true,
+  })
+  await expect(sellHere).toBeVisible({ timeout: 30_000 })
+  await sellHere.focus()
+  await page.keyboard.press("Enter")
+  await expect(
+    page.getByRole("button", { name: "Publish product", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+
+  await relationshipFilter.click()
+  await page.getByRole("option", { name: "Saved", exact: true }).click()
+  await expect(
+    timeline
+      .getByLabel(`Your relationship to ${eventTitle}`)
+      .getByText("Saved", { exact: true })
+  ).toBeVisible()
+  const following = timeline.getByRole("button", {
+    name: "Following",
+    exact: true,
+  })
+  await following.focus()
+  await page.keyboard.press("Enter")
+  await expect(following).toHaveAttribute("aria-pressed", "true")
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get("source"))
+    .toBe("following")
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth
+      )
+    )
+    .toBe(true)
+})
+
+test("organizer discovery retries an unavailable refresh without losing saved events or claiming absence @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(150_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  await gotoAs(page, merchantUrl, "/events", "organizer")
+  const emptyHeading = page.getByRole("heading", {
+    name: "No matching verified events in this relay view",
+  })
+  await expect(emptyHeading).toBeVisible()
+  relay.rejectReads(true)
+  await page.reload()
+  const retry = page.getByRole("button", {
+    name: "Retry event discovery",
+    exact: true,
+  })
+  await expect(retry).toBeEnabled({ timeout: 60_000 })
+  await expect(
+    page.getByTestId("merchant-event-timeline-discovery-status")
+  ).toContainText(/unavailable/i)
+  relay.rejectReads(false)
+  await retry.click()
+  await expect(
+    page.getByTestId("merchant-event-timeline-discovery-status")
+  ).not.toContainText(/unavailable/i)
+  const title = "Synthetic retained discovery title"
+  await publishOrganizerMarket(page, relay, {
+    title,
+    organizerHandoffEnabled: false,
+  })
+  relay.rejectReads(true)
+  await page.reload()
+  await expect(page.getByText(title, { exact: true }).first()).toBeVisible()
+  await expect(
+    page.getByTestId("merchant-event-timeline-discovery-status")
+  ).toContainText(/unavailable/i, { timeout: 60_000 })
+  relay.rejectReads(false)
+  await expect(retry).toBeEnabled()
+  await retry.click()
+  await expect(
+    page.getByTestId("merchant-event-timeline-discovery-status")
+  ).not.toContainText(/unavailable/i)
+  await expect(
+    page.getByRole("button", { name: `Manage ${title}`, exact: true })
+  ).toBeVisible()
+})
+
+test("direct and pasted event imports hydrate one saved selector title outside the selected perspective @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const eventTitle = "Synthetic imported title hydration"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: `  ${eventTitle}  `,
+    organizerHandoffEnabled: false,
+  })
+  const unrelatedFollowedPubkeys = Array.from({ length: 17 }, (_, index) =>
+    (index + 1).toString(16).padStart(64, "0")
+  )
+  relay.seed(
+    createFollowList(
+      "merchant",
+      unrelatedFollowedPubkeys,
+      market.initialCollection.created_at + 1
+    )
+  )
+
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  await expect(
+    page.getByText(/No events were found.*perspective\./)
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText(eventTitle, { exact: true }).first()).toBeVisible(
+    {
+      timeout: 30_000,
+    }
+  )
+  const savedStorageKey = `conduit:merchant:discovered-event-markets:v1:${MERCHANT_PUBKEY}`
+  const expectedTitleEvidence = {
+    titleCollectionCoordinate: market.collectionCoordinate,
+    titleCollectionCreatedAt: market.initialCollection.created_at * 1_000,
+    titleCollectionEventId: market.initialCollection.id,
+    titleCalendarCoordinate: market.calendarCoordinate,
+    titleCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
+    titleCalendarEventId: market.calendarEvent.id,
+  }
+  const readSavedTitleEvidence = () =>
+    page.evaluate((key) => {
+      const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+        reference?: string
+        title?: string
+        titleCollectionCoordinate?: string
+        titleCollectionCreatedAt?: number
+        titleCollectionEventId?: string
+        titleCalendarCoordinate?: string
+        titleCalendarCreatedAt?: number
+        titleCalendarEventId?: string
+      }>
+      return {
+        count: saved.length,
+        reference: saved[0]?.reference,
+        title: saved[0]?.title,
+        titleCollectionCoordinate: saved[0]?.titleCollectionCoordinate,
+        titleCollectionCreatedAt: saved[0]?.titleCollectionCreatedAt,
+        titleCollectionEventId: saved[0]?.titleCollectionEventId,
+        titleCalendarCoordinate: saved[0]?.titleCalendarCoordinate,
+        titleCalendarCreatedAt: saved[0]?.titleCalendarCreatedAt,
+        titleCalendarEventId: saved[0]?.titleCalendarEventId,
+      }
+    }, savedStorageKey)
+  await expect.poll(readSavedTitleEvidence).toEqual({
+    count: 1,
+    reference: market.canonicalNaddr,
+    title: eventTitle,
+    ...expectedTitleEvidence,
+  })
+
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  const shopperLink = `${marketUrl}/events/${market.canonicalNaddr}`
+  await page.getByLabel("Open a known event").fill(shopperLink)
+  await page.getByRole("button", { name: "Open", exact: true }).click()
+  await expect(page.getByText(eventTitle, { exact: true }).first()).toBeVisible(
+    {
+      timeout: 30_000,
+    }
+  )
+  await page.getByLabel("Open a known event").fill(market.canonicalNaddr)
+  await page.getByRole("button", { name: "Open", exact: true }).click()
+  await expect.poll(readSavedTitleEvidence).toEqual({
+    count: 1,
+    reference: market.canonicalNaddr,
+    title: eventTitle,
+    ...expectedTitleEvidence,
+  })
+})
+
+test("commerce discovery finds an organizer beyond the former author cap @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const title = "Synthetic discovered commerce event"
+  const market = await publishOrganizerMarket(page, relay, {
+    title,
+    organizerHandoffEnabled: false,
+  })
+  const unrelated = Array.from({ length: 17 }, (_, index) =>
+    (index + 1).toString(16).padStart(64, "0")
+  )
+  relay.seed(
+    createFollowList(
+      "merchant",
+      [...unrelated, ORGANIZER_PUBKEY],
+      market.initialCollection.created_at + 1
+    )
+  )
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await expect(
+    page.getByRole("button", { name: `Sell here ${title}`, exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await page
+    .getByRole("button", { name: `Sell here ${title}`, exact: true })
+    .click()
+  await expect(
+    page.getByRole("heading", { name: title, exact: true }).first()
+  ).toBeVisible()
+})
+
+test("current exact resolution refreshes a saved title without replacing its evidence @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const eventTitle = "Synthetic current resolved title"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: eventTitle,
+    organizerHandoffEnabled: false,
+  })
+  const [, collectionPubkey, collectionIdentifier] =
+    market.collectionCoordinate.split(":")
+  const hintedReference = nip19.naddrEncode({
+    kind: 30405,
+    pubkey: collectionPubkey!,
+    identifier: collectionIdentifier!,
+    // Mock mode retains only its isolated relay; multi-relay hint preservation
+    // is covered by the saved-reference workflow tests.
+    relays: [FIXTURE_RELAY],
+  })
+  const savedStorageKey = `conduit:merchant:discovered-event-markets:v1:${MERCHANT_PUBKEY}`
+  const savedAt = 1_725_000_000_000
+  const expectedSaved = {
+    reference: hintedReference,
+    title: "Cached title before current resolution",
+    savedAt,
+    titleCollectionCoordinate: market.collectionCoordinate,
+    titleCollectionCreatedAt: market.initialCollection.created_at * 1_000,
+    titleCollectionEventId: market.initialCollection.id,
+    titleCalendarCoordinate: market.calendarCoordinate,
+    titleCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
+    titleCalendarEventId: market.calendarEvent.id,
+  }
+  await page.evaluate(
+    ({ key, saved }) => localStorage.setItem(key, JSON.stringify([saved])),
+    { key: savedStorageKey, saved: expectedSaved }
+  )
+
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await expect(page.getByText(eventTitle, { exact: true }).first()).toBeVisible(
+    {
+      timeout: 30_000,
+    }
+  )
+  await expect
+    .poll(() =>
+      page.evaluate((key) => {
+        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<
+          Record<string, unknown>
+        >
+        return saved[0]
+      }, savedStorageKey)
+    )
+    .toEqual({ ...expectedSaved, title: eventTitle })
+})
+
+test("successful event rename keeps the new title cached @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const initialTitle = "Synthetic event before rename"
+  const renamedTitle = "Synthetic event after rename"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: initialTitle,
+    organizerHandoffEnabled: false,
+  })
+
+  const updateStart = relay.publications.length
+  await page.getByRole("button", { name: "Update event", exact: true }).click()
+  const editor = page.getByRole("dialog", { name: "Update event market" })
+  await editor
+    .getByRole("textbox", { name: "Title Required", exact: true })
+    .fill(renamedTitle)
+  await editor.getByRole("button", { name: "Publish update" }).click()
+  await expect(editor).toBeHidden({ timeout: 30_000 })
+
+  const updatedCalendar = uniquePublishedEvents(
+    relay.publications.slice(updateStart)
+  ).find((event) => event.kind === market.calendarEvent.kind)
+  expect(updatedCalendar).toBeTruthy()
+  expect(eventCoordinate(updatedCalendar!)).toBe(market.calendarCoordinate)
+  await expect(
+    page.getByRole("button", { name: `Manage ${renamedTitle}`, exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+
+  const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
+  await expect
+    .poll(() =>
+      page.evaluate((key) => {
+        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+          title?: string
+        }>
+        return { count: saved.length, title: saved[0]?.title }
+      }, savedStorageKey)
+    )
+    .toEqual({ count: 1, title: renamedTitle })
+
+  await page.reload()
+  await expect(
+    page.getByRole("button", { name: `Manage ${renamedTitle}`, exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+})
+
 async function publishMerchantProductFromEvent(
   page: Page,
   relay: RelayHarness,
@@ -910,21 +1286,17 @@ async function publishMerchantProductFromEvent(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByRole("tab", { name: "Find events", exact: true })
-  ).toHaveAttribute("data-state", "active")
+    page.getByRole("heading", { name: "Event timeline", exact: true })
+  ).toBeVisible()
 
   if (options.discoveryMode === "followed") {
-    await expect(
-      page.getByRole("heading", {
-        name: "Events from organizers you follow",
-        exact: true,
-      })
-    ).toBeVisible({ timeout: 30_000 })
-    await page
-      .getByRole("button", { name: `View ${options.eventTitle}`, exact: true })
-      .click()
+    const openEvent = page.getByRole("button", {
+      name: new RegExp(`^(Sell here|Open|Manage) ${options.eventTitle}$`),
+    })
+    await expect(openEvent).toBeVisible({ timeout: 30_000 })
+    await openEvent.click()
   } else if (options.discoveryMode === "direct") {
-    await page.getByLabel("Event naddr or link").fill(market.canonicalNaddr)
+    await page.getByLabel("Open a known event").fill(market.canonicalNaddr)
     await page.getByRole("button", { name: "Open", exact: true }).click()
   }
   const publishProductButton = page.getByRole("button", {
@@ -1139,11 +1511,15 @@ async function acceptMerchantProduct(
 }
 
 async function selectOrganizerMarket(page: Page, title: string): Promise<void> {
-  const selector = page.locator("#event-market-selector")
-  await selector.click()
-  await page.getByRole("option", { name: title, exact: true }).click()
-  await expect(selector).toContainText(title)
-  await expect(page.getByText(title, { exact: true }).first()).toBeVisible()
+  const manage = page.getByRole("button", {
+    name: `Manage ${title}`,
+    exact: true,
+  })
+  await expect(manage).toBeVisible({ timeout: 30_000 })
+  await manage.click()
+  await expect(
+    page.getByRole("heading", { name: title, exact: true }).first()
+  ).toBeVisible()
 }
 
 test.use({
@@ -1154,9 +1530,11 @@ test.use({
 })
 
 async function expectContainedEventBanner(page: Page): Promise<void> {
-  const banner = page.locator(
-    'img[src="https://cdn.conduit.market/conduit-test/synthetic-event-market.svg"]'
-  )
+  const banner = page
+    .locator(
+      'img[src="https://cdn.conduit.market/conduit-test/synthetic-event-market.svg"]'
+    )
+    .last()
   await expect(banner).toBeVisible({ timeout: 30_000 })
 
   // A freshly loaded Vite document can paint the image before its stylesheet is
@@ -1240,6 +1618,95 @@ test("event banners remain fully contained on every surface and viewport @market
   }
 })
 
+test("Market Events browses the same perspective on desktop, mobile, and keyboard @market", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(30_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Timeline Event",
+    organizerHandoffEnabled: true,
+  })
+
+  // Guests get the curated Conduit perspective without a signer prompt, even
+  // though this synthetic organizer is outside that perspective.
+  await page.evaluate(() => localStorage.clear())
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto(`${marketUrl}/events`)
+  await expect(page.getByRole("heading", { name: "Events" })).toBeVisible()
+  await expect(
+    page.getByRole("navigation", { name: "Market browse" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("group", { name: "Market perspective" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Conduit", exact: true })
+  ).toHaveAttribute("aria-pressed", "true")
+  await expect(
+    page.getByRole("button", { name: "Following", exact: true })
+  ).toBeDisabled()
+  await expect(
+    page.getByRole("dialog", { name: "Sign in to Conduit" })
+  ).toHaveCount(0)
+
+  relay.seed(
+    createFollowList(
+      "buyer",
+      [ORGANIZER_PUBKEY],
+      Math.floor(Date.now() / 1000) + 1
+    )
+  )
+  await page.setViewportSize({ width: 390, height: 844 })
+  await gotoAs(page, marketUrl, "/events", "buyer", {
+    source: "following",
+    window: "all",
+  })
+
+  const eventCard = page.getByRole("article").filter({
+    has: page.getByRole("heading", { name: "Synthetic Timeline Event" }),
+  })
+  await expect(eventCard).toBeVisible({ timeout: 60_000 })
+  await expect(eventCard.getByText("Synthetic Fixture Hall")).toBeVisible()
+  await expect(eventCard.getByText("Upcoming", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Following", exact: true })
+  ).toHaveAttribute("aria-pressed", "true")
+  const viewport = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }))
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth + 1)
+
+  const perspectiveButtons = page.getByRole("group", {
+    name: "Market perspective",
+  })
+  await perspectiveButtons
+    .getByRole("button", { name: "Conduit", exact: true })
+    .focus()
+  await page.keyboard.press("Tab")
+  await expect(
+    page.getByRole("button", { name: "Clear filters" })
+  ).toBeFocused()
+  await page.keyboard.press("Tab")
+  await expect(page.getByLabel("Date")).toBeFocused()
+
+  const viewLink = eventCard.getByRole("link", { name: "View" })
+  await viewLink.focus()
+  await expect(viewLink).toBeFocused()
+  await page.keyboard.press("Enter")
+  await expect(page).toHaveURL(
+    new RegExp(
+      `/events/${market.canonicalNaddr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`
+    )
+  )
+  await expect(
+    page.getByRole("heading", { name: "Synthetic Timeline Event" })
+  ).toBeVisible({ timeout: 60_000 })
+})
+
 test("event membership and retry completions stay bound to their initiating event @merchant", async ({
   page,
 }) => {
@@ -1309,9 +1776,11 @@ test("event membership and retry completions stay bound to their initiating even
       eventA: acceptedCollection.id,
       eventB: eventB.initialCollection.id,
     })
-  await expect(page.locator("#event-market-selector")).toContainText(
-    "Synthetic Race Event B"
-  )
+  await expect(
+    page
+      .getByRole("heading", { name: "Synthetic Race Event B", exact: true })
+      .first()
+  ).toBeVisible()
 
   const membershipDeliveryReference = await page.evaluate(
     ({ key, eventId }) => {
@@ -1354,7 +1823,6 @@ test("event membership and retry completions stay bound to their initiating even
   expect(markedForRetry).toBe(true)
 
   await page.reload()
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
   await selectOrganizerMarket(page, "Synthetic Race Event A")
   const retryAck = relay.holdNextPublicationAck(
     (event) => event.id === acceptedCollection.id
@@ -1424,9 +1892,11 @@ test("event membership and retry completions stay bound to their initiating even
   expect(eventCollectionReferenceCoordinate(retryDeliveryReference!)).toBe(
     eventA.collectionCoordinate
   )
-  await expect(page.locator("#event-market-selector")).toContainText(
-    "Synthetic Race Event B"
-  )
+  await expect(
+    page
+      .getByRole("heading", { name: "Synthetic Race Event B", exact: true })
+      .first()
+  ).toBeVisible()
 })
 
 test("keeps consecutive membership actions available while acknowledged collection readback is stale @merchant", async ({
@@ -1479,7 +1949,7 @@ test("keeps consecutive membership actions available while acknowledged collecti
   const firstCollection = await firstMembershipAck.captured
   relay.remove(firstCollection)
 
-  const staleExactRead = relay.holdNextRelayRequest((request) =>
+  const staleExactRead = relay.holdRelayRequests((request) =>
     request.filters.some(
       (filter) =>
         filter.authors?.includes(ORGANIZER_PUBKEY) &&
@@ -1613,7 +2083,6 @@ test("keeps exact collection retry available while rejected membership readback 
     })
 
   await page.reload()
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
   await selectOrganizerMarket(page, "Synthetic Rejected Membership Retry")
   await expect(
     page.getByText("Showing earlier signed event evidence", { exact: true })
@@ -1683,7 +2152,6 @@ test("a late old collection retry ACK preserves a newer same-coordinate update @
   expect(markedForRetry).toBe(true)
 
   await page.reload()
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
   await selectOrganizerMarket(page, "Synthetic Late Retry Event")
   const savedReferences = await page.evaluate(
     (key) => localStorage.getItem(key),
@@ -1700,9 +2168,6 @@ test("a late old collection retry ACK preserves a newer same-coordinate update @
     { key: savedStorageKey, references: savedReferences }
   )
   await gotoAs(concurrentPage, merchantUrl, "/events", "organizer")
-  await concurrentPage
-    .getByRole("tab", { name: "My events", exact: true })
-    .click()
   await selectOrganizerMarket(concurrentPage, "Synthetic Late Retry Event")
   await expect(
     concurrentPage.getByRole("button", { name: "Update event", exact: true })
@@ -1892,9 +2357,7 @@ test("legacy saved event keeps a newer exact retry beyond an older coordinate de
       content: "",
     })
   )
-  await page.reload()
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
-  await selectOrganizerMarket(page, "Synthetic Legacy Retry Event")
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "organizer")
   await expect(
     page.getByRole("heading", { name: "Event deleted", exact: true })
   ).toBeVisible({ timeout: 30_000 })
@@ -1915,7 +2378,7 @@ test("legacy saved event keeps a newer exact retry beyond an older coordinate de
       { timeout: 30_000 }
     )
     .toContain(newerCollection.id)
-  await expect(page.getByText("Active", { exact: true })).toBeVisible({
+  await expect(page.getByText("Active event", { exact: true })).toBeVisible({
     timeout: 30_000,
   })
 })
@@ -1959,7 +2422,6 @@ test("terminal event deletion removes the exact-record retry path @merchant", as
   expect(markedForRetry).toBe(true)
 
   await page.reload()
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
   await selectOrganizerMarket(page, "Synthetic Deleted Retry Event")
   const retryDelivery = page.getByRole("button", {
     name: "Retry delivery",
@@ -1983,6 +2445,21 @@ test("terminal event deletion removes the exact-record retry path @merchant", as
   ).toBeVisible({ timeout: 30_000 })
   await expect(retryDelivery).toHaveCount(0)
   expect(relay.publications).toHaveLength(publicationCount)
+  await page
+    .getByRole("button", { name: "Retry event discovery", exact: true })
+    .click()
+  await expect(
+    page.getByRole("button", {
+      name: "Manage Synthetic Deleted Retry Event",
+      exact: true,
+    })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("region", { name: "Event timeline" }).getByRole("heading", {
+      name: "Synthetic Deleted Retry Event",
+      exact: true,
+    })
+  ).toHaveCount(0)
 })
 
 test("organizer actions wait for an initial hinted read and use its newer collection @merchant", async ({
@@ -2014,10 +2491,16 @@ test("organizer actions wait for an initial hinted read and use its newer collec
     identifier: identifier!,
     relays: [FIXTURE_RELAY],
   })
+  const unhintedReference = nip19.naddrEncode({
+    kind: 30405,
+    pubkey: ORGANIZER_PUBKEY,
+    identifier: identifier!,
+  })
   const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
   await page.evaluate((key) => localStorage.removeItem(key), savedStorageKey)
-  await page.reload()
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  await gotoAs(page, merchantUrl, "/events", "organizer", {
+    event: unhintedReference,
+  })
   const updateEvent = page.getByRole("button", {
     name: "Update event",
     exact: true,
@@ -2025,14 +2508,20 @@ test("organizer actions wait for an initial hinted read and use its newer collec
   await expect(updateEvent).toBeEnabled({ timeout: 30_000 })
 
   relay.seed(requestedProduct)
-  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  const refreshEvidence = page.getByRole("button", {
+    name: "Refresh evidence",
+    exact: true,
+  })
+  await refreshEvidence.click()
+  await expect(refreshEvidence).toBeDisabled()
+  await expect(refreshEvidence).toBeEnabled({ timeout: 30_000 })
   const acceptRequest = page.getByRole("button", {
     name: "Accept",
     exact: true,
   })
   await expect(acceptRequest).toBeEnabled({ timeout: 30_000 })
 
-  const hintedRead = relay.holdNextRelayRequest(
+  const hintedRead = relay.holdRelayRequests(
     (request) =>
       request.relayUrl.startsWith(FIXTURE_RELAY) &&
       request.filters.some(
@@ -2041,14 +2530,27 @@ test("organizer actions wait for an initial hinted read and use its newer collec
           filter.kinds?.includes(30405)
       )
   )
-  await page.getByLabel("Catalog naddr or link").fill(hintedReference)
-  await page.getByRole("button", { name: "Open", exact: true }).click()
+  const catalogReferenceInput = page.getByLabel("Catalog naddr or link")
+  await catalogReferenceInput.fill(hintedReference)
+  await catalogReferenceInput.press("Enter")
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get("event"))
+    .toBe(hintedReference)
   await hintedRead.captured
 
-  await expect(updateEvent).toBeVisible()
-  await expect(updateEvent).toBeDisabled()
-  await expect(acceptRequest).toBeVisible({ timeout: 30_000 })
-  await expect(acceptRequest).toBeDisabled()
+  await expect
+    .poll(
+      async () =>
+        (await updateEvent.count()) === 0 || (await updateEvent.isDisabled())
+    )
+    .toBe(true)
+  await expect
+    .poll(
+      async () =>
+        (await acceptRequest.count()) === 0 ||
+        (await acceptRequest.isDisabled())
+    )
+    .toBe(true)
 
   const alreadyAcceptedProduct = createMerchantProductEvent({
     dTag: "hinted-resolution-existing",
@@ -2172,7 +2674,7 @@ test("a newer external collection can replace its calendar without inheriting th
   relay.seed(replacementCalendar, replacementCollection)
   await page.getByRole("button", { name: "Refresh evidence" }).click()
 
-  await expect(page.getByText("Active", { exact: true })).toBeVisible({
+  await expect(page.getByText("Active event", { exact: true })).toBeVisible({
     timeout: 30_000,
   })
   await expect(
@@ -2234,7 +2736,6 @@ test("membership updates retain externally replaced children and retire removed 
   relay.seed(replacementCalendar, replacementPickup, replacementCollection)
 
   await gotoAs(page, merchantUrl, "/events", "organizer")
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
   await selectOrganizerMarket(page, eventTitle)
   const acceptedCollection = await acceptMerchantProduct(
     page,
@@ -2252,7 +2753,6 @@ test("membership updates retain externally replaced children and retire removed 
   ])
 
   await page.reload()
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
   await selectOrganizerMarket(page, eventTitle)
   const removeProduct = page.getByRole("button", {
     name: "Remove",
@@ -2294,7 +2794,6 @@ test("membership updates retain externally replaced children and retire removed 
   ).toBe(false)
 
   await page.reload()
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
   await selectOrganizerMarket(page, eventTitle)
   await expect(
     page.getByRole("button", { name: "Update event", exact: true })
@@ -2358,6 +2857,26 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   ])
   expect(product.tags).toContainEqual(["visibility", "hidden"])
 
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 0,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      content: JSON.stringify({ display_name: "Synthetic Pickup Host" }),
+    })
+  )
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          ;(
+            window as typeof window & { __pickupCopiedNpub?: string }
+          ).__pickupCopiedNpub = value
+        },
+      },
+    })
+  })
   await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
   const productCard = page
     .getByRole("listitem")
@@ -2365,6 +2884,30 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   await expect(
     productCard.getByText("Pickup from merchant booth", { exact: true })
   ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    productCard.getByText("Synthetic Pickup Host", { exact: true }).last()
+  ).toBeVisible({ timeout: 30_000 })
+  const pickupDetails = productCard
+    .locator("summary")
+    .filter({ hasText: "Handled by" })
+  await pickupDetails.focus()
+  await expect(pickupDetails).toBeFocused()
+  await pickupDetails.press("Enter")
+  await expect(productCard.locator("details")).toHaveAttribute("open", "")
+  const handlerNpub = nip19.npubEncode(ORGANIZER_PUBKEY)
+  await expect(productCard.locator(`a[href="/u/${handlerNpub}"]`)).toBeVisible()
+  await productCard
+    .getByRole("button", { name: "Copy pickup handler npub" })
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __pickupCopiedNpub?: string })
+            .__pickupCopiedNpub
+      )
+    )
+    .toBe(handlerNpub)
   await productCard.getByRole("button", { name: "Add", exact: true }).click()
   await expect(
     page.getByText(
@@ -2372,12 +2915,33 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
       { exact: true }
     )
   ).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  await expect(
+    page.getByText("Synthetic Pickup Host", { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
+  await page
+    .getByRole("button", { name: "Copy pickup handler npub" })
+    .first()
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __pickupCopiedNpub?: string })
+            .__pickupCopiedNpub
+      )
+    )
+    .toBe(handlerNpub)
   await gotoAs(page, marketUrl, "/checkout", "buyer", {
     merchant: nip19.npubEncode(ORGANIZER_PUBKEY),
   })
   await expect(
     page.getByText("Pickup from merchant booth", { exact: true }).first()
   ).toBeVisible()
+  await expect(
+    page.getByText("Synthetic Pickup Host", { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
   await expect(page.getByRole("button", { name: /^Send order$/i })).toBeEnabled(
     { timeout: 30_000 }
   )
@@ -2511,7 +3075,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
 
   // Keep the explicit naddr fallback covered alongside the new followed feed.
   await gotoAs(page, merchantUrl, "/events", "merchant")
-  await page.getByLabel("Event naddr or link").fill(market.canonicalNaddr)
+  await page.getByLabel("Open a known event").fill(market.canonicalNaddr)
   await page.getByRole("button", { name: "Open", exact: true }).click()
   await expect(
     page.getByRole("button", { name: "Publish product", exact: true })
@@ -2537,10 +3101,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   await expect(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible({ timeout: 30_000 })
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
-  await expect(
-    page.getByRole("heading", { name: "My events", exact: true })
-  ).toBeVisible()
+  await selectOrganizerMarket(page, "Synthetic Merchant Booth Market")
   const acceptedCollection = await acceptMerchantProduct(
     page,
     relay,
@@ -2553,6 +3114,15 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   expect(
     acceptedCollection.tags.filter((tag) => tag[0] === "shipping_option")
   ).toEqual([])
+  await expect(
+    page.getByTestId("organizer-event-actionability-status")
+  ).toContainText("1 product available.")
+  await expect(
+    page.getByTestId("organizer-event-actionability-status")
+  ).toHaveAttribute("role", "status")
+  await expect(
+    page.getByTestId("organizer-event-relay-read-coverage")
+  ).toBeVisible()
   await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
   await expect(
     page.getByRole("heading", {
@@ -2564,6 +3134,14 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   await expect(
     page.getByText(MERCHANT_PRODUCT_TITLE, { exact: true })
   ).toBeVisible()
+  await expect(page.getByTestId("event-actionability-status")).toContainText(
+    "1 product available."
+  )
+  await expect(page.getByTestId("event-actionability-status")).toHaveAttribute(
+    "role",
+    "status"
+  )
+  await expect(page.getByTestId("event-relay-read-coverage")).toBeVisible()
   const productCard = page
     .getByRole("listitem")
     .filter({ hasText: MERCHANT_PRODUCT_TITLE })
@@ -3088,9 +3666,10 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     }
   )
   await gotoAs(concurrentPage, merchantUrl, "/events", "organizer")
-  await concurrentPage
-    .getByRole("tab", { name: "My events", exact: true })
-    .click()
+  await selectOrganizerMarket(
+    concurrentPage,
+    "Synthetic Organizer Handoff Market"
+  )
   const concurrentParticipationRow = concurrentPage
     .getByTestId("organizer-product-preview")
     .filter({ hasText: ORGANIZER_PRODUCT_TITLE })
@@ -3109,7 +3688,7 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   ).toBeEnabled({ timeout: 30_000 })
 
   await gotoAs(page, merchantUrl, "/events", "organizer")
-  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  await selectOrganizerMarket(page, "Synthetic Organizer Handoff Market")
   const queue = page.getByTestId("organizer-handoff-receipt-queue")
   await expect(queue).toBeVisible({ timeout: 30_000 })
   await expect(queue.getByText(/Receipt discovery is incomplete/i)).toBeVisible(
@@ -3173,7 +3752,7 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   await expect(removeProduct).toBeEnabled({ timeout: 30_000 })
 
   let acknowledgementReceiptReadStarted = false
-  const merchandiseRead = relay.holdNextRelayRequest((request) => {
+  const merchandiseRead = relay.holdRelayRequests((request) => {
     if (request.clientId !== "acknowledger") return false
     if (
       request.filters.some(

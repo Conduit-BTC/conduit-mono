@@ -20,8 +20,26 @@ import {
   useProfile,
   type Product,
 } from "@conduit/core"
-import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+  Badge,
+  Button,
+  eventMarketRequiredRecordsResolved,
+  formatEventRelayReadCoverage,
+  getEventActionabilityPresentation,
+} from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
+import {
+  EventActorName,
+  EventActorProvenance,
+} from "../../components/EventActorIdentity"
+import {
+  getEventActorIdentityView,
+  selectEventHandoffIdentity,
+  type EventActorIdentityView,
+} from "../../lib/event-actor-identity"
 import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
@@ -44,7 +62,10 @@ import {
   getProductSelection,
 } from "../../lib/productVariations"
 import { getEventCatalogCartAction } from "../../lib/event-market-cart-action"
-import type { EventCatalog } from "../../lib/event-market-adapter"
+import {
+  getEventCatalogProductAvailability,
+  type EventCatalog,
+} from "../../lib/event-market-adapter"
 import {
   getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
@@ -57,7 +78,7 @@ export const Route = createFileRoute("/events/$collectionRef")({
 type CatalogStateCopy = {
   title: string
   message: string
-  variant: "secondary" | "warning" | "destructive"
+  variant: "success" | "secondary" | "warning" | "destructive"
 }
 
 function EventCatalogProductCard({
@@ -65,6 +86,7 @@ function EventCatalogProductCard({
   catalog,
   purchaseReady,
   identity,
+  organizerIdentity,
   imageLoading,
   btcUsdRate,
   pricePreference,
@@ -74,6 +96,7 @@ function EventCatalogProductCard({
   catalog: EventCatalog
   purchaseReady: boolean
   identity: ReturnType<ReturnType<typeof useMerchantIdentities>["getIdentity"]>
+  organizerIdentity: EventActorIdentityView
   imageLoading: "eager" | "lazy"
   btcUsdRate: ReturnType<typeof useShopperPricing>["quote"]
   pricePreference: ReturnType<typeof useShopperPricing>["preference"]
@@ -111,6 +134,17 @@ function EventCatalogProductCard({
       : (entry.familyPickupFulfillments?.[selectedProduct.id] ?? null)
   const handoff = pickupFulfillment
     ? getPickupHandoffSummary(pickupFulfillment)
+    : null
+  const handlerIdentity = handoff
+    ? selectEventHandoffIdentity({
+        mode: handoff.mode,
+        handlerPubkey: handoff.handlerPubkey,
+        merchant: { pubkey: identity.pubkey, identity },
+        organizer: {
+          pubkey: catalog.organizerPubkey ?? "",
+          identity: organizerIdentity,
+        },
+      })
     : null
   const candidate = pickupFulfillment
     ? cartItemInputFromProductSelection(
@@ -206,15 +240,15 @@ function EventCatalogProductCard({
             </>
           )}
         </div>
-      ) : handoff ? (
+      ) : handoff && handlerIdentity ? (
         <details className="group/pickup rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-xs leading-5 text-[var(--text-secondary)]">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] [&::-webkit-details-marker]:hidden">
             <span className="min-w-0">
               <span className="block font-medium text-[var(--text-primary)]">
                 {handoff.label}
               </span>
-              <span className="block truncate font-mono">
-                Handled by {formatNpub(handoff.handlerPubkey, 10)}
+              <span className="block truncate">
+                Handled by <EventActorName identity={handlerIdentity} />
               </span>
             </span>
             <span className="flex shrink-0 items-center gap-1 font-medium text-[var(--text-primary)]">
@@ -228,9 +262,9 @@ function EventCatalogProductCard({
           <div className="border-t border-[var(--border)] px-3 py-2">
             <p>{getPickupHandoffPrivacyCopy(handoff)}</p>
             <div className="mt-2 flex justify-end">
-              <CopyButton
-                value={handoff.handlerPubkey}
-                label="Copy pickup handler npub"
+              <EventActorProvenance
+                pubkey={handoff.handlerPubkey}
+                copyLabel="Copy pickup handler npub"
               />
             </div>
           </div>
@@ -241,81 +275,22 @@ function EventCatalogProductCard({
 }
 
 export function getEventCatalogStateCopy(
-  state: EventCatalog["state"]
+  state: EventCatalog["state"],
+  requiredEventRecordsResolved = true,
+  availableProductCount = 0,
+  unresolvedProductCount = 0
 ): CatalogStateCopy | null {
-  switch (state) {
-    case "active":
-      return null
-    case "ended":
-      return {
-        title: "Archived event catalog",
-        message:
-          "This signed event has ended. Its accepted products remain visible as a read-only archive, but checkout is closed.",
-        variant: "secondary",
-      }
-    case "missing":
-      return {
-        title: "Event catalog not found",
-        message:
-          "No signed collection was found for this reference. A relay may not have the event yet.",
-        variant: "warning",
-      }
-    case "partial":
-      return {
-        title: "Event evidence is incomplete",
-        message:
-          "Some relays could not be confirmed. Products backed by exact live signed evidence may remain available; unresolved products stay closed.",
-        variant: "warning",
-      }
-    case "unavailable":
-      return {
-        title: "Event relays are unavailable",
-        message:
-          "Conduit could not confirm the organizer's signed event records. Try again when relay access recovers.",
-        variant: "warning",
-      }
-    case "stale":
-      return {
-        title: "Event evidence is out of date",
-        message:
-          "Only stale signed evidence is available. Refresh before relying on the schedule, pickup, or catalog.",
-        variant: "warning",
-      }
-    case "deleted":
-      return {
-        title: "Event catalog removed",
-        message:
-          "The organizer's signed deletion is authoritative. Products and checkout are no longer shown here.",
-        variant: "destructive",
-      }
-    case "conflicting":
-      return {
-        title: "Conflicting event evidence",
-        message:
-          "The signed records do not agree on this event catalog. Conduit will not choose between them or offer checkout.",
-        variant: "destructive",
-      }
-    case "malformed":
-      return {
-        title: "Invalid event link",
-        message:
-          "This link is not a supported event-collection reference. Ask the organizer for the canonical event link.",
-        variant: "destructive",
-      }
-    case "unsupported":
-      return {
-        title: "Unsupported event catalog",
-        message:
-          "This catalog uses signed references that this version of Conduit cannot safely interpret.",
-        variant: "warning",
-      }
-    default:
-      return {
-        title: "Unsupported event catalog",
-        message:
-          "This catalog state cannot be interpreted safely by this version of Conduit.",
-        variant: "warning",
-      }
+  const presentation = getEventActionabilityPresentation({
+    state,
+    availableProductCount,
+    unresolvedProductCount,
+    requiredEventRecordsResolved,
+  })
+  if (!presentation.prominent) return null
+  return {
+    title: presentation.label,
+    message: presentation.message,
+    variant: presentation.tone,
   }
 }
 
@@ -387,7 +362,10 @@ function StatePanel({
 }) {
   const Icon = copy.variant === "secondary" ? Archive : AlertCircle
   return (
-    <section className="mx-auto max-w-2xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 sm:p-8">
+    <section
+      className="mx-auto max-w-2xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 sm:p-8"
+      role="alert"
+    >
       <Badge variant={copy.variant}>{copy.title}</Badge>
       <div className="mt-5 flex items-start gap-4">
         <Icon className="mt-0.5 h-6 w-6 shrink-0 text-[var(--text-secondary)]" />
@@ -439,6 +417,7 @@ function EventCatalogPage() {
     accountPubkey,
     authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,
+    maxUnresolvedRefetches: 2,
   })
   const organizerName = organizerPubkey
     ? getMerchantDisplayName(organizerProfile, organizerPubkey, {
@@ -446,6 +425,12 @@ function EventCatalogPage() {
       })
     : "Event organizer"
   const organizerNip05 = getProfileNip05(organizerProfile)
+  const organizerIdentity: EventActorIdentityView = organizerPubkey
+    ? getEventActorIdentityView({
+        pubkey: organizerPubkey,
+        profile: organizerProfile,
+      })
+    : { displayName: "Event organizer" }
   const merchantPubkeys = useMemo(
     () =>
       Array.from(
@@ -488,7 +473,14 @@ function EventCatalogPage() {
     )
   }
 
-  const stateCopy = getEventCatalogStateCopy(catalog.state)
+  const requiredEventRecordsResolved =
+    eventMarketRequiredRecordsResolved(catalog)
+  const stateCopy = getEventCatalogStateCopy(
+    catalog.state,
+    requiredEventRecordsResolved,
+    catalog.products.length,
+    catalog.unresolvedProductCoordinates.length
+  )
   const canRenderRetainedEvidence =
     catalog.state === "ended" ||
     catalog.state === "partial" ||
@@ -507,7 +499,7 @@ function EventCatalogPage() {
   if (!calendar || !collection || !organizerPubkey) {
     return (
       <StatePanel
-        copy={getEventCatalogStateCopy("partial")!}
+        copy={getEventCatalogStateCopy("unavailable")!}
         retrying={query.isFetching}
         onRetry={() => void query.refetch()}
       />
@@ -515,28 +507,31 @@ function EventCatalogPage() {
   }
 
   const eventPickupSummary =
-    pickups.length === 0
-      ? "Organizer handoff is not offered. Accepted merchants may provide their own pickup point."
-      : pickups.length === 1
-        ? [pickups[0]!.title, pickups[0]!.location ?? pickups[0]!.geohash]
-            .filter(Boolean)
-            .join(" / ")
-        : `${pickups.length} pickup options; each product shows who handles it.`
+    catalog.pickupCoordinate && !catalog.pickup
+      ? "Organizer handoff details are unresolved."
+      : pickups.length === 0
+        ? "Organizer handoff is not offered. Accepted merchants may provide their own pickup point."
+        : pickups.length === 1
+          ? [pickups[0]!.title, pickups[0]!.location ?? pickups[0]!.geohash]
+              .filter(Boolean)
+              .join(" / ")
+          : `${pickups.length} pickup options; each product shows who handles it.`
   const eventLocations = calendar.locations.filter(Boolean)
   const calendarLocation = eventLocations.join(" · ")
   const archived = catalog.state === "ended"
-  const stateBadge =
-    catalog.state === "active"
-      ? ({ label: "Active event", variant: "success" } as const)
-      : catalog.state === "ended"
-        ? ({ label: "Ended", variant: "secondary" } as const)
-        : ({ label: "Evidence degraded", variant: "warning" } as const)
+  const productAvailability = getEventCatalogProductAvailability(catalog)
+  const actionability = getEventActionabilityPresentation({
+    state: catalog.state,
+    ...productAvailability,
+    requiredEventRecordsResolved,
+  })
+  const relayCoverage = formatEventRelayReadCoverage(catalog.coverage)
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
       {stateCopy ? (
         <div className="flex flex-col gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
+          <div role={actionability.role}>
             <Badge variant={stateCopy.variant}>{stateCopy.title}</Badge>
             <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
               {stateCopy.message}
@@ -569,11 +564,31 @@ function EventCatalogPage() {
         <div className="grid gap-8 p-6 sm:p-8 lg:grid-cols-[minmax(0,1fr)_20rem]">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={stateBadge.variant}>{stateBadge.label}</Badge>
+              <Badge variant={actionability.tone}>{actionability.label}</Badge>
               <Badge variant="outline" className="gap-1.5">
                 <Radio className="h-3.5 w-3.5" /> Published by organizer
               </Badge>
             </div>
+            {!actionability.prominent ? (
+              <p
+                className="mt-3 text-pretty text-sm font-medium text-[var(--text-secondary)]"
+                role={actionability.role}
+                aria-live="polite"
+                data-testid="event-actionability-status"
+              >
+                {actionability.message}
+              </p>
+            ) : null}
+            {relayCoverage ? (
+              <p
+                className="mt-1 text-pretty text-xs tabular-nums text-[var(--text-muted)]"
+                role="status"
+                aria-label={`Relay read coverage: ${relayCoverage}`}
+                data-testid="event-relay-read-coverage"
+              >
+                {relayCoverage}
+              </p>
+            ) : null}
             <h1 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
               {calendar.title}
             </h1>
@@ -723,9 +738,9 @@ function EventCatalogPage() {
             role="status"
             className="mt-5 rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
           >
-            Relay coverage is degraded. Previously verified accepted products
-            remain visible, while checkout stays closed for anything without
-            current exact product and pickup evidence.
+            Some accepted products are unresolved. Previously verified product
+            details remain visible, while checkout stays closed for anything
+            without current exact product and pickup evidence.
           </div>
         ) : null}
 
@@ -756,6 +771,7 @@ function EventCatalogPage() {
                     catalog={catalog}
                     purchaseReady={!archived && catalog.purchaseReady}
                     identity={identity}
+                    organizerIdentity={organizerIdentity}
                     imageLoading={index < 3 ? "eager" : "lazy"}
                     btcUsdRate={shopperPricing.quote}
                     pricePreference={shopperPricing.preference}

@@ -48,6 +48,7 @@ describe("Merchant live account authority", () => {
       "apps/merchant/src/routes/orders.tsx",
       "apps/merchant/src/routes/payments.tsx",
       "apps/merchant/src/routes/profile.tsx",
+      "apps/merchant/src/components/MerchantEventsTimeline.tsx",
     ]
     const sources = await Promise.all(paths.map(source))
 
@@ -59,6 +60,36 @@ describe("Merchant live account authority", () => {
     )
     expect(sources[7]).toMatch(
       /useShopperTrustEvidence\([\s\S]{0,520}shouldContinue:/
+    )
+  })
+
+  it("binds timeline discovery, relationships, and profiles to the signed-in account", async () => {
+    const hook = await source(
+      "apps/merchant/src/hooks/useMerchantEventTimeline.ts"
+    )
+    const component = await source(
+      "apps/merchant/src/components/MerchantEventsTimeline.tsx"
+    )
+    expect(hook).toContain(
+      'const authenticatedPubkey = status === "connected" ? pubkey : null'
+    )
+    expect(hook).not.toContain("authenticatedPubkey: merchantPubkey")
+    expect(
+      hook.match(
+        /!signal.aborted && authGenerationRef.current === authGeneration/g
+      )
+    ).toHaveLength(6)
+    expect(hook).toMatch(
+      /session.relayScope[\s\S]{0,80}authenticatedPubkey,[\s\S]{0,30}authGeneration/
+    )
+    expect(hook).toMatch(
+      /resolveRelationshipMarkets\([\s\S]{0,100}authenticatedPubkey: string \| null/
+    )
+    expect(
+      hook.match(/signal\?\.aborted \|\| shouldContinue\?\.\(\) === false/g)
+    ).toHaveLength(2)
+    expect(component).toMatch(
+      /useProfiles\([\s\S]{0,100}accountPubkey: authenticatedPubkey,[\s\S]{0,50}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => authGenerationRef.current === authGeneration/
     )
   })
 
