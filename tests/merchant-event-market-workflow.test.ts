@@ -429,6 +429,80 @@ describe("merchant organizer event workflow", () => {
     })
   })
 
+  it.each([5, 10, 20])(
+    "retains a newer collection relationship after a crossed title write at savedAt %i",
+    (crossedSavedAt) => {
+      const storage = new MemoryStorage()
+      const reference = encodeEventMarketNaddr(COLLECTION, [
+        "wss://one.example/events",
+        "wss://two.example/events",
+      ])
+      const retained = {
+        reference,
+        title: "Current linked calendar",
+        savedAt: 10,
+        titleCollectionCoordinate: COLLECTION,
+        titleCollectionCreatedAt: 5_000,
+        titleCollectionEventId: "a".repeat(64),
+        titleCalendarCoordinate: CALENDAR,
+        titleCalendarCreatedAt: 1_000,
+        titleCalendarEventId: "b".repeat(64),
+        expectedCollectionCoordinate: COLLECTION,
+        expectedCollectionCreatedAt: 5_000,
+        expectedCollectionEventId: "a".repeat(64),
+      }
+      rememberDiscoveredEventMarket(MERCHANT, retained, storage)
+      rememberDiscoveredEventMarket(
+        MERCHANT,
+        {
+          ...retained,
+          title: "Crossed older collection",
+          savedAt: crossedSavedAt,
+          titleCollectionCreatedAt: 4_000,
+          titleCollectionEventId: "c".repeat(64),
+          titleCalendarCreatedAt: 2_000,
+          titleCalendarEventId: "d".repeat(64),
+        },
+        storage
+      )
+      expect(loadSavedDiscoveredEventMarkets(MERCHANT, storage)).toEqual([
+        { ...retained, savedAt: Math.max(retained.savedAt, crossedSavedAt) },
+      ])
+
+      rememberDiscoveredEventMarket(
+        MERCHANT,
+        {
+          ...retained,
+          title: "Obsolete calendar relationship",
+          savedAt: 30,
+          titleCollectionCreatedAt: 4_500,
+          titleCollectionEventId: "e".repeat(64),
+          titleCalendarCoordinate: `31923:${ORGANIZER}:obsolete-calendar`,
+          titleCalendarCreatedAt: 3_000,
+          titleCalendarEventId: "f".repeat(64),
+        },
+        storage
+      )
+      expect(loadSavedDiscoveredEventMarkets(MERCHANT, storage)).toEqual([
+        { ...retained, savedAt: 30 },
+      ])
+
+      const recovered = {
+        ...retained,
+        title: "Coherent newer title",
+        savedAt: 40,
+        titleCollectionCreatedAt: 6_000,
+        titleCollectionEventId: "1".repeat(64),
+        titleCalendarCreatedAt: 2_000,
+        titleCalendarEventId: "2".repeat(64),
+      }
+      rememberDiscoveredEventMarket(MERCHANT, recovered, storage)
+      expect(loadSavedDiscoveredEventMarkets(MERCHANT, storage)).toEqual([
+        recovered,
+      ])
+    }
+  )
+
   it("keeps the in-session reference when browser storage rejects writes", () => {
     const storage = {
       getItem: () => null,

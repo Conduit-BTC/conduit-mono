@@ -776,10 +776,15 @@ function mergeSavedReferences(
   )
   const expectedCalendar = mergeRecordFrontier(frontierReferences, "calendar")
   const expectedPickup = mergeRecordFrontier(frontierReferences, "pickup")
-  const anchoredTitleSources = sorted.filter(
-    (reference) =>
-      !!reference.title && !!savedOrganizerEventMarketTitleFrontiers(reference)
-  )
+  // Incoming observations precede retained rows. Start with the retained graph
+  // so a crossed observation cannot discard either of its signed frontiers.
+  const anchoredTitleSources = [...references]
+    .reverse()
+    .filter(
+      (reference) =>
+        !!reference.title &&
+        !!savedOrganizerEventMarketTitleFrontiers(reference)
+    )
   const titleSource =
     anchoredTitleSources.reduce<
       NormalizedSavedOrganizerEventMarketReference | undefined
@@ -788,6 +793,11 @@ function mergeSavedReferences(
       const candidateFrontiers =
         savedOrganizerEventMarketTitleFrontiers(candidate)!
       const currentFrontiers = savedOrganizerEventMarketTitleFrontiers(current)!
+      const collectionComparison = compareEventMarketRecordFrontier(
+        candidateFrontiers.collection,
+        currentFrontiers.collection
+      )
+      if (collectionComparison < 0) return current
       if (
         candidateFrontiers.calendar.coordinate ===
         currentFrontiers.calendar.coordinate
@@ -796,18 +806,11 @@ function mergeSavedReferences(
           candidateFrontiers.calendar,
           currentFrontiers.calendar
         )
-        if (calendarComparison !== 0) {
-          return calendarComparison > 0 ? candidate : current
-        }
+        if (calendarComparison < 0) return current
+        if (collectionComparison > 0 || calendarComparison > 0) return candidate
+        return candidate.savedAt >= current.savedAt ? candidate : current
       }
-      const collectionComparison = compareEventMarketRecordFrontier(
-        candidateFrontiers.collection,
-        currentFrontiers.collection
-      )
-      if (collectionComparison !== 0) {
-        return collectionComparison > 0 ? candidate : current
-      }
-      return candidate.savedAt > current.savedAt ? candidate : current
+      return collectionComparison > 0 ? candidate : current
     }, undefined) ?? sorted.find((reference) => reference.title)
   return {
     reference:
