@@ -11,6 +11,7 @@ import {
   __setEventMarketTestOverrides,
   EVENT_KINDS,
   publishEventMarketPickupOption,
+  publishOrganizerCollectionUpdate,
   publishOrganizerEventMarket,
   retryEventMarketPickupOption,
   retryOrganizerEventMarketRecord,
@@ -168,6 +169,50 @@ describe("organizer event-market publishing", () => {
       EVENT_KINDS.PRODUCT_COLLECTION,
     ])
     expect(result.pickup).toBeUndefined()
+  })
+
+  it("keeps live session authority on every organizer publish and exact retry", async () => {
+    const shouldContinue = () => true
+    const forwardedAuthority: Array<(() => boolean) | undefined> = []
+    const signedEvents: SignedPublicNostrEvent[] = []
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      signDraft,
+      publishWithPlanner: async (event: NDKEvent, options) => {
+        forwardedAuthority.push(options.shouldContinue)
+        signedEvents.push(event.rawEvent() as SignedPublicNostrEvent)
+        return publishResult(true)
+      },
+    })
+
+    await publishOrganizerEventMarket({ ...input(), shouldContinue })
+    await publishOrganizerCollectionUpdate({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      collection: input().collection,
+      shouldContinue,
+      now: () => 1_900_000_000_000,
+    })
+    await publishEventMarketPickupOption({
+      authorPubkey: ORGANIZER_PUBKEY,
+      pickup: input().pickup!,
+      shouldContinue,
+      onSignedEvent: () => {},
+      now: () => 1_900_000_000_000,
+    })
+    await retryOrganizerEventMarketRecord({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      signedEvent: signedEvents[0]!,
+      shouldContinue,
+    })
+    await retryEventMarketPickupOption({
+      authorPubkey: ORGANIZER_PUBKEY,
+      signedEvent: signedEvents.find(
+        (event) => event.kind === EVENT_KINDS.SHIPPING_OPTION
+      )!,
+      shouldContinue,
+    })
+
+    expect(forwardedAuthority).toEqual(Array(7).fill(shouldContinue))
   })
 
   it("waits before the next organizer approval when the app becomes hidden", async () => {
@@ -478,5 +523,42 @@ describe("organizer event-market publishing", () => {
       sig: signed.sig,
     })
     expect(published[0]?.tags).toEqual(signed.tags)
+  })
+
+  it("requires explicit matching authentication for owner relay authority on retry", async () => {
+    const signed = finalizeEvent(
+      {
+        kind: EVENT_KINDS.SHIPPING_OPTION,
+        created_at: 1_900_000_000,
+        tags: [["d", "pickup-auth"]],
+        content: "",
+      },
+      ORGANIZER_SECRET
+    )
+    const authenticatedPubkeys: Array<string | null | undefined> = []
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      publishWithPlanner: async (_event, options) => {
+        authenticatedPubkeys.push(options.authenticatedPubkey)
+        return publishResult(true)
+      },
+    })
+
+    await retryOrganizerEventMarketRecord({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      signedEvent: signed,
+    })
+    await retryOrganizerEventMarketRecord({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      authenticatedPubkey: OTHER_PUBKEY,
+      signedEvent: signed,
+    })
+    await retryOrganizerEventMarketRecord({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      authenticatedPubkey: ORGANIZER_PUBKEY,
+      signedEvent: signed,
+    })
+
+    expect(authenticatedPubkeys).toEqual([null, null, ORGANIZER_PUBKEY])
   })
 })

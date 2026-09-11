@@ -1,6 +1,12 @@
+import { useLayoutEffect, useRef } from "react"
 import { Link } from "@tanstack/react-router"
 import { AlertTriangle } from "lucide-react"
-import { isCommerceReadIncomplete, useProfile } from "@conduit/core"
+import {
+  isCommerceReadIncomplete,
+  normalizePubkey,
+  useAuth,
+  useProfile,
+} from "@conduit/core"
 import { Button } from "@conduit/ui"
 import { getProductPaymentSetupState } from "../lib/product-payment-setup"
 
@@ -11,8 +17,21 @@ export function ProductPaymentSetupNotice({
   merchantPubkey: string
   enabled?: boolean
 }) {
+  const auth = useAuth()
+  const authGenerationRef = useRef(auth.authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = auth.authGeneration
+  }, [auth.authGeneration])
+  const normalizedMerchantPubkey = normalizePubkey(merchantPubkey)
+  const authenticatedPubkey =
+    auth.status === "connected" &&
+    normalizePubkey(auth.pubkey) === normalizedMerchantPubkey
+      ? normalizedMerchantPubkey
+      : null
   const profileQuery = useProfile(merchantPubkey, {
-    authenticatedPubkey: merchantPubkey,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === auth.authGeneration,
     enabled,
     // Product authoring must eventually settle when the merchant has no
     // profile metadata; the default visible-profile query retries forever.

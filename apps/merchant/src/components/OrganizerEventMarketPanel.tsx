@@ -256,11 +256,13 @@ function DeliveryRow({
   delivery,
   retrying,
   blocked,
+  actionsDisabled,
   onRetry,
 }: {
   delivery: MerchantOrganizerRecordDelivery
   retrying: boolean
   blocked: boolean
+  actionsDisabled: boolean
   onRetry: (delivery: MerchantOrganizerRecordDelivery) => void
 }) {
   const needsRetry =
@@ -296,7 +298,7 @@ function DeliveryRow({
           type="button"
           size="sm"
           variant="outline"
-          disabled={retrying || blocked}
+          disabled={retrying || blocked || actionsDisabled}
           onClick={() => onRetry(delivery)}
         >
           <RefreshCw className={retrying ? "animate-spin" : ""} />
@@ -310,10 +312,12 @@ function DeliveryRow({
 export function OrganizerEventMarketDeliveryList({
   deliveries,
   retryingRecord,
+  actionsDisabled,
   onRetryDelivery,
 }: {
   deliveries: MerchantOrganizerRecordDelivery[]
   retryingRecord: MerchantOrganizerRecordDelivery["record"] | null
+  actionsDisabled: boolean
   onRetryDelivery: (delivery: MerchantOrganizerRecordDelivery) => void
 }) {
   if (deliveries.length === 0) return null
@@ -338,6 +342,7 @@ export function OrganizerEventMarketDeliveryList({
             key={delivery.record}
             delivery={delivery}
             retrying={retryingRecord === delivery.record}
+            actionsDisabled={actionsDisabled}
             blocked={
               delivery.record === "collection" &&
               (!prerequisiteAcknowledged("calendar") ||
@@ -515,11 +520,15 @@ function MerchantIdentity({
 
 export function OrganizerEventMarketPanel({
   market,
+  accountPubkey,
+  authenticatedPubkey,
+  shouldContinue,
   deliveries,
   copiedUrl,
   refreshing,
   membershipPending,
   actionsDisabled,
+  deliveryRetryDisabled,
   retryingRecord,
   onCopy,
   onEdit,
@@ -528,11 +537,15 @@ export function OrganizerEventMarketPanel({
   onRetryDelivery,
 }: {
   market: MerchantOrganizerEventMarket
+  accountPubkey: string
+  authenticatedPubkey: string | null
+  shouldContinue: () => boolean
   deliveries: MerchantOrganizerRecordDelivery[]
   copiedUrl: string | null
   refreshing: boolean
   membershipPending: boolean
   actionsDisabled: boolean
+  deliveryRetryDisabled: boolean
   retryingRecord: MerchantOrganizerRecordDelivery["record"] | null
   onCopy: (url: string) => void
   onEdit: () => void
@@ -575,7 +588,9 @@ export function OrganizerEventMarketPanel({
     [market.participation]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
-    authenticatedPubkey: market.organizerPubkey,
+    accountPubkey,
+    authenticatedPubkey,
+    shouldContinue,
     priority: "visible",
     maxUnresolvedRefetches: 1,
   })
@@ -847,6 +862,7 @@ export function OrganizerEventMarketPanel({
       <OrganizerEventMarketDeliveryList
         deliveries={deliveries}
         retryingRecord={retryingRecord}
+        actionsDisabled={deliveryRetryDisabled}
         onRetryDelivery={onRetryDelivery}
       />
 

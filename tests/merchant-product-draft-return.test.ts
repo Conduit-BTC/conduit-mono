@@ -37,6 +37,15 @@ class MemoryStorage implements Storage {
 }
 
 describe("merchant product draft return intent", () => {
+  it("keeps the Network return action touch-sized", async () => {
+    const source = await Bun.file("apps/merchant/src/routes/network.tsx").text()
+    const returnAction = source.match(
+      /<Button[\s\S]*?Return to product draft[\s\S]*?<\/Button>/
+    )?.[0]
+
+    expect(returnAction).toContain("min-h-11")
+  })
+
   it("stores only content-free continuation state in a merchant-scoped key", () => {
     const storage = new MemoryStorage()
     const merchantPubkey = "merchant-a"

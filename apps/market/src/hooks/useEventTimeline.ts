@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react"
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   discoverPerspectiveEventMarkets,
@@ -45,7 +45,11 @@ function uniquePubkeys(pubkeys: readonly string[] | undefined): string[] {
 export function useEventTimeline(
   requestedSource: ProductCatalogSourceMode
 ): EventTimelineDiscoveryResult {
-  const { pubkey, status } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const session = useConduitSession()
   const connected = status === "connected" && !!pubkey
   const effectiveSource = connected ? requestedSource : "conduit"
@@ -66,10 +70,12 @@ export function useEventTimeline(
       normalizedPerspectivePubkey,
       authenticatedPubkey,
     ],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       getFollowPubkeys({
         pubkey: normalizedPerspectivePubkey!,
         authenticatedPubkey,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
       }),
     enabled: firstDegreeDiscoveryEnabled,
     staleTime: 60_000,
@@ -218,6 +224,9 @@ export function useEventTimeline(
   const discoveryQuery = useQuery({
     queryKey: [
       "market-event-timeline",
+      session.relayScope ?? "no-relay-scope",
+      authenticatedPubkey,
+      authGeneration,
       effectiveSource,
       normalizedPerspectivePubkey,
       organizerKey,
@@ -233,6 +242,8 @@ export function useEventTimeline(
         includeEnded: true,
         authenticatedPubkey,
         signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
       }),
     enabled: session.relaySettingsReady && organizerPubkeys !== undefined,
     retry: false,

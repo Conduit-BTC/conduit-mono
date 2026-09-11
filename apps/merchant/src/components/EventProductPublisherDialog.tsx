@@ -62,12 +62,16 @@ function FieldError({ id, message }: { id: string; message?: string }) {
 export function EventProductPublisherDialog({
   open,
   merchantPubkey,
+  authenticatedPubkey,
+  shouldContinue,
   market,
   onOpenChange,
   onPublished,
 }: {
   open: boolean
   merchantPubkey: string
+  authenticatedPubkey: string | null
+  shouldContinue: () => boolean
   market: MerchantOrganizerEventMarket
   onOpenChange: (open: boolean) => void
   onPublished: (accepted: boolean) => void | Promise<void>
@@ -91,9 +95,18 @@ export function EventProductPublisherDialog({
     useState<ProductSignerRequestProgress | null>(null)
 
   const templatesQuery = useQuery({
-    queryKey: ["merchant-event-product-templates", merchantPubkey],
+    queryKey: [
+      "merchant-event-product-templates",
+      merchantPubkey,
+      authenticatedPubkey,
+    ],
     enabled: open && !!merchantPubkey,
-    queryFn: () => listEventProductTemplates(merchantPubkey),
+    queryFn: ({ signal }) =>
+      listEventProductTemplates(
+        merchantPubkey,
+        authenticatedPubkey,
+        () => shouldContinue() && !signal.aborted
+      ),
   })
   const templates = useMemo(
     () => templatesQuery.data ?? [],
@@ -115,6 +128,8 @@ export function EventProductPublisherDialog({
     }
     const accepted = await acceptOwnEventProduct({
       merchantPubkey,
+      authenticatedPubkey,
+      shouldContinue,
       marketReference: market.naddr,
       productCoordinate,
       signedAcceptance,
@@ -141,6 +156,8 @@ export function EventProductPublisherDialog({
     mutationFn: async () => {
       const result = await publishEventProduct({
         merchantPubkey,
+        authenticatedPubkey,
+        shouldContinue,
         marketReference: market.naddr,
         form,
         onSignerRequest: setSignerProgress,
@@ -170,7 +187,12 @@ export function EventProductPublisherDialog({
     mutationFn: async () => {
       if (!signedEvent) throw new Error("Signed product event is unavailable.")
       if (!publishedCoordinate)
-        await retryEventProductDelivery(signedEvent, merchantPubkey)
+        await retryEventProductDelivery(
+          signedEvent,
+          merchantPubkey,
+          authenticatedPubkey,
+          shouldContinue
+        )
       const dTag = signedEvent.tags.find((tag) => tag[0] === "d")?.[1]
       if (!dTag) throw new Error("Signed product coordinate is unavailable.")
       return completeAcceptance(`30402:${merchantPubkey}:${dTag}`)

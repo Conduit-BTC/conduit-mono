@@ -45,21 +45,39 @@ async function publishWithExternalSigner(
   storage: MemoryStorage
 ): Promise<SignedPublicNostrEvent> {
   let published: SignedPublicNostrEvent | null = null
+  const accountNetworkLocalStateRepository = {
+    get: async (pubkey: string) => {
+      expect(pubkey).toBe(PUBKEY)
+      return undefined
+    },
+  }
   const fetchEvents = async (
     filter: { ids?: string[] },
-    options: { relayUrls: string[] }
-  ) => ({
-    events: filter.ids?.length && published ? [published] : [],
-    eventSourceRelayUrls:
-      filter.ids?.length && published ? { [published.id]: [RELAY_URL] } : {},
-    relays: options.relayUrls.map((relayUrl) => ({
-      relayUrl,
-      status: "success" as const,
-      eventCount: filter.ids?.length && published ? 1 : 0,
-      rejectedEventCount: 0,
-    })),
-    eventsVerified: true,
-  })
+    options: {
+      relayUrls: string[]
+      accountPubkey?: string | null
+      accountNetworkLocalStateRepository?: unknown
+    }
+  ) => {
+    if (filter.ids?.length) {
+      expect(options.accountPubkey).toBe(PUBKEY)
+      expect(options.accountNetworkLocalStateRepository).toBe(
+        accountNetworkLocalStateRepository
+      )
+    }
+    return {
+      events: filter.ids?.length && published ? [published] : [],
+      eventSourceRelayUrls:
+        filter.ids?.length && published ? { [published.id]: [RELAY_URL] } : {},
+      relays: options.relayUrls.map((relayUrl) => ({
+        relayUrl,
+        status: "success" as const,
+        eventCount: filter.ids?.length && published ? 1 : 0,
+        rejectedEventCount: 0,
+      })),
+      eventsVerified: true,
+    }
+  }
   const resolution = await readMediaServerPreferences(PUBKEY, {
     storage,
     readRelayUrls: [RELAY_URL],
@@ -74,8 +92,10 @@ async function publishWithExternalSigner(
       storage,
       readRelayUrls: [RELAY_URL],
       publishRelayUrls: [RELAY_URL],
+      accountNetworkLocalStateRepository,
       fetchEvents,
       publishToRelay: async (input) => {
+        expect(input.accountPubkey).toBe(PUBKEY)
         published = input.signedEvent
         return "acked"
       },

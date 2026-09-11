@@ -1,4 +1,8 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
+import {
+  __setEventMarketTestOverrides,
+  __resetEventMarketTestOverrides,
+} from "@conduit/core"
 import type {
   EventMarketRelayCoverage,
   EventMarketResolution,
@@ -6,6 +10,7 @@ import type {
 } from "@conduit/core"
 import {
   getMerchantOrganizerEventCatalogView,
+  listOrganizerEventMarkets,
   projectOrganizerEventMarketsReadResult,
   retainMerchantOrganizerEventMarkets,
 } from "../apps/merchant/src/lib/event-market"
@@ -76,7 +81,58 @@ function organizerRead(
   }
 }
 
+afterEach(() => __resetEventMarketTestOverrides())
+
 describe("Merchant organizer event discovery evidence", () => {
+  it("forwards the live account and cancellation through detailed organizer reads", async () => {
+    const account = "c".repeat(64)
+    const controller = new AbortController()
+    let active = true
+    const shouldContinue = () => active
+    const observed: Array<{
+      authenticatedPubkey?: string | null
+      signal?: AbortSignal
+      shouldContinue?: () => boolean
+    }> = []
+    __setEventMarketTestOverrides({
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: { version: 1, updatedAt: 1, entries: [] },
+        signedRelayListAuthoritative: true,
+      }),
+      getRelayListsDetailed: async (_authors, options) => {
+        observed.push(options ?? {})
+        return {
+          relayLists: new Map(),
+          resolutionStates: new Map([[ORGANIZER, "missing"]]),
+        }
+      },
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        observed.push(options)
+        return { events: [], relays: [], eventsVerified: true }
+      },
+    })
+    const result = await listOrganizerEventMarkets(
+      ORGANIZER,
+      account,
+      controller.signal,
+      shouldContinue
+    )
+    expect(result.markets).toEqual([])
+    expect(result.resolutions).toEqual([])
+    expect(observed.length).toBeGreaterThan(0)
+    for (const options of observed) {
+      expect(options.authenticatedPubkey).toBe(account)
+      expect(options.signal).toBe(controller.signal)
+      expect(options.shouldContinue).toBe(shouldContinue)
+    }
+    active = false
+    expect(
+      observed.every((options) => options.shouldContinue?.() === false)
+    ).toBe(true)
+  })
+
   it("carries a complete read with events through the Merchant adapter", () => {
     const result = projectOrganizerEventMarketsReadResult(
       organizerRead("complete", [eventMarket()])
