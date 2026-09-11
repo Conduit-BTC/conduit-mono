@@ -949,7 +949,7 @@ test("organizer discovery retries an unavailable refresh without losing saved ev
   await expect(page.locator("#event-market-selector")).toContainText(title)
 })
 
-test("direct and pasted event imports hydrate one saved selector title under partial discovery @merchant", async ({
+test("direct and pasted event imports hydrate one saved selector title outside the selected perspective @merchant", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -973,9 +973,6 @@ test("direct and pasted event imports hydrate one saved selector title under par
   )
 
   await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
-  await expect(
-    page.getByText(/Event discovery is a partial relay view\./)
-  ).toBeVisible({ timeout: 30_000 })
   await expect(page.locator("#discovered-event-selector")).toContainText(
     eventTitle,
     { timeout: 30_000 }
@@ -1037,6 +1034,35 @@ test("direct and pasted event imports hydrate one saved selector title under par
     title: eventTitle,
     ...expectedTitleEvidence,
   })
+})
+
+test("commerce discovery finds an organizer beyond the former author cap @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const title = "Synthetic discovered commerce event"
+  const market = await publishOrganizerMarket(page, relay, {
+    title,
+    organizerHandoffEnabled: false,
+  })
+  const unrelated = Array.from({ length: 17 }, (_, index) =>
+    (index + 1).toString(16).padStart(64, "0")
+  )
+  relay.seed(
+    createFollowList(
+      "merchant",
+      [...unrelated, ORGANIZER_PUBKEY],
+      market.initialCollection.created_at + 1
+    )
+  )
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await expect(
+    page.getByRole("button", { name: `View ${title}`, exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await page.getByRole("button", { name: `View ${title}`, exact: true }).click()
+  await expect(page.locator("#discovered-event-selector")).toContainText(title)
 })
 
 test("current exact resolution refreshes a saved title without replacing its evidence @merchant", async ({
