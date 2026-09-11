@@ -1,6 +1,13 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import {
   appendConduitClientTag,
   clearProtectedReadAuthenticationSuppression,
@@ -835,18 +842,33 @@ function OrderDetail({
   row,
   buyerPubkey,
   guestIdentity,
+  authenticatedPubkey,
 }: {
   row: OrderRow
   buyerPubkey: string
   guestIdentity?: GuestOrderSigningIdentity | null
+  authenticatedPubkey?: string | null
 }) {
   const { vm, headerStatus } = row
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const shouldContinueBuyerSession = guestIdentity
+    ? undefined
+    : () => authGenerationRef.current === authGeneration
+  const shouldContinueAccountRead = () =>
+    authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
   const wallets = useWallets()
   const shopperPricing = useShopperPricing()
   const formatSats = (sats: number) =>
     shopperPricing.formatSatsAmount(sats).primary
   const { data: profile } = useProfile(row.merchantPubkey, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: shouldContinueAccountRead,
     maxUnresolvedRefetches: 1,
   })
   const merchantName = getMerchantDisplayName(profile, row.merchantPubkey)
@@ -863,6 +885,9 @@ function OrderDetail({
     [vm.pickupFulfillments]
   )
   const eventActorProfiles = useProfiles(eventActorPubkeys, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: shouldContinueAccountRead,
     enabled: eventActorPubkeys.length > 0,
     priority: "visible",
     refetchUnresolvedMs: 12_000,
@@ -928,9 +953,19 @@ function OrderDetail({
   ])
 
   const productsQuery = useQuery({
-    queryKey: ["selected-order-products", row.merchantPubkey],
+    queryKey: [
+      "selected-order-products",
+      row.merchantPubkey,
+      authenticatedPubkey ?? "guest",
+    ],
     enabled: !!row.merchantPubkey,
-    queryFn: () => fetchStoreProducts(row.merchantPubkey),
+    queryFn: ({ signal }) =>
+      fetchStoreProducts(
+        row.merchantPubkey,
+        authenticatedPubkey,
+        authenticatedPubkey,
+        () => !signal.aborted && shouldContinueAccountRead()
+      ),
   })
   const productsById = useMemo(() => {
     const map = new Map<
@@ -1010,6 +1045,9 @@ function OrderDetail({
     return {
       orderId: vm.orderId,
       buyerPubkey,
+      accountPubkey: authenticatedPubkey,
+      authenticatedPubkey,
+      shouldContinue: shouldContinueBuyerSession,
       buyerIdentity: guestIdentity ?? undefined,
       merchantPubkey: row.merchantPubkey,
       merchantLud16: lc.merchantLightningAddress ?? null,
@@ -1071,10 +1109,16 @@ function OrderDetail({
   async function retryPayment(): Promise<void> {
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
-      row.lifecycle?.merchantPubkey ?? row.merchantPubkey
+      row.lifecycle?.merchantPubkey ?? row.merchantPubkey,
+      authenticatedPubkey,
+      () => authGenerationRef.current === authGeneration
     )
     if (!pickupFreshness.fresh) throw new Error(pickupFreshness.reason)
-    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [])
+    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [], undefined, {
+      requestingAccountPubkey: authenticatedPubkey,
+      authenticatedPubkey,
+      shouldContinue: shouldContinueBuyerSession,
+    })
 
     const ctx = await persistTargetAndBuildServiceCtx()
     if (ctx.zapMode !== "anonymous_public_zap") {
@@ -1108,10 +1152,16 @@ function OrderDetail({
   async function continuePrivateFallback(): Promise<void> {
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
-      row.lifecycle?.merchantPubkey ?? row.merchantPubkey
+      row.lifecycle?.merchantPubkey ?? row.merchantPubkey,
+      authenticatedPubkey,
+      () => authGenerationRef.current === authGeneration
     )
     if (!pickupFreshness.fresh) throw new Error(pickupFreshness.reason)
-    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [])
+    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [], undefined, {
+      requestingAccountPubkey: authenticatedPubkey,
+      authenticatedPubkey,
+      shouldContinue: shouldContinueBuyerSession,
+    })
     const ctx = await persistTargetAndBuildServiceCtx()
     setPrivateFallbackOpen(false)
     await runOrderPrivateFallback(ctx)
@@ -1177,7 +1227,10 @@ function OrderDetail({
       vm.orderId,
       guestIdentity ?? undefined,
       unboundPaidInvoice,
-      merchantInvoiceReopenEvidence
+      merchantInvoiceReopenEvidence,
+      authenticatedPubkey ?? null,
+      authenticatedPubkey ?? null,
+      shouldContinueBuyerSession
     )
   }
 
@@ -1253,7 +1306,12 @@ function OrderDetail({
         rumor,
         ndk,
         row.merchantPubkey,
-        buyerPubkey
+        buyerPubkey,
+        {
+          accountPubkey: authenticatedPubkey ?? null,
+          authenticatedPubkey: authenticatedPubkey ?? null,
+          shouldContinue: shouldContinueBuyerSession,
+        }
       )
     },
     onSuccess: async () => {
@@ -1517,7 +1575,13 @@ function OrderDetail({
                 disabled={busy}
                 onClick={() =>
                   void withBusy(() =>
-                    resendOrderProof(vm.orderId, guestIdentity ?? undefined)
+                    resendOrderProof(
+                      vm.orderId,
+                      guestIdentity ?? undefined,
+                      authenticatedPubkey ?? null,
+                      authenticatedPubkey ?? null,
+                      shouldContinueBuyerSession
+                    )
                   )
                 }
               >
@@ -1985,7 +2049,11 @@ function DetailRow({
 type PhaseTab = "all" | "pending" | "in_progress" | "completed"
 
 function OrdersPage() {
-  const { pubkey, status } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const signerConnected = status === "connected" && !!pubkey
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -2131,7 +2199,16 @@ function OrdersPage() {
           guestIdentity?.orderId === lifecycle.orderId
             ? guestIdentity
             : undefined
-        void observeOrderPublicZapReceipt(lifecycle.orderId, identity)
+        void observeOrderPublicZapReceipt(
+          lifecycle.orderId,
+          identity,
+          {},
+          signerConnected ? activeBuyerPubkey : null,
+          signerConnected ? activeBuyerPubkey : null,
+          identity
+            ? undefined
+            : () => authGenerationRef.current === authGeneration
+        )
       }
     }
 
@@ -2142,7 +2219,13 @@ function OrdersPage() {
       window.removeEventListener("focus", resumeReceiptObservers)
       document.removeEventListener("visibilitychange", resumeReceiptObservers)
     }
-  }, [guestIdentity, lifecycles])
+  }, [
+    activeBuyerPubkey,
+    authGeneration,
+    guestIdentity,
+    lifecycles,
+    signerConnected,
+  ])
 
   // Merge lifecycle records and relay conversations by orderId.
   const orders = useMemo<OrderRow[]>(() => {
@@ -2190,6 +2273,9 @@ function OrdersPage() {
     [orders]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
+    accountPubkey: signerConnected ? activeBuyerPubkey : null,
+    authenticatedPubkey: signerConnected ? activeBuyerPubkey : null,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     enabled: merchantPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
@@ -2439,6 +2525,7 @@ function OrdersPage() {
                 row={selectedRow}
                 buyerPubkey={activeBuyerPubkey}
                 guestIdentity={guestIdentity}
+                authenticatedPubkey={signerConnected ? activeBuyerPubkey : null}
               />
             ) : (
               <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">

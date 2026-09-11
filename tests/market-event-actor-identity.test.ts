@@ -36,6 +36,15 @@ describe("Market event actor identity", () => {
     })
   })
 
+  it("does not label the signed handler with another account's metadata", () => {
+    expect(
+      getEventActorIdentityView({
+        pubkey: handlerPubkey,
+        profile: { pubkey: organizerPubkey, displayName: "Organizer" },
+      })
+    ).toEqual({ displayName: formatNpub(handlerPubkey, 8) })
+  })
+
   it("selects and renders the exact handler identity for both handoff modes", () => {
     const merchant: EventActorIdentityView = {
       displayName: "Staci",
@@ -114,6 +123,17 @@ describe("Market event actor identity", () => {
     expect(identityComponent).toContain("{formatNpub(pubkey, 8)}")
     expect(identityComponent).toContain("<CopyButton value={pubkey}")
     expect(identityHook).toContain("useProfiles(pubkeys")
+    expect(identityHook).toContain(
+      'session.mode === "signed_in" ? session.pubkey : null'
+    )
+    expect(identityHook).toContain("authenticatedPubkey: accountPubkey")
+    expect(identityHook).toContain(
+      "shouldContinue: () => authGenerationRef.current === authGeneration"
+    )
+    expect(identityHook).toContain("useLayoutEffect(() => {")
+    expect(identityHook).toContain(
+      "enabled: session.relaySettingsReady && pubkeys.length > 0"
+    )
     expect(identityHook).not.toContain("useProfile(")
     expect(identityHook).toContain(
       "useEventActorIdentity must be used within EventActorIdentityProvider"

@@ -24,6 +24,9 @@ export function getEventActorIdentityView(input: {
   profile?: Profile
 }): EventActorIdentityView {
   return {
-    displayName: getProfileName(input.profile) ?? formatNpub(input.pubkey, 8),
+    displayName:
+      getProfileName(
+        input.profile?.pubkey === input.pubkey ? input.profile : undefined
+      ) ?? formatNpub(input.pubkey, 8),
   }
 }

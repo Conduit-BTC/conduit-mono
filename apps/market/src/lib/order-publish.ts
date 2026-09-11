@@ -60,6 +60,9 @@ type BuyerOrderPublishDependencies = {
   publishPrivateMessageFn?: typeof publishPrivateMessage
   cacheBuyerOrderRumorFn?: typeof cacheBuyerOrderRumor
   signerInteraction?: "external" | "background_external"
+  accountPubkey?: string | null
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -139,6 +142,9 @@ async function publishOrderCompanionNotification(input: {
   merchantPubkey: string
   deliveryRoute: OrderDeliveryRoute
   publish: typeof publishPrivateMessage
+  accountPubkey: string | null
+  authenticatedPubkey: string | null
+  shouldContinue?: () => boolean
 }): Promise<OrderCompanionNotificationStatus> {
   const messageType = input.authoritativeOrder.tags.find(
     (tag) => tag[0] === "type"
@@ -172,6 +178,9 @@ async function publishOrderCompanionNotification(input: {
       signer: input.buyerIdentity.signer,
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       selfCopy: false,
+      accountPubkey: input.accountPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
+      shouldContinue: input.shouldContinue,
       signerInteraction:
         input.buyerIdentity.kind === "guest_ephemeral"
           ? "application_owned"
@@ -232,6 +241,16 @@ export async function publishBuyerOrderMessage(
   const buyerIdentity = resolveBuyerOrderSigningIdentity(ndk, buyer)
   assertBuyerOrderScope(rumor, merchantPubkey, buyerIdentity)
   prepareBuyerRumor(rumor, buyerIdentity.pubkey)
+  const accountPubkey =
+    buyerIdentity.kind === "guest_ephemeral"
+      ? null
+      : (dependencies.accountPubkey ?? null)
+  const shouldContinue =
+    buyerIdentity.kind === "guest_ephemeral"
+      ? undefined
+      : () =>
+          (dependencies.shouldContinue?.() ?? true) &&
+          ndk.signer === buyerIdentity.signer
 
   const publish = dependencies.publishPrivateMessageFn ?? publishPrivateMessage
   const {
@@ -245,6 +264,12 @@ export async function publishBuyerOrderMessage(
     signer: buyerIdentity.signer,
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: buyerIdentity.kind !== "guest_ephemeral",
+    accountPubkey,
+    authenticatedPubkey:
+      buyerIdentity.kind === "guest_ephemeral"
+        ? null
+        : dependencies.authenticatedPubkey,
+    shouldContinue,
     signerInteraction:
       buyerIdentity.kind === "guest_ephemeral"
         ? "application_owned"
@@ -277,6 +302,12 @@ export async function publishBuyerOrderMessage(
     merchantPubkey,
     deliveryRoute,
     publish,
+    accountPubkey,
+    authenticatedPubkey:
+      buyerIdentity.kind === "guest_ephemeral"
+        ? null
+        : (dependencies.authenticatedPubkey ?? null),
+    shouldContinue,
   })
   return {
     buyerSelfCopyError,

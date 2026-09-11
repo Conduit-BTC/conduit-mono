@@ -1,10 +1,13 @@
 import { describe, expect, it } from "bun:test"
 import {
+  emptyAccountNetworkLocalState,
   retryOrderRelayDelivery,
   type OrderLifecycle,
   type OrderRelayDeliveryRepository,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+
+const BUYER = "e".repeat(64)
 
 const signedWrap: SignedPublicNostrEvent = {
   id: "a".repeat(64),
@@ -19,7 +22,7 @@ const signedWrap: SignedPublicNostrEvent = {
 function lifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle {
   return {
     orderId: "order-id",
-    buyerPubkey: "buyer",
+    buyerPubkey: BUYER,
     buyerIdentityKind: "signed_in",
     merchantPubkey: "merchant",
     checkoutMode: "pay_later",
@@ -70,6 +73,10 @@ function lifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle {
   }
 }
 
+const allowAllAccountNetworkRepository = {
+  get: async () => undefined,
+}
+
 function repository(initial: OrderLifecycle): {
   repository: OrderRelayDeliveryRepository
   read: () => OrderLifecycle
@@ -94,10 +101,12 @@ describe("order relay delivery retry", () => {
     const attempts: Array<{
       relayUrl: string
       signedEvent: SignedPublicNostrEvent
+      accountPubkey: string
     }> = []
 
-    await retryOrderRelayDelivery("order-id", "buyer", {
+    await retryOrderRelayDelivery("order-id", BUYER, {
       repository: store.repository,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
       leaseOwner: "worker",
       now: () => 100,
       publisher: async (input) => {
@@ -110,6 +119,7 @@ describe("order relay delivery retry", () => {
       "wss://failed.conduit.market",
     ])
     expect(attempts[0]?.signedEvent).toEqual(signedWrap)
+    expect(attempts[0]?.accountPubkey).toBe(BUYER)
     expect(
       store
         .read()
@@ -120,8 +130,9 @@ describe("order relay delivery retry", () => {
 
   it("never lets a later timeout overwrite an existing ACK", async () => {
     const store = repository(lifecycle())
-    await retryOrderRelayDelivery("order-id", "buyer", {
+    await retryOrderRelayDelivery("order-id", BUYER, {
       repository: store.repository,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
       leaseOwner: "worker",
       now: () => 100,
       publisher: async () => "timed_out",
@@ -160,8 +171,9 @@ describe("order relay delivery retry", () => {
     const store = repository(unsafe)
     const attempts: string[] = []
 
-    await retryOrderRelayDelivery("order-id", "buyer", {
+    await retryOrderRelayDelivery("order-id", BUYER, {
       repository: store.repository,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
       leaseOwner: "worker",
       now: () => 100,
       publisher: async ({ relayUrl }) => {
@@ -173,6 +185,71 @@ describe("order relay delivery retry", () => {
     expect(attempts).toEqual(["wss://retry.conduit.market/inbox"])
   })
 
+  it("re-reads local eligibility per target and leaves an excluded relay unresolved", async () => {
+    const blockedRelayUrl = "wss://blocked.conduit.market"
+    const allowedRelayUrl = "wss://allowed.conduit.market"
+    const candidate = lifecycle()
+    candidate.orderRelayDelivery!.relayDelivery = [
+      {
+        relayUrl: blockedRelayUrl,
+        source: "declared",
+        status: "pending",
+        attemptCount: 0,
+      },
+      {
+        relayUrl: allowedRelayUrl,
+        source: "declared",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+    ]
+    const store = repository(candidate)
+    const accountState = emptyAccountNetworkLocalState(BUYER, () => 1)
+    accountState.exclusions = [
+      {
+        relayUrl: blockedRelayUrl,
+        committedAt: 1,
+        relayListFrontier: { eventId: null, createdAt: null },
+        inboxDeclarationFrontier: { eventId: null, createdAt: null },
+      },
+    ]
+    let eligibilityReads = 0
+    const accountNetworkLocalStateRepository = {
+      get: async (pubkey: string) => {
+        eligibilityReads += 1
+        expect(pubkey).toBe(BUYER)
+        return structuredClone(accountState)
+      },
+    }
+    const attempts: string[] = []
+
+    await retryOrderRelayDelivery("order-id", BUYER, {
+      repository: store.repository,
+      accountNetworkLocalStateRepository,
+      leaseOwner: "worker",
+      now: () => 100,
+      publisher: async ({
+        relayUrl,
+        signedEvent,
+        accountPubkey,
+        accountNetworkLocalStateRepository: publisherRepository,
+      }) => {
+        attempts.push(relayUrl)
+        expect(signedEvent).toEqual(signedWrap)
+        expect(accountPubkey).toBe(BUYER)
+        expect(publisherRepository).toBe(accountNetworkLocalStateRepository)
+        return "acked"
+      },
+    })
+
+    expect(eligibilityReads).toBe(3)
+    expect(attempts).toEqual([allowedRelayUrl])
+    expect(store.read().orderRelayDelivery?.relayDelivery).toMatchObject([
+      { relayUrl: blockedRelayUrl, status: "pending", attemptCount: 0 },
+      { relayUrl: allowedRelayUrl, status: "acked", attemptCount: 2 },
+    ])
+  })
+
   it("refuses background replay for a guest or different active account", async () => {
     for (const candidate of [
       lifecycle({ buyerIdentityKind: "guest_ephemeral" }),
@@ -182,7 +259,7 @@ describe("order relay delivery retry", () => {
       let attempts = 0
       await retryOrderRelayDelivery(
         "order-id",
-        candidate.buyerIdentityKind === "guest_ephemeral" ? "buyer" : "other",
+        candidate.buyerIdentityKind === "guest_ephemeral" ? BUYER : "other",
         {
           repository: store.repository,
           leaseOwner: "worker",

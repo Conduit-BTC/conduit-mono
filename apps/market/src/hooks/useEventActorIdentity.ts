@@ -4,12 +4,13 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react"
-import { useProfiles } from "@conduit/core"
+import { useAuth, useConduitSession, useProfiles } from "@conduit/core"
 import {
   getEventActorIdentityView,
   type EventActorIdentityView,
@@ -28,6 +29,13 @@ export function EventActorIdentityProvider({
 }: {
   children: ReactNode
 }) {
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const session = useConduitSession()
+  const accountPubkey = session.mode === "signed_in" ? session.pubkey : null
   const registrations = useRef(new Map<string, number>())
   const [pubkeys, setPubkeys] = useState<string[]>([])
   const register = useCallback((pubkey: string) => {
@@ -50,7 +58,10 @@ export function EventActorIdentityProvider({
     }
   }, [])
   const { data: profiles } = useProfiles(pubkeys, {
-    enabled: pubkeys.length > 0,
+    accountPubkey,
+    authenticatedPubkey: accountPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
+    enabled: session.relaySettingsReady && pubkeys.length > 0,
     priority: "visible",
     refetchUnresolvedMs: 5_000,
     maxUnresolvedRefetches: 2,

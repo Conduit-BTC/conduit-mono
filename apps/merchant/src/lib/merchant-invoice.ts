@@ -42,6 +42,13 @@ export type CreateMerchantInvoiceInput = MerchantInvoiceScope & {
   note?: string
   delivery: MerchantOrderDelivery
   source: MerchantInvoiceSelection
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
+}
+
+export type RetryMerchantInvoiceInput = MerchantInvoiceScope & {
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
 }
 
 export type MerchantInvoiceStatus =
@@ -103,7 +110,7 @@ export interface MerchantInvoiceDependencies {
 export interface MerchantInvoiceModule {
   getStatus(input: MerchantInvoiceScope): Promise<MerchantInvoiceStatus>
   createAndDeliver(input: CreateMerchantInvoiceInput): Promise<void>
-  retryDelivery(input: MerchantInvoiceScope): Promise<void>
+  retryDelivery(input: RetryMerchantInvoiceInput): Promise<void>
 }
 
 const MERCHANT_INVOICE_SOURCES: readonly MerchantInvoiceSource[] = [
@@ -351,7 +358,9 @@ async function acquireInvoice(
 }
 
 function toPublishInput(
-  pending: MerchantPendingInvoice
+  pending: MerchantPendingInvoice,
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
 ): PublishMerchantOrderMessageInput {
   const amountSats = pending.amountMsats / 1_000
   return {
@@ -372,6 +381,8 @@ function toPublishInput(
     },
     delivery: pending.delivery,
     signerInteraction: "external",
+    authenticatedPubkey,
+    shouldContinue,
   }
 }
 
@@ -400,7 +411,9 @@ function assertSavedInvoiceBuyer(
 
 async function deliverSavedInvoice(
   saved: MerchantPendingInvoice,
-  dependencies: MerchantInvoiceDependencies
+  dependencies: MerchantInvoiceDependencies,
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
 ): Promise<void> {
   if (saved.source !== "mock") {
     validateGeneratedInvoice(
@@ -417,7 +430,9 @@ async function deliverSavedInvoice(
   }
   await dependencies.store.put(attempting)
 
-  await dependencies.publish(toPublishInput(attempting))
+  await dependencies.publish(
+    toPublishInput(attempting, authenticatedPubkey, shouldContinue)
+  )
 
   const sentAt = dependencies.now()
   await dependencies.store.put({
@@ -534,7 +549,12 @@ export function createMerchantInvoiceModule(
           updatedAt: now,
         }
 
-        return deliverSavedInvoice(pending, dependencies)
+        return deliverSavedInvoice(
+          pending,
+          dependencies,
+          input.authenticatedPubkey,
+          input.shouldContinue
+        )
       })
     },
 
@@ -548,7 +568,12 @@ export function createMerchantInvoiceModule(
         )
         if (!saved) throw new Error("No saved invoice is available for retry.")
         assertSavedInvoiceBuyer(saved, scope.buyerPubkey, "retried")
-        return deliverSavedInvoice(saved, dependencies)
+        return deliverSavedInvoice(
+          saved,
+          dependencies,
+          input.authenticatedPubkey,
+          input.shouldContinue
+        )
       })
     },
   }

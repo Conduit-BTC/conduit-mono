@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import {
   AlertCircle,
   CheckCircle2,
@@ -40,9 +40,21 @@ export const Route = createFileRoute("/payments")({
 })
 
 function PaymentsPage() {
-  const { pubkey } = useAuth()
-  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
-  const updateMutation = useUpdateProfile("merchant")
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const authenticatedPubkey = status === "connected" ? pubkey : null
+  const profileQuery = useProfile(pubkey, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
+  })
+  const updateMutation = useUpdateProfile("merchant", {
+    authenticatedPubkey,
+    authGeneration,
+  })
 
   const profile = profileQuery.data
   const complete = isPaymentsComplete(profile)

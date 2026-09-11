@@ -1,4 +1,4 @@
-import { StrictMode } from "react"
+import { StrictMode, useLayoutEffect } from "react"
 import { createRoot } from "react-dom/client"
 import { RouterProvider, createRouter } from "@tanstack/react-router"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
@@ -7,6 +7,7 @@ import {
   AuthProvider,
   ConduitSessionProvider,
   pruneShopperTrustSnapshots,
+  useAuth,
 } from "@conduit/core"
 import { isProductLegalPath } from "@conduit/ui"
 import { initializeTheme } from "@conduit/ui/theme"
@@ -33,6 +34,17 @@ declare module "@tanstack/react-router" {
   }
 }
 
+function ProductDeletionDeliveryWorker(): null {
+  const { pubkey, status } = useAuth()
+  const authenticatedPubkey = status === "connected" ? pubkey : null
+
+  useLayoutEffect(
+    () => startProductDeletionDeliveryWorker(authenticatedPubkey),
+    [authenticatedPubkey]
+  )
+  return null
+}
+
 const root = createRoot(document.getElementById("root")!)
 
 if (isPublicEntry) {
@@ -42,13 +54,13 @@ if (isPublicEntry) {
     </StrictMode>
   )
 } else {
-  startProductDeletionDeliveryWorker()
   void pruneShopperTrustSnapshots()
 
   root.render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <AuthProvider signerClientIcon="/merchant-icon-192.png">
+          <ProductDeletionDeliveryWorker />
           <ConduitSessionProvider appId="merchant" allowGuest={false}>
             <RouterProvider router={router} />
           </ConduitSessionProvider>

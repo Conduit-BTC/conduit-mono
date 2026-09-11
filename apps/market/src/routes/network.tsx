@@ -1,13 +1,11 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { useCallback, useState } from "react"
 import {
-  getInboxRelayCandidates,
-  useAuth,
-  useConduitSession,
-  useInboxDeclaration,
-  useMediaServerPreferences,
-  useRelaySettings,
-} from "@conduit/core"
-import { RelaySettingsPanel } from "@conduit/ui"
+  createFileRoute,
+  type ShouldBlockFn,
+  useBlocker,
+} from "@tanstack/react-router"
+import { useAccountNetworkSettings } from "@conduit/core"
+import { RelaySettingsPanel, UnpublishedRelayChangesDialog } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/network")({
@@ -18,87 +16,47 @@ export const Route = createFileRoute("/network")({
 })
 
 function SettingsPage() {
-  const { pubkey, signer, method, authGeneration } = useAuth()
-  const session = useConduitSession()
-  const relaySettings = useRelaySettings(session.relayScope, {
-    pubkey,
-    bootstrapRelayList: false,
+  const networkSettings = useAccountNetworkSettings()
+  const [hasUnpublishedRelayChanges, setHasUnpublishedRelayChanges] =
+    useState(false)
+  const shouldBlockNavigation = useCallback<ShouldBlockFn>(
+    ({ current, next }) =>
+      hasUnpublishedRelayChanges && current.routeId !== next.routeId,
+    [hasUnpublishedRelayChanges]
+  )
+  const blocker = useBlocker({
+    shouldBlockFn: shouldBlockNavigation,
+    enableBeforeUnload: hasUnpublishedRelayChanges,
+    disabled: !hasUnpublishedRelayChanges,
+    withResolver: true,
   })
-  const inboxDeclaration = useInboxDeclaration(pubkey, {
-    enabled: session.relaySettingsReady,
-    relayScope: session.relayScope,
-  })
-  const mediaServerPreferences = useMediaServerPreferences(pubkey, {
-    enabled: session.relaySettingsReady,
-    signer,
-    authMethod: method,
-    authGeneration,
-    relayScope: session.relayScope,
-  })
+  const networkOperationInProgress = !["idle", "complete", "error"].includes(
+    networkSettings.operation.phase
+  )
+
+  const leaveAndDiscard = useCallback(() => {
+    if (blocker.status !== "blocked") return
+    blocker.proceed()
+  }, [blocker])
 
   return (
-    <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
-      <div className="mx-auto max-w-[50rem]">
-        <RelaySettingsPanel
-          settings={relaySettings.settings}
-          authEvidenceByUrl={relaySettings.authEvidenceByUrl}
-          scanningUrls={relaySettings.scanningUrls}
-          error={relaySettings.error}
-          isLoadingPublishedRelayList={
-            relaySettings.isLoadingPublishedRelayList
-          }
-          publishedRelayListUpdatedAt={
-            relaySettings.publishedRelayListUpdatedAt
-          }
-          publishingRelayList={relaySettings.publishingRelayList}
-          publishError={relaySettings.publishError}
-          onAddRelay={relaySettings.addRelay}
-          onRefreshRelay={relaySettings.refreshRelay}
-          onRemoveRelay={relaySettings.removeRelay}
-          onToggleRead={relaySettings.toggleRelayRead}
-          onToggleWrite={relaySettings.toggleRelayWrite}
-          onReset={relaySettings.resetRelaySettings}
-          onPublishRelayList={
-            pubkey ? relaySettings.publishRelayList : undefined
-          }
-          privateInbox={
-            pubkey
-              ? {
-                  status: inboxDeclaration.status,
-                  stale: inboxDeclaration.stale,
-                  distributionRepairable:
-                    inboxDeclaration.distributionRepairable,
-                  candidateRelays: getInboxRelayCandidates(
-                    relaySettings.settings.entries,
-                    inboxDeclaration.declaredRelayUrls,
-                    inboxDeclaration.retainedRelayUrls
-                  ),
-                  lookupError: inboxDeclaration.error,
-                  publishing: inboxDeclaration.publishing,
-                  publishError: inboxDeclaration.publishError,
-                  publishSuccess: inboxDeclaration.publishSuccess,
-                  publishConfirmationPending:
-                    inboxDeclaration.publishConfirmationPending,
-                  onPublish: inboxDeclaration.publishDeclaration,
-                  onRetryLookup: inboxDeclaration.refetch,
-                }
-              : undefined
-          }
-          mediaServers={
-            pubkey
-              ? {
-                  view: mediaServerPreferences.view,
-                  onAddServer: mediaServerPreferences.addServer,
-                  onRemoveServer: mediaServerPreferences.removeServer,
-                  onMoveServer: mediaServerPreferences.moveServer,
-                  onPublish: mediaServerPreferences.publish,
-                  onRetryPublish: mediaServerPreferences.retryPublish,
-                  onRetryLookup: mediaServerPreferences.refetch,
-                }
-              : undefined
-          }
-        />
+    <>
+      <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
+        <div className="mx-auto max-w-[50rem]">
+          <RelaySettingsPanel
+            controller={networkSettings}
+            onUnpublishedRelayChangesChange={setHasUnpublishedRelayChanges}
+          />
+        </div>
       </div>
-    </div>
+      <UnpublishedRelayChangesDialog
+        open={blocker.status === "blocked"}
+        operationInProgress={networkOperationInProgress}
+        onKeepEditing={() => {
+          if (blocker.status === "blocked") blocker.reset()
+        }}
+        onLeave={leaveAndDiscard}
+      />
+    </>
   )
 }
