@@ -46,6 +46,7 @@ import { RichProfileText } from "../../components/RichProfileText"
 import { ProductGridCardSkeleton } from "../../components/ProductGridCard"
 import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCard"
 import { CopyButton } from "../../components/CopyButton"
+import { LivePresenceIndicator } from "../../components/LivePresenceIndicator"
 import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
@@ -56,6 +57,7 @@ import { ProfileBanner } from "../../components/ProfileBanner"
 import { StorefrontFollowButton } from "../../components/StorefrontFollowButton"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
+import { useLivePresenceCount } from "../../hooks/useLivePresenceCount"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
 import {
   filterProductsByFacets,
@@ -136,7 +138,8 @@ function CategoryFacetButton({
 
 function StorefrontPage() {
   const { pubkey: pubkeyParam } = Route.useParams()
-  const pubkey = normalizePubkey(pubkeyParam) ?? pubkeyParam
+  const normalizedStorePubkey = normalizePubkey(pubkeyParam)
+  const pubkey = normalizedStorePubkey ?? pubkeyParam
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
@@ -150,6 +153,10 @@ function StorefrontPage() {
   const [searchDirty, setSearchDirty] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
+  const storePresenceCount = useLivePresenceCount({
+    canonicalId: normalizedStorePubkey,
+    pageType: "store",
+  })
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
     merchantPubkey: pubkey,
@@ -554,6 +561,11 @@ function StorefrontPage() {
                       </span>
                     </span>
                   </div>
+                  <LivePresenceIndicator
+                    className="mt-3"
+                    count={storePresenceCount}
+                    pageType="store"
+                  />
                 </div>
               </div>
 

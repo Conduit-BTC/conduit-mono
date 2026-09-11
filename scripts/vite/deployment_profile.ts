@@ -6,6 +6,7 @@ export type DeploymentProfileName = "preview" | "production" | "staging"
 
 export interface PublicDeploymentFeatures {
   dmCompatibilityOrderRoutingEnabled: boolean
+  livePresenceEnabled: boolean
 }
 
 export interface PublicDeploymentProfile {
@@ -78,12 +79,21 @@ function assertProfile(
       `Deployment profile ${name} has an invalid lightningNetwork.`
     )
   }
+  if (!isRecord(value.publicFeatures)) {
+    throw new Error(
+      `Deployment profile ${name} must define public feature flags.`
+    )
+  }
   if (
-    !isRecord(value.publicFeatures) ||
     typeof value.publicFeatures.dmCompatibilityOrderRoutingEnabled !== "boolean"
   ) {
     throw new Error(
       `Deployment profile ${name} must explicitly set dmCompatibilityOrderRoutingEnabled.`
+    )
+  }
+  if (typeof value.publicFeatures.livePresenceEnabled !== "boolean") {
+    throw new Error(
+      `Deployment profile ${name} must explicitly set livePresenceEnabled.`
     )
   }
 }
@@ -147,6 +157,9 @@ export function resolveDeploymentProfile(
       publicFeatures: {
         dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(
           env.VITE_DM_BOOTSTRAP_WRITES?.trim().toLowerCase() ?? ""
+        ),
+        livePresenceEnabled: ["1", "true", "on"].includes(
+          env.VITE_LIVE_PRESENCE_ENABLED?.trim().toLowerCase() ?? ""
         ),
       },
     }

@@ -109,6 +109,9 @@ export function createConduitBuildContract(appDir: string): {
         ? "true"
         : "false"
     ),
+    "import.meta.env.VITE_LIVE_PRESENCE_ENABLED": JSON.stringify(
+      profile.publicFeatures.livePresenceEnabled ? "true" : "false"
+    ),
     "import.meta.env.VITE_LIGHTNING_NETWORK": JSON.stringify(
       profile.lightningNetwork
     ),

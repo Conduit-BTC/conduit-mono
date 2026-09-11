@@ -1,0 +1,17 @@
+{
+  "name": "@conduit/presence",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "deploy:preview": "wrangler deploy --env preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.ts\""
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260828.1",
+    "typescript": "^6.0.3",
+    "wrangler": "4.127.1"
+  }
+}

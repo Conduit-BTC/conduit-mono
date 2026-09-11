@@ -30,6 +30,8 @@ interface ImportMetaEnv {
   readonly VITE_DEPLOYMENT_PROFILE?: string
   readonly VITE_PUBLIC_CONFIG_DIGEST?: string
   readonly VITE_DM_BOOTSTRAP_WRITES?: string
+  readonly VITE_LIVE_PRESENCE_ENABLED?: string
+  readonly VITE_PRESENCE_WS_URL?: string
   readonly [key: string]: string | undefined
 }
 
