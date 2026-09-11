@@ -475,6 +475,37 @@ describe("merchant invoice validation and durability", () => {
     ])
   })
 
+  it("preserves live account authority across initial and retry delivery", async () => {
+    const store = new MemoryPendingInvoiceStore()
+    const shouldContinue = mock(() => false)
+    const observedAuthority: Array<(() => boolean) | undefined> = []
+    const publish: MerchantInvoiceDependencies["publish"] = mock(
+      async (input) => {
+        observedAuthority.push(input.shouldContinue)
+      }
+    )
+    const module = createMerchantInvoiceModule(
+      createDependencies(store, { publish })
+    )
+
+    await module.createAndDeliver({
+      ...createInput(),
+      source: { type: "manual", invoice: INVOICE },
+      authenticatedPubkey: MERCHANT_PUBKEY,
+      shouldContinue,
+    })
+    await module.retryDelivery({
+      ...createInput(),
+      authenticatedPubkey: MERCHANT_PUBKEY,
+      shouldContinue,
+    })
+
+    expect(observedAuthority).toEqual([shouldContinue, shouldContinue])
+    expect(
+      observedAuthority.every((predicate) => predicate?.() === false)
+    ).toBe(true)
+  })
+
   it("does not publish when the durable checkpoint cannot be written", async () => {
     const store = new MemoryPendingInvoiceStore()
     store.failWrites = true

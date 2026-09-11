@@ -489,6 +489,49 @@ describe("candidate-first followed event-market discovery", () => {
     expect(filters.every((filter) => filter.since === undefined)).toBe(true)
   })
 
+  it("stops after account authority changes during a candidate page", async () => {
+    let active = true
+    let calls = 0
+    let hydrationCalls = 0
+    const events = Array.from({ length: 129 }, (_, index) =>
+      collectionEvent({ dTag: `cancel-${index}`, createdAt: 1000 - index })
+    )
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      collectionCandidateRelayUrls: [RELAY],
+      fetchCollectionCandidateEvents: async () => {
+        calls += 1
+        active = false
+        return {
+          events,
+          eventSourceRelayUrls: {},
+          relays: [
+            { relayUrl: RELAY, status: "success", eventCount: events.length },
+          ],
+          eventsVerified: true,
+        }
+      },
+      readOrganizerMarkets: async () => {
+        hydrationCalls += 1
+        return organizerRead([])
+      },
+    })
+    await expect(
+      discoverPerspectiveEventMarkets({
+        organizerPubkeys: [ORGANIZER],
+        shouldContinue: () => active,
+        perspective: {
+          source: "conduit",
+          coverage: "complete",
+          eventObserved: false,
+          snapshotState: "curated",
+          truncated: false,
+        },
+      })
+    ).rejects.toMatchObject({ name: "AbortError" })
+    expect(calls).toBe(1)
+    expect(hydrationCalls).toBe(0)
+  })
+
   it("paginates descending and closes an equal-created-at boundary without a global frontier cutoff", async () => {
     const newer = Array.from({ length: 128 }, (_, index) =>
       collectionEvent({ dTag: `newer-${index}`, createdAt: 1_000 - index })
@@ -503,10 +546,22 @@ describe("candidate-first followed event-market discovery", () => {
     })
     const older = collectionEvent({ dTag: "older", createdAt: 400 })
     const filters: Filter[] = []
+    const controller = new AbortController()
+    const shouldContinue = () => true
+    const repository = { get: async () => null }
     let candidateEventCount = 0
     __setFollowedEventMarketDiscoveryTestOverrides({
       collectionCandidateRelayUrls: [RELAY],
-      fetchCollectionCandidateEvents: async (filter) => {
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: { version: 1, updatedAt: 1, entries: [] },
+        signedRelayListAuthoritative: true,
+      }),
+      fetchCollectionCandidateEvents: async (filter, options) => {
+        expect(options.authenticatedPubkey).toBe(MERCHANT)
+        expect(options.accountPubkey).toBe(MERCHANT)
+        expect(options.signal).toBe(controller.signal)
+        expect(options.shouldContinue).toBe(shouldContinue)
+        expect(options.accountNetworkLocalStateRepository).toBe(repository)
         filters.push(filter)
         const events =
           filter.since === 500
@@ -526,6 +581,9 @@ describe("candidate-first followed event-market discovery", () => {
         }
       },
       readOrganizerMarkets: async (input) => {
+        expect(input.authenticatedPubkey).toBe(MERCHANT)
+        expect(input.shouldContinue).toBe(shouldContinue)
+        expect(input.accountNetworkLocalStateRepository).toBe(repository)
         candidateEventCount = input.candidateCollectionEvents?.length ?? 0
         return organizerRead([market(ORGANIZER, "older")])
       },
@@ -533,6 +591,10 @@ describe("candidate-first followed event-market discovery", () => {
 
     const result = await discoverPerspectiveEventMarkets({
       organizerPubkeys: [ORGANIZER],
+      authenticatedPubkey: MERCHANT,
+      signal: controller.signal,
+      shouldContinue,
+      accountNetworkLocalStateRepository: repository,
       perspective: {
         source: "conduit",
         coverage: "complete",
