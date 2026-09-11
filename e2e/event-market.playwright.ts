@@ -1645,6 +1645,7 @@ test("keeps exact collection retry available while rejected membership readback 
 })
 
 test("a late old collection retry ACK preserves a newer same-coordinate update @merchant", async ({
+  browser,
   page,
 }) => {
   test.setTimeout(180_000)
@@ -1684,15 +1685,47 @@ test("a late old collection retry ACK preserves a newer same-coordinate update @
   await page.reload()
   await page.getByRole("tab", { name: "My events", exact: true }).click()
   await selectOrganizerMarket(page, "Synthetic Late Retry Event")
+  const savedReferences = await page.evaluate(
+    (key) => localStorage.getItem(key),
+    savedStorageKey
+  )
+  expect(savedReferences).toBeTruthy()
+  const concurrentContext = await browser.newContext()
+  const concurrentPage = await concurrentContext.newPage()
+  await installSyntheticEnvironment(concurrentPage, relay, "late-retry-mutator")
+  await concurrentPage.addInitScript(
+    ({ key, references }) => {
+      if (references) localStorage.setItem(key, references)
+    },
+    { key: savedStorageKey, references: savedReferences }
+  )
+  await gotoAs(concurrentPage, merchantUrl, "/events", "organizer")
+  await concurrentPage
+    .getByRole("tab", { name: "My events", exact: true })
+    .click()
+  await selectOrganizerMarket(concurrentPage, "Synthetic Late Retry Event")
+  await expect(
+    concurrentPage.getByRole("button", { name: "Update event", exact: true })
+  ).toBeEnabled()
   const retryAck = relay.holdNextPublicationAck(
     (event) => event.id === market.initialCollection.id
   )
   await page.getByRole("button", { name: "Retry delivery" }).click()
   await retryAck.captured
+  await expect(
+    page.getByRole("button", { name: "Update event", exact: true })
+  ).toBeDisabled()
+  await expect(
+    page.getByRole("button", { name: "Create event", exact: true }).first()
+  ).toBeDisabled()
 
   const updateStart = relay.publications.length
-  await page.getByRole("button", { name: "Update event", exact: true }).click()
-  const editor = page.getByRole("dialog", { name: "Update event market" })
+  await concurrentPage
+    .getByRole("button", { name: "Update event", exact: true })
+    .click()
+  const editor = concurrentPage.getByRole("dialog", {
+    name: "Update event market",
+  })
   await expect(editor).toBeVisible()
   await editor
     .getByRole("textbox", { name: "Public summary Required", exact: true })
@@ -1702,7 +1735,11 @@ test("a late old collection retry ACK preserves a newer same-coordinate update @
 
   const updatedRecords = uniquePublishedEvents(
     relay.publications.slice(updateStart)
-  ).filter((event) => [31922, 31923, 30406, 30405].includes(event.kind))
+  ).filter(
+    (event) =>
+      [31922, 31923, 30406, 30405].includes(event.kind) &&
+      event.id !== market.initialCollection.id
+  )
   const updatedCollection = updatedRecords.find(
     (event) =>
       event.kind === 30405 &&
@@ -1714,6 +1751,29 @@ test("a late old collection retry ACK preserves a newer same-coordinate update @
     market.initialCollection.created_at
   )
 
+  // Separate contexts isolate mutation scopes. Transfer the persisted records
+  // explicitly to reproduce another tab advancing this account's frontier.
+  const updatedStorage = await concurrentPage.evaluate(
+    ({ savedKey, deliveryKey }) => ({
+      references: localStorage.getItem(savedKey),
+      deliveries: localStorage.getItem(deliveryKey),
+    }),
+    { savedKey: savedStorageKey, deliveryKey: deliveryStorageKey }
+  )
+  expect(updatedStorage.references).toBeTruthy()
+  expect(updatedStorage.deliveries).toBeTruthy()
+  await page.evaluate(
+    ({ savedKey, deliveryKey, references, deliveries }) => {
+      if (references) localStorage.setItem(savedKey, references)
+      if (deliveries) localStorage.setItem(deliveryKey, deliveries)
+    },
+    {
+      savedKey: savedStorageKey,
+      deliveryKey: deliveryStorageKey,
+      ...updatedStorage,
+    }
+  )
+  await concurrentContext.close()
   relay.remove(...updatedRecords)
   retryAck.release()
 

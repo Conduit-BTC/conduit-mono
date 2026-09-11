@@ -162,6 +162,33 @@ afterEach(() => {
 })
 
 describe("followed organizer event-market discovery", () => {
+  it("never synthesizes the viewed merchant as the authenticated account", async () => {
+    const viewer = "d".repeat(64)
+    const followAccounts: Array<string | null | undefined> = []
+    const organizerAccounts: Array<string | null | undefined> = []
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readFollowLists: async (query) => {
+        followAccounts.push(query.authenticatedPubkey)
+        return followRead({ pubkeys: [ORGANIZER] })
+      },
+      readOrganizerMarkets: async (input) => {
+        organizerAccounts.push(input.authenticatedPubkey)
+        return organizerRead()
+      },
+    })
+
+    await discoverFollowedOrganizerEventMarkets({ merchantPubkey: MERCHANT })
+    await discoverFollowedOrganizerEventMarkets({
+      merchantPubkey: MERCHANT,
+      authenticatedPubkey: viewer,
+    })
+
+    expect(followAccounts).toEqual([undefined, viewer])
+    expect(organizerAccounts).toEqual([undefined, viewer])
+    expect(followAccounts).not.toContain(MERCHANT)
+    expect(organizerAccounts).not.toContain(MERCHANT)
+  })
+
   it("returns a current market from a followed organizer", async () => {
     const organizerInputs: string[] = []
     __setFollowedEventMarketDiscoveryTestOverrides({

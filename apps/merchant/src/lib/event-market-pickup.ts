@@ -17,6 +17,9 @@ interface StoredMerchantPickupDelivery {
 
 export interface EnsureMerchantBoothPickupInput {
   authorPubkey: string
+  /** Active authenticated account; never inferred from authorPubkey. */
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
   dTag: string
   title: string
   location?: string
@@ -160,6 +163,8 @@ export async function ensureMerchantBoothPickup(
   if (stored && !stored.acknowledged) {
     await retryEventMarketPickupOption({
       authorPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
+      shouldContinue: input.shouldContinue,
       signedEvent: stored.signedEvent,
     })
     stored = { ...stored, acknowledged: true }
@@ -173,6 +178,8 @@ export async function ensureMerchantBoothPickup(
   input.onSignerRequest?.()
   const result = await publishEventMarketPickupOption({
     authorPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
     pickup,
     previousCreatedAt: stored?.signedEvent.created_at,
     onSignedEvent: (record) => {

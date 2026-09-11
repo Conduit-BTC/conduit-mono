@@ -4,20 +4,18 @@ import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetRelayListTestOverrides,
   __resetRelayPublishTestOverrides,
-  __resetAccountRelaySettingsProjectionsForTests,
   __setRelayListTestOverrides,
   __setRelayPublishTestOverrides,
   applyE2eRelayIsolation,
   CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_COMMERCE_DISCOVERY_RELAYS,
   config,
-  createRelaySettingsFromPreferences,
+  createInMemoryOwnerRelayListEvidenceRepository,
   deriveRelayOutcomes,
   EVENT_KINDS,
   planPublishRelays,
   publishSignedEventToRelay,
   publishWithPlanner,
-  setAccountRelaySettingsProjection,
   setActiveRelaySettingsScope,
   type RelayList,
   type SignedPublicNostrEvent,
@@ -30,6 +28,10 @@ import {
   removeSigner,
   setSigner,
 } from "../packages/core/src/protocol/ndk"
+import {
+  emptyAccountNetworkLocalState,
+  type AccountNetworkLocalStateRepository,
+} from "../packages/core/src/protocol/account-network-local-state"
 
 const NOW = 1_700_000_000_000
 const AUTHOR_SECRET = Uint8Array.from([...new Uint8Array(31), 21])
@@ -40,6 +42,53 @@ const APP_WRITE_ATTEMPT_RELAYS = CANONICAL_APP_WRITE_RELAYS.map(
   (url) => `${url}/`
 )
 const originalConfig = structuredClone(config)
+
+async function durableOwnerRelayListRepository(tags: string[][]) {
+  const repository = createInMemoryOwnerRelayListEvidenceRepository()
+  const signedEvent = finalizeEvent(
+    {
+      kind: EVENT_KINDS.RELAY_LIST,
+      created_at: Math.floor(NOW / 1_000),
+      tags,
+      content: "",
+    },
+    AUTHOR_SECRET
+  )
+  await repository.reconcile({
+    pubkey: AUTHOR_PUBKEY,
+    observations: [
+      {
+        signedEvent,
+        sourceRelayUrls: ["wss://discovery.example"],
+        observedAt: NOW,
+        completeObservedAt: NOW,
+      },
+    ],
+    lookup: {
+      observedAt: NOW,
+      coverage: "complete",
+      hadEvent: true,
+      eventId: signedEvent.id,
+    },
+  })
+  return repository
+}
+
+function accountNetworkState(
+  pubkey: string,
+  excludedRelayUrls: readonly string[]
+) {
+  const state = emptyAccountNetworkLocalState(pubkey)
+  return {
+    ...state,
+    exclusions: excludedRelayUrls.map((relayUrl, index) => ({
+      relayUrl,
+      committedAt: NOW + index,
+      relayListFrontier: { eventId: null, createdAt: null },
+      inboxDeclarationFrontier: { eventId: null, createdAt: null },
+    })),
+  }
+}
 
 function signedTestEvent(input: {
   kind?: number
@@ -217,7 +266,6 @@ describe("planPublishRelays", () => {
     Object.assign(config, structuredClone(originalConfig))
     __resetRelayListTestOverrides()
     __resetRelayPublishTestOverrides()
-    __resetAccountRelaySettingsProjectionsForTests()
     setActiveRelaySettingsScope(null)
     __resetNdkTestState()
   })
@@ -233,27 +281,42 @@ describe("planPublishRelays", () => {
     expect(Array.isArray(plan.primaryRelayUrls)).toBe(true)
   })
 
-  it("prefers the reconciled owner projection over stale self-cache hints", async () => {
-    const relayScope = `account:${AUTHOR_PUBKEY}`
+  it("admits only an explicitly owner-selected ws target in an exclusive plan", async () => {
+    const ownerWs = "ws://owner-inbox.example"
+    const remoteWs = "ws://remote-inbox.example"
+
+    expect(
+      await planPublishRelays({
+        intent: "recipient_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        authenticatedPubkey: AUTHOR_PUBKEY,
+        accountPubkey: AUTHOR_PUBKEY,
+        exclusiveRelayUrls: [ownerWs, remoteWs],
+        ownerSelectedRelayUrls: [ownerWs],
+      })
+    ).toMatchObject({ primaryRelayUrls: [ownerWs] })
+    expect(
+      await planPublishRelays({
+        intent: "recipient_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        authenticatedPubkey: AUTHOR_PUBKEY,
+        accountPubkey: AUTHOR_PUBKEY,
+        exclusiveRelayUrls: [remoteWs],
+      })
+    ).toMatchObject({ primaryRelayUrls: [] })
+  })
+
+  it("binds durable signed owner membership instead of stale self hints", async () => {
     const currentRelayUrl = "wss://current-owner.example"
     const staleRelayUrls = Array.from(
       { length: 4 },
       (_, index) => `wss://stale-owner-${index}.example`
     )
-    setAccountRelaySettingsProjection(
-      relayScope,
-      createRelaySettingsFromPreferences(
-        [
-          {
-            url: currentRelayUrl,
-            readEnabled: true,
-            writeEnabled: true,
-          },
-        ],
-        "published"
-      ),
-      { signedRelayListAuthoritative: true }
-    )
+    __setRelayPublishTestOverrides({
+      ownerRelayListEvidenceRepository: await durableOwnerRelayListRepository([
+        ["r", currentRelayUrl],
+      ]),
+    })
     setActiveRelaySettingsScope(`account:${"f".repeat(64)}`)
     __setRelayListTestOverrides({
       now: () => NOW,
@@ -273,25 +336,49 @@ describe("planPublishRelays", () => {
     expect(plan.signedRelayListAuthoritative).toBe(true)
   })
 
-  it("does not broaden signed owner authority when no Publish relay is declared", async () => {
-    const relayScope = `account:${AUTHOR_PUBKEY}`
-    const projections = [
-      createRelaySettingsFromPreferences([], "published"),
-      createRelaySettingsFromPreferences(
-        [
-          {
-            url: "wss://read-only-owner.example",
-            readEnabled: true,
-            writeEnabled: false,
-          },
-        ],
-        "published"
-      ),
-    ]
+  it("publishes through an owner-selected ws relay without admitting remote ws", async () => {
+    const ownerWs = "ws://owner-publish.example"
+    const remoteWs = "ws://remote-recipient.example"
+    const attempts: string[][] = []
+    __setRelayPublishTestOverrides({
+      ownerRelayListEvidenceRepository: await durableOwnerRelayListRepository([
+        ["r", ownerWs, "write"],
+      ]),
+    })
+    const event = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => accountNetworkState(pubkey, []),
+    }
 
-    for (const projection of projections) {
-      setAccountRelaySettingsProjection(relayScope, projection, {
-        signedRelayListAuthoritative: true,
+    const result = await publishWithPlanner(event, {
+      intent: "author_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      authenticatedPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: repository,
+      extraRelayUrls: [remoteWs],
+    })
+
+    expect(result.attemptedRelayUrls).toEqual([ownerWs])
+    expect(attempts).toEqual([[`${ownerWs}/`]])
+  })
+
+  it("does not broaden signed owner authority when no Publish relay is declared", async () => {
+    const cases = [[], [["r", "wss://read-only-owner.example", "read"]]]
+
+    for (const tags of cases) {
+      __setRelayPublishTestOverrides({
+        ownerRelayListEvidenceRepository:
+          await durableOwnerRelayListRepository(tags),
       })
       let publishCalls = 0
       const event = signedTestEvent({
@@ -310,6 +397,18 @@ describe("planPublishRelays", () => {
       ).rejects.toThrow("signed Network settings have no usable Publish relay")
       expect(publishCalls).toBe(0)
     }
+  })
+
+  it("never infers account authority from the ambient active scope", async () => {
+    setActiveRelaySettingsScope(`account:${"f".repeat(64)}`)
+
+    const plan = await planPublishRelays({
+      intent: "author_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      authenticatedPubkey: AUTHOR_PUBKEY,
+    })
+
+    expect(plan.signedRelayListAuthoritative).not.toBe(true)
   })
 
   it("merges recipient read relays into a recipient_event primary set", async () => {
@@ -459,19 +558,19 @@ describe("planPublishRelays", () => {
     expect(planned).toBe(false)
   })
 
-  it("refuses tiny NIP-65 relay-list publishes before planning relays", async () => {
+  it("allows a single Publish relay before planning relays", async () => {
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.RELAY_LIST,
+      tags: [["r", "wss://only.conduit.market"]],
+      content: "",
+      publish: async () => new Set(),
+    })
     await expect(
-      publishWithPlanner(
-        {
-          kind: EVENT_KINDS.RELAY_LIST,
-          tags: [["r", "wss://only.conduit.market"]],
-        } as never,
-        {
-          intent: "author_event",
-          authorPubkey: "alice",
-        }
-      )
-    ).rejects.toThrow("Refusing to publish a tiny NIP-65 relay list")
+      publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).resolves.toBeDefined()
   })
 
   it("uses the app write relay for NIP-65 publishes without a planner target", async () => {
@@ -575,6 +674,53 @@ describe("planPublishRelays", () => {
         }
       )
     ).rejects.toThrow("signer session changed")
+    expect(publishes).toBe(0)
+  })
+
+  it("cancels before final planner publication when account policy loading changes the session", async () => {
+    const relayUrl = "ws://owner-final-publish.example"
+    const ownerRelayListEvidenceRepository =
+      await durableOwnerRelayListRepository([["r", relayUrl, "write"]])
+    let current = true
+    let durableReads = 0
+    let publishes = 0
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => {
+        durableReads += 1
+        if (durableReads === 2) current = false
+        return accountNetworkState(pubkey, [])
+      },
+    }
+    __setRelayPublishTestOverrides({
+      ownerRelayListEvidenceRepository,
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        signedRelayListAuthoritative: true,
+        primaryRelayUrls: [relayUrl],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(
+        signedTestEvent({
+          publish: async () => {
+            publishes += 1
+            return new Set()
+          },
+        }),
+        {
+          intent: "author_event",
+          authorPubkey: AUTHOR_PUBKEY,
+          authenticatedPubkey: AUTHOR_PUBKEY,
+          accountPubkey: AUTHOR_PUBKEY,
+          accountNetworkLocalStateRepository: repository,
+          shouldContinue: () => current,
+        }
+      )
+    ).rejects.toThrow("signer session changed")
+    expect(durableReads).toBe(2)
     expect(publishes).toBe(0)
   })
 
@@ -755,6 +901,10 @@ describe("planPublishRelays", () => {
     const result = await publishWithPlanner(fakeEvent, {
       intent: "author_event",
       authorPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: {
+        get: async (pubkey) => accountNetworkState(pubkey, []),
+      },
       extraRelayUrls: ["wss://relay.damus.io"],
     })
 
@@ -886,6 +1036,41 @@ describe("planPublishRelays", () => {
       expect(fakeWebSocket.sentEvents).toEqual([expectedEvent])
       expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
       expect(fakeWebSocket.counters).toEqual({ opened: 1, closed: 1 })
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
+  it("cancels an exact owner-selected publish when account policy loading changes the session", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket()
+    const relayUrl = "ws://owner-exact-publish.example"
+    const signedEvent = signedRawTestEvent({ kind: EVENT_KINDS.DELETION })
+    let current = true
+    let durableReads = 0
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => {
+        durableReads += 1
+        current = false
+        return accountNetworkState(pubkey, [])
+      },
+    }
+
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent,
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+          authenticatedPubkey: AUTHOR_PUBKEY,
+          ownerSelectedRelayUrls: [relayUrl],
+          accountPubkey: AUTHOR_PUBKEY,
+          accountNetworkLocalStateRepository: repository,
+          shouldContinue: () => current,
+        })
+      ).rejects.toThrow("signer session changed")
+      expect(durableReads).toBe(1)
+      expect(fakeWebSocket.counters.opened).toBe(0)
+      expect(fakeWebSocket.sentEvents).toEqual([])
     } finally {
       fakeWebSocket.restore()
     }
@@ -1048,7 +1233,10 @@ describe("planPublishRelays", () => {
 
   it("preserves an authenticated author's exact local relay target", async () => {
     const fakeWebSocket = installRelayPublishWebSocket()
-    const relayUrl = "ws://127.0.0.1:7777"
+    const relayUrl = "ws://owner-selected.example"
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => accountNetworkState(pubkey, []),
+    }
 
     try {
       await expect(
@@ -1057,6 +1245,9 @@ describe("planPublishRelays", () => {
           relayUrl,
           authorPubkey: AUTHOR_PUBKEY,
           authenticatedPubkey: AUTHOR_PUBKEY,
+          accountPubkey: AUTHOR_PUBKEY,
+          ownerSelectedRelayUrls: [relayUrl],
+          accountNetworkLocalStateRepository: repository,
         })
       ).resolves.toBe("acked")
       expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
@@ -1109,6 +1300,50 @@ describe("planPublishRelays", () => {
     }
   })
 
+  it("rejects caller-asserted owner ws authority without the account boundary", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket()
+    const relayUrl = "ws://owner-without-account.example"
+
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+          authenticatedPubkey: AUTHOR_PUBKEY,
+          ownerSelectedRelayUrls: [relayUrl],
+        })
+      ).rejects.toThrow("public or authenticated relay target")
+      expect(fakeWebSocket.counters.opened).toBe(0)
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
+  it("rejects remote ws even when an authenticated account is present", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket()
+    const remoteWs = "ws://remote-recipient.example"
+
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: remoteWs,
+          authorPubkey: AUTHOR_PUBKEY,
+          authenticatedPubkey: AUTHOR_PUBKEY,
+          accountPubkey: AUTHOR_PUBKEY,
+          ownerSelectedRelayUrls: ["ws://different-owner-selection.example"],
+          accountNetworkLocalStateRepository: {
+            get: async (pubkey) => accountNetworkState(pubkey, []),
+          },
+        })
+      ).rejects.toThrow("public or authenticated relay target")
+      expect(fakeWebSocket.counters.opened).toBe(0)
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
   it("rejects an exact private WSS relay outside the authenticated author context", async () => {
     const fakeWebSocket = installRelayPublishWebSocket()
 
@@ -1129,6 +1364,9 @@ describe("planPublishRelays", () => {
   it("preserves an authenticated author's exact private WSS target", async () => {
     const fakeWebSocket = installRelayPublishWebSocket()
     const relayUrl = "wss://127.0.0.1:7447"
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => accountNetworkState(pubkey, []),
+    }
 
     try {
       await expect(
@@ -1137,6 +1375,9 @@ describe("planPublishRelays", () => {
           relayUrl,
           authorPubkey: AUTHOR_PUBKEY,
           authenticatedPubkey: AUTHOR_PUBKEY,
+          accountPubkey: AUTHOR_PUBKEY,
+          ownerSelectedRelayUrls: [relayUrl],
+          accountNetworkLocalStateRepository: repository,
         })
       ).resolves.toBe("acked")
       expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
@@ -1498,6 +1739,230 @@ describe("planPublishRelays", () => {
     expect(attempts[2]).toContain(APP_WRITE_ATTEMPT_RELAYS[0])
     expect(result.successfulRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
     expect(result.failedRelayUrls).toContain(primaryRelay)
+  })
+
+  it("filters a stale publish plan by explicit account without changing other or public callers", async () => {
+    const relayUrl = "wss://stale-publish-plan.conduit.market"
+    const attempts: string[][] = []
+    const queriedPubkeys: string[] = []
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => {
+        queriedPubkeys.push(pubkey)
+        return accountNetworkState(
+          pubkey,
+          pubkey === AUTHOR_PUBKEY ? [relayUrl] : []
+        )
+      },
+    }
+    const event = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        signedRelayListAuthoritative: true,
+        primaryRelayUrls: [relayUrl],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        accountPubkey: AUTHOR_PUBKEY,
+        accountNetworkLocalStateRepository: repository,
+      })
+    ).rejects.toThrow("no primary relay accepted")
+    await expect(
+      publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        accountPubkey: OTHER_AUTHOR_PUBKEY,
+        accountNetworkLocalStateRepository: repository,
+      })
+    ).resolves.toMatchObject({ attemptedRelayUrls: [relayUrl] })
+    const explicitAccountQueryCount = queriedPubkeys.length
+    await expect(
+      publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        accountNetworkLocalStateRepository: repository,
+      })
+    ).resolves.toMatchObject({ attemptedRelayUrls: [relayUrl] })
+
+    expect(attempts).toEqual([[`${relayUrl}/`], [`${relayUrl}/`]])
+    expect(queriedPubkeys).toHaveLength(explicitAccountQueryCount)
+    expect(new Set(queriedPubkeys)).toEqual(
+      new Set([AUTHOR_PUBKEY, OTHER_AUTHOR_PUBKEY])
+    )
+  })
+
+  it("re-checks a broadcast target after the primary attempt commits its removal", async () => {
+    const primaryRelay = "wss://primary-before-removal.conduit.market"
+    const broadcastRelay = "wss://removed-broadcast.conduit.market"
+    const attempts: string[][] = []
+    let removalCommitted = false
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) =>
+        accountNetworkState(pubkey, removalCommitted ? [broadcastRelay] : []),
+    }
+    const event = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        removalCommitted = true
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [broadcastRelay],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    const result = await publishWithPlanner(event, {
+      intent: "author_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: repository,
+    })
+
+    expect(attempts).toEqual([[`${primaryRelay}/`]])
+    expect(result.attemptedRelayUrls).toEqual([primaryRelay])
+    expect(result.successfulRelayUrls).toEqual([primaryRelay])
+    expect(result.failedRelayUrls).toEqual([])
+  })
+
+  it("refuses an excluded exclusive target without entering NDK publish", async () => {
+    const relayUrl = "wss://excluded-private-inbox.conduit.market"
+    let publishCalls = 0
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => accountNetworkState(pubkey, [relayUrl]),
+    }
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.GIFT_WRAP,
+      publish: async () => {
+        publishCalls += 1
+        return new Set()
+      },
+    })
+
+    await expect(
+      publishWithPlanner(event, {
+        intent: "recipient_event",
+        authorPubkey: "alice",
+        recipientPubkeys: ["bob"],
+        exclusiveRelayUrls: [relayUrl],
+        accountPubkey: AUTHOR_PUBKEY,
+        accountNetworkLocalStateRepository: repository,
+      })
+    ).rejects.toThrow("required exclusive relay set")
+    expect(publishCalls).toBe(0)
+  })
+
+  it("suppresses retry and recipient fallback relays removed after the primary attempt", async () => {
+    const primaryRelay = "wss://removed-between-attempts.conduit.market"
+    const excludedAfterCommit = Array.from(
+      new Set([
+        primaryRelay,
+        ...config.appWriteRelayUrls,
+        ...config.commerceDmFallbackRelayUrls,
+      ])
+    )
+    const attempts: string[][] = []
+    let removalCommitted = false
+    let durableReads = 0
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => {
+        durableReads += 1
+        return accountNetworkState(
+          pubkey,
+          removalCommitted ? excludedAfterCommit : []
+        )
+      },
+    }
+    const event = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        removalCommitted = true
+        throw new Error("primary failed after local removal committed")
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "recipient_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(event, {
+        intent: "recipient_event",
+        authorPubkey: "alice",
+        recipientPubkeys: ["bob"],
+        deliveryMode: "critical",
+        accountPubkey: AUTHOR_PUBKEY,
+        accountNetworkLocalStateRepository: repository,
+      })
+    ).rejects.toThrow("no account-eligible relay target remains")
+
+    expect(attempts).toEqual([[`${primaryRelay}/`]])
+    expect(durableReads).toBeGreaterThanOrEqual(3)
+  })
+
+  it("suppresses an excluded exact publish without inferring the account from its author", async () => {
+    const relayUrl = "wss://excluded-exact-publish.conduit.market"
+    const fakeWebSocket = installRelayPublishWebSocket()
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => accountNetworkState(pubkey, [relayUrl]),
+    }
+    const signedEvent = signedRawTestEvent({ kind: EVENT_KINDS.DELETION })
+
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent,
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+          accountPubkey: AUTHOR_PUBKEY,
+          accountNetworkLocalStateRepository: repository,
+        })
+      ).rejects.toThrow("exact relay is not eligible")
+      expect(fakeWebSocket.counters.opened).toBe(0)
+
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent,
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+          accountNetworkLocalStateRepository: repository,
+        })
+      ).resolves.toBe("acked")
+      expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
+    } finally {
+      fakeWebSocket.restore()
+    }
   })
 
   it("does not fall through to NDK default publishing without an approved target", async () => {

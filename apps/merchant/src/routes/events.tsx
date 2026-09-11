@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { CalendarDays, Loader2, Plus, Search } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -140,9 +140,15 @@ function expectedEventMarketFrontiers(
 }
 
 function EventsPage() {
-  const { pubkey } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const { event } = Route.useSearch()
   const merchantPubkey = pubkey ?? ""
+  const authenticatedPubkey = status === "connected" ? pubkey : null
+  const shouldContinue = () => authGenerationRef.current === authGeneration
 
   return (
     <div className="mx-auto max-w-[68rem] space-y-6 py-2 sm:py-6">
@@ -169,6 +175,8 @@ function EventsPage() {
           <FindEventsPanel
             key={merchantPubkey}
             merchantPubkey={merchantPubkey}
+            authenticatedPubkey={authenticatedPubkey}
+            shouldContinue={shouldContinue}
             initialReference={event}
           />
         </TabsContent>
@@ -176,6 +184,8 @@ function EventsPage() {
           <MyEventsPanel
             key={merchantPubkey}
             organizerPubkey={merchantPubkey}
+            authenticatedPubkey={authenticatedPubkey}
+            shouldContinue={shouldContinue}
           />
         </TabsContent>
       </Tabs>
@@ -210,9 +220,13 @@ function loadInitialDiscoveredSelection(
 
 function FindEventsPanel({
   merchantPubkey,
+  authenticatedPubkey,
+  shouldContinue,
   initialReference,
 }: {
   merchantPubkey: string
+  authenticatedPubkey: string | null
+  shouldContinue: () => boolean
   initialReference?: string
 }) {
   const [initialSelection] = useState(() =>
@@ -242,10 +256,18 @@ function FindEventsPanel({
   }, [initialReference, merchantPubkey])
 
   const discoveryQuery = useQuery({
-    queryKey: ["merchant-followed-event-markets", merchantPubkey || "none"],
+    queryKey: [
+      "merchant-followed-event-markets",
+      merchantPubkey || "none",
+      authenticatedPubkey ?? "disconnected",
+    ],
     enabled: !!merchantPubkey,
     queryFn: ({ signal }) =>
-      discoverFollowedEventMarkets(merchantPubkey, { signal }),
+      discoverFollowedEventMarkets(merchantPubkey, {
+        authenticatedPubkey,
+        signal,
+        shouldContinue: () => !signal.aborted && shouldContinue(),
+      }),
     refetchInterval: 60_000,
     retry: false,
   })
@@ -263,6 +285,7 @@ function FindEventsPanel({
     queryKey: [
       "merchant-discovered-event-market",
       merchantPubkey || "none",
+      authenticatedPubkey ?? "disconnected",
       selectedReference || "none",
     ],
     enabled: !!merchantPubkey && !!selectedReference,
@@ -270,8 +293,9 @@ function FindEventsPanel({
       resolveOrganizerEventMarket(
         selectedReference,
         undefined,
-        merchantPubkey,
-        signal
+        authenticatedPubkey,
+        signal,
+        () => !signal.aborted && shouldContinue()
       ),
     retry: false,
   })
@@ -550,6 +574,8 @@ function FindEventsPanel({
       {selectedMarket && (
         <MerchantEventMarketPanel
           merchantPubkey={merchantPubkey}
+          authenticatedPubkey={authenticatedPubkey}
+          shouldContinue={shouldContinue}
           market={selectedMarket}
           refreshing={
             discoveryQuery.isFetching || selectedMarketQuery.isFetching
@@ -566,7 +592,15 @@ function FindEventsPanel({
   )
 }
 
-function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
+function MyEventsPanel({
+  organizerPubkey,
+  authenticatedPubkey,
+  shouldContinue,
+}: {
+  organizerPubkey: string
+  authenticatedPubkey: string | null
+  shouldContinue: () => boolean
+}) {
   const queryClient = useQueryClient()
   const organizerAuthorityMutationScope = useMemo(
     () => ({ id: `merchant-organizer-event-authority:${organizerPubkey}` }),
@@ -599,9 +633,19 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   }, [handoffDeliveryRevision, organizerPubkey])
 
   const marketsQuery = useQuery({
-    queryKey: ["merchant-organizer-event-markets", organizerPubkey || "none"],
+    queryKey: [
+      "merchant-organizer-event-markets",
+      organizerPubkey || "none",
+      authenticatedPubkey ?? "disconnected",
+    ],
     enabled: !!organizerPubkey,
-    queryFn: () => listOrganizerEventMarkets(organizerPubkey),
+    queryFn: ({ signal }) =>
+      listOrganizerEventMarkets(
+        organizerPubkey,
+        authenticatedPubkey,
+        signal,
+        () => !signal.aborted && shouldContinue()
+      ),
     refetchInterval: 30_000,
   })
   const markets = useMemo(() => marketsQuery.data ?? [], [marketsQuery.data])
@@ -665,8 +709,14 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       !!organizerPubkey &&
       !!selectedReference &&
       shouldResolveSelectedReference,
-    queryFn: () =>
-      resolveOrganizerEventMarketRead(selectedReference, organizerPubkey),
+    queryFn: ({ signal }) =>
+      resolveOrganizerEventMarketRead(
+        selectedReference,
+        organizerPubkey,
+        authenticatedPubkey,
+        signal,
+        () => !signal.aborted && shouldContinue()
+      ),
     retry: false,
   })
   const selectedResolution =
@@ -750,6 +800,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     queryKey: [
       "merchant-organizer-handoff-merchandise",
       organizerPubkey || "none",
+      authenticatedPubkey ?? "disconnected",
       selectedHandoffActionableMarket?.collectionCoordinate ?? "none",
       handoffClaimIds || "none",
     ],
@@ -758,7 +809,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       !!selectedHandoffActionableMarket &&
       selectedHandoffActionableMarket.organizerPubkey === organizerPubkey &&
       handoffClaims.length > 0,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const entries = await Promise.all(
         handoffClaims.map(async (claim) => {
           try {
@@ -767,7 +818,10 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
               {
                 resolution: await resolveOrganizerHandoffMerchandise({
                   organizerPubkey,
+                  authenticatedPubkey,
                   claim,
+                  signal,
+                  shouldContinue: () => !signal.aborted && shouldContinue(),
                 }),
                 error: false,
               },
@@ -847,6 +901,8 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     }) =>
       publishMerchantOrganizerEventMarket({
         organizerPubkey,
+        authenticatedPubkey,
+        shouldContinue,
         form: input.form,
         existing: input.existing,
         onSignedEvent: (record, reference) => {
@@ -926,6 +982,8 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     mutationFn: (input: OrganizerMembershipMutationInput) =>
       publishMerchantOrganizerMembership({
         organizerPubkey,
+        authenticatedPubkey,
+        shouldContinue,
         market: input.market,
         item: input.item,
         action: input.action,
@@ -977,6 +1035,8 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     mutationFn: (input: OrganizerRetryMutationInput) =>
       retryMerchantOrganizerRecord({
         organizerPubkey,
+        authenticatedPubkey,
+        shouldContinue,
         record: input.record,
       }),
     onSuccess: async (delivery, input) => {
@@ -1076,11 +1136,16 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       }
       const merchandise = await resolveOrganizerHandoffMerchandise({
         organizerPubkey,
+        authenticatedPubkey,
         claim: freshClaim,
+        shouldContinue,
       })
       const freshMarket = await resolveOrganizerEventMarket(
         initiatingReference,
-        organizerPubkey
+        organizerPubkey,
+        authenticatedPubkey,
+        undefined,
+        shouldContinue
       )
       const latestSavedReference =
         findSavedOrganizerEventMarketReference(
@@ -1103,6 +1168,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         market: freshMarket.source,
         merchandise,
         signer: ndk.signer,
+        transport: { authenticatedPubkey, shouldContinue },
       })
     },
     onSuccess: async () => {
@@ -1464,6 +1530,9 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         <>
           <OrganizerEventMarketPanel
             market={selectedPresentedMarket ?? selectedMarket}
+            accountPubkey={organizerPubkey}
+            authenticatedPubkey={authenticatedPubkey}
+            shouldContinue={shouldContinue}
             deliveries={deliveries}
             copiedUrl={copiedUrl}
             refreshing={
