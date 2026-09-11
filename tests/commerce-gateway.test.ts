@@ -913,6 +913,224 @@ describe("commerce gateway", () => {
     ).toBe(true)
   })
 
+  it.each(["source-hinted", "unhinted"] as const)(
+    "keeps distinct %s variation families within independent relay plans",
+    async (referenceKind) => {
+      const families = Array.from({ length: 7 }, (_, index) => {
+        const pubkey = (index + 1).toString(16).padStart(64, "0")
+        const parentDTag = `source-only-family-${index}`
+        const childDTag = `${parentDTag}-child`
+        const siblingDTag = `${parentDTag}-sibling`
+        const parentAddress = `30402:${pubkey}:${parentDTag}`
+        const childAddress = `30402:${pubkey}:${childDTag}`
+        const siblingAddress = `30402:${pubkey}:${siblingDTag}`
+        const sourceRelayUrl = `wss://family-source-${index}.conduit.market`
+        const familyRelayUrl = `wss://family-author-${index}.conduit.market`
+        return {
+          pubkey,
+          parentDTag,
+          childDTag,
+          parentAddress,
+          childAddress,
+          siblingAddress,
+          sourceRelayUrl,
+          familyRelayUrl,
+          parent: makeGammaProductEvent({
+            pubkey,
+            id: `source-only-parent-${index}`,
+            dTag: parentDTag,
+            createdAt: 100 + index * 2,
+            title: `Source-only family ${index}`,
+            type: "variable",
+          }),
+          child: makeGammaProductEvent({
+            pubkey,
+            id: `source-only-child-${index}`,
+            dTag: childDTag,
+            createdAt: 101 + index * 2,
+            title: `Source-only family ${index} child`,
+            type: "variation",
+            parentProductId: parentAddress,
+            size: "Only",
+          }),
+          sibling: makeGammaProductEvent({
+            pubkey,
+            id: `source-only-sibling-${index}`,
+            dTag: siblingDTag,
+            createdAt: 102 + index * 2,
+            title: `Source-only family ${index} sibling`,
+            type: "variation",
+            parentProductId: parentAddress,
+            size: "Other",
+          }),
+        }
+      })
+      const firstFamilyHistoricalRelayUrls = Array.from(
+        { length: 6 },
+        (_, index) => `wss://family-history-${index}.conduit.market`
+      )
+      if (referenceKind === "source-hinted") {
+        for (const relayUrl of firstFamilyHistoricalRelayUrls) {
+          attachEventSourceRelayUrl(families[0]!.child, relayUrl)
+        }
+      }
+      const familyAttempts: Array<{
+        kind: "parent" | "sibling"
+        dTags: string[]
+        parentAddresses: string[]
+        relayUrls: string[]
+      }> = []
+
+      __setRelayListTestOverrides({
+        loadCached: async (pubkey) => {
+          const family = families.find(
+            (candidate) => candidate.pubkey === pubkey
+          )
+          return family
+            ? {
+                pubkey,
+                readRelayUrls: [],
+                writeRelayUrls: [family.familyRelayUrl],
+                eventCreatedAt: 1,
+                cachedAt: FIXED_NOW,
+              }
+            : undefined
+        },
+      })
+
+      __setCommerceTestOverrides({
+        fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+          const relayUrls = [...(options?.relayUrls ?? [])]
+          const dTags = [...(filter["#d"] ?? [])]
+          const parentAddresses = [...(filter["#a"] ?? [])]
+          const parentRead = families.some(({ parentDTag }) =>
+            dTags.includes(parentDTag)
+          )
+          const directChildRead = families.some(({ childDTag }) =>
+            dTags.includes(childDTag)
+          )
+          if (
+            filter.kinds?.includes(EVENT_KINDS.PRODUCT) &&
+            (parentRead || parentAddresses.length > 0)
+          ) {
+            familyAttempts.push({
+              kind: parentRead ? "parent" : "sibling",
+              dTags,
+              parentAddresses,
+              relayUrls,
+            })
+          }
+          const events = families.flatMap((family) => [
+            ...(directChildRead &&
+            (referenceKind === "unhinted" ||
+              relayUrls.includes(family.sourceRelayUrl))
+              ? [family.child]
+              : []),
+            ...(relayUrls.includes(family.familyRelayUrl)
+              ? [family.parent, family.child, family.sibling]
+              : []),
+          ])
+          return {
+            events: events.filter(
+              (event) =>
+                (!filter.kinds || filter.kinds.includes(event.kind)) &&
+                (!filter.authors || filter.authors.includes(event.pubkey)) &&
+                (!filter["#d"] ||
+                  event.tags.some(
+                    (tag) =>
+                      tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                  )) &&
+                (!filter["#a"] ||
+                  event.tags.some(
+                    (tag) =>
+                      tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+                  ))
+            ) as never,
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: relayUrls,
+            failedRelayUrls: [],
+            cappedRelayUrls: [],
+          }
+        },
+      })
+
+      const result = await getProductsByIds(
+        families.map(({ childAddress, sourceRelayUrl }) =>
+          referenceKind === "source-hinted"
+            ? encodeProductNaddr(childAddress, [sourceRelayUrl])
+            : childAddress
+        )
+      )
+
+      expect(result.data.map((record) => record.addressId).sort()).toEqual(
+        families.map(({ childAddress }) => childAddress).sort()
+      )
+      expect(result.diagnostics).toHaveLength(families.length)
+      const firstDiagnostic = result.diagnostics.find(
+        (diagnostic) => diagnostic.addressId === families[0]!.childAddress
+      )
+      if (referenceKind === "source-hinted") {
+        // The exact selected child was read live, so it remains usable while
+        // the family coverage reports that older source hints were capped.
+        expect(firstDiagnostic?.issue).toBeNull()
+        expect(firstDiagnostic?.coverage?.listing).toBe("partial")
+        expect(result.meta.degraded).toBe(true)
+        expect(result.meta.capped).toBe(true)
+        const firstFamilyAttemptRelayUrls = new Set(
+          familyAttempts
+            .filter(
+              ({ dTags, parentAddresses }) =>
+                dTags.includes(families[0]!.parentDTag) ||
+                parentAddresses.includes(families[0]!.parentAddress)
+            )
+            .flatMap(({ relayUrls }) => relayUrls)
+        )
+        expect(
+          firstFamilyHistoricalRelayUrls.some(
+            (relayUrl) => !firstFamilyAttemptRelayUrls.has(relayUrl)
+          )
+        ).toBe(true)
+      } else {
+        expect(
+          result.diagnostics.every(
+            (diagnostic) =>
+              diagnostic.issue === null &&
+              diagnostic.coverage?.listing === "complete"
+          )
+        ).toBe(true)
+        expect(result.meta.degraded).toBe(false)
+      }
+      expect(
+        familyAttempts.every(({ relayUrls }) => relayUrls.length <= 6)
+      ).toBe(true)
+      for (const family of families) {
+        expect(
+          familyAttempts.some(
+            (attempt) =>
+              attempt.kind === "parent" &&
+              attempt.dTags.includes(family.parentDTag) &&
+              (referenceKind === "unhinted" ||
+                attempt.relayUrls.includes(family.sourceRelayUrl)) &&
+              attempt.relayUrls.includes(family.familyRelayUrl)
+          )
+        ).toBe(true)
+        expect(
+          familyAttempts.some(
+            (attempt) =>
+              attempt.kind === "sibling" &&
+              attempt.parentAddresses.includes(family.parentAddress) &&
+              (referenceKind === "unhinted" ||
+                attempt.relayUrls.includes(family.sourceRelayUrl)) &&
+              attempt.relayUrls.includes(family.familyRelayUrl)
+          )
+        ).toBe(true)
+        expect(
+          cachedProducts.some((product) => product.id === family.siblingAddress)
+        ).toBe(true)
+      }
+    }
+  )
+
   it("isolates a malformed variation target from a valid family batch", async () => {
     const merchantBPubkey = getPublicKey(MERCHANT_B_SECRET)
     const validParentAddress = `30402:${MERCHANT_A_PUBKEY}:valid-batch-shirt`

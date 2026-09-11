@@ -118,7 +118,7 @@ import {
   normalizePublicRelayHints,
   normalizeUntrustedRelayHintsForContext,
 } from "./relay-settings"
-import { getRelayLists } from "./relay-list"
+import { getRelayLists, type RelayList } from "./relay-list"
 import {
   DEFAULT_READ_FANOUT,
   planRelayReads,
@@ -657,8 +657,12 @@ function hasCommerceFetchTestOverride(): boolean {
 type CommerceReadRelayPlan = {
   relayUrls: string[]
   parkedRelayUrls: string[]
+  /** Complete NIP-65 hint set before the executable fanout cap. */
+  hintRelayUrls: string[]
   /** Exact planned subset backed by this authenticated owner's settings. */
   ownerSelectedRelayUrls: string[]
+  /** Resolved once so per-family plans do not repeat the NIP-65 lookup. */
+  relayLists: ReadonlyMap<string, RelayList>
 }
 
 async function planCommerceReadRelayPlan(input: {
@@ -674,6 +678,8 @@ async function planCommerceReadRelayPlan(input: {
   extraRelayUrls?: readonly string[]
   /** Hints belonging to the exact authenticated author. */
   authenticatedAuthorRelayUrls?: readonly string[]
+  /** Batched NIP-65 result reused by narrower author plans. */
+  relayLists?: ReadonlyMap<string, RelayList>
   shouldContinue?: () => boolean
   signal?: AbortSignal
 }): Promise<CommerceReadRelayPlan> {
@@ -717,34 +723,36 @@ async function planCommerceReadRelayPlan(input: {
           )
         ).filter((relayUrl) => relayListLookupRelayUrls.includes(relayUrl))
       : []
-  const relayLists = shouldFetchRelayHints
-    ? await getRelayLists(
-        hintPubkeys,
-        hasCommerceFetchTestOverride()
-          ? {
-              cacheOnly: true,
-              allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
-              accountPubkey,
-              authenticatedPubkey: input.authenticatedPubkey,
-              ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
-              accountNetworkLocalStateRepository:
-                testOverrides.accountNetworkLocalStateRepository,
-              shouldContinue: input.shouldContinue,
-              signal: input.signal,
-            }
-          : {
-              relayUrls: relayListLookupRelayUrls,
-              allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
-              accountPubkey,
-              authenticatedPubkey: input.authenticatedPubkey,
-              ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
-              accountNetworkLocalStateRepository:
-                testOverrides.accountNetworkLocalStateRepository,
-              shouldContinue: input.shouldContinue,
-              signal: input.signal,
-            }
-      )
-    : undefined
+  const relayLists =
+    input.relayLists ??
+    (shouldFetchRelayHints
+      ? await getRelayLists(
+          hintPubkeys,
+          hasCommerceFetchTestOverride()
+            ? {
+                cacheOnly: true,
+                allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+                accountPubkey,
+                authenticatedPubkey: input.authenticatedPubkey,
+                ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
+                accountNetworkLocalStateRepository:
+                  testOverrides.accountNetworkLocalStateRepository,
+                shouldContinue: input.shouldContinue,
+                signal: input.signal,
+              }
+            : {
+                relayUrls: relayListLookupRelayUrls,
+                allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+                accountPubkey,
+                authenticatedPubkey: input.authenticatedPubkey,
+                ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
+                accountNetworkLocalStateRepository:
+                  testOverrides.accountNetworkLocalStateRepository,
+                shouldContinue: input.shouldContinue,
+                signal: input.signal,
+              }
+        )
+      : new Map<string, RelayList>())
 
   const plan = planRelayReads({
     intent: input.intent,
@@ -844,7 +852,9 @@ async function planCommerceReadRelayPlan(input: {
       parkedRelayUrls: plan.parkedRelayUrls.filter(
         (relayUrl) => !executableRelayUrlSet.has(relayUrl)
       ),
+      hintRelayUrls: plan.hintRelayUrls,
       ownerSelectedRelayUrls,
+      relayLists,
     }
   }
 
@@ -855,13 +865,17 @@ async function planCommerceReadRelayPlan(input: {
       return {
         relayUrls: commerceReadRelayUrls(),
         parkedRelayUrls: [],
+        hintRelayUrls: [],
         ownerSelectedRelayUrls: [],
+        relayLists,
       }
     default:
       return {
         relayUrls: publicReadRelayUrls(),
         parkedRelayUrls: [],
+        hintRelayUrls: [],
         ownerSelectedRelayUrls: [],
+        relayLists,
       }
   }
 }
@@ -4055,6 +4069,7 @@ async function fetchVariationGroupRecordBatch(
     parentAddress: string
     parentDTag: string
     relayHints: string[]
+    plannedRelayHints: string[]
   }> = []
   const invalidTargetAddressIds = new Set<string>()
   for (const target of targets) {
@@ -4069,17 +4084,19 @@ async function fetchVariationGroupRecordBatch(
       invalidTargetAddressIds.add(target.addressId)
       continue
     }
+    const relayHints = normalizePublicOrIsolatedE2eRelayHints(
+      uniqueStrings([
+        ...(relayHintsByParent.get(parentAddress) ?? []),
+        ...(target.sourceRelayUrls ?? []),
+      ])
+    )
     validTargets.push({
       target,
       author: parsedParent.pubkey,
       parentAddress,
       parentDTag: parsedParent.d,
-      relayHints: normalizePublicOrIsolatedE2eRelayHints(
-        uniqueStrings([
-          ...(relayHintsByParent.get(parentAddress) ?? []),
-          ...(target.sourceRelayUrls ?? []),
-        ])
-      ),
+      relayHints,
+      plannedRelayHints: relayHints.slice(0, MAX_PRODUCT_RELAY_HINTS),
     })
   }
 
@@ -4092,18 +4109,82 @@ async function fetchVariationGroupRecordBatch(
     }
   }
 
-  const authorChunks = chunkStrings(
-    uniqueStrings(validTargets.map((target) => target.author)),
-    PRODUCT_AUTHOR_CHUNK_SIZE
+  const allAuthors = uniqueStrings(validTargets.map((target) => target.author))
+  // Resolve NIP-65 once for the complete bounded request. Narrow plans below
+  // reuse this result, avoiding one relay-list network read per family.
+  const sharedRelayPlan = await planCommerceReadRelayPlan({
+    intent: "author_products",
+    authors: allAuthors,
+    authenticatedPubkey: options.authenticatedPubkey,
+    accountPubkey: options.authenticatedPubkey,
+    shouldContinue: options.shouldContinue,
+    relayHintMode: "force",
+    maxRelays: DEFAULT_READ_FANOUT,
+  })
+  const targetsByFamilyPlan = new Map<string, typeof validTargets>()
+  for (const target of validTargets) {
+    const key = JSON.stringify([target.author, target.plannedRelayHints])
+    const familyTargets = targetsByFamilyPlan.get(key) ?? []
+    familyTargets.push(target)
+    targetsByFamilyPlan.set(key, familyTargets)
+  }
+  const plannedFamilies = await mapWithConcurrency(
+    Array.from(targetsByFamilyPlan.values()),
+    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    async (familyTargets) => ({
+      targets: familyTargets,
+      relayPlan: await planCommerceReadRelayPlan({
+        intent: "author_products",
+        authors: [familyTargets[0]!.author],
+        authenticatedPubkey: options.authenticatedPubkey,
+        accountPubkey: options.authenticatedPubkey,
+        shouldContinue: options.shouldContinue,
+        extraRelayUrls: familyTargets[0]!.plannedRelayHints,
+        relayHintMode: "force",
+        maxRelays: DEFAULT_READ_FANOUT,
+        relayLists: sharedRelayPlan.relayLists,
+      }),
+    })
+  )
+  type FamilyReadBatch = {
+    targets: typeof validTargets
+    relayPlan: CommerceReadRelayPlan
+  }
+  // Only families with the same complete executable and parked plans share a
+  // transport read. Distinct author/source perspectives remain independent.
+  const compatibleFamilyBatches = new Map<string, FamilyReadBatch>()
+  for (const plannedFamily of plannedFamilies) {
+    const key = JSON.stringify([
+      plannedFamily.relayPlan.relayUrls,
+      plannedFamily.relayPlan.parkedRelayUrls,
+      plannedFamily.relayPlan.hintRelayUrls,
+      plannedFamily.relayPlan.ownerSelectedRelayUrls,
+    ])
+    const existing = compatibleFamilyBatches.get(key)
+    if (existing) existing.targets.push(...plannedFamily.targets)
+    else compatibleFamilyBatches.set(key, plannedFamily)
+  }
+  const familyReadBatches = Array.from(
+    compatibleFamilyBatches.values()
+  ).flatMap((batch) =>
+    chunkStrings(
+      uniqueStrings(batch.targets.map((target) => target.author)),
+      PRODUCT_AUTHOR_CHUNK_SIZE
+    ).map((authors) => {
+      const authorSet = new Set(authors)
+      return {
+        relayPlan: batch.relayPlan,
+        targets: batch.targets.filter((target) => authorSet.has(target.author)),
+      }
+    })
   )
   type FamilyRead = {
     records: CommerceProductRecord[]
     degradedParentAddresses: Set<string>
     cappedParentAddresses: Set<string>
   }
-  const readTargets = async (
-    chunkTargets: typeof validTargets
-  ): Promise<FamilyRead> => {
+  const readTargets = async (batch: FamilyReadBatch): Promise<FamilyRead> => {
+    const { targets: chunkTargets, relayPlan } = batch
     const authors = uniqueStrings(chunkTargets.map((target) => target.author))
     const parentAddresses = uniqueStrings(
       chunkTargets.map((target) => target.parentAddress)
@@ -4113,25 +4194,12 @@ async function fetchVariationGroupRecordBatch(
         target.target.product.type === "variation" ? [target.parentDTag] : []
       )
     )
-    const normalizedRelayHints = normalizePublicOrIsolatedE2eRelayHints(
-      uniqueStrings(chunkTargets.flatMap((target) => target.relayHints))
-    )
     const degradedParentAddresses = new Set<string>()
     const cappedParentAddresses = new Set<string>()
 
     try {
       // Each transport-safe chunk starts with at most two family reads.
       // Saturated results split below without increasing concurrency.
-      const relayPlan = await planCommerceReadRelayPlan({
-        intent: "author_products",
-        authors,
-        authenticatedPubkey: options.authenticatedPubkey,
-        accountPubkey: options.authenticatedPubkey,
-        shouldContinue: options.shouldContinue,
-        extraRelayUrls: normalizedRelayHints,
-        relayHintMode: "force",
-        maxRelays: DEFAULT_READ_FANOUT,
-      })
       const fetchOptions = {
         relayUrls: relayPlan.relayUrls,
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
@@ -4186,16 +4254,18 @@ async function fetchVariationGroupRecordBatch(
       ) {
         const midpoint = Math.ceil(parentAddresses.length / 2)
         const firstAddresses = new Set(parentAddresses.slice(0, midpoint))
-        const first = await readTargets(
-          chunkTargets.filter((target) =>
+        const first = await readTargets({
+          relayPlan,
+          targets: chunkTargets.filter((target) =>
             firstAddresses.has(target.parentAddress)
-          )
-        )
-        const second = await readTargets(
-          chunkTargets.filter(
+          ),
+        })
+        const second = await readTargets({
+          relayPlan,
+          targets: chunkTargets.filter(
             (target) => !firstAddresses.has(target.parentAddress)
-          )
-        )
+          ),
+        })
         return {
           records: Array.from(
             selectLatestProductRecordsByAddress([
@@ -4219,9 +4289,13 @@ async function fetchVariationGroupRecordBatch(
       }
 
       for (const target of chunkTargets) {
+        const relevantRelayHints = uniqueStrings([
+          ...target.relayHints,
+          ...relayPlan.hintRelayUrls,
+        ])
         const expectedRelayUrls = uniqueStrings([
           ...consideredRelayUrls,
-          ...target.relayHints,
+          ...relevantRelayHints,
         ])
         const variationCoverage = variationRead
           ? productAvailabilityCoverageFromFanout(
@@ -4239,7 +4313,7 @@ async function fetchVariationGroupRecordBatch(
                 )
               : "unavailable"
         const capped =
-          target.relayHints.some(
+          relevantRelayHints.some(
             (relayUrl) => !consideredRelayUrlSet.has(relayUrl)
           ) ||
           parentReadCapped ||
@@ -4279,14 +4353,9 @@ async function fetchVariationGroupRecordBatch(
     }
   }
   const chunkReads = await mapWithConcurrency(
-    authorChunks,
+    familyReadBatches,
     PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
-    async (authors) => {
-      const authorSet = new Set(authors)
-      return await readTargets(
-        validTargets.filter((target) => authorSet.has(target.author))
-      )
-    }
+    readTargets
   )
   const degradedParentAddresses = new Set<string>()
   const cappedParentAddresses = new Set<string>()
