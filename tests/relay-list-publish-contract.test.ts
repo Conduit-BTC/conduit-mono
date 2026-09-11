@@ -16,7 +16,7 @@ describe("relay-list publish contract", () => {
       "const executePreparedMutation = useCallback("
     )
     const publishIndex = controller.indexOf(
-      "await publishAccountNetworkMutation({",
+      "publishAccountNetworkMutation({",
       executionIndex
     )
     const prepareIndex = controller.indexOf(
@@ -33,6 +33,9 @@ describe("relay-list publish contract", () => {
 
     expect(executionIndex).toBeGreaterThan(-1)
     expect(publishIndex).toBeGreaterThan(executionIndex)
+    expect(controller.slice(executionIndex, publishIndex)).toContain(
+      "await observeAccountNetworkInboxRepair({"
+    )
     expect(prepareIndex).toBeGreaterThan(publishIndex)
     expect(reviewIndex).toBeGreaterThan(-1)
     expect(reviewIndex).toBeGreaterThan(prepareIndex)
