@@ -64,16 +64,18 @@ describe("identity surface contracts", () => {
     expect(productGridCard).not.toContain("getProfileName(")
   })
 
-  it("keeps Merchant readiness on the session-owned relay scope", async () => {
+  it("keeps Merchant readiness on the session-owned signed projection", async () => {
     const content = await readFile(
       "apps/merchant/src/hooks/useMerchantReadiness.ts",
       "utf8"
     )
 
     expect(content).toContain("useConduitSession")
-    expect(content).toContain("useRelaySettings(session.relayScope")
-    expect(content).toContain("pubkey,")
-    expect(content).toContain("bootstrapRelayList: false")
+    expect(content).toContain(
+      "session.accountNetworkPreferences.reconciliation?.projection.rows"
+    )
+    expect(content).toContain("isNetworkComplete(")
+    expect(content).not.toContain("useRelaySettings")
   })
 
   it("keeps verified NIP-05 shields on the Conduit primary color", async () => {

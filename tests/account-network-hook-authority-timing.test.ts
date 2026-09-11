@@ -33,10 +33,11 @@ describe("account Network hook authority timing", () => {
     )
   })
 
-  it("updates profile and relay guard refs during the layout phase", async () => {
-    const [session, relaySettings] = await Promise.all([
+  it("updates profile and Network guard refs during the layout phase", async () => {
+    const [session, networkSettings, inboxDeclaration] = await Promise.all([
       source("packages/core/src/context/ConduitSessionContext.tsx"),
-      source("packages/core/src/hooks/useRelaySettings.ts"),
+      source("packages/core/src/hooks/useAccountNetworkSettings.ts"),
+      source("packages/core/src/hooks/useInboxDeclaration.ts"),
     ])
 
     expect(session).toContain("useLayoutEffect(() => {")
@@ -46,13 +47,19 @@ describe("account Network hook authority timing", () => {
     expect(session).toContain(
       "profileAuthorityRef.current.pubkey === signedInPubkey"
     )
-    expect(relaySettings).toMatch(
+    expect(networkSettings).toMatch(
+      /useLayoutEffect\(\(\) => \{\s*authRef\.current = auth/
+    )
+    expect(networkSettings).toMatch(
+      /useLayoutEffect\(\(\) => \{\s*revisionRef\.current = revision/
+    )
+    expect(networkSettings).not.toMatch(
+      /useEffect\(\(\) => \{\s*authRef\.current = auth/
+    )
+    expect(inboxDeclaration).toMatch(
       /useLayoutEffect\(\(\) => \{\s*authorityRef\.current = \{/
     )
-    expect(relaySettings).toMatch(
-      /useLayoutEffect\(\(\) => \{\s*currentContextKeyRef\.current = relaySettingsContextKey/
-    )
-    expect(relaySettings).not.toMatch(
+    expect(inboxDeclaration).not.toMatch(
       /useEffect\(\(\) => \{\s*authorityRef\.current = \{/
     )
   })
