@@ -12,6 +12,7 @@ import {
   type DeterministicNwcWallet,
 } from "./helpers/deterministic-nwc-wallet"
 import {
+  countDistinctMatchingRuntimePrivateWraps,
   createRuntimeSignerIdentity,
   disposeRuntimeSignerIdentity,
   installRealTestSigner,
@@ -122,37 +123,34 @@ async function privateRumorCount(input: {
   sender: RuntimeSignerIdentity
   status?: string
   type: string
+  wrapperKeyAssignments: Map<string, string>
 }): Promise<number> {
   const wraps = await readAuthenticatedGiftWraps(
     input.recipient,
     TEST_RELAY_URL
   )
-  const rumorIds = new Set<string>()
-  const seenWrapperPubkeys = new Set<string>()
+  const observations: Array<{
+    rumor: ReturnType<typeof parseCanonicalRuntimePrivateRumor>
+    wrapId: string
+  }> = []
 
   for (const wrap of wraps) {
     const rumor = parseCanonicalRuntimePrivateRumor({
+      inboxOwner: input.recipient,
       recipient: input.recipient,
       sender: input.sender,
-      seenWrapperPubkeys,
+      wrapperKeyAssignments: input.wrapperKeyAssignments,
       wrap,
     })
-    if (!rumor) continue
-    if (
-      !rumor.tags.some(
-        ([name, value]) => name === "type" && value === input.type
-      )
-    ) {
-      continue
-    }
-    const rumorOrderId = rumor.tags.find(([name]) => name === "order")?.[1]
-    if (rumorOrderId !== input.orderId) continue
-    const rumorStatus = rumor.tags.find(([name]) => name === "status")?.[1]
-    if (input.status && rumorStatus !== input.status) continue
-    rumorIds.add(rumor.id)
+    observations.push({ rumor, wrapId: wrap.id })
   }
 
-  return rumorIds.size
+  return countDistinctMatchingRuntimePrivateWraps({
+    observations,
+    orderId: input.orderId,
+    status: input.status,
+    type: input.type,
+  })
 }
 
 async function privateRumorDiagnostics(input: {
@@ -161,6 +159,7 @@ async function privateRumorDiagnostics(input: {
   sender: RuntimeSignerIdentity
   status?: string
   type: string
+  wrapperKeyAssignments: Map<string, string>
 }): Promise<Record<string, number>> {
   const health = (await (
     await fetch(TEST_RELAY_URL.replace("ws://", "http://") + "/health")
@@ -182,13 +181,12 @@ async function privateRumorDiagnostics(input: {
     type: 0,
     order: 0,
   }
-  const seenWrapperPubkeys = new Set<string>()
-
   for (const wrap of wraps) {
     const rumor = parseCanonicalRuntimePrivateRumor({
+      inboxOwner: input.recipient,
       recipient: input.recipient,
       sender: input.sender,
-      seenWrapperPubkeys,
+      wrapperKeyAssignments: input.wrapperKeyAssignments,
       wrap,
     })
     if (!rumor) continue
@@ -229,6 +227,7 @@ async function waitForPrivateRumor(input: {
   sender: RuntimeSignerIdentity
   status?: string
   type: string
+  wrapperKeyAssignments: Map<string, string>
 }): Promise<void> {
   try {
     await expect
@@ -285,6 +284,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
   test.setTimeout(180_000)
   const buyer = createRuntimeSignerIdentity()
   const merchant = createRuntimeSignerIdentity()
+  const wrapperKeyAssignments = new Map<string, string>()
   const productTitle = `Hermetic commerce ${Date.now().toString(36)}`
   let wallet: DeterministicNwcWallet | null = null
   let buyerContext: BrowserContext | null = null
@@ -428,6 +428,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       recipient: merchant,
       sender: buyer,
       type: "order",
+      wrapperKeyAssignments,
     })
 
     const merchantOrderPath = `/orders?order=${encodeURIComponent(orderId)}`
@@ -456,6 +457,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       sender: merchant,
       status: "accepted",
       type: "status_update",
+      wrapperKeyAssignments,
     })
 
     await buyerPage.goto(`${marketUrl}${buyerOrderPath}`)
@@ -511,6 +513,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       recipient: buyer,
       sender: merchant,
       type: "payment_request",
+      wrapperKeyAssignments,
     })
 
     await buyerPage.goto(`${marketUrl}${buyerOrderPath}`)
@@ -555,6 +558,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       recipient: merchant,
       sender: buyer,
       type: "payment_proof",
+      wrapperKeyAssignments,
     })
 
     await expect
@@ -568,6 +572,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       sender: merchant,
       status: "paid",
       type: "status_update",
+      wrapperKeyAssignments,
     })
 
     await merchantPage.goto(`${merchantUrl}${merchantOrderPath}`)
@@ -621,18 +626,21 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
         recipient: merchant,
         sender: buyer,
         type: "order",
+        wrapperKeyAssignments,
       })) === 1 &&
         (await privateRumorCount({
           orderId,
           recipient: buyer,
           sender: merchant,
           type: "payment_request",
+          wrapperKeyAssignments,
         })) === 1 &&
         (await privateRumorCount({
           orderId,
           recipient: merchant,
           sender: buyer,
           type: "payment_proof",
+          wrapperKeyAssignments,
         })) === 1 &&
         (await privateRumorCount({
           orderId,
@@ -640,6 +648,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
           sender: merchant,
           status: "paid",
           type: "status_update",
+          wrapperKeyAssignments,
         })) === 1
     ).toBe(true)
   } finally {

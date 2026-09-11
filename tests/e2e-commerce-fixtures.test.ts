@@ -11,6 +11,7 @@ import {
   type DeterministicNwcWallet,
 } from "../e2e/helpers/deterministic-nwc-wallet"
 import {
+  countDistinctMatchingRuntimePrivateWraps,
   createRuntimeSignerIdentity,
   decryptRuntimeTestPayload,
   disposeRuntimeSignerIdentity,
@@ -51,19 +52,23 @@ function startTestRelay() {
 
 function createPrivateGiftWrapFixture(input: {
   createdAt?: number
+  inboxOwner?: RuntimeSignerIdentity
   recipient: RuntimeSignerIdentity
+  rumorTags?: string[][]
   sender: RuntimeSignerIdentity
   sealTags?: string[][]
   signedRumor?: boolean
   wrapper: RuntimeSignerIdentity
+  wrapperTags?: string[][]
 }): Event {
   const createdAt = input.createdAt ?? 1_800_000_000
+  const inboxOwner = input.inboxOwner ?? input.recipient
   const rumorTemplate: UnsignedEvent = {
     content: "runner-only private fixture",
     created_at: createdAt,
     kind: 16,
     pubkey: input.sender.pubkey,
-    tags: [["p", input.recipient.pubkey]],
+    tags: [["p", input.recipient.pubkey], ...(input.rumorTags ?? [])],
   }
   const rumor = input.signedRumor
     ? signRuntimeTestEvent(input.sender, rumorTemplate)
@@ -71,7 +76,7 @@ function createPrivateGiftWrapFixture(input: {
   const seal = signRuntimeTestEvent(input.sender, {
     content: encryptRuntimeTestPayload(
       input.sender,
-      input.recipient.pubkey,
+      inboxOwner.pubkey,
       JSON.stringify(rumor)
     ),
     created_at: createdAt + 1,
@@ -81,12 +86,12 @@ function createPrivateGiftWrapFixture(input: {
   return signRuntimeTestEvent(input.wrapper, {
     content: encryptRuntimeTestPayload(
       input.wrapper,
-      input.recipient.pubkey,
+      inboxOwner.pubkey,
       JSON.stringify(seal)
     ),
     created_at: createdAt + 2,
     kind: 1_059,
-    tags: [["p", input.recipient.pubkey]],
+    tags: input.wrapperTags ?? [["p", inboxOwner.pubkey]],
   })
 }
 
@@ -95,12 +100,19 @@ describe("real NIP-07 test signer", () => {
     const sender = createRuntimeSignerIdentity()
     const recipient = createRuntimeSignerIdentity()
     const canonicalWrapper = createRuntimeSignerIdentity()
+    const metadataWrapper = createRuntimeSignerIdentity()
+    const duplicateRecipientWrapper = createRuntimeSignerIdentity()
     const taggedSealWrapper = createRuntimeSignerIdentity()
     const signedRumorWrapper = createRuntimeSignerIdentity()
 
     try {
       const parse = (wrap: Event) =>
-        parseCanonicalRuntimePrivateRumor({ recipient, sender, wrap })
+        parseCanonicalRuntimePrivateRumor({
+          inboxOwner: recipient,
+          recipient,
+          sender,
+          wrap,
+        })
 
       expect(
         parse(
@@ -111,6 +123,33 @@ describe("real NIP-07 test signer", () => {
           })
         )
       ).not.toBeNull()
+      expect(
+        parse(
+          createPrivateGiftWrapFixture({
+            recipient,
+            sender,
+            wrapper: metadataWrapper,
+            wrapperTags: [
+              ["p", recipient.pubkey],
+              ["expiration", "1800000100"],
+              ["nonce", "1", "1"],
+            ],
+          })
+        )
+      ).not.toBeNull()
+      expect(
+        parse(
+          createPrivateGiftWrapFixture({
+            recipient,
+            sender,
+            wrapper: duplicateRecipientWrapper,
+            wrapperTags: [
+              ["p", recipient.pubkey],
+              ["p", recipient.pubkey],
+            ],
+          })
+        )
+      ).toBeNull()
       expect(
         parse(
           createPrivateGiftWrapFixture({
@@ -153,6 +192,8 @@ describe("real NIP-07 test signer", () => {
       disposeRuntimeSignerIdentity(sender)
       disposeRuntimeSignerIdentity(recipient)
       disposeRuntimeSignerIdentity(canonicalWrapper)
+      disposeRuntimeSignerIdentity(metadataWrapper)
+      disposeRuntimeSignerIdentity(duplicateRecipientWrapper)
       disposeRuntimeSignerIdentity(taggedSealWrapper)
       disposeRuntimeSignerIdentity(signedRumorWrapper)
     }
@@ -162,7 +203,7 @@ describe("real NIP-07 test signer", () => {
     const sender = createRuntimeSignerIdentity()
     const recipient = createRuntimeSignerIdentity()
     const wrapper = createRuntimeSignerIdentity()
-    const seenWrapperPubkeys = new Set<string>()
+    const wrapperKeyAssignments = new Map<string, string>()
 
     try {
       const first = createPrivateGiftWrapFixture({
@@ -179,17 +220,28 @@ describe("real NIP-07 test signer", () => {
 
       expect(
         parseCanonicalRuntimePrivateRumor({
+          inboxOwner: recipient,
           recipient,
           sender,
-          seenWrapperPubkeys,
+          wrapperKeyAssignments,
+          wrap: first,
+        })
+      ).not.toBeNull()
+      expect(
+        parseCanonicalRuntimePrivateRumor({
+          inboxOwner: recipient,
+          recipient,
+          sender,
+          wrapperKeyAssignments,
           wrap: first,
         })
       ).not.toBeNull()
       expect(() =>
         parseCanonicalRuntimePrivateRumor({
+          inboxOwner: recipient,
           recipient,
           sender,
-          seenWrapperPubkeys,
+          wrapperKeyAssignments,
           wrap: second,
         })
       ).toThrow("E2E_COM_NIP59_WRAPPER_KEY_REUSED")
@@ -197,6 +249,157 @@ describe("real NIP-07 test signer", () => {
       disposeRuntimeSignerIdentity(sender)
       disposeRuntimeSignerIdentity(recipient)
       disposeRuntimeSignerIdentity(wrapper)
+    }
+  })
+
+  it("counts two distinct wraps carrying one rumor as duplicate deliveries", () => {
+    const sender = createRuntimeSignerIdentity()
+    const recipient = createRuntimeSignerIdentity()
+    const firstWrapper = createRuntimeSignerIdentity()
+    const secondWrapper = createRuntimeSignerIdentity()
+    const wrapperKeyAssignments = new Map<string, string>()
+
+    try {
+      const first = createPrivateGiftWrapFixture({
+        recipient,
+        rumorTags: [
+          ["type", "order"],
+          ["order", "fixture-order"],
+        ],
+        sender,
+        wrapper: firstWrapper,
+      })
+      const second = createPrivateGiftWrapFixture({
+        recipient,
+        rumorTags: [
+          ["type", "order"],
+          ["order", "fixture-order"],
+        ],
+        sender,
+        wrapper: secondWrapper,
+      })
+      const firstRumor = parseCanonicalRuntimePrivateRumor({
+        inboxOwner: recipient,
+        recipient,
+        sender,
+        wrapperKeyAssignments,
+        wrap: first,
+      })
+      const secondRumor = parseCanonicalRuntimePrivateRumor({
+        inboxOwner: recipient,
+        recipient,
+        sender,
+        wrapperKeyAssignments,
+        wrap: second,
+      })
+      const count = (
+        observations: Array<{
+          rumor: typeof firstRumor
+          wrapId: string
+        }>
+      ) =>
+        countDistinctMatchingRuntimePrivateWraps({
+          observations,
+          orderId: "fixture-order",
+          type: "order",
+        })
+
+      expect(firstRumor).not.toBeNull()
+      expect(secondRumor).not.toBeNull()
+      expect(firstRumor?.id).toBe(secondRumor?.id)
+      expect(
+        count([
+          { rumor: firstRumor, wrapId: first.id },
+          { rumor: firstRumor, wrapId: first.id },
+        ])
+      ).toBe(1)
+      expect(
+        count([
+          { rumor: firstRumor, wrapId: first.id },
+          { rumor: secondRumor, wrapId: second.id },
+        ])
+      ).toBe(2)
+    } finally {
+      disposeRuntimeSignerIdentity(sender)
+      disposeRuntimeSignerIdentity(recipient)
+      disposeRuntimeSignerIdentity(firstWrapper)
+      disposeRuntimeSignerIdentity(secondWrapper)
+    }
+  })
+
+  it("validates sender self-copies and catches wrapper reuse across inboxes", () => {
+    const sender = createRuntimeSignerIdentity()
+    const recipient = createRuntimeSignerIdentity()
+    const receiverWrapper = createRuntimeSignerIdentity()
+    const senderCopyWrapper = createRuntimeSignerIdentity()
+    const reusedWrapper = createRuntimeSignerIdentity()
+
+    try {
+      const senderCopy = createPrivateGiftWrapFixture({
+        inboxOwner: sender,
+        recipient,
+        sender,
+        wrapper: senderCopyWrapper,
+      })
+      const senderCopyRumor = parseCanonicalRuntimePrivateRumor({
+        inboxOwner: sender,
+        recipient,
+        sender,
+        wrap: senderCopy,
+      })
+      expect(senderCopyRumor?.tags).toContainEqual(["p", recipient.pubkey])
+
+      const wrapperKeyAssignments = new Map<string, string>()
+      const receiverCopy = createPrivateGiftWrapFixture({
+        recipient,
+        sender,
+        wrapper: reusedWrapper,
+      })
+      const reusedSenderCopy = createPrivateGiftWrapFixture({
+        inboxOwner: sender,
+        recipient,
+        sender,
+        wrapper: reusedWrapper,
+      })
+      expect(
+        parseCanonicalRuntimePrivateRumor({
+          inboxOwner: recipient,
+          recipient,
+          sender,
+          wrapperKeyAssignments,
+          wrap: receiverCopy,
+        })
+      ).not.toBeNull()
+      expect(() =>
+        parseCanonicalRuntimePrivateRumor({
+          inboxOwner: sender,
+          recipient,
+          sender,
+          wrapperKeyAssignments,
+          wrap: reusedSenderCopy,
+        })
+      ).toThrow("E2E_COM_NIP59_WRAPPER_KEY_REUSED")
+
+      const independentReceiverCopy = createPrivateGiftWrapFixture({
+        recipient,
+        sender,
+        wrapper: receiverWrapper,
+      })
+      expect(
+        parseCanonicalRuntimePrivateRumor({
+          inboxOwner: recipient,
+          recipient,
+          sender,
+          wrapperKeyAssignments,
+          wrap: independentReceiverCopy,
+        })
+      ).not.toBeNull()
+    } finally {
+      disposeRuntimeSignerIdentity(sender)
+      disposeRuntimeSignerIdentity(recipient)
+      disposeRuntimeSignerIdentity(receiverWrapper)
+      disposeRuntimeSignerIdentity(senderCopyWrapper)
+      disposeRuntimeSignerIdentity(reusedWrapper)
     }
   })
 

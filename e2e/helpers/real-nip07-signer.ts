@@ -167,35 +167,38 @@ export function decryptRuntimeTestPayload(
 /**
  * Parse one canonical NIP-59 envelope for the hermetic commerce oracle.
  *
- * The optional wrapper-key set belongs to one bounded inbox observation. A
- * repeated key throws instead of silently dropping a delivery so the smoke
- * cannot remain green when production reuses a disposable wrapper identity.
+ * The optional wrapper-key map belongs to the whole bounded test observation.
+ * Reading the same wrap again is harmless, but assigning one disposable key
+ * to two distinct wraps throws so reuse across polls or inboxes cannot pass.
  */
 export function parseCanonicalRuntimePrivateRumor(input: {
+  inboxOwner: RuntimeSignerIdentity
   recipient: RuntimeSignerIdentity
   sender: RuntimeSignerIdentity
-  seenWrapperPubkeys?: Set<string>
+  wrapperKeyAssignments?: Map<string, string>
   wrap: Event
 }): RuntimePrivateRumor | null {
-  const { recipient, sender, seenWrapperPubkeys, wrap } = input
+  const { inboxOwner, recipient, sender, wrapperKeyAssignments, wrap } = input
   try {
     if (wrap.kind !== 1_059 || !verifyEvent(wrap)) return null
+    const wrapRecipients = wrap.tags.filter(([name]) => name === "p")
     if (
+      wrap.pubkey === inboxOwner.pubkey ||
       wrap.pubkey === recipient.pubkey ||
       wrap.pubkey === sender.pubkey ||
-      wrap.tags.length !== 1 ||
-      wrap.tags[0]?.[0] !== "p" ||
-      wrap.tags[0]?.[1] !== recipient.pubkey
+      wrapRecipients.length !== 1 ||
+      wrapRecipients[0]?.[1] !== inboxOwner.pubkey
     ) {
       return null
     }
-    if (seenWrapperPubkeys?.has(wrap.pubkey)) {
+    const assignedWrapId = wrapperKeyAssignments?.get(wrap.pubkey)
+    if (assignedWrapId && assignedWrapId !== wrap.id) {
       throw new Error("E2E_COM_NIP59_WRAPPER_KEY_REUSED")
     }
-    seenWrapperPubkeys?.add(wrap.pubkey)
+    wrapperKeyAssignments?.set(wrap.pubkey, wrap.id)
 
     const seal = JSON.parse(
-      decryptRuntimeTestPayload(recipient, wrap.pubkey, wrap.content)
+      decryptRuntimeTestPayload(inboxOwner, wrap.pubkey, wrap.content)
     ) as Event
     if (
       seal.kind !== 13 ||
@@ -207,7 +210,7 @@ export function parseCanonicalRuntimePrivateRumor(input: {
     }
 
     const rumor = JSON.parse(
-      decryptRuntimeTestPayload(recipient, seal.pubkey, seal.content)
+      decryptRuntimeTestPayload(inboxOwner, seal.pubkey, seal.content)
     ) as RuntimePrivateRumor & { sig?: unknown }
     if (
       !rumor ||
@@ -242,6 +245,38 @@ export function parseCanonicalRuntimePrivateRumor(input: {
     }
     return null
   }
+}
+
+/** Count distinct validated gift wraps that carry the expected rumor. */
+export function countDistinctMatchingRuntimePrivateWraps(input: {
+  observations: ReadonlyArray<{
+    rumor: RuntimePrivateRumor | null
+    wrapId: string
+  }>
+  orderId: string
+  status?: string
+  type: string
+}): number {
+  const matchingWrapIds = new Set<string>()
+  for (const { rumor, wrapId } of input.observations) {
+    if (!rumor) continue
+    if (
+      !rumor.tags.some(
+        ([name, value]) => name === "type" && value === input.type
+      ) ||
+      !rumor.tags.some(
+        ([name, value]) => name === "order" && value === input.orderId
+      ) ||
+      (input.status &&
+        !rumor.tags.some(
+          ([name, value]) => name === "status" && value === input.status
+        ))
+    ) {
+      continue
+    }
+    matchingWrapIds.add(wrapId)
+  }
+  return matchingWrapIds.size
 }
 
 /**
