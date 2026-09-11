@@ -189,7 +189,11 @@ export function validatePlaywrightSmokeAreas(
   selectedAreas: readonly SmokeArea[] = smokeAreas
 ): Record<SmokeArea, number> {
   const specs = collectSpecs(report.suites ?? [])
-  const counts: Record<SmokeArea, number> = { market: 0, merchant: 0 }
+  const counts: Record<SmokeArea, number> = {
+    market: 0,
+    merchant: 0,
+    commerce: 0,
+  }
   const orphaned: PlaywrightJsonSpec[] = []
 
   for (const spec of specs) {
@@ -207,7 +211,9 @@ export function validatePlaywrightSmokeAreas(
   if (specs.length === 0) errors.push("Playwright discovered zero smoke tests.")
   if (orphaned.length > 0) {
     errors.push(
-      `Playwright discovered smoke tests without @market or @merchant tags:\n${orphaned
+      `Playwright discovered smoke tests without ${smokeAreas
+        .map((area) => smokeAreaTags[area])
+        .join(", ")} tags:\n${orphaned
         .map((spec) => `- ${formatSpec(spec)}`)
         .join("\n")}`
     )
@@ -309,11 +315,11 @@ function readSelectedAreas(): SmokeArea[] {
     areaIndex >= 0 ? (process.argv[areaIndex + 1] ?? "") : "all"
 
   if (requestedArea === "all") return smokeAreas
-  if (requestedArea === "market" || requestedArea === "merchant") {
-    return [requestedArea]
+  if (smokeAreas.includes(requestedArea as SmokeArea)) {
+    return [requestedArea as SmokeArea]
   }
   throw new Error(
-    `Unknown Playwright smoke area '${requestedArea}'. Expected all, market, or merchant.`
+    `Unknown Playwright smoke area '${requestedArea}'. Expected all, ${smokeAreas.join(", ")}.`
   )
 }
 
@@ -432,6 +438,8 @@ if (import.meta.main) {
     `Playwright smoke manifest:\n${JSON.stringify(manifest, null, 2)}\n`
   )
   process.stdout.write(
-    `Validated Playwright smoke areas: market=${counts.market}, merchant=${counts.merchant}\n`
+    `Validated Playwright smoke areas: ${smokeAreas
+      .map((area) => `${area}=${counts[area]}`)
+      .join(", ")}\n`
   )
 }

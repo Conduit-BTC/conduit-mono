@@ -7,12 +7,22 @@ import {
   validatePlaywrightSmokeExecution,
 } from "../scripts/ci/validate_playwright_smoke_areas"
 
-const playwrightConfig = await Bun.file("playwright.config.ts").text()
-const smokeAreaValidator = await Bun.file(
-  "scripts/ci/validate_playwright_smoke_areas.ts"
-).text()
-const ciWorkflow = await Bun.file(".github/workflows/ci.yml").text()
-const prTitleWorkflow = await Bun.file(".github/workflows/pr-title.yml").text()
+const normalizeLines = (value: string) => value.replaceAll("\r\n", "\n")
+const playwrightConfig = normalizeLines(
+  await Bun.file("playwright.config.ts").text()
+)
+const playwrightWebServer = normalizeLines(
+  await Bun.file("scripts/dev/run_playwright_web_server.ts").text()
+)
+const smokeAreaValidator = normalizeLines(
+  await Bun.file("scripts/ci/validate_playwright_smoke_areas.ts").text()
+)
+const ciWorkflow = normalizeLines(
+  await Bun.file(".github/workflows/ci.yml").text()
+)
+const prTitleWorkflow = normalizeLines(
+  await Bun.file(".github/workflows/pr-title.yml").text()
+)
 const previewLinksJob = ciWorkflow.slice(
   ciWorkflow.indexOf("\n  preview-links:\n")
 )
@@ -48,33 +58,48 @@ describe("Playwright smoke area validation", () => {
   })
 
   it("runs smoke against an ephemeral loopback relay", () => {
-    expect(playwrightConfig).toContain("VITE_E2E_RELAY_URL=${relayUrl}")
-    expect(playwrightConfig).toContain("RELAY_EPHEMERAL=true")
-    expect(playwrightConfig).toContain("RELAY_FAULT_MODE=none")
+    expect(playwrightWebServer).toContain("VITE_E2E_RELAY_URL: relayUrl")
+    expect(playwrightWebServer).toContain('RELAY_EPHEMERAL: "true"')
+    expect(playwrightWebServer).toContain('RELAY_FAULT_MODE: "none"')
     expect(playwrightConfig).toContain("PLAYWRIGHT_RELAY_PORT")
     expect(playwrightConfig).toContain("reuseExistingServer: false")
-  })
-
-  it("starts both apps for current dual-tagged cross-app smoke", () => {
     expect(playwrightConfig).toContain(
-      "dual-tagged\n  // cross-app smoke runs in both existing shards"
-    )
-    expect(playwrightConfig).toContain("bun run --filter @conduit/market dev")
-    expect(playwrightConfig).toContain("bun run --filter @conduit/merchant dev")
-    expect(playwrightConfig).not.toContain(
-      '...(smokeArea === "all" || smokeArea === "market"'
-    )
-    expect(playwrightConfig).not.toContain(
-      '...(smokeArea === "all" || smokeArea === "merchant"'
+      "bun scripts/dev/run_playwright_web_server.ts relay"
     )
   })
 
-  it("serializes current area shards while they share cross-app state", () => {
+  it("starts both apps with the commerce lane's testnet wallet mode", () => {
+    expect(playwrightWebServer).toContain(
+      'const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"'
+    )
+    expect(playwrightWebServer).toContain(
+      'const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"'
+    )
+    expect(playwrightWebServer).toContain(
+      '...(commerceIncluded ? { VITE_LIGHTNING_NETWORK: "testnet" } : {})'
+    )
+    expect(playwrightWebServer).toContain('"@conduit/market"')
+    expect(playwrightWebServer).toContain('"@conduit/merchant"')
+    expect(playwrightConfig).toContain(
+      "bun scripts/dev/run_playwright_web_server.ts market"
+    )
+    expect(playwrightConfig).toContain(
+      "bun scripts/dev/run_playwright_web_server.ts merchant"
+    )
+    expect(playwrightConfig).toContain(
+      'const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"'
+    )
+    expect(playwrightConfig).toContain(
+      "reuseExistingServer: !CI && !commerceIncluded"
+    )
+  })
+
+  it("serializes selected areas while they share isolated cross-app state", () => {
     expect(playwrightConfig).toContain(
       'workers: smokeArea === "all" ? (CI ? 2 : undefined) : 1'
     )
     expect(playwrightConfig).toContain(
-      "Keep them single-worker until CND-193 isolates @commerce"
+      "commerce lane can make exact replay and side-effect assertions"
     )
   })
 
@@ -86,6 +111,7 @@ describe("Playwright smoke area validation", () => {
     expect(ciWorkflow).toContain(
       "  e2e-smoke:\n    name: e2e-smoke\n    if: always()"
     )
+    expect(ciWorkflow).toContain('shards=\'["market","merchant","commerce"]\'')
   })
 
   it("keeps candidate-controlled preview verification read-only", () => {
@@ -117,6 +143,10 @@ describe("Playwright smoke area validation", () => {
   it("reconciles discovery with first-attempt execution evidence", () => {
     expect(playwrightConfig).toContain("PLAYWRIGHT_SMOKE_RESULT_FILE")
     expect(playwrightConfig).toContain(
+      '"./scripts/ci/playwright_smoke_reporter.ts"'
+    )
+    expect(playwrightConfig).toContain("{ outputFile: smokeResultFile }")
+    expect(playwrightConfig).not.toContain(
       '["json", { outputFile: smokeResultFile }]'
     )
     expect(ciWorkflow).toContain("--manifest-output")
@@ -140,8 +170,9 @@ describe("Playwright smoke area validation", () => {
       "const ciReporters: ReporterDescription[] = smokeResultFile"
     )
     expect(playwrightConfig).toContain(
-      '? [["json", { outputFile: smokeResultFile }]]'
+      '"./scripts/ci/playwright_smoke_reporter.ts"'
     )
+    expect(playwrightConfig).toContain("{ outputFile: smokeResultFile }")
     expect(playwrightConfig).toContain(': [["null"]]')
     expect(playwrightConfig).not.toContain('["html", { open: "never" }]')
     expect(playwrightConfig).toContain('trace: CI ? "off" : "on-first-retry"')
@@ -184,10 +215,15 @@ describe("Playwright smoke area validation", () => {
           tags: ["merchant"],
           title: "seller fulfills an order",
         },
+        {
+          file: "e2e/commerce.playwright.ts",
+          tags: ["commerce"],
+          title: "buyer and seller complete commerce",
+        },
       ])
     )
 
-    expect(counts).toEqual({ market: 1, merchant: 1 })
+    expect(counts).toEqual({ market: 1, merchant: 1, commerce: 1 })
   })
 
   it("builds a deterministic content-free selected-spec manifest", () => {
@@ -205,21 +241,33 @@ describe("Playwright smoke area validation", () => {
           tags: ["market"],
           title: "buyer checkout completes",
         },
+        {
+          file: "commerce.playwright.ts",
+          line: 30,
+          tags: ["commerce"],
+          title: "buyer and seller complete commerce",
+        },
       ]),
-      ["merchant", "market"]
+      ["merchant", "commerce", "market"]
     )
 
     expect(manifest).toEqual({
       schemaVersion: 1,
       evidence: null,
-      selectedTags: ["@market", "@merchant"],
-      selectedTestCount: 2,
+      selectedTags: ["@market", "@merchant", "@commerce"],
+      selectedTestCount: 3,
       tests: [
         {
           file: "e2e/alpha.playwright.ts",
           line: 10,
           name: "buyer checkout completes",
           tags: ["@market"],
+        },
+        {
+          file: "e2e/commerce.playwright.ts",
+          line: 30,
+          name: "buyer and seller complete commerce",
+          tags: ["@commerce"],
         },
         {
           file: "e2e/zeta.playwright.ts",
@@ -257,6 +305,16 @@ describe("Playwright smoke area validation", () => {
         ["merchant"]
       )
     ).toThrow("The selected merchant smoke area contains zero tests.")
+
+    expect(() =>
+      validatePlaywrightSmokeAreas(
+        reportWithSpecs([
+          { file: "e2e/market.playwright.ts", tags: ["market"] },
+          { file: "e2e/merchant.playwright.ts", tags: ["merchant"] },
+        ]),
+        ["commerce"]
+      )
+    ).toThrow("The selected commerce smoke area contains zero tests.")
   })
 
   it("accepts only the discovered tests passing on their first attempt", () => {

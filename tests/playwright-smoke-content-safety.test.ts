@@ -6,6 +6,11 @@ type UnsafeEvidenceFinding = {
   rule: string
 }
 
+const normalizeLines = (value: string) => value.replaceAll("\r\n", "\n")
+const commerceSmoke = normalizeLines(
+  await Bun.file("e2e/commerce.playwright.ts").text()
+)
+
 const unsafeEvidenceRules = [
   {
     rule: "signed event assertion",
@@ -61,6 +66,57 @@ const unsafeEvidenceRules = [
   {
     rule: "identity-bearing product collection assertion",
     pattern: /\.poll\([\s\S]{0,500}?productId[\s\S]{0,200}?\)\s*\.toEqual/g,
+  },
+] as const
+
+const unsafeCommerceSourceRules = [
+  {
+    rule: "direct commerce-sensitive value assertion",
+    pattern:
+      /expect\(\s*(?:[A-Za-z0-9_$]+\.)?(?:ciphertext|connectionString|content|invoice|npub|nsec|orderId|payload|paymentHash|plaintext|preimage|productTitle|pubkey|secret)\s*\)\.(?:not\.)?(?:toBe|toContain|toEqual|toMatch|toMatchObject)/g,
+  },
+  {
+    rule: "commerce-sensitive expected assertion value",
+    pattern:
+      /\.(?:toBe|toContain|toContainEqual|toEqual|toHaveText|toHaveValue|toMatch|toMatchObject)\(\s*(?:[A-Za-z0-9_$]+\.)?(?:ciphertext|connectionString|content|invoice|npub|nsec|orderId|payload|paymentHash|plaintext|preimage|productTitle|pubkey|secret)\b/g,
+  },
+  {
+    rule: "Playwright attachment",
+    pattern: /\.attach\(/g,
+  },
+  {
+    rule: "browser screenshot",
+    pattern: /\.(?:screenshot|toHaveScreenshot)\(/g,
+  },
+  {
+    rule: "browser trace capture",
+    pattern: /\btracing\.(?:start|startChunk|stop|stopChunk)\(/g,
+  },
+  {
+    rule: "browser video capture",
+    pattern: /\.video\(\)/g,
+  },
+  {
+    rule: "console capture",
+    pattern: /\b(?:context|page)\.on\(\s*["'`](?:console|pageerror)\b/g,
+  },
+  {
+    rule: "console output",
+    pattern: /\bconsole\.(?:debug|error|info|log|trace|warn)\(/g,
+  },
+  {
+    rule: "network capture listener",
+    pattern:
+      /\b(?:context|page)\.on\(\s*["'`](?:request|requestfailed|requestfinished|response|websocket)\b/g,
+  },
+  {
+    rule: "network body capture",
+    pattern:
+      /\b(?:request|response)\.(?:allHeaders|body|headers|headersArray|json|postData|postDataBuffer|text)\(/g,
+  },
+  {
+    rule: "recorded browser artifact configuration",
+    pattern: /\b(?:recordHar|recordVideo)\s*:/g,
   },
 ] as const
 
@@ -134,6 +190,38 @@ describe("Playwright smoke content safety", () => {
     }
   })
 
+  it("detects prohibited commerce capture and assertion forms", () => {
+    const unsafeSources = [
+      ["Playwright attachment", 'await testInfo.attach("trace", value)'],
+      ["browser screenshot", "await page.screenshot()"],
+      ["browser trace capture", "await context.tracing.start()"],
+      ["browser video capture", "await page.video()"],
+      ["console capture", 'page.on("console", () => {})'],
+      ["console output", 'console.log("browser state")'],
+      ["network capture listener", 'page.on("request", () => {})'],
+      ["network body capture", "await response.body()"],
+      ["recorded browser artifact configuration", "recordHar: {}"],
+      [
+        "direct commerce-sensitive value assertion",
+        "expect(orderId).toEqual(expected)",
+      ],
+      [
+        "commerce-sensitive expected assertion value",
+        "expect(locator).toHaveValue(connectionString)",
+      ],
+    ] as const
+
+    for (const [expectedRule, source] of unsafeSources) {
+      expect(
+        unsafeCommerceSourceRules.some(
+          ({ pattern, rule }) =>
+            rule === expectedRule &&
+            Array.from(source.matchAll(pattern)).length > 0
+        )
+      ).toBe(true)
+    }
+  })
+
   it("keeps content-bearing values out of assertion failure output", async () => {
     const findings: UnsafeEvidenceFinding[] = []
     const glob = new Bun.Glob("e2e/**/*.playwright.ts")
@@ -153,6 +241,31 @@ describe("Playwright smoke content safety", () => {
     )
 
     expect(scannedSpecCount).toBeGreaterThan(0)
+    expect(findings).toEqual([])
+  })
+
+  it("forces the commerce smoke to remain free of browser artifacts and captures", () => {
+    expect(commerceSmoke).toContain(
+      'test.use({ screenshot: "off", trace: "off", video: "off" })'
+    )
+
+    const findings = [
+      ...findUnsafeEvidenceAssertions(
+        "e2e/commerce.playwright.ts",
+        commerceSmoke
+      ),
+      ...unsafeCommerceSourceRules.flatMap(({ pattern, rule }) =>
+        Array.from(commerceSmoke.matchAll(pattern), (match) => ({
+          file: "e2e/commerce.playwright.ts",
+          line: sourceLine(commerceSmoke, match.index),
+          rule,
+        }))
+      ),
+    ].sort(
+      (left, right) =>
+        left.line - right.line || left.rule.localeCompare(right.rule)
+    )
+
     expect(findings).toEqual([])
   })
 })
