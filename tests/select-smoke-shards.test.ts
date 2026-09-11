@@ -31,6 +31,16 @@ describe("path-aware smoke shard selection", () => {
     ).toEqual(["market", "commerce"])
   })
 
+  it("adds commerce for app Network routes that own private inbox setup", () => {
+    expect(selectSmokeShards(["apps/market/src/routes/network.tsx"])).toEqual([
+      "market",
+      "commerce",
+    ])
+    expect(selectSmokeShards(["apps/merchant/src/routes/network.tsx"])).toEqual(
+      ["merchant", "commerce"]
+    )
+  })
+
   it("selects every shard for shared runtime and test infrastructure", () => {
     for (const path of [
       "packages/core/src/protocol/products.ts",

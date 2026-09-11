@@ -19,6 +19,11 @@ const commerceOnlySmokeInfrastructure = new Set([
   "tests/support/bolt11-fixture.ts",
 ])
 
+const commerceCriticalAppPaths = new Set([
+  "apps/market/src/routes/network.tsx",
+  "apps/merchant/src/routes/network.tsx",
+])
+
 const commerceCriticalPathTokens = [
   "auth",
   "cart",
@@ -49,7 +54,10 @@ const commerceCriticalPathTokens = [
 
 function isCommerceCriticalAppPath(path: string): boolean {
   const normalized = path.toLowerCase()
-  return commerceCriticalPathTokens.some((token) => normalized.includes(token))
+  return (
+    commerceCriticalAppPaths.has(normalized) ||
+    commerceCriticalPathTokens.some((token) => normalized.includes(token))
+  )
 }
 
 function selectAllShards(selected: Set<SmokeShard>): void {
