@@ -2392,7 +2392,9 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
     .locator("summary")
     .filter({ hasText: "Handled by" })
   await pickupDetails.focus()
-  await page.keyboard.press("Enter")
+  await expect(pickupDetails).toBeFocused()
+  await pickupDetails.press("Enter")
+  await expect(productCard.locator("details")).toHaveAttribute("open", "")
   const handlerNpub = nip19.npubEncode(ORGANIZER_PUBKEY)
   await expect(productCard.locator(`a[href="/u/${handlerNpub}"]`)).toBeVisible()
   await productCard
