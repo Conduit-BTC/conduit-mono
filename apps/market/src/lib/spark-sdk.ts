@@ -1,6 +1,7 @@
 import {
   config,
   decodeLightningInvoiceAmount,
+  decodeLightningInvoiceMetadata,
   decodeLightningInvoicePaymentHash,
   getLightningInvoiceNetwork,
   getWalletNetworkFromLightningConfig,
@@ -10,6 +11,11 @@ import {
 
 import {
   SparkWalletManager,
+  type SparkCheckoutReceiveInput,
+  type SparkCheckoutReceiveFailureReason,
+  type SparkCheckoutReceiveReconciliation,
+  type SparkCheckoutReceiveRequest,
+  type SparkFundsState,
   type SparkPreparedPayment,
   type SparkPayInvoiceInput,
   type SparkSdkClient,
@@ -30,6 +36,22 @@ interface SparkNativeWalletSettings {
 interface SparkNativeCurrencyAmount {
   originalValue: number
   originalUnit: string
+}
+
+interface SparkNativeInvoice {
+  encodedInvoice: string
+  bitcoinNetwork: string
+  paymentHash: string
+  amount: SparkNativeCurrencyAmount
+  createdAt: string
+  expiresAt: string
+}
+
+interface SparkNativeLightningReceiveRequest {
+  id: string
+  status: string
+  network: string
+  invoice: SparkNativeInvoice
 }
 
 interface SparkNativeTransfer {
@@ -58,7 +80,14 @@ export interface SparkNativeWallet {
     enabled: boolean
   ): Promise<SparkNativeWalletSettings | undefined>
   getWalletSettings(): Promise<SparkNativeWalletSettings | undefined>
-  getBalance(): Promise<{ balance: bigint }>
+  getBalance(): Promise<{
+    balance: bigint
+    satsBalance: {
+      available: bigint
+      owned: bigint
+      incoming: bigint
+    }
+  }>
   getTransfers(
     limit?: number,
     offset?: number
@@ -73,12 +102,12 @@ export interface SparkNativeWallet {
     amountSats: number
     memo?: string
     expirySeconds?: number
+    includeSparkAddress?: boolean
     includeSparkInvoice?: boolean
-  }): Promise<{
+  }): Promise<SparkNativeLightningReceiveRequest>
+  getLightningReceiveRequest(
     id: string
-    status: string
-    invoice: { encodedInvoice: string }
-  }>
+  ): Promise<SparkNativeLightningReceiveRequest | null>
   getLightningSendFeeEstimate(input: {
     encodedInvoice: string
     amountSats?: number
@@ -250,6 +279,7 @@ export class FirstPartySparkSdkFactory implements SparkSdkFactory {
         now: this.#now,
       })
       return adaptFirstPartySparkWallet({
+        walletId: input.walletId,
         wallet,
         module,
         network: toNativeNetwork(this.network),
@@ -361,6 +391,7 @@ async function waitForPrivacyConvergence(input: {
 }
 
 function adaptFirstPartySparkWallet(input: {
+  walletId: string
   wallet: SparkNativeWallet
   module: SparkNativeModule
   network: SparkNativeNetwork
@@ -381,6 +412,117 @@ function adaptFirstPartySparkWallet(input: {
     }
   >()
   let nextListenerId = 0
+
+  const readFundsState = async (): Promise<SparkFundsState> => {
+    const balance = await input.wallet.getBalance()
+    const availableSats = bigintToSafeNumber(
+      balance.satsBalance.available,
+      "Spark returned an available balance outside the browser's safe range."
+    )
+    const ownedSats = bigintToSafeNumber(
+      balance.satsBalance.owned,
+      "Spark returned an owned balance outside the browser's safe range."
+    )
+    const incomingSats = bigintToSafeNumber(
+      balance.satsBalance.incoming,
+      "Spark returned an incoming balance outside the browser's safe range."
+    )
+    if (ownedSats < availableSats) {
+      throw new Error("Spark returned an inconsistent funds state.")
+    }
+    const observedAt = input.now()
+    if (!Number.isSafeInteger(observedAt) || observedAt < 0) {
+      throw new Error("Spark returned an invalid funds observation time.")
+    }
+    return { availableSats, ownedSats, incomingSats, observedAt }
+  }
+
+  const createCheckoutReceive = async (
+    request: SparkCheckoutReceiveInput
+  ): Promise<SparkCheckoutReceiveRequest> => {
+    validateCheckoutReceiveInput(request)
+    const result = await input.wallet.createLightningInvoice({
+      amountSats: request.grossFundingSats,
+      memo: request.description,
+      expirySeconds: request.expirySecs,
+      includeSparkAddress: false,
+      includeSparkInvoice: false,
+    })
+    return mapNativeCheckoutReceive({
+      native: result,
+      walletId: input.walletId,
+      network: input.network,
+      requiredNetSats: request.requiredNetSats,
+      grossFundingSats: request.grossFundingSats,
+      expirySecs: request.expirySecs,
+    })
+  }
+
+  const reconcileCheckoutReceive = async (
+    request: SparkCheckoutReceiveRequest
+  ): Promise<SparkCheckoutReceiveReconciliation> => {
+    validateCheckoutReceiveRequest(request)
+    if (
+      request.walletId !== input.walletId ||
+      request.network !== fromNativeNetwork(input.network)
+    ) {
+      throw new Error(
+        "The Spark checkout receive request belongs to a different wallet or network."
+      )
+    }
+    let native: SparkNativeLightningReceiveRequest | null
+    try {
+      native = await input.wallet.getLightningReceiveRequest(request.id)
+    } catch {
+      return {
+        state: "unresolved_failure",
+        providerStatus: null,
+        failureReason: "lookup_unavailable",
+        funds: await readFundsState(),
+      }
+    }
+    const funds = await readFundsState()
+    if (!native) {
+      return {
+        state: "unresolved_failure",
+        providerStatus: null,
+        failureReason: "receive_not_found",
+        funds,
+      }
+    }
+
+    let current: SparkCheckoutReceiveRequest
+    try {
+      current = mapNativeCheckoutReceive({
+        native,
+        walletId: input.walletId,
+        network: input.network,
+        requiredNetSats: request.requiredNetSats,
+        grossFundingSats: request.grossFundingSats,
+        expirySecs: request.expirySecs,
+      })
+      assertSameCheckoutReceiveRequest(request, current)
+    } catch {
+      return {
+        state: "unresolved_failure",
+        providerStatus: normalizeProviderStatus(native.status),
+        failureReason: "conflicting_evidence",
+        funds,
+      }
+    }
+    const outcome = mapCheckoutReceiveState(current.providerStatus, {
+      availableSats: funds.availableSats,
+      requiredNetSats: request.requiredNetSats,
+      observedAt: funds.observedAt,
+      expiresAt: request.expiresAt,
+    })
+    return {
+      state: outcome.state,
+      providerStatus: current.providerStatus,
+      failureReason: outcome.failureReason,
+      funds,
+    }
+  }
 
   return {
     async addEventListener(listener) {
@@ -409,13 +551,14 @@ function adaptFirstPartySparkWallet(input: {
       await input.wallet.cleanup()
     },
     async getInfo() {
+      const funds = await readFundsState()
       return {
-        balanceSats: bigintToSafeNumber(
-          (await input.wallet.getBalance()).balance,
-          "Spark returned a balance outside the browser's safe range."
-        ),
+        balanceSats: funds.availableSats,
       }
     },
+    getFundsState: readFundsState,
+    createCheckoutReceive,
+    reconcileCheckoutReceive,
     async listPayments(request) {
       const result = await input.wallet.getTransfers(
         request?.limit ?? 50,
@@ -620,6 +763,253 @@ function adaptFirstPartySparkWallet(input: {
       }
     },
   }
+}
+
+function validateCheckoutReceiveInput(
+  request: SparkCheckoutReceiveInput
+): void {
+  if (
+    !Number.isSafeInteger(request.requiredNetSats) ||
+    request.requiredNetSats <= 0
+  ) {
+    throw new Error("Checkout receive net amount must be positive whole sats.")
+  }
+  if (
+    !Number.isSafeInteger(request.grossFundingSats) ||
+    request.grossFundingSats < request.requiredNetSats
+  ) {
+    throw new Error(
+      "Checkout receive funding amount must cover the required net sats."
+    )
+  }
+  if (!Number.isSafeInteger(request.expirySecs) || request.expirySecs <= 0) {
+    throw new Error("Checkout receive expiry must be a positive whole number.")
+  }
+}
+
+function validateCheckoutReceiveRequest(
+  request: SparkCheckoutReceiveRequest
+): void {
+  validateCheckoutReceiveInput({
+    description: "",
+    requiredNetSats: request.requiredNetSats,
+    grossFundingSats: request.grossFundingSats,
+    expirySecs: request.expirySecs,
+  })
+  if (
+    !request.walletId.trim() ||
+    !request.id.trim() ||
+    !request.providerStatus.trim()
+  ) {
+    throw new Error("Checkout receive identity is invalid.")
+  }
+  if (request.network !== "mainnet" && request.network !== "regtest") {
+    throw new Error("Checkout receive network is invalid.")
+  }
+  decodeHex32(request.paymentHash, "Checkout receive payment hash is invalid.")
+  if (
+    !Number.isSafeInteger(request.createdAt) ||
+    !Number.isSafeInteger(request.expiresAt) ||
+    request.createdAt < 0 ||
+    request.expiresAt <= request.createdAt
+  ) {
+    throw new Error("Checkout receive timestamps are invalid.")
+  }
+}
+
+function mapNativeCheckoutReceive(input: {
+  native: SparkNativeLightningReceiveRequest
+  walletId: string
+  network: SparkNativeNetwork
+  requiredNetSats: number
+  grossFundingSats: number
+  expirySecs: number
+}): SparkCheckoutReceiveRequest {
+  const id = input.native.id.trim()
+  const providerStatus = input.native.status.trim()
+  if (!id || !providerStatus) {
+    throw new Error("Spark returned an invalid checkout receive identity.")
+  }
+  if (
+    input.native.network !== input.network ||
+    input.native.invoice.bitcoinNetwork !== input.network
+  ) {
+    throw new Error("Spark returned conflicting checkout network evidence.")
+  }
+  const paymentRequest = validateLightningReceiveInvoice({
+    amountSats: input.grossFundingSats,
+    network: input.network,
+    paymentRequest: input.native.invoice.encodedInvoice,
+  })
+  const invoicePaymentHash = decodeLightningInvoicePaymentHash(paymentRequest)
+  const paymentHash = decodeHex32(
+    invoicePaymentHash ?? "",
+    "Spark returned a checkout invoice without a valid payment hash."
+  ).hex
+  const providerPaymentHash = decodeHex32(
+    input.native.invoice.paymentHash,
+    "Spark returned an invalid checkout receive payment hash."
+  ).hex
+  if (providerPaymentHash !== paymentHash) {
+    throw new Error("Spark returned conflicting checkout receive identity.")
+  }
+  if (
+    readNativeInvoiceAmountSats(input.native.invoice.amount) !==
+    input.grossFundingSats
+  ) {
+    throw new Error("Spark returned a different checkout funding amount.")
+  }
+  const providerCreatedAt = parseNativeTimestamp(
+    input.native.invoice.createdAt,
+    "Spark returned an invalid checkout receive creation time."
+  )
+  const providerExpiresAt = parseNativeTimestamp(
+    input.native.invoice.expiresAt,
+    "Spark returned an invalid checkout receive expiry."
+  )
+  if (providerExpiresAt <= providerCreatedAt) {
+    throw new Error("Spark returned an expired checkout receive interval.")
+  }
+  const invoiceMetadata = decodeLightningInvoiceMetadata(paymentRequest)
+  const invoiceCreatedAt = secondsToMilliseconds(
+    invoiceMetadata.createdAt,
+    "Spark returned a checkout invoice without a valid creation time."
+  )
+  const invoiceExpiresAt = secondsToMilliseconds(
+    invoiceMetadata.expiresAt,
+    "Spark returned a checkout invoice without a valid expiry."
+  )
+  const createdAt = Math.floor(providerCreatedAt / 1_000) * 1_000
+  const expiresAt = Math.floor(providerExpiresAt / 1_000) * 1_000
+  if (
+    createdAt !== invoiceCreatedAt ||
+    expiresAt !== invoiceExpiresAt ||
+    expiresAt - createdAt !== input.expirySecs * 1_000
+  ) {
+    throw new Error("Spark returned conflicting checkout expiry evidence.")
+  }
+  const network = fromNativeNetwork(input.network)
+  if (network !== "mainnet" && network !== "regtest") {
+    throw new Error("Spark returned an unsupported checkout network.")
+  }
+  return {
+    walletId: input.walletId,
+    network,
+    id,
+    paymentRequest,
+    paymentHash,
+    providerStatus,
+    requiredNetSats: input.requiredNetSats,
+    grossFundingSats: input.grossFundingSats,
+    expirySecs: input.expirySecs,
+    createdAt,
+    expiresAt,
+  }
+}
+
+function assertSameCheckoutReceiveRequest(
+  expected: SparkCheckoutReceiveRequest,
+  current: SparkCheckoutReceiveRequest
+): void {
+  if (
+    current.id !== expected.id ||
+    current.walletId !== expected.walletId ||
+    current.network !== expected.network ||
+    current.paymentRequest !== expected.paymentRequest ||
+    current.paymentHash !== expected.paymentHash ||
+    current.requiredNetSats !== expected.requiredNetSats ||
+    current.grossFundingSats !== expected.grossFundingSats ||
+    current.expirySecs !== expected.expirySecs ||
+    current.createdAt !== expected.createdAt ||
+    current.expiresAt !== expected.expiresAt
+  ) {
+    throw new Error("Spark returned conflicting checkout receive evidence.")
+  }
+}
+
+function mapCheckoutReceiveState(
+  providerStatus: string,
+  input: {
+    availableSats: number
+    requiredNetSats: number
+    observedAt: number
+    expiresAt: number
+  }
+): {
+  state: SparkCheckoutReceiveReconciliation["state"]
+  failureReason: SparkCheckoutReceiveFailureReason | null
+} {
+  if (providerStatus === "INVOICE_CREATED") {
+    return input.observedAt < input.expiresAt
+      ? { state: "pending", failureReason: null }
+      : {
+          state: "unresolved_failure",
+          failureReason: "invoice_expired_unresolved",
+        }
+  }
+  if (
+    providerStatus === "TRANSFER_CREATED" ||
+    providerStatus === "PAYMENT_PREIMAGE_RECOVERED" ||
+    providerStatus === "LIGHTNING_PAYMENT_RECEIVED"
+  ) {
+    return { state: "funded_pending_claim", failureReason: null }
+  }
+  if (
+    providerStatus === "TRANSFER_COMPLETED" &&
+    input.availableSats >= input.requiredNetSats
+  ) {
+    return { state: "spendable", failureReason: null }
+  }
+  if (providerStatus === "TRANSFER_COMPLETED") {
+    return {
+      state: "unresolved_failure",
+      failureReason: "insufficient_available_funds",
+    }
+  }
+  return {
+    state: "unresolved_failure",
+    failureReason: "provider_unresolved",
+  }
+}
+
+function normalizeProviderStatus(value: string): string | null {
+  const normalized = value.trim()
+  return normalized || null
+}
+
+function readNativeInvoiceAmountSats(
+  amount: SparkNativeCurrencyAmount
+): number {
+  if (!Number.isFinite(amount.originalValue) || amount.originalValue < 0) {
+    throw new Error("Spark returned an invalid checkout funding amount.")
+  }
+  const sats =
+    amount.originalUnit === "SATOSHI"
+      ? amount.originalValue
+      : amount.originalUnit === "MILLISATOSHI"
+        ? amount.originalValue / 1_000
+        : Number.NaN
+  if (!Number.isSafeInteger(sats) || sats < 0) {
+    throw new Error("Spark returned an invalid checkout funding amount.")
+  }
+  return sats
+}
+
+function parseNativeTimestamp(value: string, message: string): number {
+  const timestamp = Date.parse(value)
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+    throw new Error(message)
+  }
+  return timestamp
+}
+
+function secondsToMilliseconds(value: number | null, message: string): number {
+  if (value === null) throw new Error(message)
+  const milliseconds = value * 1_000
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) {
+    throw new Error(message)
+  }
+  return milliseconds
 }
 
 function getRecommendedLightningMaxFeeSats(amountSats: number): number {
@@ -1063,7 +1453,14 @@ async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
           getWalletSettings: () => wallet.getWalletSettings(),
           getBalance: async () => {
             const balance = await wallet.getBalance()
-            return { balance: balance.satsBalance.available }
+            return {
+              balance: balance.balance,
+              satsBalance: {
+                available: balance.satsBalance.available,
+                owned: balance.satsBalance.owned,
+                incoming: balance.satsBalance.incoming,
+              },
+            }
           },
           getTransfers: (limit, offset) => wallet.getTransfers(limit, offset),
           getSparkAddress: () => wallet.getSparkAddress(),
@@ -1071,6 +1468,8 @@ async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
           getTransfer: (id) => wallet.getTransfer(id),
           createLightningInvoice: (request) =>
             wallet.createLightningInvoice(request),
+          getLightningReceiveRequest: (id) =>
+            wallet.getLightningReceiveRequest(id),
           getLightningSendFeeEstimate: (request) =>
             wallet.getLightningSendFeeEstimate(request),
           payLightningInvoice: (request) => wallet.payLightningInvoice(request),
