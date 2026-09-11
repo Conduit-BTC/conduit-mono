@@ -76,6 +76,24 @@ function market(input: {
   }
 }
 
+function dateMarket(input: {
+  suffix: string
+  startDate: string
+  endDate?: string
+}): MerchantOrganizerEventMarket {
+  const result = market({
+    suffix: input.suffix,
+    startMs: Date.parse(`${input.startDate}T00:00:00Z`),
+  })
+  return {
+    ...result,
+    calendarKind: 31922,
+    calendarCoordinate: result.calendarCoordinate.replace("31923:", "31922:"),
+    start: input.startDate,
+    ...(input.endDate ? { end: input.endDate } : { end: undefined }),
+  }
+}
+
 describe("Merchant event timeline", () => {
   it("retires known invalid coordinates while incomplete reads retain positive cards", () => {
     const positive = market({ suffix: "known", startMs: NOW + 3_600_000 })
@@ -287,6 +305,59 @@ describe("Merchant event timeline", () => {
         (item) => item.market.title
       )
     ).toEqual(["past"])
+  })
+
+  it("keeps a no-end date event upcoming through its start date and displays explicit ends exclusively", () => {
+    const singleDay = dateMarket({
+      suffix: "single-day",
+      startDate: "2027-06-01",
+    })
+    const explicitSingleDay = dateMarket({
+      suffix: "explicit-single-day",
+      startDate: "2027-06-01",
+      endDate: "2027-06-02",
+    })
+    const multiDay = dateMarket({
+      suffix: "multi-day",
+      startDate: "2027-06-01",
+      endDate: "2027-06-03",
+    })
+    const items = mergeMerchantEventTimeline({
+      merchantPubkey: MERCHANT,
+      perspectiveMarkets: [singleDay, multiDay],
+      ownedMarkets: [],
+      exactRelationshipMarkets: [],
+      savedReferences: [],
+      sellingCollectionCoordinates: [],
+    })
+
+    expect(
+      filterAndSortMerchantEventTimeline(items, {}, NOW).map(
+        (item) => item.market.title
+      )
+    ).toContain("single-day")
+    expect(
+      filterAndSortMerchantEventTimeline(
+        [
+          {
+            market: explicitSingleDay,
+            relationships: [],
+            reconciliationPending: false,
+          },
+        ],
+        { window: "past" },
+        Date.UTC(2027, 5, 2)
+      )
+    ).toHaveLength(1)
+    const explicitSingleDaySchedule = formatMerchantEventTimelineSchedule(
+      explicitSingleDay,
+      "en-US"
+    )
+    expect(explicitSingleDaySchedule).toBe("Jun 1, 2027")
+    expect(explicitSingleDaySchedule).not.toContain("Jun 2")
+    expect(formatMerchantEventTimelineSchedule(multiDay, "en-US")).toBe(
+      "Jun 1, 2027 – Jun 2, 2027"
+    )
   })
 
   it("uses signed schedule evidence and relay-aware status labels", () => {

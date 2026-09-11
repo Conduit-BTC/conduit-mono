@@ -31,6 +31,8 @@ export const MERCHANT_EVENT_TIMELINE_WINDOWS: MerchantEventTimelineWindow[] = [
   "all",
 ]
 
+const DAY_MS = 86_400_000
+
 export interface MerchantEventTimelineItem {
   market: MerchantOrganizerEventMarket
   relationships: MerchantEventRelationship[]
@@ -191,7 +193,11 @@ export function merchantEventTimelineBounds(
     if (typeof market.start !== "string") return null
     const startMs = dateOnlyMs(market.start)
     const endMs =
-      typeof market.end === "string" ? dateOnlyMs(market.end) : startMs
+      typeof market.end === "string"
+        ? dateOnlyMs(market.end)
+        : startMs === null
+          ? null
+          : startMs + DAY_MS
     return startMs === null || endMs === null ? null : { startMs, endMs }
   }
   if (typeof market.start !== "number" || !Number.isFinite(market.start)) {
@@ -207,7 +213,7 @@ export function merchantEventTimelineBounds(
 
 function isPast(item: MerchantEventTimelineItem, nowMs: number): boolean {
   const bounds = merchantEventTimelineBounds(item.market)
-  return item.market.state === "ended" || (!!bounds && bounds.endMs < nowMs)
+  return item.market.state === "ended" || (!!bounds && bounds.endMs <= nowMs)
 }
 
 function matchesWindow(
@@ -278,8 +284,13 @@ export function formatMerchantEventTimelineSchedule(
   if (market.calendarKind === 31922) {
     if (typeof market.start !== "string") return "Schedule unavailable"
     const start = dateOnlyMs(market.start)
-    const end = typeof market.end === "string" ? dateOnlyMs(market.end) : null
-    if (start === null) return "Schedule unavailable"
+    const exclusiveEnd =
+      typeof market.end === "string"
+        ? dateOnlyMs(market.end)
+        : start === null
+          ? null
+          : start + DAY_MS
+    if (start === null || exclusiveEnd === null) return "Schedule unavailable"
     const formatter = new Intl.DateTimeFormat(locale, {
       month: "short",
       day: "numeric",
@@ -287,8 +298,9 @@ export function formatMerchantEventTimelineSchedule(
       timeZone: "UTC",
     })
     const startLabel = formatter.format(start)
-    return end && end !== start
-      ? `${startLabel} – ${formatter.format(end)}`
+    const inclusiveEnd = exclusiveEnd - DAY_MS
+    return inclusiveEnd > start
+      ? `${startLabel} – ${formatter.format(inclusiveEnd)}`
       : startLabel
   }
 

@@ -41,6 +41,8 @@ export const EVENT_TIMELINE_WINDOWS: EventTimelineWindow[] = [
   "all",
 ]
 
+const DAY_MS = 86_400_000
+
 export function isTimelineEventMarket(
   market: EventMarketResolution
 ): market is TimelineEventMarket {
@@ -169,8 +171,11 @@ export function formatEventTimelineSchedule(
   locale?: string
 ): string {
   if (calendar.kind === 31922 && calendar.startDate) {
-    return calendar.endDate
-      ? `${calendar.startDate} to ${calendar.endDate}`
+    const inclusiveEnd = new Date(calendar.end - DAY_MS)
+      .toISOString()
+      .slice(0, 10)
+    return calendar.endDate && inclusiveEnd !== calendar.startDate
+      ? `${calendar.startDate} to ${inclusiveEnd}`
       : calendar.startDate
   }
 
