@@ -1968,6 +1968,9 @@ function MyEventsPanel({
           )}
           {selectedHandoffActionableMarket && (
             <OrganizerHandoffReceiptQueue
+              organizerPubkey={organizerPubkey}
+              authenticatedPubkey={authenticatedPubkey}
+              shouldContinue={shouldContinue}
               claims={handoffClaims}
               ackDeliveries={handoffAckDeliveries}
               merchandiseReads={handoffMerchandiseQuery.data ?? {}}

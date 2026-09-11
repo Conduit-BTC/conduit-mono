@@ -3230,6 +3230,32 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     createInboxDeclaration("merchant", declarationTime + 1),
     createInboxDeclaration("buyer", declarationTime + 2)
   )
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 0,
+      created_at: declarationTime,
+      tags: [],
+      content: JSON.stringify({ display_name: "Friendly Handoff Organizer" }),
+    }),
+    signEvent(MERCHANT_SECRET, {
+      kind: 0,
+      created_at: declarationTime,
+      tags: [],
+      content: JSON.stringify({ display_name: "Friendly Handoff Merchant" }),
+    })
+  )
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          ;(
+            window as typeof window & { __merchantActorCopiedNpub?: string }
+          ).__merchantActorCopiedNpub = value
+        },
+      },
+    })
+  })
   await installSyntheticEnvironment(page, relay, "acknowledger")
 
   const market = await publishOrganizerMarket(page, relay, {
@@ -3254,6 +3280,32 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     "shipping_option",
     market.pickupCoordinate!,
   ])
+
+  await expect(
+    page.getByText("Friendly Handoff Organizer", { exact: true }).first()
+  ).toBeVisible()
+  await expect(
+    page.getByText("Friendly Handoff Merchant", { exact: true }).first()
+  ).toBeVisible()
+  await page
+    .getByRole("button", { name: "Copy organizer signer npub", exact: true })
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __merchantActorCopiedNpub?: string })
+            .__merchantActorCopiedNpub
+      )
+    )
+    .toBe(nip19.npubEncode(ORGANIZER_PUBKEY))
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  await expect(
+    page.getByText("Friendly Handoff Organizer", { exact: true }).first()
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Copy organizer npub", exact: true })
+  ).toBeVisible()
 
   await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
   await expect(
@@ -3416,6 +3468,22 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
       .filter({ visible: true })
       .first()
   ).toBeVisible({ timeout: 30_000 })
+  const merchantPickup = page.getByTestId("merchant-order-pickup")
+  await expect(
+    merchantPickup.getByText("Friendly Handoff Organizer", { exact: true })
+  ).toBeVisible()
+  await merchantPickup
+    .getByRole("button", { name: "Copy pickup organizer npub", exact: true })
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __merchantActorCopiedNpub?: string })
+            .__merchantActorCopiedNpub
+      )
+    )
+    .toBe(nip19.npubEncode(ORGANIZER_PUBKEY))
   const acceptOrder = page.getByRole("button", {
     name: "Accept order",
     exact: true,
@@ -3652,6 +3720,21 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   await expect(
     queuedClaim.getByText("Ready for pickup", { exact: true })
   ).toBeVisible()
+  await expect(
+    queuedClaim.getByText("Friendly Handoff Merchant", { exact: true })
+  ).toBeVisible()
+  await queuedClaim
+    .getByRole("button", { name: "Copy handoff merchant npub", exact: true })
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __merchantActorCopiedNpub?: string })
+            .__merchantActorCopiedNpub
+      )
+    )
+    .toBe(nip19.npubEncode(MERCHANT_PUBKEY))
   const acknowledge = queuedClaim.getByRole("button", {
     name: "Mark handed out",
     exact: true,

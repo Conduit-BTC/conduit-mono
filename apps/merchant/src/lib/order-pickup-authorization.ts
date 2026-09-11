@@ -15,6 +15,7 @@ import {
   type ProductsByIdsResult,
 } from "@conduit/core"
 import { getMerchantOrderFulfillment } from "./order-phase"
+import { getResolvedEventMarketRelayHints } from "./event-market"
 
 type OrderItem = OrderSummary["items"][number]
 type PickupOrderItem = OrderItem & {
@@ -42,6 +43,14 @@ export type MerchantPickupAuthorizationResult =
       status: "unverified"
       reason: MerchantPickupAuthorizationFailure
     }
+
+export function getMerchantPickupOrganizerProfileRelayHints(
+  result: MerchantPickupAuthorizationResult | undefined
+): string[] {
+  return result?.status === "verified"
+    ? getResolvedEventMarketRelayHints(result.market)
+    : []
+}
 
 export interface MerchantPickupAuthorizationInput {
   items: OrderSummary["items"]
