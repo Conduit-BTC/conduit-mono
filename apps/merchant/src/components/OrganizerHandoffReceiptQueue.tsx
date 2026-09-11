@@ -106,6 +106,8 @@ function publicGraphBlocker(
 
 export function OrganizerHandoffReceiptQueue({
   organizerPubkey,
+  authenticatedPubkey,
+  shouldContinue,
   claims,
   ackDeliveries,
   merchandiseReads,
@@ -117,11 +119,14 @@ export function OrganizerHandoffReceiptQueue({
   discoveryEvidenceComplete,
   error,
   actionError,
+  actionsDisabled,
   pendingReceiptId,
   onAcknowledge,
   onRefresh,
 }: {
   organizerPubkey: string
+  authenticatedPubkey: string | null
+  shouldContinue: () => boolean
   claims: readonly EventMarketOrganizerClaim[]
   ackDeliveries: readonly StoredEventMarketHandoffDelivery[]
   merchandiseReads: Readonly<Record<string, OrganizerHandoffMerchandiseRead>>
@@ -135,6 +140,7 @@ export function OrganizerHandoffReceiptQueue({
   discoveryEvidenceComplete: boolean
   error: boolean
   actionError?: string
+  actionsDisabled: boolean
   pendingReceiptId: string | null
   onAcknowledge: (claim: EventMarketOrganizerClaim) => void
   onRefresh: () => void
@@ -167,7 +173,9 @@ export function OrganizerHandoffReceiptQueue({
     [claims, merchandiseReads]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
-    authenticatedPubkey: organizerPubkey,
+    accountPubkey: organizerPubkey,
+    authenticatedPubkey,
+    shouldContinue,
     relayHintsByPubkey: merchantRelayHintsByPubkey,
     enabled: merchantPubkeys.length > 0,
     priority: "visible",
@@ -349,6 +357,7 @@ export function OrganizerHandoffReceiptQueue({
                     size="sm"
                     disabled={
                       ackReadiness?.state !== "ready" ||
+                      actionsDisabled ||
                       pending ||
                       (!!ackDelivery && !ackNeedsRetry)
                     }

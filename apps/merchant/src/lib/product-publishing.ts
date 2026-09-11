@@ -68,7 +68,12 @@ export function isDeliverableMerchantProductEvent(
 export async function deliverSignedProductEvent(
   event: NDKEvent | SignedPublicNostrEvent,
   merchantPubkey: string,
-  options: { extraRelayUrls?: readonly string[] } = {}
+  options: {
+    extraRelayUrls?: readonly string[]
+    /** Active authenticated account; never inferred from merchantPubkey. */
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+  } = {}
 ): Promise<PublishWithPlannerResult> {
   try {
     const rawEvent =
@@ -80,6 +85,9 @@ export async function deliverSignedProductEvent(
         "Expected a valid signed merchant product or deletion event"
       )
     }
+    const authenticatedPubkey = options.authenticatedPubkey
+      ?.trim()
+      .toLowerCase()
 
     let publishableEvent: NDKEvent
     if (event instanceof NDKEvent) {
@@ -91,9 +99,14 @@ export async function deliverSignedProductEvent(
     const delivery = await publishWithPlanner(publishableEvent, {
       intent: "author_event",
       authorPubkey: merchantPubkey,
-      authenticatedPubkey: merchantPubkey,
+      authenticatedPubkey:
+        authenticatedPubkey === merchantPubkey.toLowerCase()
+          ? authenticatedPubkey
+          : null,
+      accountPubkey: merchantPubkey,
       deliveryMode: "critical",
       extraRelayUrls: options.extraRelayUrls,
+      shouldContinue: options.shouldContinue,
     })
     if (rawEvent.kind === EVENT_KINDS.PRODUCT) {
       await cacheSignedProductListingEvent(publishableEvent, {
@@ -113,14 +126,20 @@ function mergeRelayUrls(...groups: readonly (readonly string[])[]): string[] {
 
 export async function deliverSignedProductEventBundle(
   events: readonly (NDKEvent | SignedPublicNostrEvent)[],
-  merchantPubkey: string
+  merchantPubkey: string,
+  options: {
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+  } = {}
 ): Promise<PublishWithPlannerResult> {
   if (events.length === 0) {
     throw new Error("At least one signed product event is required")
   }
 
   const deliveries = await Promise.all(
-    events.map((event) => deliverSignedProductEvent(event, merchantPubkey))
+    events.map((event) =>
+      deliverSignedProductEvent(event, merchantPubkey, options)
+    )
   )
   return aggregateProductEventDeliveries(deliveries)
 }
@@ -577,7 +596,12 @@ export async function deliverSignedProductWriteBundle(
   const deliveryPromises: Promise<PublishWithPlannerResult>[] = []
   for (const event of bundle.events) {
     if (event.kind !== EVENT_KINDS.DELETION) {
-      deliveryPromises.push(deliverSignedProductEvent(event, merchantPubkey))
+      deliveryPromises.push(
+        deliverSignedProductEvent(event, merchantPubkey, {
+          authenticatedPubkey: deletionDeliveryOptions.authenticatedPubkey,
+          shouldContinue: deletionDeliveryOptions.shouldContinue,
+        })
+      )
     }
   }
   if (bundle.deletionDeliveryJobId) {
@@ -594,6 +618,9 @@ export async function deliverSignedProductWriteBundle(
 
 export async function signAndPublishProductWriteBundle(input: {
   merchantPubkey: string
+  /** Current session identity; a live signer is the fallback auth seam. */
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
   listings: readonly ProductListingPublishTarget[]
   deletions?: readonly ProductDeletionPublishTarget[]
   onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
@@ -609,6 +636,14 @@ export async function signAndPublishProductWriteBundle(input: {
   if (signerPubkey !== input.merchantPubkey) {
     throw new Error("Active signer does not match current merchant pubkey")
   }
+  const suppliedAuthenticatedPubkey = input.authenticatedPubkey
+    ?.trim()
+    .toLowerCase()
+  const authenticatedPubkey =
+    input.authenticatedPubkey === undefined ||
+    suppliedAuthenticatedPubkey === signerPubkey
+      ? signerPubkey
+      : null
   if (input.listings.length === 0 && (input.deletions?.length ?? 0) === 0) {
     throw new Error("No product changes require signing")
   }
@@ -660,8 +695,10 @@ export async function signAndPublishProductWriteBundle(input: {
     const delivery = await publishWithPlanner(write.shippingEvent, {
       intent: "author_event",
       authorPubkey: signerPubkey,
-      authenticatedPubkey: signerPubkey,
+      authenticatedPubkey,
+      accountPubkey: signerPubkey,
       deliveryMode: "critical",
+      shouldContinue: input.shouldContinue,
     })
     if (delivery.successfulRelayUrls.length === 0) {
       throw new Error(
@@ -682,8 +719,11 @@ export async function signAndPublishProductWriteBundle(input: {
 
   let deletionDeliveryJobId: string | undefined
   if (deletionEvent) {
-    const currentWriteRelayUrls =
-      await planCurrentProductDeletionWriteRelays(signerPubkey)
+    const currentWriteRelayUrls = await planCurrentProductDeletionWriteRelays(
+      signerPubkey,
+      signerPubkey,
+      input.shouldContinue
+    )
     const sourceRelayUrls = mergeRelayUrls(
       ...(input.deletions ?? []).map(
         (deletion) => deletion.sourceRelayUrls ?? []
@@ -707,11 +747,11 @@ export async function signAndPublishProductWriteBundle(input: {
   }
   try {
     await input.onSignedLocal(signedBundle)
-    return await deliverSignedProductWriteBundle(
-      signedBundle,
-      signerPubkey,
-      input.deletionDeliveryOptions
-    )
+    return await deliverSignedProductWriteBundle(signedBundle, signerPubkey, {
+      ...input.deletionDeliveryOptions,
+      authenticatedPubkey,
+      shouldContinue: input.shouldContinue,
+    })
   } catch (error) {
     throw asSignedProductDeliveryError(error)
   }
@@ -719,6 +759,8 @@ export async function signAndPublishProductWriteBundle(input: {
 
 export async function signAndPublishProductListing(input: {
   merchantPubkey: string
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
   product: ProductSchema
   dTag: string
   previousEventCreatedAt?: number
@@ -728,6 +770,8 @@ export async function signAndPublishProductListing(input: {
 }): Promise<PublishWithPlannerResult> {
   return signAndPublishProductWriteBundle({
     merchantPubkey: input.merchantPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
     listings: [
       {
         product: input.product,

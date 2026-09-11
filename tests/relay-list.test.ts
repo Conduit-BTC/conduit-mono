@@ -722,12 +722,33 @@ describe("getRelayList / getRelayLists cache behavior", () => {
 
     const list = await getRelayList("alice", {
       allowInsecureRelayUrlsForPubkey: "alice",
+      authenticatedPubkey: "alice",
     })
     expect(list?.readRelayUrls).toEqual([
       "ws://artshop:4848",
       "wss://127.0.0.1:4848",
       "wss://relay-alice.conduit.market",
     ])
+  })
+
+  it("does not treat an insecure-result allowlist as authentication", async () => {
+    __setRelayListTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          makeRelayListEvent({
+            pubkey: "alice",
+            tags: [
+              ["r", "ws://artshop:4848"],
+              ["r", "wss://relay-alice.conduit.market"],
+            ],
+          }),
+        ] as unknown as NDKEvent[],
+    })
+
+    const list = await getRelayList("alice", {
+      allowInsecureRelayUrlsForPubkey: "alice",
+    })
+    expect(list?.readRelayUrls).toEqual(["wss://relay-alice.conduit.market"])
   })
 
   it("filters insecure relays only for non-authenticated pubkeys in batched lookups", async () => {
@@ -749,6 +770,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
 
     const result = await getRelayLists(["alice", "bob"], {
       allowInsecureRelayUrlsForPubkey: "alice",
+      authenticatedPubkey: "alice",
     })
     expect(result.get("alice")?.readRelayUrls).toEqual([
       "ws://local-alice:4848",

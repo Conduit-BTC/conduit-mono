@@ -45,4 +45,24 @@ describe("cart readiness hidden product scope", () => {
       [productId],
     ])
   })
+
+  it("separates signed-in relay scopes while preserving the guest key", () => {
+    const guest = merchantCartAvailabilityQueryKey(merchantPubkey, [productId])
+    const accountA = merchantCartAvailabilityQueryKey(
+      merchantPubkey,
+      [productId],
+      [],
+      "account:a"
+    )
+    const accountB = merchantCartAvailabilityQueryKey(
+      merchantPubkey,
+      [productId],
+      [],
+      "account:b"
+    )
+
+    expect(accountA).not.toEqual(guest)
+    expect(accountB).not.toEqual(guest)
+    expect(accountA).not.toEqual(accountB)
+  })
 })

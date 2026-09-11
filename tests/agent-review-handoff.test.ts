@@ -67,6 +67,32 @@ const getOutputValue = (output: string, name: string) =>
 const automationResidual =
   "Automation residual: The current Sudden action needs a narrow pull-request-write token to submit inline reviews; candidate prompt injection is not mechanically eliminated; schema and SHA gates fail malformed or stale results; human approval remains mandatory."
 
+const validQuotedSources = [
+  '"CONTRIBUTING.md."',
+  "“CONTRIBUTING.md.”",
+  'CONTRIBUTING.md "Acceptance Criteria."',
+  "CONTRIBUTING.md “Acceptance Criteria.”",
+]
+
+const quotedPlaceholderSources = [
+  '"."',
+  '" ."',
+  '"none."',
+  '"unknown."',
+  '" unknown."',
+  '"unsourced."',
+  '"unavailable."',
+  '"N/A."',
+  "“.”",
+  "“ .”",
+  "“none.”",
+  "“unknown.”",
+  "“ unknown.”",
+  "“unsourced.”",
+  "“unavailable.”",
+  "“N/A.”",
+]
+
 const sourceRunMarker = (headSha: string, runId = "321", runAttempt = "1") =>
   `<!-- conduit:sudden-review run=${runId} attempt=${runAttempt} head=${headSha} -->`
 
@@ -92,6 +118,14 @@ const cleanReviewBody = (
   )
 ) =>
   `${sourceRunMarker(headSha, runId, runAttempt)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.\n${next}`
+
+const cleanReviewBodyWithLiteralSource = (
+  headSha: string,
+  source: string,
+  runId = "321",
+  runAttempt = "1"
+) =>
+  `${sourceRunMarker(headSha, runId, runAttempt)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.\nNext: Maintainer — complete QA; evidence: the PR; done when: results are recorded; source: ${source}`
 
 const findingsReviewBody = (headSha: string, runId = "321", runAttempt = "1") =>
   `${sourceRunMarker(headSha, runId, runAttempt)}\nCode changes required.\n${nextAction(
@@ -1065,6 +1099,39 @@ describe("agent review handoff", () => {
     expect(missingActionSource.exitCode).not.toBe(0)
     expect(missingActionSource.stderr).toContain("complete Next action")
 
+    for (const quotedSource of validQuotedSources) {
+      const quotedSourceAction = await runReviewVerdictGate({
+        headSha,
+        reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.\nNext: Maintainer — complete QA; evidence: the PR; done when: results are recorded; source: ${quotedSource}`,
+        runId,
+      })
+      expect(quotedSourceAction.exitCode).toBe(0)
+    }
+
+    for (const placeholder of quotedPlaceholderSources) {
+      const quotedPlaceholder = await runReviewVerdictGate({
+        headSha,
+        reviewBody: cleanReviewBodyWithLiteralSource(
+          headSha,
+          placeholder,
+          runId
+        ),
+        runId,
+      })
+      expect(quotedPlaceholder.exitCode).not.toBe(0)
+      expect(quotedPlaceholder.stderr).toMatch(
+        /blank field|lacks a concrete source/
+      )
+    }
+
+    const quotedSourceWithoutPeriod = await runReviewVerdictGate({
+      headSha,
+      reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.\nNext: Maintainer — complete QA; evidence: the PR; done when: results are recorded; source: CONTRIBUTING.md “Acceptance Criteria”`,
+      runId,
+    })
+    expect(quotedSourceWithoutPeriod.exitCode).not.toBe(0)
+    expect(quotedSourceWithoutPeriod.stderr).toContain("complete Next action")
+
     for (const next of [
       nextAction(
         "   ",
@@ -1470,6 +1537,16 @@ describe("agent review handoff", () => {
     ).toBe(2)
     expect(
       countOccurrences(simplifyWorkflow, 'grep -Ec "$next_action_pattern"')
+    ).toBe(2)
+    expect(reviewWorkflow).toContain("source: ([^;]+)\\.(\"|”)?$'")
+    expect(
+      countOccurrences(simplifyWorkflow, "source: ([^;]+)\\.(\"|”)?$'")
+    ).toBe(2)
+    expect(
+      countOccurrences(
+        simplifyWorkflow,
+        "normalized_next_source=\"$(tr '[:upper:]' '[:lower:]' <<< \"$next_source\")\""
+      )
     ).toBe(2)
     expect(simplifyWorkflow).not.toContain("gh api graphql --paginate")
     expect(simplifyWorkflow).not.toContain("unresolved_review_thread_count")
@@ -2136,6 +2213,35 @@ while IFS= read -r _line; do :; done
     expect(manual.exitCode).toBe(0)
     expect(getOutputValue(manual.output, "should_run")).toBe("true")
   }, 15_000)
+
+  it("rejects quoted placeholder sources in both Ponytail gates", async () => {
+    const headSha = "4".repeat(40)
+    const scripts = [validationScript, revalidationScript]
+    for (const script of scripts) {
+      for (const placeholder of quotedPlaceholderSources) {
+        const result = await runGate(
+          {
+            headSha,
+            reviewBody: cleanReviewBodyWithLiteralSource(headSha, placeholder),
+          },
+          script
+        )
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toContain("lacks a concrete source")
+      }
+
+      for (const quotedSource of validQuotedSources) {
+        const result = await runGate(
+          {
+            headSha,
+            reviewBody: cleanReviewBodyWithLiteralSource(headSha, quotedSource),
+          },
+          script
+        )
+        expect(result.exitCode).toBe(0)
+      }
+    }
+  }, 60_000)
 
   it("revalidates queued handoffs inside the Ponytail execution lock", async () => {
     const headSha = "1".repeat(40)

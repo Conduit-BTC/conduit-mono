@@ -2,23 +2,29 @@ import { beforeEach, describe, expect, it } from "bun:test"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetInboxDeclarationCache,
+  applyInboxDeclarationCutoverExclusions,
+  applyInboxDeclarationCutoverRecoveryReadback,
+  applyInboxDeclarationDistributionStage,
+  applyInboxDeclarationEvidenceMerge,
   createInMemoryInboxDeclarationEvidenceRepository,
+  createInMemoryOwnerRelayListEvidenceRepository,
   deriveInboxReadCoverage,
   EVENT_KINDS,
-  getInboxMigrationRecoveryRelayUrls,
   getInboxDeclarationEvidence,
   getCachedInboxDeclaration,
   inboxDeclarationPublishRelayUrls,
+  INBOX_DECLARATION_CUTOVER_GRACE_MS,
+  INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
   sharedInboxDiscoveryRelayUrls,
   invalidateInboxDeclaration,
   mergeInboxDeclarationEvidence,
-  MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS,
   planCompatibilityOrderRelays,
   planInboxReadRelays,
   primeInboxDeclarationCache,
+  readRetainedInboxDeclaration,
+  reconcileOwnerRelayListEvidence,
   resolveInboxDeclaration,
   selectPrivateMessageDeliveryRoute,
-  setInboxMigrationRecoveryRelayUrls,
   type InboxDeclarationResolution,
   type InboxDeclarationEvidenceRepository,
   type ResolveInboxDeclarationOptions,
@@ -28,6 +34,7 @@ import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 const OWNER_SECRET = new Uint8Array(32).fill(1)
 const OTHER_SECRET = new Uint8Array(32).fill(2)
 const OWNER = getPublicKey(OWNER_SECRET)
+const OTHER = getPublicKey(OTHER_SECRET)
 
 function declarationEvent(params: {
   secretKey?: Uint8Array
@@ -113,15 +120,21 @@ describe("resolveInboxDeclaration", () => {
     expect(result.stale).toBe(false)
   })
 
-  it("preserves an authenticated owner's intentional local inbox relay", async () => {
+  it("preserves an authenticated owner's intentional ws inbox relay", async () => {
     const result = await resolveForTest({
       allowLocalRelayUrlsForPubkey: OWNER,
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
       relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [
           declarationEvent({
             createdAt: 100,
-            relays: ["wss://127.0.0.1:8080", "wss://inbox.conduit.market"],
+            relays: [
+              "ws://owner-inbox.example",
+              "wss://127.0.0.1:8080",
+              "wss://inbox.conduit.market",
+            ],
           }),
         ],
         successful: ["wss://read.conduit.market"],
@@ -130,9 +143,213 @@ describe("resolveInboxDeclaration", () => {
 
     expect(result.state).toBe("declared")
     expect(result.relayUrls).toEqual([
+      "ws://owner-inbox.example",
       "wss://127.0.0.1:8080",
       "wss://inbox.conduit.market",
     ])
+  })
+
+  it("adds owner discovery reads only from durable signed evidence for the active account", async () => {
+    const signedReadRelay = "ws://owner-read.example"
+    const signedRelayList = finalizeEvent(
+      {
+        kind: EVENT_KINDS.RELAY_LIST,
+        created_at: 100,
+        tags: [["r", signedReadRelay, "read"]],
+        content: "",
+      },
+      OWNER_SECRET
+    )
+    const ownerRepository = createInMemoryOwnerRelayListEvidenceRepository()
+    await reconcileOwnerRelayListEvidence(
+      {
+        pubkey: OWNER,
+        observations: [
+          {
+            signedEvent: signedRelayList,
+            sourceRelayUrls: ["wss://relay.damus.io"],
+            observedAt: 1_000,
+            completeObservedAt: 1_000,
+          },
+        ],
+        lookup: {
+          observedAt: 1_000,
+          coverage: "complete",
+          hadEvent: true,
+          eventId: signedRelayList.id,
+        },
+      },
+      ownerRepository
+    )
+    const relayPlans: Array<{
+      relayUrls: string[]
+      ownerSelectedRelayUrls: string[]
+    }> = []
+    const fetch = async (
+      _filter: unknown,
+      options: { relayUrls: string[]; ownerSelectedRelayUrls?: string[] }
+    ) => {
+      relayPlans.push({
+        relayUrls: [...options.relayUrls],
+        ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+      })
+      return {
+        events: [] as never,
+        attemptedRelayUrls: [...options.relayUrls],
+        successfulRelayUrls: [...options.relayUrls],
+        failedRelayUrls: [],
+      }
+    }
+
+    await resolveForTest({
+      ownerRelayListEvidenceRepository: ownerRepository,
+      fetchEventsWithDiagnostics: fetch as never,
+    })
+    expect(relayPlans[0]!.relayUrls).not.toContain(signedReadRelay)
+    expect(relayPlans[0]!.ownerSelectedRelayUrls).toEqual([])
+
+    __resetInboxDeclarationCache()
+    evidenceRepository = createInMemoryInboxDeclarationEvidenceRepository()
+    await resolveForTest({
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OTHER,
+      ownerRelayListEvidenceRepository: ownerRepository,
+      fetchEventsWithDiagnostics: fetch as never,
+    })
+    expect(relayPlans[1]!.relayUrls).not.toContain(signedReadRelay)
+    expect(relayPlans[1]!.ownerSelectedRelayUrls).toEqual([])
+
+    __resetInboxDeclarationCache()
+    evidenceRepository = createInMemoryInboxDeclarationEvidenceRepository()
+    await resolveForTest({
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      ownerRelayListEvidenceRepository: ownerRepository,
+      fetchEventsWithDiagnostics: fetch as never,
+    })
+    expect(relayPlans[2]!.relayUrls).toContain(signedReadRelay)
+    expect(relayPlans[2]!.ownerSelectedRelayUrls).toContain(signedReadRelay)
+  })
+
+  it("does not treat a remotely supplied ws discovery target as owner-selected", async () => {
+    const plans: Array<{
+      relayUrls: string[]
+      ownerSelectedRelayUrls: string[]
+    }> = []
+    const fetch = async (
+      _filter: unknown,
+      options: { relayUrls: string[]; ownerSelectedRelayUrls?: string[] }
+    ) => {
+      plans.push({
+        relayUrls: [...options.relayUrls],
+        ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+      })
+      return {
+        events: [] as never,
+        attemptedRelayUrls: [...options.relayUrls],
+        successfulRelayUrls: [...options.relayUrls],
+        failedRelayUrls: [],
+      }
+    }
+
+    await resolveForTest({
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      relayUrls: ["ws://remote-hint.example", "wss://relay.damus.io"],
+      fetchEventsWithDiagnostics: fetch as never,
+    })
+
+    expect(plans).toEqual([
+      {
+        relayUrls: ["wss://relay.damus.io"],
+        ownerSelectedRelayUrls: [],
+      },
+    ])
+  })
+
+  it("carries only an exact owner-selected ws subset to discovery I/O", async () => {
+    const ownerRelay = "ws://owner-selected.example"
+    const remoteRelay = "ws://remote-hint.example"
+    let observed:
+      { relayUrls: string[]; ownerSelectedRelayUrls: string[] } | undefined
+    await resolveForTest({
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      relayUrls: [remoteRelay, ownerRelay, "wss://relay.damus.io"],
+      ownerSelectedRelayUrls: [ownerRelay],
+      fetchEventsWithDiagnostics: (async (
+        _filter: unknown,
+        options: {
+          relayUrls: string[]
+          ownerSelectedRelayUrls?: readonly string[]
+        }
+      ) => {
+        observed = {
+          relayUrls: [...options.relayUrls],
+          ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+        }
+        return {
+          events: [],
+          attemptedRelayUrls: [...options.relayUrls],
+          successfulRelayUrls: [...options.relayUrls],
+          failedRelayUrls: [],
+        }
+      }) as never,
+    })
+
+    expect(observed).toEqual({
+      relayUrls: [ownerRelay, "wss://relay.damus.io"],
+      ownerSelectedRelayUrls: [ownerRelay],
+    })
+  })
+
+  it("drops owner-selected ws at final discovery I/O after an account mismatch", async () => {
+    const ownerRelay = "ws://owner-selected.example"
+    const secureRelay = "wss://relay.damus.io"
+    let observed:
+      | {
+          relayUrls: string[]
+          accountPubkey?: string | null
+          authenticatedPubkey?: string | null
+          ownerSelectedRelayUrls: string[]
+        }
+      | undefined
+
+    await resolveForTest({
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OTHER,
+      relayUrls: [ownerRelay, secureRelay],
+      ownerSelectedRelayUrls: [ownerRelay],
+      fetchEventsWithDiagnostics: (async (
+        _filter: unknown,
+        options: {
+          relayUrls: string[]
+          accountPubkey?: string | null
+          authenticatedPubkey?: string | null
+          ownerSelectedRelayUrls?: readonly string[]
+        }
+      ) => {
+        observed = {
+          relayUrls: [...options.relayUrls],
+          accountPubkey: options.accountPubkey,
+          authenticatedPubkey: options.authenticatedPubkey,
+          ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+        }
+        return {
+          events: [],
+          attemptedRelayUrls: [...options.relayUrls],
+          successfulRelayUrls: [...options.relayUrls],
+          failedRelayUrls: [],
+        }
+      }) as never,
+    })
+
+    expect(observed).toEqual({
+      relayUrls: [secureRelay],
+      accountPubkey: OWNER,
+      authenticatedPubkey: OTHER,
+      ownerSelectedRelayUrls: [],
+    })
   })
 
   it("does not leak an owner's local-relay cache allowance into remote use", async () => {
@@ -287,7 +504,12 @@ describe("resolveInboxDeclaration", () => {
       freshnessMs: 1,
       now: () => 1_000,
       fetchEventsWithDiagnostics: diagnostics({
-        events: [declarationEvent({ createdAt: 200, relays: ["ws://bad"] })],
+        events: [
+          declarationEvent({
+            createdAt: 200,
+            relays: ["ftp://not-a-relay.example"],
+          }),
+        ],
         successful: ["wss://read.conduit.market"],
       }),
     })
@@ -576,6 +798,7 @@ describe("resolveInboxDeclaration", () => {
       get: async () => undefined,
       merge: failMerge,
       mergeBatch: failMerge,
+      recordCutoverRecoveryReadback: failMerge,
     }
     const newer = declarationEvent({ createdAt: 200, relays: [] })
     const older = declarationEvent({
@@ -636,6 +859,8 @@ describe("resolveInboxDeclaration", () => {
           }
           return backing.mergeBatch(inputs)
         },
+        recordCutoverRecoveryReadback: (input) =>
+          backing.recordCutoverRecoveryReadback(input),
       }
       const event = declarationEvent({
         createdAt: 100,
@@ -697,6 +922,9 @@ describe("resolveInboxDeclaration", () => {
       mergeBatch: async () => {
         throw new Error("IndexedDB unavailable")
       },
+      recordCutoverRecoveryReadback: async () => {
+        throw new Error("IndexedDB unavailable")
+      },
     }
     const blocker = declarationEvent({ createdAt: 200, relays: [] })
     const older = declarationEvent({
@@ -733,6 +961,196 @@ describe("resolveInboxDeclaration", () => {
     ).toBe(blocker.id)
   })
 
+  it("targets only eligible members of a superseded local recovery plan", async () => {
+    const replacement = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://replacement-inbox.example"],
+    })
+    const stronger = declarationEvent({
+      createdAt: 200,
+      relays: ["wss://stronger-inbox.example"],
+    })
+    const sharedPlan = [
+      "wss://nos.lol",
+      "wss://relay.damus.io",
+      "wss://relay.ditto.pub",
+    ]
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: OWNER,
+      signedEvent: replacement,
+      publishRelayUrls: sharedPlan,
+      relayOutcomes: sharedPlan.map((relayUrl) => ({
+        relayUrl,
+        publishStatus: "pending" as const,
+        publishAttemptCount: 0,
+        readbackStatus: "pending" as const,
+        readbackAttemptCount: 0,
+      })),
+      previousRelayUrls: ["wss://previous-inbox.example"],
+      cutoverPolicyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      cutoverGraceMs: INBOX_DECLARATION_CUTOVER_GRACE_MS,
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+    const superseded = applyInboxDeclarationEvidenceMerge(staged, {
+      pubkey: OWNER,
+      signedEvent: stronger,
+      sourceRelayUrls: ["wss://relay.primal.net"],
+      sharedSourceRelayUrls: ["wss://relay.primal.net"],
+      observedAt: 2_000,
+    })
+    const partiallyReadBack = applyInboxDeclarationCutoverRecoveryReadback(
+      superseded,
+      {
+        replacementEventId: replacement.id,
+        replacementEventSig: replacement.sig,
+        readback: [{ relayUrl: sharedPlan[0]!, status: "observed" }],
+        observedAt: 2_250,
+      }
+    )
+    const excluded = applyInboxDeclarationCutoverExclusions(
+      partiallyReadBack,
+      [sharedPlan[1]!],
+      2_500
+    )
+    expect(excluded.cutoverRecoveries?.[0]?.readbackObservedAt).toBeUndefined()
+    const repository = createInMemoryInboxDeclarationEvidenceRepository([
+      excluded,
+    ])
+    attachEventSourceRelayUrl(replacement as never, sharedPlan[2]!)
+    attachEventSourceRelayUrl(stronger as never, "wss://relay.primal.net")
+    const calls: Array<{
+      ids?: string[]
+      relayUrls: string[]
+      accountPubkey?: string | null
+      authenticatedPubkey?: string | null
+      ownerSelectedRelayUrls: string[]
+    }> = []
+    const fetch = async (
+      filter: { ids?: string[] },
+      options: {
+        relayUrls: string[]
+        accountPubkey?: string | null
+        authenticatedPubkey?: string | null
+        ownerSelectedRelayUrls?: readonly string[]
+      }
+    ) => {
+      calls.push({
+        ...(filter.ids ? { ids: [...filter.ids] } : {}),
+        relayUrls: [...options.relayUrls],
+        accountPubkey: options.accountPubkey,
+        authenticatedPubkey: options.authenticatedPubkey,
+        ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+      })
+      if (filter.ids) {
+        return {
+          events: [replacement] as never,
+          attemptedRelayUrls: [sharedPlan[2]!],
+          successfulRelayUrls: [sharedPlan[2]!],
+          failedRelayUrls: [],
+        }
+      }
+      return {
+        events: [stronger] as never,
+        attemptedRelayUrls: ["wss://relay.primal.net"],
+        successfulRelayUrls: ["wss://relay.primal.net"],
+        failedRelayUrls: [],
+      }
+    }
+
+    const result = await resolveInboxDeclaration(OWNER, {
+      relayUrls: ["wss://relay.primal.net"],
+      freshnessMs: 0,
+      evidenceRepository: repository,
+      fetchEventsWithDiagnostics: fetch as never,
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      ownerSelectedRelayUrls: [sharedPlan[2]!],
+      now: () => 3_000,
+    })
+    const persisted = await getInboxDeclarationEvidence(OWNER, repository)
+
+    expect(calls[0]).toEqual({
+      ids: [replacement.id],
+      relayUrls: [sharedPlan[2]!],
+      accountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      ownerSelectedRelayUrls: [sharedPlan[2]!],
+    })
+    expect(calls[1]).toEqual({
+      relayUrls: ["wss://relay.primal.net"],
+      accountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      ownerSelectedRelayUrls: [sharedPlan[2]!],
+    })
+    expect(result.eventId).toBe(stronger.id)
+    expect(persisted?.cutoverRecoveries?.[0]).toMatchObject({
+      replacementEventId: replacement.id,
+      confirmationAttempts: [
+        {
+          relayUrls: sharedPlan,
+          completedRelayUrls: [sharedPlan[0], sharedPlan[2]],
+          observedRelayUrls: [sharedPlan[0], sharedPlan[2]],
+        },
+      ],
+      policyBlockedRelayUrls: [sharedPlan[1]],
+    })
+    expect(
+      persisted?.cutoverRecoveries?.[0]?.readbackObservedAt
+    ).toBeUndefined()
+    expect(persisted?.cutoverRecoveries?.[0]?.expiresAt).toBeUndefined()
+  })
+
+  it("projects signer-free redistribution when whole removal blocks the current recovery attempt", async () => {
+    const replacement = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://replacement-inbox.example"],
+    })
+    const sharedPlan = [
+      "wss://nos.lol",
+      "wss://relay.damus.io",
+      "wss://relay.ditto.pub",
+    ]
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: OWNER,
+      signedEvent: replacement,
+      publishRelayUrls: sharedPlan,
+      confirmationRelayUrls: sharedPlan,
+      relayOutcomes: sharedPlan.map((relayUrl) => ({
+        relayUrl,
+        publishStatus: "acked" as const,
+        publishAttemptCount: 1,
+        readbackStatus: "absent" as const,
+        readbackAttemptCount: 1,
+      })),
+      previousRelayUrls: ["wss://previous-inbox.example"],
+      cutoverPolicyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      cutoverGraceMs: INBOX_DECLARATION_CUTOVER_GRACE_MS,
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+    const excluded = applyInboxDeclarationCutoverExclusions(
+      staged,
+      [sharedPlan[1]!],
+      2_000
+    )
+    delete excluded.pendingDistribution
+    const repository = createInMemoryInboxDeclarationEvidenceRepository([
+      excluded,
+    ])
+
+    const result = await readRetainedInboxDeclaration(OWNER, {
+      evidenceRepository: repository,
+      now: () => 3_000,
+    })
+
+    expect(result).toMatchObject({
+      eventId: replacement.id,
+      state: "declared",
+      cutoverRecoveryNeedsRedistribution: true,
+    })
+  })
+
   it("seeds recovered storage atomically with the usable predecessor", async () => {
     const unavailableRepository: InboxDeclarationEvidenceRepository = {
       get: async () => undefined,
@@ -740,6 +1158,9 @@ describe("resolveInboxDeclaration", () => {
         throw new Error("IndexedDB unavailable")
       },
       mergeBatch: async () => {
+        throw new Error("IndexedDB unavailable")
+      },
+      recordCutoverRecoveryReadback: async () => {
         throw new Error("IndexedDB unavailable")
       },
     }
@@ -771,6 +1192,8 @@ describe("resolveInboxDeclaration", () => {
         batchMerges += 1
         return durable.mergeBatch(inputs)
       },
+      recordCutoverRecoveryReadback: (input) =>
+        durable.recordCutoverRecoveryReadback(input),
     }
     const result = await resolveInboxDeclaration(OWNER, {
       relayUrls: ["wss://shared.conduit.market"],
@@ -814,6 +1237,8 @@ describe("resolveInboxDeclaration", () => {
       },
       merge: (input) => durable.merge(input),
       mergeBatch: (inputs) => durable.mergeBatch(inputs),
+      recordCutoverRecoveryReadback: (input) =>
+        durable.recordCutoverRecoveryReadback(input),
     }
 
     __resetInboxDeclarationCache()
@@ -1067,7 +1492,6 @@ describe("planInboxReadRelays", () => {
   it("limits canonical compatibility reads to the protected inbox defaults", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
-      localReadRelayUrls: [],
     })
 
     expect(plan.relayUrls).toEqual([
@@ -1076,10 +1500,9 @@ describe("planInboxReadRelays", () => {
     ])
   })
 
-  it("unions declared, local IN, and compatibility reads with sources", () => {
+  it("unions declared and compatibility reads with sources", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ relayUrls: ["wss://inbox.conduit.market"] }),
-      localReadRelayUrls: ["wss://local.conduit.market"],
       compatibilityRelayUrls: [
         "wss://compat.conduit.market",
         "wss://inbox.conduit.market",
@@ -1088,98 +1511,23 @@ describe("planInboxReadRelays", () => {
 
     expect(plan.relayUrls).toEqual([
       "wss://inbox.conduit.market",
-      "wss://local.conduit.market",
       "wss://compat.conduit.market",
     ])
     expect(plan.relaySources["wss://inbox.conduit.market"]).toBe("declared")
-    expect(plan.relaySources["wss://local.conduit.market"]).toBe("local_in")
     expect(plan.relaySources["wss://compat.conduit.market"]).toBe(
       "compatibility"
     )
     expect(plan.source).toBe("mixed")
   })
 
-  it("keeps compatibility reads when local settings are nonempty", () => {
-    const plan = planInboxReadRelays({
-      declaration: resolution({ state: "not_observed", relayUrls: [] }),
-      localReadRelayUrls: ["wss://local.conduit.market"],
-      compatibilityRelayUrls: ["wss://compat.conduit.market"],
-    })
-
-    expect(plan.relayUrls).toContain("wss://compat.conduit.market")
-    expect(plan.relayUrls).toContain("wss://local.conduit.market")
-  })
-
-  it("adds migration recovery only for the exact authenticated inbox owner", () => {
-    const localRecovery = "wss://127.0.0.1:7447"
-    const publicRecovery = "wss://legacy-inbox.conduit.market"
-    setInboxMigrationRecoveryRelayUrls(OWNER, [localRecovery, publicRecovery])
-    const declaration = resolution({ state: "not_observed", relayUrls: [] })
-
-    const ownerPlan = planInboxReadRelays({
-      declaration,
-      authenticatedPubkey: OWNER,
-      compatibilityRelayUrls: [],
-    })
-    expect(ownerPlan.relayUrls).toEqual([localRecovery, publicRecovery])
-    expect(ownerPlan.relaySources).toEqual({
-      [localRecovery]: "migration_recovery",
-      [publicRecovery]: "migration_recovery",
-    })
-    expect(ownerPlan.source).toBe("migration_recovery")
-
-    const otherPlan = planInboxReadRelays({
-      declaration,
-      authenticatedPubkey: getPublicKey(OTHER_SECRET),
-      compatibilityRelayUrls: [],
-    })
-    expect(otherPlan.relayUrls).toEqual([])
-
-    __resetInboxDeclarationCache()
-    const resetPlan = planInboxReadRelays({
-      declaration,
-      authenticatedPubkey: OWNER,
-      compatibilityRelayUrls: [],
-    })
-    expect(resetPlan.relayUrls).toEqual([])
-  })
-
-  it("bounds direct migration recovery registry input before inbox planning", () => {
-    const oversized = Array.from(
-      { length: MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS + 4 },
-      (_, index) =>
-        `wss://migration-recovery-${String(index).padStart(2, "0")}.example`
-    )
-    const expected = oversized.slice(0, MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS)
-    setInboxMigrationRecoveryRelayUrls(OWNER, oversized)
-
-    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual(expected)
-    const plan = planInboxReadRelays({
-      declaration: resolution({ state: "not_observed", relayUrls: [] }),
-      authenticatedPubkey: OWNER,
-      compatibilityRelayUrls: [],
-    })
-    expect(plan.relayUrls).toEqual(expected)
-    expect(
-      plan.relayUrls.every(
-        (relayUrl) => plan.relaySources[relayUrl] === "migration_recovery"
-      )
-    ).toBe(true)
-  })
-
   it("reserves approved compatibility write targets inside a capped read plan", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
-      localReadRelayUrls: [
-        "wss://local-one.conduit.market",
-        "wss://local-two.conduit.market",
-        "wss://local-three.conduit.market",
-      ],
       compatibilityRelayUrls: [
+        "wss://public.conduit.market",
         "wss://commerce.conduit.market",
         "wss://inbox.conduit.market",
         "wss://interop.conduit.market",
-        "wss://public.conduit.market",
       ],
       requiredCompatibilityRelayUrls: [
         "wss://commerce.conduit.market",
@@ -1187,14 +1535,13 @@ describe("planInboxReadRelays", () => {
         "wss://interop.conduit.market",
         "wss://not-in-read-set.conduit.market",
       ],
-      maxRelays: 4,
+      maxRelays: 3,
     })
 
     expect(plan.relayUrls).toEqual([
       "wss://commerce.conduit.market",
       "wss://inbox.conduit.market",
       "wss://interop.conduit.market",
-      "wss://local-one.conduit.market",
     ])
   })
 
@@ -1209,7 +1556,6 @@ describe("planInboxReadRelays", () => {
         state: "lookup_unavailable",
         relayUrls: [],
       }),
-      localReadRelayUrls: [],
       compatibilityRelayUrls: ["wss://compat.conduit.market"],
     })
 
@@ -1232,13 +1578,11 @@ describe("planInboxReadRelays", () => {
     const thirdPartyPlan = planInboxReadRelays({
       declaration,
       authenticatedPubkey: "different-owner",
-      localReadRelayUrls: [localRelay],
       compatibilityRelayUrls: [],
     })
     const ownerPlan = planInboxReadRelays({
       declaration,
       authenticatedPubkey: OWNER,
-      localReadRelayUrls: [localRelay],
       compatibilityRelayUrls: [],
     })
 
@@ -1249,25 +1593,80 @@ describe("planInboxReadRelays", () => {
   it("caps the plan at maxRelays preserving priority order", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ relayUrls: ["wss://inbox.conduit.market"] }),
-      localReadRelayUrls: ["wss://local.conduit.market"],
-      compatibilityRelayUrls: ["wss://compat.conduit.market"],
+      compatibilityRelayUrls: [
+        "wss://compat.conduit.market",
+        "wss://extra.conduit.market",
+      ],
       maxRelays: 2,
     })
 
     expect(plan.relayUrls).toEqual([
       "wss://inbox.conduit.market",
-      "wss://local.conduit.market",
+      "wss://compat.conduit.market",
     ])
   })
 
-  it("drops insecure relay urls from every source", () => {
+  it("never truncates overlapping active recovery batches at the fanout target", () => {
+    const recoveryRelayUrls = Array.from(
+      { length: 27 },
+      (_, index) =>
+        `wss://cutover-recovery-${String(index).padStart(2, "0")}.example`
+    )
     const plan = planInboxReadRelays({
-      declaration: resolution({ relayUrls: ["ws://inbox.conduit.market"] }),
-      localReadRelayUrls: ["ws://local.conduit.market"],
-      compatibilityRelayUrls: ["wss://compat.conduit.market"],
+      declaration: resolution({
+        relayUrls: ["wss://current-inbox.example"],
+        retainedReadRelayUrls: ["wss://retained-inbox.example"],
+        cutoverRecoveryRelayUrls: recoveryRelayUrls,
+      }),
+      authenticatedPubkey: OWNER,
+      compatibilityRelayUrls: ["wss://optional-compatibility.example"],
+      maxRelays: 24,
     })
 
-    expect(plan.relayUrls).toEqual(["wss://compat.conduit.market"])
+    expect(plan.relayUrls).toEqual([
+      "wss://current-inbox.example",
+      ...recoveryRelayUrls,
+      "wss://retained-inbox.example",
+    ])
+    expect(plan.relayUrls).not.toContain("wss://optional-compatibility.example")
+    expect(
+      recoveryRelayUrls.every(
+        (relayUrl) => plan.relaySources[relayUrl] === "cutover_recovery"
+      )
+    ).toBe(true)
+  })
+
+  it("admits ws only from an exact authenticated-owner read source", () => {
+    const remotePlan = planInboxReadRelays({
+      declaration: resolution({
+        relayUrls: ["ws://inbox.conduit.market"],
+        cutoverRecoveryRelayUrls: ["ws://local.conduit.market"],
+      }),
+      compatibilityRelayUrls: ["wss://compat.conduit.market"],
+    })
+    const ownerPlan = planInboxReadRelays({
+      declaration: resolution({
+        relayUrls: ["ws://inbox.conduit.market"],
+        cutoverRecoveryRelayUrls: ["ws://local.conduit.market"],
+      }),
+      authenticatedPubkey: OWNER,
+      compatibilityRelayUrls: [
+        "ws://remote-compatibility.conduit.market",
+        "wss://compat.conduit.market",
+      ],
+    })
+
+    expect(remotePlan.relayUrls).toEqual(["wss://compat.conduit.market"])
+    expect(remotePlan.ownerSelectedRelayUrls).toEqual([])
+    expect(ownerPlan.relayUrls).toEqual([
+      "ws://inbox.conduit.market",
+      "ws://local.conduit.market",
+      "wss://compat.conduit.market",
+    ])
+    expect(ownerPlan.ownerSelectedRelayUrls).toEqual([
+      "ws://inbox.conduit.market",
+      "ws://local.conduit.market",
+    ])
   })
 })
 
@@ -1328,6 +1727,51 @@ describe("selectPrivateMessageDeliveryRoute", () => {
 
     expect(selection.route).toBe("declared_inbox")
     expect(selection.relayUrls).toEqual(["wss://inbox.conduit.market"])
+  })
+
+  it("never auto-routes to a ws target from a recipient declaration", () => {
+    const selection = selectPrivateMessageDeliveryRoute({
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      declaration: resolution({
+        pubkey: getPublicKey(OTHER_SECRET),
+        relayUrls: [
+          "ws://recipient-inbox.example",
+          "wss://recipient-inbox.example",
+        ],
+      }),
+      validatedOrder: false,
+      authenticatedOwnerPubkey: OWNER,
+      ownerSelectedRelayUrls: ["ws://recipient-inbox.example"],
+    })
+
+    expect(selection.route).toBe("declared_inbox")
+    expect(selection.relayUrls).toEqual(["wss://recipient-inbox.example"])
+    expect(selection.ownerSelectedRelayUrls).toEqual([])
+  })
+
+  it("allows only the exact selected ws subset for an authenticated owner self-route", () => {
+    const selectedOwnerRelay = "ws://owner-inbox.example"
+    const unselectedRelay = "ws://unselected-owner-inbox.example"
+    const selection = selectPrivateMessageDeliveryRoute({
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      declaration: resolution({
+        relayUrls: [
+          selectedOwnerRelay,
+          unselectedRelay,
+          "wss://owner-secure.example",
+        ],
+      }),
+      validatedOrder: false,
+      authenticatedOwnerPubkey: OWNER,
+      ownerSelectedRelayUrls: [selectedOwnerRelay],
+    })
+
+    expect(selection.route).toBe("declared_inbox")
+    expect(selection.relayUrls).toEqual([
+      selectedOwnerRelay,
+      "wss://owner-secure.example",
+    ])
+    expect(selection.ownerSelectedRelayUrls).toEqual([selectedOwnerRelay])
   })
 
   it("routes a validated order to a bounded compatibility plan when enabled", () => {

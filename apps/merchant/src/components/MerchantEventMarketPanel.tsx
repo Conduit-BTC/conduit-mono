@@ -61,11 +61,15 @@ function stateBadge(market: MerchantOrganizerEventMarket) {
 
 export function MerchantEventMarketPanel({
   merchantPubkey,
+  authenticatedPubkey,
+  shouldContinue,
   market,
   refreshing,
   onRefresh,
 }: {
   merchantPubkey: string
+  authenticatedPubkey: string | null
+  shouldContinue: () => boolean
   market: MerchantOrganizerEventMarket
   refreshing: boolean
   onRefresh: () => void | Promise<void>
@@ -77,7 +81,9 @@ export function MerchantEventMarketPanel({
   const ownsMarket = merchantPubkey === market.organizerPubkey
   const publishable = market.state === "active" || market.state === "partial"
   const organizerProfileQuery = useProfile(market.organizerPubkey, {
-    authenticatedPubkey: merchantPubkey,
+    accountPubkey: merchantPubkey,
+    authenticatedPubkey,
+    shouldContinue,
     relayHints: getResolvedEventMarketRelayHints(market.source),
     priority: "visible",
     maxUnresolvedRefetches: 1,
@@ -242,6 +248,8 @@ export function MerchantEventMarketPanel({
         key={`${publisherOpen ? "open" : "closed"}:${market.collectionCoordinate}`}
         open={publisherOpen}
         merchantPubkey={merchantPubkey}
+        authenticatedPubkey={authenticatedPubkey}
+        shouldContinue={shouldContinue}
         market={market}
         onOpenChange={setPublisherOpen}
         onPublished={async (accepted) => {

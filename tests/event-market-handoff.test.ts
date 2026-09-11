@@ -42,7 +42,7 @@ import {
   reduceEventMarketOrganizerClaims,
   resolveEventMarketHandoffAckGate,
   resolveEventMarketOrganizerInbox,
-  retryEventMarketPrivateDelivery,
+  retryEventMarketPrivateDelivery as retryEventMarketPrivateDeliveryCore,
   validateEventMarketReadyReceipt,
   type EventMarketPrivateDeliveryRecord,
   type EventMarketReadyReceiptSchema,
@@ -75,6 +75,33 @@ const COLLECTION_EVENT_ID = "c".repeat(64)
 const PICKUP_EVENT_ID = "d".repeat(64)
 const EVIDENCE_CREATED_AT = 1_700_000_000_000
 const ISSUED_AT = 1_700_000_100
+const allowAllAccountNetworkLocalStateRepository = {
+  get: async () => undefined,
+}
+
+type RetryEventMarketPrivateDeliveryInput = Parameters<
+  typeof retryEventMarketPrivateDeliveryCore
+>[0]
+
+function retryEventMarketPrivateDelivery(
+  input: Omit<
+    RetryEventMarketPrivateDeliveryInput,
+    "authenticatedOwnerPubkey" | "ownerSelectedSenderInboxRelayUrls"
+  > &
+    Partial<
+      Pick<
+        RetryEventMarketPrivateDeliveryInput,
+        "authenticatedOwnerPubkey" | "ownerSelectedSenderInboxRelayUrls"
+      >
+    >
+) {
+  return retryEventMarketPrivateDeliveryCore({
+    ...input,
+    authenticatedOwnerPubkey: input.authenticatedOwnerPubkey ?? MERCHANT,
+    ownerSelectedSenderInboxRelayUrls:
+      input.ownerSelectedSenderInboxRelayUrls ?? [],
+  })
+}
 const PRODUCT_EVENT = finalizeEvent(
   {
     kind: EVENT_KINDS.PRODUCT,
@@ -781,6 +808,8 @@ describe("event-market private handoff delivery", () => {
         persisted = record
       },
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
         senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
         giftWrapFn: (async (_rumor, recipient) =>
@@ -883,6 +912,8 @@ describe("event-market private handoff delivery", () => {
       persistExactWraps: (record) => persisted.push(record),
       transport: {
         ...transport,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: ["wss://merchant.inbox.relay.dev"],
         senderInboxRelays: ["wss://organizer.inbox.relay.dev"],
       },
@@ -904,6 +935,8 @@ describe("event-market private handoff delivery", () => {
       persistExactWraps: (record) => persisted.push(record),
       transport: {
         ...transport,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
         senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
       },
@@ -929,6 +962,8 @@ describe("event-market private handoff delivery", () => {
       recipientRelay: string,
       senderRelay: string
     ) => ({
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
       recipientInboxRelays: [recipientRelay],
       senderInboxRelays: [senderRelay],
       giftWrapFn: (async (_rumor: NDKEvent, recipient: { pubkey: string }) => {
@@ -1008,6 +1043,8 @@ describe("event-market private handoff delivery", () => {
       fulfillmentState: "paid" as const,
       persistExactWraps: async () => {},
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: [] as string[],
         giftWrapFn: (async () => {
           wrapped = true
@@ -1028,6 +1065,8 @@ describe("event-market private handoff delivery", () => {
         } as unknown as NDKSigner,
         transport: {
           ...common.transport,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
         },
       })
@@ -1042,6 +1081,7 @@ describe("event-market private handoff delivery", () => {
 
     const result = await retryEventMarketPrivateDelivery({
       record: readyDeliveryRecord(),
+      ownerSelectedSenderInboxRelayUrls: [isolatedRelayUrl],
       recipientInboxRelays: [otherLoopbackRelayUrl, isolatedRelayUrl],
       senderInboxRelays: [isolatedRelayUrl, otherLoopbackRelayUrl],
       publishFn: (async (_event, options) => {
@@ -1070,6 +1110,92 @@ describe("event-market private handoff delivery", () => {
     ).rejects.toThrow("recipient inbox is not currently usable")
   })
 
+  it("retries owner ws self-copies without admitting recipient or unselected ws targets", async () => {
+    const recipientSecureRelay = "wss://organizer.inbox.relay.dev"
+    const recipientWsRelay = "ws://organizer.inbox.relay.dev"
+    const ownerWsRelay = "ws://merchant.inbox.relay.dev"
+    const unselectedOwnerWsRelay = "ws://other-merchant.inbox.relay.dev"
+    const ownerSecureRelay = "wss://merchant.inbox.relay.dev"
+    const calls: Array<{
+      relayUrls: string[]
+      ownerSelectedRelayUrls: string[]
+    }> = []
+    const record = readyDeliveryRecord()
+
+    const result = await retryEventMarketPrivateDelivery({
+      record,
+      authenticatedOwnerPubkey: MERCHANT,
+      ownerSelectedSenderInboxRelayUrls: [ownerWsRelay],
+      recipientInboxRelays: [recipientWsRelay, recipientSecureRelay],
+      senderInboxRelays: [
+        ownerWsRelay,
+        unselectedOwnerWsRelay,
+        ownerSecureRelay,
+      ],
+      publishFn: (async (_event, options) => {
+        const relayUrls = [...(options.exclusiveRelayUrls ?? [])]
+        calls.push({
+          relayUrls,
+          ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+        })
+        return successfulDelivery(relayUrls)
+      }) as never,
+    })
+
+    expect(calls).toEqual([
+      {
+        relayUrls: [recipientSecureRelay],
+        ownerSelectedRelayUrls: [],
+      },
+      {
+        relayUrls: [ownerWsRelay, ownerSecureRelay],
+        ownerSelectedRelayUrls: [ownerWsRelay],
+      },
+    ])
+    expect(result.deliveryProgress.recipientAcknowledgedRelayRefs).toHaveLength(
+      1
+    )
+    expect(result.deliveryProgress.selfAcknowledgedRelayRefs).toHaveLength(2)
+    expect(JSON.stringify(result.deliveryProgress)).not.toContain("ws://")
+
+    const mismatchedOwnerCalls: Array<{
+      relayUrls: string[]
+      ownerSelectedRelayUrls: string[]
+      authenticatedPubkey: string | null | undefined
+    }> = []
+    const mismatchedResult = await retryEventMarketPrivateDeliveryCore({
+      record,
+      authenticatedOwnerPubkey: ORGANIZER,
+      ownerSelectedSenderInboxRelayUrls: [ownerWsRelay],
+      recipientInboxRelays: [recipientSecureRelay],
+      senderInboxRelays: [ownerWsRelay, ownerSecureRelay],
+      publishFn: (async (_event, options) => {
+        const relayUrls = [...(options.exclusiveRelayUrls ?? [])]
+        mismatchedOwnerCalls.push({
+          relayUrls,
+          ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+          authenticatedPubkey: options.authenticatedPubkey,
+        })
+        return successfulDelivery(relayUrls)
+      }) as never,
+    })
+
+    expect(mismatchedOwnerCalls).toEqual([
+      {
+        relayUrls: [recipientSecureRelay],
+        ownerSelectedRelayUrls: [],
+        authenticatedPubkey: null,
+      },
+      {
+        relayUrls: [ownerSecureRelay],
+        ownerSelectedRelayUrls: [],
+        authenticatedPubkey: null,
+      },
+    ])
+    expect(mismatchedResult.recipientStatus).toBe("full_success")
+    expect(mismatchedResult.selfDeliveryStatus).toBe("full_success")
+  })
+
   it("retains the exact retry record before a zero-ACK failure", async () => {
     let persisted: EventMarketPrivateDeliveryRecord | null = null
     let initialProgress: ReturnType<
@@ -1087,6 +1213,8 @@ describe("event-market private handoff delivery", () => {
           initialProgress = progress
         },
         transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
           recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
           senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
@@ -1334,6 +1462,8 @@ describe("event-market private handoff delivery", () => {
         record = persisted
       },
       transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
         recipientInboxRelays: recipientRelays,
         senderInboxRelays: selfRelays,
         giftWrapFn: (async (_rumor, recipient) =>
@@ -1810,13 +1940,27 @@ describe("event-market organizer inbox readiness", () => {
     const senderRelay = "wss://merchant.inbox.relay.dev"
     const record = readyDeliveryRecord()
     const calls: Array<{ id: string; relays: string[] }> = []
+    const shouldContinue = () => true
+    const declarationPredicates: Array<(() => boolean) | undefined> = []
+    const inboxDeclarationOptions = partialDeclarationRead([
+      inboxDeclaration(ORGANIZER_SECRET, [recipientRelay]),
+      inboxDeclaration(MERCHANT_SECRET, [senderRelay]),
+    ])
+    const fetchDeclarations =
+      inboxDeclarationOptions.fetchEventsWithDiagnostics!
+    inboxDeclarationOptions.fetchEventsWithDiagnostics = async (
+      filter,
+      options
+    ) => {
+      declarationPredicates.push(options?.shouldContinue)
+      return await fetchDeclarations(filter, options)
+    }
     const input = {
       record,
-      inboxDeclarationOptions: partialDeclarationRead([
-        inboxDeclaration(ORGANIZER_SECRET, [recipientRelay]),
-        inboxDeclaration(MERCHANT_SECRET, [senderRelay]),
-      ]),
+      inboxDeclarationOptions,
+      shouldContinue,
       publishFn: (async (event, options) => {
+        expect(options.shouldContinue).toBe(shouldContinue)
         const relays = [...(options.exclusiveRelayUrls ?? [])]
         calls.push({ id: event.id, relays })
         return successfulDelivery(relays)
@@ -1827,6 +1971,7 @@ describe("event-market organizer inbox readiness", () => {
       { id: record.signedRecipientWrap.id, relays: [recipientRelay] },
       { id: record.signedSelfWrap!.id, relays: [senderRelay] },
     ])
+    expect(declarationPredicates).toEqual([shouldContinue, shouldContinue])
     expect(delivered.recipientStatus).toBe("full_success")
     expect(delivered.selfDeliveryStatus).toBe("full_success")
     expect(delivered.selfCopyError).toBeNull()
@@ -1836,6 +1981,31 @@ describe("event-market organizer inbox readiness", () => {
       deliveryProgress: delivered.deliveryProgress,
     })
     expect(calls).toHaveLength(2)
+  })
+
+  it("rethrows a live-authority change during an exact self-wrap retry", async () => {
+    let sessionCurrent = true
+    const shouldContinue = () => sessionCurrent
+    let publishCount = 0
+
+    await expect(
+      retryEventMarketPrivateDelivery({
+        record: readyDeliveryRecord(),
+        recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
+        senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
+        shouldContinue,
+        publishFn: (async (_event, options) => {
+          expect(options.shouldContinue).toBe(shouldContinue)
+          publishCount += 1
+          if (publishCount === 1) {
+            return successfulDelivery(options.exclusiveRelayUrls ?? [])
+          }
+          sessionCurrent = false
+          throw new Error("session changed")
+        }) as never,
+      })
+    ).rejects.toThrow("session changed")
+    expect(publishCount).toBe(2)
   })
 
   it("caps partial-discovery retry delivery to the first three declared relays", async () => {
