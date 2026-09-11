@@ -142,6 +142,8 @@ export interface ResolveOwnerRelayListOptions {
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   /** Cancels queued or in-flight lookup I/O when account authority changes. */
   signal?: AbortSignal
+  /** Live account session authority for non-signal owner reads. */
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   now?: () => number
 }
 
@@ -1273,13 +1275,16 @@ export async function resolveOwnerRelayList(
           accountNetworkLocalStateRepository:
             options.accountNetworkLocalStateRepository,
           signal: options.signal,
+          shouldContinue: options.shouldContinue,
           connectTimeoutMs: 4_000,
           fetchTimeoutMs: 6_000,
           skipHealthFilter: true,
         }
       )
     } catch (error) {
-      if (options.signal?.aborted) throw error
+      if (options.signal?.aborted || options.shouldContinue?.() === false) {
+        throw error
+      }
       result = {
         events: [],
         attemptedRelayUrls: [...relayUrls],

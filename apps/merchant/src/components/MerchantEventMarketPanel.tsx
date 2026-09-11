@@ -58,12 +58,14 @@ function stateBadge(market: MerchantOrganizerEventMarket) {
 export function MerchantEventMarketPanel({
   merchantPubkey,
   authenticatedPubkey,
+  shouldContinue,
   market,
   refreshing,
   onRefresh,
 }: {
   merchantPubkey: string
   authenticatedPubkey: string | null
+  shouldContinue: () => boolean
   market: MerchantOrganizerEventMarket
   refreshing: boolean
   onRefresh: () => void | Promise<void>
@@ -227,6 +229,7 @@ export function MerchantEventMarketPanel({
         open={publisherOpen}
         merchantPubkey={merchantPubkey}
         authenticatedPubkey={authenticatedPubkey}
+        shouldContinue={shouldContinue}
         market={market}
         onOpenChange={setPublisherOpen}
         onPublished={async (accepted) => {

@@ -1443,6 +1443,8 @@ describe("account Network preferences", () => {
     const inboxFreshness: Array<number | undefined> = []
     const ownerSignals: Array<AbortSignal | undefined> = []
     const inboxSignals: Array<AbortSignal | undefined> = []
+    const ownerAuthorityPredicates: Array<(() => boolean) | undefined> = []
+    const inboxAuthorityPredicates: Array<(() => boolean) | undefined> = []
     const inboxAccountContexts: Array<{
       requestingAccountPubkey?: string | null
       authenticatedPubkey?: string | null
@@ -1458,6 +1460,7 @@ describe("account Network preferences", () => {
     >["resolveOwner"] = async (_pubkey, options) => {
       ownerCalls += 1
       ownerSignals.push(options.signal)
+      ownerAuthorityPredicates.push(options.shouldContinue)
       ownerAccountContexts.push({
         requestingAccountPubkey: options.requestingAccountPubkey,
         authenticatedPubkey: options.authenticatedPubkey,
@@ -1471,6 +1474,7 @@ describe("account Network preferences", () => {
     >["resolveInbox"] = async (_pubkey, options) => {
       inboxCalls += 1
       inboxSignals.push(options.signal)
+      inboxAuthorityPredicates.push(options.shouldContinue)
       inboxFreshness.push(options.freshnessMs)
       inboxAccountContexts.push({
         requestingAccountPubkey: options.requestingAccountPubkey,
@@ -1481,6 +1485,7 @@ describe("account Network preferences", () => {
     }
 
     const signal = new AbortController().signal
+    const shouldContinue = () => true
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await reconcileAccountNetworkPreferences(OWNER, {
         relayUrls: ["wss://shared.example"],
@@ -1490,6 +1495,7 @@ describe("account Network preferences", () => {
         requestingAccountPubkey: OWNER,
         authenticatedPubkey: OTHER,
         signal,
+        shouldContinue,
       })
     }
     expect(ownerCalls).toBe(2)
@@ -1497,6 +1503,8 @@ describe("account Network preferences", () => {
     expect(inboxFreshness).toEqual([0, 0])
     expect(ownerSignals).toEqual([signal, signal])
     expect(inboxSignals).toEqual([signal, signal])
+    expect(ownerAuthorityPredicates).toEqual([shouldContinue, shouldContinue])
+    expect(inboxAuthorityPredicates).toEqual([shouldContinue, shouldContinue])
     expect(ownerAccountContexts).toEqual([
       {
         requestingAccountPubkey: OWNER,

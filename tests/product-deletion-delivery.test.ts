@@ -1154,6 +1154,52 @@ describe("durable product deletion delivery", () => {
     expect(published).toEqual([event.id])
   })
 
+  it("binds explicit retry auth to the live session without stopping public wss", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const event = signedDeletionEvent()
+    const ownerRelayUrl = "ws://owner-selected.example"
+    const publicRelayUrl = "wss://relay.conduit.market"
+    await persistProductDeletionDelivery(
+      {
+        signedEvent: event,
+        currentWriteRelayUrls: [ownerRelayUrl],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: publicRelayUrl,
+      },
+      { repository, now: () => NOW }
+    )
+    let sessionCurrent = true
+    const attemptedRelayUrls: string[] = []
+
+    const result = await deliverQueuedProductDeletion(event.id, {
+      repository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      authenticatedPubkey: event.pubkey,
+      shouldContinue: () => sessionCurrent,
+      now: tickingClock(),
+      restoreLocalEvidence: async () => {},
+      publisher: async ({
+        relayUrl,
+        authenticatedPubkey,
+        isAuthenticatedPubkeyCurrent,
+      }) => {
+        attemptedRelayUrls.push(relayUrl)
+        if (relayUrl === ownerRelayUrl) {
+          expect(authenticatedPubkey).toBe(event.pubkey)
+          expect(isAuthenticatedPubkeyCurrent?.(event.pubkey)).toBe(true)
+          sessionCurrent = false
+        } else {
+          expect(authenticatedPubkey).toBeNull()
+        }
+        return { status: "acked" }
+      },
+    })
+
+    expect(attemptedRelayUrls).toEqual([ownerRelayUrl, publicRelayUrl])
+    expect(result.failedRelayUrls).toEqual([])
+  })
+
   it("returns an already-delivered job when a background worker wins the retry race", async () => {
     const repository = new MemoryProductDeletionOutbox()
     const event = signedDeletionEvent()

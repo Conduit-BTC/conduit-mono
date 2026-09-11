@@ -326,7 +326,8 @@ function createSignerHarness(input: {
 }
 
 type PublishBehavior = "acked" | "rejected" | "timed_out" | "throw"
-type ReadbackBehavior = "observed" | "absent" | "timed_out" | "throw"
+type ReadbackBehavior =
+  "observed" | "absent" | "timed_out" | "throw" | "authority_changed"
 
 interface ExecutionOptions {
   initialSnapshot?: AccountNetworkMutationSnapshot
@@ -344,6 +345,7 @@ interface ExecutionOptions {
     kind: number
     relayUrl: string
     attempt: number
+    shouldContinue?: () => boolean
   }) => ReadbackBehavior
   filterEligibleRelayUrls?: (
     relayUrls: readonly string[],
@@ -474,8 +476,19 @@ function createExecutionHarness(
         authenticatedPubkey: readOptions.authenticatedPubkey ?? null,
       })
       const behavior =
-        options.readbackBehavior?.({ kind, relayUrl, attempt }) ?? "observed"
+        options.readbackBehavior?.({
+          kind,
+          relayUrl,
+          attempt,
+          shouldContinue: readOptions.shouldContinue,
+        }) ?? "observed"
       if (behavior === "throw") throw new Error("readback unavailable")
+      if (
+        behavior === "authority_changed" &&
+        readOptions.shouldContinue?.() === false
+      ) {
+        throw new NostrSignerError("authority_changed")
+      }
       const event = publishedById.get(eventId)
       const observed = behavior === "observed" && event !== undefined
       return {
@@ -807,6 +820,103 @@ describe("account network mutation", () => {
     expect(execution.publishCalls[0]?.relayUrl).toBe(ownerWs)
     expect(execution.readbackCalls).toHaveLength(0)
     expect(await execution.baseRepository.get(ACCOUNT)).toEqual(beforeRetry)
+  })
+
+  it("does not record a readback outcome when final read authority changes", async () => {
+    const fixture = createFixture()
+    const ownerWs = "ws://owner-readback-race.example"
+    const relays = baselineRoles()
+      .map((relay) => ({ ...relay, publish: false }))
+      .concat({
+        url: ownerWs,
+        read: false,
+        publish: true,
+        privateInbox: false,
+      })
+    let readbackRound = 1
+    let authorityCurrent = true
+    const execution = createExecutionHarness(fixture, {
+      planForKind: (kind) =>
+        kind === EVENT_KINDS.RELAY_LIST ? [ownerWs] : [PLAN_A],
+      filterEligibleRelayUrls: (relayUrls, ownerSelectedRelayUrls) =>
+        relayUrls.filter(
+          (relayUrl) =>
+            relayUrl.startsWith("wss://") ||
+            ownerSelectedRelayUrls.includes(relayUrl)
+        ),
+      publishBehavior: () => "acked",
+      readbackBehavior: () => {
+        if (readbackRound === 2) {
+          authorityCurrent = false
+          return "authority_changed"
+        }
+        return "timed_out"
+      },
+    })
+    const signer = createSignerHarness({ log: execution.log })
+    const reviewed = reviewAccountNetworkMutation(
+      fixture.reconciliation,
+      action(relays)
+    )
+
+    await publishAccountNetworkMutation({
+      reviewed,
+      authenticatedPubkey: ACCOUNT,
+      signer: signer.signer,
+      dependencies: execution.dependencies,
+    })
+    const beforeRetry = await execution.baseRepository.get(ACCOUNT)
+    expect(
+      beforeRetry.ownerRelayList?.pendingDistribution?.relayOutcomes[0]
+        ?.readbackAttemptCount
+    ).toBe(1)
+
+    readbackRound = 2
+    execution.dependencies.shouldContinue = () => authorityCurrent
+
+    await expect(
+      retryAccountNetworkMutation({
+        pubkey: ACCOUNT,
+        authenticatedPubkey: ACCOUNT,
+        kind: EVENT_KINDS.RELAY_LIST,
+        dependencies: execution.dependencies,
+      })
+    ).rejects.toMatchObject({ code: "authority_changed" })
+
+    expect(await execution.baseRepository.get(ACCOUNT)).toEqual(beforeRetry)
+  })
+
+  it("stops after preflight reconciliation when live account authority changes", async () => {
+    const fixture = createFixture()
+    const execution = createExecutionHarness(fixture)
+    const signer = createSignerHarness({ log: execution.log })
+    const reviewed = reviewAccountNetworkMutation(
+      fixture.reconciliation,
+      action(ownerChangedRoles())
+    )
+    let authorityCurrent = true
+    const shouldContinue = () => authorityCurrent
+    execution.dependencies.shouldContinue = shouldContinue
+    execution.dependencies.reconcile = async (_pubkey, options) => {
+      expect(options.shouldContinue).toBe(shouldContinue)
+      authorityCurrent = false
+      return structuredClone(fixture.reconciliation)
+    }
+
+    await expect(
+      publishAccountNetworkMutation({
+        reviewed,
+        authenticatedPubkey: ACCOUNT,
+        signer: signer.signer,
+        dependencies: execution.dependencies,
+      })
+    ).rejects.toMatchObject({ code: "authority_changed" })
+
+    expect(signer.getPublicKeyCalls).toBe(0)
+    expect(signer.signedDrafts).toHaveLength(0)
+    expect(execution.log).not.toContain("stage:start")
+    expect(execution.publishCalls).toHaveLength(0)
+    expect(execution.readbackCalls).toHaveLength(0)
   })
 
   it("drops a staged owner ws relay after authentication changes while retaining wss retry", async () => {

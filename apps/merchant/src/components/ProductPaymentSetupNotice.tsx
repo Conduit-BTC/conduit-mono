@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react"
 import { Link } from "@tanstack/react-router"
 import { AlertTriangle } from "lucide-react"
 import {
@@ -17,6 +18,10 @@ export function ProductPaymentSetupNotice({
   enabled?: boolean
 }) {
   const auth = useAuth()
+  const authGenerationRef = useRef(auth.authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = auth.authGeneration
+  }, [auth.authGeneration])
   const normalizedMerchantPubkey = normalizePubkey(merchantPubkey)
   const authenticatedPubkey =
     auth.status === "connected" &&
@@ -26,6 +31,7 @@ export function ProductPaymentSetupNotice({
   const profileQuery = useProfile(merchantPubkey, {
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === auth.authGeneration,
     enabled,
     // Product authoring must eventually settle when the merchant has no
     // profile metadata; the default visible-profile query retries forever.

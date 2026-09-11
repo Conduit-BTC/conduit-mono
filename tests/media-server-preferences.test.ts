@@ -21,6 +21,7 @@ import {
 } from "../packages/core/src/protocol/media-server-preferences"
 import { planRelayReads } from "../packages/core/src/protocol/relay-planner"
 import { createRelaySettingsFromPreferences } from "../packages/core/src/protocol/relay-settings"
+import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
 import type { SignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
 
 const OWNER_KEY = generateSecretKey()
@@ -450,6 +451,19 @@ describe("kind 10063 replacement selection and evidence", () => {
       expect(finalReadCalls[0]?.relayUrls).toContain(remoteWssRelay)
       expect(finalReadCalls[0]?.relayUrls).not.toContain(remoteWsRelay)
     }
+  })
+
+  it("does not downgrade a final-read authority change to unavailable evidence", async () => {
+    await expect(
+      readMediaServerPreferences(OWNER, {
+        authenticatedPubkey: OWNER,
+        storage: null,
+        readRelayUrls: ["wss://authority-change.example"],
+        fetchEvents: async () => {
+          throw new NostrSignerError("authority_changed")
+        },
+      })
+    ).rejects.toMatchObject({ code: "authority_changed" })
   })
 
   it("projects complete source and freshness evidence", async () => {

@@ -733,6 +733,7 @@ export type EventMarketPrivateTransportOptions = Pick<
   | "publishFn"
   | "waitForSignerVisibility"
   | "refreshRelayLists"
+  | "shouldContinue"
 >
 
 function hasExactOuterRecipient(
@@ -1362,6 +1363,8 @@ export async function retryEventMarketPrivateDelivery(input: {
   senderInboxRelays?: readonly string[]
   /** Shared declaration read seam for deterministic delivery tests/adapters. */
   inboxDeclarationOptions?: ResolveInboxDeclarationOptions
+  /** Live account authority for declaration reads and exact-wrap publishes. */
+  shouldContinue?: EventMarketPrivateTransportOptions["shouldContinue"]
   publishFn?: typeof publishWithPlanner
 }): Promise<RetryEventMarketPrivateDeliveryResult> {
   assertValidEventMarketPrivateDeliveryRecord(input.record)
@@ -1373,6 +1376,12 @@ export async function retryEventMarketPrivateDelivery(input: {
   const ownerSelectedSenderInboxRelayUrls = authenticatedOwnerPubkey
     ? input.ownerSelectedSenderInboxRelayUrls
     : []
+  const shouldContinue =
+    input.shouldContinue ?? input.inboxDeclarationOptions?.shouldContinue
+  const inboxDeclarationOptions = {
+    ...input.inboxDeclarationOptions,
+    shouldContinue,
+  }
   let deliveryProgress = input.deliveryProgress
     ? parseEventMarketPrivateDeliveryProgress(
         input.deliveryProgress,
@@ -1382,7 +1391,7 @@ export async function retryEventMarketPrivateDelivery(input: {
   const recipientRelayUrls = input.recipientInboxRelays
     ? declaredInboxWriteRelayUrls(input.recipientInboxRelays)
     : await strictInboxRelays(input.record.recipientPubkey, {
-        ...input.inboxDeclarationOptions,
+        ...inboxDeclarationOptions,
         requestingAccountPubkey: accountPubkey,
         authenticatedPubkey: authenticatedOwnerPubkey,
       })
@@ -1407,9 +1416,11 @@ export async function retryEventMarketPrivateDelivery(input: {
           recipientPubkeys: [input.record.recipientPubkey],
           exclusiveRelayUrls: pendingRecipientRelayUrls,
           deliveryMode: "critical",
+          shouldContinue,
         }
       )
     } catch (error) {
+      if (shouldContinue?.() === false) throw error
       const partial = recoverEventMarketPartialPublishDiagnostics(error)
       if (!partial) throw error
       recipientDelivery = partial
@@ -1444,7 +1455,7 @@ export async function retryEventMarketPrivateDelivery(input: {
             accountPubkey,
             authenticatedOwnerPubkey,
             ownerSelectedRelayUrls: ownerSelectedSenderInboxRelayUrls,
-            options: input.inboxDeclarationOptions,
+            options: inboxDeclarationOptions,
           })
       const senderRelayUrls = senderPlan.relayUrls
       if (senderRelayUrls.length === 0) {
@@ -1469,9 +1480,11 @@ export async function retryEventMarketPrivateDelivery(input: {
                 (relayUrl) => pendingSelfRelayUrls.includes(relayUrl)
               ),
               deliveryMode: "critical",
+              shouldContinue,
             }
           )
         } catch (error) {
+          if (shouldContinue?.() === false) throw error
           const partial = recoverEventMarketPartialPublishDiagnostics(error)
           if (!partial) throw error
           selfDelivery = partial
@@ -1491,6 +1504,7 @@ export async function retryEventMarketPrivateDelivery(input: {
       )
       selfCopyError = selfCopyErrorForStatus(selfDeliveryStatus)
     } catch (error) {
+      if (shouldContinue?.() === false) throw error
       selfCopyError =
         error instanceof Error
           ? error.message

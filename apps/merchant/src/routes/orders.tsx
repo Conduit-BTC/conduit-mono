@@ -1,6 +1,13 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import {
   buildOrderStatusTimeline,
   clearProtectedReadAuthenticationSuppression,
@@ -628,7 +635,11 @@ function MobileOrdersScroller({
 }
 
 function OrdersPage() {
-  const { pubkey, status } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const session = useConduitSession()
   const authenticatedPubkey = status === "connected" ? pubkey : null
   const navigate = useNavigate()
@@ -640,6 +651,7 @@ function OrdersPage() {
   const merchantProfileQuery = useProfile(pubkey, {
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
   })
   const merchantInvoiceModule = useMemo(
     () => createDefaultMerchantInvoiceModule(),
@@ -821,6 +833,7 @@ function OrdersPage() {
   const buyerProfilesQuery = useProfiles(buyerPubkeys, {
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     enabled:
       signerConnected && !isOrdersInitialHydration && buyerPubkeys.length > 0,
     priority: "background",
@@ -856,10 +869,12 @@ function OrdersPage() {
       allOrderProductIds,
     ],
     enabled: signerConnected && allOrderProductIds.length > 0,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       getProductsByIds(allOrderProductIds, {
         includeMarketHidden: true,
         authenticatedPubkey,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
       }),
     staleTime: 5 * 60_000,
   })
@@ -1289,11 +1304,13 @@ function OrdersPage() {
       !!pubkey &&
       !!orderSummary &&
       snapshottedOrderFulfillment.hasPickupClaim,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       verifyMerchantPickupOrderAuthorization({
         items: orderSummary!.items,
         merchantPubkey: pubkey!,
         authenticatedPubkey: signerConnected ? pubkey : null,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
       }),
     staleTime: 15_000,
     refetchInterval: 30_000,
@@ -1431,6 +1448,7 @@ function OrdersPage() {
       items: orderSummary.items,
       merchantPubkey: pubkey,
       authenticatedPubkey: signerConnected ? pubkey : null,
+      shouldContinue: () => authGenerationRef.current === authGeneration,
     })
     queryClient.setQueriesData(
       {
@@ -1446,6 +1464,7 @@ function OrdersPage() {
     }
     return result.market
   }, [
+    authGeneration,
     orderSummary,
     pubkey,
     queryClient,
@@ -1563,6 +1582,7 @@ function OrdersPage() {
         !isOrdersInitialHydration,
       relayScope: session.relayScope,
       authenticatedPubkey: signerConnected ? pubkey : null,
+      shouldContinue: () => authGenerationRef.current === authGeneration,
     }
   )
   const selectedBuyerNip05 = selectedBuyerProfile?.nip05?.trim()
@@ -1644,7 +1664,10 @@ function OrdersPage() {
         const delivery = await deliverSignedProductEvent(
           payload.signedEvent,
           pubkey,
-          { authenticatedPubkey: signerConnected ? pubkey : null }
+          {
+            authenticatedPubkey: signerConnected ? pubkey : null,
+            shouldContinue: () => authGenerationRef.current === authGeneration,
+          }
         )
         return {
           delivery,
@@ -1694,6 +1717,7 @@ function OrdersPage() {
           items: payload.orderItems,
           merchantPubkey: pubkey,
           authenticatedPubkey: signerConnected ? pubkey : null,
+          shouldContinue: () => authGenerationRef.current === authGeneration,
           targetProductCoordinate: payload.adjustment.addressId,
         })
         const verifiedProduct =
@@ -1726,12 +1750,15 @@ function OrdersPage() {
         productAddressId: payload.adjustment.addressId,
         accountPubkey: pubkey,
         authenticatedPubkey: status === "connected" ? pubkey : null,
+        shouldContinue: () => authGenerationRef.current === authGeneration,
         orderHasPickupClaim: hasPickupClaim,
         ...(pickupFulfillment ? { verifiedPickup: pickupFulfillment } : {}),
       })
       let signedEvent: SignedPublicNostrEvent | null = null
       const delivery = await signAndPublishProductListing({
         merchantPubkey: pubkey,
+        authenticatedPubkey: signerConnected ? pubkey : null,
+        shouldContinue: () => authGenerationRef.current === authGeneration,
         product: {
           ...publicationRecord.product,
           stock: effectiveAdjustment.nextStock,
@@ -1928,6 +1955,7 @@ function OrdersPage() {
             delivery: operationalDelivery,
             source: resolveInvoiceSelection(source),
             authenticatedPubkey: signerConnected ? pubkey : null,
+            shouldContinue: () => authGenerationRef.current === authGeneration,
           })
         } catch {
           // Provider errors can contain invoices, addresses, relay responses,
@@ -1959,6 +1987,7 @@ function OrdersPage() {
           return await merchantInvoiceModule.retryDelivery({
             ...selectedInvoiceScope,
             authenticatedPubkey: signerConnected ? pubkey : null,
+            shouldContinue: () => authGenerationRef.current === authGeneration,
           })
         } catch {
           throw new Error(
@@ -2017,6 +2046,7 @@ function OrdersPage() {
           signer: ndk.signer,
           transport: {
             authenticatedPubkey: signerConnected ? pubkey : null,
+            shouldContinue: () => authGenerationRef.current === authGeneration,
           },
         })
       }),
@@ -2042,6 +2072,7 @@ function OrdersPage() {
         confirmMerchantPayment({
           ...input,
           authenticatedPubkey: signerConnected ? pubkey : null,
+          shouldContinue: () => authGenerationRef.current === authGeneration,
         })
       ),
     onSuccess: async (result, input) => {
@@ -2093,6 +2124,7 @@ function OrdersPage() {
           signer: ndk.signer,
           transport: {
             authenticatedPubkey: signerConnected ? pubkey : null,
+            shouldContinue: () => authGenerationRef.current === authGeneration,
           },
           matchingAckReceiptIds: new Set(
             (currentAck.currentAckRead.data?.data ?? []).map((ack) =>
@@ -2192,6 +2224,8 @@ function OrdersPage() {
               signer: ndk.signer,
               transport: {
                 authenticatedPubkey: signerConnected ? pubkey : null,
+                shouldContinue: () =>
+                  authGenerationRef.current === authGeneration,
               },
               matchingAckReceiptIds: new Set(
                 (currentAck?.currentAckRead.data?.data ?? []).map((ack) =>
@@ -2242,6 +2276,7 @@ function OrdersPage() {
           delivery: operationalDelivery,
           signerInteraction: "external",
           authenticatedPubkey: signerConnected ? pubkey : null,
+          shouldContinue: () => authGenerationRef.current === authGeneration,
         })
         if (
           nextStatus === "complete" &&
@@ -2285,6 +2320,7 @@ function OrdersPage() {
           delivery: input.delivery,
           signerInteraction: "external",
           authenticatedPubkey: signerConnected ? pubkey : null,
+          shouldContinue: () => authGenerationRef.current === authGeneration,
         })
       }),
     onSuccess: async (_data, input) => {
@@ -2333,6 +2369,7 @@ function OrdersPage() {
           delivery: operationalDelivery,
           signerInteraction: "external",
           authenticatedPubkey: signerConnected ? pubkey : null,
+          shouldContinue: () => authGenerationRef.current === authGeneration,
         })
       }),
     onSuccess: async () => {
@@ -2365,6 +2402,7 @@ function OrdersPage() {
         delivery: operationalDelivery,
         signerInteraction: "external",
         authenticatedPubkey: signerConnected ? pubkey : null,
+        shouldContinue: () => authGenerationRef.current === authGeneration,
       })
     },
     onSuccess: async () => {

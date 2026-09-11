@@ -145,6 +145,8 @@ export interface GetShopperTrustEvidenceOptions {
   baseRelayUrls?: readonly string[]
   /** Cancel obsolete reads when the selected order changes. */
   signal?: AbortSignal
+  /** Live account authority, rechecked before final relay I/O and projection. */
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   /** Bypass aggregate freshness for an explicit user or relay-scope refresh. */
   forceRefresh?: boolean
 }
@@ -350,18 +352,20 @@ async function safeRead(
   filter: NDKFilter,
   relayUrls: string[],
   truncated = false,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
 ): Promise<ReadResult> {
   try {
-    throwIfTrustAborted(signal)
+    throwIfTrustAborted(signal, shouldContinue)
     const result = await fetchEvents(filter, {
       relayUrls,
       connectTimeoutMs: 2_000,
       fetchTimeoutMs: READ_TIMEOUT_MS,
       skipHealthFilter: true,
       signal,
+      shouldContinue,
     })
-    throwIfTrustAborted(signal)
+    throwIfTrustAborted(signal, shouldContinue)
     const usesVerifiedFanout =
       fetchEvents === fetchEventsFanoutDetailed &&
       result.eventsVerified === true
@@ -397,6 +401,7 @@ async function safeRead(
       ),
     }
   } catch (error) {
+    throwIfTrustAborted(signal, shouldContinue)
     if (signal?.aborted || isTrustAbortError(error)) throw error
     return {
       events: [],
@@ -411,8 +416,11 @@ function trustAbortError(): Error {
   return error
 }
 
-function throwIfTrustAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw trustAbortError()
+function throwIfTrustAborted(
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
+): void {
+  if (signal?.aborted || shouldContinue?.() === false) throw trustAbortError()
 }
 
 function isTrustAbortError(error: unknown): boolean {
@@ -954,7 +962,8 @@ async function resolveRelayUrls(
   accountPubkey?: string | null,
   ownerRelayAuthority?: ShopperTrustOwnerRelayAuthority | null,
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
 ): Promise<{ relayUrls: string[]; completeRelayHints: boolean }> {
   let relayLists = new Map()
   let lookupFailed = false
@@ -965,8 +974,10 @@ async function resolveRelayUrls(
       ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
       accountNetworkLocalStateRepository,
       signal,
+      shouldContinue,
     })
   } catch (error) {
+    throwIfTrustAborted(signal, shouldContinue)
     if (signal?.aborted || isTrustAbortError(error)) throw error
     lookupFailed = true
     // Cached NIP-65 hints improve coverage but are not required to plan.
@@ -1048,7 +1059,8 @@ async function resolveAuthorReadRelayPlan(
   accountPubkey?: string | null,
   ownerRelayAuthority?: ShopperTrustOwnerRelayAuthority | null,
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
 ): Promise<{ relayUrls: string[]; completeAuthorHints: boolean }> {
   if (authors.length === 0) {
     return {
@@ -1070,8 +1082,10 @@ async function resolveAuthorReadRelayPlan(
       ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
       accountNetworkLocalStateRepository,
       signal,
+      shouldContinue,
     })
   } catch (error) {
+    throwIfTrustAborted(signal, shouldContinue)
     if (signal?.aborted || isTrustAbortError(error)) throw error
     lookupFailed = true
     // Missing NIP-65 data degrades the observation to the bounded fallback.
@@ -1170,7 +1184,8 @@ export async function getShopperTrustEvidence(
   options: GetShopperTrustEvidenceOptions = {}
 ): Promise<ShopperTrustEvidence> {
   const signal = options.signal
-  throwIfTrustAborted(signal)
+  const shouldContinue = options.shouldContinue
+  throwIfTrustAborted(signal, shouldContinue)
   const merchantPubkey = normalizePubkey(input.merchantPubkey)
   const shopperPubkey = normalizePubkey(input.shopperPubkey)
   if (!merchantPubkey || !shopperPubkey) {
@@ -1183,6 +1198,7 @@ export async function getShopperTrustEvidence(
     accountPubkey,
     options
   )
+  throwIfTrustAborted(signal, shouldContinue)
   const initialOwnerSelectedRelayUrls = [
     ...(ownerRelayAuthority?.readRelayUrls ?? []),
     ...(accountPubkey === merchantPubkey || accountPubkey === shopperPubkey
@@ -1195,7 +1211,7 @@ export async function getShopperTrustEvidence(
   const id = snapshotId(merchantPubkey, shopperPubkey)
   const cache = options.cache === undefined ? defaultCache() : options.cache
   const cachedRow = await loadCached(cache, id)
-  throwIfTrustAborted(signal)
+  throwIfTrustAborted(signal, shouldContinue)
   const cacheTtl =
     cachedRow && cachedSnapshotNeedsShortRetry(cachedRow)
       ? SHOPPER_TRUST_DEGRADED_CACHE_RETRY_MS
@@ -1206,7 +1222,7 @@ export async function getShopperTrustEvidence(
     : undefined
 
   if (cachedEvidence) {
-    throwIfTrustAborted(signal)
+    throwIfTrustAborted(signal, shouldContinue)
     options.onProgress?.(cachedEvidence)
   }
   if (cacheIsFresh && cachedEvidence && !options.forceRefresh) {
@@ -1230,10 +1246,11 @@ export async function getShopperTrustEvidence(
         accountPubkey,
         ownerRelayAuthority,
         options.accountNetworkLocalStateRepository,
-        signal
+        signal,
+        shouldContinue
       )
   const { relayUrls } = initialRelayPlan
-  throwIfTrustAborted(signal)
+  throwIfTrustAborted(signal, shouldContinue)
   const baseFetchEvents = options.fetchEvents ?? fetchEventsFanoutDetailed
   const fetchEvents: ShopperTrustFetchEvents = async (
     filter,
@@ -1253,6 +1270,7 @@ export async function getShopperTrustEvidence(
       ownerSelectedRelayUrls
     )
     const executableRelaySet = new Set(relayUrls)
+    throwIfTrustAborted(readOptions.signal ?? signal, shouldContinue)
     return await baseFetchEvents(filter, {
       ...readOptions,
       relayUrls,
@@ -1263,6 +1281,7 @@ export async function getShopperTrustEvidence(
       ).filter((relayUrl) => executableRelaySet.has(relayUrl)),
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
+      shouldContinue: readOptions.shouldContinue ?? shouldContinue,
     })
   }
 
@@ -1297,7 +1316,8 @@ export async function getShopperTrustEvidence(
       },
       relayUrls,
       !initialRelayPlan.completeRelayHints,
-      signal
+      signal,
+      shouldContinue
     ),
     safeRead(
       fetchEvents,
@@ -1308,7 +1328,8 @@ export async function getShopperTrustEvidence(
       },
       relayUrls,
       !initialRelayPlan.completeRelayHints,
-      signal
+      signal,
+      shouldContinue
     ),
     safeRead(
       fetchEvents,
@@ -1319,7 +1340,8 @@ export async function getShopperTrustEvidence(
       },
       relayUrls,
       !initialRelayPlan.completeRelayHints,
-      signal
+      signal,
+      shouldContinue
     ),
     safeRead(
       fetchEvents,
@@ -1330,7 +1352,8 @@ export async function getShopperTrustEvidence(
       },
       relayUrls,
       !initialRelayPlan.completeRelayHints,
-      signal
+      signal,
+      shouldContinue
     ),
     safeRead(
       fetchEvents,
@@ -1341,10 +1364,11 @@ export async function getShopperTrustEvidence(
       },
       relayUrls,
       !initialRelayPlan.completeRelayHints,
-      signal
+      signal,
+      shouldContinue
     ),
   ])
-  throwIfTrustAborted(signal)
+  throwIfTrustAborted(signal, shouldContinue)
 
   const contactEvents = contactsRead.events.filter(
     (event) =>
@@ -1392,9 +1416,10 @@ export async function getShopperTrustEvidence(
             accountPubkey,
             ownerRelayAuthority,
             options.accountNetworkLocalStateRepository,
-            signal
+            signal,
+            shouldContinue
           )
-  throwIfTrustAborted(signal)
+  throwIfTrustAborted(signal, shouldContinue)
   const confirmedFollowersRead = !followerRelayPlan
     ? null
     : await safeRead(
@@ -1406,9 +1431,10 @@ export async function getShopperTrustEvidence(
         },
         followerRelayPlan.relayUrls,
         followerCandidatesTruncated || !followerRelayPlan.completeAuthorHints,
-        signal
+        signal,
+        shouldContinue
       )
-  throwIfTrustAborted(signal)
+  throwIfTrustAborted(signal, shouldContinue)
   const followerCoverage = confirmedFollowersRead
     ? mergeCoverage(
         [followerCandidatesRead.coverage, confirmedFollowersRead.coverage],
@@ -1471,9 +1497,10 @@ export async function getShopperTrustEvidence(
             accountPubkey,
             ownerRelayAuthority,
             options.accountNetworkLocalStateRepository,
-            signal
+            signal,
+            shouldContinue
           )
-  throwIfTrustAborted(signal)
+  throwIfTrustAborted(signal, shouldContinue)
   const reportsRead = !reportRelayPlan
     ? null
     : await safeRead(
@@ -1485,9 +1512,10 @@ export async function getShopperTrustEvidence(
         },
         reportRelayPlan.relayUrls,
         reportersTruncated || !reportRelayPlan.completeAuthorHints,
-        signal
+        signal,
+        shouldContinue
       )
-  throwIfTrustAborted(signal)
+  throwIfTrustAborted(signal, shouldContinue)
   const eligibleReports = (reportsRead?.events ?? []).filter(
     (event) =>
       event.kind === EVENT_KINDS.REPORT &&
@@ -1512,9 +1540,10 @@ export async function getShopperTrustEvidence(
             accountPubkey,
             ownerRelayAuthority,
             options.accountNetworkLocalStateRepository,
-            signal
+            signal,
+            shouldContinue
           )
-  throwIfTrustAborted(signal)
+  throwIfTrustAborted(signal, shouldContinue)
   const reportDeletionsRead = !reportDeletionRelayPlan
     ? null
     : await safeRead(
@@ -1526,9 +1555,10 @@ export async function getShopperTrustEvidence(
         },
         reportDeletionRelayPlan.relayUrls,
         !reportDeletionRelayPlan.completeAuthorHints,
-        signal
+        signal,
+        shouldContinue
       )
-  throwIfTrustAborted(signal)
+  throwIfTrustAborted(signal, shouldContinue)
   const visibleReports = eligibleReports.filter(
     (report) =>
       !reportWasDeleted(
@@ -1570,7 +1600,7 @@ export async function getShopperTrustEvidence(
       signal
     ),
   ])
-  throwIfTrustAborted(signal)
+  throwIfTrustAborted(signal, shouldContinue)
 
   const networkOldestEvent = networkSignal(
     { timestamp: oldestEventTimestamp },
@@ -1676,11 +1706,11 @@ export async function getShopperTrustEvidence(
     networkReports,
   ].some(({ source }) => source === "network")
   if (hasNetworkObservation) {
-    throwIfTrustAborted(signal)
+    throwIfTrustAborted(signal, shouldContinue)
     await persistCached(cache, evidenceToRow(evidence, now))
-    throwIfTrustAborted(signal)
+    throwIfTrustAborted(signal, shouldContinue)
   }
 
-  throwIfTrustAborted(signal)
+  throwIfTrustAborted(signal, shouldContinue)
   return evidence
 }

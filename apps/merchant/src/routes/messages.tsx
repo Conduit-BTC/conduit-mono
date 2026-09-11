@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { Search } from "lucide-react"
 import {
@@ -72,7 +72,11 @@ type OptimisticDirectMessageSend = {
 }
 
 function MessagesPage() {
-  const { pubkey, status } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const session = useConduitSession()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -158,6 +162,7 @@ function MessagesPage() {
   const profilesQuery = useProfiles(counterpartyPubkeys, {
     accountPubkey: signerConnected ? pubkey : null,
     authenticatedPubkey: signerConnected ? pubkey : null,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     enabled: signerConnected && counterpartyPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
@@ -318,6 +323,7 @@ function MessagesPage() {
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         signerInteraction: "external",
+        shouldContinue: () => authGenerationRef.current === authGeneration,
       })
       optimisticMessageQueue.markPublished(message.localId)
       if (selfCopyError) {

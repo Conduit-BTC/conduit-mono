@@ -212,8 +212,10 @@ describe("Market pickup handoff", () => {
       | {
           requestingAccountPubkey?: string | null
           authenticatedPubkey?: string | null
+          shouldContinue?: () => boolean
         }
       | undefined
+    const shouldContinue = () => true
     await expect(
       assertCartPickupHandlerReady(
         [{ fulfillment: pickupFulfillment("organizer_handoff") }],
@@ -229,6 +231,7 @@ describe("Market pickup handoff", () => {
         {
           requestingAccountPubkey: MERCHANT,
           authenticatedPubkey: MERCHANT,
+          shouldContinue,
         }
       )
     ).resolves.toBeUndefined()
@@ -236,6 +239,7 @@ describe("Market pickup handoff", () => {
     expect(lookupContext).toEqual({
       requestingAccountPubkey: MERCHANT,
       authenticatedPubkey: MERCHANT,
+      shouldContinue,
     })
 
     await expect(

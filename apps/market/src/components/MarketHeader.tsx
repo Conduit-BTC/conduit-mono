@@ -11,7 +11,14 @@ import {
   ShoppingCart,
   Wallet,
 } from "lucide-react"
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import { config, formatNpub, useAuth, useProfile } from "@conduit/core"
 import {
@@ -294,11 +301,16 @@ function AccountControl({
 }
 
 export function MarketHeader() {
-  const { pubkey, status, disconnect } = useAuth()
+  const { pubkey, status, disconnect, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const authenticatedPubkey = status === "connected" ? pubkey : null
   const { data: profile } = useProfile(pubkey, {
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
   })
   const cart = useCart()
   const navigate = useNavigate()

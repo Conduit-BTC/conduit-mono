@@ -1,4 +1,4 @@
-import { StrictMode, useEffect } from "react"
+import { StrictMode, useLayoutEffect } from "react"
 import { createRoot } from "react-dom/client"
 import { RouterProvider, createRouter } from "@tanstack/react-router"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
@@ -38,7 +38,7 @@ function ProductDeletionDeliveryWorker(): null {
   const { pubkey, status } = useAuth()
   const authenticatedPubkey = status === "connected" ? pubkey : null
 
-  useEffect(
+  useLayoutEffect(
     () => startProductDeletionDeliveryWorker(authenticatedPubkey),
     [authenticatedPubkey]
   )

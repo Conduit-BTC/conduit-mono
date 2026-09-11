@@ -43,10 +43,12 @@ export type CreateMerchantInvoiceInput = MerchantInvoiceScope & {
   delivery: MerchantOrderDelivery
   source: MerchantInvoiceSelection
   authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
 }
 
 export type RetryMerchantInvoiceInput = MerchantInvoiceScope & {
   authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
 }
 
 export type MerchantInvoiceStatus =
@@ -357,7 +359,8 @@ async function acquireInvoice(
 
 function toPublishInput(
   pending: MerchantPendingInvoice,
-  authenticatedPubkey?: string | null
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
 ): PublishMerchantOrderMessageInput {
   const amountSats = pending.amountMsats / 1_000
   return {
@@ -379,6 +382,7 @@ function toPublishInput(
     delivery: pending.delivery,
     signerInteraction: "external",
     authenticatedPubkey,
+    shouldContinue,
   }
 }
 
@@ -408,7 +412,8 @@ function assertSavedInvoiceBuyer(
 async function deliverSavedInvoice(
   saved: MerchantPendingInvoice,
   dependencies: MerchantInvoiceDependencies,
-  authenticatedPubkey?: string | null
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
 ): Promise<void> {
   if (saved.source !== "mock") {
     validateGeneratedInvoice(
@@ -425,7 +430,9 @@ async function deliverSavedInvoice(
   }
   await dependencies.store.put(attempting)
 
-  await dependencies.publish(toPublishInput(attempting, authenticatedPubkey))
+  await dependencies.publish(
+    toPublishInput(attempting, authenticatedPubkey, shouldContinue)
+  )
 
   const sentAt = dependencies.now()
   await dependencies.store.put({
@@ -545,7 +552,8 @@ export function createMerchantInvoiceModule(
         return deliverSavedInvoice(
           pending,
           dependencies,
-          input.authenticatedPubkey
+          input.authenticatedPubkey,
+          input.shouldContinue
         )
       })
     },
@@ -563,7 +571,8 @@ export function createMerchantInvoiceModule(
         return deliverSavedInvoice(
           saved,
           dependencies,
-          input.authenticatedPubkey
+          input.authenticatedPubkey,
+          input.shouldContinue
         )
       })
     },

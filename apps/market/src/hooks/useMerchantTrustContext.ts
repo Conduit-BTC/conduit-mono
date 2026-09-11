@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   buildMerchantTrustSocialSummary,
@@ -8,6 +8,7 @@ import {
   isCommerceReadIncomplete,
   normalizePubkey,
   subscribeRelaySettingsChanges,
+  useAuth,
   useConduitSession,
   useProfile,
   type MerchantTrustSocialSummary,
@@ -62,6 +63,13 @@ export function useMerchantTrustContext({
   profileRelayHints?: string[]
   requireCompleteProfileEvidence?: boolean
 }): MerchantTrustContext {
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const shouldContinueAccountRead = () =>
+    authGenerationRef.current === authGeneration
   const session = useConduitSession()
   const queryClient = useQueryClient()
   const viewerPubkey = session.mode === "signed_in" ? session.pubkey : null
@@ -71,6 +79,7 @@ export function useMerchantTrustContext({
       viewerPubkey
     ),
     accountPubkey: viewerPubkey,
+    shouldContinue: shouldContinueAccountRead,
     relayHints: profileRelayHints,
     requireCompleteEvidence: requireCompleteProfileEvidence,
     evidenceScope: requireCompleteProfileEvidence ? "payment" : undefined,
@@ -104,7 +113,11 @@ export function useMerchantTrustContext({
           merchantPubkey: merchantPubkey!,
           viewerPubkey: viewerPubkey!,
         },
-        { signal, authenticatedPubkey: viewerPubkey }
+        {
+          signal,
+          authenticatedPubkey: viewerPubkey,
+          shouldContinue: () => !signal.aborted && shouldContinueAccountRead(),
+        }
       ),
   })
 

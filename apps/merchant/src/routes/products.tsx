@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
@@ -736,12 +736,14 @@ function EventProductManagementSummary({
 async function fetchMerchantProducts(
   merchantPubkey: string,
   accountPubkey: string,
-  authenticatedPubkey: string | null
+  authenticatedPubkey: string | null,
+  shouldContinue?: () => boolean
 ): Promise<CommerceResult<MerchantProduct[]>> {
   const result = await getMerchantStorefront({
     merchantPubkey,
     accountPubkey,
     authenticatedPubkey,
+    shouldContinue,
     sort: "updated_at_desc",
     includeMarketHidden: true,
   })
@@ -749,7 +751,7 @@ async function fetchMerchantProducts(
     result.data.flatMap((record) =>
       record.product.shippingOptionId ? [record.product.shippingOptionId] : []
     ),
-    { accountPubkey, authenticatedPubkey }
+    { accountPubkey, authenticatedPubkey, shouldContinue }
   )
   return {
     data: result.data.map((record) => {
@@ -808,7 +810,8 @@ async function publishProduct(
   existing?: MerchantProductFamily,
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void,
   onSignerRequestsComplete?: () => void,
-  authenticatedPubkey?: string | null
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
 ): Promise<PublishWithPlannerResult> {
   const localPickup = form.fulfillment === "local_pickup"
   const presetShippingConfig = loadShippingConfig(merchantPubkey)
@@ -880,7 +883,9 @@ async function publishProduct(
     const eventMarket = await resolveOrganizerEventMarket(
       form.eventMarketReference,
       undefined,
-      authenticatedPubkey
+      authenticatedPubkey,
+      undefined,
+      shouldContinue
     )
     verifiedLocalPickupMarket = eventMarket
     localPickupEvidenceVerified = true
@@ -1011,6 +1016,7 @@ async function publishProduct(
     await ensureMerchantBoothPickup({
       ...merchantBoothPickupInput,
       authenticatedPubkey,
+      shouldContinue,
       onSignerRequest: () => {
         signerRequestOffset = 1
         onSignerRequest?.({
@@ -1025,6 +1031,7 @@ async function publishProduct(
   return signAndPublishProductWriteBundle({
     merchantPubkey,
     authenticatedPubkey,
+    shouldContinue,
     listings,
     deletions,
     onSignerRequest: (progress) =>
@@ -1058,7 +1065,9 @@ async function deleteProduct(
   merchantPubkey: string,
   product: MerchantProductFamily,
   onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>,
-  onSignerRequest?: (progress: ProductSignerRequestProgress) => void
+  onSignerRequest?: (progress: ProductSignerRequestProgress) => void,
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
 ): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
   const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
@@ -1066,6 +1075,8 @@ async function deleteProduct(
   if (signerPubkey !== merchantPubkey) {
     throw new Error("Active signer does not match current merchant pubkey")
   }
+  const activeAuthenticatedPubkey =
+    authenticatedPubkey === undefined ? signerPubkey : authenticatedPubkey
   const familyRecords = [product, ...product.variations]
   if (
     familyRecords.some((record) => record.product.pubkey !== merchantPubkey)
@@ -1084,7 +1095,8 @@ async function deleteProduct(
   })
   const currentWriteRelayUrls = await planCurrentProductDeletionWriteRelays(
     merchantPubkey,
-    signerPubkey
+    activeAuthenticatedPubkey,
+    shouldContinue
   )
 
   const deletion = new NDKEvent(ndk)
@@ -1108,7 +1120,8 @@ async function deleteProduct(
     await onSignedLocal(deletion, deliveryJob.id)
     return {
       delivery: await deliverQueuedProductDeletion(deliveryJob.id, {
-        authenticatedPubkey: signerPubkey,
+        authenticatedPubkey: activeAuthenticatedPubkey,
+        shouldContinue,
       }),
       deliveryJobId: deliveryJob.id,
     }
@@ -1125,9 +1138,14 @@ function ProductsPage() {
     signer,
     status: authStatus,
     remoteSignerRecovery,
+    authGeneration,
     connect,
     disconnect,
   } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const session = useConduitSession()
   const authenticatedPubkey = authStatus === "connected" ? pubkey : null
   const navigate = useNavigate()
@@ -1199,11 +1217,12 @@ function ProductsPage() {
   const productsQuery = useQuery({
     queryKey: ["merchant-products-live", pubkey ?? "none", authStatus],
     enabled: !!pubkey,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       fetchMerchantProducts(
         pubkey!,
         pubkey!,
-        authStatus === "connected" ? pubkey : null
+        authStatus === "connected" ? pubkey : null,
+        () => !signal.aborted && authGenerationRef.current === authGeneration
       ),
     refetchInterval: 15_000,
   })
@@ -1218,11 +1237,13 @@ function ProductsPage() {
       productDialogOpen &&
       form.fulfillment === "local_pickup" &&
       !!form.eventMarketReference,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       resolveOrganizerEventMarket(
         form.eventMarketReference,
         undefined,
-        authenticatedPubkey
+        authenticatedPubkey,
+        signal,
+        () => !signal.aborted && authGenerationRef.current === authGeneration
       ),
     retry: false,
     staleTime: 15_000,
@@ -1236,7 +1257,13 @@ function ProductsPage() {
     ],
     enabled:
       productDialogOpen && form.fulfillment === "local_pickup" && !!pubkey,
-    queryFn: () => listOrganizerEventMarkets(pubkey!, authenticatedPubkey),
+    queryFn: ({ signal }) =>
+      listOrganizerEventMarkets(
+        pubkey!,
+        authenticatedPubkey,
+        signal,
+        () => !signal.aborted && authGenerationRef.current === authGeneration
+      ),
     retry: false,
     staleTime: 15_000,
   })
@@ -1252,10 +1279,13 @@ function ProductsPage() {
       productDialogOpen &&
       form.fulfillment === "local_pickup" &&
       !!localPickupQuery.data?.organizerPubkey,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       resolveEventMarketOrganizerInbox(localPickupQuery.data!.organizerPubkey, {
         requestingAccountPubkey: pubkey,
         authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
       }),
     retry: false,
     staleTime: 30_000,
@@ -1355,10 +1385,17 @@ function ProductsPage() {
       eventProductCollectionCoordinates,
     ],
     enabled: !!pubkey && eventProductCollectionCoordinates.length > 0,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const markets = await Promise.allSettled(
         eventProductCollectionCoordinates.map((reference) =>
-          resolveOrganizerEventMarket(reference, undefined, authenticatedPubkey)
+          resolveOrganizerEventMarket(
+            reference,
+            undefined,
+            authenticatedPubkey,
+            signal,
+            () =>
+              !signal.aborted && authGenerationRef.current === authGeneration
+          )
         )
       )
       return Object.fromEntries(
@@ -1510,6 +1547,7 @@ function ProductsPage() {
           payload.merchantPubkey,
           {
             authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+            shouldContinue: () => authGenerationRef.current === authGeneration,
           }
         )
       }
@@ -1538,7 +1576,8 @@ function ProductsPage() {
           setProductSignerProgress(null)
           setProductSignerRequestsComplete(true)
         },
-        authStatus === "connected" ? pubkey : null
+        authStatus === "connected" ? pubkey : null,
+        () => authGenerationRef.current === authGeneration
       )
     },
     onMutate: (payload) => {
@@ -1628,6 +1667,7 @@ function ProductsPage() {
         return {
           delivery: await deliverQueuedProductDeletion(payload.deliveryJobId, {
             authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+            shouldContinue: () => authGenerationRef.current === authGeneration,
           }),
           deliveryJobId: payload.deliveryJobId,
         }
@@ -1645,7 +1685,9 @@ function ProductsPage() {
           })
           await showLocalProductProjection("delete", pubkey!)
         },
-        setProductSignerProgress
+        setProductSignerProgress,
+        authStatus === "connected" ? pubkey : null,
+        () => authGenerationRef.current === authGeneration
       )
     },
     onMutate: (payload) => {
@@ -2338,7 +2380,9 @@ function ProductsPage() {
       void resolveOrganizerEventMarket(
         projection.eventMarketReference,
         undefined,
-        authenticatedPubkey
+        authenticatedPubkey,
+        undefined,
+        () => authGenerationRef.current === authGeneration
       )
         .then((market) => {
           if (editFulfillmentRequestRef.current !== requestId) return

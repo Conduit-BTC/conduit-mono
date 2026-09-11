@@ -709,6 +709,25 @@ describe("Market event adapter", () => {
     expect(cartResolution.status).toBe("pickup")
   })
 
+  it("threads live account authority through event catalog resolution", async () => {
+    const listing = product()
+    const shouldContinue = () => true
+    let observedShouldContinue: (() => boolean) | undefined
+
+    await resolveProductCartFulfillment(
+      listing,
+      null,
+      async (_reference, _rateInput, _authenticatedPubkey, liveAuthority) => {
+        observedShouldContinue = liveAuthority
+        return catalog(listing)
+      },
+      merchant,
+      shouldContinue
+    )
+
+    expect(observedShouldContinue).toBe(shouldContinue)
+  })
+
   it("rejects other safety-hidden, blocked, and unprepared event listings", async () => {
     const pendingProduct = product()
     const externalProduct = product()

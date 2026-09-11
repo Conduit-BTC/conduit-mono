@@ -39,7 +39,7 @@ describe("authenticated account profile and storefront read propagation", () => 
     expect(productDetail).toContain("const accountPubkey = authenticatedPubkey")
     expect(productDetail).toContain("authenticatedPubkey,")
     expect(publicProfile).toContain(
-      "fetchStoreProducts(pubkey!, accountPubkey, authenticatedPubkey)"
+      "fetchStoreProducts(\n        pubkey!,\n        accountPubkey,\n        authenticatedPubkey,\n        () => !signal.aborted && shouldContinueAccountRead()\n      )"
     )
     expect(publicProfile).toContain('authenticatedPubkey ?? "anonymous"')
     expect(storeProducts).toContain("authenticatedPubkey?: string | null")
@@ -73,8 +73,8 @@ describe("authenticated account profile and storefront read propagation", () => 
         source("apps/merchant/src/routes/events.tsx"),
       ])
 
-    expect(dashboard).toContain(
-      "fetchDashboardStats(pubkey!, pubkey!, pubkey!)"
+    expect(dashboard).toMatch(
+      /fetchDashboardStats\([\s\S]{0,180}!signal\.aborted && authGenerationRef\.current === authGeneration/
     )
     expect(dashboard).toContain(
       "authenticatedPubkey: signerConnected ? pubkey : null"

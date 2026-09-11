@@ -2098,16 +2098,23 @@ describe("detectNip44Capabilities", () => {
 describe("fetchInboxRelayUrls", () => {
   it("resolves and filters a peer's kind-10050 inbox relays", async () => {
     __resetInboxRelayCache()
+    const controller = new AbortController()
+    const shouldContinue = () => true
     const relays = await fetchInboxRelayUrls(INBOX_PEER, {
       relayUrls: ["wss://read.conduit.market"],
       evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
-      fetchEvents: async () =>
-        [
+      signal: controller.signal,
+      shouldContinue,
+      fetchEvents: async (_filter, options) => {
+        expect(options?.signal).toBe(controller.signal)
+        expect(options?.shouldContinue).toBe(shouldContinue)
+        return [
           signedInboxDeclaration(INBOX_PEER_SECRET, [
             "wss://inbox.conduit.market",
             "ws://insecure.conduit.market",
           ]),
-        ] as never,
+        ] as never
+      },
     })
     expect(relays).toEqual(["wss://inbox.conduit.market"])
   })

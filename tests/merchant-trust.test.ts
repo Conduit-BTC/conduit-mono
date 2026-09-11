@@ -22,6 +22,7 @@ import {
   type FollowListReadOptions,
   type RelayList,
   type SignedPublicNostrEvent,
+  NostrSignerError,
 } from "@conduit/core"
 
 const merchantSecret = Uint8Array.from([...new Uint8Array(31), 31])
@@ -1173,29 +1174,35 @@ describe("NIP-02 merchant trust helpers", () => {
     ndk.signer = new NDKPrivateKeySigner(nip19.nsecEncode(viewerSecret))
     const published: SignedPublicNostrEvent[] = []
     const snapshotCache = createOwnContactListSnapshotCache()
+    let sessionCurrent = true
+    let preReadShouldContinue: (() => boolean) | undefined
 
     __setFollowListTestOverrides({
       ...snapshotCache.overrides,
       getNdk: () => ndk,
       readLatestFollowLists: async (input, options) => {
         expect(options.refreshRelayLists).toBe(true)
+        preReadShouldContinue = options.shouldContinue
         return await readLatestFollowLists(input, {
           ...options,
           resolveRelayLists: async () =>
             new Map([
               [viewerPubkey, relayList(viewerPubkey, [], [publicRelay])],
             ]),
-          fetchEvents: async (_filter, fetchOptions) => ({
-            events: [],
-            eventSourceRelayUrls: {},
-            relays: fetchOptions.relayUrls.map((relayUrl) => ({
-              relayUrl,
-              status: "success" as const,
-              eventCount: 0,
-              rejectedEventCount: 0,
-            })),
-            eventsVerified: false,
-          }),
+          fetchEvents: async (_filter, fetchOptions) => {
+            expect(fetchOptions.shouldContinue).toBe(preReadShouldContinue)
+            return {
+              events: [],
+              eventSourceRelayUrls: {},
+              relays: fetchOptions.relayUrls.map((relayUrl) => ({
+                relayUrl,
+                status: "success" as const,
+                eventCount: 0,
+                rejectedEventCount: 0,
+              })),
+              eventsVerified: false,
+            }
+          },
         })
       },
       publishWithPlanner: async (event, input) => {
@@ -1220,6 +1227,7 @@ describe("NIP-02 merchant trust helpers", () => {
       targetPubkey: merchantPubkey,
       shouldFollow: false,
       appId: "market",
+      isSessionCurrent: () => sessionCurrent,
     })
     expect(published).toHaveLength(0)
     expect(snapshotCache.get()).toBeUndefined()
@@ -1229,6 +1237,7 @@ describe("NIP-02 merchant trust helpers", () => {
       targetPubkey: merchantPubkey,
       shouldFollow: true,
       appId: "market",
+      isSessionCurrent: () => sessionCurrent,
     })
 
     expect(published).toHaveLength(1)
@@ -1243,6 +1252,9 @@ describe("NIP-02 merchant trust helpers", () => {
       state: "observed",
       event: { id: published[0]?.id },
     })
+    expect(preReadShouldContinue?.()).toBe(true)
+    sessionCurrent = false
+    expect(preReadShouldContinue?.()).toBe(false)
   })
 
   it("aborts an initial follow when another tab stores a list after the empty read", async () => {
@@ -1748,5 +1760,24 @@ describe("NIP-02 merchant trust helpers", () => {
         }
       )
     ).rejects.toThrow()
+  })
+
+  it("does not downgrade a final-read authority change to unavailable coverage", async () => {
+    const publicRelay = "wss://authority-change.example"
+
+    await expect(
+      readLatestFollowLists(
+        { pubkeys: [viewerPubkey], authenticatedPubkey: viewerPubkey },
+        {
+          resolveRelayLists: async () =>
+            new Map([
+              [viewerPubkey, relayList(viewerPubkey, [], [publicRelay])],
+            ]),
+          fetchEvents: async () => {
+            throw new NostrSignerError("authority_changed")
+          },
+        }
+      )
+    ).rejects.toMatchObject({ code: "authority_changed" })
   })
 })

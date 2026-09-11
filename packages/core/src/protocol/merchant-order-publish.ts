@@ -27,6 +27,8 @@ export interface PublishMerchantOrderMessageInput {
   delivery: MerchantOrderDelivery
   /** Active authenticated account; never inferred from merchantPubkey. */
   authenticatedPubkey?: string | null
+  /** Live account session authority for declaration reads and relay writes. */
+  shouldContinue?: () => boolean
   /** Background automation skips foreground-only interactive coordination. */
   signerInteraction?: "external" | "background_external"
 }
@@ -131,6 +133,7 @@ export async function publishMerchantOrderMessage(
     senderPubkey: input.merchantPubkey,
     accountPubkey: input.merchantPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
     recipientPubkey: target.recipientPubkey,
     signer: ndk.signer,
     rumorKind: EVENT_KINDS.ORDER,

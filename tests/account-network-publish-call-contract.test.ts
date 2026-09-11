@@ -3,7 +3,16 @@ import { describe, expect, it } from "bun:test"
 const contracts = [
   {
     path: "packages/core/src/protocol/profiles.ts",
-    calls: [{ intent: "author_event", identity: "pubkey", count: 1 }],
+    calls: [
+      {
+        intent: "author_event",
+        authorIdentity: "pubkey",
+        authenticatedIdentity: "authenticatedPubkey",
+        authenticatedPropertyPattern: "authenticatedPubkey",
+        accountIdentity: "authenticatedPubkey",
+        count: 1,
+      },
+    ],
   },
   {
     path: "packages/core/src/protocol/follows.ts",

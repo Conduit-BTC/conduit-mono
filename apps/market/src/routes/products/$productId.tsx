@@ -9,6 +9,7 @@ import {
   isCommerceReadIncomplete,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
+  useAuth,
   useConduitSession,
   useProfile,
   type ProductDetailTelemetryAction,
@@ -82,6 +83,11 @@ function getMarketProductShareUrl(productAddressId: string): string | null {
 }
 
 function ProductPage() {
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const session = useConduitSession()
   const authenticatedPubkey =
     session.mode === "signed_in" ? session.pubkey : null
@@ -127,6 +133,7 @@ function ProductPage() {
   const merchantProfile = useProfile(product?.pubkey, {
     accountPubkey,
     authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     relayHints: product
       ? productQuery.profileRelayHintsByPubkey[product.pubkey]
       : undefined,

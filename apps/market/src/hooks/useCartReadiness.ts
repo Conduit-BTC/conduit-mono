@@ -1,9 +1,10 @@
-import { useMemo } from "react"
+import { useLayoutEffect, useMemo, useRef } from "react"
 import { useQueries, useQuery } from "@tanstack/react-query"
 import {
   fetchLnurlPayMetadata,
   getProductsByIds,
   isValidLud16Address,
+  useAuth,
   useConduitSession,
 } from "@conduit/core"
 import {
@@ -108,6 +109,11 @@ export function getCartMerchantHiddenProductIds(
  */
 export function useCartReadiness(items: CartItem[]): CartReadiness {
   const session = useConduitSession()
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const authenticatedPubkey =
     session.mode === "signed_in" ? session.pubkey : null
   const groups = useMemo(() => groupCartItems(items), [items])
@@ -119,6 +125,7 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
       const merchantHiddenProductIds = getCartMerchantHiddenProductIds(
         group.items
       )
+      const readAuthGeneration = authGeneration
       return {
         queryKey: merchantCartAvailabilityQueryKey(
           group.merchantPubkey,
@@ -131,6 +138,8 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
             getProductsByIds(productIds, {
               includeMerchantHiddenProductIds: merchantHiddenProductIds,
               authenticatedPubkey,
+              shouldContinue: () =>
+                authGenerationRef.current === readAuthGeneration,
             })
           ),
         enabled: productIds.length > 0,

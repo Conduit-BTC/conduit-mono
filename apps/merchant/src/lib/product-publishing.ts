@@ -72,6 +72,7 @@ export async function deliverSignedProductEvent(
     extraRelayUrls?: readonly string[]
     /** Active authenticated account; never inferred from merchantPubkey. */
     authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
   } = {}
 ): Promise<PublishWithPlannerResult> {
   try {
@@ -105,6 +106,7 @@ export async function deliverSignedProductEvent(
       accountPubkey: merchantPubkey,
       deliveryMode: "critical",
       extraRelayUrls: options.extraRelayUrls,
+      shouldContinue: options.shouldContinue,
     })
     if (rawEvent.kind === EVENT_KINDS.PRODUCT) {
       await cacheSignedProductListingEvent(publishableEvent, {
@@ -125,7 +127,10 @@ function mergeRelayUrls(...groups: readonly (readonly string[])[]): string[] {
 export async function deliverSignedProductEventBundle(
   events: readonly (NDKEvent | SignedPublicNostrEvent)[],
   merchantPubkey: string,
-  options: { authenticatedPubkey?: string | null } = {}
+  options: {
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+  } = {}
 ): Promise<PublishWithPlannerResult> {
   if (events.length === 0) {
     throw new Error("At least one signed product event is required")
@@ -594,6 +599,7 @@ export async function deliverSignedProductWriteBundle(
       deliveryPromises.push(
         deliverSignedProductEvent(event, merchantPubkey, {
           authenticatedPubkey: deletionDeliveryOptions.authenticatedPubkey,
+          shouldContinue: deletionDeliveryOptions.shouldContinue,
         })
       )
     }
@@ -614,6 +620,7 @@ export async function signAndPublishProductWriteBundle(input: {
   merchantPubkey: string
   /** Current session identity; a live signer is the fallback auth seam. */
   authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
   listings: readonly ProductListingPublishTarget[]
   deletions?: readonly ProductDeletionPublishTarget[]
   onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
@@ -691,6 +698,7 @@ export async function signAndPublishProductWriteBundle(input: {
       authenticatedPubkey,
       accountPubkey: signerPubkey,
       deliveryMode: "critical",
+      shouldContinue: input.shouldContinue,
     })
     if (delivery.successfulRelayUrls.length === 0) {
       throw new Error(
@@ -713,7 +721,8 @@ export async function signAndPublishProductWriteBundle(input: {
   if (deletionEvent) {
     const currentWriteRelayUrls = await planCurrentProductDeletionWriteRelays(
       signerPubkey,
-      signerPubkey
+      signerPubkey,
+      input.shouldContinue
     )
     const sourceRelayUrls = mergeRelayUrls(
       ...(input.deletions ?? []).map(
@@ -741,6 +750,7 @@ export async function signAndPublishProductWriteBundle(input: {
     return await deliverSignedProductWriteBundle(signedBundle, signerPubkey, {
       ...input.deletionDeliveryOptions,
       authenticatedPubkey,
+      shouldContinue: input.shouldContinue,
     })
   } catch (error) {
     throw asSignedProductDeliveryError(error)
@@ -750,6 +760,7 @@ export async function signAndPublishProductWriteBundle(input: {
 export async function signAndPublishProductListing(input: {
   merchantPubkey: string
   authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
   product: ProductSchema
   dTag: string
   previousEventCreatedAt?: number
@@ -760,6 +771,7 @@ export async function signAndPublishProductListing(input: {
   return signAndPublishProductWriteBundle({
     merchantPubkey: input.merchantPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
     listings: [
       {
         product: input.product,

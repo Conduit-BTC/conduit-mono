@@ -11,6 +11,8 @@ export interface UseShopperTrustEvidenceOptions {
   relayScope?: string | null
   /** Explicit signed-in account for durable final-I/O relay exclusions. */
   authenticatedPubkey?: string | null
+  /** Live account authority for owner-selected relay reads. */
+  shouldContinue?: () => boolean
 }
 
 export interface UseShopperTrustEvidenceResult {
@@ -63,14 +65,17 @@ export function useShopperTrustEvidence(
     queryFn: async ({ signal }) => {
       const forceRefresh = forceRefreshRef.current
       forceRefreshRef.current = false
+      const shouldContinue = () =>
+        !signal.aborted && (options.shouldContinue?.() ?? true)
       return getShopperTrustEvidence(
         { merchantPubkey, shopperPubkey },
         {
           authenticatedPubkey,
           signal,
+          shouldContinue,
           forceRefresh,
           onProgress: (snapshot) => {
-            if (signal.aborted) return
+            if (!shouldContinue()) return
             queryClient.setQueryData(queryKey, snapshot)
           },
         }

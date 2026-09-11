@@ -21,6 +21,8 @@ export interface MerchantPaymentConfirmationInput {
   authorizeOrganizerRelease: boolean
   /** Active authenticated account; never inferred from merchantPubkey. */
   authenticatedPubkey?: string | null
+  /** Live account session authority for pickup-evidence reads. */
+  shouldContinue?: () => boolean
 }
 
 type ReleaseResult = "delivered" | "needs_attention"
@@ -41,6 +43,7 @@ const defaults: PaymentConfirmationDependencies = {
       delivery: input.delivery,
       signerInteraction: "external",
       authenticatedPubkey: input.authenticatedPubkey,
+      shouldContinue: input.shouldContinue,
     })
   },
   async release(input) {
@@ -50,6 +53,7 @@ const defaults: PaymentConfirmationDependencies = {
       items: input.order.items,
       merchantPubkey: input.merchantPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
+      shouldContinue: input.shouldContinue,
       onVerifiedMarket: (verified) => {
         market = verified
       },
@@ -70,6 +74,7 @@ const defaults: PaymentConfirmationDependencies = {
       signer,
       transport: {
         authenticatedPubkey: input.authenticatedPubkey,
+        shouldContinue: input.shouldContinue,
       },
     })
     return eventMarketHandoffDeliveryNeedsRetry(delivery)
@@ -89,7 +94,11 @@ export async function confirmMerchantPayment(
   payment: "confirmed"
   release: "not_requested" | ReleaseResult
 }> {
-  const captured = structuredClone(input)
+  const { shouldContinue, ...snapshot } = input
+  const captured: MerchantPaymentConfirmationInput = {
+    ...structuredClone(snapshot),
+    shouldContinue,
+  }
   if (
     captured.authorizeOrganizerRelease &&
     (!captured.order ||

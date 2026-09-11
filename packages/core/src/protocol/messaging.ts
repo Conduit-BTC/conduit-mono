@@ -13,6 +13,7 @@ import {
   fetchEventsFanout,
   fetchEventsFanoutWithDiagnostics,
   getNdk,
+  type FetchEventsFanoutOptions,
 } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import {
@@ -731,6 +732,8 @@ export interface PublishPrivateMessageInput {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  /** Live caller authority for recipient and sender declaration reads. */
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signer: NDKSigner
   rumorKind: typeof EVENT_KINDS.DIRECT_MESSAGE | typeof EVENT_KINDS.ORDER
   /** Wrap a sender self-copy for local recovery. Default true. */
@@ -1002,7 +1005,8 @@ export async function publishPrivateMessage(
     false,
     accountPubkey,
     authenticatedOwnerPubkey,
-    input.accountNetworkLocalStateRepository
+    input.accountNetworkLocalStateRepository,
+    input.shouldContinue
   )
   const recipientDeclaration = await applyAccountRelayEligibilityToDeclaration(
     resolvedRecipientDeclaration,
@@ -1092,7 +1096,8 @@ export async function publishPrivateMessage(
       true,
       accountPubkey,
       authenticatedOwnerPubkey,
-      input.accountNetworkLocalStateRepository
+      input.accountNetworkLocalStateRepository,
+      input.shouldContinue
     )
     // The compatibility lane is recipient-only: the non-critical sender self-copy
     // stays strict and fails soft instead of writing to compatibility relays.
@@ -1157,6 +1162,7 @@ export async function publishPrivateMessage(
       authenticatedPubkey: authenticatedOwnerPubkey,
       recipientPubkeys: [input.recipientPubkey],
       exclusiveRelayUrls: recipientRoute.relayUrls,
+      shouldContinue: input.shouldContinue,
       refreshRelayLists,
       deliveryMode: "critical",
       ...(accountPubkey
@@ -1172,6 +1178,7 @@ export async function publishPrivateMessage(
         : {}),
     })
   } catch (error) {
+    if (input.shouldContinue?.() === false) throw error
     const partial = recoverPartialRelayPublishDiagnostics(error)
     if (!partial) throw error
     recipientDelivery = partial
@@ -1209,6 +1216,7 @@ export async function publishPrivateMessage(
             recipientPubkeys: [input.senderPubkey],
             exclusiveRelayUrls: senderRoute.relayUrls,
             ownerSelectedRelayUrls: senderRoute.ownerSelectedRelayUrls,
+            shouldContinue: input.shouldContinue,
             refreshRelayLists,
             deliveryMode: "critical",
             ...(accountPubkey
@@ -1224,6 +1232,7 @@ export async function publishPrivateMessage(
               : {}),
           })
         } catch (error) {
+          if (input.shouldContinue?.() === false) throw error
           const partial = recoverPartialRelayPublishDiagnostics(error)
           if (!partial) throw error
           selfDelivery = partial
@@ -1232,6 +1241,7 @@ export async function publishPrivateMessage(
         selfDeliveryStatus = summary.status
         selfCopyError = summary.error
       } catch (error) {
+        if (input.shouldContinue?.() === false) throw error
         selfCopyError =
           error instanceof Error ? error.message : "Self-copy publish failed"
       }
@@ -1396,7 +1406,8 @@ async function resolveDeclarationForSend(
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
-  >
+  >,
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
 ): Promise<InboxDeclarationResolution> {
   const key = pubkey.trim().toLowerCase()
   if (knownRelayUrls) {
@@ -1410,6 +1421,7 @@ async function resolveDeclarationForSend(
     requestingAccountPubkey,
     authenticatedPubkey,
     accountNetworkLocalStateRepository,
+    shouldContinue,
   })
 }
 
@@ -1569,6 +1581,10 @@ export interface FetchInboxRelayOptions {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  /** Cancels queued or in-flight declaration lookup I/O. */
+  signal?: AbortSignal
+  /** Live account session authority for declaration reads. */
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
 }
 
 export type OwnPrivateMessageRelayReadiness =
@@ -1737,6 +1753,8 @@ function toDeclarationOptions(
     authenticatedPubkey: options.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
+    signal: options.signal,
+    shouldContinue: options.shouldContinue,
   }
 }
 

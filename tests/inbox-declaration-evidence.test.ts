@@ -20,6 +20,7 @@ import {
   recordInboxDeclarationCutoverRecoveryReadback,
   type NetworkPreferenceRelayOutcome,
 } from "@conduit/core/protocol/inbox-declaration-evidence"
+import { unresolvedNetworkPreferenceReadbackRelayUrls } from "@conduit/core/protocol/network-preference-delivery"
 import { readRetainedInboxDeclaration } from "@conduit/core/protocol/private-message-routing"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 
@@ -1443,6 +1444,136 @@ describe("durable inbox declaration evidence", () => {
       1_100
     )
     expect(getActiveInboxCutoverRecoveryRelayUrls(removed, 1_100)).toEqual([])
+  })
+
+  it("keeps shared confirmation pending when only an owner relay observes the event", () => {
+    const replacement = declarationEvent({
+      createdAt: 251,
+      tags: [["relay", "ws://owner-inbox.example"]],
+    })
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: ACCOUNT_A,
+      signedEvent: replacement,
+      publishRelayUrls: [
+        "wss://shared-a.example",
+        "wss://shared-b.example",
+        "ws://owner-publish.example",
+      ],
+      confirmationRelayUrls: [
+        "wss://shared-a.example",
+        "wss://shared-b.example",
+      ],
+      relayOutcomes: [
+        pendingRelayOutcome("wss://shared-a.example"),
+        pendingRelayOutcome("wss://shared-b.example"),
+        pendingRelayOutcome("ws://owner-publish.example"),
+      ],
+      previousRelayUrls: ["wss://previous.example"],
+      cutoverPolicyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      cutoverGraceMs: INBOX_DECLARATION_CUTOVER_GRACE_MS,
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+
+    const ownerOnlyObserved = applyInboxDeclarationDistributionOutcomes(
+      staged,
+      {
+        readback: [
+          { relayUrl: "wss://shared-a.example", status: "absent" },
+          { relayUrl: "wss://shared-b.example", status: "absent" },
+          { relayUrl: "ws://owner-publish.example", status: "observed" },
+        ],
+        observedAt: 2_000,
+      }
+    )
+
+    expect(ownerOnlyObserved.pendingDistribution).toBeDefined()
+    expect(
+      unresolvedNetworkPreferenceReadbackRelayUrls(
+        ownerOnlyObserved.pendingDistribution!.relayOutcomes!
+      )
+    ).toEqual(["wss://shared-a.example", "wss://shared-b.example"])
+    expect(
+      ownerOnlyObserved.cutoverRecoveries?.[0]?.confirmationAttempts?.[0]
+    ).toMatchObject({
+      completedRelayUrls: ["wss://shared-a.example", "wss://shared-b.example"],
+    })
+    expect(
+      ownerOnlyObserved.cutoverRecoveries?.[0]?.confirmationAttempts?.[0]
+        ?.observedRelayUrls
+    ).toBeUndefined()
+    expect(
+      ownerOnlyObserved.cutoverRecoveries?.[0]?.readbackObservedAt
+    ).toBeUndefined()
+  })
+
+  it("starts shared recovery before clearing the broader completed plan", () => {
+    const replacement = declarationEvent({
+      createdAt: 252,
+      tags: [["relay", "ws://owner-inbox.example"]],
+    })
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: ACCOUNT_A,
+      signedEvent: replacement,
+      publishRelayUrls: [
+        "wss://shared-a.example",
+        "wss://shared-b.example",
+        "ws://owner-publish.example",
+      ],
+      confirmationRelayUrls: [
+        "wss://shared-a.example",
+        "wss://shared-b.example",
+      ],
+      relayOutcomes: [
+        pendingRelayOutcome("wss://shared-a.example"),
+        pendingRelayOutcome("wss://shared-b.example"),
+        pendingRelayOutcome("ws://owner-publish.example"),
+      ],
+      previousRelayUrls: ["wss://previous.example"],
+      cutoverPolicyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      cutoverGraceMs: INBOX_DECLARATION_CUTOVER_GRACE_MS,
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+
+    const sharedObserved = applyInboxDeclarationDistributionOutcomes(staged, {
+      readback: [
+        { relayUrl: "wss://shared-a.example", status: "observed" },
+        { relayUrl: "wss://shared-b.example", status: "absent" },
+      ],
+      observedAt: 2_000,
+    })
+
+    expect(sharedObserved.pendingDistribution).toBeDefined()
+    expect(sharedObserved.cutoverRecoveries?.[0]).toMatchObject({
+      confirmationAttempts: [
+        {
+          completedRelayUrls: [
+            "wss://shared-a.example",
+            "wss://shared-b.example",
+          ],
+          observedRelayUrls: ["wss://shared-a.example"],
+        },
+      ],
+      readbackObservedAt: 2_000,
+      expiresAt: 2_000 + INBOX_DECLARATION_CUTOVER_GRACE_MS,
+    })
+
+    const fullPlanCompleted = applyInboxDeclarationDistributionOutcomes(
+      sharedObserved,
+      {
+        readback: [
+          { relayUrl: "ws://owner-publish.example", status: "absent" },
+        ],
+        observedAt: 3_000,
+      }
+    )
+
+    expect(fullPlanCompleted.pendingDistribution).toBeUndefined()
+    expect(fullPlanCompleted.cutoverRecoveries?.[0]).toMatchObject({
+      readbackObservedAt: 2_000,
+      expiresAt: 2_000 + INBOX_DECLARATION_CUTOVER_GRACE_MS,
+    })
   })
 
   it("backfills the newest usable predecessor discovered after the current blocker", async () => {

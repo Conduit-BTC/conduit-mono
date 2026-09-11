@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -322,7 +322,7 @@ export function useInboxDeclaration(
   ])
   const mutationContextKeyRef = useRef(mutationContextKey)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     authorityRef.current = {
       authGeneration: auth.authGeneration,
       method: auth.method,
@@ -349,7 +349,29 @@ export function useInboxDeclaration(
   const readinessQuery = useQuery({
     queryKey,
     enabled: !!pubkey && (options.enabled ?? true),
-    queryFn: () => inspectOwnPrivateMessageRelayReadiness(pubkey!),
+    queryFn: ({ signal }) => {
+      const expectedAuthority: AccountMutationAuthority = {
+        authGeneration: auth.authGeneration,
+        method: auth.method,
+        pubkey: auth.pubkey,
+        relayScope: session.relayScope,
+        sessionPubkey: session.pubkey,
+        signer: auth.signer,
+        status: auth.status,
+      }
+      return inspectOwnPrivateMessageRelayReadiness(pubkey!, {
+        authenticatedPubkey:
+          expectedAuthority.status === "connected" &&
+          expectedAuthority.pubkey === pubkey &&
+          expectedAuthority.sessionPubkey === pubkey
+            ? pubkey
+            : null,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted &&
+          sameAccountMutationAuthority(authorityRef.current, expectedAuthority),
+      })
+    },
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,

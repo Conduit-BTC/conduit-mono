@@ -111,6 +111,8 @@ describe("explicit kind 10063 publication", () => {
     let signed: SignedPublicNostrEvent | null = null
     const attempted: string[] = []
     const phases: string[] = []
+    const shouldContinue = () => true
+    const readAuthorityChecks: Array<(() => boolean) | undefined> = []
     const targets = Array.from(
       { length: 8 },
       (_, index) => `wss://relay-${index}.conduit.market`
@@ -121,13 +123,16 @@ describe("explicit kind 10063 publication", () => {
       readRelayUrls: ["wss://one.conduit.market", "wss://two.conduit.market"],
       publishRelayUrls: targets,
       accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+      shouldContinue,
       onPhase: (phase) => phases.push(phase),
       publishToRelay: async (input) => {
+        expect(input.shouldContinue).toBe(shouldContinue)
         signed = input.signedEvent
         attempted.push(input.relayUrl)
         return "acked"
       },
       fetchEvents: async (filter, options) => {
+        readAuthorityChecks.push(options.shouldContinue)
         if (filter.ids?.length && signed) {
           return readResult({
             events: [signed],
@@ -171,6 +176,8 @@ describe("explicit kind 10063 publication", () => {
       "publishing",
       "confirming",
     ])
+    expect(readAuthorityChecks.length).toBeGreaterThanOrEqual(2)
+    readAuthorityChecks.forEach((check) => expect(check).toBe(shouldContinue))
     expect(
       loadMediaServerPreferenceRecord(OWNER, storage).pending
     ).toBeUndefined()

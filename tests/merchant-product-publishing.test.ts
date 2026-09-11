@@ -284,6 +284,32 @@ afterEach(() => {
 })
 
 describe("merchant product event delivery", () => {
+  it("revalidates live account authority before product relay I/O", async () => {
+    const relayUrl = "wss://relay.example"
+    __setRelayPublishTestOverrides({
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: [relayUrl],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const event = new NDKEvent(undefined, makeSignedEvent(EVENT_KINDS.PRODUCT))
+    const publish = spyOn(event, "publish").mockResolvedValue(
+      new Set([{ url: `${relayUrl}/` }]) as never
+    )
+
+    await expect(
+      deliverSignedProductEvent(event, MERCHANT_PUBKEY, {
+        authenticatedPubkey: MERCHANT_PUBKEY,
+        shouldContinue: () => false,
+      })
+    ).rejects.toThrow("Signed product event could not be delivered")
+    expect(publish).toHaveBeenCalledTimes(0)
+  })
+
   it("counts only the approval-bearing events in each product change bundle", () => {
     const ordinary = {
       product: makeProduct("ordinary"),

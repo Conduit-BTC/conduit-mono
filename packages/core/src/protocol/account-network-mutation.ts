@@ -1366,6 +1366,7 @@ async function deliverPendingKind(input: {
         ownerSelectedRelayUrls,
         input.dependencies
       )
+      assertContinue(input.dependencies.shouldContinue)
       if (eligible[0] !== relayUrl) continue
       try {
         const result = await fetchEvents(
@@ -1383,8 +1384,10 @@ async function deliverPendingKind(input: {
             accountPubkey: input.pubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             ownerSelectedRelayUrls,
+            shouldContinue: input.dependencies.shouldContinue,
           }
         )
+        assertContinue(input.dependencies.shouldContinue)
         const sourceExact = result.events.some(
           (event) =>
             sameSignedEvent(event, signedEvent) &&
@@ -1402,11 +1405,19 @@ async function deliverPendingKind(input: {
                 ? "absent"
                 : "timed_out",
         })
-      } catch {
+      } catch (error) {
+        assertContinue(input.dependencies.shouldContinue)
+        if (
+          error instanceof NostrSignerError &&
+          error.code === "authority_changed"
+        ) {
+          throw error
+        }
         readbackObservations.push({ relayUrl, status: "timed_out" })
       }
     }
     if (readbackObservations.length > 0) {
+      assertContinue(input.dependencies.shouldContinue)
       snapshot = await input.repository.recordOutcomes({
         pubkey: input.pubkey,
         kind: input.kind,
@@ -1435,11 +1446,14 @@ async function publishUnderLock(input: {
     input.dependencies.reconcile ?? reconcileAccountNetworkPreferences
   const now = input.dependencies.now ?? Date.now
   input.dependencies.onPhase?.("checking")
+  assertContinue(input.dependencies.shouldContinue)
   const reconciliation = await reconcile(input.pubkey, {
     ...input.dependencies.reconcileOptions,
     requestingAccountPubkey: input.pubkey,
     authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.dependencies.shouldContinue,
   })
+  assertContinue(input.dependencies.shouldContinue)
   const currentReview = reviewAccountNetworkMutation(
     reconciliation,
     input.reviewed.action
@@ -1819,11 +1833,14 @@ export async function redistributeAccountNetworkInboxDeclaration(input: {
     }
 
     dependencies.onPhase?.("checking")
+    assertContinue(dependencies.shouldContinue)
     const reconciliation = await reconcile(pubkey, {
       ...dependencies.reconcileOptions,
       requestingAccountPubkey: pubkey,
       authenticatedPubkey,
+      shouldContinue: dependencies.shouldContinue,
     })
+    assertContinue(dependencies.shouldContinue)
     const inbox = reconciliation.inboxDeclaration
     if (
       inbox.observation?.coverage !== "complete" ||

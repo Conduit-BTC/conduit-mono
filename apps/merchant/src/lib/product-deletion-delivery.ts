@@ -8,6 +8,7 @@ import {
   persistProductDeletionDelivery,
   planPublishRelays,
   publishSignedEventToRelay,
+  normalizePublicWebSocketUrl,
   type ProductDeletionDeliveryOptions,
   type ProductDeletionDeliveryJob,
   type ProductDeletionRelayPublisher,
@@ -35,6 +36,9 @@ async function publishProductDeletionRelay(
   } catch {
     authenticatedPubkey = null
   }
+  const requiresAuthenticatedOwnerAuthority =
+    !config.e2eRelayIsolationEnabled &&
+    !normalizePublicWebSocketUrl(input.relayUrl)
   return {
     status: await publishSignedEventToRelay({
       signedEvent: input.signedEvent,
@@ -45,6 +49,12 @@ async function publishProductDeletionRelay(
       ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
+      shouldContinue:
+        requiresAuthenticatedOwnerAuthority && authenticatedPubkey
+          ? () =>
+              input.isAuthenticatedPubkeyCurrent?.(authenticatedPubkey) !==
+              false
+          : undefined,
     }),
   }
 }
@@ -59,7 +69,8 @@ async function restoreLocalDeletionEvidence(
 
 export async function planCurrentProductDeletionWriteRelays(
   merchantPubkey: string,
-  authenticatedPubkey: string | null
+  authenticatedPubkey: string | null,
+  shouldContinue?: () => boolean
 ): Promise<string[]> {
   const plan = await planPublishRelays({
     intent: "author_event",
@@ -69,6 +80,7 @@ export async function planCurrentProductDeletionWriteRelays(
     refreshRelayLists: true,
     deliveryMode: "critical",
     skipHealthFilter: true,
+    shouldContinue,
   })
   return uniqueRelayUrls([
     ...plan.primaryRelayUrls,
@@ -139,6 +151,21 @@ export function productDeletionJobToPublishResult(
 export interface DeliverQueuedProductDeletionOptions extends ProductDeletionDeliveryOptions {
   publisher?: ProductDeletionRelayPublisher
   restoreLocalEvidence?: (job: ProductDeletionDeliveryJob) => Promise<void>
+  shouldContinue?: () => boolean
+}
+
+function bindAuthenticatedProductDeletionAuthority(
+  authenticatedPubkey: string | null | undefined,
+  shouldContinue: (() => boolean) | undefined,
+  isAuthenticatedPubkeyCurrent: ProductDeletionDeliveryOptions["isAuthenticatedPubkeyCurrent"]
+): ProductDeletionDeliveryOptions["isAuthenticatedPubkeyCurrent"] {
+  if (!authenticatedPubkey || !shouldContinue) {
+    return isAuthenticatedPubkeyCurrent
+  }
+  return (candidatePubkey) =>
+    candidatePubkey === authenticatedPubkey &&
+    (isAuthenticatedPubkeyCurrent?.(candidatePubkey) ?? true) &&
+    shouldContinue()
 }
 
 export async function deliverQueuedProductDeletion(
@@ -148,6 +175,7 @@ export async function deliverQueuedProductDeletion(
   const {
     publisher = publishProductDeletionRelay,
     restoreLocalEvidence = restoreLocalDeletionEvidence,
+    shouldContinue,
     ...deliveryOptions
   } = options
   const queuedJob = await getProductDeletionDelivery(jobId, deliveryOptions)
@@ -162,6 +190,11 @@ export async function deliverQueuedProductDeletion(
 
   const deliveredJob = await deliverProductDeletionJob(jobId, publisher, {
     ...deliveryOptions,
+    isAuthenticatedPubkeyCurrent: bindAuthenticatedProductDeletionAuthority(
+      deliveryOptions.authenticatedPubkey,
+      shouldContinue,
+      deliveryOptions.isAuthenticatedPubkeyCurrent
+    ),
     forceDeliveryLeaseRecovery: true,
   })
   return productDeletionJobToPublishResult(deliveredJob)

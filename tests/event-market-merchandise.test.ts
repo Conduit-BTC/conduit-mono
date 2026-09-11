@@ -179,10 +179,14 @@ describe("event-market organizer merchandise evidence", () => {
     const observedRelayUrls: string[] = []
     const observedOwnerSelectedRelayUrls: string[] = []
     const observedAuthenticatedPubkeys: Array<string | null | undefined> = []
+    const observedShouldContinue: Array<(() => boolean) | undefined> = []
+    const shouldContinue = () => true
     let relayListAuthenticatedPubkey: string | null | undefined
+    let relayListShouldContinue: (() => boolean) | undefined
     __setEventMarketMerchandiseTestOverrides({
       getRelayLists: (async (_pubkeys, options) => {
         relayListAuthenticatedPubkey = options?.authenticatedPubkey
+        relayListShouldContinue = options?.shouldContinue
         return new Map([
           [
             MERCHANT,
@@ -203,6 +207,7 @@ describe("event-market organizer merchandise evidence", () => {
           ...(options.ownerSelectedRelayUrls ?? [])
         )
         observedAuthenticatedPubkeys.push(options.authenticatedPubkey)
+        observedShouldContinue.push(options.shouldContinue)
         const events = filter.kinds?.includes(EVENT_KINDS.PRODUCT as never)
           ? [product]
           : []
@@ -221,6 +226,7 @@ describe("event-market organizer merchandise evidence", () => {
     const resolution = await getEventMarketReceiptMerchandise({
       receipt: receiptFor([product]),
       authenticatedPubkey: ORGANIZER,
+      shouldContinue,
       readAccountRelaySettingsPlanningSnapshot: async () => ({
         settings: {
           version: 1,
@@ -256,8 +262,12 @@ describe("event-market organizer merchandise evidence", () => {
     expect(observedOwnerSelectedRelayUrls).toContain(ownerRelay)
     expect(observedRelayUrls).not.toContain(remoteRelay)
     expect(relayListAuthenticatedPubkey).toBe(ORGANIZER)
+    expect(relayListShouldContinue).toBe(shouldContinue)
     expect(
       observedAuthenticatedPubkeys.every((value) => value === ORGANIZER)
+    ).toBe(true)
+    expect(
+      observedShouldContinue.every((value) => value === shouldContinue)
     ).toBe(true)
   })
 

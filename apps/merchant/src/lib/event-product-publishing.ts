@@ -139,12 +139,14 @@ export function eventProductFormFromTemplate(
 
 export async function listEventProductTemplates(
   merchantPubkey: string,
-  authenticatedPubkey: string | null
+  authenticatedPubkey: string | null,
+  shouldContinue?: () => boolean
 ): Promise<EventProductTemplate[]> {
   const result = await getMerchantStorefront({
     merchantPubkey,
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
+    shouldContinue,
     sort: "updated_at_desc",
     includeMarketHidden: true,
   })
@@ -195,6 +197,7 @@ export function validateEventProductPublishForm(
 export async function publishEventProduct(input: {
   merchantPubkey: string
   authenticatedPubkey: string | null
+  shouldContinue?: () => boolean
   marketReference: string
   form: EventProductPublishFormValues
   onSignedLocal?: (event: NDKEvent) => void | Promise<void>
@@ -208,7 +211,9 @@ export async function publishEventProduct(input: {
   const market = await resolveOrganizerEventMarket(
     input.marketReference,
     undefined,
-    input.authenticatedPubkey
+    input.authenticatedPubkey,
+    undefined,
+    input.shouldContinue
   )
   const dTag = createFreshEventProductDTag(
     input.form.title,
@@ -226,6 +231,7 @@ export async function publishEventProduct(input: {
             await ensureMerchantBoothPickup({
               authorPubkey: input.merchantPubkey,
               authenticatedPubkey: input.authenticatedPubkey,
+              shouldContinue: input.shouldContinue,
               dTag: `${dTag}-event-pickup`,
               title: "Merchant pickup",
               location: input.form.merchantPickupLocation.trim(),
@@ -271,6 +277,7 @@ export async function publishEventProduct(input: {
   const delivery = await signAndPublishProductListing({
     merchantPubkey: input.merchantPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
     product,
     dTag,
     fulfillmentIntent: { kind: "coordinate_after_order" },
@@ -290,9 +297,11 @@ export async function publishEventProduct(input: {
 export async function retryEventProductDelivery(
   event: NDKEvent,
   merchantPubkey: string,
-  authenticatedPubkey?: string | null
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
 ): Promise<PublishWithPlannerResult> {
   return deliverSignedProductEvent(event, merchantPubkey, {
     authenticatedPubkey,
+    shouldContinue,
   })
 }

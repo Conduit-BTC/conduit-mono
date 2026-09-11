@@ -144,6 +144,8 @@ export async function fetchProfile(
   opts?: {
     authenticatedPubkey?: string | null
     accountPubkey?: string | null
+    signal?: AbortSignal
+    shouldContinue?: () => boolean
     skipCache?: boolean
     priority?: "visible" | "background"
   }
@@ -152,6 +154,8 @@ export async function fetchProfile(
     pubkeys: [pubkey],
     authenticatedPubkey: opts?.authenticatedPubkey,
     accountPubkey: opts?.accountPubkey,
+    signal: opts?.signal,
+    shouldContinue: opts?.shouldContinue,
     skipCache: opts?.skipCache,
     priority: opts?.priority,
   })
@@ -298,7 +302,11 @@ export function assertProfilePublishRetained(
 
 export async function publishProfile(
   profile: Omit<Profile, "pubkey">,
-  appId: ConduitAppId
+  appId: ConduitAppId,
+  options: {
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+  } = {}
 ): Promise<Profile> {
   buildNip01ProfilePublishContent({ profile })
   const ndk = getNdk()
@@ -306,8 +314,14 @@ export async function publishProfile(
 
   const user = await ndk.signer.user()
   const pubkey = user.pubkey
+  const authenticatedPubkey =
+    options.authenticatedPubkey?.trim().toLowerCase() === pubkey.toLowerCase()
+      ? pubkey
+      : null
   const latestProfile = await fetchProfile(pubkey, {
-    authenticatedPubkey: pubkey,
+    authenticatedPubkey,
+    accountPubkey: authenticatedPubkey,
+    shouldContinue: options.shouldContinue,
     skipCache: true,
     priority: "visible",
   })
@@ -337,8 +351,9 @@ export async function publishProfile(
   await publishWithPlanner(event, {
     intent: "author_event",
     authorPubkey: pubkey,
-    authenticatedPubkey: pubkey,
-    accountPubkey: pubkey,
+    authenticatedPubkey,
+    accountPubkey: authenticatedPubkey,
+    shouldContinue: options.shouldContinue,
   })
 
   const publishedProfile = parseProfileEvent({ pubkey, content: event.content })

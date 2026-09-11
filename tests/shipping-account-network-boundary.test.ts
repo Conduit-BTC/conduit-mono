@@ -266,4 +266,44 @@ describe("shipping account network boundary", () => {
       expect(call.relayUrls).not.toContain(REMOTE_WS_RELAY)
     }
   })
+
+  it("threads live caller authority through relay-list and final shipping reads", async () => {
+    const relayListCalls: RelayListLookupOptions[] = []
+    const finalReadCalls: FetchEventsFanoutOptions[] = []
+    const controller = new AbortController()
+    const shouldContinue = () => true
+    __setShippingTestOverrides({
+      getRelayLists: async (pubkeys, options = {}) => {
+        relayListCalls.push(options)
+        return new Map(pubkeys.map((pubkey) => [pubkey, relayList(pubkey)]))
+      },
+      fetchEventsFanoutDetailed: async (_filter, options = {}) => {
+        finalReadCalls.push(options)
+        return successfulEmptyRead(options)
+      },
+      getCachedDeletionTombstones: async () => [],
+      putCachedDeletionTombstones: async () => undefined,
+      getCachedOptionFrontiers: async () => [],
+      putCachedOptionFrontiers: async () => undefined,
+    })
+
+    await expect(
+      getShippingOptionsByCoordinates([COORDINATE], {
+        accountPubkey: ACCOUNT,
+        authenticatedPubkey: ACCOUNT,
+        accountNetworkLocalStateRepository: repository,
+        shouldContinue,
+        signal: controller.signal,
+      })
+    ).resolves.toEqual([])
+
+    expect(relayListCalls).toHaveLength(1)
+    expect(relayListCalls[0]?.shouldContinue).toBe(shouldContinue)
+    expect(relayListCalls[0]?.signal).toBe(controller.signal)
+    expect(finalReadCalls).toHaveLength(2)
+    for (const call of finalReadCalls) {
+      expect(call.shouldContinue).toBe(shouldContinue)
+      expect(call.signal).toBe(controller.signal)
+    }
+  })
 })

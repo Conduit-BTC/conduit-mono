@@ -11,10 +11,11 @@ import {
   ShieldCheck,
 } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   formatNpub,
   prepareProductCatalog,
+  useAuth,
   useConduitSession,
   useProfile,
   type Product,
@@ -417,6 +418,13 @@ function StatePanel({
 }
 
 function EventCatalogPage() {
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const shouldContinueAccountRead = () =>
+    authGenerationRef.current === authGeneration
   const { collectionRef } = Route.useParams()
   const shopperPricing = useShopperPricing()
   const session = useConduitSession()
@@ -430,6 +438,7 @@ function EventCatalogPage() {
   const { data: organizerProfile } = useProfile(organizerPubkey, {
     accountPubkey,
     authenticatedPubkey,
+    shouldContinue: shouldContinueAccountRead,
   })
   const organizerName = organizerPubkey
     ? getMerchantDisplayName(organizerProfile, organizerPubkey, {
@@ -447,6 +456,7 @@ function EventCatalogPage() {
   const merchantIdentities = useMerchantIdentities({
     accountPubkey,
     authenticatedPubkey,
+    shouldContinue: shouldContinueAccountRead,
     allMerchantPubkeys: merchantPubkeys,
     visibleMerchantPubkeys: merchantPubkeys,
     relayHintsByPubkey: {},

@@ -1481,6 +1481,7 @@ export async function waitForZapReceipt({
   relayUrls,
   accountPubkey,
   accountNetworkLocalStateRepository,
+  shouldContinue,
   receiptNotAfterSeconds,
   timeoutMs = 5_000,
 }: {
@@ -1494,6 +1495,7 @@ export async function waitForZapReceipt({
   relayUrls: string[]
   accountPubkey?: string | null
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   receiptNotAfterSeconds?: number
   timeoutMs?: number
 }): Promise<NDKEvent | null> {
@@ -1515,6 +1517,7 @@ export async function waitForZapReceipt({
         relayUrls,
         accountPubkey,
         accountNetworkLocalStateRepository,
+        shouldContinue,
         connectTimeoutMs: 1_500,
         fetchTimeoutMs: 2_000,
       }

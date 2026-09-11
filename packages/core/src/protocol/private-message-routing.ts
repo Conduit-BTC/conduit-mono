@@ -189,6 +189,8 @@ export interface ResolveInboxDeclarationOptions {
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   /** Cancels queued or in-flight lookup I/O when account authority changes. */
   signal?: AbortSignal
+  /** Live account session authority for non-signal declaration reads. */
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   /** Durable owner kind-10002 evidence seam (tests/non-browser adapters). */
   ownerRelayListEvidenceRepository?: OwnerRelayListEvidenceRepository
 }
@@ -1046,6 +1048,7 @@ async function reconcilePendingInboxCutoverReadbacks(input: {
   ownerSelectedRelayUrls: readonly string[]
   accountNetworkLocalStateRepository: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   signal?: AbortSignal
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   observedAt: number
   now: () => number
 }): Promise<InboxDeclarationEvidenceRecord> {
@@ -1114,13 +1117,16 @@ async function reconcilePendingInboxCutoverReadbacks(input: {
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           signal: input.signal,
+          shouldContinue: input.shouldContinue,
           connectTimeoutMs: 3_000,
           fetchTimeoutMs: 6_000,
           skipHealthFilter: true,
         }
       )
     } catch (error) {
-      if (input.signal?.aborted) break
+      if (input.signal?.aborted || input.shouldContinue?.() === false) {
+        throw error
+      }
       continue
     }
     result = reconcileInboxReadDiagnostics(result, relayUrls)
@@ -1290,6 +1296,7 @@ export async function resolveInboxDeclaration(
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
       signal: options.signal,
+      shouldContinue: options.shouldContinue,
       observedAt: fetchedAt,
       now,
     })
@@ -1345,13 +1352,16 @@ export async function resolveInboxDeclaration(
         accountNetworkLocalStateRepository:
           options.accountNetworkLocalStateRepository,
         signal: options.signal,
+        shouldContinue: options.shouldContinue,
         connectTimeoutMs: 3_000,
         fetchTimeoutMs: 6_000,
         skipHealthFilter: true,
       }
     )
   } catch (error) {
-    if (options.signal?.aborted) throw error
+    if (options.signal?.aborted || options.shouldContinue?.() === false) {
+      throw error
+    }
     result = {
       events: [],
       attemptedRelayUrls: [...relayUrls],

@@ -1940,13 +1940,27 @@ describe("event-market organizer inbox readiness", () => {
     const senderRelay = "wss://merchant.inbox.relay.dev"
     const record = readyDeliveryRecord()
     const calls: Array<{ id: string; relays: string[] }> = []
+    const shouldContinue = () => true
+    const declarationPredicates: Array<(() => boolean) | undefined> = []
+    const inboxDeclarationOptions = partialDeclarationRead([
+      inboxDeclaration(ORGANIZER_SECRET, [recipientRelay]),
+      inboxDeclaration(MERCHANT_SECRET, [senderRelay]),
+    ])
+    const fetchDeclarations =
+      inboxDeclarationOptions.fetchEventsWithDiagnostics!
+    inboxDeclarationOptions.fetchEventsWithDiagnostics = async (
+      filter,
+      options
+    ) => {
+      declarationPredicates.push(options?.shouldContinue)
+      return await fetchDeclarations(filter, options)
+    }
     const input = {
       record,
-      inboxDeclarationOptions: partialDeclarationRead([
-        inboxDeclaration(ORGANIZER_SECRET, [recipientRelay]),
-        inboxDeclaration(MERCHANT_SECRET, [senderRelay]),
-      ]),
+      inboxDeclarationOptions,
+      shouldContinue,
       publishFn: (async (event, options) => {
+        expect(options.shouldContinue).toBe(shouldContinue)
         const relays = [...(options.exclusiveRelayUrls ?? [])]
         calls.push({ id: event.id, relays })
         return successfulDelivery(relays)
@@ -1957,6 +1971,7 @@ describe("event-market organizer inbox readiness", () => {
       { id: record.signedRecipientWrap.id, relays: [recipientRelay] },
       { id: record.signedSelfWrap!.id, relays: [senderRelay] },
     ])
+    expect(declarationPredicates).toEqual([shouldContinue, shouldContinue])
     expect(delivered.recipientStatus).toBe("full_success")
     expect(delivered.selfDeliveryStatus).toBe("full_success")
     expect(delivered.selfCopyError).toBeNull()
@@ -1966,6 +1981,31 @@ describe("event-market organizer inbox readiness", () => {
       deliveryProgress: delivered.deliveryProgress,
     })
     expect(calls).toHaveLength(2)
+  })
+
+  it("rethrows a live-authority change during an exact self-wrap retry", async () => {
+    let sessionCurrent = true
+    const shouldContinue = () => sessionCurrent
+    let publishCount = 0
+
+    await expect(
+      retryEventMarketPrivateDelivery({
+        record: readyDeliveryRecord(),
+        recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
+        senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
+        shouldContinue,
+        publishFn: (async (_event, options) => {
+          expect(options.shouldContinue).toBe(shouldContinue)
+          publishCount += 1
+          if (publishCount === 1) {
+            return successfulDelivery(options.exclusiveRelayUrls ?? [])
+          }
+          sessionCurrent = false
+          throw new Error("session changed")
+        }) as never,
+      })
+    ).rejects.toThrow("session changed")
+    expect(publishCount).toBe(2)
   })
 
   it("caps partial-discovery retry delivery to the first three declared relays", async () => {

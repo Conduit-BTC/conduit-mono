@@ -298,6 +298,7 @@ export interface GetEventMarketReceiptMerchandiseInput {
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
 }
 
@@ -345,6 +346,7 @@ export async function getEventMarketReceiptMerchandise(
     ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
   })
   const plan = planRelayReads({
     intent: "author_products",
@@ -405,6 +407,7 @@ export async function getEventMarketReceiptMerchandise(
           ),
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
+          shouldContinue: input.shouldContinue,
           signal: input.signal,
           reuseRelayConnections: true,
         })

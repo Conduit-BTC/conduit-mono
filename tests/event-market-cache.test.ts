@@ -675,6 +675,131 @@ describe("event-market retained evidence", () => {
     ).toBe(true)
   })
 
+  it("threads live account authority through exact and organizer Event Market reads", async () => {
+    const ownerRelay = "ws://owner-event-market.example:4848"
+    const shouldContinue = () => true
+    const fanoutPredicates: Array<(() => boolean) | undefined> = []
+    const relayListPredicates: Array<(() => boolean) | undefined> = []
+    const [calendar, pickup, collection] = graph([PRODUCT])
+    const product = productRevision(103, true)
+    const relayListFor = (pubkey: string) => ({
+      pubkey,
+      readRelayUrls: [ORGANIZER_RELAY],
+      writeRelayUrls: [ORGANIZER_RELAY],
+      eventCreatedAt: 1,
+      cachedAt: Date.now(),
+    })
+
+    __setEventMarketTestOverrides({
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: {
+          version: 1,
+          updatedAt: 1,
+          entries: [
+            {
+              url: ownerRelay,
+              readEnabled: true,
+              writeEnabled: true,
+              section: "public",
+              capabilities: {
+                nip11: false,
+                search: false,
+                dm: false,
+                auth: false,
+                commerce: false,
+              },
+              warnings: {
+                dmWithoutAuth: false,
+                staleRelayInfo: false,
+                unreachable: false,
+                commercePartialSupport: false,
+              },
+            },
+          ],
+        },
+        signedRelayListAuthoritative: true,
+      }),
+      getRelayListsDetailed: async (pubkeys, options = {}) => {
+        relayListPredicates.push(options.shouldContinue)
+        return {
+          relayLists: new Map(
+            pubkeys.map((pubkey) => [pubkey, relayListFor(pubkey)])
+          ),
+          resolutionStates: new Map(
+            pubkeys.map((pubkey) => [pubkey, "network" as const])
+          ),
+        }
+      },
+      getRelayLists: async (pubkeys, options = {}) => {
+        relayListPredicates.push(options.shouldContinue)
+        return new Map(pubkeys.map((pubkey) => [pubkey, relayListFor(pubkey)]))
+      },
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        fanoutPredicates.push(options.shouldContinue)
+        const filter = rawFilter as TagFilter
+        const isBroadOrganizerRead =
+          (filter.kinds?.length ?? 0) > 1 &&
+          filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)
+        let events: SignedPublicNostrEvent[] = []
+        if (isBroadOrganizerRead) {
+          events = [calendar, pickup, collection]
+        } else if (
+          filter.kinds?.length === 1 &&
+          filter.kinds[0] === EVENT_KINDS.PRODUCT_COLLECTION
+        ) {
+          events = [collection]
+        } else if (
+          filter.kinds?.includes(EVENT_KINDS.CALENDAR_TIME) ||
+          filter.kinds?.includes(EVENT_KINDS.CALENDAR_DATE)
+        ) {
+          events = [calendar]
+        } else if (filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION)) {
+          events = [pickup]
+        } else if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          events = [product]
+        }
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: isBroadOrganizerRead ? 500 : events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+
+    const expectLiveAuthority = () => {
+      expect(fanoutPredicates.length).toBeGreaterThan(6)
+      expect(relayListPredicates.length).toBeGreaterThan(1)
+      expect(
+        fanoutPredicates.every((predicate) => predicate === shouldContinue)
+      ).toBe(true)
+      expect(
+        relayListPredicates.every((predicate) => predicate === shouldContinue)
+      ).toBe(true)
+    }
+
+    await getEventMarket({
+      reference: COLLECTION,
+      authenticatedPubkey: ORGANIZER,
+      shouldContinue,
+    })
+    expectLiveAuthority()
+
+    fanoutPredicates.length = 0
+    relayListPredicates.length = 0
+    await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      authenticatedPubkey: ORGANIZER,
+      shouldContinue,
+    })
+    expectLiveAuthority()
+  })
+
   it("keeps a large valid event visible in the discovery-card projection", async () => {
     const productCoordinates = Array.from(
       { length: 65 },

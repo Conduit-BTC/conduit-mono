@@ -48,6 +48,8 @@ export interface MerchantPickupAuthorizationInput {
   merchantPubkey: string
   /** Active authenticated account; never inferred from merchantPubkey. */
   authenticatedPubkey?: string | null
+  /** Live account authority for owner-selected relay I/O. */
+  shouldContinue?: () => boolean
   /** Limit verification to coherent order lines for one stock mutation. */
   targetProductCoordinate?: string
   nowMs?: number
@@ -362,6 +364,7 @@ export async function verifyMerchantPickupOrderAuthorization(
       reference: snapshot.collection.coordinate,
       expectedOrganizerPubkey: snapshot.organizerPubkey,
       authenticatedPubkey: authenticatedMerchantPubkey,
+      shouldContinue: input.shouldContinue,
     })
   } catch {
     return { status: "unverified", reason: "network_unavailable" }
@@ -403,6 +406,7 @@ export async function verifyMerchantPickupOrderAuthorization(
     productResult = await dependencies.getProductsByIds(productCoordinates, {
       includeMarketHidden: true,
       authenticatedPubkey: authenticatedMerchantPubkey,
+      shouldContinue: input.shouldContinue,
     })
   } catch {
     return { status: "unverified", reason: "network_unavailable" }

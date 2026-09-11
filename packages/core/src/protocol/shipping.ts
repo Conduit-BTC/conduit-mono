@@ -1508,6 +1508,10 @@ export interface ShippingOptionReadOptions {
   authenticatedPubkey?: string | null
   /** Injectable durable policy reader for deterministic boundary tests. */
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  /** Live caller authority, rechecked immediately before final relay I/O. */
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  /** Cancel obsolete account-scoped reads when their caller is replaced. */
+  signal?: AbortSignal
 }
 
 type ShippingOwnerRelayAuthority = {
@@ -1624,6 +1628,8 @@ export async function getShippingOptions(
     ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
+    signal: options.signal,
   })
   const readPlan = planRelayReads({
     intent: "author_products",
@@ -1657,6 +1663,8 @@ export async function getShippingOptions(
     ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
+    signal: options.signal,
   })
   const coordinates = events.flatMap((event) => {
     const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]?.trim()
@@ -1832,6 +1840,8 @@ export async function getShippingOptionsByCoordinates(
     ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
+    signal: options.signal,
   })
   const requested = new Set(batches.flatMap((batch) => batch.coordinates))
   const batchResults = await mapWithConcurrency(
@@ -1877,6 +1887,8 @@ export async function getShippingOptionsByCoordinates(
             ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
+            shouldContinue: options.shouldContinue,
+            signal: options.signal,
           }
         ),
         relayUrls,
@@ -1901,6 +1913,8 @@ export async function getShippingOptionsByCoordinates(
           ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
           accountNetworkLocalStateRepository:
             options.accountNetworkLocalStateRepository,
+          shouldContinue: options.shouldContinue,
+          signal: options.signal,
         }
       )
       await rememberObservedShippingDeletionEvidence(
@@ -1934,6 +1948,8 @@ export async function getShippingOptionsByCoordinates(
             ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
+            shouldContinue: options.shouldContinue,
+            signal: options.signal,
           }
         )
         await rememberObservedShippingDeletionEvidence(

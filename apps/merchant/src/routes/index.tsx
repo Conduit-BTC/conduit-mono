@@ -27,7 +27,9 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentType,
 } from "react"
@@ -72,12 +74,14 @@ type MerchantDashboardStats = {
 async function fetchDashboardStats(
   pubkey: string,
   accountPubkey: string,
-  authenticatedPubkey: string
+  authenticatedPubkey: string,
+  shouldContinue?: () => boolean
 ): Promise<MerchantDashboardStats> {
   const storefront = await getMerchantStorefront({
     merchantPubkey: pubkey,
     accountPubkey,
     authenticatedPubkey,
+    shouldContinue,
     sort: "updated_at_desc",
     includeMarketHidden: true,
   })
@@ -316,7 +320,11 @@ function MerchantReadinessPanel({
 }
 
 function DashboardPage() {
-  const { pubkey, status, error } = useAuth()
+  const { pubkey, status, error, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const { authRequired, event: pendingEvent } = Route.useSearch()
   const signerConnected = status === "connected" && !!pubkey
   const navigate = useNavigate()
@@ -339,7 +347,13 @@ function DashboardPage() {
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard-live", pubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => fetchDashboardStats(pubkey!, pubkey!, pubkey!),
+    queryFn: ({ signal }) =>
+      fetchDashboardStats(
+        pubkey!,
+        pubkey!,
+        pubkey!,
+        () => !signal.aborted && authGenerationRef.current === authGeneration
+      ),
     refetchInterval: 30_000,
   })
   const cachedStatsQuery = useQuery({
@@ -446,6 +460,7 @@ function DashboardPage() {
   const buyerProfilesQuery = useProfiles(buyerPubkeys, {
     accountPubkey: signerConnected ? pubkey : null,
     authenticatedPubkey: signerConnected ? pubkey : null,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     enabled: signerConnected && buyerPubkeys.length > 0,
   })
 

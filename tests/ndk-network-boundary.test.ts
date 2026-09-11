@@ -29,8 +29,10 @@ function accountNetworkState(
   }
 }
 
-function installEoseWebSocket(): {
+function installEoseWebSocket(options: { deferEose?: boolean } = {}): {
   openedUrls: string[]
+  waitForOpenedCount: (count: number) => Promise<void>
+  releaseEose: () => void
   restore: () => void
 } {
   const originalDescriptor = Object.getOwnPropertyDescriptor(
@@ -38,6 +40,12 @@ function installEoseWebSocket(): {
     "WebSocket"
   )
   const openedUrls: string[] = []
+  const openedWaiters: Array<{
+    count: number
+    resolve: () => void
+  }> = []
+  const pendingEose: Array<() => void> = []
+  let deferEose = options.deferEose ?? false
 
   class EoseWebSocket {
     static CONNECTING = 0
@@ -53,6 +61,13 @@ function installEoseWebSocket(): {
 
     constructor(readonly url: string) {
       openedUrls.push(url)
+      for (const waiter of openedWaiters.splice(0)) {
+        if (openedUrls.length >= waiter.count) {
+          waiter.resolve()
+        } else {
+          openedWaiters.push(waiter)
+        }
+      }
       queueMicrotask(() => {
         if (this.readyState !== EoseWebSocket.CONNECTING) return
         this.readyState = EoseWebSocket.OPEN
@@ -63,12 +78,17 @@ function installEoseWebSocket(): {
     send(payload: string): void {
       const frame = JSON.parse(payload) as [string, string]
       if (frame[0] !== "REQ") return
-      queueMicrotask(() => {
+      const emitEose = () => {
         if (this.readyState !== EoseWebSocket.OPEN) return
         this.onmessage?.({
           data: JSON.stringify(["EOSE", frame[1]]),
         } as MessageEvent<string>)
-      })
+      }
+      if (deferEose) {
+        pendingEose.push(emitEose)
+      } else {
+        queueMicrotask(emitEose)
+      }
     }
 
     close(): void {
@@ -85,6 +105,18 @@ function installEoseWebSocket(): {
 
   return {
     openedUrls,
+    waitForOpenedCount: (count) => {
+      if (openedUrls.length >= count) return Promise.resolve()
+      return new Promise<void>((resolve) => {
+        openedWaiters.push({ count, resolve })
+      })
+    },
+    releaseEose: () => {
+      deferEose = false
+      for (const emitEose of pendingEose.splice(0)) {
+        queueMicrotask(emitEose)
+      }
+    },
     restore: () => {
       __resetNdkTestState()
       if (originalDescriptor) {
@@ -97,6 +129,102 @@ function installEoseWebSocket(): {
 }
 
 describe("NDK network boundary", () => {
+  it("rechecks live owner authority after final policy reads before opening ws", async () => {
+    const ownerWs = "ws://owner-session-race.example"
+    const opened = installEoseWebSocket()
+    let resolvePolicyRead: (() => void) | null = null
+    let sessionCurrent = true
+    const policyReadStarted = new Promise<void>((resolve) => {
+      resolvePolicyRead = resolve
+    })
+    let releasePolicyRead: (() => void) | null = null
+    const policyReadReleased = new Promise<void>((resolve) => {
+      releasePolicyRead = resolve
+    })
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => {
+        resolvePolicyRead?.()
+        await policyReadReleased
+        return accountNetworkState(pubkey, [])
+      },
+    }
+
+    try {
+      const read = fetchEventsFanoutDetailed(
+        { kinds: [1] },
+        {
+          relayUrls: [ownerWs],
+          accountPubkey: ACCOUNT_A,
+          authenticatedPubkey: ACCOUNT_A,
+          ownerSelectedRelayUrls: [ownerWs],
+          accountNetworkLocalStateRepository: repository,
+          reuseRelayConnections: false,
+          shouldContinue: () => sessionCurrent,
+        }
+      )
+
+      await policyReadStarted
+      sessionCurrent = false
+      releasePolicyRead?.()
+
+      await expect(read).rejects.toMatchObject({ code: "authority_changed" })
+      expect(opened.openedUrls).toEqual([])
+    } finally {
+      opened.restore()
+    }
+  })
+
+  it("rechecks live owner authority after a queued read reaches final admission", async () => {
+    const blockerRelayUrls = Array.from(
+      { length: 8 },
+      (_, index) => `wss://queued-read-blocker-${index}.example`
+    )
+    const ownerWs = "ws://queued-owner-session-race.example"
+    const opened = installEoseWebSocket({ deferEose: true })
+    let sessionCurrent = true
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => accountNetworkState(pubkey, []),
+    }
+
+    try {
+      const blockers = blockerRelayUrls.map((relayUrl) =>
+        fetchEventsFanoutDetailed(
+          { kinds: [1] },
+          {
+            relayUrls: [relayUrl],
+            reuseRelayConnections: false,
+          }
+        )
+      )
+      await opened.waitForOpenedCount(blockerRelayUrls.length)
+
+      const queuedOwnerRead = fetchEventsFanoutDetailed(
+        { kinds: [1] },
+        {
+          relayUrls: [ownerWs],
+          accountPubkey: ACCOUNT_A,
+          authenticatedPubkey: ACCOUNT_A,
+          ownerSelectedRelayUrls: [ownerWs],
+          accountNetworkLocalStateRepository: repository,
+          reuseRelayConnections: false,
+          shouldContinue: () => sessionCurrent,
+        }
+      )
+
+      sessionCurrent = false
+      opened.releaseEose()
+
+      await expect(queuedOwnerRead).rejects.toMatchObject({
+        code: "authority_changed",
+      })
+      await Promise.all(blockers)
+      expect(opened.openedUrls).toEqual(blockerRelayUrls)
+    } finally {
+      opened.releaseEose()
+      opened.restore()
+    }
+  })
+
   it("opens owner-selected ws relays only with exact owner provenance", async () => {
     const ownerWs = "ws://owner-selected.example"
     const remoteWs = "ws://remote-derived.example"

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { useQuery } from "@tanstack/react-query"
 import {
@@ -266,7 +273,7 @@ export function useMediaServerPreferences(
   )
   const [lookupRevision, setLookupRevision] = useState(0)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     authGenerationRef.current = options.authGeneration ?? 0
   }, [options.authGeneration])
 
@@ -296,10 +303,13 @@ export function useMediaServerPreferences(
   const query = useQuery({
     queryKey,
     enabled,
-    queryFn: () =>
-      readMediaServerPreferences(normalizedOwner!, {
+    queryFn: () => {
+      const generation = options.authGeneration ?? 0
+      return readMediaServerPreferences(normalizedOwner!, {
         authenticatedPubkey: normalizedAuthenticatedPubkey,
-      }),
+        shouldContinue: () => authGenerationRef.current === generation,
+      })
+    },
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,

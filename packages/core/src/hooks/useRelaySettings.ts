@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   publishAccountNetworkMutation,
@@ -326,11 +333,11 @@ export function useRelaySettings(
   const contextReady = initializedContextKey === relaySettingsContextKey
   const localSettingsControlConnections = !accountScoped
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     accountReconciliationRef.current = accountReconciliation
   }, [accountReconciliation])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     authorityRef.current = {
       authGeneration: auth.authGeneration,
       method: auth.method,
@@ -349,6 +356,10 @@ export function useRelaySettings(
     session.pubkey,
     session.relayScope,
   ])
+
+  useLayoutEffect(() => {
+    currentContextKeyRef.current = relaySettingsContextKey
+  }, [relaySettingsContextKey])
 
   useEffect(
     () =>
@@ -402,7 +413,6 @@ export function useRelaySettings(
       closeAllProtectedRelayConnections()
     }
     previousContextKeyRef.current = relaySettingsContextKey
-    currentContextKeyRef.current = relaySettingsContextKey
     setInitializedContextKey(relaySettingsContextKey)
     setScanningUrls([])
     setError(null)

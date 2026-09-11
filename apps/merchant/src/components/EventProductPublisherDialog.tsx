@@ -63,6 +63,7 @@ export function EventProductPublisherDialog({
   open,
   merchantPubkey,
   authenticatedPubkey,
+  shouldContinue,
   market,
   onOpenChange,
   onPublished,
@@ -70,6 +71,7 @@ export function EventProductPublisherDialog({
   open: boolean
   merchantPubkey: string
   authenticatedPubkey: string | null
+  shouldContinue: () => boolean
   market: MerchantOrganizerEventMarket
   onOpenChange: (open: boolean) => void
   onPublished: (accepted: boolean) => void | Promise<void>
@@ -99,8 +101,12 @@ export function EventProductPublisherDialog({
       authenticatedPubkey,
     ],
     enabled: open && !!merchantPubkey,
-    queryFn: () =>
-      listEventProductTemplates(merchantPubkey, authenticatedPubkey),
+    queryFn: ({ signal }) =>
+      listEventProductTemplates(
+        merchantPubkey,
+        authenticatedPubkey,
+        () => shouldContinue() && !signal.aborted
+      ),
   })
   const templates = useMemo(
     () => templatesQuery.data ?? [],
@@ -123,6 +129,7 @@ export function EventProductPublisherDialog({
     const accepted = await acceptOwnEventProduct({
       merchantPubkey,
       authenticatedPubkey,
+      shouldContinue,
       marketReference: market.naddr,
       productCoordinate,
       signedAcceptance,
@@ -150,6 +157,7 @@ export function EventProductPublisherDialog({
       const result = await publishEventProduct({
         merchantPubkey,
         authenticatedPubkey,
+        shouldContinue,
         marketReference: market.naddr,
         form,
         onSignerRequest: setSignerProgress,
@@ -182,7 +190,8 @@ export function EventProductPublisherDialog({
         await retryEventProductDelivery(
           signedEvent,
           merchantPubkey,
-          authenticatedPubkey
+          authenticatedPubkey,
+          shouldContinue
         )
       const dTag = signedEvent.tags.find((tag) => tag[0] === "d")?.[1]
       if (!dTag) throw new Error("Signed product coordinate is unavailable.")

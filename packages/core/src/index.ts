@@ -314,4 +314,7 @@ export {
   type UseMediaServerPreferencesOptions,
   type UseMediaServerPreferencesResult,
 } from "./hooks/useMediaServerPreferences"
-export { useUpdateProfile } from "./hooks/useUpdateProfile"
+export {
+  useUpdateProfile,
+  type UseUpdateProfileOptions,
+} from "./hooks/useUpdateProfile"

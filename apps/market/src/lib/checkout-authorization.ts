@@ -52,6 +52,7 @@ export async function authorizeCurrentCheckoutItems(input: {
   rateInput?: PricingRateInput
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
   resolveProductFulfillment?: CheckoutProductFulfillmentResolver
   authorizePickupHandlers?: CheckoutPickupHandlerAuthorizer
 }): Promise<CheckoutAuthorizationResult> {
@@ -62,7 +63,8 @@ export async function authorizeCurrentCheckoutItems(input: {
         product,
         rateInput,
         undefined,
-        input.authenticatedPubkey
+        input.authenticatedPubkey,
+        input.shouldContinue
       ))
   const fulfillmentResolutions = await Promise.all(
     input.refreshedProducts.map(async (product) => {
@@ -142,6 +144,7 @@ export async function authorizeCurrentCheckoutItems(input: {
       assertCartPickupHandlerReady(items, undefined, {
         requestingAccountPubkey: input.accountPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
+        shouldContinue: input.shouldContinue,
       }))
   await authorizePickupHandlers(prepared.items)
 

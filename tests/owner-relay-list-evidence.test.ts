@@ -139,6 +139,32 @@ describe("owner kind-10002 evidence", () => {
     ])
   })
 
+  it("preserves a live authority failure from the final owner lookup seam", async () => {
+    let authorityCurrent = true
+    const shouldContinue = () => authorityCurrent
+    const authorityError = new Error("authority changed")
+    let fetchCalls = 0
+
+    const lookup = resolveOwnerRelayList(OWNER, {
+      relayUrls: ["ws://owner-selected.example"],
+      requestingAccountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      ownerSelectedRelayUrls: ["ws://owner-selected.example"],
+      shouldContinue,
+      evidenceRepository: repository,
+      fetchEventsWithDiagnostics: (async (_filter, options) => {
+        fetchCalls += 1
+        expect(options.shouldContinue).toBe(shouldContinue)
+        authorityCurrent = false
+        expect(options.shouldContinue?.()).toBe(false)
+        throw authorityError
+      }) as never,
+    })
+
+    await expect(lookup).rejects.toBe(authorityError)
+    expect(fetchCalls).toBe(1)
+  })
+
   it("retains ws distribution only when the exact owner event selected it", () => {
     const ownerWs = "ws://owner-selected.example"
     const remoteWs = "ws://remote-derived.example"

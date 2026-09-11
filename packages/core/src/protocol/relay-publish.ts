@@ -792,6 +792,7 @@ export async function planPublishRelays(
           ownerSelectedRelayUrls: ownerSelectedReadRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
+          shouldContinue: input.shouldContinue,
         })
       : undefined
 

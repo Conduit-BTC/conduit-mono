@@ -23,6 +23,7 @@ import {
 } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
+import { NostrSignerError } from "./nostr-event-signer"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import {
@@ -210,6 +211,8 @@ export type ShopperPresetsProtocolDependencies = {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  /** Live caller authority for final account-scoped relay admission. */
+  shouldContinue?: () => boolean
   /** Explicit authenticated account. The requested preset owner is not proof. */
   authenticatedPubkey?: string | null
   /** Injectable durable owner-authority reader for deterministic tests. */
@@ -255,7 +258,16 @@ async function readShopperRelayAuthority(
       dependencies.readAccountRelaySettingsPlanningSnapshot ??
       readDurableAccountRelaySettingsPlanningSnapshot
     )(owner)
-  } catch {
+  } catch (error) {
+    if (dependencies.shouldContinue?.() === false) {
+      throw new NostrSignerError("authority_changed")
+    }
+    if (
+      error instanceof NostrSignerError &&
+      error.code === "authority_changed"
+    ) {
+      throw error
+    }
     return null
   }
 }
@@ -567,6 +579,7 @@ export async function fetchShopperPresets(
     ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       dependencies.accountNetworkLocalStateRepository,
+    shouldContinue: dependencies.shouldContinue,
   })
   const plan = planRelayReads({
     intent: "general",
@@ -617,10 +630,20 @@ export async function fetchShopperPresets(
       ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
       accountNetworkLocalStateRepository:
         dependencies.accountNetworkLocalStateRepository,
+      shouldContinue: dependencies.shouldContinue,
       connectTimeoutMs: SHOPPER_PRESETS_CONNECT_TIMEOUT_MS,
       fetchTimeoutMs: SHOPPER_PRESETS_FETCH_TIMEOUT_MS,
     })
-  } catch {
+  } catch (error) {
+    if (dependencies.shouldContinue?.() === false) {
+      throw new NostrSignerError("authority_changed")
+    }
+    if (
+      error instanceof NostrSignerError &&
+      error.code === "authority_changed"
+    ) {
+      throw error
+    }
     return { state: "unavailable", reason: "relay_read" }
   }
   const hasRelaySuccess =
@@ -661,6 +684,7 @@ async function verifyShopperPresetsConvergence({
   ownerSelectedRelayUrls,
   fetchEvents,
   accountNetworkLocalStateRepository,
+  shouldContinue,
   waitForRetry,
 }: {
   owner: string
@@ -673,6 +697,7 @@ async function verifyShopperPresetsConvergence({
     AccountNetworkLocalStateRepository,
     "get"
   >
+  shouldContinue?: () => boolean
   waitForRetry: () => Promise<void>
 }): Promise<Extract<ShopperPresetsReadResult, { state: "found" }> | null> {
   const targets = Array.from(
@@ -700,11 +725,21 @@ async function verifyShopperPresetsConvergence({
           authenticatedPubkey: owner,
           ownerSelectedRelayUrls,
           accountNetworkLocalStateRepository,
+          shouldContinue,
           connectTimeoutMs: SHOPPER_PRESETS_CONNECT_TIMEOUT_MS,
           fetchTimeoutMs: SHOPPER_PRESETS_FETCH_TIMEOUT_MS,
         }
       )
-    } catch {
+    } catch (error) {
+      if (shouldContinue?.() === false) {
+        throw new NostrSignerError("authority_changed")
+      }
+      if (
+        error instanceof NostrSignerError &&
+        error.code === "authority_changed"
+      ) {
+        throw error
+      }
       if (attempt < SHOPPER_PRESETS_CONVERGENCE_ATTEMPTS - 1) {
         await waitForRetry()
       }
@@ -848,6 +883,7 @@ export async function publishShopperPresets({
       dependencies.accountNetworkLocalStateRepository,
     refreshRelayLists: false,
     deliveryMode: "standard",
+    shouldContinue: dependencies.shouldContinue,
   })
 
   const ownerSettingsSnapshot = await readShopperRelayAuthority(
@@ -869,6 +905,7 @@ export async function publishShopperPresets({
     fetchEvents: dependencies.fetchEvents ?? fetchEventsFanoutDetailed,
     accountNetworkLocalStateRepository:
       dependencies.accountNetworkLocalStateRepository,
+    shouldContinue: dependencies.shouldContinue,
     waitForRetry:
       dependencies.waitForConvergenceRetry ??
       (() =>

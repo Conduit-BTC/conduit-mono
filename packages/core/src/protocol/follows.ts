@@ -14,6 +14,7 @@ import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { getNdk } from "./ndk"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
+import { NostrSignerError } from "./nostr-event-signer"
 import {
   getRelayLists,
   getRelayListsDetailed,
@@ -132,6 +133,8 @@ export interface FollowListReadOptions {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  /** Live caller authority for final account-scoped relay admission. */
+  shouldContinue?: () => boolean
   /** Injectable durable owner-authority reader for deterministic tests. */
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
 }
@@ -614,7 +617,16 @@ async function readAuthenticatedOwnerRelaySettings(
       options.readAccountRelaySettingsPlanningSnapshot ??
       readDurableAccountRelaySettingsPlanningSnapshot
     )(authenticatedPubkey)
-  } catch {
+  } catch (error) {
+    if (options.shouldContinue?.() === false) {
+      throw new NostrSignerError("authority_changed")
+    }
+    if (
+      error instanceof NostrSignerError &&
+      error.code === "authority_changed"
+    ) {
+      throw error
+    }
     return null
   }
 }
@@ -676,6 +688,7 @@ export async function readLatestFollowLists(
     ownerSelectedRelayUrls: ownerReadRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
     skipCache: options.refreshRelayLists,
     signal: options.signal,
   }
@@ -809,6 +822,7 @@ export async function readLatestFollowLists(
             ownerSelectedRelayUrls: plannedOwnerSelectedRelayUrls,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
+            shouldContinue: options.shouldContinue,
             connectTimeoutMs: FOLLOW_LIST_CONNECT_TIMEOUT_MS,
             fetchTimeoutMs: FOLLOW_LIST_FETCH_TIMEOUT_MS,
             skipHealthFilter: true,
@@ -817,6 +831,15 @@ export async function readLatestFollowLists(
         )
       } catch (error) {
         if (options.signal?.aborted) throw error
+        if (options.shouldContinue?.() === false) {
+          throw new NostrSignerError("authority_changed")
+        }
+        if (
+          error instanceof NostrSignerError &&
+          error.code === "authority_changed"
+        ) {
+          throw error
+        }
         return await preserveStrongestOwnFollowList(
           {
             pubkey,
@@ -1196,6 +1219,14 @@ export async function publishContactListUpdate({
     {
       maxRelays: FOLLOW_LIST_MAX_RELAYS_PER_AUTHOR,
       refreshRelayLists: true,
+      shouldContinue: () => {
+        try {
+          assertCurrentSignerSession()
+          return true
+        } catch {
+          return false
+        }
+      },
     }
   )
   assertCurrentSignerSession()

@@ -538,6 +538,7 @@ export function OrganizerEventMarketPanel({
   market,
   accountPubkey,
   authenticatedPubkey,
+  shouldContinue,
   deliveries,
   copiedUrl,
   refreshing,
@@ -553,6 +554,7 @@ export function OrganizerEventMarketPanel({
   market: MerchantOrganizerEventMarket
   accountPubkey: string
   authenticatedPubkey: string | null
+  shouldContinue: () => boolean
   deliveries: MerchantOrganizerRecordDelivery[]
   copiedUrl: string | null
   refreshing: boolean
@@ -590,6 +592,7 @@ export function OrganizerEventMarketPanel({
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
     accountPubkey,
     authenticatedPubkey,
+    shouldContinue,
     priority: "visible",
     maxUnresolvedRefetches: 1,
   })

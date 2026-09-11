@@ -177,6 +177,8 @@ export interface ReadMediaServerPreferencesDependencies {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  /** Live caller authority for final account-scoped relay admission. */
+  shouldContinue?: () => boolean
   /** Injectable durable owner-authority reader for deterministic tests. */
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
   storage?: MediaServerPreferencesStorage | null
@@ -207,7 +209,6 @@ export interface PublishMediaServerPreferencesDependencies extends ReadMediaServ
   publishRelayUrls?: readonly string[]
   planPublish?: typeof planPublishRelays
   publishToRelay?: typeof publishSignedEventToRelay
-  shouldContinue?: () => boolean
   onPhase?: (
     phase: "checking" | "awaiting_signature" | "publishing" | "confirming"
   ) => void
@@ -857,7 +858,16 @@ async function readOwnerRelayAuthority(
         )
       ),
     }
-  } catch {
+  } catch (error) {
+    if (dependencies.shouldContinue?.() === false) {
+      throw new NostrSignerError("authority_changed")
+    }
+    if (
+      error instanceof NostrSignerError &&
+      error.code === "authority_changed"
+    ) {
+      throw error
+    }
     return { snapshot: null, readRelayUrls: [], writeRelayUrls: [] }
   }
 }
@@ -938,6 +948,7 @@ async function resolveReadPlan(
       ownerSelectedRelayUrls: authority.readRelayUrls,
       accountNetworkLocalStateRepository:
         dependencies.accountNetworkLocalStateRepository,
+      shouldContinue: dependencies.shouldContinue,
     }
   )
   const planned = (dependencies.planReads ?? planRelayReads)({
@@ -1080,12 +1091,22 @@ export async function readMediaServerPreferences(
         ownerSelectedRelayUrls: resolvedPlan.ownerSelectedRelayUrls,
         accountNetworkLocalStateRepository:
           dependencies.accountNetworkLocalStateRepository,
+        shouldContinue: dependencies.shouldContinue,
         connectTimeoutMs: 4_000,
         fetchTimeoutMs: 6_000,
         skipHealthFilter: true,
       }
     )
-  } catch {
+  } catch (error) {
+    if (dependencies.shouldContinue?.() === false) {
+      throw new NostrSignerError("authority_changed")
+    }
+    if (
+      error instanceof NostrSignerError &&
+      error.code === "authority_changed"
+    ) {
+      throw error
+    }
     resolvedPlan = {
       plan: {
         intent: "general",
@@ -1297,6 +1318,7 @@ async function resolvePublishTargets(
       dependencies.accountNetworkLocalStateRepository,
     refreshRelayLists: true,
     skipHealthFilter: true,
+    shouldContinue: dependencies.shouldContinue,
   }
   const plan = await (dependencies.planPublish ?? planPublishRelays)(input)
   const relayUrls = applyOwnerTransportAuthority(
@@ -1385,6 +1407,7 @@ async function verifyPreferenceReadBack(input: {
         ownerSelectedRelayUrls,
         accountNetworkLocalStateRepository:
           input.dependencies.accountNetworkLocalStateRepository,
+        shouldContinue: input.dependencies.shouldContinue,
         connectTimeoutMs: 4_000,
         fetchTimeoutMs: 6_000,
         skipHealthFilter: true,

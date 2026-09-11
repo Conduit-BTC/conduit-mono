@@ -159,6 +159,8 @@ export interface ReconcileAccountNetworkPreferencesOptions {
   authenticatedPubkey?: string | null
   /** Cancels queued or in-flight reconciliation I/O on session change. */
   signal?: AbortSignal
+  /** Live account session authority for non-signal reconciliation reads. */
+  shouldContinue?: ResolveOwnerRelayListOptions["shouldContinue"]
 }
 
 export interface HydrateAccountNetworkPreferencesOptions {
@@ -1552,6 +1554,7 @@ export async function reconcileAccountNetworkPreferences(
         options.ownerRelayList?.accountNetworkLocalStateRepository ??
         localStateRepository,
       signal: options.signal,
+      shouldContinue: options.shouldContinue,
     }),
     resolveInbox(normalizedPubkey, {
       ...options.inboxDeclaration,
@@ -1563,6 +1566,7 @@ export async function reconcileAccountNetworkPreferences(
         options.inboxDeclaration?.accountNetworkLocalStateRepository ??
         localStateRepository,
       signal: options.signal,
+      shouldContinue: options.shouldContinue,
       allowLocalRelayUrlsForPubkey: normalizedPubkey,
       // A fresh signer connection is a reconciliation boundary, even when a
       // process-local kind-10050 resolution is still inside its normal TTL.

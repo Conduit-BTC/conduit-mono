@@ -1,10 +1,11 @@
-import { useMemo } from "react"
+import { useLayoutEffect, useMemo, useRef } from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import {
   formatNpub,
   pubkeyToNpub,
+  useAuth,
   useConduitSession,
   useProfile,
 } from "@conduit/core"
@@ -25,6 +26,13 @@ export const Route = createFileRoute("/u/$profileRef")({
 })
 
 function PublicProfilePage() {
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const shouldContinueAccountRead = () =>
+    authGenerationRef.current === authGeneration
   const session = useConduitSession()
   const authenticatedPubkey =
     session.mode === "signed_in" ? session.pubkey : null
@@ -38,6 +46,7 @@ function PublicProfilePage() {
   const profileQuery = useProfile(pubkey, {
     accountPubkey,
     authenticatedPubkey,
+    shouldContinue: shouldContinueAccountRead,
   })
   const productsQuery = useQuery({
     queryKey: [
@@ -47,8 +56,13 @@ function PublicProfilePage() {
       session.relayScope ?? "no-relay-scope",
     ],
     enabled: !!pubkey,
-    queryFn: () =>
-      fetchStoreProducts(pubkey!, accountPubkey, authenticatedPubkey),
+    queryFn: ({ signal }) =>
+      fetchStoreProducts(
+        pubkey!,
+        accountPubkey,
+        authenticatedPubkey,
+        () => !signal.aborted && shouldContinueAccountRead()
+      ),
   })
 
   if (!pubkey) {

@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -60,8 +61,12 @@ export function ConduitSessionProvider({
   allowGuest = appId === "market",
   children,
 }: ConduitSessionProviderProps) {
-  const { pubkey, status } = useAuth()
+  const { authGeneration, pubkey, status } = useAuth()
   const signedInPubkey = status === "connected" ? pubkey : null
+  const profileAuthorityRef = useRef({ authGeneration, pubkey: signedInPubkey })
+  useLayoutEffect(() => {
+    profileAuthorityRef.current = { authGeneration, pubkey: signedInPubkey }
+  }, [authGeneration, signedInPubkey])
   const session = useMemo(
     () =>
       resolveConduitSession({
@@ -76,6 +81,9 @@ export function ConduitSessionProvider({
     {
       authenticatedPubkey:
         session.mode === "signed_in" ? session.pubkey : null,
+      shouldContinue: () =>
+        profileAuthorityRef.current.authGeneration === authGeneration &&
+        profileAuthorityRef.current.pubkey === signedInPubkey,
     }
   )
   const identityReady =
@@ -92,7 +100,8 @@ export function ConduitSessionProvider({
     session.pubkey,
     accountNetworkPreferencesEnabled,
     accountNetworkPreferencesEnabled &&
-      activatedRelayScope === session.relayScope
+      activatedRelayScope === session.relayScope,
+    authGeneration
   )
   const localRelayAuthorityReady =
     session.mode === "guest" || accountNetworkPreferences.localReady

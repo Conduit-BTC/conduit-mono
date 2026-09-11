@@ -113,13 +113,19 @@ export async function fetchShopperPresetsForSession(
   if (!isCurrentSession()) {
     return { state: "unavailable", reason: "relay_read" }
   }
-  const first = await fetchPreset(pubkey, { authenticatedPubkey: pubkey })
+  const first = await fetchPreset(pubkey, {
+    authenticatedPubkey: pubkey,
+    shouldContinue: isCurrentSession,
+  })
   if (first.state !== "unavailable" || first.reason !== "relay_read") {
     return first
   }
   await wait()
   if (!isCurrentSession()) return first
-  return fetchPreset(pubkey, { authenticatedPubkey: pubkey })
+  return fetchPreset(pubkey, {
+    authenticatedPubkey: pubkey,
+    shouldContinue: isCurrentSession,
+  })
 }
 
 export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
@@ -475,6 +481,14 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
             password,
             appId: "market",
             acceptedRevision,
+            dependencies: {
+              authenticatedPubkey: identity,
+              shouldContinue: () =>
+                isCurrentShopperPresetsRelayLifecycle(
+                  relayLifecycleRef.current,
+                  lifecycle
+                ),
+            },
           })
           if (
             !isCurrentShopperPresetsRelayLifecycle(
@@ -566,6 +580,11 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     try {
       const result = await fetchShopperPresets(identity, {
         authenticatedPubkey: identity,
+        shouldContinue: () =>
+          isCurrentShopperPresetsRelayLifecycle(
+            relayLifecycleRef.current,
+            lifecycle
+          ),
       })
       if (
         !isCurrentShopperPresetsRelayLifecycle(

@@ -273,20 +273,26 @@ describe("Merchant pickup order authorization", () => {
   it("carries the authenticated merchant through both final evidence reads", async () => {
     let eventMarketAccount: string | null | undefined
     let productAccount: string | null | undefined
+    let eventMarketShouldContinue: (() => boolean) | undefined
+    let productShouldContinue: (() => boolean) | undefined
+    const shouldContinue = () => true
 
     const result = await verifyMerchantPickupOrderAuthorization(
       {
         items: orderItems(),
         merchantPubkey: merchant,
         authenticatedPubkey: merchant,
+        shouldContinue,
       },
       {
         getEventMarket: async (input) => {
           eventMarketAccount = input.authenticatedPubkey
+          eventMarketShouldContinue = input.shouldContinue
           return market()
         },
         getProductsByIds: async (_coordinates, options = {}) => {
           productAccount = options.authenticatedPubkey
+          productShouldContinue = options.shouldContinue
           return products()
         },
       }
@@ -295,6 +301,8 @@ describe("Merchant pickup order authorization", () => {
     expect(result.status).toBe("verified")
     expect(eventMarketAccount).toBe(merchant)
     expect(productAccount).toBe(merchant)
+    expect(eventMarketShouldContinue).toBe(shouldContinue)
+    expect(productShouldContinue).toBe(shouldContinue)
   })
 
   it("does not infer read authority from the merchant under absent or stale authentication", async () => {

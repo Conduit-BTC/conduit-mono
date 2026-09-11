@@ -18,6 +18,7 @@ import {
   getShopperPresetsValue,
   parseShopperPresetsEnvelope,
   publishShopperPresets,
+  NostrSignerError,
   selectLatestShopperPresetsEvent,
   serializeShopperPresetsEnvelope,
   type ShopperPresetsDocument,
@@ -361,6 +362,21 @@ describe("NIP-78 shopper presets", () => {
     expect(observedFetchAuthenticatedPubkey).toBe(pubkey)
   })
 
+  it("does not downgrade a final-read authority change to relay unavailability", async () => {
+    const { pubkey } = await signerFixture()
+
+    await expect(
+      fetchShopperPresets(pubkey, {
+        authenticatedPubkey: pubkey,
+        readRelayUrls: ["wss://authority-change.example"],
+        getRelayLists: async () => new Map(),
+        fetchEvents: async () => {
+          throw new NostrSignerError("authority_changed")
+        },
+      })
+    ).rejects.toMatchObject({ code: "authority_changed" })
+  })
+
   it("fails closed when the newest replacement has an invalid envelope", async () => {
     const { pubkey } = await signerFixture()
     const validEnvelope = await encryptShopperPresetsDocument(
@@ -425,8 +441,15 @@ describe("NIP-78 shopper presets", () => {
     } as unknown as NDKSigner
     ndk.signer = signer
     let published: NDKEvent | null = null
+    const shouldContinue = () => true
+    const readAuthorityChecks: Array<(() => boolean) | undefined> = []
     let publishOptions:
-      { refreshRelayLists?: boolean; deliveryMode?: string } | undefined
+      | {
+          refreshRelayLists?: boolean
+          deliveryMode?: string
+          shouldContinue?: () => boolean
+        }
+      | undefined
 
     const result = await publishShopperPresets({
       pubkey,
@@ -438,8 +461,13 @@ describe("NIP-78 shopper presets", () => {
         ndk,
         readRelayUrls: ["wss://relay.example", "wss://offline.example"],
         now: () => nowMs,
-        getRelayLists: async () => new Map(),
-        fetchEvents: async () => {
+        shouldContinue,
+        getRelayLists: async (_pubkeys, options) => {
+          expect(options?.shouldContinue).toBe(shouldContinue)
+          return new Map()
+        },
+        fetchEvents: async (_filter, options) => {
+          readAuthorityChecks.push(options.shouldContinue)
           if (published) {
             attachEventSourceRelayUrl(published, "wss://relay.example")
           }
@@ -474,6 +502,9 @@ describe("NIP-78 shopper presets", () => {
       refreshRelayLists: false,
       deliveryMode: "standard",
     })
+    expect(publishOptions?.shouldContinue).toBe(shouldContinue)
+    expect(readAuthorityChecks.length).toBeGreaterThanOrEqual(2)
+    readAuthorityChecks.forEach((check) => expect(check).toBe(shouldContinue))
     expect(signerContent).toBe(serializeShopperPresetsEnvelope(result.envelope))
     for (const plaintext of ["Ada", "SW1Y", "London", "example.test"]) {
       expect(signerContent).not.toContain(plaintext)

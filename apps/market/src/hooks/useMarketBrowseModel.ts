@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react"
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   getMarketplaceProducts,
@@ -46,7 +46,13 @@ export function useMarketBrowseModel({
   storeMenuOpen,
   visibleCount,
 }: UseMarketBrowseModelInput) {
-  const { pubkey, status } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const shouldContinueAccountRead = () =>
+    authGenerationRef.current === authGeneration
   const shopperPresets = useShopperPresets()
   const selectedMerchants = useMemo(
     () =>
@@ -90,9 +96,10 @@ export function useMarketBrowseModel({
       catalogSource: effectiveCatalogSource,
       anonymous: usesAnonymousPerspective,
     }),
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       getMarketplaceProducts({
         authenticatedPubkey: status === "connected" ? pubkey : null,
+        shouldContinue: () => !signal.aborted && shouldContinueAccountRead(),
         textQuery: normalizedSearchQuery,
         sort: "newest",
         readPolicy: {
@@ -226,6 +233,7 @@ export function useMarketBrowseModel({
   const merchantIdentities = useMerchantIdentities({
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
+    shouldContinue: shouldContinueAccountRead,
     allMerchantPubkeys,
     // Hydrate off-screen merchants (the rest of the store dropdown) in parallel
     // with product streaming instead of waiting for hydration to settle, so the

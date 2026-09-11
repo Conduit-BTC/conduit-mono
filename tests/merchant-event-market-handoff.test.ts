@@ -1428,6 +1428,43 @@ describe("merchant organizer handoff workflow", () => {
     expect(stored && eventMarketHandoffDeliveryNeedsRetry(stored)).toBe(true)
   })
 
+  it("keeps exact wraps pending when live authority changes before delivery", async () => {
+    const storage = new MemoryStorage()
+    let sessionCurrent = true
+    const shouldContinue = () => sessionCurrent
+
+    await expect(
+      issueOrganizerReadyReceipt({
+        merchantPubkey: MERCHANT,
+        order: order(),
+        paymentAuthenticated: true,
+        authorizationConfirmed: true,
+        market: market(),
+        signer: merchantSigner,
+        storage,
+        transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          authenticatedPubkey: MERCHANT,
+          recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+          senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
+          shouldContinue,
+          giftWrapFn: (async (_rumor, recipient) =>
+            ndkWrap(recipient.pubkey)) as never,
+          publishFn: (async (_event, options) => {
+            expect(options.shouldContinue).toBe(shouldContinue)
+            sessionCurrent = false
+            throw new Error("session changed")
+          }) as never,
+        },
+      })
+    ).rejects.toThrow("session changed")
+
+    const [stored] = loadEventMarketHandoffDeliveries(MERCHANT, storage)
+    expect(stored?.recipient.status).toBe("pending")
+    expect(stored?.selfCopy.status).toBe("pending")
+  })
+
   it("exposes self-copy failure and reloads the exact wraps for retry", async () => {
     const storage = new MemoryStorage()
     const firstPublishedIds: string[] = []

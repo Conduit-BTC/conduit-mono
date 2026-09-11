@@ -43,6 +43,7 @@ export interface DiscoverFollowedEventMarketsInput {
   accountNetworkLocalStateRepository?: FollowListReadOptions["accountNetworkLocalStateRepository"]
   nowMs?: number
   signal?: AbortSignal
+  shouldContinue?: FollowListReadOptions["shouldContinue"]
 }
 
 interface FollowedEventMarketDiscoveryTestOverrides {
@@ -68,8 +69,11 @@ function normalizePubkey(value: string | null | undefined): string | null {
   return normalized && /^[0-9a-f]{64}$/.test(normalized) ? normalized : null
 }
 
-function throwIfAborted(signal?: AbortSignal): void {
-  if (!signal?.aborted) return
+function throwIfAborted(
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
+): void {
+  if (!signal?.aborted && shouldContinue?.() !== false) return
   const error = new Error("The operation was aborted.")
   error.name = "AbortError"
   throw error
@@ -174,7 +178,7 @@ export async function discoverFollowedOrganizerEventMarkets(
     }
   }
 
-  throwIfAborted(input.signal)
+  throwIfAborted(input.signal, input.shouldContinue)
   const effectiveNowMs = input.nowMs ?? Date.now()
   const readFollowLists = testOverrides.readFollowLists ?? readLatestFollowLists
   const followRead: FollowListReadResult = await readFollowLists(
@@ -184,12 +188,13 @@ export async function discoverFollowedOrganizerEventMarkets(
     },
     {
       signal: input.signal,
+      shouldContinue: input.shouldContinue,
       now: () => effectiveNowMs,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
     }
   )
-  throwIfAborted(input.signal)
+  throwIfAborted(input.signal, input.shouldContinue)
 
   const followAuthor = followRead.authors.find(
     (candidate) => candidate.pubkey === merchantPubkey
@@ -239,7 +244,7 @@ export async function discoverFollowedOrganizerEventMarkets(
       index < selectedOrganizers.length;
       index += FOLLOWED_EVENT_MARKET_READ_CONCURRENCY
     ) {
-      throwIfAborted(input.signal)
+      throwIfAborted(input.signal, input.shouldContinue)
       if (deadlineReached) break
       const batch = selectedOrganizers.slice(
         index,
@@ -263,6 +268,7 @@ export async function discoverFollowedOrganizerEventMarkets(
               nowMs: effectiveNowMs,
               projection: "discovery",
               signal: organizerController.signal,
+              shouldContinue: input.shouldContinue,
             }),
           }
         } catch (reason) {
@@ -283,7 +289,9 @@ export async function discoverFollowedOrganizerEventMarkets(
       ])
 
       if (outcome.state === "stopped") {
-        if (outcome.reason === "caller") throwIfAborted(input.signal)
+        if (outcome.reason === "caller") {
+          throwIfAborted(input.signal, input.shouldContinue)
+        }
         organizerReads.push(
           ...batch.map((_, batchIndex) => {
             const result = completed.get(batchIndex)
@@ -310,7 +318,7 @@ export async function discoverFollowedOrganizerEventMarkets(
     clearTimeout(deadline)
     input.signal?.removeEventListener("abort", abortForCaller)
   }
-  throwIfAborted(input.signal)
+  throwIfAborted(input.signal, input.shouldContinue)
 
   const boundedOrganizerCount = organizerReads.filter(
     (read) => read.status === "rejected" && isBoundedDiscoveryError(read.reason)

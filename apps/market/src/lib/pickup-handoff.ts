@@ -108,7 +108,7 @@ type OrganizerInboxResolver = (
   organizerPubkey: string,
   options?: Pick<
     ResolveInboxDeclarationOptions,
-    "requestingAccountPubkey" | "authenticatedPubkey"
+    "requestingAccountPubkey" | "authenticatedPubkey" | "shouldContinue"
   >
 ) => Promise<EventMarketOrganizerInboxResolution>
 
@@ -118,7 +118,7 @@ export async function assertCartPickupHandlerReady(
   resolveInbox: OrganizerInboxResolver = resolveEventMarketOrganizerInbox,
   accountContext: Pick<
     ResolveInboxDeclarationOptions,
-    "requestingAccountPubkey" | "authenticatedPubkey"
+    "requestingAccountPubkey" | "authenticatedPubkey" | "shouldContinue"
   > = {}
 ): Promise<void> {
   const handoff = getCartPickupHandoffSummary(items)

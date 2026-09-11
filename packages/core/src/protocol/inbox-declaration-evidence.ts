@@ -1127,11 +1127,16 @@ function completesExactPendingReadback(
   candidate: InboxDeclarationEvidenceCandidate
 ): boolean {
   if (!pending) return false
-  if (
-    pending.relayOutcomes &&
-    hasCompletedExactNetworkPreferenceReadback(pending.relayOutcomes)
-  ) {
-    return true
+  const confirmationRelayUrls = normalizedPendingConfirmationRelayUrls(pending)
+  if (pending.relayOutcomes) {
+    const confirmationRelayUrlSet = new Set(confirmationRelayUrls)
+    const confirmationOutcomes = pending.relayOutcomes.filter((outcome) =>
+      confirmationRelayUrlSet.has(outcome.relayUrl)
+    )
+    return (
+      hasCompletedExactNetworkPreferenceReadback(pending.relayOutcomes) &&
+      hasCompletedExactNetworkPreferenceReadback(confirmationOutcomes)
+    )
   }
   if (
     !areSameSignedInboxDeclarationEvent(
@@ -1145,7 +1150,7 @@ function completesExactPendingReadback(
   const exactSharedSources = new Set(
     candidate.current.sharedSourceRelayUrls ?? []
   )
-  return pending.publishRelayUrls.every((relayUrl) =>
+  return confirmationRelayUrls.every((relayUrl) =>
     exactSharedSources.has(relayUrl)
   )
 }

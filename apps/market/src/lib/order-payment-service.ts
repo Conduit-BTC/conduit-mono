@@ -260,6 +260,8 @@ export interface OrderPaymentContext {
   accountPubkey?: string | null
   /** Active authenticated account for owner-selected ws:// authority. */
   authenticatedPubkey?: string | null
+  /** Live signed-in account authority; absent for guest orders. */
+  shouldContinue?: () => boolean
   buyerIdentity?: BuyerOrderSigningIdentity
   merchantPubkey: string
   merchantLud16: string | null
@@ -747,7 +749,8 @@ async function deliverReceiptLinkedProof(
   buyerIdentity?: BuyerOrderSigningIdentity,
   proofDeliveryClaimId?: string,
   accountPubkey?: string | null,
-  authenticatedPubkey?: string | null
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
 ): Promise<void> {
   if (lifecycle.proofDeliveryStatus === "sent") return
 
@@ -796,6 +799,7 @@ async function deliverReceiptLinkedProof(
           signerInteraction: "background_external",
           accountPubkey,
           authenticatedPubkey,
+          shouldContinue,
         }
       )
       proofPublished = true
@@ -832,7 +836,8 @@ export async function observeOrderPublicZapReceipt(
   buyerIdentity?: BuyerOrderSigningIdentity,
   dependencyOverrides: Partial<OrderReceiptObservationDependencies> = {},
   accountPubkey?: string | null,
-  authenticatedPubkey?: string | null
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
 ): Promise<void> {
   const dependencies = {
     ...defaultOrderReceiptObservationDependencies,
@@ -858,7 +863,8 @@ export async function observeOrderPublicZapReceipt(
         buyerIdentity,
         undefined,
         accountPubkey,
-        authenticatedPubkey
+        authenticatedPubkey,
+        shouldContinue
       )
       return
     }
@@ -882,12 +888,16 @@ export async function observeOrderPublicZapReceipt(
         lnurlNostrPubkey: lifecycle.zapReceiptPubkey,
         relayUrls: lifecycle.zapReceiptRelayUrls,
         accountPubkey,
+        shouldContinue,
         receiptNotAfterSeconds: Math.floor(
           lifecycle.zapReceiptObservationDeadline / 1000
         ),
         timeoutMs,
       })
-      .catch(() => null)
+      .catch((error) => {
+        if (shouldContinue?.() === false) throw error
+        return null
+      })
 
     if (receipt) {
       const proofDeliveryStatus =
@@ -936,7 +946,8 @@ export async function observeOrderPublicZapReceipt(
           buyerIdentity,
           proofDeliveryClaimId,
           accountPubkey,
-          authenticatedPubkey
+          authenticatedPubkey,
+          shouldContinue
         )
       }
       return
@@ -952,11 +963,12 @@ export async function observeOrderPublicZapReceipt(
     }
     scheduleRescan = true
   } catch {
-    scheduleRescan = true
+    scheduleRescan = shouldContinue?.() !== false
   } finally {
     receiptObservers.delete(orderId)
     if (
       scheduleRescan &&
+      shouldContinue?.() !== false &&
       typeof window !== "undefined" &&
       !receiptRescanTimers.has(orderId)
     ) {
@@ -967,7 +979,8 @@ export async function observeOrderPublicZapReceipt(
           buyerIdentity,
           dependencies,
           accountPubkey,
-          authenticatedPubkey
+          authenticatedPubkey,
+          shouldContinue
         )
       }, ZAP_RECEIPT_RESCAN_DELAY_MS)
       receiptRescanTimers.set(orderId, timer)
@@ -1448,7 +1461,8 @@ async function runOrderPaymentInternal(
             ctx.buyerIdentity,
             {},
             ctx.accountPubkey,
-            ctx.authenticatedPubkey
+            ctx.authenticatedPubkey,
+            ctx.shouldContinue
           )
         }
         return runtimeStates.get(orderId)!
@@ -1540,6 +1554,7 @@ async function runOrderPaymentInternal(
             signerInteraction: "background_external",
             accountPubkey: ctx.accountPubkey,
             authenticatedPubkey: ctx.authenticatedPubkey,
+            shouldContinue: ctx.shouldContinue,
           }
         )
         proofPublished = true
@@ -1584,7 +1599,8 @@ async function runOrderPaymentInternal(
           ctx.buyerIdentity,
           {},
           ctx.accountPubkey,
-          ctx.authenticatedPubkey
+          ctx.authenticatedPubkey,
+          ctx.shouldContinue
         )
       }
 
@@ -1768,7 +1784,8 @@ export async function resendOrderProof(
   orderId: string,
   buyerIdentity?: BuyerOrderSigningIdentity,
   accountPubkey?: string | null,
-  authenticatedPubkey?: string | null
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
 ): Promise<OrderPaymentRuntimeState | undefined> {
   const lifecycle = await getOrderLifecycle(orderId)
   if (
@@ -1817,6 +1834,7 @@ export async function resendOrderProof(
           signerInteraction: "background_external",
           accountPubkey,
           authenticatedPubkey,
+          shouldContinue,
         }
       )
       proofPublished = true
@@ -1861,7 +1879,8 @@ export async function submitExternalPaymentProof(
   merchantInvoiceAction?: MerchantInvoicePaymentAction,
   reopenEvidence?: MerchantInvoiceReopenEvidence,
   accountPubkey?: string | null,
-  authenticatedPubkey?: string | null
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
 ): Promise<OrderPaymentRuntimeState | undefined> {
   if (inFlight.has(orderId)) return runtimeStates.get(orderId)
   inFlight.add(orderId)
@@ -1951,6 +1970,7 @@ export async function submitExternalPaymentProof(
           signerInteraction: "background_external",
           accountPubkey,
           authenticatedPubkey,
+          shouldContinue,
         }
       )
       proofPublished = true

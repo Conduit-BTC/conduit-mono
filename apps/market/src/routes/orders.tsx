@@ -1,6 +1,13 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import {
   appendConduitClientTag,
   clearProtectedReadAuthenticationSuppression,
@@ -838,6 +845,16 @@ function OrderDetail({
   authenticatedPubkey?: string | null
 }) {
   const { vm, headerStatus } = row
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const shouldContinueBuyerSession = guestIdentity
+    ? undefined
+    : () => authGenerationRef.current === authGeneration
+  const shouldContinueAccountRead = () =>
+    authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
   const wallets = useWallets()
   const shopperPricing = useShopperPricing()
@@ -846,6 +863,7 @@ function OrderDetail({
   const { data: profile } = useProfile(row.merchantPubkey, {
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
+    shouldContinue: shouldContinueAccountRead,
     maxUnresolvedRefetches: 1,
   })
   const merchantName = getMerchantDisplayName(profile, row.merchantPubkey)
@@ -907,11 +925,12 @@ function OrderDetail({
       authenticatedPubkey ?? "guest",
     ],
     enabled: !!row.merchantPubkey,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       fetchStoreProducts(
         row.merchantPubkey,
         authenticatedPubkey,
-        authenticatedPubkey
+        authenticatedPubkey,
+        () => !signal.aborted && shouldContinueAccountRead()
       ),
   })
   const productsById = useMemo(() => {
@@ -994,6 +1013,7 @@ function OrderDetail({
       buyerPubkey,
       accountPubkey: authenticatedPubkey,
       authenticatedPubkey,
+      shouldContinue: shouldContinueBuyerSession,
       buyerIdentity: guestIdentity ?? undefined,
       merchantPubkey: row.merchantPubkey,
       merchantLud16: lc.merchantLightningAddress ?? null,
@@ -1056,12 +1076,14 @@ function OrderDetail({
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
       row.lifecycle?.merchantPubkey ?? row.merchantPubkey,
-      authenticatedPubkey
+      authenticatedPubkey,
+      () => authGenerationRef.current === authGeneration
     )
     if (!pickupFreshness.fresh) throw new Error(pickupFreshness.reason)
     await assertCartPickupHandlerReady(row.lifecycle?.items ?? [], undefined, {
       requestingAccountPubkey: authenticatedPubkey,
       authenticatedPubkey,
+      shouldContinue: shouldContinueBuyerSession,
     })
 
     const ctx = await persistTargetAndBuildServiceCtx()
@@ -1097,12 +1119,14 @@ function OrderDetail({
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
       row.lifecycle?.merchantPubkey ?? row.merchantPubkey,
-      authenticatedPubkey
+      authenticatedPubkey,
+      () => authGenerationRef.current === authGeneration
     )
     if (!pickupFreshness.fresh) throw new Error(pickupFreshness.reason)
     await assertCartPickupHandlerReady(row.lifecycle?.items ?? [], undefined, {
       requestingAccountPubkey: authenticatedPubkey,
       authenticatedPubkey,
+      shouldContinue: shouldContinueBuyerSession,
     })
     const ctx = await persistTargetAndBuildServiceCtx()
     setPrivateFallbackOpen(false)
@@ -1171,7 +1195,8 @@ function OrderDetail({
       unboundPaidInvoice,
       merchantInvoiceReopenEvidence,
       authenticatedPubkey ?? null,
-      authenticatedPubkey ?? null
+      authenticatedPubkey ?? null,
+      shouldContinueBuyerSession
     )
   }
 
@@ -1251,6 +1276,7 @@ function OrderDetail({
         {
           accountPubkey: authenticatedPubkey ?? null,
           authenticatedPubkey: authenticatedPubkey ?? null,
+          shouldContinue: shouldContinueBuyerSession,
         }
       )
     },
@@ -1519,7 +1545,8 @@ function OrderDetail({
                       vm.orderId,
                       guestIdentity ?? undefined,
                       authenticatedPubkey ?? null,
-                      authenticatedPubkey ?? null
+                      authenticatedPubkey ?? null,
+                      shouldContinueBuyerSession
                     )
                   )
                 }
@@ -1978,7 +2005,11 @@ function DetailRow({
 type PhaseTab = "all" | "pending" | "in_progress" | "completed"
 
 function OrdersPage() {
-  const { pubkey, status } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const signerConnected = status === "connected" && !!pubkey
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -2129,7 +2160,10 @@ function OrdersPage() {
           identity,
           {},
           signerConnected ? activeBuyerPubkey : null,
-          signerConnected ? activeBuyerPubkey : null
+          signerConnected ? activeBuyerPubkey : null,
+          identity
+            ? undefined
+            : () => authGenerationRef.current === authGeneration
         )
       }
     }
@@ -2141,7 +2175,13 @@ function OrdersPage() {
       window.removeEventListener("focus", resumeReceiptObservers)
       document.removeEventListener("visibilitychange", resumeReceiptObservers)
     }
-  }, [activeBuyerPubkey, guestIdentity, lifecycles, signerConnected])
+  }, [
+    activeBuyerPubkey,
+    authGeneration,
+    guestIdentity,
+    lifecycles,
+    signerConnected,
+  ])
 
   // Merge lifecycle records and relay conversations by orderId.
   const orders = useMemo<OrderRow[]>(() => {
@@ -2191,6 +2231,7 @@ function OrdersPage() {
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
     accountPubkey: signerConnected ? activeBuyerPubkey : null,
     authenticatedPubkey: signerConnected ? activeBuyerPubkey : null,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
     enabled: merchantPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,

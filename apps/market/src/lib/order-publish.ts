@@ -62,6 +62,7 @@ type BuyerOrderPublishDependencies = {
   signerInteraction?: "external" | "background_external"
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -143,6 +144,7 @@ async function publishOrderCompanionNotification(input: {
   publish: typeof publishPrivateMessage
   accountPubkey: string | null
   authenticatedPubkey: string | null
+  shouldContinue?: () => boolean
 }): Promise<OrderCompanionNotificationStatus> {
   const messageType = input.authoritativeOrder.tags.find(
     (tag) => tag[0] === "type"
@@ -178,6 +180,7 @@ async function publishOrderCompanionNotification(input: {
       selfCopy: false,
       accountPubkey: input.accountPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
+      shouldContinue: input.shouldContinue,
       signerInteraction:
         input.buyerIdentity.kind === "guest_ephemeral"
           ? "application_owned"
@@ -242,6 +245,12 @@ export async function publishBuyerOrderMessage(
     buyerIdentity.kind === "guest_ephemeral"
       ? null
       : (dependencies.accountPubkey ?? null)
+  const shouldContinue =
+    buyerIdentity.kind === "guest_ephemeral"
+      ? undefined
+      : () =>
+          (dependencies.shouldContinue?.() ?? true) &&
+          ndk.signer === buyerIdentity.signer
 
   const publish = dependencies.publishPrivateMessageFn ?? publishPrivateMessage
   const {
@@ -260,6 +269,7 @@ export async function publishBuyerOrderMessage(
       buyerIdentity.kind === "guest_ephemeral"
         ? null
         : dependencies.authenticatedPubkey,
+    shouldContinue,
     signerInteraction:
       buyerIdentity.kind === "guest_ephemeral"
         ? "application_owned"
@@ -297,6 +307,7 @@ export async function publishBuyerOrderMessage(
       buyerIdentity.kind === "guest_ephemeral"
         ? null
         : (dependencies.authenticatedPubkey ?? null),
+    shouldContinue,
   })
   return {
     buyerSelfCopyError,

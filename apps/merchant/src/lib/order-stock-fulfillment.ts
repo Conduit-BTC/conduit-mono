@@ -92,6 +92,7 @@ export async function resolveStockUpdateFulfillmentIntent(
     productAddressId: string
     accountPubkey?: string | null
     authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
     orderHasPickupClaim?: boolean
     verifiedPickup?: OrderPickupFulfillmentSchema
   },
@@ -158,6 +159,7 @@ export async function resolveStockUpdateFulfillmentIntent(
         getShippingOptionsByCoordinates(coordinates, {
           accountPubkey: input.accountPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
+          shouldContinue: input.shouldContinue,
         }))
     )([product.shippingOptionId])
     const prepared = resolveProductFulfillment(product, shippingOptions)

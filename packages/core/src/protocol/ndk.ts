@@ -26,6 +26,7 @@ import {
   orderEquivalentAccountRelayOperations,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
+import { NostrSignerError } from "./nostr-event-signer"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
 export interface FetchEventsFanoutOptions {
@@ -52,6 +53,8 @@ export interface FetchEventsFanoutOptions {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  /** Live caller authority, rechecked immediately before final relay I/O. */
+  shouldContinue?: () => boolean
   connectTimeoutMs?: number
   fetchTimeoutMs?: number
   skipHealthFilter?: boolean
@@ -1018,6 +1021,7 @@ async function fetchEventsFromRelay(
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
     | "accountNetworkLocalStateRepository"
+    | "shouldContinue"
     | "signal"
   >
 ): Promise<{
@@ -1050,6 +1054,9 @@ async function fetchEventsFromRelay(
     // a removal; every later queued attempt observes the new durable state.
     if (!admittedRelayUrl) return null
     throwIfAborted(options.signal)
+    if (options.shouldContinue?.() === false) {
+      throw new NostrSignerError("authority_changed")
+    }
     const { events, complete, truncated } = await readRelayEvents(
       admittedRelayUrl,
       filter,
@@ -1133,6 +1140,12 @@ async function fetchEventsFromRelay(
     }
   } catch (error) {
     if (options.signal?.aborted || isAbortError(error)) throw error
+    if (
+      error instanceof NostrSignerError &&
+      error.code === "authority_changed"
+    ) {
+      throw error
+    }
     // Queue-capacity and other pre-admission executor failures remain visible
     // as failed relay results, matching the public fanout contract. A policy
     // suppression returns above and is omitted because no attempt occurred.

@@ -27,6 +27,8 @@ export interface UseProfilesOptions {
   authenticatedPubkey?: string | null
   /** Signed-in account used only for final-I/O whole-relay exclusions. */
   accountPubkey?: string | null
+  /** Live caller authority for final account-scoped relay admission. */
+  shouldContinue?: () => boolean
   evidenceScope?: "full_profile" | "payment" | "profile_edit"
   enabled?: boolean
   maxUnresolvedRefetches?: number
@@ -221,10 +223,13 @@ export function useProfiles(
     ],
     enabled,
     queryFn: async ({ signal }) => {
+      const shouldContinue = () =>
+        !signal.aborted && (options.shouldContinue?.() ?? true)
       const result = await getProfiles({
         pubkeys: unique,
         authenticatedPubkey: options.authenticatedPubkey,
         accountPubkey: options.accountPubkey,
+        shouldContinue,
         signal,
         priority,
         skipCache: options.skipCache,

@@ -283,6 +283,54 @@ describe("buyer order publishing", () => {
     expect(await result.companionNotification).toBe("sent")
   })
 
+  it("stops signed-in private delivery when the active signer changes before transport", async () => {
+    const signer = { id: "connected-signer" }
+    const ndk = { signer }
+    let enteredFinalPolicy!: () => void
+    const finalPolicyStarted = new Promise<void>((resolve) => {
+      enteredFinalPolicy = resolve
+    })
+    let finishFinalPolicy!: () => void
+    const finalPolicyFinished = new Promise<void>((resolve) => {
+      finishFinalPolicy = resolve
+    })
+    let transportAttempts = 0
+
+    const publishing = publishBuyerOrderMessage(
+      orderRumor(),
+      ndk as never,
+      "merchant-pubkey",
+      "buyer-pubkey",
+      {
+        shouldContinue: () => true,
+        publishPrivateMessageFn: async (input) => {
+          enteredFinalPolicy()
+          await finalPolicyFinished
+          if (input.shouldContinue?.() === false) {
+            throw new Error("Buyer account changed before delivery")
+          }
+          transportAttempts += 1
+          return {
+            wrappedToRecipient: { id: "recipient-wrap" } as never,
+            wrappedToSelf: { id: "self-wrap" } as never,
+            selfCopyError: null,
+            deliveryRoute: "declared_inbox" as const,
+          }
+        },
+        cacheBuyerOrderRumorFn: async () => null,
+      }
+    )
+
+    await finalPolicyStarted
+    ndk.signer = { id: "replacement-signer" }
+    finishFinalPolicy()
+
+    await expect(publishing).rejects.toThrow(
+      "Buyer account changed before delivery"
+    )
+    expect(transportAttempts).toBe(0)
+  })
+
   it("filters a whole-removed relay from both signed-in order sends", async () => {
     const buyerPubkey = "a".repeat(64)
     const merchantPubkey = "b".repeat(64)
@@ -457,6 +505,7 @@ describe("buyer order publishing", () => {
         merchantPubkey: "merchant-pubkey",
       },
       {
+        shouldContinue: () => false,
         publishPrivateMessageFn: async (input) => {
           calls.push(input as unknown as Record<string, unknown>)
           return {
@@ -482,6 +531,7 @@ describe("buyer order publishing", () => {
     expect(orderCall?.signer).toBe(guestSigner)
     expect(orderCall?.selfCopy).toBe(false)
     expect(orderCall?.accountPubkey).toBeNull()
+    expect(orderCall?.shouldContinue).toBeUndefined()
     expect(orderCall?.signerInteraction).toBe("application_owned")
     expect(orderCall?.validatedOrderScope).toMatchObject({
       rumorId: "order-rumor",
@@ -496,6 +546,7 @@ describe("buyer order publishing", () => {
     expect(companionCall?.signer).toBe(guestSigner)
     expect(companionCall?.selfCopy).toBe(false)
     expect(companionCall?.accountPubkey).toBeNull()
+    expect(companionCall?.shouldContinue).toBeUndefined()
     expect(companionCall?.signerInteraction).toBe("application_owned")
     expect(companionCall?.validatedOrderScope).toBeUndefined()
     expect(companionCall?.validatedGuestOrderCompanionScope).toMatchObject({

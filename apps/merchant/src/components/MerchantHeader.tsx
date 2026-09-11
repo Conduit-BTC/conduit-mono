@@ -20,7 +20,7 @@ import {
   UserRound,
   Wifi,
 } from "lucide-react"
-import { useState, type ComponentType } from "react"
+import { useLayoutEffect, useRef, useState, type ComponentType } from "react"
 import { Link, useRouterState } from "@tanstack/react-router"
 import {
   buildBugReportUrl,
@@ -283,7 +283,11 @@ function MerchantNavLinks({
 // ---------------------------------------------------------------------------
 
 function UserMenu({ className }: { className?: string } = {}) {
-  const { pubkey, status, disconnect } = useAuth()
+  const { pubkey, status, disconnect, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const [npubCopied, setNpubCopied] = useState(false)
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
@@ -292,6 +296,7 @@ function UserMenu({ className }: { className?: string } = {}) {
   const profileQuery = useProfile(pubkey, {
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
+    shouldContinue: () => authGenerationRef.current === authGeneration,
   })
   const profile = profileQuery.data
   const readiness = useMerchantReadinessState()

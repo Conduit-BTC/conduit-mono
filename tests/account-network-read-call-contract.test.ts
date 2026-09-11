@@ -6,6 +6,7 @@ import {
   __setCommerceTestOverrides,
   getEventMarketPrivateMessageList,
   getMarketplaceProducts,
+  getMarketplaceProductsProgressive,
   getMerchantStorefront,
   getProductDetail,
   getProductsByIds,
@@ -42,6 +43,10 @@ import {
   type RelayListLookupOptions,
 } from "../packages/core/src/protocol/relay-list"
 import { planPublishRelays } from "../packages/core/src/protocol/relay-publish"
+import {
+  __resetProtectedReadSigner,
+  installProtectedReadSigner,
+} from "../packages/core/src/protocol/protected-read-authorization"
 import { fetchShopperPresets } from "../packages/core/src/protocol/shopper-presets"
 import { getShopperTrustEvidence } from "../packages/core/src/protocol/shopper-trust"
 import type { EventMarketReadyReceiptSchema } from "../packages/core/src/schemas"
@@ -78,6 +83,7 @@ afterEach(() => {
   __resetEventMarketMerchandiseTestOverrides()
   __resetEventMarketTestOverrides()
   __resetInboxRelayCache()
+  __resetProtectedReadSigner()
   __resetRelayListTestOverrides()
 })
 
@@ -119,6 +125,7 @@ function finalIoRecorder(openedRelayUrls: string[]) {
 describe("account network read call contract", () => {
   it("carries account policy through relay-list discovery and publish planning", async () => {
     const calls: FetchEventsFanoutOptions[] = []
+    const shouldContinue = () => true
     __setRelayListTestOverrides({
       loadCached: async () => undefined,
       fetchEventsFanoutDetailed: async (_filter, options = {}) => {
@@ -141,6 +148,7 @@ describe("account network read call contract", () => {
       accountPubkey: ACCOUNT,
       authenticatedPubkey: ACCOUNT,
       accountNetworkLocalStateRepository: repository,
+      shouldContinue,
     })
     await planPublishRelays({
       intent: "author_event",
@@ -152,6 +160,7 @@ describe("account network read call contract", () => {
     })
 
     expect(calls.length).toBeGreaterThanOrEqual(2)
+    expect(calls[0]?.shouldContinue).toBe(shouldContinue)
     calls.forEach((options) => {
       expectAccountPolicy(options)
       expect(options.authenticatedPubkey).toBe(ACCOUNT)
@@ -323,9 +332,12 @@ describe("account network read call contract", () => {
     })
 
     await getProductsByIds([productAddress])
+    const shouldContinue = () => true
     await getProductsByIds([productAddress], {
       authenticatedPubkey: ACCOUNT,
+      shouldContinue,
     })
+    const exactAccountCalls = [...accountCalls]
     collectingProductDetail = true
     await getProductDetail({
       productId: productAddress,
@@ -339,6 +351,10 @@ describe("account network read call contract", () => {
     await getMarketplaceProducts({ accountPubkey: ACCOUNT })
 
     expect(accountCalls.length).toBeGreaterThanOrEqual(4)
+    expect(exactAccountCalls.length).toBeGreaterThan(0)
+    exactAccountCalls.forEach((options) => {
+      expect(options.shouldContinue).toBe(shouldContinue)
+    })
     expect(accountDirectPlan).toEqual(guestDirectPlan)
     expect(accountDirectPlan).toContain(RELAY_URL)
     expect(variationReadObserved).toBe(true)
@@ -485,8 +501,41 @@ describe("account network read call contract", () => {
     expectAccountPolicy(calls[0]!)
   })
 
+  it("carries live account authority through progressive commerce fanout", async () => {
+    const calls: FetchEventsFanoutOptions[] = []
+    const shouldContinue = () => true
+    __setCommerceTestOverrides({
+      accountNetworkLocalStateRepository: repository,
+      getCachedProducts: async () => [],
+      putCachedProducts: async () => undefined,
+      getCachedProductTombstones: async () => [],
+      putCachedProductTombstones: async () => undefined,
+      fetchEventsFanoutProgressive: async (_filter, options = {}) => {
+        calls.push(options)
+        return []
+      },
+    })
+
+    await getMarketplaceProductsProgressive(
+      {
+        authenticatedPubkey: ACCOUNT,
+        accountPubkey: ACCOUNT,
+        shouldContinue,
+      },
+      () => undefined
+    )
+
+    expect(calls.length).toBeGreaterThan(0)
+    calls.forEach((options) => {
+      expectAccountPolicy(options)
+      expect(options.authenticatedPubkey).toBe(ACCOUNT)
+      expect(options.shouldContinue).toBe(shouldContinue)
+    })
+  })
+
   it("carries account policy through every event-market page and boundary read", async () => {
     const calls: FetchEventsFanoutOptions[] = []
+    const liveAuthorityChecks: Array<() => boolean> = []
     const wrap = new NDKEvent()
     wrap.id = "1".repeat(64)
     wrap.pubkey = "b".repeat(64)
@@ -495,13 +544,25 @@ describe("account network read call contract", () => {
     wrap.tags = [["p", ACCOUNT]]
     wrap.content = "ciphertext"
 
+    installProtectedReadSigner(
+      {
+        authMethod: "nip07",
+        getPublicKey: async () => ACCOUNT,
+        signEvent: async () => {
+          throw new Error("not used")
+        },
+      },
+      ACCOUNT,
+      () => true
+    )
     __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
       accountNetworkLocalStateRepository: repository,
       getNdk: async () => ({ signer: {} as NDKSigner }) as never,
       resolveInboxRelayUrls: async () => [RELAY_URL],
       fetchEventsFanoutWithDiagnostics: async (filter, options = {}) => {
         calls.push(options)
+        expect(options.shouldContinue?.()).toBe(true)
+        liveAuthorityChecks.push(options.shouldContinue!)
         if (filter.since === 100 && filter.until === 100) {
           return {
             events: [wrap],
@@ -535,5 +596,19 @@ describe("account network read call contract", () => {
 
     expect(calls.length).toBeGreaterThanOrEqual(3)
     calls.forEach(expectAccountPolicy)
+    installProtectedReadSigner(
+      {
+        authMethod: "nip07",
+        getPublicKey: async () => ACCOUNT,
+        signEvent: async () => {
+          throw new Error("not used")
+        },
+      },
+      ACCOUNT,
+      () => true
+    )
+    liveAuthorityChecks.forEach((shouldContinue) => {
+      expect(shouldContinue()).toBe(false)
+    })
   })
 })

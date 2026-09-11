@@ -67,6 +67,8 @@ export interface RelayListLookupOptions {
   ownerSelectedRelayUrls?: readonly string[]
   /** Injectable durable policy reader for the final per-relay I/O gate. */
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  /** Live caller authority for final account-scoped relay admission. */
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   /** Override `Date.now()` (test seam). */
   now?: () => number
   /** Cancel obsolete network work, such as after changing the selected order. */
@@ -390,6 +392,7 @@ async function runFetch(
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
     | "accountNetworkLocalStateRepository"
+    | "shouldContinue"
     | "signal"
   >
 ): Promise<NDKEvent[]> {
@@ -401,6 +404,7 @@ async function runFetch(
     ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
     connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
     fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
     signal: options.signal,
@@ -416,6 +420,7 @@ async function runFetchDetailed(
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
     | "accountNetworkLocalStateRepository"
+    | "shouldContinue"
     | "signal"
   >
 ): Promise<FetchEventsFanoutResult> {
@@ -430,6 +435,7 @@ async function runFetchDetailed(
       ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
+      shouldContinue: options.shouldContinue,
       connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
       fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
       skipHealthFilter: true,
@@ -444,6 +450,7 @@ async function runFetchDetailed(
       ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
+      shouldContinue: options.shouldContinue,
       connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
       fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
       skipHealthFilter: true,
@@ -466,6 +473,7 @@ async function runFetchDetailed(
     ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
     connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
     fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
     skipHealthFilter: true,
@@ -528,7 +536,7 @@ export async function getRelayList(
       opts
     )
   } catch (error) {
-    if (opts.signal?.aborted) throw error
+    if (opts.signal?.aborted || opts.shouldContinue?.() === false) throw error
     return filterLookupRelayList(withLookupState(retained, "stale-cache"), opts)
   }
 }
@@ -687,7 +695,7 @@ export async function getRelayListsDetailed(
       )
     }
   } catch (error) {
-    if (opts.signal?.aborted) throw error
+    if (opts.signal?.aborted || opts.shouldContinue?.() === false) throw error
     // best-effort; cached entries already merged above
     for (const pubkey of missing) {
       resolutionStates.set(

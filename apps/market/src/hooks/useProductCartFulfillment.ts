@@ -1,6 +1,7 @@
-import { useMemo } from "react"
+import { useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
+  useAuth,
   useConduitSession,
   type PricingRateInput,
   type Product,
@@ -43,6 +44,11 @@ export function useProductCartFulfillment(
   rateInput: PricingRateInput = null
 ) {
   const session = useConduitSession()
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const authenticatedPubkey =
     session.mode === "signed_in" ? session.pubkey : null
   const candidates = product ? getProductEventMarketCandidates(product) : []
@@ -59,7 +65,8 @@ export function useProductCartFulfillment(
         product!,
         rateInput,
         undefined,
-        authenticatedPubkey
+        authenticatedPubkey,
+        () => authGenerationRef.current === authGeneration
       ),
     enabled: !!product && requiresEventResolution,
     staleTime: 0,
@@ -84,6 +91,11 @@ export function useProductCartFulfillmentBatch(
   rateInput: PricingRateInput = null
 ) {
   const session = useConduitSession()
+  const { authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const authenticatedPubkey =
     session.mode === "signed_in" ? session.pubkey : null
   const candidateProducts = products.filter(
@@ -103,7 +115,8 @@ export function useProductCartFulfillmentBatch(
             product,
             rateInput,
             undefined,
-            authenticatedPubkey
+            authenticatedPubkey,
+            () => authGenerationRef.current === authGeneration
           )
         )
       )
