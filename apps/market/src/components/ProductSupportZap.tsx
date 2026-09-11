@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react"
 import {
   config,
   getProductSupportZapDisclosure,
+  getProductSupportZapRoutingError,
+  type PrepareProductSupportZapInvoiceInput,
   normalizeLightningInvoice,
   prepareProductSupportZapInvoice,
   PRODUCT_SUPPORT_ZAP_NOTE_MAX_CODE_POINTS,
@@ -24,6 +26,7 @@ import {
 } from "@conduit/ui"
 
 type ProductSupportZapProps = {
+  product: PrepareProductSupportZapInvoiceInput["product"]
   productAddress: string
   productTitle: string
   merchantPubkey: string
@@ -38,6 +41,7 @@ function limitNoteInput(value: string): string {
 }
 
 export function ProductSupportZap({
+  product,
   productAddress,
   productTitle,
   merchantPubkey,
@@ -48,13 +52,20 @@ export function ProductSupportZap({
   const [open, setOpen] = useState(false)
   const [amountInput, setAmountInput] = useState("21")
   const [note, setNote] = useState("")
-  const [invoice, setInvoice] = useState<string | null>(null)
+  const [invoice, setInvoice] = useState<{
+    value: string
+    productRevision: string | undefined
+    productUpdatedAt: number
+  } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [preparing, setPreparing] = useState(false)
   const [copied, setCopied] = useState(false)
   const noteLength = Array.from(note).length
   const disclosure = getProductSupportZapDisclosure({ note })
   const lightningAddress = lud16?.trim() ?? ""
+  const routingError = getProductSupportZapRoutingError(product)
+  const productRevision = product.supportZapRouting?.eventId
+  const productUpdatedAt = product.updatedAt
   const signerReady =
     auth.status === "connected" &&
     !!auth.pubkey &&
@@ -68,6 +79,9 @@ export function ProductSupportZap({
     merchantPubkey,
     productAddress,
     lightningAddress,
+    productRevision,
+    productUpdatedAt,
+    routingError,
   })
   const preparationSequenceRef = useRef(0)
   currentTargetRef.current = {
@@ -77,6 +91,9 @@ export function ProductSupportZap({
     merchantPubkey,
     productAddress,
     lightningAddress,
+    productRevision,
+    productUpdatedAt,
+    routingError,
   }
 
   function closeDialog() {
@@ -103,13 +120,20 @@ export function ProductSupportZap({
     auth.pubkey,
     auth.signer,
     lightningAddress,
+    productRevision,
+    productUpdatedAt,
+    routingError,
     merchantPubkey,
     productAddress,
   ])
 
-  if (!lightningAddress) return null
+  if (!lightningAddress && !routingError) return null
 
   async function connectSigner() {
+    if (routingError) {
+      setError(routingError)
+      return
+    }
     setError(null)
     try {
       await auth.connect()
@@ -119,6 +143,10 @@ export function ProductSupportZap({
   }
 
   async function prepareInvoice() {
+    if (routingError) {
+      setError(routingError)
+      return
+    }
     if (!signerReady || !auth.pubkey || !auth.signer || !auth.method) {
       setError("Connect a Nostr signer before creating a public support zap.")
       return
@@ -147,7 +175,10 @@ export function ProductSupportZap({
         current.authMethod === authMethod &&
         current.merchantPubkey === selectedMerchantPubkey &&
         current.productAddress === selectedProductAddress &&
-        current.lightningAddress === selectedLightningAddress
+        current.lightningAddress === selectedLightningAddress &&
+        current.productRevision === productRevision &&
+        current.productUpdatedAt === productUpdatedAt &&
+        current.routingError === null
       )
     }
 
@@ -157,6 +188,7 @@ export function ProductSupportZap({
     setCopied(false)
     try {
       const preparedInvoice = await prepareProductSupportZapInvoice({
+        product,
         signer: createNdkNostrEventSigner(signer, shopperPubkey, authMethod),
         shopperPubkey,
         recipientPubkey: selectedMerchantPubkey,
@@ -166,7 +198,13 @@ export function ProductSupportZap({
         relayUrls: config.zapRelayUrls,
         isCurrent: isCurrent,
       })
-      if (isCurrent()) setInvoice(preparedInvoice)
+      if (isCurrent()) {
+        setInvoice({
+          value: preparedInvoice,
+          productRevision,
+          productUpdatedAt,
+        })
+      }
     } catch (cause) {
       if (isCurrent()) {
         setError(
@@ -181,9 +219,9 @@ export function ProductSupportZap({
   }
 
   async function copyInvoice() {
-    if (!invoice) return
+    if (!bolt11) return
     try {
-      await navigator.clipboard.writeText(invoice)
+      await navigator.clipboard.writeText(bolt11)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1_500)
     } catch {
@@ -192,7 +230,13 @@ export function ProductSupportZap({
     }
   }
 
-  const bolt11 = invoice ? normalizeLightningInvoice(invoice) : null
+  const bolt11 =
+    invoice &&
+    !routingError &&
+    invoice.productRevision === productRevision &&
+    invoice.productUpdatedAt === productUpdatedAt
+      ? normalizeLightningInvoice(invoice.value)
+      : null
 
   return (
     <>
@@ -204,14 +248,20 @@ export function ProductSupportZap({
               Support this product
             </div>
             <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
-              Send a public Lightning zap to {merchantName}. This is separate
-              from buying the product and never changes cart or order status.
+              {routingError ?? (
+                <>
+                  Send a public Lightning zap to {merchantName}. This is
+                  separate from buying the product and never changes cart or
+                  order status.
+                </>
+              )}
             </p>
             <Button
               type="button"
               variant="outline"
               className="mt-3"
               onClick={() => setOpen(true)}
+              disabled={!!routingError}
             >
               <Zap className="size-4" />
               Support product
@@ -239,7 +289,11 @@ export function ProductSupportZap({
             </DialogDescription>
           </DialogHeader>
 
-          {!signerReady ? (
+          {routingError ? (
+            <p role="status" className="text-sm text-[var(--text-secondary)]">
+              {routingError}
+            </p>
+          ) : !signerReady ? (
             <div className="space-y-4">
               <p className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm leading-6 text-[var(--text-secondary)]">
                 Connect your Nostr signer so the product support request is
@@ -301,7 +355,7 @@ export function ProductSupportZap({
                     </Button>
                   </div>
                   <div className="max-h-24 overflow-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 font-mono text-xs leading-5 break-all text-[var(--text-secondary)]">
-                    {invoice}
+                    {bolt11}
                   </div>
                 </div>
               </div>

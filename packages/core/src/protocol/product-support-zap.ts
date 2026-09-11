@@ -1,6 +1,7 @@
 import { schnorr } from "@noble/curves/secp256k1.js"
 
 import { normalizePubkey } from "../utils"
+import type { Product } from "../types"
 import {
   fetchLnurlPayMetadata,
   fetchZapInvoice,
@@ -74,6 +75,7 @@ export type ProductSupportZapRequestInput = {
 }
 
 export type PrepareProductSupportZapInvoiceInput = {
+  product: Pick<Product, "id" | "pubkey" | "updatedAt" | "supportZapRouting">
   signer: NostrEventSigner
   shopperPubkey: string
   recipientPubkey: string
@@ -83,6 +85,29 @@ export type PrepareProductSupportZapInvoiceInput = {
   note?: string | null
   nowSeconds?: number
   isCurrent?: () => boolean
+}
+
+export function getProductSupportZapRoutingError(
+  product: PrepareProductSupportZapInvoiceInput["product"] | undefined
+): string | null {
+  const evidence = product?.supportZapRouting
+  const target = product && decodeProductReference(product.id)
+  if (
+    !product ||
+    !evidence ||
+    !target ||
+    target.authorPubkey !== product.pubkey.toLowerCase() ||
+    evidence.productAddress !== target.addressId ||
+    !/^[0-9a-f]{64}$/.test(evidence.eventId) ||
+    !Number.isSafeInteger(evidence.eventCreatedAt) ||
+    evidence.eventCreatedAt * 1000 !== product.updatedAt ||
+    (evidence.state !== "default" && evidence.state !== "unsupported")
+  ) {
+    return "Refresh this product to verify its support payment routing."
+  }
+  return evidence.state === "unsupported"
+    ? "This product uses custom zap routing that Conduit does not support yet. No invoice will be created."
+    : null
 }
 
 export interface ProductSupportZapDependencies {
@@ -380,6 +405,16 @@ export async function prepareProductSupportZapInvoice(
   dependencies: ProductSupportZapDependencies = defaultDependencies
 ): Promise<string> {
   assertProductSupportRequestCurrent(input.isCurrent)
+  const routingError = getProductSupportZapRoutingError(input.product)
+  if (routingError) throw new Error(routingError)
+  if (
+    decodeProductReference(input.product.id)?.addressId !==
+      decodeProductReference(input.productAddress)?.addressId ||
+    normalizePubkey(input.product.pubkey) !==
+      normalizePubkey(input.recipientPubkey)
+  ) {
+    throw new Error("The product support target changed. Refresh this product.")
+  }
   const shopperPubkey = requireAccountPubkey(input.shopperPubkey, "shopper")
   const activeSignerPubkey = normalizePubkey(await input.signer.getPublicKey())
   assertProductSupportRequestCurrent(input.isCurrent)

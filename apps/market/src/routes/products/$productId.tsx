@@ -809,6 +809,7 @@ function ProductPage() {
 
                 {selectedProduct ? (
                   <ProductSupportZap
+                    product={selectedProduct}
                     productAddress={selectedProduct.id}
                     productTitle={selectedProduct.title}
                     merchantPubkey={selectedProduct.pubkey}

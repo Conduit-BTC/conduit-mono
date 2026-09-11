@@ -92,9 +92,44 @@ async function releaseSupportSign(page: Page): Promise<void> {
     .toBe(true)
 }
 
-async function seedSupportProduct(page: Page): Promise<void> {
+let productRevisionTime = Math.floor(Date.now() / 1_000)
+
+async function publishSupportProduct(
+  extraTags: string[][] = []
+): Promise<void> {
+  productRevisionTime = Math.max(
+    productRevisionTime + 1,
+    Math.floor(Date.now() / 1_000)
+  )
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 30402,
+        created_at: productRevisionTime,
+        tags: [
+          ["d", productDTag],
+          ["title", productTitle],
+          ["price", "21", "SATS"],
+          ["type", "simple", "digital"],
+          ["stock", "1"],
+          ["image", "https://blossom.conduit.market/support-fixture.png"],
+          ...extraTags,
+        ],
+        content: "A deterministic product-support browser fixture.",
+      },
+      merchantSecretKey
+    ),
+  ])
+}
+
+async function seedSupportProduct(
+  page: Page,
+  extraTags: string[][] = []
+): Promise<void> {
+  // Routing evidence must come from the signed listing, never a cache seed.
+  await publishSupportProduct(extraTags)
   await page.evaluate(
-    ({ address, dTag, pubkey, title, relayUrl }) =>
+    ({ pubkey, relayUrl }) =>
       new Promise<void>((resolve, reject) => {
         const request = indexedDB.open("conduit")
         request.onerror = () => reject(request.error)
@@ -104,40 +139,6 @@ async function seedSupportProduct(page: Page): Promise<void> {
             "readwrite"
           )
           const now = Date.now()
-          transaction.objectStore("products").put({
-            id: address,
-            dTag,
-            pubkey,
-            title,
-            summary: "A deterministic product-support browser fixture.",
-            price: 21,
-            priceSats: 21,
-            currency: "SATS",
-            sourcePrice: {
-              amount: 21,
-              currency: "SATS",
-              normalizedCurrency: "SATS",
-            },
-            type: "simple",
-            format: "digital",
-            visibility: "public",
-            stock: 1,
-            images: [
-              {
-                url: "https://blossom.conduit.market/support-fixture.png",
-              },
-            ],
-            tags: ["support", "product"],
-            publicZapEnabled: true,
-            zapMessagePolicy: "generic_only",
-            publicZapPolicyKnown: true,
-            sourceRelayUrls: [relayUrl],
-            eventId: "1".repeat(64),
-            eventCreatedAt: Math.floor(now / 1_000),
-            createdAt: now,
-            updatedAt: now,
-            cachedAt: now,
-          })
           transaction.objectStore("profiles").put({
             pubkey,
             displayName: "Support Merchant",
@@ -157,10 +158,7 @@ async function seedSupportProduct(page: Page): Promise<void> {
         }
       }),
     {
-      address: productAddress,
-      dTag: productDTag,
       pubkey: merchantPubkey,
-      title: productTitle,
       relayUrl: TEST_RELAY_URL,
     }
   )
@@ -374,5 +372,54 @@ for (const colorScheme of ["light", "dark"] as const) {
     expect(callbackRequests).toBe(1)
     // Capture only the state message; never attach invoice or request material.
     await status.screenshot({ path: testInfo.outputPath("invoice-status.png") })
+    if (colorScheme === "light") {
+      await publishSupportProduct([["zap", receiptPubkey, TEST_RELAY_URL]])
+      // Exercise an existing background refresh while preserving the open dialog.
+      await page
+        .locator(
+          'button[aria-label="Refresh"], button[aria-label="May be out of date"], button[aria-label="Updated"]'
+        )
+        .evaluate((button) => {
+          ;(button as HTMLButtonElement).click()
+        })
+      await expect(page.getByRole("dialog")).toContainText("custom zap routing")
+      await expect(
+        page.getByRole("link", { name: "Open in wallet" })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("button", { name: "Copy invoice", exact: true })
+      ).toHaveCount(0)
+      await expect(page.getByRole("dialog")).not.toContainText("Invoice ready")
+      expect(callbackRequests).toBe(1)
+    }
   })
 }
+
+test("a signed custom zap route is unavailable before support signer or provider work @market", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  await installTestSigner(page, buyerPubkey, { secretKey: buyerSecretKey })
+  await installStalledSupportSigner(page)
+  let providerRequests = 0
+  await page.route("https://merchant-fixture.dev/**", async (route) => {
+    providerRequests += 1
+    await route.abort()
+  })
+  await page.goto(`${marketUrl}/products`)
+  await seedSupportProduct(page, [["zap", receiptPubkey, TEST_RELAY_URL, "1"]])
+  await page.goto(productUrl)
+  await expect(page.getByRole("heading", { name: productTitle })).toBeVisible()
+  await expect(
+    page.getByText("This product uses custom zap routing", { exact: false })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Support product" })
+  ).toBeDisabled()
+  expect(
+    await page.evaluate(
+      () => (window as SupportSignerWindow).__supportSignAttempts ?? 0
+    )
+  ).toBe(0)
+  expect(providerRequests).toBe(0)
+})

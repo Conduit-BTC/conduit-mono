@@ -16,6 +16,14 @@ export interface ProductSpecification {
   value: string
 }
 
+/** Transient routing evidence projected from one signed listing revision. */
+export interface ProductSupportZapRouting {
+  state: "default" | "unsupported"
+  productAddress: string
+  eventId: string
+  eventCreatedAt: number
+}
+
 export interface Product {
   id: string
   pubkey: Pubkey
@@ -73,6 +81,8 @@ export interface Product {
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
   publicZapPolicyKnown: boolean
+  /** Absent on legacy/cache-only products; never inferred from editable content. */
+  supportZapRouting?: ProductSupportZapRouting
   location?: string
   createdAt: number
   updatedAt: number

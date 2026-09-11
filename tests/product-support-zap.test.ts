@@ -15,6 +15,7 @@ import {
   __setCommerceTestOverrides,
   getProfiles,
 } from "../packages/core/src/protocol/commerce"
+import { parseProductEvent } from "../packages/core/src/protocol/products"
 import {
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
@@ -43,6 +44,28 @@ const SHOPPER_PUBKEY = getPublicKey(SHOPPER_SECRET)
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const PROVIDER_PUBKEY = getPublicKey(PROVIDER_SECRET)
 const PRODUCT_ADDRESS = `30402:${MERCHANT_PUBKEY}:coffee-mug`
+
+function supportProduct(
+  extraTags: string[][] = [],
+  content = "Public fixture"
+) {
+  return parseProductEvent(
+    finalizeEvent(
+      {
+        kind: 30402,
+        created_at: 1_700_000_000,
+        tags: [
+          ["d", "coffee-mug"],
+          ["title", "Coffee mug"],
+          ["price", "1", "SAT"],
+          ...extraTags,
+        ],
+        content,
+      },
+      MERCHANT_SECRET
+    )
+  )
+}
 
 const profileCapabilities = {
   sortModes: [],
@@ -356,10 +379,169 @@ describe("product support payment profile evidence", () => {
 })
 
 describe("product support zap invoice preparation", () => {
+  it.each([
+    ["alternate recipient", [["zap", PROVIDER_PUBKEY, "wss://relay.example"]]],
+    [
+      "split recipients",
+      [
+        ["zap", MERCHANT_PUBKEY, "wss://relay.example", "1"],
+        ["zap", PROVIDER_PUBKEY, "wss://relay.example", "1"],
+      ],
+    ],
+    ["malformed routing", [["zap"]]],
+  ] as const)(
+    "rejects %s from the parsed product before any I/O",
+    async (_, tags) => {
+      const product = supportProduct(tags.map((tag) => [...tag]))
+      const deps = dependencies()
+      const getPublicKey = mock(async () => SHOPPER_PUBKEY)
+      const signEvent = mock(signer().signEvent)
+      await expect(
+        prepareProductSupportZapInvoice(
+          {
+            product,
+            signer: { ...signer(), getPublicKey, signEvent },
+            shopperPubkey: SHOPPER_PUBKEY,
+            recipientPubkey: MERCHANT_PUBKEY,
+            productAddress: PRODUCT_ADDRESS,
+            amountSats: 21,
+            relayUrls: ["wss://relay.example"],
+          },
+          deps
+        )
+      ).rejects.toThrow("custom zap routing")
+      expect(getPublicKey).not.toHaveBeenCalled()
+      expect(signEvent).not.toHaveBeenCalled()
+      expect(deps.getProfiles).not.toHaveBeenCalled()
+      expect(deps.fetchLnurlPayMetadata).not.toHaveBeenCalled()
+      expect(deps.fetchZapInvoice).not.toHaveBeenCalled()
+    }
+  )
+
+  it("requires fresh routing evidence for legacy cached products before any I/O", async () => {
+    const { supportZapRouting: _routing, ...product } = supportProduct()
+    const deps = dependencies()
+    const getPublicKey = mock(async () => SHOPPER_PUBKEY)
+    await expect(
+      prepareProductSupportZapInvoice(
+        {
+          product,
+          signer: { ...signer(), getPublicKey },
+          shopperPubkey: SHOPPER_PUBKEY,
+          recipientPubkey: MERCHANT_PUBKEY,
+          productAddress: PRODUCT_ADDRESS,
+          amountSats: 21,
+          relayUrls: ["wss://relay.example"],
+        },
+        deps
+      )
+    ).rejects.toThrow("Refresh this product")
+    expect(getPublicKey).not.toHaveBeenCalled()
+    expect(deps.getProfiles).not.toHaveBeenCalled()
+    expect(deps.fetchLnurlPayMetadata).not.toHaveBeenCalled()
+    expect(deps.fetchZapInvoice).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])(
+    "derives legacy JSON routing from the signed envelope (custom=%s)",
+    async (custom) => {
+      const original = supportProduct()
+      const product = supportProduct(
+        custom ? [["zap"]] : [],
+        JSON.stringify({
+          ...original,
+          title: "Legacy JSON fixture",
+          id: `30402:${PROVIDER_PUBKEY}:spoofed`,
+          pubkey: PROVIDER_PUBKEY,
+          createdAt: 1,
+          updatedAt: 1,
+          supportZapRouting: {
+            ...original.supportZapRouting,
+            state: custom ? "default" : "unsupported",
+          },
+        })
+      )
+      expect(product.title).toBe("Legacy JSON fixture")
+      expect(product).toMatchObject({
+        id: PRODUCT_ADDRESS,
+        pubkey: MERCHANT_PUBKEY,
+        createdAt: 1_700_000_000_000,
+        updatedAt: 1_700_000_000_000,
+      })
+      expect(product.supportZapRouting).toMatchObject({
+        productAddress: PRODUCT_ADDRESS,
+        state: custom ? "unsupported" : "default",
+        eventCreatedAt: 1_700_000_000,
+      })
+      const deps = dependencies()
+      const getPublicKey = mock(async () => SHOPPER_PUBKEY)
+      const preparation = prepareProductSupportZapInvoice(
+        {
+          product,
+          signer: { ...signer(), getPublicKey },
+          shopperPubkey: SHOPPER_PUBKEY,
+          recipientPubkey: MERCHANT_PUBKEY,
+          productAddress: PRODUCT_ADDRESS,
+          amountSats: 21,
+          relayUrls: ["wss://relay.example"],
+        },
+        deps
+      )
+      if (custom) {
+        await expect(preparation).rejects.toThrow("custom zap routing")
+        expect(getPublicKey).not.toHaveBeenCalled()
+        expect(deps.getProfiles).not.toHaveBeenCalled()
+        expect(deps.fetchZapInvoice).not.toHaveBeenCalled()
+      } else {
+        await expect(preparation).resolves.toBe("lnbc1bound")
+        expect(deps.fetchZapInvoice).toHaveBeenCalledTimes(1)
+      }
+    }
+  )
+
+  it.each(["address", "author", "revision", "selected target"])(
+    "rejects mismatched %s evidence before any I/O",
+    async (mismatch) => {
+      const product = supportProduct()
+      if (mismatch === "address")
+        product.id = `30402:${MERCHANT_PUBKEY}:different`
+      if (mismatch === "author") product.pubkey = PROVIDER_PUBKEY
+      if (mismatch === "revision") product.updatedAt += 1000
+      const deps = dependencies()
+      const getPublicKey = mock(async () => SHOPPER_PUBKEY)
+      await expect(
+        prepareProductSupportZapInvoice(
+          {
+            product,
+            signer: { ...signer(), getPublicKey },
+            shopperPubkey: SHOPPER_PUBKEY,
+            recipientPubkey: MERCHANT_PUBKEY,
+            productAddress:
+              mismatch === "selected target"
+                ? `30402:${MERCHANT_PUBKEY}:different`
+                : PRODUCT_ADDRESS,
+            amountSats: 21,
+            relayUrls: ["wss://relay.example"],
+          },
+          deps
+        )
+      ).rejects.toThrow(
+        mismatch === "selected target"
+          ? "target changed"
+          : "Refresh this product"
+      )
+      expect(getPublicKey).not.toHaveBeenCalled()
+      expect(deps.getProfiles).not.toHaveBeenCalled()
+      expect(deps.fetchLnurlPayMetadata).not.toHaveBeenCalled()
+      expect(deps.fetchZapInvoice).not.toHaveBeenCalled()
+    }
+  )
+
   it("signs the exact public request and asks for a description-bound invoice", async () => {
     const deps = dependencies()
     const invoice = await prepareProductSupportZapInvoice(
       {
+        product: supportProduct(),
         signer: signer(),
         shopperPubkey: SHOPPER_PUBKEY,
         recipientPubkey: MERCHANT_PUBKEY,
@@ -417,6 +599,7 @@ describe("product support zap invoice preparation", () => {
     const deps = dependencies()
     await prepareProductSupportZapInvoice(
       {
+        product: supportProduct(),
         signer: signer(),
         shopperPubkey: SHOPPER_PUBKEY,
         recipientPubkey: MERCHANT_PUBKEY,
@@ -457,6 +640,7 @@ describe("product support zap invoice preparation", () => {
     await expect(
       prepareProductSupportZapInvoice(
         {
+          product: supportProduct(),
           signer: { ...signer(), signEvent: sign },
           shopperPubkey: SHOPPER_PUBKEY,
           recipientPubkey: MERCHANT_PUBKEY,
@@ -478,6 +662,7 @@ describe("product support zap invoice preparation", () => {
       ),
     })
     const input = {
+      product: supportProduct(),
       signer: signer(),
       shopperPubkey: SHOPPER_PUBKEY,
       recipientPubkey: MERCHANT_PUBKEY,
@@ -505,6 +690,7 @@ describe("product support zap invoice preparation", () => {
     await expect(
       prepareProductSupportZapInvoice(
         {
+          product: supportProduct(),
           signer: signer(MERCHANT_PUBKEY, MERCHANT_SECRET),
           shopperPubkey: SHOPPER_PUBKEY,
           recipientPubkey: MERCHANT_PUBKEY,
@@ -526,6 +712,7 @@ describe("product support zap invoice preparation", () => {
     await expect(
       prepareProductSupportZapInvoice(
         {
+          product: supportProduct(),
           signer: alteringSigner,
           shopperPubkey: SHOPPER_PUBKEY,
           recipientPubkey: MERCHANT_PUBKEY,
@@ -548,6 +735,7 @@ describe("product support zap invoice preparation", () => {
     let isCurrent = true
     const preparation = prepareProductSupportZapInvoice(
       {
+        product: supportProduct(),
         signer: { ...signer(), signEvent },
         shopperPubkey: SHOPPER_PUBKEY,
         recipientPubkey: MERCHANT_PUBKEY,
@@ -575,6 +763,7 @@ describe("product support zap invoice preparation", () => {
     let isCurrent = true
     const preparation = prepareProductSupportZapInvoice(
       {
+        product: supportProduct(),
         signer: signer(),
         shopperPubkey: SHOPPER_PUBKEY,
         recipientPubkey: MERCHANT_PUBKEY,
@@ -607,6 +796,7 @@ describe("product support zap invoice preparation", () => {
     await expect(
       prepareProductSupportZapInvoice(
         {
+          product: supportProduct(),
           signer: signer(),
           shopperPubkey: SHOPPER_PUBKEY,
           recipientPubkey: MERCHANT_PUBKEY,
@@ -639,6 +829,7 @@ describe("product support zap invoice preparation", () => {
     await expect(
       prepareProductSupportZapInvoice(
         {
+          product: supportProduct(),
           signer: signer(),
           shopperPubkey: SHOPPER_PUBKEY,
           recipientPubkey: MERCHANT_PUBKEY,
@@ -687,6 +878,7 @@ describe("product support zap invoice preparation", () => {
     })
     const preparation = prepareProductSupportZapInvoice(
       {
+        product: supportProduct(),
         signer: signer(),
         shopperPubkey: SHOPPER_PUBKEY,
         recipientPubkey: MERCHANT_PUBKEY,
@@ -743,6 +935,7 @@ describe("product support zap invoice preparation", () => {
     await expect(
       prepareProductSupportZapInvoice(
         {
+          product: supportProduct(),
           signer: signer(),
           shopperPubkey: SHOPPER_PUBKEY,
           recipientPubkey: MERCHANT_PUBKEY,
@@ -885,6 +1078,7 @@ describe("product support account profile authority", () => {
 
   function input(isCurrent = () => true) {
     return {
+      product: supportProduct(),
       signer: signer(),
       shopperPubkey: SHOPPER_PUBKEY,
       recipientPubkey: MERCHANT_PUBKEY,
