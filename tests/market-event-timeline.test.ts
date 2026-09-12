@@ -3,11 +3,65 @@ import {
   filterAndSortEventMarkets,
   formatEventTimelineSchedule,
   getEventTimelineFacets,
+  getEventTimelinePresentationPerspective,
   getEventTimelineStatus,
 } from "../apps/market/src/lib/eventTimeline"
 import type { EventMarketResolution } from "@conduit/core"
+import { getOrganizerDiscoveryPresentation } from "@conduit/ui"
 
 const NOW = Date.UTC(2027, 5, 1, 12)
+
+describe("event timeline perspective presentation", () => {
+  const conduitPerspective = {
+    source: "conduit" as const,
+    coverage: "complete" as const,
+    eventObserved: false,
+    snapshotState: "curated" as const,
+    truncated: false,
+    authorCount: 4,
+  }
+
+  it("qualifies verified cards when the Conduit perspective refresh is stale", () => {
+    const perspective = getEventTimelinePresentationPerspective(
+      conduitPerspective,
+      true
+    )
+
+    expect(perspective).toEqual({
+      ...conduitPerspective,
+      coverage: "limited",
+    })
+    expect(
+      getOrganizerDiscoveryPresentation({
+        state: "complete",
+        eventCount: 2,
+        perspective,
+        candidateScanCoverage: {
+          plannedReadCount: 4,
+          completeReadCount: 4,
+        },
+        searchedOrganizerCount: 2,
+        incompleteOrganizerCount: 0,
+      }).message
+    ).toBe(
+      "Showing 2 events. Completed 4 of 4 planned bounded relay collection reads. The available Conduit perspective snapshot may be incomplete."
+    )
+  })
+
+  it("preserves current and already-incomplete perspective coverage", () => {
+    expect(
+      getEventTimelinePresentationPerspective(conduitPerspective, false)
+    ).toBe(conduitPerspective)
+
+    const unavailablePerspective = {
+      ...conduitPerspective,
+      coverage: "unavailable" as const,
+    }
+    expect(
+      getEventTimelinePresentationPerspective(unavailablePerspective, true)
+    ).toBe(unavailablePerspective)
+  })
+})
 
 function market(input: {
   suffix: string

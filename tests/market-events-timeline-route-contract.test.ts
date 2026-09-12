@@ -106,6 +106,8 @@ describe("Market Events timeline route", () => {
     expect(hook).toContain("discoverPerspectiveEventMarkets")
     expect(hook).toContain("includeEnded: true")
     expect(route).toContain("getOrganizerDiscoveryPresentation")
+    expect(route).toContain("getEventTimelinePresentationPerspective")
+    expect(route).toContain("discovery.isRefreshStale")
     expect(route).toContain("filteredMarkets.map")
     expect(discovery).toContain("readEventMarketCollectionCandidates")
     expect(discovery).toContain("perspectiveOrganizerSet.has(organizerPubkey)")

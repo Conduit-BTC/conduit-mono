@@ -35,6 +35,7 @@ import { useMerchantIdentities } from "../../hooks/useMerchantIdentities"
 import {
   EVENT_TIMELINE_WINDOWS,
   filterAndSortEventMarkets,
+  getEventTimelinePresentationPerspective,
   formatEventTimelineSchedule,
   getEventTimelineBoundaries,
   getEventTimelineFacets,
@@ -145,7 +146,10 @@ function EventsTimelinePage() {
     ? getOrganizerDiscoveryPresentation({
         state: discovery.data.state,
         eventCount: discovery.markets.length,
-        perspective: discovery.data.perspective,
+        perspective: getEventTimelinePresentationPerspective(
+          discovery.data.perspective,
+          discovery.isRefreshStale
+        ),
         candidateScanCoverage: discovery.data.candidateScanCoverage,
         searchedOrganizerCount: discovery.data.searchedOrganizerCount,
         incompleteOrganizerCount: discovery.data.incompleteOrganizerCount,

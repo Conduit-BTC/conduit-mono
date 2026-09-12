@@ -1,4 +1,5 @@
 import type {
+  EventMarketPerspectiveSnapshot,
   EventMarketResolution,
   ParsedEventMarketCalendar,
   ParsedEventMarketCollection,
@@ -40,6 +41,17 @@ export const EVENT_TIMELINE_WINDOWS: EventTimelineWindow[] = [
   "past",
   "all",
 ]
+
+export function getEventTimelinePresentationPerspective(
+  perspective: EventMarketPerspectiveSnapshot,
+  isRefreshStale: boolean
+): EventMarketPerspectiveSnapshot {
+  if (!isRefreshStale || perspective.coverage !== "complete") {
+    return perspective
+  }
+
+  return { ...perspective, coverage: "limited" }
+}
 
 const DAY_MS = 86_400_000
 
