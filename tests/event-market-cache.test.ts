@@ -547,8 +547,10 @@ afterEach(() => {
 describe("event-market retained evidence", () => {
   it("never turns a remote naddr loopback hint into signed-in relay I/O", async () => {
     const remoteLoopbackRelay = "ws://127.0.0.1:4789"
+    const portableRelay = "wss://portable.relay.conduit.market/events"
     const ownerRelay = "ws://owner-network.example:4848"
     const attemptedRelayUrls: string[] = []
+    const relayPlans: string[][] = []
     const ownerSelectedRelayUrls: string[] = []
     const authenticatedPubkeys: Array<string | null | undefined> = []
     __setEventMarketTestOverrides({
@@ -584,6 +586,7 @@ describe("event-market retained evidence", () => {
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
       fetchEventsFanoutDetailed: async (_filter, options) => {
+        relayPlans.push([...(options.relayUrls ?? [])])
         attemptedRelayUrls.push(...(options.relayUrls ?? []))
         ownerSelectedRelayUrls.push(...(options.ownerSelectedRelayUrls ?? []))
         authenticatedPubkeys.push(options.authenticatedPubkey)
@@ -602,7 +605,7 @@ describe("event-market retained evidence", () => {
       kind: EVENT_KINDS.PRODUCT_COLLECTION,
       pubkey: ORGANIZER,
       identifier: "catalog",
-      relays: [remoteLoopbackRelay],
+      relays: [remoteLoopbackRelay, portableRelay],
     })
 
     await getEventMarket({
@@ -610,6 +613,11 @@ describe("event-market retained evidence", () => {
       authenticatedPubkey: MERCHANT,
     })
 
+    expect(relayPlans.length).toBeGreaterThan(0)
+    expect(
+      relayPlans.every((relayUrls) => relayUrls[0] === portableRelay)
+    ).toBe(true)
+    expect(attemptedRelayUrls).toContain(portableRelay)
     expect(attemptedRelayUrls).toContain(ownerRelay)
     expect(ownerSelectedRelayUrls).toContain(ownerRelay)
     expect(attemptedRelayUrls).not.toContain(remoteLoopbackRelay)
@@ -798,6 +806,69 @@ describe("event-market retained evidence", () => {
       shouldContinue,
     })
     expectLiveAuthority()
+  })
+
+  it("uses a verified candidate collection when the organizer read omits it", async () => {
+    const [calendar, pickup, collection] = graph()
+    const harness = cacheHarness()
+    harness.setFetch([calendar!, pickup!], "success")
+
+    const result = await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      nowMs: 1_750_000_000_000,
+      projection: "discovery",
+      relayHints: [ORGANIZER_RELAY],
+      candidateCollectionEvents: [collection!],
+      candidateCollectionSourceRelayUrlsById: new Map([
+        [collection!.id, [ORGANIZER_RELAY]],
+      ]),
+    })
+
+    expect(result.state).toBe("complete")
+    expect(result.markets).toHaveLength(1)
+    expect(result.markets[0]).toMatchObject({
+      state: "active",
+      collection: { coordinate: COLLECTION },
+      calendar: { coordinate: CALENDAR },
+      pickup: { coordinate: PICKUP },
+    })
+  })
+
+  it("keeps a newer retained collection stale when only an older revision is live", async () => {
+    const [calendar, pickup, retainedCollection] = graph()
+    const liveCollection = sign(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Older live catalog",
+        eventCoordinate: CALENDAR,
+        pickupCoordinate: PICKUP,
+      }),
+      90
+    )
+    const harness = cacheHarness()
+    harness.setFetch([calendar!, pickup!], "success")
+
+    const result = await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      nowMs: 1_750_000_000_000,
+      projection: "discovery",
+      relayHints: [ORGANIZER_RELAY],
+      candidateCollectionEvents: [retainedCollection!, liveCollection],
+      candidateCollectionSourceRelayUrlsById: new Map([
+        [retainedCollection!.id, [ORGANIZER_RELAY]],
+        [liveCollection.id, [ORGANIZER_RELAY]],
+      ]),
+      candidateCollectionLiveEventIds: new Set([liveCollection.id]),
+    })
+
+    expect(result.state).toBe("complete")
+    expect(result.markets).toHaveLength(1)
+    expect(result.markets[0]).toMatchObject({
+      state: "stale",
+      collection: { eventId: retainedCollection!.id },
+      calendar: { coordinate: CALENDAR },
+      pickup: { coordinate: PICKUP },
+    })
   })
 
   it("keeps a large valid event visible in the discovery-card projection", async () => {

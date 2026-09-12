@@ -1,6 +1,121 @@
 import { describe, expect, it } from "bun:test"
+import { subscribeToTimeBoundaries } from "@conduit/ui"
+import type { PerspectiveEventMarketDiscoveryResult } from "@conduit/core"
+import type { MerchantOrganizerEventMarket } from "../apps/merchant/src/lib/event-market"
+import {
+  filterAndSortMerchantEventTimeline,
+  getMerchantEventTimelineBoundaries,
+  getMerchantEventTimelineStatus,
+  qualifyMerchantEventTimelineNetwork,
+  type MerchantEventTimelineWindow,
+  type MerchantEventTimelineItem,
+} from "../apps/merchant/src/lib/merchant-event-timeline"
+import { createFakeTimeBoundaryClock } from "./helpers/fake-time-boundary-clock"
+
+function timedTimelineItem(
+  suffix: string,
+  startMs: number,
+  endMs: number
+): MerchantEventTimelineItem {
+  const organizer = "a".repeat(64)
+  const collectionCoordinate = `30405:${organizer}:${suffix}`
+  const calendarCoordinate = `31923:${organizer}:${suffix}`
+  const market: MerchantOrganizerEventMarket = {
+    state: "active",
+    organizerPubkey: organizer,
+    collectionCoordinate,
+    calendarCoordinate,
+    pickupCoordinates: [],
+    naddr: collectionCoordinate,
+    title: suffix,
+    calendarKind: 31923,
+    start: startMs / 1_000,
+    end: endMs / 1_000,
+    collectionCreatedAt: 1,
+    productCoordinates: [],
+    participation: [],
+    source: {
+      state: "active",
+      reference: collectionCoordinate,
+      organizerPubkey: organizer,
+      collectionCoordinate,
+      calendarCoordinate,
+      organizerProductCoordinates: [],
+      acceptedProductCoordinates: [],
+      acceptedProductEvidence: [],
+      organizerOnlyProductCoordinates: [],
+      participationRequests: [],
+      pickups: [],
+      participationBudget: {
+        state: "within_budget",
+        targetCount: 0,
+        targetLimit: 64,
+      },
+      pickupBudget: {
+        state: "within_budget",
+        targetCount: 0,
+        targetLimit: 64,
+      },
+      coverage: {
+        attemptedRelayCount: 1,
+        completeRelayCount: 1,
+        partialRelayCount: 0,
+        failedRelayCount: 0,
+      },
+    },
+  }
+  return { market, relationships: [], reconciliationPending: false }
+}
 
 describe("merchant organizer event market route", () => {
+  it("retains verified markets while limiting stale perspective coverage", () => {
+    const markets = [timedTimelineItem("retained", 0, 1).market.source]
+    const network = (
+      source: PerspectiveEventMarketDiscoveryResult["perspective"]["source"],
+      coverage: PerspectiveEventMarketDiscoveryResult["perspective"]["coverage"] = "complete"
+    ): PerspectiveEventMarketDiscoveryResult => ({
+      state: "complete",
+      markets,
+      perspective: {
+        source,
+        coverage,
+        eventObserved: true,
+        snapshotState: "network",
+        truncated: false,
+        authorCount: 1,
+      },
+      candidateScanCoverage: {
+        plannedReadCount: 1,
+        completeReadCount: 1,
+      },
+      candidateCollectionCount: 1,
+      candidateScanState: "complete",
+      searchedOrganizerCount: 1,
+      incompleteOrganizerCount: 0,
+      failedOrganizerCount: 0,
+      boundedOrganizerCount: 1,
+      truncated: false,
+    })
+
+    for (const source of ["following", "conduit", "combined"] as const) {
+      const retained = network(source)
+      const qualified = qualifyMerchantEventTimelineNetwork(retained, true)!
+      expect(qualified).not.toBe(retained)
+      expect(qualified.markets).toBe(markets)
+      expect(qualified.perspective.coverage).toBe("limited")
+      expect(qualifyMerchantEventTimelineNetwork(retained, false)).toBe(
+        retained
+      )
+    }
+
+    for (const coverage of ["limited", "unavailable"] as const) {
+      const alreadyIncomplete = network("combined", coverage)
+      expect(qualifyMerchantEventTimelineNetwork(alreadyIncomplete, true)).toBe(
+        alreadyIncomplete
+      )
+    }
+  })
+
   it("registers the authenticated route, navigation, and page title", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
     const header = await Bun.file(
@@ -62,6 +177,9 @@ describe("merchant organizer event market route", () => {
 
   it("separates event discovery from ownership and publishes from the event", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const timeline = await Bun.file(
+      "apps/merchant/src/components/MerchantEventsTimeline.tsx"
+    ).text()
     const panel = await Bun.file(
       "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
     ).text()
@@ -72,16 +190,21 @@ describe("merchant organizer event market route", () => {
       "apps/merchant/src/lib/event-product-publishing.ts"
     ).text()
 
-    expect(route).toContain(
-      '<TabsTrigger value="find">Find events</TabsTrigger>'
-    )
-    expect(route).toContain('<TabsTrigger value="mine">My events</TabsTrigger>')
+    expect(route).toContain("<MerchantEventsTimeline")
+    expect(route).not.toContain("<TabsTrigger")
+    expect(timeline).toContain("Network perspective")
+    expect(timeline).toContain('organizing: "Organizing"')
+    expect(timeline).toContain('selling: "Selling at"')
+    expect(timeline).toContain('saved: "Saved"')
+    expect(timeline).toContain("<EventMarketCard")
     expect(route).toContain("discoverFollowedEventMarkets")
     expect(route).toContain("loadSavedDiscoveredEventMarkets")
     expect(route).toContain(
       "This event belongs to another organizer. Open it under Find events."
     )
     expect(panel).toContain("Sell at this event")
+    expect(panel).toContain("isParticipationProductAvailable")
+    expect(panel).toContain("eventMarketRequiredRecordsResolved")
     expect(panel).toContain("<EventProductPublisherDialog")
     expect(publisher).toContain("start from one of your")
     expect(publisher).toContain("The original listing is never changed")
@@ -93,6 +216,12 @@ describe("merchant organizer event market route", () => {
 
   it("shows explicit bounded discovery states and exact-hydrates a selected event", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const timeline = await Bun.file(
+      "apps/merchant/src/components/MerchantEventsTimeline.tsx"
+    ).text()
+    const timelineHook = await Bun.file(
+      "apps/merchant/src/hooks/useMerchantEventTimeline.ts"
+    ).text()
     const adapter = await Bun.file(
       "apps/merchant/src/lib/event-market.ts"
     ).text()
@@ -103,21 +232,63 @@ describe("merchant organizer event market route", () => {
     expect(adapter).toContain("discoverFollowedOrganizerEventMarkets")
     expect(core).toContain('projection: "discovery"')
     expect(core).toContain("FOLLOWED_EVENT_MARKET_READ_CONCURRENCY = 4")
-    expect(route).toContain('discoveryQuery.data?.state === "partial"')
-    expect(route).toContain('discoveryQuery.data?.state === "unavailable"')
-    expect(route).toContain('discoveryQuery.data?.state === "complete_empty"')
-    expect(route).toContain("Retry event discovery")
-    expect(route).toContain(
-      "Checking followed organizers on their planned relays"
+    expect(route).toContain("getOrganizerDiscoveryPresentation")
+    expect(route).toContain("incompleteOrganizerCount")
+    expect(route).toContain("candidateScanCoverage")
+    expect(core).toContain("FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT = 128")
+    expect(core).toContain("kinds: [EVENT_KINDS.PRODUCT_COLLECTION]")
+    expect(core).not.toContain("FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT")
+    expect(timelineHook).toContain("discoverPerspectiveEventMarkets({")
+    expect(timelineHook).toContain("includeEnded: true")
+    expect(timelineHook).toContain("resolveEventMarketPerspectiveAuthorPubkeys")
+    expect(timelineHook).toContain("qualifyMerchantEventTimelineNetwork")
+    expect(timelineHook).toContain("followingQuery.isRefetchError")
+    expect(timelineHook).toContain("followingQuery.isPaused")
+    expect(timelineHook).toContain("conduitQuery.isRefetchError")
+    expect(timelineHook).toContain("conduitQuery.isPaused")
+    expect(timelineHook).toContain("hydrateMerchantEventRelationships({")
+    expect(timelineHook).toContain(
+      "prioritizeMerchantEventRelationshipReferences({"
     )
-    expect(route).toContain("no global event absence is inferred")
-    expect(route).toContain("aria-label={`View ${market.title}`}")
+    expect(timelineHook).toContain(
+      "if (authorPubkeys !== undefined) void refreshPerspective()"
+    )
+    expect(timelineHook).toContain("sellingCollectionCoordinates")
+    expect(timelineHook).toContain("listOrganizerEventMarkets")
+    expect(timelineHook).not.toContain("ORGANIZER_LIMIT")
+    expect(core).toContain("candidate-first relay scans")
+    expect(core).toContain("readEventMarketCollectionCandidates")
+    expect(timeline).toContain("getOrganizerDiscoveryPresentation")
+    expect(timeline).toContain("Retry event discovery")
+    expect(timeline).toContain("bounded view does not prove")
+    expect(timeline).toMatch(
+      /Existing verified events remain\s+available; retry before inferring/
+    )
     expect(route).toContain("resolveOrganizerEventMarket(")
     expect(route).toMatch(/authenticatedPubkey,\r?\n\s+signal/)
     expect(route).not.toContain("selectedFromDiscovery")
   })
 
-  it("exposes signer, delivery, degraded evidence, and organizer acceptance workflows", async () => {
+  it("keeps exact selections URL-backed and prevents stale organizer actions", async () => {
+    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const panel = await Bun.file(
+      "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
+    ).text()
+
+    expect(route.match(/onSelected={openEvent}/g)).toHaveLength(2)
+    expect(route).toContain("onSelected?.(selected)")
+    expect(route).toContain("onSelected?.(reference)")
+    expect(route).toContain(
+      "shouldResolveSelectedReference && selectedMarketQuery.isPending"
+    )
+    expect(route).toContain("!selectedReferenceResolutionPending &&")
+    expect(route).toContain("enabled: !!organizerPubkey && !embedded")
+    expect(route).toContain("compact")
+    expect(panel).toContain("compact = false")
+    expect(panel).toContain("{compact ? (")
+  })
+
+  it("exposes signer, delivery, bounded discovery, and organizer acceptance workflows", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
     const editor = await Bun.file(
       "apps/merchant/src/components/OrganizerEventMarketEditor.tsx"
@@ -131,13 +302,14 @@ describe("merchant organizer event market route", () => {
       'if (record.record === "collection") setPublishState("publishing")'
     )
     expect(editor).toContain("Everything here is published publicly")
-    expect(route).toContain("Organizer discovery is degraded")
+    expect(route).toContain("Organizer discovery could not be completed")
     expect(route).toContain("No missing event is inferred")
     expect(panel).toContain("acknowledged")
     expect(panel).toContain("rejected")
     expect(panel).toContain("timed out")
     expect(panel).toContain("Retry delivery")
     expect(panel).toContain("Pending request")
+    expect(panel).toContain("label={actionability.label}")
     expect(panel).toContain(
       'removable ? "Remove" : canAccept ? "Accept" : "Cannot accept"'
     )
@@ -158,7 +330,9 @@ describe("merchant organizer event market route", () => {
     expect(
       route.match(/findSavedOrganizerEventMarketReference/g)?.length
     ).toBeGreaterThanOrEqual(4)
-    expect(route).not.toContain("setSelectedReference(reference)")
+    expect(route).toMatch(
+      /setSelectedReference\(reference\)\r?\n\s+onSelected\?\.\(reference\)/
+    )
   })
 
   it("hydrates merchant identity without changing organizer acceptance authority", async () => {
@@ -435,4 +609,97 @@ describe("merchant organizer event market route", () => {
       'recordBrowserTelemetryEvent({\n        app: "merchant",\n        eventName: "organizer'
     )
   })
+
+  it("recomputes a mounted Merchant timeline at event boundaries", async () => {
+    const timeline = await Bun.file(
+      "apps/merchant/src/components/MerchantEventsTimeline.tsx"
+    ).text()
+    const start = 1_000
+    const end = 2_000
+    const item = timedTimelineItem("boundary", start, end)
+    const later = timedTimelineItem("later", 3_000, 4_000)
+    const clock = createFakeTimeBoundaryClock(start - 1)
+    const observedBoundaries: number[] = []
+    let renderedNowMs = clock.now()
+    const unmount = subscribeToTimeBoundaries({
+      boundaries: [start, end, 3_000, 4_000],
+      currentNowMs: renderedNowMs,
+      onBoundary: (nowMs) => {
+        observedBoundaries.push(nowMs)
+        renderedNowMs = nowMs
+      },
+      now: clock.now,
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    })
+
+    expect(timeline).toContain("useTimeBoundaryNow(timelineBoundaries)")
+    expect(timeline).not.toContain("const nowMs = Date.now()")
+    expect(timeline).not.toContain("setInterval")
+    expect(
+      filterAndSortMerchantEventTimeline([item], {}, renderedNowMs)
+    ).toHaveLength(1)
+
+    clock.advanceTo(start)
+    expect(observedBoundaries).toEqual([start])
+    expect(
+      filterAndSortMerchantEventTimeline([item], {}, renderedNowMs)
+    ).toHaveLength(1)
+
+    clock.advanceTo(end)
+    expect(observedBoundaries).toEqual([start, end])
+    expect(
+      filterAndSortMerchantEventTimeline([item], {}, renderedNowMs)
+    ).toEqual([])
+    expect(getMerchantEventTimelineStatus(item, renderedNowMs).label).toBe(
+      "Past event"
+    )
+    expect(
+      filterAndSortMerchantEventTimeline([later], {}, renderedNowMs)
+    ).toHaveLength(1)
+    expect(clock.pendingTimerCount()).toBe(1)
+
+    unmount()
+    expect(clock.pendingTimerCount()).toBe(0)
+  })
+
+  it.each([
+    ["7d", 7],
+    ["30d", 30],
+  ] as const)(
+    "admits an event when the mounted %s window reaches its rolling cutoff",
+    async (window, days) => {
+      const dayMs = 86_400_000
+      const start = 40 * dayMs
+      const item = timedTimelineItem("rolling", start, start + dayMs)
+      const cutoff = start - days * dayMs
+      const clock = createFakeTimeBoundaryClock(cutoff - 1)
+      let renderedNowMs = clock.now()
+      const unmount = subscribeToTimeBoundaries({
+        boundaries: getMerchantEventTimelineBoundaries(
+          [item],
+          window as MerchantEventTimelineWindow
+        ),
+        currentNowMs: renderedNowMs,
+        onBoundary: (nowMs) => {
+          renderedNowMs = nowMs
+        },
+        now: clock.now,
+        schedule: clock.schedule,
+        cancel: clock.cancel,
+      })
+
+      expect(
+        filterAndSortMerchantEventTimeline([item], { window }, renderedNowMs)
+      ).toEqual([])
+
+      clock.advanceTo(cutoff)
+      expect(
+        filterAndSortMerchantEventTimeline([item], { window }, renderedNowMs)
+      ).toHaveLength(1)
+
+      unmount()
+      expect(clock.pendingTimerCount()).toBe(0)
+    }
+  )
 })

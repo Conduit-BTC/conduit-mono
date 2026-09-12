@@ -1,9 +1,10 @@
 import {
+  buildEventMarketShareRelayHints,
   decodeEventMarketReference,
   discoverFollowedOrganizerEventMarkets,
   encodeEventMarketNaddr,
   getEventMarket,
-  getOrganizerEventMarkets,
+  getOrganizerEventMarketsDetailed,
   isValidSignedPublicNostrEvent,
   normalizeRelayUrl,
   normalizeSecureOrIsolatedE2eRelayUrls,
@@ -16,6 +17,7 @@ import {
   type OrganizerEventMarketCollectionPublishInput,
   type OrganizerEventMarketPickupPublishInput,
   type OrganizerEventMarketPublishResult,
+  type OrganizerEventMarketsReadResult,
   type OrganizerEventMarketSignedEvent,
   type OrganizerEventMarketSignedRecord,
   type SignedPublicNostrEvent,
@@ -34,6 +36,7 @@ import {
   type OrganizerEventMarketFormValues,
 } from "./event-market-form"
 import {
+  normalizeOrganizerEventMarketTitle,
   updateOrganizerCollectionProducts,
   type OrganizerCollectionMembershipAction,
 } from "./event-market-workflow"
@@ -133,6 +136,111 @@ export type MerchantEventMarketDiscovery = Omit<
   "markets"
 > & {
   markets: MerchantOrganizerEventMarket[]
+}
+
+export type MerchantOrganizerEventMarketsReadResult = Omit<
+  OrganizerEventMarketsReadResult,
+  "markets"
+> & {
+  markets: MerchantOrganizerEventMarket[]
+  /** Unprojected Core resolutions retain terminal and malformed evidence. */
+  resolutions: EventMarketResolution[]
+}
+
+export type MerchantOrganizerEventCatalogEmptyState =
+  "complete" | "partial" | "unavailable" | null
+
+export interface MerchantOrganizerEventCatalogView {
+  discoveryState: MerchantOrganizerEventMarketsReadResult["state"] | "loading"
+  emptyState: MerchantOrganizerEventCatalogEmptyState
+  hasKnownReferences: boolean
+}
+
+export function getMerchantOrganizerEventCatalogView(
+  result: MerchantOrganizerEventMarketsReadResult | undefined,
+  retainedReferenceCount: number,
+  readFailed = false
+): MerchantOrganizerEventCatalogView {
+  const hasKnownReferences =
+    retainedReferenceCount > 0 || (result?.markets.length ?? 0) > 0
+  if (!result) {
+    return {
+      discoveryState: "loading",
+      emptyState: null,
+      hasKnownReferences,
+    }
+  }
+  return {
+    discoveryState: result.state,
+    emptyState: hasKnownReferences || readFailed ? null : result.state,
+    hasKnownReferences,
+  }
+}
+
+const INVALIDATING_RETAINED_MARKET_STATES = new Set<EventMarketResolutionState>(
+  ["deleted", "malformed", "conflicting", "unsupported"]
+)
+
+export function invalidatedOrganizerEventMarketCoordinates(
+  resolutions: readonly EventMarketResolution[]
+): Set<string> {
+  return new Set(
+    resolutions.flatMap((resolution) =>
+      resolution.collectionCoordinate &&
+      INVALIDATING_RETAINED_MARKET_STATES.has(resolution.state)
+        ? [resolution.collectionCoordinate]
+        : []
+    )
+  )
+}
+
+export function retainMerchantOrganizerEventMarkets(
+  retained: readonly MerchantOrganizerEventMarket[],
+  result: MerchantOrganizerEventMarketsReadResult
+): MerchantOrganizerEventMarket[] {
+  // Malformed/conflicting/unsupported observations are not terminal by
+  // coordinate alone. Preserve the prior signed graph as stale so downstream
+  // views can reconcile record frontiers and bounded read scopes.
+  const deferredInvalidCoordinates = invalidatedOrganizerEventMarketCoordinates(
+    result.resolutions.filter((resolution) => resolution.state !== "deleted")
+  )
+  const currentMarkets = result.markets.filter(
+    (market) => !deferredInvalidCoordinates.has(market.collectionCoordinate)
+  )
+  const projectedCoordinates = new Set(
+    currentMarkets.map((market) => market.collectionCoordinate)
+  )
+  const deletedCoordinates = new Set(
+    result.resolutions.flatMap((resolution) =>
+      resolution.state === "deleted" && resolution.collectionCoordinate
+        ? [resolution.collectionCoordinate]
+        : []
+    )
+  )
+  const next = [...currentMarkets]
+  for (const market of retained) {
+    if (
+      projectedCoordinates.has(market.collectionCoordinate) ||
+      deletedCoordinates.has(market.collectionCoordinate)
+    ) {
+      continue
+    }
+    if (
+      result.state === "complete" &&
+      !deferredInvalidCoordinates.has(market.collectionCoordinate)
+    ) {
+      continue
+    }
+    next.push({
+      ...market,
+      state: "stale",
+      source: {
+        ...market.source,
+        state: "stale",
+      },
+    })
+  }
+  return next
 }
 
 const EVENT_MARKET_DELIVERY_OUTBOX_PREFIX =
@@ -483,10 +591,20 @@ export function isParticipationProductPreviewVerified(
   )
 }
 
+export function isParticipationProductAvailable(
+  item: MerchantOrganizerParticipation,
+  organizerPubkey: string
+): boolean {
+  return (
+    isParticipationProductPreviewVerified(item) &&
+    isParticipationHandoffVerified(item, organizerPubkey)
+  )
+}
+
 function resolvedEventMarketRelayHints(
   resolution: EventMarketResolution
 ): string[] {
-  return boundedEventMarketShareRelayHints([
+  return buildEventMarketShareRelayHints([
     resolution.collection?.sourceRelayUrls,
     resolution.calendar?.sourceRelayUrls,
     ...resolution.pickups.map((pickup) => pickup.sourceRelayUrls),
@@ -496,43 +614,14 @@ function resolvedEventMarketRelayHints(
 function publishedEventMarketRelayHints(
   value: OrganizerEventMarketPublishResult
 ): string[] {
-  return boundedEventMarketShareRelayHints([
+  return buildEventMarketShareRelayHints([
     value.collection.delivery.acknowledgedRelayUrls,
     value.calendar.delivery.acknowledgedRelayUrls,
     value.pickup?.delivery.acknowledgedRelayUrls,
   ])
 }
 
-// Event-market reads currently allow eight relays. Keep one slot available for
-// the organizer/default read plan so imported or observed hints cannot replace
-// every normal fallback. Take one relay from every required record before
-// adding secondary observations so disjoint collection/calendar/pickup
-// delivery remains reachable from the portable link.
-const EVENT_MARKET_SHARE_RELAY_HINT_LIMIT = 7
-
-function boundedEventMarketShareRelayHints(
-  groups: readonly (readonly string[] | undefined)[]
-): string[] {
-  const normalizedGroups = groups
-    .map((group) => [...(group ?? [])])
-    .filter((group) => group.length > 0)
-  const prioritized = [
-    ...normalizedGroups.flatMap((group) => group.slice(0, 1)),
-    ...normalizedGroups.flatMap((group) => group.slice(1)),
-  ]
-  const seen = new Set<string>()
-  const result: string[] = []
-  for (const relayUrl of prioritized) {
-    const key = normalizeRelayUrl(relayUrl)
-    if (seen.has(key)) continue
-    seen.add(key)
-    result.push(relayUrl)
-    if (result.length >= EVENT_MARKET_SHARE_RELAY_HINT_LIMIT) break
-  }
-  return result
-}
-
-function projectEventMarket(
+export function projectEventMarket(
   resolution: EventMarketResolution
 ): MerchantOrganizerEventMarket | null {
   const { calendar, collection, pickup } = resolution
@@ -601,7 +690,10 @@ function projectEventMarket(
     pickupCoordinate,
     pickupCoordinates,
     naddr,
-    title: calendar.title ?? collection?.title ?? "Event evidence unavailable",
+    title:
+      normalizeOrganizerEventMarketTitle(calendar.title) ??
+      normalizeOrganizerEventMarketTitle(collection?.title) ??
+      "Event evidence unavailable",
     summary: calendar.summary ?? collection?.summary,
     imageUrl: calendar.image ?? collection?.image,
     eventLocation: calendar.locations[0],
@@ -628,7 +720,7 @@ function projectEventMarket(
   }
 }
 
-function projectMarketList(
+export function projectMarketList(
   values: readonly EventMarketResolution[]
 ): MerchantOrganizerEventMarket[] {
   return values.flatMap((resolution) => {
@@ -679,7 +771,7 @@ export function organizerEventMarketReferenceWithDeliveryRelayHints(
   return encodeEventMarketNaddr(
     parsed.coordinate,
     expandsRelayHints
-      ? boundedEventMarketShareRelayHints([
+      ? buildEventMarketShareRelayHints([
           parsed.relayHints.slice(0, 3),
           acknowledgedRelayUrls,
           parsed.relayHints.slice(3),
@@ -755,14 +847,24 @@ export async function listOrganizerEventMarkets(
   authenticatedPubkey: string | null = null,
   signal?: AbortSignal,
   shouldContinue?: () => boolean
-): Promise<MerchantOrganizerEventMarket[]> {
-  const result = await getOrganizerEventMarkets({
+): Promise<MerchantOrganizerEventMarketsReadResult> {
+  const result = await getOrganizerEventMarketsDetailed({
     organizerPubkey,
     authenticatedPubkey,
     ...(signal ? { signal } : {}),
     ...(shouldContinue ? { shouldContinue } : {}),
   })
-  return projectMarketList(result)
+  return projectOrganizerEventMarketsReadResult(result)
+}
+
+export function projectOrganizerEventMarketsReadResult(
+  result: OrganizerEventMarketsReadResult
+): MerchantOrganizerEventMarketsReadResult {
+  return {
+    ...result,
+    markets: projectMarketList(result.markets),
+    resolutions: result.markets,
+  }
 }
 
 export async function discoverFollowedEventMarkets(
@@ -789,21 +891,28 @@ export async function discoverFollowedEventMarkets(
   }
 }
 
-export async function resolveOrganizerEventMarketRead(
+export async function resolveOrganizerEventMarketResolution(
   reference: string,
   organizerPubkey?: string,
   authenticatedPubkey: string | null = null,
   signal?: AbortSignal,
   shouldContinue?: () => boolean
-): Promise<MerchantOrganizerEventMarketRead> {
+): Promise<EventMarketResolution> {
   const parsedReference = parseOrganizerEventMarketReference(reference)
-  const result = await getEventMarket({
+  return getEventMarket({
     reference: parsedReference.naddr,
     ...(organizerPubkey ? { expectedOrganizerPubkey: organizerPubkey } : {}),
     authenticatedPubkey,
     ...(signal ? { signal } : {}),
     ...(shouldContinue ? { shouldContinue } : {}),
   })
+}
+
+export function projectOrganizerEventMarketDeletion(
+  result: EventMarketResolution,
+  reference: string
+): MerchantOrganizerEventMarketDeletion | null {
+  const parsedReference = parseOrganizerEventMarketReference(reference)
   if (
     result.state === "deleted" &&
     result.deletion &&
@@ -865,6 +974,26 @@ export async function resolveOrganizerEventMarketRead(
       naddr: parsedReference.naddr,
     }
   }
+  return null
+}
+
+export async function resolveOrganizerEventMarketRead(
+  reference: string,
+  organizerPubkey?: string,
+  authenticatedPubkey: string | null = null,
+  signal?: AbortSignal,
+  shouldContinue?: () => boolean
+): Promise<MerchantOrganizerEventMarketRead> {
+  const parsedReference = parseOrganizerEventMarketReference(reference)
+  const result = await resolveOrganizerEventMarketResolution(
+    reference,
+    organizerPubkey,
+    authenticatedPubkey,
+    signal,
+    shouldContinue
+  )
+  const deletion = projectOrganizerEventMarketDeletion(result, reference)
+  if (deletion) return deletion
   const normalized = projectEventMarket(result)
   if (
     !normalized ||
@@ -887,7 +1016,7 @@ export async function resolveOrganizerEventMarketRead(
       parsedReferenceContainsResolvedHints &&
         parsedReference.relayHints.length > 0
         ? parsedReference.relayHints
-        : boundedEventMarketShareRelayHints([
+        : buildEventMarketShareRelayHints([
             parsedReference.relayHints.slice(0, 1),
             projectedHints,
             parsedReference.relayHints.slice(1),

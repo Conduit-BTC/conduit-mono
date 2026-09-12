@@ -13,6 +13,7 @@ import {
   buildPickupFulfillmentTerms,
   buildEventCatalogFamilyPickupFulfillments,
   getCartEventFulfillmentBlock,
+  getEventCatalogProductAvailability,
   getProductEventMarketCandidates,
   pickupItemMatchesCanonicalSnapshot,
   projectEventCatalogHydration,
@@ -370,6 +371,10 @@ describe("Market event adapter", () => {
     expect(projection.products).toHaveLength(1)
     expect(projection.products[0]!.evidenceState).toBe("retained")
     expect(projection.products[0]!.pickupFulfillment).toBeNull()
+    expect(getEventCatalogProductAvailability(projection)).toEqual({
+      availableProductCount: 0,
+      unresolvedProductCount: 1,
+    })
   })
 
   it("keeps exact per-product live evidence purchasable when the wider batch is stale", () => {
@@ -382,6 +387,10 @@ describe("Market event adapter", () => {
     expect(projection.products).toHaveLength(1)
     expect(projection.products[0]!.evidenceState).toBe("live")
     expect(projection.products[0]!.pickupFulfillment).not.toBeNull()
+    expect(getEventCatalogProductAvailability(projection)).toEqual({
+      availableProductCount: 1,
+      unresolvedProductCount: 0,
+    })
   })
 
   it("projects every accepted product beyond the transport author chunk size", () => {
@@ -534,6 +543,10 @@ describe("Market event adapter", () => {
     expect(projected.products[0]!.pickupFulfillment).not.toBeNull()
     expect(projected.products[1]!.evidenceState).toBe("retained")
     expect(projected.products[1]!.pickupFulfillment).toBeNull()
+    expect(getEventCatalogProductAvailability(projected)).toEqual({
+      availableProductCount: 1,
+      unresolvedProductCount: 2,
+    })
   })
 
   it("distinguishes a complete empty organizer collection from degraded hydration", () => {
@@ -730,6 +743,10 @@ describe("Market event adapter", () => {
     ).toEqual([child.id])
     expect(projected.products[0]!.familyPickupFulfillments).toEqual({
       [child.id]: null,
+    })
+    expect(getEventCatalogProductAvailability(projected)).toEqual({
+      availableProductCount: 0,
+      unresolvedProductCount: 1,
     })
   })
 

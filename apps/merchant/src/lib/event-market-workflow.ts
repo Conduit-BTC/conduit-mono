@@ -9,10 +9,26 @@ import {
 
 export type OrganizerCollectionMembershipAction = "accept" | "remove"
 
+export function normalizeOrganizerEventMarketTitle(
+  value: unknown
+): string | undefined {
+  if (typeof value !== "string") return undefined
+  const title = value.trim()
+  return title || undefined
+}
+
 export interface SavedOrganizerEventMarketReference {
   reference: string
   title?: string
   savedAt: number
+  // Display provenance must stay separate from expected* mutation frontiers:
+  // learning a title must never unlock or block organizer actions.
+  titleCollectionCoordinate?: string
+  titleCollectionCreatedAt?: number
+  titleCollectionEventId?: string
+  titleCalendarCoordinate?: string
+  titleCalendarCreatedAt?: number
+  titleCalendarEventId?: string
   expectedCollectionCoordinate?: string
   expectedCollectionCreatedAt?: number
   expectedCollectionEventId?: string
@@ -440,6 +456,134 @@ function expectedFrontierFields(
   }
 }
 
+function organizerEventMarketTitleFrontiers(
+  market: EventMarketFrontierCarrier | undefined
+): {
+  collection: EventMarketRecordFrontier
+  calendar: EventMarketRecordFrontier
+} | null {
+  const collection = carrierFrontier(market, "collection")
+  const calendar = carrierFrontier(market, "calendar")
+  if (
+    !collection?.coordinate ||
+    !collection.eventId ||
+    !calendar?.coordinate ||
+    !calendar.eventId
+  ) {
+    return null
+  }
+  return { collection, calendar }
+}
+
+function savedOrganizerEventMarketTitleFrontiers(
+  savedReference: SavedOrganizerEventMarketReference | undefined
+): {
+  collection: EventMarketRecordFrontier
+  calendar: EventMarketRecordFrontier
+} | null {
+  if (!savedReference) return null
+  const collectionCreatedAt = savedReference.titleCollectionCreatedAt
+  const calendarCreatedAt = savedReference.titleCalendarCreatedAt
+  const collectionCoordinate = normalizedRecordCoordinate(
+    savedReference.titleCollectionCoordinate,
+    "collection"
+  )
+  const calendarCoordinate = normalizedRecordCoordinate(
+    savedReference.titleCalendarCoordinate,
+    "calendar"
+  )
+  const collectionEventId = normalizedEventId(
+    savedReference.titleCollectionEventId
+  )
+  const calendarEventId = normalizedEventId(savedReference.titleCalendarEventId)
+  if (
+    collectionCreatedAt === undefined ||
+    calendarCreatedAt === undefined ||
+    !collectionCoordinate ||
+    !calendarCoordinate ||
+    !collectionEventId ||
+    !calendarEventId
+  ) {
+    return null
+  }
+  return {
+    collection: {
+      coordinate: collectionCoordinate,
+      createdAt: collectionCreatedAt,
+      eventId: collectionEventId,
+    },
+    calendar: {
+      coordinate: calendarCoordinate,
+      createdAt: calendarCreatedAt,
+      eventId: calendarEventId,
+    },
+  }
+}
+
+function titleFrontierFields(
+  frontiers: {
+    collection: EventMarketRecordFrontier
+    calendar: EventMarketRecordFrontier
+  } | null
+): Partial<SavedOrganizerEventMarketReference> {
+  if (!frontiers) return {}
+  return {
+    titleCollectionCoordinate: frontiers.collection.coordinate,
+    titleCollectionCreatedAt: frontiers.collection.createdAt,
+    titleCollectionEventId: frontiers.collection.eventId,
+    titleCalendarCoordinate: frontiers.calendar.coordinate,
+    titleCalendarCreatedAt: frontiers.calendar.createdAt,
+    titleCalendarEventId: frontiers.calendar.eventId,
+  }
+}
+
+export function expectedOrganizerEventMarketTitleFrontiers(
+  market: EventMarketFrontierCarrier | undefined
+): Partial<SavedOrganizerEventMarketReference> {
+  return titleFrontierFields(organizerEventMarketTitleFrontiers(market))
+}
+
+export function organizerEventMarketHasSavedTitleEvidence(
+  market:
+    (EventMarketFrontierCarrier & { state: string; title: string }) | undefined,
+  savedReference: SavedOrganizerEventMarketReference | undefined
+): boolean {
+  const frontiers = organizerEventMarketTitleFrontiers(market)
+  const savedFrontiers = savedOrganizerEventMarketTitleFrontiers(savedReference)
+  const marketTitle = normalizeOrganizerEventMarketTitle(market?.title)
+  const savedTitle = normalizeOrganizerEventMarketTitle(savedReference?.title)
+  if (
+    !market ||
+    !savedReference ||
+    !frontiers ||
+    !savedFrontiers ||
+    !marketTitle ||
+    !savedTitle
+  ) {
+    return false
+  }
+  return (
+    savedTitle === marketTitle &&
+    savedFrontiers.collection.coordinate === frontiers.collection.coordinate &&
+    savedFrontiers.collection.createdAt === frontiers.collection.createdAt &&
+    savedFrontiers.collection.eventId === frontiers.collection.eventId &&
+    savedFrontiers.calendar.coordinate === frontiers.calendar.coordinate &&
+    savedFrontiers.calendar.createdAt === frontiers.calendar.createdAt &&
+    savedFrontiers.calendar.eventId === frontiers.calendar.eventId
+  )
+}
+
+export function shortenOrganizerEventMarketReference(
+  reference: string
+): string {
+  const decoded = decodeEventMarketReference(reference, [30405])
+  const canonicalReference = decoded
+    ? encodeEventMarketNaddr(decoded.coordinate)
+    : reference.trim()
+  if (canonicalReference.length <= 28) return canonicalReference
+  return `${canonicalReference.slice(0, 16)}…${canonicalReference.slice(-8)}`
+}
+
 export function getOrganizerEventMarketStorageKey(
   organizerPubkey: string
 ): string {
@@ -460,6 +604,12 @@ function normalizeSavedReference(
     reference?: unknown
     title?: unknown
     savedAt?: unknown
+    titleCollectionCreatedAt?: unknown
+    titleCollectionEventId?: unknown
+    titleCollectionCoordinate?: unknown
+    titleCalendarCreatedAt?: unknown
+    titleCalendarEventId?: unknown
+    titleCalendarCoordinate?: unknown
     expectedCollectionCreatedAt?: unknown
     expectedCollectionEventId?: unknown
     expectedCollectionCoordinate?: unknown
@@ -482,10 +632,33 @@ function normalizeSavedReference(
     return null
   }
 
-  const title =
-    typeof candidate.title === "string" && candidate.title.trim()
-      ? candidate.title.trim()
-      : undefined
+  const title = normalizeOrganizerEventMarketTitle(candidate.title)
+  const titleCollectionCreatedAt = normalizedCreatedAt(
+    candidate.titleCollectionCreatedAt
+  )
+  const titleCollectionEventId = normalizedEventId(
+    candidate.titleCollectionEventId
+  )
+  const titleCollectionCoordinate = normalizedRecordCoordinate(
+    candidate.titleCollectionCoordinate,
+    "collection"
+  )
+  const titleCalendarCreatedAt = normalizedCreatedAt(
+    candidate.titleCalendarCreatedAt
+  )
+  const titleCalendarEventId = normalizedEventId(candidate.titleCalendarEventId)
+  const titleCalendarCoordinate = normalizedRecordCoordinate(
+    candidate.titleCalendarCoordinate,
+    "calendar"
+  )
+  const hasCompleteTitleEvidence =
+    !!title &&
+    titleCollectionCreatedAt !== undefined &&
+    !!titleCollectionEventId &&
+    !!titleCollectionCoordinate &&
+    titleCalendarCreatedAt !== undefined &&
+    !!titleCalendarEventId &&
+    !!titleCalendarCoordinate
   const expectedCollectionCreatedAt = normalizedCreatedAt(
     candidate.expectedCollectionCreatedAt
   )
@@ -523,6 +696,16 @@ function normalizeSavedReference(
         : decoded.coordinate,
     title,
     savedAt: candidate.savedAt,
+    ...(hasCompleteTitleEvidence
+      ? {
+          titleCollectionCreatedAt,
+          titleCollectionEventId,
+          titleCollectionCoordinate,
+          titleCalendarCreatedAt,
+          titleCalendarEventId,
+          titleCalendarCoordinate,
+        }
+      : {}),
     ...(expectedCollectionCreatedAt !== undefined
       ? {
           expectedCollectionCreatedAt,
@@ -564,7 +747,7 @@ function normalizeSavedReference(
   }
 }
 
-function mergeSavedReferences(
+function mergeNormalizedSavedReferences(
   references: readonly NormalizedSavedOrganizerEventMarketReference[]
 ): SavedOrganizerEventMarketReference {
   const sorted = [...references].sort(
@@ -593,13 +776,52 @@ function mergeSavedReferences(
   )
   const expectedCalendar = mergeRecordFrontier(frontierReferences, "calendar")
   const expectedPickup = mergeRecordFrontier(frontierReferences, "pickup")
+  // Incoming observations precede retained rows. Start with the retained graph
+  // so a crossed observation cannot discard either of its signed frontiers.
+  const anchoredTitleSources = [...references]
+    .reverse()
+    .filter(
+      (reference) =>
+        !!reference.title &&
+        !!savedOrganizerEventMarketTitleFrontiers(reference)
+    )
+  const titleSource =
+    anchoredTitleSources.reduce<
+      NormalizedSavedOrganizerEventMarketReference | undefined
+    >((current, candidate) => {
+      if (!current) return candidate
+      const candidateFrontiers =
+        savedOrganizerEventMarketTitleFrontiers(candidate)!
+      const currentFrontiers = savedOrganizerEventMarketTitleFrontiers(current)!
+      const collectionComparison = compareEventMarketRecordFrontier(
+        candidateFrontiers.collection,
+        currentFrontiers.collection
+      )
+      if (collectionComparison < 0) return current
+      if (
+        candidateFrontiers.calendar.coordinate ===
+        currentFrontiers.calendar.coordinate
+      ) {
+        const calendarComparison = compareEventMarketRecordFrontier(
+          candidateFrontiers.calendar,
+          currentFrontiers.calendar
+        )
+        if (calendarComparison < 0) return current
+        if (collectionComparison > 0 || calendarComparison > 0) return candidate
+        return candidate.savedAt >= current.savedAt ? candidate : current
+      }
+      return collectionComparison > 0 ? candidate : current
+    }, undefined) ?? sorted.find((reference) => reference.title)
   return {
     reference:
       relayHints.length > 0
         ? encodeEventMarketNaddr(newest.coordinate, relayHints)
         : newest.coordinate,
-    title: newest.title ?? sorted.find((reference) => reference.title)?.title,
+    title: titleSource?.title,
     savedAt: newest.savedAt,
+    ...titleFrontierFields(
+      savedOrganizerEventMarketTitleFrontiers(titleSource)
+    ),
     ...expectedFrontierFields("collection", expectedCollection),
     ...expectedFrontierFields("calendar", expectedCalendar),
     ...expectedFrontierFields("pickup", expectedPickup),
@@ -607,6 +829,27 @@ function mergeSavedReferences(
       ? { replaceExpectedRecordFrontiers: true as const }
       : {}),
   }
+}
+
+/** Merge saved/imported views without dropping relay hints or signed frontiers. */
+export function mergeSavedOrganizerEventMarketReferences(
+  references: readonly SavedOrganizerEventMarketReference[]
+): SavedOrganizerEventMarketReference[] {
+  const byCoordinate = new Map<
+    string,
+    NormalizedSavedOrganizerEventMarketReference[]
+  >()
+  for (const reference of references) {
+    const normalized = normalizeSavedReference(reference)
+    if (!normalized) continue
+    byCoordinate.set(normalized.coordinate, [
+      ...(byCoordinate.get(normalized.coordinate) ?? []),
+      normalized,
+    ])
+  }
+  return Array.from(byCoordinate.values())
+    .map(mergeNormalizedSavedReferences)
+    .sort((left, right) => right.savedAt - left.savedAt)
 }
 
 function loadSavedReferences(
@@ -639,7 +882,7 @@ function loadSavedReferences(
       ])
     }
     return Array.from(byCoordinate.values())
-      .map(mergeSavedReferences)
+      .map(mergeNormalizedSavedReferences)
       .sort((left, right) => right.savedAt - left.savedAt)
   } catch {
     return []
@@ -670,7 +913,7 @@ function rememberSavedReference(
     const existing = normalizeSavedReference(item)
     return existing?.coordinate === normalized.coordinate ? [existing] : []
   })
-  const merged = mergeSavedReferences([normalized, ...sameIdentity])
+  const merged = mergeNormalizedSavedReferences([normalized, ...sameIdentity])
   const next = [
     merged,
     ...current.filter((item) => {
@@ -927,7 +1170,59 @@ export function organizerEventMarketReachesExpectedFrontiers(
   return marketReachesExpectedFrontiers(market, savedReference)
 }
 
-type OrganizerEventMarketCandidate = EventMarketFrontierCarrier & {
+export function organizerEventMarketCanSupplySavedTitle(
+  market:
+    (EventMarketFrontierCarrier & { state: string; title: string }) | undefined,
+  savedReference: SavedOrganizerEventMarketReference | undefined
+): boolean {
+  const titleFrontiers = organizerEventMarketTitleFrontiers(market)
+  // Pickup readiness gates actions, not signed collection/calendar labels.
+  const titleCandidate = market && { ...market, pickupCoordinate: undefined }
+  if (
+    !market ||
+    !savedReference ||
+    !titleFrontiers ||
+    !marketReachesExpectedFrontiers(
+      titleCandidate,
+      savedReference,
+      expectedEventMarketRecords(savedReference).filter(
+        (record) => record !== "pickup"
+      )
+    )
+  ) {
+    return false
+  }
+  const marketTitle = normalizeOrganizerEventMarketTitle(market.title)
+  const savedTitle = normalizeOrganizerEventMarketTitle(savedReference.title)
+  if (!marketTitle) return false
+  const savedTitleFrontiers =
+    savedOrganizerEventMarketTitleFrontiers(savedReference)
+  const savedTitleIsAnchored = !!savedTitleFrontiers
+  if (savedTitle && savedTitle !== marketTitle && !savedTitleIsAnchored) {
+    return false
+  }
+  if (
+    savedTitleFrontiers &&
+    !marketReachesExpectedFrontiers(
+      titleCandidate,
+      {
+        reference: savedReference.reference,
+        savedAt: savedReference.savedAt,
+        ...expectedFrontierFields("collection", savedTitleFrontiers.collection),
+        ...expectedFrontierFields("calendar", savedTitleFrontiers.calendar),
+      },
+      ["collection", "calendar"]
+    )
+  ) {
+    return false
+  }
+  // The validated collection/calendar frontiers determine title freshness.
+  // Aggregate state also includes pickup evidence, which still gates actions
+  // but cannot veto a newer signed title.
+  return true
+}
+
+export type OrganizerEventMarketCandidate = EventMarketFrontierCarrier & {
   state: string
   collectionCoordinate: string
   calendarCoordinate?: string
@@ -1043,6 +1338,68 @@ function compareOrganizerEventMarketGraphFrontier(
   if (advances && !regresses) return 1
   if (regresses && !advances) return -1
   return comparisons[0] ?? 0
+}
+
+export type OrganizerEventMarketInvalidationReadScope =
+  "invalid_dominates" | "positive_dominates" | "incomparable"
+
+export type OrganizerEventMarketInvalidationDecision =
+  "retire" | "retain" | "pending"
+
+/**
+ * Reconciles an unusable observation with an already projected positive
+ * market. The collection revision owns the graph relationship, so a strictly
+ * newer invalid collection retires an older graph even when its child record
+ * could not be parsed. Equal collection revisions compare their retained child
+ * frontiers and finally the bounded read scopes that produced each view.
+ */
+export function reconcileOrganizerEventMarketInvalidation(
+  positive: OrganizerEventMarketCandidate,
+  invalid: OrganizerEventMarketCandidate,
+  equalFrontierReadScope: OrganizerEventMarketInvalidationReadScope
+): OrganizerEventMarketInvalidationDecision {
+  if (positive.collectionCoordinate !== invalid.collectionCoordinate) {
+    return "retain"
+  }
+
+  const collectionComparison = compareEventMarketRecordFrontier(
+    carrierFrontier(invalid, "collection"),
+    carrierFrontier(positive, "collection")
+  )
+  if (collectionComparison > 0) return "retire"
+  if (collectionComparison < 0) return "retain"
+
+  for (const record of ["calendar", "pickup"] as const) {
+    const positiveCoordinate =
+      record === "calendar"
+        ? positive.calendarCoordinate
+        : positive.pickupCoordinate
+    const invalidCoordinate =
+      record === "calendar"
+        ? invalid.calendarCoordinate
+        : invalid.pickupCoordinate
+    if (
+      positiveCoordinate &&
+      positiveCoordinate === invalidCoordinate &&
+      carrierFrontier(positive, record) &&
+      !carrierFrontier(invalid, record)
+    ) {
+      // A parse failure removes the child's frontier from the projection; it
+      // does not prove the child is older than the last valid observation.
+      return "pending"
+    }
+  }
+
+  const graphComparison = compareOrganizerEventMarketGraphFrontier(
+    invalid,
+    positive
+  )
+  if (graphComparison === null) return "pending"
+  if (graphComparison > 0) return "retire"
+  if (graphComparison < 0) return "retain"
+  if (equalFrontierReadScope === "invalid_dominates") return "retire"
+  if (equalFrontierReadScope === "positive_dominates") return "retain"
+  return "pending"
 }
 
 function pendingOrganizerEventMarketResolution(
