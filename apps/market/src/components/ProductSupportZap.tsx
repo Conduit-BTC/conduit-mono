@@ -2,6 +2,7 @@ import { Check, Copy, ExternalLink, Zap } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import {
   config,
+  getProductSupportZapEvidenceFingerprint,
   getProductSupportZapDisclosure,
   getProductSupportZapRoutingError,
   type PrepareProductSupportZapInvoiceInput,
@@ -54,8 +55,7 @@ export function ProductSupportZap({
   const [note, setNote] = useState("")
   const [invoice, setInvoice] = useState<{
     value: string
-    productRevision: string | undefined
-    productUpdatedAt: number
+    evidenceFingerprint: string | null
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [preparing, setPreparing] = useState(false)
@@ -64,8 +64,7 @@ export function ProductSupportZap({
   const disclosure = getProductSupportZapDisclosure({ note })
   const lightningAddress = lud16?.trim() ?? ""
   const routingError = getProductSupportZapRoutingError(product)
-  const productRevision = product.supportZapRouting?.eventId
-  const productUpdatedAt = product.updatedAt
+  const evidenceFingerprint = getProductSupportZapEvidenceFingerprint(product)
   const signerReady =
     auth.status === "connected" &&
     !!auth.pubkey &&
@@ -79,8 +78,7 @@ export function ProductSupportZap({
     merchantPubkey,
     productAddress,
     lightningAddress,
-    productRevision,
-    productUpdatedAt,
+    evidenceFingerprint,
     routingError,
   })
   const preparationSequenceRef = useRef(0)
@@ -91,8 +89,7 @@ export function ProductSupportZap({
     merchantPubkey,
     productAddress,
     lightningAddress,
-    productRevision,
-    productUpdatedAt,
+    evidenceFingerprint,
     routingError,
   }
 
@@ -120,8 +117,7 @@ export function ProductSupportZap({
     auth.pubkey,
     auth.signer,
     lightningAddress,
-    productRevision,
-    productUpdatedAt,
+    evidenceFingerprint,
     routingError,
     merchantPubkey,
     productAddress,
@@ -176,8 +172,7 @@ export function ProductSupportZap({
         current.merchantPubkey === selectedMerchantPubkey &&
         current.productAddress === selectedProductAddress &&
         current.lightningAddress === selectedLightningAddress &&
-        current.productRevision === productRevision &&
-        current.productUpdatedAt === productUpdatedAt &&
+        current.evidenceFingerprint === evidenceFingerprint &&
         current.routingError === null
       )
     }
@@ -201,8 +196,7 @@ export function ProductSupportZap({
       if (isCurrent()) {
         setInvoice({
           value: preparedInvoice,
-          productRevision,
-          productUpdatedAt,
+          evidenceFingerprint,
         })
       }
     } catch (cause) {
@@ -233,8 +227,7 @@ export function ProductSupportZap({
   const bolt11 =
     invoice &&
     !routingError &&
-    invoice.productRevision === productRevision &&
-    invoice.productUpdatedAt === productUpdatedAt
+    invoice.evidenceFingerprint === evidenceFingerprint
       ? normalizeLightningInvoice(invoice.value)
       : null
 

@@ -1465,9 +1465,42 @@ function withProductFamilyRecordReadEvidence(
   record: CommerceProductRecord | null,
   meta: CommerceQueryMeta
 ): CommerceProductRecord | null {
-  return record
-    ? (withProductFamilyReadEvidence([record], meta)[0] ?? null)
-    : null
+  if (!record) return null
+
+  const readEvidence = {
+    source: meta.source,
+    fetchedAt: meta.fetchedAt,
+    stale: meta.stale,
+    degraded: meta.degraded,
+    capped: meta.capped ?? false,
+  }
+  const bindRoutingEvidence = (
+    candidate: CommerceProductRecord
+  ): CommerceProductRecord => ({
+    ...candidate,
+    product: candidate.product.supportZapRouting
+      ? {
+          ...candidate.product,
+          supportZapRouting: {
+            ...candidate.product.supportZapRouting,
+            readEvidence,
+          },
+        }
+      : candidate.product,
+  })
+  const bound = bindRoutingEvidence(record)
+
+  return record.family
+    ? {
+        ...bound,
+        family: {
+          ...record.family,
+          parent: bindRoutingEvidence(record.family.parent),
+          children: record.family.children.map(bindRoutingEvidence),
+          readEvidence,
+        },
+      }
+    : bound
 }
 
 function filterProductRecordsForRead(

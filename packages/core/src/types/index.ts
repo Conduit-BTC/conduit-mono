@@ -22,6 +22,14 @@ export interface ProductSupportZapRouting {
   productAddress: string
   eventId: string
   eventCreatedAt: number
+  /** Exact product-read evidence required before author-profile routing is safe. */
+  readEvidence?: {
+    source: "commerce" | "public" | "local_cache"
+    stale: boolean
+    degraded: boolean
+    capped: boolean
+    fetchedAt: number
+  }
 }
 
 export interface Product {

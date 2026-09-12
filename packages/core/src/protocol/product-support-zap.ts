@@ -11,8 +11,11 @@ import {
   type LnurlPayMetadata,
 } from "./lightning"
 import {
+  getProductDetail,
   getProfiles,
   isCommerceReadIncomplete,
+  type CommerceProductRecord,
+  type CommerceQueryMeta,
   type ProfileBatchQuery,
 } from "./commerce"
 import { EVENT_KINDS } from "./kinds"
@@ -91,16 +94,22 @@ export function getProductSupportZapRoutingError(
   product: PrepareProductSupportZapInvoiceInput["product"] | undefined
 ): string | null {
   const evidence = product?.supportZapRouting
+  const readEvidence = evidence?.readEvidence
   const target = product && decodeProductReference(product.id)
   if (
     !product ||
     !evidence ||
+    !readEvidence ||
     !target ||
     target.authorPubkey !== product.pubkey.toLowerCase() ||
     evidence.productAddress !== target.addressId ||
     !/^[0-9a-f]{64}$/.test(evidence.eventId) ||
     !Number.isSafeInteger(evidence.eventCreatedAt) ||
     evidence.eventCreatedAt * 1000 !== product.updatedAt ||
+    readEvidence.source === "local_cache" ||
+    isCommerceReadIncomplete(readEvidence) ||
+    !Number.isSafeInteger(readEvidence.fetchedAt) ||
+    readEvidence.fetchedAt <= 0 ||
     (evidence.state !== "default" && evidence.state !== "unsupported")
   ) {
     return "Refresh this product to verify its support payment routing."
@@ -110,7 +119,31 @@ export function getProductSupportZapRoutingError(
     : null
 }
 
+export function getProductSupportZapEvidenceFingerprint(
+  product: PrepareProductSupportZapInvoiceInput["product"] | undefined
+): string | null {
+  const routing = product?.supportZapRouting
+  const readEvidence = routing?.readEvidence
+  if (!product || !routing || !readEvidence) return null
+
+  return JSON.stringify([
+    product.id,
+    product.pubkey,
+    product.updatedAt,
+    routing.state,
+    routing.productAddress,
+    routing.eventId,
+    routing.eventCreatedAt,
+    readEvidence.source,
+    readEvidence.stale,
+    readEvidence.degraded,
+    readEvidence.capped,
+    readEvidence.fetchedAt,
+  ])
+}
+
 export interface ProductSupportZapDependencies {
+  getProductDetail: typeof getProductDetail
   getProfiles: typeof getProfiles
   fetchLnurlPayMetadata: typeof fetchLnurlPayMetadata
   fetchZapInvoice: typeof fetchZapInvoice
@@ -118,10 +151,118 @@ export interface ProductSupportZapDependencies {
 }
 
 const defaultDependencies: ProductSupportZapDependencies = {
+  getProductDetail,
   getProfiles,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
   validateLightningInvoiceForPayment,
+}
+
+function findExactProductSupportRecord(
+  record: CommerceProductRecord | null,
+  productAddress: string
+): CommerceProductRecord | null {
+  if (!record) return null
+  const candidates = [
+    record,
+    ...(record.family ? [record.family.parent, ...record.family.children] : []),
+  ]
+  return (
+    candidates.find(
+      (candidate) =>
+        candidate.addressId === productAddress ||
+        decodeProductReference(candidate.product.id)?.addressId ===
+          productAddress
+    ) ?? null
+  )
+}
+
+function routingEvidenceMatchesMeta(
+  product: PrepareProductSupportZapInvoiceInput["product"],
+  meta: CommerceQueryMeta
+): boolean {
+  const evidence = product.supportZapRouting?.readEvidence
+  return (
+    !!evidence &&
+    evidence.source === meta.source &&
+    evidence.stale === meta.stale &&
+    evidence.degraded === meta.degraded &&
+    evidence.capped === (meta.capped ?? false) &&
+    evidence.fetchedAt === meta.fetchedAt
+  )
+}
+
+async function requireCurrentProductSupportRouting(
+  input: PrepareProductSupportZapInvoiceInput,
+  shopperPubkey: string,
+  dependencies: Pick<ProductSupportZapDependencies, "getProductDetail">
+): Promise<void> {
+  assertProductSupportRequestCurrent(input.isCurrent)
+  const productAddress = decodeProductReference(input.productAddress)?.addressId
+  if (!productAddress) {
+    throw new Error("The product support target changed. Refresh this product.")
+  }
+
+  let result: Awaited<ReturnType<typeof getProductDetail>>
+  try {
+    result = await dependencies.getProductDetail({
+      productId: productAddress,
+      includeMarketHidden: true,
+      authenticatedPubkey: shopperPubkey,
+      shouldContinue: input.isCurrent,
+    })
+  } catch {
+    assertProductSupportRequestCurrent(input.isCurrent)
+    throw new Error(
+      "The product's current support routing could not be confirmed from relays. Retry before creating an invoice."
+    )
+  }
+  assertProductSupportRequestCurrent(input.isCurrent)
+
+  if (
+    result.meta.source === "local_cache" ||
+    isCommerceReadIncomplete(result.meta)
+  ) {
+    throw new Error(
+      "The product's current support routing could not be confirmed from relays. Retry before creating an invoice."
+    )
+  }
+
+  const currentRecord = findExactProductSupportRecord(
+    result.data,
+    productAddress
+  )
+  const currentProduct = currentRecord?.product
+  if (
+    !currentRecord ||
+    !currentProduct ||
+    currentRecord.addressId !== productAddress ||
+    !routingEvidenceMatchesMeta(currentProduct, result.meta)
+  ) {
+    throw new Error(
+      "The product's current support routing could not be confirmed from relays. Retry before creating an invoice."
+    )
+  }
+
+  const routingError = getProductSupportZapRoutingError(currentProduct)
+  if (routingError) throw new Error(routingError)
+
+  const selectedRouting = input.product.supportZapRouting
+  const currentRouting = currentProduct.supportZapRouting
+  if (
+    !selectedRouting ||
+    !currentRouting ||
+    currentRecord.eventId !== selectedRouting.eventId ||
+    currentRecord.eventCreatedAt !== selectedRouting.eventCreatedAt ||
+    currentRouting.eventId !== selectedRouting.eventId ||
+    currentRouting.eventCreatedAt !== selectedRouting.eventCreatedAt ||
+    currentRouting.productAddress !== selectedRouting.productAddress ||
+    currentRouting.state !== selectedRouting.state ||
+    normalizePubkey(currentProduct.pubkey) !==
+      normalizePubkey(input.recipientPubkey)
+  ) {
+    throw new Error("The product support target changed. Refresh this product.")
+  }
 }
 
 export function getProductSupportZapDisclosure(input: {
@@ -416,6 +557,8 @@ export async function prepareProductSupportZapInvoice(
     throw new Error("The product support target changed. Refresh this product.")
   }
   const shopperPubkey = requireAccountPubkey(input.shopperPubkey, "shopper")
+  await requireCurrentProductSupportRouting(input, shopperPubkey, dependencies)
+  assertProductSupportRequestCurrent(input.isCurrent)
   const activeSignerPubkey = normalizePubkey(await input.signer.getPublicKey())
   assertProductSupportRequestCurrent(input.isCurrent)
   if (!activeSignerPubkey || activeSignerPubkey !== shopperPubkey) {
@@ -494,7 +637,10 @@ export async function prepareProductSupportZapInvoice(
     )
   }
 
-  // The invoice can expire while the final relay confirmation is pending.
+  await requireCurrentProductSupportRouting(input, shopperPubkey, dependencies)
+  assertProductSupportRequestCurrent(input.isCurrent)
+
+  // The invoice can expire while either final evidence read is pending.
   const confirmedInvoiceValidation =
     dependencies.validateLightningInvoiceForPayment({
       invoice,

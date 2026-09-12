@@ -3,6 +3,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 
 import {
   buildProductSupportZapRequest,
+  getProductSupportZapEvidenceFingerprint,
   getProductSupportZapDisclosure,
   normalizeProductSupportZapNote,
   prepareProductSupportZapInvoice,
@@ -14,6 +15,7 @@ import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
   getProfiles,
+  type CommerceQueryMeta,
 } from "../packages/core/src/protocol/commerce"
 import { parseProductEvent } from "../packages/core/src/protocol/products"
 import {
@@ -44,27 +46,84 @@ const SHOPPER_PUBKEY = getPublicKey(SHOPPER_SECRET)
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const PROVIDER_PUBKEY = getPublicKey(PROVIDER_SECRET)
 const PRODUCT_ADDRESS = `30402:${MERCHANT_PUBKEY}:coffee-mug`
+const productCapabilities = {
+  sortModes: [],
+  textSearch: false,
+  protectedSummaries: false,
+  canonicalFreshness: true,
+  cursorPagination: false,
+}
+const completeProductReadMeta: CommerceQueryMeta = {
+  source: "commerce" as const,
+  stale: false,
+  degraded: false,
+  capped: false,
+  capabilities: productCapabilities,
+  fetchedAt: 1_700_000_000_000,
+}
+
+function withProductReadEvidence<
+  T extends ReturnType<typeof parseProductEvent>,
+>(product: T, meta: CommerceQueryMeta = completeProductReadMeta): T {
+  return {
+    ...product,
+    supportZapRouting: product.supportZapRouting
+      ? {
+          ...product.supportZapRouting,
+          readEvidence: {
+            source: meta.source,
+            stale: meta.stale,
+            degraded: meta.degraded,
+            capped: meta.capped,
+            fetchedAt: meta.fetchedAt,
+          },
+        }
+      : undefined,
+  }
+}
 
 function supportProduct(
   extraTags: string[][] = [],
-  content = "Public fixture"
+  content = "Public fixture",
+  createdAt = 1_700_000_000
 ) {
-  return parseProductEvent(
-    finalizeEvent(
-      {
-        kind: 30402,
-        created_at: 1_700_000_000,
-        tags: [
-          ["d", "coffee-mug"],
-          ["title", "Coffee mug"],
-          ["price", "1", "SAT"],
-          ...extraTags,
-        ],
-        content,
-      },
-      MERCHANT_SECRET
+  return withProductReadEvidence(
+    parseProductEvent(
+      finalizeEvent(
+        {
+          kind: 30402,
+          created_at: createdAt,
+          tags: [
+            ["d", "coffee-mug"],
+            ["title", "Coffee mug"],
+            ["price", "1", "SAT"],
+            ...extraTags,
+          ],
+          content,
+        },
+        MERCHANT_SECRET
+      )
     )
   )
+}
+
+function productDetailResult(
+  product = supportProduct(),
+  overrides: Partial<CommerceQueryMeta> = {}
+) {
+  const meta = { ...completeProductReadMeta, ...overrides }
+  const current = withProductReadEvidence(product, meta)
+  return {
+    data: {
+      product: current,
+      eventId: current.supportZapRouting?.eventId ?? "",
+      addressId: PRODUCT_ADDRESS,
+      dTag: "coffee-mug",
+      eventCreatedAt: current.supportZapRouting?.eventCreatedAt ?? 0,
+      sourceRelayUrls: ["wss://relay.example"],
+    },
+    meta,
+  }
 }
 
 const profileCapabilities = {
@@ -167,6 +226,7 @@ function lnurlMetadata(
 
 function dependencies(overrides: Partial<ProductSupportZapDependencies> = {}) {
   return {
+    getProductDetail: mock(async () => productDetailResult()),
     getProfiles: mock(async () => profileResult("merchant@example.com")),
     fetchLnurlPayMetadata: mock(async () => lnurlMetadata()),
     fetchZapInvoice: mock(async () => ({ invoice: "lnbc1bound" })),
@@ -379,6 +439,29 @@ describe("product support payment profile evidence", () => {
 })
 
 describe("product support zap invoice preparation", () => {
+  it("changes the routing fingerprint when exact-read evidence changes", () => {
+    const product = supportProduct()
+    const selectedFingerprint = getProductSupportZapEvidenceFingerprint(product)
+
+    expect(selectedFingerprint).not.toBeNull()
+    for (const overrides of [
+      { source: "public" as const },
+      { stale: true },
+      { degraded: true },
+      { capped: true },
+      { fetchedAt: completeProductReadMeta.fetchedAt + 1 },
+    ]) {
+      expect(
+        getProductSupportZapEvidenceFingerprint(
+          withProductReadEvidence(product, {
+            ...completeProductReadMeta,
+            ...overrides,
+          })
+        )
+      ).not.toBe(selectedFingerprint)
+    }
+  })
+
   it.each([
     ["alternate recipient", [["zap", PROVIDER_PUBKEY, "wss://relay.example"]]],
     [
@@ -419,7 +502,7 @@ describe("product support zap invoice preparation", () => {
   )
 
   it("requires fresh routing evidence for legacy cached products before any I/O", async () => {
-    const { supportZapRouting: _routing, ...product } = supportProduct()
+    const product = { ...supportProduct(), supportZapRouting: undefined }
     const deps = dependencies()
     const getPublicKey = mock(async () => SHOPPER_PUBKEY)
     await expect(
@@ -436,6 +519,179 @@ describe("product support zap invoice preparation", () => {
         deps
       )
     ).rejects.toThrow("Refresh this product")
+    expect(getPublicKey).not.toHaveBeenCalled()
+    expect(deps.getProfiles).not.toHaveBeenCalled()
+    expect(deps.fetchLnurlPayMetadata).not.toHaveBeenCalled()
+    expect(deps.fetchZapInvoice).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["cache-only", { source: "local_cache" as const }],
+    ["stale", { stale: true }],
+    ["degraded", { degraded: true }],
+    ["capped", { capped: true }],
+  ])(
+    "rejects %s selected listing evidence before any I/O",
+    async (_, overrides) => {
+      const product = withProductReadEvidence(supportProduct(), {
+        ...completeProductReadMeta,
+        ...overrides,
+      })
+      const deps = dependencies()
+      const getPublicKey = mock(async () => SHOPPER_PUBKEY)
+
+      await expect(
+        prepareProductSupportZapInvoice(
+          {
+            product,
+            signer: { ...signer(), getPublicKey },
+            shopperPubkey: SHOPPER_PUBKEY,
+            recipientPubkey: MERCHANT_PUBKEY,
+            productAddress: PRODUCT_ADDRESS,
+            amountSats: 21,
+            relayUrls: ["wss://relay.example"],
+          },
+          deps
+        )
+      ).rejects.toThrow("Refresh this product")
+      expect(deps.getProductDetail).not.toHaveBeenCalled()
+      expect(getPublicKey).not.toHaveBeenCalled()
+      expect(deps.getProfiles).not.toHaveBeenCalled()
+      expect(deps.fetchLnurlPayMetadata).not.toHaveBeenCalled()
+      expect(deps.fetchZapInvoice).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each([
+    ["cache-only", { source: "local_cache" as const }],
+    ["partial", { degraded: true }],
+    ["stale", { stale: true }],
+    ["capped", { capped: true }],
+  ])(
+    "rejects %s action-time listing evidence before downstream I/O",
+    async (_, overrides) => {
+      const getProductDetail = mock(async () =>
+        productDetailResult(supportProduct(), overrides)
+      )
+      const deps = dependencies({ getProductDetail })
+      const getPublicKey = mock(async () => SHOPPER_PUBKEY)
+      const signEvent = mock(signer().signEvent)
+
+      await expect(
+        prepareProductSupportZapInvoice(
+          {
+            product: supportProduct(),
+            signer: { ...signer(), getPublicKey, signEvent },
+            shopperPubkey: SHOPPER_PUBKEY,
+            recipientPubkey: MERCHANT_PUBKEY,
+            productAddress: PRODUCT_ADDRESS,
+            amountSats: 21,
+            relayUrls: ["wss://relay.example"],
+          },
+          deps
+        )
+      ).rejects.toThrow("could not be confirmed from relays")
+      expect(getProductDetail).toHaveBeenCalledTimes(1)
+      expect(getPublicKey).not.toHaveBeenCalled()
+      expect(signEvent).not.toHaveBeenCalled()
+      expect(deps.getProfiles).not.toHaveBeenCalled()
+      expect(deps.fetchLnurlPayMetadata).not.toHaveBeenCalled()
+      expect(deps.fetchZapInvoice).not.toHaveBeenCalled()
+    }
+  )
+
+  it("rejects an unavailable action-time listing read before downstream I/O", async () => {
+    const getProductDetail = mock(async () => {
+      throw new Error("relay unavailable")
+    })
+    const deps = dependencies({ getProductDetail })
+    const getPublicKey = mock(async () => SHOPPER_PUBKEY)
+
+    await expect(
+      prepareProductSupportZapInvoice(
+        {
+          product: supportProduct(),
+          signer: { ...signer(), getPublicKey },
+          shopperPubkey: SHOPPER_PUBKEY,
+          recipientPubkey: MERCHANT_PUBKEY,
+          productAddress: PRODUCT_ADDRESS,
+          amountSats: 21,
+          relayUrls: ["wss://relay.example"],
+        },
+        deps
+      )
+    ).rejects.toThrow("could not be confirmed from relays")
+    expect(getProductDetail).toHaveBeenCalledTimes(1)
+    expect(getPublicKey).not.toHaveBeenCalled()
+    expect(deps.getProfiles).not.toHaveBeenCalled()
+    expect(deps.fetchLnurlPayMetadata).not.toHaveBeenCalled()
+    expect(deps.fetchZapInvoice).not.toHaveBeenCalled()
+  })
+
+  it("rejects mismatched action-time evidence before downstream I/O", async () => {
+    const detail = productDetailResult()
+    const routing = detail.data.product.supportZapRouting
+    if (!routing?.readEvidence) throw new Error("Expected routing evidence")
+    detail.data.product.supportZapRouting = {
+      ...routing,
+      readEvidence: {
+        ...routing.readEvidence,
+        fetchedAt: routing.readEvidence.fetchedAt + 1,
+      },
+    }
+    const getProductDetail = mock(async () => detail)
+    const deps = dependencies({ getProductDetail })
+    const getPublicKey = mock(async () => SHOPPER_PUBKEY)
+
+    await expect(
+      prepareProductSupportZapInvoice(
+        {
+          product: supportProduct(),
+          signer: { ...signer(), getPublicKey },
+          shopperPubkey: SHOPPER_PUBKEY,
+          recipientPubkey: MERCHANT_PUBKEY,
+          productAddress: PRODUCT_ADDRESS,
+          amountSats: 21,
+          relayUrls: ["wss://relay.example"],
+        },
+        deps
+      )
+    ).rejects.toThrow("could not be confirmed from relays")
+    expect(getProductDetail).toHaveBeenCalledTimes(1)
+    expect(getPublicKey).not.toHaveBeenCalled()
+    expect(deps.getProfiles).not.toHaveBeenCalled()
+    expect(deps.fetchLnurlPayMetadata).not.toHaveBeenCalled()
+    expect(deps.fetchZapInvoice).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["newer default revision", []],
+    ["newer custom route", [["zap", PROVIDER_PUBKEY, "wss://relay.example"]]],
+  ] as const)("rejects a %s before downstream I/O", async (_, tags) => {
+    const newer = supportProduct(
+      tags.map((tag) => [...tag]),
+      "Updated fixture",
+      1_700_000_001
+    )
+    const getProductDetail = mock(async () => productDetailResult(newer))
+    const deps = dependencies({ getProductDetail })
+    const getPublicKey = mock(async () => SHOPPER_PUBKEY)
+
+    await expect(
+      prepareProductSupportZapInvoice(
+        {
+          product: supportProduct(),
+          signer: { ...signer(), getPublicKey },
+          shopperPubkey: SHOPPER_PUBKEY,
+          recipientPubkey: MERCHANT_PUBKEY,
+          productAddress: PRODUCT_ADDRESS,
+          amountSats: 21,
+          relayUrls: ["wss://relay.example"],
+        },
+        deps
+      )
+    ).rejects.toThrow()
+    expect(getProductDetail).toHaveBeenCalledTimes(1)
     expect(getPublicKey).not.toHaveBeenCalled()
     expect(deps.getProfiles).not.toHaveBeenCalled()
     expect(deps.fetchLnurlPayMetadata).not.toHaveBeenCalled()
@@ -473,7 +729,9 @@ describe("product support zap invoice preparation", () => {
         state: custom ? "unsupported" : "default",
         eventCreatedAt: 1_700_000_000,
       })
-      const deps = dependencies()
+      const deps = dependencies({
+        getProductDetail: mock(async () => productDetailResult(product)),
+      })
       const getPublicKey = mock(async () => SHOPPER_PUBKEY)
       const preparation = prepareProductSupportZapInvoice(
         {
@@ -555,6 +813,13 @@ describe("product support zap invoice preparation", () => {
     )
 
     expect(invoice).toBe("lnbc1bound")
+    expect(deps.getProductDetail).toHaveBeenCalledTimes(2)
+    expect(deps.getProductDetail).toHaveBeenNthCalledWith(1, {
+      productId: PRODUCT_ADDRESS,
+      includeMarketHidden: true,
+      authenticatedPubkey: SHOPPER_PUBKEY,
+      shouldContinue: undefined,
+    })
     expect(deps.getProfiles).toHaveBeenCalledTimes(2)
     expect(deps.getProfiles).toHaveBeenNthCalledWith(1, {
       accountPubkey: SHOPPER_PUBKEY,
@@ -593,6 +858,38 @@ describe("product support zap invoice preparation", () => {
       invoice: "lnbc1bound",
       expectedAmountMsats: 21_000,
     })
+  })
+
+  it("discards a prepared invoice when final listing confirmation observes a newer custom route", async () => {
+    const selected = supportProduct()
+    const newerCustom = supportProduct(
+      [["zap", PROVIDER_PUBKEY, "wss://relay.example"]],
+      "Updated fixture",
+      1_700_000_001
+    )
+    let productReads = 0
+    const getProductDetail = mock(async () => {
+      productReads += 1
+      return productDetailResult(productReads === 1 ? selected : newerCustom)
+    })
+    const deps = dependencies({ getProductDetail })
+
+    await expect(
+      prepareProductSupportZapInvoice(
+        {
+          product: selected,
+          signer: signer(),
+          shopperPubkey: SHOPPER_PUBKEY,
+          recipientPubkey: MERCHANT_PUBKEY,
+          productAddress: PRODUCT_ADDRESS,
+          amountSats: 21,
+          relayUrls: ["wss://relay.example"],
+        },
+        deps
+      )
+    ).rejects.toThrow("custom zap routing")
+    expect(getProductDetail).toHaveBeenCalledTimes(2)
+    expect(deps.fetchZapInvoice).toHaveBeenCalledTimes(1)
   })
 
   it("does not copy caller-supplied commerce-private fields into the public event", async () => {
@@ -897,6 +1194,65 @@ describe("product support zap invoice preparation", () => {
 
     await expect(preparation).rejects.toThrow("expired")
     expect(deps.fetchZapInvoice).toHaveBeenCalledTimes(1)
+    expect(validateInvoice).toHaveBeenCalledTimes(2)
+  })
+
+  it("rejects an invoice that expires during the final product confirmation", async () => {
+    const productGate = deferred<ReturnType<typeof productDetailResult>>()
+    const confirmationStarted = deferred<void>()
+    const createdAt = 1_800_000_000
+    let nowSeconds = createdAt
+    let productReads = 0
+    const validateInvoice = mock(
+      (input: Parameters<typeof validateLightningInvoiceForPayment>[0]) =>
+        validateLightningInvoiceForPayment({ ...input, nowSeconds })
+    )
+    const deps = dependencies({
+      getProductDetail: mock(async () => {
+        productReads += 1
+        if (productReads === 1) return productDetailResult()
+        confirmationStarted.resolve()
+        return productGate.promise
+      }),
+      fetchZapInvoice: mock(async (_callback, _amount, zapRequestJson) => {
+        const invoice = makeBolt11Fixture({
+          hrp: "lnbc210n",
+          createdAt,
+          fields: [
+            bolt11PaymentHashField(),
+            bolt11DescriptionHashField(zapRequestJson),
+            { tag: "x", words: [1] },
+          ],
+        })
+        expect(
+          validateZapInvoiceDescriptionBinding({ invoice, zapRequestJson })
+        ).toMatchObject({ ok: true })
+        return { invoice }
+      }),
+      validateLightningInvoiceForPayment: validateInvoice,
+    })
+    const preparation = prepareProductSupportZapInvoice(
+      {
+        product: supportProduct(),
+        signer: signer(),
+        shopperPubkey: SHOPPER_PUBKEY,
+        recipientPubkey: MERCHANT_PUBKEY,
+        productAddress: PRODUCT_ADDRESS,
+        amountSats: 21,
+        relayUrls: ["wss://relay.example"],
+        nowSeconds: createdAt,
+      },
+      deps
+    )
+
+    await confirmationStarted.promise
+    expect(validateInvoice.mock.results[0]?.value).toMatchObject({ ok: true })
+    nowSeconds = createdAt + 1
+    productGate.resolve(productDetailResult())
+
+    await expect(preparation).rejects.toThrow("expired")
+    expect(deps.fetchZapInvoice).toHaveBeenCalledTimes(1)
+    expect(deps.getProductDetail).toHaveBeenCalledTimes(2)
     expect(validateInvoice).toHaveBeenCalledTimes(2)
   })
 
