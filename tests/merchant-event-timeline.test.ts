@@ -3,7 +3,10 @@ import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
 } from "@conduit/core"
-import type { MerchantOrganizerEventMarket } from "../apps/merchant/src/lib/event-market"
+import {
+  retainMerchantOrganizerEventMarkets,
+  type MerchantOrganizerEventMarket,
+} from "../apps/merchant/src/lib/event-market"
 import {
   filterAndSortMerchantEventTimeline,
   formatMerchantEventTimelineSchedule,
@@ -28,6 +31,9 @@ function market(input: {
   const collectionCoordinate = `30405:${organizer}:${input.suffix}`
   const calendarCoordinate = `31923:${organizer}:${input.suffix}`
   const state = input.state ?? "active"
+  const collectionCreatedAt = input.collectionCreatedAt ?? 1
+  const collectionEventId = "1".repeat(64)
+  const calendarEventId = "2".repeat(64)
   return {
     state,
     organizerPubkey: organizer,
@@ -41,7 +47,10 @@ function market(input: {
     start: input.startMs / 1_000,
     end: (input.endMs ?? input.startMs + 3_600_000) / 1_000,
     timezone: "America/Chicago",
-    collectionCreatedAt: input.collectionCreatedAt ?? 1,
+    collectionCreatedAt,
+    collectionEventId,
+    calendarCreatedAt: collectionCreatedAt,
+    calendarEventId,
     productCoordinates: [],
     participation: [],
     source: {
@@ -50,6 +59,32 @@ function market(input: {
       organizerPubkey: organizer,
       collectionCoordinate,
       calendarCoordinate,
+      collection: {
+        coordinate: collectionCoordinate,
+        eventId: collectionEventId,
+        authorPubkey: organizer,
+        dTag: input.suffix,
+        title: input.suffix,
+        content: "",
+        eventCoordinates: [calendarCoordinate],
+        pickupCoordinates: [],
+        productCoordinates: [],
+        unsupportedReferences: [],
+        createdAt: collectionCreatedAt,
+      },
+      calendar: {
+        coordinate: calendarCoordinate,
+        eventId: calendarEventId,
+        authorPubkey: organizer,
+        dTag: input.suffix,
+        kind: 31923,
+        title: input.suffix,
+        content: "",
+        locations: ["Chicago"],
+        start: input.startMs,
+        end: input.endMs ?? input.startMs + 3_600_000,
+        createdAt: collectionCreatedAt,
+      },
       organizerProductCoordinates: [],
       acceptedProductCoordinates: [],
       acceptedProductEvidence: [],
@@ -76,6 +111,24 @@ function market(input: {
   }
 }
 
+function dateMarket(input: {
+  suffix: string
+  startDate: string
+  endDate?: string
+}): MerchantOrganizerEventMarket {
+  const result = market({
+    suffix: input.suffix,
+    startMs: Date.parse(`${input.startDate}T00:00:00Z`),
+  })
+  return {
+    ...result,
+    calendarKind: 31922,
+    calendarCoordinate: result.calendarCoordinate.replace("31923:", "31922:"),
+    start: input.startDate,
+    ...(input.endDate ? { end: input.endDate } : { end: undefined }),
+  }
+}
+
 describe("Merchant event timeline", () => {
   it("retires known invalid coordinates while incomplete reads retain positive cards", () => {
     const positive = market({ suffix: "known", startMs: NOW + 3_600_000 })
@@ -83,7 +136,7 @@ describe("Merchant event timeline", () => {
     const input = {
       merchantPubkey: MERCHANT,
       perspectiveMarkets: [positive, unrelated],
-      ownedMarkets: [positive],
+      ownedMarkets: [],
       exactRelationshipMarkets: [],
       savedReferences: [{ reference: positive.naddr, savedAt: NOW }],
       sellingCollectionCoordinates: [positive.collectionCoordinate],
@@ -91,7 +144,12 @@ describe("Merchant event timeline", () => {
     for (const state of ["malformed", "conflicting", "unsupported"] as const) {
       const rows = mergeMerchantEventTimeline({
         ...input,
-        invalidatingResolutions: [{ ...positive.source, state }],
+        resolutionObservations: [
+          {
+            readScope: "perspective",
+            resolution: { ...positive.source, state },
+          },
+        ],
       })
       expect(rows.map((row) => row.market.collectionCoordinate)).toEqual([
         unrelated.collectionCoordinate,
@@ -100,13 +158,246 @@ describe("Merchant event timeline", () => {
     for (const state of ["partial", "unavailable", "missing"] as const) {
       const rows = mergeMerchantEventTimeline({
         ...input,
-        invalidatingResolutions: [{ ...positive.source, state }],
+        resolutionObservations: [
+          {
+            readScope: "perspective",
+            resolution: { ...positive.source, state },
+          },
+        ],
       })
       expect(rows.map((row) => row.market.collectionCoordinate)).toContain(
         positive.collectionCoordinate
       )
     }
     expect(input.savedReferences).toHaveLength(1)
+  })
+
+  it("retains a newer exact market over an older invalid perspective observation", () => {
+    const olderInvalid = market({
+      suffix: "cross-query-valid",
+      startMs: NOW + 3_600_000,
+      collectionCreatedAt: 10,
+    })
+    const newerValid = market({
+      suffix: "cross-query-valid",
+      startMs: NOW + 3_600_000,
+      collectionCreatedAt: 20,
+    })
+
+    const rows = mergeMerchantEventTimeline({
+      merchantPubkey: MERCHANT,
+      perspectiveMarkets: [],
+      ownedMarkets: [],
+      exactRelationshipMarkets: [newerValid],
+      savedReferences: [],
+      sellingCollectionCoordinates: [],
+      resolutionObservations: [
+        {
+          readScope: "perspective",
+          resolution: {
+            ...olderInvalid.source,
+            state: "malformed",
+            calendar: undefined,
+          },
+        },
+      ],
+    })
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        market: expect.objectContaining({ collectionCreatedAt: 20 }),
+        reconciliationPending: false,
+      }),
+    ])
+  })
+
+  it("retains a newer owned market through partial-read invalidation before reconciliation", () => {
+    const olderInvalid = market({
+      suffix: "retained-owned-valid",
+      startMs: NOW + 3_600_000,
+      collectionCreatedAt: 10,
+    })
+    const newerValid = market({
+      suffix: "retained-owned-valid",
+      startMs: NOW + 3_600_000,
+      collectionCreatedAt: 20,
+    })
+    const invalidResolution = {
+      ...olderInvalid.source,
+      state: "malformed" as const,
+      calendar: undefined,
+    }
+    const retainedOwned = retainMerchantOrganizerEventMarkets([newerValid], {
+      state: "partial",
+      markets: [
+        {
+          ...olderInvalid,
+          state: "malformed",
+          source: invalidResolution,
+        },
+      ],
+      resolutions: [invalidResolution],
+      coverage: invalidResolution.coverage,
+      relayListState: "network",
+      relayHintTruncated: false,
+    })
+
+    const rows = mergeMerchantEventTimeline({
+      merchantPubkey: MERCHANT,
+      perspectiveMarkets: [],
+      ownedMarkets: retainedOwned,
+      exactRelationshipMarkets: [],
+      savedReferences: [],
+      sellingCollectionCoordinates: [],
+      resolutionObservations: [
+        { readScope: "owned", resolution: invalidResolution },
+      ],
+    })
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        market: expect.objectContaining({
+          collectionCreatedAt: 20,
+          state: "stale",
+        }),
+        reconciliationPending: false,
+      }),
+    ])
+  })
+
+  it("marks equal-frontier observations from independent read scopes pending", () => {
+    const exact = market({
+      suffix: "cross-query-pending",
+      startMs: NOW + 3_600_000,
+      collectionCreatedAt: 10,
+    })
+
+    const rows = mergeMerchantEventTimeline({
+      merchantPubkey: MERCHANT,
+      perspectiveMarkets: [],
+      ownedMarkets: [],
+      exactRelationshipMarkets: [exact],
+      savedReferences: [],
+      sellingCollectionCoordinates: [],
+      resolutionObservations: [
+        {
+          readScope: "perspective",
+          resolution: { ...exact.source, state: "conflicting" },
+        },
+      ],
+    })
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        market: exact,
+        reconciliationPending: true,
+      }),
+    ])
+  })
+
+  it("marks a missing invalid child frontier pending at the same collection revision", () => {
+    const positive = market({
+      suffix: "missing-invalid-child-frontier",
+      startMs: NOW + 3_600_000,
+      collectionCreatedAt: 10,
+    })
+
+    const rows = mergeMerchantEventTimeline({
+      merchantPubkey: MERCHANT,
+      perspectiveMarkets: [positive],
+      ownedMarkets: [],
+      exactRelationshipMarkets: [],
+      savedReferences: [],
+      sellingCollectionCoordinates: [],
+      resolutionObservations: [
+        {
+          readScope: "perspective",
+          resolution: {
+            ...positive.source,
+            state: "malformed",
+            calendar: undefined,
+          },
+        },
+      ],
+    })
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        market: positive,
+        reconciliationPending: true,
+      }),
+    ])
+  })
+
+  it("retains complete positive evidence over a weaker invalid read in the same scope", () => {
+    const positive = market({
+      suffix: "weaker-invalid-read",
+      startMs: NOW + 3_600_000,
+      collectionCreatedAt: 10,
+    })
+    const partialInvalid = {
+      ...positive.source,
+      state: "malformed" as const,
+      coverage: {
+        attemptedRelayCount: 2,
+        completeRelayCount: 1,
+        partialRelayCount: 0,
+        failedRelayCount: 1,
+      },
+    }
+
+    const rows = mergeMerchantEventTimeline({
+      merchantPubkey: MERCHANT,
+      perspectiveMarkets: [positive],
+      ownedMarkets: [],
+      exactRelationshipMarkets: [],
+      savedReferences: [],
+      sellingCollectionCoordinates: [],
+      resolutionObservations: [
+        { readScope: "perspective", resolution: partialInvalid },
+      ],
+    })
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        market: positive,
+        reconciliationPending: false,
+      }),
+    ])
+  })
+
+  it("retires an older perspective market under a newer invalid exact revision", () => {
+    const olderValid = market({
+      suffix: "cross-query-invalid",
+      startMs: NOW + 3_600_000,
+      collectionCreatedAt: 10,
+    })
+    const newerInvalid = market({
+      suffix: "cross-query-invalid",
+      startMs: NOW + 3_600_000,
+      collectionCreatedAt: 20,
+    })
+
+    expect(
+      mergeMerchantEventTimeline({
+        merchantPubkey: MERCHANT,
+        perspectiveMarkets: [olderValid],
+        ownedMarkets: [],
+        exactRelationshipMarkets: [],
+        savedReferences: [],
+        sellingCollectionCoordinates: [],
+        resolutionObservations: [
+          {
+            readScope: "exact",
+            resolution: {
+              ...newerInvalid.source,
+              state: "unsupported",
+              calendar: undefined,
+            },
+          },
+        ],
+      })
+    ).toEqual([])
   })
 
   it("reconciles an exact deletion against each candidate's signed frontier", () => {
@@ -147,7 +438,7 @@ describe("Merchant event timeline", () => {
       exactRelationshipMarkets: [],
       savedReferences: [],
       sellingCollectionCoordinates: [],
-      invalidatingResolutions: [deletion],
+      resolutionObservations: [{ readScope: "exact", resolution: deletion }],
     }
     expect(
       mergeMerchantEventTimeline({ ...base, perspectiveMarkets: [older] })
@@ -287,6 +578,59 @@ describe("Merchant event timeline", () => {
         (item) => item.market.title
       )
     ).toEqual(["past"])
+  })
+
+  it("keeps a no-end date event upcoming through its start date and displays explicit ends exclusively", () => {
+    const singleDay = dateMarket({
+      suffix: "single-day",
+      startDate: "2027-06-01",
+    })
+    const explicitSingleDay = dateMarket({
+      suffix: "explicit-single-day",
+      startDate: "2027-06-01",
+      endDate: "2027-06-02",
+    })
+    const multiDay = dateMarket({
+      suffix: "multi-day",
+      startDate: "2027-06-01",
+      endDate: "2027-06-03",
+    })
+    const items = mergeMerchantEventTimeline({
+      merchantPubkey: MERCHANT,
+      perspectiveMarkets: [singleDay, multiDay],
+      ownedMarkets: [],
+      exactRelationshipMarkets: [],
+      savedReferences: [],
+      sellingCollectionCoordinates: [],
+    })
+
+    expect(
+      filterAndSortMerchantEventTimeline(items, {}, NOW).map(
+        (item) => item.market.title
+      )
+    ).toContain("single-day")
+    expect(
+      filterAndSortMerchantEventTimeline(
+        [
+          {
+            market: explicitSingleDay,
+            relationships: [],
+            reconciliationPending: false,
+          },
+        ],
+        { window: "past" },
+        Date.UTC(2027, 5, 2)
+      )
+    ).toHaveLength(1)
+    const explicitSingleDaySchedule = formatMerchantEventTimelineSchedule(
+      explicitSingleDay,
+      "en-US"
+    )
+    expect(explicitSingleDaySchedule).toBe("Jun 1, 2027")
+    expect(explicitSingleDaySchedule).not.toContain("Jun 2")
+    expect(formatMerchantEventTimelineSchedule(multiDay, "en-US")).toBe(
+      "Jun 1, 2027 – Jun 2, 2027"
+    )
   })
 
   it("uses signed schedule evidence and relay-aware status labels", () => {

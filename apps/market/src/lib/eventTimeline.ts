@@ -1,4 +1,5 @@
 import type {
+  EventMarketPerspectiveSnapshot,
   EventMarketResolution,
   ParsedEventMarketCalendar,
   ParsedEventMarketCollection,
@@ -40,6 +41,27 @@ export const EVENT_TIMELINE_WINDOWS: EventTimelineWindow[] = [
   "past",
   "all",
 ]
+
+export function getEventTimelinePresentationPerspective(
+  perspective: EventMarketPerspectiveSnapshot,
+  isRefreshStale: boolean
+): EventMarketPerspectiveSnapshot {
+  if (!isRefreshStale || perspective.coverage !== "complete") {
+    return perspective
+  }
+
+  return { ...perspective, coverage: "limited" }
+}
+
+const DAY_MS = 86_400_000
+
+function eventTimelineWindowDurationMs(
+  window: EventTimelineWindow | undefined
+): number | null {
+  if (window === "7d") return 7 * DAY_MS
+  if (window === "30d") return 30 * DAY_MS
+  return null
+}
 
 export function isTimelineEventMarket(
   market: EventMarketResolution
@@ -123,6 +145,23 @@ export function filterAndSortEventMarkets(
     .sort((left, right) => compareTimelineMarkets(left, right, nowMs))
 }
 
+/** Wall-clock boundaries that can change the selected timeline projection. */
+export function getEventTimelineBoundaries(
+  markets: readonly EventMarketResolution[],
+  window: EventTimelineWindow | undefined
+): number[] {
+  const windowDurationMs = eventTimelineWindowDurationMs(window)
+  return markets
+    .filter(isTimelineEventMarket)
+    .flatMap((market) => [
+      ...(windowDurationMs === null
+        ? []
+        : [market.calendar.start - windowDurationMs]),
+      market.calendar.start,
+      market.calendar.end,
+    ])
+}
+
 export function getEventTimelineFacets(
   markets: readonly EventMarketResolution[]
 ): EventTimelineFacets {
@@ -169,8 +208,11 @@ export function formatEventTimelineSchedule(
   locale?: string
 ): string {
   if (calendar.kind === 31922 && calendar.startDate) {
-    return calendar.endDate
-      ? `${calendar.startDate} to ${calendar.endDate}`
+    const inclusiveEnd = new Date(calendar.end - DAY_MS)
+      .toISOString()
+      .slice(0, 10)
+    return calendar.endDate && inclusiveEnd !== calendar.startDate
+      ? `${calendar.startDate} to ${inclusiveEnd}`
       : calendar.startDate
   }
 

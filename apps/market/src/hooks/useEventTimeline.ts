@@ -180,6 +180,14 @@ export function useEventTimeline(
       : firstDegreeQuery.isError
         ? "unavailable"
         : "limited")
+  const followReadIncomplete =
+    firstDegreeDiscoveryEnabled &&
+    isProductDiscoveryReadIncomplete(firstDegreeQuery.data?.meta)
+  const followRefreshStale =
+    firstDegreeDiscoveryEnabled &&
+    (followReadIncomplete ||
+      firstDegreeQuery.isRefetchError ||
+      firstDegreeQuery.isPaused)
   const perspective = useMemo<
     Omit<EventMarketPerspectiveSnapshot, "authorCount">
   >(() => {
@@ -286,10 +294,6 @@ export function useEventTimeline(
     refreshFollows,
     refreshGuestPerspective,
   ])
-  const followReadIncomplete =
-    firstDegreeDiscoveryEnabled &&
-    isProductDiscoveryReadIncomplete(firstDegreeQuery.data?.meta)
-
   return {
     data: discoveryQuery.data,
     markets,
@@ -305,7 +309,7 @@ export function useEventTimeline(
       guestMarket.isRefreshing,
     isRefreshStale:
       discoveryQuery.isError ||
-      followReadIncomplete ||
+      followRefreshStale ||
       (effectiveSource !== "following" && guestMarket.stale),
     error: discoveryQuery.error,
     refetch,

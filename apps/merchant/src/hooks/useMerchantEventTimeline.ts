@@ -13,7 +13,6 @@ import {
   selectLatestFollowListEvent,
   useConduitSession,
   useAuth,
-  type EventMarketResolution,
   type EventMarketPerspectiveAuthorSource,
   type EventMarketPerspectiveSnapshot,
   type EventMarketPerspectiveSource,
@@ -28,7 +27,6 @@ import {
   projectMarketList,
   resolveOrganizerEventMarketResolution,
   retainMerchantOrganizerEventMarkets,
-  type MerchantOrganizerEventMarket,
   type MerchantOrganizerEventMarketsReadResult,
 } from "../lib/event-market"
 import {
@@ -43,8 +41,14 @@ import {
 import { getMerchantProductEventContext } from "../lib/merchant-product-event-context"
 import {
   mergeMerchantEventTimeline,
+  qualifyMerchantEventTimelineNetwork,
   type MerchantEventTimelineItem,
 } from "../lib/merchant-event-timeline"
+import {
+  hydrateMerchantEventRelationships,
+  prioritizeMerchantEventRelationshipReferences,
+  type MerchantEventRelationshipReference,
+} from "../lib/merchant-event-relationship-hydration"
 
 // This is the same public perspective used by Market. Merchant reads the
 // signed follow list rather than maintaining a separate organizer registry.
@@ -83,53 +87,6 @@ function combinedCoverage(
   if (left === "unavailable" && right === "unavailable") return "unavailable"
   if (left === "complete" && right === "complete") return "complete"
   return "limited"
-}
-
-async function resolveRelationshipMarkets(
-  references: readonly string[],
-  authenticatedPubkey: string | null,
-  signal?: AbortSignal,
-  shouldContinue?: () => boolean
-): Promise<{
-  resolutions: EventMarketResolution[]
-  markets: MerchantOrganizerEventMarket[]
-  failedCount: number
-}> {
-  const resolutions: EventMarketResolution[] = []
-  let failedCount = 0
-  const concurrency = 4
-  for (let index = 0; index < references.length; index += concurrency) {
-    if (signal?.aborted || shouldContinue?.() === false)
-      throw new DOMException("Aborted", "AbortError")
-    const batch = references.slice(index, index + concurrency)
-    const results = await Promise.allSettled(
-      batch.map((reference) =>
-        resolveOrganizerEventMarketResolution(
-          reference,
-          undefined,
-          authenticatedPubkey,
-          signal,
-          shouldContinue
-        )
-      )
-    )
-    if (signal?.aborted || shouldContinue?.() === false)
-      throw new DOMException("Aborted", "AbortError")
-    for (const result of results) {
-      if (result.status === "fulfilled") resolutions.push(result.value)
-      else failedCount += 1
-    }
-  }
-  return {
-    resolutions,
-    markets: projectMarketList(resolutions),
-    failedCount:
-      failedCount +
-      resolutions.filter(
-        (resolution) =>
-          resolution.state === "unavailable" || resolution.state === "missing"
-      ).length,
-  }
 }
 
 export function useMerchantEventTimeline(input: {
@@ -301,6 +258,22 @@ export function useMerchantEventTimeline(input: {
   const conduitCoverage =
     conduitQuery.data?.meta.coverage ??
     (conduitQuery.isError ? "unavailable" : "limited")
+  const followingRefreshStale =
+    followingEnabled &&
+    (isCommerceReadIncomplete(followingQuery.data?.meta) ||
+      followingQuery.isRefetchError ||
+      followingQuery.isPaused)
+  const conduitRefreshStale =
+    conduitEnabled &&
+    (isCommerceReadIncomplete(conduitQuery.data?.meta) ||
+      conduitQuery.isRefetchError ||
+      conduitQuery.isPaused)
+  const perspectiveRefreshStale =
+    input.source === "following"
+      ? followingRefreshStale
+      : input.source === "conduit"
+        ? conduitRefreshStale
+        : followingRefreshStale || conduitRefreshStale
   const perspective = useMemo<
     Omit<EventMarketPerspectiveSnapshot, "authorCount">
   >(() => {
@@ -462,30 +435,34 @@ export function useMerchantEventTimeline(input: {
     ])
   }, [merchantPubkey, storageRevision])
   const exactReferences = useMemo(() => {
-    const byCoordinate = new Map<string, string>()
-    for (const saved of savedReferences) {
-      try {
-        const parsed = projectReference(saved.reference)
-        byCoordinate.set(parsed.coordinate, parsed.reference)
-      } catch {
-        // Invalid local rows are ignored by the storage loader as well.
-      }
-    }
-    for (const coordinate of sellingCollectionCoordinates) {
-      if (!byCoordinate.has(coordinate))
-        byCoordinate.set(coordinate, coordinate)
-    }
+    let current: MerchantEventRelationshipReference | undefined
     if (input.currentReference) {
       try {
-        const parsed = projectReference(input.currentReference)
-        if (!byCoordinate.has(parsed.coordinate)) {
-          byCoordinate.set(parsed.coordinate, parsed.reference)
-        }
+        current = projectReference(input.currentReference)
       } catch {
         // Route validation owns invalid-link feedback.
       }
     }
-    return Array.from(byCoordinate.values()).sort()
+    const products = sellingCollectionCoordinates.flatMap((coordinate) => {
+      try {
+        return [projectReference(coordinate)]
+      } catch {
+        return []
+      }
+    })
+    const saved = savedReferences.flatMap((reference) => {
+      try {
+        return [projectReference(reference.reference)]
+      } catch {
+        // Invalid local rows are ignored by the storage loader as well.
+        return []
+      }
+    })
+    return prioritizeMerchantEventRelationshipReferences({
+      current,
+      products,
+      saved,
+    })
   }, [input.currentReference, savedReferences, sellingCollectionCoordinates])
   const exactReferenceKey = exactReferences.join("\u0000")
   const exactQuery = useQuery({
@@ -495,13 +472,35 @@ export function useMerchantEventTimeline(input: {
       merchantPubkey || "none",
       exactReferenceKey,
     ],
-    queryFn: ({ signal }) =>
-      resolveRelationshipMarkets(
-        exactReferences,
-        authenticatedPubkey,
+    queryFn: async ({ signal }) => {
+      const shouldContinue = () =>
+        !signal.aborted && authGenerationRef.current === authGeneration
+      const hydration = await hydrateMerchantEventRelationships({
+        references: exactReferences,
         signal,
-        () => !signal.aborted && authGenerationRef.current === authGeneration
-      ),
+        shouldContinue,
+        resolve: (reference, hydrationSignal) =>
+          resolveOrganizerEventMarketResolution(
+            reference,
+            undefined,
+            authenticatedPubkey,
+            hydrationSignal,
+            () => !hydrationSignal.aborted && shouldContinue()
+          ),
+      })
+      const resolutions = hydration.values
+      return {
+        resolutions,
+        markets: projectMarketList(resolutions),
+        failedCount:
+          hydration.failedCount +
+          resolutions.filter(
+            (resolution) =>
+              resolution.state === "unavailable" ||
+              resolution.state === "missing"
+          ).length,
+      }
+    },
     enabled:
       session.relaySettingsReady &&
       !!merchantPubkey &&
@@ -543,10 +542,19 @@ export function useMerchantEventTimeline(input: {
         exactRelationshipMarkets: exactQuery.data?.markets ?? [],
         savedReferences,
         sellingCollectionCoordinates,
-        invalidatingResolutions: [
-          ...(perspectiveQuery.data?.markets ?? []),
-          ...(ownedQuery.data?.resolutions ?? []),
-          ...(exactQuery.data?.resolutions ?? []),
+        resolutionObservations: [
+          ...(perspectiveQuery.data?.markets ?? []).map((resolution) => ({
+            readScope: "perspective" as const,
+            resolution,
+          })),
+          ...(ownedQuery.data?.resolutions ?? []).map((resolution) => ({
+            readScope: "owned" as const,
+            resolution,
+          })),
+          ...(exactQuery.data?.resolutions ?? []).map((resolution) => ({
+            readScope: "exact" as const,
+            resolution,
+          })),
         ],
       }),
     [
@@ -621,15 +629,16 @@ export function useMerchantEventTimeline(input: {
   const unresolvedRelationshipCount = Array.from(
     relationshipCoordinates
   ).filter((coordinate) => !visibleCoordinates.has(coordinate)).length
-  const followReadIncomplete = isCommerceReadIncomplete(
-    followingQuery.data?.meta
-  )
   const productReadIncomplete = isCommerceReadIncomplete(
     productsQuery.data?.meta
   )
+  const network = qualifyMerchantEventTimelineNetwork(
+    perspectiveQuery.data,
+    perspectiveRefreshStale
+  )
 
   return {
-    network: perspectiveQuery.data,
+    network,
     items,
     savedReferences,
     sellingCollectionCoordinates,
@@ -652,7 +661,7 @@ export function useMerchantEventTimeline(input: {
       perspectiveQuery.isError ||
       ownedQuery.isError ||
       exactQuery.isError ||
-      followReadIncomplete ||
+      perspectiveRefreshStale ||
       productReadIncomplete ||
       (exactQuery.data?.failedCount ?? 0) > 0,
     unresolvedRelationshipCount,

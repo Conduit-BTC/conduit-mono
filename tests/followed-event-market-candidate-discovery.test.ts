@@ -12,6 +12,7 @@ import {
   __setFollowedEventMarketDiscoveryTestOverrides,
   discoverFollowedOrganizerEventMarkets,
   discoverPerspectiveEventMarkets,
+  resolveEventMarketEvidence,
   FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT,
   type EventMarketRelayCoverage,
   type EventMarketResolution,
@@ -272,6 +273,176 @@ describe("candidate-first followed event-market discovery", () => {
       candidateCollectionCount: 0,
       searchedOrganizerCount: 0,
     })
+  })
+
+  describe("event collection classification", () => {
+    const ordinary = (createdAt = 200, dTag = "catalog") =>
+      finalizeEvent(
+        {
+          kind: 30405,
+          created_at: createdAt,
+          tags: [
+            ["d", dTag],
+            ["title", "Products"],
+            ["a", `30402:${ORGANIZER}:product`],
+          ],
+          content: "",
+        },
+        ORGANIZER_SECRET
+      )
+
+    function configure(
+      live: SignedPublicNostrEvent[],
+      retained: SignedPublicNostrEvent[] = []
+    ) {
+      const hydrated: SignedPublicNostrEvent[][] = []
+      const calendar = finalizeEvent(
+        {
+          kind: 31923,
+          created_at: 100,
+          tags: [
+            ["d", "catalog"],
+            ["title", "Event"],
+            ["start", "1900000000"],
+            ["D", String(Math.floor(1900000000 / 86400))],
+          ],
+          content: "",
+        },
+        ORGANIZER_SECRET
+      )
+      __setFollowedEventMarketDiscoveryTestOverrides({
+        readFollowLists: async () => followRead([ORGANIZER]),
+        readCollectionCandidates: async () => candidateRead({ events: live }),
+        readRetainedCollectionCandidates: async () => ({
+          events: retained,
+          eventSourceRelayUrls: Object.fromEntries(
+            retained.map((event) => [event.id, [RETAINED_RELAY]])
+          ),
+        }),
+        readOrganizerMarkets: async (input) => {
+          const events = [...(input.candidateCollectionEvents ?? [])]
+          hydrated.push(events)
+          const coordinates = new Set(
+            events.map(
+              (event) =>
+                `30405:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}`
+            )
+          )
+          return organizerRead(
+            [...coordinates].map((reference) =>
+              resolveEventMarketEvidence({
+                reference,
+                events: [...events, calendar],
+                nowMs: 1800000000000,
+              })
+            )
+          )
+        },
+      })
+      return hydrated
+    }
+
+    it("excludes ordinary product collections without organizer hydration", async () => {
+      const hydrated = configure([ordinary()])
+      const result = await discoverFollowedOrganizerEventMarkets({
+        merchantPubkey: MERCHANT,
+      })
+      expect(result).toMatchObject({
+        state: "complete_empty",
+        candidateCollectionCount: 0,
+        searchedOrganizerCount: 0,
+        markets: [],
+      })
+      expect(hydrated).toEqual([])
+    })
+
+    it("keeps an event complete when ordinary collections share its organizer", async () => {
+      const event = collectionEvent({ createdAt: 100 })
+      const hydrated = configure([event, ordinary(200, "products")])
+      const result = await discoverFollowedOrganizerEventMarkets({
+        merchantPubkey: MERCHANT,
+        nowMs: 1800000000000,
+      })
+      expect(result.state).toBe("complete")
+      expect(result.candidateCollectionCount).toBe(1)
+      expect(result.markets).toHaveLength(1)
+      expect(hydrated).toEqual([[event]])
+    })
+
+    for (const claims of [
+      [["a", "31923:invalid:calendar"]],
+      [
+        ["a", `31923:${ORGANIZER}:catalog`],
+        ["a", `31922:${ORGANIZER}:other`],
+      ],
+    ]) {
+      it(`keeps ${claims.length === 1 ? "malformed" : "conflicting"} event claims partial and invisible`, async () => {
+        const candidate = finalizeEvent(
+          {
+            kind: 30405,
+            created_at: 100,
+            tags: [["d", "catalog"], ["title", "Event"], ...claims],
+            content: "",
+          },
+          ORGANIZER_SECRET
+        )
+        const hydrated = configure([candidate])
+        const result = await discoverFollowedOrganizerEventMarkets({
+          merchantPubkey: MERCHANT,
+        })
+        expect(result.state).toBe("partial")
+        expect(result.markets).toEqual([])
+        expect(hydrated).toEqual([[candidate]])
+      })
+    }
+
+    it("keeps a claimed event with an extra malformed d tag partial", async () => {
+      const event = collectionEvent()
+      const malformed = finalizeEvent(
+        { ...event, tags: [...event.tags, ["d"]] },
+        ORGANIZER_SECRET
+      )
+      const hydrated = configure([malformed])
+      const result = await discoverFollowedOrganizerEventMarkets({
+        merchantPubkey: MERCHANT,
+      })
+      expect(result.state).toBe("partial")
+      expect(result.markets).toEqual([])
+      expect(hydrated).toEqual([])
+    })
+
+    for (const source of ["live", "retained", "split", "reverse"] as const) {
+      it(`preserves a removed event link across ${source} revisions`, async () => {
+        const older = collectionEvent({ createdAt: 100 })
+        const newer = ordinary()
+        const live =
+          source === "live"
+            ? [older, newer]
+            : source === "split"
+              ? [newer]
+              : source === "reverse"
+                ? [older]
+                : []
+        const retained =
+          source === "retained"
+            ? [older, newer]
+            : source === "split"
+              ? [older]
+              : source === "reverse"
+                ? [newer]
+                : []
+        const hydrated = configure(live, retained)
+        const result = await discoverFollowedOrganizerEventMarkets({
+          merchantPubkey: MERCHANT,
+          nowMs: 1800000000000,
+        })
+        expect(result.state).toBe("partial")
+        expect(result.markets).toEqual([])
+        expect(result.candidateCollectionCount).toBe(1)
+        expect(hydrated).toHaveLength(1)
+        expect(hydrated[0]).toContainEqual(newer)
+      })
+    }
   })
 
   it("retains a verified followed market across omitted live-scan states", async () => {

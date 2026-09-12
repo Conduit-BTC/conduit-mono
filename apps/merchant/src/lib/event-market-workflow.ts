@@ -1222,7 +1222,7 @@ export function organizerEventMarketCanSupplySavedTitle(
   return true
 }
 
-type OrganizerEventMarketCandidate = EventMarketFrontierCarrier & {
+export type OrganizerEventMarketCandidate = EventMarketFrontierCarrier & {
   state: string
   collectionCoordinate: string
   calendarCoordinate?: string
@@ -1338,6 +1338,68 @@ function compareOrganizerEventMarketGraphFrontier(
   if (advances && !regresses) return 1
   if (regresses && !advances) return -1
   return comparisons[0] ?? 0
+}
+
+export type OrganizerEventMarketInvalidationReadScope =
+  "invalid_dominates" | "positive_dominates" | "incomparable"
+
+export type OrganizerEventMarketInvalidationDecision =
+  "retire" | "retain" | "pending"
+
+/**
+ * Reconciles an unusable observation with an already projected positive
+ * market. The collection revision owns the graph relationship, so a strictly
+ * newer invalid collection retires an older graph even when its child record
+ * could not be parsed. Equal collection revisions compare their retained child
+ * frontiers and finally the bounded read scopes that produced each view.
+ */
+export function reconcileOrganizerEventMarketInvalidation(
+  positive: OrganizerEventMarketCandidate,
+  invalid: OrganizerEventMarketCandidate,
+  equalFrontierReadScope: OrganizerEventMarketInvalidationReadScope
+): OrganizerEventMarketInvalidationDecision {
+  if (positive.collectionCoordinate !== invalid.collectionCoordinate) {
+    return "retain"
+  }
+
+  const collectionComparison = compareEventMarketRecordFrontier(
+    carrierFrontier(invalid, "collection"),
+    carrierFrontier(positive, "collection")
+  )
+  if (collectionComparison > 0) return "retire"
+  if (collectionComparison < 0) return "retain"
+
+  for (const record of ["calendar", "pickup"] as const) {
+    const positiveCoordinate =
+      record === "calendar"
+        ? positive.calendarCoordinate
+        : positive.pickupCoordinate
+    const invalidCoordinate =
+      record === "calendar"
+        ? invalid.calendarCoordinate
+        : invalid.pickupCoordinate
+    if (
+      positiveCoordinate &&
+      positiveCoordinate === invalidCoordinate &&
+      carrierFrontier(positive, record) &&
+      !carrierFrontier(invalid, record)
+    ) {
+      // A parse failure removes the child's frontier from the projection; it
+      // does not prove the child is older than the last valid observation.
+      return "pending"
+    }
+  }
+
+  const graphComparison = compareOrganizerEventMarketGraphFrontier(
+    invalid,
+    positive
+  )
+  if (graphComparison === null) return "pending"
+  if (graphComparison > 0) return "retire"
+  if (graphComparison < 0) return "retain"
+  if (equalFrontierReadScope === "invalid_dominates") return "retire"
+  if (equalFrontierReadScope === "positive_dominates") return "retain"
+  return "pending"
 }
 
 function pendingOrganizerEventMarketResolution(
