@@ -43,6 +43,14 @@ export const EVENT_TIMELINE_WINDOWS: EventTimelineWindow[] = [
 
 const DAY_MS = 86_400_000
 
+function eventTimelineWindowDurationMs(
+  window: EventTimelineWindow | undefined
+): number | null {
+  if (window === "7d") return 7 * DAY_MS
+  if (window === "30d") return 30 * DAY_MS
+  return null
+}
+
 export function isTimelineEventMarket(
   market: EventMarketResolution
 ): market is TimelineEventMarket {
@@ -123,6 +131,23 @@ export function filterAndSortEventMarkets(
         )
     )
     .sort((left, right) => compareTimelineMarkets(left, right, nowMs))
+}
+
+/** Wall-clock boundaries that can change the selected timeline projection. */
+export function getEventTimelineBoundaries(
+  markets: readonly EventMarketResolution[],
+  window: EventTimelineWindow | undefined
+): number[] {
+  const windowDurationMs = eventTimelineWindowDurationMs(window)
+  return markets
+    .filter(isTimelineEventMarket)
+    .flatMap((market) => [
+      ...(windowDurationMs === null
+        ? []
+        : [market.calendar.start - windowDurationMs]),
+      market.calendar.start,
+      market.calendar.end,
+    ])
 }
 
 export function getEventTimelineFacets(

@@ -259,6 +259,34 @@ export function filterAndSortMerchantEventTimeline(
     })
 }
 
+function merchantEventTimelineWindowDurationMs(
+  window: MerchantEventTimelineWindow | undefined
+): number | null {
+  if (window === "7d") return 7 * DAY_MS
+  if (window === "30d") return 30 * DAY_MS
+  return null
+}
+
+/** Wall-clock boundaries that can change the selected timeline projection. */
+export function getMerchantEventTimelineBoundaries(
+  items: readonly MerchantEventTimelineItem[],
+  window: MerchantEventTimelineWindow | undefined
+): number[] {
+  const windowDurationMs = merchantEventTimelineWindowDurationMs(window)
+  return items.flatMap((item) => {
+    const bounds = merchantEventTimelineBounds(item.market)
+    return bounds
+      ? [
+          ...(windowDurationMs === null
+            ? []
+            : [bounds.startMs - windowDurationMs]),
+          bounds.startMs,
+          bounds.endMs,
+        ]
+      : []
+  })
+}
+
 export function getMerchantEventTimelineStatus(
   item: MerchantEventTimelineItem,
   nowMs = Date.now()

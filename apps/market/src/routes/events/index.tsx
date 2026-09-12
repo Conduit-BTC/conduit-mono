@@ -22,6 +22,7 @@ import {
   SelectValue,
   EventMarketCard,
   getOrganizerDiscoveryPresentation,
+  useTimeBoundaryNow,
 } from "@conduit/ui"
 import {
   MARKET_SOURCE_OPTIONS,
@@ -34,6 +35,7 @@ import {
   EVENT_TIMELINE_WINDOWS,
   filterAndSortEventMarkets,
   formatEventTimelineSchedule,
+  getEventTimelineBoundaries,
   getEventTimelineFacets,
   getEventTimelineStatus,
   type EventTimelineSearch,
@@ -109,7 +111,11 @@ function EventsTimelinePage() {
     },
     [navigate]
   )
-  const nowMs = Date.now()
+  const timelineBoundaries = useMemo(
+    () => getEventTimelineBoundaries(discovery.markets, search.window),
+    [discovery.markets, search.window]
+  )
+  const nowMs = useTimeBoundaryNow(timelineBoundaries)
   const filteredMarkets = useMemo(
     () => filterAndSortEventMarkets(discovery.markets, search, nowMs),
     [discovery.markets, nowMs, search]
