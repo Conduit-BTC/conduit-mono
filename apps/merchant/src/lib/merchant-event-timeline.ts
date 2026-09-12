@@ -5,13 +5,15 @@ import {
 } from "@conduit/core"
 import type { EventMarketCardStatusTone } from "@conduit/ui"
 import {
-  invalidatedOrganizerEventMarketCoordinates,
   projectOrganizerEventMarketDeletion,
   type MerchantOrganizerEventMarket,
 } from "./event-market"
 import {
   findSavedOrganizerEventMarketReference,
+  reconcileOrganizerEventMarketInvalidation,
   selectOrganizerEventMarketResolution,
+  type OrganizerEventMarketCandidate,
+  type OrganizerEventMarketInvalidationReadScope,
   type SavedOrganizerEventMarketReference,
 } from "./event-market-workflow"
 
@@ -50,6 +52,19 @@ export interface MerchantEventTimelineStatus {
   tone: EventMarketCardStatusTone
 }
 
+export type MerchantEventTimelineReadScope = "perspective" | "owned" | "exact"
+
+export interface MerchantEventTimelineResolutionObservation {
+  readScope: MerchantEventTimelineReadScope
+  resolution: EventMarketResolution
+}
+
+const INVALIDATING_EVENT_MARKET_STATES = new Set<EventMarketResolutionState>([
+  "malformed",
+  "conflicting",
+  "unsupported",
+])
+
 function coordinateFromReference(reference: string): string | null {
   return decodeEventMarketReference(reference, [30405])?.coordinate ?? null
 }
@@ -73,6 +88,86 @@ function positiveResolution(
   return !!value && !("terminal" in value)
 }
 
+function resolutionFrontier(
+  resolution: EventMarketResolution,
+  naddr: string
+): OrganizerEventMarketCandidate | null {
+  const collectionCoordinate = resolution.collectionCoordinate
+  if (!collectionCoordinate) return null
+  return {
+    state: resolution.state,
+    collectionCoordinate,
+    ...(resolution.calendarCoordinate
+      ? { calendarCoordinate: resolution.calendarCoordinate }
+      : {}),
+    ...(resolution.pickupCoordinate
+      ? { pickupCoordinate: resolution.pickupCoordinate }
+      : {}),
+    ...(resolution.collection
+      ? {
+          collectionCreatedAt: resolution.collection.createdAt,
+          collectionEventId: resolution.collection.eventId,
+        }
+      : {}),
+    ...(resolution.calendar
+      ? {
+          calendarCreatedAt: resolution.calendar.createdAt,
+          calendarEventId: resolution.calendar.eventId,
+        }
+      : {}),
+    ...(resolution.pickup
+      ? {
+          pickupCreatedAt: resolution.pickup.createdAt,
+          pickupEventId: resolution.pickup.eventId,
+        }
+      : {}),
+    naddr,
+  }
+}
+
+function relayCoverageTier(
+  resolution: EventMarketResolution
+): "complete" | "partial" | "unavailable" {
+  const coverage = resolution.coverage
+  if (
+    coverage.attemptedRelayCount > 0 &&
+    coverage.completeRelayCount === coverage.attemptedRelayCount &&
+    coverage.partialRelayCount === 0 &&
+    coverage.failedRelayCount === 0
+  ) {
+    return "complete"
+  }
+  return coverage.completeRelayCount > 0 || coverage.partialRelayCount > 0
+    ? "partial"
+    : "unavailable"
+}
+
+function compareEqualFrontierReadScope(
+  positiveScope: MerchantEventTimelineReadScope,
+  positive: EventMarketResolution,
+  invalidScope: MerchantEventTimelineReadScope,
+  invalid: EventMarketResolution
+): OrganizerEventMarketInvalidationReadScope {
+  // Different queries can have disjoint relay plans. Their equal signed
+  // frontiers do not make either bounded observation globally authoritative.
+  if (positiveScope !== invalidScope) return "incomparable"
+  const ranks = { unavailable: 0, partial: 1, complete: 2 } as const
+  const positiveTier = relayCoverageTier(positive)
+  const invalidTier = relayCoverageTier(invalid)
+  if (ranks[invalidTier] > ranks[positiveTier]) return "invalid_dominates"
+  if (ranks[invalidTier] < ranks[positiveTier]) return "positive_dominates"
+  const positiveCoverage = positive.coverage
+  const invalidCoverage = invalid.coverage
+  return positiveCoverage.attemptedRelayCount ===
+    invalidCoverage.attemptedRelayCount &&
+    positiveCoverage.completeRelayCount ===
+      invalidCoverage.completeRelayCount &&
+    positiveCoverage.partialRelayCount === invalidCoverage.partialRelayCount &&
+    positiveCoverage.failedRelayCount === invalidCoverage.failedRelayCount
+    ? "invalid_dominates"
+    : "incomparable"
+}
+
 /**
  * Builds one event registry from public perspective discovery plus exact local
  * relationships. Relationship coordinates are presentation inputs only; every
@@ -85,7 +180,7 @@ export function mergeMerchantEventTimeline(input: {
   exactRelationshipMarkets: readonly MerchantOrganizerEventMarket[]
   savedReferences: readonly SavedOrganizerEventMarketReference[]
   sellingCollectionCoordinates: readonly string[]
-  invalidatingResolutions?: readonly EventMarketResolution[]
+  resolutionObservations?: readonly MerchantEventTimelineResolutionObservation[]
 }): MerchantEventTimelineItem[] {
   const normalizedMerchant = input.merchantPubkey.trim().toLowerCase()
   const savedByCoordinate = referenceMap(input.savedReferences)
@@ -93,19 +188,13 @@ export function mergeMerchantEventTimeline(input: {
     input.sellingCollectionCoordinates.map((value) => value.trim())
   )
   const byCoordinate = new Map<string, MerchantEventTimelineItem>()
-  const invalidatingResolutions = input.invalidatingResolutions ?? []
-  const invalidatedCoordinates = invalidatedOrganizerEventMarketCoordinates(
-    invalidatingResolutions.filter(
-      (resolution) => resolution.state !== "deleted"
-    )
-  )
+  const resolutionObservations = input.resolutionObservations ?? []
 
   const include = (
     market: MerchantOrganizerEventMarket,
     candidateKind: "perspective" | "owned" | "exact"
   ) => {
     const coordinate = market.collectionCoordinate
-    if (invalidatedCoordinates.has(coordinate)) return
     const current = byCoordinate.get(coordinate)
     const savedReference =
       savedByCoordinate.get(coordinate) ??
@@ -113,7 +202,28 @@ export function mergeMerchantEventTimeline(input: {
         input.savedReferences,
         market.naddr
       )
-    for (const resolution of invalidatingResolutions) {
+    let invalidationPending = false
+    for (const observation of resolutionObservations) {
+      const resolution = observation.resolution
+      if (
+        INVALIDATING_EVENT_MARKET_STATES.has(resolution.state) &&
+        resolution.collectionCoordinate === coordinate
+      ) {
+        const invalid = resolutionFrontier(resolution, market.naddr)
+        if (!invalid) continue
+        const decision = reconcileOrganizerEventMarketInvalidation(
+          market,
+          invalid,
+          compareEqualFrontierReadScope(
+            candidateKind,
+            market.source,
+            observation.readScope,
+            resolution
+          )
+        )
+        if (decision === "retire") return
+        if (decision === "pending") invalidationPending = true
+      }
       if (
         resolution.state !== "deleted" ||
         resolution.collectionCoordinate !== coordinate
@@ -151,6 +261,7 @@ export function mergeMerchantEventTimeline(input: {
       : market
     const reconciliationPending =
       current?.reconciliationPending === true ||
+      invalidationPending ||
       (!!selected && "terminal" in selected && selected.state === "pending")
     const selectedMarket = positiveResolution(selected)
       ? selected

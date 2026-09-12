@@ -525,10 +525,19 @@ export function useMerchantEventTimeline(input: {
         exactRelationshipMarkets: exactQuery.data?.markets ?? [],
         savedReferences,
         sellingCollectionCoordinates,
-        invalidatingResolutions: [
-          ...(perspectiveQuery.data?.markets ?? []),
-          ...(ownedQuery.data?.resolutions ?? []),
-          ...(exactQuery.data?.resolutions ?? []),
+        resolutionObservations: [
+          ...(perspectiveQuery.data?.markets ?? []).map((resolution) => ({
+            readScope: "perspective" as const,
+            resolution,
+          })),
+          ...(ownedQuery.data?.resolutions ?? []).map((resolution) => ({
+            readScope: "owned" as const,
+            resolution,
+          })),
+          ...(exactQuery.data?.resolutions ?? []).map((resolution) => ({
+            readScope: "exact" as const,
+            resolution,
+          })),
         ],
       }),
     [

@@ -1,4 +1,5 @@
 import {
+  buildEventMarketShareRelayHints,
   decodeEventMarketReference,
   discoverFollowedOrganizerEventMarkets,
   encodeEventMarketNaddr,
@@ -197,19 +198,36 @@ export function retainMerchantOrganizerEventMarkets(
   retained: readonly MerchantOrganizerEventMarket[],
   result: MerchantOrganizerEventMarketsReadResult
 ): MerchantOrganizerEventMarket[] {
-  if (result.state === "complete") return result.markets
-
+  // Malformed/conflicting/unsupported observations are not terminal by
+  // coordinate alone. Preserve the prior signed graph as stale so downstream
+  // views can reconcile record frontiers and bounded read scopes.
+  const deferredInvalidCoordinates = invalidatedOrganizerEventMarketCoordinates(
+    result.resolutions.filter((resolution) => resolution.state !== "deleted")
+  )
+  const currentMarkets = result.markets.filter(
+    (market) => !deferredInvalidCoordinates.has(market.collectionCoordinate)
+  )
   const projectedCoordinates = new Set(
-    result.markets.map((market) => market.collectionCoordinate)
+    currentMarkets.map((market) => market.collectionCoordinate)
   )
-  const invalidatedCoordinates = invalidatedOrganizerEventMarketCoordinates(
-    result.resolutions
+  const deletedCoordinates = new Set(
+    result.resolutions.flatMap((resolution) =>
+      resolution.state === "deleted" && resolution.collectionCoordinate
+        ? [resolution.collectionCoordinate]
+        : []
+    )
   )
-  const next = [...result.markets]
+  const next = [...currentMarkets]
   for (const market of retained) {
     if (
       projectedCoordinates.has(market.collectionCoordinate) ||
-      invalidatedCoordinates.has(market.collectionCoordinate)
+      deletedCoordinates.has(market.collectionCoordinate)
+    ) {
+      continue
+    }
+    if (
+      result.state === "complete" &&
+      !deferredInvalidCoordinates.has(market.collectionCoordinate)
     ) {
       continue
     }
@@ -586,7 +604,7 @@ export function isParticipationProductAvailable(
 function resolvedEventMarketRelayHints(
   resolution: EventMarketResolution
 ): string[] {
-  return boundedEventMarketShareRelayHints([
+  return buildEventMarketShareRelayHints([
     resolution.collection?.sourceRelayUrls,
     resolution.calendar?.sourceRelayUrls,
     ...resolution.pickups.map((pickup) => pickup.sourceRelayUrls),
@@ -596,40 +614,11 @@ function resolvedEventMarketRelayHints(
 function publishedEventMarketRelayHints(
   value: OrganizerEventMarketPublishResult
 ): string[] {
-  return boundedEventMarketShareRelayHints([
+  return buildEventMarketShareRelayHints([
     value.collection.delivery.acknowledgedRelayUrls,
     value.calendar.delivery.acknowledgedRelayUrls,
     value.pickup?.delivery.acknowledgedRelayUrls,
   ])
-}
-
-// Event-market reads currently allow eight relays. Keep one slot available for
-// the organizer/default read plan so imported or observed hints cannot replace
-// every normal fallback. Take one relay from every required record before
-// adding secondary observations so disjoint collection/calendar/pickup
-// delivery remains reachable from the portable link.
-const EVENT_MARKET_SHARE_RELAY_HINT_LIMIT = 7
-
-function boundedEventMarketShareRelayHints(
-  groups: readonly (readonly string[] | undefined)[]
-): string[] {
-  const normalizedGroups = groups
-    .map((group) => [...(group ?? [])])
-    .filter((group) => group.length > 0)
-  const prioritized = [
-    ...normalizedGroups.flatMap((group) => group.slice(0, 1)),
-    ...normalizedGroups.flatMap((group) => group.slice(1)),
-  ]
-  const seen = new Set<string>()
-  const result: string[] = []
-  for (const relayUrl of prioritized) {
-    const key = normalizeRelayUrl(relayUrl)
-    if (seen.has(key)) continue
-    seen.add(key)
-    result.push(relayUrl)
-    if (result.length >= EVENT_MARKET_SHARE_RELAY_HINT_LIMIT) break
-  }
-  return result
 }
 
 export function projectEventMarket(
@@ -782,7 +771,7 @@ export function organizerEventMarketReferenceWithDeliveryRelayHints(
   return encodeEventMarketNaddr(
     parsed.coordinate,
     expandsRelayHints
-      ? boundedEventMarketShareRelayHints([
+      ? buildEventMarketShareRelayHints([
           parsed.relayHints.slice(0, 3),
           acknowledgedRelayUrls,
           parsed.relayHints.slice(3),
@@ -1027,7 +1016,7 @@ export async function resolveOrganizerEventMarketRead(
       parsedReferenceContainsResolvedHints &&
         parsedReference.relayHints.length > 0
         ? parsedReference.relayHints
-        : boundedEventMarketShareRelayHints([
+        : buildEventMarketShareRelayHints([
             parsedReference.relayHints.slice(0, 1),
             projectedHints,
             parsedReference.relayHints.slice(1),

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test"
-import type { EventMarketResolution } from "@conduit/core"
+import {
+  buildEventMarketShareRelayHints,
+  decodeEventMarketReference,
+  encodeEventMarketNaddr,
+  type EventMarketResolution,
+} from "@conduit/core"
 import { subscribeToTimeBoundaries } from "@conduit/ui"
 import {
   filterAndSortEventMarkets,
@@ -137,6 +142,69 @@ describe("Market Events timeline route", () => {
     expect(card).toContain("export function EventMarketCard")
     expect(route).not.toMatch(/product count/i)
     expect(route).not.toContain("acceptedProductCoordinates.length")
+  })
+
+  it("balances saturated exact-link hints across collection, calendar, and pickup sources", async () => {
+    const route = await Bun.file(
+      "apps/market/src/routes/events/index.tsx"
+    ).text()
+    const collectionRelays = Array.from(
+      { length: 8 },
+      (_, index) => `wss://collection-${index + 1}.relay.conduit.market/events`
+    )
+    const calendarRelays = Array.from(
+      { length: 8 },
+      (_, index) => `wss://calendar-${index + 1}.relay.conduit.market/events`
+    )
+    const pickupRelays = Array.from(
+      { length: 8 },
+      (_, index) => `wss://pickup-${index + 1}.relay.conduit.market/events`
+    )
+    const relayHints = buildEventMarketShareRelayHints([
+      collectionRelays,
+      calendarRelays,
+      pickupRelays,
+    ])
+    const organizer = "a".repeat(64)
+    const naddr = encodeEventMarketNaddr(
+      `30405:${organizer}:balanced-sources`,
+      relayHints
+    )
+
+    expect(relayHints).toEqual([
+      collectionRelays[0],
+      calendarRelays[0],
+      pickupRelays[0],
+      ...collectionRelays.slice(1, 5),
+    ])
+    expect(relayHints).toHaveLength(7)
+    expect(decodeEventMarketReference(naddr, [30405])?.relayHints).toEqual(
+      relayHints
+    )
+    expect(route).toContain("buildEventMarketShareRelayHints")
+    expect(route).toContain(
+      "...market.pickups.map((pickup) => pickup.sourceRelayUrls)"
+    )
+  })
+
+  it("keeps private observed relays out of portable event links", () => {
+    const relayHints = buildEventMarketShareRelayHints([
+      [
+        "wss://127.0.0.1:7447/private",
+        "wss://localhost:7447/private",
+        "wss://relay.conduit.market/events",
+      ],
+    ])
+
+    expect(relayHints).toEqual(["wss://relay.conduit.market/events"])
+    const organizer = "a".repeat(64)
+    const naddr = encodeEventMarketNaddr(
+      `30405:${organizer}:public-only-hints`,
+      relayHints
+    )
+    expect(decodeEventMarketReference(naddr, [30405])?.relayHints).toEqual([
+      "wss://relay.conduit.market/events",
+    ])
   })
 
   it("advances a mounted timeline at start and end without polling", async () => {

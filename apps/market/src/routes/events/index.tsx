@@ -7,6 +7,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react"
 import {
+  buildEventMarketShareRelayHints,
   encodeEventMarketNaddr,
   normalizePubkey,
   pubkeyToNpub,
@@ -377,12 +378,11 @@ function EventsTimelinePage() {
               const organizer = organizerIdentities.getIdentity(
                 market.organizerPubkey
               )
-              const relayHints = Array.from(
-                new Set([
-                  ...(market.collection.sourceRelayUrls ?? []),
-                  ...(market.calendar.sourceRelayUrls ?? []),
-                ])
-              )
+              const relayHints = buildEventMarketShareRelayHints([
+                market.collection.sourceRelayUrls,
+                market.calendar.sourceRelayUrls,
+                ...market.pickups.map((pickup) => pickup.sourceRelayUrls),
+              ])
               const naddr = encodeEventMarketNaddr(
                 market.collection.coordinate,
                 relayHints
