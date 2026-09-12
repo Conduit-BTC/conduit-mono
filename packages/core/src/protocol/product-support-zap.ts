@@ -119,12 +119,23 @@ export function getProductSupportZapRoutingError(
     : null
 }
 
+/**
+ * Stable identity for an invoice's signed product routing and read quality.
+ * `fetchedAt` is intentionally excluded: a newer complete observation of the
+ * same signed revision does not change the target. Source and completeness
+ * fields remain so cache-only or incomplete evidence still invalidates it.
+ */
 export function getProductSupportZapEvidenceFingerprint(
   product: PrepareProductSupportZapInvoiceInput["product"] | undefined
 ): string | null {
   const routing = product?.supportZapRouting
   const readEvidence = routing?.readEvidence
   if (!product || !routing || !readEvidence) return null
+  const readEvidenceComplete =
+    readEvidence.source !== "local_cache" &&
+    !isCommerceReadIncomplete(readEvidence) &&
+    Number.isSafeInteger(readEvidence.fetchedAt) &&
+    readEvidence.fetchedAt > 0
 
   return JSON.stringify([
     product.id,
@@ -138,7 +149,7 @@ export function getProductSupportZapEvidenceFingerprint(
     readEvidence.stale,
     readEvidence.degraded,
     readEvidence.capped,
-    readEvidence.fetchedAt,
+    readEvidenceComplete,
   ])
 }
 

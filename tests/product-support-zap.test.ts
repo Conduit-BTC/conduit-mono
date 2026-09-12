@@ -439,17 +439,27 @@ describe("product support payment profile evidence", () => {
 })
 
 describe("product support zap invoice preparation", () => {
-  it("changes the routing fingerprint when exact-read evidence changes", () => {
+  it("keeps equivalent complete routing stable across observation-time churn", () => {
     const product = supportProduct()
     const selectedFingerprint = getProductSupportZapEvidenceFingerprint(product)
 
     expect(selectedFingerprint).not.toBeNull()
+    expect(
+      getProductSupportZapEvidenceFingerprint(
+        withProductReadEvidence(product, {
+          ...completeProductReadMeta,
+          fetchedAt: completeProductReadMeta.fetchedAt + 1,
+        })
+      )
+    ).toBe(selectedFingerprint)
+
     for (const overrides of [
       { source: "public" as const },
+      { source: "local_cache" as const },
       { stale: true },
       { degraded: true },
       { capped: true },
-      { fetchedAt: completeProductReadMeta.fetchedAt + 1 },
+      { fetchedAt: 0 },
     ]) {
       expect(
         getProductSupportZapEvidenceFingerprint(
@@ -460,6 +470,17 @@ describe("product support zap invoice preparation", () => {
         )
       ).not.toBe(selectedFingerprint)
     }
+
+    expect(
+      getProductSupportZapEvidenceFingerprint(
+        supportProduct([], "New signed revision", 1_700_000_001)
+      )
+    ).not.toBe(selectedFingerprint)
+    expect(
+      getProductSupportZapEvidenceFingerprint(
+        supportProduct([["zap", PROVIDER_PUBKEY, "wss://relay.example"]])
+      )
+    ).not.toBe(selectedFingerprint)
   })
 
   it.each([

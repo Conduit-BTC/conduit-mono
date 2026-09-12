@@ -373,15 +373,31 @@ for (const colorScheme of ["light", "dark"] as const) {
     // Capture only the state message; never attach invoice or request material.
     await status.screenshot({ path: testInfo.outputPath("invoice-status.png") })
     if (colorScheme === "light") {
+      const refreshButton = page.locator(
+        'button[aria-label="Refresh"], button[aria-label="May be out of date"], button[aria-label="Updated"]'
+      )
+      // A complete refresh of the same signed listing changes only the
+      // observation time. It must not discard the already prepared invoice.
+      await refreshButton.evaluate((button) => {
+        ;(button as HTMLButtonElement).click()
+      })
+      await expect(page.locator('button[aria-label="Updated"]')).toBeVisible()
+      await expect(status).toHaveText(
+        "Invoice ready. Conduit has not sent or confirmed a payment."
+      )
+      await expect(
+        page.getByRole("link", { name: "Open in wallet" })
+      ).toBeVisible()
+      await expect(
+        page.getByRole("button", { name: "Copy invoice", exact: true })
+      ).toBeVisible()
+      expect(callbackRequests).toBe(1)
+
       await publishSupportProduct([["zap", receiptPubkey, TEST_RELAY_URL]])
       // Exercise an existing background refresh while preserving the open dialog.
-      await page
-        .locator(
-          'button[aria-label="Refresh"], button[aria-label="May be out of date"], button[aria-label="Updated"]'
-        )
-        .evaluate((button) => {
-          ;(button as HTMLButtonElement).click()
-        })
+      await refreshButton.evaluate((button) => {
+        ;(button as HTMLButtonElement).click()
+      })
       await expect(page.getByRole("dialog")).toContainText("custom zap routing")
       await expect(
         page.getByRole("link", { name: "Open in wallet" })
