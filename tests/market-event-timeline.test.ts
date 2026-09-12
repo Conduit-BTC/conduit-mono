@@ -61,6 +61,15 @@ describe("event timeline perspective presentation", () => {
       getEventTimelinePresentationPerspective(unavailablePerspective, true)
     ).toBe(unavailablePerspective)
   })
+
+  it("limits stale Following and Combined presentation coverage", () => {
+    for (const source of ["following", "combined"] as const) {
+      const perspective = { ...conduitPerspective, source }
+      expect(
+        getEventTimelinePresentationPerspective(perspective, true)
+      ).toEqual({ ...perspective, coverage: "limited" })
+    }
+  })
 })
 
 function market(input: {

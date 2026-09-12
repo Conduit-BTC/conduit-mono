@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test"
 import { subscribeToTimeBoundaries } from "@conduit/ui"
+import type { PerspectiveEventMarketDiscoveryResult } from "@conduit/core"
 import type { MerchantOrganizerEventMarket } from "../apps/merchant/src/lib/event-market"
 import {
   filterAndSortMerchantEventTimeline,
   getMerchantEventTimelineBoundaries,
   getMerchantEventTimelineStatus,
+  qualifyMerchantEventTimelineNetwork,
   type MerchantEventTimelineWindow,
   type MerchantEventTimelineItem,
 } from "../apps/merchant/src/lib/merchant-event-timeline"
@@ -66,6 +68,54 @@ function timedTimelineItem(
 }
 
 describe("merchant organizer event market route", () => {
+  it("retains verified markets while limiting stale perspective coverage", () => {
+    const markets = [timedTimelineItem("retained", 0, 1).market.source]
+    const network = (
+      source: PerspectiveEventMarketDiscoveryResult["perspective"]["source"],
+      coverage: PerspectiveEventMarketDiscoveryResult["perspective"]["coverage"] = "complete"
+    ): PerspectiveEventMarketDiscoveryResult => ({
+      state: "complete",
+      markets,
+      perspective: {
+        source,
+        coverage,
+        eventObserved: true,
+        snapshotState: "network",
+        truncated: false,
+        authorCount: 1,
+      },
+      candidateScanCoverage: {
+        plannedReadCount: 1,
+        completeReadCount: 1,
+      },
+      candidateCollectionCount: 1,
+      candidateScanState: "complete",
+      searchedOrganizerCount: 1,
+      incompleteOrganizerCount: 0,
+      failedOrganizerCount: 0,
+      boundedOrganizerCount: 1,
+      truncated: false,
+    })
+
+    for (const source of ["following", "conduit", "combined"] as const) {
+      const retained = network(source)
+      const qualified = qualifyMerchantEventTimelineNetwork(retained, true)!
+      expect(qualified).not.toBe(retained)
+      expect(qualified.markets).toBe(markets)
+      expect(qualified.perspective.coverage).toBe("limited")
+      expect(qualifyMerchantEventTimelineNetwork(retained, false)).toBe(
+        retained
+      )
+    }
+
+    for (const coverage of ["limited", "unavailable"] as const) {
+      const alreadyIncomplete = network("combined", coverage)
+      expect(qualifyMerchantEventTimelineNetwork(alreadyIncomplete, true)).toBe(
+        alreadyIncomplete
+      )
+    }
+  })
+
   it("registers the authenticated route, navigation, and page title", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
     const header = await Bun.file(
@@ -191,6 +241,11 @@ describe("merchant organizer event market route", () => {
     expect(timelineHook).toContain("discoverPerspectiveEventMarkets({")
     expect(timelineHook).toContain("includeEnded: true")
     expect(timelineHook).toContain("resolveEventMarketPerspectiveAuthorPubkeys")
+    expect(timelineHook).toContain("qualifyMerchantEventTimelineNetwork")
+    expect(timelineHook).toContain("followingQuery.isRefetchError")
+    expect(timelineHook).toContain("followingQuery.isPaused")
+    expect(timelineHook).toContain("conduitQuery.isRefetchError")
+    expect(timelineHook).toContain("conduitQuery.isPaused")
     expect(timelineHook).toContain("hydrateMerchantEventRelationships({")
     expect(timelineHook).toContain(
       "prioritizeMerchantEventRelationshipReferences({"

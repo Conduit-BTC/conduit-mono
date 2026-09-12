@@ -41,6 +41,7 @@ import {
 import { getMerchantProductEventContext } from "../lib/merchant-product-event-context"
 import {
   mergeMerchantEventTimeline,
+  qualifyMerchantEventTimelineNetwork,
   type MerchantEventTimelineItem,
 } from "../lib/merchant-event-timeline"
 import {
@@ -257,6 +258,22 @@ export function useMerchantEventTimeline(input: {
   const conduitCoverage =
     conduitQuery.data?.meta.coverage ??
     (conduitQuery.isError ? "unavailable" : "limited")
+  const followingRefreshStale =
+    followingEnabled &&
+    (isCommerceReadIncomplete(followingQuery.data?.meta) ||
+      followingQuery.isRefetchError ||
+      followingQuery.isPaused)
+  const conduitRefreshStale =
+    conduitEnabled &&
+    (isCommerceReadIncomplete(conduitQuery.data?.meta) ||
+      conduitQuery.isRefetchError ||
+      conduitQuery.isPaused)
+  const perspectiveRefreshStale =
+    input.source === "following"
+      ? followingRefreshStale
+      : input.source === "conduit"
+        ? conduitRefreshStale
+        : followingRefreshStale || conduitRefreshStale
   const perspective = useMemo<
     Omit<EventMarketPerspectiveSnapshot, "authorCount">
   >(() => {
@@ -612,15 +629,16 @@ export function useMerchantEventTimeline(input: {
   const unresolvedRelationshipCount = Array.from(
     relationshipCoordinates
   ).filter((coordinate) => !visibleCoordinates.has(coordinate)).length
-  const followReadIncomplete = isCommerceReadIncomplete(
-    followingQuery.data?.meta
-  )
   const productReadIncomplete = isCommerceReadIncomplete(
     productsQuery.data?.meta
   )
+  const network = qualifyMerchantEventTimelineNetwork(
+    perspectiveQuery.data,
+    perspectiveRefreshStale
+  )
 
   return {
-    network: perspectiveQuery.data,
+    network,
     items,
     savedReferences,
     sellingCollectionCoordinates,
@@ -643,7 +661,7 @@ export function useMerchantEventTimeline(input: {
       perspectiveQuery.isError ||
       ownedQuery.isError ||
       exactQuery.isError ||
-      followReadIncomplete ||
+      perspectiveRefreshStale ||
       productReadIncomplete ||
       (exactQuery.data?.failedCount ?? 0) > 0,
     unresolvedRelationshipCount,

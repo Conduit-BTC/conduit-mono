@@ -103,6 +103,8 @@ describe("Market Events timeline route", () => {
     ])
 
     expect(hook).toContain("resolvePerspectiveAuthorPubkeys")
+    expect(hook).toContain("firstDegreeQuery.isRefetchError")
+    expect(hook).toContain("firstDegreeQuery.isPaused")
     expect(hook).toContain("discoverPerspectiveEventMarkets")
     expect(hook).toContain("includeEnded: true")
     expect(route).toContain("getOrganizerDiscoveryPresentation")

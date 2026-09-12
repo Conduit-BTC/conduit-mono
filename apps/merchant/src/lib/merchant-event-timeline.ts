@@ -2,6 +2,7 @@ import {
   decodeEventMarketReference,
   type EventMarketResolutionState,
   type EventMarketResolution,
+  type PerspectiveEventMarketDiscoveryResult,
 } from "@conduit/core"
 import type { EventMarketCardStatusTone } from "@conduit/ui"
 import {
@@ -50,6 +51,24 @@ export interface MerchantEventTimelineSearch {
 export interface MerchantEventTimelineStatus {
   label: string
   tone: EventMarketCardStatusTone
+}
+
+export function qualifyMerchantEventTimelineNetwork(
+  network: PerspectiveEventMarketDiscoveryResult | undefined,
+  perspectiveRefreshStale: boolean
+): PerspectiveEventMarketDiscoveryResult | undefined {
+  if (
+    !network ||
+    !perspectiveRefreshStale ||
+    network.perspective.coverage !== "complete"
+  ) {
+    return network
+  }
+
+  return {
+    ...network,
+    perspective: { ...network.perspective, coverage: "limited" },
+  }
 }
 
 export type MerchantEventTimelineReadScope = "perspective" | "owned" | "exact"
