@@ -1296,96 +1296,37 @@ describe("agent review handoff", () => {
 
     expect(sourceHeadingWithInternalLanguage.exitCode).toBe(0)
 
-    const externalUrlWithUnverifiedInternalLanguage =
-      await runReviewVerdictGate({
-        headSha,
-        reviewBody: cleanReviewBody(
-          headSha,
-          runId,
-          "1",
-          nextAction(
-            "Maintainer",
-            "complete QA",
-            "the PR",
-            "results are recorded",
-            "https://example.com/review-policy Review and QA Disposition"
-          )
-        ),
-        runId,
-      })
-    expect(externalUrlWithUnverifiedInternalLanguage.exitCode).not.toBe(0)
-    expect(externalUrlWithUnverifiedInternalLanguage.stderr).toContain(
-      "internal workflow language without a concrete public source reference"
-    )
-
-    const arbitraryInternalSource = await runReviewVerdictGate({
-      headSha,
-      reviewBody: cleanReviewBody(
-        headSha,
-        runId,
-        "1",
-        nextAction(
-          "Maintainer",
-          "complete QA",
-          "the PR",
-          "results are recorded",
-          "acceptance/evidence mapping"
-        )
-      ),
-      runId,
-    })
-    expect(arbitraryInternalSource.exitCode).not.toBe(0)
-    expect(arbitraryInternalSource.stderr).toContain(
-      "internal workflow language without a concrete public source reference"
-    )
-
-    const nonexistentPublicPath = await runReviewVerdictGate({
-      baseSha: trustedBaseSha,
-      headSha,
-      reviewBody: cleanReviewBody(
-        headSha,
-        runId,
-        "1",
-        nextAction(
-          "Maintainer",
-          "complete QA",
-          "the PR",
-          "results are recorded",
-          "docs/specs/not-a-real-review-contract.md Review and QA Disposition"
-        )
-      ),
-      runId,
-    })
-    expect(nonexistentPublicPath.exitCode).not.toBe(0)
-    expect(nonexistentPublicPath.stderr).toContain(
-      "internal workflow language without a concrete public source reference"
-    )
-
-    const fakeHeadingOnRealPublicPath = await runReviewVerdictGate({
-      baseSha: trustedBaseSha,
-      headSha,
-      reviewBody: cleanReviewBody(
-        headSha,
-        runId,
-        "1",
-        nextAction(
-          "Maintainer",
-          "complete QA",
-          "the PR",
-          "results are recorded",
-          "docs/specs/wallets.md Review and QA Disposition"
-        )
-      ),
-      runId,
-    })
-    expect(fakeHeadingOnRealPublicPath.exitCode).not.toBe(0)
-    expect(fakeHeadingOnRealPublicPath.stderr).toContain(
-      "internal workflow language without a concrete public source reference"
-    )
-
-    const inventedHeadingOnRealPathContainingJargon =
-      await runReviewVerdictGate({
+    for (const { baseSha, source } of [
+      {
+        source: "https://example.com/review-policy Review and QA Disposition",
+      },
+      { source: "acceptance/evidence mapping" },
+      {
         baseSha: trustedBaseSha,
+        source:
+          "docs/specs/not-a-real-review-contract.md Review and QA Disposition",
+      },
+      {
+        baseSha: trustedBaseSha,
+        source: "docs/specs/wallets.md Review and QA Disposition",
+      },
+      {
+        baseSha: trustedBaseSha,
+        source:
+          ".github/workflows/agent-pr-review.yml Blocked acceptance/evidence mapping QA disposition PR-only graph synthetic merge clean-review contract merge-readiness",
+      },
+      {
+        baseSha: trustedBaseSha,
+        source: "tests/agent-review-handoff.test.ts Blocked",
+      },
+      {
+        baseSha: trustedBaseSha,
+        source:
+          "CONTRIBUTING.md The author proposes one review and QA disposition",
+      },
+    ]) {
+      const result = await runReviewVerdictGate({
+        baseSha,
         headSha,
         reviewBody: cleanReviewBody(
           headSha,
@@ -1396,59 +1337,16 @@ describe("agent review handoff", () => {
             "complete QA",
             "the PR",
             "results are recorded",
-            ".github/workflows/agent-pr-review.yml Blocked acceptance/evidence mapping QA disposition PR-only graph synthetic merge clean-review contract merge-readiness"
+            source
           )
         ),
         runId,
       })
-    expect(inventedHeadingOnRealPathContainingJargon.exitCode).not.toBe(0)
-    expect(inventedHeadingOnRealPathContainingJargon.stderr).toContain(
-      "internal workflow language without a concrete public source reference"
-    )
-
-    const codeLineMasqueradingAsPublicHeading = await runReviewVerdictGate({
-      baseSha: trustedBaseSha,
-      headSha,
-      reviewBody: cleanReviewBody(
-        headSha,
-        runId,
-        "1",
-        nextAction(
-          "Maintainer",
-          "complete QA",
-          "the PR",
-          "results are recorded",
-          "tests/agent-review-handoff.test.ts Blocked"
-        )
-      ),
-      runId,
-    })
-    expect(codeLineMasqueradingAsPublicHeading.exitCode).not.toBe(0)
-    expect(codeLineMasqueradingAsPublicHeading.stderr).toContain(
-      "internal workflow language without a concrete public source reference"
-    )
-
-    const markdownBodyLineMasqueradingAsHeading = await runReviewVerdictGate({
-      baseSha: trustedBaseSha,
-      headSha,
-      reviewBody: cleanReviewBody(
-        headSha,
-        runId,
-        "1",
-        nextAction(
-          "Maintainer",
-          "complete QA",
-          "the PR",
-          "results are recorded",
-          "CONTRIBUTING.md The author proposes one review and QA disposition"
-        )
-      ),
-      runId,
-    })
-    expect(markdownBodyLineMasqueradingAsHeading.exitCode).not.toBe(0)
-    expect(markdownBodyLineMasqueradingAsHeading.stderr).toContain(
-      "internal workflow language without a concrete public source reference"
-    )
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr).toContain(
+        "internal workflow language without a concrete public source reference"
+      )
+    }
 
     const internalLanguageOutsideSource = await runReviewVerdictGate({
       headSha,
