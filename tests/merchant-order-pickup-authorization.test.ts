@@ -273,17 +273,21 @@ function cloneSnapshot(): OrderPickupFulfillmentSchema {
 describe("Merchant pickup order authorization", () => {
   it("carries verified event source relays into organizer profile hydration", async () => {
     const resolution = market()
-    resolution.collection!.sourceRelayUrls = ["wss://collection.example"]
-    resolution.calendar!.sourceRelayUrls = ["wss://calendar.example"]
-    resolution.pickup!.sourceRelayUrls = ["wss://pickup.example"]
+    resolution.collection!.sourceRelayUrls = [
+      "wss://collection.relay.conduit.market",
+    ]
+    resolution.calendar!.sourceRelayUrls = [
+      "wss://calendar.relay.conduit.market",
+    ]
+    resolution.pickup!.sourceRelayUrls = ["wss://pickup.relay.conduit.market"]
     resolution.pickups = [resolution.pickup!]
 
     const result = await verify(dependencies(resolution))
 
     expect(getMerchantPickupOrganizerProfileRelayHints(result)).toEqual([
-      "wss://collection.example",
-      "wss://calendar.example",
-      "wss://pickup.example",
+      "wss://collection.relay.conduit.market",
+      "wss://calendar.relay.conduit.market",
+      "wss://pickup.relay.conduit.market",
     ])
     expect(getMerchantPickupOrganizerProfileRelayHints(undefined)).toEqual([])
     expect(
