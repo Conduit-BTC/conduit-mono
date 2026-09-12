@@ -26,6 +26,10 @@ import {
   PRODUCT_GRID_CLASS_NAME,
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
+import {
+  MARKET_SOURCE_OPTIONS,
+  MarketBrowseNavigation,
+} from "../../components/MarketBrowseNavigation"
 import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCard"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
@@ -38,16 +42,6 @@ import type { ProductCatalogSourceMode } from "../../lib/productCatalogRead"
 
 const PAGE_SIZE = 12
 const COLLAPSED_TAG_CLOUD_HEIGHT = 76
-const CATALOG_SOURCE_OPTIONS: ProductCatalogSourceMode[] = [
-  "combined",
-  "following",
-  "conduit",
-]
-const CATALOG_SOURCE_LABELS: Record<ProductCatalogSourceMode, string> = {
-  combined: "Following + Conduit",
-  following: "Following",
-  conduit: "Conduit",
-}
 const SORT_OPTIONS: Array<{
   value: MarketBrowseSortOption
   label: string
@@ -82,7 +76,7 @@ export const Route = createFileRoute("/products/")({
       )
         ? (raw.sort as MarketBrowseSortOption)
         : undefined,
-      source: CATALOG_SOURCE_OPTIONS.includes(
+      source: MARKET_SOURCE_OPTIONS.includes(
         raw.source as ProductCatalogSourceMode
       )
         ? (raw.source as ProductCatalogSourceMode)
@@ -109,50 +103,6 @@ function FilterRemoveButton({
     >
       <X className="h-3.5 w-3.5" aria-hidden="true" />
     </button>
-  )
-}
-
-function CatalogSourceControl({
-  catalogSource,
-  connected,
-  onSelect,
-}: {
-  catalogSource: ProductCatalogSourceMode
-  connected: boolean
-  onSelect: (source: ProductCatalogSourceMode) => void
-}) {
-  return (
-    <section className="flex min-h-10 flex-col gap-2 text-xs sm:flex-row sm:items-center">
-      <div className="shrink-0 font-medium uppercase tracking-wider text-[var(--text-muted)]">
-        Catalog
-      </div>
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <div className="inline-flex rounded-full border border-[var(--border)] bg-[var(--surface)] p-1">
-          {CATALOG_SOURCE_OPTIONS.map((source) => {
-            const selected = catalogSource === source
-            return (
-              <button
-                key={source}
-                type="button"
-                disabled={!connected && source !== "conduit"}
-                onClick={() => onSelect(source)}
-                className={[
-                  "h-7 rounded-full px-3 font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-                  selected
-                    ? "bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-sm)]"
-                    : "text-[var(--text-muted)] hover:text-[var(--text-primary)]",
-                  !connected && source !== "conduit"
-                    ? "pointer-events-none opacity-45"
-                    : "",
-                ].join(" ")}
-              >
-                {CATALOG_SOURCE_LABELS[source]}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-    </section>
   )
 }
 
@@ -399,10 +349,11 @@ function ProductsPage() {
         </section>
       )}
 
-      <CatalogSourceControl
-        catalogSource={catalogSource}
+      <MarketBrowseNavigation
+        active="catalog"
+        source={catalogSource}
         connected={connected}
-        onSelect={(source) =>
+        onSelectSource={(source) =>
           updateSearch({
             source: source === "combined" ? undefined : source,
           })

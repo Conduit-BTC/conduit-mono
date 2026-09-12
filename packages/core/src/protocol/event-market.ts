@@ -35,6 +35,7 @@ import { planRelayReads } from "./relay-planner"
 import {
   getConfiguredIsolatedE2eRelayUrl,
   normalizeOwnerSelectedRelayUrls,
+  normalizePublicOrIsolatedE2eRelayHints,
   normalizeSecureOrIsolatedE2eRelayUrls,
   tryNormalizeRelayUrl,
 } from "./relay-settings"
@@ -50,6 +51,9 @@ const NON_NEGATIVE_DECIMAL = /^(?:0|[1-9]\d*)(?:\.\d+)?$/
 const GEOHASH = /^[0-9bcdefghjkmnpqrstuvwxyz]{1,32}$/i
 const EVENT_MARKET_MAX_D_TAG_LENGTH = 128
 const EVENT_MARKET_MAX_RELAY_HINTS = 8
+// Keep one event-market read slot available for the organizer/default relay
+// plan when portable links supply observed source hints.
+const EVENT_MARKET_SHARE_RELAY_HINT_LIMIT = EVENT_MARKET_MAX_RELAY_HINTS - 1
 const EVENT_MARKET_MAX_DAY_BUCKETS = 370
 const EVENT_MARKET_MAX_AUTHOR_EVENTS = 500
 const EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER = 750
@@ -169,6 +173,8 @@ export interface ParsedEventMarketCalendar {
   summary?: string
   image?: string
   locations: string[]
+  /** Signed NIP-52 topic tags, preserved for display and local filtering. */
+  topics?: string[]
   geohash?: string
   /** Inclusive start instant in epoch milliseconds. */
   start: number
@@ -303,6 +309,38 @@ function normalizeRelayHints(values: readonly string[] | undefined): string[] {
     if (hints.size >= EVENT_MARKET_MAX_RELAY_HINTS) break
   }
   return Array.from(hints)
+}
+
+function normalizePortableRelayHints(
+  values: readonly string[] | undefined
+): string[] {
+  return normalizePublicOrIsolatedE2eRelayHints(values ?? []).slice(
+    0,
+    EVENT_MARKET_MAX_RELAY_HINTS
+  )
+}
+
+/**
+ * Selects portable event-market relay hints without letting one record type
+ * consume the full bounded read plan. Each non-empty source group contributes
+ * its first observed relay before secondary observations are considered.
+ */
+export function buildEventMarketShareRelayHints(
+  groups: readonly (readonly string[] | undefined)[]
+): string[] {
+  const normalizedGroups = groups
+    .map((group) => normalizePortableRelayHints(group))
+    .filter((group) => group.length > 0)
+  const prioritized = [
+    ...normalizedGroups.flatMap((group) => group.slice(0, 1)),
+    ...normalizedGroups.flatMap((group) => group.slice(1)),
+  ]
+  const result = new Set<string>()
+  for (const relayUrl of prioritized) {
+    result.add(relayUrl)
+    if (result.size >= EVENT_MARKET_SHARE_RELAY_HINT_LIMIT) break
+  }
+  return Array.from(result)
 }
 
 function extractNaddr(value: string): string | null {
@@ -812,6 +850,14 @@ export function parseEventMarketCalendarEvent(
     end = endMs ?? startMs
   }
 
+  const topics = Array.from(
+    new Set(
+      tagValues(event.tags, "t")
+        .map((topic) => topic.trim())
+        .filter(Boolean)
+    )
+  )
+
   return {
     coordinate: coordinate.coordinate,
     eventId: event.id.toLowerCase(),
@@ -826,6 +872,7 @@ export function parseEventMarketCalendarEvent(
     ...(summary ? { summary } : {}),
     ...(image ? { image } : {}),
     locations: tagValues(event.tags, "location").filter(Boolean),
+    ...(topics.length > 0 ? { topics } : {}),
     ...(geohash ? { geohash: geohash.toLowerCase() } : {}),
     start,
     end,
@@ -2290,10 +2337,40 @@ async function eventMarketReadPlanDetailed(input: {
   const usableOrganizerHints = plan.hintRelayUrls.filter(
     (relayUrl) => !parkedRelays.has(relayUrl.toLowerCase())
   )
+  const organizerHintRelays = new Set(
+    plan.hintRelayUrls.map((relayUrl) => relayUrl.toLowerCase())
+  )
+  const ownerSelectedRelays = new Set(
+    (plan.ownerSelectedRelayUrls ?? []).map((relayUrl) =>
+      relayUrl.toLowerCase()
+    )
+  )
+  const planFallbackRelayUrls = plan.relayUrls.filter((relayUrl) => {
+    const key = relayUrl.toLowerCase()
+    return !organizerHintRelays.has(key) && !ownerSelectedRelays.has(key)
+  })
+  const relayPrefix = mergeRelayUrlsWithOwnerAuthority(
+    plan.ownerSelectedRelayUrls ?? [],
+    usableOrganizerHints
+  )
+  const portableRelayHints = normalizePortableRelayHints(input.relayHints)
+  const reservedPlanFallback =
+    portableRelayHints.length > 0 ? planFallbackRelayUrls.slice(0, 1) : []
+  const portableHintsBeforeFallback = portableRelayHints.slice(
+    0,
+    Math.max(
+      0,
+      EVENT_MARKET_MAX_RELAY_HINTS -
+        relayPrefix.length -
+        reservedPlanFallback.length
+    )
+  )
   const relayUrls = mergeRelayUrlsWithOwnerAuthority(
     plan.ownerSelectedRelayUrls ?? [],
-    usableOrganizerHints,
-    input.relayHints ?? [],
+    relayPrefix,
+    portableHintsBeforeFallback,
+    reservedPlanFallback,
+    portableRelayHints.slice(portableHintsBeforeFallback.length),
     plan.relayUrls
   )
   const selectedRelays = new Set(

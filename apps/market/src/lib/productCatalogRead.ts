@@ -1,8 +1,10 @@
 import {
   isCommerceReadIncomplete,
   normalizePubkey,
+  resolveEventMarketPerspectiveAuthorPubkeys,
   selectLatestFollowListEvent,
   type CommerceQueryMeta,
+  type EventMarketPerspectiveAuthorSource,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 
@@ -22,8 +24,7 @@ export interface ProductCatalogReadInput {
   limit?: number
 }
 
-export type PerspectiveAuthorSource =
-  "refreshed" | "seed" | "cached" | "fallback" | "combined" | "none"
+export type PerspectiveAuthorSource = EventMarketPerspectiveAuthorSource
 
 export interface PerspectiveAuthorResolution {
   authorPubkeys: string[] | undefined
@@ -168,30 +169,6 @@ export function isPerspectiveMarketplaceRead(
   return input.scope === "marketplace" && !input.merchantPubkey
 }
 
-function uniquePerspectiveAuthors(
-  pubkeys: readonly string[] | undefined,
-  perspectivePubkey?: string | null
-): string[] {
-  return Array.from(
-    new Set(pubkeys?.map(normalizePubkey).filter(Boolean) as string[])
-  )
-    .filter((pubkey) => pubkey !== perspectivePubkey)
-    .sort()
-}
-
-function includePerspectiveAuthor(
-  pubkeys: readonly string[],
-  perspectivePubkey?: string | null
-): string[] {
-  const normalizedPerspective = normalizePubkey(perspectivePubkey)
-  return Array.from(
-    new Set([
-      ...pubkeys,
-      ...(normalizedPerspective ? [normalizedPerspective] : []),
-    ])
-  ).sort()
-}
-
 export function resolvePerspectiveAuthorPubkeys(input: {
   usesPerspectiveGraph: boolean
   sourceMode?: ProductCatalogSourceMode
@@ -202,124 +179,7 @@ export function resolvePerspectiveAuthorPubkeys(input: {
   fallbackAuthorPubkeys?: readonly string[]
   followLookupSettled?: boolean
 }): PerspectiveAuthorResolution {
-  const refreshed = uniquePerspectiveAuthors(
-    input.refreshedAuthorPubkeys,
-    input.perspectivePubkey
-  )
-  const cached = uniquePerspectiveAuthors(
-    input.cachedAuthorPubkeys,
-    input.perspectivePubkey
-  )
-  const fallback = uniquePerspectiveAuthors(
-    input.fallbackAuthorPubkeys,
-    input.perspectivePubkey
-  )
-  const sourceMode = input.sourceMode ?? "following"
-  const hasRefreshedAuthors = input.refreshedAuthorPubkeys !== undefined
-  const hasCachedAuthors = input.cachedAuthorPubkeys !== undefined
-
-  if (input.usesPerspectiveGraph && sourceMode === "conduit") {
-    const seeded = uniquePerspectiveAuthors(
-      input.seedAuthorPubkeys,
-      input.perspectivePubkey
-    )
-    if (seeded.length > 0) return { authorPubkeys: seeded, source: "seed" }
-
-    if (fallback.length > 0) {
-      return { authorPubkeys: fallback, source: "fallback" }
-    }
-    return { authorPubkeys: undefined, source: "none" }
-  }
-
-  if (input.usesPerspectiveGraph && sourceMode === "combined") {
-    if (hasRefreshedAuthors) {
-      if (refreshed.length > 0) {
-        return {
-          authorPubkeys: includePerspectiveAuthor(
-            uniquePerspectiveAuthors(
-              [...refreshed, ...fallback],
-              input.perspectivePubkey
-            ),
-            input.perspectivePubkey
-          ),
-          source: fallback.length > 0 ? "combined" : "refreshed",
-        }
-      }
-    } else {
-      const seeded = uniquePerspectiveAuthors(
-        input.seedAuthorPubkeys,
-        input.perspectivePubkey
-      )
-      if (seeded.length > 0) {
-        return {
-          authorPubkeys: includePerspectiveAuthor(
-            uniquePerspectiveAuthors(
-              [...seeded, ...fallback],
-              input.perspectivePubkey
-            ),
-            input.perspectivePubkey
-          ),
-          source: fallback.length > 0 ? "combined" : "seed",
-        }
-      }
-
-      if (hasCachedAuthors && cached.length > 0) {
-        return {
-          authorPubkeys: includePerspectiveAuthor(
-            uniquePerspectiveAuthors(
-              [...cached, ...fallback],
-              input.perspectivePubkey
-            ),
-            input.perspectivePubkey
-          ),
-          source: fallback.length > 0 ? "combined" : "cached",
-        }
-      }
-    }
-
-    if (fallback.length > 0) {
-      return {
-        authorPubkeys: includePerspectiveAuthor(
-          fallback,
-          input.perspectivePubkey
-        ),
-        source: "fallback",
-      }
-    }
-
-    const normalizedPerspective = normalizePubkey(input.perspectivePubkey)
-    if (normalizedPerspective) {
-      return { authorPubkeys: [normalizedPerspective], source: "combined" }
-    }
-  }
-
-  if (hasRefreshedAuthors) {
-    return refreshed.length > 0
-      ? { authorPubkeys: refreshed, source: "refreshed" }
-      : { authorPubkeys: [], source: "none" }
-  }
-
-  const seeded = uniquePerspectiveAuthors(
-    input.seedAuthorPubkeys,
-    input.perspectivePubkey
-  )
-  if (seeded.length > 0) return { authorPubkeys: seeded, source: "seed" }
-
-  if (hasCachedAuthors) {
-    return cached.length > 0
-      ? { authorPubkeys: cached, source: "cached" }
-      : { authorPubkeys: [], source: "none" }
-  }
-
-  if (input.usesPerspectiveGraph && input.followLookupSettled) {
-    return { authorPubkeys: [], source: "none" }
-  }
-
-  if (!input.usesPerspectiveGraph) {
-    return { authorPubkeys: undefined, source: "none" }
-  }
-
-  return { authorPubkeys: undefined, source: "none" }
+  return resolveEventMarketPerspectiveAuthorPubkeys(input)
 }
 
 export function getCatalogAuthorPubkeys(
