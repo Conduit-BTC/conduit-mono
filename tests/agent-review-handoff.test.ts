@@ -663,6 +663,9 @@ describe("agent review handoff", () => {
       "Next: <owner> — <action>; evidence: <destination>; done when: <completion signal>; source: <source>."
     )
     expect(reviewWorkflow).toContain(
+      "The colon after `done when:` is mandatory."
+    )
+    expect(reviewWorkflow).toContain(
       "Pending maintainer QA, testing, approval, or other human work"
     )
     expect(reviewWorkflow).toContain(
@@ -908,7 +911,12 @@ describe("agent review handoff", () => {
     const jargonInlineFinding = await runReviewVerdictGate({
       headSha,
       inlineComments: JSON.stringify([
-        { body: inlineFindingBody("the clean-review contract") },
+        {
+          body: inlineFindingBody().replace(
+            "Action: preserve the destination in the retry checkpoint",
+            "Action: preserve the clean-review contract"
+          ),
+        },
       ]),
       reviewBody: findingsReviewBody(headSha, runId),
       runId,
@@ -1099,6 +1107,14 @@ describe("agent review handoff", () => {
     expect(missingActionSource.exitCode).not.toBe(0)
     expect(missingActionSource.stderr).toContain("complete Next action")
 
+    const missingDoneWhenColon = await runReviewVerdictGate({
+      headSha,
+      reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.\nNext: Maintainer — complete QA; evidence: the PR; done when results are recorded; source: the PR test plan.`,
+      runId,
+    })
+    expect(missingDoneWhenColon.exitCode).not.toBe(0)
+    expect(missingDoneWhenColon.stderr).toContain("complete Next action")
+
     for (const quotedSource of validQuotedSources) {
       const quotedSourceAction = await runReviewVerdictGate({
         headSha,
@@ -1249,6 +1265,139 @@ describe("agent review handoff", () => {
     })
     expect(wrongFirstLine.exitCode).not.toBe(0)
     expect(wrongFirstLine.stderr).toContain("first visible line")
+  })
+
+  it("allows internal-language headings only in validated sources", async () => {
+    const headSha = "7".repeat(40)
+    const runId = "321"
+    const trustedBaseSha = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+      cwd: process.cwd(),
+    })
+      .stdout.toString()
+      .trim()
+    expect(trustedBaseSha).toMatch(/^[0-9a-f]{40}$/)
+    const sourceHeadingWithInternalLanguage = await runReviewVerdictGate({
+      baseSha: trustedBaseSha,
+      headSha,
+      reviewBody: cleanReviewBody(
+        headSha,
+        runId,
+        "1",
+        nextAction(
+          "Maintainer",
+          "complete QA",
+          "the PR",
+          "results are recorded",
+          "`docs/specs/testing-e2e.md` Review and QA Disposition"
+        )
+      ),
+      runId,
+    })
+
+    expect(sourceHeadingWithInternalLanguage.exitCode).toBe(0)
+
+    for (const { baseSha, source } of [
+      {
+        source: "https://example.com/review-policy Review and QA Disposition",
+      },
+      { source: "acceptance/evidence mapping" },
+      {
+        baseSha: trustedBaseSha,
+        source:
+          "docs/specs/not-a-real-review-contract.md Review and QA Disposition",
+      },
+      {
+        baseSha: trustedBaseSha,
+        source: "docs/specs/wallets.md Review and QA Disposition",
+      },
+      {
+        baseSha: trustedBaseSha,
+        source:
+          ".github/workflows/agent-pr-review.yml Blocked acceptance/evidence mapping QA disposition PR-only graph synthetic merge clean-review contract merge-readiness",
+      },
+      {
+        baseSha: trustedBaseSha,
+        source: "tests/agent-review-handoff.test.ts Blocked",
+      },
+      {
+        baseSha: trustedBaseSha,
+        source:
+          "CONTRIBUTING.md The author proposes one review and QA disposition",
+      },
+    ]) {
+      const result = await runReviewVerdictGate({
+        baseSha,
+        headSha,
+        reviewBody: cleanReviewBody(
+          headSha,
+          runId,
+          "1",
+          nextAction(
+            "Maintainer",
+            "complete QA",
+            "the PR",
+            "results are recorded",
+            source
+          )
+        ),
+        runId,
+      })
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr).toContain(
+        "internal workflow language without a concrete public source reference"
+      )
+    }
+
+    const internalLanguageOutsideSource = await runReviewVerdictGate({
+      headSha,
+      reviewBody: cleanReviewBody(
+        headSha,
+        runId,
+        "1",
+        nextAction(
+          "Maintainer",
+          "record the QA disposition",
+          "the PR",
+          "results are recorded",
+          "the PR test plan"
+        )
+      ),
+      runId,
+    })
+    expect(internalLanguageOutsideSource.exitCode).not.toBe(0)
+    expect(internalLanguageOutsideSource.stderr).toContain(
+      "internal workflow language"
+    )
+
+    const inlineSourceHeadingWithInternalLanguage = await runReviewVerdictGate({
+      baseSha: trustedBaseSha,
+      headSha,
+      inlineComments: JSON.stringify([
+        {
+          body: inlineFindingBody(
+            "`docs/specs/testing-e2e.md` Review and QA Disposition"
+          ),
+        },
+      ]),
+      reviewBody: findingsReviewBody(headSha, runId),
+      runId,
+    })
+    expect(inlineSourceHeadingWithInternalLanguage.exitCode).toBe(0)
+
+    const arbitraryInlineInternalSource = await runReviewVerdictGate({
+      headSha,
+      inlineComments: JSON.stringify([
+        {
+          body: inlineFindingBody("the clean-review contract"),
+        },
+      ]),
+      reviewBody: findingsReviewBody(headSha, runId),
+      runId,
+    })
+    expect(arbitraryInlineInternalSource.exitCode).not.toBe(0)
+    expect(arbitraryInlineInternalSource.stderr).toContain(
+      "Code-change handoffs require inline P0-P2 findings"
+    )
   })
 
   it("fails malformed or stale final Ponytail reviews closed", async () => {
