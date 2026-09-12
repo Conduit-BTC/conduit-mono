@@ -33,6 +33,7 @@ import {
 } from "../../components/MerchantIdentity"
 import { ProductDescriptionMarkdown } from "../../components/ProductDescriptionMarkdown"
 import { ProductGridCardSkeleton } from "../../components/ProductGridCard"
+import { ProductSupportZap } from "../../components/ProductSupportZap"
 import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCard"
 import { ProductVariationSelector } from "../../components/ProductVariationSelector"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
@@ -805,6 +806,17 @@ function ProductPage() {
                     View cart
                   </Link>
                 </Button>
+
+                {selectedProduct ? (
+                  <ProductSupportZap
+                    product={selectedProduct}
+                    productAddress={selectedProduct.id}
+                    productTitle={selectedProduct.title}
+                    merchantPubkey={selectedProduct.pubkey}
+                    merchantName={merchantName}
+                    lud16={merchantProfile.data?.lud16}
+                  />
+                ) : null}
               </div>
             </aside>
           </div>

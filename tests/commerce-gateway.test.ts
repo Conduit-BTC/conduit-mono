@@ -2898,6 +2898,80 @@ describe("commerce gateway", () => {
     )
   })
 
+  it.each([
+    ["complete", false, false],
+    ["partial", true, false],
+    ["capped", false, true],
+  ] as const)(
+    "binds support routing to %s exact-detail evidence",
+    async (_, partial, capped) => {
+      const dTag = `support-routing-${partial ? "partial" : capped ? "capped" : "complete"}`
+      const event = makeSignedProductEvent({
+        dTag,
+        createdAt: 100,
+        title: "Support routing evidence",
+      })
+      const addressId = `30402:${event.pubkey}:${dTag}`
+      const productEvents = capped
+        ? [
+            ...Array.from({ length: 9 }, (_, index) =>
+              makeSignedProductEvent({
+                dTag,
+                createdAt: 91 + index,
+                title: `Older support routing ${index}`,
+              })
+            ),
+            event,
+          ]
+        : [event]
+
+      __setCommerceTestOverrides({
+        fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+          const relayUrls = [...(options?.relayUrls ?? [])]
+          const attemptedRelayUrls = relayUrls.length
+            ? relayUrls
+            : ["wss://relay.conduit.market"]
+          if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+            return {
+              events: productEvents,
+              attemptedRelayUrls: partial
+                ? [...attemptedRelayUrls, "wss://unavailable.example"]
+                : attemptedRelayUrls,
+              successfulRelayUrls: attemptedRelayUrls,
+              failedRelayUrls: partial ? ["wss://unavailable.example"] : [],
+              cappedRelayUrls: capped
+                ? [attemptedRelayUrls[0] ?? "wss://relay.conduit.market"]
+                : [],
+            }
+          }
+          return {
+            events: [],
+            attemptedRelayUrls,
+            successfulRelayUrls: attemptedRelayUrls,
+            failedRelayUrls: [],
+            cappedRelayUrls: [],
+          }
+        },
+      })
+
+      const result = await getProductDetail({ productId: addressId })
+
+      expect(result.data?.product.supportZapRouting?.readEvidence).toEqual({
+        source: result.meta.source,
+        stale: result.meta.stale,
+        degraded: result.meta.degraded,
+        capped: result.meta.capped,
+        fetchedAt: result.meta.fetchedAt,
+      })
+      expect(result.meta).toMatchObject({
+        source: "commerce",
+        stale: partial || capped,
+        degraded: partial || capped,
+        capped,
+      })
+    }
+  )
+
   it("builds stable buyer conversation summaries from cached messages", async () => {
     cachedOrderMessages.push(
       {

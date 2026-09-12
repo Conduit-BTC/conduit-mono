@@ -1,4 +1,5 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { Product } from "../types"
 import {
   canonicalizeProductPrice,
   normalizeCurrencyCode,
@@ -985,9 +986,24 @@ export function normalizeProductSummaryForDisplay(
  */
 export function parseProductEvent(
   event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id">
-): ProductSchema {
+): ProductSchema & Pick<Product, "supportZapRouting"> {
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")
+  // Never accept routing claims from legacy JSON. The commerce gateway validates
+  // this envelope; cache-only projections deliberately do not retain this field.
+  const supportZapRouting: Product["supportZapRouting"] =
+    dTag &&
+    /^[0-9a-f]{64}$/i.test(event.id ?? "") &&
+    event.created_at !== undefined
+      ? {
+          state: event.tags?.some((tag) => tag[0] === "zap")
+            ? "unsupported"
+            : "default",
+          productAddress: `30402:${event.pubkey}:${dTag}`,
+          eventId: event.id,
+          eventCreatedAt: event.created_at,
+        }
+      : undefined
   const standardPrice = parsePriceTag(event.tags)
   let legacyContent: unknown
   let legacyContentParsed = false
@@ -1070,9 +1086,7 @@ export function parseProductEvent(
         }
       )
 
-      return normalizedSummary === res.data.summary
-        ? res.data
-        : { ...res.data, summary: normalizedSummary }
+      return { ...res.data, summary: normalizedSummary, supportZapRouting }
     }
   } catch {
     // fall through
@@ -1152,5 +1166,5 @@ export function parseProductEvent(
     })
   )
 
-  return fallback
+  return { ...fallback, supportZapRouting }
 }
