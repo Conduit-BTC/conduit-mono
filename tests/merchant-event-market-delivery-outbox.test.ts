@@ -31,9 +31,9 @@ const SECRET = generateSecretKey()
 const ORGANIZER = getPublicKey(SECRET)
 const OTHER_ORGANIZER = "f".repeat(64)
 const REFERENCE = `30405:${ORGANIZER}:public-market`
-const PUBLISH_RELAY = "wss://publish.example/events"
-const CALENDAR_RELAY = "wss://calendar-only.example/events"
-const PICKUP_RELAY = "wss://pickup-only.example/events"
+const PUBLISH_RELAY = "wss://publish-relay.test.conduit.market/events"
+const CALENDAR_RELAY = "wss://calendar-relay.test.conduit.market/events"
+const PICKUP_RELAY = "wss://pickup-relay.test.conduit.market/events"
 
 class MemoryStorage {
   constructor(private readonly values = new Map<string, string>()) {}
@@ -362,9 +362,9 @@ describe("merchant organizer delivery outbox", () => {
   it("adds an exact retry acknowledgement relay to the portable reference", () => {
     const existingHints = Array.from(
       { length: 7 },
-      (_, index) => `wss://existing-${index + 1}.example/events`
+      (_, index) => `wss://existing-${index + 1}.test.conduit.market/events`
     )
-    const acknowledgementRelay = "wss://out-only.example/events"
+    const acknowledgementRelay = "wss://out-only.test.conduit.market/events"
     const updated = organizerEventMarketReferenceWithDeliveryRelayHints(
       encodeEventMarketNaddr(REFERENCE, existingHints),
       {
