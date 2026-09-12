@@ -366,6 +366,7 @@ jobs:
               `Code changes required.`
             - The second visible line must use this exact field structure:
               `Next: <owner> — <action>; evidence: <destination>; done when: <completion signal>; source: <source>.`
+              The colon after `done when:` is mandatory.
               Name the person or role who acts next and keep every field
               concrete. A missing source makes the action invalid.
             - Pending maintainer QA, testing, approval, or other human work goes
@@ -375,6 +376,8 @@ jobs:
             - Do not use generic `Blocked`. Do not expose internal workflow
               phrases including `acceptance/evidence mapping`, `QA disposition`,
               `PR-only graph`, `synthetic merge`, or `clean-review contract`.
+              An exact public document or section title may appear only in a
+              validated `source` or `Source` field.
             - Do not add headings, duplicate finding details, or a second summary.
 
             Clean handoff contract:
@@ -575,8 +578,15 @@ jobs:
             echo "The current-run review Next action lacks a concrete source." >&2
             exit 1
           fi
+          review_jargon_body="$(
+            {
+              printf '%s\n' "$first_visible_line"
+              printf '%s\n' "$next_owner" "$next_action" "$next_evidence" "$next_completion"
+              awk 'NF { count += 1; if (count > 2) print }' <<< "$visible_body"
+            }
+          )"
           if grep -Eqi '(^|[^[:alnum:]])blocked([^[:alnum:]]|$)|acceptance/evidence mapping|qa disposition|pr-only graph|synthetic merge|clean-review contract|merge-readiness' \
-            <<< "$visible_body"; then
+            <<< "$review_jargon_body"; then
             echo "The current-run review exposes internal workflow language." >&2
             exit 1
           fi
@@ -611,7 +621,9 @@ jobs:
                   any(length == 0)) or
                 (($fields.source | trim | ascii_downcase) |
                   test("^(none|unknown|unsourced|unavailable|n/?a)$")) or
-                ($body | test("(?i)\\bblocked\\b|acceptance/evidence mapping|qa disposition|pr-only graph|synthetic merge|clean-review contract|merge-readiness"))
+                ([$fields.impact, $fields.owner, $fields.action, $fields.evidence, $fields.completion] |
+                  join("\\n") |
+                  test("(?i)\\bblocked\\b|acceptance/evidence mapping|qa disposition|pr-only graph|synthetic merge|clean-review contract|merge-readiness"))
               )
             ] | length' \
               <<< "$review_comments"
