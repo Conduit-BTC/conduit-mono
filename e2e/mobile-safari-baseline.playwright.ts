@@ -1,11 +1,15 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
-import { nip19 } from "nostr-tools"
 import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
 
+import {
+  buildEventMarketCalendarDraft,
+  buildEventMarketCollectionDraft,
+  encodeEventMarketNaddr,
+} from "@conduit/core/protocol/event-market"
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
@@ -345,46 +349,34 @@ test.describe("CND-162 mobile browser baseline", () => {
     const shopperSecret = generateSecretKey()
     const shopperPubkey = getPublicKey(shopperSecret)
     const createdAt = Math.floor(Date.now() / 1_000)
-    const start = createdAt + 60
-    const end = createdAt + 3_600
     const calendarDTag = "mobile-profile-refresh-calendar"
-    const collectionDTag = "mobile-profile-refresh-collection"
+    const calendarDraft = buildEventMarketCalendarDraft({
+      kind: 31923,
+      dTag: calendarDTag,
+      title: "Stable mobile event catalog",
+      start: createdAt + 60,
+      end: createdAt + 3_600,
+      locations: ["Synthetic venue"],
+    })
     const calendar = finalizeEvent(
-      {
-        kind: 31923,
-        created_at: createdAt,
-        content: "",
-        tags: [
-          ["d", calendarDTag],
-          ["title", "Stable mobile event catalog"],
-          ["start", String(start)],
-          ["end", String(end)],
-          ["location", "Synthetic venue"],
-          ["D", String(Math.floor(start / 86_400))],
-        ],
-      },
+      { ...calendarDraft, created_at: createdAt },
       organizerSecret
     )
     const calendarCoordinate = `${calendar.kind}:${organizerPubkey}:${calendarDTag}`
+    const collectionDTag = "mobile-profile-refresh-collection"
+    const collectionDraft = buildEventMarketCollectionDraft({
+      dTag: collectionDTag,
+      title: "Stable mobile event catalog",
+      eventCoordinate: calendarCoordinate,
+    })
     const collection = finalizeEvent(
-      {
-        kind: 30405,
-        created_at: createdAt,
-        content: "",
-        tags: [
-          ["d", collectionDTag],
-          ["title", "Stable mobile event catalog"],
-          ["a", calendarCoordinate],
-        ],
-      },
+      { ...collectionDraft, created_at: createdAt },
       organizerSecret
     )
-    const collectionRef = nip19.naddrEncode({
-      kind: collection.kind,
-      pubkey: organizerPubkey,
-      identifier: collectionDTag,
-      relays: [TEST_RELAY_URL],
-    })
+    const collectionRef = encodeEventMarketNaddr(
+      `${collection.kind}:${organizerPubkey}:${collectionDTag}`,
+      [TEST_RELAY_URL]
+    )
 
     await publishTestRelayEvents([calendar, collection])
     await seedTestRelayIdentity(shopperSecret)
