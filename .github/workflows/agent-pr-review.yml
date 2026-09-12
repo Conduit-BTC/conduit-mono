@@ -377,7 +377,8 @@ jobs:
               phrases including `acceptance/evidence mapping`, `QA disposition`,
               `PR-only graph`, `synthetic merge`, or `clean-review contract`.
               An exact public document or section title may appear only in a
-              validated `source` or `Source` field.
+              `source` or `Source` field that starts with an existing
+              trusted-base repository path where that exact phrase appears.
             - Do not add headings, duplicate finding details, or a second summary.
 
             Clean handoff contract:
@@ -578,6 +579,44 @@ jobs:
             echo "The current-run review Next action lacks a concrete source." >&2
             exit 1
           fi
+          review_jargon_pattern='(^|[^[:alnum:]])blocked([^[:alnum:]]|$)|acceptance/evidence mapping|qa disposition|pr-only graph|synthetic merge|clean-review contract|merge-readiness'
+          source_is_concrete_public_reference() {
+            local source="$1"
+            local source_label
+            local source_path
+            source_path="$(
+              sed -nE \
+                's~^[^[:alnum:]_.-]*((\./)?([[:alnum:]_.-]+/)*[[:alnum:]_.-]+\.(md|mdx))(:[1-9][0-9]*|#[[:alnum:]_.:/-]+)?([^[:alnum:]_.:/-]|$).*$~\1~p' \
+                <<< "$source"
+            )"
+            source_path="$(sed 's#^\./##' <<< "$source_path")"
+            source_label="${source#*"$source_path"}"
+            source_label="$(
+              sed -E \
+                -e 's/^(:[1-9][0-9]*|#[[:alnum:]_.:/-]+)//' \
+                -e 's/^[[:space:][:punct:]“”‘’]+//' \
+                -e 's/[[:space:][:punct:]“”‘’]+$//' \
+                -e 's/[[:space:]]+/ /g' \
+                <<< "$source_label"
+            )"
+            if [[ -z "$source_path" || -z "$source_label" ]]; then
+              return 1
+            fi
+            git cat-file blob "$EXPECTED_BASE_SHA:$source_path" 2>/dev/null |
+              sed -nE \
+                -e 's/\r$//' \
+                -e 's/^ {0,3}#{1,6}[[:space:]]+//p' |
+              sed -E \
+                -e 's/^[[:space:][:punct:]“”‘’]+//' \
+                -e 's/[[:space:][:punct:]“”‘’]+$//' \
+                -e 's/[[:space:]]+/ /g' |
+              grep -Fix -- "$source_label" >/dev/null
+          }
+          if grep -Eqi "$review_jargon_pattern" <<< "$next_source" &&
+            ! source_is_concrete_public_reference "$next_source"; then
+            echo "The current-run review exposes internal workflow language without a concrete public source reference." >&2
+            exit 1
+          fi
           review_jargon_body="$(
             {
               printf '%s\n' "$first_visible_line"
@@ -585,7 +624,7 @@ jobs:
               awk 'NF { count += 1; if (count > 2) print }' <<< "$visible_body"
             }
           )"
-          if grep -Eqi '(^|[^[:alnum:]])blocked([^[:alnum:]]|$)|acceptance/evidence mapping|qa disposition|pr-only graph|synthetic merge|clean-review contract|merge-readiness' \
+          if grep -Eqi "$review_jargon_pattern" \
             <<< "$review_jargon_body"; then
             echo "The current-run review exposes internal workflow language." >&2
             exit 1
@@ -608,6 +647,8 @@ jobs:
           invalid_finding_count="$(
             jq '
               def trim: gsub("^\\s+|\\s+$"; "");
+              def has_internal_review_jargon:
+                test("\\bblocked\\b|acceptance/evidence mapping|qa disposition|pr-only graph|synthetic merge|clean-review contract|merge-readiness"; "i");
               [
               .[] |
               (.body // "") as $body |
@@ -623,11 +664,30 @@ jobs:
                   test("^(none|unknown|unsourced|unavailable|n/?a)$")) or
                 ([$fields.impact, $fields.owner, $fields.action, $fields.evidence, $fields.completion] |
                   join("\\n") |
-                  test("(?i)\\bblocked\\b|acceptance/evidence mapping|qa disposition|pr-only graph|synthetic merge|clean-review contract|merge-readiness"))
+                  has_internal_review_jargon)
               )
             ] | length' \
               <<< "$review_comments"
           )"
+          invalid_inline_source_jargon_count=0
+          while IFS= read -r inline_source; do
+            if ! source_is_concrete_public_reference "$inline_source"; then
+              invalid_inline_source_jargon_count="$((invalid_inline_source_jargon_count + 1))"
+            fi
+          done < <(
+            jq -r '
+              .[] |
+              (((.body // "") | capture(
+                "^\\[(?<severity>P[0-2])\\] (?<impact>[^\\n]+)\\nOwner: (?<owner>[^\\n]*)\\nAction: (?<action>[^\\n]*)\\nEvidence: (?<evidence>[^\\n]*)\\nComplete when: (?<completion>[^\\n]*)\\nSource: (?<source>[^\\n]*)\\.$"
+              )) // null) as $fields |
+              select(
+                $fields != null and
+                ($fields.source | test("\\bblocked\\b|acceptance/evidence mapping|qa disposition|pr-only graph|synthetic merge|clean-review contract|merge-readiness"; "i"))
+              ) |
+              $fields.source
+            ' <<< "$review_comments"
+          )
+          invalid_finding_count="$((invalid_finding_count + invalid_inline_source_jargon_count))"
           clean_marker_count="$(grep -Fxc "$clean_marker" <<< "$review_body" || true)"
           clean_status_count="$(grep -Fxc 'No code changes needed. Ready for human review.' <<< "$visible_body" || true)"
           findings_status_count="$(grep -Fxc 'Code changes required.' <<< "$visible_body" || true)"

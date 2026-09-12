@@ -1270,7 +1270,14 @@ describe("agent review handoff", () => {
   it("allows internal-language headings only in validated sources", async () => {
     const headSha = "7".repeat(40)
     const runId = "321"
+    const trustedBaseSha = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+      cwd: process.cwd(),
+    })
+      .stdout.toString()
+      .trim()
+    expect(trustedBaseSha).toMatch(/^[0-9a-f]{40}$/)
     const sourceHeadingWithInternalLanguage = await runReviewVerdictGate({
+      baseSha: trustedBaseSha,
       headSha,
       reviewBody: cleanReviewBody(
         headSha,
@@ -1288,6 +1295,160 @@ describe("agent review handoff", () => {
     })
 
     expect(sourceHeadingWithInternalLanguage.exitCode).toBe(0)
+
+    const externalUrlWithUnverifiedInternalLanguage =
+      await runReviewVerdictGate({
+        headSha,
+        reviewBody: cleanReviewBody(
+          headSha,
+          runId,
+          "1",
+          nextAction(
+            "Maintainer",
+            "complete QA",
+            "the PR",
+            "results are recorded",
+            "https://example.com/review-policy Review and QA Disposition"
+          )
+        ),
+        runId,
+      })
+    expect(externalUrlWithUnverifiedInternalLanguage.exitCode).not.toBe(0)
+    expect(externalUrlWithUnverifiedInternalLanguage.stderr).toContain(
+      "internal workflow language without a concrete public source reference"
+    )
+
+    const arbitraryInternalSource = await runReviewVerdictGate({
+      headSha,
+      reviewBody: cleanReviewBody(
+        headSha,
+        runId,
+        "1",
+        nextAction(
+          "Maintainer",
+          "complete QA",
+          "the PR",
+          "results are recorded",
+          "acceptance/evidence mapping"
+        )
+      ),
+      runId,
+    })
+    expect(arbitraryInternalSource.exitCode).not.toBe(0)
+    expect(arbitraryInternalSource.stderr).toContain(
+      "internal workflow language without a concrete public source reference"
+    )
+
+    const nonexistentPublicPath = await runReviewVerdictGate({
+      baseSha: trustedBaseSha,
+      headSha,
+      reviewBody: cleanReviewBody(
+        headSha,
+        runId,
+        "1",
+        nextAction(
+          "Maintainer",
+          "complete QA",
+          "the PR",
+          "results are recorded",
+          "docs/specs/not-a-real-review-contract.md Review and QA Disposition"
+        )
+      ),
+      runId,
+    })
+    expect(nonexistentPublicPath.exitCode).not.toBe(0)
+    expect(nonexistentPublicPath.stderr).toContain(
+      "internal workflow language without a concrete public source reference"
+    )
+
+    const fakeHeadingOnRealPublicPath = await runReviewVerdictGate({
+      baseSha: trustedBaseSha,
+      headSha,
+      reviewBody: cleanReviewBody(
+        headSha,
+        runId,
+        "1",
+        nextAction(
+          "Maintainer",
+          "complete QA",
+          "the PR",
+          "results are recorded",
+          "docs/specs/wallets.md Review and QA Disposition"
+        )
+      ),
+      runId,
+    })
+    expect(fakeHeadingOnRealPublicPath.exitCode).not.toBe(0)
+    expect(fakeHeadingOnRealPublicPath.stderr).toContain(
+      "internal workflow language without a concrete public source reference"
+    )
+
+    const inventedHeadingOnRealPathContainingJargon =
+      await runReviewVerdictGate({
+        baseSha: trustedBaseSha,
+        headSha,
+        reviewBody: cleanReviewBody(
+          headSha,
+          runId,
+          "1",
+          nextAction(
+            "Maintainer",
+            "complete QA",
+            "the PR",
+            "results are recorded",
+            ".github/workflows/agent-pr-review.yml Blocked acceptance/evidence mapping QA disposition PR-only graph synthetic merge clean-review contract merge-readiness"
+          )
+        ),
+        runId,
+      })
+    expect(inventedHeadingOnRealPathContainingJargon.exitCode).not.toBe(0)
+    expect(inventedHeadingOnRealPathContainingJargon.stderr).toContain(
+      "internal workflow language without a concrete public source reference"
+    )
+
+    const codeLineMasqueradingAsPublicHeading = await runReviewVerdictGate({
+      baseSha: trustedBaseSha,
+      headSha,
+      reviewBody: cleanReviewBody(
+        headSha,
+        runId,
+        "1",
+        nextAction(
+          "Maintainer",
+          "complete QA",
+          "the PR",
+          "results are recorded",
+          "tests/agent-review-handoff.test.ts Blocked"
+        )
+      ),
+      runId,
+    })
+    expect(codeLineMasqueradingAsPublicHeading.exitCode).not.toBe(0)
+    expect(codeLineMasqueradingAsPublicHeading.stderr).toContain(
+      "internal workflow language without a concrete public source reference"
+    )
+
+    const markdownBodyLineMasqueradingAsHeading = await runReviewVerdictGate({
+      baseSha: trustedBaseSha,
+      headSha,
+      reviewBody: cleanReviewBody(
+        headSha,
+        runId,
+        "1",
+        nextAction(
+          "Maintainer",
+          "complete QA",
+          "the PR",
+          "results are recorded",
+          "CONTRIBUTING.md The author proposes one review and QA disposition"
+        )
+      ),
+      runId,
+    })
+    expect(markdownBodyLineMasqueradingAsHeading.exitCode).not.toBe(0)
+    expect(markdownBodyLineMasqueradingAsHeading.stderr).toContain(
+      "internal workflow language without a concrete public source reference"
+    )
 
     const internalLanguageOutsideSource = await runReviewVerdictGate({
       headSha,
@@ -1311,6 +1472,7 @@ describe("agent review handoff", () => {
     )
 
     const inlineSourceHeadingWithInternalLanguage = await runReviewVerdictGate({
+      baseSha: trustedBaseSha,
       headSha,
       inlineComments: JSON.stringify([
         {
@@ -1323,6 +1485,21 @@ describe("agent review handoff", () => {
       runId,
     })
     expect(inlineSourceHeadingWithInternalLanguage.exitCode).toBe(0)
+
+    const arbitraryInlineInternalSource = await runReviewVerdictGate({
+      headSha,
+      inlineComments: JSON.stringify([
+        {
+          body: inlineFindingBody("the clean-review contract"),
+        },
+      ]),
+      reviewBody: findingsReviewBody(headSha, runId),
+      runId,
+    })
+    expect(arbitraryInlineInternalSource.exitCode).not.toBe(0)
+    expect(arbitraryInlineInternalSource.stderr).toContain(
+      "Code-change handoffs require inline P0-P2 findings"
+    )
   })
 
   it("fails malformed or stale final Ponytail reviews closed", async () => {
