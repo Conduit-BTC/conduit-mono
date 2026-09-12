@@ -23,6 +23,26 @@ export interface ConduitRelaySettingsReadinessInput {
   activatedRelayScope: string | null
 }
 
+export interface ConduitIdentityReadinessInput {
+  mode: ConduitSessionMode
+  profileHasName: boolean
+  profileInitialLoading: boolean
+}
+
+/**
+ * Wait for the first signed-in profile lookup without letting later background
+ * refreshes revoke an already usable session.
+ */
+export function isConduitIdentityReady(
+  input: ConduitIdentityReadinessInput
+): boolean {
+  return (
+    input.mode === "guest" ||
+    input.profileHasName ||
+    !input.profileInitialLoading
+  )
+}
+
 /**
  * Local retained authority must be installed before a signed-in scope becomes
  * ready. Fresh relay reconciliation is then a background refresh rather than

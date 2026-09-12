@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test"
 import {
   createRelaySettingsFromPreferences,
   getRelaySettingsStorageKey,
+  isConduitIdentityReady,
   isConduitRelaySettingsReady,
   loadRelaySettings,
   resolveConduitSession,
@@ -42,6 +43,37 @@ afterEach(() => {
 })
 
 describe("Conduit session scopes", () => {
+  it("keeps identity ready during a background profile refresh", () => {
+    expect(
+      isConduitIdentityReady({
+        mode: "signed_in",
+        profileHasName: false,
+        profileInitialLoading: true,
+      })
+    ).toBe(false)
+    expect(
+      isConduitIdentityReady({
+        mode: "signed_in",
+        profileHasName: false,
+        profileInitialLoading: false,
+      })
+    ).toBe(true)
+    expect(
+      isConduitIdentityReady({
+        mode: "signed_in",
+        profileHasName: true,
+        profileInitialLoading: true,
+      })
+    ).toBe(true)
+    expect(
+      isConduitIdentityReady({
+        mode: "guest",
+        profileHasName: false,
+        profileInitialLoading: true,
+      })
+    ).toBe(true)
+  })
+
   it("waits for local authority without gating on fresh relay reconciliation", () => {
     expect(
       isConduitRelaySettingsReady({

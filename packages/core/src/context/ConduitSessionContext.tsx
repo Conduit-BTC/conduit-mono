@@ -24,6 +24,7 @@ import {
   closeAllProtectedRelayConnections,
 } from "../protocol/relay-executor"
 import {
+  isConduitIdentityReady,
   isConduitRelaySettingsReady,
   resolveConduitSession,
   shouldCloseProtectedConnectionsForScopeTransition,
@@ -86,10 +87,11 @@ export function ConduitSessionProvider({
         profileAuthorityRef.current.pubkey === signedInPubkey,
     }
   )
-  const identityReady =
-    session.mode === "guest" ||
-    hasProfileName(profileQuery.data) ||
-    (!profileQuery.isLoading && !profileQuery.isFetching)
+  const identityReady = isConduitIdentityReady({
+    mode: session.mode,
+    profileHasName: hasProfileName(profileQuery.data),
+    profileInitialLoading: profileQuery.isLoading,
+  })
 
   const [activatedRelayScope, setActivatedRelayScope] = useState<string | null>(
     null

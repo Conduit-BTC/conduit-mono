@@ -1,10 +1,17 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
-import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
+import { nip19 } from "nostr-tools"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
+  TEST_RELAY_URL,
   installTestSigner,
+  publishTestRelayEvents,
   seedTestRelayIdentity,
   seedMarketCart,
 } from "./helpers/auth"
@@ -330,6 +337,134 @@ async function readRecoveredPayment(
 }
 
 test.describe("CND-162 mobile browser baseline", () => {
+  test("event catalog stays mounted during an unresolved profile refresh @market", async ({
+    page,
+  }) => {
+    const organizerSecret = generateSecretKey()
+    const organizerPubkey = getPublicKey(organizerSecret)
+    const shopperSecret = generateSecretKey()
+    const shopperPubkey = getPublicKey(shopperSecret)
+    const createdAt = Math.floor(Date.now() / 1_000)
+    const start = createdAt + 60
+    const end = createdAt + 3_600
+    const calendarDTag = "mobile-profile-refresh-calendar"
+    const collectionDTag = "mobile-profile-refresh-collection"
+    const calendar = finalizeEvent(
+      {
+        kind: 31923,
+        created_at: createdAt,
+        content: "",
+        tags: [
+          ["d", calendarDTag],
+          ["title", "Stable mobile event catalog"],
+          ["start", String(start)],
+          ["end", String(end)],
+          ["location", "Synthetic venue"],
+          ["D", String(Math.floor(start / 86_400))],
+        ],
+      },
+      organizerSecret
+    )
+    const calendarCoordinate = `${calendar.kind}:${organizerPubkey}:${calendarDTag}`
+    const collection = finalizeEvent(
+      {
+        kind: 30405,
+        created_at: createdAt,
+        content: "",
+        tags: [
+          ["d", collectionDTag],
+          ["title", "Stable mobile event catalog"],
+          ["a", calendarCoordinate],
+        ],
+      },
+      organizerSecret
+    )
+    const collectionRef = nip19.naddrEncode({
+      kind: collection.kind,
+      pubkey: organizerPubkey,
+      identifier: collectionDTag,
+      relays: [TEST_RELAY_URL],
+    })
+
+    await publishTestRelayEvents([calendar, collection])
+    await seedTestRelayIdentity(shopperSecret)
+    await installTestSigner(page, shopperPubkey, { secretKey: shopperSecret })
+
+    let holdShopperProfileReads = false
+    let backgroundProfileReadObserved = false
+    const heldProfileReads: Array<() => void> = []
+    await page.routeWebSocket(TEST_RELAY_URL, (socket) => {
+      const server = socket.connectToServer()
+      socket.onMessage((message) => {
+        if (typeof message !== "string") {
+          server.send(message)
+          return
+        }
+
+        let frame: unknown
+        try {
+          frame = JSON.parse(message)
+        } catch {
+          server.send(message)
+          return
+        }
+        const filters =
+          Array.isArray(frame) && frame[0] === "REQ" ? frame.slice(2) : []
+        const readsShopperProfile = filters.some((filter) => {
+          if (!filter || typeof filter !== "object" || Array.isArray(filter)) {
+            return false
+          }
+          const candidate = filter as {
+            authors?: unknown
+            kinds?: unknown
+          }
+          return (
+            Array.isArray(candidate.kinds) &&
+            candidate.kinds.includes(0) &&
+            Array.isArray(candidate.authors) &&
+            candidate.authors.includes(shopperPubkey)
+          )
+        })
+        if (holdShopperProfileReads && readsShopperProfile) {
+          backgroundProfileReadObserved = true
+          heldProfileReads.push(() => server.send(message))
+          return
+        }
+        server.send(message)
+      })
+    })
+
+    await page.goto(`${marketUrl}/events/${collectionRef}`)
+    const heading = page.getByRole("heading", {
+      name: "Stable mobile event catalog",
+      exact: true,
+    })
+    await expect(heading).toBeVisible({ timeout: 20_000 })
+    await assertMobileViewport(page)
+
+    holdShopperProfileReads = true
+    try {
+      await expect
+        .poll(() => backgroundProfileReadObserved, { timeout: 7_000 })
+        .toBe(true)
+      const catalogStayedMounted = await page.evaluate(async (title) => {
+        const deadline = performance.now() + 500
+        while (performance.now() < deadline) {
+          if (document.querySelector("h1")?.textContent?.trim() !== title) {
+            return false
+          }
+          await new Promise(requestAnimationFrame)
+        }
+        return true
+      }, "Stable mobile event catalog")
+      expect(catalogStayedMounted).toBe(true)
+      await expect(page.locator("main .animate-pulse")).toHaveCount(0)
+    } finally {
+      holdShopperProfileReads = false
+      for (const release of heldProfileReads.splice(0)) release()
+    }
+  })
+
   test("market viewport, touch navigation, and cart survive history and refresh @market", async ({
     page,
   }) => {
