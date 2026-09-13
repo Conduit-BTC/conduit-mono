@@ -1222,7 +1222,7 @@ function OrderDetail({
   const paymentRecoveryError =
     recoveryError ??
     (!busy && showRetryPayment && !recoveredBeforeWallet
-      ? getOrderPaymentFailureDetail(row.lifecycle)
+      ? getOrderPaymentFailureDetail(row.lifecycle, vm)
       : null)
   const showAnonPaymentRecovery =
     showRetryPayment &&

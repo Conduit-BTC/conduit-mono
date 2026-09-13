@@ -122,8 +122,14 @@ describe("payment failure details", () => {
   const bindingError =
     "The zap invoice is not bound to the signed NIP-57 request sent to the callback."
 
+  const detailForLifecycle = (lifecycle: OrderLifecycle | undefined) =>
+    getOrderPaymentFailureDetail(
+      lifecycle,
+      buildOrderViewModel({ orderId: "order-1", lifecycle })
+    )
+
   it("explains a persisted zap binding failure without exposing the request", () => {
-    const detail = getOrderPaymentFailureDetail(
+    const detail = detailForLifecycle(
       baseLifecycle({
         invoiceStatus: "failed",
         paymentStatus: "failed",
@@ -136,7 +142,7 @@ describe("payment failure details", () => {
   })
 
   it("does not echo arbitrary saved provider payloads", () => {
-    const detail = getOrderPaymentFailureDetail(
+    const detail = detailForLifecycle(
       baseLifecycle({
         paymentStatus: "failed",
         lastError: "Provider response: lnbc1synthetic-invoice-payload",
@@ -145,6 +151,57 @@ describe("payment failure details", () => {
     expect(detail).toBe(
       "Payment could not be completed. Try again or contact the merchant if it keeps failing."
     )
+  })
+
+  it("suppresses saved failures when cached merchant status supersedes payment state", () => {
+    const lifecycle = baseLifecycle({
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      proofDeliveryStatus: "not_started",
+      lastError: "Provider preparation failed.",
+    })
+    for (const status of [
+      "paid",
+      "complete",
+      "delivered",
+      "cancelled",
+    ] as const) {
+      const vm = buildOrderViewModel({
+        orderId: lifecycle.orderId,
+        lifecycle,
+        conversation: {
+          id: lifecycle.orderId,
+          orderId: lifecycle.orderId,
+          merchantPubkey: lifecycle.merchantPubkey,
+          latestAt: lifecycle.updatedAt,
+          latestType: "status_update",
+          status,
+          totalSummary: null,
+          preview: "",
+          messageCount: 0,
+          messages: [],
+          context: "missing_order",
+        },
+      })
+      // The cached status is effective even before its messages are loaded.
+      expect(vm.paymentStatus).toBe("failed")
+      expect(vm.merchantStatus).toBe(status)
+      expect(getOrderPaymentFailureDetail(lifecycle, vm)).toBeNull()
+    }
+  })
+
+  it("suppresses a binding error after local cancellation or completion", () => {
+    for (const phase of ["cancelled", "completed"] as const) {
+      const lifecycle = baseLifecycle({
+        invoiceStatus: "failed",
+        paymentStatus: "failed",
+        lastError: bindingError,
+        phase,
+      })
+      const vm = buildOrderViewModel({ orderId: lifecycle.orderId, lifecycle })
+      expect(vm.paymentStatus).toBe("failed")
+      expect(getOrderPaymentFailureDetail(lifecycle, vm)).toBeNull()
+    }
   })
 
   it("does not turn stale errors into failure advice for other payment states", () => {
@@ -156,14 +213,14 @@ describe("payment failure details", () => {
       "paid",
     ] as const) {
       expect(
-        getOrderPaymentFailureDetail(
+        detailForLifecycle(
           baseLifecycle({ paymentStatus, lastError: bindingError })
         )
       ).toBeNull()
     }
-    expect(getOrderPaymentFailureDetail(undefined)).toBeNull()
+    expect(detailForLifecycle(undefined)).toBeNull()
     expect(
-      getOrderPaymentFailureDetail(baseLifecycle({ paymentStatus: "failed" }))
+      detailForLifecycle(baseLifecycle({ paymentStatus: "failed" }))
     ).toBeNull()
   })
 })

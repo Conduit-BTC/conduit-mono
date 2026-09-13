@@ -920,6 +920,68 @@ test.describe("CND-162 mobile browser baseline", () => {
     expect(callbackRequests).toBe(1)
   })
 
+  test("market hides a saved payment failure after cancellation @market", async ({
+    page,
+  }) => {
+    const orderId = "cancelled-payment-error"
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+    const failureAlert = page.getByRole("alert").filter({
+      hasText:
+        "Payment could not be completed. Try again or contact the merchant if it keeps failing.",
+    })
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
+    await page.goto(`${marketUrl}/orders`)
+    await expect(
+      page.getByRole("heading", { name: "No orders yet" })
+    ).toBeVisible()
+    await seedPaymentLifecycle(page, {
+      orderId,
+      buyerPubkey,
+      paymentClaimId: "unused-preparation-claim",
+      preparationError: "Synthetic preparation failure",
+    })
+    await page.goto(`${marketUrl}/orders?order=${orderId}`)
+    await expect(failureAlert).toBeVisible()
+
+    // Keep the old failed payment and error intact while the effective order
+    // becomes terminal. Reload must render cancellation without saved advice.
+    await page.evaluate(async (id) => {
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction("orderLifecycles", "readwrite")
+        const store = transaction.objectStore("orderLifecycles")
+        const request = store.get(id)
+        request.onsuccess = () => {
+          if (!request.result) {
+            transaction.abort()
+            return
+          }
+          store.put({ ...request.result, phase: "cancelled" })
+        }
+        transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(new Error("Fixture update failed"))
+      })
+      database.close()
+    }, orderId)
+    await page.reload()
+    await expect(
+      page.getByText("Order cancelled", { exact: true })
+    ).toBeVisible()
+    await expect(failureAlert).toHaveCount(0)
+    expect(await readRecoveredPayment(page, orderId)).toMatchObject({
+      paymentStatus: "failed",
+      proofDeliveryStatus: "not_started",
+    })
+    await assertMobileViewport(page)
+  })
+
   test("market reload safely recovers an expired tokenless pre-wallet payment @market", async ({
     page,
   }) => {

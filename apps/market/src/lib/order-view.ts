@@ -36,9 +36,17 @@ import { getPickupHandoffSummary } from "./pickup-handoff"
 
 /** Show controlled copy, never an arbitrary provider response saved in lastError. */
 export function getOrderPaymentFailureDetail(
-  lifecycle: OrderLifecycle | undefined
+  lifecycle: OrderLifecycle | undefined,
+  vm: Pick<OrderViewModel, "paymentStatus" | "merchantStatus" | "phase">
 ): string | null {
-  if (lifecycle?.paymentStatus !== "failed" || !lifecycle.lastError) {
+  if (
+    lifecycle?.paymentStatus !== "failed" ||
+    !lifecycle.lastError ||
+    vm.paymentStatus !== "failed" ||
+    isBuyerOrderPaid(vm) ||
+    vm.phase === "cancelled" ||
+    vm.phase === "completed"
+  ) {
     return null
   }
   if (
