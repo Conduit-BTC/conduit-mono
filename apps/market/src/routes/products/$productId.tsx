@@ -70,13 +70,20 @@ type DescriptionMetrics = {
   expandedHeight: number
 }
 
-function getMarketProductShareUrl(productAddressId: string): string | null {
+function getMarketProductShareUrl(
+  productAddressId: string,
+  sourceRelayUrls: readonly string[]
+): string | null {
   const marketOrigin =
     typeof window === "undefined"
       ? "https://shop.conduit.market"
       : window.location.origin
   try {
-    return buildMarketProductShareUrl(marketOrigin, productAddressId)
+    return buildMarketProductShareUrl(
+      marketOrigin,
+      productAddressId,
+      sourceRelayUrls
+    )
   } catch {
     return null
   }
@@ -246,8 +253,17 @@ function ProductPage() {
     () => (product ? getProductDisplaySummary(product) : null),
     [product]
   )
+  const selectedProductSourceRelayUrls =
+    selectedProduct && selectedProduct.id !== product?.id
+      ? (family?.children.find(
+          (variation) => variation.product.id === selectedProduct.id
+        )?.sourceRelayUrls ?? [])
+      : productQuery.sourceRelayUrls
   const productShareUrl = selectedProduct
-    ? getMarketProductShareUrl(selectedProduct.id)
+    ? getMarketProductShareUrl(
+        selectedProduct.id,
+        selectedProductSourceRelayUrls
+      )
     : null
 
   const visibleTags = useMemo(() => {
