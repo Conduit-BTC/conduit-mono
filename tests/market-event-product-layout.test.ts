@@ -50,7 +50,7 @@ describe("Market event product layout", () => {
       'className="overflow-hidden rounded-3xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)] [@media(min-width:768px)_and_(hover:hover)]:overflow-visible"'
     )
     expect(event).toContain(
-      'className="h-48 w-full rounded-t-3xl border-b border-[var(--border)] object-cover sm:h-64"'
+      'className="h-48 w-full rounded-t-3xl border-b border-[var(--border)] bg-[var(--surface-elevated)] object-contain sm:h-64"'
     )
   })
 })
