@@ -1,8 +1,16 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import {
+  createECDH,
+  createPrivateKey,
+  createPublicKey,
+  sign,
+  verify,
+} from "node:crypto"
+import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
+  verifyEvent,
 } from "nostr-tools/pure"
 
 import {
@@ -19,6 +27,13 @@ import {
   seedTestRelayIdentity,
   seedMarketCart,
 } from "./helpers/auth"
+import {
+  bolt11DescriptionHashField,
+  bolt11PaymentHashField,
+  bytesToBolt11Words,
+  encodeBolt11FixtureField,
+  makeBolt11Fixture,
+} from "../tests/support/bolt11-fixture"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
@@ -218,6 +233,7 @@ async function seedInterruptedPayment(
     invoice?: string
     preimage?: string
     storeMarker?: boolean
+    failedPayment?: { merchantPubkey: string; address: string }
   }
 ): Promise<void> {
   await page.evaluate(
@@ -229,6 +245,7 @@ async function seedInterruptedPayment(
       invoice,
       preimage,
       storeMarker,
+      failedPayment,
     }) => {
       const database = await new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open("conduit")
@@ -282,13 +299,26 @@ async function seedInterruptedPayment(
             : {}),
           createdAt: now,
           updatedAt: now,
+          ...(failedPayment
+            ? {
+                paymentClaimId: undefined,
+                paymentClaimedAt: undefined,
+                paymentClaimLeaseExpiresAt: undefined,
+                merchantPubkey: failedPayment.merchantPubkey,
+                merchantLightningAddress: failedPayment.address,
+                checkoutMode: "public_zap_as_shopper",
+                paymentTarget: { type: "manual" },
+                invoiceStatus: "failed",
+                paymentStatus: "failed",
+              }
+            : {}),
         })
         transaction.oncomplete = () => resolve()
         transaction.onerror = () => reject(transaction.error)
         transaction.onabort = () => reject(transaction.error)
       })
       database.close()
-      if (storeMarker !== false) {
+      if (storeMarker !== false && !failedPayment) {
         sessionStorage.setItem(
           `conduit:order-payment-claim:${orderId}`,
           paymentClaimId
@@ -336,6 +366,214 @@ async function readRecoveredPayment(
       marker: sessionStorage.getItem(
         `conduit:order-payment-claim:${paymentOrderId}`
       ),
+    }
+  }, orderId)
+}
+
+function signedManualZapInvoice(description: string): string {
+  const secret = generateSecretKey()
+  const curve = createECDH("secp256k1")
+  curve.setPrivateKey(secret)
+  const publicKey = curve.getPublicKey(undefined, "uncompressed")
+  const key = createPrivateKey({
+    format: "jwk",
+    key: {
+      kty: "EC",
+      crv: "secp256k1",
+      d: Buffer.from(secret).toString("base64url"),
+      x: publicKey.subarray(1, 33).toString("base64url"),
+      y: publicKey.subarray(33).toString("base64url"),
+    },
+  })
+  const createdAt = Math.floor(Date.now() / 1000)
+  const hrp = "lnbc10n"
+  const fields = [
+    bolt11PaymentHashField(),
+    bolt11DescriptionHashField(description),
+    { tag: "s", words: bytesToBolt11Words(new Uint8Array(32).fill(8)) },
+    {
+      tag: "n",
+      words: bytesToBolt11Words(curve.getPublicKey(undefined, "compressed")),
+    },
+  ]
+  const words = [
+    ...Array.from({ length: 7 }, (_, index) =>
+      Number((BigInt(createdAt) >> BigInt((6 - index) * 5)) & 31n)
+    ),
+    ...fields.flatMap(encodeBolt11FixtureField),
+  ]
+  const data: number[] = []
+  let value = 0
+  let bits = 0
+  for (const word of words) {
+    value = (value << 5) | word
+    bits += 5
+    if (bits >= 8) {
+      bits -= 8
+      data.push((value >> bits) & 255)
+    }
+  }
+  if (bits) data.push((value << (8 - bits)) & 255)
+  const payload = Buffer.concat([Buffer.from(hrp), Buffer.from(data)])
+  const signature = sign("sha256", payload, { key, dsaEncoding: "ieee-p1363" })
+  const order = BigInt(
+    "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+  )
+  const s = BigInt(`0x${signature.subarray(32).toString("hex")}`)
+  if (s > order / 2n) {
+    Buffer.from((order - s).toString(16).padStart(64, "0"), "hex").copy(
+      signature,
+      32
+    )
+  }
+  expect(
+    verify(
+      "sha256",
+      payload,
+      { key: createPublicKey(key), dsaEncoding: "ieee-p1363" },
+      signature
+    )
+  ).toBe(true)
+  // The explicit n field supplies the signing key; recovery is unnecessary.
+  return makeBolt11Fixture({
+    hrp,
+    createdAt,
+    fields,
+    signatureWords: bytesToBolt11Words(
+      Buffer.concat([signature, Buffer.from([0])])
+    ),
+  })
+}
+
+const savedPaymentAddress = "merchant@old-payment-fixture.dev"
+const updatedPaymentAddress = "merchant@new-payment-fixture.dev"
+
+async function prepareUpdatedPaymentAddress(
+  page: Page,
+  orderId: string,
+  wrongHash = false,
+  initialAddress = updatedPaymentAddress
+) {
+  const buyerSecret = generateSecretKey()
+  const buyerPubkey = getPublicKey(buyerSecret)
+  const merchantSecret = generateSecretKey()
+  const merchantPubkey = getPublicKey(merchantSecret)
+  let profileTimestamp = Math.floor(Date.now() / 1000)
+  const publishAddress = async (address: string) => {
+    await publishTestRelayEvents([
+      finalizeEvent(
+        {
+          kind: 0,
+          created_at: profileTimestamp++,
+          tags: [],
+          content: JSON.stringify({
+            name: "Recovery merchant",
+            lud16: address,
+          }),
+        },
+        merchantSecret
+      ),
+    ])
+  }
+  const providerRequests: string[] = []
+  await page.route("https://*-payment-fixture.dev/**", async (route) => {
+    const url = new URL(route.request().url())
+    providerRequests.push(`${url.hostname}${url.pathname}`)
+    if (url.pathname === "/callback") {
+      expect(url.searchParams.get("amount")).toBe("1000")
+      const request = url.searchParams.get("nostr") ?? ""
+      const event = JSON.parse(request)
+      expect(verifyEvent(event)).toBe(true)
+      expect(event.kind).toBe(9734)
+      expect(event.pubkey).toBe(buyerPubkey)
+      expect(event.tags).toContainEqual(["p", merchantPubkey])
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          pr: signedManualZapInvoice(
+            wrongHash || url.hostname === "old-payment-fixture.dev"
+              ? "unrelated synthetic request"
+              : request
+          ),
+          routes: [],
+        }),
+      })
+      return
+    }
+    expect(url.pathname).toBe("/.well-known/lnurlp/merchant")
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        tag: "payRequest",
+        callback: `${url.origin}/callback`,
+        minSendable: 1000,
+        maxSendable: 100000,
+        allowsNostr: true,
+        nostrPubkey: merchantPubkey,
+        metadata: JSON.stringify([
+          ["text/plain", "Synthetic recovery merchant"],
+        ]),
+      }),
+    })
+  })
+  await seedTestRelayIdentity(buyerSecret)
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 10002,
+        created_at: profileTimestamp,
+        tags: [["r", TEST_RELAY_URL]],
+        content: "",
+      },
+      merchantSecret
+    ),
+  ])
+  await publishAddress(initialAddress)
+  await installTestSigner(page, buyerPubkey, { secretKey: buyerSecret })
+  await page.goto(`${marketUrl}/orders`)
+  await expect(
+    page.getByRole("heading", { name: "No orders yet" })
+  ).toBeVisible()
+  await seedInterruptedPayment(page, {
+    orderId,
+    buyerPubkey,
+    paymentClaimId: "unused-failed-payment-claim",
+    failedPayment: { merchantPubkey, address: savedPaymentAddress },
+  })
+  await page.goto(`${marketUrl}/orders?order=${orderId}`)
+  await expect(
+    page.getByRole("button", { name: "Try payment again" })
+  ).toBeVisible()
+  return { providerRequests, publishAddress }
+}
+
+async function readPaymentAddressRecovery(page: Page, orderId: string) {
+  return page.evaluate(async (id) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("conduit")
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const records = await new Promise<Array<Record<string, unknown>>>(
+      (resolve, reject) => {
+        const request = database
+          .transaction("orderLifecycles", "readonly")
+          .objectStore("orderLifecycles")
+          .getAll()
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      }
+    )
+    database.close()
+    const row = records.find((record) => record.orderId === id)
+    return {
+      count: records.length,
+      orderId: row?.orderId,
+      address: row?.merchantLightningAddress,
+      paymentStatus: row?.paymentStatus,
+      invoiceStatus: row?.invoiceStatus,
+      hasInvoice: !!row?.invoice,
+      lastError: row?.lastError,
     }
   }, orderId)
 }
@@ -796,6 +1034,186 @@ test.describe("CND-162 mobile browser baseline", () => {
     ).toBeVisible()
     await page.getByRole("button", { name: "Connect wallet" }).tap()
     await expect(connectionString).toBeVisible()
+  })
+
+  test("market reviews an updated payment address before retrying the same order @market", async ({
+    page,
+  }) => {
+    const orderId = "mobile-updated-payment-address"
+    const { providerRequests, publishAddress } =
+      await prepareUpdatedPaymentAddress(
+        page,
+        orderId,
+        false,
+        savedPaymentAddress
+      )
+    const dialog = page.getByRole("alertdialog", {
+      name: "Merchant updated their payment address",
+    })
+    await page.getByRole("button", { name: "Try payment again" }).tap()
+    await expect
+      .poll(() => readPaymentAddressRecovery(page, orderId))
+      .toMatchObject({
+        address: savedPaymentAddress,
+        paymentStatus: "failed",
+        invoiceStatus: "failed",
+        hasInvoice: false,
+        lastError:
+          "The zap invoice is not bound to the signed NIP-57 request sent to the callback.",
+      })
+    expect(providerRequests).toEqual([
+      "old-payment-fixture.dev/.well-known/lnurlp/merchant",
+      "old-payment-fixture.dev/callback",
+    ])
+    await publishAddress(updatedPaymentAddress)
+    await page.getByRole("button", { name: "Try payment again" }).tap()
+    await expect(dialog).toBeVisible()
+    await expect(
+      dialog.getByText(savedPaymentAddress, { exact: true })
+    ).toBeVisible()
+    await expect(
+      dialog.getByText(updatedPaymentAddress, { exact: true })
+    ).toBeVisible()
+    expect(providerRequests).toHaveLength(2)
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).tap()
+    await expect(dialog).not.toBeVisible()
+    expect(await readPaymentAddressRecovery(page, orderId)).toMatchObject({
+      count: 1,
+      orderId,
+      address: savedPaymentAddress,
+      paymentStatus: "failed",
+      hasInvoice: false,
+    })
+    expect(providerRequests).toHaveLength(2)
+
+    await page.getByRole("button", { name: "Try payment again" }).tap()
+    await expect(dialog).toBeVisible()
+    await dialog
+      .getByRole("button", { name: "Use updated address and retry" })
+      .tap()
+    await expect(
+      page.getByRole("button", { name: "Copy invoice", exact: true })
+    ).toBeVisible()
+    expect(await readPaymentAddressRecovery(page, orderId)).toMatchObject({
+      count: 1,
+      orderId,
+      address: updatedPaymentAddress,
+      paymentStatus: "manual_required",
+      invoiceStatus: "manual_required",
+      hasInvoice: true,
+    })
+    expect(providerRequests).toEqual([
+      "old-payment-fixture.dev/.well-known/lnurlp/merchant",
+      "old-payment-fixture.dev/callback",
+      "new-payment-fixture.dev/.well-known/lnurlp/merchant",
+      "new-payment-fixture.dev/callback",
+    ])
+    await assertMobileViewport(page)
+    await page.reload()
+    await expect(
+      page.getByRole("button", { name: "Copy invoice", exact: true })
+    ).toBeVisible()
+    expect(await readPaymentAddressRecovery(page, orderId)).toMatchObject({
+      count: 1,
+      orderId,
+      address: updatedPaymentAddress,
+      paymentStatus: "manual_required",
+      hasInvoice: true,
+    })
+    expect(providerRequests).toHaveLength(4)
+  })
+
+  test("market rejects an updated payment address that changes after review @market", async ({
+    page,
+  }) => {
+    const orderId = "mobile-changed-payment-address"
+    const { providerRequests, publishAddress } =
+      await prepareUpdatedPaymentAddress(page, orderId)
+    await page.getByRole("button", { name: "Try payment again" }).tap()
+    const dialog = page.getByRole("alertdialog", {
+      name: "Merchant updated their payment address",
+    })
+    await expect(dialog).toBeVisible()
+    await publishAddress("merchant@later-payment-fixture.dev")
+    await dialog
+      .getByRole("button", { name: "Use updated address and retry" })
+      .tap()
+    await expect(
+      page.getByText(
+        "The merchant's updated payment address could not be confirmed. Check it again before retrying.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    expect(await readPaymentAddressRecovery(page, orderId)).toMatchObject({
+      count: 1,
+      orderId,
+      address: savedPaymentAddress,
+      paymentStatus: "failed",
+      hasInvoice: false,
+    })
+    expect(providerRequests).toEqual([])
+  })
+
+  test("market still rejects a mismatched zap invoice after updating the payment address @market", async ({
+    page,
+  }) => {
+    const orderId = "mobile-updated-address-wrong-invoice"
+    const { providerRequests } = await prepareUpdatedPaymentAddress(
+      page,
+      orderId,
+      true
+    )
+    await page.getByRole("button", { name: "Try payment again" }).tap()
+    const dialog = page.getByRole("alertdialog", {
+      name: "Merchant updated their payment address",
+    })
+    await expect(dialog).toBeVisible()
+    await dialog
+      .getByRole("button", { name: "Use updated address and retry" })
+      .tap()
+    await expect
+      .poll(() => readPaymentAddressRecovery(page, orderId))
+      .toMatchObject({
+        count: 1,
+        orderId,
+        address: updatedPaymentAddress,
+        paymentStatus: "failed",
+        invoiceStatus: "failed",
+        hasInvoice: false,
+        lastError:
+          "The zap invoice is not bound to the signed NIP-57 request sent to the callback.",
+      })
+    await expect(
+      page.getByRole("button", { name: "Try payment again" })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Copy invoice", exact: true })
+    ).toHaveCount(0)
+    expect(providerRequests).toEqual([
+      "new-payment-fixture.dev/.well-known/lnurlp/merchant",
+      "new-payment-fixture.dev/callback",
+    ])
+    await page.getByRole("button", { name: "Try payment again" }).tap()
+    await expect.poll(() => providerRequests.length).toBe(4)
+    await expect(dialog).not.toBeVisible()
+    await expect
+      .poll(() => readPaymentAddressRecovery(page, orderId))
+      .toMatchObject({
+        count: 1,
+        orderId,
+        address: updatedPaymentAddress,
+        paymentStatus: "failed",
+        invoiceStatus: "failed",
+        hasInvoice: false,
+        lastError:
+          "The zap invoice is not bound to the signed NIP-57 request sent to the callback.",
+      })
+    expect(providerRequests).toEqual([
+      "new-payment-fixture.dev/.well-known/lnurlp/merchant",
+      "new-payment-fixture.dev/callback",
+      "new-payment-fixture.dev/.well-known/lnurlp/merchant",
+      "new-payment-fixture.dev/callback",
+    ])
   })
 
   test("market reload safely recovers an expired tokenless pre-wallet payment @market", async ({

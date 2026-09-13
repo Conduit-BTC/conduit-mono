@@ -1,0 +1,97 @@
+import {
+  getOrderPaymentAddressReplacementAdmission,
+  getProfiles,
+  normalizePubkey,
+  type OrderLifecycle,
+} from "@conduit/core"
+import { getMerchantProfileAuthenticatedPubkey } from "../hooks/useMerchantTrustContext"
+import { hasPositiveMerchantPaymentAddressEvidence } from "./merchant-payment-readiness"
+
+export type OrderPaymentAddressUpdate = {
+  orderId: string
+  merchantPubkey: string
+  previousAddress: string
+  newAddress: string
+  expectedUpdatedAt: number
+}
+
+type OrderPaymentAddressAuthority = {
+  accountPubkey?: string | null
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
+}
+
+type OrderPaymentAddressDependencies = {
+  getProfiles: typeof getProfiles
+}
+
+type OrderPaymentAddressCheck =
+  | { status: "unchanged" | "unavailable" | "not_eligible" }
+  | { status: "updated"; update: OrderPaymentAddressUpdate }
+
+/** Check current signed payment evidence without changing the saved order. */
+export async function checkOrderPaymentAddressUpdate(
+  lifecycle: OrderLifecycle,
+  authority: OrderPaymentAddressAuthority,
+  dependencyOverrides: Partial<OrderPaymentAddressDependencies> = {}
+): Promise<OrderPaymentAddressCheck> {
+  const assertCurrentSession = () => {
+    if (authority.shouldContinue?.() === false) {
+      throw new Error(
+        "The connected account changed. Check the merchant payment address again."
+      )
+    }
+  }
+  assertCurrentSession()
+  if (
+    getOrderPaymentAddressReplacementAdmission(lifecycle) !== "replaceable" ||
+    !lifecycle.merchantLightningAddress?.trim()
+  ) {
+    return { status: "not_eligible" }
+  }
+
+  const merchantPubkey = normalizePubkey(lifecycle.merchantPubkey)
+  if (!merchantPubkey) return { status: "unavailable" }
+  const snapshot = {
+    orderId: lifecycle.orderId,
+    merchantPubkey: lifecycle.merchantPubkey,
+    previousAddress: lifecycle.merchantLightningAddress,
+    expectedUpdatedAt: lifecycle.updatedAt,
+  }
+  let result: Awaited<ReturnType<typeof getProfiles>>
+  try {
+    result = await (dependencyOverrides.getProfiles ?? getProfiles)({
+      pubkeys: [merchantPubkey],
+      accountPubkey: authority.accountPubkey,
+      authenticatedPubkey: getMerchantProfileAuthenticatedPubkey(
+        merchantPubkey,
+        authority.authenticatedPubkey
+      ),
+      shouldContinue: authority.shouldContinue,
+      skipCache: true,
+      requireCompleteEvidence: true,
+      evidenceScope: "payment",
+      priority: "visible",
+    })
+  } catch {
+    assertCurrentSession()
+    return { status: "unavailable" }
+  }
+  assertCurrentSession()
+
+  const profile = result.data[merchantPubkey]
+  if (
+    profile?.pubkey !== merchantPubkey ||
+    !hasPositiveMerchantPaymentAddressEvidence({
+      meta: result.meta,
+      lud16: profile.lud16,
+    })
+  ) {
+    return { status: "unavailable" }
+  }
+  const newAddress = profile.lud16!.trim().toLowerCase()
+  if (newAddress === snapshot.previousAddress.trim().toLowerCase()) {
+    return { status: "unchanged" }
+  }
+  return { status: "updated", update: { ...snapshot, newAddress } }
+}

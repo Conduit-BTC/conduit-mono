@@ -21,6 +21,7 @@ import {
   getNdk,
   getProductImageCandidates,
   getOrderPublicZapSigner,
+  getOrderLifecycle,
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
   hasWebLN,
@@ -130,11 +131,16 @@ import {
   resendOrderProof,
   runOrderPrivateFallback,
   runOrderPayment,
+  runOrderPaymentWithUpdatedAddress,
   submitExternalPaymentProof,
   subscribeOrderPayment,
   validateMerchantInvoicePaymentAction,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import {
+  checkOrderPaymentAddressUpdate,
+  type OrderPaymentAddressUpdate,
+} from "../lib/order-payment-address"
 import {
   getNextOrderPaymentLeaseExpiry,
   reconcileOrderPaymentForDisplay,
@@ -870,6 +876,10 @@ function OrderDetail({
   const [busy, setBusy] = useState(false)
   const [privateFallbackOpen, setPrivateFallbackOpen] = useState(false)
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
+  const [paymentAddressUpdate, setPaymentAddressUpdate] = useState<{
+    ctx: OrderPaymentContext
+    update: OrderPaymentAddressUpdate
+  } | null>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
@@ -1072,7 +1082,7 @@ function OrderDetail({
     }
   }, [])
 
-  async function retryPayment(): Promise<void> {
+  async function verifyRetryFreshness(): Promise<void> {
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
       row.lifecycle?.merchantPubkey ?? row.merchantPubkey,
@@ -1085,10 +1095,42 @@ function OrderDetail({
       authenticatedPubkey,
       shouldContinue: shouldContinueBuyerSession,
     })
+  }
 
+  async function retryPayment(): Promise<void> {
+    await verifyRetryFreshness()
     const ctx = await persistTargetAndBuildServiceCtx()
+    const lifecycle = await getOrderLifecycle(vm.orderId)
+    if (
+      lifecycle &&
+      vm.phase !== "cancelled" &&
+      vm.phase !== "completed" &&
+      !vm.merchantInvoiceAction
+    ) {
+      const check = await checkOrderPaymentAddressUpdate(lifecycle, ctx)
+      if (check.status === "updated") {
+        setPaymentAddressUpdate({ ctx, update: check.update })
+        return
+      }
+      if (check.status === "unavailable") {
+        setRecoveryError(
+          "We couldn't check for an updated merchant address. This retry uses the saved address."
+        )
+      }
+    }
+    await runRetryPayment(ctx)
+  }
+
+  async function runRetryPayment(
+    ctx: OrderPaymentContext,
+    update?: OrderPaymentAddressUpdate
+  ): Promise<void> {
+    const run = (context: OrderPaymentContext) =>
+      update
+        ? runOrderPaymentWithUpdatedAddress(context, update)
+        : runOrderPayment(context)
     if (ctx.zapMode !== "anonymous_public_zap") {
-      await runOrderPayment(ctx)
+      await run(ctx)
       return
     }
 
@@ -1108,11 +1150,28 @@ function OrderDetail({
       )
     }
     const preparedAnonZap = await signAuthorizedAnonZapCheckout(authorization)
-    await runOrderPayment({
+    await run({
       ...ctx,
       zapContent: preparedAnonZap.rawEvent.content,
       preparedAnonZap,
     })
+  }
+
+  async function confirmPaymentAddressUpdate(): Promise<void> {
+    const pending = paymentAddressUpdate
+    if (!pending) return
+    setPaymentAddressUpdate(null)
+    if (
+      vm.phase === "cancelled" ||
+      vm.phase === "completed" ||
+      vm.merchantInvoiceAction
+    ) {
+      throw new Error(
+        "This order no longer accepts an updated payment address."
+      )
+    }
+    await verifyRetryFreshness()
+    await runRetryPayment(pending.ctx, pending.update)
   }
 
   async function continuePrivateFallback(): Promise<void> {
@@ -1617,6 +1676,55 @@ function OrderDetail({
           </div>
         </StatusNotice>
       )}
+
+      <AlertDialog
+        open={!!paymentAddressUpdate}
+        onOpenChange={(open) => {
+          if (!open) setPaymentAddressUpdate(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Merchant updated their payment address
+            </AlertDialogTitle>
+            <AlertDialogDescription className="leading-6">
+              Review the new address before retrying this order. The order total
+              and payment method stay the same. If you selected a wallet,
+              confirming may pay immediately.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <dl className="grid gap-3 text-sm">
+            <div>
+              <dt className="text-[var(--text-secondary)]">Saved address</dt>
+              <dd className="break-all">
+                {paymentAddressUpdate?.update.previousAddress}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[var(--text-secondary)]">Updated address</dt>
+              <dd className="break-all">
+                {paymentAddressUpdate?.update.newAddress}
+              </dd>
+            </div>
+          </dl>
+          <AlertDialogFooter>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => setPaymentAddressUpdate(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() => void withBusy(confirmPaymentAddressUpdate)}
+            >
+              Use updated address and retry
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={privateFallbackOpen}
