@@ -224,7 +224,7 @@ async function expectMobileSignerChoices(
   return "Amber"
 }
 
-async function seedInterruptedPayment(
+async function seedPaymentLifecycle(
   page: Page,
   input: {
     orderId: string
@@ -238,6 +238,7 @@ async function seedInterruptedPayment(
       address: string
       checkoutMode?: "public_zap_as_shopper" | "external_wallet"
     }
+    preparationError?: string
   }
 ): Promise<void> {
   await page.evaluate(
@@ -250,6 +251,7 @@ async function seedInterruptedPayment(
       preimage,
       storeMarker,
       failedPayment,
+      preparationError,
     }) => {
       const database = await new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open("conduit")
@@ -266,14 +268,25 @@ async function seedInterruptedPayment(
         const transaction = database.transaction("orderLifecycles", "readwrite")
         transaction.objectStore("orderLifecycles").put({
           orderId,
-          paymentClaimId,
-          paymentClaimedAt: now - 20_000,
-          paymentClaimLeaseExpiresAt: now - 1,
+          ...(preparationError
+            ? {}
+            : {
+                paymentClaimId,
+                paymentClaimedAt: now - 20_000,
+                paymentClaimLeaseExpiresAt: now - 1,
+              }),
           buyerPubkey,
           buyerIdentityKind: "signed_in",
           merchantPubkey,
-          merchantLightningAddress: "merchant@example.test",
-          checkoutMode: "private_checkout",
+          merchantLightningAddress: preparationError
+            ? "merchant@merchant-fixture.dev"
+            : "merchant@example.test",
+          checkoutMode: preparationError
+            ? "public_zap_as_shopper"
+            : "private_checkout",
+          ...(preparationError
+            ? { paymentTarget: { type: "manual" }, lastError: preparationError }
+            : {}),
           items: [
             {
               productId: "30402:fixture:mobile-recovery",
@@ -292,8 +305,18 @@ async function seedInterruptedPayment(
           addressValidity: "not_required",
           shippingZoneEligibility: "not_required",
           orderDeliveryStatus: "sent",
-          invoiceStatus: invoice ? "received" : "requesting",
-          paymentStatus: preimage ? "paid" : invoice ? "paying" : "not_started",
+          invoiceStatus: preparationError
+            ? "failed"
+            : invoice
+              ? "received"
+              : "requesting",
+          paymentStatus: preparationError
+            ? "failed"
+            : preimage
+              ? "paid"
+              : invoice
+                ? "paying"
+                : "not_started",
           proofDeliveryStatus: preimage ? "pending" : "not_started",
           zapReceiptStatus: "not_applicable",
           phase: "in_progress",
@@ -323,7 +346,7 @@ async function seedInterruptedPayment(
         transaction.onabort = () => reject(transaction.error)
       })
       database.close()
-      if (storeMarker !== false && !failedPayment) {
+      if (storeMarker !== false && !failedPayment && !preparationError) {
         sessionStorage.setItem(
           `conduit:order-payment-claim:${orderId}`,
           paymentClaimId
@@ -557,7 +580,7 @@ async function prepareUpdatedPaymentAddress(
   await expect(
     page.getByRole("heading", { name: "No orders yet" })
   ).toBeVisible()
-  await seedInterruptedPayment(page, {
+  await seedPaymentLifecycle(page, {
     orderId,
     buyerPubkey,
     paymentClaimId: "unused-failed-payment-claim",
@@ -1326,6 +1349,162 @@ test.describe("CND-162 mobile browser baseline", () => {
     ])
   })
 
+  test("market shows invoice binding failures after manual retry and reload @market", async ({
+    page,
+  }) => {
+    const orderId = "mobile-invoice-binding-failure"
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+    const failureDetail =
+      "The merchant's payment provider returned an invoice that does not match this public zap request. Contact the merchant if this keeps happening."
+    const failureAlert = page
+      .getByRole("alert")
+      .filter({ hasText: failureDetail })
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc10n",
+      createdAt: Math.floor(Date.now() / 1000),
+      fields: [
+        bolt11PaymentHashField(),
+        bolt11DescriptionHashField("unrelated synthetic description"),
+      ],
+    })
+    let callbackRequests = 0
+    let releaseCallback!: () => void
+    const callbackReleased = new Promise<void>((resolve) => {
+      releaseCallback = resolve
+    })
+    await page.route("https://merchant-fixture.dev/**", async (route) => {
+      const url = new URL(route.request().url())
+      if (url.pathname === "/callback") {
+        callbackRequests += 1
+        expect(url.searchParams.get("amount")).toBe("1000")
+        const zapRequest = JSON.parse(url.searchParams.get("nostr") ?? "null")
+        expect(zapRequest?.kind).toBe(9734)
+        expect(zapRequest?.pubkey).toBe(buyerPubkey)
+        await callbackReleased
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ pr: invoice, routes: [] }),
+        })
+        return
+      }
+      expect(url.pathname).toBe("/.well-known/lnurlp/merchant")
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          tag: "payRequest",
+          callback: "https://merchant-fixture.dev/callback",
+          minSendable: 1_000,
+          maxSendable: 100_000,
+          allowsNostr: true,
+          nostrPubkey: TEST_MERCHANT_PUBKEY,
+          metadata: JSON.stringify([["text/plain", "Synthetic merchant"]]),
+        }),
+      })
+    })
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
+    await page.goto(`${marketUrl}/orders`)
+    await expect(
+      page.getByRole("heading", { name: "No orders yet" })
+    ).toBeVisible()
+    await seedPaymentLifecycle(page, {
+      orderId,
+      buyerPubkey,
+      paymentClaimId: "unused-failed-preparation-claim",
+      preparationError:
+        "The zap invoice is not bound to the signed NIP-57 request sent to the callback.",
+    })
+    await page.goto(`${marketUrl}/orders?order=${orderId}`)
+    await expect(failureAlert).toBeVisible()
+    await page.reload()
+    await expect(failureAlert).toBeVisible()
+
+    try {
+      await page.getByRole("button", { name: "Try payment again" }).tap()
+      await expect.poll(() => callbackRequests).toBe(1)
+      await expect(failureAlert).toHaveCount(0)
+    } finally {
+      releaseCallback()
+    }
+
+    // The real service catches the callback's binding error and resolves with
+    // failed state. Orders must still show its actionable error to the buyer.
+    await expect(failureAlert).toBeVisible()
+    expect(await readRecoveredPayment(page, orderId)).toEqual({
+      paymentStatus: "failed",
+      proofDeliveryStatus: "not_started",
+      paymentClaimId: undefined,
+      marker: null,
+    })
+    await assertMobileViewport(page)
+    await page.reload()
+    await expect(failureAlert).toBeVisible()
+    expect(callbackRequests).toBe(1)
+  })
+
+  test("market hides a saved payment failure after cancellation @market", async ({
+    page,
+  }) => {
+    const orderId = "cancelled-payment-error"
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+    const failureAlert = page.getByRole("alert").filter({
+      hasText:
+        "Payment could not be completed. Try again or contact the merchant if it keeps failing.",
+    })
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
+    await page.goto(`${marketUrl}/orders`)
+    await expect(
+      page.getByRole("heading", { name: "No orders yet" })
+    ).toBeVisible()
+    await seedPaymentLifecycle(page, {
+      orderId,
+      buyerPubkey,
+      paymentClaimId: "unused-preparation-claim",
+      preparationError: "Synthetic preparation failure",
+    })
+    await page.goto(`${marketUrl}/orders?order=${orderId}`)
+    await expect(failureAlert).toBeVisible()
+
+    // Keep the old failed payment and error intact while the effective order
+    // becomes terminal. Reload must render cancellation without saved advice.
+    await page.evaluate(async (id) => {
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction("orderLifecycles", "readwrite")
+        const store = transaction.objectStore("orderLifecycles")
+        const request = store.get(id)
+        request.onsuccess = () => {
+          if (!request.result) {
+            transaction.abort()
+            return
+          }
+          store.put({ ...request.result, phase: "cancelled" })
+        }
+        transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(new Error("Fixture update failed"))
+      })
+      database.close()
+    }, orderId)
+    await page.reload()
+    await expect(
+      page.getByText("Order cancelled", { exact: true })
+    ).toBeVisible()
+    await expect(failureAlert).toHaveCount(0)
+    expect(await readRecoveredPayment(page, orderId)).toMatchObject({
+      paymentStatus: "failed",
+      proofDeliveryStatus: "not_started",
+    })
+    await assertMobileViewport(page)
+  })
+
   test("market reload safely recovers an expired tokenless pre-wallet payment @market", async ({
     page,
   }) => {
@@ -1341,7 +1520,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(
       page.getByRole("heading", { name: "No orders yet" })
     ).toBeVisible()
-    await seedInterruptedPayment(page, {
+    await seedPaymentLifecycle(page, {
       orderId,
       buyerPubkey,
       paymentClaimId: "pre-wallet-claim",
@@ -1380,7 +1559,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(
       page.getByRole("heading", { name: "No orders yet" })
     ).toBeVisible()
-    await seedInterruptedPayment(page, {
+    await seedPaymentLifecycle(page, {
       orderId,
       buyerPubkey,
       paymentClaimId: "wallet-handoff-claim",
@@ -1418,7 +1597,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(
       page.getByRole("heading", { name: "No orders yet" })
     ).toBeVisible()
-    await seedInterruptedPayment(page, {
+    await seedPaymentLifecycle(page, {
       orderId,
       buyerPubkey,
       paymentClaimId: "paid-proof-claim",
