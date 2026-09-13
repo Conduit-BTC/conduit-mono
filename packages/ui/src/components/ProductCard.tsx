@@ -1,5 +1,12 @@
 import { Check, ImageOff, ShoppingCart } from "lucide-react"
-import { type ReactNode, useEffect, useRef, useState } from "react"
+import {
+  type FocusEventHandler,
+  type PointerEventHandler,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 import { normalizePublicMediaUrl } from "@conduit/core"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
@@ -37,6 +44,10 @@ export interface ProductCardProps {
   onActivate?: () => void
   onMerchantActivate?: () => void
   onInvalidImage?: () => void
+  /** Fires when the pointer enters the card root. */
+  onPointerEnter?: PointerEventHandler<HTMLDivElement>
+  /** Fires when the card root or any descendant receives focus. */
+  onFocus?: FocusEventHandler<HTMLDivElement>
   className?: string
 }
 
@@ -61,6 +72,8 @@ export function ProductCard({
   onActivate,
   onMerchantActivate,
   onInvalidImage,
+  onPointerEnter,
+  onFocus,
   className,
 }: ProductCardProps) {
   const [imageFailed, setImageFailed] = useState(false)
@@ -97,6 +110,8 @@ export function ProductCard({
         className
       )}
       onClick={onActivate}
+      onPointerEnter={onPointerEnter}
+      onFocus={onFocus}
       onKeyDown={(event) => {
         if (!onActivate || (event.key !== "Enter" && event.key !== " ")) return
         event.preventDefault()

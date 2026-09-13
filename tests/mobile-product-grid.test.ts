@@ -76,6 +76,15 @@ describe("Market product grid layout", () => {
 
     expect(content).toContain(`${desktopHoverMedia}:absolute`)
     expect(content).toContain(`${desktopHoverMedia}:top-full`)
+    expect(content).toContain(`${desktopHoverMedia}:bottom-full`)
+    expect(content).toContain(`${desktopHoverMedia}:hover:rounded-t-none`)
+    expect(content).toContain(`${desktopHoverMedia}:hover:border-t-0`)
+    expect(content).toContain("getVariationPanelPlacement")
+    expect(content).toContain("--market-hud-height")
+    expect(content).toContain("onPointerEnter=")
+    expect(content).toContain("onFocus=")
+    expect(content).toContain(`${desktopHoverMedia}:scale-y-0`)
+    expect(content).toContain(`${desktopHoverMedia}:group-hover:scale-y-100`)
     expect(content).toContain("origin-center")
     expect(content).toContain(`${desktopHoverMedia}:hover:scale-[1.12]`)
     expect(content).toContain(`${desktopHoverMedia}:focus-within:scale-[1.12]`)
@@ -92,7 +101,7 @@ describe("Market product grid layout", () => {
     )
     expect(content).not.toContain(`${desktopHoverMedia}:translate-y-2`)
     expect(content).toContain(
-      `${desktopHoverMedia}:transition-[opacity,visibility]`
+      `${desktopHoverMedia}:transition-[opacity,visibility,transform]`
     )
     expect(content).toContain(`${desktopHoverMedia}:pointer-events-none`)
     expect(content).toContain(`${desktopHoverMedia}:invisible`)

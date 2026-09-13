@@ -20,11 +20,41 @@ import {
   getProductSelectionImages,
   type MarketProductFamily,
 } from "../lib/productVariations"
+import {
+  getVariationPanelPlacement,
+  readRootPixelVariable,
+  type VariationPanelPlacement,
+} from "../lib/variation-panel-placement"
 import { getPendingMerchantDisplayName } from "./MerchantIdentity"
 import { ProductVariationSelector } from "./ProductVariationSelector"
 
 export const PRODUCT_GRID_CLASS_NAME =
   "grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
+
+const DESKTOP_HOVER_MEDIA_QUERY = "(min-width: 768px) and (hover: hover)"
+const VARIATION_CONTROLS_SELECTOR =
+  '[data-slot="product-variation-selector"], [data-slot="product-variation-skeleton"]'
+
+function measureVariationPanelPlacement(
+  root: HTMLElement
+): VariationPanelPlacement | null {
+  if (!window.matchMedia(DESKTOP_HOVER_MEDIA_QUERY).matches) return null
+  const panel = root.querySelector<HTMLElement>(
+    VARIATION_CONTROLS_SELECTOR
+  )?.parentElement
+  if (!panel) return null
+  const rect = root.getBoundingClientRect()
+  const cardHeight = root.offsetHeight
+  return getVariationPanelPlacement({
+    cardTop: rect.top + rect.height / 2 - cardHeight / 2,
+    cardHeight,
+    panelHeight: panel.offsetHeight,
+    viewportHeight: window.innerHeight,
+    bottomInset:
+      readRootPixelVariable("--market-hud-height") +
+      readRootPixelVariable("--market-fixed-footer-height"),
+  })
+}
 
 export type ProductGridCardProps = {
   product: Product
@@ -86,6 +116,8 @@ export function ProductGridCard({
     defaultSelection.id
   )
   const [isVariationMenuOpen, setIsVariationMenuOpen] = useState(false)
+  const [variationPanelPlacement, setVariationPanelPlacement] =
+    useState<VariationPanelPlacement>("below")
   const selectedProductId =
     controlledSelectedProductId ?? internalSelectedProductId
   const selectedProduct = getProductSelection(
@@ -139,14 +171,26 @@ export function ProductGridCard({
     getProductAddAvailability(selectedProduct.stock, selectedCartQuantity, 1)
       .canAdd === false
 
+  const panelOpensAbove = variationPanelPlacement === "above"
+  const updateVariationPanelPlacement = (root: HTMLElement) => {
+    if (!hasVariationControls) return
+    const placement = measureVariationPanelPlacement(root)
+    if (placement) setVariationPanelPlacement(placement)
+  }
+
   const variationPanelClassName = cn(
     "pt-3",
-    "[@media(min-width:768px)_and_(hover:hover)]:absolute [@media(min-width:768px)_and_(hover:hover)]:inset-x-0 [@media(min-width:768px)_and_(hover:hover)]:top-full [@media(min-width:768px)_and_(hover:hover)]:z-20 [@media(min-width:768px)_and_(hover:hover)]:border-x [@media(min-width:768px)_and_(hover:hover)]:border-b [@media(min-width:768px)_and_(hover:hover)]:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:p-3 [@media(min-width:768px)_and_(hover:hover)]:rounded-b-xl",
-    "[@media(min-width:768px)_and_(hover:hover)]:pointer-events-none [@media(min-width:768px)_and_(hover:hover)]:invisible [@media(min-width:768px)_and_(hover:hover)]:opacity-0 [@media(min-width:768px)_and_(hover:hover)]:transition-[opacity,visibility] [@media(min-width:768px)_and_(hover:hover)]:duration-200 motion-reduce:!transition-none",
-    "[@media(min-width:768px)_and_(hover:hover)]:group-hover:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-hover:visible [@media(min-width:768px)_and_(hover:hover)]:group-hover:opacity-100",
-    "[@media(min-width:768px)_and_(hover:hover)]:group-focus-within:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:visible [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:opacity-100",
+    "[@media(min-width:768px)_and_(hover:hover)]:absolute [@media(min-width:768px)_and_(hover:hover)]:inset-x-0 [@media(min-width:768px)_and_(hover:hover)]:z-20 [@media(min-width:768px)_and_(hover:hover)]:border-x [@media(min-width:768px)_and_(hover:hover)]:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:p-3",
+    panelOpensAbove
+      ? "[@media(min-width:768px)_and_(hover:hover)]:bottom-full [@media(min-width:768px)_and_(hover:hover)]:origin-bottom [@media(min-width:768px)_and_(hover:hover)]:border-t [@media(min-width:768px)_and_(hover:hover)]:rounded-t-xl"
+      : "[@media(min-width:768px)_and_(hover:hover)]:top-full [@media(min-width:768px)_and_(hover:hover)]:origin-top [@media(min-width:768px)_and_(hover:hover)]:border-b [@media(min-width:768px)_and_(hover:hover)]:rounded-b-xl",
+    // The collapsed panel scales to zero height so it never adds scrollable
+    // space below the last grid row while it is hidden.
+    "[@media(min-width:768px)_and_(hover:hover)]:pointer-events-none [@media(min-width:768px)_and_(hover:hover)]:invisible [@media(min-width:768px)_and_(hover:hover)]:opacity-0 [@media(min-width:768px)_and_(hover:hover)]:scale-y-0 [@media(min-width:768px)_and_(hover:hover)]:transition-[opacity,visibility,transform] [@media(min-width:768px)_and_(hover:hover)]:duration-200 motion-reduce:!transition-none",
+    "[@media(min-width:768px)_and_(hover:hover)]:group-hover:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-hover:visible [@media(min-width:768px)_and_(hover:hover)]:group-hover:opacity-100 [@media(min-width:768px)_and_(hover:hover)]:group-hover:scale-y-100",
+    "[@media(min-width:768px)_and_(hover:hover)]:group-focus-within:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:visible [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:opacity-100 [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:scale-y-100",
     isVariationMenuOpen &&
-      "[@media(min-width:768px)_and_(hover:hover)]:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:visible [@media(min-width:768px)_and_(hover:hover)]:opacity-100"
+      "[@media(min-width:768px)_and_(hover:hover)]:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:visible [@media(min-width:768px)_and_(hover:hover)]:opacity-100 [@media(min-width:768px)_and_(hover:hover)]:scale-y-100"
   )
 
   return (
@@ -156,10 +200,20 @@ export function ProductGridCard({
         "relative origin-center",
         "[@media(min-width:768px)_and_(hover:hover)]:overflow-visible [@media(min-width:768px)_and_(hover:hover)]:z-10 [@media(min-width:768px)_and_(hover:hover)]:hover:z-20 [@media(min-width:768px)_and_(hover:hover)]:focus-within:z-20 [@media(min-width:768px)_and_(hover:hover)]:hover:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:focus-within:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:hover:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:hover:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:focus-within:bg-[var(--surface-overlay)] motion-reduce:transition-none",
         hasVariationControls &&
-          "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-b-0",
+          (panelOpensAbove
+            ? "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-t-0"
+            : "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-b-0"),
         isVariationMenuOpen &&
-          "[@media(min-width:768px)_and_(hover:hover)]:z-30 [@media(min-width:768px)_and_(hover:hover)]:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:shadow-[var(--shadow-lg)]"
+          "[@media(min-width:768px)_and_(hover:hover)]:z-30 [@media(min-width:768px)_and_(hover:hover)]:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:shadow-[var(--shadow-lg)]",
+        isVariationMenuOpen &&
+          (panelOpensAbove
+            ? "[@media(min-width:768px)_and_(hover:hover)]:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:border-t-0"
+            : "[@media(min-width:768px)_and_(hover:hover)]:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:border-b-0")
       )}
+      onPointerEnter={(event) =>
+        updateVariationPanelPlacement(event.currentTarget)
+      }
+      onFocus={(event) => updateVariationPanelPlacement(event.currentTarget)}
       title={product.title}
       notice={notice}
       merchantName={merchantName}
@@ -170,7 +224,14 @@ export function ProductGridCard({
       approximateUsdPrice={approximateUsd}
       imageLoading={imageLoading}
       disableImageHoverZoom
-      mediaClassName="[@media(min-width:768px)_and_(hover:hover)]:rounded-t-[calc(0.75rem-1px)]"
+      mediaClassName={cn(
+        "[@media(min-width:768px)_and_(hover:hover)]:rounded-t-[calc(0.75rem-1px)]",
+        panelOpensAbove &&
+          "[@media(min-width:768px)_and_(hover:hover)]:group-hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:rounded-t-none",
+        panelOpensAbove &&
+          isVariationMenuOpen &&
+          "[@media(min-width:768px)_and_(hover:hover)]:rounded-t-none"
+      )}
       cartQuantity={selectedCartQuantity}
       soldOut={soldOut}
       options={
@@ -237,6 +298,7 @@ function ProductVariationLoadingSkeleton() {
     <div
       role="status"
       aria-label="Loading product options"
+      data-slot="product-variation-skeleton"
       className="space-y-2 animate-pulse motion-reduce:animate-none"
     >
       {Array.from({ length: 3 }).map((_, index) => (

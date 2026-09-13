@@ -352,6 +352,85 @@ test("market product variation panel preserves grid geometry across desktop mous
   await expect(chooseSize).toHaveAttribute("aria-expanded", "false")
 })
 
+test("market product variation panel opens above the card when the page ends below it @market", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mountHarness(page)
+
+  const variableItem = page.getByTestId("variable-product-list-item")
+  const variableCard = variableItem.locator(":scope > div")
+  const media = variableCard.locator(":scope > div:first-child")
+  const chooseSize = variableItem.getByRole("combobox", {
+    name: "Choose size",
+    includeHidden: true,
+  })
+  const panel = await variationPanel(variableItem)
+
+  await page.evaluate(() => {
+    const container = document.getElementById("product-variation-panel-harness")
+    if (container) container.style.paddingBottom = "0px"
+  })
+  const viewportHeight = page.viewportSize()?.height ?? 0
+  // The catalog above the harness keeps loading; retry until the page end
+  // settles with the card resting against the bottom of the viewport.
+  await expect
+    .poll(async () => {
+      await page.evaluate(() =>
+        window.scrollTo({
+          top: document.documentElement.scrollHeight,
+          behavior: "instant",
+        })
+      )
+      const restingCard = await geometry(variableCard)
+      return restingCard.y + restingCard.height
+    })
+    .toBeGreaterThan(viewportHeight - 40)
+
+  await variableCard.hover()
+  await expect(chooseSize).toBeVisible()
+  await expect
+    .poll(() => panelStyle(panel))
+    .toMatchObject({ opacity: "1", position: "absolute" })
+
+  const [cardBox, panelBox] = await Promise.all([
+    geometry(variableCard),
+    geometry(panel),
+  ])
+  expect(
+    Math.abs(panelBox.y + panelBox.height - cardBox.y)
+  ).toBeLessThanOrEqual(1)
+  expect(panelBox.y).toBeGreaterThanOrEqual(0)
+
+  const openedAbovePanel = await panelStyle(panel)
+  expect(openedAbovePanel.borderBottomLeftRadius).toBe("0px")
+  expect(parseFloat(openedAbovePanel.borderTopWidth)).toBeGreaterThan(0)
+  expect(
+    await panel.evaluate((element) =>
+      parseFloat(getComputedStyle(element).borderTopLeftRadius)
+    )
+  ).toBeGreaterThan(0)
+  expect(
+    await variableCard.evaluate(
+      (element) => getComputedStyle(element).borderTopWidth
+    )
+  ).toBe("0px")
+  expect(
+    await media.evaluate(
+      (element) => getComputedStyle(element).borderTopLeftRadius
+    )
+  ).toBe("0px")
+
+  await chooseSize.click()
+  await expect(page.getByRole("option", { name: "M" })).toBeVisible()
+  await page.mouse.move(0, 0)
+  const panelWhileOpen = await geometry(panel)
+  expect(
+    Math.abs(panelWhileOpen.y + panelWhileOpen.height - cardBox.y)
+  ).toBeLessThanOrEqual(1)
+  await page.keyboard.press("Escape")
+})
+
 test("market product variation panel uses an opaque matching light overlay @market", async ({
   page,
 }) => {
@@ -395,7 +474,9 @@ test("market product variation panel joins hydration controls on desktop hover @
   })
   const panel = skeleton.locator("xpath=../..")
 
-  await variableCard.scrollIntoViewIfNeeded()
+  await variableCard.evaluate((element) =>
+    element.scrollIntoView({ block: "center", behavior: "instant" })
+  )
   const cardBox = await geometry(variableCard)
   await page.mouse.move(
     cardBox.x + cardBox.width / 2,
@@ -403,14 +484,30 @@ test("market product variation panel joins hydration controls on desktop hover @
   )
 
   await expect(skeleton).toBeVisible()
-  expect(await cardStyle(variableCard)).toMatchObject({
-    borderBottomWidth: "0px",
-  })
   expect(await panelStyle(panel)).toMatchObject({
-    borderTopWidth: "0px",
     opacity: "1",
     visibility: "visible",
   })
+  // The three-row skeleton is the tallest panel, so it may open on either
+  // side; the seam facing the card must be open on both boxes.
+  const seam = await panel.evaluate((element) => {
+    const card = element.parentElement?.parentElement as HTMLElement
+    const panelStyles = getComputedStyle(element)
+    const cardStyles = getComputedStyle(card)
+    const opensAbove =
+      element.getBoundingClientRect().bottom <=
+      card.getBoundingClientRect().top + 1
+    return opensAbove
+      ? {
+          panelSeam: panelStyles.borderBottomWidth,
+          cardSeam: cardStyles.borderTopWidth,
+        }
+      : {
+          panelSeam: panelStyles.borderTopWidth,
+          cardSeam: cardStyles.borderBottomWidth,
+        }
+  })
+  expect(seam).toEqual({ panelSeam: "0px", cardSeam: "0px" })
 })
 
 test("market product variation panel reveals instantly with reduced motion @market", async ({

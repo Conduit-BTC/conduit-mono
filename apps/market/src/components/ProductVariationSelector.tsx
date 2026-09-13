@@ -49,6 +49,7 @@ export function ProductVariationSelector({
   // inside the control until the shopper makes an explicit variation choice.
   return (
     <div
+      data-slot="product-variation-selector"
       className={cn("space-y-2", className)}
       onClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => event.stopPropagation()}
