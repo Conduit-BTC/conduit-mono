@@ -4,7 +4,7 @@ import {
   NDKPrivateKeySigner,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
-import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
+import { finalizeEvent, getEventHash, getPublicKey } from "nostr-tools/pure"
 import {
   __resetInboxRelayCache,
   applyAccountNetworkRelayExclusion,
@@ -1537,6 +1537,92 @@ describe("publishPrivateMessage", () => {
     )
   })
 
+  for (const declared of [true, false]) {
+    it(`delivers an encrypted synthetic order through ${declared ? "strict" : "bounded compatibility"} routing for recipient decryption`, async () => {
+      const senderSigner = NDKPrivateKeySigner.generate()
+      const recipientSigner = NDKPrivateKeySigner.generate()
+      const unrelatedSigner = NDKPrivateKeySigner.generate()
+      const sender = await senderSigner.user()
+      const recipient = await recipientSigner.user()
+      const unsigned = {
+        kind: EVENT_KINDS.ORDER,
+        pubkey: sender.pubkey,
+        created_at: 1_000,
+        tags: [
+          ["p", recipient.pubkey],
+          ["type", "message"],
+          ["order", "synthetic-rollout"],
+        ],
+        content: JSON.stringify({ note: "Synthetic rollout receipt" }),
+      }
+      const order = new NDKEvent(undefined, {
+        ...unsigned,
+        id: getEventHash(unsigned),
+      })
+      const target = declared
+        ? "wss://recipient.inbox.conduit.market"
+        : "wss://compatibility.example"
+      let staged: NDKEvent | null = null
+      let received: NDKEvent | null = null
+      const outcomes: unknown[] = []
+      const delivered = await publishPrivateMessage({
+        rumor: order,
+        senderPubkey: sender.pubkey,
+        recipientPubkey: recipient.pubkey,
+        signer: senderSigner,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: declared ? [target] : [],
+        validatedOrderScope: createValidatedOrderRouteScope({
+          rumor: order,
+          orderId: "synthetic-rollout",
+          senderPubkey: sender.pubkey,
+          recipientPubkey: recipient.pubkey,
+        }),
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://compatibility.example"],
+          maxRelays: 1,
+        },
+        resolveCompatibilityRecipientReadRelays: async () => [],
+        onWrapped: async ({ wrappedToRecipient }) => {
+          staged = wrappedToRecipient
+        },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
+        publishFn: (async (event, options) => {
+          expect(event).toBe(staged)
+          expect(options.exclusiveRelayUrls).toEqual([target])
+          received = event
+          return { successfulRelayUrls: [target], failedRelayUrls: [] }
+        }) as never,
+      })
+      expect(delivered.deliveryRoute).toBe(
+        declared ? "declared_inbox" : "compatibility_order"
+      )
+      expect(received).not.toBeNull()
+      const receipt = await unwrapGiftWrap(received!, recipientSigner)
+      expect(receipt.status).toBe("ok")
+      if (receipt.status === "ok") {
+        expect(receipt.category).toBe("order")
+        expect(receipt.rumor.id).toBe(order.id)
+        expect(receipt.rumor.pubkey).toBe(sender.pubkey)
+      }
+      expect((await unwrapGiftWrap(received!, unrelatedSigner)).status).toBe(
+        "decrypt_failed"
+      )
+      expect(outcomes).toEqual([
+        {
+          action: "order_delivery",
+          declarationClass: declared ? "declared" : "not_observed",
+          deliveryRoute: declared ? "declared_inbox" : "compatibility_order",
+          ackOutcome: "positive",
+          repairOutcome: "not_applicable",
+          blockReason: "not_applicable",
+        },
+      ])
+    })
+  }
+
   it("attaches an NDK instance before the real gift-wrap encryption path", async () => {
     const senderSigner = NDKPrivateKeySigner.generate()
     const recipientSigner = NDKPrivateKeySigner.generate()
@@ -1630,6 +1716,7 @@ describe("publishPrivateMessage", () => {
 
   it("delivers a validated order over the compatibility route when the recipient has no declaration", async () => {
     const publishes: Array<{ id: string; relays: readonly string[] }> = []
+    const outcomes: unknown[] = []
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
@@ -1643,6 +1730,7 @@ describe("publishPrivateMessage", () => {
         enabled: true,
         relayUrls: ["wss://compatibility.conduit.market"],
       },
+      onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
       giftWrapFn: (async (_rumor, recipient) =>
         wrap(`wrap-${recipient.pubkey}`)) as never,
       publishFn: (async (event, options) => {
@@ -1661,6 +1749,16 @@ describe("publishPrivateMessage", () => {
       },
     ])
     expect(result.deliveryRoute).toBe("compatibility_order")
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "positive",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
   })
 
   it("records a guest order update to the merchant without treating the guest as an inbox", async () => {
@@ -1734,6 +1832,7 @@ describe("publishPrivateMessage", () => {
   })
 
   it("accepts one compatibility ACK, surfaces partial delivery, and keeps NIP-65 bounded", async () => {
+    const outcomes: unknown[] = []
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
       senderPubkey: "sender",
@@ -1754,6 +1853,7 @@ describe("publishPrivateMessage", () => {
         "wss://arbitrary.conduit.market",
         "wss://inbox.conduit.market/",
       ],
+      onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
       giftWrapFn: (async () => wrap("recipient-wrap")) as never,
       publishFn: (async (_event, options) => {
         const relayUrls = [...(options.exclusiveRelayUrls ?? [])]
@@ -1762,7 +1862,7 @@ describe("publishPrivateMessage", () => {
           "wss://commerce.conduit.market",
           "wss://interop.conduit.market",
         ])
-        return {
+        const diagnostics = {
           plan: {
             intent: "recipient_event",
             primaryRelayUrls: relayUrls,
@@ -1781,6 +1881,11 @@ describe("publishPrivateMessage", () => {
             "wss://interop.conduit.market": "rate-limited: retry later",
           },
         }
+        throw new RelayPublishDiagnosticsError(
+          "Some compatibility relays did not acknowledge the order.",
+          diagnostics,
+          new Error("partial compatibility delivery")
+        )
       }) as never,
     })
 
@@ -1796,9 +1901,20 @@ describe("publishPrivateMessage", () => {
     expect(JSON.stringify(result.deliveryRelaySources)).not.toContain(
       "Order update"
     )
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "partial",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
   })
 
   it("fails explicitly when every compatibility relay fails", async () => {
+    const outcomes: unknown[] = []
     const diagnostics = {
       plan: {
         intent: "recipient_event" as const,
@@ -1834,6 +1950,7 @@ describe("publishPrivateMessage", () => {
           enabled: true,
           relayUrls: ["wss://one.conduit.market", "wss://two.conduit.market"],
         },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         giftWrapFn: (async () => wrap("recipient-wrap")) as never,
         publishFn: (async () => {
           throw new RelayPublishDiagnosticsError(
@@ -1844,10 +1961,137 @@ describe("publishPrivateMessage", () => {
         }) as never,
       })
     ).rejects.toBeInstanceOf(RelayPublishDiagnosticsError)
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "zero",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
+  })
+
+  it("records recipient wrapping failures as unavailable after route selection", async () => {
+    const outcomes: unknown[] = []
+    let published = false
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://compatibility.conduit.market"],
+        },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
+        giftWrapFn: (async () => {
+          throw new Error("recipient wrap failed")
+        }) as never,
+        publishFn: (async () => {
+          published = true
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toThrow("recipient wrap failed")
+    expect(published).toBe(false)
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "unavailable",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
+  })
+
+  it("records durable wrap persistence failures as unavailable after route selection", async () => {
+    const outcomes: unknown[] = []
+    let published = false
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://compatibility.conduit.market"],
+        },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
+        giftWrapFn: (async () => wrap("recipient-wrap")) as never,
+        onWrapped: async () => {
+          throw new Error("durable wrap persistence failed")
+        },
+        publishFn: (async () => {
+          published = true
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toThrow("durable wrap persistence failed")
+    expect(published).toBe(false)
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "unavailable",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
+  })
+
+  it("records publisher failures without relay diagnostics as unavailable", async () => {
+    const outcomes: unknown[] = []
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://compatibility.conduit.market"],
+        },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
+        giftWrapFn: (async () => wrap("recipient-wrap")) as never,
+        publishFn: (async () => {
+          throw new Error("publisher failed before relay diagnostics")
+        }) as never,
+      })
+    ).rejects.toThrow("publisher failed before relay diagnostics")
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "unavailable",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
   })
 
   it("keeps a declared inbox exclusive even when compatibility is enabled", async () => {
     const publishes: Array<readonly string[]> = []
+    const outcomes: unknown[] = []
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
@@ -1861,6 +2105,7 @@ describe("publishPrivateMessage", () => {
         enabled: true,
         relayUrls: ["wss://compatibility.conduit.market"],
       },
+      onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
       giftWrapFn: (async (_rumor, recipient) =>
         wrap(`wrap-${recipient.pubkey}`)) as never,
       publishFn: (async (_event, options) => {
@@ -1871,11 +2116,22 @@ describe("publishPrivateMessage", () => {
 
     expect(publishes).toEqual([["wss://recipient.inbox.conduit.market"]])
     expect(result.deliveryRoute).toBe("declared_inbox")
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "declared",
+        deliveryRoute: "declared_inbox",
+        ackOutcome: "positive",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
   })
 
   it("never routes kind-14 direct messages through the compatibility lane", async () => {
     let published = false
     let thrown: unknown
+    const outcomes: unknown[] = []
 
     try {
       await publishPrivateMessage({
@@ -1891,6 +2147,7 @@ describe("publishPrivateMessage", () => {
           enabled: true,
           relayUrls: ["wss://compatibility.conduit.market"],
         },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         giftWrapFn: (async () => wrap("unexpected")) as never,
         publishFn: (async () => {
           published = true
@@ -1906,11 +2163,13 @@ describe("publishPrivateMessage", () => {
       "recipient_not_ready"
     )
     expect(published).toBe(false)
+    expect(outcomes).toEqual([])
   })
 
   it("blocks unvalidated orders from the compatibility lane", async () => {
     let published = false
     let thrown: unknown
+    const outcomes: unknown[] = []
 
     try {
       await publishPrivateMessage({
@@ -1925,6 +2184,7 @@ describe("publishPrivateMessage", () => {
           enabled: true,
           relayUrls: ["wss://compatibility.conduit.market"],
         },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         giftWrapFn: (async () => wrap("unexpected")) as never,
         publishFn: (async () => {
           published = true
@@ -1940,6 +2200,7 @@ describe("publishPrivateMessage", () => {
       "recipient_not_ready"
     )
     expect(published).toBe(false)
+    expect(outcomes).toEqual([])
   })
 
   it("keeps compatibility writes disabled by default for validated orders", async () => {
@@ -1975,6 +2236,7 @@ describe("publishPrivateMessage", () => {
   it("blocks a malformed recipient declaration instead of using compatibility", async () => {
     let published = false
     let thrown: unknown
+    const outcomes: unknown[] = []
 
     try {
       await publishPrivateMessage({
@@ -1994,6 +2256,7 @@ describe("publishPrivateMessage", () => {
           enabled: true,
           relayUrls: ["wss://compatibility.conduit.market"],
         },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         giftWrapFn: (async () => wrap("unexpected")) as never,
         publishFn: (async () => {
           published = true
@@ -2009,6 +2272,16 @@ describe("publishPrivateMessage", () => {
       "recipient_declaration_malformed"
     )
     expect(published).toBe(false)
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "malformed",
+        deliveryRoute: "blocked",
+        ackOutcome: "not_applicable",
+        repairOutcome: "not_applicable",
+        blockReason: "recipient_declaration_malformed",
+      },
+    ])
   })
 
   it("reports a signed empty recipient distinctly while keeping compatibility closed", async () => {

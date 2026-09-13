@@ -148,11 +148,16 @@ wss://relay.primal.net
 Browser builds print a relay map in DevTools showing the code defaults, raw/normalized relay env vars, and the final resolved relay lists. Conduit-hosted deploys should leave relay env vars empty so reviewers can compare the open-source code defaults with the deployed behavior.
 
 Public deployment behavior is repo-owned in `deploy/pages-profiles.json`.
-Cloudflare Pages selects `preview` for non-`main` branches and `production` for
-`main`; CI selects the same profile explicitly. Preview enables validated-order
-compatibility routing so the feature is reviewable. Production and the signet
-`staging` profile remain independently disabled by default. Dashboard values
-cannot override that managed flag. Every app emits
+Cloudflare Pages selects `staging` when its deployment URL belongs to a
+repo-owned Signet project, `preview` for other non-`main` branches, and
+`production` for `main`; CI selects its profile explicitly. Preview enables
+validated-order compatibility routing so the feature is reviewable. Production
+and the Signet `staging` profile remain independently controlled. Dashboard
+`VITE_*` values cannot directly override those managed flags, but Pages build
+metadata and operator configuration remain part of the trusted release
+boundary. A runtime drift guard forces compatibility routing off when an
+official Shop or Sell host receives a non-production profile or a Signet Pages
+host receives a non-staging profile. Every app emits
 `/.well-known/conduit-deployment.json` with its profile, source commit, build
 time, public feature flags, and public-config digest; the manifest is a strict
 non-secret allowlist.

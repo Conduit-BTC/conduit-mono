@@ -138,8 +138,12 @@ describe("app account-network read propagation", () => {
     expect(controller).toContain(
       'authenticatedPubkey: auth.status === "connected" ? auth.pubkey : null'
     )
-    expect(marketNetwork).toContain("useAccountNetworkSettings()")
-    expect(merchantNetwork).toContain("useAccountNetworkSettings()")
+    expect(marketNetwork).toContain(
+      'useAccountNetworkSettings({ telemetryApp: "market" })'
+    )
+    expect(merchantNetwork).toMatch(
+      /useAccountNetworkSettings\(\{\s*telemetryApp: "merchant",?\s*\}\)/
+    )
   })
 
   it("aborts background account reconciliation when live authority changes", async () => {

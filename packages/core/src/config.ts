@@ -74,6 +74,14 @@ export const CANONICAL_DEFAULT_RELAYS = [
 ]
 const RETIRED_DEFAULT_RELAYS = new Set<string>()
 const FALLBACK_RELAY_URL = "wss://nos.lol"
+const OFFICIAL_PRODUCTION_APP_HOSTNAMES = new Set([
+  "shop.conduit.market",
+  "sell.conduit.market",
+])
+const SIGNET_PAGES_PROJECT_HOSTNAMES = [
+  "conduit-market-signet.pages.dev",
+  "conduit-merchant-signet.pages.dev",
+] as const
 const PUBLIC_REPO_ISSUES_URL =
   "https://github.com/Conduit-BTC/conduit-mono/issues"
 const CONDUIT_RELAY_DEBUG_BANNER = [
@@ -145,6 +153,7 @@ function getViteEnv(): {
   commerceRelayUrls: string
   cacheApiUrl: string
   lightningNetwork: string
+  deploymentProfile: string
   dmCompatibilityOrderRouting: string
   nip89RelayHint: string
   nip89MarketPubkey: string
@@ -166,6 +175,7 @@ function getViteEnv(): {
       commerceRelayUrls: import.meta.env.VITE_COMMERCE_RELAY_URLS ?? "",
       cacheApiUrl: import.meta.env.VITE_CACHE_API_URL ?? "",
       lightningNetwork: import.meta.env.VITE_LIGHTNING_NETWORK ?? "",
+      deploymentProfile: import.meta.env.VITE_DEPLOYMENT_PROFILE ?? "",
       dmCompatibilityOrderRouting:
         import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "",
       nip89RelayHint: import.meta.env.VITE_NIP89_RELAY_HINT ?? "",
@@ -188,6 +198,7 @@ function getViteEnv(): {
     commerceRelayUrls: "",
     cacheApiUrl: "",
     lightningNetwork: "",
+    deploymentProfile: "",
     dmCompatibilityOrderRouting: "",
     nip89RelayHint: "",
     nip89MarketPubkey: "",
@@ -298,6 +309,41 @@ export function applyE2eRelayIsolation(
     zapRelayUrls: [...isolatedRelayUrls],
     nip89RelayHint: relayUrl,
   }
+}
+
+/**
+ * Fail closed when trusted build metadata and the host receiving the compiled
+ * bundle disagree. This guards accidental profile drift; it does not replace
+ * Cloudflare release-access controls.
+ */
+export function resolveDmCompatibilityOrderRoutingEnabled(input: {
+  profileEnabled: boolean
+  deploymentProfile: string
+  runtimeHostname?: string | null
+}): boolean {
+  if (!input.profileEnabled) return false
+
+  const deploymentProfile = input.deploymentProfile.trim().toLowerCase()
+  const runtimeHostname = (input.runtimeHostname ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.+$/, "")
+
+  if (OFFICIAL_PRODUCTION_APP_HOSTNAMES.has(runtimeHostname)) {
+    return deploymentProfile === "production"
+  }
+
+  if (
+    SIGNET_PAGES_PROJECT_HOSTNAMES.some(
+      (projectHostname) =>
+        runtimeHostname === projectHostname ||
+        runtimeHostname.endsWith(`.${projectHostname}`)
+    )
+  ) {
+    return deploymentProfile === "staging"
+  }
+
+  return true
 }
 
 function getConfiguredRelayUrl(raw: string, fallback: string): string {
@@ -440,9 +486,15 @@ const commerceDmFallbackRelaySet = new Set(commerceDmFallbackRelayUrls)
 const dmCompatibilityOrderRelayUrls = uniqueConfiguredRelayUrls(
   CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS
 ).filter((url) => commerceDmFallbackRelaySet.has(url))
-const dmCompatibilityOrderRoutingEnabled = ["1", "true", "on"].includes(
-  env.dmCompatibilityOrderRouting.trim().toLowerCase()
-)
+const dmCompatibilityOrderRoutingEnabled =
+  resolveDmCompatibilityOrderRoutingEnabled({
+    profileEnabled: ["1", "true", "on"].includes(
+      env.dmCompatibilityOrderRouting.trim().toLowerCase()
+    ),
+    deploymentProfile: env.deploymentProfile,
+    runtimeHostname:
+      typeof window === "undefined" ? null : window.location.hostname,
+  })
 const zapRelayUrls = uniqueConfiguredRelayUrls(CANONICAL_ZAP_PUBLIC_RELAYS)
 const commerceRelayUrls = uniqueConfiguredRelayUrls([
   ...appWriteRelayUrls,

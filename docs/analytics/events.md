@@ -28,6 +28,11 @@ Runtime telemetry events may only use these fields:
 - `result_count_bucket`
 - `amount_bucket`
 - `product_type`
+- `declaration_class`
+- `delivery_route`
+- `ack_outcome`
+- `repair_outcome`
+- `block_reason`
 
 ## Retention and Redaction
 
@@ -230,6 +235,32 @@ Emitted as an aggregate operational counter for relay connection outcomes.
 ### `relay_publish_result`
 
 Emitted as an aggregate operational counter for relay publish outcomes.
+
+<!-- telemetry-event: nip17_compatibility_result properties=event_name,app,page_url,page_path,action,declaration_class,delivery_route,ack_outcome,repair_outcome,block_reason -->
+
+### `nip17_compatibility_result`
+
+Emitted only for the bounded NIP-17 migration rollout. It contains fixed enums
+and no identifiers, relay URLs, payloads, errors, or free text.
+
+- `action=order_delivery` denominator: every validated kind-16 recipient send
+  that reaches declaration route selection. Route-blocked attempts use
+  `delivery_route=blocked` and a fixed `block_reason`; a selected strict or
+  compatibility route uses
+  `ack_outcome=unavailable|zero|partial|positive`. `unavailable` means the
+  attempt failed before relay acknowledgement evidence was available; `zero`
+  is reserved for relay diagnostics that show no successful acknowledgement.
+- `action=declaration_repair` denominator: explicit unified Network inbox
+  setup/update, exact retry, or redistribution attempts that keep a usable
+  inbox. No-ops, successful signed withdrawals, unrelated relay-list updates,
+  and outcomes after account cancellation are excluded. `repair_outcome` is
+  `discoverable` only after the current mutation owner completes exact
+  confirmation, otherwise `confirmation_pending` or `failed`; delivery and
+  ACK fields are `not_applicable`. Failures before a resulting checkpoint use
+  `declaration_class=unknown`; no account or signed-event details are emitted.
+- Rollout observation uses a rolling 24-hour window per deployment profile.
+  Event counts are aggregate attempts, not users, merchants, or orders. No
+  identity may be reconstructed or correlated from these counters.
 
 <!-- telemetry-event: checkout_result properties=event_name,app,page_url,page_path,surface,mode,rail,network,status,count_bucket,amount_bucket,product_type,time_bucket -->
 
