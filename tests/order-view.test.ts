@@ -12,6 +12,7 @@ import {
   deriveBoundMerchantInvoiceAccess,
   deriveOrderHeaderStatus,
   getOrderFilterPhase,
+  getOrderPaymentFailureDetail,
   getOrderPaymentMethodLabel,
   isZeroCostPickupOrder,
   type OrderViewModel,
@@ -116,6 +117,56 @@ function baseLifecycle(
     ...overrides,
   }
 }
+
+describe("payment failure details", () => {
+  const bindingError =
+    "The zap invoice is not bound to the signed NIP-57 request sent to the callback."
+
+  it("explains a persisted zap binding failure without exposing the request", () => {
+    const detail = getOrderPaymentFailureDetail(
+      baseLifecycle({
+        invoiceStatus: "failed",
+        paymentStatus: "failed",
+        lastError: bindingError,
+      })
+    )
+    expect(detail).toBe(
+      "The merchant's payment provider returned an invoice that does not match this public zap request. Contact the merchant if this keeps happening."
+    )
+  })
+
+  it("does not echo arbitrary saved provider payloads", () => {
+    const detail = getOrderPaymentFailureDetail(
+      baseLifecycle({
+        paymentStatus: "failed",
+        lastError: "Provider response: lnbc1synthetic-invoice-payload",
+      })
+    )
+    expect(detail).toBe(
+      "Payment could not be completed. Try again or contact the merchant if it keeps failing."
+    )
+  })
+
+  it("does not turn stale errors into failure advice for other payment states", () => {
+    for (const paymentStatus of [
+      "not_started",
+      "paying",
+      "manual_required",
+      "ambiguous",
+      "paid",
+    ] as const) {
+      expect(
+        getOrderPaymentFailureDetail(
+          baseLifecycle({ paymentStatus, lastError: bindingError })
+        )
+      ).toBeNull()
+    }
+    expect(getOrderPaymentFailureDetail(undefined)).toBeNull()
+    expect(
+      getOrderPaymentFailureDetail(baseLifecycle({ paymentStatus: "failed" }))
+    ).toBeNull()
+  })
+})
 
 function vmFromLifecycle(
   overrides: Partial<OrderLifecycle> = {}

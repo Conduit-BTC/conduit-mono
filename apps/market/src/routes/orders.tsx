@@ -104,6 +104,7 @@ import {
   deriveBoundMerchantInvoiceAccess,
   deriveOrderHeaderStatus,
   getOrderFilterPhase,
+  getOrderPaymentFailureDetail,
   getOrderPaymentMethodLabel,
   isZeroCostPickupOrder,
   type OrderHeaderStatus,
@@ -1218,6 +1219,11 @@ function OrderDetail({
   const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"
   const recoveredBeforeWallet =
     row.lifecycle?.lastError === ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR
+  const paymentRecoveryError =
+    recoveryError ??
+    (!busy && showRetryPayment && !recoveredBeforeWallet
+      ? getOrderPaymentFailureDetail(row.lifecycle)
+      : null)
   const showAnonPaymentRecovery =
     showRetryPayment &&
     vm.publicZapSigner === "anon" &&
@@ -1576,12 +1582,12 @@ function OrderDetail({
                                 : "No funds moved. You can retry payment for this order."
                             : "Payment went through; the receipt didn't reach the merchant."}
             </span>
-            {recoveryError && (
+            {paymentRecoveryError && (
               <p
                 role="alert"
                 className="w-full text-sm text-[var(--destructive)]"
               >
-                {recoveryError}
+                {paymentRecoveryError}
               </p>
             )}
             {showRetryPayment && wallets.initializationError && (
