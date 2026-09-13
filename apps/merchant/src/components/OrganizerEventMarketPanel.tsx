@@ -18,6 +18,7 @@ import {
   getProfileName,
   normalizeCurrencyCode,
   pubkeyToNpub,
+  useProfile,
   useProfiles,
   type Profile,
   type ProductImage,
@@ -41,6 +42,7 @@ import {
 } from "@conduit/ui"
 import { type OrganizerCollectionMembershipAction } from "../lib/event-market-workflow"
 import {
+  getResolvedEventMarketRelayHints,
   isParticipationHandoffVerified,
   isParticipationProductAvailable,
   isParticipationProductPreviewVerified,
@@ -57,6 +59,15 @@ import {
   getMerchantProfileState,
   type MerchantProfileState,
 } from "../lib/event-market-participation-identity"
+import {
+  getOrganizerEventParticipantPubkeys,
+  normalizeEventActorPubkey,
+} from "../lib/event-actor-identity"
+import {
+  EventActorName,
+  EventActorProvenance,
+  EventPickupHandlerIdentity,
+} from "./EventActorIdentity"
 
 function formatSchedule(market: MerchantOrganizerEventMarket): string {
   if (market.calendarKind === 31922) {
@@ -237,9 +248,7 @@ function SignedProductPreview({
           {productPreview.summary?.trim() || "No signed product description."}
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]">
-          <span>Merchant {formatNpub(item.merchantPubkey, 6)}</span>
-          <span aria-hidden="true">{"\u00b7"}</span>
-          <span>Exact signed listing</span>
+          <span>Exact merchant-signed listing</span>
           {productPreview.stock === 0 ? (
             <>
               <span aria-hidden="true">{"\u00b7"}</span>
@@ -360,6 +369,7 @@ function ParticipationRow({
   item,
   merchantProfile,
   merchantProfileState,
+  handlerProfile,
   organizerPubkey,
   pending,
   onMembership,
@@ -367,6 +377,7 @@ function ParticipationRow({
   item: MerchantOrganizerParticipation
   merchantProfile?: Profile
   merchantProfileState: MerchantProfileState
+  handlerProfile?: Profile
   organizerPubkey: string
   pending: boolean
   onMembership: (
@@ -409,13 +420,11 @@ function ParticipationRow({
                   : "Pending request"}
             </StatusPill>
             {item.handoffMode && item.handlerPubkey && (
-              <span>
-                {item.handoffMode === "organizer_handoff"
-                  ? "Organizer hands out"
-                  : "Merchant hands out"}
-                {" \u00b7 "}
-                {formatNpub(item.handlerPubkey, 6)}
-              </span>
+              <EventPickupHandlerIdentity
+                handoffMode={item.handoffMode}
+                handlerPubkey={item.handlerPubkey}
+                profile={handlerProfile}
+              />
             )}
             {!removable && (!handoffVerified || !previewVerified) && (
               <span>
@@ -583,11 +592,29 @@ export function OrganizerEventMarketPanel({
     ),
   })
   const relayCoverage = formatEventRelayReadCoverage(market.source.coverage)
-  const merchantPubkeys = useMemo(
-    () => market.participation.map((item) => item.merchantPubkey),
-    [market.participation]
+  const organizerIdentityPubkey = normalizeEventActorPubkey(
+    market.organizerPubkey
   )
-  const merchantProfilesQuery = useProfiles(merchantPubkeys, {
+  const participantPubkeys = useMemo(
+    () =>
+      getOrganizerEventParticipantPubkeys({
+        organizerPubkey: market.organizerPubkey,
+        participantPubkeys: market.participation.flatMap((item) => [
+          item.merchantPubkey,
+          item.handlerPubkey,
+        ]),
+      }),
+    [market.organizerPubkey, market.participation]
+  )
+  const organizerProfileQuery = useProfile(organizerIdentityPubkey, {
+    accountPubkey,
+    authenticatedPubkey,
+    shouldContinue,
+    relayHints: getResolvedEventMarketRelayHints(market.source),
+    priority: "visible",
+    maxUnresolvedRefetches: 1,
+  })
+  const participantProfilesQuery = useProfiles(participantPubkeys, {
     accountPubkey,
     authenticatedPubkey,
     shouldContinue,
@@ -595,14 +622,25 @@ export function OrganizerEventMarketPanel({
     maxUnresolvedRefetches: 1,
   })
 
+  function profileQueryForActor(pubkey: string) {
+    return pubkey.trim().toLowerCase() === market.organizerPubkey.toLowerCase()
+      ? organizerProfileQuery
+      : participantProfilesQuery
+  }
+
+  function eventActorProfile(pubkey: string): Profile | undefined {
+    return profileQueryForActor(pubkey).getProfile(pubkey.trim().toLowerCase())
+  }
+
   function merchantProfileState(
     pubkey: string | undefined
   ): MerchantProfileState {
     if (!pubkey) return "unresolved"
+    const profileQuery = profileQueryForActor(pubkey)
     return getMerchantProfileState({
-      hasProfile: merchantProfilesQuery.hasProfile(pubkey),
-      lookupSettled: merchantProfilesQuery.lookupSettled,
-      error: merchantProfilesQuery.error,
+      hasProfile: profileQuery.hasProfile(pubkey.trim().toLowerCase()),
+      lookupSettled: profileQuery.lookupSettled,
+      error: profileQuery.error,
     })
   }
 
@@ -707,8 +745,17 @@ export function OrganizerEventMarketPanel({
             <div className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
               Organizer signer
             </div>
-            <div className="mt-1 font-mono text-sm text-[var(--text-primary)]">
-              {formatNpub(market.organizerPubkey, 12)}
+            <div className="mt-1 min-w-0">
+              <EventActorName
+                pubkey={market.organizerPubkey}
+                profile={eventActorProfile(market.organizerPubkey)}
+                className="block text-sm"
+              />
+              <EventActorProvenance
+                pubkey={market.organizerPubkey}
+                copyLabel="Copy organizer signer npub"
+                className="mt-0.5 max-w-full text-xs"
+              />
             </div>
           </div>
 
@@ -892,12 +939,17 @@ export function OrganizerEventMarketPanel({
                     item={item}
                     merchantProfile={
                       item.merchantPubkey
-                        ? merchantProfilesQuery.getProfile(item.merchantPubkey)
+                        ? eventActorProfile(item.merchantPubkey)
                         : undefined
                     }
                     merchantProfileState={merchantProfileState(
                       item.merchantPubkey
                     )}
+                    handlerProfile={
+                      item.handlerPubkey
+                        ? eventActorProfile(item.handlerPubkey)
+                        : undefined
+                    }
                     organizerPubkey={market.organizerPubkey}
                     pending={membershipPending || !canChangeMembership}
                     onMembership={onMembership}
@@ -927,12 +979,17 @@ export function OrganizerEventMarketPanel({
                     item={item}
                     merchantProfile={
                       item.merchantPubkey
-                        ? merchantProfilesQuery.getProfile(item.merchantPubkey)
+                        ? eventActorProfile(item.merchantPubkey)
                         : undefined
                     }
                     merchantProfileState={merchantProfileState(
                       item.merchantPubkey
                     )}
+                    handlerProfile={
+                      item.handlerPubkey
+                        ? eventActorProfile(item.handlerPubkey)
+                        : undefined
+                    }
                     organizerPubkey={market.organizerPubkey}
                     pending={membershipPending || !canChangeMembership}
                     onMembership={onMembership}
@@ -966,12 +1023,17 @@ export function OrganizerEventMarketPanel({
                     item={item}
                     merchantProfile={
                       item.merchantPubkey
-                        ? merchantProfilesQuery.getProfile(item.merchantPubkey)
+                        ? eventActorProfile(item.merchantPubkey)
                         : undefined
                     }
                     merchantProfileState={merchantProfileState(
                       item.merchantPubkey
                     )}
+                    handlerProfile={
+                      item.handlerPubkey
+                        ? eventActorProfile(item.handlerPubkey)
+                        : undefined
+                    }
                     organizerPubkey={market.organizerPubkey}
                     pending={membershipPending || !canChangeMembership}
                     onMembership={onMembership}
