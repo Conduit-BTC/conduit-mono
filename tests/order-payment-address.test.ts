@@ -59,6 +59,18 @@ function profileResult(
 }
 
 describe("checking an updated order payment address", () => {
+  it("discovers an updated address for checkout-persisted private manual orders", async () => {
+    const result = await checkOrderPaymentAddressUpdate(
+      lifecycle({
+        checkoutMode: "external_wallet",
+        paymentTarget: { type: "manual" },
+      }),
+      {},
+      { getProfiles: async () => profileResult() }
+    )
+    expect(result.status).toBe("updated")
+  })
+
   it("checks fresh payment evidence with account authority and preserves the review snapshot", async () => {
     const stored = lifecycle({
       merchantLightningAddress: " Old@wallet.example ",

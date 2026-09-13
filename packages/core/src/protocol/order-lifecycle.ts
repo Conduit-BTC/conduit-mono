@@ -581,7 +581,6 @@ export function getOrderPaymentAddressReplacementAdmission(
     lifecycle.phase === "cancelled" ||
     lifecycle.completedAt !== undefined ||
     lifecycle.checkoutMode === "pay_later" ||
-    lifecycle.checkoutMode === "external_wallet" ||
     lifecycle.paymentStatus !== "failed" ||
     lifecycle.invoiceStatus !== "failed" ||
     lifecycle.proofDeliveryStatus !== "not_started" ||

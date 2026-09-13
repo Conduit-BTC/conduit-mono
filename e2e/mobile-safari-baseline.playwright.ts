@@ -233,7 +233,11 @@ async function seedInterruptedPayment(
     invoice?: string
     preimage?: string
     storeMarker?: boolean
-    failedPayment?: { merchantPubkey: string; address: string }
+    failedPayment?: {
+      merchantPubkey: string
+      address: string
+      checkoutMode?: "public_zap_as_shopper" | "external_wallet"
+    }
   }
 ): Promise<void> {
   await page.evaluate(
@@ -306,7 +310,8 @@ async function seedInterruptedPayment(
                 paymentClaimLeaseExpiresAt: undefined,
                 merchantPubkey: failedPayment.merchantPubkey,
                 merchantLightningAddress: failedPayment.address,
-                checkoutMode: "public_zap_as_shopper",
+                checkoutMode:
+                  failedPayment.checkoutMode ?? "public_zap_as_shopper",
                 paymentTarget: { type: "manual" },
                 invoiceStatus: "failed",
                 paymentStatus: "failed",
@@ -370,7 +375,7 @@ async function readRecoveredPayment(
   }, orderId)
 }
 
-function signedManualZapInvoice(description: string): string {
+function signedManualInvoice(description: string): string {
   const secret = generateSecretKey()
   const curve = createECDH("secp256k1")
   curve.setPrivateKey(secret)
@@ -452,7 +457,9 @@ async function prepareUpdatedPaymentAddress(
   page: Page,
   orderId: string,
   wrongHash = false,
-  initialAddress = updatedPaymentAddress
+  initialAddress = updatedPaymentAddress,
+  checkoutMode:
+    "public_zap_as_shopper" | "external_wallet" = "public_zap_as_shopper"
 ) {
   const buyerSecret = generateSecretKey()
   const buyerPubkey = getPublicKey(buyerSecret)
@@ -476,24 +483,42 @@ async function prepareUpdatedPaymentAddress(
     ])
   }
   const providerRequests: string[] = []
+  const metadata = JSON.stringify([
+    ["text/plain", "Synthetic recovery merchant"],
+  ])
   await page.route("https://*-payment-fixture.dev/**", async (route) => {
     const url = new URL(route.request().url())
     providerRequests.push(`${url.hostname}${url.pathname}`)
     if (url.pathname === "/callback") {
       expect(url.searchParams.get("amount")).toBe("1000")
-      const request = url.searchParams.get("nostr") ?? ""
-      const event = JSON.parse(request)
-      expect(verifyEvent(event)).toBe(true)
-      expect(event.kind).toBe(9734)
-      expect(event.pubkey).toBe(buyerPubkey)
-      expect(event.tags).toContainEqual(["p", merchantPubkey])
+      let description = metadata
+      if (checkoutMode === "external_wallet") {
+        expect(url.searchParams.has("nostr")).toBe(false)
+        if (url.hostname === "old-payment-fixture.dev") {
+          await route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({
+              status: "ERROR",
+              reason: "Synthetic old provider unavailable",
+            }),
+          })
+          return
+        }
+      } else {
+        description = url.searchParams.get("nostr") ?? ""
+        const event = JSON.parse(description)
+        expect(verifyEvent(event)).toBe(true)
+        expect(event.kind).toBe(9734)
+        expect(event.pubkey).toBe(buyerPubkey)
+        expect(event.tags).toContainEqual(["p", merchantPubkey])
+      }
       await route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
-          pr: signedManualZapInvoice(
+          pr: signedManualInvoice(
             wrongHash || url.hostname === "old-payment-fixture.dev"
               ? "unrelated synthetic request"
-              : request
+              : description
           ),
           routes: [],
         }),
@@ -510,9 +535,7 @@ async function prepareUpdatedPaymentAddress(
         maxSendable: 100000,
         allowsNostr: true,
         nostrPubkey: merchantPubkey,
-        metadata: JSON.stringify([
-          ["text/plain", "Synthetic recovery merchant"],
-        ]),
+        metadata,
       }),
     })
   })
@@ -538,7 +561,11 @@ async function prepareUpdatedPaymentAddress(
     orderId,
     buyerPubkey,
     paymentClaimId: "unused-failed-payment-claim",
-    failedPayment: { merchantPubkey, address: savedPaymentAddress },
+    failedPayment: {
+      merchantPubkey,
+      address: savedPaymentAddress,
+      checkoutMode,
+    },
   })
   await page.goto(`${marketUrl}/orders?order=${orderId}`)
   await expect(
@@ -570,6 +597,8 @@ async function readPaymentAddressRecovery(page: Page, orderId: string) {
       count: records.length,
       orderId: row?.orderId,
       address: row?.merchantLightningAddress,
+      checkoutMode: row?.checkoutMode,
+      paymentTarget: row?.paymentTarget,
       paymentStatus: row?.paymentStatus,
       invoiceStatus: row?.invoiceStatus,
       hasInvoice: !!row?.invoice,
@@ -1117,6 +1146,87 @@ test.describe("CND-162 mobile browser baseline", () => {
       count: 1,
       orderId,
       address: updatedPaymentAddress,
+      paymentStatus: "manual_required",
+      hasInvoice: true,
+    })
+    expect(providerRequests).toHaveLength(4)
+  })
+
+  test("market recovers a stored private manual order with an updated payment address @market", async ({
+    page,
+  }) => {
+    const orderId = "mobile-private-updated-payment-address"
+    const { providerRequests, publishAddress } =
+      await prepareUpdatedPaymentAddress(
+        page,
+        orderId,
+        false,
+        savedPaymentAddress,
+        "external_wallet"
+      )
+    await page.getByRole("button", { name: "Try payment again" }).tap()
+    await expect
+      .poll(() => readPaymentAddressRecovery(page, orderId))
+      .toMatchObject({
+        count: 1,
+        orderId,
+        address: savedPaymentAddress,
+        checkoutMode: "external_wallet",
+        paymentTarget: { type: "manual" },
+        paymentStatus: "failed",
+        invoiceStatus: "failed",
+        hasInvoice: false,
+        lastError: "LNURL error: Synthetic old provider unavailable",
+      })
+    expect(providerRequests).toEqual([
+      "old-payment-fixture.dev/.well-known/lnurlp/merchant",
+      "old-payment-fixture.dev/callback",
+    ])
+    await publishAddress(updatedPaymentAddress)
+    await page.getByRole("button", { name: "Try payment again" }).tap()
+    const dialog = page.getByRole("alertdialog", {
+      name: "Merchant updated their payment address",
+    })
+    await expect(dialog).toBeVisible()
+    await expect(
+      dialog.getByText(savedPaymentAddress, { exact: true })
+    ).toBeVisible()
+    await expect(
+      dialog.getByText(updatedPaymentAddress, { exact: true })
+    ).toBeVisible()
+    expect(providerRequests).toHaveLength(2)
+    await dialog
+      .getByRole("button", { name: "Use updated address and retry" })
+      .tap()
+    await expect(
+      page.getByRole("button", { name: "Copy invoice", exact: true })
+    ).toBeVisible()
+    expect(await readPaymentAddressRecovery(page, orderId)).toMatchObject({
+      count: 1,
+      orderId,
+      address: updatedPaymentAddress,
+      checkoutMode: "external_wallet",
+      paymentTarget: { type: "manual" },
+      paymentStatus: "manual_required",
+      invoiceStatus: "manual_required",
+      hasInvoice: true,
+    })
+    expect(providerRequests).toEqual([
+      "old-payment-fixture.dev/.well-known/lnurlp/merchant",
+      "old-payment-fixture.dev/callback",
+      "new-payment-fixture.dev/.well-known/lnurlp/merchant",
+      "new-payment-fixture.dev/callback",
+    ])
+    await page.reload()
+    await expect(
+      page.getByRole("button", { name: "Copy invoice", exact: true })
+    ).toBeVisible()
+    expect(await readPaymentAddressRecovery(page, orderId)).toMatchObject({
+      count: 1,
+      orderId,
+      address: updatedPaymentAddress,
+      checkoutMode: "external_wallet",
+      paymentTarget: { type: "manual" },
       paymentStatus: "manual_required",
       hasInvoice: true,
     })
