@@ -1,4 +1,13 @@
 export { Avatar, AvatarImage, AvatarFallback } from "./Avatar"
+export {
+  SearchSuggestions,
+  getSearchSuggestionInputProps,
+  getSearchSuggestionOptionId,
+  useSearchSuggestionKeyboard,
+  type SearchSuggestionItem,
+  type SearchSuggestionsProps,
+  type UseSearchSuggestionKeyboardInput,
+} from "./SearchSuggestions"
 export { QRCodeSVG } from "qrcode.react"
 export { AccountMenu, type AccountMenuProps } from "./AccountMenu"
 export {
