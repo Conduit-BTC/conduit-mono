@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:study": "vite --config design-study/vite.config.ts",
+    "build:study": "tsc -p design-study/tsconfig.json && vite build --config design-study/vite.config.ts",
+    "typecheck:study": "tsc -p design-study/tsconfig.json",
     "routes:gen": "bun scripts/generate-routes.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",
