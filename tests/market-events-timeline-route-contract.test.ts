@@ -84,8 +84,9 @@ describe("Market Events timeline route", () => {
     ])
 
     expect(route).toContain('createFileRoute("/events/")')
-    expect(navigation).toContain('to="/products"')
-    expect(navigation).toContain('to="/events"')
+    expect(navigation).toContain('to: "/products"')
+    expect(navigation).toContain('to: "/events"')
+    expect(navigation).toContain("SegmentedControl")
     expect(navigation).toContain("Following + Conduit")
     expect(navigation).toContain('aria-label="Market perspective"')
     expect(navigation).toContain("aria-pressed={selected}")

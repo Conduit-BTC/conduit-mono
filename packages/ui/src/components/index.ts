@@ -128,6 +128,11 @@ export {
 export { Skeleton } from "./Skeleton"
 export { Switch } from "./Switch"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
+export { SegmentedControl, SegmentedControlItem } from "./SegmentedControl"
+export type {
+  SegmentedControlProps,
+  SegmentedControlItemProps,
+} from "./SegmentedControl"
 export {
   RelaySettingsPanel,
   UnpublishedRelayChangesDialog,
