@@ -546,7 +546,7 @@ function EventCatalogPage() {
           <img
             src={calendar.image ?? collection.image}
             alt={`${calendar.title} banner`}
-            className="h-28 w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] object-contain sm:h-44"
+            className="aspect-[3/1] w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] object-contain"
           />
         ) : null}
         <div className="flex flex-wrap items-start justify-between gap-3">

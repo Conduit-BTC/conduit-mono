@@ -1775,6 +1775,17 @@ test("event catalog shops products by search, merchant, and sort before technica
   page.setDefaultTimeout(30_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
+  // A correctly prepared banner must occupy the complete 3:1 frame.
+  // Other event-banner coverage keeps a mismatched 2:1 source to verify fitting.
+  await page.route(
+    "https://cdn.conduit.market/conduit-test/synthetic-event-market.svg",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="600"><rect width="1800" height="600" fill="#211e31"/><rect x="12" y="12" width="1776" height="576" rx="20" fill="none" stroke="#bb00ff" stroke-width="8"/><text x="900" y="280" text-anchor="middle" fill="white" font-family="sans-serif" font-size="100">3:1 event banner</text><text x="900" y="390" text-anchor="middle" fill="white" font-family="sans-serif" font-size="48">1800 × 600 · full artwork visible</text></svg>',
+      })
+  )
   const eventTitle = "Synthetic Shopping Event"
   const market = await publishOrganizerMarket(page, relay, {
     title: eventTitle,
@@ -2020,6 +2031,19 @@ test("event catalog shops products by search, merchant, and sort before technica
     await page.setViewportSize(viewport)
     await page.evaluate(() => window.scrollTo(0, 0))
     await expect(banner).toBeVisible()
+    await expect
+      .poll(() =>
+        banner.evaluate((image) => {
+          const bounds = image.getBoundingClientRect()
+          return bounds.width / bounds.height
+        })
+      )
+      .toBeCloseTo(3, 2)
+    await expect
+      .poll(() =>
+        banner.evaluate((image) => image.naturalWidth / image.naturalHeight)
+      )
+      .toBe(3)
     await expect(search).toBeVisible()
     await search.fill("Alpine Goods")
     await expect(titles).toHaveText(["Amber Mug", "Dawn Coffee"])
