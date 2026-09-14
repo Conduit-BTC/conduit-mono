@@ -59,6 +59,15 @@ function SellersPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-7">
+      <MarketBrowseNavigation
+        active="sellers"
+        source={directory.effectiveSource}
+        connected={directory.connected}
+        onSelectSource={(source) =>
+          updateSearch({ source: source === "combined" ? undefined : source })
+        }
+      />
+
       <header className="space-y-3">
         <div className="flex items-center gap-2 text-sm font-medium text-secondary-400">
           <Store className="h-4 w-4" aria-hidden="true" />
@@ -75,15 +84,6 @@ function SellersPage() {
           </p>
         </div>
       </header>
-
-      <MarketBrowseNavigation
-        active="sellers"
-        source={directory.effectiveSource}
-        connected={directory.connected}
-        onSelectSource={(source) =>
-          updateSearch({ source: source === "combined" ? undefined : source })
-        }
-      />
 
       <section
         aria-labelledby="discovered-sellers-heading"
