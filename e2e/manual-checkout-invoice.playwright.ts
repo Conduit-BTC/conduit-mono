@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test"
+import { nip44 } from "nostr-tools"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -18,7 +19,7 @@ import {
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 
-test("signed-in checkout switches from browser wallet to manual and shows its zap invoice without merchant approval @market", async ({
+test("signed-in manual checkout displays its zap invoice and completes only for the exact public receipt @market", async ({
   page,
 }) => {
   test.setTimeout(60_000)
@@ -31,13 +32,25 @@ test("signed-in checkout switches from browser wallet to manual and shows its za
   let walletSendCalls = 0
   let callbackRequests = 0
   let generatedInvoice = ""
+  let signedZapRequest = ""
+  let invalidReceiptId = ""
+  let invalidReceiptDeliveries = 0
 
   // Only the isolated relay may carry fixture events. No external wallet is
   // connected; a payment invocation is a test failure, not a payment attempt.
   await page.routeWebSocket(/.*/, (socket) => {
-    if (new URL(socket.url()).origin === new URL(TEST_RELAY_URL).origin)
-      socket.connectToServer()
-    else socket.close()
+    if (new URL(socket.url()).origin !== new URL(TEST_RELAY_URL).origin) {
+      socket.close()
+      return
+    }
+    const server = socket.connectToServer()
+    server.onMessage((message) => {
+      const frame = JSON.parse(message.toString())
+      if (frame[0] === "EVENT" && frame[2]?.id === invalidReceiptId) {
+        invalidReceiptDeliveries += 1
+      }
+      socket.send(message)
+    })
   })
   await page.exposeFunction("__unexpectedWalletSend", () => {
     walletSendCalls += 1
@@ -73,6 +86,7 @@ test("signed-in checkout switches from browser wallet to manual and shows its za
         kind: 9734,
         pubkey: buyerPubkey,
       })
+      signedZapRequest = signedZap!
       generatedInvoice = makeBolt11Fixture({
         hrp: "lnbc10u",
         createdAt,
@@ -137,6 +151,40 @@ test("signed-in checkout switches from browser wallet to manual and shows its za
     ),
   ])
   await installTestSigner(page, buyerPubkey, { secretKey: buyerSecret })
+  // Synthetic keys exercise real NIP-44 sealing and unwrapping on the local
+  // relay. They never connect to a real wallet or public relay.
+  await page.exposeFunction(
+    "__syntheticEncrypt",
+    (peer: string, text: string) =>
+      nip44.v2.encrypt(
+        text,
+        nip44.v2.utils.getConversationKey(buyerSecret, peer)
+      )
+  )
+  await page.exposeFunction(
+    "__syntheticDecrypt",
+    (peer: string, text: string) =>
+      nip44.v2.decrypt(
+        text,
+        nip44.v2.utils.getConversationKey(buyerSecret, peer)
+      )
+  )
+  await page.addInitScript(() => {
+    const syntheticWindow = window as unknown as {
+      nostr: {
+        nip44: {
+          encrypt: (peer: string, text: string) => Promise<string>
+          decrypt: (peer: string, text: string) => Promise<string>
+        }
+      }
+      __syntheticEncrypt: (peer: string, text: string) => Promise<string>
+      __syntheticDecrypt: (peer: string, text: string) => Promise<string>
+    }
+    syntheticWindow.nostr.nip44 = {
+      encrypt: (peer, text) => syntheticWindow.__syntheticEncrypt(peer, text),
+      decrypt: (peer, text) => syntheticWindow.__syntheticDecrypt(peer, text),
+    }
+  })
   await page.goto(`${marketUrl}/products/${productCoordinate}`)
   await page.getByRole("button", { name: "Add 1 to cart", exact: true }).click()
 
@@ -179,6 +227,87 @@ test("signed-in checkout switches from browser wallet to manual and shows its za
   ).toHaveAttribute("href", `lightning:${generatedInvoice}`)
   await expect(
     page.getByRole("button", { name: "Use merchant invoice", exact: true })
+  ).toHaveCount(0)
+  expect(callbackRequests).toBe(1)
+  expect(walletSendCalls).toBe(0)
+
+  const orderId = new URL(page.url()).searchParams.get("order")!
+  const paymentState = () =>
+    page.evaluate(async (id) => {
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => resolve(request.result)
+      })
+      try {
+        const lifecycle = await new Promise<Record<string, unknown>>(
+          (resolve, reject) => {
+            const request = database
+              .transaction("orderLifecycles", "readonly")
+              .objectStore("orderLifecycles")
+              .get(id)
+            request.onsuccess = () => resolve(request.result)
+            request.onerror = () => reject(request.error)
+          }
+        )
+        return {
+          paymentStatus: lifecycle.paymentStatus,
+          zapReceiptStatus: lifecycle.zapReceiptStatus,
+          zapReceiptId: lifecycle.zapReceiptId ?? null,
+          proofDeliveryStatus: lifecycle.proofDeliveryStatus,
+        }
+      } finally {
+        database.close()
+      }
+    }, orderId)
+  const receipt = (invoice: string) =>
+    finalizeEvent(
+      {
+        kind: 9735,
+        created_at: Math.floor(Date.now() / 1000),
+        content: "",
+        tags: [
+          ["p", merchantPubkey],
+          ["P", buyerPubkey],
+          ["bolt11", invoice],
+          ["description", signedZapRequest],
+        ],
+      },
+      merchantSecret
+    )
+  const unrelatedInvoice = makeBolt11Fixture({
+    hrp: "lnbc10u",
+    createdAt,
+    fields: [
+      bolt11PaymentHashField(new Uint8Array(32).fill(8)),
+      bolt11DescriptionHashField(signedZapRequest),
+    ],
+  })
+  const invalidReceipt = receipt(unrelatedInvoice)
+  invalidReceiptId = invalidReceipt.id
+  await publishTestRelayEvents([invalidReceipt])
+  // Observe the real receipt poll returning the wrong invoice more than once.
+  await expect
+    .poll(() => invalidReceiptDeliveries, { timeout: 8000 })
+    .toBeGreaterThanOrEqual(2)
+  const unpaidState = await paymentState()
+  expect(unpaidState.paymentStatus).toBe("manual_required")
+  expect(unpaidState.zapReceiptId).toBeNull()
+  expect(unpaidState.proofDeliveryStatus).toBe("not_started")
+  await expect(
+    page.getByRole("button", { name: "Copy invoice", exact: true })
+  ).toBeVisible()
+
+  const exactReceipt = receipt(generatedInvoice)
+  await publishTestRelayEvents([exactReceipt])
+  await expect.poll(paymentState, { timeout: 20_000 }).toEqual({
+    paymentStatus: "paid",
+    zapReceiptStatus: "observed",
+    zapReceiptId: exactReceipt.id,
+    proofDeliveryStatus: "sent",
+  })
+  await expect(
+    page.getByRole("button", { name: "Copy invoice", exact: true })
   ).toHaveCount(0)
   expect(callbackRequests).toBe(1)
   expect(walletSendCalls).toBe(0)

@@ -1,7 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Copy, ExternalLink } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
-import { normalizeLightningInvoice } from "@conduit/core"
+import {
+  decodeLightningInvoiceMetadata,
+  getOrderPublicZapSigner,
+  normalizeLightningInvoice,
+} from "@conduit/core"
 import { Button } from "@conduit/ui"
 import type { OrderViewModel } from "../lib/order-view"
 
@@ -51,18 +55,25 @@ export function ExternalWalletPanel({
     !!invoice &&
     boundMerchantInvoiceExpiresAt !== null
   const isMerchantInvoice = !!merchantInvoice || hasBoundMerchantInvoice
-  const merchantInvoiceExpiry =
-    merchantInvoice?.expiresAt ??
-    (hasBoundMerchantInvoice ? boundMerchantInvoiceExpiresAt : null)
+  const invoiceExpiry = invoice
+    ? decodeLightningInvoiceMetadata(invoice).expiresAt
+    : null
+  const publicReceiptInvoice =
+    autoDetectReceipt ||
+    !!(
+      vm.publicZapSigner ??
+      (vm.checkoutMode ? getOrderPublicZapSigner(vm.checkoutMode) : null)
+    )
   useEffect(() => {
-    if (merchantInvoiceExpiry === null) return
-    const remainingMs = merchantInvoiceExpiry * 1_000 - Date.now()
+    if (invoiceExpiry === null) return
+    const remainingMs = invoiceExpiry * 1_000 - Date.now()
+    if (remainingMs <= 0) return
     const timer = window.setTimeout(
       () => setNowSeconds(Math.floor(Date.now() / 1_000)),
-      Math.max(0, Math.min(remainingMs, 2_147_483_647))
+      Math.min(remainingMs, 2_147_483_647)
     )
     return () => window.clearTimeout(timer)
-  }, [merchantInvoiceExpiry, nowSeconds])
+  }, [invoiceExpiry, nowSeconds])
   const requiresPreparation =
     merchantInvoice?.status === "payable" && !merchantInvoicePrepared
   const preparationInvoice = merchantInvoice?.invoice ?? ""
@@ -126,32 +137,42 @@ export function ExternalWalletPanel({
       </section>
     )
   }
-  const merchantInvoiceExpired =
-    isMerchantInvoice &&
-    merchantInvoiceExpiry !== null &&
-    merchantInvoiceExpiry <= nowSeconds
-  const merchantInvoiceBlocked =
-    merchantInvoice?.status === "blocked" || merchantInvoiceExpired
-  const merchantInvoiceCanReport =
-    merchantInvoice?.status === "blocked"
+  const invoiceExpired =
+    invoiceExpiry !== null &&
+    invoiceExpiry <= Math.max(nowSeconds, Math.floor(Date.now() / 1_000))
+  const invoiceBlocked =
+    merchantInvoice?.status === "blocked" ||
+    invoiceExpiry === null ||
+    invoiceExpired
+  const invoiceCanReport =
+    !publicReceiptInvoice &&
+    (merchantInvoice?.status === "blocked"
       ? merchantInvoice.canReport
-      : merchantInvoiceExpired
-  const merchantInvoiceError =
+      : invoiceExpired)
+  const invoiceError =
     merchantInvoice?.status === "blocked"
       ? merchantInvoice.reason
-      : merchantInvoiceExpired
-        ? "The invoice returned by the merchant is already expired."
-        : null
-  if (merchantInvoiceBlocked) {
+      : invoiceExpiry === null
+        ? "This invoice has an invalid expiry and cannot be used for payment."
+        : "This invoice has expired. Do not pay it again."
+  const receiptNotice = (
+    <p className="text-xs leading-5 text-[var(--text-secondary)]">
+      {autoDetectReceipt
+        ? "Waiting for the matching receipt. If your wallet confirms payment, do not pay this invoice again while detection completes."
+        : "No matching receipt has been observed yet. If your wallet confirms payment, do not pay again. A matching public receipt is needed to confirm this payment."}
+    </p>
+  )
+  if (invoiceBlocked) {
     return (
       <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
         <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
           Invoice unavailable
         </h2>
         <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
-          {merchantInvoiceError}
+          {invoiceError}
         </p>
-        {merchantInvoiceCanReport && (
+        {publicReceiptInvoice && <div className="mt-4">{receiptNotice}</div>}
+        {invoiceCanReport && (
           <div className="mt-4 space-y-2">
             <Button
               variant="outline"
@@ -171,8 +192,16 @@ export function ExternalWalletPanel({
     )
   }
   const bolt11 = normalizeLightningInvoice(invoice)
+  const canUseInvoice = () => {
+    const currentSeconds = Math.floor(Date.now() / 1_000)
+    if (invoiceExpiry === null || invoiceExpiry <= currentSeconds) {
+      setNowSeconds(currentSeconds)
+      return false
+    }
+    return onBeforeInvoiceUse()
+  }
   const copy = async () => {
-    if (!onBeforeInvoiceUse()) return
+    if (!canUseInvoice()) return
     try {
       await navigator.clipboard.writeText(invoice)
       setCopied(true)
@@ -189,7 +218,7 @@ export function ExternalWalletPanel({
           : "Pay with an external wallet"}
       </h2>
       <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
-        {autoDetectReceipt
+        {publicReceiptInvoice
           ? "Check your wallet first if an automatic payment was already attempted. Otherwise scan or copy this invoice and pay it once. Conduit will match the public Lightning receipt and notify the merchant automatically."
           : isMerchantInvoice
             ? "Scan, copy, or open this merchant invoice. After your wallet confirms payment, report it to the merchant for verification."
@@ -197,7 +226,7 @@ export function ExternalWalletPanel({
       </p>
       {guestSession && (
         <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
-          {autoDetectReceipt
+          {publicReceiptInvoice
             ? "Return to this same tab after paying so Conduit can finish receipt detection. Closing it ends local access to this guest order."
             : "Keep this tab open until the payment is reported. Closing it ends local access to this guest order. The merchant can use the private recovery contact submitted at checkout."}
         </p>
@@ -212,7 +241,7 @@ export function ExternalWalletPanel({
               <a
                 href={`lightning:${bolt11}`}
                 onClick={(event) => {
-                  if (!onBeforeInvoiceUse()) event.preventDefault()
+                  if (!canUseInvoice()) event.preventDefault()
                 }}
               >
                 <ExternalLink className="h-4 w-4" />
@@ -231,11 +260,8 @@ export function ExternalWalletPanel({
           <div className="max-h-24 overflow-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 font-mono text-xs leading-5 break-all text-[var(--text-secondary)]">
             {invoice}
           </div>
-          {autoDetectReceipt ? (
-            <p className="text-xs leading-5 text-[var(--text-secondary)]">
-              Waiting for the matching receipt. If your wallet confirms payment,
-              do not pay this invoice again while detection completes.
-            </p>
+          {publicReceiptInvoice ? (
+            receiptNotice
           ) : (
             <>
               <Button

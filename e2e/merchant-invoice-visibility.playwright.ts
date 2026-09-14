@@ -8,10 +8,23 @@ import {
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 
-async function mountInvoice(page: Page, failFirst = false, expired = false) {
+type DirectInvoiceFixture = {
+  mode: "private_checkout" | "public_zap_as_shopper" | "anonymous_public_zap"
+  createdAt?: number
+  receiptTimedOut?: boolean
+}
+
+async function mountInvoice(
+  page: Page,
+  failFirst = false,
+  expired = false,
+  direct?: DirectInvoiceFixture
+) {
   const invoice = makeBolt11Fixture({
     hrp: "lnbc1110n",
-    createdAt: Math.floor(Date.now() / 1_000) - (expired ? 3_601 : 0),
+    createdAt:
+      direct?.createdAt ??
+      Math.floor(Date.now() / 1_000) - (expired ? 3_601 : 0),
     fields: [
       bolt11PaymentHashField(new Uint8Array(32).fill(7)),
       bolt11PlainDescriptionField("Invoice visibility fixture"),
@@ -23,7 +36,7 @@ async function mountInvoice(page: Page, failFirst = false, expired = false) {
   })
   await page.goto(`${marketUrl}/products`)
   await page.evaluate(
-    async ({ rootPath, invoice, failFirst }) => {
+    async ({ rootPath, invoice, failFirst, direct }) => {
       const React = (await import("/@id/react")).default
       const ReactDOM = (await import("/@id/react-dom/client")).default
       const { ExternalWalletPanel } = await import(
@@ -46,7 +59,8 @@ async function mountInvoice(page: Page, failFirst = false, expired = false) {
         orderId: "invoice-visibility-order",
         buyerPubkey: "invoice-visibility-buyer",
         merchantPubkey: "invoice-visibility-merchant",
-        checkoutMode: "pay_later",
+        checkoutMode: direct?.mode ?? "pay_later",
+        ...(direct ? { invoice } : {}),
         items: [],
         itemSubtotalSats: 111,
         shippingCostSats: 0,
@@ -56,10 +70,15 @@ async function mountInvoice(page: Page, failFirst = false, expired = false) {
         addressValidity: "not_required",
         shippingZoneEligibility: "eligible",
         orderDeliveryStatus: "sent",
-        invoiceStatus: "not_requested",
-        paymentStatus: "not_started",
+        invoiceStatus: direct ? "manual_required" : "not_requested",
+        paymentStatus: direct ? "manual_required" : "not_started",
         proofDeliveryStatus: "not_started",
-        zapReceiptStatus: "not_applicable",
+        zapReceiptStatus:
+          direct && direct.mode !== "private_checkout"
+            ? direct.receiptTimedOut
+              ? "receipt_not_observed"
+              : "waiting"
+            : "not_applicable",
         phase: "pending",
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -88,6 +107,8 @@ async function mountInvoice(page: Page, failFirst = false, expired = false) {
       document.body.append(host)
       const state = window as typeof window & {
         __invoicePreparationCalls: number
+        __invoiceUseCalls: number
+        __invoiceReportCalls: number
         __releaseInvoice: () => void
         __rerenderInvoice: () => void
         __switchInvoiceScope: () => void
@@ -95,6 +116,8 @@ async function mountInvoice(page: Page, failFirst = false, expired = false) {
         __readBoundInvoice: () => Promise<unknown>
       }
       state.__invoicePreparationCalls = 0
+      state.__invoiceUseCalls = 0
+      state.__invoiceReportCalls = 0
       state.__readBoundInvoice = () => db.orderLifecycles.get(order.orderId)
       const root = ReactDOM.createRoot(host)
       let lifecycle = order
@@ -115,16 +138,26 @@ async function mountInvoice(page: Page, failFirst = false, expired = false) {
             vm,
             busy: false,
             guestSession: false,
-            autoDetectReceipt: false,
+            autoDetectReceipt:
+              !!direct &&
+              direct.mode !== "private_checkout" &&
+              !direct.receiptTimedOut,
             preparationScope: scope,
-            merchantInvoicePrepared: isMerchantInvoicePaymentActionBound(
-              lifecycle,
-              vm.merchantInvoiceAction
-            ),
+            merchantInvoicePrepared:
+              !!vm.merchantInvoiceAction &&
+              isMerchantInvoicePaymentActionBound(
+                lifecycle,
+                vm.merchantInvoiceAction
+              ),
             boundMerchantInvoiceExpiresAt: lifecycle.invoiceExpiresAt ?? null,
-            onBeforeInvoiceUse: () => true,
+            onBeforeInvoiceUse: () => {
+              state.__invoiceUseCalls += 1
+              return false
+            },
             onMarkPaid: () => {
-              throw new Error("Preparation must not report payment")
+              if (!direct)
+                throw new Error("Preparation must not report payment")
+              state.__invoiceReportCalls += 1
             },
             onPrepareMerchantInvoice: async () => {
               state.__invoicePreparationCalls += 1
@@ -149,7 +182,7 @@ async function mountInvoice(page: Page, failFirst = false, expired = false) {
       }
       render()
     },
-    { rootPath: path.resolve(process.cwd()), invoice, failFirst }
+    { rootPath: path.resolve(process.cwd()), invoice, failFirst, direct }
   )
   return { host: page.locator("#invoice-visibility-fixture"), invoice }
 }
@@ -237,3 +270,110 @@ test("expired merchant invoices stay unavailable without starting preparation @m
   )
   expect(await page.evaluate(() => window.__invoicePreparationCalls)).toBe(0)
 })
+
+for (const mode of [
+  "private_checkout",
+  "public_zap_as_shopper",
+  "anonymous_public_zap",
+] as const) {
+  for (const alreadyExpired of [true, false]) {
+    test(`${mode} hides invoice payment controls ${alreadyExpired ? "on reopen after expiry" : "when the visible invoice expires"} @market`, async ({
+      page,
+    }) => {
+      const now = new Date(Math.floor(Date.now() / 1_000) * 1_000)
+      await page.clock.install({ time: now })
+      const { host } = await mountInvoice(page, false, false, {
+        mode,
+        createdAt: now.getTime() / 1_000 - (alreadyExpired ? 3_601 : 0),
+      })
+      if (!alreadyExpired) {
+        await expect(
+          host.getByRole("button", { name: "Copy invoice" })
+        ).toBeVisible()
+        await page.clock.fastForward(3_601_000)
+      }
+      await expect(
+        host.getByRole("heading", { name: "Invoice unavailable" })
+      ).toBeVisible()
+      await expect(
+        host.getByRole("link", { name: "Open in wallet" })
+      ).toHaveCount(0)
+      await expect(
+        host.getByRole("button", { name: "Copy invoice" })
+      ).toHaveCount(0)
+      await expect(host.locator("svg")).toHaveCount(0)
+      if (mode === "private_checkout") {
+        await host
+          .getByRole("button", { name: "Report a payment already made" })
+          .click()
+        expect(await page.evaluate(() => window.__invoiceReportCalls)).toBe(1)
+      } else {
+        await expect(
+          host.getByText(/Waiting for the matching receipt/)
+        ).toBeVisible()
+        await expect(host.getByRole("button", { name: /Report/ })).toHaveCount(
+          0
+        )
+      }
+      expect(await page.evaluate(() => window.__invoicePreparationCalls)).toBe(
+        0
+      )
+    })
+  }
+}
+
+for (const mode of ["public_zap_as_shopper", "anonymous_public_zap"] as const) {
+  test(`${mode} does not offer a payment report after receipt observation times out @market`, async ({
+    page,
+  }) => {
+    const now = new Date(Math.floor(Date.now() / 1_000) * 1_000)
+    await page.clock.install({ time: now })
+    const { host } = await mountInvoice(page, false, false, {
+      mode,
+      createdAt: now.getTime() / 1_000,
+      receiptTimedOut: true,
+    })
+    await expect(
+      host.getByRole("button", { name: "Copy invoice" })
+    ).toBeVisible()
+    await expect(
+      host.getByText(/No matching receipt has been observed yet/)
+    ).toBeVisible()
+    await expect(host.getByRole("button", { name: /Report/ })).toHaveCount(0)
+    await page.clock.fastForward(3_601_000)
+    await expect(
+      host.getByRole("heading", { name: "Invoice unavailable" })
+    ).toBeVisible()
+    await expect(host.getByRole("button", { name: /Report/ })).toHaveCount(0)
+    await expect(
+      host.getByText(/No matching receipt has been observed yet/)
+    ).toBeVisible()
+  })
+}
+
+for (const action of ["copy", "open"] as const) {
+  test(`invoice ${action} rechecks expiry before the timer runs @market`, async ({
+    page,
+  }) => {
+    const now = new Date(Math.floor(Date.now() / 1_000) * 1_000)
+    await page.clock.install({ time: now })
+    const { host } = await mountInvoice(page, false, false, {
+      mode: "private_checkout",
+      createdAt: now.getTime() / 1_000,
+    })
+    await expect(
+      host.getByRole("button", { name: "Copy invoice" })
+    ).toBeVisible()
+    // Advance wall time without firing timers, as after a suspended browser tab.
+    await page.clock.setSystemTime(new Date(now.getTime() + 3_601_000))
+    if (action === "copy") {
+      await host.getByRole("button", { name: "Copy invoice" }).click()
+    } else {
+      await host.getByRole("link", { name: "Open in wallet" }).click()
+    }
+    expect(await page.evaluate(() => window.__invoiceUseCalls)).toBe(0)
+    await expect(
+      host.getByRole("heading", { name: "Invoice unavailable" })
+    ).toBeVisible()
+  })
+}

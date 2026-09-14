@@ -2094,144 +2094,167 @@ describe("runOrderPayment", () => {
     }
   })
 
-  it("resumes only complete, unexpired anon receipt contexts", () => {
-    const now = Date.now()
-    const observable = lifecycle({
-      checkoutMode: "anonymous_public_zap",
-      zapReceiptStatus: "waiting",
-      zapRequestId: "zap-request-id",
-      zapRequestCreatedAt: Math.floor(now / 1000) - 10,
-      zapLnurl: "lnurl1test",
-      zapReceiptPubkey: "a".repeat(64),
-      zapReceiptRelayUrls: ["wss://relay.example"],
-      zapReceiptObservationDeadline: now + 60_000,
-    })
+  it.each(["anon", "shopper"] as const)(
+    "resumes only complete, unexpired %s receipt contexts",
+    (publicZapSigner) => {
+      const now = Date.now()
+      const observable = lifecycle({
+        checkoutMode:
+          publicZapSigner === "anon"
+            ? "anonymous_public_zap"
+            : "public_zap_as_shopper",
+        publicZapSigner,
+        zapReceiptStatus: "waiting",
+        zapRequestId: "zap-request-id",
+        zapRequestCreatedAt: Math.floor(now / 1000) - 10,
+        zapLnurl: "lnurl1test",
+        zapReceiptPubkey: "a".repeat(64),
+        zapReceiptRelayUrls: ["wss://relay.example"],
+        zapReceiptObservationDeadline: now + 60_000,
+      })
 
-    expect(canObserveOrderPublicZapReceipt(observable, now)).toBe(true)
-    expect(
-      canObserveOrderPublicZapReceipt(
-        { ...observable, zapReceiptRelayUrls: [] },
-        now
-      )
-    ).toBe(false)
-    expect(
-      canObserveOrderPublicZapReceipt(
-        {
-          ...observable,
-          buyerIdentityKind: "guest_ephemeral",
-          createdAt: now - 24 * 60 * 60 * 1_000 - 1,
-        },
-        now
-      )
-    ).toBe(false)
-    for (const proofDeliveryStatus of [
-      "not_started",
-      "pending",
-      "retry_needed",
-      "failed",
-    ] as const) {
+      expect(canObserveOrderPublicZapReceipt(observable, now)).toBe(true)
+      expect(
+        canObserveOrderPublicZapReceipt(
+          {
+            ...observable,
+            checkoutMode: "private_checkout",
+            publicZapSigner: undefined,
+          },
+          now
+        )
+      ).toBe(false)
+      expect(
+        canObserveOrderPublicZapReceipt(
+          { ...observable, zapReceiptRelayUrls: [] },
+          now
+        )
+      ).toBe(false)
+      expect(
+        canObserveOrderPublicZapReceipt(
+          {
+            ...observable,
+            buyerIdentityKind: "guest_ephemeral",
+            createdAt: now - 24 * 60 * 60 * 1_000 - 1,
+          },
+          now
+        )
+      ).toBe(false)
+      for (const proofDeliveryStatus of [
+        "not_started",
+        "pending",
+        "retry_needed",
+        "failed",
+      ] as const) {
+        expect(
+          canObserveOrderPublicZapReceipt(
+            {
+              ...observable,
+              zapReceiptStatus: "observed",
+              zapReceiptId: "zap-receipt-id",
+              proofDeliveryStatus,
+            },
+            now
+          )
+        ).toBe(true)
+      }
       expect(
         canObserveOrderPublicZapReceipt(
           {
             ...observable,
             zapReceiptStatus: "observed",
-            zapReceiptId: "zap-receipt-id",
-            proofDeliveryStatus,
+            proofDeliveryStatus: "sent",
           },
           now
         )
-      ).toBe(true)
+      ).toBe(false)
     }
-    expect(
-      canObserveOrderPublicZapReceipt(
+  )
+
+  it.each(["anon", "shopper"] as const)(
+    "uses current durable truth after a %s receipt observer wait",
+    async (publicZapSigner) => {
+      const orderId = `deferred-${publicZapSigner}-receipt-timeout-race`
+      const accountPubkey = "b".repeat(64)
+      let current = lifecycle({
+        orderId,
+        checkoutMode:
+          publicZapSigner === "anon"
+            ? "anonymous_public_zap"
+            : "public_zap_as_shopper",
+        publicZapSigner,
+        invoice: privateInvoice(),
+        invoiceStatus: "received",
+        paymentStatus: "paying",
+        proofDeliveryStatus: "pending",
+        zapReceiptStatus: "waiting",
+        zapRequestId: "zap-request-current",
+        zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+        zapLnurl: "lnurl1test",
+        zapReceiptPubkey: "a".repeat(64),
+        zapReceiptRelayUrls: ["wss://relay.example"],
+        zapReceiptObservationDeadline: Date.now() - 1,
+      })
+      let releaseWait!: (receipt: null) => void
+      let waitStarted = false
+      let timeoutCalls = 0
+      const shouldContinue = () => true
+      const receiptWait = new Promise<null>((resolve) => {
+        releaseWait = resolve
+      })
+
+      const observation = observeOrderPublicZapReceipt(
+        orderId,
+        undefined,
         {
-          ...observable,
-          zapReceiptStatus: "observed",
-          proofDeliveryStatus: "sent",
+          getOrderLifecycle: async () => current,
+          waitForZapReceipt: async (input) => {
+            expect(input.accountPubkey).toBe(accountPubkey)
+            expect(input.shouldContinue).toBe(shouldContinue)
+            waitStarted = true
+            return receiptWait
+          },
+          recordOrderPaymentReceiptTimeout: async () => {
+            timeoutCalls += 1
+            if (
+              current.paymentStatus === "paid" ||
+              current.zapReceiptStatus === "observed"
+            ) {
+              return { status: "preserved", lifecycle: current }
+            }
+            throw new Error("must preserve stronger evidence")
+          },
         },
-        now
+        accountPubkey,
+        accountPubkey,
+        shouldContinue
       )
-    ).toBe(false)
-  })
 
-  it("uses current durable truth after a receipt observer wait", async () => {
-    const orderId = "deferred-receipt-timeout-race"
-    const accountPubkey = "b".repeat(64)
-    let current = lifecycle({
-      orderId,
-      checkoutMode: "anonymous_public_zap",
-      publicZapSigner: "anon",
-      invoice: privateInvoice(),
-      invoiceStatus: "received",
-      paymentStatus: "paying",
-      proofDeliveryStatus: "pending",
-      zapReceiptStatus: "waiting",
-      zapRequestId: "zap-request-current",
-      zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
-      zapLnurl: "lnurl1test",
-      zapReceiptPubkey: "a".repeat(64),
-      zapReceiptRelayUrls: ["wss://relay.example"],
-      zapReceiptObservationDeadline: Date.now() - 1,
-    })
-    let releaseWait!: (receipt: null) => void
-    let waitStarted = false
-    let timeoutCalls = 0
-    const shouldContinue = () => true
-    const receiptWait = new Promise<null>((resolve) => {
-      releaseWait = resolve
-    })
+      for (let index = 0; index < 5 && !waitStarted; index += 1) {
+        await Promise.resolve()
+      }
+      expect(waitStarted).toBe(true)
+      current = {
+        ...current,
+        paymentStatus: "paid",
+        proofDeliveryStatus: "sent",
+        zapReceiptStatus: "observed",
+        zapReceiptId: "zap-receipt-current",
+        lastError: undefined,
+      }
+      releaseWait(null)
+      await observation
 
-    const observation = observeOrderPublicZapReceipt(
-      orderId,
-      undefined,
-      {
-        getOrderLifecycle: async () => current,
-        waitForZapReceipt: async (input) => {
-          expect(input.accountPubkey).toBe(accountPubkey)
-          expect(input.shouldContinue).toBe(shouldContinue)
-          waitStarted = true
-          return receiptWait
-        },
-        recordOrderPaymentReceiptTimeout: async () => {
-          timeoutCalls += 1
-          if (
-            current.paymentStatus === "paid" ||
-            current.zapReceiptStatus === "observed"
-          ) {
-            return { status: "preserved", lifecycle: current }
-          }
-          throw new Error("must preserve stronger evidence")
-        },
-      },
-      accountPubkey,
-      accountPubkey,
-      shouldContinue
-    )
-
-    for (let index = 0; index < 5 && !waitStarted; index += 1) {
-      await Promise.resolve()
+      expect(timeoutCalls).toBe(1)
+      expect(current).toMatchObject({
+        paymentStatus: "paid",
+        proofDeliveryStatus: "sent",
+        zapReceiptStatus: "observed",
+        zapReceiptId: "zap-receipt-current",
+      })
+      expect(current.lastError).toBeUndefined()
     }
-    expect(waitStarted).toBe(true)
-    current = {
-      ...current,
-      paymentStatus: "paid",
-      proofDeliveryStatus: "sent",
-      zapReceiptStatus: "observed",
-      zapReceiptId: "zap-receipt-current",
-      lastError: undefined,
-    }
-    releaseWait(null)
-    await observation
-
-    expect(timeoutCalls).toBe(1)
-    expect(current).toMatchObject({
-      paymentStatus: "paid",
-      proofDeliveryStatus: "sent",
-      zapReceiptStatus: "observed",
-      zapReceiptId: "zap-receipt-current",
-    })
-    expect(current.lastError).toBeUndefined()
-  })
+  )
 
   it("releases the order in-flight lock when lifecycle patching fails", async () => {
     const ctx = basePaymentContext({

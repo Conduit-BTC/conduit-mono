@@ -1075,11 +1075,11 @@ function OrderDetail({
     (vm.paymentStatus === "manual_required" || !!vm.merchantInvoiceAction)
   const autoDetectPublicReceipt =
     !zeroCostPickupOrder &&
-    vm.publicZapSigner === "anon" &&
+    !!vm.publicZapSigner &&
     vm.zapReceiptStatus === "waiting"
   const publicReceiptNotObserved =
     !zeroCostPickupOrder &&
-    vm.publicZapSigner === "anon" &&
+    !!vm.publicZapSigner &&
     vm.zapReceiptStatus === "receipt_not_observed"
   const showResendProof =
     !zeroCostPickupOrder &&
@@ -1402,7 +1402,7 @@ function OrderDetail({
               {wallets.loading
                 ? "Wait while Conduit checks the Portable and Connected Wallets saved on this device."
                 : publicReceiptNotObserved
-                  ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays during this guest session."
+                  ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays while this order remains available on this device."
                   : showAmbiguousPayment
                     ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
                     : showRetryPayment && retryWalletTargetIsStale
