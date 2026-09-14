@@ -144,7 +144,10 @@ import {
   getNextOrderPaymentLeaseExpiry,
   reconcileOrderPaymentForDisplay,
 } from "../lib/order-payment-recovery"
-import { getEventActorIdentityView } from "../lib/event-actor-identity"
+import {
+  getEventActorIdentityView,
+  normalizeEventActorPubkey,
+} from "../lib/event-actor-identity"
 
 type PriceFormatter = (
   price: CommercePriceLike,
@@ -879,7 +882,7 @@ function OrderDetail({
         new Set(
           vm.pickupFulfillments.flatMap((pickup) => [
             getPickupHandoffSummary(pickup).handlerPubkey,
-            pickup.organizerPubkey,
+            normalizeEventActorPubkey(pickup.organizerPubkey),
           ])
         )
       ),
@@ -898,7 +901,7 @@ function OrderDetail({
     (pubkey: string) =>
       getEventActorIdentityView({
         pubkey,
-        profile: eventActorProfiles.data[pubkey],
+        profile: eventActorProfiles.data[normalizeEventActorPubkey(pubkey)],
       }),
     [eventActorProfiles.data]
   )
