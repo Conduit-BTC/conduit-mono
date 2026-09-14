@@ -3093,6 +3093,26 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   ])
   expect(product.tags).toContainEqual(["visibility", "hidden"])
 
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 0,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      content: JSON.stringify({ display_name: "Synthetic Pickup Host" }),
+    })
+  )
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          ;(
+            window as typeof window & { __pickupCopiedNpub?: string }
+          ).__pickupCopiedNpub = value
+        },
+      },
+    })
+  })
   await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
   const productCard = page
     .getByRole("listitem")
@@ -3100,6 +3120,30 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   await expect(
     productCard.getByText("Pickup from merchant booth", { exact: true })
   ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    productCard.getByText("Synthetic Pickup Host", { exact: true }).last()
+  ).toBeVisible({ timeout: 30_000 })
+  const pickupDetails = productCard
+    .locator("summary")
+    .filter({ hasText: "Handled by" })
+  await pickupDetails.focus()
+  await expect(pickupDetails).toBeFocused()
+  await pickupDetails.press("Enter")
+  await expect(productCard.locator("details")).toHaveAttribute("open", "")
+  const handlerNpub = nip19.npubEncode(ORGANIZER_PUBKEY)
+  await expect(productCard.locator(`a[href="/u/${handlerNpub}"]`)).toBeVisible()
+  await productCard
+    .getByRole("button", { name: "Copy pickup handler npub" })
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __pickupCopiedNpub?: string })
+            .__pickupCopiedNpub
+      )
+    )
+    .toBe(handlerNpub)
   await productCard.getByRole("button", { name: "Add", exact: true }).click()
   await expect(
     page.getByText(
@@ -3107,12 +3151,33 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
       { exact: true }
     )
   ).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  await expect(
+    page.getByText("Synthetic Pickup Host", { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
+  await page
+    .getByRole("button", { name: "Copy pickup handler npub" })
+    .first()
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __pickupCopiedNpub?: string })
+            .__pickupCopiedNpub
+      )
+    )
+    .toBe(handlerNpub)
   await gotoAs(page, marketUrl, "/checkout", "buyer", {
     merchant: nip19.npubEncode(ORGANIZER_PUBKEY),
   })
   await expect(
     page.getByText("Pickup from merchant booth", { exact: true }).first()
   ).toBeVisible()
+  await expect(
+    page.getByText("Synthetic Pickup Host", { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
   await expect(page.getByRole("button", { name: /^Send order$/i })).toBeEnabled(
     { timeout: 30_000 }
   )
@@ -3471,6 +3536,32 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     createInboxDeclaration("merchant", declarationTime + 1),
     createInboxDeclaration("buyer", declarationTime + 2)
   )
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 0,
+      created_at: declarationTime,
+      tags: [],
+      content: JSON.stringify({ display_name: "Friendly Handoff Organizer" }),
+    }),
+    signEvent(MERCHANT_SECRET, {
+      kind: 0,
+      created_at: declarationTime,
+      tags: [],
+      content: JSON.stringify({ display_name: "Friendly Handoff Merchant" }),
+    })
+  )
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          ;(
+            window as typeof window & { __merchantActorCopiedNpub?: string }
+          ).__merchantActorCopiedNpub = value
+        },
+      },
+    })
+  })
   await installSyntheticEnvironment(page, relay, "acknowledger")
 
   const market = await publishOrganizerMarket(page, relay, {
@@ -3495,6 +3586,32 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     "shipping_option",
     market.pickupCoordinate!,
   ])
+
+  await expect(
+    page.getByText("Friendly Handoff Organizer", { exact: true }).first()
+  ).toBeVisible()
+  await expect(
+    page.getByText("Friendly Handoff Merchant", { exact: true }).first()
+  ).toBeVisible()
+  await page
+    .getByRole("button", { name: "Copy organizer signer npub", exact: true })
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __merchantActorCopiedNpub?: string })
+            .__merchantActorCopiedNpub
+      )
+    )
+    .toBe(nip19.npubEncode(ORGANIZER_PUBKEY))
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  await expect(
+    page.getByText("Friendly Handoff Organizer", { exact: true }).first()
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Copy organizer npub", exact: true })
+  ).toBeVisible()
 
   await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
   await expect(
@@ -3657,6 +3774,22 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
       .filter({ visible: true })
       .first()
   ).toBeVisible({ timeout: 30_000 })
+  const merchantPickup = page.getByTestId("merchant-order-pickup")
+  await expect(
+    merchantPickup.getByText("Friendly Handoff Organizer", { exact: true })
+  ).toBeVisible()
+  await merchantPickup
+    .getByRole("button", { name: "Copy pickup organizer npub", exact: true })
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __merchantActorCopiedNpub?: string })
+            .__merchantActorCopiedNpub
+      )
+    )
+    .toBe(nip19.npubEncode(ORGANIZER_PUBKEY))
   const acceptOrder = page.getByRole("button", {
     name: "Accept order",
     exact: true,
@@ -3893,6 +4026,21 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   await expect(
     queuedClaim.getByText("Ready for pickup", { exact: true })
   ).toBeVisible()
+  await expect(
+    queuedClaim.getByText("Friendly Handoff Merchant", { exact: true })
+  ).toBeVisible()
+  await queuedClaim
+    .getByRole("button", { name: "Copy handoff merchant npub", exact: true })
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __merchantActorCopiedNpub?: string })
+            .__merchantActorCopiedNpub
+      )
+    )
+    .toBe(nip19.npubEncode(MERCHANT_PUBKEY))
   const acknowledge = queuedClaim.getByRole("button", {
     name: "Mark handed out",
     exact: true,
