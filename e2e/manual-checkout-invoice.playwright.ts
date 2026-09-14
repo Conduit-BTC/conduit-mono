@@ -107,7 +107,8 @@ test("signed-in checkout switches from browser wallet to manual and shows its za
     finalizeEvent(
       {
         kind: 0,
-        created_at: createdAt + 1,
+        // Follow the seed profile even when setup crosses a second boundary.
+        created_at: Math.floor(Date.now() / 1_000) + 1,
         tags: [],
         content: JSON.stringify({
           name: "Synthetic invoice merchant",
