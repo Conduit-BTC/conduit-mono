@@ -8,8 +8,10 @@ import {
   scoreProfileSearchMatch,
   searchCachedProfiles,
   searchNetworkProfiles,
+  planProfileSearchRelayUrls,
   searchProfiles,
   summarizeProfileSearchRelays,
+  PROFILE_SEARCH_MAX_RELAYS,
   type ProfileSearchDependencies,
   type ProfileSearchMatch,
   type ProfileSearchResult,
@@ -226,6 +228,58 @@ describe("profile search evidence", () => {
         24
       )
     ).toEqual({ relaysCompleted: 1, relaysDegraded: 4, verified: false })
+  })
+})
+
+describe("profile search relay plan", () => {
+  it("keeps configured indexes first, deduplicates, and caps the fanout", () => {
+    const advertised = Array.from(
+      { length: 30 },
+      (_, index) => `wss://advertised-${index}.example/`
+    )
+    const planned = planProfileSearchRelayUrls(
+      ["wss://index.example", "wss://index.example/"],
+      ["WSS://INDEX.EXAMPLE", "ws://insecure.example", "  ", ...advertised]
+    )
+
+    expect(planned).toHaveLength(PROFILE_SEARCH_MAX_RELAYS)
+    expect(planned[0]).toBe("wss://index.example")
+    expect(new Set(planned).size).toBe(planned.length)
+    expect(planned.every((url) => url.startsWith("wss://"))).toBe(true)
+  })
+
+  it("reports the capped plan as the relays it actually attempted", async () => {
+    const attempted: string[][] = []
+    const result = await searchNetworkProfiles(
+      { query: "alice" },
+      deps({
+        planSearchRelayUrls: () =>
+          planProfileSearchRelayUrls(
+            [],
+            Array.from(
+              { length: 12 },
+              (_, index) => `wss://relay-${index}.example`
+            )
+          ),
+        fetchEvents: async (_filter, options) => {
+          attempted.push(options.relayUrls)
+          return {
+            events: [],
+            relays: options.relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 0,
+            })),
+            eventsVerified: true,
+          }
+        },
+      })
+    )
+
+    expect(attempted).toHaveLength(1)
+    expect(attempted[0]).toHaveLength(PROFILE_SEARCH_MAX_RELAYS)
+    expect(result.relaysPlanned).toBe(PROFILE_SEARCH_MAX_RELAYS)
+    expect(result.evidence).toBe("absent_within_scope")
   })
 })
 
@@ -562,6 +616,48 @@ describe("phased profile search", () => {
     expect(byPubkey.get(ALICIA)?.profile.name).toBe("alicia cached")
     expect(byPubkey.get(ALICIA)?.frontier.eventId).toBe("0a")
     expect(merged.matches.every((entry) => entry.source === "both")).toBe(true)
+  })
+
+  it("ranks the displayed profile, not a replaced name", () => {
+    const merged = mergeProfileSearchResults(
+      result({
+        query: "alice",
+        matches: [
+          match({
+            pubkey: ALICE,
+            profile: { pubkey: ALICE, name: "alice" },
+            source: "local_cache",
+            score: 0,
+            frontier: { createdAt: 100, eventId: "old" },
+          }),
+        ],
+      }),
+      result({
+        query: "alice",
+        matches: [
+          match({
+            pubkey: ALICE,
+            profile: { pubkey: ALICE, name: "Malice Corp" },
+            score: 3,
+            frontier: { createdAt: 200, eventId: "new" },
+          }),
+          match({
+            pubkey: ALICIA,
+            profile: { pubkey: ALICIA, name: "alice" },
+            score: 0,
+            frontier: { createdAt: 150, eventId: "exact" },
+          }),
+        ],
+        evidence: "present_current",
+        relaysPlanned: 1,
+        relaysCompleted: 1,
+      }),
+      5
+    )
+
+    expect(merged.matches.map((entry) => entry.pubkey)).toEqual([ALICIA, ALICE])
+    expect(merged.matches[1]?.profile.name).toBe("Malice Corp")
+    expect(merged.matches[1]?.score).toBe(3)
   })
 
   it("does not let cached rows upgrade an absent relay observation", () => {

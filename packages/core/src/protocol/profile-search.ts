@@ -17,6 +17,12 @@ export const PROFILE_SEARCH_DEFAULT_LIMIT = 5
 const NETWORK_FETCH_LIMIT = 24
 const LOCAL_CACHE_SCAN_LIMIT = 5_000
 /**
+ * One settled query must finish within a single bounded read window. Relay
+ * lists grow with the account's own NIP-65 settings, so the plan keeps the
+ * configured search indexes first and takes at most this many relays.
+ */
+export const PROFILE_SEARCH_MAX_RELAYS = 4
+/**
  * The cached phase must answer while listings are still being written, and an
  * open write transaction on the products store can hold a seller lookup for
  * hundreds of milliseconds. Past this budget the phase answers with the
@@ -208,14 +214,43 @@ export function resolveProfileSearchEvidence(
   return input.matchCount > 0 ? "present_current" : "absent_within_scope"
 }
 
+function normalizeSearchRelayUrl(url: string): string | null {
+  const trimmed = url.trim().replace(/\/+$/, "")
+  return trimmed.toLowerCase().startsWith("wss://") ? trimmed : null
+}
+
+/**
+ * Deduplicates and caps the search plan. Configured search indexes keep
+ * priority over relays that merely advertise NIP-50, so a long advertised
+ * list cannot push the indexes out of the plan.
+ */
+export function planProfileSearchRelayUrls(
+  configuredUrls: readonly string[],
+  advertisedUrls: readonly string[],
+  maxRelays: number = PROFILE_SEARCH_MAX_RELAYS
+): string[] {
+  const planned: string[] = []
+  const seen = new Set<string>()
+  for (const url of [...configuredUrls, ...advertisedUrls]) {
+    if (planned.length >= maxRelays) break
+    const normalized = normalizeSearchRelayUrl(url)
+    if (!normalized) continue
+    const key = normalized.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    planned.push(normalized)
+  }
+  return planned
+}
+
 function defaultPlanSearchRelayUrls(): string[] {
   const snapshot = loadRelaySettingsPlanningSnapshot()
-  const advertised = snapshot.settings.entries
-    .filter((entry) => entry.readEnabled && entry.capabilities.search)
-    .map((entry) => entry.url)
-  return Array.from(
-    new Set([...config.searchIndexRelayUrls, ...advertised])
-  ).filter((url) => url.startsWith("wss://"))
+  return planProfileSearchRelayUrls(
+    config.searchIndexRelayUrls,
+    snapshot.settings.entries
+      .filter((entry) => entry.readEnabled && entry.capabilities.search)
+      .map((entry) => entry.url)
+  )
 }
 
 async function defaultLoadSellerPubkeys(
@@ -427,7 +462,9 @@ function mergeMatches(
     frontier: winner.frontier,
     isSeller: existing.isSeller || incoming.isSeller,
     source: existing.source === incoming.source ? incoming.source : "both",
-    score: Math.min(existing.score, incoming.score),
+    // Both phases score against the same query, so the winning profile's own
+    // score ranks what the row displays instead of a replaced name.
+    score: winner.score,
   }
 }
 
