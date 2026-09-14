@@ -10,6 +10,7 @@ import {
   __resetEventMarketTestOverrides,
   __setEventMarketTestOverrides,
   EVENT_KINDS,
+  parseEventMarketCalendarEvent,
   publishEventMarketPickupOption,
   publishOrganizerCollectionUpdate,
   publishOrganizerEventMarket,
@@ -102,6 +103,86 @@ afterEach(() => {
 })
 
 describe("organizer event-market publishing", () => {
+  for (const kind of [EVENT_KINDS.CALENDAR_DATE, EVENT_KINDS.CALENDAR_TIME]) {
+    it(`publishes and updates kind ${kind} descriptions without changing event identity or schedule`, async () => {
+      const published: SignedPublicNostrEvent[] = []
+      __setEventMarketTestOverrides({
+        getNdk: connectedNdk,
+        signDraft,
+        publishWithPlanner: async (event: NDKEvent) => {
+          published.push(event.rawEvent() as SignedPublicNostrEvent)
+          return publishResult(true)
+        },
+      })
+      const original = input()
+      original.calendar = {
+        ...original.calendar,
+        kind,
+        summary: "  Original public description.  ",
+        ...(kind === EVENT_KINDS.CALENDAR_DATE
+          ? { start: "2036-07-18", end: "2036-07-20" }
+          : { timezone: "America/Chicago" }),
+      }
+      original.collection.eventCoordinate = `${kind}:${ORGANIZER_PUBKEY}:calendar`
+      const created = await publishOrganizerEventMarket(original)
+      const originalCalendar = created.calendar.signedEvent
+      const snapshot = JSON.stringify(originalCalendar)
+      expect(parseEventMarketCalendarEvent(originalCalendar)).toMatchObject({
+        content: "Original public description.",
+        summary: "Original public description.",
+      })
+
+      const updated = await publishOrganizerEventMarket({
+        ...original,
+        calendar: {
+          ...original.calendar,
+          summary: "  Updated public description.  ",
+          content: " \n ",
+        },
+        previousCreatedAt: originalCalendar.created_at,
+      })
+      const updatedCalendar = updated.calendar.signedEvent
+      expect(parseEventMarketCalendarEvent(updatedCalendar)).toMatchObject({
+        content: "Updated public description.",
+        summary: "Updated public description.",
+      })
+      expect(updatedCalendar.kind).toBe(originalCalendar.kind)
+      expect(updatedCalendar.pubkey).toBe(originalCalendar.pubkey)
+      expect(updatedCalendar.created_at).toBeGreaterThan(
+        originalCalendar.created_at
+      )
+      expect(
+        updatedCalendar.tags.filter(([name]) => name !== "summary")
+      ).toEqual(originalCalendar.tags.filter(([name]) => name !== "summary"))
+      expect(updated.collection.signedEvent.tags).toEqual(
+        created.collection.signedEvent.tags
+      )
+      expect(JSON.stringify(originalCalendar)).toBe(snapshot)
+
+      // Retrying a previously signed summary-only event must not backfill it.
+      const legacyCalendar = finalizeEvent(
+        {
+          kind: originalCalendar.kind,
+          created_at: originalCalendar.created_at,
+          tags: originalCalendar.tags,
+          content: "",
+        },
+        ORGANIZER_SECRET
+      )
+      await retryOrganizerEventMarketRecord({
+        organizerPubkey: ORGANIZER_PUBKEY,
+        signedEvent: legacyCalendar,
+      })
+      expect(published.at(-1)).toEqual(
+        JSON.parse(JSON.stringify(legacyCalendar))
+      )
+      expect(parseEventMarketCalendarEvent(legacyCalendar)).toMatchObject({
+        content: "",
+        summary: "Original public description.",
+      })
+    })
+  }
+
   it("persists a merchant booth pickup before I/O and retries the exact event", async () => {
     const sequence: string[] = []
     let durable: SignedPublicNostrEvent | null = null

@@ -22,6 +22,7 @@ import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as TermsOfServiceRouteImport } from './routes/terms-of-service'
 import { Route as WalletRouteImport } from './routes/wallet'
 import { Route as ZapoutsRouteImport } from './routes/zapouts'
+import { Route as EventsIndexRouteImport } from './routes/events/index'
 import { Route as EventsCollectionRefRouteImport } from './routes/events/$collectionRef'
 import { Route as ProductsIndexRouteImport } from './routes/products/index'
 import { Route as ProductsProductIdRouteImport } from './routes/products/$productId'
@@ -93,6 +94,11 @@ const ZapoutsRoute = ZapoutsRouteImport.update({
   path: '/zapouts',
   getParentRoute: () => rootRouteImport,
 } as any)
+const EventsIndexRoute = EventsIndexRouteImport.update({
+  id: '/events/',
+  path: '/events/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const EventsCollectionRefRoute = EventsCollectionRefRouteImport.update({
   id: '/events/$collectionRef',
   path: '/events/$collectionRef',
@@ -137,6 +143,7 @@ export interface FileRoutesByFullPath {
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
+  '/events/': typeof EventsIndexRoute
   '/products/': typeof ProductsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -157,6 +164,7 @@ export interface FileRoutesByTo {
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
+  '/events': typeof EventsIndexRoute
   '/products': typeof ProductsIndexRoute
 }
 export interface FileRoutesById {
@@ -178,6 +186,7 @@ export interface FileRoutesById {
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
+  '/events/': typeof EventsIndexRoute
   '/products/': typeof ProductsIndexRoute
 }
 export interface FileRouteTypes {
@@ -200,6 +209,7 @@ export interface FileRouteTypes {
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
+    | '/events/'
     | '/products/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -220,6 +230,7 @@ export interface FileRouteTypes {
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
+    | '/events'
     | '/products'
   id:
     | '__root__'
@@ -240,6 +251,7 @@ export interface FileRouteTypes {
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
+    | '/events/'
     | '/products/'
   fileRoutesById: FileRoutesById
 }
@@ -261,6 +273,7 @@ export interface RootRouteChildren {
   ProductsProductIdRoute: typeof ProductsProductIdRoute
   StorePubkeyRoute: typeof StorePubkeyRoute
   UProfileRefRoute: typeof UProfileRefRoute
+  EventsIndexRoute: typeof EventsIndexRoute
   ProductsIndexRoute: typeof ProductsIndexRoute
 }
 
@@ -357,6 +370,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ZapoutsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/events/': {
+      id: '/events/'
+      path: '/events'
+      fullPath: '/events/'
+      preLoaderRoute: typeof EventsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/events/$collectionRef': {
       id: '/events/$collectionRef'
       path: '/events/$collectionRef'
@@ -413,6 +433,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProductsProductIdRoute: ProductsProductIdRoute,
   StorePubkeyRoute: StorePubkeyRoute,
   UProfileRefRoute: UProfileRefRoute,
+  EventsIndexRoute: EventsIndexRoute,
   ProductsIndexRoute: ProductsIndexRoute,
 }
 export const routeTree = rootRouteImport

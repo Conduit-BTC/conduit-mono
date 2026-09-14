@@ -89,7 +89,7 @@ export function ConduitSessionProvider({
   const identityReady =
     session.mode === "guest" ||
     hasProfileName(profileQuery.data) ||
-    (!profileQuery.isLoading && !profileQuery.isFetching)
+    !profileQuery.isLoading
 
   const [activatedRelayScope, setActivatedRelayScope] = useState<string | null>(
     null

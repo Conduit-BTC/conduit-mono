@@ -6,7 +6,7 @@ async function source(path: string): Promise<string> {
 
 function profileCallSources(contents: string): string[] {
   const calls: string[] = []
-  const matcher = /\buseProfiles?\(/g
+  const matcher = /\b(?:useProfiles?|useMerchantIdentities)\(/g
   let match: RegExpExecArray | null
 
   while ((match = matcher.exec(contents))) {
@@ -42,10 +42,12 @@ describe("Market live account authority", () => {
       "apps/market/src/components/MarketCartHud.tsx",
       "apps/market/src/components/MarketHeader.tsx",
       "apps/market/src/hooks/useMerchantIdentities.ts",
+      "apps/market/src/hooks/useEventActorIdentity.ts",
       "apps/market/src/hooks/useMerchantTrustContext.ts",
       "apps/market/src/routes/cart.tsx",
       "apps/market/src/routes/checkout.tsx",
       "apps/market/src/routes/events/$collectionRef.tsx",
+      "apps/market/src/routes/events/index.tsx",
       "apps/market/src/routes/messages.tsx",
       "apps/market/src/routes/orders.tsx",
       "apps/market/src/routes/products/$productId.tsx",

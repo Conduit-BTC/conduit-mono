@@ -1,12 +1,18 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import {
   __resetEventMarketTestOverrides,
   __resetFollowedEventMarketDiscoveryTestOverrides,
   __setEventMarketTestOverrides,
   __setFollowedEventMarketDiscoveryTestOverrides,
+  buildEventMarketCalendarDraft,
+  buildEventMarketCollectionDraft,
+  buildEventMarketPickupDraft,
   discoverFollowedOrganizerEventMarkets,
+  discoverPerspectiveEventMarkets,
+  EVENT_KINDS,
   EventMarketDiscoveryBoundError,
-  FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT,
   getOrganizerEventMarketsDetailed,
   type EventMarketRelayCoverage,
   type EventMarketResolution,
@@ -18,8 +24,10 @@ import {
 } from "@conduit/core"
 
 const MERCHANT = "a".repeat(64)
-const ORGANIZER = "b".repeat(64)
-const OTHER_ORGANIZER = "c".repeat(64)
+const ORGANIZER_SECRET = generateSecretKey()
+const ORGANIZER = getPublicKey(ORGANIZER_SECRET)
+const OTHER_ORGANIZER_SECRET = generateSecretKey()
+const OTHER_ORGANIZER = getPublicKey(OTHER_ORGANIZER_SECRET)
 const RELAY = "wss://event-discovery.test"
 const COMPLETE_COVERAGE: EventMarketRelayCoverage = {
   attemptedRelayCount: 1,
@@ -80,6 +88,74 @@ function followRead(input: {
     plannedRelayUrls: [RELAY],
     relays: [],
     eventsVerified: true,
+  }
+}
+
+function collectionCandidate(
+  secret = ORGANIZER_SECRET,
+  suffix = "catalog"
+): SignedPublicNostrEvent {
+  const organizerPubkey = getPublicKey(secret)
+  return finalizeEvent(
+    {
+      kind: 30405,
+      created_at: 1_800_000_000,
+      tags: [
+        ["d", suffix],
+        ["title", `Event ${suffix}`],
+        ["a", `31923:${organizerPubkey}:${suffix}`],
+      ],
+      content: "",
+    },
+    secret
+  )
+}
+
+function candidateRead(
+  events: SignedPublicNostrEvent[],
+  input: {
+    relayStatus?: "success" | "partial" | "failed"
+    eventsVerified?: boolean
+    capped?: boolean
+  } = {}
+) {
+  const relayStatus = input.relayStatus ?? "success"
+  const eventsVerified = input.eventsVerified ?? true
+  const capped = input.capped ?? false
+  const complete = relayStatus === "success" && eventsVerified && !capped
+  const failed = relayStatus === "failed"
+  return {
+    events,
+    eventSourceRelayUrls: Object.fromEntries(
+      events.map((event) => [event.id, [RELAY]])
+    ),
+    relays: [
+      {
+        relayUrl: RELAY,
+        status: relayStatus,
+        eventCount: events.length,
+      },
+    ],
+    eventsVerified,
+    plannedRelayCount: 1,
+    capped,
+    coverage: {
+      plannedRelayUrls: [RELAY],
+      authorChunkCount: 1,
+      plannedReadCount: 1,
+      requestCount: 1,
+      skippedReadCount: 0,
+      executionBoundedReadCount: 0,
+      reads: [],
+      completeReadCount: complete ? 1 : 0,
+      partialReadCount: !complete && !failed ? 1 : 0,
+      failedReadCount: failed ? 1 : 0,
+      mainPageCount: 1,
+      boundaryPageCount: 0,
+      saturatedPageCount: capped ? 1 : 0,
+      pageBudgetExhaustedReadCount: capped ? 1 : 0,
+      verificationTruncatedReadCount: eventsVerified ? 0 : 1,
+    },
   }
 }
 
@@ -161,12 +237,21 @@ afterEach(() => {
   __resetEventMarketTestOverrides()
 })
 
+beforeEach(() => {
+  __setEventMarketTestOverrides({
+    loadCachedEvidence: async () => [],
+    loadCachedCollectionEvidence: async () => [],
+  })
+})
+
 describe("followed organizer event-market discovery", () => {
   it("never synthesizes the viewed merchant as the authenticated account", async () => {
     const viewer = "d".repeat(64)
     const followAccounts: Array<string | null | undefined> = []
     const organizerAccounts: Array<string | null | undefined> = []
     __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
       readFollowLists: async (query) => {
         followAccounts.push(query.authenticatedPubkey)
         return followRead({ pubkeys: [ORGANIZER] })
@@ -194,6 +279,8 @@ describe("followed organizer event-market discovery", () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () =>
         followRead({ pubkeys: [ORGANIZER], eventObserved: true }),
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
       readOrganizerMarkets: async (input) => {
         organizerInputs.push(input.organizerPubkey)
         expect(input.projection).toBe("discovery")
@@ -211,6 +298,7 @@ describe("followed organizer event-market discovery", () => {
       `30405:${ORGANIZER}:catalog`,
     ])
     expect(organizerInputs).toEqual([ORGANIZER])
+    expect(result.incompleteOrganizerCount).toBe(0)
   })
 
   it("distinguishes a complete empty follow view from partial and unavailable reads", async () => {
@@ -256,6 +344,15 @@ describe("followed organizer event-market discovery", () => {
             coverage: scenario.coverage,
             eventObserved: scenario.eventObserved,
           }),
+        readCollectionCandidates: async () =>
+          candidateRead(scenario.eventObserved ? [collectionCandidate()] : [], {
+            relayStatus:
+              scenario.organizerState === "unavailable"
+                ? "failed"
+                : scenario.organizerState === "partial"
+                  ? "partial"
+                  : "success",
+          }),
         readOrganizerMarkets: async () =>
           organizerRead({ state: scenario.organizerState }),
       })
@@ -266,6 +363,9 @@ describe("followed organizer event-market discovery", () => {
       expect(result.state).toBe(scenario.expected)
       expect(result.markets).toEqual([])
       expect(result.followListEventObserved).toBe(scenario.eventObserved)
+      expect(result.incompleteOrganizerCount).toBe(
+        scenario.organizerState === "complete" ? 0 : 1
+      )
     }
   })
 
@@ -291,6 +391,11 @@ describe("followed organizer event-market discovery", () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () =>
         followRead({ pubkeys: [ORGANIZER, OTHER_ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(),
+          collectionCandidate(OTHER_ORGANIZER_SECRET),
+        ]),
       readOrganizerMarkets: async (input) =>
         input.organizerPubkey === ORGANIZER
           ? organizerRead({ markets: [market(ORGANIZER)] })
@@ -303,6 +408,7 @@ describe("followed organizer event-market discovery", () => {
 
     expect(result.state).toBe("partial")
     expect(result.failedOrganizerCount).toBe(1)
+    expect(result.incompleteOrganizerCount).toBe(1)
     expect(result.markets.map((item) => item.reference)).toEqual([
       `30405:${ORGANIZER}:catalog`,
     ])
@@ -311,6 +417,8 @@ describe("followed organizer event-market discovery", () => {
   it("marks an active market partial when its organizer read is incomplete", async () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
       readOrganizerMarkets: async () =>
         organizerRead({
           markets: [market(ORGANIZER)],
@@ -324,11 +432,18 @@ describe("followed organizer event-market discovery", () => {
 
     expect(result.state).toBe("partial")
     expect(result.markets).toHaveLength(1)
+    expect(result.incompleteOrganizerCount).toBe(1)
   })
 
   it("treats ended, deleted, and unfollowed candidates as absent", async () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(ORGANIZER_SECRET, "ended"),
+          collectionCandidate(ORGANIZER_SECRET, "deleted"),
+          collectionCandidate(OTHER_ORGANIZER_SECRET, "unfollowed"),
+        ]),
       readOrganizerMarkets: async () =>
         organizerRead({
           markets: [
@@ -350,6 +465,12 @@ describe("followed organizer event-market discovery", () => {
   it("reports unusable followed-organizer evidence as degraded", async () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(ORGANIZER_SECRET, "malformed"),
+          collectionCandidate(ORGANIZER_SECRET, "conflicting"),
+          collectionCandidate(ORGANIZER_SECRET, "unsupported"),
+        ]),
       readOrganizerMarkets: async () =>
         organizerRead({
           markets: [
@@ -373,6 +494,8 @@ describe("followed organizer event-market discovery", () => {
       __resetFollowedEventMarketDiscoveryTestOverrides()
       __setFollowedEventMarketDiscoveryTestOverrides({
         readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+        readCollectionCandidates: async () =>
+          candidateRead([collectionCandidate()]),
         readOrganizerMarkets: async () =>
           organizerRead({ markets: [market(ORGANIZER, state)] }),
       })
@@ -396,6 +519,11 @@ describe("followed organizer event-market discovery", () => {
     )
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(ORGANIZER_SECRET, "ended"),
+          collectionCandidate(ORGANIZER_SECRET, "future"),
+        ]),
       readOrganizerMarkets: async (input) => {
         expect(input.nowMs).toBe(nowMs)
         return {
@@ -427,16 +555,44 @@ describe("followed organizer event-market discovery", () => {
     ])
   })
 
-  it("sorts and bounds followed authors with bounded concurrency", async () => {
-    const pubkeys = Array.from({ length: 20 }, (_, index) =>
-      (index + 1).toString(16).padStart(64, "0")
-    )
+  it("can include valid ended markets for a timeline without changing discovery defaults", async () => {
+    const nowMs = 1_800_000_000_000
+    const ended = marketWithCalendarEnd(ORGANIZER, "ended", "ended", nowMs)
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate(ORGANIZER_SECRET, "ended")]),
+      readOrganizerMarkets: async () => organizerRead({ markets: [ended] }),
+    })
+
+    const result = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: {
+        source: "conduit",
+        coverage: "complete",
+        eventObserved: false,
+        snapshotState: "curated",
+        truncated: false,
+      },
+      includeEnded: true,
+      nowMs,
+    })
+
+    expect(result.markets.map((item) => item.reference)).toEqual([
+      ended.reference,
+    ])
+  })
+
+  it("bounds candidate validation concurrency without truncating the follow list", async () => {
+    const secrets = Array.from({ length: 8 }, () => generateSecretKey())
+    const pubkeys = secrets.map(getPublicKey)
     const observed: string[] = []
     let active = 0
     let maxActive = 0
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () =>
         followRead({ pubkeys: [...pubkeys].reverse() }),
+      readCollectionCandidates: async () =>
+        candidateRead(secrets.map((secret) => collectionCandidate(secret))),
       readOrganizerMarkets: async (input) => {
         observed.push(input.organizerPubkey)
         active += 1
@@ -451,20 +607,18 @@ describe("followed organizer event-market discovery", () => {
       merchantPubkey: MERCHANT,
     })
 
-    expect(observed).toEqual(
-      [...pubkeys].sort().slice(0, FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT)
-    )
+    expect(observed).toEqual([...pubkeys].sort())
     expect(maxActive).toBeLessThanOrEqual(4)
-    expect(result.searchedOrganizerCount).toBe(
-      FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT
-    )
-    expect(result.truncated).toBe(true)
-    expect(result.state).toBe("partial")
+    expect(result.searchedOrganizerCount).toBe(pubkeys.length)
+    expect(result.truncated).toBe(false)
+    expect(result.state).toBe("complete_empty")
   })
 
   it("reports a bounded organizer frontier as partial and truncated", async () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
       readOrganizerMarkets: async () => {
         throw new EventMarketDiscoveryBoundError("bounded")
       },
@@ -478,6 +632,7 @@ describe("followed organizer event-market discovery", () => {
       state: "partial",
       truncated: true,
       boundedOrganizerCount: 1,
+      incompleteOrganizerCount: 1,
       failedOrganizerCount: 0,
     })
   })
@@ -487,6 +642,11 @@ describe("followed organizer event-market discovery", () => {
       organizerReadDeadlineMs: 5,
       readFollowLists: async () =>
         followRead({ pubkeys: [ORGANIZER, OTHER_ORGANIZER] }),
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(),
+          collectionCandidate(OTHER_ORGANIZER_SECRET),
+        ]),
       readOrganizerMarkets: async (input) => {
         if (input.organizerPubkey === ORGANIZER) {
           return organizerRead({ markets: [market(ORGANIZER)] })
@@ -515,6 +675,7 @@ describe("followed organizer event-market discovery", () => {
       state: "partial",
       searchedOrganizerCount: 2,
       boundedOrganizerCount: 1,
+      incompleteOrganizerCount: 1,
       failedOrganizerCount: 0,
       truncated: true,
     })
@@ -629,4 +790,388 @@ describe("organizer event-market read coverage", () => {
     expect(result.relayHintTruncated).toBe(true)
     expect(result.state).toBe("partial")
   })
+
+  it("keeps organizer write relays ahead of candidate source hints", async () => {
+    const organizerRelayUrls = Array.from(
+      { length: 3 },
+      (_, index) => `wss://relay.damus.io/organizer-${index}`
+    )
+    const candidateRelayUrls = Array.from(
+      { length: 6 },
+      (_, index) => `wss://relay.damus.io/candidate-${index}`
+    )
+    const calendarCoordinate = `${EVENT_KINDS.CALENDAR_TIME}:${ORGANIZER}:relay-calendar`
+    const pickupCoordinate = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER}:relay-pickup`
+    const calendar = finalizeEvent(
+      {
+        ...buildEventMarketCalendarDraft({
+          kind: EVENT_KINDS.CALENDAR_TIME,
+          dTag: "relay-calendar",
+          title: "Relay-priority event",
+          start: 1_800_000_000,
+          end: 1_800_003_600,
+        }),
+        created_at: 100,
+      },
+      ORGANIZER_SECRET
+    )
+    const pickup = finalizeEvent(
+      {
+        ...buildEventMarketPickupDraft({
+          dTag: "relay-pickup",
+          title: "Relay-priority pickup",
+          price: 0,
+          currency: "SATS",
+          countries: ["US"],
+          location: "Organizer booth",
+        }),
+        created_at: 101,
+      },
+      ORGANIZER_SECRET
+    )
+    const collection = finalizeEvent(
+      {
+        ...buildEventMarketCollectionDraft({
+          dTag: "relay-catalog",
+          title: "Relay-priority catalog",
+          eventCoordinate: calendarCoordinate,
+          pickupCoordinate,
+        }),
+        created_at: 102,
+      },
+      ORGANIZER_SECRET
+    )
+    const observedRelaySets: string[][] = []
+    configureRead({ relayListState: "network", relayUrls: organizerRelayUrls })
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        const relayUrls = [...(options.relayUrls ?? [])]
+        observedRelaySets.push(relayUrls)
+        const events = relayUrls.includes(organizerRelayUrls[2]!)
+          ? [collection, pickup, calendar]
+          : [collection, pickup]
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+
+    const result = await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      projection: "discovery",
+      relayHints: candidateRelayUrls,
+      candidateCollectionEvents: [collection],
+      candidateCollectionSourceRelayUrlsById: new Map([
+        [collection.id, candidateRelayUrls],
+      ]),
+      nowMs: 1_799_000_000_000,
+    })
+
+    expect(observedRelaySets.length).toBeGreaterThan(0)
+    const organizerReadRelays = observedRelaySets[0]!
+    expect(organizerReadRelays.slice(0, organizerRelayUrls.length)).toEqual(
+      organizerRelayUrls
+    )
+    expect(organizerReadRelays).toHaveLength(8)
+    expect(result.relayHintTruncated).toBe(false)
+    expect(result.state).toBe("complete")
+    expect(result.markets).toHaveLength(1)
+    expect(result.markets[0]).toMatchObject({
+      reference: `${EVENT_KINDS.PRODUCT_COLLECTION}:${ORGANIZER}:relay-catalog`,
+      state: "active",
+    })
+  })
+})
+
+function held<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+const progressPerspective = {
+  source: "conduit" as const,
+  coverage: "complete" as const,
+  eventObserved: true,
+  snapshotState: "network" as const,
+  truncated: false,
+}
+
+describe("progressive perspective event discovery", () => {
+  it("shows retained cards while candidate network discovery is held", async () => {
+    const network = held<ReturnType<typeof candidateRead>>()
+    const first = held<unknown>()
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: () => network.promise,
+      readRetainedCollectionCandidates: async () => ({
+        events: [collectionCandidate()],
+        eventSourceRelayUrls: {},
+      }),
+      readCachedOrganizerMarkets: async () => [market(ORGANIZER, "stale")],
+      readOrganizerMarkets: async () =>
+        organizerRead({ markets: [market(ORGANIZER)] }),
+    })
+    const pending = discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+      onProgress: (snapshot) => {
+        if (snapshot.markets.length) first.resolve(snapshot)
+      },
+    })
+    const progress = await Promise.race([
+      first.promise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 100)),
+    ])
+    network.resolve(candidateRead([collectionCandidate()]))
+    await pending
+    expect(progress).not.toBeNull()
+  })
+
+  it("publishes a completed organizer without waiting for its held sibling", async () => {
+    const sibling = held<OrganizerEventMarketsReadResult>()
+    const first = held<unknown>()
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(),
+          collectionCandidate(OTHER_ORGANIZER_SECRET),
+        ]),
+      readCachedOrganizerMarkets: async () => [],
+      readOrganizerMarkets: async ({ organizerPubkey }) =>
+        organizerPubkey === ORGANIZER
+          ? organizerRead({ markets: [market(ORGANIZER)] })
+          : sibling.promise,
+    })
+    const pending = discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER, OTHER_ORGANIZER],
+      perspective: progressPerspective,
+      onProgress: (snapshot) => {
+        if (
+          snapshot.markets.some((value) => value.organizerPubkey === ORGANIZER)
+        )
+          first.resolve(snapshot)
+      },
+    })
+    const progress = await Promise.race([
+      first.promise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 100)),
+    ])
+    sibling.resolve(organizerRead({ markets: [market(OTHER_ORGANIZER)] }))
+    const final = await pending
+    expect(progress).not.toBeNull()
+    expect(final.markets).toHaveLength(2)
+  })
+
+  it("retracts a terminal organizer snapshot and ignores late cache completion", async () => {
+    const cache = held<EventMarketResolution[]>()
+    const live = held<OrganizerEventMarketsReadResult>()
+    const terminal = held<unknown>()
+    const progress: Array<{ markets: EventMarketResolution[] }> = []
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
+      readCachedOrganizerMarkets: () => cache.promise,
+      readOrganizerMarkets: async (input) => {
+        input.onProgress?.(
+          organizerRead({
+            markets: [market(ORGANIZER, "stale")],
+            state: "partial",
+          })
+        )
+        input.onProgress?.(
+          organizerRead({
+            markets: [market(ORGANIZER, "deleted")],
+            state: "partial",
+          })
+        )
+        terminal.resolve(null)
+        return live.promise
+      },
+    })
+    const pending = discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+      onProgress: (snapshot) => progress.push(snapshot),
+    })
+    await terminal.promise
+    cache.resolve([market(ORGANIZER, "stale")])
+    live.resolve(organizerRead({ markets: [market(ORGANIZER, "deleted")] }))
+    const final = await pending
+    expect(progress.some((value) => value.markets.length === 1)).toBe(true)
+    expect(progress.at(-1)?.markets).toEqual([])
+    expect(final.markets).toEqual([])
+  })
+
+  it("retains the latest safe organizer progress when its final read reaches the deadline", async () => {
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
+      readCachedOrganizerMarkets: async () => [],
+      organizerReadDeadlineMs: 40,
+      readOrganizerMarkets: async (input) => {
+        input.onProgress?.(
+          organizerRead({
+            markets: [market(ORGANIZER, "stale")],
+            state: "partial",
+          })
+        )
+        return new Promise(() => {})
+      },
+    })
+    const final = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+    })
+    expect(final.markets).toHaveLength(1)
+    expect(final.markets[0]?.state).toBe("stale")
+    expect(final.state).toBe("partial")
+    expect(final.boundedOrganizerCount).toBe(1)
+  })
+  it("supersedes a retained candidate with a newer signed unlink before late cache completes", async () => {
+    const original = collectionCandidate()
+    const unlink = finalizeEvent(
+      {
+        kind: original.kind,
+        created_at: original.created_at + 1,
+        tags: original.tags.filter((tag) => tag[0] !== "a"),
+        content: "",
+      },
+      ORGANIZER_SECRET
+    )
+    const network = held<ReturnType<typeof candidateRead>>()
+    const earlyCache = held<EventMarketResolution[]>()
+    const cacheStarted = held<unknown>()
+    const live = held<OrganizerEventMarketsReadResult>()
+    const newFrontier = held<unknown>()
+    const progress: Array<{ markets: EventMarketResolution[] }> = []
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: () => network.promise,
+      readRetainedCollectionCandidates: async () => ({
+        events: [original],
+        eventSourceRelayUrls: {},
+      }),
+      readCachedOrganizerMarkets: async (input) => {
+        if (
+          input.candidateCollectionEvents?.some(
+            (event) => event.id === unlink.id
+          )
+        ) {
+          newFrontier.resolve(null)
+          return [market(ORGANIZER, "unsupported")]
+        }
+        cacheStarted.resolve(null)
+        return earlyCache.promise
+      },
+      readOrganizerMarkets: () => live.promise,
+    })
+    const pending = discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+      onProgress: (snapshot) => progress.push(snapshot),
+    })
+    await cacheStarted.promise
+    network.resolve(candidateRead([unlink]))
+    await newFrontier.promise
+    earlyCache.resolve([market(ORGANIZER, "stale")])
+    live.resolve(organizerRead({ markets: [market(ORGANIZER, "unsupported")] }))
+    const final = await pending
+    expect(final.markets).toEqual([])
+    expect(progress.every((snapshot) => snapshot.markets.length === 0)).toBe(
+      true
+    )
+  })
+
+  it("suppresses organizer and cache completions after caller cancellation", async () => {
+    const controller = new AbortController()
+    const live = held<OrganizerEventMarketsReadResult>()
+    const cached = held<EventMarketResolution[]>()
+    const first = held<unknown>()
+    const progress: Array<{ markets: EventMarketResolution[] }> = []
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
+      readCachedOrganizerMarkets: () => cached.promise,
+      readOrganizerMarkets: async (input) => {
+        input.onProgress?.(
+          organizerRead({
+            markets: [market(ORGANIZER, "stale")],
+            state: "partial",
+          })
+        )
+        first.resolve(null)
+        return live.promise
+      },
+    })
+    const pending = discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+      signal: controller.signal,
+      onProgress: (snapshot) => progress.push(snapshot),
+    })
+    await first.promise
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" })
+    const count = progress.length
+    live.resolve(organizerRead({ markets: [market(ORGANIZER)] }))
+    cached.resolve([market(ORGANIZER, "stale")])
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(progress).toHaveLength(count)
+  })
+
+  it("retains a cache-only organizer card when its live read is unavailable", async () => {
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
+      readCachedOrganizerMarkets: async () => [market(ORGANIZER, "stale")],
+      readOrganizerMarkets: async () => organizerRead({ state: "unavailable" }),
+    })
+    const final = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+    })
+    expect(final.markets.map((value) => value.state)).toEqual(["stale"])
+    expect(final.state).toBe("partial")
+    expect(final.failedOrganizerCount).toBe(1)
+  })
+})
+
+it("waits for delayed retained cards after an immediate unavailable organizer result", async () => {
+  const cache = held<EventMarketResolution[]>()
+  const cacheStarted = held<unknown>()
+  __setFollowedEventMarketDiscoveryTestOverrides({
+    readCollectionCandidates: async () =>
+      candidateRead([collectionCandidate()]),
+    readCachedOrganizerMarkets: async () => {
+      cacheStarted.resolve(null)
+      return cache.promise
+    },
+    readOrganizerMarkets: async () => organizerRead({ state: "unavailable" }),
+  })
+  let finished = false
+  const pending = discoverPerspectiveEventMarkets({
+    organizerPubkeys: [ORGANIZER],
+    perspective: progressPerspective,
+  }).then((value) => {
+    finished = true
+    return value
+  })
+  await cacheStarted.promise
+  // Drain the immediate live result without releasing the local storage read.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  const finishedBeforeCache = finished
+  cache.resolve([market(ORGANIZER, "stale")])
+  const final = await pending
+  expect(finishedBeforeCache).toBe(false)
+  expect(final.markets.map((value) => value.state)).toEqual(["stale"])
+  expect(final.state).toBe("partial")
+  expect(final.failedOrganizerCount).toBe(1)
 })

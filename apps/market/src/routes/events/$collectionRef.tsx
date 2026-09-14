@@ -4,24 +4,41 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
-  Clock3,
   MapPin,
-  Radio,
   RefreshCw,
-  ShieldCheck,
 } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   formatNpub,
-  prepareProductCatalog,
+  buildMarketEventCatalogUrl,
   useAuth,
   useConduitSession,
   useProfile,
   type Product,
 } from "@conduit/core"
-import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+  Badge,
+  Button,
+  ShareLinkButton,
+  eventMarketRequiredRecordsResolved,
+  formatEventRelayReadCoverage,
+  getEventActionabilityPresentation,
+} from "@conduit/ui"
+import { EventCatalogBrowser } from "../../components/EventCatalogBrowser"
 import { CopyButton } from "../../components/CopyButton"
+import {
+  EventActorName,
+  EventActorProvenance,
+} from "../../components/EventActorIdentity"
+import {
+  getEventActorIdentityView,
+  selectEventHandoffIdentity,
+  type EventActorIdentityView,
+} from "../../lib/event-actor-identity"
 import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
@@ -44,7 +61,10 @@ import {
   getProductSelection,
 } from "../../lib/productVariations"
 import { getEventCatalogCartAction } from "../../lib/event-market-cart-action"
-import type { EventCatalog } from "../../lib/event-market-adapter"
+import {
+  getEventCatalogProductAvailability,
+  type EventCatalog,
+} from "../../lib/event-market-adapter"
 import {
   getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
@@ -57,42 +77,39 @@ export const Route = createFileRoute("/events/$collectionRef")({
 type CatalogStateCopy = {
   title: string
   message: string
-  variant: "secondary" | "warning" | "destructive"
+  variant: "success" | "secondary" | "warning" | "destructive"
 }
 
 function EventCatalogProductCard({
   entry,
   catalog,
   purchaseReady,
+  isChecking,
   identity,
+  organizerIdentity,
   imageLoading,
   btcUsdRate,
   pricePreference,
   onCartNotice,
+  onMerchantActivate,
 }: {
   entry: EventCatalog["products"][number]
   catalog: EventCatalog
   purchaseReady: boolean
+  isChecking: boolean
   identity: ReturnType<ReturnType<typeof useMerchantIdentities>["getIdentity"]>
+  organizerIdentity: EventActorIdentityView
   imageLoading: "eager" | "lazy"
   btcUsdRate: ReturnType<typeof useShopperPricing>["quote"]
   pricePreference: ReturnType<typeof useShopperPricing>["preference"]
+  onMerchantActivate: () => void
   onCartNotice: (message: string) => void
 }) {
   const cart = useCart()
   const { product } = entry
-  const authorizedFamily = useMemo(() => {
-    if (!entry.family) return undefined
-    const authorizedChildren = entry.family.children.filter(
-      (child) => entry.familyPickupFulfillments?.[child.product.id]
-    )
-    const prepared = prepareProductCatalog(
-      [entry.family.parent, ...authorizedChildren],
-      entry.family.readEvidence
-    ).items[0]
-    return prepared?.kind === "family" ? prepared.family : undefined
-  }, [entry.family, entry.familyPickupFulfillments])
-  const family = authorizedFamily
+  // The adapter has already applied listing and membership safety. Keep the
+  // display family intact while exact child pickup authorization is checked.
+  const family = entry.family
   const defaultSelection = useMemo(
     () => getDefaultProductSelection(product, family),
     [family, product]
@@ -109,8 +126,21 @@ function EventCatalogProductCard({
     selectedProduct.id === product.id && product.type !== "variable"
       ? entry.pickupFulfillment
       : (entry.familyPickupFulfillments?.[selectedProduct.id] ?? null)
+  const pickupLocation =
+    pickupFulfillment?.option.location ?? pickupFulfillment?.option.geohash
   const handoff = pickupFulfillment
     ? getPickupHandoffSummary(pickupFulfillment)
+    : null
+  const handlerIdentity = handoff
+    ? selectEventHandoffIdentity({
+        mode: handoff.mode,
+        handlerPubkey: handoff.handlerPubkey,
+        merchant: { pubkey: identity.pubkey, identity },
+        organizer: {
+          pubkey: catalog.organizerPubkey ?? "",
+          identity: organizerIdentity,
+        },
+      })
     : null
   const candidate = pickupFulfillment
     ? cartItemInputFromProductSelection(
@@ -131,12 +161,18 @@ function EventCatalogProductCard({
     state: catalog.state,
     purchaseReady,
     hasPickupFulfillment: pickupFulfillment !== null,
+    isChecking,
   })
   const canAdd = cartAction.enabled
 
   useEffect(() => {
-    setSelectedProductId(defaultSelection.id)
-  }, [defaultSelection.id])
+    setSelectedProductId((previous) =>
+      previous === product.id ||
+      family?.children.some((child) => child.product.id === previous)
+        ? previous
+        : defaultSelection.id
+    )
+  }, [defaultSelection.id, family, product.id])
 
   const add = (selection: Product) => {
     if (selection.id !== selectedProduct.id || !canAdd || !candidate) return
@@ -185,6 +221,7 @@ function EventCatalogProductCard({
         allowZeroPrice={pickupFulfillment !== null}
         cartQuantity={cartQuantity}
         onProductActivate={null}
+        onMerchantActivate={onMerchantActivate}
         onAddToCart={add}
         onIncrement={canAdd ? add : undefined}
         onDecrement={canAdd ? decrement : undefined}
@@ -193,7 +230,12 @@ function EventCatalogProductCard({
       />
       {!pickupFulfillment ? (
         <div className="rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-          {entry.evidenceState === "retained" ? (
+          {isChecking ? (
+            <>
+              Checking the current product and pickup terms. You can browse
+              while this finishes.
+            </>
+          ) : entry.evidenceState === "retained" ? (
             <>
               Previously verified product details are shown while current relay
               evidence is unavailable. Checkout is disabled until the exact
@@ -206,19 +248,19 @@ function EventCatalogProductCard({
             </>
           )}
         </div>
-      ) : handoff ? (
+      ) : handoff && handlerIdentity ? (
         <details className="group/pickup rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-xs leading-5 text-[var(--text-secondary)]">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] [&::-webkit-details-marker]:hidden">
             <span className="min-w-0">
               <span className="block font-medium text-[var(--text-primary)]">
                 {handoff.label}
               </span>
-              <span className="block truncate font-mono">
-                Handled by {formatNpub(handoff.handlerPubkey, 10)}
+              <span className="block break-words">
+                Handled by <EventActorName identity={handlerIdentity} />
               </span>
             </span>
             <span className="flex shrink-0 items-center gap-1 font-medium text-[var(--text-primary)]">
-              Details
+              <span className="sr-only sm:not-sr-only">Details</span>
               <ChevronDown
                 className="h-3.5 w-3.5 transition-transform duration-200 group-open/pickup:rotate-180"
                 aria-hidden="true"
@@ -226,11 +268,15 @@ function EventCatalogProductCard({
             </span>
           </summary>
           <div className="border-t border-[var(--border)] px-3 py-2">
-            <p>{getPickupHandoffPrivacyCopy(handoff)}</p>
+            <p className="font-medium text-[var(--text-primary)]">
+              {pickupFulfillment.option.title}
+            </p>
+            {pickupLocation ? <p className="mt-1">{pickupLocation}</p> : null}
+            <p className="mt-2">{getPickupHandoffPrivacyCopy(handoff)}</p>
             <div className="mt-2 flex justify-end">
-              <CopyButton
-                value={handoff.handlerPubkey}
-                label="Copy pickup handler npub"
+              <EventActorProvenance
+                pubkey={handoff.handlerPubkey}
+                copyLabel="Copy pickup handler npub"
               />
             </div>
           </div>
@@ -241,81 +287,22 @@ function EventCatalogProductCard({
 }
 
 export function getEventCatalogStateCopy(
-  state: EventCatalog["state"]
+  state: EventCatalog["state"],
+  requiredEventRecordsResolved = true,
+  availableProductCount = 0,
+  unresolvedProductCount = 0
 ): CatalogStateCopy | null {
-  switch (state) {
-    case "active":
-      return null
-    case "ended":
-      return {
-        title: "Archived event catalog",
-        message:
-          "This signed event has ended. Its accepted products remain visible as a read-only archive, but checkout is closed.",
-        variant: "secondary",
-      }
-    case "missing":
-      return {
-        title: "Event catalog not found",
-        message:
-          "No signed collection was found for this reference. A relay may not have the event yet.",
-        variant: "warning",
-      }
-    case "partial":
-      return {
-        title: "Event evidence is incomplete",
-        message:
-          "Some relays could not be confirmed. Products backed by exact live signed evidence may remain available; unresolved products stay closed.",
-        variant: "warning",
-      }
-    case "unavailable":
-      return {
-        title: "Event relays are unavailable",
-        message:
-          "Conduit could not confirm the organizer's signed event records. Try again when relay access recovers.",
-        variant: "warning",
-      }
-    case "stale":
-      return {
-        title: "Event evidence is out of date",
-        message:
-          "Only stale signed evidence is available. Refresh before relying on the schedule, pickup, or catalog.",
-        variant: "warning",
-      }
-    case "deleted":
-      return {
-        title: "Event catalog removed",
-        message:
-          "The organizer's signed deletion is authoritative. Products and checkout are no longer shown here.",
-        variant: "destructive",
-      }
-    case "conflicting":
-      return {
-        title: "Conflicting event evidence",
-        message:
-          "The signed records do not agree on this event catalog. Conduit will not choose between them or offer checkout.",
-        variant: "destructive",
-      }
-    case "malformed":
-      return {
-        title: "Invalid event link",
-        message:
-          "This link is not a supported event-collection reference. Ask the organizer for the canonical event link.",
-        variant: "destructive",
-      }
-    case "unsupported":
-      return {
-        title: "Unsupported event catalog",
-        message:
-          "This catalog uses signed references that this version of Conduit cannot safely interpret.",
-        variant: "warning",
-      }
-    default:
-      return {
-        title: "Unsupported event catalog",
-        message:
-          "This catalog state cannot be interpreted safely by this version of Conduit.",
-        variant: "warning",
-      }
+  const presentation = getEventActionabilityPresentation({
+    state,
+    availableProductCount,
+    unresolvedProductCount,
+    requiredEventRecordsResolved,
+  })
+  if (!presentation.prominent) return null
+  return {
+    title: presentation.label,
+    message: presentation.message,
+    variant: presentation.tone,
   }
 }
 
@@ -387,7 +374,10 @@ function StatePanel({
 }) {
   const Icon = copy.variant === "secondary" ? Archive : AlertCircle
   return (
-    <section className="mx-auto max-w-2xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 sm:p-8">
+    <section
+      className="mx-auto max-w-2xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 sm:p-8"
+      role="alert"
+    >
       <Badge variant={copy.variant}>{copy.title}</Badge>
       <div className="mt-5 flex items-start gap-4">
         <Icon className="mt-0.5 h-6 w-6 shrink-0 text-[var(--text-secondary)]" />
@@ -431,6 +421,7 @@ function EventCatalogPage() {
   const [cartNotice, setCartNotice] = useState<string | null>(null)
   const query = useEventMarket(collectionRef, shopperPricing.quote)
   const catalog = query.data
+  const isChecking = query.isHydrating
   const organizerPubkey = catalog?.organizerPubkey ?? ""
   const authenticatedPubkey =
     session.mode === "signed_in" ? session.pubkey : null
@@ -439,6 +430,7 @@ function EventCatalogPage() {
     accountPubkey,
     authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,
+    maxUnresolvedRefetches: 2,
   })
   const organizerName = organizerPubkey
     ? getMerchantDisplayName(organizerProfile, organizerPubkey, {
@@ -446,6 +438,12 @@ function EventCatalogPage() {
       })
     : "Event organizer"
   const organizerNip05 = getProfileNip05(organizerProfile)
+  const organizerIdentity: EventActorIdentityView = organizerPubkey
+    ? getEventActorIdentityView({
+        pubkey: organizerPubkey,
+        profile: organizerProfile,
+      })
+    : { displayName: "Event organizer" }
   const merchantPubkeys = useMemo(
     () =>
       Array.from(
@@ -462,7 +460,16 @@ function EventCatalogPage() {
     relayHintsByPubkey: {},
   })
 
-  if (!session.relaySettingsReady || query.isLoading) {
+  const awaitingHeader =
+    isChecking &&
+    catalog &&
+    ["partial", "stale", "unavailable"].includes(catalog.state) &&
+    (!catalog.calendar || !catalog.collection)
+  if (
+    !session.relaySettingsReady ||
+    (!catalog && query.isInitialLoading) ||
+    awaitingHeader
+  ) {
     return (
       <div className="mx-auto max-w-6xl animate-pulse space-y-5">
         <div className="h-8 w-48 rounded bg-[var(--surface-elevated)]" />
@@ -478,7 +485,7 @@ function EventCatalogPage() {
     )
   }
 
-  if (query.isError || !catalog) {
+  if (!catalog) {
     return (
       <StatePanel
         copy={getEventCatalogStateCopy("unavailable")!}
@@ -488,7 +495,15 @@ function EventCatalogPage() {
     )
   }
 
-  const stateCopy = getEventCatalogStateCopy(catalog.state)
+  const requiredEventRecordsResolved =
+    eventMarketRequiredRecordsResolved(catalog)
+  const productAvailability = getEventCatalogProductAvailability(catalog)
+  const stateCopy = getEventCatalogStateCopy(
+    catalog.state,
+    requiredEventRecordsResolved,
+    productAvailability.availableProductCount,
+    productAvailability.unresolvedProductCount
+  )
   const canRenderRetainedEvidence =
     catalog.state === "ended" ||
     catalog.state === "partial" ||
@@ -507,36 +522,42 @@ function EventCatalogPage() {
   if (!calendar || !collection || !organizerPubkey) {
     return (
       <StatePanel
-        copy={getEventCatalogStateCopy("partial")!}
+        copy={getEventCatalogStateCopy("unavailable")!}
         retrying={query.isFetching}
         onRetry={() => void query.refetch()}
       />
     )
   }
 
-  const eventPickupSummary =
-    pickups.length === 0
-      ? "Organizer handoff is not offered. Accepted merchants may provide their own pickup point."
-      : pickups.length === 1
-        ? [pickups[0]!.title, pickups[0]!.location ?? pickups[0]!.geohash]
-            .filter(Boolean)
-            .join(" / ")
-        : `${pickups.length} pickup options; each product shows who handles it.`
   const eventLocations = calendar.locations.filter(Boolean)
   const calendarLocation = eventLocations.join(" · ")
   const archived = catalog.state === "ended"
-  const stateBadge =
-    catalog.state === "active"
-      ? ({ label: "Active event", variant: "success" } as const)
-      : catalog.state === "ended"
-        ? ({ label: "Ended", variant: "secondary" } as const)
-        : ({ label: "Evidence degraded", variant: "warning" } as const)
+  const actionability = getEventActionabilityPresentation({
+    state: catalog.state,
+    ...productAvailability,
+    requiredEventRecordsResolved,
+  })
+  const relayCoverage = formatEventRelayReadCoverage(catalog.coverage)
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
-      {stateCopy ? (
+      {isChecking ? (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="event-refresh-status"
+          className="flex items-center gap-2 text-sm text-[var(--text-secondary)]"
+        >
+          <RefreshCw
+            className="h-4 w-4 animate-spin motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+          Refreshing event details and checking pickup…
+        </div>
+      ) : null}
+      {stateCopy && !isChecking ? (
         <div className="flex flex-col gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
+          <div role={actionability.role}>
             <Badge variant={stateCopy.variant}>{stateCopy.title}</Badge>
             <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
               {stateCopy.message}
@@ -558,230 +579,261 @@ function EventCatalogPage() {
         </div>
       ) : null}
 
-      <section className="overflow-hidden rounded-3xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)]">
+      <header className="space-y-3">
         {calendar.image || collection.image ? (
           <img
             src={calendar.image ?? collection.image}
-            alt=""
-            className="h-48 w-full border-b border-[var(--border)] bg-[var(--surface-elevated)] object-contain sm:h-64"
+            alt={`${calendar.title} banner`}
+            className="aspect-[3/1] w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] object-contain"
           />
         ) : null}
-        <div className="grid gap-8 p-6 sm:p-8 lg:grid-cols-[minmax(0,1fr)_20rem]">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={stateBadge.variant}>{stateBadge.label}</Badge>
-              <Badge variant="outline" className="gap-1.5">
-                <Radio className="h-3.5 w-3.5" /> Published by organizer
-              </Badge>
-            </div>
-            <h1 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
-              {calendar.title}
-            </h1>
-            {(calendar.summary || collection.summary) && (
-              <p className="mt-4 max-w-3xl text-base leading-7 text-[var(--text-secondary)]">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="min-w-0 break-words text-balance text-3xl font-semibold text-[var(--text-primary)] sm:text-4xl">
+            {calendar.title}
+          </h1>
+          {catalog.canonicalNaddr ? (
+            <ShareLinkButton
+              url={buildMarketEventCatalogUrl(
+                window.location.origin,
+                catalog.canonicalNaddr
+              )}
+              shareTitle={calendar.title}
+              idleLabel="Share event"
+              className="shrink-0"
+            />
+          ) : null}
+        </div>
+        <dl className="flex flex-col gap-x-6 gap-y-2 text-sm text-[var(--text-secondary)] sm:flex-row sm:flex-wrap">
+          <div className="flex min-w-0 items-start gap-2">
+            <CalendarDays
+              aria-hidden="true"
+              className="mt-0.5 size-4 shrink-0 text-secondary-400"
+            />
+            <dt className="sr-only">Date and time</dt>
+            <dd className="text-pretty">{formatCalendarSchedule(calendar)}</dd>
+          </div>
+          <div className="flex min-w-0 items-start gap-2">
+            <MapPin
+              aria-hidden="true"
+              className="mt-0.5 size-4 shrink-0 text-secondary-400"
+            />
+            <dt className="sr-only">Location</dt>
+            <dd className="break-words text-pretty">
+              {calendarLocation || calendar.geohash || "Location not published"}
+            </dd>
+          </div>
+        </dl>
+        <div className="flex min-w-0 items-center gap-2 text-sm text-[var(--text-secondary)]">
+          <Avatar className="size-7 shrink-0 border border-[var(--border)]">
+            <AvatarImage
+              src={organizerProfile?.picture}
+              alt=""
+              referrerPolicy="no-referrer"
+            />
+            <AvatarFallback>
+              <MerchantAvatarFallback iconClassName="size-4" />
+            </AvatarFallback>
+          </Avatar>
+          <span className="min-w-0 break-words">
+            Organized by{" "}
+            <span className="font-medium text-[var(--text-primary)]">
+              {organizerName}
+            </span>
+          </span>
+          {organizerNip05 ? (
+            <Nip05TrustIndicator
+              pubkey={organizerPubkey}
+              nip05={organizerNip05}
+            />
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--text-secondary)]">
+          <p>Pickup details are shown on each product.</p>
+          {calendar.summary || collection.summary ? (
+            <details className="group/about basis-full">
+              <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] [&::-webkit-details-marker]:hidden">
+                About this event{" "}
+                <ChevronDown
+                  aria-hidden="true"
+                  className="size-4 group-open/about:rotate-180"
+                />
+              </summary>
+              <p className="mt-2 whitespace-pre-wrap break-words text-pretty leading-6">
                 {calendar.summary ?? collection.summary}
               </p>
-            )}
-
-            <dl className="mt-7 grid gap-4 text-sm text-[var(--text-secondary)] sm:grid-cols-2">
-              <div className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-                <CalendarDays className="mt-0.5 h-5 w-5 shrink-0 text-secondary-400" />
-                <div>
-                  <dt className="font-medium text-[var(--text-primary)]">
-                    Date and time
-                  </dt>
-                  <dd className="mt-1 leading-6">
-                    {formatCalendarSchedule(calendar)}
-                  </dd>
-                </div>
-              </div>
-              <div className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-                <MapPin className="mt-0.5 h-5 w-5 shrink-0 text-secondary-400" />
-                <div>
-                  <dt className="font-medium text-[var(--text-primary)]">
-                    Location
-                  </dt>
-                  <dd className="mt-1 leading-6">
-                    {calendarLocation || calendar.geohash || "Not published"}
-                  </dd>
-                </div>
-              </div>
-              <div className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 sm:col-span-2">
-                <Clock3 className="mt-0.5 h-5 w-5 shrink-0 text-secondary-400" />
-                <div>
-                  <dt className="font-medium text-[var(--text-primary)]">
-                    Pickup
-                  </dt>
-                  <dd className="mt-1 leading-6">{eventPickupSummary}</dd>
-                </div>
-              </div>
-            </dl>
-          </div>
-
-          <aside className="space-y-5">
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                Organizer identity
-              </div>
-              <div className="mt-4 flex items-center gap-3">
-                <Avatar className="h-11 w-11 border border-[var(--border)]">
-                  <AvatarImage
-                    src={organizerProfile?.picture}
-                    alt=""
-                    referrerPolicy="no-referrer"
-                  />
-                  <AvatarFallback>
-                    <MerchantAvatarFallback iconClassName="h-5 w-5" />
-                  </AvatarFallback>
-                </Avatar>
-                <div className="min-w-0">
-                  <div className="truncate font-medium text-[var(--text-primary)]">
-                    {organizerName}
-                  </div>
-                  {organizerNip05 ? (
-                    <Nip05TrustIndicator
-                      pubkey={organizerPubkey}
-                      nip05={organizerNip05}
-                      className="mt-1 max-w-full text-xs text-[var(--text-muted)]"
-                    />
-                  ) : null}
-                </div>
-              </div>
-              <div className="mt-4 flex items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2">
-                <span className="truncate font-mono text-xs text-[var(--text-secondary)]">
-                  {formatNpub(organizerPubkey, 10)}
-                </span>
-                <CopyButton
-                  value={organizerPubkey}
-                  label="Copy organizer npub"
-                />
-              </div>
-              <p className="mt-3 text-xs leading-5 text-[var(--text-muted)]">
-                This is the account that published the event. Each pickup option
-                names the account responsible for handoff. Conduit does not
-                operate an organizer registry or endorse the organizer.
-              </p>
-            </div>
-
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-2">
-              <EvidenceRow label="Event details" eventId={calendar.eventId} />
-              <EvidenceRow label="Product list" eventId={collection.eventId} />
-              {pickups.map((pickup, index) => (
-                <EvidenceRow
-                  key={pickup.coordinate}
-                  label={
-                    pickups.length === 1 ? "Pickup" : `Pickup ${index + 1}`
-                  }
-                  eventId={pickup.eventId}
-                />
-              ))}
-              {catalog.canonicalNaddr ? (
-                <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] py-3">
-                  <div>
-                    <div className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                      Share link
-                    </div>
-                    <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      Portable event address
-                    </div>
-                  </div>
-                  <CopyButton
-                    value={catalog.canonicalNaddr}
-                    npub={false}
-                    label="Copy canonical event link"
-                  />
-                </div>
-              ) : null}
-            </div>
-          </aside>
+            </details>
+          ) : null}
         </div>
-      </section>
+        {!isChecking && !actionability.prominent ? (
+          <p
+            className="text-pretty text-sm text-[var(--text-secondary)]"
+            role={actionability.role}
+            aria-live="polite"
+            data-testid="event-actionability-status"
+          >
+            {actionability.message}
+          </p>
+        ) : null}
+        {!isChecking && catalog.pickupCoordinate && !catalog.pickup ? (
+          <p role="status" className="text-sm text-[var(--warning)]">
+            Organizer handoff details are unresolved.
+          </p>
+        ) : null}
+      </header>
 
-      <section>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="h-5 w-5 text-secondary-400" />
-              <h2 className="text-2xl font-semibold text-[var(--text-primary)]">
-                Accepted products
-              </h2>
-            </div>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">
-              The organizer's collection controls acceptance. Each product is
-              still authored by its merchant and needs its own exact collection
-              and pickup link before checkout opens.
-            </p>
-          </div>
-          <Badge variant="outline">
-            {catalog.acceptedProductCount} product
-            {catalog.acceptedProductCount === 1 ? "" : "s"}
-          </Badge>
-        </div>
-
-        {catalog.productReadState !== "ready" ? (
+      <EventCatalogBrowser
+        key={collection.coordinate}
+        products={catalog.products}
+        identities={merchantIdentities.identitiesByPubkey}
+        btcUsdRate={shopperPricing.quote}
+        renderProduct={(entry, index, onMerchantActivate) => (
+          <EventCatalogProductCard
+            entry={entry}
+            catalog={catalog}
+            purchaseReady={!archived && !isChecking && catalog.purchaseReady}
+            isChecking={isChecking}
+            identity={merchantIdentities.getIdentity(entry.product.pubkey)}
+            organizerIdentity={organizerIdentity}
+            imageLoading={index < 4 ? "eager" : "lazy"}
+            btcUsdRate={shopperPricing.quote}
+            pricePreference={shopperPricing.preference}
+            onCartNotice={setCartNotice}
+            onMerchantActivate={onMerchantActivate}
+          />
+        )}
+      >
+        {!isChecking && catalog.productReadState !== "ready" ? (
           <div
             role="status"
-            className="mt-5 rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
+            className="rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
           >
-            Relay coverage is degraded. Previously verified accepted products
-            remain visible, while checkout stays closed for anything without
-            current exact product and pickup evidence.
+            Some accepted products are unresolved. Previously verified product
+            details remain visible. Products that cannot be confirmed are
+            unavailable for checkout.
           </div>
         ) : null}
-
         {cartNotice ? (
           <div
             role="status"
-            className="mt-5 flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]"
+            className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]"
           >
-            <Check className="mt-0.5 h-4 w-4 shrink-0 text-[var(--success)]" />
+            <Check
+              className="mt-0.5 size-4 shrink-0 text-[var(--success)]"
+              aria-hidden="true"
+            />
             {cartNotice}
           </div>
         ) : null}
-
-        {catalog.acceptedProductCount === 0 ? (
-          <div className="mt-6 rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-8 text-center text-sm leading-6 text-[var(--text-secondary)]">
-            The organizer has not accepted any products for this event.
-          </div>
-        ) : (
-          <ul className={`mt-6 ${PRODUCT_GRID_CLASS_NAME}`}>
-            {catalog.products.map((entry, index) => {
-              const { product } = entry
-              const identity = merchantIdentities.getIdentity(product.pubkey)
-
-              return (
-                <li key={product.id} className="min-w-0 space-y-2">
-                  <EventCatalogProductCard
-                    entry={entry}
-                    catalog={catalog}
-                    purchaseReady={!archived && catalog.purchaseReady}
-                    identity={identity}
-                    imageLoading={index < 3 ? "eager" : "lazy"}
-                    btcUsdRate={shopperPricing.quote}
-                    pricePreference={shopperPricing.preference}
-                    onCartNotice={setCartNotice}
-                  />
-                </li>
-              )
-            })}
-            {catalog.unresolvedProductCoordinates.map((coordinate) => (
-              <li
-                key={coordinate}
-                className="min-w-0 rounded-xl border border-dashed border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-5 text-sm leading-6 text-[var(--text-secondary)]"
-              >
-                <div className="font-medium text-[var(--text-primary)]">
-                  Accepted product details temporarily unavailable
-                </div>
-                <p className="mt-2">
-                  The organizer's acceptance is still recorded, but no safe
-                  product details are available to show yet. Checkout remains
-                  disabled for this item.
-                </p>
-              </li>
+        {isChecking && catalog.products.length === 0 ? (
+          <div
+            className={PRODUCT_GRID_CLASS_NAME}
+            aria-label="Loading event products"
+            aria-busy="true"
+          >
+            {[0, 1, 2, 3].map((index) => (
+              <ProductGridCardSkeleton key={index} />
             ))}
-          </ul>
-        )}
-      </section>
+          </div>
+        ) : !isChecking &&
+          catalog.acceptedProductCount === 0 &&
+          catalog.products.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-[var(--border)] p-8 text-center text-sm text-[var(--text-secondary)]">
+            The organizer has not accepted any products for this event.
+          </p>
+        ) : null}
+      </EventCatalogBrowser>
+
+      {!isChecking && catalog.unresolvedProductCoordinates.length > 0 ? (
+        <details className="rounded-xl border border-[var(--border)] p-4 text-sm text-[var(--text-secondary)]">
+          <summary className="cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+            Accepted product details temporarily unavailable (
+            {catalog.unresolvedProductCoordinates.length})
+          </summary>
+          <p className="mt-2 text-pretty">
+            These products remain accepted for this event, but their details
+            cannot be loaded yet. They are not included in search, merchant
+            counts, or sorting. Checkout remains disabled for these items.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-3"
+            disabled={query.isFetching}
+            onClick={() => void query.refetch()}
+          >
+            Refresh products
+          </Button>
+        </details>
+      ) : null}
+
+      <details className="group/technical border-t border-[var(--border)] pt-4 text-sm text-[var(--text-secondary)]">
+        <summary className="inline-flex cursor-pointer list-none items-center gap-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] [&::-webkit-details-marker]:hidden">
+          Technical details{" "}
+          <ChevronDown
+            aria-hidden="true"
+            className="size-4 group-open/technical:rotate-180"
+          />
+        </summary>
+        <div className="mt-4 space-y-4">
+          <div>
+            <h2 className="text-balance font-medium text-[var(--text-primary)]">
+              Organizer identity
+            </h2>
+            <div className="mt-2 flex min-w-0 items-center gap-2">
+              <span className="truncate font-mono text-xs">
+                {formatNpub(organizerPubkey, 10)}
+              </span>
+              <CopyButton value={organizerPubkey} label="Copy organizer npub" />
+            </div>
+            <p className="mt-2 max-w-3xl text-pretty text-xs leading-5">
+              This is the account that published the event. Each pickup option
+              names the account responsible for handoff. Conduit does not
+              operate an organizer registry or endorse the organizer.
+            </p>
+          </div>
+          {relayCoverage ? (
+            <p
+              className="text-pretty text-xs tabular-nums"
+              role="status"
+              aria-label={`Relay read coverage: ${relayCoverage}`}
+              data-testid="event-relay-read-coverage"
+            >
+              {relayCoverage}
+            </p>
+          ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={query.isFetching}
+            onClick={() => void query.refetch()}
+          >
+            Refresh evidence
+          </Button>
+          <div
+            className="max-h-80 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4"
+            tabIndex={0}
+            role="region"
+            aria-label="Published event records"
+          >
+            <EvidenceRow label="Event details" eventId={calendar.eventId} />
+            <EvidenceRow label="Product list" eventId={collection.eventId} />
+            {pickups.map((pickup) => (
+              <EvidenceRow
+                key={pickup.coordinate}
+                label={`Pickup: ${pickup.title}`}
+                eventId={pickup.eventId}
+              />
+            ))}
+          </div>
+          {catalog.canonicalNaddr ? (
+            <CopyButton
+              value={catalog.canonicalNaddr}
+              npub={false}
+              label="Copy canonical event link"
+            />
+          ) : null}
+        </div>
+      </details>
     </div>
   )
 }
