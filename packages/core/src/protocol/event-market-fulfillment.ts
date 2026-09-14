@@ -18,6 +18,7 @@ function currencyCompatibilityKey(currency: string): string {
 
 export type EventMarketProductFulfillmentAmbiguityReason =
   | "missing_pickup_evidence"
+  | "stale_pickup_evidence"
   | "conflicting_pickup_evidence"
   | "pickup_not_accepted_by_collection"
   | "missing_product_identity"
@@ -240,6 +241,13 @@ export function resolveEventMarketProductFulfillment(
   if (!pickup) {
     return ambiguousDecision(
       "missing_pickup_evidence",
+      pickupReferenced,
+      collectionReferencedForFulfillment
+    )
+  }
+  if (pickup.evidenceState === "retained") {
+    return ambiguousDecision(
+      "stale_pickup_evidence",
       pickupReferenced,
       collectionReferencedForFulfillment
     )

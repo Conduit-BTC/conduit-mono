@@ -19,10 +19,13 @@ import {
   getEventMarket,
   getOrganizerEventMarkets,
   getOrganizerEventMarketsDetailed,
+  parseProductEvent,
   resolveEventMarketProductFulfillment,
+  resolveEventMarketProductParticipation,
   type CachedEventMarketEvidence,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import { buildPickupFulfillmentTerms } from "../apps/market/src/lib/event-market-adapter"
 
 const SECRET = generateSecretKey()
 const MERCHANT_SECRET = generateSecretKey()
@@ -1574,6 +1577,130 @@ describe("event-market retained evidence", () => {
     })
     expect(reloaded.state).toBe("stale")
     expect(reloaded.pickups[0]?.coordinate).toBe(MERCHANT_PICKUP)
+  })
+
+  it("keeps a live merchant pickup actionable when another merchant pickup is retained", async () => {
+    const otherSecret = generateSecretKey()
+    const otherMerchant = getPublicKey(otherSecret)
+    const otherProduct = `${EVENT_KINDS.PRODUCT}:${otherMerchant}:tea`
+    const otherPickup = `${EVENT_KINDS.SHIPPING_OPTION}:${otherMerchant}:booth`
+    const records = [
+      ...merchantPickupGraph().filter(
+        (event) => event.kind !== EVENT_KINDS.PRODUCT_COLLECTION
+      ),
+      sign(
+        buildEventMarketCollectionDraft({
+          dTag: "catalog",
+          title: "Market catalog",
+          eventCoordinate: CALENDAR,
+          productCoordinates: [PRODUCT, otherProduct],
+        }),
+        102
+      ),
+      merchantPickupProductRevision(),
+      merchantPickupEvent(),
+      signAs(
+        otherSecret,
+        {
+          kind: EVENT_KINDS.PRODUCT,
+          tags: [
+            ["d", "tea"],
+            ["title", "Tea"],
+            ["price", "25", "USD"],
+            ["a", COLLECTION],
+            ["shipping_option", otherPickup],
+          ],
+        },
+        100
+      ),
+      signAs(
+        otherSecret,
+        buildEventMarketPickupDraft({
+          dTag: "booth",
+          title: "Tea booth",
+          price: 0,
+          currency: "SATS",
+          countries: ["US"],
+          location: "Public market hall",
+        }),
+        101
+      ),
+    ]
+    cacheHarness()
+    let otherPickupRead: "live" | "failed" | "empty" = "live"
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        const filter = rawFilter as TagFilter
+        const omitted =
+          otherPickupRead !== "live" &&
+          !!filter.authors?.includes(otherMerchant) &&
+          !!filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION as never)
+        const failed = omitted && otherPickupRead === "failed"
+        const events = omitted
+          ? []
+          : records.filter(
+              (event) =>
+                (!filter.kinds || filter.kinds.includes(event.kind as never)) &&
+                (!filter.authors || filter.authors.includes(event.pubkey)) &&
+                ["a", "d", "e"].every((tagName) => {
+                  const values = filter[`#${tagName}` as "#a" | "#d" | "#e"]
+                  return (
+                    !values ||
+                    event.tags.some(
+                      (tag) => tag[0] === tagName && values.includes(tag[1]!)
+                    )
+                  )
+                })
+            )
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: failed ? ("failed" as const) : ("success" as const),
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+    await expect(
+      getEventMarket({ reference: COLLECTION, nowMs: 1_750_000_000_000 })
+    ).resolves.toMatchObject({ state: "active" })
+
+    const productEvents = records.filter(
+      (event) => event.kind === EVENT_KINDS.PRODUCT
+    )
+    for (const nextRead of ["failed", "empty", "live"] as const) {
+      otherPickupRead = nextRead
+      const reloaded = await getEventMarket({
+        reference: COLLECTION,
+        nowMs: 1_750_000_000_000,
+      })
+      for (const event of productEvents) {
+        const product = parseProductEvent(event)
+        const expectedReady = event.pubkey === MERCHANT || nextRead === "live"
+        expect(
+          reloaded.acceptedProductEvidence.find(
+            (evidence) => evidence.productCoordinate === product.id
+          )?.fulfillmentStatus
+        ).toBe(expectedReady ? "resolved" : "ambiguous")
+        expect(
+          resolveEventMarketProductParticipation(product, reloaded)
+            .purchaseReady
+        ).toBe(expectedReady)
+        const terms = buildPickupFulfillmentTerms(product, reloaded, {
+          eventId: event.id,
+          eventCreatedAt: event.created_at,
+        })
+        if (expectedReady) {
+          expect(terms?.option.coordinate).toBe(
+            event.pubkey === MERCHANT ? MERCHANT_PICKUP : otherPickup
+          )
+        } else {
+          expect(terms).toBeNull()
+        }
+      }
+    }
   })
 
   it("retains same-author merchant pickup deletion across reload", async () => {
