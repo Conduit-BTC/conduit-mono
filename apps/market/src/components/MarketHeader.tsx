@@ -373,7 +373,7 @@ export function MarketHeader() {
     searchFocused &&
     searchDirty &&
     !suggestionsDismissed &&
-    accountSearch.settledQuery.length > 0 &&
+    accountSearch.activeQuery.length > 0 &&
     (accountItems.length > 0 ||
       !!accountSearch.data ||
       accountSearch.isFetching)
@@ -381,7 +381,7 @@ export function MarketHeader() {
 
   useEffect(() => {
     setActiveSuggestion(-1)
-  }, [accountSearch.settledQuery, accountItems.length])
+  }, [accountSearch.activeQuery, accountItems.length])
 
   function selectAccountSuggestion(index: number): void {
     const match = accountMatches?.[index]

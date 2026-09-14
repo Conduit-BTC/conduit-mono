@@ -12,6 +12,13 @@ export const PROFILE_SEARCH_MIN_QUERY_LENGTH = 2
 export const PROFILE_SEARCH_DEFAULT_LIMIT = 5
 const NETWORK_FETCH_LIMIT = 24
 const LOCAL_CACHE_SCAN_LIMIT = 5_000
+/**
+ * The cached phase must answer while listings are still being written, and an
+ * open write transaction on the products store can hold a seller lookup for
+ * hundreds of milliseconds. Past this budget the phase answers with the
+ * seller flags it already knows and lets the lookup finish in the background.
+ */
+export const CACHED_SELLER_LOOKUP_BUDGET_MS = 200
 
 /**
  * Bounded read outcome for one settled query. A completed plan that observed
@@ -50,6 +57,8 @@ export interface ProfileSearchQuery {
   query: string
   limit?: number
   signal?: AbortSignal
+  /** Cached phase only; `Infinity` waits for the seller lookup. */
+  sellerLookupBudgetMs?: number
 }
 
 export interface ProfileSearchDependencies {
@@ -177,13 +186,62 @@ const defaultDependencies: ProfileSearchDependencies = {
     }),
 }
 
+function emptyResult(query: string): ProfileSearchResult {
+  return {
+    query,
+    matches: [],
+    evidence: "not_queried",
+    relaysPlanned: 0,
+    relaysCompleted: 0,
+    verified: true,
+  }
+}
+
+function toMatch(
+  profile: Profile,
+  source: ProfileSearchSource,
+  normalizedQuery: string
+): ProfileSearchMatch | null {
+  const score = scoreProfileSearchMatch(profile, normalizedQuery)
+  if (!Number.isFinite(score)) return null
+  return { pubkey: profile.pubkey, profile, isSeller: false, source, score }
+}
+
+const knownSellerPubkeys = new Set<string>()
+
+async function flagSellers(
+  matches: ProfileSearchMatch[],
+  deps: ProfileSearchDependencies,
+  budgetMs = Infinity
+): Promise<ProfileSearchMatch[]> {
+  const lookup = deps
+    .loadSellerPubkeys(matches.map((match) => match.pubkey))
+    .then((pubkeys) => {
+      for (const pubkey of pubkeys) knownSellerPubkeys.add(pubkey)
+      return pubkeys
+    })
+    .catch(() => new Set<string>())
+  const sellerPubkeys = Number.isFinite(budgetMs)
+    ? await Promise.race([
+        lookup,
+        new Promise<null>((resolve) =>
+          setTimeout(() => resolve(null), budgetMs)
+        ),
+      ])
+    : await lookup
+  const resolved = sellerPubkeys ?? knownSellerPubkeys
+  return matches.map((match) => ({
+    ...match,
+    isSeller: resolved.has(match.pubkey),
+  }))
+}
+
 /**
- * Searches accounts by name: the local profile cache first, then a bounded
- * NIP-50 kind-0 read against search-capable relays. Results are display-only
- * suggestions and are not written to the profile cache; opening a result runs
- * the normal profile read with its frontier and payment-authority rules.
+ * Fast phase: scans the local profile cache only. It never touches a relay,
+ * so its evidence stays `not_queried`; callers show these rows immediately
+ * while the network phase is still running.
  */
-export async function searchProfiles(
+export async function searchCachedProfiles(
   input: ProfileSearchQuery,
   dependencies: Partial<ProfileSearchDependencies> = {}
 ): Promise<ProfileSearchResult> {
@@ -191,54 +249,58 @@ export async function searchProfiles(
   const query = input.query.trim()
   const normalizedQuery = normalizeProfileSearchText(query)
   const limit = input.limit ?? PROFILE_SEARCH_DEFAULT_LIMIT
-
   if (normalizedQuery.length < PROFILE_SEARCH_MIN_QUERY_LENGTH) {
-    return {
-      query,
-      matches: [],
-      evidence: "not_queried",
-      relaysPlanned: 0,
-      relaysCompleted: 0,
-      verified: true,
-    }
+    return emptyResult(query)
   }
 
-  const candidates = new Map<string, ProfileSearchMatch>()
-  const addCandidate = (profile: Profile, source: ProfileSearchSource) => {
-    const score = scoreProfileSearchMatch(profile, normalizedQuery)
-    if (!Number.isFinite(score)) return
-    const existing = candidates.get(profile.pubkey)
-    if (!existing) {
-      candidates.set(profile.pubkey, {
-        pubkey: profile.pubkey,
-        profile,
-        isSeller: false,
-        source,
-        score,
-      })
-      return
-    }
-    candidates.set(profile.pubkey, {
-      ...existing,
-      profile: source === "network" ? profile : existing.profile,
-      source: existing.source === source ? source : "both",
-      score: Math.min(existing.score, score),
-    })
-  }
-
-  let cachedRows: CachedProfile[] = []
-  try {
-    cachedRows = await deps.loadCachedProfiles()
-  } catch {
-    cachedRows = []
-  }
+  const cachedRows: CachedProfile[] = await deps
+    .loadCachedProfiles()
+    .catch(() => [])
+  const candidates: ProfileSearchMatch[] = []
   for (const row of cachedRows) {
-    addCandidate(projectCachedProfile(row), "local_cache")
+    const match = toMatch(
+      projectCachedProfile(row),
+      "local_cache",
+      normalizedQuery
+    )
+    if (match) candidates.push(match)
+  }
+
+  return {
+    ...emptyResult(query),
+    matches: rankProfileSearchMatches(
+      await flagSellers(
+        candidates,
+        deps,
+        input.sellerLookupBudgetMs ?? CACHED_SELLER_LOOKUP_BUDGET_MS
+      ),
+      limit
+    ),
+  }
+}
+
+/**
+ * Slow phase: a bounded NIP-50 kind-0 read against search-capable relays.
+ * Results are display-only suggestions and are not written to the profile
+ * cache; opening a result runs the normal profile read with its frontier and
+ * payment-authority rules.
+ */
+export async function searchNetworkProfiles(
+  input: ProfileSearchQuery,
+  dependencies: Partial<ProfileSearchDependencies> = {}
+): Promise<ProfileSearchResult> {
+  const deps = { ...defaultDependencies, ...dependencies }
+  const query = input.query.trim()
+  const normalizedQuery = normalizeProfileSearchText(query)
+  const limit = input.limit ?? PROFILE_SEARCH_DEFAULT_LIMIT
+  if (normalizedQuery.length < PROFILE_SEARCH_MIN_QUERY_LENGTH) {
+    return emptyResult(query)
   }
 
   const relayUrls = deps.planSearchRelayUrls()
   let relaysCompleted = 0
   let verified = true
+  const candidates: ProfileSearchMatch[] = []
   if (relayUrls.length > 0) {
     try {
       const result = await deps.fetchEvents(
@@ -254,7 +316,12 @@ export async function searchProfiles(
       ).length
       verified = result.eventsVerified !== false
       for (const event of pickLatestEventPerPubkey(result.events)) {
-        addCandidate(parseProfileEvent(event), "network")
+        const match = toMatch(
+          parseProfileEvent(event),
+          "network",
+          normalizedQuery
+        )
+        if (match) candidates.push(match)
       }
     } catch (error) {
       if (input.signal?.aborted) throw error
@@ -262,27 +329,80 @@ export async function searchProfiles(
     }
   }
 
-  const sellerPubkeys = await deps
-    .loadSellerPubkeys(Array.from(candidates.keys()))
-    .catch(() => new Set<string>())
-  const matches = rankProfileSearchMatches(
-    Array.from(candidates.values(), (candidate) => ({
-      ...candidate,
-      isSeller: sellerPubkeys.has(candidate.pubkey),
-    })),
-    limit
-  )
-
   return {
     query,
-    matches,
+    matches: rankProfileSearchMatches(
+      await flagSellers(candidates, deps),
+      limit
+    ),
     evidence: resolveProfileSearchEvidence({
       relaysPlanned: relayUrls.length,
       relaysCompleted,
-      matchCount: candidates.size,
+      matchCount: candidates.length,
     }),
     relaysPlanned: relayUrls.length,
     relaysCompleted,
     verified,
   }
+}
+
+/**
+ * Combines the cached and network phases for one query. Network profiles win
+ * for display, the best score is kept, and relay evidence comes from the
+ * network phase; without it the merged result stays `not_queried`.
+ */
+export function mergeProfileSearchResults(
+  cached: ProfileSearchResult | undefined,
+  network: ProfileSearchResult | undefined,
+  limit: number = PROFILE_SEARCH_DEFAULT_LIMIT
+): ProfileSearchResult {
+  const query = network?.query ?? cached?.query ?? ""
+  const combined = new Map<string, ProfileSearchMatch>()
+  for (const match of [
+    ...(cached?.matches ?? []),
+    ...(network?.matches ?? []),
+  ]) {
+    const existing = combined.get(match.pubkey)
+    if (!existing) {
+      combined.set(match.pubkey, match)
+      continue
+    }
+    combined.set(match.pubkey, {
+      ...existing,
+      profile: match.source === "network" ? match.profile : existing.profile,
+      isSeller: existing.isSeller || match.isSeller,
+      source: existing.source === match.source ? match.source : "both",
+      score: Math.min(existing.score, match.score),
+    })
+  }
+  const matches = rankProfileSearchMatches(Array.from(combined.values()), limit)
+  if (!network) return { ...emptyResult(query), matches }
+  return {
+    query,
+    matches,
+    evidence:
+      network.evidence === "not_queried"
+        ? "not_queried"
+        : resolveProfileSearchEvidence({
+            relaysPlanned: network.relaysPlanned,
+            relaysCompleted: network.relaysCompleted,
+            matchCount: combined.size,
+          }),
+    relaysPlanned: network.relaysPlanned,
+    relaysCompleted: network.relaysCompleted,
+    verified: network.verified,
+  }
+}
+
+/** Runs both phases and returns the merged result once the network answers. */
+export async function searchProfiles(
+  input: ProfileSearchQuery,
+  dependencies: Partial<ProfileSearchDependencies> = {}
+): Promise<ProfileSearchResult> {
+  const limit = input.limit ?? PROFILE_SEARCH_DEFAULT_LIMIT
+  const [cached, network] = await Promise.all([
+    searchCachedProfiles(input, dependencies),
+    searchNetworkProfiles(input, dependencies),
+  ])
+  return mergeProfileSearchResults(cached, network, limit)
 }

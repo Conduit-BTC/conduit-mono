@@ -4,7 +4,10 @@ import {
   normalizeProfileSearchText,
   rankProfileSearchMatches,
   resolveProfileSearchEvidence,
+  mergeProfileSearchResults,
   scoreProfileSearchMatch,
+  searchCachedProfiles,
+  searchNetworkProfiles,
   searchProfiles,
   type ProfileSearchDependencies,
 } from "../packages/core/src/protocol/profile-search"
@@ -13,6 +16,7 @@ const ALICE = "a".repeat(64)
 const ALICIA = "b".repeat(64)
 const CAROL = "c".repeat(64)
 const MALICE = "d".repeat(64)
+const ERIN = "e".repeat(64)
 
 function profileEvent(
   pubkey: string,
@@ -262,5 +266,150 @@ describe("searchProfiles", () => {
         })
       )
     ).rejects.toBeInstanceOf(DOMException)
+  })
+})
+
+describe("phased profile search", () => {
+  it("answers from the local cache without relay traffic and stays not_queried", async () => {
+    let fetched = 0
+    const result = await searchCachedProfiles(
+      { query: "ali", limit: 5 },
+      deps({
+        loadCachedProfiles: async () => [
+          { pubkey: ALICE, name: "alice", cachedAt: 1 },
+          { pubkey: CAROL, name: "Carol", cachedAt: 1 },
+        ],
+        loadSellerPubkeys: async (pubkeys) =>
+          new Set(pubkeys.filter((pubkey) => pubkey === ALICE)),
+        fetchEvents: async () => {
+          fetched += 1
+          return { events: [], relays: [], eventsVerified: true }
+        },
+      })
+    )
+
+    expect(fetched).toBe(0)
+    expect(result.evidence).toBe("not_queried")
+    expect(result.relaysPlanned).toBe(0)
+    expect(result.matches.map((match) => match.pubkey)).toEqual([ALICE])
+    expect(result.matches[0]?.source).toBe("local_cache")
+    expect(result.matches[0]?.isSeller).toBe(true)
+  })
+
+  it("reads relays only in the network phase and reports its own evidence", async () => {
+    let cacheReads = 0
+    const result = await searchNetworkProfiles(
+      { query: "ali", limit: 5 },
+      deps({
+        loadCachedProfiles: async () => {
+          cacheReads += 1
+          return [{ pubkey: ALICE, name: "alice", cachedAt: 1 }]
+        },
+        fetchEvents: async () => ({
+          events: [profileEvent(ALICIA, { name: "Alicia" })],
+          relays: [
+            {
+              relayUrl: "wss://search.example",
+              status: "success",
+              eventCount: 1,
+            },
+          ],
+          eventsVerified: true,
+        }),
+      })
+    )
+
+    expect(cacheReads).toBe(0)
+    expect(result.evidence).toBe("present_current")
+    expect(result.matches.map((match) => match.pubkey)).toEqual([ALICIA])
+    expect(result.matches[0]?.source).toBe("network")
+  })
+
+  it("merges phases: cached rows show first, network profiles win, evidence follows the network", () => {
+    const cached = {
+      query: "ali",
+      matches: [
+        {
+          pubkey: ALICE,
+          profile: { pubkey: ALICE, name: "alice" },
+          isSeller: true,
+          source: "local_cache" as const,
+          score: 1,
+        },
+      ],
+      evidence: "not_queried" as const,
+      relaysPlanned: 0,
+      relaysCompleted: 0,
+      verified: true,
+    }
+    const network = {
+      query: "ali",
+      matches: [
+        {
+          pubkey: ALICE,
+          profile: { pubkey: ALICE, name: "alice", about: "newer" },
+          isSeller: false,
+          source: "network" as const,
+          score: 1,
+        },
+        {
+          pubkey: ALICIA,
+          profile: { pubkey: ALICIA, name: "Alicia" },
+          isSeller: false,
+          source: "network" as const,
+          score: 1,
+        },
+      ],
+      evidence: "lookup_partial" as const,
+      relaysPlanned: 2,
+      relaysCompleted: 1,
+      verified: true,
+    }
+
+    const cachedOnly = mergeProfileSearchResults(cached, undefined, 5)
+    expect(cachedOnly.evidence).toBe("not_queried")
+    expect(cachedOnly.matches.map((match) => match.pubkey)).toEqual([ALICE])
+
+    const merged = mergeProfileSearchResults(cached, network, 5)
+    expect(merged.evidence).toBe("lookup_partial")
+    expect(merged.relaysPlanned).toBe(2)
+    expect(merged.matches.map((match) => match.pubkey)).toEqual([ALICE, ALICIA])
+    expect(merged.matches[0]?.source).toBe("both")
+    expect(merged.matches[0]?.isSeller).toBe(true)
+    expect(merged.matches[0]?.profile.about).toBe("newer")
+  })
+
+  it("answers within the seller lookup budget and keeps flags it already knows", async () => {
+    let release: (value: Set<string>) => void = () => {}
+    const blocked = new Promise<Set<string>>((resolve) => {
+      release = resolve
+    })
+    const slowDeps = deps({
+      loadCachedProfiles: async () => [
+        { pubkey: ERIN, name: "erin", cachedAt: 1 },
+      ],
+      loadSellerPubkeys: () => blocked,
+    })
+
+    const started = Date.now()
+    const first = await searchCachedProfiles(
+      { query: "eri", sellerLookupBudgetMs: 20 },
+      slowDeps
+    )
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(first.matches[0]?.isSeller).toBe(false)
+
+    release(new Set([ERIN]))
+    await blocked
+    const second = await searchCachedProfiles(
+      { query: "eri", sellerLookupBudgetMs: 20 },
+      deps({
+        loadCachedProfiles: async () => [
+          { pubkey: ERIN, name: "erin", cachedAt: 1 },
+        ],
+        loadSellerPubkeys: () => new Promise(() => {}),
+      })
+    )
+    expect(second.matches[0]?.isSeller).toBe(true)
   })
 })
