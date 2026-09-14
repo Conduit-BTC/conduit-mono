@@ -567,7 +567,7 @@ export function MarketHeader() {
           )}
           <HeaderAction
             label="Orders"
-            icon={<ReceiptText className="size-4" aria-hidden="true" />}
+            icon={<ReceiptText className="size-6" aria-hidden="true" />}
             enabled={connected}
             active={pathname === "/orders"}
             labelClassName="hidden lg:inline"
