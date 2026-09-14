@@ -2,6 +2,7 @@ import {
   getOrderPaymentAddressReplacementAdmission,
   getOrderPaymentTargetReplacementAdmission,
   getProfiles,
+  isValidLud16Address,
   normalizePubkey,
   type OrderLifecycle,
 } from "@conduit/core"
@@ -93,24 +94,38 @@ export async function checkOrderPaymentAddressUpdate(
   if (profile?.pubkey !== merchantPubkey) {
     return { status: "unavailable" }
   }
-  const hasPositiveAddress = hasPositiveMerchantPaymentAddressEvidence({
-    meta: result.meta,
-    lud16: profile.lud16,
-  })
+  const frontierState = result.meta.profileFrontierStates?.[merchantPubkey]
+  const hasPositiveAddress =
+    frontierState !== "retained_valid" &&
+    frontierState !== "retained_malformed" &&
+    hasPositiveMerchantPaymentAddressEvidence({
+      meta: result.meta,
+      lud16: profile.lud16,
+    })
+  const hasKnownFrontier =
+    frontierState === "observed_valid" ||
+    frontierState === "observed_malformed" ||
+    frontierState === "retained_valid" ||
+    frontierState === "retained_malformed"
+  // Read freshness cannot erase a known contradictory signed frontier. It
+  // still controls whether a positive address may authorize replacement.
+  if (
+    hasKnownFrontier &&
+    (frontierState === "observed_malformed" ||
+      frontierState === "retained_malformed" ||
+      !isValidLud16Address(profile.lud16?.trim() ?? ""))
+  ) {
+    return { status: "current_address_unusable" }
+  }
+  const newAddress = (profile.lud16 ?? "").trim().toLowerCase()
+  const previousAddress = snapshot.previousAddress.trim().toLowerCase()
   if (!hasPositiveAddress) {
-    const frontierState = result.meta.profileFrontierStates?.[merchantPubkey]
-    if (
-      result.meta.source === "public" &&
-      !result.meta.stale &&
-      (frontierState === "observed_valid" ||
-        frontierState === "observed_malformed")
-    ) {
-      return { status: "current_address_unusable" }
+    if (hasKnownFrontier && newAddress !== previousAddress) {
+      return { status: "current_address_changed" }
     }
     return { status: "unavailable" }
   }
-  const newAddress = profile.lud16!.trim().toLowerCase()
-  if (newAddress === snapshot.previousAddress.trim().toLowerCase()) {
+  if (newAddress === previousAddress) {
     return { status: "unchanged" }
   }
   if (getOrderPaymentAddressReplacementAdmission(lifecycle) !== "replaceable") {

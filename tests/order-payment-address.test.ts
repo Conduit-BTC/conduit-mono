@@ -209,6 +209,73 @@ describe("checking an updated order payment address", () => {
     }
   })
 
+  it("preserves known unusable payment authority through stale or failed reads", async () => {
+    for (const state of [
+      "retained_valid",
+      "retained_malformed",
+      "observed_valid",
+      "observed_malformed",
+    ] as const) {
+      for (const lud16 of [undefined, "invalid"]) {
+        const result = observedProfileResult(lud16)
+        Object.assign(result.meta, {
+          source: "local_cache",
+          stale: true,
+          degraded: true,
+          profileFrontierStates: { [MERCHANT]: state },
+        })
+        expect(
+          await checkOrderPaymentAddressUpdate(
+            lifecycle(),
+            {},
+            {
+              getProfiles: async () => result,
+            }
+          )
+        ).toEqual({ status: "current_address_unusable" })
+      }
+    }
+  })
+
+  it("uses retained valid authority only to veto a contradicted destination", async () => {
+    for (const [address, status] of [
+      ["new@wallet.example", "current_address_changed"],
+      [" OLD@wallet.example ", "unavailable"],
+    ]) {
+      const result = profileResult(address, {
+        source: "local_cache",
+        stale: true,
+        degraded: true,
+      })
+      Object.assign(result.meta, {
+        profileFrontierStates: { [MERCHANT]: "retained_valid" },
+      })
+      expect(
+        await checkOrderPaymentAddressUpdate(
+          lifecycle(),
+          {},
+          {
+            getProfiles: async () => result,
+          }
+        )
+      ).toEqual({ status })
+    }
+  })
+
+  it("does not mistake retained authority for fresh positive evidence", async () => {
+    const result = profileResult("new@wallet.example")
+    result.meta.profileFrontierStates = { [MERCHANT]: "retained_valid" }
+    expect(
+      await checkOrderPaymentAddressUpdate(
+        lifecycle(),
+        {},
+        {
+          getProfiles: async () => result,
+        }
+      )
+    ).toEqual({ status: "current_address_changed" })
+  })
+
   it("rejects cached, stale, and conflicting retained payment evidence", async () => {
     for (const meta of [
       { source: "local_cache" as const, stale: false },

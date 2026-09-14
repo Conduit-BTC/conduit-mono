@@ -420,22 +420,21 @@ async function prepareUpdatedPaymentAddress(
   const merchantSecret = generateSecretKey()
   const merchantPubkey = getPublicKey(merchantSecret)
   let profileTimestamp = Math.floor(Date.now() / 1000)
-  const publishAddress = async (address?: string) => {
-    await publishTestRelayEvents([
-      finalizeEvent(
-        {
-          kind: 0,
-          created_at: profileTimestamp++,
-          tags: [],
-          content: JSON.stringify({
-            name: "Recovery merchant",
-            ...(address ? { lud16: address } : {}),
-          }),
-        },
-        merchantSecret
-      ),
-    ])
+  const publishProfile = async (content: string) => {
+    const event = finalizeEvent(
+      { kind: 0, created_at: profileTimestamp++, tags: [], content },
+      merchantSecret
+    )
+    await publishTestRelayEvents([event])
+    return event
   }
+  const publishAddress = (address?: string) =>
+    publishProfile(
+      JSON.stringify({
+        name: "Recovery merchant",
+        ...(address ? { lud16: address } : {}),
+      })
+    )
   const providerRequests: string[] = []
   const walletCalls: string[] = []
   if (retainedInvoice) {
@@ -531,7 +530,8 @@ async function prepareUpdatedPaymentAddress(
       merchantSecret
     ),
   ])
-  if (initialAddress !== null) await publishAddress(initialAddress)
+  const initialProfile =
+    initialAddress !== null ? await publishAddress(initialAddress) : undefined
   await installTestSigner(page, buyerPubkey, { secretKey: buyerSecret })
   await page.goto(`${marketUrl}/orders`)
   await expect(
@@ -554,7 +554,15 @@ async function prepareUpdatedPaymentAddress(
   await expect(
     page.getByRole("button", { name: "Try payment again" })
   ).toBeVisible()
-  return { providerRequests, walletCalls, publishAddress, savedInvoice }
+  return {
+    providerRequests,
+    walletCalls,
+    publishAddress,
+    publishProfile,
+    merchantPubkey,
+    initialProfile,
+    savedInvoice,
+  }
 }
 
 async function readPaymentAddressRecovery(
@@ -1334,6 +1342,106 @@ test.describe("CND-162 mobile browser baseline", () => {
           paymentTarget: { type: "webln" },
         })
       }
+      await assertMobileViewport(page)
+    })
+  }
+
+  for (const frontier of ["removed", "malformed"] as const) {
+    test(`market retains a ${frontier} payment profile across empty and older reads @market`, async ({
+      page,
+    }) => {
+      const orderId = `mobile-retained-payment-profile-${frontier}`
+      const {
+        providerRequests,
+        walletCalls,
+        publishAddress,
+        publishProfile,
+        merchantPubkey,
+        initialProfile,
+        savedInvoice,
+      } = await prepareUpdatedPaymentAddress(
+        page,
+        orderId,
+        false,
+        savedPaymentAddress,
+        "private_checkout",
+        true
+      )
+      const before = await readPaymentAddressRecovery(
+        page,
+        orderId,
+        savedInvoice
+      )
+      if (frontier === "removed") await publishAddress()
+      else await publishProfile("{synthetic malformed profile")
+
+      const retry = page.getByRole("button", { name: "Try payment again" })
+      const blocked = page.getByRole("alert").filter({
+        hasText:
+          "The merchant's current profile no longer has a usable Lightning address. No invoice was requested.",
+      })
+      await retry.tap()
+      await expect(blocked).toBeVisible()
+      expect(providerRequests).toEqual([])
+      expect(walletCalls).toEqual([])
+
+      let readMode: "empty" | "older" | "live" = "empty"
+      let interceptedReads = 0
+      await page.routeWebSocket(TEST_RELAY_URL, (socket) => {
+        const server = socket.connectToServer()
+        socket.onMessage((message) => {
+          if (typeof message !== "string") {
+            server.send(message)
+            return
+          }
+          const frame = JSON.parse(message)
+          const filters =
+            Array.isArray(frame) && frame[0] === "REQ" ? frame.slice(2) : []
+          const merchantProfileRead = filters.some(
+            (filter: { kinds?: number[]; authors?: string[] }) =>
+              filter.kinds?.includes(0) &&
+              filter.authors?.includes(merchantPubkey)
+          )
+          if (readMode !== "live" && merchantProfileRead) {
+            interceptedReads += 1
+            if (readMode === "older") {
+              socket.send(JSON.stringify(["EVENT", frame[1], initialProfile]))
+            }
+            socket.send(JSON.stringify(["EOSE", frame[1]]))
+            return
+          }
+          server.send(message)
+        })
+      })
+
+      for (const mode of ["empty", "older"] as const) {
+        readMode = mode
+        // Reload clears in-memory query state and proves durable retained
+        // evidence survives a relay that no longer returns its newest profile.
+        await page.reload()
+        await expect(retry).toBeVisible()
+        const readsBeforeRetry = interceptedReads
+        await retry.tap()
+        await expect(blocked).toBeVisible()
+        expect(interceptedReads).toBeGreaterThan(readsBeforeRetry)
+        expect(providerRequests).toEqual([])
+        expect(walletCalls).toEqual([])
+        expect(
+          await readPaymentAddressRecovery(page, orderId, savedInvoice)
+        ).toEqual(before)
+      }
+
+      // A newer signed correction supersedes the retained negative evidence.
+      await publishAddress(savedPaymentAddress)
+      readMode = "live"
+      await page.reload()
+      await expect(retry).toBeVisible()
+      await retry.tap()
+      await expect.poll(() => walletCalls).toEqual(["enable", "sendPayment"])
+      expect(providerRequests).toEqual([
+        "old-payment-fixture.dev/.well-known/lnurlp/merchant",
+        "old-payment-fixture.dev/callback",
+      ])
       await assertMobileViewport(page)
     })
   }
