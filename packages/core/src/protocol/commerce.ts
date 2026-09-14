@@ -1463,7 +1463,12 @@ function withProductFamilyReadEvidence(
 
 function withProductFamilyRecordReadEvidence(
   record: CommerceProductRecord | null,
-  meta: CommerceQueryMeta
+  meta: CommerceQueryMeta,
+  directRead?: {
+    record: CommerceProductRecord
+    complete: boolean
+    capped: boolean
+  }
 ): CommerceProductRecord | null {
   if (!record) return null
 
@@ -1483,7 +1488,20 @@ function withProductFamilyRecordReadEvidence(
           ...candidate.product,
           supportZapRouting: {
             ...candidate.product.supportZapRouting,
-            readEvidence,
+            // Family presentation can be incomplete even when the exact
+            // selected listing revision was completely confirmed. Never
+            // transfer that confirmation to another coordinate or revision.
+            readEvidence:
+              directRead &&
+              candidate.addressId === directRead.record.addressId &&
+              candidate.eventId === directRead.record.eventId
+                ? {
+                    ...readEvidence,
+                    stale: !directRead.complete,
+                    degraded: !directRead.complete,
+                    capped: directRead.capped,
+                  }
+                : readEvidence,
           },
         }
       : candidate.product,
@@ -4208,11 +4226,9 @@ export async function getProductDetail(
                 ),
                 directRecords: directVisible,
               })
-        const completeLiveRead =
-          hasLiveDirectTarget &&
-          !directReadDegraded &&
-          !directReadCapped &&
-          hasCompleteGroupCoverage
+        const completeDirectRead =
+          hasLiveDirectTarget && !directReadDegraded && !directReadCapped
+        const completeLiveRead = completeDirectRead && hasCompleteGroupCoverage
         const hasLiveEvidence =
           directVisible.length > 0 || groupVisible.length > 0
         const meta = hasLiveEvidence
@@ -4226,7 +4242,17 @@ export async function getProductDetail(
               degraded: true,
             })
         return {
-          data: withProductFamilyRecordReadEvidence(record, meta),
+          data: withProductFamilyRecordReadEvidence(
+            record,
+            meta,
+            selectedDirectTarget
+              ? {
+                  record: selectedDirectTarget,
+                  complete: completeDirectRead,
+                  capped: directReadCapped,
+                }
+              : undefined
+          ),
           meta,
         }
       }

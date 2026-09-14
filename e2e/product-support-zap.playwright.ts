@@ -411,6 +411,213 @@ for (const colorScheme of ["light", "dark"] as const) {
   })
 }
 
+test("an exact variation can prepare and retain an unpaid support invoice while a cached sibling is unavailable @market", async ({
+  page,
+}) => {
+  const parentDTag = "support-partial-family"
+  const selectedDTag = `${parentDTag}-blue`
+  const siblingDTag = `${parentDTag}-red`
+  const parentAddress = `30402:${merchantPubkey}:${parentDTag}`
+  const selectedAddress = `30402:${merchantPubkey}:${selectedDTag}`
+  const parentTitle = "Support partial family fixture"
+  const createdAt = Math.floor(Date.now() / 1_000)
+  const selectedEvent = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: createdAt,
+      tags: [
+        ["d", selectedDTag],
+        ["title", `${parentTitle} — Blue`],
+        ["price", "21", "SATS"],
+        ["type", "variation", "digital"],
+        ["a", parentAddress],
+        ["spec", "color", "Blue"],
+        ["stock", "1"],
+      ],
+      content: "A directly confirmed variation with an unavailable sibling.",
+    },
+    merchantSecretKey
+  )
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt,
+        tags: [],
+        content: JSON.stringify({
+          display_name: "Support Merchant",
+          lud16: "support@merchant-fixture.dev",
+        }),
+      },
+      merchantSecretKey
+    ),
+    finalizeEvent(
+      {
+        kind: 30402,
+        created_at: createdAt,
+        tags: [
+          ["d", parentDTag],
+          ["title", parentTitle],
+          ["price", "21", "SATS"],
+          ["type", "variable", "digital"],
+          ["image", "https://blossom.conduit.market/support-fixture.png"],
+        ],
+        content: "A deterministic variation family fixture.",
+      },
+      merchantSecretKey
+    ),
+    selectedEvent,
+  ])
+  await installTestSigner(page, buyerPubkey, { secretKey: buyerSecretKey })
+  let callbackRequests = 0
+  await page.route("https://merchant-fixture.dev/**", async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname === "/callback") {
+      callbackRequests += 1
+      const request = url.searchParams.get("nostr") ?? ""
+      const zap = JSON.parse(request)
+      expect(zap.kind).toBe(9734)
+      expect(zap.tags).toContainEqual(["a", selectedAddress])
+      expect(zap.tags).toContainEqual(["p", merchantPubkey])
+      // Support requests identify the addressable listing through a + k tags.
+      expect(zap.tags).toContainEqual(["k", "30402"])
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          pr: makeBolt11Fixture({
+            hrp: "lnbc210n",
+            createdAt: Math.floor(Date.now() / 1_000),
+            fields: [
+              bolt11PaymentHashField(),
+              bolt11DescriptionHashField(request),
+            ],
+          }),
+        }),
+      })
+      return
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        tag: "payRequest",
+        callback: "https://merchant-fixture.dev/callback",
+        minSendable: 1_000,
+        maxSendable: 100_000_000,
+        allowsNostr: true,
+        nostrPubkey: receiptPubkey,
+        metadata: JSON.stringify([["text/plain", "support"]]),
+      }),
+    })
+  })
+
+  const selectedUrl = `${marketUrl}/products/${nip19.naddrEncode({
+    kind: 30_402,
+    pubkey: merchantPubkey,
+    identifier: selectedDTag,
+    relays: [],
+  })}`
+  await page.clock.install()
+  await page.goto(selectedUrl)
+  await expect(page.getByRole("heading", { name: parentTitle })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Support product" })
+  ).toBeEnabled()
+  // Only the unrelated sibling is a cache hint. The selected variation and
+  // its routing evidence must be fetched from the real signed relay event.
+  await page.evaluate(
+    ({ selectedAddress, siblingDTag, merchantPubkey }) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const transaction = request.result.transaction(
+            "products",
+            "readwrite"
+          )
+          const products = transaction.objectStore("products")
+          const selected = products.get(selectedAddress)
+          selected.onsuccess = () => {
+            if (!selected.result) {
+              transaction.abort()
+              return
+            }
+            products.put({
+              ...selected.result,
+              id: `30402:${merchantPubkey}:${siblingDTag}`,
+              dTag: siblingDTag,
+              title: "Support partial family fixture — Red",
+              specifications: [{ key: "color", value: "Red" }],
+              eventId: "3".repeat(64),
+            })
+          }
+          transaction.oncomplete = () => resolve()
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      }),
+    { selectedAddress, siblingDTag, merchantPubkey }
+  )
+  await page.goto(selectedUrl)
+  const refreshButton = page.locator('button[aria-label="May be out of date"]')
+  await expect(refreshButton).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Support product" })
+  ).toBeEnabled()
+  await page.getByRole("button", { name: "Support product" }).click()
+  await page.getByRole("button", { name: "Create zap invoice" }).click()
+  const status = page.getByRole("status").filter({ hasText: "Invoice ready" })
+  await expect(status).toHaveText(
+    "Invoice ready. Conduit has not sent or confirmed a payment."
+  )
+  expect(callbackRequests).toBe(1)
+
+  const readSelectedCacheSnapshot = () =>
+    page.evaluate(
+      (address) =>
+        new Promise<{ cachedAt: number; eventId: string }>(
+          (resolve, reject) => {
+            const request = indexedDB.open("conduit")
+            request.onerror = () => reject(request.error)
+            request.onsuccess = () => {
+              const transaction = request.result.transaction(
+                "products",
+                "readonly"
+              )
+              const selected = transaction.objectStore("products").get(address)
+              selected.onsuccess = () =>
+                resolve({
+                  cachedAt: selected.result?.cachedAt ?? 0,
+                  eventId: selected.result?.eventId ?? "",
+                })
+              selected.onerror = () => reject(selected.error)
+            }
+          }
+        ),
+      selectedAddress
+    )
+  const selectedBeforeRefresh = await readSelectedCacheSnapshot()
+  expect(selectedBeforeRefresh.eventId).toBe(selectedEvent.id)
+  // Refocusing after the detail query's 20-second freshness window triggers
+  // the normal background refresh while the unpaid invoice remains open.
+  await page.clock.fastForward(20_001)
+  await page.evaluate(() => {
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }))
+  })
+  await expect
+    .poll(async () => (await readSelectedCacheSnapshot()).cachedAt)
+    .toBeGreaterThan(selectedBeforeRefresh.cachedAt)
+  expect((await readSelectedCacheSnapshot()).eventId).toBe(selectedEvent.id)
+  await expect(refreshButton).toBeVisible()
+  await expect(status).toHaveText(
+    "Invoice ready. Conduit has not sent or confirmed a payment."
+  )
+  await expect(page.getByRole("link", { name: "Open in wallet" })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Copy invoice", exact: true })
+  ).toBeVisible()
+  expect(callbackRequests).toBe(1)
+})
+
 test("a signed custom zap route is unavailable before support signer or provider work @market", async ({
   page,
 }) => {

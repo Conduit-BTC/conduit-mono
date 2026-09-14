@@ -1,6 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
 import { NDKEvent, nip19 } from "@nostr-dev-kit/ndk"
-import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
@@ -22,6 +26,8 @@ import {
   getMerchantStorefront,
   getProductImageCandidates,
   getProductDetail,
+  getProductSupportZapRoutingError,
+  prepareProductSupportZapInvoice,
   getProductsByIds,
   getProfiles,
   __resetRelayHealth,
@@ -2969,6 +2975,196 @@ describe("commerce gateway", () => {
         degraded: partial || capped,
         capped,
       })
+    }
+  )
+
+  it.each([
+    ["partial family", true],
+    ["capped family", true],
+    ["missing cached sibling", true],
+    ["partial direct read", false],
+    ["capped direct read", false],
+    ["newer cached selection", false],
+    ["newer group selection", false],
+  ] as const)(
+    "scopes support routing to the exact variation with %s",
+    async (scenario, routingAllowed) => {
+      const secretKey = generateSecretKey()
+      const merchantPubkey = getPublicKey(secretKey)
+      const shopperPubkey = getPublicKey(generateSecretKey())
+      const parentAddress = `30402:${merchantPubkey}:support-family`
+      const selectedAddress = `30402:${merchantPubkey}:support-family-s`
+      const signedFamilyEvent = (
+        dTag: string,
+        type: "variable" | "variation",
+        createdAt = 100
+      ) => {
+        const event = makeGammaProductEvent({
+          pubkey: merchantPubkey,
+          dTag,
+          id: "unsigned-fixture",
+          createdAt,
+          title: dTag,
+          type,
+          parentProductId: type === "variation" ? parentAddress : undefined,
+          size: type === "variation" ? dTag.slice(-1) : undefined,
+        })
+        return new NDKEvent(
+          undefined,
+          finalizeEvent(
+            {
+              kind: event.kind,
+              created_at: event.created_at,
+              content: event.content,
+              tags: event.tags,
+            },
+            secretKey
+          )
+        )
+      }
+      const parent = signedFamilyEvent("support-family", "variable")
+      const selected = signedFamilyEvent("support-family-s", "variation")
+      const newerSelected = signedFamilyEvent(
+        "support-family-s",
+        "variation",
+        200
+      )
+      const sibling = signedFamilyEvent("support-family-m", "variation")
+      const parentHistory = Array.from({ length: 9 }, (_, index) =>
+        signedFamilyEvent("support-family", "variable", 91 + index)
+      )
+      const selectedHistory = Array.from({ length: 9 }, (_, index) =>
+        signedFamilyEvent("support-family-s", "variation", 91 + index)
+      )
+      let priming = true
+      const directQueries: string[] = []
+      __setCommerceTestOverrides({
+        fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+          const relayUrls = [...(options?.relayUrls ?? [])]
+          const attemptedRelayUrls = relayUrls.length
+            ? relayUrls
+            : ["wss://relay.conduit.market"]
+          const isProductRead = filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          const isDirect =
+            isProductRead && filter["#d"]?.includes("support-family-s")
+          const isFamily = isProductRead && !isDirect
+          if (isDirect) directQueries.push(selectedAddress)
+          const partial =
+            !priming &&
+            ((isFamily && scenario === "partial family") ||
+              (isDirect && scenario === "partial direct read"))
+          const capped =
+            !priming &&
+            ((isFamily && !!filter["#d"] && scenario === "capped family") ||
+              (isDirect && scenario === "capped direct read"))
+          const liveSelected =
+            priming && scenario === "newer cached selection"
+              ? newerSelected
+              : !priming && !isDirect && scenario === "newer group selection"
+                ? newerSelected
+                : selected
+          const events = !isProductRead
+            ? []
+            : filter["#d"]
+              ? [parent, liveSelected, sibling].filter((event) =>
+                  event.tags.some(
+                    (tag) =>
+                      tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                  )
+                )
+              : !priming && scenario === "missing cached sibling"
+                ? [liveSelected]
+                : [liveSelected, sibling]
+          return {
+            events: capped
+              ? [...(isDirect ? selectedHistory : parentHistory), ...events]
+              : events,
+            attemptedRelayUrls: partial
+              ? [...attemptedRelayUrls, "wss://unavailable.example"]
+              : attemptedRelayUrls,
+            successfulRelayUrls: attemptedRelayUrls,
+            failedRelayUrls: partial ? ["wss://unavailable.example"] : [],
+            cappedRelayUrls: capped ? [attemptedRelayUrls[0]!] : [],
+          }
+        },
+      })
+
+      const initial = await getProductDetail({ productId: selectedAddress })
+      const initialProduct = initial.data?.family?.children.find(
+        (record) => record.addressId === selectedAddress
+      )?.product
+      expect(initialProduct).toBeDefined()
+      expect(getProductSupportZapRoutingError(initialProduct)).toBeNull()
+      priming = false
+      const result = await getProductDetail({ productId: selectedAddress })
+      const product = result.data?.family?.children.find(
+        (record) => record.addressId === selectedAddress
+      )?.product
+      expect(product).toBeDefined()
+      expect(result.meta.stale).toBe(true)
+      expect(result.data?.family?.readEvidence.stale).toBe(true)
+      const signerGetPublicKey = mock(async () => shopperPubkey)
+      const signEvent = mock(async () => {
+        throw new Error("Unexpected signing")
+      })
+      const getProfiles = mock(async () => {
+        throw new Error("Profile boundary reached")
+      })
+      const fetchLnurlPayMetadata = mock(async () => {
+        throw new Error("Unexpected provider lookup")
+      })
+      const fetchZapInvoice = mock(async () => {
+        throw new Error("Unexpected invoice request")
+      })
+      const validateLightningInvoiceForPayment = mock(() => {
+        throw new Error("Unexpected invoice validation")
+      })
+      const queriesBeforePreparation = directQueries.length
+      const preparation = prepareProductSupportZapInvoice(
+        {
+          product: routingAllowed ? product! : initialProduct!,
+          signer: { getPublicKey: signerGetPublicKey, signEvent },
+          shopperPubkey,
+          recipientPubkey: merchantPubkey,
+          productAddress: selectedAddress,
+          amountSats: 21,
+          relayUrls: ["wss://relay.conduit.market"],
+        },
+        {
+          getProductDetail,
+          getProfiles,
+          fetchLnurlPayMetadata,
+          fetchZapInvoice,
+          validateLightningInvoiceForPayment,
+        }
+      )
+      await expect(preparation).rejects.toThrow(
+        routingAllowed
+          ? "current Lightning address could not be confirmed"
+          : "current support routing could not be confirmed"
+      )
+      expect(directQueries.length).toBeGreaterThan(queriesBeforePreparation)
+      if (routingAllowed) {
+        expect(getProductSupportZapRoutingError(product)).toBeNull()
+        expect(
+          getProductSupportZapRoutingError(result.data?.family?.parent.product)
+        ).not.toBeNull()
+        const otherVariation = result.data?.family?.children.find(
+          (record) => record.addressId !== selectedAddress
+        )?.product
+        expect(otherVariation).toBeDefined()
+        expect(getProductSupportZapRoutingError(otherVariation)).not.toBeNull()
+        expect(signerGetPublicKey).toHaveBeenCalledTimes(1)
+        expect(getProfiles).toHaveBeenCalledTimes(1)
+      } else {
+        expect(getProductSupportZapRoutingError(product)).not.toBeNull()
+        expect(signerGetPublicKey).not.toHaveBeenCalled()
+        expect(getProfiles).not.toHaveBeenCalled()
+      }
+      expect(signEvent).not.toHaveBeenCalled()
+      expect(fetchLnurlPayMetadata).not.toHaveBeenCalled()
+      expect(fetchZapInvoice).not.toHaveBeenCalled()
+      expect(validateLightningInvoiceForPayment).not.toHaveBeenCalled()
     }
   )
 

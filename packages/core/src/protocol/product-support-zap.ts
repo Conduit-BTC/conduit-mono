@@ -195,10 +195,9 @@ function routingEvidenceMatchesMeta(
   const evidence = product.supportZapRouting?.readEvidence
   return (
     !!evidence &&
+    // Observation identity is shared with the detail result; read quality is
+    // specific to this listing, independent of parent/sibling discovery.
     evidence.source === meta.source &&
-    evidence.stale === meta.stale &&
-    evidence.degraded === meta.degraded &&
-    evidence.capped === (meta.capped ?? false) &&
     evidence.fetchedAt === meta.fetchedAt
   )
 }
@@ -230,25 +229,20 @@ async function requireCurrentProductSupportRouting(
   }
   assertProductSupportRequestCurrent(input.isCurrent)
 
-  if (
-    result.meta.source === "local_cache" ||
-    isCommerceReadIncomplete(result.meta)
-  ) {
-    throw new Error(
-      "The product's current support routing could not be confirmed from relays. Retry before creating an invoice."
-    )
-  }
-
   const currentRecord = findExactProductSupportRecord(
     result.data,
     productAddress
   )
   const currentProduct = currentRecord?.product
+  const readEvidence = currentProduct?.supportZapRouting?.readEvidence
   if (
+    result.meta.source === "local_cache" ||
     !currentRecord ||
     !currentProduct ||
     currentRecord.addressId !== productAddress ||
-    !routingEvidenceMatchesMeta(currentProduct, result.meta)
+    !routingEvidenceMatchesMeta(currentProduct, result.meta) ||
+    !readEvidence ||
+    isCommerceReadIncomplete(readEvidence)
   ) {
     throw new Error(
       "The product's current support routing could not be confirmed from relays. Retry before creating an invoice."
