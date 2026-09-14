@@ -127,33 +127,25 @@ async function captureScreenshot(page: Page, fileName: string): Promise<void> {
 }
 
 async function expectSilentThemeFeedback(page: Page): Promise<void> {
-  await expect(page.locator("[data-theme-toggle-feedback]")).toHaveAttribute(
-    "data-state",
-    "hidden"
-  )
+  await expect(page.locator("[data-theme-toggle-feedback]")).toHaveCount(0)
   await expect(page.locator("[data-theme-toggle-status]")).toBeEmpty()
-  await expect(page.locator("[data-theme-toggle-icon]")).toHaveCSS(
-    "opacity",
-    "1"
-  )
+  await expect(page.locator("[data-theme-toggle-icon]")).toBeVisible()
 }
 
-async function expectThemeFeedbackInsideButton(page: Page): Promise<void> {
+async function expectThemeIconInsideButton(page: Page): Promise<void> {
   const bounds = await page
-    .locator("[data-theme-toggle-feedback]")
+    .locator("[data-theme-toggle-icon]")
     .evaluate((element) => {
       const button = element.closest("button")
       if (!button) return null
-      const textRange = document.createRange()
-      textRange.selectNodeContents(element)
-      const text = textRange.getBoundingClientRect()
+      const icon = element.getBoundingClientRect()
       const control = button.getBoundingClientRect()
       return {
-        text: {
-          left: text.left,
-          right: text.right,
-          top: text.top,
-          bottom: text.bottom,
+        icon: {
+          left: icon.left,
+          right: icon.right,
+          top: icon.top,
+          bottom: icon.bottom,
         },
         control: {
           left: control.left,
@@ -170,10 +162,10 @@ async function expectThemeFeedbackInsideButton(page: Page): Promise<void> {
   expect(bounds!.control.height).toBe(44)
   expect(bounds!.control.left).toBeGreaterThanOrEqual(0)
   expect(bounds!.control.right).toBeLessThanOrEqual(page.viewportSize()!.width)
-  expect(bounds!.text.left).toBeGreaterThanOrEqual(bounds!.control.left)
-  expect(bounds!.text.right).toBeLessThanOrEqual(bounds!.control.right)
-  expect(bounds!.text.top).toBeGreaterThanOrEqual(bounds!.control.top)
-  expect(bounds!.text.bottom).toBeLessThanOrEqual(bounds!.control.bottom)
+  expect(bounds!.icon.left).toBeGreaterThanOrEqual(bounds!.control.left)
+  expect(bounds!.icon.right).toBeLessThanOrEqual(bounds!.control.right)
+  expect(bounds!.icon.top).toBeGreaterThanOrEqual(bounds!.control.top)
+  expect(bounds!.icon.bottom).toBeLessThanOrEqual(bounds!.control.bottom)
 }
 
 for (const surface of [
@@ -185,11 +177,9 @@ for (const surface of [
   },
   { name: "Merchant", url: merchantUrl, width: 390, area: "@merchant" },
 ]) {
-  test(`${surface.name} theme toggle briefly swaps its icon for the selected label ${surface.area}`, async ({
+  test(`${surface.name} theme toggle swaps its icon without text and announces the selection ${surface.area}`, async ({
     page,
   }) => {
-    const clockStart = Date.now()
-    await page.clock.install({ time: clockStart })
     await page.setViewportSize({ width: surface.width, height: 900 })
     await page.emulateMedia({
       colorScheme: "dark",
@@ -203,6 +193,7 @@ for (const surface of [
       "sun-moon"
     )
     await expectSilentThemeFeedback(page)
+    await expect(button).toHaveText("")
     await button.hover()
     await expect(button).toHaveCSS(
       "background-color",
@@ -210,29 +201,22 @@ for (const surface of [
         getComputedStyle(element).getPropertyValue("--surface-elevated").trim()
       )
     )
-    await page.clock.pauseAt(clockStart + 60_000)
     const nightColors = await button.evaluate((element) => {
       const style = getComputedStyle(element)
       return { background: style.backgroundColor, text: style.color }
     })
 
-    const feedback = page.locator("[data-theme-toggle-feedback]")
     const status = page.locator("[data-theme-toggle-status]")
-    const icon = page.locator("[data-theme-toggle-icon]")
+    const toggle = page.locator("[data-theme-toggle-preference]")
     await button.click()
-    await expect(feedback).toHaveText("Day")
-    await expect(feedback).toHaveAttribute("data-state", "visible")
     await expect(status).toHaveText("Appearance set to Day Market.")
     await expect(status).toHaveAttribute("role", "status")
-    await expect(feedback).toHaveCSS("transition-duration", "0.08s")
-    await expect(feedback).toHaveCSS("pointer-events", "none")
-    await page.clock.runFor(240)
-    await expect(feedback).toHaveCSS("opacity", "1")
-    await expect(icon).toHaveCSS("opacity", "0")
-    await expectThemeFeedbackInsideButton(page)
+    await expect(page.locator("[data-theme-toggle-feedback]")).toHaveCount(0)
+    await expect(toggle).toHaveText("")
+    await expectThemeIconInsideButton(page)
     await captureScreenshot(
       page,
-      `${surface.name.toLowerCase()}-day-theme-feedback.png`
+      `${surface.name.toLowerCase()}-day-theme-toggle.png`
     )
 
     const nightButton = await expectThemeToggle(
@@ -249,26 +233,13 @@ for (const surface of [
         return { background: style.backgroundColor, text: style.color }
       })
     expect(selectedNightColors).toEqual(nightColors)
-    await expect(feedback).toHaveCount(1)
-    await expect(feedback).toHaveText("Night")
     await expect(status).toHaveText("Appearance set to Night Market.")
-    await expect(feedback).toHaveCSS("color", nightColors.text)
-    await page.clock.runFor(160)
-    await expect(feedback).toHaveAttribute("data-state", "visible")
-    await expect(feedback).toHaveCSS("opacity", "1")
-    await expect(icon).toHaveCSS("opacity", "0")
-    await expectThemeFeedbackInsideButton(page)
+    await expect(toggle).toHaveText("")
+    await expectThemeIconInsideButton(page)
     await captureScreenshot(
       page,
-      `${surface.name.toLowerCase()}-night-theme-feedback.png`
+      `${surface.name.toLowerCase()}-night-theme-toggle.png`
     )
-    await page.clock.runFor(159)
-    await expect(feedback).toHaveAttribute("data-state", "visible")
-    await page.clock.runFor(1)
-    await expect(feedback).toHaveAttribute("data-state", "hidden")
-    await page.clock.runFor(80)
-    await expect(feedback).toHaveCSS("opacity", "0")
-    await expect(icon).toHaveCSS("opacity", "1")
 
     const systemButton = await expectThemeToggle(
       page,
@@ -278,43 +249,29 @@ for (const surface of [
     )
     await systemButton.focus()
     await page.keyboard.press("Enter")
-    await expect(feedback).toHaveText("System")
     await expect(status).toHaveText("Appearance set to System.")
     await expect(
       page.getByRole("button", {
         name: "Appearance: System. Switch to Day Market",
       })
     ).toBeFocused()
-    await page.clock.runFor(80)
-    await expect(feedback).toHaveCSS("opacity", "1")
-    await expect(icon).toHaveCSS("opacity", "0")
     for (const width of [320, 390, 1440]) {
       await page.setViewportSize({ width, height: 900 })
-      await expectThemeFeedbackInsideButton(page)
+      await expectThemeIconInsideButton(page)
       await captureScreenshot(
         page,
-        `${surface.name.toLowerCase()}-${width}-system-theme-feedback.png`
+        `${surface.name.toLowerCase()}-${width}-system-theme-toggle.png`
       )
     }
     await page.setViewportSize({ width: surface.width, height: 900 })
 
-    await page.clock.runFor(400)
-    await expect(feedback).toHaveCSS("opacity", "0")
-    await expect(icon).toHaveCSS("opacity", "1")
     await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" })
     await expectResolvedTheme(page, "day-market", "light")
-    await expect(feedback).toHaveAttribute("data-state", "hidden")
     await expect(status).toHaveText("Appearance set to System.")
-    await expect(feedback).toHaveCSS("transition-property", "none")
-    await expect(icon).toHaveCSS("transition-property", "none")
 
     await page.keyboard.press("Space")
-    await expect(feedback).toHaveText("Day")
-    await expect(feedback).toHaveCSS("opacity", "1")
-    await expect(icon).toHaveCSS("opacity", "0")
-    await page.clock.runFor(320)
-    await expect(feedback).toHaveCSS("opacity", "0")
-    await expect(icon).toHaveCSS("opacity", "1")
+    await expect(status).toHaveText("Appearance set to Day Market.")
+    await expectThemeToggle(page, "day-market", "night-market", "sun")
   })
 }
 
