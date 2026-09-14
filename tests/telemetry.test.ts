@@ -938,6 +938,28 @@ describe("browser telemetry", () => {
       repair_outcome: "not_applicable",
       block_reason: "not_applicable",
     })
+
+    expect(
+      sanitizeTelemetryEventProperties({
+        app: "market",
+        eventName: "nip17_compatibility_result",
+        properties: buildNip17CompatibilityResultTelemetryProperties({
+          action: "order_delivery",
+          declarationClass: "declared",
+          deliveryRoute: "blocked",
+          ackOutcome: "not_applicable",
+          repairOutcome: "not_applicable",
+          blockReason: "recipient_relays_excluded",
+        }),
+      })
+    ).toMatchObject({
+      action: "order_delivery",
+      declaration_class: "declared",
+      delivery_route: "blocked",
+      ack_outcome: "not_applicable",
+      repair_outcome: "not_applicable",
+      block_reason: "recipient_relays_excluded",
+    })
   })
 
   it("drops events with invalid or event-incompatible properties", () => {

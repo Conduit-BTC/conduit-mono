@@ -26,12 +26,10 @@ import {
   mergeInboxDeclarationEvidence,
   parseDirectMessageRumor,
   parsePrivateMessageRelays,
-  planInboxReadRelays,
   PrivateMessageRelayReadinessError,
   publishPrivateMessage,
   RelayPublishDiagnosticsError,
   resolveInboxDeclaration,
-  selectPrivateMessageDeliveryRoute,
   sharedInboxDiscoveryRelayUrls,
   unwrapGiftWrap,
   type GiftUnwrapFn,
@@ -805,6 +803,7 @@ describe("publishPrivateMessage", () => {
     let wraps = 0
     let publishes = 0
     let compatibilityLookups = 0
+    const outcomes: unknown[] = []
 
     await expect(
       publishPrivateMessage({
@@ -824,6 +823,7 @@ describe("publishPrivateMessage", () => {
           enabled: true,
           relayUrls: [compatibilityRelayUrl],
         },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         resolveCompatibilityRecipientReadRelays: async () => {
           compatibilityLookups += 1
           return [compatibilityRelayUrl]
@@ -841,6 +841,16 @@ describe("publishPrivateMessage", () => {
     expect(compatibilityLookups).toBe(0)
     expect(wraps).toBe(0)
     expect(publishes).toBe(0)
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "declared",
+        deliveryRoute: "blocked",
+        ackOutcome: "not_applicable",
+        repairOutcome: "not_applicable",
+        blockReason: "recipient_relays_excluded",
+      },
+    ])
   })
 
   it("requires an explicit account scope to match the sender", async () => {

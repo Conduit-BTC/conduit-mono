@@ -1055,6 +1055,14 @@ export async function publishPrivateMessage(
     // Keep a valid kind:10050 declaration authoritative even when local policy
     // excludes every target. Do not reinterpret it as missing and activate the
     // non-standard compatibility lane.
+    recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
+      action: "order_delivery",
+      declarationClass: "declared",
+      deliveryRoute: "blocked",
+      ackOutcome: "not_applicable",
+      repairOutcome: "not_applicable",
+      blockReason: "recipient_relays_excluded",
+    })
     throw new PrivateMessageRelayReadinessError("recipient_relays_excluded")
   }
   const compatibilityRecipientReadRelays =

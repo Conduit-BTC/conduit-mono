@@ -32,6 +32,7 @@ export type Nip17RepairTelemetryOutcome =
 export type Nip17BlockTelemetryReason =
   | "sender_not_ready"
   | "recipient_not_ready"
+  | "recipient_relays_excluded"
   | "recipient_lookup_failed"
   | "recipient_declaration_distribution_pending"
   | "recipient_declaration_signed_empty"
