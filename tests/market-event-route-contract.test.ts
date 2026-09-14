@@ -88,18 +88,16 @@ describe("Market event catalog route", () => {
   })
 
   it("keeps variable parent acceptance separate from exact child authority", async () => {
-    const [route, adapter, browse] = await Promise.all([
+    const [route, adapter] = await Promise.all([
       Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
       Bun.file("apps/market/src/lib/event-market-adapter.ts").text(),
-      Bun.file("apps/market/src/lib/event-catalog-browse.ts").text(),
     ])
 
     expect(adapter).toContain("buildEventCatalogFamilyPickupFulfillments")
     expect(adapter).toContain("buildPickupFulfillmentSnapshot(")
     expect(route).toContain("entry.familyPickupFulfillments?.[")
-    expect(route).toContain("getEventCatalogAuthorizedFamily(entry)")
-    expect(browse).toContain("authorizedChildren")
-    expect(browse).toContain("prepareProductCatalog(")
+    expect(route).toContain("const family = entry.family")
+    expect(route).not.toContain("authorizedChildren")
     expect(route).toContain("selectedProduct.id === product.id")
     expect(route).toContain('product.type !== "variable"')
     expect(route).toContain("cartItemInputFromProductSelection(")
