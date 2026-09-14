@@ -348,6 +348,7 @@ export function MarketHeader() {
   const currentQuery = typeof search.q === "string" ? search.q : ""
   const isSellersRoute = pathname === "/sellers"
   const isBrowseRoute = pathname === "/products" || isSellersRoute
+  /** Typing filters the browse page you are on. Enter always searches products. */
   const searchRoute = isSellersRoute ? "/sellers" : "/products"
   const connected = status === "connected" && !!pubkey
   const authPending = status === "connecting" || status === "restoring"
@@ -506,11 +507,11 @@ export function MarketHeader() {
 
   function submitSearch(): void {
     navigate({
-      to: searchRoute,
+      to: "/products",
       search: {
         q: normalizedSearchValue || undefined,
       },
-      replace: isBrowseRoute,
+      replace: pathname === "/products",
     })
     setSearchDirty(false)
   }
@@ -606,11 +607,13 @@ export function MarketHeader() {
                   }
                   footer={
                     accountEvidence ??
-                    (isBrowseRoute ? null : "Press Enter to search products")
+                    (pathname === "/products"
+                      ? null
+                      : "Press Enter to search products")
                   }
                 />
               </div>
-            ) : !isBrowseRoute &&
+            ) : pathname !== "/products" &&
               searchDirty &&
               normalizedSearchValue.length > 0 ? (
               <div className="pointer-events-none absolute left-1 top-full mt-1 text-[11px] text-[var(--text-muted)]">

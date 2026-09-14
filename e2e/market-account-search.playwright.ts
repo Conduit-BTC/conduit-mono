@@ -150,3 +150,27 @@ test("sellers tab lists discovered storefronts and filters by name @market", asy
     page.locator('section[aria-labelledby="network-accounts-heading"]')
   ).toBeVisible()
 })
+
+test("sellers page filters while typing and still submits a product search @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, SELLER_PUBKEY)
+  await page.goto("http://127.0.0.1:7000/products")
+  await seedAccounts(page)
+  await page.goto("http://127.0.0.1:7000/sellers?source=combined")
+
+  const input = page.getByRole("combobox", {
+    name: "Search products and accounts",
+  })
+  await input.fill("alice")
+  await expect(page).toHaveURL(/\/sellers\?.*q=alice/)
+  await expect(
+    page
+      .locator('section[aria-labelledby="discovered-sellers-heading"]')
+      .getByRole("link", { name: /Alice Storefront/ })
+  ).toBeVisible()
+
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Enter")
+  await expect(page).toHaveURL(/\/products\?q=alice$/)
+})
