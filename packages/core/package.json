@@ -34,7 +34,7 @@
     "@nostr-dev-kit/ndk": "^3.0.3",
     "clsx": "^2.1.1",
     "country-list": "^2.4.1",
-    "dexie": "^4.4.5",
+    "dexie": "^4.4.6",
     "libphonenumber-js": "^1.13.12",
     "nostr-tools": "2.25.2",
     "posthog-js": "^1.427.2",
