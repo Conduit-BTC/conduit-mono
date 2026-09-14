@@ -222,6 +222,7 @@ describe("Market wallet route contracts", () => {
     expect(content).not.toContain("balanceMsats")
     expect(content).not.toContain("refreshBalance: true")
     expect(content).toContain('label="Wallets"')
+    expect(content).not.toMatch(/<HeaderAction\s+label="Wallets"/)
   })
 
   it("keeps header destinations named and current without crowding narrow screens", async () => {
