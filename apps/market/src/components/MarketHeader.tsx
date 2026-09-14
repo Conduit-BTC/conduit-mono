@@ -20,7 +20,13 @@ import {
   type ReactNode,
 } from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
-import { config, formatNpub, useAuth, useProfile } from "@conduit/core"
+import {
+  config,
+  formatNpub,
+  useAuth,
+  useProfile,
+  useProfileSearch,
+} from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
@@ -32,12 +38,23 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Input,
+  SearchSuggestions,
   ThemeToggleButton,
   cn,
+  getSearchSuggestionInputProps,
+  useSearchSuggestionKeyboard,
 } from "@conduit/ui"
 
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
+import {
+  ACCOUNT_SUGGESTION_LIMIT,
+  describeAccountSearchEvidence,
+  getAccountSuggestionTarget,
+  toAccountSuggestionItems,
+} from "../lib/accountSearch"
+
+const ACCOUNT_SUGGESTIONS_LISTBOX_ID = "market-account-suggestions"
 
 type NavState = "top" | "scrolled" | "hidden"
 
@@ -324,9 +341,13 @@ export function MarketHeader() {
   const [searchDirty, setSearchDirty] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [navState, setNavState] = useState<NavState>("top")
+  const [searchFocused, setSearchFocused] = useState(false)
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false)
+  const [activeSuggestion, setActiveSuggestion] = useState(-1)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const currentQuery = typeof search.q === "string" ? search.q : ""
   const isBrowseRoute = pathname === "/products"
+  const searchRoute = "/products" as const
   const connected = status === "connected" && !!pubkey
   const authPending = status === "connecting" || status === "restoring"
   const displayName = connected
@@ -338,6 +359,47 @@ export function MarketHeader() {
       isBrowseRoute && searchDirty && normalizedSearchValue !== currentQuery,
     [currentQuery, isBrowseRoute, normalizedSearchValue, searchDirty]
   )
+  const accountSearch = useProfileSearch(searchValue, {
+    enabled: searchFocused && searchDirty && !suggestionsDismissed,
+    limit: ACCOUNT_SUGGESTION_LIMIT,
+  })
+  const accountMatches = accountSearch.data?.matches
+  const accountItems = useMemo(
+    () => toAccountSuggestionItems(accountMatches ?? []),
+    [accountMatches]
+  )
+  const suggestionsOpen =
+    searchFocused &&
+    searchDirty &&
+    !suggestionsDismissed &&
+    accountSearch.settledQuery.length > 0 &&
+    (accountItems.length > 0 ||
+      !!accountSearch.data ||
+      accountSearch.isFetching)
+  const accountEvidence = describeAccountSearchEvidence(accountSearch.data)
+
+  useEffect(() => {
+    setActiveSuggestion(-1)
+  }, [accountSearch.settledQuery, accountItems.length])
+
+  function selectAccountSuggestion(index: number): void {
+    const match = accountMatches?.[index]
+    if (!match) return
+    setSuggestionsDismissed(true)
+    setSearchDirty(false)
+    setSearchValue("")
+    searchInputRef.current?.blur()
+    void navigate(getAccountSuggestionTarget(match))
+  }
+
+  const onSearchKeyDown = useSearchSuggestionKeyboard({
+    open: suggestionsOpen,
+    count: accountItems.length,
+    activeIndex: activeSuggestion,
+    onActiveIndexChange: setActiveSuggestion,
+    onSelectActive: () => selectAccountSuggestion(activeSuggestion),
+    onDismiss: () => setSuggestionsDismissed(true),
+  })
 
   useEffect(() => {
     // Mirror the URL query into the input only when the user isn't actively
@@ -423,7 +485,7 @@ export function MarketHeader() {
       }
 
       navigate({
-        to: "/products",
+        to: searchRoute,
         search: {
           q: normalizedSearchValue || undefined,
         },
@@ -438,15 +500,16 @@ export function MarketHeader() {
     navigate,
     normalizedSearchValue,
     searchDirty,
+    searchRoute,
   ])
 
   function submitSearch(): void {
     navigate({
-      to: "/products",
+      to: searchRoute,
       search: {
         q: normalizedSearchValue || undefined,
       },
-      replace: pathname === "/products",
+      replace: isBrowseRoute,
     })
     setSearchDirty(false)
   }
@@ -501,10 +564,20 @@ export function MarketHeader() {
               onChange={(event) => {
                 setSearchValue(event.target.value)
                 setSearchDirty(true)
+                setSuggestionsDismissed(false)
               }}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setSearchFocused(false)}
+              onKeyDown={onSearchKeyDown}
               placeholder="Search"
-              aria-label="Search products"
+              aria-label="Search products and accounts"
+              autoComplete="off"
               className="h-11 bg-[var(--surface-elevated)] pl-9 pr-9 focus-visible:ring-offset-0"
+              {...getSearchSuggestionInputProps({
+                listboxId: ACCOUNT_SUGGESTIONS_LISTBOX_ID,
+                open: suggestionsOpen,
+                activeIndex: activeSuggestion,
+              })}
             />
             <div className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 text-[var(--text-muted)]">
               {pendingSearch ? (
@@ -516,13 +589,33 @@ export function MarketHeader() {
                 </span>
               )}
             </div>
-            {!isBrowseRoute &&
+            {suggestionsOpen ? (
+              <div className="absolute inset-x-0 top-full z-50 mt-2">
+                <SearchSuggestions
+                  id={ACCOUNT_SUGGESTIONS_LISTBOX_ID}
+                  heading="Accounts"
+                  ariaLabel="Matching accounts"
+                  items={accountItems}
+                  activeIndex={activeSuggestion}
+                  onActiveIndexChange={setActiveSuggestion}
+                  onSelect={(_item, index) => selectAccountSuggestion(index)}
+                  loading={accountSearch.isFetching}
+                  emptyMessage={
+                    accountSearch.isFetching ? "Searching accounts..." : null
+                  }
+                  footer={
+                    accountEvidence ??
+                    (isBrowseRoute ? null : "Press Enter to search products")
+                  }
+                />
+              </div>
+            ) : !isBrowseRoute &&
               searchDirty &&
-              normalizedSearchValue.length > 0 && (
-                <div className="pointer-events-none absolute left-1 top-full mt-1 text-[11px] text-[var(--text-muted)]">
-                  Press Enter to search
-                </div>
-              )}
+              normalizedSearchValue.length > 0 ? (
+              <div className="pointer-events-none absolute left-1 top-full mt-1 text-[11px] text-[var(--text-muted)]">
+                Press Enter to search
+              </div>
+            ) : null}
           </form>
         </div>
 
