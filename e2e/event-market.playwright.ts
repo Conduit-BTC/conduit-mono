@@ -2066,31 +2066,6 @@ test("event catalog shops products by search, merchant, and sort before technica
     expect(firstProductBounds!.y).toBeLessThan(technicalBounds!.y)
     // The first product is close to the header even with 26 pickup records.
     expect(firstProductBounds!.y).toBeLessThan(viewport.height * 1.5)
-    if (process.env.PLAYWRIGHT_EVENT_LAYOUT_SCREENSHOTS === "true") {
-      if (viewport.name === "mobile") {
-        await search.fill("mug")
-        await expect(titles).toHaveText(["Amber Mug", "Cedar Mug"])
-      }
-      await page.evaluate(() =>
-        window.scrollTo({ top: 0, behavior: "instant" })
-      )
-      const screenshotOptions =
-        viewport.name === "mobile"
-          ? { fullPage: true }
-          : { clip: { x: 0, y: 0, width: viewport.width, height: 1200 } }
-      await page.emulateMedia({ colorScheme: "light" })
-      await page.screenshot({
-        path: `context/event-layout-${viewport.name}-light.png`,
-        animations: "disabled",
-        ...screenshotOptions,
-      })
-      await page.emulateMedia({ colorScheme: "dark" })
-      await page.screenshot({
-        path: `context/event-layout-${viewport.name}.png`,
-        animations: "disabled",
-        ...screenshotOptions,
-      })
-    }
   }
   await technicalSummary.focus()
   await technicalSummary.press("Enter")
