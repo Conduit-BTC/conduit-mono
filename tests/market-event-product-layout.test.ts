@@ -6,10 +6,11 @@ async function source(path: string): Promise<string> {
 
 describe("Market event product layout", () => {
   it("shares the standard responsive product grid with the main catalog", async () => {
-    const [card, products, event] = await Promise.all([
+    const [card, products, event, browser] = await Promise.all([
       source("apps/market/src/components/ProductGridCard.tsx"),
       source("apps/market/src/routes/products/index.tsx"),
       source("apps/market/src/routes/events/$collectionRef.tsx"),
+      source("apps/market/src/components/EventCatalogBrowser.tsx"),
     ])
 
     expect(card).toContain("export const PRODUCT_GRID_CLASS_NAME")
@@ -19,8 +20,12 @@ describe("Market event product layout", () => {
     expect(products.match(/className={PRODUCT_GRID_CLASS_NAME}/g)?.length).toBe(
       2
     )
-    expect(event).toContain("className={`mt-6 ${PRODUCT_GRID_CLASS_NAME}`}")
-    expect(event).not.toContain(
+    expect(event).toContain("<EventCatalogBrowser")
+    expect(browser).toContain(
+      'import { PRODUCT_GRID_CLASS_NAME } from "./ProductGridCard"'
+    )
+    expect(browser).toContain("<ul className={PRODUCT_GRID_CLASS_NAME}>")
+    expect(browser).not.toContain(
       'className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3"'
     )
   })
