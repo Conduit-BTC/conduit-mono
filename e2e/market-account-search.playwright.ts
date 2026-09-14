@@ -151,7 +151,7 @@ test("sellers tab lists discovered storefronts and filters by name @market", asy
   ).toBeVisible()
 })
 
-test("sellers page filters while typing and still submits a product search @market", async ({
+test("sellers search stays on the sellers page and keeps its perspective @market", async ({
   page,
 }) => {
   await installTestSigner(page, SELLER_PUBKEY)
@@ -173,5 +173,11 @@ test("sellers page filters while typing and still submits a product search @mark
 
   await page.keyboard.press("Escape")
   await page.keyboard.press("Enter")
-  await expect(page).toHaveURL(/\/products\?q=alice$/)
+  await expect(page).toHaveURL(/\/sellers\?.*q=alice/)
+  await expect(page).toHaveURL(/source=combined/)
+  await expect(
+    page
+      .locator('section[aria-labelledby="discovered-sellers-heading"]')
+      .getByRole("link", { name: /Alice Storefront/ })
+  ).toBeVisible()
 })
