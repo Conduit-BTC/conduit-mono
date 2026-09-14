@@ -25,7 +25,6 @@ import {
   getWalletNetworkFromLightningConfig,
   hasWebLN,
   listOrderLifecycles,
-  normalizeLightningInvoice,
   ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
   pruneExpiredGuestOrderData,
   prepareProtectedReadRefreshState,
@@ -68,8 +67,6 @@ import {
 } from "@conduit/ui"
 import {
   ChevronRight,
-  Copy,
-  ExternalLink,
   LoaderCircle,
   MapPin,
   MessageCircle,
@@ -77,7 +74,7 @@ import {
   RotateCw,
   ShoppingBag,
 } from "lucide-react"
-import { QRCodeSVG } from "qrcode.react"
+import { InvoicePayment } from "../components/InvoicePayment"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CopyButton } from "../components/CopyButton"
 import {
@@ -654,6 +651,7 @@ function ExternalWalletPanel({
   busy,
   guestSession,
   autoDetectReceipt,
+  pricing,
 }: {
   vm: OrderViewModel
   onMarkPaid: () => void
@@ -664,8 +662,8 @@ function ExternalWalletPanel({
   busy: boolean
   guestSession: boolean
   autoDetectReceipt: boolean
+  pricing: ReturnType<typeof useShopperPricing>
 }) {
-  const [copied, setCopied] = useState(false)
   const [nowSeconds, setNowSeconds] = useState(() =>
     Math.floor(Date.now() / 1_000)
   )
@@ -754,17 +752,6 @@ function ExternalWalletPanel({
       </section>
     )
   }
-  const bolt11 = normalizeLightningInvoice(invoice)
-  const copy = async () => {
-    if (!onBeforeInvoiceUse()) return
-    try {
-      await navigator.clipboard.writeText(invoice)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      /* clipboard unavailable */
-    }
-  }
   return (
     <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
       <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
@@ -786,57 +773,37 @@ function ExternalWalletPanel({
             : "Keep this tab open until the payment is reported. Closing it ends local access to this guest order. The merchant can use the private recovery contact submitted at checkout."}
         </p>
       )}
-      <div className="mt-4 flex flex-col items-start gap-4 sm:flex-row">
-        <div className="rounded-xl bg-white p-3">
-          <QRCodeSVG value={bolt11} size={156} level="M" />
-        </div>
-        <div className="min-w-0 flex-1 space-y-3">
-          <div className="flex flex-wrap gap-2">
-            <Button asChild className="h-10 px-4 text-sm">
-              <a
-                href={`lightning:${bolt11}`}
-                onClick={(event) => {
-                  if (!onBeforeInvoiceUse()) event.preventDefault()
-                }}
-              >
-                <ExternalLink className="h-4 w-4" />
-                Open in wallet
-              </a>
-            </Button>
+      <InvoicePayment
+        key={invoice}
+        invoice={invoice}
+        expectedAmountSats={vm.totalSats}
+        preference={pricing.preference}
+        quote={pricing.quote}
+        guestSession={guestSession}
+        onBeforeInvoiceUse={onBeforeInvoiceUse}
+      />
+      <div className="mt-4 space-y-3">
+        {autoDetectReceipt ? (
+          <p className="text-xs leading-5 text-[var(--text-secondary)]">
+            Waiting for the matching receipt. If your wallet confirms payment,
+            do not pay this invoice again while detection completes.
+          </p>
+        ) : (
+          <>
             <Button
-              variant="outline"
+              variant="primary"
               className="h-10 px-4 text-sm"
-              onClick={copy}
+              disabled={busy}
+              onClick={onMarkPaid}
             >
-              <Copy className="h-4 w-4" />
-              {copied ? "Copied" : "Copy invoice"}
+              Report payment to merchant
             </Button>
-          </div>
-          <div className="max-h-24 overflow-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 font-mono text-xs leading-5 break-all text-[var(--text-secondary)]">
-            {invoice}
-          </div>
-          {autoDetectReceipt ? (
-            <p className="text-xs leading-5 text-[var(--text-secondary)]">
-              Waiting for the matching receipt. If your wallet confirms payment,
-              do not pay this invoice again while detection completes.
+            <p className="text-xs text-[var(--text-secondary)]">
+              Only report after your wallet confirms payment. This does not
+              verify settlement; the merchant will confirm it.
             </p>
-          ) : (
-            <>
-              <Button
-                variant="primary"
-                className="h-10 px-4 text-sm"
-                disabled={busy}
-                onClick={onMarkPaid}
-              >
-                Report payment to merchant
-              </Button>
-              <p className="text-xs text-[var(--text-secondary)]">
-                Only report after your wallet confirms payment. This does not
-                verify settlement; the merchant will confirm it.
-              </p>
-            </>
-          )}
-        </div>
+          </>
+        )}
       </div>
     </section>
   )
@@ -1467,6 +1434,7 @@ function OrderDetail({
           </StatusNotice>
           <ExternalWalletPanel
             vm={vm}
+            pricing={shopperPricing}
             busy={busy}
             guestSession={!!guestIdentity}
             autoDetectReceipt={autoDetectPublicReceipt}

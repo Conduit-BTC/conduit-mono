@@ -6,12 +6,13 @@ describe("merchant invoice route contract", () => {
     const prepareGate = source.indexOf(
       'merchantInvoice?.status === "payable" && !merchantInvoicePrepared'
     )
-    const qrControl = source.indexOf("<QRCodeSVG")
+    const invoiceControls = source.indexOf("<InvoicePayment")
 
     expect(source).toContain("prepareMerchantInvoicePaymentAction")
     expect(source).toContain("Use merchant invoice")
     expect(prepareGate).toBeGreaterThan(-1)
-    expect(qrControl).toBeGreaterThan(prepareGate)
+    expect(invoiceControls).toBeGreaterThan(prepareGate)
+    expect(source).toContain("onBeforeInvoiceUse={onBeforeInvoiceUse}")
     expect(source).toContain("Do not pay this invoice.")
     expect(source).toContain('boundMerchantInvoiceAccess !== "closed"')
     expect(source).toContain('boundMerchantInvoiceAccess !== "report_only"')
