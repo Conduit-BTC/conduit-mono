@@ -74,7 +74,11 @@ export async function readEventCatalogProducts(
         const ids = new Set(groups[index])
         snapshots.set(index, {
           ...cached,
-          data: cached.data.filter((record) => ids.has(record.product.id)),
+          data: cached.data.filter(
+            (record) =>
+              ids.has(record.product.id) ||
+              record.family?.children.some((child) => ids.has(child.product.id))
+          ),
           diagnostics: [...ids].map((productId) => ({
             productId,
             addressId: productId,

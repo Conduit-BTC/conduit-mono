@@ -369,6 +369,120 @@ describe("shared progressive event catalogs", () => {
     }
   })
 
+  it("keeps a child-only cached family visible while its merchant read is queued", async () => {
+    const parent = product({
+      type: "variable",
+      images: [],
+      visibility: "private",
+    })
+    const child = product({
+      id: `30402:${merchant}:small`,
+      type: "variation",
+      visibility: "private",
+      parentProductId: parent.id,
+      specifications: [{ key: "size", value: "Small" }],
+    })
+    const prepared = prepareProductCatalog(
+      [commerceRecord(parent), commerceRecord(child)],
+      {
+        source: "local_cache",
+        stale: true,
+        degraded: true,
+        capped: false,
+        fetchedAt: 1,
+      }
+    ).items[0]
+    if (prepared?.kind !== "family") throw new Error("Expected cached family")
+    const family = { ...prepared.family.parent, family: prepared.family }
+    const resolution = market()
+    resolution.organizerProductCoordinates = [child.id]
+    resolution.acceptedProductCoordinates = [child.id]
+    resolution.acceptedProductEvidence = [
+      {
+        ...resolution.acceptedProductEvidence[0]!,
+        productCoordinate: child.id,
+      },
+    ]
+    const queuedBehind = ["c", "d", "e", "f"].map(
+      (key) => `30402:${key.repeat(64)}:other`
+    )
+    const held = deferred<ProductsByIdsResult>()
+    const queued = deferred<void>()
+    const started: string[] = []
+    const snapshots: ProductsByIdsResult[] = []
+    const running = readEventCatalogProducts(
+      [...queuedBehind, child.id],
+      {
+        onProgress: (snapshot) => snapshots.push(snapshot),
+      },
+      async (ids) => {
+        started.push(ids[0]!)
+        if (started.length === 4) queued.resolve()
+        return ids.includes(child.id)
+          ? {
+              ...productRead({ product: child }),
+              data: [
+                {
+                  ...commerceRecord(child),
+                  safety: evaluateListingSafety(child, undefined, {
+                    variationGroupRole: "variation",
+                    hasGroupImage: true,
+                  }),
+                },
+              ],
+            }
+          : held.promise
+      },
+      async () => ({
+        data: [family],
+        meta: {
+          ...productRead().meta,
+          source: "local_cache",
+          stale: true,
+          degraded: true,
+        },
+      })
+    )
+    try {
+      await queued.promise
+      expect(started).not.toContain(child.id)
+      expect(snapshots).not.toHaveLength(0)
+      for (const snapshot of snapshots) {
+        const retained = projectRawEventCatalog({
+          reference: collectionCoordinate,
+          resolution,
+          result: snapshot,
+          resolutionComplete: true,
+          complete: false,
+        })
+        expect(retained.products.map((entry) => entry.product.id)).toEqual([
+          child.id,
+        ])
+        expect(retained.products[0]?.pickupFulfillment).toBeNull()
+        expect(
+          snapshot.diagnostics.find((entry) => entry.productId === child.id)
+            ?.issue
+        ).toBe("cached_only")
+        expect(
+          snapshot.diagnostics.some((entry) => entry.productId === parent.id)
+        ).toBe(false)
+      }
+    } finally {
+      held.resolve({ ...productRead(), data: [], diagnostics: [] })
+      await running
+    }
+    const complete = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution,
+      result: await running,
+      complete: true,
+    })
+    expect(complete.products.map((entry) => entry.product.id)).toEqual([
+      child.id,
+    ])
+    expect(complete.products[0]?.pickupFulfillment).not.toBeNull()
+  })
+
   it("does not reuse canceled progressive authorization before a remounted read emits evidence", async () => {
     const client = new QueryClient()
     const first = deferred<RawEventCatalog>()
