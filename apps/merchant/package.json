@@ -20,7 +20,7 @@
     "country-list": "^2.4.1",
     "lucide-react": "^1.41.0",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8",
+    "react-dom": "^19.3.0",
     "react-hook-form": "^7.87.0",
     "zod": "^4.5.4"
   },
@@ -33,7 +33,7 @@
     "@tailwindcss/postcss": "^4.3.3",
     "@types/country-list": "^2.1.4",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react-swc": "^4.3.3",
     "postcss": "^8.5.28",
     "tailwindcss": "^4.3.3",
