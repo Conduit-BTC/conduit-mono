@@ -86,6 +86,7 @@ function HeaderAction({
   className,
   labelClassName = "hidden xl:inline",
   count,
+  badge,
   onClick,
 }: {
   label: string
@@ -96,6 +97,8 @@ function HeaderAction({
   className?: string
   labelClassName?: string
   count?: number
+  /** Count pinned to the icon's top-right corner; hidden at zero. */
+  badge?: number
   onClick: () => void
 }) {
   return (
@@ -116,7 +119,21 @@ function HeaderAction({
         className
       )}
     >
-      {icon}
+      {typeof badge === "number" ? (
+        <span className="relative inline-flex">
+          {icon}
+          {badge > 0 ? (
+            <span
+              aria-hidden="true"
+              className="absolute -right-2.5 -top-2 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary-500 px-1 text-[10px] font-semibold leading-none tabular-nums text-white"
+            >
+              {badge > 99 ? "99+" : badge}
+            </span>
+          ) : null}
+        </span>
+      ) : (
+        icon
+      )}
       <span className={labelClassName}>{label}</span>
       {typeof count === "number" ? (
         <span className="tabular-nums text-[var(--text-muted)]">({count})</span>
@@ -560,10 +577,10 @@ export function MarketHeader() {
             ariaLabel={`Cart, ${cart.totals.count} ${
               cart.totals.count === 1 ? "item" : "items"
             }`}
-            icon={<ShoppingCart className="size-4" aria-hidden="true" />}
+            icon={<ShoppingCart className="size-6" aria-hidden="true" />}
             active={pathname === "/cart"}
-            labelClassName="hidden sm:inline"
-            count={cart.totals.count}
+            labelClassName="sr-only"
+            badge={cart.totals.count}
             onClick={() => void navigate({ to: "/cart" })}
           />
         </nav>
