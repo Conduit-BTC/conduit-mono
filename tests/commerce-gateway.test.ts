@@ -4033,6 +4033,7 @@ describe("commerce gateway", () => {
       stale: false,
       degraded: false,
       capped: false,
+      profileFrontierStates: { merchant: "observed_malformed" },
     })
 
     const paymentResult = await getProfiles({
@@ -4049,6 +4050,7 @@ describe("commerce gateway", () => {
       stale: false,
       degraded: true,
       capped: false,
+      profileFrontierStates: { merchant: "observed_malformed" },
     })
 
     __setCommerceTestOverrides({
@@ -4679,11 +4681,13 @@ describe("commerce gateway", () => {
       source: "public",
       stale: false,
       degraded: false,
+      profileFrontierStates: { merchant: "observed_valid" },
     })
     expect(secondResult.meta).toMatchObject({
       source: "public",
       stale: false,
       degraded: false,
+      profileFrontierStates: { merchant: "observed_valid" },
     })
     expect(cachedProfiles.get("merchant")).toMatchObject({
       name: "ZALGEBAR",
@@ -4923,6 +4927,7 @@ describe("commerce gateway", () => {
         source: "public",
         stale: false,
         degraded: false,
+        profileFrontierStates: { merchant: "observed_valid" },
       })
     })
   }
@@ -5162,6 +5167,9 @@ describe("commerce gateway", () => {
 
     expect(result.data["missing-profile"]).toEqual({
       pubkey: "missing-profile",
+    })
+    expect(result.meta.profileFrontierStates).toEqual({
+      "missing-profile": "not_observed",
     })
     expect(cachedProfiles.has("missing-profile")).toBe(false)
   })

@@ -26,7 +26,13 @@ type OrderPaymentAddressDependencies = {
 }
 
 type OrderPaymentAddressCheck =
-  | { status: "unchanged" | "unavailable" | "not_eligible" }
+  | {
+      status:
+        | "unchanged"
+        | "unavailable"
+        | "not_eligible"
+        | "current_address_unusable"
+    }
   | { status: "updated"; update: OrderPaymentAddressUpdate }
 
 /** Check current signed payment evidence without changing the saved order. */
@@ -80,13 +86,23 @@ export async function checkOrderPaymentAddressUpdate(
   assertCurrentSession()
 
   const profile = result.data[merchantPubkey]
-  if (
-    profile?.pubkey !== merchantPubkey ||
-    !hasPositiveMerchantPaymentAddressEvidence({
-      meta: result.meta,
-      lud16: profile.lud16,
-    })
-  ) {
+  if (profile?.pubkey !== merchantPubkey) {
+    return { status: "unavailable" }
+  }
+  const hasPositiveAddress = hasPositiveMerchantPaymentAddressEvidence({
+    meta: result.meta,
+    lud16: profile.lud16,
+  })
+  if (!hasPositiveAddress) {
+    const frontierState = result.meta.profileFrontierStates?.[merchantPubkey]
+    if (
+      result.meta.source === "public" &&
+      !result.meta.stale &&
+      (frontierState === "observed_valid" ||
+        frontierState === "observed_malformed")
+    ) {
+      return { status: "current_address_unusable" }
+    }
     return { status: "unavailable" }
   }
   const newAddress = profile.lud16!.trim().toLowerCase()

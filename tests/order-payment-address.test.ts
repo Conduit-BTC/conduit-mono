@@ -58,6 +58,16 @@ function profileResult(
   }
 }
 
+function observedProfileResult(
+  lud16: string | undefined,
+  frontierState: "observed_valid" | "observed_malformed" = "observed_valid"
+): ProfileResult {
+  const result = profileResult(lud16 ?? "")
+  if (lud16 === undefined) delete result.data[MERCHANT]!.lud16
+  result.meta.profileFrontierStates = { [MERCHANT]: frontierState }
+  return result
+}
+
 describe("checking an updated order payment address", () => {
   it("discovers an updated address for checkout-persisted private manual orders", async () => {
     const result = await checkOrderPaymentAddressUpdate(
@@ -156,6 +166,47 @@ describe("checking an updated order payment address", () => {
         }
       )
     ).toEqual({ status: "unchanged" })
+  })
+
+  it("distinguishes an observed signed removal or unusable address from unavailable evidence", async () => {
+    const partialObservedRemoval = observedProfileResult(undefined)
+    partialObservedRemoval.meta.degraded = true
+    partialObservedRemoval.meta.capped = true
+    for (const result of [
+      observedProfileResult(undefined),
+      observedProfileResult(""),
+      observedProfileResult("not-a-lightning-address"),
+      observedProfileResult(undefined, "observed_malformed"),
+      partialObservedRemoval,
+    ]) {
+      expect(
+        await checkOrderPaymentAddressUpdate(
+          lifecycle(),
+          {},
+          { getProfiles: async () => result }
+        )
+      ).toEqual({ status: "current_address_unusable" })
+    }
+  })
+
+  it("keeps unobserved complete and partial reads in the saved-address retry lane", async () => {
+    for (const freshness of [
+      { degraded: false, capped: false },
+      { degraded: true, capped: true },
+    ]) {
+      const result = profileResult("")
+      delete result.data[MERCHANT]!.lud16
+      Object.assign(result.meta, freshness)
+      result.meta.profileFrontierStates = { [MERCHANT]: "not_observed" }
+
+      expect(
+        await checkOrderPaymentAddressUpdate(
+          lifecycle(),
+          {},
+          { getProfiles: async () => result }
+        )
+      ).toEqual({ status: "unavailable" })
+    }
   })
 
   it("rejects cached, stale, and conflicting retained payment evidence", async () => {

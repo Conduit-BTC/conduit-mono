@@ -1113,6 +1113,11 @@ function OrderDetail({
         setPaymentAddressUpdate({ ctx, update: check.update })
         return
       }
+      if (check.status === "current_address_unusable") {
+        throw new Error(
+          "The merchant's current profile no longer has a usable Lightning address. No invoice was requested."
+        )
+      }
       if (check.status === "unavailable") {
         setRecoveryError(
           "We couldn't check for an updated merchant address. This retry uses the saved address."

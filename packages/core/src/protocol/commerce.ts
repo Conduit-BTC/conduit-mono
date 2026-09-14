@@ -200,7 +200,16 @@ export interface CommerceQueryMeta {
   decryptFailures?: DecryptFailure[]
   /** Deprecated kind-4 failures, kept distinct from NIP-17 gift wraps. */
   legacyDecryptFailures?: LegacyDmDecryptFailure[]
+  /**
+   * Profile-batch only: whether this read observed the selected signed kind-0
+   * frontier for each requested author. `not_observed` is scoped to this read
+   * and must not be treated as global absence.
+   */
+  profileFrontierStates?: Record<string, ProfileFrontierState>
 }
+
+export type ProfileFrontierState =
+  "not_observed" | "observed_valid" | "observed_malformed"
 
 export type CommerceFreshnessMeta = Pick<
   CommerceQueryMeta,
@@ -2565,9 +2574,11 @@ function mergeProfileEvents(
   rowsToCache: CachedProfile[]
   hasResolvedProfile: boolean
   hasInvalidLatestProfile: boolean
+  profileFrontierStates: Record<string, ProfileFrontierState>
 } {
   const profiles = { ...currentProfiles }
   const rowsToCache: CachedProfile[] = []
+  const profileFrontierStates: Record<string, ProfileFrontierState> = {}
   let hasResolvedProfile = false
   let hasInvalidLatestProfile = false
 
@@ -2648,6 +2659,11 @@ function mergeProfileEvents(
     profiles[pubkey] = profile ?? { pubkey }
     const observedFrontier =
       frontier ?? (exactCurrentFrontierObserved ? latestEvent : undefined)
+    profileFrontierStates[pubkey] = !observedFrontier
+      ? "not_observed"
+      : hasValidProfileEventContent(observedFrontier.content)
+        ? "observed_valid"
+        : "observed_malformed"
     if (observedFrontier || (profile && hasProfileContent(profile))) {
       if (event) hasResolvedProfile = true
       const cachedProfile = profile ?? { pubkey }
@@ -2677,6 +2693,7 @@ function mergeProfileEvents(
     rowsToCache,
     hasResolvedProfile,
     hasInvalidLatestProfile,
+    profileFrontierStates,
   }
 }
 
@@ -5041,7 +5058,10 @@ export async function getProfiles(
 
       query.onProgress({
         data: progress.profiles,
-        meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+        meta: {
+          ...createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+          profileFrontierStates: progress.profileFrontierStates,
+        },
       })
     }
     let evidenceDegraded =
@@ -5072,8 +5092,12 @@ export async function getProfiles(
       }
     }
 
-    const { profiles, rowsToCache, hasInvalidLatestProfile } =
-      mergeProfileEvents(missing, result, events, cachedRowsByPubkey)
+    const {
+      profiles,
+      rowsToCache,
+      hasInvalidLatestProfile,
+      profileFrontierStates,
+    } = mergeProfileEvents(missing, result, events, cachedRowsByPubkey)
     // A fully observed malformed kind-0 must stay unusable as payment or
     // display authority, but it cannot permanently lock its owner out of the
     // repair surface. Only an explicitly complete profile-edit read may
@@ -5128,16 +5152,19 @@ export async function getProfiles(
 
     return {
       data: result,
-      meta: createMeta(
-        "profile_batch",
-        dependsOnCache ? "local_cache" : "public",
-        PROFILE_CAPABILITIES,
-        {
-          stale,
-          degraded: stale || evidenceDegraded,
-          capped: evidenceCapped,
-        }
-      ),
+      meta: {
+        ...createMeta(
+          "profile_batch",
+          dependsOnCache ? "local_cache" : "public",
+          PROFILE_CAPABILITIES,
+          {
+            stale,
+            degraded: stale || evidenceDegraded,
+            capped: evidenceCapped,
+          }
+        ),
+        profileFrontierStates,
+      },
     }
   } catch (error) {
     if (query.shouldContinue?.() === false) throw error

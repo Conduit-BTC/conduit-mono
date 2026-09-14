@@ -489,7 +489,7 @@ async function prepareUpdatedPaymentAddress(
   const merchantSecret = generateSecretKey()
   const merchantPubkey = getPublicKey(merchantSecret)
   let profileTimestamp = Math.floor(Date.now() / 1000)
-  const publishAddress = async (address: string) => {
+  const publishAddress = async (address?: string) => {
     await publishTestRelayEvents([
       finalizeEvent(
         {
@@ -498,7 +498,7 @@ async function prepareUpdatedPaymentAddress(
           tags: [],
           content: JSON.stringify({
             name: "Recovery merchant",
-            lud16: address,
+            ...(address ? { lud16: address } : {}),
           }),
         },
         merchantSecret
@@ -1254,6 +1254,38 @@ test.describe("CND-162 mobile browser baseline", () => {
       hasInvoice: true,
     })
     expect(providerRequests).toHaveLength(4)
+  })
+
+  test("market blocks retry when the current signed profile removes its payment address @market", async ({
+    page,
+  }) => {
+    const orderId = "mobile-removed-payment-address"
+    const { providerRequests, publishAddress } =
+      await prepareUpdatedPaymentAddress(
+        page,
+        orderId,
+        false,
+        savedPaymentAddress
+      )
+    await publishAddress()
+
+    await page.getByRole("button", { name: "Try payment again" }).tap()
+    await expect(
+      page.getByRole("alert").filter({
+        hasText:
+          "The merchant's current profile no longer has a usable Lightning address. No invoice was requested.",
+      })
+    ).toBeVisible()
+    expect(providerRequests).toEqual([])
+    expect(await readPaymentAddressRecovery(page, orderId)).toMatchObject({
+      count: 1,
+      orderId,
+      address: savedPaymentAddress,
+      paymentStatus: "failed",
+      invoiceStatus: "failed",
+      hasInvoice: false,
+    })
+    await assertMobileViewport(page)
   })
 
   test("market rejects an updated payment address that changes after review @market", async ({
