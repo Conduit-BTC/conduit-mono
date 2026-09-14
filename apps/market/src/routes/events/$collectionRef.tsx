@@ -644,7 +644,6 @@ function EventCatalogPage() {
             <Nip05TrustIndicator
               pubkey={organizerPubkey}
               nip05={organizerNip05}
-              className="shrink-0"
             />
           ) : null}
         </div>
