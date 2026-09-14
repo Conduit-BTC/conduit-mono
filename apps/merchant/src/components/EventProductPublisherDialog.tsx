@@ -236,12 +236,9 @@ export function EventProductPublisherDialog({
     setForm(createEmptyEventProductForm(market))
     setSubmitted(false)
     setActionState("dirty")
-    setActionError("")
     setSignedEvent(null)
     setPublishedCoordinate(null)
     setSignedAcceptance(null)
-    setAccepting(false)
-    setSignerProgress(null)
     requestAnimationFrame(() => titleInputRef.current?.focus())
   }
 
