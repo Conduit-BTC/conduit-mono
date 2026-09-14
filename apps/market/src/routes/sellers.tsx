@@ -11,6 +11,7 @@ import { MerchantAvatarFallback } from "../components/MerchantIdentity"
 import { useSellerDirectory } from "../hooks/useSellerDirectory"
 import {
   describeAccountSearchEvidence,
+  getAccountSuggestionDescription,
   getAccountSuggestionLabel,
   getAccountSuggestionTarget,
 } from "../lib/accountSearch"
@@ -201,8 +202,7 @@ function SellersPage() {
                         {getAccountSuggestionLabel(match)}
                       </span>
                       <span className="truncate text-xs text-[var(--text-muted)]">
-                        {match.profile.nip05?.replace(/^_@/, "") ??
-                          formatNpub(match.pubkey, 6)}
+                        {getAccountSuggestionDescription(match)}
                       </span>
                     </span>
                     {match.isSeller ? (

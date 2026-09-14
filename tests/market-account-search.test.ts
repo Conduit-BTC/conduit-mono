@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test"
+import { readFile } from "node:fs/promises"
 import type { ProfileSearchMatch } from "../packages/core/src/protocol/profile-search"
 import {
   describeAccountSearchEvidence,
+  getAccountSuggestionDescription,
   getAccountSuggestionTarget,
   toAccountSuggestionItems,
 } from "../apps/market/src/lib/accountSearch"
@@ -21,7 +23,7 @@ function match(overrides: Partial<ProfileSearchMatch> & { pubkey: string }) {
 }
 
 describe("account suggestion items", () => {
-  it("labels by profile name, describes by nip05 or npub, and badges sellers", () => {
+  it("labels by profile name, describes by npub, and badges sellers", () => {
     const items = toAccountSuggestionItems([
       match({
         pubkey: SELLER,
@@ -38,12 +40,33 @@ describe("account suggestion items", () => {
     expect(items[0]).toMatchObject({
       id: SELLER,
       label: "Alice Store",
-      description: "alice.example",
       badge: "Seller",
       imageUrl: "https://cdn.conduit.market/alice.png",
     })
+    expect(items[0]?.description).toMatch(/^npub1/)
     expect(items[1]?.label).toMatch(/^npub1/)
     expect(items[1]?.badge).toBeUndefined()
+  })
+
+  it("never shows an unverified NIP-05 claim as the account identifier", async () => {
+    const impostor = toAccountSuggestionItems([
+      match({
+        pubkey: BUYER,
+        profile: {
+          pubkey: BUYER,
+          displayName: "Alice Store",
+          nip05: "alice@alice.example",
+        },
+      }),
+    ])
+    expect(impostor[0]?.description).toBe(
+      getAccountSuggestionDescription(match({ pubkey: BUYER }))
+    )
+    expect(JSON.stringify(impostor)).not.toContain("alice.example")
+
+    const route = await readFile("apps/market/src/routes/sellers.tsx", "utf8")
+    expect(route).toContain("getAccountSuggestionDescription(match)")
+    expect(route).not.toContain("nip05")
   })
 
   it("routes sellers to their storefront and other accounts to the profile view", () => {

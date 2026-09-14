@@ -18,20 +18,28 @@ export function getAccountSuggestionLabel(match: ProfileSearchMatch): string {
   return getProfileName(match.profile) ?? formatNpub(match.pubkey, 6)
 }
 
+/**
+ * Search results describe themselves with the npub, never with a claimed
+ * NIP-05 identifier. A kind-0 event can claim any identifier, and these rows
+ * are unverified suggestions; showing the claim here would read as a verified
+ * handle. Verified NIP-05 is shown on the profile and storefront surfaces,
+ * where the shared verifier has confirmed the identifier for that pubkey.
+ */
+export function getAccountSuggestionDescription(
+  match: ProfileSearchMatch
+): string {
+  return formatNpub(match.pubkey, 6)
+}
+
 export function toAccountSuggestionItems(
   matches: readonly ProfileSearchMatch[]
 ): SearchSuggestionItem[] {
   return matches.map((match) => {
     const profile = sanitizeProfileMedia(match.profile) ?? match.profile
-    const label = getAccountSuggestionLabel(match)
-    const nip05 = profile.nip05?.trim()
     return {
       id: match.pubkey,
-      label,
-      description:
-        nip05 && nip05 !== label
-          ? nip05.replace(/^_@/, "")
-          : formatNpub(match.pubkey, 6),
+      label: getAccountSuggestionLabel(match),
+      description: getAccountSuggestionDescription(match),
       badge: match.isSeller ? "Seller" : undefined,
       imageUrl: profile.picture,
     }
