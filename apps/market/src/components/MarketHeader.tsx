@@ -346,8 +346,9 @@ export function MarketHeader() {
   const [activeSuggestion, setActiveSuggestion] = useState(-1)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const currentQuery = typeof search.q === "string" ? search.q : ""
-  const isBrowseRoute = pathname === "/products"
-  const searchRoute = "/products" as const
+  const isSellersRoute = pathname === "/sellers"
+  const isBrowseRoute = pathname === "/products" || isSellersRoute
+  const searchRoute = isSellersRoute ? "/sellers" : "/products"
   const connected = status === "connected" && !!pubkey
   const authPending = status === "connecting" || status === "restoring"
   const displayName = connected

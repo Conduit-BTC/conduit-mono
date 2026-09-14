@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router"
-import { CalendarDays, LayoutGrid } from "lucide-react"
+import { CalendarDays, LayoutGrid, Store } from "lucide-react"
 import { cn } from "@conduit/ui"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
 
@@ -24,7 +24,7 @@ export function MarketBrowseNavigation({
   connected,
   onSelectSource,
 }: {
-  active: "catalog" | "events"
+  active: "catalog" | "events" | "sellers"
   source: ProductCatalogSourceMode
   connected: boolean
   onSelectSource: (source: ProductCatalogSourceMode) => void
@@ -62,6 +62,20 @@ export function MarketBrowseNavigation({
         >
           <CalendarDays className="h-4 w-4" aria-hidden="true" />
           Events
+        </Link>
+        <Link
+          to="/sellers"
+          search={source === "combined" ? {} : { source }}
+          aria-current={active === "sellers" ? "page" : undefined}
+          className={cn(
+            browseLinkClassName,
+            active === "sellers"
+              ? "bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-sm)]"
+              : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+          )}
+        >
+          <Store className="h-4 w-4" aria-hidden="true" />
+          Sellers
         </Link>
       </nav>
 
