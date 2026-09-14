@@ -275,6 +275,7 @@ export {
 } from "./hooks/useNip05Verification"
 export {
   getProfileSearchQueryKey,
+  selectProfileSearchPhaseResult,
   useProfileSearch,
   type UseProfileSearchOptions,
   type UseProfileSearchResult,

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import {
   PROFILE_SEARCH_DEFAULT_LIMIT,
   PROFILE_SEARCH_MIN_QUERY_LENGTH,
@@ -49,6 +49,21 @@ export function getProfileSearchQueryKey(
   ] as const
 }
 
+/**
+ * Accepts a phase result only when it answers the query currently typed.
+ * Query keys change per keystroke, so a result for the previous query must
+ * never render or become selectable while the current read is pending.
+ */
+export function selectProfileSearchPhaseResult(
+  result: ProfileSearchResult | undefined,
+  normalizedQuery: string
+): ProfileSearchResult | undefined {
+  if (!result) return undefined
+  return normalizeProfileSearchText(result.query) === normalizedQuery
+    ? result
+    : undefined
+}
+
 export function useProfileSearch(
   query: string,
   options: UseProfileSearchOptions = {}
@@ -83,7 +98,6 @@ export function useProfileSearch(
     staleTime: 30_000,
     gcTime: 5 * 60_000,
     retry: false,
-    placeholderData: keepPreviousData,
     queryFn: ({ signal }) =>
       searchCachedProfiles({ query: trimmed, limit, signal }),
   })
@@ -94,17 +108,18 @@ export function useProfileSearch(
     staleTime: 60_000,
     gcTime: 5 * 60_000,
     retry: false,
-    placeholderData: keepPreviousData,
     queryFn: ({ signal }) =>
       searchNetworkProfiles({ query: settledQuery, limit, signal }),
   })
 
-  const cachedData = cachedQuery.data
-  const networkData =
-    networkQuery.data &&
-    normalizeProfileSearchText(networkQuery.data.query) === normalized
-      ? networkQuery.data
-      : undefined
+  const cachedData = selectProfileSearchPhaseResult(
+    cachedQuery.data,
+    normalized
+  )
+  const networkData = selectProfileSearchPhaseResult(
+    networkQuery.data,
+    normalized
+  )
   const data = useMemo(() => {
     if (!eligible || (!cachedData && !networkData)) return undefined
     return mergeProfileSearchResults(cachedData, networkData, limit)
