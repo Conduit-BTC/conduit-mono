@@ -20,7 +20,13 @@ import {
   type ReactNode,
 } from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
-import { config, formatNpub, useAuth, useProfile } from "@conduit/core"
+import {
+  config,
+  formatNpub,
+  useAuth,
+  useProfile,
+  useUnreadDirectMessageCount,
+} from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
@@ -345,6 +351,9 @@ export function MarketHeader() {
   const currentQuery = typeof search.q === "string" ? search.q : ""
   const isBrowseRoute = pathname === "/products"
   const connected = status === "connected" && !!pubkey
+  const unreadMessages = useUnreadDirectMessageCount(
+    connected ? pubkey : null
+  ).count
   const authPending = status === "connecting" || status === "restoring"
   const displayName = connected
     ? (profile?.displayName ?? profile?.name ?? formatNpub(pubkey, 6))
@@ -557,14 +566,6 @@ export function MarketHeader() {
             />
           )}
           <HeaderAction
-            label="Messages"
-            icon={<MessagesSquare className="size-4" aria-hidden="true" />}
-            enabled={connected}
-            active={pathname === "/messages"}
-            labelClassName="hidden lg:inline"
-            onClick={() => handleProtectedRoute("/messages")}
-          />
-          <HeaderAction
             label="Orders"
             icon={<ReceiptText className="size-4" aria-hidden="true" />}
             enabled={connected}
@@ -582,6 +583,18 @@ export function MarketHeader() {
             labelClassName="sr-only"
             badge={cart.totals.count}
             onClick={() => void navigate({ to: "/cart" })}
+          />
+          <HeaderAction
+            label="Messages"
+            ariaLabel={
+              connected ? `Messages, ${unreadMessages} unread` : "Messages"
+            }
+            icon={<MessagesSquare className="size-6" aria-hidden="true" />}
+            enabled={connected}
+            active={pathname === "/messages"}
+            labelClassName="sr-only"
+            badge={unreadMessages}
+            onClick={() => handleProtectedRoute("/messages")}
           />
         </nav>
 
