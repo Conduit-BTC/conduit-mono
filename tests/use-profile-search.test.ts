@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
-import { selectProfileSearchPhaseResult } from "../packages/core/src/hooks/useProfileSearch"
+import {
+  getProfileSearchQueryKey,
+  selectProfileSearchPhaseResult,
+} from "../packages/core/src/hooks/useProfileSearch"
 import type { ProfileSearchResult } from "../packages/core/src/protocol/profile-search"
 
 const ALICE = "a".repeat(64)
@@ -50,5 +53,35 @@ describe("useProfileSearch phase selection", () => {
     expect(hook).toMatch(
       /selectProfileSearchPhaseResult\(\s*networkQuery\.data,\s*normalized\s*\)/
     )
+  })
+})
+
+describe("profile search query keys", () => {
+  const ACCOUNT = "f".repeat(64)
+
+  it("separates guest and account plans and both phases", async () => {
+    expect(getProfileSearchQueryKey("Ali", 5, "network", ACCOUNT)).toEqual([
+      "profile-search",
+      "network",
+      "ali",
+      5,
+      ACCOUNT,
+    ])
+    expect(getProfileSearchQueryKey("Ali", 5, "network")).toEqual([
+      "profile-search",
+      "network",
+      "ali",
+      5,
+      "guest",
+    ])
+    expect(getProfileSearchQueryKey("Ali", 5, "cached", ACCOUNT)).not.toEqual(
+      getProfileSearchQueryKey("Ali", 5, "network", ACCOUNT)
+    )
+
+    const hook = await readFile(
+      "packages/core/src/hooks/useProfileSearch.ts",
+      "utf8"
+    )
+    expect(hook).toContain("authenticatedPubkey: accountPubkey")
   })
 })

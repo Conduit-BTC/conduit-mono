@@ -17,6 +17,11 @@ export interface UseProfileSearchOptions {
   limit?: number
   /** Idle time after the last keystroke before the relay query is issued. */
   settleMs?: number
+  /**
+   * Active account whose signed relay list supplies the NIP-50 read relays.
+   * It is part of the query key, so a guest never reuses an account plan.
+   */
+  accountPubkey?: string | null
 }
 
 export interface UseProfileSearchResult {
@@ -39,13 +44,15 @@ export interface UseProfileSearchResult {
 export function getProfileSearchQueryKey(
   query: string,
   limit: number,
-  phase: "cached" | "network" = "network"
+  phase: "cached" | "network" = "network",
+  accountPubkey: string | null = null
 ) {
   return [
     "profile-search",
     phase,
     normalizeProfileSearchText(query),
     limit,
+    accountPubkey ?? "guest",
   ] as const
 }
 
@@ -70,6 +77,7 @@ export function useProfileSearch(
 ): UseProfileSearchResult {
   const limit = options.limit ?? PROFILE_SEARCH_DEFAULT_LIMIT
   const settleMs = options.settleMs ?? PROFILE_SEARCH_SETTLE_MS
+  const accountPubkey = options.accountPubkey?.trim().toLowerCase() || null
   const trimmed = query.trim()
   const normalized = normalizeProfileSearchText(trimmed)
   const eligible =
@@ -93,7 +101,7 @@ export function useProfileSearch(
   }, [eligible, settleMs, trimmed])
 
   const cachedQuery = useQuery({
-    queryKey: getProfileSearchQueryKey(trimmed, limit, "cached"),
+    queryKey: getProfileSearchQueryKey(trimmed, limit, "cached", accountPubkey),
     enabled: eligible,
     staleTime: 30_000,
     gcTime: 5 * 60_000,
@@ -103,13 +111,23 @@ export function useProfileSearch(
   })
 
   const networkQuery = useQuery({
-    queryKey: getProfileSearchQueryKey(settledQuery, limit, "network"),
+    queryKey: getProfileSearchQueryKey(
+      settledQuery,
+      limit,
+      "network",
+      accountPubkey
+    ),
     enabled: eligible && settledQuery.length > 0,
     staleTime: 60_000,
     gcTime: 5 * 60_000,
     retry: false,
     queryFn: ({ signal }) =>
-      searchNetworkProfiles({ query: settledQuery, limit, signal }),
+      searchNetworkProfiles({
+        query: settledQuery,
+        limit,
+        signal,
+        authenticatedPubkey: accountPubkey,
+      }),
   })
 
   const cachedData = selectProfileSearchPhaseResult(

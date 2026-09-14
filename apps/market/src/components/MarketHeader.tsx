@@ -369,6 +369,7 @@ export function MarketHeader() {
   const accountSearch = useProfileSearch(searchValue, {
     enabled: searchFocused && searchDirty && !suggestionsDismissed,
     limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT,
+    accountPubkey: connected ? pubkey : null,
   })
   const accountMatches = useMemo(
     () =>

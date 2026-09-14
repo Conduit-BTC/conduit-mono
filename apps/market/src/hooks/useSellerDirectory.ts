@@ -61,6 +61,7 @@ export function useSellerDirectory(input: {
   const accountSearch = useProfileSearch(query, {
     limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT,
     settleMs: 0,
+    accountPubkey: connected ? pubkey : null,
   })
   const networkAccounts = useMemo(
     () =>

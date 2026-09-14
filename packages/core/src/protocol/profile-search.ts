@@ -10,6 +10,7 @@ import {
   type ProfileFrontier,
 } from "./profile-cache"
 import { parseProfileEvent } from "./profiles"
+import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { loadRelaySettingsPlanningSnapshot } from "./relay-settings"
 
 export const PROFILE_SEARCH_MIN_QUERY_LENGTH = 2
@@ -76,12 +77,23 @@ export interface ProfileSearchQuery {
   signal?: AbortSignal
   /** Cached phase only; `Infinity` waits for the seller lookup. */
   sellerLookupBudgetMs?: number
+  /**
+   * Active account. Its validated signed relay list supplies the NIP-50 read
+   * relays for this search; a guest plan never reuses an account plan.
+   */
+  authenticatedPubkey?: string | null
 }
 
 export interface ProfileSearchDependencies {
   loadCachedProfiles: () => Promise<CachedProfile[]>
+  /** Targeted read for the pubkeys a relay returned. */
+  loadCachedProfileRows: (
+    pubkeys: readonly string[]
+  ) => Promise<Map<string, CachedProfile>>
   loadSellerPubkeys: (pubkeys: readonly string[]) => Promise<Set<string>>
-  planSearchRelayUrls: () => string[]
+  planSearchRelayUrls: (
+    authenticatedPubkey: string | null
+  ) => string[] | Promise<string[]>
   fetchEvents: (
     filter: NDKFilter,
     options: { relayUrls: string[]; signal?: AbortSignal }
@@ -243,8 +255,12 @@ export function planProfileSearchRelayUrls(
   return planned
 }
 
-function defaultPlanSearchRelayUrls(): string[] {
-  const snapshot = loadRelaySettingsPlanningSnapshot()
+async function defaultPlanSearchRelayUrls(
+  authenticatedPubkey: string | null
+): Promise<string[]> {
+  const snapshot = authenticatedPubkey
+    ? await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)
+    : loadRelaySettingsPlanningSnapshot()
   return planProfileSearchRelayUrls(
     config.searchIndexRelayUrls,
     snapshot.settings.entries
@@ -264,8 +280,21 @@ async function defaultLoadSellerPubkeys(
   return new Set(rows.map((row) => row.pubkey))
 }
 
+async function defaultLoadCachedProfileRows(
+  pubkeys: readonly string[]
+): Promise<Map<string, CachedProfile>> {
+  if (pubkeys.length === 0) return new Map()
+  const rows = await db.profiles.bulkGet([...pubkeys])
+  return new Map(
+    rows
+      .filter((row): row is CachedProfile => !!row)
+      .map((row) => [row.pubkey, row])
+  )
+}
+
 const defaultDependencies: ProfileSearchDependencies = {
   loadCachedProfiles: () => db.profiles.limit(LOCAL_CACHE_SCAN_LIMIT).toArray(),
+  loadCachedProfileRows: defaultLoadCachedProfileRows,
   loadSellerPubkeys: defaultLoadSellerPubkeys,
   planSearchRelayUrls: defaultPlanSearchRelayUrls,
   fetchEvents: (filter, options) =>
@@ -398,7 +427,9 @@ export async function searchNetworkProfiles(
     return emptyResult(query)
   }
 
-  const relayUrls = deps.planSearchRelayUrls()
+  const relayUrls = await deps.planSearchRelayUrls(
+    input.authenticatedPubkey ?? null
+  )
   let summary: ProfileSearchRelaySummary = {
     relaysPlanned: relayUrls.length,
     relaysCompleted: 0,
@@ -417,12 +448,26 @@ export async function searchNetworkProfiles(
         { relayUrls, signal: input.signal }
       )
       summary = { ...summary, ...summarizeProfileSearchRelays(result) }
-      for (const event of pickLatestEventPerPubkey(result.events)) {
+      const events = pickLatestEventPerPubkey(result.events)
+      // A relay can answer with a kind-0 event this device already replaced.
+      // Reconcile before scoring so a stale name is never offered as a match.
+      const cachedRows = await deps
+        .loadCachedProfileRows(events.map((event) => event.pubkey))
+        .catch(() => new Map<string, CachedProfile>())
+      for (const event of events) {
+        const row = cachedRows.get(event.pubkey)
+        const cachedFrontier: ProfileFrontier | null = row
+          ? { createdAt: row.eventCreatedAt, eventId: row.eventId }
+          : null
+        const cachedWins =
+          !!row &&
+          !!cachedFrontier &&
+          compareProfileFrontiers(cachedFrontier, eventFrontier(event)) > 0
         const match = toMatch(
-          parseProfileEvent(event),
-          "network",
+          cachedWins ? projectCachedProfile(row) : parseProfileEvent(event),
+          cachedWins ? "both" : "network",
           normalizedQuery,
-          eventFrontier(event)
+          cachedWins ? cachedFrontier : eventFrontier(event)
         )
         if (match) candidates.push(match)
       }
@@ -447,8 +492,9 @@ export async function searchNetworkProfiles(
 
 function mergeMatches(
   existing: ProfileSearchMatch,
-  incoming: ProfileSearchMatch
-): ProfileSearchMatch {
+  incoming: ProfileSearchMatch,
+  normalizedQuery: string
+): ProfileSearchMatch | null {
   const comparison = compareProfileFrontiers(
     incoming.frontier,
     existing.frontier
@@ -456,15 +502,17 @@ function mergeMatches(
   const incomingWins =
     comparison > 0 || (comparison === 0 && incoming.source === "network")
   const winner = incomingWins ? incoming : existing
+  // Rank and filter on the profile that will be displayed. A replaced name
+  // must not keep a row in the list or lend it a stronger score.
+  const score = scoreProfileSearchMatch(winner.profile, normalizedQuery)
+  if (!Number.isFinite(score)) return null
   return {
     pubkey: existing.pubkey,
     profile: winner.profile,
     frontier: winner.frontier,
     isSeller: existing.isSeller || incoming.isSeller,
     source: existing.source === incoming.source ? incoming.source : "both",
-    // Both phases score against the same query, so the winning profile's own
-    // score ranks what the row displays instead of a replaced name.
-    score: winner.score,
+    score,
   }
 }
 
@@ -481,13 +529,20 @@ export function mergeProfileSearchResults(
   limit: number = PROFILE_SEARCH_DEFAULT_LIMIT
 ): ProfileSearchResult {
   const query = network?.query ?? cached?.query ?? ""
+  const normalizedQuery = normalizeProfileSearchText(query)
   const combined = new Map<string, ProfileSearchMatch>()
   for (const match of [
     ...(cached?.matches ?? []),
     ...(network?.matches ?? []),
   ]) {
     const existing = combined.get(match.pubkey)
-    combined.set(match.pubkey, existing ? mergeMatches(existing, match) : match)
+    if (!existing) {
+      combined.set(match.pubkey, match)
+      continue
+    }
+    const merged = mergeMatches(existing, match, normalizedQuery)
+    if (merged) combined.set(match.pubkey, merged)
+    else combined.delete(match.pubkey)
   }
   const matches = rankProfileSearchMatches(Array.from(combined.values()), limit)
   if (!network) return { ...emptyResult(query), matches }

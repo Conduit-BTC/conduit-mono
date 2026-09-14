@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { readFile } from "node:fs/promises"
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   normalizeProfileSearchText,
@@ -70,6 +71,7 @@ function deps(
 ): Partial<ProfileSearchDependencies> {
   return {
     loadCachedProfiles: async () => [],
+    loadCachedProfileRows: async () => new Map(),
     loadSellerPubkeys: async () => new Set(),
     planSearchRelayUrls: () => ["wss://search.example"],
     fetchEvents: async () => ({
@@ -283,6 +285,60 @@ describe("profile search relay plan", () => {
   })
 })
 
+describe("account-scoped search plan", () => {
+  it("plans with the active account and keeps a guest plan separate", async () => {
+    const scopes: (string | null)[] = []
+    const attempted: string[][] = []
+    const scopedDeps = (accountRelay: string) =>
+      deps({
+        planSearchRelayUrls: (authenticatedPubkey) => {
+          scopes.push(authenticatedPubkey)
+          return authenticatedPubkey ? [accountRelay] : ["wss://search.example"]
+        },
+        fetchEvents: async (_filter, options) => {
+          attempted.push(options.relayUrls)
+          return {
+            events: [],
+            relays: options.relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 0,
+            })),
+            eventsVerified: true,
+          }
+        },
+      })
+
+    await searchNetworkProfiles(
+      { query: "alice", authenticatedPubkey: ALICE },
+      scopedDeps("wss://account.example")
+    )
+    await searchNetworkProfiles(
+      { query: "alice" },
+      scopedDeps("wss://other.example")
+    )
+
+    expect(scopes).toEqual([ALICE, null])
+    expect(attempted).toEqual([
+      ["wss://account.example"],
+      ["wss://search.example"],
+    ])
+  })
+
+  it("binds the account relay snapshot instead of the guest adapter", async () => {
+    const source = await readFile(
+      "packages/core/src/protocol/profile-search.ts",
+      "utf8"
+    )
+    expect(source).toContain(
+      "await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)"
+    )
+    expect(source).toMatch(
+      /authenticatedPubkey\s*\?[\s\S]{0,120}: loadRelaySettingsPlanningSnapshot\(\)/
+    )
+  })
+})
+
 describe("searchProfiles", () => {
   it("skips relay traffic for queries below the minimum length", async () => {
     let fetched = 0
@@ -454,6 +510,83 @@ describe("searchProfiles", () => {
     expect(result.evidence).toBe("lookup_partial")
     expect(result.relaysPlanned).toBe(2)
     expect(result.relaysCompleted).toBe(1)
+  })
+
+  it("drops a relay name this device already replaced and keeps a newer one", async () => {
+    const relayDeps = (createdAt: number) =>
+      deps({
+        loadCachedProfileRows: async () =>
+          new Map([
+            [
+              ALICE,
+              {
+                pubkey: ALICE,
+                name: "Bob",
+                eventCreatedAt: 300,
+                eventId: "cached",
+                cachedAt: 1,
+              },
+            ],
+          ]),
+        fetchEvents: async () => ({
+          events: [profileEvent(ALICE, { name: "Alice" }, createdAt)],
+          relays: [
+            {
+              relayUrl: "wss://search.example",
+              status: "success" as const,
+              eventCount: 1,
+            },
+          ],
+          eventsVerified: true,
+        }),
+      })
+
+    const stale = await searchNetworkProfiles(
+      { query: "alice" },
+      relayDeps(200)
+    )
+    expect(stale.matches).toEqual([])
+    expect(stale.evidence).toBe("absent_within_scope")
+
+    const current = await searchNetworkProfiles(
+      { query: "alice" },
+      relayDeps(400)
+    )
+    expect(current.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
+    expect(current.matches[0]?.profile.name).toBe("Alice")
+  })
+
+  it("drops a merged row whose winning profile no longer matches", () => {
+    const merged = mergeProfileSearchResults(
+      result({
+        query: "alice",
+        matches: [
+          match({
+            pubkey: ALICE,
+            profile: { pubkey: ALICE, name: "Alice" },
+            source: "local_cache",
+            score: 0,
+            frontier: { createdAt: 100, eventId: "old" },
+          }),
+        ],
+      }),
+      result({
+        query: "alice",
+        matches: [
+          match({
+            pubkey: ALICE,
+            profile: { pubkey: ALICE, name: "Bob" },
+            score: 3,
+            frontier: { createdAt: 300, eventId: "new" },
+          }),
+        ],
+        evidence: "present_current",
+        relaysPlanned: 1,
+        relaysCompleted: 1,
+      }),
+      5
+    )
+    expect(merged.matches).toEqual([])
   })
 
   it("rethrows an abort so a superseded query does not report stale evidence", async () => {
