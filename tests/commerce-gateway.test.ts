@@ -25,6 +25,7 @@ import {
   getProductImageCandidates,
   getProductDetail,
   getProductsByIds,
+  getCachedProductsByIds,
   getProfiles,
   __resetRelayHealth,
   __resetRelayListTestOverrides,
@@ -3191,6 +3192,62 @@ describe("commerce gateway", () => {
     })
 
     expect(result.data).toHaveLength(0)
+  })
+
+  it("reads an exact cached event product batch once without resurrecting a signed deletion", async () => {
+    const first = makeSignedProductEvent({
+      dTag: "batch-first",
+      createdAt: 100,
+      title: "First cached product",
+    })
+    const deleted = makeSignedProductEvent({
+      dTag: "batch-deleted",
+      createdAt: 100,
+      title: "Deleted cached product",
+    })
+    const unrelated = makeSignedProductEvent({
+      secretKey: MERCHANT_B_SECRET,
+      dTag: "unrelated",
+      createdAt: 100,
+      title: "Unrelated product",
+    })
+    for (const event of [first, deleted, unrelated])
+      await cacheSignedProductListingEvent(event)
+    const firstId = `30402:${first.pubkey}:batch-first`
+    const deletedId = `30402:${deleted.pubkey}:batch-deleted`
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({ createdAt: 101, tags: [["a", deletedId]] })
+    )
+    let cacheReads = 0
+    let networkReads = 0
+    let seenAuthors: readonly string[] | undefined
+    __setCommerceTestOverrides({
+      getCachedProducts: async (_merchant, authors) => {
+        cacheReads++
+        seenAuthors = authors
+        return cachedProducts.filter(
+          (row) => !authors || authors.includes(row.pubkey)
+        )
+      },
+      fetchEventsFanout: async () => {
+        networkReads++
+        throw new Error("Cached reads cannot use relays")
+      },
+      fetchEventsFanoutWithDiagnostics: async () => {
+        networkReads++
+        throw new Error("Cached reads cannot use relays")
+      },
+    })
+    const result = await getCachedProductsByIds([firstId, deletedId, firstId], {
+      includeStale: true,
+      includeMarketHidden: true,
+    })
+    expect(result.data.map((record) => record.addressId)).toEqual([firstId])
+    expect(cacheReads).toBe(1)
+    expect(seenAuthors).toEqual([first.pubkey])
+    expect(networkReads).toBe(0)
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.source).toBe("local_cache")
   })
 
   it("suppresses stale direct product detail with a local signed tombstone", async () => {
