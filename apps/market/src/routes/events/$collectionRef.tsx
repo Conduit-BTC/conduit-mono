@@ -123,6 +123,8 @@ function EventCatalogProductCard({
     selectedProduct.id === product.id && product.type !== "variable"
       ? entry.pickupFulfillment
       : (entry.familyPickupFulfillments?.[selectedProduct.id] ?? null)
+  const pickupLocation =
+    pickupFulfillment?.option.location ?? pickupFulfillment?.option.geohash
   const handoff = pickupFulfillment
     ? getPickupHandoffSummary(pickupFulfillment)
     : null
@@ -255,9 +257,7 @@ function EventCatalogProductCard({
             <p className="font-medium text-[var(--text-primary)]">
               {pickupFulfillment.option.title}
             </p>
-            {pickupFulfillment.option.location ? (
-              <p className="mt-1">{pickupFulfillment.option.location}</p>
-            ) : null}
+            {pickupLocation ? <p className="mt-1">{pickupLocation}</p> : null}
             <p className="mt-2">{getPickupHandoffPrivacyCopy(handoff)}</p>
             <div className="mt-2 flex justify-end">
               <EventActorProvenance

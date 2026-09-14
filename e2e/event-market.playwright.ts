@@ -1793,6 +1793,10 @@ test("event catalog shops products by search, merchant, and sort before technica
   })
   const createdAt = market.initialCollection.created_at + 1
   const secondMerchantSecret = generateSecretKey()
+  const pickupGeohash = "dp3wj"
+  const pickupLocation = market.pickupEvent!.tags.find(
+    (tag) => tag[0] === "location"
+  )![1]!
   const pickups = Array.from({ length: 26 }, (_, index) =>
     signEvent(
       index === 1 || index === 2 || (index >= 4 && index % 2 === 1)
@@ -1802,9 +1806,16 @@ test("event catalog shops products by search, merchant, and sort before technica
         kind: 30406,
         created_at: createdAt,
         content: market.pickupEvent!.content,
-        tags: market.pickupEvent!.tags.map((tag) =>
-          tag[0] === "d" ? ["d", `shopping-pickup-${index}`] : tag
-        ),
+        tags: [
+          ...market
+            .pickupEvent!.tags.filter(
+              (tag) => tag[0] !== "g" && (index !== 0 || tag[0] !== "location")
+            )
+            .map((tag) =>
+              tag[0] === "d" ? ["d", `shopping-pickup-${index}`] : tag
+            ),
+          ["g", pickupGeohash],
+        ],
       }
     )
   )
@@ -1891,6 +1902,18 @@ test("event catalog shops products by search, merchant, and sort before technica
     cards.first().getByRole("button", { name: "Alpine Goods", exact: true })
   ).toBeVisible()
   await expect(technicalDetails).not.toHaveAttribute("open", "")
+  // Geohash-only pickups retain their location; readable text takes precedence.
+  for (const [index, location] of [pickupGeohash, pickupLocation].entries()) {
+    const details = cards.nth(index).locator("details")
+    await details.locator("summary").click()
+    await expect(details.getByText(location, { exact: true })).toBeVisible()
+    if (index === 1) {
+      await expect(
+        details.getByText(pickupGeohash, { exact: true })
+      ).toHaveCount(0)
+    }
+    await details.locator("summary").click()
+  }
   await expect(
     page.getByRole("button", { name: "All products", exact: true })
   ).toHaveAttribute("aria-pressed", "true")
