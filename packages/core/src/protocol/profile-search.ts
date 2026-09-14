@@ -4,7 +4,11 @@ import { db, type CachedProfile } from "../db"
 import type { Profile } from "../types"
 import { EVENT_KINDS } from "./kinds"
 import { fetchEventsFanoutDetailed, type FetchEventsFanoutResult } from "./ndk"
-import { projectCachedProfile } from "./profile-cache"
+import {
+  compareProfileFrontiers,
+  projectCachedProfile,
+  type ProfileFrontier,
+} from "./profile-cache"
 import { parseProfileEvent } from "./profiles"
 import { loadRelaySettingsPlanningSnapshot } from "./relay-settings"
 
@@ -23,6 +27,8 @@ export const CACHED_SELLER_LOOKUP_BUDGET_MS = 200
 /**
  * Bounded read outcome for one settled query. A completed plan that observed
  * nothing is `absent_within_scope`; it is never proof that no account exists.
+ * Any relay that answered partially, hit the filter limit, or returned events
+ * that failed verification keeps the read `lookup_partial`.
  */
 export type ProfileSearchEvidence =
   | "not_queried"
@@ -41,6 +47,8 @@ export interface ProfileSearchMatch {
   source: ProfileSearchSource
   /** Lower is a stronger textual match. */
   score: number
+  /** Kind-0 frontier behind `profile`; absent for legacy projection-only rows. */
+  frontier: ProfileFrontier
 }
 
 export interface ProfileSearchResult {
@@ -48,7 +56,10 @@ export interface ProfileSearchResult {
   matches: ProfileSearchMatch[]
   evidence: ProfileSearchEvidence
   relaysPlanned: number
+  /** Relays that answered with a complete, fully verified, uncapped read. */
   relaysCompleted: number
+  /** Relays that answered but only partially, capped, or with rejected events. */
+  relaysDegraded: number
   /** False when returned network events skipped signature verification. */
   verified: boolean
 }
@@ -112,12 +123,19 @@ export function scoreProfileSearchMatch(
   )
 }
 
+function eventFrontier(event: NDKEvent): ProfileFrontier {
+  return { createdAt: event.created_at, eventId: event.id }
+}
+
 function pickLatestEventPerPubkey(events: readonly NDKEvent[]): NDKEvent[] {
   const latest = new Map<string, NDKEvent>()
   for (const event of events) {
     if (event.kind !== EVENT_KINDS.PROFILE || !event.pubkey) continue
     const current = latest.get(event.pubkey)
-    if (!current || (event.created_at ?? 0) > (current.created_at ?? 0)) {
+    if (
+      !current ||
+      compareProfileFrontiers(eventFrontier(event), eventFrontier(current)) > 0
+    ) {
       latest.set(event.pubkey, event)
     }
   }
@@ -140,15 +158,53 @@ export function rankProfileSearchMatches(
     .slice(0, limit)
 }
 
-export function resolveProfileSearchEvidence(input: {
+export interface ProfileSearchRelaySummary {
   relaysPlanned: number
   relaysCompleted: number
-  matchCount: number
-}): ProfileSearchEvidence {
-  if (input.relaysPlanned === 0 || input.relaysCompleted === 0) {
-    return "lookup_unavailable"
+  relaysDegraded: number
+  verified: boolean
+}
+
+/**
+ * Classifies each relay observation. Only a `success` relay with no rejected
+ * events and fewer events than the filter limit counts as complete; a capped
+ * read may have dropped matches, and rejected events mean the relay returned
+ * data this client could not trust.
+ */
+export function summarizeProfileSearchRelays(
+  result: Pick<FetchEventsFanoutResult, "relays" | "eventsVerified">,
+  fetchLimit: number = NETWORK_FETCH_LIMIT
+): Omit<ProfileSearchRelaySummary, "relaysPlanned"> {
+  let relaysCompleted = 0
+  let relaysDegraded = 0
+  for (const relay of result.relays) {
+    if (relay.status === "failed") continue
+    const complete =
+      relay.status === "success" &&
+      (relay.rejectedEventCount ?? 0) === 0 &&
+      relay.eventCount < fetchLimit
+    if (complete) relaysCompleted += 1
+    else relaysDegraded += 1
   }
-  if (input.relaysCompleted < input.relaysPlanned) return "lookup_partial"
+  return {
+    relaysCompleted,
+    relaysDegraded,
+    verified: result.eventsVerified !== false,
+  }
+}
+
+export function resolveProfileSearchEvidence(
+  input: ProfileSearchRelaySummary & { matchCount: number }
+): ProfileSearchEvidence {
+  const answered = input.relaysCompleted + input.relaysDegraded
+  if (input.relaysPlanned === 0 || answered === 0) return "lookup_unavailable"
+  if (
+    input.relaysDegraded > 0 ||
+    input.relaysCompleted < input.relaysPlanned ||
+    !input.verified
+  ) {
+    return "lookup_partial"
+  }
   return input.matchCount > 0 ? "present_current" : "absent_within_scope"
 }
 
@@ -193,6 +249,7 @@ function emptyResult(query: string): ProfileSearchResult {
     evidence: "not_queried",
     relaysPlanned: 0,
     relaysCompleted: 0,
+    relaysDegraded: 0,
     verified: true,
   }
 }
@@ -200,11 +257,19 @@ function emptyResult(query: string): ProfileSearchResult {
 function toMatch(
   profile: Profile,
   source: ProfileSearchSource,
-  normalizedQuery: string
+  normalizedQuery: string,
+  frontier: ProfileFrontier
 ): ProfileSearchMatch | null {
   const score = scoreProfileSearchMatch(profile, normalizedQuery)
   if (!Number.isFinite(score)) return null
-  return { pubkey: profile.pubkey, profile, isSeller: false, source, score }
+  return {
+    pubkey: profile.pubkey,
+    profile,
+    isSeller: false,
+    source,
+    score,
+    frontier,
+  }
 }
 
 const knownSellerPubkeys = new Set<string>()
@@ -261,7 +326,8 @@ export async function searchCachedProfiles(
     const match = toMatch(
       projectCachedProfile(row),
       "local_cache",
-      normalizedQuery
+      normalizedQuery,
+      { createdAt: row.eventCreatedAt, eventId: row.eventId }
     )
     if (match) candidates.push(match)
   }
@@ -298,8 +364,12 @@ export async function searchNetworkProfiles(
   }
 
   const relayUrls = deps.planSearchRelayUrls()
-  let relaysCompleted = 0
-  let verified = true
+  let summary: ProfileSearchRelaySummary = {
+    relaysPlanned: relayUrls.length,
+    relaysCompleted: 0,
+    relaysDegraded: 0,
+    verified: true,
+  }
   const candidates: ProfileSearchMatch[] = []
   if (relayUrls.length > 0) {
     try {
@@ -311,21 +381,18 @@ export async function searchNetworkProfiles(
         },
         { relayUrls, signal: input.signal }
       )
-      relaysCompleted = result.relays.filter(
-        (relay) => relay.status !== "failed"
-      ).length
-      verified = result.eventsVerified !== false
+      summary = { ...summary, ...summarizeProfileSearchRelays(result) }
       for (const event of pickLatestEventPerPubkey(result.events)) {
         const match = toMatch(
           parseProfileEvent(event),
           "network",
-          normalizedQuery
+          normalizedQuery,
+          eventFrontier(event)
         )
         if (match) candidates.push(match)
       }
     } catch (error) {
       if (input.signal?.aborted) throw error
-      relaysCompleted = 0
     }
   }
 
@@ -336,20 +403,40 @@ export async function searchNetworkProfiles(
       limit
     ),
     evidence: resolveProfileSearchEvidence({
-      relaysPlanned: relayUrls.length,
-      relaysCompleted,
+      ...summary,
       matchCount: candidates.length,
     }),
-    relaysPlanned: relayUrls.length,
-    relaysCompleted,
-    verified,
+    ...summary,
+  }
+}
+
+function mergeMatches(
+  existing: ProfileSearchMatch,
+  incoming: ProfileSearchMatch
+): ProfileSearchMatch {
+  const comparison = compareProfileFrontiers(
+    incoming.frontier,
+    existing.frontier
+  )
+  const incomingWins =
+    comparison > 0 || (comparison === 0 && incoming.source === "network")
+  const winner = incomingWins ? incoming : existing
+  return {
+    pubkey: existing.pubkey,
+    profile: winner.profile,
+    frontier: winner.frontier,
+    isSeller: existing.isSeller || incoming.isSeller,
+    source: existing.source === incoming.source ? incoming.source : "both",
+    score: Math.min(existing.score, incoming.score),
   }
 }
 
 /**
- * Combines the cached and network phases for one query. Network profiles win
- * for display, the best score is kept, and relay evidence comes from the
- * network phase; without it the merged result stays `not_queried`.
+ * Combines the cached and network phases for one query. For a pubkey seen in
+ * both, the NIP-01 winner (newest `created_at`, lowest id on ties) supplies
+ * the profile, so a stale relay copy never displaces a newer cached frontier.
+ * Relay evidence comes from the network phase alone; cached rows are not
+ * relay observations and cannot upgrade it.
  */
 export function mergeProfileSearchResults(
   cached: ProfileSearchResult | undefined,
@@ -363,35 +450,11 @@ export function mergeProfileSearchResults(
     ...(network?.matches ?? []),
   ]) {
     const existing = combined.get(match.pubkey)
-    if (!existing) {
-      combined.set(match.pubkey, match)
-      continue
-    }
-    combined.set(match.pubkey, {
-      ...existing,
-      profile: match.source === "network" ? match.profile : existing.profile,
-      isSeller: existing.isSeller || match.isSeller,
-      source: existing.source === match.source ? match.source : "both",
-      score: Math.min(existing.score, match.score),
-    })
+    combined.set(match.pubkey, existing ? mergeMatches(existing, match) : match)
   }
   const matches = rankProfileSearchMatches(Array.from(combined.values()), limit)
   if (!network) return { ...emptyResult(query), matches }
-  return {
-    query,
-    matches,
-    evidence:
-      network.evidence === "not_queried"
-        ? "not_queried"
-        : resolveProfileSearchEvidence({
-            relaysPlanned: network.relaysPlanned,
-            relaysCompleted: network.relaysCompleted,
-            matchCount: combined.size,
-          }),
-    relaysPlanned: network.relaysPlanned,
-    relaysCompleted: network.relaysCompleted,
-    verified: network.verified,
-  }
+  return { ...network, query, matches }
 }
 
 /** Runs both phases and returns the merged result once the network answers. */

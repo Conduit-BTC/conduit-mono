@@ -15,6 +15,7 @@ function match(overrides: Partial<ProfileSearchMatch> & { pubkey: string }) {
     isSeller: false,
     source: "network",
     score: 1,
+    frontier: {},
     ...overrides,
   } as ProfileSearchMatch
 }
@@ -64,6 +65,7 @@ describe("account suggestion items", () => {
       matches: [],
       relaysPlanned: 2,
       relaysCompleted: 2,
+      relaysDegraded: 0,
       verified: true,
     }
     expect(describeAccountSearchEvidence(undefined)).toBeNull()
@@ -82,7 +84,16 @@ describe("account suggestion items", () => {
         evidence: "lookup_partial",
         relaysCompleted: 1,
       })
-    ).toContain("did not answer")
+    ).toContain("incomplete")
+    expect(
+      describeAccountSearchEvidence({
+        ...base,
+        evidence: "lookup_partial",
+        relaysDegraded: 1,
+        verified: false,
+        matches: [match({ pubkey: BUYER })],
+      })
+    ).toBe("Search relay results are incomplete. More accounts may exist.")
     expect(
       describeAccountSearchEvidence({
         ...base,

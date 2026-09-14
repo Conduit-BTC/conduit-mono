@@ -64,17 +64,15 @@ export function describeAccountSearchEvidence(
     case "not_queried":
       return null
     case "present_current":
-      return result.verified
-        ? null
-        : "Some results could not be signature-verified."
+      return null
     case "absent_within_scope":
       return `No accounts matched on ${result.relaysCompleted} search ${
         result.relaysCompleted === 1 ? "relay" : "relays"
       }.`
     case "lookup_partial":
       return hasMatches
-        ? "Some search relays did not answer. Results may be incomplete."
-        : "Some search relays did not answer. No matches yet."
+        ? "Search relay results are incomplete. More accounts may exist."
+        : "Search relay results are incomplete. No matches yet."
     case "lookup_unavailable":
       return hasMatches
         ? "Search relays are unavailable. Showing accounts seen on this device."

@@ -9,7 +9,10 @@ import {
   searchCachedProfiles,
   searchNetworkProfiles,
   searchProfiles,
+  summarizeProfileSearchRelays,
   type ProfileSearchDependencies,
+  type ProfileSearchMatch,
+  type ProfileSearchResult,
 } from "../packages/core/src/protocol/profile-search"
 
 const ALICE = "a".repeat(64)
@@ -31,6 +34,33 @@ function profileEvent(
     content: JSON.stringify(content),
     tags: [],
   } as unknown as NDKEvent
+}
+
+function match(
+  overrides: Partial<ProfileSearchMatch> & Pick<ProfileSearchMatch, "pubkey">
+): ProfileSearchMatch {
+  return {
+    profile: { pubkey: overrides.pubkey },
+    isSeller: false,
+    source: "network",
+    score: 1,
+    frontier: {},
+    ...overrides,
+  }
+}
+
+function result(
+  overrides: Partial<ProfileSearchResult> & Pick<ProfileSearchResult, "query">
+): ProfileSearchResult {
+  return {
+    matches: [],
+    evidence: "not_queried",
+    relaysPlanned: 0,
+    relaysCompleted: 0,
+    relaysDegraded: 0,
+    verified: true,
+    ...overrides,
+  }
 }
 
 function deps(
@@ -78,34 +108,23 @@ describe("profile search text matching", () => {
   it("ranks sellers first, then by score and name, and caps the list", () => {
     const ranked = rankProfileSearchMatches(
       [
-        {
+        match({
           pubkey: MALICE,
           profile: { pubkey: MALICE, name: "Malice" },
           isSeller: true,
-          source: "network",
           score: 3,
-        },
-        {
-          pubkey: CAROL,
-          profile: { pubkey: CAROL, name: "Alice C" },
-          isSeller: false,
-          source: "network",
-          score: 1,
-        },
-        {
+        }),
+        match({ pubkey: CAROL, profile: { pubkey: CAROL, name: "Alice C" } }),
+        match({
           pubkey: ALICIA,
           profile: { pubkey: ALICIA, name: "Alice B" },
           isSeller: true,
-          source: "network",
-          score: 1,
-        },
-        {
+        }),
+        match({
           pubkey: ALICE,
           profile: { pubkey: ALICE, name: "alice" },
-          isSeller: false,
-          source: "network",
           score: 0,
-        },
+        }),
       ],
       3
     )
@@ -114,9 +133,17 @@ describe("profile search text matching", () => {
 })
 
 describe("profile search evidence", () => {
+  const complete = {
+    relaysPlanned: 2,
+    relaysCompleted: 2,
+    relaysDegraded: 0,
+    verified: true,
+  }
+
   it("does not collapse partial or unavailable reads into absence", () => {
     expect(
       resolveProfileSearchEvidence({
+        ...complete,
         relaysPlanned: 0,
         relaysCompleted: 0,
         matchCount: 0,
@@ -124,32 +151,81 @@ describe("profile search evidence", () => {
     ).toBe("lookup_unavailable")
     expect(
       resolveProfileSearchEvidence({
-        relaysPlanned: 2,
+        ...complete,
         relaysCompleted: 0,
         matchCount: 0,
       })
     ).toBe("lookup_unavailable")
     expect(
       resolveProfileSearchEvidence({
-        relaysPlanned: 2,
+        ...complete,
         relaysCompleted: 1,
         matchCount: 0,
       })
     ).toBe("lookup_partial")
+    expect(resolveProfileSearchEvidence({ ...complete, matchCount: 0 })).toBe(
+      "absent_within_scope"
+    )
+    expect(resolveProfileSearchEvidence({ ...complete, matchCount: 1 })).toBe(
+      "present_current"
+    )
+  })
+
+  it("keeps degraded relay observations partial with or without matches", () => {
+    for (const matchCount of [0, 1]) {
+      expect(
+        resolveProfileSearchEvidence({
+          ...complete,
+          relaysCompleted: 1,
+          relaysDegraded: 1,
+          matchCount,
+        })
+      ).toBe("lookup_partial")
+      expect(
+        resolveProfileSearchEvidence({
+          ...complete,
+          relaysCompleted: 0,
+          relaysDegraded: 2,
+          matchCount,
+        })
+      ).toBe("lookup_partial")
+      expect(
+        resolveProfileSearchEvidence({
+          ...complete,
+          verified: false,
+          matchCount,
+        })
+      ).toBe("lookup_partial")
+    }
+  })
+
+  it("classifies partial, capped, rejected, and invalid-only relays as degraded", () => {
     expect(
-      resolveProfileSearchEvidence({
-        relaysPlanned: 2,
-        relaysCompleted: 2,
-        matchCount: 0,
-      })
-    ).toBe("absent_within_scope")
-    expect(
-      resolveProfileSearchEvidence({
-        relaysPlanned: 2,
-        relaysCompleted: 2,
-        matchCount: 1,
-      })
-    ).toBe("present_current")
+      summarizeProfileSearchRelays(
+        {
+          relays: [
+            { relayUrl: "wss://a.example", status: "success", eventCount: 3 },
+            { relayUrl: "wss://b.example", status: "partial", eventCount: 3 },
+            { relayUrl: "wss://c.example", status: "success", eventCount: 24 },
+            {
+              relayUrl: "wss://d.example",
+              status: "success",
+              eventCount: 2,
+              rejectedEventCount: 1,
+            },
+            {
+              relayUrl: "wss://e.example",
+              status: "success",
+              eventCount: 0,
+              rejectedEventCount: 2,
+            },
+            { relayUrl: "wss://f.example", status: "failed", eventCount: 0 },
+          ],
+          eventsVerified: false,
+        },
+        24
+      )
+    ).toEqual({ relaysCompleted: 1, relaysDegraded: 4, verified: false })
   })
 })
 
@@ -231,6 +307,79 @@ describe("searchProfiles", () => {
     expect(result.matches.map((match) => match.pubkey)).toEqual([ALICE])
     expect(result.evidence).toBe("lookup_unavailable")
     expect(result.relaysCompleted).toBe(0)
+  })
+
+  it("keeps a capped or partially answered relay read partial even with matches", async () => {
+    const capped = await searchProfiles(
+      { query: "alice" },
+      deps({
+        fetchEvents: async () => ({
+          events: [profileEvent(ALICE, { name: "alice" })],
+          relays: [
+            {
+              relayUrl: "wss://search.example",
+              status: "success",
+              eventCount: 24,
+            },
+          ],
+          eventsVerified: true,
+        }),
+      })
+    )
+    expect(capped.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
+    expect(capped.evidence).toBe("lookup_partial")
+    expect(capped.relaysDegraded).toBe(1)
+
+    const partial = await searchProfiles(
+      { query: "alice" },
+      deps({
+        fetchEvents: async () => ({
+          events: [],
+          relays: [
+            {
+              relayUrl: "wss://search.example",
+              status: "partial",
+              eventCount: 0,
+            },
+          ],
+          eventsVerified: true,
+        }),
+      })
+    )
+    expect(partial.evidence).toBe("lookup_partial")
+    expect(partial.relaysCompleted).toBe(0)
+  })
+
+  it("picks the lowest event id when two kind-0 events share a timestamp", async () => {
+    const lower = {
+      ...profileEvent(ALICE, { name: "alice low" }, 100),
+      id: "0a",
+    }
+    const higher = {
+      ...profileEvent(ALICE, { name: "alice high" }, 100),
+      id: "0b",
+    }
+    const result = await searchNetworkProfiles(
+      { query: "alice" },
+      deps({
+        fetchEvents: async () => ({
+          events: [higher as NDKEvent, lower as NDKEvent],
+          relays: [
+            {
+              relayUrl: "wss://search.example",
+              status: "success",
+              eventCount: 2,
+            },
+          ],
+          eventsVerified: true,
+        }),
+      })
+    )
+    expect(result.matches[0]?.profile.name).toBe("alice low")
+    expect(result.matches[0]?.frontier).toEqual({
+      createdAt: 100,
+      eventId: "0a",
+    })
   })
 
   it("reports a partial lookup when only some relays answer", async () => {
@@ -325,58 +474,118 @@ describe("phased profile search", () => {
     expect(result.matches[0]?.source).toBe("network")
   })
 
-  it("merges phases: cached rows show first, network profiles win, evidence follows the network", () => {
-    const cached = {
+  it("merges phases: cached rows show first, the NIP-01 winner supplies the profile, evidence follows the network", () => {
+    const cached = result({
       query: "ali",
       matches: [
-        {
+        match({
           pubkey: ALICE,
           profile: { pubkey: ALICE, name: "alice" },
           isSeller: true,
-          source: "local_cache" as const,
-          score: 1,
-        },
+          source: "local_cache",
+          frontier: { createdAt: 100, eventId: "cached" },
+        }),
       ],
-      evidence: "not_queried" as const,
-      relaysPlanned: 0,
-      relaysCompleted: 0,
-      verified: true,
-    }
-    const network = {
+    })
+    const network = result({
       query: "ali",
       matches: [
-        {
+        match({
           pubkey: ALICE,
           profile: { pubkey: ALICE, name: "alice", about: "newer" },
-          isSeller: false,
-          source: "network" as const,
-          score: 1,
-        },
-        {
-          pubkey: ALICIA,
-          profile: { pubkey: ALICIA, name: "Alicia" },
-          isSeller: false,
-          source: "network" as const,
-          score: 1,
-        },
+          frontier: { createdAt: 200, eventId: "relay" },
+        }),
+        match({ pubkey: ALICIA, profile: { pubkey: ALICIA, name: "Alicia" } }),
       ],
-      evidence: "lookup_partial" as const,
+      evidence: "lookup_partial",
       relaysPlanned: 2,
       relaysCompleted: 1,
-      verified: true,
-    }
+    })
 
     const cachedOnly = mergeProfileSearchResults(cached, undefined, 5)
     expect(cachedOnly.evidence).toBe("not_queried")
-    expect(cachedOnly.matches.map((match) => match.pubkey)).toEqual([ALICE])
+    expect(cachedOnly.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
 
     const merged = mergeProfileSearchResults(cached, network, 5)
     expect(merged.evidence).toBe("lookup_partial")
     expect(merged.relaysPlanned).toBe(2)
-    expect(merged.matches.map((match) => match.pubkey)).toEqual([ALICE, ALICIA])
+    expect(merged.matches.map((entry) => entry.pubkey)).toEqual([ALICE, ALICIA])
     expect(merged.matches[0]?.source).toBe("both")
     expect(merged.matches[0]?.isSeller).toBe(true)
     expect(merged.matches[0]?.profile.about).toBe("newer")
+    expect(merged.matches[0]?.frontier.eventId).toBe("relay")
+  })
+
+  it("keeps a newer cached frontier over a stale relay copy and breaks ties by lowest id", () => {
+    const cached = result({
+      query: "ali",
+      matches: [
+        match({
+          pubkey: ALICE,
+          profile: { pubkey: ALICE, name: "alice renamed" },
+          source: "local_cache",
+          frontier: { createdAt: 300, eventId: "cached-new" },
+        }),
+        match({
+          pubkey: ALICIA,
+          profile: { pubkey: ALICIA, name: "alicia cached" },
+          source: "local_cache",
+          frontier: { createdAt: 100, eventId: "0a" },
+        }),
+      ],
+    })
+    const network = result({
+      query: "ali",
+      matches: [
+        match({
+          pubkey: ALICE,
+          profile: { pubkey: ALICE, name: "alice stale" },
+          frontier: { createdAt: 200, eventId: "relay-old" },
+        }),
+        match({
+          pubkey: ALICIA,
+          profile: { pubkey: ALICIA, name: "alicia relay" },
+          frontier: { createdAt: 100, eventId: "0b" },
+        }),
+      ],
+      evidence: "present_current",
+      relaysPlanned: 1,
+      relaysCompleted: 1,
+    })
+
+    const merged = mergeProfileSearchResults(cached, network, 5)
+    const byPubkey = new Map(
+      merged.matches.map((entry) => [entry.pubkey, entry])
+    )
+    expect(byPubkey.get(ALICE)?.profile.name).toBe("alice renamed")
+    expect(byPubkey.get(ALICE)?.frontier.eventId).toBe("cached-new")
+    expect(byPubkey.get(ALICIA)?.profile.name).toBe("alicia cached")
+    expect(byPubkey.get(ALICIA)?.frontier.eventId).toBe("0a")
+    expect(merged.matches.every((entry) => entry.source === "both")).toBe(true)
+  })
+
+  it("does not let cached rows upgrade an absent relay observation", () => {
+    const merged = mergeProfileSearchResults(
+      result({
+        query: "ali",
+        matches: [
+          match({
+            pubkey: ALICE,
+            profile: { pubkey: ALICE, name: "alice" },
+            source: "local_cache",
+          }),
+        ],
+      }),
+      result({
+        query: "ali",
+        evidence: "absent_within_scope",
+        relaysPlanned: 1,
+        relaysCompleted: 1,
+      }),
+      5
+    )
+    expect(merged.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
+    expect(merged.evidence).toBe("absent_within_scope")
   })
 
   it("answers within the seller lookup budget and keeps flags it already knows", async () => {

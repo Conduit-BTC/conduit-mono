@@ -16,6 +16,7 @@ function match(overrides: Partial<ProfileSearchMatch> & { pubkey: string }) {
     isSeller: false,
     source: "network",
     score: 1,
+    frontier: {},
     ...overrides,
   } as ProfileSearchMatch
 }
