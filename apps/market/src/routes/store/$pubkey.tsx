@@ -668,7 +668,7 @@ function StorefrontPage() {
           </div>
         </aside>
 
-        <section className="min-w-0 max-w-full self-start overflow-hidden">
+        <section className="min-w-0 max-w-full self-start overflow-hidden [@media(min-width:768px)_and_(hover:hover)]:overflow-visible">
           {categoryFacetOptions.length > 0 && (
             <div className="mb-4 min-w-0 max-w-full overflow-hidden rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface)] p-4 md:hidden">
               <div className="mb-3 flex items-center justify-between gap-3">
@@ -773,9 +773,9 @@ function StorefrontPage() {
           </div>
 
           {productsQuery.isInitialLoading && (
-            <ul className="mt-4 grid min-w-0 max-w-full items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
-                <li key={index}>
+                <li key={index} className="h-full">
                   <ProductGridCardSkeleton />
                 </li>
               ))}
@@ -820,9 +820,9 @@ function StorefrontPage() {
             )}
 
           {filteredProducts.length > 0 && (
-            <ul className="mt-4 grid min-w-0 max-w-full items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {filteredProducts.map((product, index) => (
-                <li key={product.id}>
+                <li key={product.id} className="h-full">
                   <ResolvedProductGridCard
                     product={product}
                     family={productsQuery.familiesByProductId[product.id]}
