@@ -10,6 +10,7 @@ import {
   buildEventMarketCollectionDraft,
   buildEventMarketPickupDraft,
   discoverFollowedOrganizerEventMarkets,
+  discoverPerspectiveEventMarkets,
   EVENT_KINDS,
   EventMarketDiscoveryBoundError,
   getOrganizerEventMarketsDetailed,
@@ -551,6 +552,33 @@ describe("followed organizer event-market discovery", () => {
     expect(result.state).toBe("partial")
     expect(result.markets.map((item) => item.reference)).toEqual([
       future.reference,
+    ])
+  })
+
+  it("can include valid ended markets for a timeline without changing discovery defaults", async () => {
+    const nowMs = 1_800_000_000_000
+    const ended = marketWithCalendarEnd(ORGANIZER, "ended", "ended", nowMs)
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate(ORGANIZER_SECRET, "ended")]),
+      readOrganizerMarkets: async () => organizerRead({ markets: [ended] }),
+    })
+
+    const result = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: {
+        source: "conduit",
+        coverage: "complete",
+        eventObserved: false,
+        snapshotState: "curated",
+        truncated: false,
+      },
+      includeEnded: true,
+      nowMs,
+    })
+
+    expect(result.markets.map((item) => item.reference)).toEqual([
+      ended.reference,
     ])
   })
 

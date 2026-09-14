@@ -34,6 +34,31 @@ import type { StatusStepperRow, StatusStepperRowStatus } from "@conduit/ui"
 import type { CartItemFulfillment, CartPickupFulfillment } from "./cart-model"
 import { getPickupHandoffSummary } from "./pickup-handoff"
 
+/** Show controlled copy, never an arbitrary provider response saved in lastError. */
+export function getOrderPaymentFailureDetail(
+  lifecycle: OrderLifecycle | undefined,
+  vm: Pick<OrderViewModel, "paymentStatus" | "merchantStatus" | "phase">
+): string | null {
+  if (
+    lifecycle?.paymentStatus !== "failed" ||
+    !lifecycle.lastError ||
+    vm.paymentStatus !== "failed" ||
+    isBuyerOrderPaid(vm) ||
+    vm.phase === "cancelled" ||
+    vm.phase === "completed"
+  ) {
+    return null
+  }
+  if (
+    lifecycle.invoiceStatus === "failed" &&
+    lifecycle.lastError ===
+      "The zap invoice is not bound to the signed NIP-57 request sent to the callback."
+  ) {
+    return "The merchant's payment provider returned an invoice that does not match this public zap request. Contact the merchant if this keeps happening."
+  }
+  return "Payment could not be completed. Try again or contact the merchant if it keeps failing."
+}
+
 /**
  * Interpreted, status-first order view-model (CND-122).
  *

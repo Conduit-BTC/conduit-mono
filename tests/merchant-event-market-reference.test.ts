@@ -37,16 +37,18 @@ const ORGANIZER_SECRET = generateSecretKey()
 const ORGANIZER = getPublicKey(ORGANIZER_SECRET)
 const COLLECTION = `30405:${ORGANIZER}:public-market`
 const CALENDAR = `31923:${ORGANIZER}:public-market-day`
-const HINT_RELAY = "wss://hint.example/events"
-const DISCOVERY_RELAY = "wss://discovery.example/read"
-const OBSERVED_RELAY = "wss://observed.example/events"
-const CALENDAR_OBSERVED_RELAY = "wss://calendar-observed.example/events"
-const PATH_CASE_COLLECTION_RELAY = "wss://path-case.example/A"
-const PATH_CASE_CALENDAR_RELAY = "wss://path-case.example/a"
+const HINT_RELAY = "wss://hint.relay.conduit.market/events"
+const DISCOVERY_RELAY = "wss://discovery.relay.conduit.market/read"
+const OBSERVED_RELAY = "wss://observed.relay.conduit.market/events"
+const CALENDAR_OBSERVED_RELAY =
+  "wss://calendar-observed.relay.conduit.market/events"
+const ORGANIZER_HINT_RELAY = "wss://nos.lol"
+const PATH_CASE_COLLECTION_RELAY = "wss://path-case.relay.conduit.market/A"
+const PATH_CASE_CALENDAR_RELAY = "wss://path-case.relay.conduit.market/a"
 const FALLBACK_RELAY = CANONICAL_APP_BACKPLANE_RELAYS[0]!
 const SUPPORT_ONLY_RELAYS = Array.from(
   { length: 7 },
-  (_, index) => `wss://support-${index + 1}.example/events`
+  (_, index) => `wss://support-${index + 1}.relay.conduit.market/events`
 )
 
 afterEach(() => __resetEventMarketTestOverrides())
@@ -85,6 +87,26 @@ describe("merchant organizer event-market references", () => {
       })
     ).toEqual({})
     expect(parseMerchantEventsSearch({ event: [imported] })).toEqual({})
+    expect(
+      parseMerchantEventsSearch({
+        event: imported,
+        source: "following",
+        relation: "selling",
+        window: "30d",
+      })
+    ).toEqual({
+      event: imported,
+      source: "following",
+      relation: "selling",
+      window: "30d",
+    })
+    expect(
+      parseMerchantEventsSearch({
+        source: "unknown",
+        relation: "mine",
+        window: "forever",
+      })
+    ).toEqual({})
   })
 
   it("preserves only a validated event through the signed-out auth handoff", () => {
@@ -120,6 +142,39 @@ describe("merchant organizer event-market references", () => {
       relayHints: [HINT_RELAY],
     })
     expect(organizerEventMarketReferencesMatch(imported, COLLECTION)).toBe(true)
+  })
+
+  it("does not execute a private relay hint from an imported naddr", async () => {
+    const privateRelay = "wss://127.0.0.1:7447/private"
+    const readPlans: string[][] = []
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        const relayUrls = [...(options.relayUrls ?? [])]
+        readPlans.push(relayUrls)
+        return {
+          events: [],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+          eventsVerified: true,
+        }
+      },
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+    })
+
+    await loadEventCatalog(
+      encodeEventMarketNaddr(COLLECTION, [privateRelay, HINT_RELAY])
+    )
+
+    expect(readPlans).not.toHaveLength(0)
+    for (const relayUrls of readPlans) {
+      expect(relayUrls).not.toContain(privateRelay)
+      expect(relayUrls).toContain(HINT_RELAY)
+    }
   })
 
   it("keeps path-distinct relay acknowledgements in a published reference", async () => {
@@ -597,10 +652,10 @@ describe("merchant organizer event-market references", () => {
     })
   })
 
-  it("keeps and queries the eighth imported relay when an ACK is already present", async () => {
+  it("keeps an encoded eighth imported relay while reserving fallback when an ACK is already present", async () => {
     const importedHints = Array.from(
       { length: 8 },
-      (_, index) => `wss://import-${index + 1}.example/events`
+      (_, index) => `wss://import-${index + 1}.relay.conduit.market/events`
     )
     const imported = encodeEventMarketNaddr(COLLECTION, importedHints)
     const acknowledged = organizerEventMarketReferenceWithDeliveryRelayHints(
@@ -647,7 +702,7 @@ describe("merchant organizer event-market references", () => {
       fetchEventsFanoutDetailed: async (rawFilter, options) => {
         const relayUrls = [...(options.relayUrls ?? [])]
         readPlans.push(relayUrls)
-        const events = relayUrls.includes(importedHints[7]!)
+        const events = relayUrls.includes(FALLBACK_RELAY)
           ? graph.filter((event) => {
               const filter = rawFilter as NDKFilter
               if (filter.kinds && !filter.kinds.includes(event.kind as never)) {
@@ -681,7 +736,7 @@ describe("merchant organizer event-market references", () => {
     expect(market.collectionCoordinate).toBe(COLLECTION)
     expect(readPlans.length).toBeGreaterThan(0)
     for (const relayUrls of readPlans) {
-      expect(relayUrls).toEqual(importedHints)
+      expect(relayUrls).toEqual([...importedHints.slice(0, 7), FALLBACK_RELAY])
     }
     expect(
       decodeEventMarketReference(market.naddr, [30405])?.relayHints
@@ -693,7 +748,7 @@ describe("merchant organizer event-market references", () => {
     expect(guestCatalog.state).toBe("active")
     expect(readPlans.length).toBeGreaterThan(0)
     for (const relayUrls of readPlans) {
-      expect(relayUrls).toEqual(importedHints)
+      expect(relayUrls).toEqual([...importedHints.slice(0, 7), FALLBACK_RELAY])
     }
   })
 
@@ -777,6 +832,93 @@ describe("merchant organizer event-market references", () => {
     for (const relayUrls of readPlans) expect(relayUrls[0]).toBe(OBSERVED_RELAY)
   })
 
+  it("keeps a normal fallback in an imported eight-hint link without an organizer relay list", async () => {
+    const now = Math.floor(Date.now() / 1_000)
+    const readPlans: string[][] = []
+    const portableHints = Array.from(
+      { length: 8 },
+      (_, index) => `wss://portable-${index + 1}.relay.conduit.market/events`
+    )
+    const graph = [
+      signedEvent(
+        buildEventMarketCalendarDraft({
+          kind: EVENT_KINDS.CALENDAR_TIME,
+          dTag: "fallback-only-day",
+          title: "Fallback-only market day",
+          start: now + 86_400,
+          end: now + 90_000,
+          startTzid: "UTC",
+          endTzid: "UTC",
+        }),
+        now
+      ),
+      signedEvent(
+        buildEventMarketCollectionDraft({
+          dTag: "fallback-only-market",
+          title: "Fallback-only market",
+          eventCoordinate: `31923:${ORGANIZER}:fallback-only-day`,
+          productCoordinates: [],
+        }),
+        now + 1
+      ),
+    ]
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        const relayUrls = [...(options.relayUrls ?? [])]
+        readPlans.push(relayUrls)
+        const filter = rawFilter as NDKFilter
+        const events = relayUrls.includes(FALLBACK_RELAY)
+          ? graph
+              .filter((event) => {
+                if (
+                  filter.kinds &&
+                  !filter.kinds.includes(event.kind as never)
+                ) {
+                  return false
+                }
+                if (filter.authors && !filter.authors.includes(event.pubkey)) {
+                  return false
+                }
+                const dTags = filter["#d"]
+                return (
+                  !dTags ||
+                  event.tags.some(
+                    (tag) => tag[0] === "d" && dTags.includes(tag[1] ?? "")
+                  )
+                )
+              })
+              .map((event) => new NDKEvent(undefined, event))
+          : []
+        return {
+          events,
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+    })
+
+    const catalog = await loadEventCatalog(
+      encodeEventMarketNaddr(
+        `30405:${ORGANIZER}:fallback-only-market`,
+        portableHints
+      )
+    )
+
+    expect(readPlans).not.toHaveLength(0)
+    for (const relayUrls of readPlans) {
+      expect(relayUrls).toContain(FALLBACK_RELAY)
+      expect(relayUrls).toHaveLength(8)
+    }
+    expect(catalog.state).toBe("active")
+  })
+
   it("reserves a fallback when required-record sources saturate share hints", async () => {
     const now = Math.floor(Date.now() / 1_000)
     const readPlans: string[][] = []
@@ -805,7 +947,19 @@ describe("merchant organizer event-market references", () => {
       ),
     ]
     __setEventMarketTestOverrides({
-      getRelayLists: async () => new Map(),
+      getRelayLists: async () =>
+        new Map([
+          [
+            ORGANIZER,
+            {
+              pubkey: ORGANIZER,
+              readRelayUrls: [],
+              writeRelayUrls: [ORGANIZER_HINT_RELAY],
+              eventCreatedAt: 1,
+              cachedAt: 1,
+            },
+          ],
+        ]),
       fetchEventsFanoutDetailed: async (rawFilter, options) => {
         const relayUrls = [...(options.relayUrls ?? [])]
         readPlans.push(relayUrls)
@@ -878,7 +1032,7 @@ describe("merchant organizer event-market references", () => {
       ORGANIZER,
       {
         reference: encodeEventMarketNaddr(COLLECTION, [
-          "wss://stale.example/events",
+          "wss://stale.relay.conduit.market/events",
         ]),
         savedAt: 1,
       },
@@ -900,11 +1054,13 @@ describe("merchant organizer event-market references", () => {
 
     expect(readPlans).not.toHaveLength(0)
     for (const relayUrls of readPlans) {
+      expect(relayUrls).toContain(ORGANIZER_HINT_RELAY)
       expect(relayUrls).toContain(OBSERVED_RELAY)
       expect(relayUrls).toContain(FALLBACK_RELAY)
-      for (const supportRelay of SUPPORT_ONLY_RELAYS.slice(0, 6)) {
+      for (const supportRelay of SUPPORT_ONLY_RELAYS.slice(0, 5)) {
         expect(relayUrls).toContain(supportRelay)
       }
+      expect(relayUrls).not.toContain(SUPPORT_ONLY_RELAYS[5])
       expect(relayUrls).not.toContain(SUPPORT_ONLY_RELAYS[6])
     }
     expect(guestCatalog.state).toBe("active")
@@ -914,7 +1070,7 @@ describe("merchant organizer event-market references", () => {
     const now = Math.floor(Date.now() / 1_000)
     const staleRelays = Array.from(
       { length: 8 },
-      (_, index) => `wss://stale-${index + 1}.example/events`
+      (_, index) => `wss://stale-${index + 1}.relay.conduit.market/events`
     )
     const readPlans: string[][] = []
     let includeCache = true

@@ -547,8 +547,10 @@ afterEach(() => {
 describe("event-market retained evidence", () => {
   it("never turns a remote naddr loopback hint into signed-in relay I/O", async () => {
     const remoteLoopbackRelay = "ws://127.0.0.1:4789"
+    const portableRelay = "wss://portable.relay.conduit.market/events"
     const ownerRelay = "ws://owner-network.example:4848"
     const attemptedRelayUrls: string[] = []
+    const relayPlans: string[][] = []
     const ownerSelectedRelayUrls: string[] = []
     const authenticatedPubkeys: Array<string | null | undefined> = []
     __setEventMarketTestOverrides({
@@ -584,6 +586,7 @@ describe("event-market retained evidence", () => {
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
       fetchEventsFanoutDetailed: async (_filter, options) => {
+        relayPlans.push([...(options.relayUrls ?? [])])
         attemptedRelayUrls.push(...(options.relayUrls ?? []))
         ownerSelectedRelayUrls.push(...(options.ownerSelectedRelayUrls ?? []))
         authenticatedPubkeys.push(options.authenticatedPubkey)
@@ -602,7 +605,7 @@ describe("event-market retained evidence", () => {
       kind: EVENT_KINDS.PRODUCT_COLLECTION,
       pubkey: ORGANIZER,
       identifier: "catalog",
-      relays: [remoteLoopbackRelay],
+      relays: [remoteLoopbackRelay, portableRelay],
     })
 
     await getEventMarket({
@@ -610,6 +613,11 @@ describe("event-market retained evidence", () => {
       authenticatedPubkey: MERCHANT,
     })
 
+    expect(relayPlans.length).toBeGreaterThan(0)
+    expect(
+      relayPlans.every((relayUrls) => relayUrls[0] === portableRelay)
+    ).toBe(true)
+    expect(attemptedRelayUrls).toContain(portableRelay)
     expect(attemptedRelayUrls).toContain(ownerRelay)
     expect(ownerSelectedRelayUrls).toContain(ownerRelay)
     expect(attemptedRelayUrls).not.toContain(remoteLoopbackRelay)
