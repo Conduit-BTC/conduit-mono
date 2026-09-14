@@ -1768,6 +1768,337 @@ test("event banners remain fully contained on every surface and viewport @market
   }
 })
 
+test("event catalog shops products by search, merchant, and sort before technical pickup records @market", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(30_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  // A correctly prepared banner must occupy the complete 3:1 frame.
+  // Other event-banner coverage keeps a mismatched 2:1 source to verify fitting.
+  await page.route(
+    "https://cdn.conduit.market/conduit-test/synthetic-event-market.svg",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="600"><rect width="1800" height="600" fill="#211e31"/><rect x="12" y="12" width="1776" height="576" rx="20" fill="none" stroke="#bb00ff" stroke-width="8"/><text x="900" y="280" text-anchor="middle" fill="white" font-family="sans-serif" font-size="100">3:1 event banner</text><text x="900" y="390" text-anchor="middle" fill="white" font-family="sans-serif" font-size="48">1800 × 600 · full artwork visible</text></svg>',
+      })
+  )
+  const eventTitle = "Synthetic Shopping Event"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: eventTitle,
+    organizerHandoffEnabled: true,
+  })
+  const createdAt = market.initialCollection.created_at + 1
+  const secondMerchantSecret = generateSecretKey()
+  const pickupGeohash = "dp3wj"
+  const pickupLocation = market.pickupEvent!.tags.find(
+    (tag) => tag[0] === "location"
+  )![1]!
+  const pickups = Array.from({ length: 26 }, (_, index) =>
+    signEvent(
+      index === 1 || index === 2 || (index >= 4 && index % 2 === 1)
+        ? secondMerchantSecret
+        : MERCHANT_SECRET,
+      {
+        kind: 30406,
+        created_at: createdAt,
+        content: market.pickupEvent!.content,
+        tags: [
+          ...market
+            .pickupEvent!.tags.filter(
+              (tag) => tag[0] !== "g" && (index !== 0 || tag[0] !== "location")
+            )
+            .map((tag) =>
+              tag[0] === "d" ? ["d", `shopping-pickup-${index}`] : tag
+            ),
+          ["g", pickupGeohash],
+        ],
+      }
+    )
+  )
+  const productSpecs = [
+    { title: "Amber Mug", price: 3000, secret: MERCHANT_SECRET },
+    { title: "Blue Tote", price: 1000, secret: secondMerchantSecret },
+    { title: "Cedar Mug", price: 2000, secret: secondMerchantSecret },
+    { title: "Dawn Coffee", price: 4000, secret: MERCHANT_SECRET },
+  ]
+  const products = productSpecs.map((spec, index) => {
+    const template = createMerchantProductEvent({
+      dTag: `shopping-product-${index}`,
+      title: spec.title,
+      collectionCoordinate: market.collectionCoordinate,
+      pickupCoordinate: eventCoordinate(pickups[index]!),
+      createdAt,
+      priceSats: spec.price,
+    })
+    return signEvent(spec.secret, {
+      kind: template.kind,
+      created_at: template.created_at,
+      content: template.content,
+      tags: template.tags,
+    })
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: createdAt,
+    content: market.initialCollection.content,
+    tags: [
+      ...market.initialCollection.tags.filter(
+        (tag) => tag[0] !== "shipping_option"
+      ),
+      ...products.map((product) => ["a", eventCoordinate(product)]),
+    ],
+  })
+  relay.seed(
+    ...pickups,
+    ...products,
+    collection,
+    ...[
+      { secret: MERCHANT_SECRET, name: "Alpine Goods" },
+      { secret: secondMerchantSecret, name: "Bay Coffee" },
+    ].map(({ secret, name }) =>
+      signEvent(secret, {
+        kind: 0,
+        created_at: createdAt,
+        tags: [],
+        content: JSON.stringify({ display_name: name }),
+      })
+    )
+  )
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const catalogUrl = page.url()
+  const shopHeading = page.getByRole("heading", { name: "Shop the event" })
+  const banner = page.getByRole("img", { name: `${eventTitle} banner` })
+  const cards = page.getByRole("listitem").filter({
+    has: page.getByRole("heading", {
+      name: /^(Amber Mug|Blue Tote|Cedar Mug|Dawn Coffee)$/,
+    }),
+  })
+  const titles = cards.getByRole("heading", { level: 3 })
+  const search = page.getByRole("searchbox", {
+    name: "Search products or merchants",
+  })
+  const merchant = page.getByRole("combobox", { name: "Merchant", exact: true })
+  const sort = page.getByRole("combobox", { name: "Sort products" })
+  const technicalSummary = page.locator("summary").filter({
+    hasText: /^Technical details\s*$/,
+  })
+  const technicalDetails = technicalSummary.locator("..")
+  await expect(shopHeading).toBeVisible()
+  await expect(banner).toBeVisible()
+  await expect(titles).toHaveText(productSpecs.map((spec) => spec.title))
+  await expect(
+    cards.getByRole("button", { name: "Add", exact: true })
+  ).toHaveCount(4)
+  for (const card of await cards.all()) {
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+  }
+  await expect(
+    cards.first().getByRole("button", { name: "Alpine Goods", exact: true })
+  ).toBeVisible()
+  await expect(technicalDetails).not.toHaveAttribute("open", "")
+  // Geohash-only pickups retain their location; readable text takes precedence.
+  for (const [index, location] of [pickupGeohash, pickupLocation].entries()) {
+    const details = cards.nth(index).locator("details")
+    await details.locator("summary").click()
+    await expect(details.getByText(location, { exact: true })).toBeVisible()
+    if (index === 1) {
+      await expect(
+        details.getByText(pickupGeohash, { exact: true })
+      ).toHaveCount(0)
+    }
+    await details.locator("summary").click()
+  }
+  await expect(
+    page.getByRole("button", { name: "All products", exact: true })
+  ).toHaveAttribute("aria-pressed", "true")
+
+  await sort.click()
+  await page
+    .getByRole("option", { name: "Price: low to high", exact: true })
+    .click()
+  await expect(titles).toHaveText([
+    "Blue Tote",
+    "Cedar Mug",
+    "Amber Mug",
+    "Dawn Coffee",
+  ])
+  await sort.click()
+  await page
+    .getByRole("option", { name: "Price: high to low", exact: true })
+    .click()
+  await expect(titles).toHaveText([
+    "Dawn Coffee",
+    "Amber Mug",
+    "Cedar Mug",
+    "Blue Tote",
+  ])
+  await sort.click()
+  await page.getByRole("option", { name: "Merchant A–Z", exact: true }).click()
+  await expect(titles).toHaveText([
+    "Amber Mug",
+    "Dawn Coffee",
+    "Blue Tote",
+    "Cedar Mug",
+  ])
+  await sort.click()
+  await page.getByRole("option", { name: "Name A–Z", exact: true }).click()
+
+  await search.fill("mug")
+  await expect(titles).toHaveText(["Amber Mug", "Cedar Mug"])
+  await merchant.click()
+  await page.getByRole("option", { name: /Bay Coffee/ }).click()
+  await expect(titles).toHaveText(["Cedar Mug"])
+  await search.fill("coffee")
+  // Merchant names are searchable, and the selected merchant narrows results.
+  await expect(titles).toHaveText(["Blue Tote", "Cedar Mug"])
+  await search.fill("no matching item")
+  await expect(cards).toHaveCount(0)
+  await expect(
+    page.getByRole("heading", { name: "No matching products", exact: true })
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click()
+  await expect(search).toHaveValue("")
+  await expect(merchant).toContainText("All merchants")
+  await expect(titles).toHaveText(productSpecs.map((spec) => spec.title))
+
+  await merchant.click()
+  await page.getByRole("option", { name: /Alpine Goods/ }).click()
+  await expect(titles).toHaveText(["Amber Mug", "Dawn Coffee"])
+  await merchant.click()
+  await page.keyboard.press("ArrowUp")
+  await page.keyboard.press("Enter")
+  await expect(merchant).toContainText("All merchants")
+  await expect(titles).toHaveText(productSpecs.map((spec) => spec.title))
+  await merchant.click()
+  await page.keyboard.press("Enter")
+  await expect(merchant).toContainText("All merchants")
+  await expect(titles).toHaveText(productSpecs.map((spec) => spec.title))
+
+  await cards
+    .first()
+    .getByRole("button", { name: "Alpine Goods", exact: true })
+    .click()
+  await expect(titles).toHaveText(["Amber Mug", "Dawn Coffee"])
+  expect(page.url()).toBe(catalogUrl)
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click()
+  await page.getByRole("button", { name: "By merchant", exact: true }).click()
+  await expect(
+    page.getByRole("button", { name: "By merchant", exact: true })
+  ).toHaveAttribute("aria-pressed", "true")
+  for (const name of ["Alpine Goods", "Bay Coffee"]) {
+    const heading = page.getByRole("heading", { name, exact: true })
+    await expect(heading).toBeVisible()
+    await expect(heading.locator("..")).toContainText("2 products")
+  }
+  await expect(titles).toHaveText([
+    "Amber Mug",
+    "Dawn Coffee",
+    "Blue Tote",
+    "Cedar Mug",
+  ])
+  await page.getByRole("button", { name: "All products", exact: true }).click()
+
+  // Add many accepted merchant-owned pickup records through valid products.
+  // The collection itself supports at most one organizer pickup; each merchant
+  // product references its own same-author handoff option instead.
+  const extraProducts = pickups.slice(4).map((pickup, index) => {
+    const template = createMerchantProductEvent({
+      dTag: `shopping-extra-${index}`,
+      title: `Fixture item ${String(index + 5).padStart(2, "0")}`,
+      collectionCoordinate: market.collectionCoordinate,
+      pickupCoordinate: eventCoordinate(pickup),
+      createdAt: createdAt + 1,
+      priceSats: 5000 + index,
+    })
+    return signEvent(index % 2 === 1 ? secondMerchantSecret : MERCHANT_SECRET, {
+      kind: template.kind,
+      created_at: template.created_at,
+      content: template.content,
+      tags: template.tags,
+    })
+  })
+  relay.seed(
+    ...extraProducts,
+    signEvent(ORGANIZER_SECRET, {
+      kind: collection.kind,
+      created_at: createdAt + 1,
+      content: collection.content,
+      tags: [
+        ...collection.tags,
+        ...extraProducts.map((product) => ["a", eventCoordinate(product)]),
+      ],
+    })
+  )
+  await page.reload()
+  await expect(
+    page
+      .getByRole("listitem")
+      .filter({ has: page.getByRole("heading", { level: 3 }) })
+  ).toHaveCount(26)
+  await expect(
+    cards.first().getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled()
+
+  // A large pickup record set must remain available without pushing the catalog
+  // below the record list, on both desktop and narrow mobile screens.
+  for (const viewport of [
+    { width: 1440, height: 1000, name: "desktop" },
+    { width: 390, height: 844, name: "mobile" },
+  ]) {
+    await page.setViewportSize(viewport)
+    await page.evaluate(() => window.scrollTo(0, 0))
+    await expect(banner).toBeVisible()
+    await expect
+      .poll(() =>
+        banner.evaluate((image) => {
+          const bounds = image.getBoundingClientRect()
+          return bounds.width / bounds.height
+        })
+      )
+      .toBeCloseTo(3, 2)
+    await expect
+      .poll(() =>
+        banner.evaluate((image) => image.naturalWidth / image.naturalHeight)
+      )
+      .toBe(3)
+    await expect(search).toBeVisible()
+    await search.fill("Alpine Goods")
+    await expect(titles).toHaveText(["Amber Mug", "Dawn Coffee"])
+    await page
+      .getByRole("button", { name: "Clear filters", exact: true })
+      .click()
+    await expect(titles).toHaveText(productSpecs.map((spec) => spec.title))
+    await expect(technicalDetails).not.toHaveAttribute("open", "")
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }))
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0)
+    const layout = await page.evaluate(() => ({
+      width: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }))
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.width + 1)
+    const firstProductBounds = await cards.first().boundingBox()
+    const technicalBounds = await technicalSummary.boundingBox()
+    expect(firstProductBounds).not.toBeNull()
+    expect(technicalBounds).not.toBeNull()
+    expect(firstProductBounds!.y).toBeLessThan(technicalBounds!.y)
+    // The first product is close to the header even with 26 pickup records.
+    expect(firstProductBounds!.y).toBeLessThan(viewport.height * 1.5)
+  }
+  await technicalSummary.focus()
+  await technicalSummary.press("Enter")
+  await expect(technicalDetails).toHaveAttribute("open", "")
+  await expect(technicalDetails.getByText(/^Pickup: /)).toHaveCount(26)
+  await expect(
+    technicalDetails.getByText("Product list", { exact: true })
+  ).toBeVisible()
+})
+
 test("Market Events browses the same perspective on desktop, mobile, and keyboard @market", async ({
   page,
 }) => {
@@ -3351,10 +3682,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
     })
   ).toBeVisible({ timeout: 30_000 })
   await expect(
-    page.getByText(
-      "Organizer handoff is not offered. Accepted merchants may provide their own pickup point.",
-      { exact: true }
-    )
+    page.getByText("Pickup details are shown on each product.", { exact: true })
   ).toBeVisible()
   await expect(
     page.getByText(
@@ -3447,7 +3775,13 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
     "role",
     "status"
   )
+  const technicalDetails = page
+    .locator("summary")
+    .filter({ hasText: /^Technical details\s*$/ })
+  await expect(page.getByTestId("event-relay-read-coverage")).toBeHidden()
+  await technicalDetails.click()
   await expect(page.getByTestId("event-relay-read-coverage")).toBeVisible()
+  await technicalDetails.click()
   const productCard = page
     .getByRole("listitem")
     .filter({ hasText: MERCHANT_PRODUCT_TITLE })
