@@ -346,11 +346,7 @@ export function getShippingStepBlockingMessage(params: {
 
 export function getCheckoutEvidenceCheckingLabel(input: {
   availabilityChecking: boolean
-  eventPickupChecking: boolean
-  organizerInboxChecking: boolean
 }): string | null {
-  if (input.eventPickupChecking) return "Checking signed event pickup"
-  if (input.organizerInboxChecking) return "Checking organizer pickup inbox"
   if (input.availabilityChecking) return "Checking product availability"
   return null
 }

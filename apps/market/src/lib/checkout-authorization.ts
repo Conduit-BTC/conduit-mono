@@ -14,8 +14,7 @@ import {
   prepareCartFulfillment,
 } from "./cart-shipping-options"
 import {
-  getProductEventMarketCandidates,
-  resolveProductCartFulfillment,
+  resolveCheckoutProductFulfillments,
   type ProductCartFulfillmentResolution,
 } from "./event-market-adapter"
 import { assertCartPickupHandlerReady } from "./pickup-handoff"
@@ -56,28 +55,18 @@ export async function authorizeCurrentCheckoutItems(input: {
   resolveProductFulfillment?: CheckoutProductFulfillmentResolver
   authorizePickupHandlers?: CheckoutPickupHandlerAuthorizer
 }): Promise<CheckoutAuthorizationResult> {
-  const resolveFulfillment =
-    input.resolveProductFulfillment ??
-    ((product, rateInput) =>
-      resolveProductCartFulfillment(
-        product,
-        rateInput,
-        undefined,
+  const fulfillmentResolutions = input.resolveProductFulfillment
+    ? await Promise.all(
+        input.refreshedProducts.map((product) =>
+          input.resolveProductFulfillment!(product, input.rateInput ?? null)
+        )
+      )
+    : await resolveCheckoutProductFulfillments(
+        input.refreshedProducts,
+        input.rateInput,
         input.authenticatedPubkey,
         input.shouldContinue
-      ))
-  const fulfillmentResolutions = await Promise.all(
-    input.refreshedProducts.map(async (product) => {
-      if (getProductEventMarketCandidates(product).length === 0) {
-        return {
-          status: "standard",
-          type: product.format === "digital" ? "digital" : "shipping",
-          product,
-        } satisfies ProductCartFulfillmentResolution
-      }
-      return resolveFulfillment(product, input.rateInput ?? null)
-    })
-  )
+      )
   if (
     fulfillmentResolutions.some((resolution) => resolution.status === "blocked")
   ) {

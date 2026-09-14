@@ -44,7 +44,6 @@ import {
   orderSchema,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
-  resolveEventMarketOrganizerInbox,
   resolveWalletPaymentInstance,
   validateAddressConsistency,
   useAuth,
@@ -108,7 +107,6 @@ import {
 } from "../hooks/useCartReadiness"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useEventActorIdentity } from "../hooks/useEventActorIdentity"
-import { useProductCartFulfillmentBatch } from "../hooks/useProductCartFulfillment"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets, type WalletRuntimeState } from "../hooks/useWallets"
 import { useShopperPresets } from "../hooks/useShopperPresets"
@@ -217,10 +215,8 @@ import {
   runOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
-import { getCartEventFulfillmentBlock } from "../lib/event-market-adapter"
 import {
   getCartPickupHandoffSummary,
-  getOrganizerInboxBlockingMessage,
   getPickupHandoffPrivacyCopy,
   type PickupHandoffSummary,
 } from "../lib/pickup-handoff"
@@ -1355,50 +1351,8 @@ function CheckoutPage() {
   )
   const mixedFulfillmentMessage =
     getMixedFulfillmentBlockingMessage(checkoutItems)
-  const checkoutEventFulfillment = useProductCartFulfillmentBatch(
-    selectedMerchantReadiness?.products ?? [],
-    btcUsdRate
-  )
-  const eventFulfillmentBlock = useMemo(
-    () =>
-      getCartEventFulfillmentBlock(
-        checkoutItems,
-        checkoutEventFulfillment.resolutionsByProductId
-      ),
-    [checkoutEventFulfillment.resolutionsByProductId, checkoutItems]
-  )
-  const organizerInboxQuery = useQuery({
-    queryKey: [
-      "event-market-organizer-inbox",
-      session.relayScope ?? "no-relay-scope",
-      draftOwnerIdentity ?? "anonymous",
-      pickupHandoff?.mode === "organizer_handoff"
-        ? pickupHandoff.handlerPubkey
-        : "not-required",
-    ],
-    queryFn: ({ signal }) =>
-      resolveEventMarketOrganizerInbox(pickupHandoff!.handlerPubkey, {
-        requestingAccountPubkey: draftOwnerIdentity,
-        authenticatedPubkey: draftOwnerIdentity,
-        signal,
-        shouldContinue: () =>
-          !signal.aborted && authGenerationRef.current === authGeneration,
-      }),
-    enabled:
-      session.relaySettingsReady && pickupHandoff?.mode === "organizer_handoff",
-    staleTime: 0,
-    refetchOnMount: "always",
-    retry: false,
-  })
-  const organizerInboxBlockingMessage =
-    organizerInboxQuery.data?.state === "blocked"
-      ? getOrganizerInboxBlockingMessage(organizerInboxQuery.data)
-      : null
-  const fulfillmentBlockingMessage =
-    mixedFulfillmentMessage ??
-    eventFulfillmentBlock?.message ??
-    organizerInboxBlockingMessage ??
-    null
+  // Pickup is reviewed from the cart; live authorization runs at submission.
+  const fulfillmentBlockingMessage = mixedFulfillmentMessage
   const checkoutAvailability = {
     availabilityByProductId:
       selectedMerchantReadiness?.availabilityByProductId ?? emptyAvailability,
@@ -1428,12 +1382,6 @@ function CheckoutPage() {
     selectedMerchantReadiness?.blockingMessage ?? null
   const checkoutEvidenceCheckingLabel = getCheckoutEvidenceCheckingLabel({
     availabilityChecking: checkoutAvailability.isChecking,
-    eventPickupChecking: checkoutEventFulfillment.isChecking,
-    organizerInboxChecking:
-      pickupHandoff?.mode === "organizer_handoff" &&
-      (!session.relaySettingsReady ||
-        organizerInboxQuery.isLoading ||
-        organizerInboxQuery.isFetching),
   })
   const checkoutEvidenceIsChecking = checkoutEvidenceCheckingLabel !== null
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
@@ -3522,68 +3470,6 @@ function CheckoutPage() {
             >
               Review cart
             </Link>
-          </Button>
-        </div>
-      ) : null}
-
-      {eventFulfillmentBlock ? (
-        <div
-          role="alert"
-          className="flex flex-col gap-4 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warning)]" />
-            <div>
-              <div className="font-medium text-[var(--text-primary)]">
-                Event pickup must be refreshed
-              </div>
-              <p className="mt-1 leading-6">{eventFulfillmentBlock.message}</p>
-            </div>
-          </div>
-          <Button asChild variant="outline" className="shrink-0">
-            {eventFulfillmentBlock.canonicalNaddr ? (
-              <Link
-                to="/events/$collectionRef"
-                params={{
-                  collectionRef: eventFulfillmentBlock.canonicalNaddr,
-                }}
-              >
-                View event catalog
-              </Link>
-            ) : (
-              <Link
-                to="/cart"
-                search={{ merchant: pubkeyToNpub(selectedMerchant!) }}
-              >
-                Review cart
-              </Link>
-            )}
-          </Button>
-        </div>
-      ) : null}
-
-      {organizerInboxBlockingMessage ? (
-        <div
-          role="alert"
-          className="flex flex-col gap-4 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warning)]" />
-            <div>
-              <div className="font-medium text-[var(--text-primary)]">
-                Organizer pickup is not ready
-              </div>
-              <p className="mt-1 leading-6">{organizerInboxBlockingMessage}</p>
-            </div>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            className="shrink-0"
-            disabled={organizerInboxQuery.isFetching}
-            onClick={() => void organizerInboxQuery.refetch()}
-          >
-            {organizerInboxQuery.isFetching ? "Checking" : "Try again"}
           </Button>
         </div>
       ) : null}
