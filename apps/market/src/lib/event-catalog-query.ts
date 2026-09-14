@@ -53,17 +53,10 @@ export function eventCatalogQueryOptions(
         signal,
         onProgress: (snapshot: RawEventCatalog) => {
           if (active())
-            client.setQueryData<RawEventCatalog>(
-              identity.queryKey,
-              (previous) => ({
-                ...snapshot,
-                previewRecords:
-                  snapshot.previewRecords ??
-                  previous?.result?.data ??
-                  previous?.previewRecords,
-                complete: false,
-              })
-            )
+            client.setQueryData<RawEventCatalog>(identity.queryKey, {
+              ...snapshot,
+              complete: false,
+            })
         },
       })
       if (!active())

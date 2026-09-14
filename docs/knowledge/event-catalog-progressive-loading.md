@@ -11,7 +11,9 @@ The shared event reader emits cumulative verified organizer snapshots as relays
 finish. Local event evidence can render before relay planning completes. Safe
 cached product details load in one author-scoped batch. These snapshots support
 browsing only: cached requests never grant current merchant participation or
-pickup authorization.
+pickup authorization. Each progress header starts without product records;
+only its own deletion-aware cache batch can restore cards. A missing or failed
+cache batch must not borrow records from an earlier progress or query result.
 
 The final read still resolves collection/calendar revisions, exact product and
 pickup frontiers, known withdrawals and same-author deletions. Independent
@@ -19,7 +21,10 @@ product and organizer pickup checks overlap without reducing read budgets.
 
 While a query refreshes, fails or pauses, its display projection removes pickup
 authorization. Previously rendered content remains useful, but old readiness
-is not reused. Explicit checkout freshness verification remains a separate
+is not reused. A failed or paused refresh marks retained active or partial
+evidence stale and exposes retry; terminal protocol states stay intact. This
+changes the display projection, not the shared raw evidence. Explicit checkout
+freshness verification remains a separate
 live read. Query keys and cancellation prevent old account or relay-scope
 requests from updating the current view.
 

@@ -943,23 +943,22 @@ export async function loadRawEventCatalog(
   }
   let finished = false
   let progressVersion = 0
-  const cachedRecords = new Map<string, CommerceProductRecord | null>()
+  let previewRecords: CommerceProductRecord[] = []
   const emitPreview = async (
     resolution: EventMarketResolution,
     version: number
   ) => {
     if (!active() || finished || version !== progressVersion) return
+    // Earlier records may predate a signed deletion or withdrawal in the
+    // product cache. Only this progress version's reconciled batch can restore
+    // cards; the header remains available while that local read runs.
+    previewRecords = []
     const snapshot = {
       reference,
       canonicalNaddr,
       resolution,
       complete: false,
-      previewRecords:
-        cachedRecords.size > 0
-          ? [...cachedRecords.values()].filter(
-              (record): record is CommerceProductRecord => !!record
-            )
-          : undefined,
+      previewRecords,
     }
     options.onProgress?.(snapshot)
     if (!options.onProgress || !resolution.collection) return
@@ -970,18 +969,14 @@ export async function loadRawEventCatalog(
         includeMarketHidden: true,
       })
       if (!active() || finished || version !== progressVersion) return
-      cachedRecords.clear()
-      for (const record of result.data)
-        cachedRecords.set(record.product.id, record)
+      previewRecords = result.data
     } catch {
       // Storage may be unavailable; the current network read still runs.
     }
     if (active() && !finished && version === progressVersion) {
       options.onProgress?.({
         ...snapshot,
-        previewRecords: [...cachedRecords.values()].filter(
-          (record): record is CommerceProductRecord => !!record
-        ),
+        previewRecords,
       })
     }
   }
@@ -1021,9 +1016,7 @@ export async function loadRawEventCatalog(
       canonicalNaddr,
       resolution,
       result,
-      previewRecords: [...cachedRecords.values()].filter(
-        (record): record is CommerceProductRecord => !!record
-      ),
+      previewRecords,
       complete: true,
     }
   } finally {

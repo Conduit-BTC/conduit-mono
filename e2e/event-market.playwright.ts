@@ -3600,6 +3600,92 @@ test("event variation choices remain stable while cached pickup authorization re
   ).toBeDisabled()
 })
 
+test("failed event refresh retains cards with stale warning and a working retry @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic failed refresh",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "failed-refresh",
+    title: "Synthetic retained refresh product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  await acceptMerchantProduct(page, relay, product, market.collectionCoordinate)
+  // Fail at the query boundary before progress, after the real signed catalog
+  // has completed. Relay timeouts normally resolve as bounded stale results;
+  // this covers the distinct rejected-query path with retained successful data.
+  await page.route("**/src/lib/event-catalog-query.ts*", async (route) => {
+    const response = await route.fetch()
+    const source = await response.text()
+    const renamed = source.replace(
+      "import { loadRawEventCatalog }",
+      "import { loadRawEventCatalog as loadOriginalEventCatalog }"
+    )
+    expect(renamed).not.toBe(source)
+    const injected = renamed.replace(
+      /const identity = eventCatalogQueryIdentity\(reference, scope\);?/,
+      `$&
+window.__failNextEventRefresh = () => {
+  failNextEventRead = true;
+  return client.refetchQueries({ queryKey: identity.queryKey });
+};`
+    )
+    expect(injected).not.toBe(renamed)
+    await route.fulfill({
+      response,
+      body: `${injected}
+let failNextEventRead = false;
+const loadRawEventCatalog = async (...args) => {
+  if (failNextEventRead) {
+    failNextEventRead = false;
+    throw new Error("Synthetic failure before event progress");
+  }
+  return loadOriginalEventCatalog(...args);
+};`,
+    })
+  })
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const card = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic retained refresh product" })
+  await expect(
+    card.getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled()
+  const publicationCount = relay.publications.length
+  await page.evaluate(async () => {
+    const refresh = (
+      window as unknown as { __failNextEventRefresh: () => Promise<void> }
+    ).__failNextEventRefresh
+    await refresh()
+  })
+  const warning = page
+    .getByRole("alert")
+    .filter({ hasText: "Event evidence is stale" })
+  await expect(warning).toBeVisible()
+  await expect(page.getByText("Event loaded", { exact: true })).toHaveCount(0)
+  await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+  await expect(card).toBeVisible()
+  await expect(
+    card.getByRole("button", { name: "Pickup unavailable", exact: true })
+  ).toBeDisabled()
+  await page
+    .getByRole("button", { name: "Refresh evidence", exact: true })
+    .click()
+  await expect(
+    card.getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled()
+  await expect(warning).toHaveCount(0)
+  await expect(page.getByText("Event loaded", { exact: true })).toBeVisible()
+  expect(relay.publications).toHaveLength(publicationCount)
+})
+
 test("event availability copy excludes retained products without pickup authority @market", async ({
   page,
 }) => {

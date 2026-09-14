@@ -571,7 +571,7 @@ describe("shared progressive event catalogs", () => {
     ])
     expect(projected.products[0]?.pickupFulfillment).toBeNull()
   })
-  it("keeps cached cards through the first refresh header and retracts stronger negative evidence", async () => {
+  it("waits for reconciled cache records before restoring cards and retracts stronger negative evidence", async () => {
     const client = new QueryClient()
     const pending = deferred<RawEventCatalog>()
     let emit: ((snapshot: RawEventCatalog) => void) | undefined
@@ -592,6 +592,17 @@ describe("shared progressive event catalogs", () => {
     resolution.acceptedProductCoordinates = []
     resolution.acceptedProductEvidence = []
     emit?.({ reference: collectionCoordinate, resolution, complete: false })
+    const header = projectRawEventCatalog(
+      client.getQueryData(options.queryKey)!
+    )
+    expect(header.products).toHaveLength(0)
+    expect(header.collection?.title).toBe("Summer Market")
+    emit?.({
+      reference: collectionCoordinate,
+      resolution,
+      previewRecords: [commerceRecord(product())],
+      complete: false,
+    })
     const retained = projectRawEventCatalog(
       client.getQueryData(options.queryKey)!
     )

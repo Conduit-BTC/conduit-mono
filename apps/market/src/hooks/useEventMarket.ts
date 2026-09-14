@@ -5,7 +5,7 @@ import {
   useConduitSession,
   type PricingRateInput,
 } from "@conduit/core"
-import { projectRawEventCatalog } from "../lib/event-market-adapter"
+import { getEventCatalogQueryDisplayState } from "../lib/event-catalog-query-state"
 import { eventCatalogQueryOptions } from "../lib/event-catalog-query"
 
 /** All event consumers observe the same scoped, rate-independent raw query. */
@@ -45,20 +45,11 @@ export function useEventCatalogs(
   return queries.map((query, index) => ({
     ...query,
     queryIdentity: JSON.stringify([scopeToken, references[index]]),
-    data: query.data
-      ? projectRawEventCatalog(
-          query.data,
-          rateInput,
-          query.data.complete &&
-            !query.isFetching &&
-            !query.isError &&
-            !query.isPaused &&
-            session.relaySettingsReady
-        )
-      : undefined,
-    isInitialLoading:
-      !query.data && (!session.relaySettingsReady || query.isPending),
-    isHydrating: query.isFetching || !session.relaySettingsReady,
+    ...getEventCatalogQueryDisplayState(
+      query,
+      rateInput,
+      session.relaySettingsReady
+    ),
   }))
 }
 
