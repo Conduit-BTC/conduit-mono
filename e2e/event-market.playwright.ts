@@ -1424,6 +1424,7 @@ async function publishMerchantProductFromEvent(
     discoveryMode?: "direct" | "followed"
     identity?: "merchant" | "organizer"
     rejectAcceptanceOnce?: boolean
+    completionAction?: "done" | "leave_open"
   }
 ): Promise<SignedEvent> {
   await gotoAs(
@@ -1464,17 +1465,20 @@ async function publishMerchantProductFromEvent(
   await expect(
     editor.getByText("Lightning payments are not set up", { exact: true })
   ).toBeVisible({ timeout: 15_000 })
-  const templateSelector = editor.getByLabel("Start from")
+  const templateSelector = editor.getByLabel("Create new or copy existing")
   if (options.templateTitle) {
     await templateSelector.click()
     await page
-      .getByRole("option", { name: options.templateTitle, exact: true })
+      .getByRole("option", {
+        name: `Copy “${options.templateTitle}”`,
+        exact: true,
+      })
       .click()
     await expect(editor.getByLabel("Product title")).toHaveValue(
       options.templateTitle
     )
   } else {
-    await expect(templateSelector).toContainText("Blank product")
+    await expect(templateSelector).toContainText("Create a new event product")
   }
   await editor.getByLabel("Product title").fill(options.productTitle)
   await editor
@@ -1529,9 +1533,8 @@ async function publishMerchantProductFromEvent(
       .getByRole("button", { name: "Retry acceptance", exact: true })
       .click()
   }
-  await expect(editor).toBeHidden({ timeout: 30_000 })
   await expect(
-    page.getByText(
+    editor.getByText(
       options.identity === "organizer"
         ? "Product published and accepted into your event."
         : "Product published. Organizer acceptance is pending.",
@@ -1540,6 +1543,16 @@ async function publishMerchantProductFromEvent(
       }
     )
   ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    editor.getByRole("button", { name: "Done", exact: true })
+  ).toBeEnabled()
+  await expect(
+    editor.getByRole("button", { name: "Publish another item", exact: true })
+  ).toBeEnabled()
+  if (options.completionAction !== "leave_open") {
+    await editor.getByRole("button", { name: "Done", exact: true }).click()
+    await expect(editor).toBeHidden({ timeout: 30_000 })
+  }
 
   const published = uniquePublishedEvents(
     relay.publications.slice(publishStart)
@@ -3438,13 +3451,52 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
     title: "Synthetic Owner Product Event",
     organizerHandoffEnabled: true,
   })
-  const product = await publishMerchantProductFromEvent(page, relay, market, {
+  const productPublishStart = relay.publications.length
+  const completionRefresh = relay.holdRelayRequests((request) => {
+    const acceptedCollection = uniquePublishedEvents(
+      relay.publications.slice(productPublishStart)
+    ).find((event) => event.kind === 30405)
+    if (
+      !acceptedCollection ||
+      !relay.events().some((event) => event.id === acceptedCollection.id)
+    ) {
+      return false
+    }
+    return request.filters.some((filter) =>
+      eventMatchesFilter(acceptedCollection, filter)
+    )
+  })
+  const productPromise = publishMerchantProductFromEvent(page, relay, market, {
     eventTitle: "Synthetic Owner Product Event",
     productTitle: "Synthetic Owner Product",
     handoffMode: "merchant",
     identity: "organizer",
     rejectAcceptanceOnce: true,
+    completionAction: "leave_open",
   })
+  await completionRefresh.captured
+  try {
+    const editor = page.getByRole("dialog", {
+      name: "Publish a product to Synthetic Owner Product Event",
+    })
+    await expect(
+      editor.getByRole("button", { name: "Done", exact: true })
+    ).toBeEnabled()
+    await editor
+      .getByRole("button", { name: "Publish another item", exact: true })
+      .click()
+    await expect(editor).toBeVisible()
+    await expect(editor.getByLabel("Product title")).toHaveValue("")
+    await expect(editor.getByLabel("Product title")).toBeFocused()
+    await expect(
+      editor.getByLabel("Create new or copy existing")
+    ).toContainText("Create a new event product")
+    await editor.getByRole("button", { name: "Cancel", exact: true }).click()
+    await expect(editor).toBeHidden()
+  } finally {
+    completionRefresh.release()
+  }
+  const product = await productPromise
   const accepted = uniquePublishedEvents(relay.publications).filter(
     (event) =>
       event.kind === 30405 &&

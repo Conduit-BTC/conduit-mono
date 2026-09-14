@@ -391,15 +391,19 @@ describe("merchant organizer event market route", () => {
     expect(openEdit).toContain('setPublishState("idle")')
 
     const publishSuccess = publisher.slice(
-      publisher.indexOf("async function finishPublication("),
+      publisher.indexOf("function finishPublication("),
       publisher.indexOf("const publishMutation = useMutation(")
     )
-    expect(publishSuccess).toContain("await onPublished(result.accepted)")
-    expect(publishSuccess).toContain("onOpenChange(false)")
-    expect(publishSuccess.indexOf("onOpenChange(false)")).toBeGreaterThan(
-      publishSuccess.indexOf("await onPublished(")
-    )
+    expect(publishSuccess).toContain("onPublished(result.accepted)")
+    expect(publishSuccess).not.toContain("await onPublished(")
+    expect(publishSuccess).not.toContain("onOpenChange(false)")
     expect(publisher.match(/onSuccess: finishPublication/g)).toHaveLength(2)
+    expect(publisher).toContain("Publish another item")
+    expect(publisher).toContain("startAnotherPublication")
+    expect(publisher).toContain("Create new or copy existing")
+    expect(publisher).toContain("Create a new event product")
+    expect(publisher).toContain("Existing products are listed newest first")
+    expect(publisher).not.toContain("blank product")
   })
 
   it("keeps merchant booth pickup evidence on the merchant product graph", async () => {
