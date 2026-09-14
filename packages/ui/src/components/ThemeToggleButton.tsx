@@ -26,14 +26,16 @@ export function ThemeToggleButton({
   cycle = DEFAULT_THEME_TOGGLE_CYCLE,
 }: ThemeToggleButtonProps) {
   const { preference, setPreference } = useTheme()
-  const [announced, setAnnounced] = useState<ThemePreference | null>(null)
+  /**
+   * Only this button's own activations speak. Another tab or the device can
+   * change the preference at any time; those updates change the icon, and the
+   * live region keeps the last locally chosen text so it is neither cleared
+   * nor repeated as if this button had performed them.
+   */
+  const [announcement, setAnnouncement] = useState("")
 
   const nextPreference = getNextThemePreferenceInCycle(preference, cycle)
   const label = `Appearance: ${getThemePreferenceLabel(preference)}. Switch to ${getThemePreferenceLabel(nextPreference)}`
-  const announcement =
-    announced && announced === preference
-      ? `Appearance set to ${getThemePreferenceLabel(announced)}.`
-      : ""
   const Icon =
     preference === "system" ? SunMoon : preference === "day-market" ? Sun : Moon
 
@@ -50,7 +52,9 @@ export function ThemeToggleButton({
         )}
         onClick={() => {
           setPreference(nextPreference)
-          setAnnounced(nextPreference)
+          setAnnouncement(
+            `Appearance set to ${getThemePreferenceLabel(nextPreference)}.`
+          )
         }}
       >
         <span

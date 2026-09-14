@@ -272,6 +272,28 @@ for (const surface of [
     await page.keyboard.press("Space")
     await expect(status).toHaveText("Appearance set to Day Market.")
     await expectThemeToggle(page, "day-market", "night-market", "sun")
+
+    // Another tab changes the preference away and back. The icon follows, but
+    // this button never speaks for a change it did not perform.
+    for (const external of ["night-market", "day-market"] as const) {
+      await page.evaluate(
+        ([key, value]) => {
+          localStorage.setItem(key, value)
+          window.dispatchEvent(
+            new StorageEvent("storage", { key, newValue: value })
+          )
+        },
+        [THEME_STORAGE_KEY, external] as const
+      )
+      await expect(toggle).toHaveAttribute(
+        "data-theme-toggle-preference",
+        external
+      )
+      await expect(status).toHaveText("Appearance set to Day Market.")
+    }
+
+    await toggle.click()
+    await expect(status).toHaveText("Appearance set to Night Market.")
   })
 }
 
