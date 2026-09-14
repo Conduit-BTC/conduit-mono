@@ -1288,7 +1288,7 @@ describe("agent review handoff", () => {
           "complete QA",
           "the PR",
           "results are recorded",
-          "`docs/specs/testing-e2e.md` Review and QA Disposition"
+          "`docs/specs/testing-e2e.md#review-and-qa-disposition` Review and QA Disposition"
         )
       ),
       runId,
@@ -1305,6 +1305,10 @@ describe("agent review handoff", () => {
         baseSha: trustedBaseSha,
         source:
           "docs/specs/not-a-real-review-contract.md Review and QA Disposition",
+      },
+      {
+        baseSha: trustedBaseSha,
+        source: "docs/specs/testing-e2e.md#blocked Review and QA Disposition",
       },
       {
         baseSha: trustedBaseSha,

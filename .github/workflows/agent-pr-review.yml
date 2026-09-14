@@ -581,16 +581,30 @@ jobs:
           fi
           review_jargon_pattern='(^|[^[:alnum:]])blocked([^[:alnum:]]|$)|acceptance/evidence mapping|qa disposition|pr-only graph|synthetic merge|clean-review contract|merge-readiness'
           source_is_concrete_public_reference() {
+            local normalized_source_anchor
             local source="$1"
+            local source_anchor
             local source_label
             local source_path
+            local source_suffix
             source_path="$(
               sed -nE \
                 's~^[^[:alnum:]_.-]*((\./)?([[:alnum:]_.-]+/)*[[:alnum:]_.-]+\.(md|mdx))(:[1-9][0-9]*|#[[:alnum:]_.:/-]+)?([^[:alnum:]_.:/-]|$).*$~\1~p' \
                 <<< "$source"
             )"
             source_path="$(sed 's#^\./##' <<< "$source_path")"
-            source_label="${source#*"$source_path"}"
+            source_suffix="${source#*"$source_path"}"
+            source_anchor="$(
+              sed -nE 's/^#([[:alnum:]_.:/-]+).*/\1/p' <<< "$source_suffix"
+            )"
+            normalized_source_anchor="$(
+              tr '[:upper:]' '[:lower:]' <<< "$source_anchor" |
+                sed -E \
+                  -e 's/[^[:alnum:]]+/ /g' \
+                  -e 's/^[[:space:]]+//' \
+                  -e 's/[[:space:]]+$//'
+            )"
+            source_label="$source_suffix"
             source_label="$(
               sed -E \
                 -e 's/^(:[1-9][0-9]*|#[[:alnum:]_.:/-]+)//' \
@@ -601,6 +615,21 @@ jobs:
             )"
             if [[ -z "$source_path" || -z "$source_label" ]]; then
               return 1
+            fi
+            if [[ -n "$source_anchor" ]]; then
+              if [[ -z "$normalized_source_anchor" ]] ||
+                ! git cat-file blob "$EXPECTED_BASE_SHA:$source_path" 2>/dev/null |
+                  sed -nE \
+                    -e 's/\r$//' \
+                    -e 's/^ {0,3}#{1,6}[[:space:]]+//p' |
+                  tr '[:upper:]' '[:lower:]' |
+                  sed -E \
+                    -e 's/[^[:alnum:]]+/ /g' \
+                    -e 's/^[[:space:]]+//' \
+                    -e 's/[[:space:]]+$//' |
+                  grep -Fx -- "$normalized_source_anchor" >/dev/null; then
+                return 1
+              fi
             fi
             git cat-file blob "$EXPECTED_BASE_SHA:$source_path" 2>/dev/null |
               sed -nE \
