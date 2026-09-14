@@ -460,6 +460,18 @@ describe("Merchant pickup order authorization", () => {
         orderItems(merchantHandoff)
       )
     ).toMatchObject({ status: "verified" })
+
+    multiPickupMarket.state = "partial"
+    multiPickupMarket.pickups = [
+      market().pickup!,
+      { ...merchantPickup, evidenceState: "retained" },
+    ]
+    expect(
+      await verify(
+        dependencies(multiPickupMarket, products({ product: merchantProduct })),
+        orderItems(merchantHandoff)
+      )
+    ).toMatchObject({ status: "unverified" })
   })
 
   it("verifies a historical own-organizer snapshot without a receipt handoff", async () => {
