@@ -81,6 +81,10 @@ import {
 import { QRCodeSVG } from "qrcode.react"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CopyButton } from "../components/CopyButton"
+import {
+  EventActorName,
+  EventActorProvenance,
+} from "../components/EventActorIdentity"
 import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME,
@@ -146,6 +150,10 @@ import {
   getNextOrderPaymentLeaseExpiry,
   reconcileOrderPaymentForDisplay,
 } from "../lib/order-payment-recovery"
+import {
+  getEventActorIdentityView,
+  normalizeEventActorPubkey,
+} from "../lib/event-actor-identity"
 
 type PriceFormatter = (
   price: CommercePriceLike,
@@ -874,6 +882,35 @@ function OrderDetail({
     maxUnresolvedRefetches: 1,
   })
   const merchantName = getMerchantDisplayName(profile, row.merchantPubkey)
+  const eventActorPubkeys = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          vm.pickupFulfillments.flatMap((pickup) => [
+            getPickupHandoffSummary(pickup).handlerPubkey,
+            normalizeEventActorPubkey(pickup.organizerPubkey),
+          ])
+        )
+      ),
+    [vm.pickupFulfillments]
+  )
+  const eventActorProfiles = useProfiles(eventActorPubkeys, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: shouldContinueAccountRead,
+    enabled: eventActorPubkeys.length > 0,
+    priority: "visible",
+    refetchUnresolvedMs: 12_000,
+    maxUnresolvedRefetches: 2,
+  })
+  const eventActorIdentity = useCallback(
+    (pubkey: string) =>
+      getEventActorIdentityView({
+        pubkey,
+        profile: eventActorProfiles.data[normalizeEventActorPubkey(pubkey)],
+      }),
+    [eventActorProfiles.data]
+  )
   const [busy, setBusy] = useState(false)
   const [privateFallbackOpen, setPrivateFallbackOpen] = useState(false)
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
@@ -1842,11 +1879,15 @@ function OrderDetail({
                         <dt className="text-[var(--text-muted)]">
                           Pickup handler
                         </dt>
-                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
-                          <span>{formatNpub(handoff.handlerPubkey, 8)}</span>
-                          <CopyButton
-                            value={handoff.handlerPubkey}
-                            label="Copy pickup handler npub"
+                        <dd className="mt-1 min-w-0">
+                          <EventActorName
+                            identity={eventActorIdentity(handoff.handlerPubkey)}
+                            className="block truncate"
+                          />
+                          <EventActorProvenance
+                            pubkey={handoff.handlerPubkey}
+                            copyLabel="Copy pickup handler npub"
+                            className="mt-1"
                           />
                         </dd>
                       </div>
@@ -1869,11 +1910,17 @@ function OrderDetail({
                         <dt className="text-[var(--text-muted)]">
                           Event organizer
                         </dt>
-                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
-                          <span>{formatNpub(pickup.organizerPubkey, 8)}</span>
-                          <CopyButton
-                            value={pickup.organizerPubkey}
-                            label="Copy event organizer npub"
+                        <dd className="mt-1 min-w-0">
+                          <EventActorName
+                            identity={eventActorIdentity(
+                              pickup.organizerPubkey
+                            )}
+                            className="block truncate"
+                          />
+                          <EventActorProvenance
+                            pubkey={pickup.organizerPubkey}
+                            copyLabel="Copy event organizer npub"
+                            className="mt-1"
                           />
                         </dd>
                       </div>
@@ -1990,7 +2037,7 @@ function OrderDetail({
                   </span>
                   <CopyButton value={vm.orderId} label="Copy order id" />
                 </DetailRow>
-                <DetailRow label="Order npub">
+                <DetailRow label="Merchant npub">
                   <span className="font-mono text-xs">
                     {formatNpub(row.merchantPubkey, 8)}
                   </span>

@@ -9,6 +9,7 @@ import type {
 } from "@conduit/core"
 import {
   getMerchantPickupAuthorizationMessage,
+  getMerchantPickupOrganizerProfileRelayHints,
   verifyMerchantPickupOrderAuthorization,
   type MerchantPickupAuthorizationDependencies,
 } from "../apps/merchant/src/lib/order-pickup-authorization"
@@ -270,6 +271,30 @@ function cloneSnapshot(): OrderPickupFulfillmentSchema {
 }
 
 describe("Merchant pickup order authorization", () => {
+  it("carries verified event source relays into organizer profile hydration", async () => {
+    const resolution = market()
+    resolution.collection!.sourceRelayUrls = [
+      "wss://collection.relay.conduit.market",
+    ]
+    resolution.calendar!.sourceRelayUrls = [
+      "wss://calendar.relay.conduit.market",
+    ]
+    resolution.pickup!.sourceRelayUrls = ["wss://pickup.relay.conduit.market"]
+    resolution.pickups = [resolution.pickup!]
+
+    const result = await verify(dependencies(resolution))
+
+    expect(getMerchantPickupOrganizerProfileRelayHints(result)).toEqual([
+      "wss://collection.relay.conduit.market",
+      "wss://calendar.relay.conduit.market",
+      "wss://pickup.relay.conduit.market",
+    ])
+    expect(getMerchantPickupOrganizerProfileRelayHints(undefined)).toEqual([])
+    expect(
+      getMerchantPickupOrganizerProfileRelayHints({ status: "not_required" })
+    ).toEqual([])
+  })
+
   it("carries the authenticated merchant through both final evidence reads", async () => {
     let eventMarketAccount: string | null | undefined
     let productAccount: string | null | undefined
