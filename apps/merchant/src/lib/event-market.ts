@@ -601,7 +601,7 @@ export function isParticipationProductAvailable(
   )
 }
 
-function resolvedEventMarketRelayHints(
+export function getResolvedEventMarketRelayHints(
   resolution: EventMarketResolution
 ): string[] {
   return buildEventMarketShareRelayHints([
@@ -665,7 +665,7 @@ export function projectEventMarket(
   )
   const naddr = encodeEventMarketNaddr(
     collectionCoordinate,
-    resolvedEventMarketRelayHints(resolution)
+    getResolvedEventMarketRelayHints(resolution)
   )
   const calendarKind = calendar.kind === 31922 ? 31922 : 31923
   const start =
