@@ -1793,6 +1793,21 @@ test("event catalog shops products by search, merchant, and sort before technica
   })
   const createdAt = market.initialCollection.created_at + 1
   const secondMerchantSecret = generateSecretKey()
+  const organizerNip05Suffix = "@identity.conduit.market"
+  const organizerNip05Name = "o".repeat(100 - organizerNip05Suffix.length)
+  const organizerNip05 = `${organizerNip05Name}${organizerNip05Suffix}`
+  expect(organizerNip05).toHaveLength(100)
+  await page.route(
+    "https://identity.conduit.market/.well-known/nostr.json*",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          names: { [organizerNip05Name]: ORGANIZER_PUBKEY },
+        }),
+      })
+  )
   const pickupGeohash = "dp3wj"
   const pickupLocation = market.pickupEvent!.tags.find(
     (tag) => tag[0] === "location"
@@ -1856,6 +1871,15 @@ test("event catalog shops products by search, merchant, and sort before technica
     ...pickups,
     ...products,
     collection,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 0,
+      created_at: createdAt,
+      tags: [],
+      content: JSON.stringify({
+        display_name: "Event organizer",
+        nip05: organizerNip05,
+      }),
+    }),
     ...[
       { secret: MERCHANT_SECRET, name: "Alpine Goods" },
       { secret: secondMerchantSecret, name: "Bay Coffee" },
@@ -2068,6 +2092,18 @@ test("event catalog shops products by search, merchant, and sort before technica
       )
       .toBe(3)
     await expect(search).toBeVisible()
+    const organizerLabel = page.getByText(organizerNip05, { exact: true })
+    await expect(organizerLabel).toBeVisible()
+    if (viewport.name === "mobile") {
+      const labelSize = await organizerLabel.evaluate((element) => ({
+        width: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        right: element.getBoundingClientRect().right,
+      }))
+      expect(labelSize.width).toBeGreaterThan(0)
+      expect(labelSize.scrollWidth).toBeGreaterThan(labelSize.width)
+      expect(labelSize.right).toBeLessThanOrEqual(viewport.width)
+    }
     await search.fill("Alpine Goods")
     await expect(titles).toHaveText(["Amber Mug", "Dawn Coffee"])
     await page
