@@ -3875,7 +3875,7 @@ test("event catalog paints before held product reads and keeps cached browsing c
     card.getByRole("button", { name: "Add", exact: true })
   ).toBeEnabled()
   // Exercise the actual in-app product-to-event link with matching catalog
-  // evidence already present, while its refresh is deliberately held.
+  // evidence already present. A return visit must not start another check.
   await gotoAs(
     page,
     marketUrl,
@@ -3900,8 +3900,9 @@ test("event catalog paints before held product reads and keeps cached browsing c
     await expect(card).toBeVisible()
     timings.warmNavigationMs = Date.now() - navigationStarted
     await expect(
-      card.getByRole("button", { name: "Checking pickup…", exact: true })
-    ).toBeDisabled()
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
   } finally {
     navigationRead.release()
   }

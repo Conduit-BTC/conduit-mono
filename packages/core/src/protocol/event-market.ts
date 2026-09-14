@@ -2560,6 +2560,44 @@ interface EventMarketFrontierFilterResult extends FetchEventsFanoutResult {
   remainingRelayUrlsByAuthor: Map<string, string[]>
 }
 
+function batchEventMarketDeletionFilters(
+  filters: readonly NDKFilter[]
+): NDKFilter[] {
+  const result: NDKFilter[] = []
+  const groups = new Map<
+    string,
+    { filter: NDKFilter; tag: "#a" | "#e"; values: Set<string> }
+  >()
+  for (const filter of filters) {
+    const tag = filter["#a"] ? "#a" : filter["#e"] ? "#e" : null
+    if (
+      filter.kinds?.length !== 1 ||
+      filter.kinds[0] !== EVENT_KINDS.DELETION ||
+      filter.authors?.length !== 1 ||
+      !tag ||
+      (filter["#a"] && filter["#e"])
+    ) {
+      result.push(filter)
+      continue
+    }
+    const base = { ...filter }
+    delete base[tag]
+    const key = JSON.stringify([base, tag])
+    const group = groups.get(key) ?? { filter: base, tag, values: new Set() }
+    for (const value of filter[tag] ?? []) group.values.add(value)
+    groups.set(key, group)
+  }
+  for (const { filter, tag, values } of groups.values()) {
+    for (const batch of chunkValues(
+      [...values].sort(),
+      EVENT_MARKET_FRONTIER_FILTER_BATCH_SIZE
+    )) {
+      result.push({ ...filter, [tag]: batch })
+    }
+  }
+  return result
+}
+
 async function fetchEventMarketFrontierFilters(input: {
   filters: readonly NDKFilter[]
   relayUrls: string[]
@@ -2601,17 +2639,15 @@ async function fetchEventMarketFrontierFilters(input: {
   const fetch =
     eventMarketTestOverrides.fetchEventsFanoutDetailed ??
     fetchEventsFanoutDetailed
+  const filters = batchEventMarketDeletionFilters(input.filters)
   const results: FetchEventsFanoutResult[] = []
   let remainingRelayUrls = [...input.relayUrls]
-  for (
-    let index = 0;
-    index < input.filters.length;
-    index += EVENT_MARKET_FRONTIER_QUERY_CONCURRENCY
-  ) {
-    const batch = input.filters.slice(
+  for (let index = 0; index < filters.length;) {
+    const batch = filters.slice(
       index,
       index + EVENT_MARKET_FRONTIER_QUERY_CONCURRENCY
     )
+    index += batch.length
     const batchPlans = batch.flatMap((filter) => {
       const author = filterAuthor(filter)
       const relayUrls = author
@@ -2636,6 +2672,31 @@ async function fetchEventMarketFrontierFilters(input: {
       )
     )
     results.push(...batchResults)
+    for (
+      let resultIndex = 0;
+      resultIndex < batchResults.length;
+      resultIndex++
+    ) {
+      const { filter } = batchPlans[resultIndex]!
+      const tag = filter["#a"] ? "#a" : filter["#e"] ? "#e" : null
+      if (
+        filter.kinds?.length !== 1 ||
+        filter.kinds[0] !== EVENT_KINDS.DELETION ||
+        !tag ||
+        (filter[tag]?.length ?? 0) <= 1 ||
+        !eventMarketReadReachedLimit(
+          batchResults[resultIndex]!,
+          filter.limit ?? EVENT_MARKET_MAX_AUTHOR_EVENTS
+        )
+      )
+        continue
+      // A busy sibling can fill a combined deletion read before an older
+      // target tombstone arrives. Refine capped batches to the original exact
+      // target reads; uncapped catalogs avoid one round trip per target.
+      filters.push(
+        ...filter[tag]!.map((value) => ({ ...filter, [tag]: [value] }))
+      )
+    }
     // Keep any verified events returned by an incomplete relay in this wave,
     // but do not pay another timeout for that relay in a later exact query.
     // A partial response is useful evidence, not proof that the next filter

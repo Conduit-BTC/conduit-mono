@@ -547,6 +547,73 @@ describe("event-market exact product request frontiers", () => {
     expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
   })
 
+  it("batches event catalog deletion checks by merchant without cross-author filters", async () => {
+    const merchants = [
+      MERCHANT_SECRET,
+      ...Array.from({ length: 7 }, () => generateSecretKey()),
+    ]
+    const requests = merchants.flatMap((secret, merchantIndex) =>
+      Array.from({ length: 7 }, (_, productIndex) =>
+        sign(
+          secret,
+          {
+            kind: EVENT_KINDS.PRODUCT,
+            tags: [
+              ["d", `product-${merchantIndex}-${productIndex}`],
+              ["title", "Product"],
+              ["price", "25", "USD"],
+              ["a", COLLECTION],
+              ["shipping_option", PICKUP],
+            ],
+          },
+          100
+        )
+      )
+    )
+    const coordinates = requests.map(
+      (event) =>
+        `${EVENT_KINDS.PRODUCT}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")![1]}`
+    )
+    const deletionFilters: TagFilter[] = []
+    installReadHarness((filter) => {
+      if (filter.authors?.includes(ORGANIZER))
+        return { events: graph(coordinates) }
+      if (filter.kinds?.[0] === EVENT_KINDS.PRODUCT) {
+        if (filter["#a"]?.includes(COLLECTION)) return { events: requests }
+        return {
+          events: requests.filter(
+            (event) =>
+              filter.authors?.includes(event.pubkey) &&
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1]!)
+              )
+          ),
+        }
+      }
+      if (filter.kinds?.[0] === EVENT_KINDS.DELETION)
+        deletionFilters.push(filter)
+      return { events: [] }
+    })
+    const result = await getEventMarket({
+      reference: COLLECTION,
+      nowMs: NOW_MS,
+    })
+    expect(result.acceptedProductCoordinates.slice().sort()).toEqual(
+      coordinates.slice().sort()
+    )
+    expect(deletionFilters).toHaveLength(16)
+    for (const filter of deletionFilters) {
+      expect(filter.authors).toHaveLength(1)
+      const author = filter.authors![0]!
+      for (const coordinate of filter["#a"] ?? []) {
+        expect(coordinate.split(":")[1]).toBe(author)
+      }
+      for (const id of filter["#e"] ?? []) {
+        expect(requests.find((event) => event.id === id)?.pubkey).toBe(author)
+      }
+    }
+  })
+
   it("bounds exact deletion queries for 500 revisions of one coordinate", async () => {
     const revisions = Array.from({ length: 500 }, (_, index) =>
       productRevision("coffee", 100 + index, true)
@@ -578,12 +645,11 @@ describe("event-market exact product request frontiers", () => {
       Boolean(filter["#e"])
     )
 
-    expect(eventDeletionFilters).toHaveLength(
+    expect(eventDeletionFilters).toHaveLength(1)
+    expect(eventDeletionFilters[0]?.["#e"]).toHaveLength(
       EVENT_MARKET_PARTICIPATION_REVISIONS_PER_TARGET_LIMIT
     )
-    expect(deletionFilters).toHaveLength(
-      EVENT_MARKET_PARTICIPATION_REVISIONS_PER_TARGET_LIMIT + 1
-    )
+    expect(deletionFilters).toHaveLength(2)
     expect(deletionFilters.length).toBeLessThanOrEqual(
       EVENT_MARKET_PARTICIPATION_DELETION_TARGET_LIMIT
     )
@@ -787,7 +853,7 @@ describe("event-market exact product request frontiers", () => {
     ).toBe(true)
     expect(
       deletionFilters.every(
-        (filter) => !filter["#a"] || filter["#a"]?.length === 1
+        (filter) => !filter["#a"] || (filter["#a"]?.length ?? 0) <= 32
       )
     ).toBe(true)
     expect(result.acceptedProductCoordinates).toEqual([])
@@ -806,7 +872,7 @@ describe("event-market exact product request frontiers", () => {
     ).toBe(true)
     expect(
       deletionFilters.every(
-        (filter) => !filter["#e"] || filter["#e"]?.length === 1
+        (filter) => !filter["#e"] || (filter["#e"]?.length ?? 0) <= 32
       )
     ).toBe(true)
     expect(result.acceptedProductCoordinates).toEqual([])
