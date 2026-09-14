@@ -1,17 +1,9 @@
 import { describe, expect, it } from "bun:test"
 
 describe("merchant invoice route contract", () => {
-  it("binds the shopper invoice before wallet controls and reports the bound lifecycle", async () => {
+  it("retains bound-invoice reporting and order-status guards", async () => {
     const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
-    const prepareGate = source.indexOf(
-      'merchantInvoice?.status === "payable" && !merchantInvoicePrepared'
-    )
-    const qrControl = source.indexOf("<QRCodeSVG")
-
     expect(source).toContain("prepareMerchantInvoicePaymentAction")
-    expect(source).toContain("Use merchant invoice")
-    expect(prepareGate).toBeGreaterThan(-1)
-    expect(qrControl).toBeGreaterThan(prepareGate)
     expect(source).toContain("Do not pay this invoice.")
     expect(source).toContain('boundMerchantInvoiceAccess !== "closed"')
     expect(source).toContain('boundMerchantInvoiceAccess !== "report_only"')

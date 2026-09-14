@@ -357,8 +357,8 @@ export function getCheckoutEvidenceCheckingLabel(input: {
 
 // ─── Fast checkout eligibility ────────────────────────────────────────────────
 
-export function isFastCheckoutEligible(params: {
-  walletPayCapable: boolean
+/** Invoice readiness is independent of the wallet used to pay it. */
+export type InvoiceCheckoutEligibilityInput = {
   merchantLud16: string | undefined | null
   merchantProfileLoading?: boolean
   merchantProfileUnavailable?: boolean
@@ -371,7 +371,11 @@ export function isFastCheckoutEligible(params: {
   shippingPriced?: boolean
   relayReady?: boolean
   addressValidForDirectPayment?: boolean
-}): boolean {
+}
+
+export function isFastCheckoutEligible(
+  params: InvoiceCheckoutEligibilityInput & { walletPayCapable: boolean }
+): boolean {
   return getFastCheckoutUnavailableReasons(params).length === 0
 }
 
@@ -449,27 +453,21 @@ export function getShippingCheckoutState(params: {
   return "no_published_rule"
 }
 
-export function getFastCheckoutUnavailableReasons(params: {
-  walletPayCapable: boolean
-  merchantLud16: string | undefined | null
-  merchantProfileLoading?: boolean
-  merchantProfileUnavailable?: boolean
-  lnurlAllowsNostr: boolean
-  lnurlAmountWithinRange?: boolean
-  requiresNostrZap?: boolean
-  pricingReady?: boolean
-  shippingEligible?: boolean
-  shippingState?: ShippingCheckoutState
-  shippingPriced?: boolean
-  relayReady?: boolean
-  addressValidForDirectPayment?: boolean
-}): string[] {
+export function getFastCheckoutUnavailableReasons(
+  params: InvoiceCheckoutEligibilityInput & { walletPayCapable: boolean }
+): string[] {
+  return [
+    ...(!params.walletPayCapable
+      ? ["Connect a Lightning wallet or enable browser Lightning payments."]
+      : []),
+    ...getInvoiceCheckoutUnavailableReasons(params),
+  ]
+}
+
+export function getInvoiceCheckoutUnavailableReasons(
+  params: InvoiceCheckoutEligibilityInput
+): string[] {
   const reasons: string[] = []
-  if (!params.walletPayCapable) {
-    reasons.push(
-      "Connect a Lightning wallet or enable browser Lightning payments."
-    )
-  }
   if (!params.merchantLud16) {
     reasons.push(
       params.merchantProfileLoading

@@ -13,6 +13,7 @@ import {
   isFastCheckoutEligible,
   isFastCheckoutInputPending,
   getFastCheckoutUnavailableReasons,
+  getInvoiceCheckoutUnavailableReasons,
   getShippingPhoneDescribedBy,
   getShippingCheckoutState,
   getShippingRegionRequirement,
@@ -482,6 +483,49 @@ describe("getShippingCheckoutState", () => {
 })
 
 // ─── isFastCheckoutEligible ───────────────────────────────────────────────────
+
+describe("invoice checkout eligibility", () => {
+  const ready = {
+    merchantLud16: "merchant@wallet.conduit.market",
+    lnurlAllowsNostr: true,
+    lnurlAmountWithinRange: true,
+    pricingReady: true,
+    shippingEligible: true,
+    shippingPriced: true,
+    addressValidForDirectPayment: true,
+    relayReady: true,
+  }
+
+  it("keeps invoice requests available when automatic payment is unavailable", () => {
+    expect(getInvoiceCheckoutUnavailableReasons(ready)).toEqual([])
+    expect(isFastCheckoutEligible({ ...ready, walletPayCapable: false })).toBe(
+      false
+    )
+    expect(isFastCheckoutEligible({ ...ready, walletPayCapable: true })).toBe(
+      true
+    )
+  })
+
+  it.each([
+    { merchantLud16: undefined },
+    { lnurlAllowsNostr: false },
+    { lnurlAmountWithinRange: false },
+    { pricingReady: false },
+    { shippingEligible: false },
+    { shippingPriced: false },
+    { addressValidForDirectPayment: false },
+    { relayReady: false },
+    { shippingState: "loading" as const },
+    { shippingState: "country_unsupported" as const },
+  ])("retains invoice and fulfillment safeguards: %j", (unavailable) => {
+    const input = { ...ready, ...unavailable }
+    const invoiceReasons = getInvoiceCheckoutUnavailableReasons(input)
+    expect(invoiceReasons.length).toBeGreaterThan(0)
+    expect(
+      getFastCheckoutUnavailableReasons({ ...input, walletPayCapable: true })
+    ).toEqual(invoiceReasons)
+  })
+})
 
 describe("isFastCheckoutEligible", () => {
   it("returns true when all conditions met", () => {

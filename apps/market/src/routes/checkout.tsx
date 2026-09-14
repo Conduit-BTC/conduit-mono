@@ -148,6 +148,7 @@ import {
   isFastCheckoutEligible,
   isFastCheckoutInputPending,
   getFastCheckoutUnavailableReasons,
+  getInvoiceCheckoutUnavailableReasons,
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
   getCheckoutEvidenceCheckingLabel,
@@ -1786,12 +1787,6 @@ function CheckoutPage() {
     !!lnurlPayMetadata &&
     pricingPreview.totalMsats >= lnurlPayMetadata.minSendable &&
     pricingPreview.totalMsats <= lnurlPayMetadata.maxSendable
-  const allowsManualLightningFallback =
-    paymentPathEnabled &&
-    !wallets.loading &&
-    !!merchantLud16 &&
-    lnurlReadyForSelectedPayment &&
-    lnurlAmountReady
   const fastEligibilityInput = {
     walletPayCapable: !isGuestCheckout && canAttemptLightningPayment,
     merchantLud16,
@@ -1811,22 +1806,26 @@ function CheckoutPage() {
     paymentPathEnabled &&
     !fulfillmentBlockingMessage &&
     isFastCheckoutEligible(fastEligibilityInput)
+  const usesManualInvoice =
+    isGuestCheckout || selectedPaymentTarget.type === "manual"
+  const getSelectedPaymentUnavailableReasons = usesManualInvoice
+    ? getInvoiceCheckoutUnavailableReasons
+    : getFastCheckoutUnavailableReasons
   const fastUnavailableReasons = !paymentRequired
     ? []
     : fulfillmentBlockingMessage
       ? [fulfillmentBlockingMessage]
-      : getFastCheckoutUnavailableReasons(fastEligibilityInput)
-  const guestManualInvoiceEligible =
-    isGuestCheckout &&
+      : getSelectedPaymentUnavailableReasons(fastEligibilityInput)
+  const firstFastUnavailableReason = fastUnavailableReasons[0]
+  const manualInvoiceEligible =
     paymentPathEnabled &&
+    !wallets.loading &&
+    usesManualInvoice &&
     !fulfillmentBlockingMessage &&
-    allowsManualLightningFallback &&
-    pricingPreview.status === "ok" &&
-    shippingEligibleForFastCheckout &&
-    checkoutShippingCost.status !== "manual" &&
-    currentAddressValidity.canDirectPay
+    getInvoiceCheckoutUnavailableReasons(fastEligibilityInput).length === 0
+  const directCheckoutEligible = fastEligible || manualInvoiceEligible
   const fastUnavailableReasonsWithoutPricing =
-    getFastCheckoutUnavailableReasons({
+    getSelectedPaymentUnavailableReasons({
       ...fastEligibilityInput,
       pricingReady: true,
     })
@@ -1835,7 +1834,8 @@ function CheckoutPage() {
     !fulfillmentBlockingMessage &&
     pricingPreviewIsStale &&
     fastUnavailableReasonsWithoutPricing.length === 0
-  const showFastCheckoutSurface = fastEligible || pricingOnlyFastCheckoutBlocker
+  const showFastCheckoutSurface =
+    directCheckoutEligible || pricingOnlyFastCheckoutBlocker
   const addressStatusMessage = (() => {
     if (currentAddressValidity.status === "not_required") {
       return "This cart does not require delivery details."
@@ -3212,7 +3212,7 @@ function CheckoutPage() {
     if (!fastEligible) {
       setAutoZapAuthorization(null)
       setError(
-        fastUnavailableReasons[0] ??
+        firstFastUnavailableReason ??
           "Zap out is unavailable for this order. Review checkout before paying."
       )
       setStep("payment")
@@ -3247,7 +3247,7 @@ function CheckoutPage() {
     autoZapInputsResolving,
     checkoutItems,
     fastEligible,
-    fastUnavailableReasons,
+    firstFastUnavailableReason,
     hasUnavailableCheckoutItems,
     pricingPreview,
     selectedMerchant,
@@ -4088,7 +4088,7 @@ function CheckoutPage() {
                 <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
                   {isGuestCheckout
                     ? "Send the order with a temporary guest key, then pay the Lightning invoice with your wallet."
-                    : fastEligible
+                    : directCheckoutEligible
                       ? selectedPaymentTarget.type === "manual"
                         ? "Send the order and show its Lightning invoice for manual payment."
                         : selectedPaymentTarget.type === "webln"
@@ -4360,7 +4360,7 @@ function CheckoutPage() {
                 {paymentRequired &&
                   !isGuestCheckout &&
                   !lnurlProbing &&
-                  fastEligible && (
+                  directCheckoutEligible && (
                     <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
                       <div className="text-sm font-medium text-[var(--text-primary)]">
                         Zap visibility
@@ -4568,7 +4568,7 @@ function CheckoutPage() {
 
                 {/* Action buttons */}
                 <div className="mt-6 flex flex-wrap gap-3">
-                  {fastEligible && (
+                  {!isGuestCheckout && directCheckoutEligible && (
                     <HoldToReleaseButton
                       className="h-11 px-5 text-sm"
                       disabled={
@@ -4580,7 +4580,7 @@ function CheckoutPage() {
                         !!signerBlockedMessage
                       }
                       canComplete={() =>
-                        fastEligible &&
+                        directCheckoutEligible &&
                         !checkoutAvailability.isChecking &&
                         !hasUnavailableCheckoutItems &&
                         !paymentInFlightRef.current
@@ -4591,7 +4591,11 @@ function CheckoutPage() {
                         }
                         void payNow()
                       }}
-                      chargedLabel="Release to zap out"
+                      chargedLabel={
+                        selectedPaymentTarget.type === "manual"
+                          ? "Release to show invoice"
+                          : "Release to zap out"
+                      }
                     >
                       <LightningIcon className="h-4 w-4" />
                       {isGuestCheckout
@@ -4607,7 +4611,7 @@ function CheckoutPage() {
                   )}
                   {isGuestCheckout &&
                     !fastEligible &&
-                    guestManualInvoiceEligible && (
+                    manualInvoiceEligible && (
                       <Button
                         className="h-11 px-5 text-sm"
                         disabled={
@@ -4620,25 +4624,26 @@ function CheckoutPage() {
                         Send order and show invoice
                       </Button>
                     )}
-                  {pricingOnlyFastCheckoutBlocker && !fastEligible && (
-                    <Button
-                      className="h-11 px-5 text-sm"
-                      disabled={pricingRefreshState === "refreshing"}
-                      onClick={() => void refreshCheckoutPricing(true)}
-                    >
-                      {pricingRefreshState === "refreshing" ? (
-                        <>
-                          <SpinnerIcon className="h-4 w-4 animate-spin" />
-                          Refreshing total...
-                        </>
-                      ) : (
-                        <>
-                          <LightningIcon className="h-4 w-4" />
-                          Refresh total
-                        </>
-                      )}
-                    </Button>
-                  )}
+                  {pricingOnlyFastCheckoutBlocker &&
+                    !directCheckoutEligible && (
+                      <Button
+                        className="h-11 px-5 text-sm"
+                        disabled={pricingRefreshState === "refreshing"}
+                        onClick={() => void refreshCheckoutPricing(true)}
+                      >
+                        {pricingRefreshState === "refreshing" ? (
+                          <>
+                            <SpinnerIcon className="h-4 w-4 animate-spin" />
+                            Refreshing total...
+                          </>
+                        ) : (
+                          <>
+                            <LightningIcon className="h-4 w-4" />
+                            Refresh total
+                          </>
+                        )}
+                      </Button>
+                    )}
 
                   {isGuestCheckout &&
                     !fastEligible &&
@@ -4657,7 +4662,7 @@ function CheckoutPage() {
                           ? checkoutEvidenceCheckingLabel
                           : "Send order"}
                       </Button>
-                    ) : !guestManualInvoiceEligible ? (
+                    ) : !manualInvoiceEligible ? (
                       <Button
                         variant={
                           pricingOnlyFastCheckoutBlocker ? "outline" : "primary"
@@ -4676,7 +4681,7 @@ function CheckoutPage() {
                   {!isGuestCheckout && (
                     <Button
                       variant={
-                        fastEligible || pricingOnlyFastCheckoutBlocker
+                        directCheckoutEligible || pricingOnlyFastCheckoutBlocker
                           ? "outline"
                           : "primary"
                       }
