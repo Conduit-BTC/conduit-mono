@@ -126,6 +126,18 @@ async function captureScreenshot(page: Page, fileName: string): Promise<void> {
   })
 }
 
+/** Reads the live region without its silent repeat marker. */
+async function expectAnnouncement(page: Page, text: string): Promise<void> {
+  await expect
+    .poll(() =>
+      page
+        .locator("[data-theme-toggle-status]")
+        .textContent()
+        .then((value) => (value ?? "").replaceAll("\u200b", ""))
+    )
+    .toBe(text)
+}
+
 async function expectSilentThemeFeedback(page: Page): Promise<void> {
   await expect(page.locator("[data-theme-toggle-feedback]")).toHaveCount(0)
   await expect(page.locator("[data-theme-toggle-status]")).toBeEmpty()
@@ -275,7 +287,7 @@ for (const surface of [
 
     // Another tab changes the preference away and back. The icon follows, but
     // this button never speaks for a change it did not perform.
-    for (const external of ["night-market", "day-market"] as const) {
+    for (const external of ["night-market", "system", "day-market"] as const) {
       await page.evaluate(
         ([key, value]) => {
           localStorage.setItem(key, value)
@@ -289,11 +301,30 @@ for (const surface of [
         "data-theme-toggle-preference",
         external
       )
-      await expect(status).toHaveText("Appearance set to Day Market.")
+      await expectAnnouncement(page, "Appearance set to Day Market.")
     }
 
+    // Re-selecting the same destination still produces a new status update.
+    const beforeRepeat = await status.textContent()
+    await page.evaluate(
+      ([key, value]) => {
+        localStorage.setItem(key, value)
+        window.dispatchEvent(
+          new StorageEvent("storage", { key, newValue: value })
+        )
+      },
+      [THEME_STORAGE_KEY, "system"] as const
+    )
     await toggle.click()
-    await expect(status).toHaveText("Appearance set to Night Market.")
+    await expect(toggle).toHaveAttribute(
+      "data-theme-toggle-preference",
+      "day-market"
+    )
+    await expectAnnouncement(page, "Appearance set to Day Market.")
+    expect(await status.textContent()).not.toBe(beforeRepeat)
+
+    await toggle.click()
+    await expectAnnouncement(page, "Appearance set to Night Market.")
   })
 }
 

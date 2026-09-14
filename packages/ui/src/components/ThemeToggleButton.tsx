@@ -14,6 +14,9 @@ export type ThemeToggleButtonProps = {
   cycle?: readonly ThemePreference[]
 }
 
+/** Silent marker that makes a repeated announcement a new text change. */
+const REPEAT_MARKER = "\u200b"
+
 function getThemePreferenceLabel(preference: ThemePreference): string {
   if (preference === "system") return "System"
   return (
@@ -52,9 +55,10 @@ export function ThemeToggleButton({
         )}
         onClick={() => {
           setPreference(nextPreference)
-          setAnnouncement(
-            `Appearance set to ${getThemePreferenceLabel(nextPreference)}.`
-          )
+          setAnnouncement((current) => {
+            const text = `Appearance set to ${getThemePreferenceLabel(nextPreference)}.`
+            return current === text ? `${text}${REPEAT_MARKER}` : text
+          })
         }}
       >
         <span
