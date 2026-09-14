@@ -1,5 +1,6 @@
 import {
   getOrderPaymentAddressReplacementAdmission,
+  getOrderPaymentTargetReplacementAdmission,
   getProfiles,
   normalizePubkey,
   type OrderLifecycle,
@@ -32,6 +33,7 @@ type OrderPaymentAddressCheck =
         | "unavailable"
         | "not_eligible"
         | "current_address_unusable"
+        | "current_address_changed"
     }
   | { status: "updated"; update: OrderPaymentAddressUpdate }
 
@@ -49,8 +51,10 @@ export async function checkOrderPaymentAddressUpdate(
     }
   }
   assertCurrentSession()
+  // Every ordinary retry must inspect current authority, even when retained
+  // payment evidence prevents replacing the saved destination.
   if (
-    getOrderPaymentAddressReplacementAdmission(lifecycle) !== "replaceable" ||
+    getOrderPaymentTargetReplacementAdmission(lifecycle) !== "replaceable" ||
     !lifecycle.merchantLightningAddress?.trim()
   ) {
     return { status: "not_eligible" }
@@ -108,6 +112,9 @@ export async function checkOrderPaymentAddressUpdate(
   const newAddress = profile.lud16!.trim().toLowerCase()
   if (newAddress === snapshot.previousAddress.trim().toLowerCase()) {
     return { status: "unchanged" }
+  }
+  if (getOrderPaymentAddressReplacementAdmission(lifecycle) !== "replaceable") {
+    return { status: "current_address_changed" }
   }
   return { status: "updated", update: { ...snapshot, newAddress } }
 }

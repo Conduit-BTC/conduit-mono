@@ -1155,6 +1155,11 @@ function OrderDetail({
           "The merchant's current profile no longer has a usable Lightning address. No invoice was requested."
         )
       }
+      if (check.status === "current_address_changed") {
+        throw new Error(
+          "The merchant's payment address changed. This order cannot safely switch addresses. Contact the merchant before retrying. No invoice was requested."
+        )
+      }
       if (check.status === "unavailable") {
         setRecoveryError(
           "We couldn't check for an updated merchant address. This retry uses the saved address."

@@ -943,6 +943,8 @@ describe("runOrderPayment", () => {
         },
       })
       const state = await runOrderPayment(context, dependencies)
+      expect(state.lifecycle?.invoice).toBe(invoice)
+      expect(state.lifecycle?.paymentClaimId).toBeUndefined()
       const retryState = await runOrderPayment(context, dependencies)
 
       expect(state.lifecycle?.invoiceStatus).toBe("failed")

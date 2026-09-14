@@ -256,11 +256,71 @@ describe("checking an updated order payment address", () => {
     }
   })
 
-  it("does no profile lookup when payment evidence exists or no saved address can be replaced", async () => {
+  it("checks current authority for retryable states that cannot replace their address", async () => {
+    for (const overrides of [
+      { invoice: "synthetic-existing-invoice" },
+      { paymentHash: "d".repeat(64) },
+      { invoiceExpiresAt: 4_000 },
+      { proofDeliveryStatus: "sent" as const },
+      {
+        paymentStatus: "not_started" as const,
+        invoiceStatus: "not_requested" as const,
+      },
+    ]) {
+      const stored = lifecycle(overrides)
+      const before = structuredClone(stored)
+      for (const [profile, status] of [
+        [observedProfileResult(undefined), "current_address_unusable"],
+        [observedProfileResult("invalid"), "current_address_unusable"],
+        [
+          observedProfileResult("new@wallet.example"),
+          "current_address_changed",
+        ],
+        [observedProfileResult(" OLD@wallet.example "), "unchanged"],
+        [profileResult("", { degraded: true }), "unavailable"],
+        [profileResult("new@wallet.example", { stale: true }), "unavailable"],
+      ] as const) {
+        let calls = 0
+        expect(
+          await checkOrderPaymentAddressUpdate(
+            stored,
+            {},
+            {
+              getProfiles: async () => {
+                calls += 1
+                return profile
+              },
+            }
+          )
+        ).toEqual({ status })
+        expect(calls).toBe(1)
+        expect(stored).toEqual(before)
+      }
+    }
+  })
+
+  it("keeps unavailable reads retryable when an invoice is retained", async () => {
+    expect(
+      await checkOrderPaymentAddressUpdate(
+        lifecycle({ invoice: "synthetic-existing-invoice" }),
+        {},
+        {
+          getProfiles: async () => {
+            throw new Error("Synthetic outage")
+          },
+        }
+      )
+    ).toEqual({ status: "unavailable" })
+  })
+
+  it("does no profile lookup when ordinary retry is unsafe or no saved address exists", async () => {
     let calls = 0
     for (const stored of [
-      lifecycle({ invoice: "synthetic-existing-invoice" }),
       lifecycle({ paymentStatus: "ambiguous" }),
+      lifecycle({ paymentStatus: "paid" }),
+      lifecycle({ phase: "completed" }),
+      lifecycle({ phase: "cancelled" }),
+      lifecycle({ orderDeliveryStatus: "pending" }),
       lifecycle({ merchantLightningAddress: undefined }),
     ]) {
       expect(

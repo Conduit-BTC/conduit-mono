@@ -227,7 +227,9 @@ async function seedPaymentLifecycle(
     failedPayment?: {
       merchantPubkey: string
       address: string
-      checkoutMode?: "public_zap_as_shopper" | "external_wallet"
+      checkoutMode?:
+        "public_zap_as_shopper" | "external_wallet" | "private_checkout"
+      paymentTarget?: { type: "manual" | "webln" }
     }
     preparationError?: string
   }
@@ -326,7 +328,9 @@ async function seedPaymentLifecycle(
                 merchantLightningAddress: failedPayment.address,
                 checkoutMode:
                   failedPayment.checkoutMode ?? "public_zap_as_shopper",
-                paymentTarget: { type: "manual" },
+                paymentTarget: failedPayment.paymentTarget ?? {
+                  type: "manual",
+                },
                 invoiceStatus: "failed",
                 paymentStatus: "failed",
               }
@@ -404,9 +408,12 @@ async function prepareUpdatedPaymentAddress(
   page: Page,
   orderId: string,
   wrongHash = false,
-  initialAddress = updatedPaymentAddress,
+  initialAddress: string | null = updatedPaymentAddress,
   checkoutMode:
-    "public_zap_as_shopper" | "external_wallet" = "public_zap_as_shopper"
+    | "public_zap_as_shopper"
+    | "external_wallet"
+    | "private_checkout" = "public_zap_as_shopper",
+  retainedInvoice = false
 ) {
   const buyerSecret = generateSecretKey()
   const buyerPubkey = getPublicKey(buyerSecret)
@@ -430,6 +437,31 @@ async function prepareUpdatedPaymentAddress(
     ])
   }
   const providerRequests: string[] = []
+  const walletCalls: string[] = []
+  if (retainedInvoice) {
+    await page.exposeFunction("recordRecoveryWalletCall", (method: string) => {
+      walletCalls.push(method)
+    })
+    await page.addInitScript(() => {
+      const fixtureWindow = window as typeof window & {
+        recordRecoveryWalletCall: (method: string) => Promise<void>
+      }
+      fixtureWindow.webln = {
+        enable: async () => {
+          await fixtureWindow.recordRecoveryWalletCall("enable")
+        },
+        makeInvoice: async () => {
+          throw new Error(
+            "The recovery fixture must not create wallet invoices."
+          )
+        },
+        sendPayment: async () => {
+          await fixtureWindow.recordRecoveryWalletCall("sendPayment")
+          throw new Error("Synthetic browser wallet payment stopped.")
+        },
+      }
+    })
+  }
   const metadata = JSON.stringify([
     ["text/plain", "Synthetic recovery merchant"],
   ])
@@ -439,9 +471,9 @@ async function prepareUpdatedPaymentAddress(
     if (url.pathname === "/callback") {
       expect(url.searchParams.get("amount")).toBe("1000")
       let description = metadata
-      if (checkoutMode === "external_wallet") {
+      if (checkoutMode !== "public_zap_as_shopper") {
         expect(url.searchParams.has("nostr")).toBe(false)
-        if (url.hostname === "old-payment-fixture.dev") {
+        if (url.hostname === "old-payment-fixture.dev" && !retainedInvoice) {
           await route.fulfill({
             contentType: "application/json",
             body: JSON.stringify({
@@ -463,7 +495,8 @@ async function prepareUpdatedPaymentAddress(
         contentType: "application/json",
         body: JSON.stringify({
           pr: makeManualInvoice(
-            wrongHash || url.hostname === "old-payment-fixture.dev"
+            wrongHash ||
+              (url.hostname === "old-payment-fixture.dev" && !retainedInvoice)
               ? "unrelated synthetic request"
               : description
           ),
@@ -498,60 +531,74 @@ async function prepareUpdatedPaymentAddress(
       merchantSecret
     ),
   ])
-  await publishAddress(initialAddress)
+  if (initialAddress !== null) await publishAddress(initialAddress)
   await installTestSigner(page, buyerPubkey, { secretKey: buyerSecret })
   await page.goto(`${marketUrl}/orders`)
   await expect(
     page.getByRole("heading", { name: "No orders yet" })
   ).toBeVisible()
+  const savedInvoice = retainedInvoice ? makeManualInvoice(metadata) : undefined
   await seedPaymentLifecycle(page, {
     orderId,
     buyerPubkey,
     paymentClaimId: "unused-failed-payment-claim",
+    invoice: savedInvoice,
     failedPayment: {
       merchantPubkey,
       address: savedPaymentAddress,
       checkoutMode,
+      ...(retainedInvoice ? { paymentTarget: { type: "webln" as const } } : {}),
     },
   })
   await page.goto(`${marketUrl}/orders?order=${orderId}`)
   await expect(
     page.getByRole("button", { name: "Try payment again" })
   ).toBeVisible()
-  return { providerRequests, publishAddress }
+  return { providerRequests, walletCalls, publishAddress, savedInvoice }
 }
 
-async function readPaymentAddressRecovery(page: Page, orderId: string) {
-  return page.evaluate(async (id) => {
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("conduit")
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-    const records = await new Promise<Array<Record<string, unknown>>>(
-      (resolve, reject) => {
-        const request = database
-          .transaction("orderLifecycles", "readonly")
-          .objectStore("orderLifecycles")
-          .getAll()
+async function readPaymentAddressRecovery(
+  page: Page,
+  orderId: string,
+  expectedInvoice?: string
+) {
+  return page.evaluate(
+    async ({ id, expectedInvoice }) => {
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
         request.onsuccess = () => resolve(request.result)
         request.onerror = () => reject(request.error)
+      })
+      const records = await new Promise<Array<Record<string, unknown>>>(
+        (resolve, reject) => {
+          const request = database
+            .transaction("orderLifecycles", "readonly")
+            .objectStore("orderLifecycles")
+            .getAll()
+          request.onsuccess = () => resolve(request.result)
+          request.onerror = () => reject(request.error)
+        }
+      )
+      database.close()
+      const row = records.find((record) => record.orderId === id)
+      return {
+        count: records.length,
+        orderId: row?.orderId,
+        address: row?.merchantLightningAddress,
+        checkoutMode: row?.checkoutMode,
+        paymentTarget: row?.paymentTarget,
+        paymentStatus: row?.paymentStatus,
+        invoiceStatus: row?.invoiceStatus,
+        hasInvoice: !!row?.invoice,
+        ...(expectedInvoice
+          ? { invoiceMatches: row?.invoice === expectedInvoice }
+          : {}),
+        hasPaymentClaim: !!row?.paymentClaimId,
+        lastError: row?.lastError,
       }
-    )
-    database.close()
-    const row = records.find((record) => record.orderId === id)
-    return {
-      count: records.length,
-      orderId: row?.orderId,
-      address: row?.merchantLightningAddress,
-      checkoutMode: row?.checkoutMode,
-      paymentTarget: row?.paymentTarget,
-      paymentStatus: row?.paymentStatus,
-      invoiceStatus: row?.invoiceStatus,
-      hasInvoice: !!row?.invoice,
-      lastError: row?.lastError,
-    }
-  }, orderId)
+    },
+    { id: orderId, expectedInvoice }
+  )
 }
 
 test.describe("CND-162 mobile browser baseline", () => {
@@ -1211,6 +1258,85 @@ test.describe("CND-162 mobile browser baseline", () => {
     })
     await assertMobileViewport(page)
   })
+
+  for (const profile of [
+    "removed",
+    "changed",
+    "unchanged",
+    "unobserved",
+  ] as const) {
+    test(`market checks the ${profile} profile before retrying a retained invoice @market`, async ({
+      page,
+    }) => {
+      const orderId = `mobile-retained-invoice-${profile}`
+      const { providerRequests, walletCalls, publishAddress, savedInvoice } =
+        await prepareUpdatedPaymentAddress(
+          page,
+          orderId,
+          false,
+          profile === "unobserved" ? null : savedPaymentAddress,
+          "private_checkout",
+          true
+        )
+      const before = await readPaymentAddressRecovery(
+        page,
+        orderId,
+        savedInvoice
+      )
+      expect(before).toMatchObject({
+        count: 1,
+        orderId,
+        address: savedPaymentAddress,
+        checkoutMode: "private_checkout",
+        paymentTarget: { type: "webln" },
+        paymentStatus: "failed",
+        invoiceStatus: "failed",
+        hasInvoice: true,
+        hasPaymentClaim: false,
+        invoiceMatches: true,
+      })
+      if (profile === "removed") await publishAddress()
+      if (profile === "changed") await publishAddress(updatedPaymentAddress)
+
+      await page.getByRole("button", { name: "Try payment again" }).tap()
+
+      if (profile === "removed" || profile === "changed") {
+        await expect(
+          page.getByRole("alert").filter({
+            hasText:
+              profile === "removed"
+                ? "The merchant's current profile no longer has a usable Lightning address. No invoice was requested."
+                : "The merchant's payment address changed. This order cannot safely switch addresses. Contact the merchant before retrying. No invoice was requested.",
+          })
+        ).toBeVisible()
+        expect(providerRequests).toEqual([])
+        expect(walletCalls).toEqual([])
+        expect(
+          await readPaymentAddressRecovery(page, orderId, savedInvoice)
+        ).toEqual(before)
+        await expect(
+          page.getByRole("alertdialog", {
+            name: "Merchant updated their payment address",
+          })
+        ).toHaveCount(0)
+      } else {
+        // Unavailable evidence must not veto the saved destination. The
+        // selected browser wallet is a spy; no real payment can leave the test.
+        await expect.poll(() => walletCalls).toEqual(["enable", "sendPayment"])
+        expect(providerRequests).toEqual([
+          "old-payment-fixture.dev/.well-known/lnurlp/merchant",
+          "old-payment-fixture.dev/callback",
+        ])
+        expect(await readPaymentAddressRecovery(page, orderId)).toMatchObject({
+          count: 1,
+          orderId,
+          address: savedPaymentAddress,
+          paymentTarget: { type: "webln" },
+        })
+      }
+      await assertMobileViewport(page)
+    })
+  }
 
   test("market rejects an updated payment address that changes after review @market", async ({
     page,
