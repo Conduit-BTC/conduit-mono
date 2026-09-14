@@ -54,7 +54,10 @@ describe("app account-network read propagation", () => {
     ).toBeGreaterThanOrEqual(2)
     expect(
       orders.match(/authGenerationRef\.current === authGeneration/g)?.length
-    ).toBeGreaterThanOrEqual(6)
+    ).toBeGreaterThanOrEqual(5)
+    expect(orders).toContain(
+      "async function continuePrivateFallback(): Promise<void> {\n    await verifyRetryFreshness()"
+    )
   })
 
   it("threads account-only exclusions through exact products and cart suggestions", async () => {
