@@ -944,6 +944,13 @@ export async function loadRawEventCatalog(
   let finished = false
   let progressVersion = 0
   let previewRecords: CommerceProductRecord[] = []
+  let latestResolution: EventMarketResolution | undefined
+  let productReadVersion = 0
+  type ProductRead = {
+    key: string
+    promise: Promise<{ result: ProductsByIdsResult } | { error: unknown }>
+  }
+  let productRead: ProductRead | undefined
   const emitPreview = async (
     resolution: EventMarketResolution,
     version: number
@@ -981,6 +988,61 @@ export async function loadRawEventCatalog(
     }
   }
 
+  const startProductRead = (coordinates: readonly string[]) => {
+    const targets = [...new Set(coordinates)].sort()
+    const key = JSON.stringify(targets)
+    if (productRead?.key === key) return productRead
+    const version = ++productReadVersion
+    const current = () =>
+      active() && !finished && version === productReadVersion
+    const promise = getProductsByIds(targets, {
+      includeMerchantHiddenProductIds: targets,
+      authenticatedPubkey: options.authenticatedPubkey,
+      shouldContinue: current,
+      onProgress: options.onProgress
+        ? (snapshot) => {
+            if (!current() || !latestResolution) return
+            // Core has reconciled this cumulative frontier against current
+            // product revisions and known deletions. Supersede pending cache
+            // projections; this remains browse-only until both reads finish.
+            ++progressVersion
+            previewRecords = snapshot.data
+            options.onProgress?.({
+              reference,
+              canonicalNaddr,
+              resolution: latestResolution,
+              previewRecords,
+              complete: false,
+            })
+          }
+        : undefined,
+    }).then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error })
+    )
+    productRead = { key, promise }
+    return productRead
+  }
+  const updateResolution = (resolution: EventMarketResolution) => {
+    latestResolution = resolution
+    const preview = emitPreview(resolution, ++progressVersion)
+    if (
+      options.onProgress &&
+      ["active", "ended", "partial", "stale"].includes(resolution.state) &&
+      resolution.organizerProductCoordinates.length > 0 &&
+      resolution.organizerProductCoordinates.length <=
+        resolution.participationBudget.targetLimit
+    ) {
+      // The organizer list is enough to read safe product cards. Exact
+      // participation and pickup checks continue independently in core.
+      startProductRead(resolution.organizerProductCoordinates)
+    } else {
+      ++productReadVersion
+      productRead = undefined
+    }
+    return preview
+  }
+
   try {
     assertActive()
     const resolution = await getEventMarket({
@@ -990,24 +1052,50 @@ export async function loadRawEventCatalog(
       signal: options.signal,
       onProgress: options.onProgress
         ? (snapshot) => {
-            void emitPreview(snapshot, ++progressVersion)
+            void updateResolution(snapshot)
           }
         : undefined,
     })
     assertActive()
-    const previewRead = emitPreview(resolution, ++progressVersion)
+    const previewRead = updateResolution(resolution)
     const canHydrate = ["active", "ended", "partial", "stale"].includes(
       resolution.state
     )
-    const result =
-      canHydrate && resolution.acceptedProductCoordinates.length > 0
-        ? await getProductsByIds(resolution.acceptedProductCoordinates, {
-            includeMerchantHiddenProductIds:
-              resolution.acceptedProductCoordinates,
-            authenticatedPubkey: options.authenticatedPubkey,
-            shouldContinue: active,
-          })
-        : undefined
+    let result: ProductsByIdsResult | undefined
+    if (canHydrate && resolution.acceptedProductCoordinates.length > 0) {
+      const read =
+        productRead ?? startProductRead(resolution.acceptedProductCoordinates)
+      const outcome = await read.promise
+      assertActive()
+      if ("error" in outcome) throw outcome.error
+      result = outcome.result
+      // Event verification can find a product or a newer exact revision after
+      // the overlapping read finishes. Reconcile that positive evidence once,
+      // including accepted children folded into a variable product family.
+      const recordsByCoordinate = new Map(
+        result.data.flatMap((record) =>
+          [record, ...(record.family?.children ?? [])].map(
+            (entry) => [entry.product.id, entry] as const
+          )
+        )
+      )
+      if (
+        resolution.acceptedProductCoordinates.some((coordinate) => {
+          const record = recordsByCoordinate.get(coordinate)
+          return (
+            !record ||
+            (compareRecordToAcceptedEvidence(record, resolution) ?? 0) < 0
+          )
+        })
+      ) {
+        result = await getProductsByIds(resolution.acceptedProductCoordinates, {
+          includeMerchantHiddenProductIds:
+            resolution.acceptedProductCoordinates,
+          authenticatedPubkey: options.authenticatedPubkey,
+          shouldContinue: active,
+        })
+      }
+    }
     await previewRead
     assertActive()
     finished = true

@@ -12,8 +12,19 @@ finish. Local event evidence can render before relay planning completes. Safe
 cached product details load in one author-scoped batch. These snapshots support
 browsing only: cached requests never grant current merchant participation or
 pickup authorization. Each progress header starts without product records;
-only its own deletion-aware cache batch can restore cards. A missing or failed
-cache batch must not borrow records from an earlier progress or query result.
+only its own deletion-aware cache batch or a current network product snapshot
+can restore cards. A missing or failed cache batch must not borrow records from
+an earlier progress or query result.
+
+For cold detail loads, the organizer product coordinates start an exact product
+read while participation and pickup verification continue. Completed merchant
+batches emit cumulative browse snapshots without waiting for slower merchants
+or family hydration. These snapshots reconcile current signed revisions and
+local deletions before display; final reconciliation must not restore older
+terms. The overlapping read is reused at completion. If final accepted evidence
+identifies a missing or newer product, one exact read reconciles it. Coordinate
+changes cancel obsolete progress, and the existing target limits, author
+concurrency and relay budgets remain in force.
 
 The final read still resolves collection/calendar revisions, exact product and
 pickup frontiers, known withdrawals and same-author deletions. Independent
@@ -65,7 +76,8 @@ which also includes app/account startup.
 Coverage includes shared reads and local repricing, failed refreshes, scope
 changes, cancellation, cache-only browsing, hidden event products, variable
 choices, cross-cache withdrawals/deletions and a later live re-request. Browser
-checks exercise header progress, warm product-to-event navigation, retained
+checks exercise cold product progress with empty caches and a held sibling
+merchant, header progress, warm product-to-event navigation, retained
 cards, variation selection and deletion after a cached preview. Timeline checks
 cover delayed sibling reads, cache progress, deadline retention, signed removal
 and local connection teardown followed by successful discovery retry.

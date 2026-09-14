@@ -304,6 +304,12 @@ export interface ProductDetailQuery {
 }
 
 export interface ProductsByIdsOptions {
+  /**
+   * Cumulative exact-coordinate browse snapshots as author batches settle.
+   * Intermediate snapshots are stale/partial and never authorize purchase.
+   * The last callback is the final family/deletion-reconciled return value.
+   */
+  onProgress?: (result: ProductsByIdsResult) => void
   /** Merchant management only: bypass every Market listing-safety filter. */
   includeMarketHidden?: boolean
   /**
@@ -4964,7 +4970,7 @@ export async function getProductsByIds(
     )
 
   if (addresses.length === 0) {
-    return {
+    const result: ProductsByIdsResult = {
       data: [],
       meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES, {
         degraded: lookups.length > 0,
@@ -4975,6 +4981,8 @@ export async function getProductsByIds(
         issue: "invalid_product_reference",
       })),
     }
+    if (options.shouldContinue?.() !== false) options.onProgress?.(result)
+    return result
   }
 
   const authors = uniqueStrings(addresses.map((address) => address.pubkey))
@@ -5136,75 +5144,157 @@ export async function getProductsByIds(
   }
   const directReadEntries = Array.from(compatibleDirectReadBatches.values())
   let directReadCapped = false
+  const progressiveEvents: NDKEvent[] = []
+  let progressiveKnownRecords: CommerceProductRecord[] = []
+  let progressQueue = Promise.resolve()
+  const emitDirectProgress = (events: NDKEvent[]) => {
+    if (!options.onProgress) return Promise.resolve()
+    // Serialize cache reconciliation so an older asynchronous snapshot cannot
+    // overtake a later one, including a signed deletion learned by another read.
+    progressQueue = progressQueue.then(async () => {
+      if (options.shouldContinue?.() === false) return
+      progressiveEvents.push(...events)
+      const observed = dedupeProductEvents(progressiveEvents)
+      const currentDeletionTimestamps = await getLocalProductDeletionTimestamps(
+        undefined,
+        authors
+      )
+      if (options.shouldContinue?.() === false) return
+      try {
+        // Publish shared cache evidence before notifying consumers that may
+        // re-read it. This uses the same monotonic writer as the final result.
+        await cacheProductRecords(
+          filterDeletedProductRecords(observed, currentDeletionTimestamps)
+        )
+      } catch {
+        // Storage failure must not discard a valid network browse snapshot.
+      }
+      if (options.shouldContinue?.() === false) return
+      const currentCached = await getCachedProductRecords(
+        undefined,
+        { includeStale: true, includeMarketHidden: true },
+        authors
+      )
+      const currentFrontier = await getLocalProductDeletionTimestamps(
+        undefined,
+        authors
+      )
+      if (options.shouldContinue?.() === false) return
+      const merged = mergeCachedAndLiveProductRecords({
+        cached: currentCached,
+        live: [...progressiveKnownRecords, ...observed],
+        deletionTimestamps: currentFrontier,
+      })
+      progressiveKnownRecords = merged
+      const meta = createMeta(
+        "product_detail",
+        "commerce",
+        PRODUCT_CAPABILITIES,
+        {
+          stale: true,
+          degraded: true,
+          capped: directReadCapped,
+        }
+      )
+      options.onProgress?.({
+        data: withProductFamilyReadEvidence(
+          filterExactProductRecordsForRead(merged, wanted, options),
+          meta
+        ),
+        meta,
+        diagnostics: lookups.map((lookup) => ({
+          productId: lookup.productId,
+          addressId: lookup.addressId,
+          issue: lookup.addressId
+            ? "lookup_partial"
+            : "invalid_product_reference",
+          ...(lookup.addressId
+            ? {
+                coverage: {
+                  listing: "partial" as const,
+                  deletion: "partial" as const,
+                },
+              }
+            : {}),
+        })),
+      })
+    })
+    return progressQueue
+  }
   const directReads = await mapWithConcurrency(
     directReadEntries,
     PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
     async ({ targets, relayPlan }) => {
-      try {
-        const author = targets[0]!.author
-        // Same-author coordinates only share a read when their complete relay
-        // plans are compatible. Distinct source perspectives remain isolated
-        // so one six-relay cap cannot discard another coordinate's only hint.
-        const knownRelayHints = normalizePublicOrIsolatedE2eRelayHints(
-          uniqueStrings(targets.flatMap((target) => target.relayHints))
-        )
-        const result = await runFetchEventsFanoutWithDiagnostics(
-          {
-            kinds: [EVENT_KINDS.PRODUCT],
-            authors: [author],
-            "#d": uniqueStrings(targets.map((target) => target.dTag)),
-          },
-          {
-            relayUrls: relayPlan.relayUrls,
-            ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-            accountPubkey: options.authenticatedPubkey,
-            authenticatedPubkey: options.authenticatedPubkey,
-            accountNetworkLocalStateRepository:
-              testOverrides.accountNetworkLocalStateRepository,
-            shouldContinue: options.shouldContinue,
-            connectTimeoutMs: 4_000,
-            fetchTimeoutMs: 8_000,
-          }
-        )
-        const consideredRelayUrls = uniqueStrings([
-          ...relayPlan.relayUrls,
-          ...relayPlan.parkedRelayUrls,
-        ])
-        const consideredRelayUrlSet = new Set(consideredRelayUrls)
-        const completeRelayHints = uniqueStrings([
-          ...knownRelayHints,
-          ...relayPlan.hintRelayUrls,
-        ])
-        return {
-          targets,
-          events: result.events,
-          capped:
-            (result.cappedRelayUrls?.length ?? 0) > 0 ||
-            completeRelayHints.some(
-              (relayUrl) => !consideredRelayUrlSet.has(relayUrl)
-            ),
-          coverageByAddress: new Map(
-            targets.map((target) => [
-              target.addressId,
-              productAvailabilityCoverageFromFanout(
-                result,
-                uniqueStrings([
-                  ...consideredRelayUrls,
-                  ...target.relayHints,
-                  ...relayPlan.hintRelayUrls,
-                ])
+      const directRead = await (async () => {
+        try {
+          const author = targets[0]!.author
+          // Same-author coordinates only share a read when their complete relay
+          // plans are compatible. Distinct source perspectives remain isolated
+          // so one six-relay cap cannot discard another coordinate's only hint.
+          const knownRelayHints = normalizePublicOrIsolatedE2eRelayHints(
+            uniqueStrings(targets.flatMap((target) => target.relayHints))
+          )
+          const result = await runFetchEventsFanoutWithDiagnostics(
+            {
+              kinds: [EVENT_KINDS.PRODUCT],
+              authors: [author],
+              "#d": uniqueStrings(targets.map((target) => target.dTag)),
+            },
+            {
+              relayUrls: relayPlan.relayUrls,
+              ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+              accountPubkey: options.authenticatedPubkey,
+              authenticatedPubkey: options.authenticatedPubkey,
+              accountNetworkLocalStateRepository:
+                testOverrides.accountNetworkLocalStateRepository,
+              shouldContinue: options.shouldContinue,
+              connectTimeoutMs: 4_000,
+              fetchTimeoutMs: 8_000,
+            }
+          )
+          const consideredRelayUrls = uniqueStrings([
+            ...relayPlan.relayUrls,
+            ...relayPlan.parkedRelayUrls,
+          ])
+          const consideredRelayUrlSet = new Set(consideredRelayUrls)
+          const completeRelayHints = uniqueStrings([
+            ...knownRelayHints,
+            ...relayPlan.hintRelayUrls,
+          ])
+          return {
+            targets,
+            events: result.events,
+            capped:
+              (result.cappedRelayUrls?.length ?? 0) > 0 ||
+              completeRelayHints.some(
+                (relayUrl) => !consideredRelayUrlSet.has(relayUrl)
               ),
-            ])
-          ),
+            coverageByAddress: new Map(
+              targets.map((target) => [
+                target.addressId,
+                productAvailabilityCoverageFromFanout(
+                  result,
+                  uniqueStrings([
+                    ...consideredRelayUrls,
+                    ...target.relayHints,
+                    ...relayPlan.hintRelayUrls,
+                  ])
+                ),
+              ])
+            ),
+          }
+        } catch {
+          return {
+            targets,
+            events: [],
+            capped: false,
+            coverageByAddress: new Map<string, ProductAvailabilityCoverage>(),
+          }
         }
-      } catch {
-        return {
-          targets,
-          events: [],
-          capped: false,
-          coverageByAddress: new Map<string, ProductAvailabilityCoverage>(),
-        }
-      }
+      })()
+      directReadCapped ||= directRead.capped
+      await emitDirectProgress(directRead.events)
+      return directRead
     }
   )
   if (options.shouldContinue?.() === false)
@@ -5476,11 +5566,99 @@ export async function getProductsByIds(
     capped: directReadCapped || groupReadCapped,
   })
 
-  return {
+  const result = {
     data: withProductFamilyReadEvidence(filtered, meta),
     meta,
     diagnostics,
   }
+  if (options.onProgress && options.shouldContinue?.() !== false) {
+    // Another read may learn a newer signed revision or deletion during this
+    // batch. Never return older terms than a progressive snapshot already saw.
+    const currentCached = await getCachedProductRecords(
+      undefined,
+      { includeStale: true, includeMarketHidden: true },
+      authors
+    )
+    const currentFrontier = mergeDeletionTimestamps(
+      deletionTimestamps,
+      await getLocalProductDeletionTimestamps(undefined, authors)
+    )
+    if (options.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const currentRecords = mergeCachedAndLiveProductRecords({
+      cached: [],
+      live: [...merged, ...progressiveKnownRecords, ...currentCached].filter(
+        (record) =>
+          wanted.has(record.addressId) ||
+          neededParentAddresses.has(record.addressId) ||
+          (record.product.parentProductId
+            ? neededParentAddresses.has(record.product.parentProductId)
+            : false)
+      ),
+      deletionTimestamps: currentFrontier,
+    })
+    const previousByAddress = new Map(
+      merged.map((record) => [record.addressId, record])
+    )
+    if (
+      currentRecords.length !== merged.length ||
+      currentRecords.some(
+        (record) =>
+          previousByAddress.get(record.addressId)?.eventId !== record.eventId
+      )
+    ) {
+      // Rebuild families from surviving current records as well as top-level
+      // cards, so child withdrawals and deletions cannot remain in choices.
+      const currentFiltered = filterExactProductRecordsForRead(
+        currentRecords,
+        wanted,
+        options
+      )
+      const currentByAddress = new Map(
+        currentFiltered.map((record) => [record.addressId, record])
+      )
+      const currentAddresses = new Set(
+        currentRecords.map((record) => record.addressId)
+      )
+      const currentLiveByAddress = new Map(
+        filterDeletedProductRecords(liveDirectRecords, currentFrontier).map(
+          (record) => [record.addressId, record]
+        )
+      )
+      result.diagnostics = result.diagnostics.map((diagnostic) => ({
+        ...diagnostic,
+        issue: resolveProductAvailabilityIssue({
+          addressId: diagnostic.addressId,
+          listingCoverage: diagnostic.coverage?.listing ?? "unavailable",
+          liveByAddress: currentLiveByAddress,
+          filteredByAddress: currentByAddress,
+          mergedAddressIds: currentAddresses,
+        }),
+      }))
+      const liveContextByAddress = new Map(
+        liveContext.map((record) => [record.addressId, record])
+      )
+      const hasNewCacheOnlyTerms = currentFiltered.some(
+        (record) =>
+          currentLiveByAddress.get(record.addressId)?.eventId !==
+            record.eventId ||
+          record.family?.children.some(
+            (child) =>
+              liveContextByAddress.get(child.addressId)?.eventId !==
+              child.eventId
+          )
+      )
+      result.meta = {
+        ...result.meta,
+        source: hasNewCacheOnlyTerms ? "local_cache" : result.meta.source,
+        stale: result.meta.stale || hasNewCacheOnlyTerms,
+        degraded: true,
+      }
+      result.data = withProductFamilyReadEvidence(currentFiltered, result.meta)
+    }
+    options.onProgress(result)
+  }
+  return result
 }
 
 function resolveProductAvailabilityIssue(input: {

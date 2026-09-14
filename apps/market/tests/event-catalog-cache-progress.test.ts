@@ -52,7 +52,10 @@ afterEach(() => {
   __resetEventMarketTestOverrides()
 })
 
-async function fixture(negative: "deletion" | "withdrawal" | "none") {
+async function fixture(
+  negative: "deletion" | "withdrawal" | "none",
+  networkOnly: boolean | "missing-first" = false
+) {
   const nowMs = Date.now()
   const createdAt = Math.floor(nowMs / 1000) - 1000
   const organizerKey = generateSecretKey()
@@ -117,8 +120,17 @@ async function fixture(negative: "deletion" | "withdrawal" | "none") {
   let cacheGate: ReturnType<typeof deferred<void>> | undefined
   const cacheStarted = deferred()
   let cacheFailure = false
+  let productNetworkReads = 0
   __setCommerceTestOverrides({
     now: () => nowMs,
+    getRelayLists: async () => new Map(),
+    fetchEventsFanout: async (filter) => {
+      if (!networkOnly || !filter.kinds?.includes(30402)) return []
+      productNetworkReads++
+      if (networkOnly === "missing-first" && productNetworkReads === 1)
+        return []
+      return [new NDKEvent(undefined, listing)]
+    },
     getCachedProducts: async (merchantPubkey, authors) => {
       if (cacheGate) {
         cacheStarted.resolve()
@@ -213,6 +225,7 @@ async function fixture(negative: "deletion" | "withdrawal" | "none") {
     }
   }
   if (negative !== "none") await applyNegative(negative)
+  if (networkOnly) cachedProducts = []
   cacheGate = deferred()
   const plan = deferred<Map<string, never>>()
   const network = deferred<FetchEventsFanoutResult>()
@@ -240,7 +253,7 @@ async function fixture(negative: "deletion" | "withdrawal" | "none") {
     defaultOptions: { queries: { retry: false } },
   })
   const key = eventCatalogQueryIdentity(collection, scope).queryKey
-  client.setQueryData(key, previous)
+  if (!networkOnly) client.setQueryData(key, previous)
   const snapshots: RawEventCatalog[] = []
   const listeners = new Set<() => void>()
   const unsubscribe = client.getQueryCache().subscribe((event) => {
@@ -282,8 +295,35 @@ async function fixture(negative: "deletion" | "withdrawal" | "none") {
     .catch(() => undefined)
   return {
     snapshots,
+    productNetworkReads: () => productNetworkReads,
+    waitForProduct: () =>
+      new Promise<void>((resolve) => {
+        const notify = () => {
+          const current = snapshots.at(-1)
+          if (current && projectRawEventCatalog(current).products.length > 0) {
+            listeners.delete(notify)
+            resolve()
+          }
+        }
+        listeners.add(notify)
+        notify()
+      }),
     cacheStarted: cacheStarted.promise,
     waitForSnapshots,
+    async completeNetwork() {
+      plan.resolve(new Map())
+      const events = [...graph, listing].map(
+        (event) => new NDKEvent(undefined, event)
+      )
+      network.resolve({
+        events,
+        relays: [
+          { relayUrl: relay, status: "success", eventCount: events.length },
+        ],
+        eventsVerified: true,
+      })
+      return pending
+    },
     releaseCache: () => {
       cacheGate?.resolve()
       cacheGate = undefined
@@ -316,6 +356,47 @@ async function fixture(negative: "deletion" | "withdrawal" | "none") {
 }
 
 describe("event catalog composed cache progress", () => {
+  it("reconciles a completed empty early read when final event evidence accepts the product", async () => {
+    const run = await fixture("none", "missing-first")
+    try {
+      await run.cacheStarted
+      run.releaseCache()
+      // Header, cache, direct batch and final product snapshots all finish
+      // while event planning is held. The early product read found nothing.
+      await run.waitForSnapshots(4)
+      expect(run.productNetworkReads()).toBe(1)
+      expect(
+        projectRawEventCatalog(run.snapshots.at(-1)!).products
+      ).toHaveLength(0)
+      const completed = await run.completeNetwork()
+      expect(completed?.resolution?.acceptedProductCoordinates).toHaveLength(1)
+      expect(run.productNetworkReads()).toBe(2)
+      expect(projectRawEventCatalog(completed!).products).toHaveLength(1)
+    } finally {
+      await run.cleanup()
+    }
+  })
+
+  it("shows a newly fetched product with empty caches before event relay planning completes", async () => {
+    const run = await fixture("none", true)
+    try {
+      await run.cacheStarted
+      expect(projectRawEventCatalog(run.snapshots[0]!).products).toHaveLength(0)
+      run.releaseCache()
+      // The event relay plan remains held for this whole assertion. The only
+      // way to obtain this card is the overlapping exact network product read.
+      await run.waitForProduct()
+      const preview = projectRawEventCatalog(run.snapshots.at(-1)!)
+      expect(run.productNetworkReads()).toBe(1)
+      expect(preview.products).toHaveLength(1)
+      expect(preview.purchaseReady).toBe(false)
+      expect(preview.products[0]?.pickupFulfillment).toBeNull()
+      expect(run.snapshots.at(-1)!.complete).toBe(false)
+    } finally {
+      await run.cleanup()
+    }
+  })
+
   it("shows an intact cached product after its batch check while relay discovery remains held", async () => {
     const run = await fixture("none")
     try {
