@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test"
-import { prepareProductCatalog, type Product } from "@conduit/core"
+import {
+  getShopperPriceDisplay,
+  prepareProductCatalog,
+  type PricingRateInput,
+  type Product,
+} from "@conduit/core"
 import {
   buildEventCatalogBrowse,
   getEventCatalogAuthorizedFamily,
@@ -162,7 +167,10 @@ describe("event catalog browsing", () => {
       ["price-asc", ["sats", "btc", "fiat", "unavailable"]],
       ["price-desc", ["fiat", "btc", "sats", "unavailable"]],
     ] as [EventCatalogSort, string[]][]) {
-      const result = browse(products, { sort, btcUsdRate: 100_000 })
+      const result = browse(products, {
+        sort,
+        btcUsdRate: { rate: 100_000, fetchedAt: Date.now(), source: "mempool" },
+      })
       expect(ids(result.products)).toEqual(expected)
       expect(result.hasUnavailablePriceForSort).toBe(true)
     }
@@ -177,6 +185,82 @@ describe("event catalog browsing", () => {
       "fiat",
       "unavailable",
     ])
+  })
+
+  for (const [label, btcUsdRate] of [
+    ["missing", null],
+    ["without a timestamp", 100_000],
+    ["stale", { rate: 100_000, fetchedAt: 1_000, source: "mempool" }],
+    [
+      "future-dated",
+      { rate: 100_000, fetchedAt: Date.now() + 86_400_000, source: "mempool" },
+    ],
+  ] satisfies [string, PricingRateInput][]) {
+    it(`puts rate-dependent prices last when the quote is ${label}`, () => {
+      const fiat = entry("fiat", "a", { price: 0.5, currency: "USD" })
+      const cachedFiat = entry("cached-fiat", "a", {
+        price: 5_000,
+        currency: "SAT",
+        priceSats: 5_000,
+        sourcePrice: { amount: 5, currency: "USD", normalizedCurrency: "USD" },
+      })
+      const native = entry("native", "a", { price: 1_000 })
+      const bitcoin = entry("bitcoin", "a", { price: 0.00002, currency: "BTC" })
+      const free = entry("free", "a", {
+        price: 0,
+        priceSats: 0,
+        sourcePrice: { amount: 0, currency: "SAT", normalizedCurrency: "SAT" },
+      })
+      free.pickupFulfillment = pickup()
+      const products = [fiat, native, cachedFiat, bitcoin, free]
+      for (const [sort, expected] of [
+        ["price-asc", ["free", "native", "bitcoin", "cached-fiat", "fiat"]],
+        ["price-desc", ["bitcoin", "native", "free", "cached-fiat", "fiat"]],
+      ] satisfies [EventCatalogSort, string[]][]) {
+        const result = browse(products, { sort, btcUsdRate })
+        expect(ids(result.products)).toEqual(expected)
+        expect(result.hasUnavailablePriceForSort).toBe(true)
+        expect(
+          browse([native, bitcoin, free], { sort, btcUsdRate })
+            .hasUnavailablePriceForSort
+        ).toBe(false)
+      }
+      for (const product of [fiat.product, cachedFiat.product]) {
+        expect(
+          getShopperPriceDisplay(
+            product,
+            undefined,
+            typeof btcUsdRate === "object" ? btcUsdRate : null
+          ).sats
+        ).toBeNull()
+      }
+    })
+  }
+
+  it("recomputes cached fiat prices from fresh or configured quotes, matching the card", () => {
+    const fiat = entry("fiat", "a", {
+      price: 5,
+      currency: "USD",
+      priceSats: 9_000,
+      sourcePrice: { amount: 5, currency: "USD", normalizedCurrency: "USD" },
+    })
+    const native = entry("native", "a", { price: 4_000 })
+    for (const btcUsdRate of [
+      { rate: 200_000, fetchedAt: Date.now(), source: "mempool" },
+      { rate: 200_000, fetchedAt: 1, source: "env" },
+    ] as const) {
+      expect(
+        getShopperPriceDisplay(fiat.product, undefined, btcUsdRate).sats
+      ).toBe(2_500)
+      for (const [sort, expected] of [
+        ["price-asc", ["fiat", "native"]],
+        ["price-desc", ["native", "fiat"]],
+      ] satisfies [EventCatalogSort, string[]][]) {
+        const result = browse([native, fiat], { sort, btcUsdRate })
+        expect(ids(result.products)).toEqual(expected)
+        expect(result.hasUnavailablePriceForSort).toBe(false)
+      }
+    }
   })
 
   it("sorts variable products by the displayed family minimum", () => {

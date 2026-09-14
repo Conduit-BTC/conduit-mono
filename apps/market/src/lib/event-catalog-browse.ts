@@ -1,5 +1,5 @@
 import {
-  getPriceSats,
+  getShopperPriceDisplay,
   prepareProductCatalog,
   type PricingRateInput,
 } from "@conduit/core"
@@ -47,9 +47,14 @@ function getDisplayedComparablePrice(
     displayed.id === entry.product.id && entry.product.type !== "variable"
       ? entry.pickupFulfillment
       : entry.familyPickupFulfillments?.[displayed.id]
-  return (
-    getPriceSats(displayed, btcUsdRate, { allowZero: !!pickup })?.sats ?? null
-  )
+  // Compare in sats so native prices remain sortable without a fiat quote.
+  // Use the card's pricing rules to reject stale quotes and cached conversions.
+  return getShopperPriceDisplay(
+    displayed,
+    { currency: "BITCOIN", bitcoinUnit: "sats" },
+    typeof btcUsdRate === "object" ? btcUsdRate : null,
+    { allowZero: !!pickup }
+  ).sats
 }
 
 /** Browse only the event's already-loaded catalog; preserve its evidence objects. */
