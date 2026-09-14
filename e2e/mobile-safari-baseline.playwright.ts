@@ -1,12 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import {
-  createECDH,
-  createPrivateKey,
-  createPublicKey,
-  sign,
-  verify,
-} from "node:crypto"
-import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
@@ -30,8 +23,6 @@ import {
 import {
   bolt11DescriptionHashField,
   bolt11PaymentHashField,
-  bytesToBolt11Words,
-  encodeBolt11FixtureField,
   makeBolt11Fixture,
 } from "../tests/support/bolt11-fixture"
 
@@ -398,78 +389,11 @@ async function readRecoveredPayment(
   }, orderId)
 }
 
-function signedManualInvoice(description: string): string {
-  const secret = generateSecretKey()
-  const curve = createECDH("secp256k1")
-  curve.setPrivateKey(secret)
-  const publicKey = curve.getPublicKey(undefined, "uncompressed")
-  const key = createPrivateKey({
-    format: "jwk",
-    key: {
-      kty: "EC",
-      crv: "secp256k1",
-      d: Buffer.from(secret).toString("base64url"),
-      x: publicKey.subarray(1, 33).toString("base64url"),
-      y: publicKey.subarray(33).toString("base64url"),
-    },
-  })
-  const createdAt = Math.floor(Date.now() / 1000)
-  const hrp = "lnbc10n"
-  const fields = [
-    bolt11PaymentHashField(),
-    bolt11DescriptionHashField(description),
-    { tag: "s", words: bytesToBolt11Words(new Uint8Array(32).fill(8)) },
-    {
-      tag: "n",
-      words: bytesToBolt11Words(curve.getPublicKey(undefined, "compressed")),
-    },
-  ]
-  const words = [
-    ...Array.from({ length: 7 }, (_, index) =>
-      Number((BigInt(createdAt) >> BigInt((6 - index) * 5)) & 31n)
-    ),
-    ...fields.flatMap(encodeBolt11FixtureField),
-  ]
-  const data: number[] = []
-  let value = 0
-  let bits = 0
-  for (const word of words) {
-    value = (value << 5) | word
-    bits += 5
-    if (bits >= 8) {
-      bits -= 8
-      data.push((value >> bits) & 255)
-    }
-  }
-  if (bits) data.push((value << (8 - bits)) & 255)
-  const payload = Buffer.concat([Buffer.from(hrp), Buffer.from(data)])
-  const signature = sign("sha256", payload, { key, dsaEncoding: "ieee-p1363" })
-  const order = BigInt(
-    "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
-  )
-  const s = BigInt(`0x${signature.subarray(32).toString("hex")}`)
-  if (s > order / 2n) {
-    Buffer.from((order - s).toString(16).padStart(64, "0"), "hex").copy(
-      signature,
-      32
-    )
-  }
-  expect(
-    verify(
-      "sha256",
-      payload,
-      { key: createPublicKey(key), dsaEncoding: "ieee-p1363" },
-      signature
-    )
-  ).toBe(true)
-  // The explicit n field supplies the signing key; recovery is unnecessary.
+function makeManualInvoice(description: string): string {
   return makeBolt11Fixture({
-    hrp,
-    createdAt,
-    fields,
-    signatureWords: bytesToBolt11Words(
-      Buffer.concat([signature, Buffer.from([0])])
-    ),
+    hrp: "lnbc10n",
+    createdAt: Math.floor(Date.now() / 1000),
+    fields: [bolt11PaymentHashField(), bolt11DescriptionHashField(description)],
   })
 }
 
@@ -538,7 +462,7 @@ async function prepareUpdatedPaymentAddress(
       await route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
-          pr: signedManualInvoice(
+          pr: makeManualInvoice(
             wrongHash || url.hostname === "old-payment-fixture.dev"
               ? "unrelated synthetic request"
               : description

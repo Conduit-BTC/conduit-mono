@@ -1183,18 +1183,7 @@ function OrderDetail({
   }
 
   async function continuePrivateFallback(): Promise<void> {
-    const pickupFreshness = await verifyPickupCartFreshness(
-      row.lifecycle?.items ?? [],
-      row.lifecycle?.merchantPubkey ?? row.merchantPubkey,
-      authenticatedPubkey,
-      () => authGenerationRef.current === authGeneration
-    )
-    if (!pickupFreshness.fresh) throw new Error(pickupFreshness.reason)
-    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [], undefined, {
-      requestingAccountPubkey: authenticatedPubkey,
-      authenticatedPubkey,
-      shouldContinue: shouldContinueBuyerSession,
-    })
+    await verifyRetryFreshness()
     const ctx = await persistTargetAndBuildServiceCtx()
     setPrivateFallbackOpen(false)
     await runOrderPrivateFallback(ctx)
