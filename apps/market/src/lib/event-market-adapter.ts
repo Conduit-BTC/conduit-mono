@@ -56,13 +56,10 @@ export type EventCatalog = {
   products: EventCatalogProduct[]
   /** Organizer-accepted coordinates after stronger known negative evidence. */
   acceptedProductCount: number
-  /** Organizer-listed count for browse-only views; does not imply acceptance. */
-  listedProductCount?: number
   /** Accepted coordinates with neither safe retained nor current product data. */
   unresolvedProductCoordinates: string[]
   productReadState: "not_requested" | "ready" | "partial" | "unavailable"
   purchaseReady: boolean
-  readPhase?: "checking" | "ready"
 }
 
 export function getEventCatalogProductAvailability(
@@ -787,13 +784,9 @@ export function projectRawEventCatalog(
     coverage: resolution.coverage,
     products: [],
     acceptedProductCount: resolution.acceptedProductCoordinates.length,
-    listedProductCount: resolution.organizerProductCoordinates.filter(
-      (coordinate) => !excludedProducts.has(coordinate)
-    ).length,
     unresolvedProductCoordinates: [],
     productReadState: "not_requested",
     purchaseReady: false,
-    readPhase: complete ? "ready" : "checking",
   }
   if (
     resolution.state !== "active" &&

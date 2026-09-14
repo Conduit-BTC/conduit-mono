@@ -4000,26 +4000,6 @@ export async function getCachedOrganizerEventMarkets(
   )
 }
 
-/** Local validated evidence for browsing only; never starts relay discovery or I/O. */
-export async function getCachedEventMarket(
-  input: GetEventMarketInput
-): Promise<EventMarketResolution> {
-  assertEventMarketReadCurrent(input)
-  const decoded = decodeEventMarketReference(input.reference, [
-    EVENT_KINDS.PRODUCT_COLLECTION,
-  ])
-  if (!decoded) return emptyResolution(input.reference, "malformed")
-  const cached = await loadCachedEventMarketEvidence(decoded.authorPubkey)
-  assertEventMarketReadCurrent(input)
-  return resolveEventMarketBrowseEvidence(
-    input,
-    mergeCachedAndLiveEvidence({
-      cached,
-      live: { events: [], sourceRelayUrlsById: new Map() },
-    })
-  )
-}
-
 export async function getEventMarket(
   input: GetEventMarketInput
 ): Promise<EventMarketResolution> {

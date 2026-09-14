@@ -346,7 +346,6 @@ describe("shared progressive event catalogs", () => {
     expect(projected.purchaseReady).toBe(false)
     expect(projected.products[0]?.participation.purchaseReady).toBe(false)
     expect(projected.products[0]?.pickupFulfillment).toBeNull()
-    expect(projected.readPhase).toBe("checking")
   })
 
   it("publishes a browse-only header before completion and retains no authority after failure", async () => {
@@ -446,7 +445,6 @@ describe("shared progressive event catalogs", () => {
     expect(projected.products).toHaveLength(1)
     expect(projected.purchaseReady).toBe(false)
     expect(projected.productReadState).toBe("unavailable")
-    expect(projected.readPhase).toBe("ready")
   })
 
   it("retains safe hidden family choices while excluding unsafe and organizer-unlisted children", () => {
@@ -622,7 +620,6 @@ describe("shared progressive event catalogs", () => {
     )
     expect(removed.products).toHaveLength(0)
     expect(removed.unresolvedProductCoordinates).toHaveLength(0)
-    expect(removed.listedProductCount).toBe(0)
     pending.resolve({
       reference: collectionCoordinate,
       resolution: withdrawn,

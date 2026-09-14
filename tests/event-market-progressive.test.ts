@@ -13,7 +13,6 @@ import {
   buildEventMarketPickupDraft,
   EVENT_KINDS,
   encodeEventMarketNaddr,
-  getCachedEventMarket,
   getCachedOrganizerEventMarkets,
   getEventMarket,
   getOrganizerEventMarketsDetailed,
@@ -133,7 +132,10 @@ describe("event market progressive browsing", () => {
         throw new Error("cache read started relay I/O")
       },
     })
-    const cached = await getCachedEventMarket({ reference: collection, nowMs })
+    const [cached] = await getCachedOrganizerEventMarkets({
+      organizerPubkey: organizer,
+      nowMs,
+    })
     expect(cached.collection?.title).toBe("Market catalog")
     expect(cached.calendar?.title).toBe("Public market")
     expect(cached.state).toBe("stale")
@@ -299,7 +301,10 @@ describe("event market progressive browsing", () => {
       })
     )
     install(records)
-    const cached = await getCachedEventMarket({ reference: collection, nowMs })
+    const [cached] = await getCachedOrganizerEventMarkets({
+      organizerPubkey: organizer,
+      nowMs,
+    })
     expect(cached.state).toBe("stale")
     expect(cached.organizerProductCoordinates).toEqual([productCoordinate])
     expect(cached.acceptedProductCoordinates).toEqual([])
@@ -370,7 +375,10 @@ describe("event market progressive browsing", () => {
       })
     )
     install(records)
-    const cached = await getCachedEventMarket({ reference: collection, nowMs })
+    const [cached] = await getCachedOrganizerEventMarkets({
+      organizerPubkey: organizer,
+      nowMs,
+    })
     expect(cached.organizerProductCoordinates).toEqual([productCoordinate])
     expect(cached.browseExcludedProductCoordinates).toEqual([])
     expect(cached.acceptedProductCoordinates).toEqual([])
@@ -432,8 +440,8 @@ describe("event market progressive browsing", () => {
               200
             )
       install([...records, product, evidence])
-      const cached = await getCachedEventMarket({
-        reference: collection,
+      const [cached] = await getCachedOrganizerEventMarkets({
+        organizerPubkey: organizer,
         nowMs,
       })
       expect(cached.organizerProductCoordinates).toEqual([productCoordinate])
@@ -518,7 +526,10 @@ describe("event market progressive browsing", () => {
     expect(final.browseExcludedProductCoordinates).toEqual([])
     expect(final.acceptedProductCoordinates).toEqual([productCoordinate])
     install([...records, product, withdrawal, foreignDeletion])
-    const cached = await getCachedEventMarket({ reference: collection, nowMs })
+    const [cached] = await getCachedOrganizerEventMarkets({
+      organizerPubkey: organizer,
+      nowMs,
+    })
     expect(cached.browseExcludedProductCoordinates).toEqual([])
     expect(cached.acceptedProductCoordinates).toEqual([])
   })

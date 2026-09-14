@@ -35,7 +35,7 @@ export function getEventCatalogQueryDisplayState(
     (query.isError || query.isPaused) &&
     (data.state === "active" || data.state === "partial")
   ) {
-    data = { ...data, state: "stale", readPhase: undefined }
+    data = { ...data, state: "stale" }
   }
   return {
     data,
