@@ -7,7 +7,6 @@ import {
 } from "@conduit/core"
 import {
   buildEventCatalogBrowse,
-  getEventCatalogAuthorizedFamily,
   type EventCatalogSort,
 } from "../apps/market/src/lib/event-catalog-browse"
 import type { EventCatalogProduct } from "../apps/market/src/lib/event-market-adapter"
@@ -296,7 +295,7 @@ describe("event catalog browsing", () => {
       ids(browse([parent, sticker], { sort: "price-asc" }).products)
     ).toEqual(["sticker", "shirt"])
   })
-  it("ignores unauthorized cheap variants and matches the card when no authorized variants remain", () => {
+  it("sorts by safe displayed variants without turning pending pickup into missing options", () => {
     const parent = entry("shirt", "a", { type: "variable", price: 100 })
     const cheap = entry("cheap", "a", {
       type: "variation",
@@ -331,15 +330,25 @@ describe("event catalog browsing", () => {
     parent.family = prepared.family
     parent.familyPickupFulfillments = { cheap: null, costly: pickup() }
     const sticker = entry("sticker", "a", { price: 2000 })
+    // The adapter has already removed unsafe/unlisted children. Pickup
+    // readiness does not remove otherwise safe choices from the card.
     expect(
       ids(browse([parent, sticker], { sort: "price-asc" }).products)
-    ).toEqual(["sticker", "shirt"])
-    expect(
-      getEventCatalogAuthorizedFamily(parent)?.priceSummary.minimum?.product.id
-    ).toBe("costly")
-    parent.familyPickupFulfillments = {}
-    expect(getEventCatalogAuthorizedFamily(parent)?.state).toBe("parent_only")
-    // The existing card falls back to the parent price when no child can be selected.
+    ).toEqual(["shirt", "sticker"])
+    parent.evidenceState = "retained"
+    parent.familyPickupFulfillments = { cheap: null, costly: null }
+    parent.participation.purchaseReady = false
+    const pending = browse([parent, sticker], { sort: "price-asc" })
+    expect(ids(pending.products)).toEqual(["shirt", "sticker"])
+    expect(pending.products[0]?.family).toBe(prepared.family)
+    expect(pending.products[0]?.family?.children).toHaveLength(2)
+    expect(pending.products[0]?.participation.purchaseReady).toBe(false)
+    expect(pending.products[0]?.familyPickupFulfillments).toEqual({
+      cheap: null,
+      costly: null,
+    })
+    // Actual family removal still uses the price the card can display.
+    parent.family = undefined
     expect(
       ids(browse([parent, sticker], { sort: "price-asc" }).products)
     ).toEqual(["shirt", "sticker"])

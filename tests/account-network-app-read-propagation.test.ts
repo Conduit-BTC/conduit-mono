@@ -9,6 +9,7 @@ describe("app account-network read propagation", () => {
     const [
       eventHook,
       fulfillmentHook,
+      catalogQuery,
       adapter,
       authorization,
       checkout,
@@ -16,26 +17,32 @@ describe("app account-network read propagation", () => {
     ] = await Promise.all([
       source("apps/market/src/hooks/useEventMarket.ts"),
       source("apps/market/src/hooks/useProductCartFulfillment.ts"),
+      source("apps/market/src/lib/event-catalog-query.ts"),
       source("apps/market/src/lib/event-market-adapter.ts"),
       source("apps/market/src/lib/checkout-authorization.ts"),
       source("apps/market/src/routes/checkout.tsx"),
       source("apps/market/src/routes/orders.tsx"),
     ])
 
-    expect(eventHook).toContain("loadEventCatalog(")
+    expect(eventHook).toContain("useConduitSession")
+    expect(eventHook).toContain("eventCatalogQueryOptions(")
     expect(eventHook).toContain("authenticatedPubkey,")
-    expect(eventHook).toContain("authGenerationRef.current === authGeneration")
-    expect(fulfillmentHook).toContain("useConduitSession")
-    expect(
-      fulfillmentHook.match(/authGenerationRef\.current === authGeneration/g)
-        ?.length
-    ).toBe(2)
-    expect(adapter).toContain("authenticatedPubkey?: string | null")
-    expect(adapter).toContain(
-      "reference: canonicalNaddr,\n    authenticatedPubkey,"
+    expect(eventHook).toContain("authGeneration,")
+    expect(eventHook).toContain("currentScope.current === scopeToken")
+    expect(fulfillmentHook).toContain("useEventCatalogs(")
+    expect(catalogQuery).toContain("scope.authenticatedPubkey,")
+    expect(catalogQuery).toContain("scope.authGeneration,")
+    expect(catalogQuery).toContain("!signal.aborted && shouldContinue()")
+    expect(catalogQuery).toContain(
+      "authenticatedPubkey: scope.authenticatedPubkey"
     )
-    expect(adapter).toContain(
-      "includeMerchantHiddenProductIds: requested,\n    authenticatedPubkey,\n    shouldContinue,"
+    expect(catalogQuery).toContain("shouldContinue: active")
+    expect(adapter).toContain("authenticatedPubkey?: string | null")
+    expect(adapter).toMatch(
+      /reference: canonicalNaddr,\s+authenticatedPubkey: options.authenticatedPubkey,\s+shouldContinue: active/
+    )
+    expect(adapter).toMatch(
+      /includeMerchantHiddenProductIds:\s+resolution.acceptedProductCoordinates,\s+authenticatedPubkey: options.authenticatedPubkey,\s+shouldContinue: active/
     )
     expect(adapter).toContain(
       "includeMerchantHiddenProductIds: [item.productId],\n    authenticatedPubkey,\n    shouldContinue,"

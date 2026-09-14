@@ -1,6 +1,7 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   __aggregateSocialCounts,
+  __resetNdkTestState,
   __socialHydratorTestHooks,
   getProductSocialSummary,
 } from "@conduit/core"
@@ -65,18 +66,73 @@ describe("aggregateSocialCounts", () => {
 })
 
 describe("getProductSocialSummary", () => {
+  const originalWebSocket = globalThis.WebSocket
+  beforeEach(() => {
+    __resetNdkTestState()
+    class EmptyRelayWebSocket {
+      static CONNECTING = 0
+      static OPEN = 1
+      static CLOSED = 3
+      readyState = EmptyRelayWebSocket.CONNECTING
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+
+      constructor() {
+        queueMicrotask(() => {
+          this.readyState = EmptyRelayWebSocket.OPEN
+          this.onopen?.(new Event("open"))
+        })
+      }
+
+      send(payload: string): void {
+        const [type, subscriptionId] = JSON.parse(payload) as [string, string]
+        if (type !== "REQ") return
+        queueMicrotask(() =>
+          this.onmessage?.({
+            data: JSON.stringify(["EOSE", subscriptionId]),
+          } as MessageEvent<string>)
+        )
+      }
+
+      close(): void {
+        this.readyState = EmptyRelayWebSocket.CLOSED
+        this.onclose?.(new Event("close"))
+      }
+    }
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: EmptyRelayWebSocket,
+    })
+  })
+
+  afterEach(() => {
+    __resetNdkTestState()
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: originalWebSocket,
+    })
+  })
+
   it("returns an empty cache-miss summary synchronously", async () => {
-    const { summary } = await getProductSocialSummary({
+    const { summary, refreshPromise } = await getProductSocialSummary({
       coordinate: "30402:abcd:slug",
       authorPubkey: "abcd",
     })
     expect(summary.source === "empty" || summary.source === "stale").toBe(true)
     expect(summary.reactionCount).toBe(0)
+    // The cache-first API transfers ownership of its background promise.
+    // Drain it before another test resets the shared relay executor.
+    const refreshed = await refreshPromise
+    expect(refreshed.reactionCount).toBe(0)
   })
 
   it("schedules background refresh work via the queue", async () => {
     const beforePending = __socialHydratorTestHooks.pendingCount()
-    await getProductSocialSummary(
+    const { refreshPromise } = await getProductSocialSummary(
       {
         coordinate: "30402:abcd:another-slug",
         authorPubkey: "abcd",
@@ -89,5 +145,7 @@ describe("getProductSocialSummary", () => {
     const afterPending = __socialHydratorTestHooks.pendingCount()
     expect(afterPending).toBeGreaterThanOrEqual(0)
     expect(afterPending).toBeGreaterThanOrEqual(beforePending - 1)
+    await refreshPromise
+    expect(__socialHydratorTestHooks.pendingCount()).toBe(0)
   })
 })

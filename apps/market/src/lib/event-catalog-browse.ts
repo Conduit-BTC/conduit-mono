@@ -1,8 +1,4 @@
-import {
-  getShopperPriceDisplay,
-  prepareProductCatalog,
-  type PricingRateInput,
-} from "@conduit/core"
+import { getShopperPriceDisplay, type PricingRateInput } from "@conduit/core"
 import type { EventCatalogProduct } from "./event-market-adapter"
 import { getPendingMerchantName } from "./marketBrowseModel"
 import { getConfiguredPricingRateQuote } from "./pricing"
@@ -25,23 +21,13 @@ function normalizeSearch(value: string): string {
   return value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim()
 }
 
-export function getEventCatalogAuthorizedFamily(entry: EventCatalogProduct) {
-  if (!entry.family) return undefined
-  const authorizedChildren = entry.family.children.filter(
-    (child) => entry.familyPickupFulfillments?.[child.product.id]
-  )
-  const prepared = prepareProductCatalog(
-    [entry.family.parent, ...authorizedChildren],
-    entry.family.readEvidence
-  ).items[0]
-  return prepared?.kind === "family" ? prepared.family : undefined
-}
-
 function getDisplayedComparablePrice(
   entry: EventCatalogProduct,
   btcUsdRate: PricingRateInput
 ): number | null {
-  const family = getEventCatalogAuthorizedFamily(entry)
+  // The adapter prepares safe display choices; pickup readiness only gates
+  // purchase. Match the family displayed by the card throughout refresh.
+  const family = entry.family
   const displayed = family?.priceSummary.minimum?.product ?? entry.product
   const pickup =
     displayed.id === entry.product.id && entry.product.type !== "variable"

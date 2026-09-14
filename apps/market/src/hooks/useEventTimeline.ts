@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   discoverPerspectiveEventMarkets,
   extractFollowPubkeys,
@@ -20,6 +20,10 @@ import {
   type PerspectiveAuthorSource,
   type ProductCatalogSourceMode,
 } from "../lib/productCatalogRead"
+import {
+  eventTimelineQueryOptions,
+  getEventTimelineQueryDisplayState,
+} from "../lib/event-timeline-query"
 import { getDefaultMarketPerspectiveFollowPubkeys } from "../lib/defaultMarketPerspective"
 import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
 
@@ -45,6 +49,7 @@ function uniquePubkeys(pubkeys: readonly string[] | undefined): string[] {
 export function useEventTimeline(
   requestedSource: ProductCatalogSourceMode
 ): EventTimelineDiscoveryResult {
+  const queryClient = useQueryClient()
   const { pubkey, status, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
@@ -229,34 +234,43 @@ export function useEventTimeline(
   ])
   const organizerPubkeys = resolvedOrganizerPubkeys
   const organizerKey = organizerPubkeys?.join(",") ?? "unresolved"
+  const discoveryQueryKey = [
+    "market-event-timeline",
+    session.relayScope ?? "no-relay-scope",
+    authenticatedPubkey,
+    authGeneration,
+    effectiveSource,
+    normalizedPerspectivePubkey,
+    organizerKey,
+    perspective.coverage,
+    perspective.eventObserved,
+    perspective.snapshotState,
+    perspective.truncated,
+  ] as const
+  const discoveryScope = JSON.stringify(discoveryQueryKey)
+  const discoveryScopeRef = useRef(discoveryScope)
+  useLayoutEffect(() => {
+    discoveryScopeRef.current = discoveryScope
+  }, [discoveryScope])
   const discoveryQuery = useQuery({
-    queryKey: [
-      "market-event-timeline",
-      session.relayScope ?? "no-relay-scope",
-      authenticatedPubkey,
-      authGeneration,
-      effectiveSource,
-      normalizedPerspectivePubkey,
-      organizerKey,
-      perspective.coverage,
-      perspective.eventObserved,
-      perspective.snapshotState,
-      perspective.truncated,
-    ],
-    queryFn: ({ signal }) =>
-      discoverPerspectiveEventMarkets({
-        organizerPubkeys: organizerPubkeys!,
+    ...eventTimelineQueryOptions(
+      queryClient,
+      discoveryQueryKey,
+      {
+        organizerPubkeys: organizerPubkeys ?? [],
         perspective,
         includeEnded: true,
         authenticatedPubkey,
-        signal,
-        shouldContinue: () =>
-          !signal.aborted && authGenerationRef.current === authGeneration,
-      }),
+      },
+      (signal) =>
+        !signal.aborted &&
+        authGenerationRef.current === authGeneration &&
+        discoveryScopeRef.current === discoveryScope,
+      discoverPerspectiveEventMarkets
+    ),
     enabled: session.relaySettingsReady && organizerPubkeys !== undefined,
-    retry: false,
-    staleTime: 60_000,
   })
+  const queryDisplayState = getEventTimelineQueryDisplayState(discoveryQuery)
   const markets = useMemo(
     () => discoveryQuery.data?.markets ?? [],
     [discoveryQuery.data?.markets]
@@ -301,14 +315,13 @@ export function useEventTimeline(
     authorSource: authorResolution.source,
     effectiveSource,
     isInitialLoading:
-      organizerPubkeys === undefined ||
-      (markets.length === 0 && discoveryQuery.isPending),
+      organizerPubkeys === undefined || queryDisplayState.isInitialLoading,
     isFetching:
       discoveryQuery.isFetching ||
       firstDegreeQuery.isFetching ||
       guestMarket.isRefreshing,
     isRefreshStale:
-      discoveryQuery.isError ||
+      queryDisplayState.isRefreshStale ||
       followRefreshStale ||
       (effectiveSource !== "following" && guestMarket.stale),
     error: discoveryQuery.error,
