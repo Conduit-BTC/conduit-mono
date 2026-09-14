@@ -164,6 +164,7 @@ test("sellers page filters while typing and still submits a product search @mark
   })
   await input.fill("alice")
   await expect(page).toHaveURL(/\/sellers\?.*q=alice/)
+  await expect(page).toHaveURL(/source=combined/)
   await expect(
     page
       .locator('section[aria-labelledby="discovered-sellers-heading"]')

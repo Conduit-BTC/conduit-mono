@@ -12,6 +12,7 @@ import {
   Wallet,
 } from "lucide-react"
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -48,7 +49,9 @@ import {
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
 import {
-  ACCOUNT_SUGGESTION_LIMIT,
+  ACCOUNT_SEARCH_CANDIDATE_LIMIT,
+  limitAccountMatches,
+  resolveActiveSuggestionIndex,
   describeAccountSearchEvidence,
   getAccountSuggestionTarget,
   toAccountSuggestionItems,
@@ -343,7 +346,9 @@ export function MarketHeader() {
   const [navState, setNavState] = useState<NavState>("top")
   const [searchFocused, setSearchFocused] = useState(false)
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false)
-  const [activeSuggestion, setActiveSuggestion] = useState(-1)
+  const [activeSuggestionId, setActiveSuggestionId] = useState<string | null>(
+    null
+  )
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const currentQuery = typeof search.q === "string" ? search.q : ""
   const isSellersRoute = pathname === "/sellers"
@@ -363,12 +368,30 @@ export function MarketHeader() {
   )
   const accountSearch = useProfileSearch(searchValue, {
     enabled: searchFocused && searchDirty && !suggestionsDismissed,
-    limit: ACCOUNT_SUGGESTION_LIMIT,
+    limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT,
   })
-  const accountMatches = accountSearch.data?.matches
+  const accountMatches = useMemo(
+    () =>
+      accountSearch.data
+        ? limitAccountMatches(accountSearch.data.matches)
+        : undefined,
+    [accountSearch.data]
+  )
   const accountItems = useMemo(
     () => toAccountSuggestionItems(accountMatches ?? []),
     [accountMatches]
+  )
+  const activeSuggestion = resolveActiveSuggestionIndex(
+    accountItems,
+    activeSuggestionId
+  )
+  const setActiveSuggestion = useCallback(
+    (index: number) => {
+      setActiveSuggestionId(
+        index >= 0 ? (accountItems[index]?.id ?? null) : null
+      )
+    },
+    [accountItems]
   )
   const suggestionsOpen =
     searchFocused &&
@@ -381,8 +404,8 @@ export function MarketHeader() {
   const accountEvidence = describeAccountSearchEvidence(accountSearch.data)
 
   useEffect(() => {
-    setActiveSuggestion(-1)
-  }, [accountSearch.activeQuery, accountItems.length])
+    setActiveSuggestionId(null)
+  }, [accountSearch.activeQuery])
 
   function selectAccountSuggestion(index: number): void {
     const match = accountMatches?.[index]
@@ -488,9 +511,11 @@ export function MarketHeader() {
 
       navigate({
         to: searchRoute,
-        search: {
+        // Keep the perspective and any other browse parameter; only q changes.
+        search: (previous: Record<string, unknown>) => ({
+          ...previous,
           q: normalizedSearchValue || undefined,
-        },
+        }),
         replace: true,
       })
     }, 260)
@@ -506,12 +531,16 @@ export function MarketHeader() {
   ])
 
   function submitSearch(): void {
+    const onCatalog = pathname === "/products"
     navigate({
       to: "/products",
-      search: {
-        q: normalizedSearchValue || undefined,
-      },
-      replace: pathname === "/products",
+      search: onCatalog
+        ? (previous: Record<string, unknown>) => ({
+            ...previous,
+            q: normalizedSearchValue || undefined,
+          })
+        : { q: normalizedSearchValue || undefined },
+      replace: onCatalog,
     })
     setSearchDirty(false)
   }
