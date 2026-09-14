@@ -34,6 +34,22 @@ child pickup snapshots. Parent acceptance does not authorize a child. Newer
 signed withdrawals and deletions must dominate both the event evidence cache
 and the general product cache, including intermediate previews.
 
+## Timeline discovery and relay lifecycle
+
+The Events timeline reads retained signed organizer headers alongside its bounded
+candidate scan, then streams each organizer's header before pickup checks finish.
+A cumulative organizer snapshot replaces earlier evidence, including terminal
+removals. A newer candidate unlink or signed deletion must retract an older card;
+late cache reads cannot restore it. Cancelled account, perspective or relay scopes
+cannot update the current timeline. A timeout preserves the latest safe browsing
+snapshot and remains an incomplete read.
+
+Deliberate local connection teardown cancels pending subscriptions without
+recording relay failure. Remote disconnects and timeouts still contribute to
+relay health. This distinction prevents account or network-setting transitions
+from cooling down healthy relays merely because several reads were interrupted.
+Candidate limits, relay scope and discovery deadlines remain unchanged.
+
 ## Validation
 
 Measure header visibility, product visibility and purchase readiness separately.
@@ -45,7 +61,9 @@ Coverage includes shared reads and local repricing, failed refreshes, scope
 changes, cancellation, cache-only browsing, hidden event products, variable
 choices, cross-cache withdrawals/deletions and a later live re-request. Browser
 checks exercise header progress, warm product-to-event navigation, retained
-cards, variation selection and deletion after a cached preview.
+cards, variation selection and deletion after a cached preview. Timeline checks
+cover delayed sibling reads, cache progress, deadline retention, signed removal
+and local connection teardown followed by successful discovery retry.
 
 Public network latency is not a CI dependency. Synthetic signer/relay results
 do not replace maintainer preview validation with the relevant real accounts

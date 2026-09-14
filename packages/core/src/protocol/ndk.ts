@@ -698,7 +698,7 @@ export async function verifySignedPublicNostrEvents(
 // concurrent reads. Explicit CLOSE per sub; the socket stays warm and idle-closes
 // once no reads are using it. No auto-reconnect, so failing relays are attempted
 // once (not re-hammered by every concurrent read) and freed deterministically.
-type RelaySubEnd = "eose" | "closed" | "drop"
+type RelaySubEnd = "eose" | "closed" | "drop" | "cancelled"
 type RelaySub = {
   onEvent: (raw: RawNostrEvent, frameChars: number) => void
   end: (reason: RelaySubEnd) => void
@@ -720,7 +720,8 @@ const relayConnections = new Map<string, RelayConnection>()
 
 function dropRelayConnection(
   conn: RelayConnection,
-  connections: Map<string, RelayConnection>
+  connections: Map<string, RelayConnection>,
+  reason: "drop" | "cancelled" = "drop"
 ): void {
   if (connections.get(conn.url) === conn) connections.delete(conn.url)
   if (conn.closed) return
@@ -728,7 +729,7 @@ function dropRelayConnection(
   if (conn.idleTimer) clearTimeout(conn.idleTimer)
   const pending = [...conn.subs.values()]
   conn.subs.clear()
-  for (const sub of pending) sub.end("drop")
+  for (const sub of pending) sub.end(reason)
   try {
     conn.ws.close()
   } catch {
@@ -853,7 +854,9 @@ function closeRelayConnections(
   connections: Map<string, RelayConnection>
 ): void {
   for (const conn of [...connections.values()]) {
-    dropRelayConnection(conn, connections)
+    // Deliberate client teardown revokes pending reads without declaring a
+    // relay outage. Remote closes and transport guards retain the drop path.
+    dropRelayConnection(conn, connections, "cancelled")
   }
   connections.clear()
 }
@@ -942,6 +945,12 @@ function readRelayEvents(
       cleanup()
       resolve({ events, complete, truncated })
     }
+    const cancel = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(abortError())
+    }
 
     conn.subs.set(subId, {
       onEvent: (raw, frameChars) => {
@@ -970,16 +979,12 @@ function readRelayEvents(
           finish(false, true)
         }
       },
-      end: (reason) => finish(reason === "eose"),
+      end: (reason) =>
+        reason === "cancelled" ? cancel() : finish(reason === "eose"),
     })
 
     if (signal) {
-      onAbort = () => {
-        if (settled) return
-        settled = true
-        cleanup()
-        reject(abortError())
-      }
+      onAbort = cancel
       if (signal.aborted) {
         onAbort()
         return

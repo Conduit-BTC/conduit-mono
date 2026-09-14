@@ -2131,6 +2131,8 @@ export interface GetOrganizerEventMarketsInput {
    * participant products and merchant-authored pickup frontiers.
    */
   projection?: "full" | "discovery"
+  /** Browse-only organizer headers while pickup validation continues. */
+  onProgress?: (result: OrganizerEventMarketsReadResult) => void
   signal?: AbortSignal
 }
 
@@ -3883,7 +3885,9 @@ function organizerProductCoordinatesFromEvidence(
   return Array.from(products).sort()
 }
 
-function assertEventMarketReadCurrent(input: GetEventMarketInput): void {
+function assertEventMarketReadCurrent(
+  input: Pick<GetEventMarketInput, "signal" | "shouldContinue">
+): void {
   if (input.signal?.aborted || input.shouldContinue?.() === false) {
     const error = new Error("The operation was aborted.")
     error.name = "AbortError"
@@ -3951,6 +3955,48 @@ function resolveEventMarketBrowseEvidence(
       ? { ...resolution, state: "stale" }
       : resolution,
     records.events
+  )
+}
+
+function resolveOrganizerBrowseEvidence(
+  input: GetOrganizerEventMarketsInput,
+  records: ReturnType<typeof mergeCachedAndLiveEvidence>
+): EventMarketResolution[] {
+  return collectionCoordinatesFromEvidence(
+    records.events,
+    input.organizerPubkey
+  ).map((reference) =>
+    resolveEventMarketBrowseEvidence(
+      {
+        reference,
+        expectedOrganizerPubkey: input.organizerPubkey,
+        nowMs: input.nowMs,
+        maxEvidenceAgeMs: input.maxEvidenceAgeMs,
+      },
+      records
+    )
+  )
+}
+
+/** Retained signed organizer headers, reconciled with newer supplied candidates. */
+export async function getCachedOrganizerEventMarkets(
+  input: GetOrganizerEventMarketsInput
+): Promise<EventMarketResolution[]> {
+  assertEventMarketReadCurrent(input)
+  const organizerPubkey = normalizePubkey(input.organizerPubkey)
+  if (!organizerPubkey) return []
+  const cached = await loadCachedEventMarketEvidence(organizerPubkey)
+  assertEventMarketReadCurrent(input)
+  return resolveOrganizerBrowseEvidence(
+    { ...input, organizerPubkey },
+    mergeCachedAndLiveEvidence({
+      cached,
+      live: candidateCollectionEvidence({
+        organizerPubkey,
+        events: input.candidateCollectionEvents,
+        sourceRelayUrlsById: input.candidateCollectionSourceRelayUrlsById,
+      }),
+    })
   )
 }
 
@@ -4626,6 +4672,19 @@ export async function getOrganizerEventMarketsDetailed(
     collectionCoordinates,
   })
   const discoveryProjection = input.projection === "discovery"
+  assertEventMarketReadCurrent(input)
+  if (discoveryProjection && input.onProgress) {
+    input.onProgress({
+      markets: resolveOrganizerBrowseEvidence(
+        { ...input, organizerPubkey },
+        organizerRecords
+      ),
+      state: "partial",
+      coverage: coverageForNetworkRead(organizerRecordRelays, relayUrls.length),
+      relayListState: readPlan.relayListState,
+      relayHintTruncated: readPlan.relayHintTruncated,
+    })
+  }
   const [requestResult, organizerPickupResult] = await Promise.all([
     discoveryProjection
       ? Promise.resolve({

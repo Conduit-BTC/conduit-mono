@@ -14,7 +14,10 @@ import {
   EVENT_KINDS,
   encodeEventMarketNaddr,
   getCachedEventMarket,
+  getCachedOrganizerEventMarkets,
   getEventMarket,
+  getOrganizerEventMarketsDetailed,
+  type OrganizerEventMarketsReadResult,
   type CachedEventMarketEvidence,
   type EventMarketResolution,
   type FetchEventsFanoutResult,
@@ -555,4 +558,103 @@ describe("event market progressive browsing", () => {
       expect(snapshots).toHaveLength(count)
     })
   }
+})
+
+describe("organizer timeline progressive headers", () => {
+  it("reads retained organizer headers without I/O and honors a newer signed unlink", async () => {
+    const events = graph()
+    install(events)
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => {
+        throw new Error("cache started relay discovery")
+      },
+      fetchEventsFanoutDetailed: async () => {
+        throw new Error("cache started relay I/O")
+      },
+    })
+    const cached = await getCachedOrganizerEventMarkets({
+      organizerPubkey: organizer,
+      nowMs,
+    })
+    expect(cached[0]?.calendar?.title).toBe("Public market")
+    expect(cached[0]?.state).toBe("stale")
+    expect(cached[0]?.acceptedProductEvidence).toEqual([])
+    const unlinked = sign(
+      {
+        kind: 30405,
+        content: "",
+        tags: [
+          ["d", "market"],
+          ["title", "Regular collection"],
+        ],
+      },
+      200
+    )
+    const current = await getCachedOrganizerEventMarkets({
+      organizerPubkey: organizer,
+      nowMs,
+      candidateCollectionEvents: [unlinked],
+    })
+    expect(current[0]?.calendar).toBeUndefined()
+    expect(current[0]?.state).not.toBe("stale")
+  })
+
+  it("retains signed deletion authority and discards cache finishing after abort", async () => {
+    const deleted = sign(
+      { kind: 5, content: "", tags: [["a", collection]] },
+      200
+    )
+    install([...graph(), deleted])
+    const cached = await getCachedOrganizerEventMarkets({
+      organizerPubkey: organizer,
+      nowMs,
+    })
+    expect(cached[0]?.state).toBe("deleted")
+    const held = deferred<CachedEventMarketEvidence[]>()
+    __setEventMarketTestOverrides({ loadCachedEvidence: () => held.promise })
+    const controller = new AbortController()
+    const pending = getCachedOrganizerEventMarkets({
+      organizerPubkey: organizer,
+      signal: controller.signal,
+    })
+    controller.abort()
+    held.resolve(rows(graph()))
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" })
+  })
+
+  it("emits a browse-only signed header while pickup checks are held", async () => {
+    install()
+    const pickupStarted = deferred()
+    const releasePickup = deferred<FetchEventsFanoutResult>()
+    const snapshots: OrganizerEventMarketsReadResult[] = []
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (filter) => {
+        if (
+          filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION) &&
+          filter["#d"]
+        ) {
+          pickupStarted.resolve()
+          return releasePickup.promise
+        }
+        return result(graph())
+      },
+    })
+    const read = getOrganizerEventMarketsDetailed({
+      organizerPubkey: organizer,
+      projection: "discovery",
+      nowMs,
+      onProgress: (snapshot: OrganizerEventMarketsReadResult) =>
+        snapshots.push(snapshot),
+    })
+    try {
+      await pickupStarted.promise
+      expect(snapshots.length).toBeGreaterThan(0)
+      expect(snapshots[0]?.markets[0]?.calendar?.title).toBe("Public market")
+      expect(snapshots[0]?.markets[0]?.acceptedProductEvidence).toEqual([])
+      expect(snapshots[0]?.state).toBe("partial")
+    } finally {
+      releasePickup.resolve(result(graph()))
+      await read
+    }
+  })
 })

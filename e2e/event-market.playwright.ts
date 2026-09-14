@@ -3256,6 +3256,102 @@ test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @
   ).toBe(false)
 })
 
+test("event timeline paints before held pickup reads and keeps cached cards until signed withdrawal @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const timings: Record<string, number> = {}
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic progressive timeline",
+    organizerHandoffEnabled: true,
+  })
+  relay.seed(
+    createFollowList(
+      "buyer",
+      [ORGANIZER_PUBKEY],
+      Math.floor(Date.now() / 1000) + 1
+    )
+  )
+  const card = page.getByRole("article").filter({
+    has: page.getByRole("heading", {
+      name: "Synthetic progressive timeline",
+      exact: true,
+    }),
+  })
+  const held = relay.holdRelayRequests((request) =>
+    request.filters.some(
+      (filter) => filter.kinds?.length === 1 && filter.kinds[0] === 30406
+    )
+  )
+  const coldStarted = Date.now()
+  try {
+    await gotoAs(page, marketUrl, "/events", "buyer", {
+      source: "following",
+      window: "all",
+    })
+    await held.captured
+    // A usable organizer header must render before pickup hydration settles.
+    await expect(card).toBeVisible()
+    timings.coldListCardMs = Date.now() - coldStarted
+    await expect(
+      card.getByRole("link", { name: "View", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Retry discovery", exact: true })
+    ).toBeDisabled()
+  } finally {
+    held.release()
+  }
+  await expect
+    .poll(async () => {
+      const retry = page.getByRole("button", {
+        name: "Retry discovery",
+        exact: true,
+      })
+      return (await retry.count()) === 0 || (await retry.isEnabled())
+    })
+    .toBe(true)
+  await expect(card).toBeVisible()
+  const publications = relay.publications.length
+  const warmRead = relay.holdRelayRequests((request) =>
+    request.filters.some((filter) =>
+      filter.kinds?.some((kind) => [30405, 30406, 31922, 31923].includes(kind))
+    )
+  )
+  const warmStarted = Date.now()
+  try {
+    await page.reload()
+    await warmRead.captured
+    await expect(card).toBeVisible()
+    timings.warmListCardMs = Date.now() - warmStarted
+    await expect(
+      page.getByRole("button", { name: "Retry discovery", exact: true })
+    ).toBeDisabled()
+    // A newer collection withdrawing its event link is stronger evidence than
+    // the retained card, including when the organizer refresh is incomplete.
+    relay.seed(
+      signEvent(ORGANIZER_SECRET, {
+        kind: 30405,
+        created_at: market.initialCollection.created_at + 20,
+        content: market.initialCollection.content,
+        tags: market.initialCollection.tags.filter(
+          (tag) => !(tag[0] === "a" && tag[1] === market.calendarCoordinate)
+        ),
+      })
+    )
+  } finally {
+    warmRead.release()
+  }
+  await expect(card).toHaveCount(0)
+  expect(relay.publications).toHaveLength(publications)
+  console.log(
+    "Event timeline loading timings (synthetic, ms):",
+    JSON.stringify(timings)
+  )
+})
+
 test("event catalog paints before held product reads and keeps cached browsing closed to purchase @market", async ({
   page,
 }) => {
