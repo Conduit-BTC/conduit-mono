@@ -1,6 +1,10 @@
 import { useLayoutEffect, useMemo, useRef } from "react"
 import { useAuth, useProfileSearch } from "@conduit/core"
-import { ACCOUNT_SUGGESTION_LIMIT } from "../lib/accountSearch"
+import {
+  ACCOUNT_SEARCH_CANDIDATE_LIMIT,
+  ACCOUNT_SUGGESTION_LIMIT,
+  limitAccountMatches,
+} from "../lib/accountSearch"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
 import {
   excludeDiscoveredSellers,
@@ -55,11 +59,15 @@ export function useSellerDirectory(input: {
     [identities.getIdentity, query, sellers]
   )
   const accountSearch = useProfileSearch(query, {
-    limit: ACCOUNT_SUGGESTION_LIMIT,
+    limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT,
     settleMs: 0,
   })
   const networkAccounts = useMemo(
-    () => excludeDiscoveredSellers(accountSearch.data?.matches ?? [], sellers),
+    () =>
+      limitAccountMatches(
+        excludeDiscoveredSellers(accountSearch.data?.matches ?? [], sellers),
+        ACCOUNT_SUGGESTION_LIMIT
+      ),
     [accountSearch.data, sellers]
   )
 

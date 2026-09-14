@@ -9,6 +9,34 @@ import {
 import type { SearchSuggestionItem } from "@conduit/ui"
 
 export const ACCOUNT_SUGGESTION_LIMIT = 5
+/**
+ * Both account surfaces read one shared query, then narrow it themselves: the
+ * header shows the first `ACCOUNT_SUGGESTION_LIMIT` rows, and the Sellers page
+ * first removes accounts already listed as discovered sellers. Fetching the
+ * display cap would let those removals empty the "Other accounts" row.
+ */
+export const ACCOUNT_SEARCH_CANDIDATE_LIMIT = 20
+
+/**
+ * Resolves the highlighted option by account, not by position. Relay results
+ * merge into a list that is already on screen, so an index would silently
+ * point at a different account after a reorder.
+ */
+export function resolveActiveSuggestionIndex(
+  items: readonly SearchSuggestionItem[],
+  activeId: string | null
+): number {
+  if (!activeId) return -1
+  return items.findIndex((item) => item.id === activeId)
+}
+
+/** Caps a suggestion list after any surface-specific filtering. */
+export function limitAccountMatches(
+  matches: readonly ProfileSearchMatch[],
+  limit: number = ACCOUNT_SUGGESTION_LIMIT
+): ProfileSearchMatch[] {
+  return matches.slice(0, limit)
+}
 
 export type AccountSuggestionTarget =
   | { to: "/store/$pubkey"; params: { pubkey: string } }

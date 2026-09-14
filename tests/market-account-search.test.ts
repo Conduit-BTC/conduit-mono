@@ -5,6 +5,7 @@ import {
   describeAccountSearchEvidence,
   getAccountSuggestionDescription,
   getAccountSuggestionTarget,
+  resolveActiveSuggestionIndex,
   toAccountSuggestionItems,
 } from "../apps/market/src/lib/accountSearch"
 
@@ -125,5 +126,30 @@ describe("account suggestion items", () => {
         matches: [match({ pubkey: BUYER })],
       })
     ).toContain("seen on this device")
+  })
+})
+
+describe("highlighted suggestion", () => {
+  const cached = toAccountSuggestionItems([
+    match({ pubkey: SELLER, profile: { pubkey: SELLER, name: "Alice One" } }),
+    match({ pubkey: BUYER, profile: { pubkey: BUYER, name: "Alice Two" } }),
+  ])
+
+  it("follows the highlighted account when relay results reorder the list", async () => {
+    const active = cached[1]!.id
+    expect(resolveActiveSuggestionIndex(cached, active)).toBe(1)
+
+    const reordered = [cached[1]!, cached[0]!]
+    expect(resolveActiveSuggestionIndex(reordered, active)).toBe(0)
+    expect(resolveActiveSuggestionIndex([cached[0]!], active)).toBe(-1)
+    expect(resolveActiveSuggestionIndex(cached, null)).toBe(-1)
+
+    const header = await readFile(
+      "apps/market/src/components/MarketHeader.tsx",
+      "utf8"
+    )
+    expect(header).toContain("resolveActiveSuggestionIndex(")
+    expect(header).toContain("useState<string | null>(")
+    expect(header).not.toContain("useState(-1)")
   })
 })
