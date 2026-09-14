@@ -1775,6 +1775,18 @@ test("event catalog shops products by search, merchant, and sort before technica
   page.setDefaultTimeout(30_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          ;(
+            window as typeof window & { __eventCatalogCopiedValue?: string }
+          ).__eventCatalogCopiedValue = value
+        },
+      },
+    })
+  })
   // A correctly prepared banner must occupy the complete 3:1 frame.
   // Other event-banner coverage keeps a mismatched 2:1 source to verify fitting.
   await page.route(
@@ -1793,6 +1805,8 @@ test("event catalog shops products by search, merchant, and sort before technica
   })
   const createdAt = market.initialCollection.created_at + 1
   const secondMerchantSecret = generateSecretKey()
+  const longMerchantName =
+    "Peter No Taxation Without Representation Ryszkiewicz"
   const organizerNip05Suffix = "@identity.conduit.market"
   const organizerNip05Name = "o".repeat(100 - organizerNip05Suffix.length)
   const organizerNip05 = `${organizerNip05Name}${organizerNip05Suffix}`
@@ -1882,7 +1896,7 @@ test("event catalog shops products by search, merchant, and sort before technica
     }),
     ...[
       { secret: MERCHANT_SECRET, name: "Alpine Goods" },
-      { secret: secondMerchantSecret, name: "Bay Coffee" },
+      { secret: secondMerchantSecret, name: longMerchantName },
     ].map(({ secret, name }) =>
       signEvent(secret, {
         kind: 0,
@@ -1926,6 +1940,22 @@ test("event catalog shops products by search, merchant, and sort before technica
     cards.first().getByRole("button", { name: "Alpine Goods", exact: true })
   ).toBeVisible()
   await expect(technicalDetails).not.toHaveAttribute("open", "")
+  const longHandlerDetails = cards.nth(1).locator("details")
+  const longHandlerSummary = longHandlerDetails.locator("summary")
+  await expect(
+    longHandlerSummary.getByTitle(`Handled by ${longMerchantName}`)
+  ).toBeVisible()
+  await longHandlerSummary.focus()
+  await expect(longHandlerSummary).toBeFocused()
+  await longHandlerSummary.press("Enter")
+  await expect(longHandlerDetails).toHaveAttribute("open", "")
+  await expect(
+    longHandlerDetails
+      .locator(":scope > div")
+      .getByText(`Handled by ${longMerchantName}`, { exact: true })
+  ).toBeVisible()
+  await longHandlerSummary.click()
+  await expect(longHandlerDetails).not.toHaveAttribute("open", "")
   // Geohash-only pickups retain their location; readable text takes precedence.
   for (const [index, location] of [pickupGeohash, pickupLocation].entries()) {
     const details = cards.nth(index).locator("details")
@@ -1976,9 +2006,9 @@ test("event catalog shops products by search, merchant, and sort before technica
   await search.fill("mug")
   await expect(titles).toHaveText(["Amber Mug", "Cedar Mug"])
   await merchant.click()
-  await page.getByRole("option", { name: /Bay Coffee/ }).click()
+  await page.getByRole("option", { name: new RegExp(longMerchantName) }).click()
   await expect(titles).toHaveText(["Cedar Mug"])
-  await search.fill("coffee")
+  await search.fill("representation")
   // Merchant names are searchable, and the selected merchant narrows results.
   await expect(titles).toHaveText(["Blue Tote", "Cedar Mug"])
   await search.fill("no matching item")
@@ -2015,7 +2045,7 @@ test("event catalog shops products by search, merchant, and sort before technica
   await expect(
     page.getByRole("button", { name: "By merchant", exact: true })
   ).toHaveAttribute("aria-pressed", "true")
-  for (const name of ["Alpine Goods", "Bay Coffee"]) {
+  for (const name of ["Alpine Goods", longMerchantName]) {
     const heading = page.getByRole("heading", { name, exact: true })
     await expect(heading).toBeVisible()
     await expect(heading.locator("..")).toContainText("2 products")
@@ -2111,6 +2141,26 @@ test("event catalog shops products by search, merchant, and sort before technica
       .click()
     await expect(titles).toHaveText(productSpecs.map((spec) => spec.title))
     await expect(technicalDetails).not.toHaveAttribute("open", "")
+    const collapsedHandler = cards
+      .nth(1)
+      .getByTitle(`Handled by ${longMerchantName}`)
+    const handlerSize = await collapsedHandler.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      whiteSpace: getComputedStyle(element).whiteSpace,
+    }))
+    expect(handlerSize.clientWidth).toBeGreaterThan(0)
+    expect(handlerSize.scrollWidth).toBeGreaterThan(handlerSize.clientWidth)
+    expect(handlerSize.whiteSpace).toBe("nowrap")
+    const pickupSummaryHeights = await cards
+      .locator("details > summary")
+      .evaluateAll((summaries) =>
+        summaries.map((summary) => summary.getBoundingClientRect().height)
+      )
+    expect(Math.max(...pickupSummaryHeights)).toBeCloseTo(
+      Math.min(...pickupSummaryHeights),
+      0
+    )
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }))
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0)
     const layout = await page.evaluate(() => ({
@@ -2133,6 +2183,28 @@ test("event catalog shops products by search, merchant, and sort before technica
   await expect(
     technicalDetails.getByText("Product list", { exact: true })
   ).toBeVisible()
+  await expect(
+    technicalDetails.getByText("Event organizer", { exact: true })
+  ).toBeVisible()
+  const organizerNpub = nip19.npubEncode(ORGANIZER_PUBKEY)
+  await expect(
+    technicalDetails.locator(`a[href="/u/${organizerNpub}"]`)
+  ).toBeVisible()
+  await expect(
+    technicalDetails.getByText("Event catalog naddr", { exact: true })
+  ).toBeVisible()
+  await technicalDetails
+    .getByRole("button", { name: "Copy event catalog naddr", exact: true })
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __eventCatalogCopiedValue?: string })
+            .__eventCatalogCopiedValue
+      )
+    )
+    .toBe(market.canonicalNaddr)
 })
 
 test("Market Events browses the same perspective on desktop, mobile, and keyboard @market", async ({

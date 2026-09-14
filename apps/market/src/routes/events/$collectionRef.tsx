@@ -10,7 +10,6 @@ import {
 import { createFileRoute } from "@tanstack/react-router"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
-  formatNpub,
   buildMarketEventCatalogUrl,
   useAuth,
   useConduitSession,
@@ -251,11 +250,14 @@ function EventCatalogProductCard({
       ) : handoff && handlerIdentity ? (
         <details className="group/pickup rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-xs leading-5 text-[var(--text-secondary)]">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] [&::-webkit-details-marker]:hidden">
-            <span className="min-w-0">
+            <span className="min-w-0 flex-1">
               <span className="block font-medium text-[var(--text-primary)]">
                 {handoff.label}
               </span>
-              <span className="block break-words">
+              <span
+                className="block truncate"
+                title={`Handled by ${handlerIdentity.displayName}`}
+              >
                 Handled by <EventActorName identity={handlerIdentity} />
               </span>
             </span>
@@ -272,6 +274,9 @@ function EventCatalogProductCard({
               {pickupFulfillment.option.title}
             </p>
             {pickupLocation ? <p className="mt-1">{pickupLocation}</p> : null}
+            <p className="mt-2 break-words">
+              Handled by <EventActorName identity={handlerIdentity} />
+            </p>
             <p className="mt-2">{getPickupHandoffPrivacyCopy(handoff)}</p>
             <div className="mt-2 flex justify-end">
               <EventActorProvenance
@@ -337,13 +342,19 @@ function formatCalendarSchedule(
   }
 }
 
-function shortEventId(eventId: string): string {
-  return eventId.length > 18
-    ? `${eventId.slice(0, 9)}…${eventId.slice(-7)}`
-    : eventId
+function shortTechnicalValue(value: string): string {
+  return value.length > 18 ? `${value.slice(0, 9)}…${value.slice(-7)}` : value
 }
 
-function EvidenceRow({ label, eventId }: { label: string; eventId: string }) {
+function TechnicalValueRow({
+  label,
+  value,
+  copyLabel,
+}: {
+  label: string
+  value: string
+  copyLabel: string
+}) {
   return (
     <div className="flex min-w-0 items-center justify-between gap-3 border-t border-[var(--border)] py-3 first:border-t-0">
       <div className="min-w-0">
@@ -351,14 +362,10 @@ function EvidenceRow({ label, eventId }: { label: string; eventId: string }) {
           {label}
         </div>
         <div className="mt-1 truncate font-mono text-xs text-[var(--text-secondary)]">
-          {shortEventId(eventId)}
+          {shortTechnicalValue(value)}
         </div>
       </div>
-      <CopyButton
-        value={eventId}
-        npub={false}
-        label={`Copy ${label} event id`}
-      />
+      <CopyButton value={value} npub={false} label={copyLabel} />
     </div>
   )
 }
@@ -779,11 +786,13 @@ function EventCatalogPage() {
             <h2 className="text-balance font-medium text-[var(--text-primary)]">
               Organizer identity
             </h2>
-            <div className="mt-2 flex min-w-0 items-center gap-2">
-              <span className="truncate font-mono text-xs">
-                {formatNpub(organizerPubkey, 10)}
-              </span>
-              <CopyButton value={organizerPubkey} label="Copy organizer npub" />
+            <div className="mt-2 min-w-0">
+              <EventActorName identity={organizerIdentity} className="block" />
+              <EventActorProvenance
+                pubkey={organizerPubkey}
+                copyLabel="Copy organizer npub"
+                className="mt-1 flex text-xs"
+              />
             </div>
             <p className="mt-2 max-w-3xl text-pretty text-xs leading-5">
               This is the account that published the event. Each pickup option
@@ -813,25 +822,34 @@ function EventCatalogPage() {
             className="max-h-80 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4"
             tabIndex={0}
             role="region"
-            aria-label="Published event records"
+            aria-label="Published event records and catalog reference"
           >
-            <EvidenceRow label="Event details" eventId={calendar.eventId} />
-            <EvidenceRow label="Product list" eventId={collection.eventId} />
+            <TechnicalValueRow
+              label="Event details"
+              value={calendar.eventId}
+              copyLabel="Copy Event details event id"
+            />
+            <TechnicalValueRow
+              label="Product list"
+              value={collection.eventId}
+              copyLabel="Copy Product list event id"
+            />
             {pickups.map((pickup) => (
-              <EvidenceRow
+              <TechnicalValueRow
                 key={pickup.coordinate}
                 label={`Pickup: ${pickup.title}`}
-                eventId={pickup.eventId}
+                value={pickup.eventId}
+                copyLabel={`Copy Pickup: ${pickup.title} event id`}
               />
             ))}
+            {catalog.canonicalNaddr ? (
+              <TechnicalValueRow
+                label="Event catalog naddr"
+                value={catalog.canonicalNaddr}
+                copyLabel="Copy event catalog naddr"
+              />
+            ) : null}
           </div>
-          {catalog.canonicalNaddr ? (
-            <CopyButton
-              value={catalog.canonicalNaddr}
-              npub={false}
-              label="Copy canonical event link"
-            />
-          ) : null}
         </div>
       </details>
     </div>
