@@ -4022,12 +4022,15 @@ function getProductLookupIds(productId: string): {
 function findProductDetailRecord(
   records: CommerceProductRecord[],
   lookupIds: string[],
-  includeMarketHidden?: boolean
+  includeMarketHidden?: boolean,
+  preparedRecords?: CommerceProductRecord[]
 ): CommerceProductRecord | null {
-  const prepared = filterProductRecordsForRead(records, {
-    includeMarketHidden,
-    groupVariations: true,
-  })
+  const prepared =
+    preparedRecords ??
+    filterProductRecordsForRead(records, {
+      includeMarketHidden,
+      groupVariations: true,
+    })
   const target =
     records.find(
       (item) =>
@@ -5563,6 +5566,60 @@ export async function getCachedProductDetail(
   )
   return {
     data: withProductFamilyRecordReadEvidence(record, meta),
+    meta,
+  }
+}
+
+/** Read one cached catalog batch for exact coordinates without relay I/O.
+ * Retained records carry stale evidence; callers must not authorize purchases
+ * from this projection. The same deletion and family safety rules as cached
+ * product detail apply, with a single author-scoped storage read.
+ */
+export async function getCachedProductsByIds(
+  productIds: readonly string[],
+  options: CachedProductReadOptions = { includeStale: true }
+): Promise<CommerceResult<CommerceProductRecord[]>> {
+  const lookups = productIds.map(getProductLookupIds)
+  const authors = uniqueStrings(
+    lookups.flatMap(({ address }) =>
+      address?.kind === EVENT_KINDS.PRODUCT ? [address.pubkey] : []
+    )
+  )
+  const cached =
+    authors.length > 0
+      ? await getCachedProductRecords(
+          undefined,
+          { ...options, includeMarketHidden: true },
+          authors
+        )
+      : []
+  const prepared = filterProductRecordsForRead(cached, {
+    includeMarketHidden: options.includeMarketHidden,
+    groupVariations: true,
+  })
+  const records = new Map<string, CommerceProductRecord>()
+  for (const { decodedId, addressId } of lookups) {
+    const record = findProductDetailRecord(
+      cached,
+      [decodedId, addressId].filter((id): id is string => !!id),
+      options.includeMarketHidden,
+      prepared
+    )
+    if (record) records.set(record.addressId, record)
+  }
+  const meta = createMeta(
+    "product_detail",
+    "local_cache",
+    PRODUCT_CAPABILITIES,
+    {
+      stale: true,
+      degraded: true,
+    }
+  )
+  return {
+    data: [...records.values()].map((record) =>
+      withProductFamilyRecordReadEvidence(record, meta)!
+    ),
     meta,
   }
 }

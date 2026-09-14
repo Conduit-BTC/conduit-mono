@@ -9,9 +9,14 @@ export function getEventCatalogCartAction(input: {
   state: EventCatalog["state"]
   purchaseReady: boolean
   hasPickupFulfillment: boolean
+  isChecking?: boolean
 }): EventCatalogCartAction {
   if (input.state === "ended") {
     return { enabled: false, disabledLabel: "Event ended" }
+  }
+
+  if (input.isChecking) {
+    return { enabled: false, disabledLabel: "Checking pickup…" }
   }
 
   if (!input.hasPickupFulfillment) {

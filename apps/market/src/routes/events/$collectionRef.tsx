@@ -14,7 +14,6 @@ import { createFileRoute } from "@tanstack/react-router"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   formatNpub,
-  prepareProductCatalog,
   useAuth,
   useConduitSession,
   useProfile,
@@ -85,6 +84,7 @@ function EventCatalogProductCard({
   entry,
   catalog,
   purchaseReady,
+  isChecking,
   identity,
   organizerIdentity,
   imageLoading,
@@ -95,6 +95,7 @@ function EventCatalogProductCard({
   entry: EventCatalog["products"][number]
   catalog: EventCatalog
   purchaseReady: boolean
+  isChecking: boolean
   identity: ReturnType<ReturnType<typeof useMerchantIdentities>["getIdentity"]>
   organizerIdentity: EventActorIdentityView
   imageLoading: "eager" | "lazy"
@@ -104,18 +105,9 @@ function EventCatalogProductCard({
 }) {
   const cart = useCart()
   const { product } = entry
-  const authorizedFamily = useMemo(() => {
-    if (!entry.family) return undefined
-    const authorizedChildren = entry.family.children.filter(
-      (child) => entry.familyPickupFulfillments?.[child.product.id]
-    )
-    const prepared = prepareProductCatalog(
-      [entry.family.parent, ...authorizedChildren],
-      entry.family.readEvidence
-    ).items[0]
-    return prepared?.kind === "family" ? prepared.family : undefined
-  }, [entry.family, entry.familyPickupFulfillments])
-  const family = authorizedFamily
+  // The adapter has already applied listing and membership safety. Keep the
+  // display family intact while exact child pickup authorization is checked.
+  const family = entry.family
   const defaultSelection = useMemo(
     () => getDefaultProductSelection(product, family),
     [family, product]
@@ -165,12 +157,18 @@ function EventCatalogProductCard({
     state: catalog.state,
     purchaseReady,
     hasPickupFulfillment: pickupFulfillment !== null,
+    isChecking,
   })
   const canAdd = cartAction.enabled
 
   useEffect(() => {
-    setSelectedProductId(defaultSelection.id)
-  }, [defaultSelection.id])
+    setSelectedProductId((previous) =>
+      previous === product.id ||
+      family?.children.some((child) => child.product.id === previous)
+        ? previous
+        : defaultSelection.id
+    )
+  }, [defaultSelection.id, family, product.id])
 
   const add = (selection: Product) => {
     if (selection.id !== selectedProduct.id || !canAdd || !candidate) return
@@ -227,7 +225,12 @@ function EventCatalogProductCard({
       />
       {!pickupFulfillment ? (
         <div className="rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-          {entry.evidenceState === "retained" ? (
+          {isChecking ? (
+            <>
+              Checking the current product and pickup terms. You can browse
+              while this finishes.
+            </>
+          ) : entry.evidenceState === "retained" ? (
             <>
               Previously verified product details are shown while current relay
               evidence is unavailable. Checkout is disabled until the exact
@@ -409,6 +412,7 @@ function EventCatalogPage() {
   const [cartNotice, setCartNotice] = useState<string | null>(null)
   const query = useEventMarket(collectionRef, shopperPricing.quote)
   const catalog = query.data
+  const isChecking = query.isHydrating
   const organizerPubkey = catalog?.organizerPubkey ?? ""
   const authenticatedPubkey =
     session.mode === "signed_in" ? session.pubkey : null
@@ -447,7 +451,16 @@ function EventCatalogPage() {
     relayHintsByPubkey: {},
   })
 
-  if (!session.relaySettingsReady || query.isLoading) {
+  const awaitingHeader =
+    isChecking &&
+    catalog &&
+    ["partial", "stale", "unavailable"].includes(catalog.state) &&
+    (!catalog.calendar || !catalog.collection)
+  if (
+    !session.relaySettingsReady ||
+    (!catalog && query.isInitialLoading) ||
+    awaitingHeader
+  ) {
     return (
       <div className="mx-auto max-w-6xl animate-pulse space-y-5">
         <div className="h-8 w-48 rounded bg-[var(--surface-elevated)]" />
@@ -463,7 +476,7 @@ function EventCatalogPage() {
     )
   }
 
-  if (query.isError || !catalog) {
+  if (!catalog) {
     return (
       <StatePanel
         copy={getEventCatalogStateCopy("unavailable")!}
@@ -508,17 +521,21 @@ function EventCatalogPage() {
   }
 
   const eventPickupSummary =
-    catalog.pickupCoordinate && !catalog.pickup
-      ? "Organizer handoff details are unresolved."
-      : pickups.length === 0
-        ? "Organizer handoff is not offered. Accepted merchants may provide their own pickup point."
-        : pickups.length === 1
-          ? [pickups[0]!.title, pickups[0]!.location ?? pickups[0]!.geohash]
-              .filter(Boolean)
-              .join(" / ")
-          : `${pickups.length} pickup options; each product shows who handles it.`
+    isChecking && !catalog.pickup
+      ? "Checking pickup options…"
+      : catalog.pickupCoordinate && !catalog.pickup
+        ? "Organizer handoff details are unresolved."
+        : pickups.length === 0
+          ? "Organizer handoff is not offered. Accepted merchants may provide their own pickup point."
+          : pickups.length === 1
+            ? [pickups[0]!.title, pickups[0]!.location ?? pickups[0]!.geohash]
+                .filter(Boolean)
+                .join(" / ")
+            : `${pickups.length} pickup options; each product shows who handles it.`
   const eventLocations = calendar.locations.filter(Boolean)
   const calendarLocation = eventLocations.join(" · ")
+  const displayedProductCount =
+    catalog.listedProductCount ?? catalog.acceptedProductCount
   const archived = catalog.state === "ended"
   const actionability = getEventActionabilityPresentation({
     state: catalog.state,
@@ -529,7 +546,21 @@ function EventCatalogPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
-      {stateCopy ? (
+      {isChecking ? (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="event-refresh-status"
+          className="flex items-center gap-2 text-sm text-[var(--text-secondary)]"
+        >
+          <RefreshCw
+            className="h-4 w-4 animate-spin motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+          Refreshing event details and checking pickup…
+        </div>
+      ) : null}
+      {stateCopy && !isChecking ? (
         <div className="flex flex-col gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 sm:flex-row sm:items-center sm:justify-between">
           <div role={actionability.role}>
             <Badge variant={stateCopy.variant}>{stateCopy.title}</Badge>
@@ -564,12 +595,14 @@ function EventCatalogPage() {
         <div className="grid gap-8 p-6 sm:p-8 lg:grid-cols-[minmax(0,1fr)_20rem]">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={actionability.tone}>{actionability.label}</Badge>
+              <Badge variant={isChecking ? "secondary" : actionability.tone}>
+                {isChecking ? "Checking pickup…" : actionability.label}
+              </Badge>
               <Badge variant="outline" className="gap-1.5">
                 <Radio className="h-3.5 w-3.5" /> Published by organizer
               </Badge>
             </div>
-            {!actionability.prominent ? (
+            {!isChecking && !actionability.prominent ? (
               <p
                 className="mt-3 text-pretty text-sm font-medium text-[var(--text-secondary)]"
                 role={actionability.role}
@@ -728,12 +761,13 @@ function EventCatalogPage() {
             </p>
           </div>
           <Badge variant="outline">
-            {catalog.acceptedProductCount} product
-            {catalog.acceptedProductCount === 1 ? "" : "s"}
+            {isChecking
+              ? "Updating products…"
+              : `${displayedProductCount} product${displayedProductCount === 1 ? "" : "s"}`}
           </Badge>
         </div>
 
-        {catalog.productReadState !== "ready" ? (
+        {!isChecking && catalog.productReadState !== "ready" ? (
           <div
             role="status"
             className="mt-5 rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
@@ -754,7 +788,18 @@ function EventCatalogPage() {
           </div>
         ) : null}
 
-        {catalog.acceptedProductCount === 0 ? (
+        {isChecking && catalog.products.length === 0 ? (
+          <div
+            className={`mt-6 ${PRODUCT_GRID_CLASS_NAME}`}
+            aria-label="Loading event products"
+            aria-busy="true"
+          >
+            {[0, 1, 2, 3].map((index) => (
+              <ProductGridCardSkeleton key={index} />
+            ))}
+          </div>
+        ) : catalog.acceptedProductCount === 0 &&
+          catalog.products.length === 0 ? (
           <div className="mt-6 rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-8 text-center text-sm leading-6 text-[var(--text-secondary)]">
             The organizer has not accepted any products for this event.
           </div>
@@ -769,7 +814,10 @@ function EventCatalogPage() {
                   <EventCatalogProductCard
                     entry={entry}
                     catalog={catalog}
-                    purchaseReady={!archived && catalog.purchaseReady}
+                    purchaseReady={
+                      !archived && !isChecking && catalog.purchaseReady
+                    }
+                    isChecking={isChecking}
                     identity={identity}
                     organizerIdentity={organizerIdentity}
                     imageLoading={index < 3 ? "eager" : "lazy"}
@@ -780,21 +828,32 @@ function EventCatalogPage() {
                 </li>
               )
             })}
-            {catalog.unresolvedProductCoordinates.map((coordinate) => (
-              <li
-                key={coordinate}
-                className="min-w-0 rounded-xl border border-dashed border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-5 text-sm leading-6 text-[var(--text-secondary)]"
-              >
-                <div className="font-medium text-[var(--text-primary)]">
-                  Accepted product details temporarily unavailable
-                </div>
-                <p className="mt-2">
-                  The organizer's acceptance is still recorded, but no safe
-                  product details are available to show yet. Checkout remains
-                  disabled for this item.
-                </p>
-              </li>
-            ))}
+            {catalog.unresolvedProductCoordinates.map((coordinate) =>
+              isChecking ? (
+                <li
+                  key={coordinate}
+                  className="min-w-0"
+                  aria-label="Loading product"
+                  aria-busy="true"
+                >
+                  <ProductGridCardSkeleton />
+                </li>
+              ) : (
+                <li
+                  key={coordinate}
+                  className="min-w-0 rounded-xl border border-dashed border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-5 text-sm leading-6 text-[var(--text-secondary)]"
+                >
+                  <div className="font-medium text-[var(--text-primary)]">
+                    Accepted product details temporarily unavailable
+                  </div>
+                  <p className="mt-2">
+                    The organizer's acceptance is still recorded, but no safe
+                    product details are available to show yet. Checkout remains
+                    disabled for this item.
+                  </p>
+                </li>
+              )
+            )}
           </ul>
         )}
       </section>

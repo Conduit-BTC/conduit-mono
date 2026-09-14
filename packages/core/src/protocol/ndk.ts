@@ -60,6 +60,8 @@ export interface FetchEventsFanoutOptions {
   skipHealthFilter?: boolean
   reuseRelayConnections?: boolean
   signal?: AbortSignal
+  /** Cumulative verified observations after each relay finishes; not final coverage. */
+  onProgress?: (result: FetchEventsFanoutResult) => void
 }
 
 export interface FetchEventsFanoutProgress {
@@ -1268,11 +1270,13 @@ export async function fetchEventsFanoutDetailed(
       ? new Map<string, RelayConnection>()
       : relayConnections
 
+  const progressEvents = new Map<string, NDKEvent>()
+  const progressRelays: FetchEventsRelayStatus[] = []
   try {
     const perRelayResults = (
       await Promise.all(
-        relayUrls.map((relayUrl) =>
-          fetchEventsFromRelay(
+        relayUrls.map(async (relayUrl) => {
+          const result = await fetchEventsFromRelay(
             relayUrl,
             filter,
             connectTimeoutMs,
@@ -1280,7 +1284,29 @@ export async function fetchEventsFanoutDetailed(
             connections,
             options
           )
-        )
+          throwIfAborted(options.signal)
+          if (
+            result &&
+            options.onProgress &&
+            options.shouldContinue?.() !== false
+          ) {
+            mergeEventsInto(progressEvents, result.events)
+            progressRelays.push({
+              relayUrl: result.relayUrl,
+              status: result.status,
+              eventCount: result.events.length,
+              ...(result.rejectedEventCount > 0
+                ? { rejectedEventCount: result.rejectedEventCount }
+                : {}),
+            })
+            options.onProgress({
+              events: Array.from(progressEvents.values()),
+              relays: [...progressRelays],
+              eventsVerified: true,
+            })
+          }
+          return result
+        })
       )
     ).filter((result) => result !== null)
     throwIfAborted(options.signal)
