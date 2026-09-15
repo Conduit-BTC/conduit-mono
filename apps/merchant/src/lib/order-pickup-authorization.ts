@@ -236,8 +236,17 @@ function pickupOptionMatchesCurrentEvidence(
   snapshot: OrderPickupFulfillmentSchema["option"],
   current: NonNullable<EventMarketResolution["pickup"]>
 ): boolean {
-  const snapshotCountries = normalizedPickupCountries(snapshot.countries)
+  const snapshotCountries =
+    snapshot.countries === undefined
+      ? null
+      : normalizedPickupCountries(snapshot.countries)
   const currentCountries = normalizedPickupCountries(current.countries)
+  const countriesMatch =
+    snapshotCountries === null ||
+    (snapshotCountries.length === currentCountries.length &&
+      snapshotCountries.every(
+        (country, index) => country === currentCountries[index]
+      ))
   return (
     sameCoordinate(snapshot.coordinate, current.coordinate, [30406]) &&
     snapshot.eventId.toLowerCase() === current.eventId.toLowerCase() &&
@@ -245,10 +254,7 @@ function pickupOptionMatchesCurrentEvidence(
     snapshot.title === current.title &&
     snapshot.location === current.location &&
     snapshot.geohash?.toLowerCase() === current.geohash?.toLowerCase() &&
-    snapshotCountries.length === currentCountries.length &&
-    snapshotCountries.every(
-      (country, index) => country === currentCountries[index]
-    )
+    countriesMatch
   )
 }
 

@@ -591,6 +591,36 @@ describe("Merchant pickup order authorization", () => {
     expect(result).toMatchObject({ status: "verified" })
     expect(result.status === "verified" ? result.products : []).toHaveLength(2)
 
+    const legacyFirstSnapshot = structuredClone(firstSnapshot)
+    delete legacyFirstSnapshot.option.countries
+    expect(
+      await verify(
+        dependencies(currentMarket, currentProducts),
+        orderItems(legacyFirstSnapshot)
+      )
+    ).toMatchObject({ status: "verified" })
+
+    const presentChangedCountries = structuredClone(firstSnapshot)
+    presentChangedCountries.option.countries = ["CA"]
+    expect(
+      await verify(
+        dependencies(currentMarket, currentProducts),
+        orderItems(presentChangedCountries)
+      )
+    ).toEqual({ status: "unverified", reason: "revision_mismatch" })
+
+    const changedLegacyRevision = structuredClone(currentMarket)
+    changedLegacyRevision.pickups = [
+      { ...firstBooth, eventId: "5".repeat(64) },
+      secondBooth,
+    ]
+    expect(
+      await verify(
+        dependencies(changedLegacyRevision, currentProducts),
+        orderItems(legacyFirstSnapshot)
+      )
+    ).toEqual({ status: "unverified", reason: "revision_mismatch" })
+
     for (const changedTerms of [
       { eventId: "6".repeat(64) },
       { createdAt: secondBooth.createdAt + 1 },
