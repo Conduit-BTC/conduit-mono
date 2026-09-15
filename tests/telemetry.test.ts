@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { nip19 } from "@nostr-dev-kit/ndk"
 
 import {
   applyPlausibleInitOptions,
@@ -9,7 +10,9 @@ import {
   buildShippingPublishResultTelemetryProperties,
   buildTelemetryEventPageContext,
   buildTelemetryPageUrl,
+  buildTelemetryPageViewUrl,
   constrainOfficialBrowserTelemetryConfig,
+  encodeProductNaddr,
   getConduitPostHogConfig,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
@@ -21,6 +24,7 @@ import {
   sanitizeTelemetryEventProperties,
   sanitizePostHogCaptureEvent,
   sanitizeTelemetryPath,
+  sanitizeTelemetryPageViewPath,
   sensitiveTelemetryPropertyNames,
   type PlausibleFunction,
 } from "@conduit/core"
@@ -29,6 +33,12 @@ describe("browser telemetry", () => {
   const storePubkey =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   const storeNpub = pubkeyToNpub(storePubkey)
+  const secondStorePubkey = "f".repeat(64)
+  const secondStoreNpub = pubkeyToNpub(secondStorePubkey)
+  const productAddress = `30402:${storePubkey}:testing-digital-jxwwl7`
+  const productNaddr = encodeProductNaddr(productAddress)
+  const secondProductAddress = `30402:${storePubkey}:second-product`
+  const secondProductNaddr = encodeProductNaddr(secondProductAddress)
 
   it("is disabled by default", () => {
     const config = resolveBrowserTelemetryConfig("market", {})
@@ -166,9 +176,26 @@ describe("browser telemetry", () => {
     }
   })
 
-  it("redacts dynamic route identifiers from pageview paths", () => {
+  it("keeps only canonical public commerce identifiers in pageview paths", () => {
     expect(
-      sanitizeTelemetryPath(
+      sanitizeTelemetryPageViewPath(
+        `/products/${encodeURIComponent(productAddress)}`
+      )
+    ).toBe(`/products/${productNaddr}`)
+    expect(
+      sanitizeTelemetryPageViewPath(`/products/${productNaddr}?order=abc`)
+    ).toBe(`/products/${productNaddr}`)
+    const hintedProductNaddr = nip19.naddrEncode({
+      identifier: "testing-digital-jxwwl7",
+      kind: 30402,
+      pubkey: storePubkey,
+      relays: ["wss://relay.example"],
+    })
+    expect(
+      sanitizeTelemetryPageViewPath(`/products/${hintedProductNaddr}`)
+    ).toBe(`/products/${productNaddr}`)
+    expect(
+      sanitizeTelemetryPageViewPath(
         "/products/30402%3Amerchant%3Atesting-digital-jxwwl7?order=abc"
       )
     ).toBe("/products/:productId")
@@ -183,13 +210,45 @@ describe("browser telemetry", () => {
     expect(sanitizeTelemetryPath("/orders?order=local-secret")).toBe("/orders")
     expect(sanitizeTelemetryPath("/npub1example")).toBe("/:param")
     expect(sanitizeTelemetryPath("/lnbc123")).toBe("/:param")
+    expect(
+      sanitizeTelemetryPageViewPath(
+        `/products/${productNaddr}/unexpected-segment`
+      )
+    ).toBe("/products/:productId")
+    expect(sanitizeTelemetryPath(`/products/${productNaddr}`)).toBe(
+      "/products/:productId"
+    )
   })
 
   it("builds sanitized pageview urls for providers", () => {
     expect(
-      buildTelemetryPageUrl({
+      buildTelemetryPageViewUrl({
+        origin: "https://shop.conduit.market/",
+        pathname: `/products/${encodeURIComponent(productAddress)}`,
+      })
+    ).toBe(`https://shop.conduit.market/products/${productNaddr}`)
+    expect(
+      buildTelemetryPageViewUrl({
+        origin: "https://shop.conduit.market/",
+        pathname: `/store/${storePubkey}`,
+      })
+    ).toBe(`https://shop.conduit.market/store/${storeNpub}`)
+    expect(
+      buildTelemetryPageViewUrl({
+        origin: "https://shop.conduit.market/",
+        pathname: `/store/${secondStorePubkey}`,
+      })
+    ).toBe(`https://shop.conduit.market/store/${secondStoreNpub}`)
+    expect(
+      buildTelemetryPageViewUrl({
         origin: "https://shop.conduit.market/",
         pathname: "/products/30402:merchant:item",
+      })
+    ).toBe("https://shop.conduit.market/products/:productId")
+    expect(
+      buildTelemetryPageUrl({
+        origin: "https://shop.conduit.market/",
+        pathname: `/products/${productNaddr}`,
       })
     ).toBe("https://shop.conduit.market/products/:productId")
   })
@@ -203,6 +262,15 @@ describe("browser telemetry", () => {
     ).toEqual({
       page_path: `/store/${storeNpub}`,
       page_url: `https://shop.conduit.market/store/${storeNpub}`,
+    })
+    expect(
+      buildTelemetryEventPageContext({
+        origin: "https://shop.conduit.market/",
+        pathname: `/products/${productNaddr}`,
+      })
+    ).toEqual({
+      page_path: "/products/:productId",
+      page_url: "https://shop.conduit.market/products/:productId",
     })
   })
 
@@ -533,7 +601,7 @@ describe("browser telemetry", () => {
       location: {
         hostname: "preview.example",
         origin: "https://preview.example",
-        pathname: "/products/first",
+        pathname: `/products/${encodeURIComponent(productAddress)}`,
       },
       plausible,
     } as unknown as Window
@@ -549,20 +617,20 @@ describe("browser telemetry", () => {
 
       recordBrowserTelemetryPageView({
         app: "market",
-        pathname: "/products/first",
+        pathname: `/products/${encodeURIComponent(productAddress)}`,
       })
       recordBrowserTelemetryPageView({
         app: "market",
-        pathname: "/products/first",
+        pathname: `/products/${encodeURIComponent(productAddress)}`,
       })
       recordBrowserTelemetryPageView({
         app: "market",
-        pathname: "/products/second",
+        pathname: `/products/${encodeURIComponent(secondProductAddress)}`,
       })
 
       expect(pageUrls).toEqual([
-        "https://preview.example/products/:productId",
-        "https://preview.example/products/:productId",
+        `https://preview.example/products/${productNaddr}`,
+        `https://preview.example/products/${secondProductNaddr}`,
       ])
     } finally {
       restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
@@ -618,6 +686,120 @@ describe("browser telemetry", () => {
         surface: "cart",
       },
     })
+  })
+
+  it("keeps product attribution on pageviews but not operational events", () => {
+    const productPath = `/products/${productNaddr}`
+    const productUrl = `https://shop.conduit.market${productPath}`
+    const pageview = sanitizePostHogCaptureEvent({
+      event: "$pageview",
+      properties: {
+        $current_url: productUrl,
+        $pathname: productPath,
+        app: "market",
+        page_path: productPath,
+        page_url: productUrl,
+      },
+    })
+    expect(pageview?.properties).toMatchObject({
+      $current_url: productUrl,
+      $pathname: productPath,
+      page_path: productPath,
+      page_url: productUrl,
+    })
+
+    for (const event of [
+      {
+        event: "client_error_result",
+        properties: {
+          action: "window_error",
+          event_family: "type_error",
+          mode: "unhandled",
+          status: "failure",
+          surface: "browser",
+        },
+      },
+      {
+        event: "checkout_result",
+        properties: {
+          amount_bucket: "10k_100k_sats",
+          count_bucket: "2_3",
+          mode: "checkout",
+          network: "browser",
+          product_type: "physical",
+          rail: "nwc",
+          status: "failed",
+          surface: "checkout",
+        },
+      },
+      {
+        event: "payment_attempt_result",
+        properties: {
+          amount_bucket: "1k_10k_sats",
+          latency_bucket: "250ms_1s",
+          mode: "automatic",
+          rail: "wallet",
+          status: "success",
+        },
+      },
+      {
+        event: "product_detail_action",
+        properties: {
+          action: "view_cart",
+          product_type: "digital",
+          surface: "product_detail",
+        },
+      },
+    ]) {
+      const sanitized = sanitizePostHogCaptureEvent({
+        event: event.event,
+        properties: {
+          ...event.properties,
+          $current_url: productUrl,
+          $pathname: productPath,
+          app: "market",
+          event_name: event.event,
+          page_path: productPath,
+          page_url: productUrl,
+        },
+      })
+
+      expect(sanitized?.properties).toMatchObject({
+        $current_url: "https://shop.conduit.market/products/:productId",
+        $pathname: "/products/:productId",
+        page_path: "/products/:productId",
+        page_url: "https://shop.conduit.market/products/:productId",
+      })
+      expect(JSON.stringify(sanitized)).not.toContain(productNaddr)
+    }
+
+    for (const event of [
+      {
+        event: "$pageleave",
+        properties: { $prev_pageview_pathname: productPath },
+      },
+      {
+        event: "$web_vitals",
+        properties: { $web_vitals_LCP_value: 1_200 },
+      },
+    ]) {
+      const sanitized = sanitizePostHogCaptureEvent({
+        event: event.event,
+        properties: {
+          ...event.properties,
+          $current_url: productUrl,
+          $pathname: productPath,
+        },
+      })
+
+      expect(sanitized?.properties).toMatchObject({
+        $current_url: "https://shop.conduit.market/products/:productId",
+        $pathname: "/products/:productId",
+        page_path: "/products/:productId",
+        page_url: "https://shop.conduit.market/products/:productId",
+      })
+      expect(JSON.stringify(sanitized)).not.toContain(productNaddr)
+    }
   })
 
   it("preserves only the static anonymous PostHog ingestion fields", () => {

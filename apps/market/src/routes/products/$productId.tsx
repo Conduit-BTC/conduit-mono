@@ -25,6 +25,7 @@ import {
   ShareLinkButton,
 } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
+import { LivePresenceIndicator } from "../../components/LivePresenceIndicator"
 import {
   EventActorName,
   EventActorProvenance,
@@ -41,6 +42,7 @@ import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCar
 import { ProductVariationSelector } from "../../components/ProductVariationSelector"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
+import { useLivePresenceCount } from "../../hooks/useLivePresenceCount"
 import { useProductCartFulfillment } from "../../hooks/useProductCartFulfillment"
 import { useEventActorIdentity } from "../../hooks/useEventActorIdentity"
 import {
@@ -275,6 +277,10 @@ function ProductPage() {
         selectedProductSourceRelayUrls
       )
     : null
+  const productPresenceCount = useLivePresenceCount({
+    canonicalId: selectedProduct?.id,
+    pageType: "product",
+  })
 
   const visibleTags = useMemo(() => {
     if (!product) return []
@@ -697,6 +703,11 @@ function ProductPage() {
                     </div>
                   ) : null}
                 </div>
+
+                <LivePresenceIndicator
+                  count={productPresenceCount}
+                  pageType="product"
+                />
 
                 {family && selectedProduct ? (
                   <ProductVariationSelector
