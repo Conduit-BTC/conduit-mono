@@ -1222,10 +1222,17 @@ export async function publishPrivateMessage(
           recipientDelivery,
         })
       : undefined
+  const selfCopySessionChangedError =
+    "Sender self-copy was skipped because the signer session changed after recipient delivery."
 
   if (wrappedToSelf) {
     if (!senderRoute || senderRoute.route === "blocked") {
       selfCopyError = "Sender has no usable NIP-17 inbox relay declaration."
+    } else if (input.shouldContinue?.() === false) {
+      // The critical recipient leg is already committed. A session change must
+      // fence off the non-critical self-copy without turning the accepted
+      // message into a retryable checkout failure.
+      selfCopyError = selfCopySessionChangedError
     } else {
       try {
         try {
@@ -1252,18 +1259,26 @@ export async function publishPrivateMessage(
               : {}),
           })
         } catch (error) {
-          if (input.shouldContinue?.() === false) throw error
-          const partial = recoverPartialRelayPublishDiagnostics(error)
-          if (!partial) throw error
-          selfDelivery = partial
+          if (input.shouldContinue?.() === false) {
+            selfCopyError = selfCopySessionChangedError
+          } else {
+            const partial = recoverPartialRelayPublishDiagnostics(error)
+            if (!partial) throw error
+            selfDelivery = partial
+          }
         }
-        const summary = summarizePrivateMessageSelfDelivery(selfDelivery)
-        selfDeliveryStatus = summary.status
-        selfCopyError = summary.error
+        if (selfDelivery) {
+          const summary = summarizePrivateMessageSelfDelivery(selfDelivery)
+          selfDeliveryStatus = summary.status
+          selfCopyError = summary.error
+        }
       } catch (error) {
-        if (input.shouldContinue?.() === false) throw error
         selfCopyError =
-          error instanceof Error ? error.message : "Self-copy publish failed"
+          input.shouldContinue?.() === false
+            ? selfCopySessionChangedError
+            : error instanceof Error
+              ? error.message
+              : "Self-copy publish failed"
       }
     }
   }
