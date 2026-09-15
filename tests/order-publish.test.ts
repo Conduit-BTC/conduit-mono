@@ -334,6 +334,115 @@ describe("buyer order publishing", () => {
     expect(transportAttempts).toBe(0)
   })
 
+  it("commits one signed-in order when the signer session changes after the merchant ACK", async () => {
+    const buyerPubkey = "a".repeat(64)
+    const merchantPubkey = "b".repeat(64)
+    const merchantRelayUrl = "wss://merchant.inbox.conduit.market"
+    const buyerRelayUrl = "wss://buyer.inbox.conduit.market"
+    const signer = {
+      user: async () => ({ pubkey: buyerPubkey }),
+    }
+    const ndk = { signer }
+    let sessionCurrent = true
+    const published: string[] = []
+    let cacheAttempts = 0
+    let recipientWrapId = ""
+    let selfWrapId = ""
+    const wrapSigner = NDKPrivateKeySigner.generate()
+    const order = orderRumor({
+      pubkey: buyerPubkey,
+      tags: [
+        ["p", merchantPubkey],
+        ["type", "order"],
+        ["order", "single-order"],
+      ],
+    })
+
+    const result = await publishBuyerOrderMessage(
+      order,
+      ndk as never,
+      merchantPubkey,
+      {
+        kind: "signed_in",
+        pubkey: buyerPubkey,
+        signer: signer as never,
+      },
+      {
+        shouldContinue: () => sessionCurrent,
+        cacheBuyerOrderRumorFn: async () => {
+          cacheAttempts += 1
+          return null
+        },
+        publishPrivateMessageFn: async (input) => {
+          if (input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE) {
+            throw new Error("advisory companion skipped after session change")
+          }
+          return await publishPrivateMessage({
+            ...input,
+            recipientInboxRelays: [merchantRelayUrl],
+            senderInboxRelays: [buyerRelayUrl],
+            inspectOwnInboxReadiness: async () => ({
+              state: "ready",
+              eventId: "c".repeat(64),
+              relayUrls: [buyerRelayUrl],
+              stale: false,
+              distributionRepairable: false,
+            }),
+            giftWrapFn: (async (rumor, recipient) => {
+              const wrapped = new NDKEvent()
+              wrapped.kind = EVENT_KINDS.GIFT_WRAP
+              wrapped.created_at = 100
+              wrapped.tags = [["p", recipient.pubkey]]
+              wrapped.content = "encrypted test fixture"
+              await wrapped.sign(wrapSigner)
+              if (
+                rumor.kind === EVENT_KINDS.ORDER &&
+                recipient.pubkey === merchantPubkey
+              ) {
+                recipientWrapId = wrapped.id
+              } else if (
+                rumor.kind === EVENT_KINDS.ORDER &&
+                recipient.pubkey === buyerPubkey
+              ) {
+                selfWrapId = wrapped.id
+              }
+              return wrapped
+            }) as never,
+            publishFn: (async (event) => {
+              published.push(event.id)
+              if (event.id !== recipientWrapId) {
+                throw new Error("stale self-copy transport must not start")
+              }
+              sessionCurrent = false
+              return {
+                successfulRelayUrls: [merchantRelayUrl],
+                failedRelayUrls: [],
+              }
+            }) as never,
+          })
+        },
+      }
+    )
+
+    expect(cacheAttempts).toBe(1)
+    expect(result.orderRelayDelivery?.signedRecipientWrap.id).toBe(
+      recipientWrapId
+    )
+    expect(result.orderRelayDelivery?.relayDelivery).toEqual([
+      expect.objectContaining({
+        relayUrl: merchantRelayUrl,
+        status: "acked",
+      }),
+    ])
+    expect(result.buyerSelfCopyError).toBe(
+      "Sender self-copy was skipped because the signer session changed after recipient delivery."
+    )
+    expect(result.localCacheError).toBeNull()
+    expect(await result.companionNotification).toBe("failed")
+    expect(published[0]).toBe(recipientWrapId)
+    expect(published).not.toContain(selfWrapId)
+  })
+
   it("filters a whole-removed relay from both signed-in order sends", async () => {
     const buyerPubkey = "a".repeat(64)
     const merchantPubkey = "b".repeat(64)

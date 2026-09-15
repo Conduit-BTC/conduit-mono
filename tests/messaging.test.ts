@@ -1704,6 +1704,47 @@ describe("publishPrivateMessage", () => {
     expect(result.selfCopyError).toBe("self relay rejected")
   })
 
+  it("keeps an accepted order delivered when the signer session changes before self-copy", async () => {
+    let sessionCurrent = true
+    const published: string[] = []
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+      senderInboxRelays: ["wss://sender.inbox.conduit.market"],
+      inspectOwnInboxReadiness: readyOwnInbox,
+      shouldContinue: () => sessionCurrent,
+      giftWrapFn: (async (_rumor, recipient) =>
+        wrap(`wrap-${recipient.pubkey}`)) as never,
+      publishFn: (async (event) => {
+        published.push(event.id)
+        if (event.id !== "wrap-recipient") {
+          throw new Error("stale self-copy transport must not start")
+        }
+        sessionCurrent = false
+        return {
+          successfulRelayUrls: ["wss://recipient.inbox.conduit.market"],
+          failedRelayUrls: [],
+        }
+      }) as never,
+    })
+
+    expect(published).toEqual(["wrap-recipient"])
+    expect(result.recipientDelivery.successfulRelayUrls).toEqual([
+      "wss://recipient.inbox.conduit.market",
+    ])
+    expect(result.wrappedToRecipient.id).toBe("wrap-recipient")
+    expect(result.selfDelivery).toBeNull()
+    expect(result.selfDeliveryStatus).toBeNull()
+    expect(result.selfCopyError).toBe(
+      "Sender self-copy was skipped because the signer session changed after recipient delivery."
+    )
+  })
+
   it("delivers a validated order over the compatibility route when the recipient has no declaration", async () => {
     const publishes: Array<{ id: string; relays: readonly string[] }> = []
 
