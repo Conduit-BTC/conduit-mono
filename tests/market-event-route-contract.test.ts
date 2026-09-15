@@ -67,6 +67,23 @@ describe("Market event catalog route", () => {
     expect(route).not.toContain("pickupFulfillment ?? undefined")
   })
 
+  it("scopes in-flight pickup gating to each product card", async () => {
+    const route = await Bun.file(
+      "apps/market/src/routes/events/$collectionRef.tsx"
+    ).text()
+
+    expect(route).toContain(
+      "const isProductChecking = isChecking && pickupFulfillment === null"
+    )
+    expect(route).toContain(
+      "purchaseReady={!archived && catalog.purchaseReady}"
+    )
+    expect(route).not.toContain(
+      "purchaseReady={!archived && !isChecking && catalog.purchaseReady}"
+    )
+    expect(route).toContain("isChecking: isProductChecking")
+  })
+
   it("keeps retained acceptance visible without claiming current purchase evidence", async () => {
     const [route, adapter] = await Promise.all([
       Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),

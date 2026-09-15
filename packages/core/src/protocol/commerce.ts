@@ -310,6 +310,20 @@ export interface ProductsByIdsOptions {
    * The last callback is the final family/deletion-reconciled return value.
    */
   onProgress?: (result: ProductsByIdsResult) => void
+  /**
+   * Cumulative exact-coordinate snapshots after each author's product,
+   * variation-family, and deletion reads have settled. Unlike `onProgress`,
+   * each included diagnostic has passed the same availability reconciliation
+   * as the completed return value and may be evaluated with
+   * `hasExactLiveProductAvailabilityEvidence`.
+   */
+  onAuthorSettled?: (result: ProductsByIdsResult) => void
+  /**
+   * Optional shared coordinator for overlapping progressive exact reads. Calls
+   * that share one coordinator cannot exceed its combined author-pipeline
+   * concurrency, including targeted follow-up reads.
+   */
+  readCoordinator?: ProductsByIdsReadCoordinator
   /** Merchant management only: bypass every Market listing-safety filter. */
   includeMarketHidden?: boolean
   /**
@@ -326,6 +340,42 @@ export interface ProductsByIdsOptions {
   authenticatedPubkey?: string | null
   /** Live account session authority for relay admission after policy awaits. */
   shouldContinue?: () => boolean
+}
+
+export interface ProductsByIdsReadCoordinator {
+  run<T>(task: () => Promise<T>): Promise<T>
+}
+
+export function createProductsByIdsReadCoordinator(
+  concurrency = PRODUCT_AUTHOR_CHUNK_CONCURRENCY
+): ProductsByIdsReadCoordinator {
+  const limit = Math.max(1, Math.floor(concurrency))
+  const pending: Array<() => void> = []
+  let active = 0
+  const advance = () => {
+    while (active < limit) {
+      const next = pending.shift()
+      if (!next) return
+      active += 1
+      next()
+    }
+  }
+  return {
+    run<T>(task: () => Promise<T>): Promise<T> {
+      return new Promise<T>((resolve, reject) => {
+        pending.push(() => {
+          void Promise.resolve()
+            .then(task)
+            .then(resolve, reject)
+            .finally(() => {
+              active -= 1
+              advance()
+            })
+        })
+        advance()
+      })
+    },
+  }
 }
 
 export interface ProfileBatchQuery {
@@ -540,6 +590,7 @@ let testOverrides: CommerceTestOverrides = {}
 let testProfileCacheWriteLock: Promise<void> = Promise.resolve()
 const volatileProductSourceRelayUrls = new Map<string, string[]>()
 const volatileProductTombstones = new Map<string, CachedProductTombstone>()
+const productAuthorityGenerationByAuthor = new Map<string, number>()
 const successfulWrapIdsByPrincipal = new Map<string, Set<string>>()
 const retryWrapsByPrincipal = new Map<
   string,
@@ -1086,6 +1137,7 @@ export function __resetCommerceTestOverrides(): void {
   testProfileCacheWriteLock = Promise.resolve()
   volatileProductSourceRelayUrls.clear()
   volatileProductTombstones.clear()
+  productAuthorityGenerationByAuthor.clear()
   successfulWrapIdsByPrincipal.clear()
   retryWrapsByPrincipal.clear()
   eventMarketInboxScanCycles.clear()
@@ -2093,6 +2145,32 @@ function selectCachedProductUpdates(
   return Array.from(changed.values())
 }
 
+function productAuthorityGeneration(author: string): number {
+  return productAuthorityGenerationByAuthor.get(author.toLowerCase()) ?? 0
+}
+
+function advanceProductAuthorityGeneration(authors: readonly string[]): void {
+  for (const author of new Set(authors.map((value) => value.toLowerCase()))) {
+    productAuthorityGenerationByAuthor.set(
+      author,
+      productAuthorityGeneration(author) + 1
+    )
+  }
+}
+
+function changedProductAuthorityAuthors(
+  rows: readonly CachedProduct[],
+  existingRows: readonly CachedProduct[]
+): string[] {
+  const existingById = new Map(existingRows.map((row) => [row.id, row]))
+  return rows
+    .filter((row) => {
+      const existing = existingById.get(row.id)
+      return !!row.eventId && existing?.eventId !== row.eventId
+    })
+    .map((row) => row.pubkey)
+}
+
 async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
   if (rows.length === 0) return
 
@@ -2102,20 +2180,30 @@ async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
       : []
     const rowsToStore = selectCachedProductUpdates(rows, existingRows)
     if (rowsToStore.length === 0) return
+    const changedAuthors = changedProductAuthorityAuthors(
+      rowsToStore,
+      existingRows
+    )
+    advanceProductAuthorityGeneration(changedAuthors)
     await testOverrides.putCachedProducts(rowsToStore)
+    advanceProductAuthorityGeneration(changedAuthors)
     return
   }
 
   const ids = Array.from(new Set(rows.map((row) => row.id)))
+  let changedAuthors: string[] = []
   await db.transaction("rw", db.products, async () => {
     const existingRows = (await db.products.bulkGet(ids)).filter(
       (row): row is CachedProduct => row !== undefined
     )
     const rowsToStore = selectCachedProductUpdates(rows, existingRows)
     if (rowsToStore.length > 0) {
+      changedAuthors = changedProductAuthorityAuthors(rowsToStore, existingRows)
+      advanceProductAuthorityGeneration(changedAuthors)
       await db.products.bulkPut(rowsToStore)
     }
   })
+  advanceProductAuthorityGeneration(changedAuthors)
 }
 
 function clearPersistedVolatileProductSourceRelayUrls(
@@ -2300,6 +2388,23 @@ function selectCachedProductTombstoneUpdates(
   return Array.from(changed.values())
 }
 
+function changedProductTombstoneAuthorityAuthors(
+  rows: readonly CachedProductTombstone[],
+  existingRows: readonly CachedProductTombstone[]
+): string[] {
+  const existingById = new Map(existingRows.map((row) => [row.id, row]))
+  return rows
+    .filter((row) => {
+      const existing = existingById.get(row.id)
+      return (
+        !existing ||
+        existing.deletionEventId !== row.deletionEventId ||
+        existing.deletedAt !== row.deletedAt
+      )
+    })
+    .map((row) => row.pubkey)
+}
+
 async function storeCachedProductTombstones(
   rows: CachedProductTombstone[]
 ): Promise<void> {
@@ -2311,32 +2416,48 @@ async function storeCachedProductTombstones(
       : []
     const rowsToStore = selectCachedProductTombstoneUpdates(rows, existingRows)
     if (rowsToStore.length === 0) return
+    const changedAuthors = changedProductTombstoneAuthorityAuthors(
+      rowsToStore,
+      existingRows
+    )
+    advanceProductAuthorityGeneration(changedAuthors)
     await testOverrides.putCachedProductTombstones(rowsToStore)
+    advanceProductAuthorityGeneration(changedAuthors)
     return
   }
 
   const ids = Array.from(new Set(rows.map((row) => row.id)))
+  let changedAuthors: string[] = []
   await db.transaction("rw", db.productTombstones, async () => {
     const existingRows = (await db.productTombstones.bulkGet(ids)).filter(
       (row): row is CachedProductTombstone => row !== undefined
     )
     const rowsToStore = selectCachedProductTombstoneUpdates(rows, existingRows)
     if (rowsToStore.length > 0) {
+      changedAuthors = changedProductTombstoneAuthorityAuthors(
+        rowsToStore,
+        existingRows
+      )
+      advanceProductAuthorityGeneration(changedAuthors)
       await db.productTombstones.bulkPut(rowsToStore)
     }
   })
+  advanceProductAuthorityGeneration(changedAuthors)
 }
 
 function rememberVolatileProductTombstones(
   rows: readonly CachedProductTombstone[]
 ): void {
-  const updates = selectCachedProductTombstoneUpdates(
-    [...rows],
-    Array.from(volatileProductTombstones.values())
+  const existingRows = Array.from(volatileProductTombstones.values())
+  const updates = selectCachedProductTombstoneUpdates([...rows], existingRows)
+  const changedAuthors = changedProductTombstoneAuthorityAuthors(
+    updates,
+    existingRows
   )
   for (const row of updates) {
     volatileProductTombstones.set(row.id, row)
   }
+  advanceProductAuthorityGeneration(changedAuthors)
 }
 
 async function flushVolatileProductTombstones(): Promise<boolean> {
@@ -2920,6 +3041,12 @@ async function fetchProductDeletionTimestamps(
     shouldContinue?: () => boolean
     fetchEvents?: typeof runFetchEventsFanout
     onSkippedRelayUrls?: (relayUrls: readonly string[]) => void
+    /** Batched NIP-65 result reused by exact author pipelines. */
+    relayLists?: ReadonlyMap<string, RelayList>
+    /** Keeps nested per-author pipelines inside the shared concurrency bound. */
+    queryConcurrency?: number
+    /** Allows independent `#e` and `#a` filters to overlap within that bound. */
+    filterConcurrency?: number
   } = {}
 ): Promise<DeletionTimestamps> {
   const authors = uniqueStrings(candidates.map((candidate) => candidate.pubkey))
@@ -2927,9 +3054,23 @@ async function fetchProductDeletionTimestamps(
     return await getLocalProductDeletionTimestamps()
   }
   const authorChunks = chunkStrings(authors, PRODUCT_AUTHOR_CHUNK_SIZE)
+  const queryConcurrency = Math.max(
+    1,
+    Math.min(
+      PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+      options.queryConcurrency ?? PRODUCT_AUTHOR_CHUNK_CONCURRENCY
+    )
+  )
+  const filterConcurrency = Math.max(
+    1,
+    Math.min(
+      PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+      options.filterConcurrency ?? queryConcurrency
+    )
+  )
   const deletionEventBatches = await mapWithConcurrency(
     authorChunks,
-    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    queryConcurrency,
     async (authorChunk) => {
       const authorSet = new Set(authorChunk)
       const chunkCandidates = candidates.filter((candidate) =>
@@ -2970,6 +3111,7 @@ async function fetchProductDeletionTimestamps(
         accountPubkey: options.accountPubkey,
         maxRelays: options.readPolicy?.maxRelays,
         shouldContinue: options.shouldContinue,
+        relayLists: options.relayLists,
       })
       const authenticatedOwnerSourceRelayUrls =
         normalizeUntrustedRelayHintsForContext({
@@ -3006,7 +3148,7 @@ async function fetchProductDeletionTimestamps(
         (
           await mapWithConcurrency(
             deletionRelayBatches,
-            PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+            queryConcurrency,
             async (relayUrls) =>
               await (options.fetchEvents ?? runFetchEventsFanout)(filter, {
                 relayUrls,
@@ -3027,7 +3169,7 @@ async function fetchProductDeletionTimestamps(
         ).flat()
       const filterBatches = await mapWithConcurrency(
         filters,
-        PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+        filterConcurrency,
         fetchDeletionFilter
       )
       const chunkEvents = filterBatches.flat()
@@ -4152,7 +4294,12 @@ async function fetchVariationGroupRecords(
 async function fetchVariationGroupRecordBatch(
   targets: readonly CommerceProductRecord[],
   relayHintsByParent: ReadonlyMap<string, readonly string[]>,
-  options: ProductsByIdsOptions = {}
+  options: ProductsByIdsOptions = {},
+  execution: {
+    relayLists?: ReadonlyMap<string, RelayList>
+    unavailableAuthors?: ReadonlySet<string>
+    queryConcurrency?: number
+  } = {}
 ): Promise<{
   records: CommerceProductRecord[]
   capped: boolean
@@ -4218,10 +4365,21 @@ async function fetchVariationGroupRecordBatch(
   // Resolve NIP-65 once per transport-safe author chunk. Narrow plans below
   // reuse the combined result, avoiding both oversized author filters and one
   // relay-list network read per family.
-  const {
-    relayLists: sharedRelayLists,
-    unavailableAuthors: relayListUnavailableAuthors,
-  } = await preloadExactProductRelayLists(allAuthors, options)
+  const relayListContext = execution.relayLists
+    ? {
+        relayLists: execution.relayLists,
+        unavailableAuthors: execution.unavailableAuthors ?? new Set<string>(),
+      }
+    : await preloadExactProductRelayLists(allAuthors, options)
+  const sharedRelayLists = relayListContext.relayLists
+  const relayListUnavailableAuthors = relayListContext.unavailableAuthors
+  const queryConcurrency = Math.max(
+    1,
+    Math.min(
+      PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+      execution.queryConcurrency ?? PRODUCT_AUTHOR_CHUNK_CONCURRENCY
+    )
+  )
   const targetsByFamilyPlan = new Map<string, typeof validTargets>()
   for (const target of validTargets) {
     const key = JSON.stringify([target.author, target.plannedRelayHints])
@@ -4231,7 +4389,7 @@ async function fetchVariationGroupRecordBatch(
   }
   const plannedFamilies = await mapWithConcurrency(
     Array.from(targetsByFamilyPlan.values()),
-    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    queryConcurrency,
     async (familyTargets) => {
       if (relayListUnavailableAuthors.has(familyTargets[0]!.author)) {
         return { targets: familyTargets, relayPlan: null }
@@ -4478,7 +4636,7 @@ async function fetchVariationGroupRecordBatch(
   }
   const chunkReads = await mapWithConcurrency(
     familyReadBatches,
-    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    queryConcurrency,
     readTargets
   )
   const degradedParentAddresses = new Set(planningDegradedParentAddresses)
@@ -5000,9 +5158,7 @@ export async function getProductsByIds(
   // Checkout needs positive live evidence for the selected listing version.
   // Deletion reads preserve monotonic known evidence, but incomplete deletion
   // discovery alone is not a global absence proof and must not veto checkout.
-  let listingCoverage: ProductAvailabilityCoverage = "unavailable"
-  let deletionCoverage: ProductAvailabilityCoverage = "complete"
-  let deletionTimestamps = await getLocalProductDeletionTimestamps(
+  const deletionTimestamps = await getLocalProductDeletionTimestamps(
     undefined,
     authors
   )
@@ -5053,9 +5209,6 @@ export async function getProductsByIds(
     ).slice(0, MAX_PRODUCT_RELAY_HINTS)
   }
   const directReadTargets = Array.from(directReadTargetByAddress.values())
-  const listingCoverageByAddress = new Map<string, ProductAvailabilityCoverage>(
-    Array.from(wanted, (addressId) => [addressId, "unavailable"] as const)
-  )
   const {
     relayLists: directRelayLists,
     unavailableAuthors: relayListUnavailableAuthors,
@@ -5221,121 +5374,186 @@ export async function getProductsByIds(
     })
     return progressQueue
   }
-  const directReads = await mapWithConcurrency(
-    directReadEntries,
-    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
-    async ({ targets, relayPlan }) => {
-      const directRead = await (async () => {
-        try {
-          const author = targets[0]!.author
-          // Same-author coordinates only share a read when their complete relay
-          // plans are compatible. Distinct source perspectives remain isolated
-          // so one six-relay cap cannot discard another coordinate's only hint.
-          const knownRelayHints = normalizePublicOrIsolatedE2eRelayHints(
-            uniqueStrings(targets.flatMap((target) => target.relayHints))
-          )
-          const result = await runFetchEventsFanoutWithDiagnostics(
-            {
-              kinds: [EVENT_KINDS.PRODUCT],
-              authors: [author],
-              "#d": uniqueStrings(targets.map((target) => target.dTag)),
-            },
-            {
-              relayUrls: relayPlan.relayUrls,
-              ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-              accountPubkey: options.authenticatedPubkey,
-              authenticatedPubkey: options.authenticatedPubkey,
-              accountNetworkLocalStateRepository:
-                testOverrides.accountNetworkLocalStateRepository,
-              shouldContinue: options.shouldContinue,
-              connectTimeoutMs: 4_000,
-              fetchTimeoutMs: 8_000,
-            }
-          )
-          const consideredRelayUrls = uniqueStrings([
-            ...relayPlan.relayUrls,
-            ...relayPlan.parkedRelayUrls,
-          ])
-          const consideredRelayUrlSet = new Set(consideredRelayUrls)
-          const completeRelayHints = uniqueStrings([
-            ...knownRelayHints,
-            ...relayPlan.hintRelayUrls,
-          ])
-          return {
-            targets,
-            events: result.events,
-            capped:
-              (result.cappedRelayUrls?.length ?? 0) > 0 ||
-              completeRelayHints.some(
-                (relayUrl) => !consideredRelayUrlSet.has(relayUrl)
-              ),
-            coverageByAddress: new Map(
-              targets.map((target) => [
-                target.addressId,
-                productAvailabilityCoverageFromFanout(
-                  result,
-                  uniqueStrings([
-                    ...consideredRelayUrls,
-                    ...target.relayHints,
-                    ...relayPlan.hintRelayUrls,
-                  ])
-                ),
+  type ExactDirectRead = {
+    targets: typeof directReadTargets
+    events: NDKEvent[]
+    capped: boolean
+    coverageByAddress: Map<string, ProductAvailabilityCoverage>
+  }
+  type ExactAuthorRead = {
+    author: string
+    lookups: Array<(typeof lookups)[number]>
+    wanted: Set<string>
+    listingCoverageByAddress: Map<string, ProductAvailabilityCoverage>
+    deletionCoverage: ProductAvailabilityCoverage
+    deletionTimestamps: DeletionTimestamps
+    directReadCapped: boolean
+    groupReadCapped: boolean
+    hasCompleteLiveDirectCoverage: boolean
+    hasCompleteLiveVariationCoverage: boolean
+    merged: CommerceProductRecord[]
+    liveDirectRecords: CommerceProductRecord[]
+    liveContext: CommerceProductRecord[]
+    neededParentAddresses: Set<string>
+  }
+  type ExactReadProjection = {
+    result: ProductsByIdsResult
+    deletionTimestamps: DeletionTimestamps
+    merged: CommerceProductRecord[]
+    liveDirectRecords: CommerceProductRecord[]
+    liveContext: CommerceProductRecord[]
+    neededParentAddresses: Set<string>
+    cacheOnlySelection: boolean
+  }
+
+  const readDirectEntry = async ({
+    targets,
+    relayPlan,
+  }: (typeof directReadEntries)[number]): Promise<ExactDirectRead> => {
+    try {
+      const author = targets[0]!.author
+      // Same-author coordinates only share a read when their complete relay
+      // plans are compatible. Distinct source perspectives remain isolated so
+      // one six-relay cap cannot discard another coordinate's only hint.
+      const knownRelayHints = normalizePublicOrIsolatedE2eRelayHints(
+        uniqueStrings(targets.flatMap((target) => target.relayHints))
+      )
+      const result = await runFetchEventsFanoutWithDiagnostics(
+        {
+          kinds: [EVENT_KINDS.PRODUCT],
+          authors: [author],
+          "#d": uniqueStrings(targets.map((target) => target.dTag)),
+        },
+        {
+          relayUrls: relayPlan.relayUrls,
+          ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+          accountPubkey: options.authenticatedPubkey,
+          authenticatedPubkey: options.authenticatedPubkey,
+          accountNetworkLocalStateRepository:
+            testOverrides.accountNetworkLocalStateRepository,
+          shouldContinue: options.shouldContinue,
+          connectTimeoutMs: 4_000,
+          fetchTimeoutMs: 8_000,
+        }
+      )
+      const consideredRelayUrls = uniqueStrings([
+        ...relayPlan.relayUrls,
+        ...relayPlan.parkedRelayUrls,
+      ])
+      const consideredRelayUrlSet = new Set(consideredRelayUrls)
+      const completeRelayHints = uniqueStrings([
+        ...knownRelayHints,
+        ...relayPlan.hintRelayUrls,
+      ])
+      return {
+        targets,
+        events: result.events,
+        capped:
+          (result.cappedRelayUrls?.length ?? 0) > 0 ||
+          completeRelayHints.some(
+            (relayUrl) => !consideredRelayUrlSet.has(relayUrl)
+          ),
+        coverageByAddress: new Map(
+          targets.map((target) => [
+            target.addressId,
+            productAvailabilityCoverageFromFanout(
+              result,
+              uniqueStrings([
+                ...consideredRelayUrls,
+                ...target.relayHints,
+                ...relayPlan.hintRelayUrls,
               ])
             ),
-          }
-        } catch {
-          return {
-            targets,
-            events: [],
-            capped: false,
-            coverageByAddress: new Map<string, ProductAvailabilityCoverage>(),
-          }
-        }
-      })()
-      directReadCapped ||= directRead.capped
-      await emitDirectProgress(directRead.events)
-      return directRead
-    }
-  )
-  if (options.shouldContinue?.() === false)
-    throw new NostrSignerError("authority_changed")
-  const productEvents = directReads.flatMap((result) => result.events)
-  for (const result of directReads) {
-    directReadCapped ||= result.capped
-    for (const target of result.targets) {
-      listingCoverageByAddress.set(
-        target.addressId,
-        result.coverageByAddress.get(target.addressId) ?? "unavailable"
-      )
+          ])
+        ),
+      }
+    } catch (error) {
+      rethrowProductReadAuthorityChange(error, options.shouldContinue)
+      return {
+        targets,
+        events: [],
+        capped: false,
+        coverageByAddress: new Map<string, ProductAvailabilityCoverage>(),
+      }
     }
   }
-  listingCoverage = aggregateProductAvailabilityCoverage(
-    Array.from(listingCoverageByAddress.values())
-  )
 
-  const directRecords = (() => {
-    try {
-      return dedupeProductEvents(productEvents)
-    } catch {
-      return []
+  // The same scoped pipeline serves both modes. Aggregate callers pass every
+  // author together to retain transport-safe cross-author batching. Settled
+  // callers pass one author at a time from the bounded scheduler below.
+  const resolveScopedAuthorReads = async (
+    scopedAuthors: readonly string[],
+    queryConcurrency: number
+  ): Promise<ExactAuthorRead[]> => {
+    const scopedAuthorSet = new Set(scopedAuthors)
+    const scopedLookups = lookups.filter(
+      (lookup) => !!lookup.address && scopedAuthorSet.has(lookup.address.pubkey)
+    )
+    const scopedWanted = new Set(
+      scopedLookups
+        .map((lookup) => lookup.addressId)
+        .filter((addressId): addressId is string => !!addressId)
+    )
+    const scopedCachedByAuthors = cachedByAuthors.filter((record) =>
+      scopedAuthorSet.has(record.product.pubkey)
+    )
+    const scopedCached = scopedCachedByAuthors.filter((record) =>
+      scopedWanted.has(record.addressId)
+    )
+    const scopedListingCoverageByAddress = new Map<
+      string,
+      ProductAvailabilityCoverage
+    >(Array.from(scopedWanted, (addressId) => [addressId, "unavailable"]))
+    let scopedDeletionTimestamps = deletionTimestamps
+    const scopedDirectReadEntries = directReadEntries.filter((entry) =>
+      scopedAuthorSet.has(entry.targets[0]!.author)
+    )
+    const directReads = await mapWithConcurrency(
+      scopedDirectReadEntries,
+      queryConcurrency,
+      async (entry) => {
+        const directRead = await readDirectEntry(entry)
+        directReadCapped ||= directRead.capped
+        await emitDirectProgress(directRead.events)
+        return directRead
+      }
+    )
+    if (options.shouldContinue?.() === false) {
+      throw new NostrSignerError("authority_changed")
     }
-  })()
-  const locallyVisibleDirectRecords = filterDeletedProductRecords(
-    directRecords,
-    deletionTimestamps
-  )
-  const directTargetCandidates = mergeCachedAndLiveProductRecords({
-    cached,
-    live: locallyVisibleDirectRecords,
-    deletionTimestamps,
-  }).filter((record) => wanted.has(record.addressId))
-  const groupTargetsByParent = new Map<string, CommerceProductRecord>()
-  const groupRequestedAddressesByParent = new Map<string, Set<string>>()
-  const groupRelayHintsByParent = new Map<string, string[]>()
-  for (const target of directTargetCandidates) {
-    if (target.product.type === "simple") continue
-    const parentAddress = getVariationParentAddress(target)
-    if (parentAddress) {
+    const productEvents = directReads.flatMap((result) => result.events)
+    for (const result of directReads) {
+      for (const target of result.targets) {
+        scopedListingCoverageByAddress.set(
+          target.addressId,
+          result.coverageByAddress.get(target.addressId) ?? "unavailable"
+        )
+      }
+    }
+
+    const directRecords = (() => {
+      try {
+        return dedupeProductEvents(productEvents)
+      } catch {
+        return []
+      }
+    })()
+    const locallyVisibleDirectRecords = filterDeletedProductRecords(
+      directRecords,
+      scopedDeletionTimestamps
+    )
+    const directTargetCandidates = mergeCachedAndLiveProductRecords({
+      cached: scopedCached,
+      live: locallyVisibleDirectRecords,
+      deletionTimestamps: scopedDeletionTimestamps,
+    }).filter((record) => scopedWanted.has(record.addressId))
+    const groupTargetsByParent = new Map<string, CommerceProductRecord>()
+    const groupRequestedAddressesByParent = new Map<string, Set<string>>()
+    const groupRelayHintsByParent = new Map<string, string[]>()
+    for (const target of directTargetCandidates) {
+      if (target.product.type === "simple") continue
+      const parentAddress = getVariationParentAddress(target)
+      if (!parentAddress) continue
       const requestedAddresses =
         groupRequestedAddressesByParent.get(parentAddress) ?? new Set<string>()
       requestedAddresses.add(target.addressId)
@@ -5354,254 +5572,413 @@ export async function getProductsByIds(
         groupTargetsByParent.set(parentAddress, target)
       }
     }
-  }
-  const groupTargets = Array.from(groupTargetsByParent.values())
-  const groupRead = await fetchVariationGroupRecordBatch(
-    groupTargets,
-    groupRelayHintsByParent,
-    options
-  )
-  if (options.shouldContinue?.() === false)
-    throw new NostrSignerError("authority_changed")
-  const groupRecords = groupRead.records
-
-  if (
-    productEvents.length > 0 ||
-    groupRecords.length > 0 ||
-    cachedByAuthors.length > 0
-  ) {
-    let deletionReadAttempted = false
-    let deletionPlanSkippedRelay = false
-    const fetchDeletionEventsWithCoverage: typeof runFetchEventsFanout = async (
-      filter,
-      fetchOptions
-    ) => {
-      const result = await runFetchEventsFanoutWithDiagnostics(
-        filter,
-        fetchOptions
-      )
-      const nextCoverage = productAvailabilityCoverageFromFanout(
-        result,
-        fetchOptions?.relayUrls
-      )
-      deletionCoverage = deletionReadAttempted
-        ? mergeProductAvailabilityCoverage(deletionCoverage, nextCoverage)
-        : nextCoverage
-      deletionReadAttempted = true
-      return result.events
+    const groupTargets = Array.from(groupTargetsByParent.values())
+    const groupRead = await fetchVariationGroupRecordBatch(
+      groupTargets,
+      groupRelayHintsByParent,
+      options,
+      {
+        relayLists: directRelayLists,
+        unavailableAuthors: relayListUnavailableAuthors,
+        queryConcurrency,
+      }
+    )
+    if (options.shouldContinue?.() === false) {
+      throw new NostrSignerError("authority_changed")
     }
-    try {
-      deletionTimestamps = mergeDeletionTimestamps(
-        deletionTimestamps,
-        await fetchProductDeletionTimestamps(
-          [
-            ...productEvents.map(deletionCandidateFromEvent),
-            ...groupRecords.map(deletionCandidateFromRecord),
-            ...cachedByAuthors.map(deletionCandidateFromRecord),
-          ],
-          {
-            accountPubkey: options.authenticatedPubkey,
-            shouldContinue: options.shouldContinue,
-            fetchEvents: fetchDeletionEventsWithCoverage,
-            onSkippedRelayUrls: (relayUrls) => {
-              deletionPlanSkippedRelay ||= relayUrls.length > 0
-            },
-          }
+    const groupRecords = groupRead.records
+
+    let batchedDeletionCoverage: ProductAvailabilityCoverage = "complete"
+    if (
+      productEvents.length > 0 ||
+      groupRecords.length > 0 ||
+      scopedCachedByAuthors.length > 0
+    ) {
+      let deletionReadAttempted = false
+      let deletionPlanSkippedRelay = false
+      const fetchDeletionEventsWithCoverage: typeof runFetchEventsFanout =
+        async (filter, fetchOptions) => {
+          const result = await runFetchEventsFanoutWithDiagnostics(
+            filter,
+            fetchOptions
+          )
+          const nextCoverage = productAvailabilityCoverageFromFanout(
+            result,
+            fetchOptions?.relayUrls
+          )
+          batchedDeletionCoverage = deletionReadAttempted
+            ? mergeProductAvailabilityCoverage(
+                batchedDeletionCoverage,
+                nextCoverage
+              )
+            : nextCoverage
+          deletionReadAttempted = true
+          return result.events
+        }
+      try {
+        scopedDeletionTimestamps = mergeDeletionTimestamps(
+          scopedDeletionTimestamps,
+          await fetchProductDeletionTimestamps(
+            [
+              ...productEvents.map(deletionCandidateFromEvent),
+              ...groupRecords.map(deletionCandidateFromRecord),
+              ...scopedCachedByAuthors.map(deletionCandidateFromRecord),
+            ],
+            {
+              accountPubkey: options.authenticatedPubkey,
+              shouldContinue: options.shouldContinue,
+              fetchEvents: fetchDeletionEventsWithCoverage,
+              onSkippedRelayUrls: (relayUrls) => {
+                deletionPlanSkippedRelay ||= relayUrls.length > 0
+              },
+              relayLists: directRelayLists,
+              queryConcurrency,
+              filterConcurrency: PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+            }
+          )
         )
-      )
-      if (!deletionReadAttempted) deletionCoverage = "unavailable"
-      else if (deletionPlanSkippedRelay) {
-        deletionCoverage = mergeProductAvailabilityCoverage(
-          deletionCoverage,
-          "partial"
+        if (!deletionReadAttempted) batchedDeletionCoverage = "unavailable"
+        else if (deletionPlanSkippedRelay) {
+          batchedDeletionCoverage = mergeProductAvailabilityCoverage(
+            batchedDeletionCoverage,
+            "partial"
+          )
+        }
+      } catch (error) {
+        if (options.shouldContinue?.() === false) throw error
+        batchedDeletionCoverage = "unavailable"
+      }
+    }
+
+    const liveDirectRecords = filterDeletedProductRecords(
+      directRecords,
+      scopedDeletionTimestamps
+    )
+    const directTargets = mergeCachedAndLiveProductRecords({
+      cached: scopedCached,
+      live: liveDirectRecords,
+      deletionTimestamps: scopedDeletionTimestamps,
+    }).filter((record) => scopedWanted.has(record.addressId))
+    const visibleGroupRecords = filterDeletedProductRecords(
+      groupRecords,
+      scopedDeletionTimestamps
+    )
+    const knownRecords = filterDeletedProductRecords(
+      [...scopedCachedByAuthors, ...directTargets],
+      scopedDeletionTimestamps
+    )
+    const completeVariationCoverageByParent = new Map<string, boolean>()
+    for (const target of groupTargets) {
+      const parentAddress = getVariationParentAddress(target)
+      const complete = hasCompleteLiveVariationGroupCoverage({
+        target,
+        groupRead: {
+          degraded:
+            !parentAddress ||
+            groupRead.degradedParentAddresses.has(parentAddress) ||
+            groupRead.invalidTargetAddressIds.has(target.addressId),
+          records: visibleGroupRecords,
+        },
+        knownRecords,
+        directRecords: liveDirectRecords,
+      })
+      if (!parentAddress) continue
+      completeVariationCoverageByParent.set(parentAddress, complete)
+      if (complete) continue
+      for (const addressId of groupRequestedAddressesByParent.get(
+        parentAddress
+      ) ?? []) {
+        scopedListingCoverageByAddress.set(
+          addressId,
+          mergeProductAvailabilityCoverage(
+            scopedListingCoverageByAddress.get(addressId) ?? "unavailable",
+            "partial"
+          )
         )
       }
-    } catch (error) {
-      if (options.shouldContinue?.() === false) throw error
-      deletionCoverage = "unavailable"
     }
-  }
 
-  const liveDirectRecords = filterDeletedProductRecords(
-    directRecords,
-    deletionTimestamps
-  )
-  const liveDirectAddressIds = new Set(
-    liveDirectRecords.map((record) => record.addressId)
-  )
-  const hasCompleteLiveDirectCoverage = Array.from(wanted).every((addressId) =>
-    liveDirectAddressIds.has(addressId)
-  )
-  const directTargets = mergeCachedAndLiveProductRecords({
-    cached,
-    live: liveDirectRecords,
-    deletionTimestamps,
-  }).filter((record) => wanted.has(record.addressId))
-  const visibleGroupRecords = filterDeletedProductRecords(
-    groupRecords,
-    deletionTimestamps
-  )
-  const knownRecords = filterDeletedProductRecords(
-    [...cachedByAuthors, ...directTargets],
-    deletionTimestamps
-  )
-  const completeVariationCoverageByGroup = groupTargets.map((target) => {
-    const parentAddress = getVariationParentAddress(target)
-    return hasCompleteLiveVariationGroupCoverage({
-      target,
-      groupRead: {
-        degraded:
-          !parentAddress ||
-          groupRead.degradedParentAddresses.has(parentAddress) ||
-          groupRead.invalidTargetAddressIds.has(target.addressId),
-        records: filterDeletedProductRecords(
-          groupRead.records,
-          deletionTimestamps
-        ),
-      },
-      knownRecords,
-      directRecords: liveDirectRecords,
+    const neededParentAddresses = new Set(groupTargetsByParent.keys())
+    const cachedContext = scopedCachedByAuthors.filter(
+      (record) =>
+        scopedWanted.has(record.addressId) ||
+        neededParentAddresses.has(record.addressId) ||
+        (record.product.parentProductId
+          ? neededParentAddresses.has(record.product.parentProductId)
+          : false)
+    )
+    const liveContext = [...liveDirectRecords, ...visibleGroupRecords]
+    const merged = mergeCachedAndLiveProductRecords({
+      cached: cachedContext,
+      live: liveContext,
+      deletionTimestamps: scopedDeletionTimestamps,
     })
-  })
-  const hasCompleteLiveVariationCoverage =
-    completeVariationCoverageByGroup.every(Boolean)
-  for (
-    let index = 0;
-    index < completeVariationCoverageByGroup.length;
-    index++
-  ) {
-    if (completeVariationCoverageByGroup[index]) continue
-    const parentAddress = getVariationParentAddress(groupTargets[index]!)
-    if (!parentAddress) continue
-    for (const addressId of groupRequestedAddressesByParent.get(
-      parentAddress
-    ) ?? []) {
-      listingCoverageByAddress.set(
-        addressId,
-        mergeProductAvailabilityCoverage(
-          listingCoverageByAddress.get(addressId) ?? "unavailable",
-          "partial"
-        )
+    try {
+      await cacheProductRecords(liveContext)
+    } catch {
+      // A cache write failure must not break the availability read itself.
+    }
+    await progressQueue
+    progressiveKnownRecords = mergeCachedAndLiveProductRecords({
+      cached: progressiveKnownRecords,
+      live: merged,
+      deletionTimestamps: scopedDeletionTimestamps,
+    })
+
+    return scopedAuthors.map((author) => {
+      const authorLookups = scopedLookups.filter(
+        (lookup) => lookup.address?.pubkey === author
       )
-    }
+      const authorWanted = new Set(
+        authorLookups
+          .map((lookup) => lookup.addressId)
+          .filter((addressId): addressId is string => !!addressId)
+      )
+      const authorGroupTargets = groupTargets.filter(
+        (target) => target.product.pubkey === author
+      )
+      const authorNeededParentAddresses = new Set(
+        authorGroupTargets
+          .map(getVariationParentAddress)
+          .filter((addressId): addressId is string => !!addressId)
+      )
+      const authorLiveDirectRecords = liveDirectRecords.filter(
+        (record) => record.product.pubkey === author
+      )
+      const authorLiveContext = liveContext.filter(
+        (record) => record.product.pubkey === author
+      )
+      const authorMerged = merged.filter(
+        (record) => record.product.pubkey === author
+      )
+      const liveDirectAddressIds = new Set(
+        authorLiveDirectRecords.map((record) => record.addressId)
+      )
+      return {
+        author,
+        lookups: authorLookups,
+        wanted: authorWanted,
+        listingCoverageByAddress: new Map(
+          Array.from(authorWanted, (addressId) => [
+            addressId,
+            scopedListingCoverageByAddress.get(addressId) ?? "unavailable",
+          ])
+        ),
+        deletionCoverage: batchedDeletionCoverage,
+        deletionTimestamps: scopedDeletionTimestamps,
+        directReadCapped: directReads.some(
+          (read) =>
+            read.capped &&
+            read.targets.some((target) => target.author === author)
+        ),
+        groupReadCapped: groupRead.capped,
+        hasCompleteLiveDirectCoverage: Array.from(authorWanted).every(
+          (addressId) => liveDirectAddressIds.has(addressId)
+        ),
+        hasCompleteLiveVariationCoverage: authorGroupTargets.every((target) => {
+          const parentAddress = getVariationParentAddress(target)
+          return (
+            !!parentAddress &&
+            completeVariationCoverageByParent.get(parentAddress) === true
+          )
+        }),
+        merged: authorMerged,
+        liveDirectRecords: authorLiveDirectRecords,
+        liveContext: authorLiveContext,
+        neededParentAddresses: authorNeededParentAddresses,
+      }
+    })
   }
-  listingCoverage = aggregateProductAvailabilityCoverage(
-    Array.from(listingCoverageByAddress.values())
-  )
-  const groupReadCapped = groupRead.capped
-  const neededParentAddresses = new Set(groupTargetsByParent.keys())
-  const cachedContext = cachedByAuthors.filter(
-    (record) =>
-      wanted.has(record.addressId) ||
-      neededParentAddresses.has(record.addressId) ||
-      (record.product.parentProductId
-        ? neededParentAddresses.has(record.product.parentProductId)
-        : false)
-  )
-  const liveContext = [...liveDirectRecords, ...visibleGroupRecords]
-  const merged = mergeCachedAndLiveProductRecords({
-    cached: cachedContext,
-    live: liveContext,
-    deletionTimestamps,
-  })
-  try {
-    await cacheProductRecords(liveContext)
-  } catch {
-    // A cache write failure must not break the availability read itself.
-  }
-  const filtered = filterExactProductRecordsForRead(merged, wanted, options)
 
-  const liveByAddress = new Map(
-    liveDirectRecords.map((record) => [record.addressId, record] as const)
-  )
-  const filteredByAddress = new Map(
-    filtered.map((record) => [record.addressId, record] as const)
-  )
-  const mergedAddressIds = new Set(merged.map((record) => record.addressId))
-  const diagnostics: ProductAvailabilityDiagnostic[] = lookups.map((lookup) => {
-    const lookupListingCoverage = lookup.addressId
-      ? (listingCoverageByAddress.get(lookup.addressId) ?? "unavailable")
-      : listingCoverage
+  const authorOrder = new Map(authors.map((author, index) => [author, index]))
+  const buildProjection = (
+    reads: readonly ExactAuthorRead[],
+    scopedLookups: readonly (typeof lookups)[number][],
+    scopedWanted: ReadonlySet<string>
+  ): ExactReadProjection => {
+    const orderedReads = [...reads].sort(
+      (left, right) =>
+        (authorOrder.get(left.author) ?? 0) -
+        (authorOrder.get(right.author) ?? 0)
+    )
+    const combinedListingCoverageByAddress = new Map<
+      string,
+      ProductAvailabilityCoverage
+    >()
+    let combinedDeletionCoverage: ProductAvailabilityCoverage = "complete"
+    let combinedDeletionTimestamps = deletionTimestamps
+    const combinedMerged: CommerceProductRecord[] = []
+    const combinedLiveDirectRecords: CommerceProductRecord[] = []
+    const combinedLiveContext: CommerceProductRecord[] = []
+    const combinedNeededParentAddresses = new Set<string>()
+    for (const read of orderedReads) {
+      for (const [addressId, coverage] of read.listingCoverageByAddress) {
+        combinedListingCoverageByAddress.set(addressId, coverage)
+      }
+      combinedDeletionCoverage = mergeProductAvailabilityCoverage(
+        combinedDeletionCoverage,
+        read.deletionCoverage
+      )
+      combinedDeletionTimestamps = mergeDeletionTimestamps(
+        combinedDeletionTimestamps,
+        read.deletionTimestamps
+      )
+      combinedMerged.push(...read.merged)
+      combinedLiveDirectRecords.push(...read.liveDirectRecords)
+      combinedLiveContext.push(...read.liveContext)
+      for (const addressId of read.neededParentAddresses) {
+        combinedNeededParentAddresses.add(addressId)
+      }
+    }
+    const combinedListingCoverage = aggregateProductAvailabilityCoverage(
+      Array.from(
+        scopedWanted,
+        (addressId) =>
+          combinedListingCoverageByAddress.get(addressId) ?? "unavailable"
+      )
+    )
+    const filtered = filterExactProductRecordsForRead(
+      combinedMerged,
+      scopedWanted,
+      options
+    )
+    const liveByAddress = new Map(
+      combinedLiveDirectRecords.map(
+        (record) => [record.addressId, record] as const
+      )
+    )
+    const filteredByAddress = new Map(
+      filtered.map((record) => [record.addressId, record] as const)
+    )
+    const mergedAddressIds = new Set(
+      combinedMerged.map((record) => record.addressId)
+    )
+    const diagnostics: ProductAvailabilityDiagnostic[] = scopedLookups.map(
+      (lookup) => {
+        const lookupListingCoverage = lookup.addressId
+          ? (combinedListingCoverageByAddress.get(lookup.addressId) ??
+            "unavailable")
+          : combinedListingCoverage
+        return {
+          productId: lookup.productId,
+          addressId: lookup.addressId,
+          issue: resolveProductAvailabilityIssue({
+            addressId: lookup.addressId,
+            listingCoverage: lookupListingCoverage,
+            liveByAddress,
+            filteredByAddress,
+            mergedAddressIds,
+          }),
+          ...(lookup.addressId
+            ? {
+                coverage: {
+                  listing: lookupListingCoverage,
+                  deletion: combinedDeletionCoverage,
+                },
+              }
+            : {}),
+        }
+      }
+    )
+    const hasCompleteLiveDirectCoverage = orderedReads.every(
+      (read) => read.hasCompleteLiveDirectCoverage
+    )
+    const hasCompleteLiveVariationCoverage = orderedReads.every(
+      (read) => read.hasCompleteLiveVariationCoverage
+    )
+    const degraded =
+      combinedListingCoverage !== "complete" ||
+      combinedDeletionCoverage !== "complete" ||
+      diagnostics.some((diagnostic) => diagnostic.issue !== null) ||
+      !hasCompleteLiveDirectCoverage ||
+      !hasCompleteLiveVariationCoverage
+    const hasCacheOnlySelection = filtered.some(
+      (record) =>
+        liveByAddress.get(record.addressId)?.eventId !== record.eventId
+    )
+    const source =
+      combinedListingCoverage === "unavailable" || hasCacheOnlySelection
+        ? "local_cache"
+        : "commerce"
+    const completeLiveRead =
+      hasCompleteLiveDirectCoverage &&
+      hasCompleteLiveVariationCoverage &&
+      combinedListingCoverage === "complete" &&
+      !hasCacheOnlySelection
+    const meta = createMeta("product_detail", source, PRODUCT_CAPABILITIES, {
+      stale: !completeLiveRead,
+      degraded,
+      capped: orderedReads.some(
+        (read) => read.directReadCapped || read.groupReadCapped
+      ),
+    })
     return {
-      productId: lookup.productId,
-      addressId: lookup.addressId,
-      issue: resolveProductAvailabilityIssue({
-        addressId: lookup.addressId,
-        listingCoverage: lookupListingCoverage,
-        liveByAddress,
-        filteredByAddress,
-        mergedAddressIds,
-      }),
-      ...(lookup.addressId
-        ? {
-            coverage: {
-              listing: lookupListingCoverage,
-              deletion: deletionCoverage,
-            },
-          }
-        : {}),
+      result: {
+        data: withProductFamilyReadEvidence(filtered, meta),
+        meta,
+        diagnostics,
+      },
+      deletionTimestamps: combinedDeletionTimestamps,
+      merged: combinedMerged,
+      liveDirectRecords: combinedLiveDirectRecords,
+      liveContext: combinedLiveContext,
+      neededParentAddresses: combinedNeededParentAddresses,
+      cacheOnlySelection: hasCacheOnlySelection,
     }
-  })
-  const degraded =
-    listingCoverage !== "complete" ||
-    deletionCoverage !== "complete" ||
-    diagnostics.some((diagnostic) => diagnostic.issue !== null) ||
-    !hasCompleteLiveDirectCoverage ||
-    !hasCompleteLiveVariationCoverage
-  const hasCacheOnlySelection = filtered.some(
-    (record) => liveByAddress.get(record.addressId)?.eventId !== record.eventId
-  )
-  const source =
-    listingCoverage === "unavailable" || hasCacheOnlySelection
-      ? "local_cache"
-      : "commerce"
-  const completeLiveRead =
-    hasCompleteLiveDirectCoverage &&
-    hasCompleteLiveVariationCoverage &&
-    listingCoverage === "complete" &&
-    !hasCacheOnlySelection
-  const meta = createMeta("product_detail", source, PRODUCT_CAPABILITIES, {
-    stale: !completeLiveRead,
-    degraded,
-    capped: directReadCapped || groupReadCapped,
-  })
-
-  const result = {
-    data: withProductFamilyReadEvidence(filtered, meta),
-    meta,
-    diagnostics,
   }
-  if (options.onProgress && options.shouldContinue?.() !== false) {
+
+  const reconcileProjection = async (
+    projection: ExactReadProjection,
+    scopedAuthors: readonly string[],
+    scopedWanted: ReadonlySet<string>
+  ): Promise<ExactReadProjection> => {
+    const result: ProductsByIdsResult = {
+      ...projection.result,
+      data: [...projection.result.data],
+      diagnostics: [...projection.result.diagnostics],
+    }
     // Another read may learn a newer signed revision or deletion during this
     // batch. Never return older terms than a progressive snapshot already saw.
     const currentCached = await getCachedProductRecords(
       undefined,
       { includeStale: true, includeMarketHidden: true },
-      authors
+      scopedAuthors
     )
     const currentFrontier = mergeDeletionTimestamps(
-      deletionTimestamps,
-      await getLocalProductDeletionTimestamps(undefined, authors)
+      projection.deletionTimestamps,
+      await getLocalProductDeletionTimestamps(undefined, scopedAuthors)
     )
-    if (options.shouldContinue?.() === false)
+    if (options.shouldContinue?.() === false) {
       throw new NostrSignerError("authority_changed")
+    }
     const currentRecords = mergeCachedAndLiveProductRecords({
       cached: [],
-      live: [...merged, ...progressiveKnownRecords, ...currentCached].filter(
+      live: [
+        ...projection.merged,
+        ...progressiveKnownRecords,
+        ...currentCached,
+      ].filter(
         (record) =>
-          wanted.has(record.addressId) ||
-          neededParentAddresses.has(record.addressId) ||
+          scopedWanted.has(record.addressId) ||
+          projection.neededParentAddresses.has(record.addressId) ||
           (record.product.parentProductId
-            ? neededParentAddresses.has(record.product.parentProductId)
+            ? projection.neededParentAddresses.has(
+                record.product.parentProductId
+              )
             : false)
       ),
       deletionTimestamps: currentFrontier,
     })
-    const previousByAddress = new Map(
-      merged.map((record) => [record.addressId, record])
+    const currentLiveDirectRecords = filterDeletedProductRecords(
+      projection.liveDirectRecords,
+      currentFrontier
     )
+    const previousByAddress = new Map(
+      projection.merged.map((record) => [record.addressId, record])
+    )
+    let cacheOnlySelection = projection.cacheOnlySelection
     if (
-      currentRecords.length !== merged.length ||
+      currentRecords.length !== projection.merged.length ||
       currentRecords.some(
         (record) =>
           previousByAddress.get(record.addressId)?.eventId !== record.eventId
@@ -5611,7 +5988,7 @@ export async function getProductsByIds(
       // cards, so child withdrawals and deletions cannot remain in choices.
       const currentFiltered = filterExactProductRecordsForRead(
         currentRecords,
-        wanted,
+        scopedWanted,
         options
       )
       const currentByAddress = new Map(
@@ -5621,9 +5998,7 @@ export async function getProductsByIds(
         currentRecords.map((record) => record.addressId)
       )
       const currentLiveByAddress = new Map(
-        filterDeletedProductRecords(liveDirectRecords, currentFrontier).map(
-          (record) => [record.addressId, record]
-        )
+        currentLiveDirectRecords.map((record) => [record.addressId, record])
       )
       result.diagnostics = result.diagnostics.map((diagnostic) => ({
         ...diagnostic,
@@ -5636,7 +6011,7 @@ export async function getProductsByIds(
         }),
       }))
       const liveContextByAddress = new Map(
-        liveContext.map((record) => [record.addressId, record])
+        projection.liveContext.map((record) => [record.addressId, record])
       )
       const hasNewCacheOnlyTerms = currentFiltered.some(
         (record) =>
@@ -5648,6 +6023,7 @@ export async function getProductsByIds(
               child.eventId
           )
       )
+      cacheOnlySelection ||= hasNewCacheOnlyTerms
       result.meta = {
         ...result.meta,
         source: hasNewCacheOnlyTerms ? "local_cache" : result.meta.source,
@@ -5656,8 +6032,212 @@ export async function getProductsByIds(
       }
       result.data = withProductFamilyReadEvidence(currentFiltered, result.meta)
     }
-    options.onProgress(result)
+    return {
+      ...projection,
+      result,
+      deletionTimestamps: currentFrontier,
+      merged: currentRecords,
+      liveDirectRecords: currentLiveDirectRecords,
+      cacheOnlySelection,
+    }
   }
+
+  type ReconciledAuthorProjection = {
+    read: ExactAuthorRead
+    projection: ExactReadProjection
+    authorityGeneration: number
+  }
+  const completedAuthorProjections: ReconciledAuthorProjection[] = []
+  const reconcileAuthorProjection = async (
+    read: ExactAuthorRead
+  ): Promise<ReconciledAuthorProjection> => {
+    const projection = buildProjection([read], read.lookups, read.wanted)
+    while (true) {
+      const generationBefore = productAuthorityGeneration(read.author)
+      const reconciled = await reconcileProjection(
+        projection,
+        [read.author],
+        read.wanted
+      )
+      const generationAfter = productAuthorityGeneration(read.author)
+      if (generationBefore === generationAfter) {
+        return {
+          read,
+          projection: reconciled,
+          authorityGeneration: generationAfter,
+        }
+      }
+    }
+  }
+  const refreshChangedAuthorProjections = async (): Promise<void> => {
+    while (true) {
+      const changedIndex = completedAuthorProjections.findIndex(
+        ({ read, authorityGeneration }) =>
+          authorityGeneration !== productAuthorityGeneration(read.author)
+      )
+      if (changedIndex < 0) return
+      completedAuthorProjections[changedIndex] =
+        await reconcileAuthorProjection(
+          completedAuthorProjections[changedIndex]!.read
+        )
+    }
+  }
+  const combineSettledAuthorProjections = (
+    completed: readonly ReconciledAuthorProjection[]
+  ): ProductsByIdsResult => {
+    const ordered = [...completed].sort(
+      (left, right) =>
+        (authorOrder.get(left.read.author) ?? 0) -
+        (authorOrder.get(right.read.author) ?? 0)
+    )
+    const settledAuthors = new Set(ordered.map(({ read }) => read.author))
+    const settledLookups = lookups.filter(
+      (lookup) => !lookup.address || settledAuthors.has(lookup.address.pubkey)
+    )
+    const settledWanted = new Set(
+      settledLookups
+        .map((lookup) => lookup.addressId)
+        .filter((addressId): addressId is string => !!addressId)
+    )
+    const listingCoverageByAddress = new Map<
+      string,
+      ProductAvailabilityCoverage
+    >()
+    let deletionCoverage: ProductAvailabilityCoverage = "complete"
+    const diagnosticsByLookup = new Map<string, ProductAvailabilityDiagnostic>()
+    for (const { read, projection } of ordered) {
+      for (const [addressId, coverage] of read.listingCoverageByAddress) {
+        listingCoverageByAddress.set(addressId, coverage)
+      }
+      deletionCoverage = mergeProductAvailabilityCoverage(
+        deletionCoverage,
+        read.deletionCoverage
+      )
+      for (const diagnostic of projection.result.diagnostics) {
+        diagnosticsByLookup.set(
+          JSON.stringify([diagnostic.productId, diagnostic.addressId]),
+          diagnostic
+        )
+      }
+    }
+    const listingCoverage = aggregateProductAvailabilityCoverage(
+      Array.from(
+        settledWanted,
+        (addressId) => listingCoverageByAddress.get(addressId) ?? "unavailable"
+      )
+    )
+    const diagnostics = settledLookups.map((lookup) => {
+      if (!lookup.addressId) {
+        return {
+          productId: lookup.productId,
+          addressId: null,
+          issue: "invalid_product_reference" as const,
+        }
+      }
+      const diagnostic = diagnosticsByLookup.get(
+        JSON.stringify([lookup.productId, lookup.addressId])
+      )
+      return diagnostic
+        ? {
+            ...diagnostic,
+            coverage: diagnostic.coverage
+              ? { ...diagnostic.coverage, deletion: deletionCoverage }
+              : undefined,
+          }
+        : {
+            productId: lookup.productId,
+            addressId: lookup.addressId,
+            issue: "lookup_unavailable" as const,
+            coverage: {
+              listing:
+                listingCoverageByAddress.get(lookup.addressId) ?? "unavailable",
+              deletion: deletionCoverage,
+            },
+          }
+    })
+    const cacheOnlySelection = ordered.some(
+      ({ projection }) => projection.cacheOnlySelection
+    )
+    const completeLiveRead =
+      ordered.every(({ read }) => read.hasCompleteLiveDirectCoverage) &&
+      ordered.every(({ read }) => read.hasCompleteLiveVariationCoverage) &&
+      listingCoverage === "complete" &&
+      !cacheOnlySelection
+    const source =
+      listingCoverage === "unavailable" || cacheOnlySelection
+        ? "local_cache"
+        : "commerce"
+    const meta = createMeta("product_detail", source, PRODUCT_CAPABILITIES, {
+      stale: !completeLiveRead,
+      degraded:
+        listingCoverage !== "complete" ||
+        deletionCoverage !== "complete" ||
+        diagnostics.some((diagnostic) => diagnostic.issue !== null) ||
+        ordered.some(({ projection }) => projection.result.meta.degraded),
+      capped: ordered.some(
+        ({ read }) => read.directReadCapped || read.groupReadCapped
+      ),
+    })
+    return {
+      data: withProductFamilyReadEvidence(
+        ordered.flatMap(({ projection }) => projection.result.data),
+        meta
+      ),
+      meta,
+      diagnostics,
+    }
+  }
+  let settledProgressQueue = Promise.resolve()
+  const authorReads =
+    options.onAuthorSettled || options.readCoordinator
+      ? await mapWithConcurrency(
+          authors,
+          PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+          async (author) => {
+            const resolveAuthor = () => resolveScopedAuthorReads([author], 1)
+            const read = (
+              await (options.readCoordinator
+                ? options.readCoordinator.run(resolveAuthor)
+                : resolveAuthor())
+            )[0]!
+            if (!options.onAuthorSettled) return read
+            const emitSettled = settledProgressQueue.then(async () => {
+              if (options.shouldContinue?.() === false) return
+              completedAuthorProjections.push(
+                await reconcileAuthorProjection(read)
+              )
+              do {
+                await refreshChangedAuthorProjections()
+              } while (
+                completedAuthorProjections.some(
+                  ({ read, authorityGeneration }) =>
+                    authorityGeneration !==
+                    productAuthorityGeneration(read.author)
+                )
+              )
+              if (options.shouldContinue?.() !== false) {
+                options.onAuthorSettled?.(
+                  combineSettledAuthorProjections(completedAuthorProjections)
+                )
+              }
+            })
+            settledProgressQueue = emitSettled
+            await emitSettled
+            return read
+          }
+        )
+      : await resolveScopedAuthorReads(
+          authors,
+          PRODUCT_AUTHOR_CHUNK_CONCURRENCY
+        )
+  await progressQueue
+  await settledProgressQueue
+  if (options.shouldContinue?.() === false) {
+    throw new NostrSignerError("authority_changed")
+  }
+  const projection = buildProjection(authorReads, lookups, wanted)
+  const result = (await reconcileProjection(projection, authors, wanted)).result
+  options.onProgress?.(result)
   return result
 }
 

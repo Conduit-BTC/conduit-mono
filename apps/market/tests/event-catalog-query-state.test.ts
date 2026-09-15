@@ -360,4 +360,65 @@ describe("event catalog refresh presentation", () => {
       })
     ).toMatchObject({ isInitialLoading: true })
   })
+
+  it("permits only current-run exact product progress while the wider read continues", () => {
+    const progressive: RawEventCatalog = {
+      ...raw(),
+      complete: false,
+      actionableProductCoordinates: [productCoordinate],
+    }
+    const current = getEventCatalogQueryDisplayState({
+      data: progressive,
+      isError: false,
+      isFetching: true,
+      isPaused: false,
+      isPending: false,
+    })
+    expect(current.isHydrating).toBe(true)
+    expect(current.data?.purchaseReady).toBe(true)
+    expect(current.data?.products[0]?.pickupFulfillment).not.toBeNull()
+
+    for (const blocked of [
+      { ...progressive, actionableProductCoordinates: [] },
+      { ...progressive, complete: true },
+    ]) {
+      const retained = getEventCatalogQueryDisplayState({
+        data: blocked,
+        isError: false,
+        isFetching: true,
+        isPaused: false,
+        isPending: false,
+      })
+      expect(retained.data?.purchaseReady).toBe(false)
+      expect(retained.data?.products[0]?.pickupFulfillment).toBeNull()
+    }
+
+    const failed = getEventCatalogQueryDisplayState({
+      data: progressive,
+      isError: true,
+      isFetching: false,
+      isPaused: false,
+      isPending: false,
+    })
+    expect(failed.data?.purchaseReady).toBe(false)
+    expect(failed.data?.products[0]?.pickupFulfillment).toBeNull()
+
+    const retainedPickup = market()
+    retainedPickup.pickup = {
+      ...retainedPickup.pickup!,
+      evidenceState: "retained",
+    }
+    retainedPickup.pickups = [retainedPickup.pickup]
+    const retainedPickupProgress = getEventCatalogQueryDisplayState({
+      data: { ...progressive, resolution: retainedPickup },
+      isError: false,
+      isFetching: true,
+      isPaused: false,
+      isPending: false,
+    })
+    expect(retainedPickupProgress.data?.purchaseReady).toBe(false)
+    expect(
+      retainedPickupProgress.data?.products[0]?.pickupFulfillment
+    ).toBeNull()
+  })
 })

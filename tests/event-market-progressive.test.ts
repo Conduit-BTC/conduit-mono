@@ -22,6 +22,7 @@ import {
   type FetchEventsFanoutResult,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 
 const secret = generateSecretKey()
 const organizer = getPublicKey(secret)
@@ -347,6 +348,598 @@ describe("event market progressive browsing", () => {
     expect(pickupPending).toBe(true)
     releasePickup.resolve()
     await pending
+  })
+
+  it("emits an exact fast merchant acceptance while an unrelated merchant frontier is held", async () => {
+    install()
+    const fastSecret = generateSecretKey()
+    const slowSecret = generateSecretKey()
+    const fastPubkey = getPublicKey(fastSecret)
+    const fastPickupCoordinate = `30406:${fastPubkey}:fast-pickup`
+    const fastPickup = finalizeEvent(
+      {
+        ...buildEventMarketPickupDraft({
+          dTag: "fast-pickup",
+          title: "Fast merchant booth",
+          price: 0,
+          currency: "SATS",
+          countries: ["US"],
+          location: "Fast booth",
+        }),
+        created_at: 101,
+      },
+      fastSecret
+    )
+    const fast = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 101,
+        content: "",
+        tags: [
+          ["d", "fast-product"],
+          ["title", "Fast product"],
+          ["price", "10", "SATS"],
+          ["a", collection],
+          ["shipping_option", fastPickupCoordinate],
+        ],
+      },
+      fastSecret
+    )
+    const slow = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 101,
+        content: "",
+        tags: [
+          ["d", "slow-product"],
+          ["title", "Slow product"],
+          ["price", "20", "SATS"],
+          ["a", collection],
+          ["shipping_option", pickup],
+        ],
+      },
+      slowSecret
+    )
+    const organizerRecords = graph()
+    organizerRecords[2] = sign(
+      buildEventMarketCollectionDraft({
+        dTag: "market",
+        title: "Market catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [
+          `30402:${fast.pubkey}:fast-product`,
+          `30402:${slow.pubkey}:slow-product`,
+        ],
+      }),
+      102
+    )
+    const slowStarted = deferred()
+    const releaseSlow = deferred()
+    let fastPickupReads = 0
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)) {
+          return result(organizerRecords)
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION)) {
+          if (filter.authors?.includes(fast.pubkey)) {
+            fastPickupReads++
+            return result([fastPickup])
+          }
+          return result([organizerRecords[1]!])
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          if (filter["#a"]) return result([fast, slow])
+          if (filter.authors?.includes(slow.pubkey)) {
+            slowStarted.resolve()
+            await releaseSlow.promise
+            return result([slow])
+          }
+          if (filter.authors?.includes(fast.pubkey)) return result([fast])
+        }
+        return result([])
+      },
+    })
+    const progress: EventMarketResolution[] = []
+    let finished = false
+    const pending = getEventMarket({
+      reference: collection,
+      nowMs,
+      onProgress: (snapshot) => progress.push(snapshot),
+    }).then((resolution) => {
+      finished = true
+      return resolution
+    })
+    await slowStarted.promise
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const whileSlowIsHeld = progress.find((snapshot) =>
+      snapshot.acceptedProductCoordinates.includes(
+        `30402:${fast.pubkey}:fast-product`
+      )
+    )
+    expect(finished).toBe(false)
+    expect(whileSlowIsHeld?.state).toBe("partial")
+    expect(whileSlowIsHeld?.acceptedProductCoordinates).toEqual([
+      `30402:${fast.pubkey}:fast-product`,
+    ])
+    expect(whileSlowIsHeld?.organizerOnlyProductCoordinates).toEqual([
+      `30402:${slow.pubkey}:slow-product`,
+    ])
+    expect(
+      whileSlowIsHeld?.pickups.find(
+        (candidate) => candidate.coordinate === fastPickupCoordinate
+      )?.evidenceState
+    ).toBe("live")
+    expect(whileSlowIsHeld?.acceptedProductEvidence[0]).toMatchObject({
+      fulfillmentStatus: "resolved",
+      pickupCoordinate: fastPickupCoordinate,
+      handoffMode: "merchant_handoff",
+    })
+
+    releaseSlow.resolve()
+    expect((await pending).acceptedProductCoordinates.sort()).toEqual(
+      [
+        `30402:${fast.pubkey}:fast-product`,
+        `30402:${slow.pubkey}:slow-product`,
+      ].sort()
+    )
+    expect(fastPickupReads).toBe(1)
+  })
+
+  it("authorizes an organizer-listed merchant while broad request discovery is held", async () => {
+    install()
+    const merchantSecret = generateSecretKey()
+    const merchantPubkey = getPublicKey(merchantSecret)
+    const merchantPickupCoordinate = `30406:${merchantPubkey}:merchant-pickup`
+    const merchantPickup = finalizeEvent(
+      {
+        ...buildEventMarketPickupDraft({
+          dTag: "merchant-pickup",
+          title: "Merchant booth",
+          price: 0,
+          currency: "SATS",
+          countries: ["US"],
+          location: "Merchant booth",
+        }),
+        created_at: 101,
+      },
+      merchantSecret
+    )
+    const product = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 101,
+        content: "",
+        tags: [
+          ["d", "listed-product"],
+          ["title", "Listed product"],
+          ["price", "10", "SATS"],
+          ["a", collection],
+          ["shipping_option", merchantPickupCoordinate],
+        ],
+      },
+      merchantSecret
+    )
+    const pendingSecret = generateSecretKey()
+    const pendingPubkey = getPublicKey(pendingSecret)
+    const pendingProduct = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 101,
+        content: "",
+        tags: [
+          ["d", "pending-product"],
+          ["title", "Pending product"],
+          ["price", "20", "SATS"],
+          ["a", collection],
+        ],
+      },
+      pendingSecret
+    )
+    const organizerRecords = graph()
+    organizerRecords[2] = sign(
+      buildEventMarketCollectionDraft({
+        dTag: "market",
+        title: "Market catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [`30402:${merchantPubkey}:listed-product`],
+      }),
+      102
+    )
+    const candidateStarted = deferred()
+    const releaseCandidate = deferred()
+    const authorized = deferred<EventMarketResolution>()
+    let listedExactReads = 0
+    let pendingExactReads = 0
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)) {
+          return result(organizerRecords)
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          if (filter["#a"]) {
+            candidateStarted.resolve()
+            await releaseCandidate.promise
+            return result([product, pendingProduct])
+          }
+          if (filter.authors?.includes(merchantPubkey)) {
+            listedExactReads++
+            return result([product])
+          }
+          if (filter.authors?.includes(pendingPubkey)) {
+            pendingExactReads++
+            return result([pendingProduct])
+          }
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION)) {
+          return filter.authors?.includes(merchantPubkey)
+            ? result([merchantPickup])
+            : result([organizerRecords[1]!])
+        }
+        return result([])
+      },
+    })
+    let finished = false
+    const pending = getEventMarket({
+      reference: collection,
+      nowMs,
+      onProgress: (snapshot) => {
+        if (
+          snapshot.acceptedProductCoordinates.includes(
+            `30402:${merchantPubkey}:listed-product`
+          )
+        ) {
+          authorized.resolve(snapshot)
+        }
+      },
+    }).then((resolution) => {
+      finished = true
+      return resolution
+    })
+
+    try {
+      await candidateStarted.promise
+      const snapshot = await Promise.race([
+        authorized.promise,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("organizer product did not progress")),
+            2_000
+          )
+        ),
+      ])
+      expect(finished).toBe(false)
+      expect(snapshot.state).toBe("partial")
+      expect(snapshot.acceptedProductCoordinates).toEqual([
+        `30402:${merchantPubkey}:listed-product`,
+      ])
+      expect(snapshot.acceptedProductEvidence[0]).toMatchObject({
+        fulfillmentStatus: "resolved",
+        pickupCoordinate: merchantPickupCoordinate,
+        handoffMode: "merchant_handoff",
+      })
+      expect(listedExactReads).toBe(1)
+      expect(pendingExactReads).toBe(0)
+    } finally {
+      releaseCandidate.resolve()
+    }
+
+    const final = await pending
+    expect(final.acceptedProductCoordinates).toEqual([
+      `30402:${merchantPubkey}:listed-product`,
+    ])
+    expect(final.participationRequests).toHaveLength(1)
+    expect(final.participationRequests[0]?.productCoordinate).toBe(
+      `30402:${pendingPubkey}:pending-product`
+    )
+    expect(listedExactReads).toBe(1)
+    expect(pendingExactReads).toBe(1)
+  })
+
+  it("reconciles a broad newer organizer-listed product from its observed relay after the early hint-capped frontier", async () => {
+    install()
+    const merchantSecret = generateSecretKey()
+    const merchantPubkey = getPublicKey(merchantSecret)
+    const productCoordinate = `30402:${merchantPubkey}:listed-product`
+    const merchantHints = Array.from(
+      { length: 8 },
+      (_, index) => `wss://relay.ditto.pub/merchant-hint-${index}`
+    )
+    const olderProduct = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 101,
+        content: "",
+        tags: [
+          ["d", "listed-product"],
+          ["title", "Older listed product"],
+          ["price", "10", "SATS"],
+          ["a", collection],
+        ],
+      },
+      merchantSecret
+    )
+    const newerProduct = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 102,
+        content: "",
+        tags: [
+          ["d", "listed-product"],
+          ["title", "Newer listed product"],
+          ["price", "10", "SATS"],
+          ["a", collection],
+        ],
+      },
+      merchantSecret
+    )
+    const organizerRecords = graph()
+    organizerRecords[2] = sign(
+      buildEventMarketCollectionDraft({
+        dTag: "market",
+        title: "Market catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [productCoordinate],
+      }),
+      103
+    )
+    const earlyExactRead = deferred()
+    const broadRead = deferred()
+    const releaseBroadRead = deferred()
+    let earlyExactReads = 0
+    let reconciledExactReads = 0
+    const resultFromRelay = (
+      events: SignedPublicNostrEvent[],
+      sourceRelayUrl: string
+    ): FetchEventsFanoutResult => ({
+      events: events.map((event) => {
+        const ndkEvent = new NDKEvent(undefined, event)
+        attachEventSourceRelayUrl(ndkEvent, sourceRelayUrl)
+        return ndkEvent
+      }),
+      relays: [
+        {
+          relayUrl: sourceRelayUrl,
+          status: "success",
+          eventCount: events.length,
+        },
+      ],
+      eventsVerified: true,
+    })
+    __setEventMarketTestOverrides({
+      getRelayLists: async (authors) =>
+        new Map(
+          authors.map((pubkey) => [
+            pubkey,
+            {
+              pubkey,
+              readRelayUrls:
+                pubkey === merchantPubkey ? merchantHints : [relay],
+              writeRelayUrls:
+                pubkey === merchantPubkey ? merchantHints : [relay],
+              eventCreatedAt: 100,
+              cachedAt: nowMs,
+            },
+          ])
+        ),
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)) {
+          return result(organizerRecords)
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          if (filter["#a"]?.includes(collection)) {
+            broadRead.resolve()
+            await releaseBroadRead.promise
+            return resultFromRelay([newerProduct], relay)
+          }
+          if (filter.authors?.includes(merchantPubkey)) {
+            if (options?.relayUrls.includes(relay)) {
+              reconciledExactReads += 1
+              return resultFromRelay([newerProduct], relay)
+            }
+            earlyExactReads += 1
+            earlyExactRead.resolve()
+            return resultFromRelay([olderProduct], merchantHints[0]!)
+          }
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION)) {
+          return result([organizerRecords[1]!])
+        }
+        return result([])
+      },
+    })
+
+    const progress: EventMarketResolution[] = []
+    const pending = getEventMarket({
+      reference: collection,
+      nowMs,
+      onProgress: (snapshot) => progress.push(snapshot),
+    })
+    await Promise.all([earlyExactRead.promise, broadRead.promise])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(earlyExactReads).toBe(1)
+    expect(
+      progress.some((snapshot) =>
+        snapshot.acceptedProductEvidence.some(
+          (evidence) => evidence.eventId === olderProduct.id
+        )
+      )
+    ).toBe(true)
+
+    releaseBroadRead.resolve()
+    const final = await pending
+
+    expect(final.acceptedProductCoordinates).toEqual([productCoordinate])
+    expect(final.acceptedProductEvidence).toMatchObject([
+      { eventId: newerProduct.id },
+    ])
+    expect(reconciledExactReads).toBe(1)
+  })
+
+  it("checks completed merchant pickups concurrently and reuses each settled read", async () => {
+    install()
+    const blockedSecret = generateSecretKey()
+    const freeSecret = generateSecretKey()
+    const blockedPubkey = getPublicKey(blockedSecret)
+    const freePubkey = getPublicKey(freeSecret)
+    const makePickup = (secret: Uint8Array, dTag: string, title: string) =>
+      finalizeEvent(
+        {
+          ...buildEventMarketPickupDraft({
+            dTag,
+            title,
+            price: 0,
+            currency: "SATS",
+            countries: ["US"],
+            location: `${title} location`,
+          }),
+          created_at: 101,
+        },
+        secret
+      )
+    const makeProduct = (
+      secret: Uint8Array,
+      dTag: string,
+      pickupCoordinate: string
+    ) =>
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.PRODUCT,
+          created_at: 101,
+          content: "",
+          tags: [
+            ["d", dTag],
+            ["title", dTag],
+            ["price", "10", "SATS"],
+            ["a", collection],
+            ["shipping_option", pickupCoordinate],
+          ],
+        },
+        secret
+      )
+    const blockedPickup = makePickup(
+      blockedSecret,
+      "blocked-pickup",
+      "Blocked booth"
+    )
+    const freePickup = makePickup(freeSecret, "free-pickup", "Free booth")
+    const blockedProduct = makeProduct(
+      blockedSecret,
+      "blocked-product",
+      `30406:${blockedPubkey}:blocked-pickup`
+    )
+    const freeProduct = makeProduct(
+      freeSecret,
+      "free-product",
+      `30406:${freePubkey}:free-pickup`
+    )
+    const organizerRecords = graph()
+    organizerRecords[2] = sign(
+      buildEventMarketCollectionDraft({
+        dTag: "market",
+        title: "Market catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [
+          `30402:${blockedPubkey}:blocked-product`,
+          `30402:${freePubkey}:free-product`,
+        ],
+      }),
+      102
+    )
+    const blockedPickupStarted = deferred()
+    const freePickupStarted = deferred()
+    const organizerPickupStarted = deferred()
+    const releaseBlockedPickup = deferred()
+    const releaseOrganizerPickup = deferred()
+    let activeMerchantPickupReads = 0
+    let maxMerchantPickupReads = 0
+    let blockedPickupReads = 0
+    let freePickupReads = 0
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)) {
+          return result(organizerRecords)
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          if (filter["#a"]) return result([blockedProduct, freeProduct])
+          if (filter.authors?.includes(blockedPubkey)) {
+            return result([blockedProduct])
+          }
+          if (filter.authors?.includes(freePubkey)) {
+            await blockedPickupStarted.promise
+            return result([freeProduct])
+          }
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION)) {
+          if (filter.authors?.includes(blockedPubkey)) {
+            blockedPickupReads++
+            activeMerchantPickupReads++
+            maxMerchantPickupReads = Math.max(
+              maxMerchantPickupReads,
+              activeMerchantPickupReads
+            )
+            blockedPickupStarted.resolve()
+            await releaseBlockedPickup.promise
+            activeMerchantPickupReads--
+            return result([blockedPickup])
+          }
+          if (filter.authors?.includes(freePubkey)) {
+            freePickupReads++
+            activeMerchantPickupReads++
+            maxMerchantPickupReads = Math.max(
+              maxMerchantPickupReads,
+              activeMerchantPickupReads
+            )
+            freePickupStarted.resolve()
+            activeMerchantPickupReads--
+            return result([freePickup])
+          }
+          organizerPickupStarted.resolve()
+          await releaseOrganizerPickup.promise
+          return result([organizerRecords[1]!])
+        }
+        return result([])
+      },
+    })
+    const progress: EventMarketResolution[] = []
+    const pending = getEventMarket({
+      reference: collection,
+      nowMs,
+      onProgress: (snapshot) => progress.push(snapshot),
+    })
+    try {
+      await organizerPickupStarted.promise
+      await blockedPickupStarted.promise
+      const freeStartedBeforeRelease = await Promise.race([
+        freePickupStarted.promise.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+      ])
+      expect(freeStartedBeforeRelease).toBe(true)
+      expect(maxMerchantPickupReads).toBe(2)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(
+        progress.some((snapshot) =>
+          snapshot.acceptedProductCoordinates.includes(
+            `30402:${freePubkey}:free-product`
+          )
+        )
+      ).toBe(true)
+    } finally {
+      releaseBlockedPickup.resolve()
+      releaseOrganizerPickup.resolve()
+    }
+    expect((await pending).acceptedProductCoordinates.sort()).toEqual(
+      [
+        `30402:${blockedPubkey}:blocked-product`,
+        `30402:${freePubkey}:free-product`,
+      ].sort()
+    )
+    expect(blockedPickupReads).toBe(1)
+    expect(freePickupReads).toBe(1)
   })
 
   it("recognizes a same-collection naddr claim without treating it as a withdrawal", async () => {

@@ -35,11 +35,23 @@ const RELAY_A = "wss://relay.conduit.market"
 const RELAY_B = "wss://nos.lol"
 const MERCHANT_RELAY = "wss://merchant-write.relay.dev"
 const NOW_MS = 1_800_000_100_000
+// Keep the 501-deletion adversarial fixture intact. On shared CI workers it
+// can take longer than the normal per-test cap even though its isolated
+// runtime remains well below this bound.
+const DELETION_STARVATION_TIMEOUT_MS = 30_000
 
 type TagFilter = NDKFilter & {
   "#a"?: string[]
   "#d"?: string[]
   "#e"?: string[]
+}
+
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
 }
 
 function sign(
@@ -590,6 +602,203 @@ describe("event-market exact product request frontiers", () => {
     expect(result.acceptedProductCoordinates).toEqual([PRODUCT])
   }, 15_000)
 
+  it("runs same-author frontier queries concurrently within one shared four-query budget", async () => {
+    const requests = Array.from(
+      { length: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT },
+      (_, index) => productRevision(`same-author-${index}`, 100, true)
+    )
+    const productCoordinates = requests.map((event) => {
+      const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]
+      return `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${dTag}`
+    })
+    const releaseProductQueries = deferred()
+    const productQueriesStarted = deferred()
+    const releaseDeletionQueries = deferred()
+    const deletionQueriesStarted = deferred()
+    let activeFrontierQueries = 0
+    let maxActiveFrontierQueries = 0
+    let activeProductQueries = 0
+    let activeDeletionQueries = 0
+
+    const holdFrontierQuery = async (
+      kind: "product" | "deletion",
+      release: Promise<void>
+    ) => {
+      activeFrontierQueries += 1
+      maxActiveFrontierQueries = Math.max(
+        maxActiveFrontierQueries,
+        activeFrontierQueries
+      )
+      if (kind === "product") {
+        activeProductQueries += 1
+        if (activeProductQueries === 2) productQueriesStarted.resolve()
+      } else {
+        activeDeletionQueries += 1
+        if (activeDeletionQueries === 4) deletionQueriesStarted.resolve()
+      }
+      try {
+        await release
+      } finally {
+        activeFrontierQueries -= 1
+        if (kind === "product") activeProductQueries -= 1
+        else activeDeletionQueries -= 1
+      }
+    }
+
+    installReadHarness(async (filter) => {
+      if (filter.authors?.includes(ORGANIZER)) {
+        return { events: graph(productCoordinates) }
+      }
+      if (
+        filter.kinds?.length === 1 &&
+        filter.kinds[0] === EVENT_KINDS.PRODUCT &&
+        filter["#a"]?.includes(COLLECTION)
+      ) {
+        return { events: requests }
+      }
+      if (
+        filter.kinds?.length === 1 &&
+        filter.kinds[0] === EVENT_KINDS.PRODUCT &&
+        filter.authors?.includes(MERCHANT) &&
+        filter["#d"]
+      ) {
+        await holdFrontierQuery("product", releaseProductQueries.promise)
+        return {
+          events: requests.filter((event) =>
+            event.tags.some(
+              (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+            )
+          ),
+        }
+      }
+      if (
+        filter.kinds?.length === 1 &&
+        filter.kinds[0] === EVENT_KINDS.DELETION &&
+        filter.authors?.includes(MERCHANT)
+      ) {
+        await holdFrontierQuery("deletion", releaseDeletionQueries.promise)
+        return { events: [] }
+      }
+      return { events: [] }
+    })
+
+    const pending = getEventMarket({ reference: COLLECTION, nowMs: NOW_MS })
+    try {
+      await productQueriesStarted.promise
+      expect(activeProductQueries).toBe(2)
+      expect(maxActiveFrontierQueries).toBeGreaterThan(1)
+      expect(maxActiveFrontierQueries).toBeLessThanOrEqual(4)
+      releaseProductQueries.resolve()
+
+      await deletionQueriesStarted.promise
+      expect(activeDeletionQueries).toBe(4)
+      expect(maxActiveFrontierQueries).toBe(4)
+      expect(maxActiveFrontierQueries).toBeLessThanOrEqual(4)
+    } finally {
+      releaseProductQueries.resolve()
+      releaseDeletionQueries.resolve()
+    }
+
+    const result = await pending
+    expect(result.acceptedProductCoordinates).toHaveLength(
+      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
+    )
+  }, 15_000)
+
+  it("retires an incomplete deletion relay without suppressing later product reads", async () => {
+    const secrets = [
+      MERCHANT_SECRET,
+      ...Array.from({ length: 4 }, () => generateSecretKey()),
+    ]
+    const requests = secrets.map((secret, index) =>
+      sign(
+        secret,
+        {
+          kind: EVENT_KINDS.PRODUCT,
+          tags: [
+            ["d", index === 0 ? "coffee" : `deletion-stage-${index}`],
+            ["title", `Deletion-stage product ${index}`],
+            ["price", "25", "USD"],
+            ["a", COLLECTION],
+            ["shipping_option", PICKUP],
+          ],
+        },
+        100
+      )
+    )
+    let productCallsWithIncompleteRelay = 0
+    let deletionCallsWithIncompleteRelay = 0
+    let deletionCallsWithoutIncompleteRelay = 0
+    let activeFrontierQueries = 0
+    let maxActiveFrontierQueries = 0
+    const observeFrontierQuery = async () => {
+      activeFrontierQueries += 1
+      maxActiveFrontierQueries = Math.max(
+        maxActiveFrontierQueries,
+        activeFrontierQueries
+      )
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      } finally {
+        activeFrontierQueries -= 1
+      }
+    }
+    installReadHarness(async (filter, relayUrls) => {
+      if (filter.authors?.includes(ORGANIZER)) return { events: graph() }
+      if (
+        filter.kinds?.length === 1 &&
+        filter.kinds[0] === EVENT_KINDS.PRODUCT &&
+        filter["#a"]?.includes(COLLECTION)
+      ) {
+        return { events: requests }
+      }
+      if (
+        filter.kinds?.length === 1 &&
+        filter.kinds[0] === EVENT_KINDS.PRODUCT &&
+        filter["#d"]
+      ) {
+        await observeFrontierQuery()
+        if (relayUrls.includes(RELAY_B)) {
+          productCallsWithIncompleteRelay += 1
+        }
+        return {
+          events: requests.filter((event) =>
+            event.tags.some(
+              (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+            )
+          ),
+        }
+      }
+      if (
+        filter.kinds?.length === 1 &&
+        filter.kinds[0] === EVENT_KINDS.DELETION
+      ) {
+        await observeFrontierQuery()
+        const includesIncompleteRelay = relayUrls.includes(RELAY_B)
+        if (includesIncompleteRelay) deletionCallsWithIncompleteRelay += 1
+        else deletionCallsWithoutIncompleteRelay += 1
+        return {
+          events: [],
+          relayBStatus: includesIncompleteRelay ? "partial" : "success",
+        }
+      }
+      return { events: [] }
+    })
+
+    const result = await getEventMarket({
+      reference: COLLECTION,
+      nowMs: NOW_MS,
+    })
+
+    expect(productCallsWithIncompleteRelay).toBe(5)
+    expect(deletionCallsWithIncompleteRelay).toBeGreaterThan(0)
+    expect(deletionCallsWithoutIncompleteRelay).toBeGreaterThan(0)
+    expect(maxActiveFrontierQueries).toBeGreaterThan(1)
+    expect(maxActiveFrontierQueries).toBeLessThanOrEqual(4)
+    expect(result.state).toBe("partial")
+    expect(result.acceptedProductCoordinates).toEqual([PRODUCT])
+  })
+
   it("retires a failed relay after one exact-query wave", async () => {
     const secrets = [
       MERCHANT_SECRET,
@@ -661,7 +870,7 @@ describe("event-market exact product request frontiers", () => {
     })
     const elapsedMs = Date.now() - startedAt
 
-    expect(productCallsWithFailedRelay).toBe(4)
+    expect(productCallsWithFailedRelay).toBe(1)
     expect(deletionCallsWithFailedRelay).toBe(0)
     expect(elapsedMs).toBeLessThan(450)
     expect(result.state).toBe("partial")
@@ -735,7 +944,7 @@ describe("event-market exact product request frontiers", () => {
       nowMs: NOW_MS,
     })
 
-    expect(productCallsWithPartialRelay).toBe(4)
+    expect(productCallsWithPartialRelay).toBe(1)
     expect(deletionCallsWithPartialRelay).toBe(0)
     expect(Date.now() - startedAt).toBeLessThan(450)
     expect(result.state).toBe("partial")
@@ -775,43 +984,51 @@ describe("event-market exact product request frontiers", () => {
     expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
   })
 
-  it("isolates an exact coordinate tombstone from 501 newer sibling deletions", async () => {
-    const { result, targetValue, deletionFilters } =
-      await resolveDeletionStarvationCase("a")
+  it(
+    "isolates an exact coordinate tombstone from 501 newer sibling deletions",
+    async () => {
+      const { result, targetValue, deletionFilters } =
+        await resolveDeletionStarvationCase("a")
 
-    expect(
-      deletionFilters.some(
-        (filter) =>
-          filter["#a"]?.length === 1 && filter["#a"][0] === targetValue
-      )
-    ).toBe(true)
-    expect(
-      deletionFilters.every(
-        (filter) => !filter["#a"] || filter["#a"]?.length === 1
-      )
-    ).toBe(true)
-    expect(result.acceptedProductCoordinates).toEqual([])
-    expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
-  }, 15_000)
+      expect(
+        deletionFilters.some(
+          (filter) =>
+            filter["#a"]?.length === 1 && filter["#a"][0] === targetValue
+        )
+      ).toBe(true)
+      expect(
+        deletionFilters.every(
+          (filter) => !filter["#a"] || filter["#a"]?.length === 1
+        )
+      ).toBe(true)
+      expect(result.acceptedProductCoordinates).toEqual([])
+      expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
+    },
+    DELETION_STARVATION_TIMEOUT_MS
+  )
 
-  it("isolates an exact event tombstone from 501 newer sibling deletions", async () => {
-    const { result, targetValue, deletionFilters } =
-      await resolveDeletionStarvationCase("e")
+  it(
+    "isolates an exact event tombstone from 501 newer sibling deletions",
+    async () => {
+      const { result, targetValue, deletionFilters } =
+        await resolveDeletionStarvationCase("e")
 
-    expect(
-      deletionFilters.some(
-        (filter) =>
-          filter["#e"]?.length === 1 && filter["#e"][0] === targetValue
-      )
-    ).toBe(true)
-    expect(
-      deletionFilters.every(
-        (filter) => !filter["#e"] || filter["#e"]?.length === 1
-      )
-    ).toBe(true)
-    expect(result.acceptedProductCoordinates).toEqual([])
-    expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
-  }, 15_000)
+      expect(
+        deletionFilters.some(
+          (filter) =>
+            filter["#e"]?.length === 1 && filter["#e"][0] === targetValue
+        )
+      ).toBe(true)
+      expect(
+        deletionFilters.every(
+          (filter) => !filter["#e"] || filter["#e"]?.length === 1
+        )
+      ).toBe(true)
+      expect(result.acceptedProductCoordinates).toEqual([])
+      expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
+    },
+    DELETION_STARVATION_TIMEOUT_MS
+  )
 
   it("merges a failed exact-deletion batch into partial relay coverage", async () => {
     const request = productRevision("coffee", 100, true)

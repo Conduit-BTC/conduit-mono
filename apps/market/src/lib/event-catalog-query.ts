@@ -47,6 +47,14 @@ export function eventCatalogQueryOptions(
     queryKey: identity.queryKey,
     queryFn: async ({ signal }) => {
       const active = () => !signal.aborted && shouldContinue()
+      // An incomplete snapshot belongs only to the invocation that emitted it.
+      // Strip its action grant synchronously before a remount/retry starts so
+      // retained progress cannot authorize while the replacement read is idle.
+      client.setQueryData<RawEventCatalog>(identity.queryKey, (current) =>
+        current && !current.complete
+          ? { ...current, actionableProductCoordinates: [] }
+          : current
+      )
       const result = await loader(identity.reference, {
         authenticatedPubkey: scope.authenticatedPubkey,
         shouldContinue: active,
@@ -65,6 +73,7 @@ export function eventCatalogQueryOptions(
     },
     staleTime: 0,
     refetchOnMount: "always",
+    refetchOnWindowFocus: false,
     retry: false,
   })
 }
