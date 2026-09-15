@@ -74,9 +74,9 @@ import {
   RotateCw,
   ShoppingBag,
 } from "lucide-react"
-import { InvoicePayment } from "../components/InvoicePayment"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CopyButton } from "../components/CopyButton"
+import { ExternalWalletPanel } from "../components/ExternalWalletPanel"
 import {
   EventActorName,
   EventActorProvenance,
@@ -640,175 +640,6 @@ function OrderTimeline({
   )
 }
 
-/** External-wallet QR fallback (CND-120): shown when payment is manual_required. */
-function ExternalWalletPanel({
-  vm,
-  onMarkPaid,
-  onBeforeInvoiceUse,
-  onPrepareMerchantInvoice,
-  merchantInvoicePrepared,
-  boundMerchantInvoiceExpiresAt,
-  busy,
-  guestSession,
-  autoDetectReceipt,
-  pricing,
-}: {
-  vm: OrderViewModel
-  onMarkPaid: () => void
-  onBeforeInvoiceUse: () => boolean
-  onPrepareMerchantInvoice: () => void
-  merchantInvoicePrepared: boolean
-  boundMerchantInvoiceExpiresAt: number | null
-  busy: boolean
-  guestSession: boolean
-  autoDetectReceipt: boolean
-  pricing: ReturnType<typeof useShopperPricing>
-}) {
-  const [nowSeconds, setNowSeconds] = useState(() =>
-    Math.floor(Date.now() / 1_000)
-  )
-  const invoice = vm.invoice
-  const merchantInvoice = vm.merchantInvoiceAction
-  const hasBoundMerchantInvoice =
-    vm.checkoutMode === "pay_later" &&
-    vm.paymentStatus === "manual_required" &&
-    !!invoice &&
-    boundMerchantInvoiceExpiresAt !== null
-  const isMerchantInvoice = !!merchantInvoice || hasBoundMerchantInvoice
-  const merchantInvoiceExpiry =
-    merchantInvoice?.expiresAt ??
-    (hasBoundMerchantInvoice ? boundMerchantInvoiceExpiresAt : null)
-  useEffect(() => {
-    if (merchantInvoiceExpiry === null) return
-    const remainingMs = merchantInvoiceExpiry * 1_000 - Date.now()
-    const timer = window.setTimeout(
-      () => setNowSeconds(Math.floor(Date.now() / 1_000)),
-      Math.max(0, Math.min(remainingMs, 2_147_483_647))
-    )
-    return () => window.clearTimeout(timer)
-  }, [merchantInvoiceExpiry, nowSeconds])
-  if (!invoice) return null
-  if (merchantInvoice?.status === "payable" && !merchantInvoicePrepared) {
-    return (
-      <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
-        <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-          Merchant invoice ready
-        </h2>
-        <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
-          Confirm this invoice before opening it. Orders will keep this exact
-          invoice attached to the payment report.
-        </p>
-        <Button
-          className="mt-4 h-10 px-4 text-sm"
-          disabled={busy}
-          onClick={onPrepareMerchantInvoice}
-        >
-          Use merchant invoice
-        </Button>
-      </section>
-    )
-  }
-  const merchantInvoiceExpired =
-    isMerchantInvoice &&
-    merchantInvoiceExpiry !== null &&
-    merchantInvoiceExpiry <= nowSeconds
-  const merchantInvoiceBlocked =
-    merchantInvoice?.status === "blocked" || merchantInvoiceExpired
-  const merchantInvoiceCanReport =
-    merchantInvoice?.status === "blocked"
-      ? merchantInvoice.canReport
-      : merchantInvoiceExpired
-  const merchantInvoiceError =
-    merchantInvoice?.status === "blocked"
-      ? merchantInvoice.reason
-      : merchantInvoiceExpired
-        ? "The invoice returned by the merchant is already expired."
-        : null
-  if (merchantInvoiceBlocked) {
-    return (
-      <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
-        <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-          Invoice unavailable
-        </h2>
-        <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
-          {merchantInvoiceError}
-        </p>
-        {merchantInvoiceCanReport && (
-          <div className="mt-4 space-y-2">
-            <Button
-              variant="outline"
-              className="h-10 px-4 text-sm"
-              disabled={busy}
-              onClick={onMarkPaid}
-            >
-              Report a payment already made
-            </Button>
-            <p className="text-pretty text-xs text-[var(--text-secondary)]">
-              Only report this if your wallet confirms it paid this exact
-              invoice before expiry.
-            </p>
-          </div>
-        )}
-      </section>
-    )
-  }
-  return (
-    <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
-      <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-        {isMerchantInvoice
-          ? "Pay merchant invoice"
-          : "Pay with an external wallet"}
-      </h2>
-      <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
-        {autoDetectReceipt
-          ? "Check your wallet first if an automatic payment was already attempted. Otherwise scan or copy this invoice and pay it once. Conduit will match the public Lightning receipt and notify the merchant automatically."
-          : isMerchantInvoice
-            ? "Scan, copy, or open this merchant invoice. After your wallet confirms payment, report it to the merchant for verification."
-            : "Automatic payment did not complete. Check your wallet first, then pay this same invoice once and report it to the merchant for verification. This invoice can only settle once, so paying it again is safe if nothing was sent."}
-      </p>
-      {guestSession && (
-        <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
-          {autoDetectReceipt
-            ? "Return to this same tab after paying so Conduit can finish receipt detection. Closing it ends local access to this guest order."
-            : "Keep this tab open until the payment is reported. Closing it ends local access to this guest order. The merchant can use the private recovery contact submitted at checkout."}
-        </p>
-      )}
-      <InvoicePayment
-        key={invoice}
-        invoice={invoice}
-        expectedAmountSats={vm.totalSats}
-        preference={pricing.preference}
-        quote={pricing.quote}
-        guestSession={guestSession}
-        onBeforeInvoiceUse={onBeforeInvoiceUse}
-      />
-      <div className="mt-4 space-y-3">
-        {autoDetectReceipt ? (
-          <p className="text-xs leading-5 text-[var(--text-secondary)]">
-            Waiting for the matching receipt. If your wallet confirms payment,
-            do not pay this invoice again while detection completes.
-          </p>
-        ) : (
-          <>
-            <Button
-              variant="primary"
-              className="h-10 px-4 text-sm"
-              disabled={busy}
-              onClick={onMarkPaid}
-            >
-              Report payment to merchant
-            </Button>
-            <p className="text-xs text-[var(--text-secondary)]">
-              Only report after your wallet confirms payment. This does not
-              verify settlement; the merchant will confirm it.
-            </p>
-          </>
-        )}
-      </div>
-    </section>
-  )
-}
-
 function OrderDetail({
   row,
   buyerPubkey,
@@ -1177,6 +1008,9 @@ function OrderDetail({
   }
 
   async function prepareCurrentMerchantInvoice(): Promise<void> {
+    if (!shouldContinueAccountRead()) {
+      throw new Error("Your account changed. Reopen the order to continue.")
+    }
     const action = vm.merchantInvoiceAction
     if (!action || action.status !== "payable") {
       throw new Error("This merchant invoice is no longer payable.")
@@ -1241,11 +1075,11 @@ function OrderDetail({
     (vm.paymentStatus === "manual_required" || !!vm.merchantInvoiceAction)
   const autoDetectPublicReceipt =
     !zeroCostPickupOrder &&
-    vm.publicZapSigner === "anon" &&
+    !!vm.publicZapSigner &&
     vm.zapReceiptStatus === "waiting"
   const publicReceiptNotObserved =
     !zeroCostPickupOrder &&
-    vm.publicZapSigner === "anon" &&
+    !!vm.publicZapSigner &&
     vm.zapReceiptStatus === "receipt_not_observed"
   const showResendProof =
     !zeroCostPickupOrder &&
@@ -1429,7 +1263,7 @@ function OrderDetail({
                 : vm.merchantInvoiceAction?.status === "blocked"
                   ? "Orders checked the latest merchant invoice but could not make it payable."
                   : vm.merchantInvoiceAction
-                    ? "Orders checked the latest merchant invoice against this saved order. Confirm it once before payment controls appear."
+                    ? "Orders checked the merchant invoice against this saved order. Payment details appear automatically below."
                     : vm.publicZapFallback
                       ? "Your order is still ready. The optional public checkout note was unavailable, so this invoice is private. Pay it once, then report the payment so the merchant can verify it."
                       : "No automatic wallet was available. Pay the invoice below, then report the payment to the merchant for verification."}
@@ -1442,9 +1276,8 @@ function OrderDetail({
             guestSession={!!guestIdentity}
             autoDetectReceipt={autoDetectPublicReceipt}
             onBeforeInvoiceUse={beginMerchantInvoicePayment}
-            onPrepareMerchantInvoice={() =>
-              void withBusy(prepareCurrentMerchantInvoice)
-            }
+            onPrepareMerchantInvoice={prepareCurrentMerchantInvoice}
+            preparationScope={`${authGeneration}:${authenticatedPubkey ?? "guest"}:${buyerPubkey}:${vm.orderId}`}
             merchantInvoicePrepared={merchantInvoicePrepared}
             boundMerchantInvoiceExpiresAt={boundMerchantInvoiceExpiresAt}
             onMarkPaid={() => void withBusy(reportExternalPayment)}
@@ -1573,7 +1406,7 @@ function OrderDetail({
               {wallets.loading
                 ? "Wait while Conduit checks the Portable and Connected Wallets saved on this device."
                 : publicReceiptNotObserved
-                  ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays during this guest session."
+                  ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays while this order remains available on this device."
                   : showAmbiguousPayment
                     ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
                     : showRetryPayment && retryWalletTargetIsStale

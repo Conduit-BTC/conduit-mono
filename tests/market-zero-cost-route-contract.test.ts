@@ -68,7 +68,7 @@ describe("Market verified zero-cost pickup route contract", () => {
       /const canAttemptLightningPayment =\s+paymentPathEnabled &&/
     )
     expect(checkout).toMatch(
-      /const allowsManualLightningFallback =\s+paymentPathEnabled &&/
+      /const manualInvoiceEligible =\s+paymentPathEnabled &&/
     )
     expect(checkout).toContain(
       "const fastEligible =\n    paymentPathEnabled &&"

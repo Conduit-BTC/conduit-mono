@@ -7,6 +7,12 @@ import {
   verifyEvent,
 } from "nostr-tools/pure"
 
+import {
+  bolt11DescriptionHashField,
+  bolt11PaymentHashField,
+  makeBolt11Fixture,
+} from "../tests/support/bolt11-fixture"
+
 const marketUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 }`
@@ -3585,8 +3591,7 @@ test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @
 
   const hud = page.getByRole("region", { name: "Cart inventory", exact: true })
   const checkout = hud.getByRole("link", {
-    name: "Continue to checkout",
-    exact: true,
+    name: /^(Continue to checkout|Checkout)$/i,
   })
   await expect(hud).toBeVisible()
   await expect(checkout).toHaveAttribute("href", /\/checkout\?merchant=/)
@@ -3717,6 +3722,239 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
     "Event timeline loading timings (synthetic, ms):",
     JSON.stringify(timings)
   )
+})
+
+test("guest booth checkout reaches a manual invoice without reading unselected pickup options @market", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic independent pickup freshness",
+    organizerHandoffEnabled: true,
+  })
+  const otherSecret = generateSecretKey()
+  const createdAt = market.initialCollection.created_at + 1
+  const pickups = [MERCHANT_SECRET, otherSecret].map((secret) =>
+    signEvent(secret, {
+      kind: 30406,
+      created_at: createdAt,
+      content: "",
+      tags: [
+        ["d", "booth"],
+        ["title", "Synthetic booth"],
+        ["price", "0", "SAT"],
+        ["country", "US"],
+        ["service", "pickup"],
+        ["location", "Synthetic public hall"],
+      ],
+    })
+  )
+  const product = createMerchantProductEvent({
+    dTag: "live-booth-product",
+    title: "Synthetic live booth product",
+    priceSats: 1000,
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: eventCoordinate(pickups[0]!),
+    createdAt,
+  })
+  const secondProduct = createMerchantProductEvent({
+    dTag: "second-live-booth-product",
+    title: "Synthetic second booth product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: eventCoordinate(pickups[0]!),
+    createdAt,
+    priceSats: 1000,
+  })
+  const otherProduct = signEvent(otherSecret, {
+    kind: product.kind,
+    created_at: createdAt,
+    content: "Synthetic other booth product.",
+    tags: product.tags.map((tag) =>
+      tag[0] === "d"
+        ? ["d", "other-booth-product"]
+        : tag[0] === "title"
+          ? ["title", "Synthetic other booth product"]
+          : tag[0] === "shipping_option"
+            ? ["shipping_option", eventCoordinate(pickups[1]!), "0"]
+            : tag
+    ),
+  })
+  const metadata = JSON.stringify([["text/plain", "Synthetic booth merchant"]])
+  let callbackRequests = 0
+  const invoice = makeBolt11Fixture({
+    hrp: "lnbc20u",
+    createdAt: Math.floor(Date.now() / 1000),
+    fields: [bolt11PaymentHashField(), bolt11DescriptionHashField(metadata)],
+  })
+  await page.route("https://merchant-fixture.dev/**", async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname === "/callback") {
+      callbackRequests += 1
+      expect(url.searchParams.get("amount")).toBe("2000000")
+      expect(url.searchParams.has("nostr")).toBe(false)
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ pr: invoice, routes: [] }),
+      })
+      return
+    }
+    expect(url.pathname).toBe("/.well-known/lnurlp/merchant")
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        tag: "payRequest",
+        callback: "https://merchant-fixture.dev/callback",
+        minSendable: 1000,
+        maxSendable: 10_000_000,
+        metadata,
+      }),
+    })
+  })
+  relay.seed(
+    createInboxDeclaration("merchant", createdAt),
+    signEvent(MERCHANT_SECRET, {
+      kind: 0,
+      created_at: createdAt,
+      tags: [],
+      content: JSON.stringify({
+        name: "Synthetic booth merchant",
+        lud16: "merchant@merchant-fixture.dev",
+      }),
+    }),
+    ...pickups,
+    product,
+    secondProduct,
+    otherProduct,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: createdAt + 1,
+      content: market.initialCollection.content,
+      tags: [
+        ...market.initialCollection.tags,
+        ["a", eventCoordinate(product)],
+        ["a", eventCoordinate(secondProduct)],
+        ["a", eventCoordinate(otherProduct)],
+      ],
+    })
+  )
+  await page.setViewportSize({ width: 390, height: 844 })
+  // Market starts signed out; publishing the fixture used Merchant's origin.
+  await page.goto(`${marketUrl}/events/${market.canonicalNaddr}`)
+  const card = page.getByRole("listitem").filter({
+    hasText: "Synthetic live booth product",
+  })
+  await expect(
+    page
+      .getByRole("listitem")
+      .filter({
+        hasText: "Synthetic other booth product",
+      })
+      .getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled({ timeout: 30_000 })
+  await card.getByRole("button", { name: "Add", exact: true }).click()
+
+  await page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic second booth product" })
+    .getByRole("button", { name: "Add", exact: true })
+    .click()
+
+  // Neither a different booth nor the unused organizer handoff option belongs
+  // to this order. Hold both reads until after invoice readiness.
+  relay.remove(pickups[1]!)
+  const isUnrelatedPickupRead = (request: RelayRequest) =>
+    request.filters.some(
+      (filter) =>
+        filter.kinds?.includes(30406) &&
+        (!filter.authors ||
+          filter.authors.includes(pickups[1]!.pubkey) ||
+          filter.authors.includes(ORGANIZER_PUBKEY))
+    )
+  const held = relay.holdRelayRequests(isUnrelatedPickupRead)
+  const publicationStart = relay.publications.length
+  try {
+    await page.goto(`${marketUrl}/cart`)
+    // Cart recommendations may still discover the other booth. Checkout must
+    // advance while that browsing read is held and start no additional one.
+    await held.captured
+    const priorDiscoveryPickupReads = relay.requests.filter(
+      isUnrelatedPickupRead
+    ).length
+    const checkoutRequestsStart = relay.requests.length
+    await page.getByRole("button", { name: "Order", exact: true }).click()
+    await expect(
+      page.getByText("Merchant-only recovery", { exact: true })
+    ).toBeVisible()
+    await page.getByLabel("Email", { exact: true }).fill("guest@example.test")
+    const continueButton = page.getByRole("button", {
+      name: "Continue to Send Order",
+      exact: true,
+    })
+    await expect(continueButton).toBeEnabled({ timeout: 10_000 })
+    await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
+    await continueButton.click()
+    const submit = page.getByRole("button", {
+      name: "Send order and show invoice",
+      exact: true,
+    })
+    await expect(submit).toBeEnabled({ timeout: 10_000 })
+    const submitRequestsStart = relay.requests.length
+    await submit.click()
+    await expect(page).toHaveURL(/\/orders\?order=/, { timeout: 30_000 })
+    await expect(
+      page.getByRole("button", { name: "Copy invoice", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("link", { name: "Open in wallet", exact: true })
+    ).toHaveAttribute("href", `lightning:${invoice}`)
+    expect(callbackRequests).toBe(1)
+    expect(
+      relay.requests.slice(checkoutRequestsStart).filter(isUnrelatedPickupRead)
+        .length
+    ).toBe(0)
+    const collectionReads = relay.requests
+      .slice(submitRequestsStart)
+      .filter((request) =>
+        request.filters.some((filter) => filter.kinds?.includes(30405))
+      )
+    // Both selected products share one event verification, rather than each
+    // product loading the event independently.
+    expect(collectionReads.length).toBe(1)
+    console.log(
+      "Synthetic guest pickup checkout:",
+      JSON.stringify({
+        selectedProducts: 2,
+        priorDiscoveryPickupReads,
+        checkoutUnrelatedPickupReads: 0,
+        submissionCollectionReads: collectionReads.length,
+        invoiceCallbacks: callbackRequests,
+      })
+    )
+    const privateOrders = uniquePrivatePublications(
+      decryptPrivatePublications(
+        relay.publications,
+        MERCHANT_SECRET,
+        publicationStart
+      )
+    ).filter((message) => rumorType(message.rumor) === "order")
+    expect(privateOrders).toHaveLength(1)
+    expect(privateOrders[0]!.rumor.kind).toBe(16)
+    expect(
+      privateOrders[0]!.rumor.tags
+        .filter((tag) => tag[0] === "p")
+        .map((tag) => tag[1])
+    ).toEqual([MERCHANT_PUBKEY])
+    const orderPayload = JSON.parse(privateOrders[0]!.rumor.content) as {
+      items: Array<{ productId: string }>
+    }
+    expect(orderPayload.items.map((item) => item.productId).sort()).toEqual(
+      [eventCoordinate(product), eventCoordinate(secondProduct)].sort()
+    )
+  } finally {
+    held.release()
+  }
 })
 
 test("cold event catalog shows a completed merchant product before a slower merchant finishes @market", async ({
