@@ -717,7 +717,7 @@ function hasPublicReceiptContext(
   const publicZapSigner =
     lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
   return (
-    publicZapSigner === "anon" &&
+    (publicZapSigner === "anon" || publicZapSigner === "shopper") &&
     !!lifecycle.invoice &&
     !!lifecycle.zapRequestId &&
     Number.isSafeInteger(lifecycle.zapRequestCreatedAt) &&
