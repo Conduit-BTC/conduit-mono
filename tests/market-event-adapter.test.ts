@@ -46,7 +46,7 @@ function market(
     content: "",
     price: 0,
     currency: "SATS",
-    countries: [],
+    countries: ["US"],
     location: "Public hall entrance",
     geohash: "dpz83",
     createdAt: 102,
@@ -1312,6 +1312,16 @@ describe("Market event adapter", () => {
       pickupItemMatchesCanonicalSnapshot(stored, canonical, merchant)
     ).toBe(true)
 
+    const legacyWithoutCountries = clonePickupItem(stored)
+    delete legacyWithoutCountries.fulfillment.option.countries
+    expect(
+      pickupItemMatchesCanonicalSnapshot(
+        legacyWithoutCountries,
+        canonical,
+        merchant
+      )
+    ).toBe(true)
+
     const tampering: Array<
       [string, (item: ReturnType<typeof pickupItem>) => void]
     > = [
@@ -1373,6 +1383,10 @@ describe("Market event adapter", () => {
         (item) => (item.fulfillment.option.location = "Other entrance"),
       ],
       ["pickup geohash", (item) => (item.fulfillment.option.geohash = "9q8yy")],
+      [
+        "pickup countries",
+        (item) => (item.fulfillment.option.countries = ["CA"]),
+      ],
       ["pickup sats cost", (item) => (item.fulfillment.costSats = 1)],
       [
         "pickup source amount",

@@ -39,6 +39,7 @@ function pickupFulfillment(): OrderPickupFulfillmentSchema {
       createdAt: 1_700_000_003_000,
       title: "Event pickup",
       location: "Public market hall",
+      countries: ["US"],
     },
     costSats: 0,
     sourceCost: {
@@ -353,6 +354,75 @@ describe("pickup order fulfillment evidence", () => {
     for (const mutate of graphMutations) {
       const conflicting = pickupOrder()
       const fulfillment = pickupFulfillment()
+      mutate(fulfillment)
+      conflicting.items.push(
+        additionalPickupItem(fulfillment) as (typeof conflicting.items)[number]
+      )
+      expect(orderSchema.safeParse(conflicting).success).toBe(false)
+    }
+  })
+
+  it("accepts equivalent per-product merchant booth records for one order", () => {
+    const merchantPickup = (productDTag: string, revision: string) => {
+      const fulfillment = pickupFulfillment()
+      fulfillment.product.coordinate = `30402:${MERCHANT}:${productDTag}`
+      fulfillment.product.eventId = revision.repeat(64)
+      fulfillment.option = {
+        ...fulfillment.option,
+        coordinate: `30406:${MERCHANT}:${productDTag}-event-pickup`,
+        eventId: revision.repeat(64),
+        createdAt: 1_700_000_003_000 + Number(revision),
+        title: "Merchant pickup",
+        location: "Booth 12, Public market hall",
+        geohash: "dr5ru",
+        countries: ["US", "CA"],
+      }
+      fulfillment.handoffMode = "merchant_handoff"
+      fulfillment.handlerPubkey = MERCHANT
+      return fulfillment
+    }
+    const coffeeFulfillment = merchantPickup("coffee", "1")
+    const teaFulfillment = merchantPickup("tea", "2")
+    const order = pickupOrder()
+    order.items[0]!.productId = coffeeFulfillment.product.coordinate
+    order.items[0]!.fulfillment = coffeeFulfillment
+    order.items[0]!.shippingOptionId = coffeeFulfillment.option.coordinate
+    order.items[0]!.shippingOptionDTag =
+      coffeeFulfillment.option.coordinate.split(":")[2]
+    order.items.push(
+      additionalPickupItem(teaFulfillment) as (typeof order.items)[number]
+    )
+
+    expect(orderSchema.safeParse(order).success).toBe(true)
+
+    const incompatibleTerms: Array<
+      (fulfillment: OrderPickupFulfillmentSchema) => void
+    > = [
+      (fulfillment) => {
+        fulfillment.option.title = "Other pickup"
+      },
+      (fulfillment) => {
+        fulfillment.option.location = "Booth 13, Public market hall"
+      },
+      (fulfillment) => {
+        fulfillment.option.geohash = "dr5rv"
+      },
+      (fulfillment) => {
+        fulfillment.option.countries = ["US"]
+      },
+      (fulfillment) => {
+        delete fulfillment.option.countries
+      },
+    ]
+    for (const mutate of incompatibleTerms) {
+      const conflicting = pickupOrder()
+      conflicting.items[0]!.productId = coffeeFulfillment.product.coordinate
+      conflicting.items[0]!.fulfillment = coffeeFulfillment
+      conflicting.items[0]!.shippingOptionId =
+        coffeeFulfillment.option.coordinate
+      conflicting.items[0]!.shippingOptionDTag =
+        coffeeFulfillment.option.coordinate.split(":")[2]
+      const fulfillment = merchantPickup("tea", "2")
       mutate(fulfillment)
       conflicting.items.push(
         additionalPickupItem(fulfillment) as (typeof conflicting.items)[number]

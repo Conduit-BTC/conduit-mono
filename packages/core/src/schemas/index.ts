@@ -251,6 +251,12 @@ export const orderPickupFulfillmentSchema = z
         .string()
         .regex(/^[0-9bcdefghjkmnpqrstuvwxyz]{1,32}$/i)
         .optional(),
+      /** Optional only for snapshots created before pickup countries were retained. */
+      countries: z
+        .array(z.string().regex(/^[A-Z]{2}$/))
+        .min(1)
+        .max(249)
+        .optional(),
     }),
     /** Omitted only by legacy snapshots, which never authorize organizer sharing. */
     handoffMode: eventMarketHandoffModeSchema.optional(),
@@ -452,9 +458,45 @@ function hasSamePickupEvidenceRevision(
   )
 }
 
+function pickupEvidenceAuthor(coordinate: string): string | null {
+  const canonical = canonicalPickupCoordinateIdentity(coordinate)
+  if (!canonical) return null
+  const [kind, author] = canonical.split(":", 3)
+  return kind === "30406" ? (author ?? null) : null
+}
+
+function normalizedPickupCountries(
+  countries: readonly string[] | undefined
+): string[] | null {
+  if (!countries?.length) return null
+  return Array.from(
+    new Set(countries.map((country) => country.toUpperCase()))
+  ).sort()
+}
+
+function hasSameMerchantPickupTerms(
+  left: OrderPickupFulfillmentSchema,
+  right: OrderPickupFulfillmentSchema
+): boolean {
+  const leftCountries = normalizedPickupCountries(left.option.countries)
+  const rightCountries = normalizedPickupCountries(right.option.countries)
+  return (
+    leftCountries !== null &&
+    rightCountries !== null &&
+    left.option.title === right.option.title &&
+    left.option.location === right.option.location &&
+    left.option.geohash?.toLowerCase() ===
+      right.option.geohash?.toLowerCase() &&
+    leftCountries.length === rightCountries.length &&
+    leftCountries.every((country, index) => country === rightCountries[index])
+  )
+}
+
 /**
  * Pickup items may have different merchant-owned products and per-product
- * costs, but one order must preserve one exact organizer-authored event graph.
+ * costs. Organizer handoff requires one exact pickup revision. Merchant
+ * handoff also permits distinct merchant-authored option records when their
+ * public booth terms match exactly within one event graph.
  */
 export function hasSamePickupFulfillmentGraph(
   left: OrderPickupFulfillmentSchema,
@@ -474,16 +516,30 @@ export function hasSamePickupFulfillmentGraph(
   ) {
     return false
   }
+  const leftAuthority = resolveOrderPickupHandoffAuthority(left)
+  const rightAuthority = resolveOrderPickupHandoffAuthority(right)
+  const leftMerchant = left.product.merchantPubkey.toLowerCase()
+  const rightMerchant = right.product.merchantPubkey.toLowerCase()
+  if (
+    left.organizerPubkey.toLowerCase() !==
+      right.organizerPubkey.toLowerCase() ||
+    leftMerchant !== rightMerchant ||
+    !hasSamePickupEvidenceRevision(left.calendar, right.calendar) ||
+    !hasSamePickupEvidenceRevision(left.collection, right.collection) ||
+    leftAuthority.mode !== rightAuthority.mode ||
+    leftAuthority.handlerPubkey !== rightAuthority.handlerPubkey
+  ) {
+    return false
+  }
+
+  if (hasSamePickupEvidenceRevision(left.option, right.option)) return true
+
   return (
-    left.organizerPubkey.toLowerCase() ===
-      right.organizerPubkey.toLowerCase() &&
-    hasSamePickupEvidenceRevision(left.calendar, right.calendar) &&
-    hasSamePickupEvidenceRevision(left.collection, right.collection) &&
-    hasSamePickupEvidenceRevision(left.option, right.option) &&
-    resolveOrderPickupHandoffAuthority(left).mode ===
-      resolveOrderPickupHandoffAuthority(right).mode &&
-    resolveOrderPickupHandoffAuthority(left).handlerPubkey ===
-      resolveOrderPickupHandoffAuthority(right).handlerPubkey
+    leftAuthority.mode === "merchant_handoff" &&
+    leftAuthority.handlerPubkey === leftMerchant &&
+    pickupEvidenceAuthor(left.option.coordinate) === leftMerchant &&
+    pickupEvidenceAuthor(right.option.coordinate) === rightMerchant &&
+    hasSameMerchantPickupTerms(left, right)
   )
 }
 
