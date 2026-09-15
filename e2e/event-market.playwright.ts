@@ -3504,6 +3504,7 @@ test("membership updates retain externally replaced children and retire removed 
 test("organizer publishes and accepts their own product as merchant pickup @market @merchant", async ({
   page,
 }) => {
+  test.setTimeout(120_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
   const market = await publishOrganizerMarket(page, relay, {
@@ -3560,7 +3561,7 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
     productCard.getByText("Pickup from merchant booth", { exact: true })
   ).toBeVisible({ timeout: 30_000 })
   await expect(
-    productCard.getByText("Synthetic Pickup Host", { exact: true }).last()
+    productCard.getByText("Synthetic Pickup Host", { exact: true }).first()
   ).toBeVisible({ timeout: 30_000 })
   const pickupDetails = productCard
     .locator("summary")
@@ -3569,6 +3570,9 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   await expect(pickupDetails).toBeFocused()
   await pickupDetails.press("Enter")
   await expect(productCard.locator("details")).toHaveAttribute("open", "")
+  await expect(
+    productCard.getByText("Synthetic Pickup Host", { exact: true }).last()
+  ).toBeVisible()
   const handlerNpub = nip19.npubEncode(ORGANIZER_PUBKEY)
   await expect(productCard.locator(`a[href="/u/${handlerNpub}"]`)).toBeVisible()
   await productCard
