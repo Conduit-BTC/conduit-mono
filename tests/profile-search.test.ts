@@ -23,6 +23,7 @@ const ALICIA = "b".repeat(64)
 const CAROL = "c".repeat(64)
 const MALICE = "d".repeat(64)
 const ERIN = "e".repeat(64)
+const FRANK = "f".repeat(64)
 
 function profileEvent(
   pubkey: string,
@@ -62,6 +63,12 @@ function result(
     relaysCompleted: 0,
     relaysDegraded: 0,
     verified: true,
+    device: {
+      profileCache: "not_read",
+      sellerFlags: "not_read",
+      cachedFrontiers: "not_read",
+    },
+    superseded: [],
     ...overrides,
   }
 }
@@ -849,5 +856,168 @@ describe("phased profile search", () => {
       })
     )
     expect(second.matches[0]?.isSeller).toBe(true)
+  })
+})
+
+describe("profile search device reads and retirement", () => {
+  it("reports an unreadable profile cache instead of an empty directory", async () => {
+    const outcome = await searchCachedProfiles(
+      { query: "ali" },
+      deps({
+        loadCachedProfiles: async () => {
+          throw new Error("indexeddb unavailable")
+        },
+      })
+    )
+
+    expect(outcome.matches).toEqual([])
+    expect(outcome.device.profileCache).toBe("unavailable")
+    expect(outcome.evidence).toBe("not_queried")
+  })
+
+  it("reports an unavailable seller lookup and still shows the account", async () => {
+    const outcome = await searchCachedProfiles(
+      { query: "fra", sellerLookupBudgetMs: Infinity },
+      deps({
+        loadCachedProfiles: async () => [
+          {
+            pubkey: FRANK,
+            name: "frank",
+            eventCreatedAt: 100,
+            eventId: "cached",
+            cachedAt: 1,
+          },
+        ],
+        loadSellerPubkeys: async () => {
+          throw new Error("products store unavailable")
+        },
+      })
+    )
+
+    expect(outcome.matches.map((entry) => entry.pubkey)).toEqual([FRANK])
+    expect(outcome.matches[0]?.isSeller).toBe(false)
+    expect(outcome.device.sellerFlags).toBe("unavailable")
+  })
+
+  it("reports when relay answers could not be checked against saved profiles", async () => {
+    const outcome = await searchNetworkProfiles(
+      { query: "ali" },
+      deps({
+        loadCachedProfileRows: async () => {
+          throw new Error("indexeddb unavailable")
+        },
+        fetchEvents: async () => ({
+          events: [profileEvent(ALICE, { name: "Alice" }, 200)],
+          relays: [
+            {
+              relayUrl: "wss://search.example",
+              status: "success",
+              eventCount: 1,
+            },
+          ],
+          eventsVerified: true,
+        }),
+      })
+    )
+
+    expect(outcome.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
+    expect(outcome.device.cachedFrontiers).toBe("unavailable")
+  })
+
+  it("answers a one-character query from the device and leaves relays alone", async () => {
+    let planned = 0
+    let fetched = 0
+    const shortQueryDeps = deps({
+      loadCachedProfiles: async () => [
+        {
+          pubkey: ALICE,
+          name: "alice",
+          eventCreatedAt: 100,
+          eventId: "cached",
+          cachedAt: 1,
+        },
+      ],
+      planSearchRelayUrls: () => {
+        planned += 1
+        return ["wss://search.example"]
+      },
+      fetchEvents: async () => {
+        fetched += 1
+        return { events: [], relays: [], eventsVerified: true }
+      },
+    })
+
+    const cached = await searchCachedProfiles({ query: "a" }, shortQueryDeps)
+    const network = await searchNetworkProfiles({ query: "a" }, shortQueryDeps)
+
+    expect(cached.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
+    expect(network.matches).toEqual([])
+    expect(network.evidence).toBe("not_queried")
+    expect(network.relaysPlanned).toBe(0)
+    expect(planned).toBe(0)
+    expect(fetched).toBe(0)
+  })
+
+  it("retires a cached suggestion the relay has already replaced", async () => {
+    const cachedRow = {
+      pubkey: ALICE,
+      name: "alice",
+      eventCreatedAt: 100,
+      eventId: "cached",
+      cachedAt: 1,
+    }
+    const replacedDeps = deps({
+      loadCachedProfiles: async () => [cachedRow],
+      loadCachedProfileRows: async () => new Map([[ALICE, cachedRow]]),
+      fetchEvents: async () => ({
+        events: [profileEvent(ALICE, { name: "Bob" }, 200)],
+        relays: [
+          {
+            relayUrl: "wss://search.example",
+            status: "success",
+            eventCount: 1,
+          },
+        ],
+        eventsVerified: true,
+      }),
+    })
+
+    const network = await searchNetworkProfiles({ query: "ali" }, replacedDeps)
+    expect(network.superseded.map((entry) => entry.pubkey)).toEqual([ALICE])
+
+    const merged = await searchProfiles({ query: "ali" }, replacedDeps)
+    expect(merged.matches).toEqual([])
+  })
+
+  it("keeps the cached suggestion when the relay copy is older", async () => {
+    const cachedRow = {
+      pubkey: ALICE,
+      name: "alice",
+      eventCreatedAt: 300,
+      eventId: "cached",
+      cachedAt: 1,
+    }
+    const merged = await searchProfiles(
+      { query: "ali" },
+      deps({
+        loadCachedProfiles: async () => [cachedRow],
+        loadCachedProfileRows: async () => new Map([[ALICE, cachedRow]]),
+        fetchEvents: async () => ({
+          events: [profileEvent(ALICE, { name: "Bob" }, 200)],
+          relays: [
+            {
+              relayUrl: "wss://search.example",
+              status: "success",
+              eventCount: 1,
+            },
+          ],
+          eventsVerified: true,
+        }),
+      })
+    )
+
+    expect(merged.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
+    expect(merged.matches[0]?.profile.name).toBe("alice")
+    expect(merged.superseded).toEqual([])
   })
 })

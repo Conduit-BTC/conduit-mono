@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
 import type { ProfileSearchMatch } from "../packages/core/src/protocol/profile-search"
 import {
+  describeAccountSearchDeviceEvidence,
   describeAccountSearchEvidence,
   getAccountSuggestionDescription,
   getAccountSuggestionTarget,
@@ -91,7 +92,13 @@ describe("account suggestion items", () => {
       relaysCompleted: 2,
       relaysDegraded: 0,
       verified: true,
-    }
+      device: {
+        profileCache: "read",
+        sellerFlags: "read",
+        cachedFrontiers: "read",
+      },
+      superseded: [],
+    } as const
     expect(describeAccountSearchEvidence(undefined)).toBeNull()
     expect(
       describeAccountSearchEvidence({ ...base, evidence: "present_current" })
@@ -126,6 +133,61 @@ describe("account suggestion items", () => {
         matches: [match({ pubkey: BUYER })],
       })
     ).toContain("seen on this device")
+  })
+
+  it("names a failed device read instead of showing a confident empty list", () => {
+    const base = {
+      query: "ali",
+      matches: [],
+      evidence: "absent_within_scope" as const,
+      relaysPlanned: 1,
+      relaysCompleted: 1,
+      relaysDegraded: 0,
+      verified: true,
+      superseded: [],
+    }
+    expect(
+      describeAccountSearchDeviceEvidence({
+        ...base,
+        device: {
+          profileCache: "unavailable",
+          sellerFlags: "read",
+          cachedFrontiers: "read",
+        },
+      })
+    ).toBe("Accounts saved on this device could not be read.")
+    expect(
+      describeAccountSearchEvidence({
+        ...base,
+        device: {
+          profileCache: "unavailable",
+          sellerFlags: "read",
+          cachedFrontiers: "read",
+        },
+      })
+    ).toBe(
+      "Accounts saved on this device could not be read. No accounts matched on 1 search relay."
+    )
+    expect(
+      describeAccountSearchDeviceEvidence({
+        ...base,
+        device: {
+          profileCache: "read",
+          sellerFlags: "unavailable",
+          cachedFrontiers: "read",
+        },
+      })
+    ).toBe("Seller badges could not be checked on this device.")
+    expect(
+      describeAccountSearchDeviceEvidence({
+        ...base,
+        device: {
+          profileCache: "read",
+          sellerFlags: "partial",
+          cachedFrontiers: "read",
+        },
+      })
+    ).toBeNull()
   })
 })
 

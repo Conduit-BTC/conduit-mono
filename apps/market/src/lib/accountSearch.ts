@@ -88,10 +88,41 @@ export function getAccountSuggestionTarget(
 }
 
 /**
+ * Device reads can fail while relays answer normally. A failed local read is
+ * named so an empty or badge-less list is never read as a confirmed answer.
+ */
+export function describeAccountSearchDeviceEvidence(
+  result: ProfileSearchResult | undefined
+): string | null {
+  const device = result?.device
+  if (!device) return null
+  if (device.profileCache === "unavailable") {
+    return "Accounts saved on this device could not be read."
+  }
+  if (device.cachedFrontiers === "unavailable") {
+    return "Relay results could not be checked against saved accounts."
+  }
+  if (device.sellerFlags === "unavailable") {
+    return "Seller badges could not be checked on this device."
+  }
+  return null
+}
+
+/**
  * Truthful footer for the suggestion list. An empty list is described as the
  * bounded scope that was searched, never as proof that no account exists.
  */
 export function describeAccountSearchEvidence(
+  result: ProfileSearchResult | undefined
+): string | null {
+  const sentences = [
+    describeAccountSearchDeviceEvidence(result),
+    describeAccountSearchRelayEvidence(result),
+  ].filter((sentence): sentence is string => !!sentence)
+  return sentences.length > 0 ? sentences.join(" ") : null
+}
+
+function describeAccountSearchRelayEvidence(
   result: ProfileSearchResult | undefined
 ): string | null {
   if (!result) return null

@@ -52,6 +52,87 @@ export type ProfileSearchEvidence =
 
 export type ProfileSearchSource = "local_cache" | "network" | "both"
 
+/**
+ * Outcome of one device-local read. A failed read is reported, never folded
+ * into an empty answer: "nothing is stored here" and "this device could not
+ * be read" lead to different user decisions.
+ */
+export type ProfileSearchDeviceReadState =
+  "not_read" | "read" | "partial" | "unavailable"
+
+export interface ProfileSearchDeviceEvidence {
+  /** Scan of the local profile cache. */
+  profileCache: ProfileSearchDeviceReadState
+  /** Seller flags read from the local listing store. */
+  sellerFlags: ProfileSearchDeviceReadState
+  /** Reconciliation of relay answers against cached kind-0 frontiers. */
+  cachedFrontiers: ProfileSearchDeviceReadState
+}
+
+/**
+ * A relay answered with a newer kind-0 for this pubkey that does not match
+ * the query. It retires an older cached match for the same account.
+ */
+export interface ProfileSearchSupersededProfile {
+  pubkey: string
+  frontier: ProfileFrontier
+}
+
+const DEVICE_READ_RANK: Record<ProfileSearchDeviceReadState, number> = {
+  not_read: 0,
+  read: 1,
+  partial: 2,
+  unavailable: 3,
+}
+
+export function mergeProfileSearchDeviceReadStates(
+  left: ProfileSearchDeviceReadState,
+  right: ProfileSearchDeviceReadState
+): ProfileSearchDeviceReadState {
+  return DEVICE_READ_RANK[left] >= DEVICE_READ_RANK[right] ? left : right
+}
+
+export function mergeProfileSearchDeviceEvidence(
+  left: ProfileSearchDeviceEvidence | undefined,
+  right: ProfileSearchDeviceEvidence | undefined
+): ProfileSearchDeviceEvidence {
+  const base = left ?? emptyDeviceEvidence()
+  const other = right ?? emptyDeviceEvidence()
+  return {
+    profileCache: mergeProfileSearchDeviceReadStates(
+      base.profileCache,
+      other.profileCache
+    ),
+    sellerFlags: mergeProfileSearchDeviceReadStates(
+      base.sellerFlags,
+      other.sellerFlags
+    ),
+    cachedFrontiers: mergeProfileSearchDeviceReadStates(
+      base.cachedFrontiers,
+      other.cachedFrontiers
+    ),
+  }
+}
+
+/** True when a device read failed, so the list may be missing accounts. */
+export function hasUnavailableProfileSearchDeviceRead(
+  device: ProfileSearchDeviceEvidence
+): boolean {
+  return (
+    device.profileCache === "unavailable" ||
+    device.sellerFlags === "unavailable" ||
+    device.cachedFrontiers === "unavailable"
+  )
+}
+
+function emptyDeviceEvidence(): ProfileSearchDeviceEvidence {
+  return {
+    profileCache: "not_read",
+    sellerFlags: "not_read",
+    cachedFrontiers: "not_read",
+  }
+}
+
 export interface ProfileSearchMatch {
   pubkey: string
   profile: Profile
@@ -75,6 +156,10 @@ export interface ProfileSearchResult {
   relaysDegraded: number
   /** False when returned network events skipped signature verification. */
   verified: boolean
+  /** Outcome of the device-local reads behind this result. */
+  device: ProfileSearchDeviceEvidence
+  /** Newer non-matching relay profiles that retire cached matches. */
+  superseded: ProfileSearchSupersededProfile[]
 }
 
 export interface ProfileSearchQuery {
@@ -321,6 +406,8 @@ function emptyResult(query: string): ProfileSearchResult {
     relaysCompleted: 0,
     relaysDegraded: 0,
     verified: true,
+    device: emptyDeviceEvidence(),
+    superseded: [],
   }
 }
 
@@ -344,31 +431,52 @@ function toMatch(
 
 const knownSellerPubkeys = new Set<string>()
 
+interface SellerFlagOutcome {
+  matches: ProfileSearchMatch[]
+  state: ProfileSearchDeviceReadState
+}
+
+/**
+ * Flags sellers from the local listing store. A failed lookup is reported as
+ * `unavailable` and a lookup that outran its budget as `partial`; both fall
+ * back to sellers this session already confirmed, so a missing badge is never
+ * presented as a confirmed "not a seller".
+ */
 async function flagSellers(
   matches: ProfileSearchMatch[],
   deps: ProfileSearchDependencies,
   budgetMs = Infinity
-): Promise<ProfileSearchMatch[]> {
+): Promise<SellerFlagOutcome> {
+  if (matches.length === 0) return { matches, state: "not_read" }
   const lookup = deps
     .loadSellerPubkeys(matches.map((match) => match.pubkey))
     .then((pubkeys) => {
       for (const pubkey of pubkeys) knownSellerPubkeys.add(pubkey)
       return pubkeys
     })
-    .catch(() => new Set<string>())
+    .catch(() => null)
   const sellerPubkeys = Number.isFinite(budgetMs)
     ? await Promise.race([
         lookup,
-        new Promise<null>((resolve) =>
-          setTimeout(() => resolve(null), budgetMs)
+        new Promise<undefined>((resolve) =>
+          setTimeout(() => resolve(undefined), budgetMs)
         ),
       ])
     : await lookup
+  const state: ProfileSearchDeviceReadState =
+    sellerPubkeys instanceof Set
+      ? "read"
+      : sellerPubkeys === null
+        ? "unavailable"
+        : "partial"
   const resolved = sellerPubkeys ?? knownSellerPubkeys
-  return matches.map((match) => ({
-    ...match,
-    isSeller: resolved.has(match.pubkey),
-  }))
+  return {
+    matches: matches.map((match) => ({
+      ...match,
+      isSeller: resolved.has(match.pubkey),
+    })),
+    state,
+  }
 }
 
 /**
@@ -388,9 +496,13 @@ export async function searchCachedProfiles(
     return emptyResult(query)
   }
 
+  let profileCache: ProfileSearchDeviceReadState = "read"
   const cachedRows: CachedProfile[] = await deps
     .loadCachedProfiles()
-    .catch(() => [])
+    .catch(() => {
+      profileCache = "unavailable"
+      return []
+    })
   const candidates: ProfileSearchMatch[] = []
   for (const row of cachedRows) {
     const match = toMatch(
@@ -402,16 +514,20 @@ export async function searchCachedProfiles(
     if (match) candidates.push(match)
   }
 
+  const sellers = await flagSellers(
+    candidates,
+    deps,
+    input.sellerLookupBudgetMs ?? CACHED_SELLER_LOOKUP_BUDGET_MS
+  )
+
   return {
     ...emptyResult(query),
-    matches: rankProfileSearchMatches(
-      await flagSellers(
-        candidates,
-        deps,
-        input.sellerLookupBudgetMs ?? CACHED_SELLER_LOOKUP_BUDGET_MS
-      ),
-      limit
-    ),
+    matches: rankProfileSearchMatches(sellers.matches, limit),
+    device: {
+      profileCache,
+      sellerFlags: sellers.state,
+      cachedFrontiers: "not_read",
+    },
   }
 }
 
@@ -447,6 +563,8 @@ export async function searchNetworkProfiles(
     verified: true,
   }
   const candidates: ProfileSearchMatch[] = []
+  const superseded: ProfileSearchSupersededProfile[] = []
+  let cachedFrontiers: ProfileSearchDeviceReadState = "not_read"
   if (relayUrls.length > 0) {
     try {
       const result = await deps.fetchEvents(
@@ -461,9 +579,13 @@ export async function searchNetworkProfiles(
       const events = pickLatestEventPerPubkey(result.events)
       // A relay can answer with a kind-0 event this device already replaced.
       // Reconcile before scoring so a stale name is never offered as a match.
+      cachedFrontiers = events.length > 0 ? "read" : "not_read"
       const cachedRows = await deps
         .loadCachedProfileRows(events.map((event) => event.pubkey))
-        .catch(() => new Map<string, CachedProfile>())
+        .catch(() => {
+          if (events.length > 0) cachedFrontiers = "unavailable"
+          return new Map<string, CachedProfile>()
+        })
       for (const event of events) {
         const row = cachedRows.get(event.pubkey)
         const cachedFrontier: ProfileFrontier | null = row
@@ -480,23 +602,36 @@ export async function searchNetworkProfiles(
           cachedWins ? cachedFrontier : eventFrontier(event)
         )
         if (match) candidates.push(match)
+        else if (!cachedWins) {
+          // The relay holds a newer kind-0 that no longer matches. Record it
+          // so a stale cached suggestion for the same account is retired.
+          superseded.push({
+            pubkey: event.pubkey,
+            frontier: eventFrontier(event),
+          })
+        }
       }
     } catch (error) {
       if (input.signal?.aborted) throw error
     }
   }
 
+  const sellers = await flagSellers(candidates, deps)
+
   return {
     query,
-    matches: rankProfileSearchMatches(
-      await flagSellers(candidates, deps),
-      limit
-    ),
+    matches: rankProfileSearchMatches(sellers.matches, limit),
     evidence: resolveProfileSearchEvidence({
       ...summary,
       matchCount: candidates.length,
     }),
     ...summary,
+    device: {
+      profileCache: "not_read",
+      sellerFlags: sellers.state,
+      cachedFrontiers,
+    },
+    superseded,
   }
 }
 
@@ -554,9 +689,34 @@ export function mergeProfileSearchResults(
     if (merged) combined.set(match.pubkey, merged)
     else combined.delete(match.pubkey)
   }
+  for (const [pubkey, frontier] of collectSupersededFrontiers(
+    network?.superseded
+  )) {
+    const match = combined.get(pubkey)
+    if (match && compareProfileFrontiers(match.frontier, frontier) < 0) {
+      combined.delete(pubkey)
+    }
+  }
   const matches = rankProfileSearchMatches(Array.from(combined.values()), limit)
-  if (!network) return { ...emptyResult(query), matches }
-  return { ...network, query, matches }
+  const device = mergeProfileSearchDeviceEvidence(
+    cached?.device,
+    network?.device
+  )
+  if (!network) return { ...emptyResult(query), matches, device }
+  return { ...network, query, matches, device }
+}
+
+function collectSupersededFrontiers(
+  entries: readonly ProfileSearchSupersededProfile[] | undefined
+): Map<string, ProfileFrontier> {
+  const superseded = new Map<string, ProfileFrontier>()
+  for (const entry of entries ?? []) {
+    const existing = superseded.get(entry.pubkey)
+    if (!existing || compareProfileFrontiers(entry.frontier, existing) > 0) {
+      superseded.set(entry.pubkey, entry.frontier)
+    }
+  }
+  return superseded
 }
 
 /** Runs both phases and returns the merged result once the network answers. */
