@@ -1,13 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
-import { Copy, ExternalLink } from "lucide-react"
-import { QRCodeSVG } from "qrcode.react"
 import {
   decodeLightningInvoiceMetadata,
   getOrderPublicZapSigner,
-  normalizeLightningInvoice,
+  type BtcUsdRateQuote,
+  type ShopperPricePreference,
 } from "@conduit/core"
 import { Button } from "@conduit/ui"
 import type { OrderViewModel } from "../lib/order-view"
+import { InvoicePayment } from "./InvoicePayment"
 
 /** External-wallet QR fallback (CND-120): shown when payment is manual_required. */
 export function ExternalWalletPanel({
@@ -21,6 +21,7 @@ export function ExternalWalletPanel({
   busy,
   guestSession,
   autoDetectReceipt,
+  pricing,
 }: {
   vm: OrderViewModel
   onMarkPaid: () => void
@@ -32,8 +33,11 @@ export function ExternalWalletPanel({
   busy: boolean
   guestSession: boolean
   autoDetectReceipt: boolean
+  pricing: {
+    preference: ShopperPricePreference
+    quote: BtcUsdRateQuote | null
+  }
 }) {
-  const [copied, setCopied] = useState(false)
   const prepareRef = useRef(onPrepareMerchantInvoice)
   useLayoutEffect(() => {
     prepareRef.current = onPrepareMerchantInvoice
@@ -191,7 +195,6 @@ export function ExternalWalletPanel({
       </section>
     )
   }
-  const bolt11 = normalizeLightningInvoice(invoice)
   const canUseInvoice = () => {
     const currentSeconds = Math.floor(Date.now() / 1_000)
     if (invoiceExpiry === null || invoiceExpiry <= currentSeconds) {
@@ -199,16 +202,6 @@ export function ExternalWalletPanel({
       return false
     }
     return onBeforeInvoiceUse()
-  }
-  const copy = async () => {
-    if (!canUseInvoice()) return
-    try {
-      await navigator.clipboard.writeText(invoice)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      /* clipboard unavailable */
-    }
   }
   return (
     <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
@@ -231,54 +224,34 @@ export function ExternalWalletPanel({
             : "Keep this tab open until the payment is reported. Closing it ends local access to this guest order. The merchant can use the private recovery contact submitted at checkout."}
         </p>
       )}
-      <div className="mt-4 flex flex-col items-start gap-4 sm:flex-row">
-        <div className="rounded-xl bg-white p-3">
-          <QRCodeSVG value={bolt11} size={156} level="M" />
-        </div>
-        <div className="min-w-0 flex-1 space-y-3">
-          <div className="flex flex-wrap gap-2">
-            <Button asChild className="h-10 px-4 text-sm">
-              <a
-                href={`lightning:${bolt11}`}
-                onClick={(event) => {
-                  if (!canUseInvoice()) event.preventDefault()
-                }}
-              >
-                <ExternalLink className="h-4 w-4" />
-                Open in wallet
-              </a>
-            </Button>
+      <InvoicePayment
+        key={invoice}
+        invoice={invoice}
+        expectedAmountSats={vm.totalSats}
+        preference={pricing.preference}
+        quote={pricing.quote}
+        guestSession={guestSession}
+        onBeforeInvoiceUse={canUseInvoice}
+      />
+      <div className="mt-4 space-y-3">
+        {publicReceiptInvoice ? (
+          receiptNotice
+        ) : (
+          <>
             <Button
-              variant="outline"
+              variant="primary"
               className="h-10 px-4 text-sm"
-              onClick={copy}
+              disabled={busy}
+              onClick={onMarkPaid}
             >
-              <Copy className="h-4 w-4" />
-              {copied ? "Copied" : "Copy invoice"}
+              Report payment to merchant
             </Button>
-          </div>
-          <div className="max-h-24 overflow-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 font-mono text-xs leading-5 break-all text-[var(--text-secondary)]">
-            {invoice}
-          </div>
-          {publicReceiptInvoice ? (
-            receiptNotice
-          ) : (
-            <>
-              <Button
-                variant="primary"
-                className="h-10 px-4 text-sm"
-                disabled={busy}
-                onClick={onMarkPaid}
-              >
-                Report payment to merchant
-              </Button>
-              <p className="text-xs text-[var(--text-secondary)]">
-                Only report after your wallet confirms payment. This does not
-                verify settlement; the merchant will confirm it.
-              </p>
-            </>
-          )}
-        </div>
+            <p className="text-xs text-[var(--text-secondary)]">
+              Only report after your wallet confirms payment. This does not
+              verify settlement; the merchant will confirm it.
+            </p>
+          </>
+        )}
       </div>
     </section>
   )

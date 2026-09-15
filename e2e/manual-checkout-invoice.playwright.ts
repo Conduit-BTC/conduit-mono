@@ -23,6 +23,7 @@ const scenarios: Array<{
   name: string
   mode: "private_checkout" | "public_zap_as_shopper"
   stop?: "cancelled" | "refund_requested"
+  legacyPublicZap?: boolean
 }> = [
   {
     name: "completes only for the exact public receipt",
@@ -35,6 +36,12 @@ const scenarios: Array<{
       stop,
     }))
   ),
+  ...(["cancelled", "refund_requested"] as const).map((stop) => ({
+    name: `blocks legacy public_zap payment after ${stop}, including reload`,
+    mode: "public_zap_as_shopper" as const,
+    stop,
+    legacyPublicZap: true,
+  })),
 ]
 
 for (const scenario of scenarios) {
@@ -256,7 +263,7 @@ for (const scenario of scenarios) {
       page.getByRole("button", { name: "Copy invoice", exact: true })
     ).toBeVisible()
     await expect(
-      page.getByRole("link", { name: "Open in wallet", exact: true })
+      page.getByRole("link", { name: "Open Lightning wallet", exact: true })
     ).toHaveAttribute("href", `lightning:${generatedInvoice}`)
     await expect(
       page.getByRole("button", { name: "Use merchant invoice", exact: true })
@@ -265,34 +272,82 @@ for (const scenario of scenarios) {
     expect(walletSendCalls).toBe(0)
 
     const orderId = new URL(page.url()).searchParams.get("order")!
-    const paymentState = () =>
-      page.evaluate(async (id) => {
+    if (scenario.legacyPublicZap) {
+      // Older saved public zaps identify the signer through checkoutMode only.
+      // Keep the actual checkout invoice and zap request for receipt matching.
+      await page.evaluate(async (id) => {
         const database = await new Promise<IDBDatabase>((resolve, reject) => {
           const request = indexedDB.open("conduit")
           request.onerror = () => reject(request.error)
           request.onsuccess = () => resolve(request.result)
         })
         try {
-          const lifecycle = await new Promise<Record<string, unknown>>(
-            (resolve, reject) => {
-              const request = database
-                .transaction("orderLifecycles", "readonly")
-                .objectStore("orderLifecycles")
-                .get(id)
-              request.onsuccess = () => resolve(request.result)
-              request.onerror = () => reject(request.error)
+          await new Promise<void>((resolve, reject) => {
+            const transaction = database.transaction(
+              "orderLifecycles",
+              "readwrite"
+            )
+            transaction.oncomplete = () => resolve()
+            transaction.onerror = () => reject(transaction.error)
+            transaction.onabort = () => reject(transaction.error)
+            const store = transaction.objectStore("orderLifecycles")
+            const request = store.get(id)
+            request.onsuccess = () => {
+              const lifecycle = request.result
+              lifecycle.checkoutMode = "public_zap"
+              delete lifecycle.publicZapSigner
+              store.put(lifecycle)
             }
-          )
-          return {
-            paymentStatus: lifecycle.paymentStatus,
-            zapReceiptStatus: lifecycle.zapReceiptStatus,
-            zapReceiptId: lifecycle.zapReceiptId ?? null,
-            proofDeliveryStatus: lifecycle.proofDeliveryStatus,
-          }
+          })
         } finally {
           database.close()
         }
       }, orderId)
+      await page.reload()
+      await expect(
+        page.getByRole("heading", { name: "Orders", exact: true })
+      ).toBeVisible()
+    }
+    const paymentState = async () => {
+      const { checkoutMode, publicZapSigner, ...state } = await page.evaluate(
+        async (id) => {
+          const database = await new Promise<IDBDatabase>((resolve, reject) => {
+            const request = indexedDB.open("conduit")
+            request.onerror = () => reject(request.error)
+            request.onsuccess = () => resolve(request.result)
+          })
+          try {
+            const lifecycle = await new Promise<Record<string, unknown>>(
+              (resolve, reject) => {
+                const request = database
+                  .transaction("orderLifecycles", "readonly")
+                  .objectStore("orderLifecycles")
+                  .get(id)
+                request.onsuccess = () => resolve(request.result)
+                request.onerror = () => reject(request.error)
+              }
+            )
+            return {
+              checkoutMode: lifecycle.checkoutMode,
+              publicZapSigner: lifecycle.publicZapSigner,
+              paymentStatus: lifecycle.paymentStatus,
+              zapReceiptStatus: lifecycle.zapReceiptStatus,
+              zapReceiptId: lifecycle.zapReceiptId ?? null,
+              proofDeliveryStatus: lifecycle.proofDeliveryStatus,
+            }
+          } finally {
+            database.close()
+          }
+        },
+        orderId
+      )
+      if (scenario.legacyPublicZap) {
+        expect(checkoutMode).toBe("public_zap")
+        expect(publicZapSigner).toBeUndefined()
+      }
+      return state
+    }
+    if (scenario.legacyPublicZap) await paymentState()
     if (scenario.stop) {
       const stopStatus = scenario.stop
       const stopEvent = nip59.wrapEvent(
@@ -325,7 +380,7 @@ for (const scenario of scenarios) {
           page.getByRole("button", { name: "Copy invoice", exact: true })
         ).toHaveCount(0)
         await expect(
-          page.getByRole("link", { name: "Open in wallet", exact: true })
+          page.getByRole("link", { name: "Open Lightning wallet", exact: true })
         ).toHaveCount(0)
         await expect(page.locator('a[href^="lightning:"]')).toHaveCount(0)
         await expect(
