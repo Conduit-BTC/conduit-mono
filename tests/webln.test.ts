@@ -37,6 +37,55 @@ afterEach(() => {
 })
 
 describe("weblnSendPayment", () => {
+  it("rechecks admission after enable and never submits a rejected payment", async () => {
+    let admitted = true
+    const sendPayment = mock(async () => ({ preimage: "paid" }))
+    setTestWindow({
+      webln: createProvider({
+        enable: async () => {
+          admitted = false
+        },
+        sendPayment,
+      }),
+    })
+    await expect(
+      weblnSendPayment({
+        invoice: "lnbc1invoice",
+        beforeSend: async () => {
+          if (!admitted) throw new Error("Payment authority changed")
+        },
+      })
+    ).rejects.toMatchObject({
+      phase: "admission",
+      message: "Payment authority changed",
+    })
+    expect(sendPayment).toHaveBeenCalledTimes(0)
+  })
+
+  it("submits once after successful admission", async () => {
+    const calls: string[] = []
+    setTestWindow({
+      webln: createProvider({
+        enable: async () => {
+          calls.push("enable")
+        },
+        sendPayment: async () => {
+          calls.push("send")
+          return { preimage: "paid" }
+        },
+      }),
+    })
+    await expect(
+      weblnSendPayment({
+        invoice: "lnbc1invoice",
+        beforeSend: async () => {
+          calls.push("admission")
+        },
+      })
+    ).resolves.toMatchObject({ preimage: "paid" })
+    expect(calls).toEqual(["enable", "admission", "send"])
+  })
+
   it("reports unavailable when no provider exists", async () => {
     setTestWindow({})
 

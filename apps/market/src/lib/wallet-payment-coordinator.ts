@@ -89,6 +89,18 @@ export class WalletPaymentCoordinator {
       }
     }
 
+    try {
+      await input.beforeSend?.()
+    } catch (error) {
+      return {
+        status: "failed",
+        phase: "before_publish",
+        reason:
+          error instanceof Error
+            ? error.message
+            : "Payment is no longer authorized.",
+      }
+    }
     return provider.payInvoice(target.walletId, input)
   }
 }
@@ -153,6 +165,9 @@ function getNwcFailureResult(
   result: Exclude<NwcSessionPaymentResult, { status: "paid" }>,
   connection: NwcConnection
 ): WalletPayInvoiceResult {
+  if (result.status === "pre_publish_failed" && result.admissionRejected) {
+    return { status: "failed", phase: "before_publish", reason: result.reason }
+  }
   const diagnostic = classifyNwcPaymentError(result.reason, connection)
   if (result.status === "published_timeout") {
     return {
@@ -223,6 +238,7 @@ async function payInvoiceWithNwcProvider(
       timeoutMs: input.timeoutMs,
       appId: input.appId,
       metadata: input.metadata,
+      beforeSend: input.beforeSend,
     })
     if (result.status === "paid") {
       return {
@@ -264,6 +280,7 @@ async function payInvoiceWithSparkProvider(
     idempotencyKey: input.idempotencyKey,
     completionTimeoutSecs: Math.max(1, Math.floor(input.timeoutMs / 1_000)),
     approveFee: input.approveFee,
+    beforeSend: input.beforeSend,
   })
   if (result.status === "paid") {
     return {
