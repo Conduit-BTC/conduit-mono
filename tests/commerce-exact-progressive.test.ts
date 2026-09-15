@@ -9,6 +9,7 @@ import {
   __setRelayListTestOverrides,
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
+  createProductsByIdsReadCoordinator,
   getCachedProductsByIds,
   getProductsByIds,
   hasExactLiveProductAvailabilityEvidence,
@@ -19,6 +20,7 @@ import {
 
 const fastSecret = generateSecretKey()
 const slowSecret = generateSecretKey()
+const thirdSecret = generateSecretKey()
 const now = 1_700_000_000_000
 let products: CachedProduct[] = []
 let tombstones: CachedProductTombstone[] = []
@@ -123,10 +125,21 @@ function installHeldRead(
   const held = gate()
   const fastReturned = gate()
   const filters: Array<{ authors?: string[]; dTags?: string[] }> = []
+  const deletionFilters: Array<{
+    authors?: string[]
+    eventIds?: string[]
+    addresses?: string[]
+  }> = []
   __setCommerceTestOverrides({
     fetchEventsFanout: async (filter) => {
-      if (filter.kinds?.includes(5))
+      if (filter.kinds?.includes(5)) {
+        deletionFilters.push({
+          authors: filter.authors,
+          eventIds: filter["#e"],
+          addresses: filter["#a"],
+        })
         return networkDeletion ? [networkDeletion] : []
+      }
       if (!filter.kinds?.includes(30402)) return []
       filters.push({ authors: filter.authors, dTags: filter["#d"] })
       if (filter.authors?.includes(slow.pubkey)) {
@@ -137,7 +150,7 @@ function installHeldRead(
       return fast
     },
   })
-  return { held, fastReturned, filters }
+  return { held, fastReturned, filters, deletionFilters }
 }
 
 async function afterFastRead(fastReturned: ReturnType<typeof gate>) {
@@ -147,16 +160,71 @@ async function afterFastRead(fastReturned: ReturnType<typeof gate>) {
 }
 
 describe("progressive exact product reads", () => {
-  it("emits the completed author batch before a held sibling without adding requests", async () => {
+  it("shares one author concurrency budget across overlapping exact reads", async () => {
+    const listings = Array.from({ length: 4 }, (_, index) =>
+      listing(generateSecretKey(), `coordinated-${index}`)
+    )
+    const release = gate()
+    const twoStarted = gate()
+    let activeProductReads = 0
+    let maximumProductReads = 0
+    let startedProductReads = 0
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(30402)) return []
+        activeProductReads += 1
+        startedProductReads += 1
+        maximumProductReads = Math.max(maximumProductReads, activeProductReads)
+        if (startedProductReads === 2) twoStarted.release()
+        try {
+          await release.promise
+          return listings.filter(
+            (event) =>
+              filter.authors?.includes(event.pubkey) &&
+              filter["#d"]?.includes(
+                event.tags.find((tag) => tag[0] === "d")?.[1] ?? ""
+              )
+          )
+        } finally {
+          activeProductReads -= 1
+        }
+      },
+    })
+    const coordinator = createProductsByIdsReadCoordinator(2)
+    const first = getProductsByIds(listings.slice(0, 2).map(address), {
+      readCoordinator: coordinator,
+    })
+    const second = getProductsByIds(listings.slice(2).map(address), {
+      readCoordinator: coordinator,
+    })
+    try {
+      await twoStarted.promise
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(maximumProductReads).toBe(2)
+    } finally {
+      release.release()
+    }
+
+    const results = await Promise.all([first, second])
+    expect(results.map((result) => result.data.length)).toEqual([2, 2])
+    expect(maximumProductReads).toBe(2)
+  })
+
+  it("settles a completed author before a held sibling without rereading exact products", async () => {
     const fast = [
       listing(fastSecret, "fast-one"),
       listing(fastSecret, "fast-two"),
     ]
     const slow = listing(slowSecret, "slow")
-    const { held, fastReturned, filters } = installHeldRead(fast, slow)
+    const { held, fastReturned, filters, deletionFilters } = installHeldRead(
+      fast,
+      slow
+    )
     const snapshots: ProductsByIdsResult[] = []
+    const settled: ProductsByIdsResult[] = []
     const read = getProductsByIds([...fast, slow].map(address), {
       onProgress: (snapshot) => snapshots.push(snapshot),
+      onAuthorSettled: (snapshot) => settled.push(snapshot),
     })
     try {
       await afterFastRead(fastReturned)
@@ -173,6 +241,30 @@ describe("progressive exact product reads", () => {
       expect(
         (await getCachedProductsByIds(fast.map(address))).data
       ).toHaveLength(2)
+      expect(settled).toHaveLength(1)
+      expect(
+        fast.every((event) =>
+          hasExactLiveProductAvailabilityEvidence(
+            settled[0]!.diagnostics.find(
+              (diagnostic) => diagnostic.addressId === address(event)
+            ),
+            address(event)
+          )
+        )
+      ).toBe(true)
+      expect(
+        settled[0]!.diagnostics.some(
+          (diagnostic) => diagnostic.addressId === address(slow)
+        )
+      ).toBe(false)
+      expect(
+        deletionFilters.filter((filter) =>
+          filter.authors?.includes(fast[0]!.pubkey)
+        )
+      ).toHaveLength(2)
+      expect(
+        deletionFilters.some((filter) => filter.authors?.includes(slow.pubkey))
+      ).toBe(false)
       expect(filters).toHaveLength(2)
       expect(
         filters.find((filter) => filter.authors?.includes(fast[0]!.pubkey))
@@ -185,7 +277,347 @@ describe("progressive exact product reads", () => {
     const final = await read
     expect(final.data).toHaveLength(3)
     expect(snapshots.at(-1)).toEqual(final)
+    expect(settled.at(-1)).toEqual(final)
     expect(final.meta.stale).toBe(false)
+  })
+
+  it("reconciles each settled author against cache only once", async () => {
+    const listings = Array.from({ length: 4 }, (_, index) =>
+      listing(generateSecretKey(), `linear-reconciliation-${index}`)
+    )
+    const cacheReadScopes: string[][] = []
+    __setCommerceTestOverrides({
+      getCachedProducts: async (merchant, authors) => {
+        if (authors) cacheReadScopes.push([...authors])
+        return products.filter(
+          (row) =>
+            (!merchant || merchant === row.pubkey) &&
+            (!authors || authors.includes(row.pubkey))
+        )
+      },
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(30402)
+          ? listings.filter(
+              (event) =>
+                filter.authors?.includes(event.pubkey) &&
+                event.tags.some(
+                  (tag) =>
+                    tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                )
+            )
+          : [],
+    })
+    const settled: ProductsByIdsResult[] = []
+
+    const result = await getProductsByIds(listings.map(address), {
+      onAuthorSettled: (snapshot) => settled.push(snapshot),
+    })
+
+    expect(result.data).toHaveLength(listings.length)
+    expect(settled.map((snapshot) => snapshot.data.length)).toEqual([
+      1, 2, 3, 4,
+    ])
+    expect(cacheReadScopes.map((scope) => scope.length)).toEqual([
+      listings.length,
+      1,
+      1,
+      1,
+      1,
+      listings.length,
+    ])
+  })
+
+  it("revalidates a settled author after a signed tombstone is cached", async () => {
+    const fast = listing(fastSecret, "settled-then-deleted")
+    const slow = listing(slowSecret, "held-sibling")
+    const { held, fastReturned } = installHeldRead([fast], slow)
+    const settled: ProductsByIdsResult[] = []
+    const read = getProductsByIds([fast, slow].map(address), {
+      onAuthorSettled: (snapshot) => settled.push(snapshot),
+    })
+
+    try {
+      await afterFastRead(fastReturned)
+      expect(settled).toHaveLength(1)
+      expect(
+        hasExactLiveProductAvailabilityEvidence(
+          settled[0]!.diagnostics.find(
+            (diagnostic) => diagnostic.addressId === address(fast)
+          ),
+          address(fast)
+        )
+      ).toBe(true)
+      await cacheSignedProductDeletionEvent(deletion(fast))
+    } finally {
+      held.release()
+      await read.catch(() => undefined)
+    }
+
+    const final = await read
+    expect(settled.length).toBeGreaterThan(1)
+    expect(
+      settled.slice(1).every(
+        (snapshot) =>
+          !snapshot.data.some((record) => record.addressId === address(fast)) &&
+          !hasExactLiveProductAvailabilityEvidence(
+            snapshot.diagnostics.find(
+              (diagnostic) => diagnostic.addressId === address(fast)
+            ),
+            address(fast)
+          )
+      )
+    ).toBe(true)
+    expect(
+      final.data.some((record) => record.addressId === address(fast))
+    ).toBe(false)
+  })
+
+  it("revalidates a settled author after a newer signed withdrawal is cached", async () => {
+    const fast = listing(fastSecret, "settled-then-withdrawn")
+    const withdrawn = listing(
+      fastSecret,
+      "settled-then-withdrawn",
+      [["visibility", "private"]],
+      150
+    )
+    const slow = listing(slowSecret, "held-withdrawal-sibling")
+    const { held, fastReturned } = installHeldRead([fast], slow)
+    const withdrawalVisible = gate()
+    const finishWithdrawalWrite = gate()
+    __setCommerceTestOverrides({
+      putCachedProducts: async (rows) => {
+        for (const row of rows)
+          products = [
+            ...products.filter((current) => current.id !== row.id),
+            row,
+          ]
+        if (rows.some((row) => row.eventId === withdrawn.id)) {
+          withdrawalVisible.release()
+          await finishWithdrawalWrite.promise
+        }
+      },
+    })
+    const settled: ProductsByIdsResult[] = []
+    const laterSettled = gate()
+    const read = getProductsByIds([fast, slow].map(address), {
+      onAuthorSettled: (snapshot) => {
+        settled.push(snapshot)
+        if (settled.length > 1) laterSettled.release()
+      },
+    })
+    let withdrawalCacheWrite:
+      ReturnType<typeof cacheSignedProductListingEvent> | undefined
+
+    try {
+      await afterFastRead(fastReturned)
+      expect(settled).toHaveLength(1)
+      expect(
+        hasExactLiveProductAvailabilityEvidence(
+          settled[0]!.diagnostics.find(
+            (diagnostic) => diagnostic.addressId === address(fast)
+          ),
+          address(fast)
+        )
+      ).toBe(true)
+      withdrawalCacheWrite = cacheSignedProductListingEvent(withdrawn)
+      await withdrawalVisible.promise
+      held.release()
+      await laterSettled.promise
+    } finally {
+      finishWithdrawalWrite.release()
+      held.release()
+      await withdrawalCacheWrite?.catch(() => undefined)
+      await read.catch(() => undefined)
+    }
+
+    const final = await read
+    expect(settled.length).toBeGreaterThan(1)
+    for (const snapshot of settled.slice(1)) {
+      expect(
+        snapshot.data.some((record) => record.addressId === address(fast))
+      ).toBe(false)
+      expect(
+        hasExactLiveProductAvailabilityEvidence(
+          snapshot.diagnostics.find(
+            (diagnostic) => diagnostic.addressId === address(fast)
+          ),
+          address(fast)
+        )
+      ).toBe(false)
+    }
+    expect(
+      final.data.some((record) => record.addressId === address(fast))
+    ).toBe(false)
+  })
+
+  it("holds an author pipeline slot through deletion reconciliation", async () => {
+    const first = listing(fastSecret, "pipeline-first")
+    const second = listing(slowSecret, "pipeline-second")
+    const third = listing(thirdSecret, "pipeline-third")
+    const deletionHeld = gate()
+    const deletionStarted = gate()
+    const productReadAuthors: string[] = []
+    let deletionStarts = 0
+    let activeReads = 0
+    let maxActiveReads = 0
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        activeReads++
+        maxActiveReads = Math.max(maxActiveReads, activeReads)
+        try {
+          if (filter.kinds?.includes(5)) {
+            deletionStarts++
+            if (deletionStarts === 2) deletionStarted.release()
+            await deletionHeld.promise
+            return []
+          }
+          if (!filter.kinds?.includes(30402)) return []
+          const author = filter.authors?.[0]
+          if (author) productReadAuthors.push(author)
+          return [first, second, third].filter(
+            (event) =>
+              filter.authors?.includes(event.pubkey) &&
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )
+          )
+        } finally {
+          activeReads--
+        }
+      },
+    })
+    const settled: ProductsByIdsResult[] = []
+    const read = getProductsByIds([first, second, third].map(address), {
+      onAuthorSettled: (snapshot) => settled.push(snapshot),
+    })
+    try {
+      await deletionStarted.promise
+      expect(new Set(productReadAuthors)).toEqual(
+        new Set([first.pubkey, second.pubkey])
+      )
+      expect(productReadAuthors).not.toContain(third.pubkey)
+      expect(settled).toHaveLength(0)
+    } finally {
+      deletionHeld.release()
+      await read.catch(() => undefined)
+    }
+    const final = await read
+    expect(final.data).toHaveLength(3)
+    expect(productReadAuthors).toHaveLength(3)
+    expect(new Set(productReadAuthors).size).toBe(3)
+    // Two author pipelines may each overlap their independent `#e` and `#a`
+    // deletion checks, but a third author cannot enter the shared coordinator.
+    expect(maxActiveReads).toBeLessThanOrEqual(4)
+  })
+
+  it("overlaps exact event-id and coordinate deletion checks before settling an author", async () => {
+    const product = listing(fastSecret, "parallel-deletion-frontier")
+    const releaseDeletionReads = gate()
+    const firstDeletionReadStarted = gate()
+    let activeDeletionReads = 0
+    let maximumDeletionReads = 0
+    let deletionReadStarts = 0
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(5)) {
+          activeDeletionReads++
+          deletionReadStarts++
+          maximumDeletionReads = Math.max(
+            maximumDeletionReads,
+            activeDeletionReads
+          )
+          if (deletionReadStarts === 1) firstDeletionReadStarted.release()
+          try {
+            await releaseDeletionReads.promise
+            return []
+          } finally {
+            activeDeletionReads--
+          }
+        }
+        return filter.kinds?.includes(30402) ? [product] : []
+      },
+    })
+    const settled: ProductsByIdsResult[] = []
+    const read = getProductsByIds([address(product)], {
+      onAuthorSettled: (snapshot) => settled.push(snapshot),
+    })
+    await firstDeletionReadStarted.promise
+    try {
+      expect(deletionReadStarts).toBe(2)
+      expect(maximumDeletionReads).toBe(2)
+      expect(settled).toHaveLength(0)
+    } finally {
+      releaseDeletionReads.release()
+      await read.catch(() => undefined)
+    }
+    expect((await read).data).toHaveLength(1)
+    expect(settled).toHaveLength(1)
+  })
+
+  it("waits for an exact variation family before settling a fast author", async () => {
+    const parent = listing(fastSecret, "settled-family", [
+      ["type", "variable", "physical"],
+    ])
+    const child = listing(fastSecret, "settled-family-blue", [
+      ["type", "variation", "physical"],
+      ["a", address(parent)],
+      ["spec", "color", "blue"],
+    ])
+    const slow = listing(slowSecret, "settled-family-sibling")
+    const slowHeld = gate()
+    const familyHeld = gate()
+    const familyStarted = gate()
+    const settledStarted = gate()
+    const settled: ProductsByIdsResult[] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(5)) return []
+        if (!filter.kinds?.includes(30402)) return []
+        if (filter.authors?.includes(slow.pubkey)) {
+          await slowHeld.promise
+          return [slow]
+        }
+        if (filter["#a"]?.includes(address(parent))) {
+          familyStarted.release()
+          await familyHeld.promise
+          return [child]
+        }
+        return [parent]
+      },
+    })
+    const read = getProductsByIds([parent, slow].map(address), {
+      onAuthorSettled: (snapshot) => {
+        settled.push(snapshot)
+        settledStarted.release()
+      },
+    })
+    try {
+      await familyStarted.promise
+      expect(settled).toHaveLength(0)
+      familyHeld.release()
+      await settledStarted.promise
+      const fastSnapshot = settled.at(-1)!
+      const family = fastSnapshot.data.find(
+        (record) => record.addressId === address(parent)
+      )?.family
+      expect(family?.state).toBe("ready")
+      expect(family?.children.map((record) => record.addressId)).toEqual([
+        address(child),
+      ])
+      expect(
+        hasExactLiveProductAvailabilityEvidence(
+          fastSnapshot.diagnostics.find(
+            (diagnostic) => diagnostic.addressId === address(parent)
+          ),
+          address(parent)
+        )
+      ).toBe(true)
+    } finally {
+      familyHeld.release()
+      slowHeld.release()
+      await read.catch(() => undefined)
+    }
+    await read
   })
 
   it("retracts an earlier product when a later signed network deletion arrives", async () => {
@@ -193,14 +625,28 @@ describe("progressive exact product reads", () => {
     const slow = listing(slowSecret, "survivor")
     const { held, fastReturned } = installHeldRead([fast], slow, deletion(fast))
     const snapshots: ProductsByIdsResult[] = []
+    const settled: ProductsByIdsResult[] = []
     const read = getProductsByIds([fast, slow].map(address), {
       onProgress: (snapshot) => snapshots.push(snapshot),
+      onAuthorSettled: (snapshot) => settled.push(snapshot),
     })
     try {
       await afterFastRead(fastReturned)
       expect(snapshots[0]?.data.map((record) => record.addressId)).toContain(
         address(fast)
       )
+      expect(settled).toHaveLength(1)
+      expect(
+        settled.every(
+          (snapshot) =>
+            !hasExactLiveProductAvailabilityEvidence(
+              snapshot.diagnostics.find(
+                (diagnostic) => diagnostic.addressId === address(fast)
+              ),
+              address(fast)
+            )
+        )
+      ).toBe(true)
     } finally {
       held.release()
       await read.catch(() => undefined)

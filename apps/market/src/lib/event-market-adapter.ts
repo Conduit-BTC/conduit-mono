@@ -1,4 +1,5 @@
 import {
+  createProductsByIdsReadCoordinator,
   decodeEventMarketReference,
   encodeEventMarketNaddr,
   getEventMarket,
@@ -31,6 +32,27 @@ import type {
 } from "./cart-model"
 
 const EVENT_COLLECTION_KIND = 30405
+
+type EventCatalogAdapterTestOverrides = {
+  getEventMarket?: typeof getEventMarket
+  getProductsByIds?: typeof getProductsByIds
+  getCachedProductsByIds?: typeof getCachedProductsByIds
+}
+
+let eventCatalogAdapterTestOverrides: EventCatalogAdapterTestOverrides = {}
+
+export function __setEventCatalogAdapterTestOverrides(
+  overrides: EventCatalogAdapterTestOverrides
+): void {
+  eventCatalogAdapterTestOverrides = {
+    ...eventCatalogAdapterTestOverrides,
+    ...overrides,
+  }
+}
+
+export function __resetEventCatalogAdapterTestOverrides(): void {
+  eventCatalogAdapterTestOverrides = {}
+}
 
 export type EventCatalogProduct = {
   product: Product
@@ -759,7 +781,114 @@ export type RawEventCatalog = {
   resolution?: EventMarketResolution
   result?: ProductsByIdsResult
   previewRecords?: CommerceProductRecord[]
+  /**
+   * Full-set coordinates completed by this loader invocation's exact event and
+   * product reads. Retained query data and browse-only progress leave it empty.
+   */
+  actionableProductCoordinates?: string[]
   complete: boolean
+}
+
+function constrainProgressiveProductAction(
+  entry: EventCatalogProduct,
+  actionable: ReadonlySet<string>
+): EventCatalogProduct {
+  const directActionable = actionable.has(entry.product.id)
+  const familyPickupFulfillments = entry.familyPickupFulfillments
+    ? Object.fromEntries(
+        Object.entries(entry.familyPickupFulfillments).map(
+          ([coordinate, fulfillment]) => [
+            coordinate,
+            actionable.has(coordinate) ? fulfillment : null,
+          ]
+        )
+      )
+    : undefined
+  const familyActionable = Object.values(familyPickupFulfillments ?? {}).some(
+    Boolean
+  )
+  return {
+    ...entry,
+    evidenceState:
+      directActionable || familyActionable ? entry.evidenceState : "retained",
+    participation: {
+      ...entry.participation,
+      purchaseReady: directActionable && entry.participation.purchaseReady,
+    },
+    pickupFulfillment: directActionable ? entry.pickupFulfillment : null,
+    familyPickupFulfillments,
+  }
+}
+
+function eventCatalogProductHasPickup(entry: EventCatalogProduct): boolean {
+  return (
+    entry.pickupFulfillment !== null ||
+    Object.values(entry.familyPickupFulfillments ?? {}).some(Boolean)
+  )
+}
+
+function projectEventCatalogPreviewProducts(
+  resolution: EventMarketResolution,
+  records: readonly CommerceProductRecord[]
+): EventCatalogProduct[] {
+  const excludedProducts = new Set(resolution.browseExcludedProductCoordinates)
+  const requested = new Set(
+    resolution.organizerProductCoordinates.filter(
+      (coordinate) => !excludedProducts.has(coordinate)
+    )
+  )
+  const previewByCoordinate = new Map<string, CommerceProductRecord>()
+  for (const record of records) {
+    if (record.product.type === "variable") {
+      const prepared = prepareEventCatalogFamily(
+        record,
+        resolution,
+        new Set(),
+        true
+      )
+      if (!prepared?.family) continue
+      previewByCoordinate.set(prepared.product.id, prepared)
+      for (const child of prepared.family.children)
+        previewByCoordinate.set(child.product.id, child)
+    } else if (
+      record.product.type === "simple" ||
+      record.product.type === "variation"
+    ) {
+      previewByCoordinate.set(record.product.id, record)
+    }
+  }
+  const foldedChildren = new Set(
+    [...previewByCoordinate.values()].flatMap((record) =>
+      requested.has(record.product.id) &&
+      resolveEventMarketProductParticipation(record.product, resolution)
+        .requested
+        ? (record.family?.children.map((child) => child.product.id) ?? [])
+        : []
+    )
+  )
+  return [...requested].flatMap<EventCatalogProduct>((coordinate) => {
+    const record = previewByCoordinate.get(coordinate)
+    if (
+      !record ||
+      foldedChildren.has(coordinate) ||
+      !isEventCatalogRecordSafetyAllowed(record, resolution, undefined, true)
+    )
+      return []
+    const participation = resolveEventMarketProductParticipation(
+      record.product,
+      resolution
+    )
+    if (!participation.requested) return []
+    return [
+      {
+        product: record.product,
+        family: record.family,
+        evidenceState: "retained",
+        participation: { ...participation, purchaseReady: false },
+        pickupFulfillment: null,
+      },
+    ]
+  })
 }
 
 export function projectRawEventCatalog(
@@ -770,6 +899,11 @@ export function projectRawEventCatalog(
   const resolution = raw.resolution
   if (!resolution) return unavailableCatalog(raw.reference, "malformed")
   const complete = raw.complete && allowPurchase
+  const actionable = new Set(
+    !raw.complete && allowPurchase
+      ? (raw.actionableProductCoordinates ?? [])
+      : []
+  )
   const excludedProducts = new Set(resolution.browseExcludedProductCoordinates)
   const base: EventCatalog = {
     state: resolution.state,
@@ -802,15 +936,33 @@ export function projectRawEventCatalog(
       result: raw.result,
       rateInput,
     })
+    const hydratedProducts = complete
+      ? hydrated.products
+      : actionable.size > 0
+        ? hydrated.products.map((entry) =>
+            constrainProgressiveProductAction(entry, actionable)
+          )
+        : hydrated.products.map(browseOnlyProduct)
+    const products = complete
+      ? hydratedProducts
+      : Array.from(
+          new Map(
+            [
+              ...projectEventCatalogPreviewProducts(
+                resolution,
+                raw.previewRecords ?? []
+              ),
+              ...hydratedProducts,
+            ].map((entry) => [entry.product.id, entry])
+          ).values()
+        )
     return {
       ...base,
       ...hydrated,
-      products: complete
-        ? hydrated.products
-        : hydrated.products.map(browseOnlyProduct),
+      products,
       purchaseReady:
-        complete &&
-        (resolution.state === "active" || resolution.state === "partial"),
+        (resolution.state === "active" || resolution.state === "partial") &&
+        (complete || products.some(eventCatalogProductHasPickup)),
     }
   }
   // Organizer evidence is enough to display safe retained cards, but is never
@@ -827,58 +979,10 @@ export function projectRawEventCatalog(
       (coordinate) => !excludedProducts.has(coordinate)
     )
   )
-  const previewByCoordinate = new Map<string, CommerceProductRecord>()
-  for (const record of raw.previewRecords ?? []) {
-    if (record.product.type === "variable") {
-      const prepared = prepareEventCatalogFamily(
-        record,
-        resolution,
-        new Set(),
-        true
-      )
-      if (!prepared?.family) continue
-      previewByCoordinate.set(prepared.product.id, prepared)
-      for (const child of prepared.family.children)
-        previewByCoordinate.set(child.product.id, child)
-    } else if (
-      record.product.type === "simple" ||
-      record.product.type === "variation"
-    ) {
-      previewByCoordinate.set(record.product.id, record)
-    }
-  }
-  const foldedChildren = new Set(
-    [...previewByCoordinate.values()].flatMap((record) =>
-      requested.has(record.product.id) &&
-      resolveEventMarketProductParticipation(record.product, resolution)
-        .requested
-        ? (record.family?.children.map((child) => child.product.id) ?? [])
-        : []
-    )
+  const products = projectEventCatalogPreviewProducts(
+    resolution,
+    raw.previewRecords ?? []
   )
-  const products = [...requested].flatMap<EventCatalogProduct>((coordinate) => {
-    const record = previewByCoordinate.get(coordinate)
-    if (
-      !record ||
-      foldedChildren.has(coordinate) ||
-      !isEventCatalogRecordSafetyAllowed(record, resolution, undefined, true)
-    )
-      return []
-    const participation = resolveEventMarketProductParticipation(
-      record.product,
-      resolution
-    )
-    if (!participation.requested) return []
-    return [
-      {
-        product: record.product,
-        family: record.family,
-        evidenceState: "retained",
-        participation: { ...participation, purchaseReady: false },
-        pickupFulfillment: null,
-      },
-    ]
-  })
   return {
     ...base,
     products,
@@ -913,6 +1017,230 @@ function browseOnlyProduct(entry: EventCatalogProduct): EventCatalogProduct {
   }
 }
 
+function newerProductRecord(
+  current: CommerceProductRecord,
+  candidate: CommerceProductRecord
+): CommerceProductRecord {
+  if (candidate.eventCreatedAt !== current.eventCreatedAt) {
+    return candidate.eventCreatedAt > current.eventCreatedAt
+      ? candidate
+      : current
+  }
+  return candidate.eventId.toLowerCase() < current.eventId.toLowerCase()
+    ? candidate
+    : current
+}
+
+function mergeProductRecords(
+  ...groups: readonly (readonly CommerceProductRecord[])[]
+): CommerceProductRecord[] {
+  const records = new Map<string, CommerceProductRecord>()
+  for (const record of groups.flat()) {
+    const current = records.get(record.addressId)
+    if (!current) {
+      records.set(record.addressId, record)
+      continue
+    }
+    const selected = newerProductRecord(current, record)
+    if (selected.product.type !== "variable") {
+      records.set(selected.addressId, { ...selected, family: undefined })
+      continue
+    }
+    const familySources = [current.family, record.family].filter(
+      (family): family is NonNullable<CommerceProductRecord["family"]> =>
+        !!family
+    )
+    if (familySources.length === 0) {
+      records.set(selected.addressId, selected)
+      continue
+    }
+    const children = new Map<string, CommerceProductRecord>()
+    for (const child of familySources.flatMap((family) => family.children)) {
+      const existing = children.get(child.addressId)
+      children.set(
+        child.addressId,
+        existing ? newerProductRecord(existing, child) : child
+      )
+    }
+    const newestEvidence = familySources.reduce(
+      (newest, family) =>
+        family.readEvidence.fetchedAt > newest.fetchedAt
+          ? family.readEvidence
+          : newest,
+      familySources[0]!.readEvidence
+    )
+    const readEvidence = {
+      ...newestEvidence,
+      stale: familySources.some((family) => family.readEvidence.stale),
+      degraded: familySources.some((family) => family.readEvidence.degraded),
+      capped: familySources.some((family) => family.readEvidence.capped),
+    }
+    const prepared = prepareProductCatalog(
+      [
+        { ...selected, family: undefined },
+        ...Array.from(children.values(), (child) => ({
+          ...child,
+          family: undefined,
+        })),
+      ],
+      readEvidence
+    ).items[0]
+    records.set(
+      selected.addressId,
+      prepared?.kind === "family"
+        ? { ...prepared.family.parent, family: prepared.family }
+        : selected
+    )
+  }
+  return Array.from(records.values())
+}
+
+function recordsByProductCoordinate(result: ProductsByIdsResult) {
+  const records = new Map<string, CommerceProductRecord>()
+  for (const record of result.data) {
+    for (const entry of [record, ...(record.family?.children ?? [])]) {
+      const current = records.get(entry.product.id)
+      records.set(
+        entry.product.id,
+        current ? newerProductRecord(current, entry) : entry
+      )
+    }
+  }
+  return records
+}
+
+function pruneProductRecords(
+  records: readonly CommerceProductRecord[],
+  exclusions: ReadonlySet<string>
+): CommerceProductRecord[] {
+  return records.flatMap((record) => {
+    if (exclusions.has(record.product.id)) return []
+    if (!record.family) return [record]
+    const children = record.family.children.filter(
+      (child) => !exclusions.has(child.product.id)
+    )
+    if (children.length === record.family.children.length) return [record]
+    const prepared = prepareProductCatalog(
+      [
+        { ...record.family.parent, family: undefined },
+        ...children.map((child) => ({ ...child, family: undefined })),
+      ],
+      record.family.readEvidence
+    ).items[0]
+    return prepared?.kind === "family"
+      ? [{ ...prepared.family.parent, family: prepared.family }]
+      : []
+  })
+}
+
+/**
+ * Return final accepted coordinates whose product evidence needs one exact
+ * reconciliation after the overlapping organizer-list read settles. A newer
+ * selected withdrawal is conclusive and must not be replaced by older
+ * acceptance evidence.
+ */
+export function eventCatalogAcceptedProductRecoveryCoordinates(
+  resolution: EventMarketResolution,
+  result: ProductsByIdsResult
+): string[] {
+  const records = recordsByProductCoordinate(result)
+  const diagnostics = new Map(
+    result.diagnostics.map((diagnostic) => [diagnostic.productId, diagnostic])
+  )
+
+  return resolution.acceptedProductCoordinates.filter((coordinate) => {
+    if (!diagnostics.has(coordinate)) return true
+    const record = records.get(coordinate)
+    if (!record) return true
+    const comparison = compareRecordToAcceptedEvidence(record, resolution)
+    if (comparison !== null && comparison > 0) return false
+    return (
+      comparison === null ||
+      comparison < 0 ||
+      !productReadIsLive(result, coordinate)
+    )
+  })
+}
+
+function mergeProductsByIdsResults(
+  ...results: readonly ProductsByIdsResult[]
+): ProductsByIdsResult | undefined {
+  const last = results.at(-1)
+  if (!last) return undefined
+  let data = mergeProductRecords(...results.map((result) => result.data))
+  const diagnostics = new Map<
+    string,
+    ProductsByIdsResult["diagnostics"][number]
+  >()
+  const selectedRecords = recordsByProductCoordinate({ ...last, data })
+  for (const result of results) {
+    const candidateRecords = recordsByProductCoordinate(result)
+    for (const diagnostic of result.diagnostics) {
+      const candidate = candidateRecords.get(diagnostic.productId)
+      const selected = selectedRecords.get(diagnostic.productId)
+      // Results are passed in causal order. A later negative without a record
+      // demotes retained signed data to browse-only. A later positive may
+      // replace authority only when its signed record also wins NIP-01 order.
+      if (diagnostic.issue !== null) {
+        diagnostics.set(diagnostic.productId, diagnostic)
+        continue
+      }
+      if (
+        candidate &&
+        selected &&
+        selected.eventCreatedAt === candidate.eventCreatedAt &&
+        selected.eventId.toLowerCase() === candidate.eventId.toLowerCase()
+      ) {
+        diagnostics.set(diagnostic.productId, diagnostic)
+      }
+    }
+  }
+  const diagnosticCoordinates = new Set(diagnostics.keys())
+  const normalized = new Set<string>()
+  data = data.flatMap((record) => {
+    const selected = selectedRecords.get(record.product.id)
+    if (!selected || !diagnosticCoordinates.has(record.product.id)) {
+      return [record]
+    }
+    normalized.add(record.product.id)
+    return record.product.type === "variable"
+      ? [record]
+      : [{ ...selected, family: undefined }]
+  })
+  for (const coordinate of diagnosticCoordinates) {
+    if (normalized.has(coordinate)) continue
+    const selected = selectedRecords.get(coordinate)
+    if (selected) data.push({ ...selected, family: undefined })
+  }
+  data = pruneProductRecords(
+    data,
+    new Set(
+      [...diagnostics].flatMap(([coordinate, diagnostic]) =>
+        diagnostic.issue === "listing_filtered" ? [coordinate] : []
+      )
+    )
+  )
+  return {
+    data,
+    diagnostics: Array.from(diagnostics.values()),
+    meta: {
+      ...last.meta,
+      stale: results.some((result) => result.meta.stale),
+      degraded: results.some((result) => result.meta.degraded),
+      capped: results.some((result) => result.meta.capped),
+      fetchedAt: Math.max(...results.map((result) => result.meta.fetchedAt)),
+    },
+  }
+}
+
+/** Merge the one final affected-author recovery in causal result order. */
+export function mergeEventCatalogAcceptedProductRecovery(
+  base: ProductsByIdsResult,
+  recovery: ProductsByIdsResult
+): ProductsByIdsResult {
+  return mergeProductsByIdsResults(base, recovery) ?? base
+}
+
 export async function loadRawEventCatalog(
   reference: string,
   options: {
@@ -928,6 +1256,13 @@ export async function loadRawEventCatalog(
     decoded.coordinate,
     decoded.relayHints
   )
+  const readEventMarket =
+    eventCatalogAdapterTestOverrides.getEventMarket ?? getEventMarket
+  const readProductsByIds =
+    eventCatalogAdapterTestOverrides.getProductsByIds ?? getProductsByIds
+  const readCachedProductsByIds =
+    eventCatalogAdapterTestOverrides.getCachedProductsByIds ??
+    getCachedProductsByIds
   const active = () =>
     !options.signal?.aborted && (options.shouldContinue?.() ?? true)
   const assertActive = () => {
@@ -935,15 +1270,30 @@ export async function loadRawEventCatalog(
       throw new DOMException("Event catalog read cancelled", "AbortError")
   }
   let finished = false
+  const productReadCoordinator = createProductsByIdsReadCoordinator(2)
   let progressVersion = 0
   let previewRecords: CommerceProductRecord[] = []
   let latestResolution: EventMarketResolution | undefined
   let productReadVersion = 0
+  let settledProductResult: ProductsByIdsResult | undefined
   type ProductRead = {
     key: string
     promise: Promise<{ result: ProductsByIdsResult } | { error: unknown }>
   }
   let productRead: ProductRead | undefined
+
+  const settledProductProgress = (resolution: EventMarketResolution) => {
+    const result = settledProductResult
+    if (!result) return {}
+    const hydration = projectEventCatalogHydration({ resolution, result })
+    const actionableProductCoordinates = hydration.products.flatMap((entry) => [
+      ...(entry.pickupFulfillment ? [entry.product.id] : []),
+      ...Object.entries(entry.familyPickupFulfillments ?? {}).flatMap(
+        ([coordinate, fulfillment]) => (fulfillment ? [coordinate] : [])
+      ),
+    ])
+    return { result, actionableProductCoordinates }
+  }
   const emitPreview = async (
     resolution: EventMarketResolution,
     version: number
@@ -959,12 +1309,13 @@ export async function loadRawEventCatalog(
       resolution,
       complete: false,
       previewRecords,
+      ...settledProductProgress(resolution),
     }
     options.onProgress?.(snapshot)
     if (!options.onProgress || !resolution.collection) return
     const coordinates = resolution.organizerProductCoordinates
     try {
-      const result = await getCachedProductsByIds([...coordinates], {
+      const result = await readCachedProductsByIds([...coordinates], {
         includeStale: true,
         includeMarketHidden: true,
       })
@@ -977,6 +1328,7 @@ export async function loadRawEventCatalog(
       options.onProgress?.({
         ...snapshot,
         previewRecords,
+        ...settledProductProgress(resolution),
       })
     }
   }
@@ -988,16 +1340,15 @@ export async function loadRawEventCatalog(
     const version = ++productReadVersion
     const current = () =>
       active() && !finished && version === productReadVersion
-    const promise = getProductsByIds(targets, {
+    settledProductResult = undefined
+    const promise = readProductsByIds(targets, {
       includeMerchantHiddenProductIds: targets,
       authenticatedPubkey: options.authenticatedPubkey,
       shouldContinue: current,
+      readCoordinator: productReadCoordinator,
       onProgress: options.onProgress
         ? (snapshot) => {
             if (!current() || !latestResolution) return
-            // Core has reconciled this cumulative frontier against current
-            // product revisions and known deletions. Supersede pending cache
-            // projections; this remains browse-only until both reads finish.
             ++progressVersion
             previewRecords = snapshot.data
             options.onProgress?.({
@@ -1006,6 +1357,22 @@ export async function loadRawEventCatalog(
               resolution: latestResolution,
               previewRecords,
               complete: false,
+              ...settledProductProgress(latestResolution),
+            })
+          }
+        : undefined,
+      onAuthorSettled: options.onProgress
+        ? (snapshot) => {
+            if (!current() || !latestResolution) return
+            settledProductResult = snapshot
+            previewRecords = mergeProductRecords(previewRecords, snapshot.data)
+            options.onProgress?.({
+              reference,
+              canonicalNaddr,
+              resolution: latestResolution,
+              previewRecords,
+              complete: false,
+              ...settledProductProgress(latestResolution),
             })
           }
         : undefined,
@@ -1032,13 +1399,14 @@ export async function loadRawEventCatalog(
     } else {
       ++productReadVersion
       productRead = undefined
+      settledProductResult = undefined
     }
     return preview
   }
 
   try {
     assertActive()
-    const resolution = await getEventMarket({
+    const resolution = await readEventMarket({
       reference: canonicalNaddr,
       authenticatedPubkey: options.authenticatedPubkey,
       shouldContinue: active,
@@ -1061,32 +1429,54 @@ export async function loadRawEventCatalog(
       const outcome = await read.promise
       assertActive()
       if ("error" in outcome) throw outcome.error
-      result = outcome.result
+      settledProductResult = outcome.result
+      previewRecords = mergeProductRecords(previewRecords, outcome.result.data)
+      options.onProgress?.({
+        reference,
+        canonicalNaddr,
+        resolution,
+        previewRecords,
+        complete: false,
+        ...settledProductProgress(resolution),
+      })
       // Event verification can find a product or a newer exact revision after
-      // the overlapping read finishes. Reconcile that positive evidence once,
-      // including accepted children folded into a variable product family.
-      const recordsByCoordinate = new Map(
-        result.data.flatMap((record) =>
-          [record, ...(record.family?.children ?? [])].map(
-            (entry) => [entry.product.id, entry] as const
-          )
+      // the overlapping read finishes. Once both broad reads settle, reconcile
+      // every final accepted coordinate for only the affected authors. Keeping
+      // this rare recovery sequential avoids stale progress overlays while the
+      // ordinary author subsets above still become actionable immediately.
+      const recoveryCoordinates =
+        eventCatalogAcceptedProductRecoveryCoordinates(
+          resolution,
+          outcome.result
         )
-      )
-      if (
-        resolution.acceptedProductCoordinates.some((coordinate) => {
-          const record = recordsByCoordinate.get(coordinate)
-          return (
-            !record ||
-            (compareRecordToAcceptedEvidence(record, resolution) ?? 0) < 0
-          )
+      const affectedAuthors = new Set(
+        recoveryCoordinates.flatMap((coordinate) => {
+          const merchantPubkey = acceptedEvidenceFor(
+            resolution,
+            coordinate
+          )?.merchantPubkey
+          return merchantPubkey ? [merchantPubkey] : []
         })
-      ) {
-        result = await getProductsByIds(resolution.acceptedProductCoordinates, {
-          includeMerchantHiddenProductIds:
-            resolution.acceptedProductCoordinates,
+      )
+      const recoveryTargets = resolution.acceptedProductCoordinates.filter(
+        (coordinate) => {
+          const merchantPubkey = acceptedEvidenceFor(
+            resolution,
+            coordinate
+          )?.merchantPubkey
+          return !!merchantPubkey && affectedAuthors.has(merchantPubkey)
+        }
+      )
+      result = outcome.result
+      if (recoveryTargets.length > 0) {
+        const recovery = await readProductsByIds(recoveryTargets, {
+          includeMerchantHiddenProductIds: recoveryTargets,
           authenticatedPubkey: options.authenticatedPubkey,
           shouldContinue: active,
+          readCoordinator: productReadCoordinator,
         })
+        assertActive()
+        result = mergeEventCatalogAcceptedProductRecovery(result, recovery)
       }
     }
     await previewRead

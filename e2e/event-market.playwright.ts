@@ -3835,16 +3835,43 @@ test("cold event catalog shows a completed merchant product before a slower merc
   await installSyntheticEnvironment(page, relay)
   const market = await publishOrganizerMarket(page, relay, {
     title: "Synthetic independently loading catalog",
-    organizerHandoffEnabled: true,
+    organizerHandoffEnabled: false,
+  })
+  const createdAt = market.initialCollection.created_at + 1
+  const fastPickup = signEvent(MERCHANT_SECRET, {
+    kind: 30406,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "fast-merchant-pickup"],
+      ["title", "Synthetic fast merchant booth"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Synthetic public hall"],
+    ],
   })
   const fast = createMerchantProductEvent({
     dTag: "fast-merchant-product",
     title: "Synthetic fast merchant product",
     collectionCoordinate: market.collectionCoordinate,
-    pickupCoordinate: market.pickupCoordinate!,
-    createdAt: market.initialCollection.created_at + 1,
+    pickupCoordinate: eventCoordinate(fastPickup),
+    createdAt,
   })
   const slowSecret = generateSecretKey()
+  const slowPickup = signEvent(slowSecret, {
+    kind: 30406,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "slow-merchant-pickup"],
+      ["title", "Synthetic slow merchant booth"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Synthetic public hall"],
+    ],
+  })
   const slow = signEvent(slowSecret, {
     kind: fast.kind,
     created_at: fast.created_at,
@@ -3854,7 +3881,9 @@ test("cold event catalog shows a completed merchant product before a slower merc
         ? ["d", "slow-merchant-product"]
         : tag[0] === "title"
           ? ["title", "Synthetic slow merchant product"]
-          : tag
+          : tag[0] === "shipping_option"
+            ? ["shipping_option", eventCoordinate(slowPickup), "0"]
+            : tag
     ),
   })
   expect(slow.pubkey).not.toBe(fast.pubkey)
@@ -3869,7 +3898,9 @@ test("cold event catalog shows a completed merchant product before a slower merc
     ],
   })
   relay.seed(
+    fastPickup,
     fast,
+    slowPickup,
     slow,
     collection,
     ...[MERCHANT_SECRET, slowSecret].map((secret) =>
@@ -3881,10 +3912,25 @@ test("cold event catalog shows a completed merchant product before a slower merc
       })
     )
   )
-  const held = relay.holdRelayRequests((request) =>
+  const exactProductRequests = (author: string, dTag: string) =>
+    relay.requests.filter((request) =>
+      request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(30402) &&
+          filter.authors?.includes(author) &&
+          filter["#d"]?.includes(dTag)
+      )
+    )
+  // Hold only the slow merchant's bounded participation frontier. Commerce
+  // hydration uses the same coordinate filter without a limit, so both cold
+  // cards can still render while this action-authority read is pending.
+  const heldSlowFrontier = relay.holdRelayRequests((request) =>
     request.filters.some(
       (filter) =>
-        filter.kinds?.includes(30402) && filter.authors?.includes(slow.pubkey)
+        filter.kinds?.includes(30402) &&
+        filter.authors?.includes(slow.pubkey) &&
+        filter["#d"]?.includes("slow-merchant-product") &&
+        typeof filter.limit === "number"
     )
   )
   const fastCard = page
@@ -3897,7 +3943,17 @@ test("cold event catalog shows a completed merchant product before a slower merc
     // This is the context's first Market-origin navigation: neither product
     // has been read into its commerce cache by a product page or warm visit.
     await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
-    await held.captured
+    await heldSlowFrontier.captured
+    await expect
+      .poll(() => ({
+        fast: exactProductRequests(fast.pubkey, "fast-merchant-product").some(
+          (request) => request.matchedEventIds.includes(fast.id)
+        ),
+        slow: exactProductRequests(slow.pubkey, "slow-merchant-product").some(
+          (request) => request.matchedEventIds.includes(slow.id)
+        ),
+      }))
+      .toEqual({ fast: true, slow: true })
     await expect
       .poll(() =>
         relay.requests.some((request) =>
@@ -3907,20 +3963,23 @@ test("cold event catalog shows a completed merchant product before a slower merc
       .toBe(true)
     await expect(fastCard).toBeVisible()
     await expect(
-      fastCard.getByRole("button", { name: "Checking pickup…", exact: true })
-    ).toBeDisabled()
-    await expect(
       fastCard.getByRole("button", { name: "Add", exact: true })
-    ).toHaveCount(0)
-    await expect(slowCard).toHaveCount(0)
+    ).toBeEnabled()
+    await expect(
+      fastCard.getByText("Pickup from merchant booth", { exact: true })
+    ).toBeVisible()
+    await expect(slowCard).toBeVisible()
+    await expect(
+      slowCard.getByRole("button", { name: "Checking pickup…", exact: true })
+    ).toBeDisabled()
     await expect(page.getByTestId("event-refresh-status")).toBeVisible()
   } finally {
-    held.release()
+    heldSlowFrontier.release()
   }
   for (const card of [fastCard, slowCard]) {
     await expect(card).toBeVisible()
     await expect(
-      card.getByText("Pickup from event organizer", { exact: true })
+      card.getByText("Pickup from merchant booth", { exact: true })
     ).toBeVisible()
     await expect(
       card.getByRole("button", { name: "Add", exact: true })

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import { QueryClient, QueryObserver } from "@tanstack/react-query"
 import {
   encodeEventMarketNaddr,
@@ -15,14 +15,19 @@ import {
   type EventCatalogQueryScope,
 } from "../src/lib/event-catalog-query"
 import {
+  __resetEventCatalogAdapterTestOverrides,
+  __setEventCatalogAdapterTestOverrides,
+  eventCatalogAcceptedProductRecoveryCoordinates,
+  mergeEventCatalogAcceptedProductRecovery,
+  projectEventCatalogHydration,
   projectRawEventCatalog,
   resolveProductCartFulfillmentFromCatalogs,
   getProductEventMarketCandidates,
   eventCatalogNeedsProductRefresh,
   getEventCatalogProductSourceObservation,
+  loadRawEventCatalog,
   takeEventCatalogProductRefreshObservations,
   type RawEventCatalog,
-  type loadRawEventCatalog,
 } from "../src/lib/event-market-adapter"
 
 const organizer = "a".repeat(64)
@@ -225,7 +230,718 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+afterEach(() => {
+  __resetEventCatalogAdapterTestOverrides()
+})
+
 describe("shared progressive event catalogs", () => {
+  it("targets missing, older, or unsettled products when acceptance advances", () => {
+    const healthyCoordinate = `30402:${merchant}:tea`
+    const pendingCoordinate = `30402:${"c".repeat(64)}:pending`
+    const healthy = product({
+      id: healthyCoordinate,
+      title: "Tea",
+      createdAt: 104_000,
+      updatedAt: 104_000,
+    })
+    const resolution: EventMarketResolution = {
+      ...market(),
+      organizerProductCoordinates: [
+        productCoordinate,
+        healthyCoordinate,
+        pendingCoordinate,
+      ],
+      acceptedProductCoordinates: [
+        productCoordinate,
+        healthyCoordinate,
+        pendingCoordinate,
+      ],
+      acceptedProductEvidence: [
+        ...market().acceptedProductEvidence,
+        {
+          productCoordinate: healthyCoordinate,
+          eventId: "5".repeat(64),
+          createdAt: 104_000,
+          shippingOptionCoordinates: [pickupCoordinate],
+          merchantPubkey: merchant,
+        },
+        {
+          productCoordinate: pendingCoordinate,
+          eventId: "6".repeat(64),
+          createdAt: 105_000,
+          shippingOptionCoordinates: [pickupCoordinate],
+          merchantPubkey: "c".repeat(64),
+        },
+      ],
+    }
+    const missing = productRead({
+      includeRecord: false,
+      issue: "product_missing",
+    })
+    const result: ProductsByIdsResult = {
+      ...missing,
+      data: [
+        commerceRecord(healthy, {
+          eventId: "5".repeat(64),
+          eventCreatedAt: 104,
+        }),
+      ],
+      diagnostics: [
+        ...missing.diagnostics,
+        {
+          productId: healthyCoordinate,
+          addressId: healthyCoordinate,
+          issue: null,
+          coverage: { listing: "complete", deletion: "complete" },
+        },
+      ],
+    }
+
+    expect(
+      eventCatalogAcceptedProductRecoveryCoordinates(resolution, result)
+    ).toEqual([productCoordinate, pendingCoordinate])
+
+    const older = productRead({ eventId: "3".repeat(64), eventCreatedAt: 102 })
+    expect(
+      eventCatalogAcceptedProductRecoveryCoordinates(market(), older)
+    ).toEqual([productCoordinate])
+
+    const newerWithdrawal = productRead({
+      product: product({ collectionRefs: [], createdAt: 104_000 }),
+      eventId: "7".repeat(64),
+      eventCreatedAt: 104,
+      issue: "listing_filtered",
+    })
+    expect(
+      eventCatalogAcceptedProductRecoveryCoordinates(market(), newerWithdrawal)
+    ).toEqual([])
+
+    const recovered = productRead()
+    const recoveredWithUnrelatedDegradation: ProductsByIdsResult = {
+      ...recovered,
+      meta: { ...recovered.meta, stale: true, degraded: true },
+      diagnostics: [
+        ...recovered.diagnostics,
+        {
+          productId: pendingCoordinate,
+          addressId: pendingCoordinate,
+          issue: "lookup_unavailable",
+          coverage: { listing: "unavailable", deletion: "unavailable" },
+        },
+      ],
+    }
+    const hydration = projectEventCatalogHydration({
+      resolution,
+      result: recoveredWithUnrelatedDegradation,
+    })
+    expect(hydration.productReadState).toBe("partial")
+    expect(
+      hydration.products.find((entry) => entry.product.id === productCoordinate)
+        ?.pickupFulfillment
+    ).not.toBeNull()
+
+    const withdrawnHealthy = product({
+      ...healthy,
+      collectionRefs: [],
+      createdAt: 105_000,
+      updatedAt: 105_000,
+    })
+    const baseAfterWithdrawal: ProductsByIdsResult = {
+      ...missing,
+      data: [
+        commerceRecord(withdrawnHealthy, {
+          eventId: "7".repeat(64),
+          eventCreatedAt: 105,
+        }),
+      ],
+      diagnostics: [
+        ...missing.diagnostics,
+        {
+          productId: healthyCoordinate,
+          addressId: healthyCoordinate,
+          issue: "listing_filtered",
+          coverage: { listing: "complete", deletion: "complete" },
+        },
+      ],
+    }
+    const earlierRecovery: ProductsByIdsResult = {
+      ...recovered,
+      data: [
+        ...recovered.data,
+        commerceRecord(healthy, {
+          eventId: "5".repeat(64),
+          eventCreatedAt: 104,
+        }),
+      ],
+      diagnostics: [
+        ...recovered.diagnostics,
+        {
+          productId: healthyCoordinate,
+          addressId: healthyCoordinate,
+          issue: null,
+          coverage: { listing: "complete", deletion: "complete" },
+        },
+      ],
+    }
+    const merged = mergeEventCatalogAcceptedProductRecovery(
+      baseAfterWithdrawal,
+      earlierRecovery
+    )
+    expect(
+      merged.diagnostics.find(
+        (diagnostic) => diagnostic.productId === healthyCoordinate
+      )?.issue
+    ).toBe("listing_filtered")
+    expect(
+      merged.data.find((record) => record.addressId === healthyCoordinate)
+        ?.eventId
+    ).toBeUndefined()
+    const mergedHydration = projectEventCatalogHydration({
+      resolution,
+      result: merged,
+    })
+    expect(
+      mergedHydration.products.find(
+        (entry) => entry.product.id === productCoordinate
+      )?.pickupFulfillment
+    ).not.toBeNull()
+    expect(
+      mergedHydration.products.find(
+        (entry) => entry.product.id === healthyCoordinate
+      )?.pickupFulfillment
+    ).toBeUndefined()
+  })
+
+  it("retains a signed product for browsing when a later exact read is missing", () => {
+    const merged = mergeEventCatalogAcceptedProductRecovery(
+      productRead(),
+      productRead({ includeRecord: false, issue: "product_missing" })
+    )
+
+    expect(merged.data.map((record) => record.product.id)).toEqual([
+      productCoordinate,
+    ])
+    expect(merged.diagnostics[0]?.issue).toBe("product_missing")
+    expect(
+      projectEventCatalogHydration({ resolution: market(), result: merged })
+        .products[0]?.pickupFulfillment
+    ).toBeNull()
+  })
+
+  it("merges a final affected-author family recovery without borrowing authority", () => {
+    const parent = product({
+      id: `30402:${merchant}:family`,
+      type: "variable",
+    })
+    const child = (dTag: string, createdAt: number) =>
+      product({
+        id: `30402:${merchant}:${dTag}`,
+        title: dTag,
+        type: "variation",
+        parentProductId: parent.id,
+        specifications: [{ key: "Size", value: dTag }],
+        createdAt,
+        updatedAt: createdAt,
+      })
+    const recoveredChild = child("recovered-child", 103_000)
+    const sibling = child("settled-sibling", 105_000)
+    const staleSibling = child("settled-sibling", 104_000)
+    const family = (...children: Product[]) => {
+      const prepared = prepareProductCatalog(
+        [
+          commerceRecord(parent),
+          ...children.map((entry) => commerceRecord(entry)),
+        ],
+        {
+          source: "commerce",
+          stale: false,
+          degraded: false,
+          capped: false,
+          fetchedAt: 1,
+        }
+      ).items[0]
+      if (prepared?.kind !== "family") throw new Error("Expected family")
+      return { ...prepared.family.parent, family: prepared.family }
+    }
+    const resolution: EventMarketResolution = {
+      ...market(),
+      organizerProductCoordinates: [parent.id, recoveredChild.id, sibling.id],
+      acceptedProductCoordinates: [recoveredChild.id, sibling.id],
+      acceptedProductEvidence: [
+        {
+          productCoordinate: recoveredChild.id,
+          eventId: "4".repeat(64),
+          createdAt: 103_000,
+          shippingOptionCoordinates: [pickupCoordinate],
+          merchantPubkey: merchant,
+        },
+        {
+          productCoordinate: sibling.id,
+          eventId: "4".repeat(64),
+          createdAt: 105_000,
+          shippingOptionCoordinates: [pickupCoordinate],
+          merchantPubkey: merchant,
+        },
+      ],
+    }
+    const base = productRead({ includeRecord: false })
+    base.data = [family(sibling)]
+    base.diagnostics = [
+      {
+        productId: recoveredChild.id,
+        addressId: recoveredChild.id,
+        issue: "product_missing",
+        coverage: { listing: "complete", deletion: "complete" },
+      },
+      {
+        productId: sibling.id,
+        addressId: sibling.id,
+        issue: null,
+        coverage: { listing: "complete", deletion: "complete" },
+      },
+    ]
+    const recovery = productRead({ includeRecord: false })
+    recovery.data = [family(recoveredChild, staleSibling)]
+    recovery.diagnostics = [
+      {
+        productId: recoveredChild.id,
+        addressId: recoveredChild.id,
+        issue: null,
+        coverage: { listing: "complete", deletion: "complete" },
+      },
+      {
+        productId: sibling.id,
+        addressId: sibling.id,
+        issue: null,
+        coverage: { listing: "complete", deletion: "complete" },
+      },
+    ]
+
+    const merged = mergeEventCatalogAcceptedProductRecovery(base, recovery)
+    const mergedFamily = merged.data[0]?.family
+    expect(
+      mergedFamily?.children.map((entry) => entry.product.id).sort()
+    ).toEqual([recoveredChild.id, sibling.id].sort())
+    expect(
+      mergedFamily?.children.find((entry) => entry.product.id === sibling.id)
+        ?.eventCreatedAt
+    ).toBe(105)
+    expect(
+      merged.diagnostics.find(
+        (diagnostic) => diagnostic.productId === sibling.id
+      )?.issue
+    ).toBeNull()
+
+    const retainedSiblingBase: ProductsByIdsResult = {
+      ...base,
+      diagnostics: base.diagnostics.map((diagnostic) =>
+        diagnostic.productId === sibling.id
+          ? { ...diagnostic, issue: "cached_only" }
+          : diagnostic
+      ),
+    }
+    const mergedRetainedSibling = mergeEventCatalogAcceptedProductRecovery(
+      retainedSiblingBase,
+      recovery
+    )
+    expect(
+      mergedRetainedSibling.data[0]?.family?.children.find(
+        (entry) => entry.product.id === sibling.id
+      )?.eventCreatedAt
+    ).toBe(105)
+    expect(
+      mergedRetainedSibling.diagnostics.find(
+        (diagnostic) => diagnostic.productId === sibling.id
+      )?.issue
+    ).toBe("cached_only")
+    const retainedSiblingHydration = projectEventCatalogHydration({
+      resolution,
+      result: mergedRetainedSibling,
+    })
+    expect(
+      retainedSiblingHydration.products.some(
+        (entry) =>
+          (entry.product.id === sibling.id &&
+            entry.pickupFulfillment !== null) ||
+          !!entry.familyPickupFulfillments?.[sibling.id]
+      )
+    ).toBe(false)
+
+    const parentResolution: EventMarketResolution = {
+      ...resolution,
+      acceptedProductCoordinates: [parent.id],
+      acceptedProductEvidence: [
+        {
+          productCoordinate: parent.id,
+          eventId: "4".repeat(64),
+          createdAt: 103_000,
+          shippingOptionCoordinates: [pickupCoordinate],
+          merchantPubkey: merchant,
+        },
+      ],
+    }
+    const parentBase: ProductsByIdsResult = {
+      ...base,
+      diagnostics: [
+        {
+          productId: parent.id,
+          addressId: parent.id,
+          issue: "lookup_partial",
+          coverage: { listing: "partial", deletion: "partial" },
+        },
+      ],
+    }
+    const parentRecovery: ProductsByIdsResult = {
+      ...recovery,
+      diagnostics: [
+        {
+          productId: parent.id,
+          addressId: parent.id,
+          issue: null,
+          coverage: { listing: "complete", deletion: "complete" },
+        },
+      ],
+    }
+    const mergedParent = mergeEventCatalogAcceptedProductRecovery(
+      parentBase,
+      parentRecovery
+    )
+    expect(
+      mergedParent.data[0]?.family?.children
+        .map((entry) => entry.product.id)
+        .sort()
+    ).toEqual([recoveredChild.id, sibling.id].sort())
+    expect(
+      mergedParent.data[0]?.family?.children.find(
+        (entry) => entry.product.id === sibling.id
+      )?.eventCreatedAt
+    ).toBe(105)
+    expect(
+      mergedParent.diagnostics.find(
+        (diagnostic) => diagnostic.productId === sibling.id
+      )
+    ).toBeUndefined()
+
+    const parentAndChildResolution: EventMarketResolution = {
+      ...parentResolution,
+      organizerProductCoordinates: [parent.id, staleSibling.id],
+      acceptedProductCoordinates: [parent.id, staleSibling.id],
+      acceptedProductEvidence: [
+        ...parentResolution.acceptedProductEvidence,
+        {
+          productCoordinate: staleSibling.id,
+          eventId: "4".repeat(64),
+          createdAt: 104_000,
+          shippingOptionCoordinates: [pickupCoordinate],
+          merchantPubkey: merchant,
+        },
+      ],
+      participationRequests: [
+        { productCoordinate: parent.id, merchantPubkey: merchant },
+        { productCoordinate: staleSibling.id, merchantPubkey: merchant },
+      ],
+    }
+    const baseWithExactStandaloneChild: ProductsByIdsResult = {
+      ...parentBase,
+      data: [family(staleSibling), commerceRecord(staleSibling)],
+      diagnostics: [
+        ...parentBase.diagnostics,
+        {
+          productId: staleSibling.id,
+          addressId: staleSibling.id,
+          issue: null,
+          coverage: { listing: "complete", deletion: "complete" },
+        },
+      ],
+    }
+    const parentRecoveryWithNewerRetainedChild: ProductsByIdsResult = {
+      ...parentRecovery,
+      data: [family(sibling)],
+      diagnostics: [
+        ...parentRecovery.diagnostics,
+        {
+          productId: sibling.id,
+          addressId: sibling.id,
+          issue: "cached_only",
+          coverage: { listing: "complete", deletion: "complete" },
+        },
+      ],
+    }
+    const mergedAtomicChild = mergeEventCatalogAcceptedProductRecovery(
+      baseWithExactStandaloneChild,
+      parentRecoveryWithNewerRetainedChild
+    )
+    expect(
+      mergedAtomicChild.data[0]?.family?.children.find(
+        (entry) => entry.product.id === staleSibling.id
+      )?.eventCreatedAt
+    ).toBe(105)
+    expect(
+      mergedAtomicChild.data.find(
+        (entry) => entry.addressId === staleSibling.id
+      )?.eventCreatedAt
+    ).toBe(105)
+    expect(
+      mergedAtomicChild.diagnostics.find(
+        (diagnostic) => diagnostic.productId === staleSibling.id
+      )?.issue
+    ).toBe("cached_only")
+    const atomicHydration = projectEventCatalogHydration({
+      resolution: parentAndChildResolution,
+      result: mergedAtomicChild,
+    })
+    expect(
+      atomicHydration.products
+        .find((entry) => entry.product.id === parent.id)
+        ?.family?.children.find((entry) => entry.product.id === staleSibling.id)
+        ?.product.createdAt
+    ).toBe(105_000)
+    expect(
+      atomicHydration.products.find((entry) => entry.product.id === parent.id)
+        ?.familyPickupFulfillments?.[staleSibling.id]
+    ).toBeNull()
+
+    const recoveryWithoutChildDiagnostic: ProductsByIdsResult = {
+      ...parentRecoveryWithNewerRetainedChild,
+      diagnostics: parentRecovery.diagnostics,
+    }
+    const mergedWithoutChildDiagnostic =
+      mergeEventCatalogAcceptedProductRecovery(
+        baseWithExactStandaloneChild,
+        recoveryWithoutChildDiagnostic
+      )
+    expect(
+      mergedWithoutChildDiagnostic.data[0]?.family?.children.find(
+        (entry) => entry.product.id === staleSibling.id
+      )?.eventCreatedAt
+    ).toBe(105)
+    expect(
+      mergedWithoutChildDiagnostic.data.find(
+        (entry) => entry.addressId === staleSibling.id
+      )?.eventCreatedAt
+    ).toBe(104)
+
+    const recoveryAfterSiblingDeletion: ProductsByIdsResult = {
+      ...parentRecovery,
+      data: [family(recoveredChild)],
+      diagnostics: [
+        ...parentRecovery.diagnostics,
+        {
+          productId: sibling.id,
+          addressId: sibling.id,
+          issue: "product_missing",
+          coverage: { listing: "complete", deletion: "complete" },
+        },
+      ],
+    }
+    const mergedAfterSiblingDeletion = mergeEventCatalogAcceptedProductRecovery(
+      parentBase,
+      recoveryAfterSiblingDeletion
+    )
+    expect(
+      mergedAfterSiblingDeletion.data[0]?.family?.children.map(
+        (entry) => entry.product.id
+      )
+    ).toEqual([recoveredChild.id, sibling.id])
+    expect(
+      mergedAfterSiblingDeletion.diagnostics.find(
+        (diagnostic) => diagnostic.productId === sibling.id
+      )?.issue
+    ).toBe("product_missing")
+
+    const filteredSibling = mergeEventCatalogAcceptedProductRecovery(
+      parentBase,
+      {
+        ...recoveryAfterSiblingDeletion,
+        diagnostics: recoveryAfterSiblingDeletion.diagnostics.map(
+          (diagnostic) =>
+            diagnostic.productId === sibling.id
+              ? { ...diagnostic, issue: "listing_filtered" }
+              : diagnostic
+        ),
+      }
+    )
+    expect(
+      filteredSibling.data[0]?.family?.children.map((entry) => entry.product.id)
+    ).toEqual([recoveredChild.id])
+
+    const partialParentRecovery: ProductsByIdsResult = {
+      ...parentRecovery,
+      data: [family(recoveredChild)],
+      meta: { ...parentRecovery.meta, degraded: true },
+      diagnostics: [
+        {
+          productId: parent.id,
+          addressId: parent.id,
+          issue: "lookup_partial",
+          coverage: { listing: "partial", deletion: "partial" },
+        },
+      ],
+    }
+    const mergedPartialParent = mergeEventCatalogAcceptedProductRecovery(
+      parentBase,
+      partialParentRecovery
+    )
+    expect(
+      mergedPartialParent.data[0]?.family?.children
+        .map((entry) => entry.product.id)
+        .sort()
+    ).toEqual([recoveredChild.id, sibling.id].sort())
+    expect(
+      mergedPartialParent.data[0]?.family?.children.find(
+        (entry) => entry.product.id === sibling.id
+      )?.eventCreatedAt
+    ).toBe(105)
+
+    const baseAfterChildDeletion: ProductsByIdsResult = {
+      ...parentBase,
+      data: [family(sibling)],
+      diagnostics: [
+        ...parentBase.diagnostics,
+        {
+          productId: recoveredChild.id,
+          addressId: recoveredChild.id,
+          issue: "product_missing",
+          coverage: { listing: "complete", deletion: "complete" },
+        },
+      ],
+    }
+    const oldCompletedParentRecovery: ProductsByIdsResult = {
+      ...parentRecovery,
+      data: [family(recoveredChild, staleSibling)],
+    }
+    const mergedAfterLaterBaseDeletion =
+      mergeEventCatalogAcceptedProductRecovery(
+        baseAfterChildDeletion,
+        oldCompletedParentRecovery
+      )
+    expect(
+      mergedAfterLaterBaseDeletion.data[0]?.family?.children.map(
+        (entry) => entry.product.id
+      )
+    ).toEqual([recoveredChild.id, sibling.id])
+    expect(
+      mergedAfterLaterBaseDeletion.diagnostics.find(
+        (diagnostic) => diagnostic.productId === recoveredChild.id
+      )?.issue
+    ).toBe("product_missing")
+  })
+
+  it("keeps settled products actionable and performs one final affected-author recovery", async () => {
+    const slowMerchant = "c".repeat(64)
+    const slowCoordinate = `30402:${slowMerchant}:slow`
+    const resolution: EventMarketResolution = {
+      ...market(),
+      organizerProductCoordinates: [productCoordinate, slowCoordinate],
+      acceptedProductCoordinates: [productCoordinate, slowCoordinate],
+      acceptedProductEvidence: [
+        ...market().acceptedProductEvidence,
+        {
+          productCoordinate: slowCoordinate,
+          eventId: "5".repeat(64),
+          createdAt: 104_000,
+          shippingOptionCoordinates: [pickupCoordinate],
+          merchantPubkey: slowMerchant,
+        },
+      ],
+      participationRequests: [
+        ...market().participationRequests,
+        { productCoordinate: slowCoordinate, merchantPubkey: slowMerchant },
+      ],
+      participationBudget: {
+        state: "within_budget",
+        targetCount: 2,
+        targetLimit: 64,
+      },
+    }
+    const broadResult: ProductsByIdsResult = {
+      ...productRead(),
+      diagnostics: [
+        {
+          productId: productCoordinate,
+          addressId: productCoordinate,
+          issue: null,
+          coverage: { listing: "complete", deletion: "complete" },
+        },
+        {
+          productId: slowCoordinate,
+          addressId: slowCoordinate,
+          issue: "product_missing",
+          coverage: { listing: "complete", deletion: "complete" },
+        },
+      ],
+    }
+    const slowProduct = product({
+      id: slowCoordinate,
+      pubkey: slowMerchant,
+      title: "Slow product",
+      createdAt: 104_000,
+      updatedAt: 104_000,
+    })
+    const slowRecovery = productRead({
+      product: slowProduct,
+      eventId: "5".repeat(64),
+      eventCreatedAt: 104,
+    })
+    const eventFinal = deferred<void>()
+    const broadFinal = deferred<void>()
+    let productReads = 0
+    const productTargets: string[][] = []
+
+    __setEventCatalogAdapterTestOverrides({
+      getCachedProductsByIds: async () => ({
+        data: [],
+        meta: { ...broadResult.meta, source: "local_cache", stale: true },
+      }),
+      getEventMarket: async (input) => {
+        input.onProgress?.(resolution)
+        await eventFinal.promise
+        return resolution
+      },
+      getProductsByIds: async (coordinates, options = {}) => {
+        productReads += 1
+        productTargets.push([...coordinates])
+        if (productReads === 1) {
+          options.onAuthorSettled?.(broadResult)
+          await broadFinal.promise
+          return broadResult
+        }
+        return slowRecovery
+      },
+    })
+
+    const snapshots: RawEventCatalog[] = []
+    const loading = loadRawEventCatalog(collectionCoordinate, {
+      onProgress: (snapshot) => snapshots.push(snapshot),
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(
+      snapshots.some((snapshot) =>
+        snapshot.actionableProductCoordinates?.includes(productCoordinate)
+      )
+    ).toBe(true)
+    expect(snapshots.at(-1)?.actionableProductCoordinates ?? []).not.toContain(
+      slowCoordinate
+    )
+    expect(productReads).toBe(1)
+
+    // Recovery waits until both broad reads have settled, then rechecks only
+    // the final accepted set owned by the affected merchant.
+    eventFinal.resolve(undefined)
+    broadFinal.resolve(undefined)
+    const completed = await loading
+    expect(productReads).toBe(2)
+    expect(productTargets[1]).toEqual([slowCoordinate])
+    expect(
+      completed.result?.data.map((record) => record.product.id).sort()
+    ).toEqual([productCoordinate, slowCoordinate].sort())
+    expect(
+      completed.result?.diagnostics.find(
+        (diagnostic) => diagnostic.productId === slowCoordinate
+      )?.issue
+    ).toBeNull()
+  })
+
   it("shares a matching pending detail/card query and reprices without another read", async () => {
     const client = new QueryClient()
     const pending = deferred<RawEventCatalog>()
@@ -312,6 +1028,39 @@ describe("shared progressive event catalogs", () => {
     }
   })
 
+  it("does not restart a resolved event read when the window regains focus", async () => {
+    const client = new QueryClient()
+    let reads = 0
+    const observer = new QueryObserver(
+      client,
+      eventCatalogQueryOptions(
+        client,
+        collectionCoordinate,
+        scope,
+        () => true,
+        async () => {
+          reads++
+          return raw()
+        }
+      )
+    )
+    const release = observer.subscribe(() => {})
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(reads).toBe(1)
+
+      client.getQueryCache().onFocus()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(reads).toBe(1)
+      expect(observer.getCurrentResult().data?.complete).toBe(true)
+    } finally {
+      release()
+      client.clear()
+    }
+  })
+
   it("shows organizer-only cached cards without inventing acceptance or pickup authority", () => {
     const resolution = market("stale")
     resolution.acceptedProductCoordinates = []
@@ -348,6 +1097,67 @@ describe("shared progressive event catalogs", () => {
     expect(projected.products[0]?.pickupFulfillment).toBeNull()
   })
 
+  it("keeps progressive authorization opt-in and preserves browse-only siblings", () => {
+    const slowCoordinate = `30402:${"c".repeat(64)}:slow-product`
+    const resolution = market("partial")
+    resolution.organizerProductCoordinates = [productCoordinate, slowCoordinate]
+    resolution.acceptedProductCoordinates = [productCoordinate, slowCoordinate]
+    resolution.acceptedProductEvidence = [
+      ...resolution.acceptedProductEvidence,
+      {
+        productCoordinate: slowCoordinate,
+        eventId: "5".repeat(64),
+        createdAt: 103_000,
+        shippingOptionCoordinates: [pickupCoordinate],
+        merchantPubkey: "c".repeat(64),
+      },
+    ]
+    resolution.participationRequests.push({
+      productCoordinate: slowCoordinate,
+      merchantPubkey: "c".repeat(64),
+    })
+    const fastRecord = commerceRecord(product())
+    const slowRecord = commerceRecord(
+      product({
+        id: slowCoordinate,
+        pubkey: "c".repeat(64),
+        title: "Slow product",
+      }),
+      { eventId: "5".repeat(64) }
+    )
+    const progressive: RawEventCatalog = {
+      reference: collectionCoordinate,
+      resolution,
+      result: productRead(),
+      previewRecords: [fastRecord, slowRecord],
+      actionableProductCoordinates: [productCoordinate],
+      complete: false,
+    }
+
+    const failClosed = projectRawEventCatalog(progressive)
+    expect(failClosed.products.map((entry) => entry.product.id).sort()).toEqual(
+      [productCoordinate, slowCoordinate].sort()
+    )
+    expect(failClosed.purchaseReady).toBe(false)
+    expect(failClosed.products.every((entry) => !entry.pickupFulfillment)).toBe(
+      true
+    )
+
+    const currentRun = projectRawEventCatalog(progressive, null, true)
+    expect(currentRun.products.map((entry) => entry.product.id).sort()).toEqual(
+      [productCoordinate, slowCoordinate].sort()
+    )
+    expect(
+      currentRun.products.find(
+        (entry) => entry.product.id === productCoordinate
+      )?.pickupFulfillment
+    ).not.toBeNull()
+    expect(
+      currentRun.products.find((entry) => entry.product.id === slowCoordinate)
+        ?.pickupFulfillment
+    ).toBeNull()
+  })
+
   it("publishes a browse-only header before completion and retains no authority after failure", async () => {
     const client = new QueryClient()
     const pending = deferred<RawEventCatalog>()
@@ -375,6 +1185,19 @@ describe("shared progressive event catalogs", () => {
       projectRawEventCatalog(observer.getCurrentResult().data!).purchaseReady
     ).toBe(false)
     release()
+    client.clear()
+  })
+
+  it("does not restart the expensive catalog read when window focus returns", () => {
+    const client = new QueryClient()
+    const options = eventCatalogQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true
+    )
+
+    expect(options.refetchOnWindowFocus).toBe(false)
     client.clear()
   })
 
@@ -430,6 +1253,67 @@ describe("shared progressive event catalogs", () => {
     pending.resolve(raw())
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(client.getQueryData(options.queryKey)).toBeUndefined()
+    client.clear()
+  })
+
+  it("does not carry interrupted partial authority into a remounted read", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const replacement = deferred<RawEventCatalog>()
+    let reads = 0
+    const loader: typeof loadRawEventCatalog = async (_reference, options) => {
+      reads++
+      if (reads === 1) {
+        options?.onProgress?.({
+          ...raw(),
+          actionableProductCoordinates: [productCoordinate],
+          complete: false,
+        })
+        await new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("cancelled", "AbortError")),
+            { once: true }
+          )
+        })
+      }
+      return replacement.promise
+    }
+    const options = eventCatalogQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true,
+      loader
+    )
+    const first = new QueryObserver(client, options)
+    const stopFirst = first.subscribe(() => {})
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(
+      projectRawEventCatalog(
+        client.getQueryData<RawEventCatalog>(options.queryKey)!,
+        null,
+        true
+      ).purchaseReady
+    ).toBe(true)
+
+    stopFirst()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const second = new QueryObserver(client, options)
+    const stopSecond = second.subscribe(() => {})
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const remounted = client.getQueryData<RawEventCatalog>(options.queryKey)!
+    expect(reads).toBe(2)
+    expect(remounted.complete).toBe(false)
+    expect(remounted.actionableProductCoordinates ?? []).toEqual([])
+    expect(projectRawEventCatalog(remounted, null, true).purchaseReady).toBe(
+      false
+    )
+
+    replacement.resolve(raw())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    stopSecond()
     client.clear()
   })
   it("preserves a stale completed browse catalog and a hidden signed cache entry", () => {

@@ -126,6 +126,7 @@ function EventCatalogProductCard({
     selectedProduct.id === product.id && product.type !== "variable"
       ? entry.pickupFulfillment
       : (entry.familyPickupFulfillments?.[selectedProduct.id] ?? null)
+  const isProductChecking = isChecking && pickupFulfillment === null
   const pickupLocation =
     pickupFulfillment?.option.location ?? pickupFulfillment?.option.geohash
   const handoff = pickupFulfillment
@@ -161,7 +162,7 @@ function EventCatalogProductCard({
     state: catalog.state,
     purchaseReady,
     hasPickupFulfillment: pickupFulfillment !== null,
-    isChecking,
+    isChecking: isProductChecking,
   })
   const canAdd = cartAction.enabled
 
@@ -230,7 +231,7 @@ function EventCatalogProductCard({
       />
       {!pickupFulfillment ? (
         <div className="rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-          {isChecking ? (
+          {isProductChecking ? (
             <>
               Checking the current product and pickup terms. You can browse
               while this finishes.
@@ -690,7 +691,7 @@ function EventCatalogPage() {
           <EventCatalogProductCard
             entry={entry}
             catalog={catalog}
-            purchaseReady={!archived && !isChecking && catalog.purchaseReady}
+            purchaseReady={!archived && catalog.purchaseReady}
             isChecking={isChecking}
             identity={merchantIdentities.getIdentity(entry.product.pubkey)}
             organizerIdentity={organizerIdentity}

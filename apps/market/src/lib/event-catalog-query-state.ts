@@ -19,11 +19,10 @@ export function getEventCatalogQueryDisplayState(
     ? projectRawEventCatalog(
         query.data,
         rateInput,
-        query.data.complete &&
-          !query.isFetching &&
-          !query.isError &&
+        !query.isError &&
           !query.isPaused &&
-          relaySettingsReady
+          relaySettingsReady &&
+          (query.data.complete ? !query.isFetching : query.isFetching)
       )
     : undefined
   // A retained successful resolution describes the previous read. Once a

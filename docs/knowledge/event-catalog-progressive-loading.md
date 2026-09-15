@@ -9,35 +9,59 @@ local projection of signed source terms and does not restart relay reads.
 
 The shared event reader emits cumulative verified organizer snapshots as relays
 finish. Local event evidence can render before relay planning completes. Safe
-cached product details load in one author-scoped batch. These snapshots support
-browsing only: cached requests never grant current merchant participation or
-pickup authorization. Each progress header starts without product records;
-only its own deletion-aware cache batch or a current network product snapshot
-can restore cards. A missing or failed cache batch must not borrow records from
-an earlier progress or query result.
+cached product details load through a bounded author-scoped pipeline. Cached
+snapshots support browsing only: cached requests never grant current merchant
+participation or pickup authorization. Each progress header starts without
+product records; only its own deletion-aware cache batch or a current network
+product snapshot can restore cards. A missing or failed cache batch must not
+borrow records from an earlier progress or query result.
 
-For cold detail loads, the organizer product coordinates start an exact product
-read while participation and pickup verification continue. Completed merchant
-batches emit cumulative browse snapshots without waiting for slower merchants
-or family hydration. These snapshots reconcile current signed revisions and
-local deletions before display; final reconciliation must not restore older
-terms. The overlapping read is reused at completion. If final accepted evidence
-identifies a missing or newer product, one exact read reconciles it. Coordinate
-changes cancel obsolete progress, and the existing target limits, author
-concurrency and relay budgets remain in force.
+For cold detail loads, the organizer product coordinates start both hydration
+and exact participation-frontier reads while broad collection-tag discovery and
+pickup verification continue. Later-discovered pending requests join the final
+resolution without rereading organizer-listed coordinates. Browse snapshots may
+paint as transport batches arrive. An author becomes action-authoritative only
+after that author's product, variation family, deletion frontier and current
+cache reconciliation settle. Settled callbacks reconcile only the newly
+completed author and compose already-reconciled author results; one final
+aggregate reconciliation preserves cross-author ordering. A newer signed
+listing revision or tombstone advances that author's local authority generation;
+before the next cumulative callback, only changed settled authors are
+reconciled again. The matching event-market author frontier and the selected
+organizer or merchant pickup must also be current. That completed subset can
+enable Add while an unrelated merchant remains in progress; retained sibling
+cards stay visible but browse-only. Normal settled artifacts are reused by the
+final aggregate result. If final event acceptance advances beyond an
+already-settled missing, older or cache-only product snapshot, the loader waits
+for both broad reads to settle and performs one exact recovery for the complete
+accepted set of each affected author. This preserves that author's family and
+deletion context without rereading healthy authors elsewhere in the event or
+merging overlapping recovery progress. The broad read and final recovery share
+one two-author coordinator. Pickup results are also reused without duplicate
+reads. Existing target limits and relay budgets remain in force.
 
 The final read still resolves collection/calendar revisions, exact product and
 pickup frontiers, known withdrawals and same-author deletions. Independent
 product and organizer pickup checks overlap without reducing read budgets.
+Completed merchant pickup pipelines run concurrently within the shared bound;
+one slow merchant does not serialize another merchant behind its timeout.
+Product and deletion frontier filters share one four-query coordinator across
+all active author pipelines. A product-stage relay failure retires that relay
+only from later product reads, while a deletion-stage failure retires it only
+from later deletion reads; skipped reads retain partial coverage and therefore
+remain fail-closed.
 
 While a query refreshes, fails or pauses, its display projection removes pickup
-authorization. Previously rendered content remains useful, but old readiness
-is not reused. A failed or paused refresh marks retained active or partial
-evidence stale and exposes retry; terminal protocol states stay intact. This
-changes the display projection, not the shared raw evidence. Explicit checkout
-freshness verification remains a separate
-live read. Query keys and cancellation prevent old account or relay-scope
-requests from updating the current view.
+authorization from retained completed data. Previously rendered content remains
+useful, but old readiness is not reused. During an active invocation, only the
+exact coordinates completed by that same invocation may regain readiness while
+the wider read continues. Cancellation, remount and retry synchronously clear
+that incomplete grant before replacement I/O starts. A failed or paused refresh
+marks retained active or partial evidence stale and exposes retry; terminal
+protocol states stay intact. Window focus does not automatically restart this
+expensive catalog read. Explicit user refresh and checkout's separate live
+freshness read remain available. Query keys and cancellation prevent old account
+or relay-scope requests from updating the current view.
 
 Product surfaces also compare source terms with the shared catalog. A newer
 revision, differing terms at the same timestamp, or a newly observed product
@@ -74,13 +98,17 @@ product/pickup completion. Test warm navigation separately from a full reload,
 which also includes app/account startup.
 
 Coverage includes shared reads and local repricing, failed refreshes, scope
-changes, cancellation, cache-only browsing, hidden event products, variable
-choices, cross-cache withdrawals/deletions and a later live re-request. Browser
-checks exercise cold product progress with empty caches and a held sibling
-merchant, header progress, warm product-to-event navigation, retained
-cards, variation selection and deletion after a cached preview. Timeline checks
-cover delayed sibling reads, cache progress, deadline retention, signed removal
-and local connection teardown followed by successful discovery retry.
+changes, cancellation/remount, cache-only browsing, hidden event products,
+variable choices, cross-cache withdrawals/deletions, bounded author and filter
+concurrency, stage-local relay retirement, and one final affected-author
+accepted-revision recovery. A core regression holds broad collection-tag
+discovery and proves an organizer-listed merchant can still become actionable.
+Browser checks exercise a cold merchant-booth product becoming Add-enabled while
+a sibling merchant read is held. They also cover header progress, warm
+product-to-event navigation, retained cards, variation selection and deletion
+after a cached preview. Timeline checks cover delayed sibling reads, cache
+progress, deadline retention, signed removal and local connection teardown
+followed by successful discovery retry.
 
 Public network latency is not a CI dependency. Synthetic signer/relay results
 do not replace maintainer preview validation with the relevant real accounts
