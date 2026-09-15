@@ -38,6 +38,11 @@ const SAVED_ADDRESS = "merchant@wallet.example"
 const originalGet = db.orderLifecycles.get
 const originalPut = db.orderLifecycles.put
 const originalTransaction = db.transaction
+const originalNow = Date.now
+const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
+  globalThis,
+  "window"
+)
 let stored: OrderLifecycle
 let profile: CachedProfile | undefined
 let profileEvents: NDKEvent[]
@@ -227,6 +232,12 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  Date.now = originalNow
+  if (originalWindowDescriptor) {
+    Object.defineProperty(globalThis, "window", originalWindowDescriptor)
+  } else {
+    Reflect.deleteProperty(globalThis, "window")
+  }
   db.orderLifecycles.get = originalGet
   db.orderLifecycles.put = originalPut
   db.transaction = originalTransaction
@@ -236,6 +247,68 @@ afterEach(() => {
 })
 
 describe("executor profile authority workflow", () => {
+  for (const change of ["removal", "session", "expiry", "none"] as const) {
+    it(`rechecks ${change} after real WebLN enable before submitting`, async () => {
+      await observeProfile(JSON.stringify({ lud16: SAVED_ADDRESS }))
+      let signalEnabled!: () => void
+      let releaseEnable!: () => void
+      const enabled = new Promise<void>((resolve) => {
+        signalEnabled = resolve
+      })
+      const enableGate = new Promise<void>((resolve) => {
+        releaseEnable = resolve
+      })
+      let sessionCurrent = true
+      const submittedInvoices: string[] = []
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+          localStorage: { getItem: () => null },
+          webln: {
+            enable: async () => {
+              signalEnabled()
+              await enableGate
+            },
+            sendPayment: async (paymentRequest: string) => {
+              submittedInvoices.push(paymentRequest)
+              throw new Error("Synthetic provider received the invoice.")
+            },
+          },
+        },
+      })
+      const paymentDependencies = dependencies()
+      // Exercise the real rails and WebLN adapter; only the extension is fake.
+      delete paymentDependencies.payCheckoutInvoice
+      const payment = runOrderPayment(
+        { ...context(), shouldContinue: () => sessionCurrent },
+        paymentDependencies
+      )
+      await enabled
+      const acquiredInvoice = stored.invoice
+      expect(acquiredInvoice).toBeTruthy()
+      expect(submittedInvoices).toEqual([])
+      if (change === "removal") {
+        await observeProfile("{}")
+        expect(profile?.rawContent).toBe("{}")
+      }
+      if (change === "session") sessionCurrent = false
+      if (change === "expiry") Date.now = () => originalNow() + 7_200_000
+      releaseEnable()
+      const result = await payment
+      expect(counts).toEqual({ metadata: 1, invoice: 1, wallet: 0 })
+      expect(submittedInvoices.length).toBe(change === "none" ? 1 : 0)
+      if (change === "none") {
+        expect(submittedInvoices[0] === acquiredInvoice).toBe(true)
+        expect(result.error).toContain(
+          "Synthetic provider received the invoice."
+        )
+      } else {
+        expect(result.error).toMatch(/address|account changed|expired/i)
+      }
+      expect(stored.invoice).toBe(acquiredInvoice)
+    })
+  }
+
   for (const identityKind of ["signed_in", "guest_ephemeral"] as const) {
     it(`admits an initial ${identityKind} payment through real lifecycle and profile admission`, async () => {
       stored.buyerIdentityKind = identityKind
@@ -247,8 +320,7 @@ describe("executor profile authority workflow", () => {
         ...context(),
         accountPubkey: identityKind === "signed_in" ? BUYER : null,
         authenticatedPubkey: identityKind === "signed_in" ? BUYER : null,
-        shouldContinue:
-          identityKind === "signed_in" ? () => true : undefined,
+        shouldContinue: identityKind === "signed_in" ? () => true : undefined,
         buyerIdentity:
           identityKind === "guest_ephemeral"
             ? {
