@@ -32,9 +32,10 @@ concurrency and relay budgets remain in force.
 The final read still resolves collection/calendar revisions, exact product and
 pickup frontiers, known withdrawals and same-author deletions. Independent
 product and organizer pickup checks overlap without reducing read budgets.
-Deletion filters batch up to 32 targets of the same author and tag type. A
-response reaching its result limit is refined to individual target reads, so
-a busy sibling cannot hide an older deletion.
+Deletion checks remain isolated by product target so busy siblings cannot
+consume another product's response. A relay may return fewer events than the
+requested limit; result counts do not prove complete deletion coverage. The
+existing exact-target reads and bounded concurrency remain unchanged.
 
 Completed catalog reads are reused for 60 seconds across matching mounts and
 return visits. The in-memory query retains browsing evidence for 30 minutes;
