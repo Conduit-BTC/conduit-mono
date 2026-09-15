@@ -236,6 +236,39 @@ afterEach(() => {
 })
 
 describe("executor profile authority workflow", () => {
+  for (const identityKind of ["signed_in", "guest_ephemeral"] as const) {
+    it(`admits an initial ${identityKind} payment through real lifecycle and profile admission`, async () => {
+      stored.buyerIdentityKind = identityKind
+      stored.paymentStatus = "not_started"
+      stored.invoiceStatus = "not_requested"
+      stored.invoice = undefined
+      await observeProfile(JSON.stringify({ lud16: SAVED_ADDRESS }))
+      const paymentContext: OrderPaymentContext = {
+        ...context(),
+        accountPubkey: identityKind === "signed_in" ? BUYER : null,
+        authenticatedPubkey: identityKind === "signed_in" ? BUYER : null,
+        shouldContinue:
+          identityKind === "signed_in" ? () => true : undefined,
+        buyerIdentity:
+          identityKind === "guest_ephemeral"
+            ? {
+                kind: "guest_ephemeral",
+                pubkey: BUYER,
+                signer: buyerSigner,
+                orderId: stored.orderId,
+                merchantPubkey: MERCHANT,
+              }
+            : undefined,
+      }
+      const result = await runOrderPayment(paymentContext, dependencies())
+      expect(counts).toEqual({ metadata: 1, invoice: 1, wallet: 1 })
+      expect(result.error).toBe("Synthetic wallet declined before sending.")
+      expect(result.lifecycle?.invoice).toBeTruthy()
+      expect(stored.buyerIdentityKind).toBe(identityKind)
+      expect(stored.paymentClaimId).toBeUndefined()
+    })
+  }
+
   for (const retention of ["durable", "failed_write"] as const) {
     for (const [label, content] of [
       ["removed", "{}"],
