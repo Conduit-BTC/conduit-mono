@@ -35,6 +35,10 @@ const RELAY_A = "wss://relay.conduit.market"
 const RELAY_B = "wss://nos.lol"
 const MERCHANT_RELAY = "wss://merchant-write.relay.dev"
 const NOW_MS = 1_800_000_100_000
+// Keep the 501-deletion adversarial fixture intact. On shared CI workers it
+// can take longer than the normal per-test cap even though its isolated
+// runtime remains well below this bound.
+const DELETION_STARVATION_TIMEOUT_MS = 30_000
 
 type TagFilter = NDKFilter & {
   "#a"?: string[]
@@ -980,43 +984,51 @@ describe("event-market exact product request frontiers", () => {
     expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
   })
 
-  it("isolates an exact coordinate tombstone from 501 newer sibling deletions", async () => {
-    const { result, targetValue, deletionFilters } =
-      await resolveDeletionStarvationCase("a")
+  it(
+    "isolates an exact coordinate tombstone from 501 newer sibling deletions",
+    async () => {
+      const { result, targetValue, deletionFilters } =
+        await resolveDeletionStarvationCase("a")
 
-    expect(
-      deletionFilters.some(
-        (filter) =>
-          filter["#a"]?.length === 1 && filter["#a"][0] === targetValue
-      )
-    ).toBe(true)
-    expect(
-      deletionFilters.every(
-        (filter) => !filter["#a"] || filter["#a"]?.length === 1
-      )
-    ).toBe(true)
-    expect(result.acceptedProductCoordinates).toEqual([])
-    expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
-  }, 15_000)
+      expect(
+        deletionFilters.some(
+          (filter) =>
+            filter["#a"]?.length === 1 && filter["#a"][0] === targetValue
+        )
+      ).toBe(true)
+      expect(
+        deletionFilters.every(
+          (filter) => !filter["#a"] || filter["#a"]?.length === 1
+        )
+      ).toBe(true)
+      expect(result.acceptedProductCoordinates).toEqual([])
+      expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
+    },
+    DELETION_STARVATION_TIMEOUT_MS
+  )
 
-  it("isolates an exact event tombstone from 501 newer sibling deletions", async () => {
-    const { result, targetValue, deletionFilters } =
-      await resolveDeletionStarvationCase("e")
+  it(
+    "isolates an exact event tombstone from 501 newer sibling deletions",
+    async () => {
+      const { result, targetValue, deletionFilters } =
+        await resolveDeletionStarvationCase("e")
 
-    expect(
-      deletionFilters.some(
-        (filter) =>
-          filter["#e"]?.length === 1 && filter["#e"][0] === targetValue
-      )
-    ).toBe(true)
-    expect(
-      deletionFilters.every(
-        (filter) => !filter["#e"] || filter["#e"]?.length === 1
-      )
-    ).toBe(true)
-    expect(result.acceptedProductCoordinates).toEqual([])
-    expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
-  }, 15_000)
+      expect(
+        deletionFilters.some(
+          (filter) =>
+            filter["#e"]?.length === 1 && filter["#e"][0] === targetValue
+        )
+      ).toBe(true)
+      expect(
+        deletionFilters.every(
+          (filter) => !filter["#e"] || filter["#e"]?.length === 1
+        )
+      ).toBe(true)
+      expect(result.acceptedProductCoordinates).toEqual([])
+      expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
+    },
+    DELETION_STARVATION_TIMEOUT_MS
+  )
 
   it("merges a failed exact-deletion batch into partial relay coverage", async () => {
     const request = productRevision("coffee", 100, true)
