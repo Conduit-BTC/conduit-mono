@@ -102,7 +102,8 @@ import { useWallets } from "../hooks/useWallets"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
-  deriveBoundMerchantInvoiceAccess,
+  canClaimManualInvoiceReport,
+  deriveManualInvoiceAccess,
   deriveOrderHeaderStatus,
   getOrderFilterPhase,
   getOrderPaymentFailureDetail,
@@ -652,6 +653,10 @@ function OrderDetail({
   authenticatedPubkey?: string | null
 }) {
   const { vm, headerStatus } = row
+  const currentViewRef = useRef(vm)
+  useLayoutEffect(() => {
+    currentViewRef.current = vm
+  }, [vm])
   const { authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
@@ -969,7 +974,7 @@ function OrderDetail({
     await runOrderPrivateFallback(ctx)
   }
 
-  const boundMerchantInvoiceAccess = deriveBoundMerchantInvoiceAccess(
+  const manualInvoiceAccess = deriveManualInvoiceAccess(
     row.lifecycle,
     vm.merchantStatus,
     vm.phase,
@@ -985,8 +990,9 @@ function OrderDetail({
 
   function beginMerchantInvoicePayment(): boolean {
     if (
-      boundMerchantInvoiceAccess === "report_only" ||
-      boundMerchantInvoiceAccess === "closed"
+      manualInvoiceAccess === "report_only" ||
+      manualInvoiceAccess === "receipt_only" ||
+      manualInvoiceAccess === "closed"
     ) {
       setRecoveryError("This order no longer accepts payment.")
       return false
@@ -1022,8 +1028,13 @@ function OrderDetail({
   }
 
   async function reportExternalPayment(): Promise<void> {
-    if (boundMerchantInvoiceAccess === "closed") {
+    if (manualInvoiceAccess === "closed") {
       throw new Error("The merchant already confirmed this payment.")
+    }
+    if (manualInvoiceAccess === "receipt_only") {
+      throw new Error(
+        "A matching public receipt is required to confirm this payment."
+      )
     }
     const action = vm.merchantInvoiceAction
     const unboundPaidInvoice =
@@ -1035,7 +1046,15 @@ function OrderDetail({
       merchantInvoiceReopenEvidence,
       authenticatedPubkey ?? null,
       authenticatedPubkey ?? null,
-      shouldContinueBuyerSession
+      shouldContinueBuyerSession,
+      (lifecycle) =>
+        shouldContinueAccountRead() &&
+        canClaimManualInvoiceReport(
+          vm,
+          currentViewRef.current,
+          lifecycle,
+          buyerPubkey
+        )
     )
   }
 
@@ -1070,8 +1089,9 @@ function OrderDetail({
     !zeroCostPickupOrder && vm.paymentStatus === "ambiguous"
   const showExternalWallet =
     !zeroCostPickupOrder &&
-    boundMerchantInvoiceAccess !== "closed" &&
-    boundMerchantInvoiceAccess !== "report_only" &&
+    manualInvoiceAccess !== "closed" &&
+    manualInvoiceAccess !== "report_only" &&
+    manualInvoiceAccess !== "receipt_only" &&
     (vm.paymentStatus === "manual_required" || !!vm.merchantInvoiceAction)
   const autoDetectPublicReceipt =
     !zeroCostPickupOrder &&
@@ -1202,7 +1222,8 @@ function OrderDetail({
         </section>
       </>
 
-      {boundMerchantInvoiceAccess === "report_only" && (
+      {(manualInvoiceAccess === "report_only" ||
+        manualInvoiceAccess === "receipt_only") && (
         <StatusNotice
           variant="warning"
           title="Order no longer accepts payment"
@@ -1213,11 +1234,11 @@ function OrderDetail({
           }
         >
           <p className="text-pretty text-sm text-[var(--text-secondary)]">
-            {vm.publicZapSigner
-              ? "Do not pay this invoice. Conduit can still match a public receipt for a payment already made. Keep this tab open for receipt detection."
+            {manualInvoiceAccess === "receipt_only"
+              ? "Do not pay this invoice. If your wallet already confirms payment, Conduit can still match its public receipt and notify the merchant."
               : "Do not pay this invoice. If your wallet already confirms a payment, report it so the merchant can verify what happened."}
           </p>
-          {!vm.publicZapSigner && (
+          {manualInvoiceAccess === "report_only" && (
             <Button
               variant="outline"
               className="mt-4 h-10 px-4 text-sm"

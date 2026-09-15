@@ -17,8 +17,9 @@ describe("merchant invoice route contract", () => {
     expect(panel).toContain("onBeforeInvoiceUse={canUseInvoice}")
     expect(panel).toContain("return onBeforeInvoiceUse()")
     expect(source).toContain("Do not pay this invoice.")
-    expect(source).toContain('boundMerchantInvoiceAccess !== "closed"')
-    expect(source).toContain('boundMerchantInvoiceAccess !== "report_only"')
+    expect(source).toContain('manualInvoiceAccess !== "closed"')
+    expect(source).toContain('manualInvoiceAccess !== "report_only"')
+    expect(source).toContain('manualInvoiceAccess !== "receipt_only"')
     expect(source).toContain(
       'action?.status === "blocked" && action.canReport ? action : undefined'
     )

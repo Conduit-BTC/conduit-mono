@@ -26,7 +26,7 @@ async function mountInvoice(page: Page, checkoutMode: CheckoutMode) {
       const React = (await import("/@id/react")).default
       const ReactDOM = (await import("/@id/react-dom/client")).default
       const { InvoicePayment } = await import(componentUrl)
-      const { deriveBoundMerchantInvoiceAccess } = await import(orderViewUrl)
+      const { deriveManualInvoiceAccess } = await import(orderViewUrl)
       const { config } = await import(configUrl)
       // The mock app runs locally; only this isolated component fixture uses mainnet.
       config.lightningNetwork = "mainnet"
@@ -88,11 +88,15 @@ async function mountInvoice(page: Page, checkoutMode: CheckoutMode) {
           guestSession: true,
           onBeforeInvoiceUse: () => {
             state.__invoiceTest.attempts += 1
-            const access = deriveBoundMerchantInvoiceAccess(
+            const access = deriveManualInvoiceAccess(
               lifecycle,
               state.__invoiceTest.status
             )
-            return access !== "closed" && access !== "report_only"
+            return (
+              access !== "closed" &&
+              access !== "report_only" &&
+              access !== "receipt_only"
+            )
           },
         })
       )
