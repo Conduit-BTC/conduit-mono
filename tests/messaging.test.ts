@@ -26,12 +26,10 @@ import {
   mergeInboxDeclarationEvidence,
   parseDirectMessageRumor,
   parsePrivateMessageRelays,
-  planInboxReadRelays,
   PrivateMessageRelayReadinessError,
   publishPrivateMessage,
   RelayPublishDiagnosticsError,
   resolveInboxDeclaration,
-  selectPrivateMessageDeliveryRoute,
   sharedInboxDiscoveryRelayUrls,
   unwrapGiftWrap,
   type GiftUnwrapFn,
@@ -1125,6 +1123,84 @@ describe("publishPrivateMessage", () => {
     expect(encryptCalls).toBe(1)
     expect(signCalls).toBe(1)
     expect(visibilityChecks).toBe(2)
+  })
+
+  it("scopes foreground relay authentication to the active account signer", async () => {
+    let visible = false
+    let restoreVisibility = () => {}
+    const visibleAgain = new Promise<void>((resolve) => {
+      restoreVisibility = resolve
+    })
+    let signerCalls = 0
+    let visibilityChecks = 0
+    const signer = {
+      user: async () => ({ pubkey: INBOX_OWNER }),
+      sign: async (event: {
+        kind: number
+        created_at: number
+        tags: string[][]
+        content: string
+      }) => {
+        signerCalls += 1
+        return finalizeEvent(event, INBOX_OWNER_SECRET).sig
+      },
+    } as unknown as NDKSigner
+
+    const publishing = publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.ORDER, {
+        pubkey: INBOX_OWNER,
+        tags: [["p", INBOX_PEER]],
+      }),
+      senderPubkey: INBOX_OWNER,
+      recipientPubkey: INBOX_PEER,
+      accountPubkey: INBOX_OWNER,
+      authenticatedPubkey: INBOX_OWNER,
+      accountNetworkLocalStateRepository:
+        createInMemoryAccountNetworkLocalStateRepository(),
+      signer,
+      signerInteraction: "external",
+      relayAuthMethod: "nip07",
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: ["wss://auth.nostr1.com"],
+      waitForSignerVisibility: async () => {
+        visibilityChecks += 1
+        if (!visible) await visibleAgain
+      },
+      giftWrapFn: (async () => wrap("wrap-recipient")) as never,
+      publishFn: (async (_event, options) => {
+        const relayAuthentication = options.relayAuthentication
+        expect(relayAuthentication?.expectedPubkey).toBe(INBOX_OWNER)
+        expect(relayAuthentication?.signer.authMethod).toBe("nip07")
+        expect(relayAuthentication?.sessionScope).toBe(signer)
+        await relayAuthentication!.waitForSignerVisibility?.()
+        const signed = await relayAuthentication!.signer.signEvent({
+          kind: 22_242,
+          pubkey: INBOX_OWNER,
+          created_at: 1_700_000_100,
+          tags: [
+            ["relay", "wss://auth.nostr1.com"],
+            ["challenge", "challenge-1"],
+          ],
+          content: "",
+        })
+        expect(signed.pubkey).toBe(INBOX_OWNER)
+        return {
+          successfulRelayUrls: [options.exclusiveRelayUrls?.[0]],
+          failedRelayUrls: [],
+        } as never
+      }) as never,
+    })
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(signerCalls).toBe(0)
+
+    visible = true
+    restoreVisibility()
+    await publishing
+
+    expect(signerCalls).toBe(1)
+    expect(visibilityChecks).toBe(1)
   })
 
   it("keeps the guest companion capability one-use and recipient-inbox strict", async () => {

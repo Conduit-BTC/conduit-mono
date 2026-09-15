@@ -43,8 +43,10 @@ import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-prefe
 import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import {
   publishSignedEventFrameToRelay,
+  type ExactRelayWriteAuthorization,
   type ExactRelayWriteStatus,
 } from "./relay-writer"
+import type { NostrEventSigner } from "./nostr-event-signer"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import {
   filterEligibleAccountRelayUrls,
@@ -105,6 +107,16 @@ export interface PublishWithPlannerInput {
   replaceableSafety?: ReplaceablePublishSafetyOptions
   /** Abort before a relay attempt when the caller's authenticated session changed. */
   shouldContinue?: () => boolean
+  /**
+   * Foreground-only NIP-42 capability for an exact NIP-17 recipient write.
+   * This never enables fallback relays or ambient/background authentication.
+   */
+  relayAuthentication?: {
+    expectedPubkey: string
+    signer: NostrEventSigner
+    sessionScope: object
+    waitForSignerVisibility?: (signal?: AbortSignal) => Promise<void>
+  }
 }
 
 function hasAuthenticatedAuthorRelayContext(
@@ -194,6 +206,7 @@ interface RelayPublishTestOverrides {
     "get"
   >
   ownerRelayListEvidenceRepository?: OwnerRelayListEvidenceRepository
+  publishSignedEventFrameToRelay?: typeof publishSignedEventFrameToRelay
 }
 
 let testOverrides: RelayPublishTestOverrides = {}
@@ -472,6 +485,12 @@ async function publishToRelayUrls(input: {
     "get"
   >
   shouldContinue?: () => boolean
+  relayAuthentication?: {
+    expectedPubkey: string
+    signer: NostrEventSigner
+    sessionScope: object
+    waitForSignerVisibility?: (signal?: AbortSignal) => Promise<void>
+  }
 }): Promise<{
   attemptedRelayUrls: string[]
   successfulRelayUrls: string[]
@@ -540,6 +559,94 @@ async function publishToRelayUrls(input: {
               "Refusing to publish because no account-eligible relay target remains."
             )
           : null,
+    }
+  }
+
+  if (input.relayAuthentication) {
+    const rawEvent = input.event.rawEvent() as SignedPublicNostrEvent
+    const writeExactFrame =
+      testOverrides.publishSignedEventFrameToRelay ??
+      publishSignedEventFrameToRelay
+    const successfulRelayUrls: string[] = []
+    const failedRelayUrls: string[] = []
+    const rejectedRelayUrls: string[] = []
+    const relayFailureMessages: Record<string, string> = {}
+    const attemptedRelayUrls: string[] = []
+    let authenticatedPreflightFailure: unknown = null
+
+    // Serialize auth-capable relay writes so one foreground action cannot open
+    // concurrent external-signer prompts. Each target still receives the same
+    // already-signed gift wrap and remains inside the exact exclusive set.
+    for (const candidateRelayUrl of relayUrls) {
+      let freshlyEligibleRelayUrls: string[]
+      try {
+        assertPublishSessionCurrent(input.shouldContinue)
+        freshlyEligibleRelayUrls =
+          input.accountPubkey === undefined || input.accountPubkey === null
+            ? [candidateRelayUrl]
+            : await filterEligibleAccountRelayUrls({
+                accountPubkey: input.accountPubkey,
+                authenticatedPubkey: input.authenticatedPubkey,
+                candidateRelayUrls: [candidateRelayUrl],
+                ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+                repository: accountNetworkLocalStateRepository,
+              })
+        assertPublishSessionCurrent(input.shouldContinue)
+      } catch (error) {
+        // Before the first acknowledgement, fail closed exactly as before. Once
+        // any relay has ACKed this immutable frame, preserve that durable
+        // success and stop opening new signer-authenticated connections.
+        if (successfulRelayUrls.length === 0) throw error
+        authenticatedPreflightFailure = error
+        break
+      }
+      const relayUrl = freshlyEligibleRelayUrls[0]
+      if (!relayUrl) continue
+      attemptedRelayUrls.push(relayUrl)
+      const authorization: ExactRelayWriteAuthorization = {
+        expectedPubkey: input.relayAuthentication.expectedPubkey,
+        signer: input.relayAuthentication.signer,
+        sessionScope: input.relayAuthentication.sessionScope,
+        waitForSignerVisibility:
+          input.relayAuthentication.waitForSignerVisibility,
+        shouldContinue: input.shouldContinue,
+      }
+      const status = await writeExactFrame({
+        relayUrl,
+        signedEvent: rawEvent,
+        timeoutMs: input.timeoutMs,
+        authorization,
+      })
+      if (status === "acked") {
+        successfulRelayUrls.push(relayUrl)
+        recordRelaySuccess(relayUrl)
+        continue
+      }
+      failedRelayUrls.push(relayUrl)
+      recordRelayFailure(relayUrl)
+      if (status === "rejected") {
+        rejectedRelayUrls.push(relayUrl)
+        relayFailureMessages[relayUrl] = "Relay rejected the event"
+      } else {
+        relayFailureMessages[relayUrl] = "No acknowledgement before timeout"
+      }
+    }
+
+    return {
+      attemptedRelayUrls,
+      successfulRelayUrls,
+      failedRelayUrls,
+      relayFailureMessages,
+      rejectedRelayUrls,
+      thrown:
+        successfulRelayUrls.length >= input.requiredRelayCount
+          ? null
+          : (authenticatedPreflightFailure ??
+            (attemptedRelayUrls.length === 0 && input.accountPubkey != null
+              ? new Error(
+                  "Refusing to publish because no account-eligible relay target remains."
+                )
+              : new Error("No required relay acknowledged the event."))),
     }
   }
 
@@ -840,6 +947,33 @@ export async function publishWithPlanner(
   assertSafeReplaceablePublish(event, input.replaceableSafety)
   assertValidSignedPublish(event, input)
 
+  if (input.relayAuthentication) {
+    const expectedPubkey = input.relayAuthentication.expectedPubkey
+      .trim()
+      .toLowerCase()
+    const authorPubkey = input.authorPubkey?.trim().toLowerCase()
+    const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
+    const accountPubkey = input.accountPubkey?.trim().toLowerCase()
+    if (
+      event.kind !== EVENT_KINDS.GIFT_WRAP ||
+      input.intent !== "recipient_event" ||
+      !input.exclusiveRelayUrls ||
+      input.deliveryMode !== "critical" ||
+      !/^[0-9a-f]{64}$/.test(expectedPubkey) ||
+      authorPubkey !== expectedPubkey ||
+      authenticatedPubkey !== expectedPubkey ||
+      accountPubkey !== expectedPubkey ||
+      typeof input.relayAuthentication.sessionScope !== "object" ||
+      input.relayAuthentication.sessionScope === null ||
+      (input.relayAuthentication.signer.authMethod !== "nip07" &&
+        input.relayAuthentication.signer.authMethod !== "nip46")
+    ) {
+      throw new Error(
+        "Relay authentication requires an active foreground account and exact recipient relay plan."
+      )
+    }
+  }
+
   const assertShouldContinue = () =>
     assertPublishSessionCurrent(input.shouldContinue)
 
@@ -954,6 +1088,7 @@ export async function publishWithPlanner(
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
+        relayAuthentication: input.relayAuthentication,
       })
       attemptedRelayUrls = mergeUnique([
         attemptedRelayUrls,
@@ -990,8 +1125,9 @@ export async function publishWithPlanner(
   }
 
   const ndk = testOverrides.getNdk ? testOverrides.getNdk() : getNdk()
-  const publishTimeoutMs =
-    input.deliveryMode === "critical"
+  const publishTimeoutMs = input.relayAuthentication
+    ? CRITICAL_RETRY_PUBLISH_TIMEOUT_MS
+    : input.deliveryMode === "critical"
       ? CRITICAL_PUBLISH_TIMEOUT_MS
       : STANDARD_PUBLISH_TIMEOUT_MS
   assertShouldContinue()
@@ -1007,6 +1143,7 @@ export async function publishWithPlanner(
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
+    relayAuthentication: input.relayAuthentication,
   })
   attemptedRelayUrls = mergeUnique([
     attemptedRelayUrls,
@@ -1016,7 +1153,11 @@ export async function publishWithPlanner(
   if (primary.thrown) {
     let retry: Awaited<ReturnType<typeof publishToRelayUrls>> | null = null
 
-    if (input.deliveryMode === "critical" && primary.failedRelayUrls.length) {
+    if (
+      input.deliveryMode === "critical" &&
+      primary.failedRelayUrls.length &&
+      !input.relayAuthentication
+    ) {
       assertShouldContinue()
       retry = await publishToRelayUrls({
         event,
