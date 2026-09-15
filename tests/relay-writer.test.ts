@@ -255,6 +255,45 @@ describe("exact relay writer", () => {
     expect(socket.closeCalls).toBe(1)
   })
 
+  it("reports a post-auth restricted write as rejected without waiting for timeout", async () => {
+    const relayUrl = "wss://auth.nostr1.com/"
+    const event = signedEvent()
+    const socket = new WriterTestSocket()
+    const result = publishSignedEventFrameToRelay({
+      relayUrl,
+      signedEvent: event,
+      timeoutMs: 100,
+      authorization: {
+        expectedPubkey: AUTH_PUBKEY,
+        signer: authSigner(),
+        sessionScope: AUTH_SESSION_SCOPE,
+        now: () => 1_700_000_100_000,
+      },
+      createWebSocket: () => socket as unknown as WebSocket,
+    })
+
+    socket.open()
+    socket.message(
+      JSON.stringify(["OK", event.id, false, "auth-required: sign in"])
+    )
+    socket.message(JSON.stringify(["AUTH", "challenge-1"]))
+    await nextTask()
+
+    const authFrame = JSON.parse(socket.sentPayloads[1]!)
+    socket.message(JSON.stringify(["OK", authFrame[1].id, true, ""]))
+    socket.message(
+      JSON.stringify([
+        "OK",
+        event.id,
+        false,
+        "restricted: this account cannot publish here",
+      ])
+    )
+
+    await expect(result).resolves.toBe("rejected")
+    expect(socket.closeCalls).toBe(1)
+  })
+
   it("does not sign a superseding challenge on one write connection", async () => {
     const socket = new WriterTestSocket()
     let signerCalls = 0

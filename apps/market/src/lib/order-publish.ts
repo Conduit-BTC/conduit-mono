@@ -36,7 +36,11 @@ export type BuyerMessageDeliveryResult = {
 }
 
 export type OrderCompanionNotificationStatus =
-  "sent" | "skipped_non_declared_route" | "skipped_non_order" | "failed"
+  | "sent"
+  | "skipped_non_declared_route"
+  | "skipped_non_order"
+  | "skipped_session_changed"
+  | "failed"
 
 export type BuyerOrderSigningIdentity =
   | {
@@ -153,6 +157,11 @@ async function publishOrderCompanionNotification(input: {
   if (messageType !== "order") return "skipped_non_order"
   if (input.deliveryRoute !== "declared_inbox") {
     return "skipped_non_declared_route"
+  }
+  // The merchant already ACKed the authoritative order. Do not construct or
+  // wrap the advisory companion with a stale signed-in session.
+  if (input.shouldContinue?.() === false) {
+    return "skipped_session_changed"
   }
 
   try {

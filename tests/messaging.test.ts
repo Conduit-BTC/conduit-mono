@@ -1613,6 +1613,88 @@ describe("publishPrivateMessage", () => {
     )
   })
 
+  it("keeps an acknowledged recipient delivery when the session changes during partial diagnostics", async () => {
+    const recipientA = "wss://recipient-a.inbox.conduit.market"
+    const recipientB = "wss://recipient-b.inbox.conduit.market"
+    let sessionCurrent = true
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [recipientA, recipientB],
+      shouldContinue: () => sessionCurrent,
+      giftWrapFn: (async () => wrap("recipient-wrap")) as never,
+      publishFn: (async (_event, options) => {
+        const attemptedRelayUrls = [...(options.exclusiveRelayUrls ?? [])]
+        sessionCurrent = false
+        throw new RelayPublishDiagnosticsError(
+          "One recipient relay acknowledged before the session changed.",
+          {
+            plan: {
+              intent: "recipient_event",
+              primaryRelayUrls: attemptedRelayUrls,
+              broadcastRelayUrls: [],
+              parkedRelayUrls: [],
+            },
+            attemptedRelayUrls,
+            successfulRelayUrls: [recipientA],
+            failedRelayUrls: [recipientB],
+            relayFailureMessages: {
+              [recipientB]: "No acknowledgement before timeout",
+            },
+          },
+          new Error("session changed after recipient acknowledgement")
+        )
+      }) as never,
+    })
+
+    expect(result.recipientDelivery.successfulRelayUrls).toEqual([recipientA])
+    expect(result.deliveryStatus).toBe("partial_success")
+    expect(result.selfCopyError).toBeNull()
+  })
+
+  it("records an explicit recipient relay rejection in the durable order retry state", async () => {
+    const recipientA = "wss://recipient-a.inbox.conduit.market"
+    const recipientB = "wss://recipient-b.inbox.conduit.market"
+    const wrapSigner = NDKPrivateKeySigner.generate()
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [recipientA, recipientB],
+      giftWrapFn: (async () => {
+        const wrapped = new NDKEvent()
+        wrapped.kind = EVENT_KINDS.GIFT_WRAP
+        wrapped.created_at = 100
+        wrapped.tags = [["p", "recipient"]]
+        wrapped.content = "encrypted test fixture"
+        await wrapped.sign(wrapSigner)
+        return wrapped
+      }) as never,
+      publishFn: (async () => ({
+        successfulRelayUrls: [recipientA],
+        failedRelayUrls: [recipientB],
+        rejectedRelayUrls: [recipientB],
+        // Keep this deliberately human-readable. The durable record must use
+        // the publisher's structured rejection state rather than infer it.
+        relayFailureMessages: { [recipientB]: "Relay rejected the event" },
+      })) as never,
+    })
+
+    expect(result.orderRelayDelivery?.relayDelivery).toEqual([
+      expect.objectContaining({ relayUrl: recipientA, status: "acked" }),
+      expect.objectContaining({ relayUrl: recipientB, status: "rejected" }),
+    ])
+  })
+
   it("attaches an NDK instance before the real gift-wrap encryption path", async () => {
     const senderSigner = NDKPrivateKeySigner.generate()
     const recipientSigner = NDKPrivateKeySigner.generate()

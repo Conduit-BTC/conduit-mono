@@ -345,6 +345,7 @@ describe("buyer order publishing", () => {
     const ndk = { signer }
     let sessionCurrent = true
     const published: string[] = []
+    let companionPublishAttempts = 0
     let cacheAttempts = 0
     let recipientWrapId = ""
     let selfWrapId = ""
@@ -375,6 +376,7 @@ describe("buyer order publishing", () => {
         },
         publishPrivateMessageFn: async (input) => {
           if (input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE) {
+            companionPublishAttempts += 1
             throw new Error("advisory companion skipped after session change")
           }
           return await publishPrivateMessage({
@@ -438,7 +440,8 @@ describe("buyer order publishing", () => {
       "Sender self-copy was skipped because the signer session changed after recipient delivery."
     )
     expect(result.localCacheError).toBeNull()
-    expect(await result.companionNotification).toBe("failed")
+    expect(await result.companionNotification).toBe("skipped_session_changed")
+    expect(companionPublishAttempts).toBe(0)
     expect(published[0]).toBe(recipientWrapId)
     expect(published).not.toContain(selfWrapId)
   })
