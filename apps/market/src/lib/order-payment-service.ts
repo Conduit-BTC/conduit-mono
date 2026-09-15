@@ -4,6 +4,7 @@ import {
   buildLightningPaymentProofMessage,
   claimExternalOrderPaymentProof,
   claimOrderLifecyclePayment,
+  claimOrderLifecycleUpdatedAddressPayment,
   claimOrderLifecyclePrivateFallbackPayment,
   claimOrderPaymentProofDelivery,
   config,
@@ -68,6 +69,10 @@ import {
   clearOrderPaymentClaim,
   rememberOrderPaymentClaim,
 } from "./order-payment-session"
+import {
+  checkOrderPaymentAddressUpdate,
+  type OrderPaymentAddressUpdate,
+} from "./order-payment-address"
 
 export function getLifecyclePaymentProofAction(
   lifecycle: Pick<OrderLifecycle, "checkoutMode" | "publicZapSigner">
@@ -289,6 +294,9 @@ export interface OrderPaymentRuntimeState {
 }
 
 export interface OrderPaymentDependencies {
+  getOrderLifecycle: typeof getOrderLifecycle
+  checkOrderPaymentAddressUpdate: typeof checkOrderPaymentAddressUpdate
+  claimOrderLifecycleUpdatedAddressPayment: typeof claimOrderLifecycleUpdatedAddressPayment
   anonZapSignerPubkey: string | null
   fetchLnurlPayMetadata: typeof fetchLnurlPayMetadata
   requestCheckoutLnurlInvoice: typeof requestCheckoutLnurlInvoice
@@ -317,6 +325,9 @@ export interface OrderPaymentDependencies {
 }
 
 const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
+  getOrderLifecycle,
+  checkOrderPaymentAddressUpdate,
+  claimOrderLifecycleUpdatedAddressPayment,
   anonZapSignerPubkey: normalizePubkey(config.anonZapSignerPubkey),
   fetchLnurlPayMetadata,
   requestCheckoutLnurlInvoice,
@@ -421,8 +432,8 @@ const runtimeStates = new Map<string, OrderPaymentRuntimeState>()
 const listeners = new Map<string, Set<Listener>>()
 /** Guards against concurrent payment attempts for the same order. */
 const inFlight = new Set<string>()
-/** Serializes the explicit anonymous-to-private recovery transition. */
-const privateFallbackTransitions = new Set<string>()
+/** Serializes explicit payment recovery transitions. */
+const paymentRecoveryTransitions = new Set<string>()
 const receiptObservers = new Set<string>()
 
 function startProofDeliveryClaimHeartbeat(
@@ -671,7 +682,7 @@ export function getOrderPaymentState(
 }
 
 export function isOrderPaymentRunning(orderId: string): boolean {
-  return inFlight.has(orderId) || privateFallbackTransitions.has(orderId)
+  return inFlight.has(orderId) || paymentRecoveryTransitions.has(orderId)
 }
 
 export function subscribeOrderPayment(
@@ -1002,9 +1013,125 @@ export async function runOrderPayment(
   return runOrderPaymentInternal(ctx, dependencyOverrides)
 }
 
+/** Buyer-confirmed destination recovery; the ordinary snapshot gate stays strict. */
+export async function runOrderPaymentWithUpdatedAddress(
+  ctx: OrderPaymentContext,
+  update: OrderPaymentAddressUpdate,
+  dependencyOverrides: Partial<OrderPaymentDependencies> = {}
+): Promise<OrderPaymentRuntimeState> {
+  const dependencies = {
+    ...defaultOrderPaymentDependencies,
+    ...dependencyOverrides,
+  }
+  const sessionIsCurrent = () => {
+    if (ctx.shouldContinue?.() === false) return false
+    if (ctx.buyerIdentity?.kind === "guest_ephemeral") {
+      return (
+        ctx.buyerIdentity.pubkey === ctx.buyerPubkey &&
+        ctx.buyerIdentity.orderId === ctx.orderId &&
+        ctx.buyerIdentity.merchantPubkey === ctx.merchantPubkey
+      )
+    }
+    return (
+      !!ctx.authenticatedPubkey && ctx.authenticatedPubkey === ctx.buyerPubkey
+    )
+  }
+  const assertSession = () => {
+    if (!sessionIsCurrent()) {
+      throw new Error(
+        "The connected account changed. Check the merchant payment address again."
+      )
+    }
+  }
+  assertSession()
+  if (isOrderPaymentRunning(ctx.orderId)) {
+    throw new Error("Payment is already in progress for this order.")
+  }
+  paymentRecoveryTransitions.add(ctx.orderId)
+  const paymentClaimId = generateId()
+  let claim: OrderPaymentClaimResult
+  let remembered = false
+  try {
+    const lifecycle = await dependencies.getOrderLifecycle(ctx.orderId)
+    assertSession()
+    if (
+      !lifecycle ||
+      lifecycle.updatedAt !== update.expectedUpdatedAt ||
+      lifecycle.orderId !== update.orderId ||
+      lifecycle.merchantPubkey !== update.merchantPubkey ||
+      ctx.merchantPubkey !== update.merchantPubkey ||
+      ctx.merchantLud16 !== update.previousAddress ||
+      lifecycle.merchantLightningAddress !== update.previousAddress ||
+      lifecycle.buyerPubkey !== ctx.buyerPubkey ||
+      isGuestOrderDataExpired(lifecycle)
+    ) {
+      throw new Error(
+        "Order payment details changed. Check the merchant payment address again."
+      )
+    }
+    const current = await dependencies.checkOrderPaymentAddressUpdate(
+      lifecycle,
+      {
+        ...ctx,
+        shouldContinue: sessionIsCurrent,
+      }
+    )
+    assertSession()
+    if (
+      current.status !== "updated" ||
+      current.update.newAddress !== update.newAddress
+    ) {
+      throw new Error(
+        "The merchant's updated payment address could not be confirmed. Check it again before retrying."
+      )
+    }
+    remembered = dependencies.rememberOrderPaymentClaim(
+      ctx.orderId,
+      paymentClaimId
+    )
+    if (!remembered)
+      throw new Error("Recoverable payment storage is unavailable.")
+    claim = await dependencies.claimOrderLifecycleUpdatedAddressPayment(
+      {
+        orderId: ctx.orderId,
+        paymentClaimId,
+        buyerPubkey: ctx.buyerPubkey,
+        merchantPubkey: ctx.merchantPubkey,
+        merchantLightningAddress: ctx.merchantLud16,
+        checkoutMode: ctx.zapMode,
+        zapContent: ctx.zapContent,
+        totalSats: ctx.totalSats,
+        totalMsats: ctx.totalMsats,
+        items: ctx.items,
+        paymentTarget: ctx.paymentTarget,
+      },
+      update.expectedUpdatedAt,
+      update.newAddress,
+      sessionIsCurrent
+    )
+    if (claim.status !== "claimed") {
+      throw new Error(
+        "Order payment state changed. Refresh before retrying with the updated address."
+      )
+    }
+  } catch (error) {
+    if (remembered)
+      dependencies.clearOrderPaymentClaim(ctx.orderId, paymentClaimId)
+    throw error
+  } finally {
+    paymentRecoveryTransitions.delete(ctx.orderId)
+  }
+  return runOrderPaymentInternal(ctx, dependencyOverrides, {
+    paymentClaimId,
+    lifecycle: claim.lifecycle,
+    assertSession,
+  })
+}
+
 type PreparedOrderPaymentClaim = {
   paymentClaimId: string
   lifecycle: OrderLifecycle
+  assertSession?: () => void
 }
 
 async function runOrderPaymentInternal(
@@ -1047,7 +1174,7 @@ async function runOrderPaymentInternal(
       throw error
     }
   }
-  if (inFlight.has(orderId) || privateFallbackTransitions.has(orderId)) {
+  if (inFlight.has(orderId) || paymentRecoveryTransitions.has(orderId)) {
     return (
       runtimeStates.get(orderId) ?? {
         orderId,
@@ -1176,10 +1303,12 @@ async function runOrderPaymentInternal(
     let proofDeliveryOutcome: "pending" | "retry_needed" | "sent" = "pending"
 
     try {
+      preparedClaim?.assertSession?.()
       const ndk = getNdk()
       const lnurlMeta = await dependencies.fetchLnurlPayMetadata(
         ctx.merchantLud16
       )
+      preparedClaim?.assertSession?.()
       let visibility = getCheckoutZapVisibility(ctx.zapMode)
       const publicZapSigner = getOrderPublicZapSigner(ctx.zapMode)
       if (
@@ -1256,6 +1385,7 @@ async function runOrderPaymentInternal(
 
       const requestInvoice = async (requestedVisibility: typeof visibility) => {
         await patchClaim({}, { stage: "requesting_invoice" })
+        preparedClaim?.assertSession?.()
         const zapTargetAddress =
           requestedVisibility === "public_zap"
             ? recoverCheckoutZapTargetAddress({
@@ -1286,6 +1416,7 @@ async function runOrderPaymentInternal(
             signZapRequest: async (
               draft: CheckoutZapRequestDraft
             ): Promise<SignedCheckoutZapRequest> => {
+              preparedClaim?.assertSession?.()
               if (publicZapSigner === "anon") {
                 return requirePreparedAnonZap(
                   ctx,
@@ -1297,11 +1428,13 @@ async function runOrderPaymentInternal(
                 throw new Error("Public zap signer was not selected.")
               }
               if (!ndk.signer) throw new Error("Signer not connected")
-              return signShopperCheckoutZapRequest(
+              const signed = await signShopperCheckoutZapRequest(
                 draft,
                 ctx.buyerPubkey,
                 ndk.signer
               )
+              preparedClaim?.assertSession?.()
+              return signed
             },
           }
         )
@@ -1404,6 +1537,7 @@ async function runOrderPaymentInternal(
       invoiceReceived = true
 
       await patchClaim({}, { stage: "paying_invoice" })
+      preparedClaim?.assertSession?.()
       const payResult = await dependencies.payCheckoutInvoice({
         invoice,
         amountMsats: ctx.totalMsats,
@@ -1412,7 +1546,15 @@ async function runOrderPaymentInternal(
             ? undefined
             : lifecycle.walletPaymentAttemptId,
         paymentTarget: ctx.paymentTarget,
-        approveFee: ctx.approveFee,
+        approveFee:
+          ctx.approveFee && preparedClaim?.assertSession
+            ? async (quote) => {
+                preparedClaim.assertSession?.()
+                const approved = await ctx.approveFee!(quote)
+                preparedClaim.assertSession?.()
+                return approved
+              }
+            : ctx.approveFee,
         timeoutMs: 60_000,
         appId: "market",
         metadata: {
@@ -1705,7 +1847,7 @@ export async function runOrderPrivateFallback(
 ): Promise<OrderPaymentRuntimeState> {
   if (
     inFlight.has(ctx.orderId) ||
-    privateFallbackTransitions.has(ctx.orderId)
+    paymentRecoveryTransitions.has(ctx.orderId)
   ) {
     throw new Error("Payment is already in progress for this order.")
   }
@@ -1739,14 +1881,14 @@ export async function runOrderPrivateFallback(
     return runtimeStates.get(ctx.orderId)!
   }
 
-  privateFallbackTransitions.add(ctx.orderId)
+  paymentRecoveryTransitions.add(ctx.orderId)
 
   let claim: OrderPaymentClaimResult
   try {
     claim =
       await dependencies.claimOrderLifecyclePrivateFallbackPayment(claimInput)
   } finally {
-    privateFallbackTransitions.delete(ctx.orderId)
+    paymentRecoveryTransitions.delete(ctx.orderId)
   }
 
   if (claim.status !== "claimed") {

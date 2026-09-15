@@ -2,6 +2,7 @@ import { db, type CachedProfile } from "../db"
 import type { Profile } from "../types"
 import { getProfileName } from "../utils"
 import { normalizePublicMediaUrl } from "../network-target-safety"
+import { isValidLud16Address } from "./lightning"
 
 export type ProfileMap = Record<string, Profile | undefined>
 
@@ -353,4 +354,318 @@ export function mergeRicherProfiles(
   }
 
   return next
+}
+
+export type ProfileFrontierState =
+  | "not_observed"
+  | "observed_valid"
+  | "observed_malformed"
+  | "retained_valid"
+  | "retained_malformed"
+
+export interface SelectedProfileContext {
+  profile: Profile
+  frontier?: {
+    eventId: string
+    eventCreatedAt: number
+    rawContent: string
+    validity: "valid" | "malformed"
+  }
+  freshness: "observed" | "retained" | "unobserved"
+  persistence: "durable" | "session" | "unknown" | "unavailable"
+  /** Complete bounded network evidence; never a claim of global absence. */
+  readComplete: boolean
+}
+
+type ProfileCacheTestOverrides = {
+  getCachedProfiles?: (
+    pubkeys: string[]
+  ) => Promise<Array<CachedProfile | undefined>>
+  putCachedProfiles?: (rows: CachedProfile[]) => Promise<void>
+}
+let profileCacheTestOverrides: ProfileCacheTestOverrides = {}
+let profileCacheWriteLock: Promise<void> = Promise.resolve()
+// Failed writes remain until equal or stronger durable evidence is confirmed.
+const unpersistedProfileRows = new Map<string, CachedProfile>()
+
+export function __setProfileCacheTestOverrides(
+  overrides: ProfileCacheTestOverrides
+): void {
+  profileCacheTestOverrides = { ...profileCacheTestOverrides, ...overrides }
+}
+
+export function __resetProfileCacheTestOverrides(): void {
+  profileCacheTestOverrides = {}
+  profileCacheWriteLock = Promise.resolve()
+  unpersistedProfileRows.clear()
+}
+
+/** Build projection, exact frontier, and provenance from one selected row. */
+export function createSelectedProfileContext(input: {
+  pubkey: string
+  row?: CachedProfile
+  profile?: Profile
+  observed?: boolean
+  readComplete?: boolean
+  storageAvailable?: boolean
+  persistence?: SelectedProfileContext["persistence"]
+}): SelectedProfileContext {
+  const { row } = input
+  const known = hasKnownProfileFrontier(row)
+  const pending = unpersistedProfileRows.get(input.pubkey)
+  return {
+    profile:
+      known && hasValidProfileEventContent(row.rawContent)
+        ? projectProfileContent(row.pubkey, row.rawContent)
+        : row
+          ? projectProfilePaymentAuthority(row)
+          : (input.profile ?? { pubkey: input.pubkey }),
+    ...(known
+      ? {
+          frontier: {
+            eventId: row.eventId,
+            eventCreatedAt: row.eventCreatedAt,
+            rawContent: row.rawContent,
+            validity: hasValidProfileEventContent(row.rawContent)
+              ? ("valid" as const)
+              : ("malformed" as const),
+          },
+        }
+      : {}),
+    freshness: known
+      ? input.observed
+        ? "observed"
+        : "retained"
+      : "unobserved",
+    persistence:
+      input.persistence ??
+      (known
+        ? pending && compareCachedProfileFrontiers(pending, row) >= 0
+          ? "session"
+          : "durable"
+        : input.storageAvailable === false
+          ? "unavailable"
+          : "unknown"),
+    readComplete: input.readComplete ?? false,
+  }
+}
+
+/** Compare selected contexts using the same NIP-01 frontier order as persistence. */
+export function compareSelectedProfileContexts(
+  candidate: SelectedProfileContext,
+  current: SelectedProfileContext
+): -1 | 0 | 1 {
+  return compareCachedProfileFrontiers(
+    { pubkey: candidate.profile.pubkey, ...candidate.frontier, cachedAt: 0 },
+    { pubkey: current.profile.pubkey, ...current.frontier, cachedAt: 0 }
+  )
+}
+
+/** Read the same selected owner context without adding a network availability gate. */
+export async function loadSelectedProfileContext(
+  pubkey: string
+): Promise<SelectedProfileContext> {
+  const snapshot = await loadProfileCacheSnapshot([pubkey])
+  if (!snapshot.storageAvailable && !snapshot.rows[0]) {
+    throw new Error("Retained profile context is unavailable.")
+  }
+  return createSelectedProfileContext({
+    pubkey,
+    row: snapshot.rows[0],
+    storageAvailable: snapshot.storageAvailable,
+  })
+}
+
+export function getProfilePaymentAddress(
+  context: SelectedProfileContext | undefined
+): string | undefined {
+  if (!context?.frontier || context.frontier.validity !== "valid")
+    return undefined
+  const address = projectProfileContent(
+    context.profile.pubkey,
+    context.frontier.rawContent
+  ).lud16?.trim()
+  return address && isValidLud16Address(address) ? address : undefined
+}
+
+export function hasFreshProfilePaymentAddress(
+  context: SelectedProfileContext | undefined
+): boolean {
+  return (
+    context?.freshness === "observed" && !!getProfilePaymentAddress(context)
+  )
+}
+
+export function hasValidProfileEventContent(
+  content: string | null | undefined
+): boolean {
+  if (typeof content !== "string") return false
+  try {
+    const parsed = JSON.parse(content) as unknown
+    return !!parsed && typeof parsed === "object" && !Array.isArray(parsed)
+  } catch {
+    return false
+  }
+}
+
+export function hasKnownProfileFrontier(
+  row: CachedProfile | undefined
+): row is CachedProfile & {
+  rawContent: string
+  eventId: string
+  eventCreatedAt: number
+} {
+  return (
+    !!row?.eventId &&
+    typeof row.rawContent === "string" &&
+    Number.isSafeInteger(row.eventCreatedAt) &&
+    row.eventCreatedAt! >= 0
+  )
+}
+
+export function projectProfilePaymentAuthority(row: CachedProfile): Profile {
+  const profile = projectCachedProfile(row)
+  if (!hasKnownProfileFrontier(row)) return profile
+  return {
+    ...profile,
+    lud16: hasValidProfileEventContent(row.rawContent)
+      ? projectProfileContent(row.pubkey, row.rawContent).lud16
+      : undefined,
+  }
+}
+
+export function retainedProfileFrontierState(
+  row: CachedProfile | undefined
+): ProfileFrontierState {
+  return !hasKnownProfileFrontier(row)
+    ? "not_observed"
+    : hasValidProfileEventContent(row.rawContent)
+      ? "retained_valid"
+      : "retained_malformed"
+}
+
+export async function loadProfileCacheSnapshot(pubkeys: string[]): Promise<{
+  rows: Array<CachedProfile | undefined>
+  storageAvailable: boolean
+}> {
+  let storageAvailable = true
+  let rows: Array<CachedProfile | undefined>
+  try {
+    rows = profileCacheTestOverrides.getCachedProfiles
+      ? await profileCacheTestOverrides.getCachedProfiles(pubkeys)
+      : await db.profiles.bulkGet(pubkeys)
+  } catch {
+    storageAvailable = false
+    rows = []
+  }
+  const selected = pubkeys.map((pubkey, index) => {
+    const durable = rows[index]
+    const pending = unpersistedProfileRows.get(pubkey)
+    if (!pending) return durable
+    if (!hasKnownProfileFrontier(durable)) return pending
+    if (compareCachedProfileFrontiers(durable, pending) >= 0) {
+      unpersistedProfileRows.delete(pubkey)
+    }
+    return retainStrongestCachedProfileRow(durable, pending)
+  })
+  return { rows: selected, storageAvailable }
+}
+
+export async function loadRetainedProfileRows(
+  pubkeys: string[]
+): Promise<Array<CachedProfile | undefined>> {
+  return (await loadProfileCacheSnapshot(pubkeys)).rows
+}
+
+export async function retainSelectedProfileRows(
+  rows: CachedProfile[]
+): Promise<CachedProfileRetentionResult & { persistenceFailed?: boolean }> {
+  let retention: CachedProfileRetentionResult
+  let persistenceFailed = false
+  try {
+    retention = await persistCachedProfiles(rows)
+    for (const row of retention.rows) {
+      const pending = unpersistedProfileRows.get(row.pubkey)
+      if (
+        pending &&
+        hasKnownProfileFrontier(row) &&
+        compareCachedProfileFrontiers(row, pending) >= 0
+      ) {
+        unpersistedProfileRows.delete(row.pubkey)
+      }
+    }
+  } catch {
+    persistenceFailed = true
+    // A failed cache write must not erase signed evidence already received.
+    // Reconcile once more in case another reader committed a stronger row.
+    const current = await loadRetainedProfileRows(rows.map((row) => row.pubkey))
+    retention = reduceCachedProfileRows(rows, current)
+    for (const row of retention.rows) {
+      if (hasKnownProfileFrontier(row)) {
+        unpersistedProfileRows.set(
+          row.pubkey,
+          retainStrongestCachedProfileRow(
+            unpersistedProfileRows.get(row.pubkey),
+            row
+          )
+        )
+      }
+    }
+  }
+  // An overlapping failed write can outlive this request's durable write.
+  const effective = reduceCachedProfileRows(
+    retention.rows,
+    retention.rows.map((row) => unpersistedProfileRows.get(row.pubkey))
+  )
+  return {
+    rows: effective.rows,
+    displacedPubkeys: new Set([
+      ...retention.displacedPubkeys,
+      ...effective.displacedPubkeys,
+    ]),
+    persistenceFailed,
+  }
+}
+
+async function persistCachedProfiles(
+  rows: CachedProfile[]
+): Promise<CachedProfileRetentionResult> {
+  if (rows.length === 0) {
+    return { rows: [], displacedPubkeys: new Set() }
+  }
+
+  if (
+    profileCacheTestOverrides.getCachedProfiles ||
+    profileCacheTestOverrides.putCachedProfiles
+  ) {
+    const previous = profileCacheWriteLock
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    profileCacheWriteLock = previous.catch(() => undefined).then(() => gate)
+
+    await previous.catch(() => undefined)
+    try {
+      const pubkeys = Array.from(new Set(rows.map((row) => row.pubkey)))
+      const currentRows = profileCacheTestOverrides.getCachedProfiles
+        ? await profileCacheTestOverrides.getCachedProfiles(pubkeys)
+        : pubkeys.map(() => undefined)
+      const retention = reduceCachedProfileRows(rows, currentRows)
+      if (
+        retention.updates.length > 0 &&
+        profileCacheTestOverrides.putCachedProfiles
+      ) {
+        await profileCacheTestOverrides.putCachedProfiles(retention.updates)
+      }
+      return {
+        rows: retention.rows,
+        displacedPubkeys: retention.displacedPubkeys,
+      }
+    } finally {
+      release()
+    }
+  }
+
+  return await retainStrongestCachedProfiles(rows)
 }

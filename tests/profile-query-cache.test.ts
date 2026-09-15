@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import type {
   CommerceQueryMeta,
-  CommerceResult,
+  ProfileBatchResult,
+  SelectedProfileContext,
   Profile,
-  ProfileMap,
   ProfileFormValues,
 } from "@conduit/core"
 import { reconcileProfileFormDraft } from "../packages/core/src/protocol/profiles"
@@ -11,18 +11,40 @@ import { updateProfileQueryCache } from "../packages/core/src/hooks/useUpdatePro
 
 const PUBKEY = "a".repeat(64)
 
+function selectedContext(
+  lud16: string | undefined,
+  eventId = "selected",
+  eventCreatedAt = 20
+): SelectedProfileContext {
+  return {
+    profile: { pubkey: PUBKEY, name: "Merchant", lud16 },
+    frontier: {
+      eventId,
+      eventCreatedAt,
+      rawContent: JSON.stringify({ name: "Merchant", lud16 }),
+      validity: "valid",
+    },
+    freshness: "observed",
+    persistence: "durable",
+    readComplete: true,
+  }
+}
+
 describe("profile query cache", () => {
-  it("updates the profile inside the Commerce result without replacing metadata", () => {
+  it("replaces published projection and selected authority together without retaining fresh-read metadata", () => {
     const meta = {
       stale: false,
       degraded: false,
       capped: false,
     } as CommerceQueryMeta
-    const current: CommerceResult<ProfileMap> = {
+    const current: ProfileBatchResult = {
       data: {
         [PUBKEY]: { pubkey: PUBKEY, name: "Before" },
       },
       meta,
+      profileContexts: {
+        [PUBKEY]: selectedContext("old@wallet.example", "old", 10),
+      },
     }
     const profile: Profile = {
       pubkey: PUBKEY,
@@ -30,17 +52,60 @@ describe("profile query cache", () => {
       about: "Updated locally after publish",
     }
 
-    const updated = updateProfileQueryCache(current, profile)
+    const published = selectedContext(undefined, "published", 20)
+    published.profile = profile
+    const updated = updateProfileQueryCache(current, published)
 
     expect(updated?.data[PUBKEY]).toEqual(profile)
-    expect(updated?.meta).toBe(meta)
+    expect(updated?.profileContexts[PUBKEY]).toBe(published)
+    expect(updated?.meta).toMatchObject({
+      source: "local_cache",
+      stale: true,
+      degraded: true,
+      profileFrontierStates: { [PUBKEY]: "observed_valid" },
+    })
+    expect(current.profileContexts[PUBKEY].frontier?.eventId).toBe("old")
     expect(updated).not.toHaveProperty(PUBKEY)
   })
 
   it("leaves an unpopulated query cache alone", () => {
     expect(
-      updateProfileQueryCache(undefined, { pubkey: PUBKEY })
+      updateProfileQueryCache(undefined, selectedContext(undefined))
     ).toBeUndefined()
+  })
+
+  it("does not replace a stronger query context when an older publish callback finishes", () => {
+    const stronger = selectedContext(undefined, "removal", 30)
+    const current: ProfileBatchResult = {
+      data: { [PUBKEY]: stronger.profile },
+      profileContexts: { [PUBKEY]: stronger },
+      meta: { source: "public", stale: false } as CommerceQueryMeta,
+    }
+    expect(
+      updateProfileQueryCache(
+        current,
+        selectedContext("old@wallet.example", "published", 20)
+      )
+    ).toBe(current)
+    expect(current.data[PUBKEY].lud16).toBeUndefined()
+  })
+
+  it("keeps other authors selected contexts intact when publishing one profile", () => {
+    const other = "b".repeat(64)
+    const otherContext = selectedContext("other@wallet.example")
+    otherContext.profile = { ...otherContext.profile, pubkey: other }
+    const current: ProfileBatchResult = {
+      data: { [other]: otherContext.profile },
+      profileContexts: { [other]: otherContext },
+      meta: { source: "public", stale: false } as CommerceQueryMeta,
+    }
+    const updated = updateProfileQueryCache(
+      current,
+      selectedContext(undefined)
+    )!
+    expect(updated.profileContexts[other]).toBe(otherContext)
+    expect(updated.data[other]).toBe(otherContext.profile)
+    expect(updated.profileContexts[PUBKEY].profile.lud16).toBeUndefined()
   })
 
   it("rebases untouched draft fields onto the latest signed profile", () => {

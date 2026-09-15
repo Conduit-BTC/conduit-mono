@@ -3,7 +3,6 @@ import { describe, expect, it, mock } from "bun:test"
 import {
   createMerchantInvoiceModule,
   DexieMerchantPendingInvoiceStore,
-  getAuthoritativeMerchantProfileLud16,
   type MerchantInvoiceDependencies,
   type MerchantPendingInvoice,
   type MerchantPendingInvoiceStore,
@@ -113,26 +112,6 @@ function createInput() {
 }
 
 describe("merchant invoice source routing", () => {
-  it("fails closed for legacy or malformed profile rows without signed content", () => {
-    expect(
-      getAuthoritativeMerchantProfileLud16({
-        lud16: "stale@pay.example",
-      })
-    ).toBeNull()
-    expect(
-      getAuthoritativeMerchantProfileLud16({
-        rawContent: "not-json",
-        lud16: "stale@pay.example",
-      })
-    ).toBeNull()
-    expect(
-      getAuthoritativeMerchantProfileLud16({
-        rawContent: JSON.stringify({ lud16: "current@pay.example" }),
-        lud16: "stale@pay.example",
-      })
-    ).toBe("current@pay.example")
-  })
-
   it("uses the signed profile destination for a plain LNURL invoice", async () => {
     const store = new MemoryPendingInvoiceStore()
     const dependencies = createDependencies(store)
