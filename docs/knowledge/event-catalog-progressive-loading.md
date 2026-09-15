@@ -19,9 +19,13 @@ an earlier progress or query result.
 For cold detail loads, the organizer product coordinates start an exact product
 read while participation and pickup verification continue. Completed merchant
 batches emit cumulative snapshots without waiting for slower merchants. Each
-merchant read keeps its family checks together. At most two merchant reads run
-concurrently, matching the shared exact product reader's author limit. Safe cached cards for queued
-merchants remain visible with cache-only diagnostics. Once event verification
+merchant read keeps its family checks together. The shared `getProductsByIds`
+reader owns the author queue, cumulative snapshots and exact diagnostics. At
+most two complete author pipelines run concurrently. The Market adapter calls
+that reader directly, without a second app scheduler or cache-seeding pass.
+Initial cached products and relay-list preparation are shared across the read.
+Safe cached cards and child-only families for queued merchants remain visible
+with cache-only diagnostics. Once event verification
 finishes, each completed exact product can become actionable while other
 merchants continue loading. These snapshots reconcile current signed revisions and
 local deletions before display; final reconciliation must not restore older
@@ -75,6 +79,34 @@ Variable families retain safe display choices independently of their exact
 child pickup snapshots. Parent acceptance does not authorize a child. Newer
 signed withdrawals and deletions must dominate both the event evidence cache
 and the general product cache, including intermediate previews.
+
+## Shared exact product progress
+
+An author becomes complete only after its direct listing reads, family
+reconciliation and exact deletion checks finish. Its final diagnostics can then
+support pickup actions while another author is still pending. Provisional direct
+results remain non-authorizing. A completed author frees a queue slot immediately.
+The shared reader retains alias diagnostics and compatible relay-hint plans.
+Calls without a progress observer retain cross-author bulk family batching.
+Both modes use the same prepared read pipeline; progressive callers schedule
+that pipeline per author so an unrelated family cannot delay completion.
+
+Exact cache hydration uses primary-key lookups for requested coordinates and
+adds same-author parent/sibling context when a variation family needs it. Rows
+are selected before normalization, so unrelated merchant inventory does not
+repeat through every progress snapshot. Known family child IDs remain in later
+lookups even if a child changes parent or becomes a simple listing. Newly
+observed live family references contribute context when persistence fails.
+
+Later publication still checks current cached revisions and monotonic deletions;
+a newer withdrawal or deletion must retract an earlier completed snapshot.
+Shared initial preparation removes duplicate setup, but does not remove those
+freshness checks. Cancellation stops queued authors and late publication.
+
+The two-author limit applies to author pipelines, whose existing transport
+helpers retain their own bounded fanout. It is not a global app connection limit.
+Batched relay-list preparation and current event-graph verification remain
+prerequisites; this change does not guarantee public-relay response times.
 
 ## Checkout is independent of catalog browsing
 
