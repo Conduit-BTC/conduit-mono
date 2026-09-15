@@ -79,6 +79,7 @@ export type NwcSessionPaymentResult =
       status: "pre_publish_failed"
       phase: "before_publish"
       reason: string
+      admissionRejected?: true
     }
   | {
       status: "published_timeout"
@@ -94,6 +95,7 @@ export type NwcSessionPaymentResult =
     }
 
 export interface NwcSessionPayInvoiceInput {
+  beforeSend?: () => Promise<void>
   invoice: string
   amountMsats?: number
   timeoutMs: number
@@ -259,6 +261,17 @@ export class BuyerNwcSession {
       ...(input.metadata !== undefined && { metadata: input.metadata }),
     }
     if (amount !== undefined) request.amount = amount
+
+    try {
+      await input.beforeSend?.()
+    } catch (error) {
+      return {
+        status: "pre_publish_failed",
+        phase: "before_publish",
+        reason: getErrorMessage(error, "Payment is no longer authorized."),
+        admissionRejected: true,
+      }
+    }
 
     try {
       const result = await withTimeout(

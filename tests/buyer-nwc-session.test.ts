@@ -630,6 +630,43 @@ describe("BuyerNwcSession", () => {
     expect(payCalls).toBe(0)
   })
 
+  it("rechecks admission after relay preconnect and preserves a definitive rejection", async () => {
+    let admitted = true
+    let payCalls = 0
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        pool: {
+          ensureRelay: async () => {
+            admitted = false
+          },
+        },
+        payInvoice: async () => {
+          payCalls += 1
+          return { preimage: "paid" }
+        },
+      })
+    )
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+        beforeSend: async () => {
+          if (!admitted) throw new Error("Payment authority changed")
+        },
+      })
+    ).resolves.toEqual({
+      status: "pre_publish_failed",
+      phase: "before_publish",
+      reason: "Payment authority changed",
+      admissionRejected: true,
+    })
+    expect(payCalls).toBe(0)
+  })
+
   it("does not let failed relay preconnect skip payment publish", async () => {
     let payCalls = 0
     const relayTimeouts: number[] = []

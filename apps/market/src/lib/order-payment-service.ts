@@ -1736,6 +1736,7 @@ async function runOrderPaymentInternal(
             ? undefined
             : lifecycle.walletPaymentAttemptId,
         paymentTarget: ctx.paymentTarget,
+        beforeSend: assertPaymentAuthority,
         approveFee: ctx.approveFee
           ? async (quote) => {
               await assertPaymentAuthority()

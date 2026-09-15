@@ -1232,12 +1232,35 @@ describe("SparkWalletManager", () => {
     ])
     expect(sendCalls).toHaveLength(0)
 
+    let admitted = true
+    await expect(
+      manager.payInvoice("wallet-personal", {
+        invoice: "lnbc1checkout",
+        amountMsats: 1_000_000,
+        idempotencyKey: "order-declined",
+        approveFee: async () => {
+          admitted = false
+          return true
+        },
+        beforeSend: async () => {
+          if (!admitted) throw new Error("Payment authority changed")
+        },
+      })
+    ).resolves.toEqual({
+      status: "pre_publish_failed",
+      reason: "Payment authority changed",
+    })
+    expect(sendCalls).toHaveLength(0)
+
     await expect(
       manager.payInvoice("wallet-personal", {
         invoice: "lnbc1checkout",
         amountMsats: 1_000_000,
         idempotencyKey: "order-declined",
         approveFee: async () => true,
+        beforeSend: async () => {
+          expect(sendCalls).toHaveLength(0)
+        },
       })
     ).resolves.toEqual({
       status: "paid",
