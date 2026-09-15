@@ -181,6 +181,7 @@ describe("buyer order publishing", () => {
       {
         accountPubkey: "buyer-pubkey",
         authenticatedPubkey: "buyer-pubkey",
+        relayAuthMethod: "nip07",
         publishPrivateMessageFn: async (input) => {
           calls.push(input as unknown as Record<string, unknown>)
           if (input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE) {
@@ -225,6 +226,7 @@ describe("buyer order publishing", () => {
     expect(orderCall?.accountPubkey).toBe("buyer-pubkey")
     expect(orderCall?.authenticatedPubkey).toBe("buyer-pubkey")
     expect(orderCall?.signerInteraction).toBe("external")
+    expect(orderCall?.relayAuthMethod).toBe("nip07")
     expect(orderCall?.validatedOrderScope).toMatchObject({
       rumorId: "order-rumor",
       orderId: "guest-order",
@@ -240,6 +242,7 @@ describe("buyer order publishing", () => {
     expect(companionCall?.signer).toBe(signer)
     expect(companionCall?.selfCopy).toBe(false)
     expect(companionCall?.signerInteraction).toBe("background_external")
+    expect(companionCall?.relayAuthMethod).toBeUndefined()
     expect(companionCall?.validatedOrderScope).toBeUndefined()
     expect(companionCall?.validatedGuestOrderCompanionScope).toBeUndefined()
 

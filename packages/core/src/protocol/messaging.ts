@@ -45,6 +45,7 @@ import {
   normalizeSecureOrIsolatedE2eRelayUrls,
 } from "./relay-settings"
 import { waitForVisibleDocument } from "./interactive-signer"
+import { createNdkNostrEventSigner } from "./ndk-nostr-event-signer"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -741,8 +742,10 @@ export interface PublishPrivateMessageInput {
   refreshRelayLists?: boolean
   /** Skip foreground coordination for a caller-owned ephemeral guest signer. */
   signerInteraction?: "external" | "background_external" | "application_owned"
+  /** External account method eligible to answer a foreground NIP-42 challenge. */
+  relayAuthMethod?: "nip07" | "nip46"
   /** Controlled visibility seam for interactive external signer workflows. */
-  waitForSignerVisibility?: () => Promise<void>
+  waitForSignerVisibility?: (signal?: AbortSignal) => Promise<void>
   giftWrapFn?: typeof giftWrap
   /**
    * Durable exact-retry seam. Runs after wrapping and before the first relay
@@ -798,7 +801,7 @@ export interface PublishPrivateMessageInput {
 
 function createVisibilityGatedSigner(
   signer: NDKSigner,
-  waitForSignerVisibility: () => Promise<void>
+  waitForSignerVisibility: (signal?: AbortSignal) => Promise<void>
 ): NDKSigner {
   return new Proxy(signer, {
     get(target, property) {
@@ -1116,10 +1119,26 @@ export async function publishPrivateMessage(
   const externalSignerInteraction =
     (input.signerInteraction ?? "background_external") === "external"
   const waitForSignerVisibility =
-    input.waitForSignerVisibility ?? waitForVisibleDocument
+    input.waitForSignerVisibility ??
+    ((signal?: AbortSignal) => waitForVisibleDocument(undefined, signal))
   const giftWrapSigner = externalSignerInteraction
     ? createVisibilityGatedSigner(input.signer, waitForSignerVisibility)
     : input.signer
+  const relayAuthentication =
+    externalSignerInteraction &&
+    authenticatedOwnerPubkey &&
+    input.relayAuthMethod
+      ? {
+          expectedPubkey: authenticatedOwnerPubkey,
+          signer: createNdkNostrEventSigner(
+            input.signer,
+            authenticatedOwnerPubkey,
+            input.relayAuthMethod
+          ),
+          sessionScope: input.signer,
+          waitForSignerVisibility,
+        }
+      : undefined
 
   const wrappedToRecipient = await giftWrapFn(
     input.rumor,
@@ -1165,6 +1184,7 @@ export async function publishPrivateMessage(
       shouldContinue: input.shouldContinue,
       refreshRelayLists,
       deliveryMode: "critical",
+      ...(relayAuthentication ? { relayAuthentication } : {}),
       ...(accountPubkey
         ? {
             accountPubkey,

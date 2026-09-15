@@ -27,6 +27,19 @@ describe("checkout completion navigation contracts", () => {
     expect(paymentTracker).not.toContain('<Link to="/cart">Back to cart</Link>')
   })
 
+  it("scopes relay authentication to both foreground signed order sends", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const relayAuthForOrder =
+      checkoutRoute.match(
+        /authMethod \? \{ relayAuthMethod: authMethod \} : \{\}/g
+      ) ?? []
+
+    expect(checkoutRoute).toContain("method: authMethod")
+    expect(relayAuthForOrder).toHaveLength(2)
+  })
+
   it("uses the published fast-checkout total for degraded success telemetry", async () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"

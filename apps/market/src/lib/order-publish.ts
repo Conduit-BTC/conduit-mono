@@ -62,6 +62,7 @@ type BuyerOrderPublishDependencies = {
   signerInteraction?: "external" | "background_external"
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
+  relayAuthMethod?: "nip07" | "nip46"
   shouldContinue?: () => boolean
 }
 
@@ -274,6 +275,11 @@ export async function publishBuyerOrderMessage(
       buyerIdentity.kind === "guest_ephemeral"
         ? "application_owned"
         : (dependencies.signerInteraction ?? "external"),
+    ...(buyerIdentity.kind !== "guest_ephemeral" &&
+    (dependencies.signerInteraction ?? "external") === "external" &&
+    dependencies.relayAuthMethod
+      ? { relayAuthMethod: dependencies.relayAuthMethod }
+      : {}),
     // Checkout-created kind-16 orders are locally validated, so the merchant
     // leg may use the bounded compatibility route when the merchant has
     // no usable NIP-17 declaration (CND-208). Guest orders gain no reply
