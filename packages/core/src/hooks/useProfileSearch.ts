@@ -58,6 +58,24 @@ export function getProfileSearchQueryKey(
   ] as const
 }
 
+/** Stable identity for one cached-phase query, used to scope repair reads. */
+export function getProfileSearchRepairKey(
+  queryKey: readonly (string | number)[]
+): string {
+  return queryKey.join("\u0000")
+}
+
+/**
+ * True when this exact query already ran its one repair read. Scoping by key
+ * keeps a late lookup for an abandoned query from silencing the current one.
+ */
+export function isRepairedProfileSearchQuery(
+  repairedKey: string | null,
+  queryKey: string
+): boolean {
+  return repairedKey === queryKey
+}
+
 /**
  * Accepts a phase result only when it answers the query currently typed.
  * Query keys change per keystroke, so a result for the previous query must
@@ -92,15 +110,11 @@ export function useProfileSearch(
   const [settledQuery, setSettledQuery] = useState("")
   const queryClient = useQueryClient()
   /**
-   * Set once per query when a seller lookup settles after its display
-   * budget. The repair read waits for the lookup, so the rebuilt result
-   * ranks late sellers and reports a failed lookup truthfully.
+   * Identifies the query whose seller lookup already triggered a repair read.
+   * It is keyed, not a plain flag, so a late lookup for a query the shopper
+   * has already left cannot consume the repair the current query needs.
    */
-  const sellerLookupBudgetRef = useRef<number | undefined>(undefined)
-
-  useEffect(() => {
-    sellerLookupBudgetRef.current = undefined
-  }, [accountPubkey, limit, normalized])
+  const repairedQueryRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (!eligible) {
@@ -123,6 +137,7 @@ export function useProfileSearch(
     "cached",
     accountPubkey
   )
+  const cachedKeyId = getProfileSearchRepairKey(cachedKey)
   const cachedQuery = useQuery({
     queryKey: cachedKey,
     enabled: eligible,
@@ -134,10 +149,19 @@ export function useProfileSearch(
         query: trimmed,
         limit,
         signal,
-        sellerLookupBudgetMs: sellerLookupBudgetRef.current,
+        sellerLookupBudgetMs: isRepairedProfileSearchQuery(
+          repairedQueryRef.current,
+          cachedKeyId
+        )
+          ? Infinity
+          : undefined,
         onSellerLookupSettled: () => {
-          if (sellerLookupBudgetRef.current !== undefined) return
-          sellerLookupBudgetRef.current = Infinity
+          if (
+            isRepairedProfileSearchQuery(repairedQueryRef.current, cachedKeyId)
+          ) {
+            return
+          }
+          repairedQueryRef.current = cachedKeyId
           void queryClient.refetchQueries({
             queryKey: cachedKey,
             exact: true,

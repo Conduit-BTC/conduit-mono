@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
 import {
   getProfileSearchQueryKey,
+  getProfileSearchRepairKey,
+  isRepairedProfileSearchQuery,
   selectProfileSearchPhaseResult,
 } from "../packages/core/src/hooks/useProfileSearch"
 import type { ProfileSearchResult } from "../packages/core/src/protocol/profile-search"
@@ -111,15 +113,53 @@ describe("short query handling", () => {
 })
 
 describe("late seller flags", () => {
+  const repairKeyFor = (query: string) =>
+    getProfileSearchRepairKey(getProfileSearchQueryKey(query, 5, "cached"))
+
+  /** Mirrors the hook callback: one repair read per query, keyed by query. */
+  function repairRunner() {
+    let repaired: string | null = null
+    const reads: string[] = []
+    return {
+      reads,
+      budgetFor: (key: string) =>
+        isRepairedProfileSearchQuery(repaired, key) ? Infinity : undefined,
+      settle: (key: string) => {
+        if (isRepairedProfileSearchQuery(repaired, key)) return
+        repaired = key
+        reads.push(key)
+      },
+    }
+  }
+
+  it("lets the current query repair even after an abandoned query settles first", () => {
+    const first = repairKeyFor("ali")
+    const second = repairKeyFor("alic")
+    const runner = repairRunner()
+
+    // Both lookups outran the budget; the abandoned query answers first.
+    runner.settle(first)
+    runner.settle(second)
+    expect(runner.reads).toEqual([first, second])
+    expect(runner.budgetFor(second)).toBe(Infinity)
+  })
+
+  it("repairs a query once so a repair read cannot loop", () => {
+    const key = repairKeyFor("ali")
+    const runner = repairRunner()
+
+    runner.settle(key)
+    runner.settle(key)
+    expect(runner.reads).toEqual([key])
+  })
+
   it("rebuilds the cached result once a settled seller lookup arrives", async () => {
     const hook = await readFile(
       "packages/core/src/hooks/useProfileSearch.ts",
       "utf8"
     )
     expect(hook).toContain("onSellerLookupSettled")
-    expect(hook).toContain(
-      "sellerLookupBudgetMs: sellerLookupBudgetRef.current"
-    )
+    expect(hook).toContain("repairedQueryRef.current = cachedKeyId")
     expect(hook).toContain("queryClient.refetchQueries({")
   })
 })
