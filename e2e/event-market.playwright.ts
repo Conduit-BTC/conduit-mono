@@ -3719,6 +3719,114 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
   )
 })
 
+test("checkout keeps live booth orders available when another booth pickup is cached only @market", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic independent pickup freshness",
+    organizerHandoffEnabled: false,
+  })
+  const otherSecret = generateSecretKey()
+  const createdAt = market.initialCollection.created_at + 1
+  const pickups = [MERCHANT_SECRET, otherSecret].map((secret) =>
+    signEvent(secret, {
+      kind: 30406,
+      created_at: createdAt,
+      content: "",
+      tags: [
+        ["d", "booth"],
+        ["title", "Synthetic booth"],
+        ["price", "0", "SAT"],
+        ["country", "US"],
+        ["service", "pickup"],
+        ["location", "Synthetic public hall"],
+      ],
+    })
+  )
+  const product = createMerchantProductEvent({
+    dTag: "live-booth-product",
+    title: "Synthetic live booth product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: eventCoordinate(pickups[0]!),
+    createdAt,
+  })
+  const otherProduct = signEvent(otherSecret, {
+    kind: product.kind,
+    created_at: createdAt,
+    content: "Synthetic other booth product.",
+    tags: product.tags.map((tag) =>
+      tag[0] === "d"
+        ? ["d", "other-booth-product"]
+        : tag[0] === "title"
+          ? ["title", "Synthetic other booth product"]
+          : tag[0] === "shipping_option"
+            ? ["shipping_option", eventCoordinate(pickups[1]!), "0"]
+            : tag
+    ),
+  })
+  relay.seed(
+    ...pickups,
+    product,
+    otherProduct,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: createdAt + 1,
+      content: market.initialCollection.content,
+      tags: [
+        ...market.initialCollection.tags,
+        ["a", eventCoordinate(product)],
+        ["a", eventCoordinate(otherProduct)],
+      ],
+    })
+  )
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const card = page.getByRole("listitem").filter({
+    hasText: "Synthetic live booth product",
+  })
+  await expect(
+    page
+      .getByRole("listitem")
+      .filter({
+        hasText: "Synthetic other booth product",
+      })
+      .getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled({ timeout: 30_000 })
+  await card.getByRole("button", { name: "Add", exact: true }).click()
+
+  // The browser retains both signed pickups, but subsequent live reads can
+  // find only the pickup for the item being ordered.
+  relay.remove(pickups[1]!)
+  const held = relay.holdRelayRequests((request) =>
+    request.filters.some((filter) => filter.kinds?.includes(30406))
+  )
+  try {
+    await gotoAs(page, marketUrl, "/checkout", "buyer", {
+      merchant: nip19.npubEncode(MERCHANT_PUBKEY),
+    })
+    await held.captured
+    await expect(
+      page.getByRole("button", {
+        name: "Checking signed event pickup",
+        exact: true,
+      })
+    ).toBeDisabled()
+    await expect(page.getByText("Event pickup must be refreshed")).toHaveCount(
+      0
+    )
+  } finally {
+    held.release()
+  }
+  await expect(page.getByRole("button", { name: /^Send order$/i })).toBeEnabled(
+    {
+      timeout: 30_000,
+    }
+  )
+  await expect(page.getByText("Event pickup must be refreshed")).toHaveCount(0)
+  await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
+})
+
 test("cold event catalog shows a completed merchant product before a slower merchant finishes @market", async ({
   page,
 }) => {

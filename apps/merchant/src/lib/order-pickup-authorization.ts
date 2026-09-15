@@ -247,6 +247,7 @@ function organizerGraphMatches(
     calendar &&
     collection &&
     pickup &&
+    pickup.evidenceState !== "retained" &&
     resolution.organizerPubkey?.toLowerCase() === organizerPubkey &&
     calendar.authorPubkey.toLowerCase() === organizerPubkey &&
     collection.authorPubkey.toLowerCase() === organizerPubkey &&

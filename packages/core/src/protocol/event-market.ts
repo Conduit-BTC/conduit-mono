@@ -202,6 +202,8 @@ export interface ParsedEventMarketPickup {
   geohash?: string
   createdAt: number
   sourceRelayUrls?: string[]
+  /** Network-read provenance; retained records remain display-only. */
+  evidenceState?: "live" | "retained"
 }
 
 export interface ParsedEventMarketCollection {
@@ -1158,6 +1160,8 @@ export interface ResolveEventMarketEvidenceInput {
   collectionEvents?: readonly SignedPublicNostrEvent[]
   calendarEvents?: readonly SignedPublicNostrEvent[]
   pickupEvents?: readonly SignedPublicNostrEvent[]
+  /** Exact pickup revisions observed by this network read, excluding cache. */
+  livePickupEventIds?: ReadonlySet<string>
   deletionEvents?: readonly SignedPublicNostrEvent[]
   productRequestEvents?: readonly SignedPublicNostrEvent[]
   participationBudget?: EventMarketParticipationBudget
@@ -1984,7 +1988,18 @@ export function resolveEventMarketEvidence(
     ...directMerchantPickupResults.flatMap((entry) =>
       entry.result.state === "current" ? [entry.result.value] : []
     ),
-  ]
+  ].map((pickup): ParsedEventMarketPickup =>
+    input.livePickupEventIds
+      ? {
+          ...pickup,
+          evidenceState: input.livePickupEventIds.has(
+            pickup.eventId.toLowerCase()
+          )
+            ? "live"
+            : "retained",
+        }
+      : pickup
+  )
 
   if (participationBudget.state === "exceeded") {
     return {
@@ -3820,14 +3835,29 @@ function downgradeCachedOnlyResolution(
   const requiredIds = [
     resolution.collection?.eventId,
     resolution.calendar?.eventId,
-    ...resolution.pickups.map((pickup) => pickup.eventId),
+    resolution.pickup?.eventId,
   ].filter((value): value is string => Boolean(value))
   const allRequiredEvidenceIsLive =
-    requiredIds.length === 2 + resolution.pickups.length &&
+    requiredIds.length === 2 + (resolution.pickup ? 1 : 0) &&
     requiredIds.every((eventId) => liveEventIds.has(eventId.toLowerCase()))
-  return allRequiredEvidenceIsLive
-    ? resolution
-    : { ...resolution, state: "stale" }
+  const pickups = resolution.pickups
+  const retainedPickups = pickups.filter(
+    (pickup) => pickup.evidenceState === "retained"
+  )
+  // One merchant's retained booth must not veto another merchant's live
+  // pickup. The shared fulfillment resolver rejects the selected retained
+  // record while keeping it available for browsing and later refresh.
+  return {
+    ...resolution,
+    pickups,
+    state:
+      !allRequiredEvidenceIsLive ||
+      (pickups.length > 0 && retainedPickups.length === pickups.length)
+        ? "stale"
+        : retainedPickups.length > 0 && resolution.state === "active"
+          ? "partial"
+          : resolution.state,
+  }
 }
 
 function addResolutionSources(
@@ -4309,6 +4339,7 @@ export async function getEventMarket(
   const resolution = resolveEventMarketEvidence({
     reference: decoded.coordinate,
     events: records.events,
+    livePickupEventIds: records.liveEventIds,
     productRequestEvents,
     participationBudget: requestFrontierResult.participationBudget,
     coverage: coverageForNetworkRead(
@@ -4874,6 +4905,7 @@ export async function getOrganizerEventMarketsDetailed(
         resolveEventMarketEvidence({
           reference,
           events: records.events,
+          livePickupEventIds: currentResolutionEventIds,
           productRequestEvents,
           participationBudget: requestFrontierResult.participationBudget,
           pickupBudget,
