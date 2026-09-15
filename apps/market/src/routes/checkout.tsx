@@ -44,7 +44,6 @@ import {
   orderSchema,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
-  resolveEventMarketOrganizerInbox,
   resolveWalletPaymentInstance,
   validateAddressConsistency,
   useAuth,
@@ -108,7 +107,6 @@ import {
 } from "../hooks/useCartReadiness"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useEventActorIdentity } from "../hooks/useEventActorIdentity"
-import { useProductCartFulfillmentBatch } from "../hooks/useProductCartFulfillment"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets, type WalletRuntimeState } from "../hooks/useWallets"
 import { useShopperPresets } from "../hooks/useShopperPresets"
@@ -148,6 +146,7 @@ import {
   isFastCheckoutEligible,
   isFastCheckoutInputPending,
   getFastCheckoutUnavailableReasons,
+  getInvoiceCheckoutUnavailableReasons,
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
   getCheckoutEvidenceCheckingLabel,
@@ -216,10 +215,8 @@ import {
   runOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
-import { getCartEventFulfillmentBlock } from "../lib/event-market-adapter"
 import {
   getCartPickupHandoffSummary,
-  getOrganizerInboxBlockingMessage,
   getPickupHandoffPrivacyCopy,
   type PickupHandoffSummary,
 } from "../lib/pickup-handoff"
@@ -1354,50 +1351,8 @@ function CheckoutPage() {
   )
   const mixedFulfillmentMessage =
     getMixedFulfillmentBlockingMessage(checkoutItems)
-  const checkoutEventFulfillment = useProductCartFulfillmentBatch(
-    selectedMerchantReadiness?.products ?? [],
-    btcUsdRate
-  )
-  const eventFulfillmentBlock = useMemo(
-    () =>
-      getCartEventFulfillmentBlock(
-        checkoutItems,
-        checkoutEventFulfillment.resolutionsByProductId
-      ),
-    [checkoutEventFulfillment.resolutionsByProductId, checkoutItems]
-  )
-  const organizerInboxQuery = useQuery({
-    queryKey: [
-      "event-market-organizer-inbox",
-      session.relayScope ?? "no-relay-scope",
-      draftOwnerIdentity ?? "anonymous",
-      pickupHandoff?.mode === "organizer_handoff"
-        ? pickupHandoff.handlerPubkey
-        : "not-required",
-    ],
-    queryFn: ({ signal }) =>
-      resolveEventMarketOrganizerInbox(pickupHandoff!.handlerPubkey, {
-        requestingAccountPubkey: draftOwnerIdentity,
-        authenticatedPubkey: draftOwnerIdentity,
-        signal,
-        shouldContinue: () =>
-          !signal.aborted && authGenerationRef.current === authGeneration,
-      }),
-    enabled:
-      session.relaySettingsReady && pickupHandoff?.mode === "organizer_handoff",
-    staleTime: 0,
-    refetchOnMount: "always",
-    retry: false,
-  })
-  const organizerInboxBlockingMessage =
-    organizerInboxQuery.data?.state === "blocked"
-      ? getOrganizerInboxBlockingMessage(organizerInboxQuery.data)
-      : null
-  const fulfillmentBlockingMessage =
-    mixedFulfillmentMessage ??
-    eventFulfillmentBlock?.message ??
-    organizerInboxBlockingMessage ??
-    null
+  // Pickup is reviewed from the cart; live authorization runs at submission.
+  const fulfillmentBlockingMessage = mixedFulfillmentMessage
   const checkoutAvailability = {
     availabilityByProductId:
       selectedMerchantReadiness?.availabilityByProductId ?? emptyAvailability,
@@ -1427,12 +1382,6 @@ function CheckoutPage() {
     selectedMerchantReadiness?.blockingMessage ?? null
   const checkoutEvidenceCheckingLabel = getCheckoutEvidenceCheckingLabel({
     availabilityChecking: checkoutAvailability.isChecking,
-    eventPickupChecking: checkoutEventFulfillment.isChecking,
-    organizerInboxChecking:
-      pickupHandoff?.mode === "organizer_handoff" &&
-      (!session.relaySettingsReady ||
-        organizerInboxQuery.isLoading ||
-        organizerInboxQuery.isFetching),
   })
   const checkoutEvidenceIsChecking = checkoutEvidenceCheckingLabel !== null
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
@@ -1786,12 +1735,6 @@ function CheckoutPage() {
     !!lnurlPayMetadata &&
     pricingPreview.totalMsats >= lnurlPayMetadata.minSendable &&
     pricingPreview.totalMsats <= lnurlPayMetadata.maxSendable
-  const allowsManualLightningFallback =
-    paymentPathEnabled &&
-    !wallets.loading &&
-    !!merchantLud16 &&
-    lnurlReadyForSelectedPayment &&
-    lnurlAmountReady
   const fastEligibilityInput = {
     walletPayCapable: !isGuestCheckout && canAttemptLightningPayment,
     merchantLud16,
@@ -1811,22 +1754,26 @@ function CheckoutPage() {
     paymentPathEnabled &&
     !fulfillmentBlockingMessage &&
     isFastCheckoutEligible(fastEligibilityInput)
+  const usesManualInvoice =
+    isGuestCheckout || selectedPaymentTarget.type === "manual"
+  const getSelectedPaymentUnavailableReasons = usesManualInvoice
+    ? getInvoiceCheckoutUnavailableReasons
+    : getFastCheckoutUnavailableReasons
   const fastUnavailableReasons = !paymentRequired
     ? []
     : fulfillmentBlockingMessage
       ? [fulfillmentBlockingMessage]
-      : getFastCheckoutUnavailableReasons(fastEligibilityInput)
-  const guestManualInvoiceEligible =
-    isGuestCheckout &&
+      : getSelectedPaymentUnavailableReasons(fastEligibilityInput)
+  const firstFastUnavailableReason = fastUnavailableReasons[0]
+  const manualInvoiceEligible =
     paymentPathEnabled &&
+    !wallets.loading &&
+    usesManualInvoice &&
     !fulfillmentBlockingMessage &&
-    allowsManualLightningFallback &&
-    pricingPreview.status === "ok" &&
-    shippingEligibleForFastCheckout &&
-    checkoutShippingCost.status !== "manual" &&
-    currentAddressValidity.canDirectPay
+    getInvoiceCheckoutUnavailableReasons(fastEligibilityInput).length === 0
+  const directCheckoutEligible = fastEligible || manualInvoiceEligible
   const fastUnavailableReasonsWithoutPricing =
-    getFastCheckoutUnavailableReasons({
+    getSelectedPaymentUnavailableReasons({
       ...fastEligibilityInput,
       pricingReady: true,
     })
@@ -1835,7 +1782,8 @@ function CheckoutPage() {
     !fulfillmentBlockingMessage &&
     pricingPreviewIsStale &&
     fastUnavailableReasonsWithoutPricing.length === 0
-  const showFastCheckoutSurface = fastEligible || pricingOnlyFastCheckoutBlocker
+  const showFastCheckoutSurface =
+    directCheckoutEligible || pricingOnlyFastCheckoutBlocker
   const addressStatusMessage = (() => {
     if (currentAddressValidity.status === "not_required") {
       return "This cart does not require delivery details."
@@ -3212,7 +3160,7 @@ function CheckoutPage() {
     if (!fastEligible) {
       setAutoZapAuthorization(null)
       setError(
-        fastUnavailableReasons[0] ??
+        firstFastUnavailableReason ??
           "Zap out is unavailable for this order. Review checkout before paying."
       )
       setStep("payment")
@@ -3247,7 +3195,7 @@ function CheckoutPage() {
     autoZapInputsResolving,
     checkoutItems,
     fastEligible,
-    fastUnavailableReasons,
+    firstFastUnavailableReason,
     hasUnavailableCheckoutItems,
     pricingPreview,
     selectedMerchant,
@@ -3522,68 +3470,6 @@ function CheckoutPage() {
             >
               Review cart
             </Link>
-          </Button>
-        </div>
-      ) : null}
-
-      {eventFulfillmentBlock ? (
-        <div
-          role="alert"
-          className="flex flex-col gap-4 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warning)]" />
-            <div>
-              <div className="font-medium text-[var(--text-primary)]">
-                Event pickup must be refreshed
-              </div>
-              <p className="mt-1 leading-6">{eventFulfillmentBlock.message}</p>
-            </div>
-          </div>
-          <Button asChild variant="outline" className="shrink-0">
-            {eventFulfillmentBlock.canonicalNaddr ? (
-              <Link
-                to="/events/$collectionRef"
-                params={{
-                  collectionRef: eventFulfillmentBlock.canonicalNaddr,
-                }}
-              >
-                View event catalog
-              </Link>
-            ) : (
-              <Link
-                to="/cart"
-                search={{ merchant: pubkeyToNpub(selectedMerchant!) }}
-              >
-                Review cart
-              </Link>
-            )}
-          </Button>
-        </div>
-      ) : null}
-
-      {organizerInboxBlockingMessage ? (
-        <div
-          role="alert"
-          className="flex flex-col gap-4 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warning)]" />
-            <div>
-              <div className="font-medium text-[var(--text-primary)]">
-                Organizer pickup is not ready
-              </div>
-              <p className="mt-1 leading-6">{organizerInboxBlockingMessage}</p>
-            </div>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            className="shrink-0"
-            disabled={organizerInboxQuery.isFetching}
-            onClick={() => void organizerInboxQuery.refetch()}
-          >
-            {organizerInboxQuery.isFetching ? "Checking" : "Try again"}
           </Button>
         </div>
       ) : null}
@@ -4088,7 +3974,7 @@ function CheckoutPage() {
                 <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
                   {isGuestCheckout
                     ? "Send the order with a temporary guest key, then pay the Lightning invoice with your wallet."
-                    : fastEligible
+                    : directCheckoutEligible
                       ? selectedPaymentTarget.type === "manual"
                         ? "Send the order and show its Lightning invoice for manual payment."
                         : selectedPaymentTarget.type === "webln"
@@ -4360,7 +4246,7 @@ function CheckoutPage() {
                 {paymentRequired &&
                   !isGuestCheckout &&
                   !lnurlProbing &&
-                  fastEligible && (
+                  directCheckoutEligible && (
                     <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
                       <div className="text-sm font-medium text-[var(--text-primary)]">
                         Zap visibility
@@ -4568,7 +4454,7 @@ function CheckoutPage() {
 
                 {/* Action buttons */}
                 <div className="mt-6 flex flex-wrap gap-3">
-                  {fastEligible && (
+                  {!isGuestCheckout && directCheckoutEligible && (
                     <HoldToReleaseButton
                       className="h-11 px-5 text-sm"
                       disabled={
@@ -4580,7 +4466,7 @@ function CheckoutPage() {
                         !!signerBlockedMessage
                       }
                       canComplete={() =>
-                        fastEligible &&
+                        directCheckoutEligible &&
                         !checkoutAvailability.isChecking &&
                         !hasUnavailableCheckoutItems &&
                         !paymentInFlightRef.current
@@ -4591,7 +4477,11 @@ function CheckoutPage() {
                         }
                         void payNow()
                       }}
-                      chargedLabel="Release to zap out"
+                      chargedLabel={
+                        selectedPaymentTarget.type === "manual"
+                          ? "Release to show invoice"
+                          : "Release to zap out"
+                      }
                     >
                       <LightningIcon className="h-4 w-4" />
                       {isGuestCheckout
@@ -4607,7 +4497,7 @@ function CheckoutPage() {
                   )}
                   {isGuestCheckout &&
                     !fastEligible &&
-                    guestManualInvoiceEligible && (
+                    manualInvoiceEligible && (
                       <Button
                         className="h-11 px-5 text-sm"
                         disabled={
@@ -4620,25 +4510,26 @@ function CheckoutPage() {
                         Send order and show invoice
                       </Button>
                     )}
-                  {pricingOnlyFastCheckoutBlocker && !fastEligible && (
-                    <Button
-                      className="h-11 px-5 text-sm"
-                      disabled={pricingRefreshState === "refreshing"}
-                      onClick={() => void refreshCheckoutPricing(true)}
-                    >
-                      {pricingRefreshState === "refreshing" ? (
-                        <>
-                          <SpinnerIcon className="h-4 w-4 animate-spin" />
-                          Refreshing total...
-                        </>
-                      ) : (
-                        <>
-                          <LightningIcon className="h-4 w-4" />
-                          Refresh total
-                        </>
-                      )}
-                    </Button>
-                  )}
+                  {pricingOnlyFastCheckoutBlocker &&
+                    !directCheckoutEligible && (
+                      <Button
+                        className="h-11 px-5 text-sm"
+                        disabled={pricingRefreshState === "refreshing"}
+                        onClick={() => void refreshCheckoutPricing(true)}
+                      >
+                        {pricingRefreshState === "refreshing" ? (
+                          <>
+                            <SpinnerIcon className="h-4 w-4 animate-spin" />
+                            Refreshing total...
+                          </>
+                        ) : (
+                          <>
+                            <LightningIcon className="h-4 w-4" />
+                            Refresh total
+                          </>
+                        )}
+                      </Button>
+                    )}
 
                   {isGuestCheckout &&
                     !fastEligible &&
@@ -4657,7 +4548,7 @@ function CheckoutPage() {
                           ? checkoutEvidenceCheckingLabel
                           : "Send order"}
                       </Button>
-                    ) : !guestManualInvoiceEligible ? (
+                    ) : !manualInvoiceEligible ? (
                       <Button
                         variant={
                           pricingOnlyFastCheckoutBlocker ? "outline" : "primary"
@@ -4676,7 +4567,7 @@ function CheckoutPage() {
                   {!isGuestCheckout && (
                     <Button
                       variant={
-                        fastEligible || pricingOnlyFastCheckoutBlocker
+                        directCheckoutEligible || pricingOnlyFastCheckoutBlocker
                           ? "outline"
                           : "primary"
                       }
