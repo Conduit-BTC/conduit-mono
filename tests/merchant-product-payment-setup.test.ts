@@ -62,7 +62,9 @@ describe("merchant product payment setup guidance", () => {
     expect(notice).toContain(
       "You can still publish and arrange payment manually"
     )
-    expect(notice).toContain("getProfilePaymentAddress(profileQuery.profileContext)")
+    expect(notice).toContain(
+      "getProfilePaymentAddress(profileQuery.profileContext)"
+    )
     expect(notice).toContain('evidenceScope: "payment"')
     expect(notice).toContain('<Link to="/payments">Set up payments</Link>')
     expect(notice).not.toContain("disabled")
