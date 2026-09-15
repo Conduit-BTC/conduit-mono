@@ -136,6 +136,10 @@ async function mountInvoice(
         root.render(
           React.createElement(ExternalWalletPanel, {
             vm,
+            pricing: {
+              preference: { currency: "BTC", bitcoinUnit: "sats" },
+              quote: null,
+            },
             busy: false,
             guestSession: false,
             autoDetectReceipt:
@@ -203,10 +207,12 @@ test("merchant invoice appears automatically after exact persistent binding @mar
     .toBe(1)
   await page.evaluate(() => window.__releaseInvoice())
   await expect(
-    host.getByRole("link", { name: "Open in wallet" })
+    host.getByRole("link", { name: "Open Lightning wallet" })
   ).toHaveAttribute("href", `lightning:${invoice}`)
   await expect(host.getByRole("button", { name: "Copy invoice" })).toBeVisible()
-  await expect(host.locator("svg").first()).toBeVisible()
+  const qr = host.locator("svg:has(> title)")
+  await expect(qr).toHaveCount(1)
+  await expect(qr).toBeVisible()
   expect(await page.evaluate(() => window.__readBoundInvoice())).toMatchObject({
     invoice,
     paymentHash: "07".repeat(32),
@@ -224,9 +230,9 @@ test("failed preparation stays blocked until an explicit retry @market", async (
   await page.evaluate(() => window.__rerenderInvoice())
   await expect(host.getByRole("alert")).toHaveText("Invoice preparation failed")
   expect(await page.evaluate(() => window.__invoicePreparationCalls)).toBe(1)
-  await expect(host.getByRole("link", { name: "Open in wallet" })).toHaveCount(
-    0
-  )
+  await expect(
+    host.getByRole("link", { name: "Open Lightning wallet" })
+  ).toHaveCount(0)
   await host.getByRole("button", { name: "Retry invoice" }).click()
   await expect
     .poll(() => page.evaluate(() => window.__invoicePreparationCalls))
@@ -262,9 +268,9 @@ test("expired merchant invoices stay unavailable without starting preparation @m
   await expect(
     host.getByRole("heading", { name: "Invoice unavailable" })
   ).toBeVisible()
-  await expect(host.getByRole("link", { name: "Open in wallet" })).toHaveCount(
-    0
-  )
+  await expect(
+    host.getByRole("link", { name: "Open Lightning wallet" })
+  ).toHaveCount(0)
   await expect(host.getByRole("button", { name: "Copy invoice" })).toHaveCount(
     0
   )
@@ -296,7 +302,7 @@ for (const mode of [
         host.getByRole("heading", { name: "Invoice unavailable" })
       ).toBeVisible()
       await expect(
-        host.getByRole("link", { name: "Open in wallet" })
+        host.getByRole("link", { name: "Open Lightning wallet" })
       ).toHaveCount(0)
       await expect(
         host.getByRole("button", { name: "Copy invoice" })
@@ -369,7 +375,7 @@ for (const action of ["copy", "open"] as const) {
     if (action === "copy") {
       await host.getByRole("button", { name: "Copy invoice" }).click()
     } else {
-      await host.getByRole("link", { name: "Open in wallet" }).click()
+      await host.getByRole("link", { name: "Open Lightning wallet" }).click()
     }
     expect(await page.evaluate(() => window.__invoiceUseCalls)).toBe(0)
     await expect(

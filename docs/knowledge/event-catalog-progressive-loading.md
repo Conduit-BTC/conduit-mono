@@ -74,6 +74,29 @@ child pickup snapshots. Parent acceptance does not authorize a child. Newer
 signed withdrawals and deletions must dominate both the event evidence cache
 and the general product cache, including intermediate previews.
 
+## Checkout is independent of catalog browsing
+
+Checkout displays the selected cart pickup snapshot and uses the normal
+merchant-scoped product availability checks while the buyer enters details.
+It does not subscribe to the event browse query or wait for catalog-wide
+participation, other merchants' pickups, or organizer inbox discovery before
+the buyer can review the order.
+
+At submission, `resolveCheckoutProductFulfillments` shares one event read per
+collection across the selected products. `getEventMarket` accepts
+`selectedProductCoordinates` to read their exact participation and pickup
+references without discovering the rest of the catalog. Product hydration is
+limited to those accepted coordinates. The full catalog remains the default
+for browsing; a scoped result must not populate the shared browse query.
+
+This moves validation to the action that needs it. Current signed collection
+and calendar evidence, selected product and pickup revisions, price/stock,
+known withdrawals/deletions and reviewed snapshot parity still authorize the
+order or invoice request. Organizer handoff checks the organizer inbox at
+submission. Merchant-booth handoff does not need that inbox. Payment retries
+also restrict event reads to the selected product. Fulfillment readiness and
+pickup receipts remain part of the later merchant workflow.
+
 ## Timeline discovery and relay lifecycle
 
 The Events timeline reads retained signed organizer headers alongside its bounded

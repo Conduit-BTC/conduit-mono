@@ -94,7 +94,7 @@ describe("Market live account authority", () => {
       expect(route).toContain("!signal.aborted && shouldContinueAccountRead()")
     }
     expect(checkout).toMatch(
-      /resolveEventMarketOrganizerInbox\([\s\S]{0,220}?signal,[\s\S]{0,120}?shouldContinue: \(\) =>[\s\S]{0,80}?!signal\.aborted && authGenerationRef\.current === authGeneration/
+      /authorizeCurrentCheckoutItems\([\s\S]{0,900}shouldContinue: \(\) => authGenerationRef\.current === authGeneration/
     )
   })
 })

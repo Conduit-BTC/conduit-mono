@@ -1244,6 +1244,8 @@ export function mergeEventCatalogAcceptedProductRecovery(
 export async function loadRawEventCatalog(
   reference: string,
   options: {
+    /** Submission checks hydrate only these exact listings, never the browse catalog. */
+    selectedProductCoordinates?: readonly string[]
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -1408,6 +1410,7 @@ export async function loadRawEventCatalog(
     assertActive()
     const resolution = await readEventMarket({
       reference: canonicalNaddr,
+      selectedProductCoordinates: options.selectedProductCoordinates,
       authenticatedPubkey: options.authenticatedPubkey,
       shouldContinue: active,
       signal: options.signal,
@@ -1665,6 +1668,46 @@ export async function resolveProductCartFulfillment(
     })
   )
   return resolveProductCartFulfillmentFromCatalogs(product, catalogs)
+}
+
+/** One selected-item read per event for an order, independent of browse queries. */
+export async function resolveCheckoutProductFulfillments(
+  products: readonly Product[],
+  rateInput: PricingRateInput = null,
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
+): Promise<ProductCartFulfillmentResolution[]> {
+  const selectedByReference = new Map<string, Set<string>>()
+  for (const product of products) {
+    if (product.format === "digital") continue
+    for (const candidate of getProductEventMarketCandidates(product)) {
+      const selected =
+        selectedByReference.get(candidate.canonicalNaddr) ?? new Set<string>()
+      selected.add(product.id)
+      selectedByReference.set(candidate.canonicalNaddr, selected)
+    }
+  }
+  const reads = new Map<string, Promise<EventCatalog>>()
+  const loadSelectedCatalog: EventCatalogLoader = (reference) => {
+    let read = reads.get(reference)
+    if (!read) {
+      read = (async () => {
+        const raw = await loadRawEventCatalog(reference, {
+          selectedProductCoordinates: [...selectedByReference.get(reference)!],
+          authenticatedPubkey,
+          shouldContinue,
+        })
+        return projectRawEventCatalog(raw, rateInput)
+      })()
+      reads.set(reference, read)
+    }
+    return read
+  }
+  return Promise.all(
+    products.map((product) =>
+      resolveProductCartFulfillment(product, rateInput, loadSelectedCatalog)
+    )
+  )
 }
 
 /** Signed/source fields only: display conversion values never change this key. */
@@ -1976,6 +2019,7 @@ export async function verifyPickupFulfillmentFreshness(
   const reference = encodeEventMarketNaddr(snapshot.collection.coordinate)
   const resolution = await getEventMarket({
     reference,
+    selectedProductCoordinates: [item.productId],
     expectedOrganizerPubkey: snapshot.organizerPubkey,
     authenticatedPubkey,
     shouldContinue,
