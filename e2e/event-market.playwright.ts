@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url"
+
 import { expect, test, type Page } from "@playwright/test"
 import { nip19, nip44 } from "nostr-tools"
 import {
@@ -4246,6 +4248,152 @@ test("event catalog paints before held product reads and keeps cached browsing c
   await expect(card).toHaveCount(0)
   expect(relay.publications).toHaveLength(publications)
   console.log("Event loading timings (synthetic, ms):", JSON.stringify(timings))
+})
+
+test("event catalogs honor cross-tab signed deletions while mounted and on a warm return without relay rechecks @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay, "catalog-reader")
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic cross-tab deletion catalog",
+    organizerHandoffEnabled: true,
+  })
+  const products = [
+    "Mounted deletion",
+    "Warm deletion",
+    "Retained product",
+  ].map((title, index) =>
+    createMerchantProductEvent({
+      dTag: `cross-tab-deletion-${index}`,
+      title: `Synthetic ${title}`,
+      collectionCoordinate: market.collectionCoordinate,
+      pickupCoordinate: market.pickupCoordinate!,
+      createdAt: market.initialCollection.created_at + 1,
+    })
+  )
+  relay.seed(
+    ...products,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: market.initialCollection.created_at + 2,
+      content: market.initialCollection.content,
+      tags: [
+        ...market.initialCollection.tags,
+        ...products.map((product) => ["a", eventCoordinate(product)]),
+      ],
+    })
+  )
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const cards = products.map((product) =>
+    page.getByRole("listitem").filter({
+      hasText: product.tags.find((tag) => tag[0] === "title")![1]!,
+    })
+  )
+  for (const card of cards) {
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+  }
+  await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+
+  // A separate same-origin document owns a different module instance. Its
+  // real Dexie commit must reach the reader through browser change broadcasts.
+  const writer = await page.context().newPage()
+  await relay.install(writer, "deletion-writer")
+  const writerUrl = `${marketUrl}/__synthetic-deletion-writer.html`
+  await writer.route(writerUrl, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Synthetic local deletion writer</title>",
+    })
+  )
+  await writer.goto(writerUrl)
+  const commerceUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/protocol/commerce.ts", import.meta.url))}`
+  const persistDeletion = async (product: SignedEvent) => {
+    const signed = signEvent(MERCHANT_SECRET, {
+      kind: 5,
+      created_at: product.created_at + 10,
+      content: "",
+      tags: [
+        ["a", eventCoordinate(product)],
+        ["k", "30402"],
+      ],
+    })
+    const retainedCount = await writer.evaluate(
+      async ({ moduleUrl, event }) => {
+        const { cacheSignedProductDeletionEvent } = await import(moduleUrl)
+        // The public event wrapper supplies the same raw signed payload consumed
+        // by core validation; no signer or deletion-validation code is replaced.
+        const retained = await cacheSignedProductDeletionEvent({
+          ...event,
+          rawEvent: () => event,
+        })
+        return retained.length as number
+      },
+      { moduleUrl: commerceUrl, event: signed }
+    )
+    expect(retainedCount).toBe(1)
+  }
+  const isReaderCatalogRead = (request: RelayRequest) =>
+    request.clientId === "catalog-reader" &&
+    request.filters.some((filter) =>
+      filter.kinds?.some((kind) =>
+        [5, 30402, 30405, 30406, 31922, 31923].includes(kind)
+      )
+    )
+  const readerCatalogReads = () =>
+    relay.requests.filter(isReaderCatalogRead).length
+  const beforeMountedDeletion = readerCatalogReads()
+  const heldMounted = relay.holdRelayRequests(isReaderCatalogRead)
+  try {
+    await persistDeletion(products[0]!)
+    await expect(cards[0]!).toHaveCount(0)
+    for (const card of cards.slice(1)) {
+      await expect(
+        card.getByRole("button", { name: "Add", exact: true })
+      ).toBeEnabled()
+    }
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+    expect(readerCatalogReads()).toBe(beforeMountedDeletion)
+  } finally {
+    heldMounted.release()
+  }
+
+  try {
+    // The catalog cards have no detail link. Use a real SPA link to unmount
+    // every event consumer while retaining the completed query in this tab.
+    await page.getByRole("link", { name: "About", exact: true }).click()
+    await expect(page).toHaveURL(/\/about$/)
+    const beforeWarmDeletion = readerCatalogReads()
+    const heldWarm = relay.holdRelayRequests(isReaderCatalogRead)
+    try {
+      await persistDeletion(products[1]!)
+      await page.goBack()
+      await expect(page).toHaveURL(/\/events\//)
+      await expect(cards[0]!).toHaveCount(0)
+      await expect(cards[1]!).toHaveCount(0)
+      await expect(
+        cards[2]!.getByRole("button", { name: "Add", exact: true })
+      ).toBeEnabled()
+      await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+      expect(readerCatalogReads()).toBe(beforeWarmDeletion)
+      console.log(
+        "Synthetic cross-tab event deletion convergence:",
+        JSON.stringify({
+          localDeletions: 2,
+          remainingAddableProducts: 1,
+          mountedCatalogRechecks: 0,
+          warmCatalogRechecks: 0,
+        })
+      )
+    } finally {
+      heldWarm.release()
+    }
+  } finally {
+    await writer.close()
+  }
 })
 
 test("event variation choices remain stable while cached pickup authorization refreshes @market", async ({
