@@ -170,6 +170,13 @@ coordinate and prepares one fulfillment snapshot for pricing, destination
 eligibility, checkout, and order persistence. See
 `docs/specs/fixed-product-shipping.md`.
 
+The accepted next implementation replaces per-product authoring with one
+explicitly referenced, same-author reusable `30406` profile and applies its
+base price once per compatible merchant group. It introduces no new public
+event kind or tags. Until that resolver and writer land, product-scoped fixed
+shipping remains the runtime behavior. See
+`docs/specs/reusable-shipping-policy.md`.
+
 ### Event Markets And Pickup
 
 Organizer-authored event catalogs compose a NIP-52 `31922`/`31923` calendar

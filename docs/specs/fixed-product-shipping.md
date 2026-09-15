@@ -3,6 +3,12 @@
 This contract defines Conduit's launch support for fixed physical-product
 shipping using GammaMarkets kind `30406`.
 
+This remains the implemented compatibility baseline. The accepted future
+authoring model publishes one reusable merchant profile and composes its base
+price once per compatible merchant group; see
+`docs/specs/reusable-shipping-policy.md`. Until that implementation lands, this
+document continues to govern current product-scoped writes and reads.
+
 Canonical public sources:
 
 - GammaMarkets product listing kind `30402`

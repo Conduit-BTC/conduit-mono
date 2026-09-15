@@ -28,6 +28,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
+- `docs/specs/reusable-shipping-policy.md`: reusable merchant kind `30406`
+  profile, deterministic multi-item grouping, private calculation result, and
+  fixed-product compatibility contract
 - `docs/specs/event-markets.md`: organizer-authored calendar/collection,
   merchant- or organizer-operated pickup, private handoff receipts, catalog
   membership, and checkout provenance contract
