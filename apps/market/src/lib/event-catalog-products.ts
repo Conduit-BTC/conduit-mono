@@ -101,8 +101,10 @@ export async function readEventCatalogProducts(
     snapshots.set(index, result)
     options.onProgress?.(aggregate())
   }
+  // Each call below owns one author plan. Match core's two-author limit
+  // across calls, since its per-call scheduler cannot bound this outer queue.
   await Promise.all(
-    Array.from({ length: Math.min(4, groups.length) }, async () => {
+    Array.from({ length: Math.min(2, groups.length) }, async () => {
       while (next < groups.length) {
         if (options.shouldContinue?.() === false)
           throw new DOMException("Event catalog read cancelled", "AbortError")

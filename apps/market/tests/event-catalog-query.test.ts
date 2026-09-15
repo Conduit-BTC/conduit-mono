@@ -369,6 +369,72 @@ describe("shared progressive event catalogs", () => {
     }
   })
 
+  it("limits five merchants to two active reads while publishing completed merchants before queued ones", async () => {
+    const products = ["b", "c", "d", "e", "f"].map((key) =>
+      product({ id: `30402:${key.repeat(64)}:item`, pubkey: key.repeat(64) })
+    )
+    const gates = products.map(() => deferred<void>())
+    const startedSignals = products.map(() => deferred<void>())
+    const started: number[] = []
+    const snapshots: ProductsByIdsResult[] = []
+    let active = 0
+    let peakActive = 0
+    const running = readEventCatalogProducts(
+      products.map((entry) => entry.id),
+      { onProgress: (snapshot) => snapshots.push(snapshot) },
+      async (ids) => {
+        const index = products.findIndex((entry) => entry.id === ids[0])
+        started.push(index)
+        active++
+        peakActive = Math.max(peakActive, active)
+        startedSignals[index]!.resolve()
+        try {
+          await gates[index]!.promise
+          return productRead({ product: products[index]! })
+        } finally {
+          active--
+        }
+      },
+      async () => productRead({ includeRecord: false, source: "local_cache" })
+    )
+    try {
+      await startedSignals[1]!.promise
+      expect(started).toEqual([0, 1])
+      expect(active).toBe(2)
+      gates[0]!.resolve()
+      await startedSignals[2]!.promise
+      expect(started).toEqual([0, 1, 2])
+      const progress = snapshots.at(-1)!
+      expect(progress.data.map((entry) => entry.product.id)).toEqual([
+        products[0]!.id,
+      ])
+      expect(
+        progress.diagnostics.find(
+          (entry) => entry.productId === products[0]!.id
+        )?.issue
+      ).toBeNull()
+      expect(
+        progress.diagnostics.find(
+          (entry) => entry.productId === products[4]!.id
+        )?.issue
+      ).toBe("cached_only")
+      // Keep merchant 1 held while the other worker drains the remaining queue.
+      gates[2]!.resolve()
+      await startedSignals[3]!.promise
+      gates[3]!.resolve()
+      await startedSignals[4]!.promise
+      expect(started).toEqual([0, 1, 2, 3, 4])
+      expect(peakActive).toBe(2)
+    } finally {
+      for (const gate of gates) gate.resolve()
+      await running
+    }
+    expect((await running).data.map((entry) => entry.product.id)).toEqual(
+      products.map((entry) => entry.id)
+    )
+    expect(active).toBe(0)
+  })
+
   it("keeps a child-only cached family visible while its merchant read is queued", async () => {
     const parent = product({
       type: "variable",
@@ -417,7 +483,7 @@ describe("shared progressive event catalogs", () => {
       },
       async (ids) => {
         started.push(ids[0]!)
-        if (started.length === 4) queued.resolve()
+        if (started.length === 2) queued.resolve()
         return ids.includes(child.id)
           ? {
               ...productRead({ product: child }),

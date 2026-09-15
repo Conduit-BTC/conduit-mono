@@ -19,7 +19,8 @@ an earlier progress or query result.
 For cold detail loads, the organizer product coordinates start an exact product
 read while participation and pickup verification continue. Completed merchant
 batches emit cumulative snapshots without waiting for slower merchants. Each
-merchant read keeps its family checks together. Safe cached cards for queued
+merchant read keeps its family checks together. At most two merchant reads run
+concurrently, matching the shared exact product reader's author limit. Safe cached cards for queued
 merchants remain visible with cache-only diagnostics. Once event verification
 finishes, each completed exact product can become actionable while other
 merchants continue loading. These snapshots reconcile current signed revisions and
