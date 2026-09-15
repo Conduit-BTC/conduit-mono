@@ -73,12 +73,14 @@ export {
 } from "./client-error-telemetry"
 export {
   buildMerchantSetupStepResultTelemetryProperties,
+  buildNip17CompatibilityResultTelemetryProperties,
   buildPaymentAttemptResultTelemetryProperties,
   buildProductDetailActionTelemetryProperties,
   buildProductPublishResultTelemetryProperties,
   buildShippingPublishResultTelemetryProperties,
   getTelemetryLatencyBucket,
   type MerchantSetupTelemetryStep,
+  type Nip17CompatibilityResultTelemetryInput,
   type PaymentAttemptTelemetryRail,
   type ProductDetailTelemetryAction,
   type ProductPublishTelemetryFamily,
@@ -173,6 +175,7 @@ export {
   config,
   getRelayBucketConfigs,
   isRetiredDefaultRelayUrl,
+  resolveDmCompatibilityOrderRoutingEnabled,
   resolveE2eRelayIsolation,
   isMockPayments,
   isSignet,

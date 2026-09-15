@@ -22,6 +22,7 @@ interface PagesProfilesFile {
       package: string
       outputDirectory: string
       cloudflareProject: string | null
+      cloudflareStagingProject: string | null
     }
   >
   profiles: Record<DeploymentProfileName, PublicDeploymentProfile>
@@ -95,6 +96,17 @@ export function parsePagesProfiles(value: unknown): PagesProfilesFile {
   if (!isRecord(value.apps) || !isRecord(value.profiles)) {
     throw new Error("Pages deployment profiles must define apps and profiles.")
   }
+  for (const [name, app] of Object.entries(value.apps)) {
+    if (
+      !isRecord(app) ||
+      (app.cloudflareStagingProject !== null &&
+        typeof app.cloudflareStagingProject !== "string")
+    ) {
+      throw new Error(
+        `Pages app ${name} must define cloudflareStagingProject as a string or null.`
+      )
+    }
+  }
   for (const name of ["preview", "production", "staging"] as const) {
     assertProfile(name, value.profiles[name])
   }
@@ -105,13 +117,41 @@ export function loadPagesProfiles(): PagesProfilesFile {
   return parsePagesProfiles(JSON.parse(readFileSync(profilesPath, "utf8")))
 }
 
+function cloudflareProjectFromDeploymentUrl(rawUrl: string | undefined) {
+  if (!rawUrl) return null
+  try {
+    const labels = new URL(rawUrl).hostname.toLowerCase().split(".")
+    if (
+      labels.length < 3 ||
+      labels.at(-2) !== "pages" ||
+      labels.at(-1) !== "dev"
+    ) {
+      return null
+    }
+    return labels.at(-3) ?? null
+  } catch {
+    return null
+  }
+}
+
+function isCloudflareStagingProject(env: Record<string, string | undefined>) {
+  const project = cloudflareProjectFromDeploymentUrl(env.CF_PAGES_URL)
+  if (!project) return false
+  return Object.values(loadPagesProfiles().apps).some(
+    (app) => app.cloudflareStagingProject === project
+  )
+}
+
 export function selectDeploymentProfileName(
   env: Record<string, string | undefined>
 ): DeploymentProfileName | "local" {
   const explicit = env.CONDUIT_DEPLOYMENT_PROFILE?.trim()
   if (env.CF_PAGES === "1") {
-    const cloudflareProfile =
-      env.CF_PAGES_BRANCH?.trim() === "main" ? "production" : "preview"
+    const cloudflareProfile = isCloudflareStagingProject(env)
+      ? "staging"
+      : env.CF_PAGES_BRANCH?.trim() === "main"
+        ? "production"
+        : "preview"
     if (explicit && explicit !== cloudflareProfile) {
       throw new Error(
         `Cloudflare branch requires ${cloudflareProfile}, not ${explicit}.`

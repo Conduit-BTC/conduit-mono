@@ -115,6 +115,14 @@ const validBrowserEventProperties = {
   },
   relay_connect_result: { network: "browser", status: "success" },
   relay_publish_result: { network: "browser", status: "failure" },
+  nip17_compatibility_result: {
+    ack_outcome: "partial",
+    action: "order_delivery",
+    block_reason: "not_applicable",
+    declaration_class: "not_observed",
+    delivery_route: "compatibility_order",
+    repair_outcome: "not_applicable",
+  },
   wallet_connect_result: {
     method: "nwc",
     rail: "lightning",
