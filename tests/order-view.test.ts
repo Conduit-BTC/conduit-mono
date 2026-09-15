@@ -8,10 +8,12 @@ import { config } from "@conduit/core"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
+  canClaimManualInvoiceReport,
   computeOrderTimelineStatuses,
-  deriveBoundMerchantInvoiceAccess,
+  deriveManualInvoiceAccess,
   deriveOrderHeaderStatus,
   getOrderFilterPhase,
+  getOrderPaymentFailureDetail,
   getOrderPaymentMethodLabel,
   isZeroCostPickupOrder,
   type OrderViewModel,
@@ -116,6 +118,113 @@ function baseLifecycle(
     ...overrides,
   }
 }
+
+describe("payment failure details", () => {
+  const bindingError =
+    "The zap invoice is not bound to the signed NIP-57 request sent to the callback."
+
+  const detailForLifecycle = (lifecycle: OrderLifecycle | undefined) =>
+    getOrderPaymentFailureDetail(
+      lifecycle,
+      buildOrderViewModel({ orderId: "order-1", lifecycle })
+    )
+
+  it("explains a persisted zap binding failure without exposing the request", () => {
+    const detail = detailForLifecycle(
+      baseLifecycle({
+        invoiceStatus: "failed",
+        paymentStatus: "failed",
+        lastError: bindingError,
+      })
+    )
+    expect(detail).toBe(
+      "The merchant's payment provider returned an invoice that does not match this public zap request. Contact the merchant if this keeps happening."
+    )
+  })
+
+  it("does not echo arbitrary saved provider payloads", () => {
+    const detail = detailForLifecycle(
+      baseLifecycle({
+        paymentStatus: "failed",
+        lastError: "Provider response: lnbc1synthetic-invoice-payload",
+      })
+    )
+    expect(detail).toBe(
+      "Payment could not be completed. Try again or contact the merchant if it keeps failing."
+    )
+  })
+
+  it("suppresses saved failures when cached merchant status supersedes payment state", () => {
+    const lifecycle = baseLifecycle({
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      proofDeliveryStatus: "not_started",
+      lastError: "Provider preparation failed.",
+    })
+    for (const status of [
+      "paid",
+      "complete",
+      "delivered",
+      "cancelled",
+    ] as const) {
+      const vm = buildOrderViewModel({
+        orderId: lifecycle.orderId,
+        lifecycle,
+        conversation: {
+          id: lifecycle.orderId,
+          orderId: lifecycle.orderId,
+          merchantPubkey: lifecycle.merchantPubkey,
+          latestAt: lifecycle.updatedAt,
+          latestType: "status_update",
+          status,
+          totalSummary: null,
+          preview: "",
+          messageCount: 0,
+          messages: [],
+          context: "missing_order",
+        },
+      })
+      // The cached status is effective even before its messages are loaded.
+      expect(vm.paymentStatus).toBe("failed")
+      expect(vm.merchantStatus).toBe(status)
+      expect(getOrderPaymentFailureDetail(lifecycle, vm)).toBeNull()
+    }
+  })
+
+  it("suppresses a binding error after local cancellation or completion", () => {
+    for (const phase of ["cancelled", "completed"] as const) {
+      const lifecycle = baseLifecycle({
+        invoiceStatus: "failed",
+        paymentStatus: "failed",
+        lastError: bindingError,
+        phase,
+      })
+      const vm = buildOrderViewModel({ orderId: lifecycle.orderId, lifecycle })
+      expect(vm.paymentStatus).toBe("failed")
+      expect(getOrderPaymentFailureDetail(lifecycle, vm)).toBeNull()
+    }
+  })
+
+  it("does not turn stale errors into failure advice for other payment states", () => {
+    for (const paymentStatus of [
+      "not_started",
+      "paying",
+      "manual_required",
+      "ambiguous",
+      "paid",
+    ] as const) {
+      expect(
+        detailForLifecycle(
+          baseLifecycle({ paymentStatus, lastError: bindingError })
+        )
+      ).toBeNull()
+    }
+    expect(detailForLifecycle(undefined)).toBeNull()
+    expect(
+      detailForLifecycle(baseLifecycle({ paymentStatus: "failed" }))
+    ).toBeNull()
+  })
+})
 
 function vmFromLifecycle(
   overrides: Partial<OrderLifecycle> = {}
@@ -585,18 +694,18 @@ describe("buildOrderViewModel", () => {
       ["complete", "closed"],
       ["delivered", "closed"],
     ] as const) {
-      expect(deriveBoundMerchantInvoiceAccess(lifecycle, status)).toBe(access)
+      expect(deriveManualInvoiceAccess(lifecycle, status)).toBe(access)
     }
 
     expect(
-      deriveBoundMerchantInvoiceAccess(
+      deriveManualInvoiceAccess(
         { ...lifecycle, phase: "cancelled" },
         "accepted",
         "in_progress"
       )
     ).toBe("pay")
     expect(
-      deriveBoundMerchantInvoiceAccess(
+      deriveManualInvoiceAccess(
         { ...lifecycle, phase: "cancelled" },
         "processing",
         "in_progress",
@@ -604,6 +713,119 @@ describe("buildOrderViewModel", () => {
       )
     ).toBe("closed")
   })
+
+  for (const checkoutMode of [
+    "private_checkout",
+    "external_wallet",
+    "public_zap_as_shopper",
+    "anonymous_public_zap",
+  ] as const) {
+    it(`gates ${checkoutMode} invoices using effective merchant status and preserves recovery`, () => {
+      const lifecycle = baseLifecycle({
+        checkoutMode,
+        invoiceStatus: "received",
+        paymentStatus: "manual_required",
+        proofDeliveryStatus: "not_started",
+        invoice: merchantInvoice(),
+      })
+      const publicReceipt =
+        checkoutMode === "public_zap_as_shopper" ||
+        checkoutMode === "anonymous_public_zap"
+      for (const status of ["cancelled", "refund_requested"] as const) {
+        const vm = buildOrderViewModel({
+          orderId: lifecycle.orderId,
+          lifecycle,
+          messages: [merchantStatusMessage("stop", status, 2)],
+        })
+        expect(lifecycle.phase).toBe("in_progress")
+        expect(vm.merchantStatus).toBe(status)
+        expect(
+          deriveManualInvoiceAccess(lifecycle, vm.merchantStatus, vm.phase)
+        ).toBe(publicReceipt ? "receipt_only" : "report_only")
+        expect(vm.invoice).toBe(lifecycle.invoice)
+        expect(vm.paymentStatus).toBe("manual_required")
+        expect(
+          canClaimManualInvoiceReport(vm, vm, lifecycle, lifecycle.buyerPubkey)
+        ).toBe(!publicReceipt)
+      }
+      const active = buildOrderViewModel({
+        orderId: lifecycle.orderId,
+        lifecycle,
+      })
+      const canReport = (current: OrderViewModel, stored = lifecycle) =>
+        canClaimManualInvoiceReport(
+          active,
+          current,
+          stored,
+          lifecycle.buyerPubkey
+        )
+      expect(canReport({ ...active, merchantStatus: "paid" })).toBe(false)
+      expect(
+        canReport(active, { ...lifecycle, buyerPubkey: "different" })
+      ).toBe(false)
+      expect(canReport({ ...active, orderId: "different" })).toBe(false)
+      expect(
+        canReport({
+          ...active,
+          invoice: merchantInvoice({ paymentHashByte: 8 }),
+        })
+      ).toBe(false)
+      expect(
+        canReport(active, {
+          ...lifecycle,
+          invoice: merchantInvoice({ paymentHashByte: 8 }),
+        })
+      ).toBe(false)
+      for (const status of [
+        "paid",
+        "shipped",
+        "complete",
+        "delivered",
+      ] as const) {
+        expect(deriveManualInvoiceAccess(lifecycle, status)).toBe("closed")
+      }
+      expect(
+        deriveManualInvoiceAccess(lifecycle, "accepted", "in_progress", true)
+      ).toBe("closed")
+      expect(deriveManualInvoiceAccess(lifecycle, null, "completed")).toBe(
+        "closed"
+      )
+      expect(deriveManualInvoiceAccess(lifecycle, null, "cancelled")).toBe(
+        publicReceipt ? "receipt_only" : "report_only"
+      )
+
+      const cancellationId = "c".repeat(64)
+      const cancellation = merchantStatusMessage(cancellationId, "cancelled", 2)
+      const stale = buildOrderViewModel({
+        orderId: lifecycle.orderId,
+        lifecycle,
+        messages: [
+          merchantStatusMessage("initial", "accepted", 1),
+          cancellation,
+          merchantStatusMessage("accepted", "accepted", 3),
+        ],
+      })
+      expect(
+        deriveManualInvoiceAccess(lifecycle, stale.merchantStatus, stale.phase)
+      ).toBe(publicReceipt ? "receipt_only" : "report_only")
+      const reopened = buildOrderViewModel({
+        orderId: lifecycle.orderId,
+        lifecycle,
+        messages: [
+          merchantStatusMessage("initial", "accepted", 1),
+          cancellation,
+          merchantStatusMessage("reopened", "accepted", 3, cancellationId),
+        ],
+      })
+      expect(
+        deriveManualInvoiceAccess(
+          lifecycle,
+          reopened.merchantStatus,
+          reopened.phase
+        )
+      ).toBe("pay")
+    })
+  }
 
   it("keeps invalid and expired message invoices blocked", () => {
     const previousNetwork = config.lightningNetwork
@@ -654,6 +876,30 @@ describe("buildOrderViewModel", () => {
         status: "blocked",
         canReport: true,
       })
+      expect(
+        canClaimManualInvoiceReport(
+          expired,
+          expired,
+          lifecycle,
+          lifecycle.buyerPubkey
+        )
+      ).toBe(true)
+      expect(
+        canClaimManualInvoiceReport(
+          expired,
+          { ...expired, merchantStatus: "paid" },
+          lifecycle,
+          lifecycle.buyerPubkey
+        )
+      ).toBe(false)
+      expect(
+        canClaimManualInvoiceReport(
+          invalid,
+          invalid,
+          lifecycle,
+          lifecycle.buyerPubkey
+        )
+      ).toBe(false)
       expect(overflowed.merchantInvoiceAction).toMatchObject({
         status: "blocked",
         reason: expect.stringContaining("invalid expiry"),

@@ -10,6 +10,7 @@ import {
   buildEventMarketCollectionDraft,
   buildEventMarketPickupDraft,
   discoverFollowedOrganizerEventMarkets,
+  discoverPerspectiveEventMarkets,
   EVENT_KINDS,
   EventMarketDiscoveryBoundError,
   getOrganizerEventMarketsDetailed,
@@ -554,6 +555,33 @@ describe("followed organizer event-market discovery", () => {
     ])
   })
 
+  it("can include valid ended markets for a timeline without changing discovery defaults", async () => {
+    const nowMs = 1_800_000_000_000
+    const ended = marketWithCalendarEnd(ORGANIZER, "ended", "ended", nowMs)
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate(ORGANIZER_SECRET, "ended")]),
+      readOrganizerMarkets: async () => organizerRead({ markets: [ended] }),
+    })
+
+    const result = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: {
+        source: "conduit",
+        coverage: "complete",
+        eventObserved: false,
+        snapshotState: "curated",
+        truncated: false,
+      },
+      includeEnded: true,
+      nowMs,
+    })
+
+    expect(result.markets.map((item) => item.reference)).toEqual([
+      ended.reference,
+    ])
+  })
+
   it("bounds candidate validation concurrency without truncating the follow list", async () => {
     const secrets = Array.from({ length: 8 }, () => generateSecretKey())
     const pubkeys = secrets.map(getPublicKey)
@@ -859,4 +887,291 @@ describe("organizer event-market read coverage", () => {
       state: "active",
     })
   })
+})
+
+function held<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+const progressPerspective = {
+  source: "conduit" as const,
+  coverage: "complete" as const,
+  eventObserved: true,
+  snapshotState: "network" as const,
+  truncated: false,
+}
+
+describe("progressive perspective event discovery", () => {
+  it("shows retained cards while candidate network discovery is held", async () => {
+    const network = held<ReturnType<typeof candidateRead>>()
+    const first = held<unknown>()
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: () => network.promise,
+      readRetainedCollectionCandidates: async () => ({
+        events: [collectionCandidate()],
+        eventSourceRelayUrls: {},
+      }),
+      readCachedOrganizerMarkets: async () => [market(ORGANIZER, "stale")],
+      readOrganizerMarkets: async () =>
+        organizerRead({ markets: [market(ORGANIZER)] }),
+    })
+    const pending = discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+      onProgress: (snapshot) => {
+        if (snapshot.markets.length) first.resolve(snapshot)
+      },
+    })
+    const progress = await Promise.race([
+      first.promise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 100)),
+    ])
+    network.resolve(candidateRead([collectionCandidate()]))
+    await pending
+    expect(progress).not.toBeNull()
+  })
+
+  it("publishes a completed organizer without waiting for its held sibling", async () => {
+    const sibling = held<OrganizerEventMarketsReadResult>()
+    const first = held<unknown>()
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([
+          collectionCandidate(),
+          collectionCandidate(OTHER_ORGANIZER_SECRET),
+        ]),
+      readCachedOrganizerMarkets: async () => [],
+      readOrganizerMarkets: async ({ organizerPubkey }) =>
+        organizerPubkey === ORGANIZER
+          ? organizerRead({ markets: [market(ORGANIZER)] })
+          : sibling.promise,
+    })
+    const pending = discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER, OTHER_ORGANIZER],
+      perspective: progressPerspective,
+      onProgress: (snapshot) => {
+        if (
+          snapshot.markets.some((value) => value.organizerPubkey === ORGANIZER)
+        )
+          first.resolve(snapshot)
+      },
+    })
+    const progress = await Promise.race([
+      first.promise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 100)),
+    ])
+    sibling.resolve(organizerRead({ markets: [market(OTHER_ORGANIZER)] }))
+    const final = await pending
+    expect(progress).not.toBeNull()
+    expect(final.markets).toHaveLength(2)
+  })
+
+  it("retracts a terminal organizer snapshot and ignores late cache completion", async () => {
+    const cache = held<EventMarketResolution[]>()
+    const live = held<OrganizerEventMarketsReadResult>()
+    const terminal = held<unknown>()
+    const progress: Array<{ markets: EventMarketResolution[] }> = []
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
+      readCachedOrganizerMarkets: () => cache.promise,
+      readOrganizerMarkets: async (input) => {
+        input.onProgress?.(
+          organizerRead({
+            markets: [market(ORGANIZER, "stale")],
+            state: "partial",
+          })
+        )
+        input.onProgress?.(
+          organizerRead({
+            markets: [market(ORGANIZER, "deleted")],
+            state: "partial",
+          })
+        )
+        terminal.resolve(null)
+        return live.promise
+      },
+    })
+    const pending = discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+      onProgress: (snapshot) => progress.push(snapshot),
+    })
+    await terminal.promise
+    cache.resolve([market(ORGANIZER, "stale")])
+    live.resolve(organizerRead({ markets: [market(ORGANIZER, "deleted")] }))
+    const final = await pending
+    expect(progress.some((value) => value.markets.length === 1)).toBe(true)
+    expect(progress.at(-1)?.markets).toEqual([])
+    expect(final.markets).toEqual([])
+  })
+
+  it("retains the latest safe organizer progress when its final read reaches the deadline", async () => {
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
+      readCachedOrganizerMarkets: async () => [],
+      organizerReadDeadlineMs: 40,
+      readOrganizerMarkets: async (input) => {
+        input.onProgress?.(
+          organizerRead({
+            markets: [market(ORGANIZER, "stale")],
+            state: "partial",
+          })
+        )
+        return new Promise(() => {})
+      },
+    })
+    const final = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+    })
+    expect(final.markets).toHaveLength(1)
+    expect(final.markets[0]?.state).toBe("stale")
+    expect(final.state).toBe("partial")
+    expect(final.boundedOrganizerCount).toBe(1)
+  })
+  it("supersedes a retained candidate with a newer signed unlink before late cache completes", async () => {
+    const original = collectionCandidate()
+    const unlink = finalizeEvent(
+      {
+        kind: original.kind,
+        created_at: original.created_at + 1,
+        tags: original.tags.filter((tag) => tag[0] !== "a"),
+        content: "",
+      },
+      ORGANIZER_SECRET
+    )
+    const network = held<ReturnType<typeof candidateRead>>()
+    const earlyCache = held<EventMarketResolution[]>()
+    const cacheStarted = held<unknown>()
+    const live = held<OrganizerEventMarketsReadResult>()
+    const newFrontier = held<unknown>()
+    const progress: Array<{ markets: EventMarketResolution[] }> = []
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: () => network.promise,
+      readRetainedCollectionCandidates: async () => ({
+        events: [original],
+        eventSourceRelayUrls: {},
+      }),
+      readCachedOrganizerMarkets: async (input) => {
+        if (
+          input.candidateCollectionEvents?.some(
+            (event) => event.id === unlink.id
+          )
+        ) {
+          newFrontier.resolve(null)
+          return [market(ORGANIZER, "unsupported")]
+        }
+        cacheStarted.resolve(null)
+        return earlyCache.promise
+      },
+      readOrganizerMarkets: () => live.promise,
+    })
+    const pending = discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+      onProgress: (snapshot) => progress.push(snapshot),
+    })
+    await cacheStarted.promise
+    network.resolve(candidateRead([unlink]))
+    await newFrontier.promise
+    earlyCache.resolve([market(ORGANIZER, "stale")])
+    live.resolve(organizerRead({ markets: [market(ORGANIZER, "unsupported")] }))
+    const final = await pending
+    expect(final.markets).toEqual([])
+    expect(progress.every((snapshot) => snapshot.markets.length === 0)).toBe(
+      true
+    )
+  })
+
+  it("suppresses organizer and cache completions after caller cancellation", async () => {
+    const controller = new AbortController()
+    const live = held<OrganizerEventMarketsReadResult>()
+    const cached = held<EventMarketResolution[]>()
+    const first = held<unknown>()
+    const progress: Array<{ markets: EventMarketResolution[] }> = []
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
+      readCachedOrganizerMarkets: () => cached.promise,
+      readOrganizerMarkets: async (input) => {
+        input.onProgress?.(
+          organizerRead({
+            markets: [market(ORGANIZER, "stale")],
+            state: "partial",
+          })
+        )
+        first.resolve(null)
+        return live.promise
+      },
+    })
+    const pending = discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+      signal: controller.signal,
+      onProgress: (snapshot) => progress.push(snapshot),
+    })
+    await first.promise
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" })
+    const count = progress.length
+    live.resolve(organizerRead({ markets: [market(ORGANIZER)] }))
+    cached.resolve([market(ORGANIZER, "stale")])
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(progress).toHaveLength(count)
+  })
+
+  it("retains a cache-only organizer card when its live read is unavailable", async () => {
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readCollectionCandidates: async () =>
+        candidateRead([collectionCandidate()]),
+      readCachedOrganizerMarkets: async () => [market(ORGANIZER, "stale")],
+      readOrganizerMarkets: async () => organizerRead({ state: "unavailable" }),
+    })
+    const final = await discoverPerspectiveEventMarkets({
+      organizerPubkeys: [ORGANIZER],
+      perspective: progressPerspective,
+    })
+    expect(final.markets.map((value) => value.state)).toEqual(["stale"])
+    expect(final.state).toBe("partial")
+    expect(final.failedOrganizerCount).toBe(1)
+  })
+})
+
+it("waits for delayed retained cards after an immediate unavailable organizer result", async () => {
+  const cache = held<EventMarketResolution[]>()
+  const cacheStarted = held<unknown>()
+  __setFollowedEventMarketDiscoveryTestOverrides({
+    readCollectionCandidates: async () =>
+      candidateRead([collectionCandidate()]),
+    readCachedOrganizerMarkets: async () => {
+      cacheStarted.resolve(null)
+      return cache.promise
+    },
+    readOrganizerMarkets: async () => organizerRead({ state: "unavailable" }),
+  })
+  let finished = false
+  const pending = discoverPerspectiveEventMarkets({
+    organizerPubkeys: [ORGANIZER],
+    perspective: progressPerspective,
+  }).then((value) => {
+    finished = true
+    return value
+  })
+  await cacheStarted.promise
+  // Drain the immediate live result without releasing the local storage read.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  const finishedBeforeCache = finished
+  cache.resolve([market(ORGANIZER, "stale")])
+  const final = await pending
+  expect(finishedBeforeCache).toBe(false)
+  expect(final.markets.map((value) => value.state)).toEqual(["stale"])
+  expect(final.state).toBe("partial")
+  expect(final.failedOrganizerCount).toBe(1)
 })

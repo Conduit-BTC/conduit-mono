@@ -66,8 +66,13 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../components/MerchantIdentity"
+import {
+  EventActorName,
+  EventActorProvenance,
+} from "../components/EventActorIdentity"
 import { ProductVariationSelector } from "../components/ProductVariationSelector"
 import { type CartItem, useCart } from "../hooks/useCart"
+import { useEventActorIdentity } from "../hooks/useEventActorIdentity"
 import { useProductCartFulfillment } from "../hooks/useProductCartFulfillment"
 import {
   useCartReadiness,
@@ -393,6 +398,9 @@ function RelatedProductRow({
     resolution?.status === "pickup"
       ? getPickupHandoffSummary(resolution.fulfillment)
       : null
+  const relatedPickupHandlerIdentity = useEventActorIdentity(
+    relatedPickupHandoff?.handlerPubkey
+  )
   const cartCandidate = resolution
     ? resolution.status === "pickup"
       ? cartItemInputFromProductSelection(
@@ -548,15 +556,26 @@ function RelatedProductRow({
         resolution?.status === "blocked" ||
         resolution?.status === "pickup" ? (
           <div className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
-            {existingFulfillmentConflict
-              ? "This listing is already in your cart with different fulfillment. Remove that line before adding it here."
-              : fulfillment.isChecking
-                ? "Checking signed event pickup."
-                : resolution?.status === "blocked"
-                  ? resolution.reason
-                  : relatedPickupHandoff
-                    ? `${relatedPickupHandoff.label} · signed by ${formatNpub(relatedPickupHandoff.handlerPubkey, 8)} · no delivery address required.`
-                    : "Signed event pickup · no delivery address required."}{" "}
+            {existingFulfillmentConflict ? (
+              "This listing is already in your cart with different fulfillment. Remove that line before adding it here."
+            ) : fulfillment.isChecking ? (
+              "Checking signed event pickup."
+            ) : resolution?.status === "blocked" ? (
+              resolution.reason
+            ) : relatedPickupHandoff && relatedPickupHandlerIdentity ? (
+              <>
+                {relatedPickupHandoff.label} · handled by{" "}
+                <EventActorName identity={relatedPickupHandlerIdentity} />
+                {" · no delivery address required."}
+                <EventActorProvenance
+                  pubkey={relatedPickupHandoff.handlerPubkey}
+                  copyLabel="Copy pickup handler npub"
+                  className="mt-1 flex"
+                />
+              </>
+            ) : (
+              "Signed event pickup · no delivery address required."
+            )}{" "}
             {(resolution?.status === "blocked" ||
               resolution?.status === "pickup") && (
               <Link
@@ -622,6 +641,9 @@ function CartLineItem({
   )
   const unitPrice = formatPrice(item, zeroPriceOptions)
   const pickupHandoff = pickup ? getPickupHandoffSummary(pickup) : null
+  const pickupHandlerIdentity = useEventActorIdentity(
+    pickupHandoff?.handlerPubkey
+  )
 
   return (
     <div
@@ -677,10 +699,15 @@ function CartLineItem({
           <div className="mt-2 flex items-start gap-2 text-xs leading-5 text-[var(--text-secondary)]">
             <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-secondary-400" />
             <div>
-              {pickupHandoff ? (
+              {pickupHandoff && pickupHandlerIdentity ? (
                 <div className="font-medium text-[var(--text-primary)]">
-                  {pickupHandoff.label} · signed by{" "}
-                  {formatNpub(pickupHandoff.handlerPubkey, 8)}
+                  {pickupHandoff.label} · handled by{" "}
+                  <EventActorName identity={pickupHandlerIdentity} />
+                  <EventActorProvenance
+                    pubkey={pickupHandoff.handlerPubkey}
+                    copyLabel="Copy pickup handler npub"
+                    className="mt-1 flex font-normal"
+                  />
                 </div>
               ) : null}
               <div>

@@ -34,6 +34,31 @@ import type { StatusStepperRow, StatusStepperRowStatus } from "@conduit/ui"
 import type { CartItemFulfillment, CartPickupFulfillment } from "./cart-model"
 import { getPickupHandoffSummary } from "./pickup-handoff"
 
+/** Show controlled copy, never an arbitrary provider response saved in lastError. */
+export function getOrderPaymentFailureDetail(
+  lifecycle: OrderLifecycle | undefined,
+  vm: Pick<OrderViewModel, "paymentStatus" | "merchantStatus" | "phase">
+): string | null {
+  if (
+    lifecycle?.paymentStatus !== "failed" ||
+    !lifecycle.lastError ||
+    vm.paymentStatus !== "failed" ||
+    isBuyerOrderPaid(vm) ||
+    vm.phase === "cancelled" ||
+    vm.phase === "completed"
+  ) {
+    return null
+  }
+  if (
+    lifecycle.invoiceStatus === "failed" &&
+    lifecycle.lastError ===
+      "The zap invoice is not bound to the signed NIP-57 request sent to the callback."
+  ) {
+    return "The merchant's payment provider returned an invoice that does not match this public zap request. Contact the merchant if this keeps happening."
+  }
+  return "Payment could not be completed. Try again or contact the merchant if it keeps failing."
+}
+
 /**
  * Interpreted, status-first order view-model (CND-122).
  *
@@ -145,26 +170,23 @@ export interface OrderViewModel {
   hasLifecycle: boolean
 }
 
-export type BoundMerchantInvoiceAccess =
-  "none" | "pay" | "report_only" | "closed"
+export type ManualInvoiceAccess =
+  "none" | "pay" | "report_only" | "receipt_only" | "closed"
 
 /**
- * Keep a bound invoice as evidence after the merchant closes the order without
+ * Keep any saved manual invoice as evidence after the merchant closes the order without
  * continuing to offer it for payment. Cancellation and refund states retain
- * the buyer's existing ability to report a payment that already happened.
+ * private reporting or public receipt observation for a payment that already happened.
  */
-export function deriveBoundMerchantInvoiceAccess(
+export function deriveManualInvoiceAccess(
   lifecycle: OrderLifecycle | null | undefined,
   merchantStatus: KnownOrderStatus | null,
   effectivePhase: OrderLifecyclePhase | undefined = lifecycle?.phase,
   paymentConfirmed = false
-): BoundMerchantInvoiceAccess {
-  const hasBoundInvoice =
-    lifecycle?.checkoutMode === "pay_later" &&
-    lifecycle.invoiceStatus === "manual_required" &&
-    lifecycle.paymentStatus === "manual_required" &&
-    !!lifecycle.invoice
-  if (!hasBoundInvoice) return "none"
+): ManualInvoiceAccess {
+  const hasManualInvoice =
+    lifecycle?.paymentStatus === "manual_required" && !!lifecycle.invoice
+  if (!hasManualInvoice) return "none"
 
   if (
     paymentConfirmed ||
@@ -178,9 +200,60 @@ export function deriveBoundMerchantInvoiceAccess(
     merchantStatus === "cancelled" ||
     merchantStatus === "refund_requested"
   ) {
-    return "report_only"
+    const publicZapSigner =
+      lifecycle.publicZapSigner ??
+      getOrderPublicZapSigner(lifecycle.checkoutMode)
+    return publicZapSigner ? "receipt_only" : "report_only"
   }
   return "pay"
+}
+
+/** Authorize a captured already-paid report against the latest view and stored invoice. */
+export function canClaimManualInvoiceReport(
+  expected: OrderViewModel,
+  current: OrderViewModel,
+  lifecycle: OrderLifecycle,
+  buyerPubkey: string
+): boolean {
+  if (
+    current.publicZapSigner ||
+    (current.checkoutMode && getOrderPublicZapSigner(current.checkoutMode)) ||
+    current.phase === "completed" ||
+    current.paymentStatus === "paid" ||
+    isMerchantOrderPaid({ status: current.merchantStatus }) ||
+    expected.orderId !== current.orderId ||
+    expected.merchantPubkey !== current.merchantPubkey ||
+    expected.orderId !== lifecycle.orderId ||
+    buyerPubkey !== lifecycle.buyerPubkey ||
+    expected.merchantPubkey !== lifecycle.merchantPubkey ||
+    !expected.invoice ||
+    !current.invoice ||
+    normalizeLightningInvoice(expected.invoice).toLowerCase() !==
+      normalizeLightningInvoice(current.invoice).toLowerCase()
+  )
+    return false
+
+  const action = current.merchantInvoiceAction
+  const unboundReport = action?.status === "blocked" && action.canReport
+  const storedInvoice =
+    lifecycle.invoice ?? (unboundReport ? action.invoice : undefined)
+  if (
+    !storedInvoice ||
+    normalizeLightningInvoice(storedInvoice).toLowerCase() !==
+      normalizeLightningInvoice(expected.invoice).toLowerCase()
+  )
+    return false
+
+  const access = deriveManualInvoiceAccess(
+    lifecycle,
+    current.merchantStatus,
+    current.phase
+  )
+  return (
+    access === "pay" ||
+    access === "report_only" ||
+    (access === "none" && !!unboundReport)
+  )
 }
 
 export interface BuildOrderViewModelInput {

@@ -2,6 +2,7 @@ import type { Filter } from "nostr-tools"
 import {
   EventMarketDiscoveryBoundError,
   getOrganizerEventMarketsDetailed,
+  getCachedOrganizerEventMarkets,
   getRetainedEventMarketCollectionEvidence,
   parseAddressableCoordinate,
   type EventMarketResolution,
@@ -58,6 +59,165 @@ export type FollowedEventMarketCandidateScanState =
   "complete" | "partial" | "unavailable"
 
 export type EventMarketPerspectiveSource = "following" | "conduit" | "combined"
+
+export type EventMarketPerspectiveAuthorSource =
+  "refreshed" | "seed" | "cached" | "fallback" | "combined" | "none"
+
+export interface EventMarketPerspectiveAuthorResolution {
+  authorPubkeys: string[] | undefined
+  source: EventMarketPerspectiveAuthorSource
+}
+
+function uniquePerspectiveAuthors(
+  pubkeys: readonly string[] | undefined,
+  perspectivePubkey?: string | null
+): string[] {
+  return Array.from(
+    new Set(pubkeys?.map(normalizePubkey).filter(Boolean) as string[])
+  )
+    .filter((pubkey) => pubkey !== normalizePubkey(perspectivePubkey))
+    .sort()
+}
+
+function includePerspectiveAuthor(
+  pubkeys: readonly string[],
+  perspectivePubkey?: string | null
+): string[] {
+  const normalizedPerspective = normalizePubkey(perspectivePubkey)
+  return Array.from(
+    new Set([
+      ...pubkeys,
+      ...(normalizedPerspective ? [normalizedPerspective] : []),
+    ])
+  ).sort()
+}
+
+/**
+ * Resolves the author boundary shared by product and event discovery. The
+ * result is an input to candidate-first relay scans; callers must not turn it
+ * into one independent event-market traversal per followed organizer.
+ */
+export function resolveEventMarketPerspectiveAuthorPubkeys(input: {
+  usesPerspectiveGraph: boolean
+  sourceMode?: EventMarketPerspectiveSource
+  perspectivePubkey?: string | null
+  refreshedAuthorPubkeys?: readonly string[]
+  seedAuthorPubkeys?: readonly string[]
+  cachedAuthorPubkeys?: readonly string[]
+  fallbackAuthorPubkeys?: readonly string[]
+  followLookupSettled?: boolean
+}): EventMarketPerspectiveAuthorResolution {
+  const refreshed = uniquePerspectiveAuthors(
+    input.refreshedAuthorPubkeys,
+    input.perspectivePubkey
+  )
+  const cached = uniquePerspectiveAuthors(
+    input.cachedAuthorPubkeys,
+    input.perspectivePubkey
+  )
+  const fallback = uniquePerspectiveAuthors(
+    input.fallbackAuthorPubkeys,
+    input.perspectivePubkey
+  )
+  const sourceMode = input.sourceMode ?? "following"
+  const hasRefreshedAuthors = input.refreshedAuthorPubkeys !== undefined
+  const hasCachedAuthors = input.cachedAuthorPubkeys !== undefined
+
+  if (input.usesPerspectiveGraph && sourceMode === "conduit") {
+    const seeded = uniquePerspectiveAuthors(
+      input.seedAuthorPubkeys,
+      input.perspectivePubkey
+    )
+    if (seeded.length > 0) return { authorPubkeys: seeded, source: "seed" }
+    if (fallback.length > 0) {
+      return { authorPubkeys: fallback, source: "fallback" }
+    }
+    return { authorPubkeys: undefined, source: "none" }
+  }
+
+  if (input.usesPerspectiveGraph && sourceMode === "combined") {
+    if (hasRefreshedAuthors) {
+      if (refreshed.length > 0) {
+        return {
+          authorPubkeys: includePerspectiveAuthor(
+            uniquePerspectiveAuthors(
+              [...refreshed, ...fallback],
+              input.perspectivePubkey
+            ),
+            input.perspectivePubkey
+          ),
+          source: fallback.length > 0 ? "combined" : "refreshed",
+        }
+      }
+    } else {
+      const seeded = uniquePerspectiveAuthors(
+        input.seedAuthorPubkeys,
+        input.perspectivePubkey
+      )
+      if (seeded.length > 0) {
+        return {
+          authorPubkeys: includePerspectiveAuthor(
+            uniquePerspectiveAuthors(
+              [...seeded, ...fallback],
+              input.perspectivePubkey
+            ),
+            input.perspectivePubkey
+          ),
+          source: fallback.length > 0 ? "combined" : "seed",
+        }
+      }
+      if (hasCachedAuthors && cached.length > 0) {
+        return {
+          authorPubkeys: includePerspectiveAuthor(
+            uniquePerspectiveAuthors(
+              [...cached, ...fallback],
+              input.perspectivePubkey
+            ),
+            input.perspectivePubkey
+          ),
+          source: fallback.length > 0 ? "combined" : "cached",
+        }
+      }
+    }
+
+    if (fallback.length > 0) {
+      return {
+        authorPubkeys: includePerspectiveAuthor(
+          fallback,
+          input.perspectivePubkey
+        ),
+        source: "fallback",
+      }
+    }
+    const normalizedPerspective = normalizePubkey(input.perspectivePubkey)
+    if (normalizedPerspective) {
+      return { authorPubkeys: [normalizedPerspective], source: "combined" }
+    }
+  }
+
+  if (hasRefreshedAuthors) {
+    return refreshed.length > 0
+      ? { authorPubkeys: refreshed, source: "refreshed" }
+      : { authorPubkeys: [], source: "none" }
+  }
+  const seeded = uniquePerspectiveAuthors(
+    input.seedAuthorPubkeys,
+    input.perspectivePubkey
+  )
+  if (seeded.length > 0) return { authorPubkeys: seeded, source: "seed" }
+  if (hasCachedAuthors) {
+    return cached.length > 0
+      ? { authorPubkeys: cached, source: "cached" }
+      : { authorPubkeys: [], source: "none" }
+  }
+  if (input.usesPerspectiveGraph && input.followLookupSettled) {
+    return { authorPubkeys: [], source: "none" }
+  }
+  if (!input.usesPerspectiveGraph) {
+    return { authorPubkeys: undefined, source: "none" }
+  }
+  return { authorPubkeys: undefined, source: "none" }
+}
 
 export interface EventMarketPerspectiveSnapshot {
   source: EventMarketPerspectiveSource
@@ -153,8 +313,12 @@ type DiscoveryReadAuthority = Pick<
 >
 
 export interface DiscoverPerspectiveEventMarketsInput extends DiscoveryReadAuthority {
+  /** Cumulative scoped browsing snapshots; final coverage comes from the promise. */
+  onProgress?: (snapshot: PerspectiveEventMarketDiscoveryResult) => void
   organizerPubkeys: readonly string[]
   perspective: Omit<EventMarketPerspectiveSnapshot, "authorCount">
+  /** Include valid ended markets for timeline/history views. */
+  includeEnded?: boolean
   authenticatedPubkey?: string | null
   nowMs?: number
   signal?: AbortSignal
@@ -168,6 +332,7 @@ interface FollowedEventMarketDiscoveryTestOverrides {
   collectionCandidateRelayUrls?: readonly string[]
   readRetainedCollectionCandidates?: typeof getRetainedEventMarketCollectionEvidence
   readOrganizerMarkets?: typeof getOrganizerEventMarketsDetailed
+  readCachedOrganizerMarkets?: typeof getCachedOrganizerEventMarkets
   candidateReadDeadlineMs?: number
   candidateReadRequestLimit?: number
   organizerReadDeadlineMs?: number
@@ -1226,291 +1391,472 @@ export async function discoverPerspectiveEventMarkets(
   }
   const perspectiveOrganizerSet = new Set(perspectiveOrganizers)
 
-  const readCollectionCandidates =
-    testOverrides.readCollectionCandidates ??
-    readEventMarketCollectionCandidates
-  const candidateRead =
-    perspectiveOrganizers.length === 0
-      ? ({
-          events: [],
-          eventSourceRelayUrls: {},
-          relays: [],
-          eventsVerified: true,
-          plannedRelayCount: 0,
-          capped: false,
-          coverage: emptyCandidateReadCoverage(),
-        } satisfies EventMarketCollectionCandidateReadResult)
-      : await readCollectionCandidates({
-          organizerPubkeys: perspectiveOrganizers,
-          authenticatedPubkey: input.authenticatedPubkey,
-          accountNetworkLocalStateRepository:
-            input.accountNetworkLocalStateRepository,
-          shouldContinue: input.shouldContinue,
-          nowMs: effectiveNowMs,
-          signal: input.signal,
-        })
-  throwIfAborted(input.signal, input.shouldContinue)
-  const resolvedCandidateScanState =
-    perspectiveOrganizers.length === 0
-      ? "complete"
-      : candidateScanState(candidateRead)
-  const readRetainedCollectionCandidates =
-    testOverrides.readRetainedCollectionCandidates ??
-    getRetainedEventMarketCollectionEvidence
-  const retainedCandidateRead =
-    perspectiveOrganizers.length === 0
-      ? { events: [], eventSourceRelayUrls: {} }
-      : await readRetainedCollectionCandidates({
-          organizerPubkeys: perspectiveOrganizers,
-          signal: input.signal,
-        })
-  throwIfAborted(input.signal, input.shouldContinue)
-  // Classify before reducing either source's revisions. A newer signed
-  // collection that removes an observed event link must still supersede the
-  // older event claim, including when the two sources disagree.
-  const eventClaimCoordinates = claimedEventMarketCoordinates([
-    ...candidateRead.events,
-    ...retainedCandidateRead.events,
-  ])
-  const liveCandidateFrontier = collectionCandidateFrontier({
-    read: candidateRead,
-    perspectiveOrganizerPubkeys: perspectiveOrganizerSet,
-    eventClaimCoordinates,
-  })
-  const retainedCandidateFrontier = collectionCandidateFrontier({
-    read: {
-      ...retainedCandidateRead,
-      relays: [],
-      eventsVerified: true,
-      plannedRelayCount: 0,
-      capped: false,
-      coverage: emptyCandidateReadCoverage(),
-    },
-    perspectiveOrganizerPubkeys: perspectiveOrganizerSet,
-    eventClaimCoordinates,
-  })
-  const candidateFrontier = mergeCandidateFrontiers(
-    retainedCandidateFrontier,
-    liveCandidateFrontier
-  )
-  const liveCandidateEventIdsByOrganizer = new Map(
-    liveCandidateFrontier.organizers.map((candidate) => [
-      candidate.organizerPubkey,
-      new Set(candidate.events.map((event) => event.id.toLowerCase())),
-    ])
-  )
-  const readOrganizerMarkets =
-    testOverrides.readOrganizerMarkets ?? getOrganizerEventMarketsDetailed
+  let candidateRead: EventMarketCollectionCandidateReadResult = {
+    events: [],
+    eventSourceRelayUrls: {},
+    relays: [],
+    eventsVerified: true,
+    plannedRelayCount: 0,
+    capped: false,
+    coverage: emptyCandidateReadCoverage(),
+  }
+  let resolvedCandidateScanState: FollowedEventMarketCandidateScanState =
+    "partial"
+  let candidateFrontier: ReturnType<typeof collectionCandidateFrontier> = {
+    organizers: [],
+    candidateCollectionCount: 0,
+    malformedFollowedCandidateObserved: false,
+    truncated: false,
+  }
+  let liveCandidateFrontier = candidateFrontier
+  const organizerSnapshots = new Map<string, EventMarketResolution[]>()
+  const liveOrganizerSnapshots = new Set<string>()
   const organizerReads: PromiseSettledResult<OrganizerEventMarketsReadResult>[] =
     []
-  const organizerController = new AbortController()
-  let deadlineReached = false
   let searchedOrganizerCount = 0
-  let resolveStop: (reason: "deadline" | "caller") => void = () => undefined
-  const stopPromise = new Promise<"deadline" | "caller">((resolve) => {
-    resolveStop = resolve
-  })
-  const abortForCaller = () => {
-    organizerController.abort()
-    resolveStop("caller")
-  }
-  input.signal?.addEventListener("abort", abortForCaller, { once: true })
-  const configuredDeadline =
-    testOverrides.organizerReadDeadlineMs ??
-    FOLLOWED_EVENT_MARKET_READ_DEADLINE_MS
-  const deadlineMs = Number.isFinite(configuredDeadline)
-    ? Math.max(1, Math.floor(configuredDeadline))
-    : FOLLOWED_EVENT_MARKET_READ_DEADLINE_MS
-  const deadline = setTimeout(() => {
-    deadlineReached = true
-    organizerController.abort()
-    resolveStop("deadline")
-  }, deadlineMs)
+  let deadlineReached = false
+  let finished = false
+  let candidateGeneration = 0
+  const active = () =>
+    !finished && !input.signal?.aborted && input.shouldContinue?.() !== false
+  const snapshot = (final = false): PerspectiveEventMarketDiscoveryResult => {
+    const boundedOrganizerCount = organizerReads.filter(
+      (read) =>
+        read.status === "rejected" && isBoundedDiscoveryError(read.reason)
+    ).length
+    const truncated =
+      perspective.truncated ||
+      candidateRead.capped ||
+      candidateFrontier.truncated ||
+      boundedOrganizerCount > 0 ||
+      deadlineReached ||
+      (final && searchedOrganizerCount < candidateFrontier.organizers.length)
 
-  try {
-    for (
-      let index = 0;
-      index < candidateFrontier.organizers.length;
-      index += FOLLOWED_EVENT_MARKET_READ_CONCURRENCY
-    ) {
-      throwIfAborted(input.signal, input.shouldContinue)
-      if (deadlineReached) break
-      const batch = candidateFrontier.organizers.slice(
-        index,
-        index + FOLLOWED_EVENT_MARKET_READ_CONCURRENCY
-      )
-      searchedOrganizerCount += batch.length
-      const completed = new Map<
-        number,
-        PromiseSettledResult<OrganizerEventMarketsReadResult>
-      >()
-      const reads = batch.map(async (candidate, batchIndex) => {
-        let result: PromiseSettledResult<OrganizerEventMarketsReadResult>
-        try {
-          result = {
-            status: "fulfilled",
-            value: await readOrganizerMarkets({
-              organizerPubkey: candidate.organizerPubkey,
-              authenticatedPubkey: input.authenticatedPubkey,
-              accountNetworkLocalStateRepository:
-                input.accountNetworkLocalStateRepository,
-              nowMs: effectiveNowMs,
-              projection: "discovery",
-              relayHints: candidate.relayHints,
-              candidateCollectionEvents: candidate.events,
-              candidateCollectionSourceRelayUrlsById:
-                candidate.sourceRelayUrlsById,
-              candidateCollectionLiveEventIds:
-                liveCandidateEventIdsByOrganizer.get(
-                  candidate.organizerPubkey
-                ) ?? new Set<string>(),
-              signal: organizerController.signal,
-              shouldContinue: input.shouldContinue,
-            }),
-          }
-        } catch (reason) {
-          result = { status: "rejected", reason }
-        }
-        completed.set(batchIndex, result)
-        return result
-      })
-      const outcome = await Promise.race([
-        Promise.all(reads).then((results) => ({
-          state: "complete" as const,
-          results,
-        })),
-        stopPromise.then((reason) => ({
-          state: "stopped" as const,
-          reason,
-        })),
+    const candidateCoordinates = new Set(
+      candidateFrontier.organizers.flatMap((candidate) => [
+        ...candidate.coordinates,
       ])
-
-      if (outcome.state === "stopped") {
-        if (outcome.reason === "caller") {
-          throwIfAborted(input.signal, input.shouldContinue)
+    )
+    const liveCandidateCoordinates = new Set(
+      liveCandidateFrontier.organizers.flatMap((candidate) => [
+        ...candidate.coordinates,
+      ])
+    )
+    const marketsByCoordinate = new Map<string, EventMarketResolution>()
+    let hasDegradedMarket =
+      candidateFrontier.malformedFollowedCandidateObserved ||
+      candidateRead.eventsVerified !== true
+    for (const organizerMarkets of organizerSnapshots.values()) {
+      for (const market of organizerMarkets) {
+        const organizerPubkey = normalizePubkey(market.organizerPubkey)
+        const calendarEndMs = market.calendar?.end
+        if (
+          !organizerPubkey ||
+          !perspectiveOrganizerSet.has(organizerPubkey) ||
+          !candidateCoordinates.has(market.reference)
+        ) {
+          continue
         }
-        organizerReads.push(
-          ...batch.map((_, batchIndex) => {
-            const result = completed.get(batchIndex)
-            return result?.status === "rejected" && isAbortError(result.reason)
-              ? deadlineBoundRead()
-              : (result ?? deadlineBoundRead())
+        if (
+          !input.includeEnded &&
+          calendarEndMs !== undefined &&
+          calendarEndMs <= effectiveNowMs
+        ) {
+          continue
+        }
+        if (
+          market.state === "malformed" ||
+          market.state === "conflicting" ||
+          market.state === "unsupported"
+        ) {
+          hasDegradedMarket = true
+          continue
+        }
+        if (
+          market.state !== "active" &&
+          !(input.includeEnded && market.state === "ended") &&
+          market.state !== "partial" &&
+          market.state !== "stale"
+        ) {
+          continue
+        }
+        if (market.state === "partial" || market.state === "stale") {
+          hasDegradedMarket = true
+        }
+        if (!liveCandidateCoordinates.has(market.reference)) {
+          hasDegradedMarket = true
+        }
+        marketsByCoordinate.set(market.reference, market)
+      }
+    }
+
+    const markets = sortCurrentMarkets(marketsByCoordinate.values())
+    return {
+      markets,
+      state: final
+        ? resultState({
+            marketCount: markets.length,
+            followCoverage: perspective.coverage,
+            hasFollowSnapshot:
+              perspective.eventObserved || perspective.snapshotState !== "none",
+            candidateScanState: resolvedCandidateScanState,
+            organizerReads,
+            truncated,
+            hasDegradedMarket,
+          })
+        : "partial",
+      perspective,
+      candidateCollectionCount: candidateFrontier.candidateCollectionCount,
+      candidateScanState: resolvedCandidateScanState,
+      candidateScanCoverage: candidateRead.coverage,
+      searchedOrganizerCount,
+      incompleteOrganizerCount: organizerReads.filter(
+        (read) =>
+          read.status === "rejected" ||
+          (read.status === "fulfilled" && read.value.state !== "complete")
+      ).length,
+      failedOrganizerCount: organizerReads.filter(readIsUnavailable).length,
+      boundedOrganizerCount,
+      truncated,
+    }
+  }
+  const emit = () => {
+    if (active()) input.onProgress?.(snapshot())
+  }
+  const replaceOrganizerSnapshot = (
+    candidate: EventMarketOrganizerCandidates,
+    value: OrganizerEventMarketsReadResult,
+    generation: number,
+    source: "cache" | "live"
+  ) => {
+    if (!active() || generation !== candidateGeneration) return
+    if (
+      source === "cache" &&
+      liveOrganizerSnapshots.has(candidate.organizerPubkey)
+    )
+      return
+    // An unavailable read is not evidence that retained signed cards vanished.
+    if (value.markets.length === 0 && value.state !== "complete") return
+    if (source === "live") liveOrganizerSnapshots.add(candidate.organizerPubkey)
+    organizerSnapshots.set(
+      candidate.organizerPubkey,
+      value.markets.filter(
+        (market) =>
+          market.organizerPubkey === candidate.organizerPubkey &&
+          perspectiveOrganizerSet.has(candidate.organizerPubkey) &&
+          candidate.coordinates.has(market.reference)
+      )
+    )
+    emit()
+  }
+  const readCachedOrganizerMarkets =
+    testOverrides.readCachedOrganizerMarkets ?? getCachedOrganizerEventMarkets
+  const readCache = async (
+    candidate: EventMarketOrganizerCandidates,
+    generation: number,
+    signal?: AbortSignal
+  ) => {
+    try {
+      const markets = await readCachedOrganizerMarkets({
+        organizerPubkey: candidate.organizerPubkey,
+        authenticatedPubkey: input.authenticatedPubkey,
+        accountNetworkLocalStateRepository:
+          input.accountNetworkLocalStateRepository,
+        nowMs: effectiveNowMs,
+        projection: "discovery",
+        candidateCollectionEvents: candidate.events,
+        candidateCollectionSourceRelayUrlsById: candidate.sourceRelayUrlsById,
+        signal: signal ?? input.signal,
+        shouldContinue: () =>
+          active() &&
+          generation === candidateGeneration &&
+          input.shouldContinue?.() !== false,
+      })
+      if (signal?.aborted) return
+      replaceOrganizerSnapshot(
+        candidate,
+        {
+          markets,
+          state: "partial",
+          coverage: {
+            attemptedRelayCount: 0,
+            completeRelayCount: 0,
+            partialRelayCount: 0,
+            failedRelayCount: 0,
+          },
+          relayListState: "stale-cache",
+          relayHintTruncated: false,
+        },
+        generation,
+        "cache"
+      )
+    } catch {
+      // A cache miss/storage failure must not interrupt the bounded live read.
+    }
+  }
+  try {
+    const readCollectionCandidates =
+      testOverrides.readCollectionCandidates ??
+      readEventMarketCollectionCandidates
+    const readRetainedCollectionCandidates =
+      testOverrides.readRetainedCollectionCandidates ??
+      getRetainedEventMarketCollectionEvidence
+    const networkRead =
+      perspectiveOrganizers.length === 0
+        ? Promise.resolve(candidateRead)
+        : readCollectionCandidates({
+            organizerPubkeys: perspectiveOrganizers,
+            authenticatedPubkey: input.authenticatedPubkey,
+            accountNetworkLocalStateRepository:
+              input.accountNetworkLocalStateRepository,
+            shouldContinue: input.shouldContinue,
+            nowMs: effectiveNowMs,
+            signal: input.signal,
+          })
+    const retainedRead =
+      perspectiveOrganizers.length === 0
+        ? Promise.resolve({ events: [], eventSourceRelayUrls: {} })
+        : readRetainedCollectionCandidates({
+            organizerPubkeys: perspectiveOrganizers,
+            signal: input.signal,
+          })
+    // Retained header resolution runs alongside the candidate network scan.
+    void retainedRead
+      .then(async (read) => {
+        if (!active() || candidateGeneration !== 0) return
+        candidateFrontier = collectionCandidateFrontier({
+          read: { ...candidateRead, ...read },
+          perspectiveOrganizerPubkeys: perspectiveOrganizerSet,
+          eventClaimCoordinates: claimedEventMarketCoordinates(read.events),
+        })
+        await mapWithConcurrency({
+          values: candidateFrontier.organizers,
+          concurrency: FOLLOWED_EVENT_MARKET_READ_CONCURRENCY,
+          worker: (candidate) => readCache(candidate, 0),
+        })
+      })
+      .catch(() => {
+        /* Retained browsing is best-effort; live discovery owns errors. */
+      })
+    const [completedCandidateRead, retainedCandidateRead] = await Promise.all([
+      networkRead,
+      retainedRead,
+    ])
+    candidateRead = completedCandidateRead
+    candidateGeneration += 1
+    throwIfAborted(input.signal, input.shouldContinue)
+    resolvedCandidateScanState =
+      perspectiveOrganizers.length === 0
+        ? "complete"
+        : candidateScanState(candidateRead)
+    const eventClaimCoordinates = claimedEventMarketCoordinates([
+      ...candidateRead.events,
+      ...retainedCandidateRead.events,
+    ])
+    liveCandidateFrontier = collectionCandidateFrontier({
+      read: candidateRead,
+      perspectiveOrganizerPubkeys: perspectiveOrganizerSet,
+      eventClaimCoordinates,
+    })
+    const retainedCandidateFrontier = collectionCandidateFrontier({
+      read: {
+        ...retainedCandidateRead,
+        relays: [],
+        eventsVerified: true,
+        plannedRelayCount: 0,
+        capped: false,
+        coverage: emptyCandidateReadCoverage(),
+      },
+      perspectiveOrganizerPubkeys: perspectiveOrganizerSet,
+      eventClaimCoordinates,
+    })
+    candidateFrontier = mergeCandidateFrontiers(
+      retainedCandidateFrontier,
+      liveCandidateFrontier
+    )
+    // A known newer signed unlink must retract the old card before cache I/O.
+    for (const candidate of candidateFrontier.organizers) {
+      const latest = new Map<string, SignedPublicNostrEvent>()
+      for (const event of candidate.events) {
+        const d = event.tags.find((tag) => tag[0] === "d")?.[1]
+        const coordinate = `${event.kind}:${event.pubkey}:${d}`
+        const previous = latest.get(coordinate)
+        if (!previous || newerAddressableEvent(event, previous))
+          latest.set(coordinate, event)
+      }
+      const retained = organizerSnapshots.get(candidate.organizerPubkey)
+      if (retained)
+        organizerSnapshots.set(
+          candidate.organizerPubkey,
+          retained.filter((market) => {
+            const current = latest.get(market.reference)
+            return !current || claimsEventMarket(current)
           })
         )
-        break
-      }
+    }
+    emit()
+    const liveCandidateEventIdsByOrganizer = new Map(
+      liveCandidateFrontier.organizers.map((candidate) => [
+        candidate.organizerPubkey,
+        new Set(candidate.events.map((event) => event.id.toLowerCase())),
+      ])
+    )
+    const readOrganizerMarkets =
+      testOverrides.readOrganizerMarkets ?? getOrganizerEventMarketsDetailed
+    const organizerController = new AbortController()
+    let resolveStop: (reason: "deadline" | "caller") => void = () => undefined
+    const stopPromise = new Promise<"deadline" | "caller">((resolve) => {
+      resolveStop = resolve
+    })
+    const abortForCaller = () => {
+      organizerController.abort()
+      resolveStop("caller")
+    }
+    input.signal?.addEventListener("abort", abortForCaller, { once: true })
+    const configuredDeadline =
+      testOverrides.organizerReadDeadlineMs ??
+      FOLLOWED_EVENT_MARKET_READ_DEADLINE_MS
+    const deadlineMs = Number.isFinite(configuredDeadline)
+      ? Math.max(1, Math.floor(configuredDeadline))
+      : FOLLOWED_EVENT_MARKET_READ_DEADLINE_MS
+    const deadline = setTimeout(() => {
+      deadlineReached = true
+      organizerController.abort()
+      resolveStop("deadline")
+    }, deadlineMs)
 
-      organizerReads.push(
-        ...outcome.results.map((result) =>
-          deadlineReached &&
-          result.status === "rejected" &&
-          isAbortError(result.reason)
-            ? deadlineBoundRead()
-            : result
+    try {
+      for (
+        let index = 0;
+        index < candidateFrontier.organizers.length;
+        index += FOLLOWED_EVENT_MARKET_READ_CONCURRENCY
+      ) {
+        throwIfAborted(input.signal, input.shouldContinue)
+        if (deadlineReached) break
+        const batch = candidateFrontier.organizers.slice(
+          index,
+          index + FOLLOWED_EVENT_MARKET_READ_CONCURRENCY
         )
-      )
-      if (deadlineReached) break
+        searchedOrganizerCount += batch.length
+        const completed = new Map<
+          number,
+          PromiseSettledResult<OrganizerEventMarketsReadResult>
+        >()
+        const reads = batch.map(async (candidate, batchIndex) => {
+          const generation = candidateGeneration
+          const cacheRead = readCache(
+            candidate,
+            generation,
+            organizerController.signal
+          )
+          let result: PromiseSettledResult<OrganizerEventMarketsReadResult>
+          try {
+            result = {
+              status: "fulfilled",
+              value: await readOrganizerMarkets({
+                organizerPubkey: candidate.organizerPubkey,
+                authenticatedPubkey: input.authenticatedPubkey,
+                accountNetworkLocalStateRepository:
+                  input.accountNetworkLocalStateRepository,
+                nowMs: effectiveNowMs,
+                projection: "discovery",
+                relayHints: candidate.relayHints,
+                candidateCollectionEvents: candidate.events,
+                candidateCollectionSourceRelayUrlsById:
+                  candidate.sourceRelayUrlsById,
+                candidateCollectionLiveEventIds:
+                  liveCandidateEventIdsByOrganizer.get(
+                    candidate.organizerPubkey
+                  ) ?? new Set<string>(),
+                signal: organizerController.signal,
+                shouldContinue: input.shouldContinue,
+                onProgress: (value) => {
+                  if (!organizerController.signal.aborted)
+                    replaceOrganizerSnapshot(
+                      candidate,
+                      value,
+                      generation,
+                      "live"
+                    )
+                },
+              }),
+            }
+          } catch (reason) {
+            result = { status: "rejected", reason }
+          }
+          if (!organizerController.signal.aborted) {
+            if (result.status === "fulfilled") {
+              if (
+                result.value.markets.length === 0 &&
+                result.value.state !== "complete"
+              ) {
+                // An empty incomplete result cannot replace retained evidence.
+                // Keep its local read inside the same organizer deadline race.
+                await cacheRead
+              }
+              replaceOrganizerSnapshot(
+                candidate,
+                result.value,
+                generation,
+                "live"
+              )
+            } else {
+              await cacheRead
+            }
+          }
+          completed.set(batchIndex, result)
+          emit()
+          return result
+        })
+        const outcome = await Promise.race([
+          Promise.all(reads).then((results) => ({
+            state: "complete" as const,
+            results,
+          })),
+          stopPromise.then((reason) => ({
+            state: "stopped" as const,
+            reason,
+          })),
+        ])
+
+        if (outcome.state === "stopped") {
+          if (outcome.reason === "caller") {
+            throwIfAborted(input.signal, input.shouldContinue)
+          }
+          organizerReads.push(
+            ...batch.map((_, batchIndex) => {
+              const result = completed.get(batchIndex)
+              return result?.status === "rejected" &&
+                isAbortError(result.reason)
+                ? deadlineBoundRead()
+                : (result ?? deadlineBoundRead())
+            })
+          )
+          break
+        }
+
+        organizerReads.push(
+          ...outcome.results.map((result) =>
+            deadlineReached &&
+            result.status === "rejected" &&
+            isAbortError(result.reason)
+              ? deadlineBoundRead()
+              : result
+          )
+        )
+        if (deadlineReached) break
+      }
+    } finally {
+      clearTimeout(deadline)
+      input.signal?.removeEventListener("abort", abortForCaller)
     }
+    throwIfAborted(input.signal, input.shouldContinue)
+
+    return snapshot(true)
   } finally {
-    clearTimeout(deadline)
-    input.signal?.removeEventListener("abort", abortForCaller)
-  }
-  throwIfAborted(input.signal, input.shouldContinue)
-
-  const boundedOrganizerCount = organizerReads.filter(
-    (read) => read.status === "rejected" && isBoundedDiscoveryError(read.reason)
-  ).length
-  const truncated =
-    perspective.truncated ||
-    candidateRead.capped ||
-    candidateFrontier.truncated ||
-    boundedOrganizerCount > 0 ||
-    deadlineReached ||
-    searchedOrganizerCount < candidateFrontier.organizers.length
-
-  const candidateCoordinates = new Set(
-    candidateFrontier.organizers.flatMap((candidate) => [
-      ...candidate.coordinates,
-    ])
-  )
-  const liveCandidateCoordinates = new Set(
-    liveCandidateFrontier.organizers.flatMap((candidate) => [
-      ...candidate.coordinates,
-    ])
-  )
-  const marketsByCoordinate = new Map<string, EventMarketResolution>()
-  let hasDegradedMarket =
-    candidateFrontier.malformedFollowedCandidateObserved ||
-    candidateRead.eventsVerified !== true
-  for (const read of organizerReads) {
-    if (read.status !== "fulfilled") continue
-    for (const market of read.value.markets) {
-      const organizerPubkey = normalizePubkey(market.organizerPubkey)
-      const calendarEndMs = market.calendar?.end
-      if (
-        !organizerPubkey ||
-        !perspectiveOrganizerSet.has(organizerPubkey) ||
-        !candidateCoordinates.has(market.reference)
-      ) {
-        continue
-      }
-      if (calendarEndMs !== undefined && calendarEndMs <= effectiveNowMs) {
-        continue
-      }
-      if (
-        market.state === "malformed" ||
-        market.state === "conflicting" ||
-        market.state === "unsupported"
-      ) {
-        hasDegradedMarket = true
-        continue
-      }
-      if (
-        market.state !== "active" &&
-        market.state !== "partial" &&
-        market.state !== "stale"
-      ) {
-        continue
-      }
-      if (market.state === "partial" || market.state === "stale") {
-        hasDegradedMarket = true
-      }
-      if (!liveCandidateCoordinates.has(market.reference)) {
-        hasDegradedMarket = true
-      }
-      marketsByCoordinate.set(market.reference, market)
-    }
-  }
-
-  const markets = sortCurrentMarkets(marketsByCoordinate.values())
-  return {
-    markets,
-    state: resultState({
-      marketCount: markets.length,
-      followCoverage: perspective.coverage,
-      hasFollowSnapshot:
-        perspective.eventObserved || perspective.snapshotState !== "none",
-      candidateScanState: resolvedCandidateScanState,
-      organizerReads,
-      truncated,
-      hasDegradedMarket,
-    }),
-    perspective,
-    candidateCollectionCount: candidateFrontier.candidateCollectionCount,
-    candidateScanState: resolvedCandidateScanState,
-    candidateScanCoverage: candidateRead.coverage,
-    searchedOrganizerCount,
-    incompleteOrganizerCount: organizerReads.filter(
-      (read) =>
-        read.status === "rejected" ||
-        (read.status === "fulfilled" && read.value.state !== "complete")
-    ).length,
-    failedOrganizerCount: organizerReads.filter(readIsUnavailable).length,
-    boundedOrganizerCount,
-    truncated,
+    finished = true
   }
 }
-
 export async function discoverFollowedOrganizerEventMarkets(
   input: DiscoverFollowedEventMarketsInput
 ): Promise<FollowedEventMarketDiscoveryResult> {

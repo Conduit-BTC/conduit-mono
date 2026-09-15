@@ -217,6 +217,8 @@ export type ProjectedMerchantInvoiceClaim = {
 export type ExternalOrderPaymentProofClaimOptions = {
   merchantInvoice?: ProjectedMerchantInvoiceClaim
   nowMs?: number
+  /** Recheck current action authority after reading storage, before claiming. */
+  authorizeClaim?: (lifecycle: OrderLifecycle) => boolean
 }
 
 type AdmittedProjectedMerchantInvoice = {
@@ -1058,9 +1060,13 @@ export async function claimExternalOrderPaymentProof(
     if (
       !normalizedClaimId ||
       publicZapSigner ||
+      lifecycle.phase === "completed" ||
       lifecycle.proofDeliveryStatus !== "not_started" ||
       (!admittedMerchantInvoice && !existingManualInvoiceIsAdmissible)
     ) {
+      return { status: "preserved", lifecycle }
+    }
+    if (options.authorizeClaim?.(lifecycle) === false) {
       return { status: "preserved", lifecycle }
     }
     const claimed = mergeOrderLifecyclePatch(

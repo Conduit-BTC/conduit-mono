@@ -24,6 +24,7 @@ import {
 } from "@conduit/ui"
 import { MarketHeader } from "../components/MarketHeader"
 import { MarketCartHud } from "../components/MarketCartHud"
+import { EventActorIdentityProvider } from "../hooks/useEventActorIdentity"
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -219,12 +220,14 @@ function MarketProductRoot({ pathname }: { pathname: string }) {
   throwSyntheticClientErrorForTelemetryTest()
 
   return (
-    <RootShell cartHud={<MarketCartHud pathname={pathname} />}>
-      <Outlet />
-      {authUrl && (
-        <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
-      )}
-    </RootShell>
+    <EventActorIdentityProvider>
+      <RootShell cartHud={<MarketCartHud pathname={pathname} />}>
+        <Outlet />
+        {authUrl && (
+          <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
+        )}
+      </RootShell>
+    </EventActorIdentityProvider>
   )
 }
 
@@ -285,7 +288,7 @@ function getPageTitle(pathname: string): string {
   if (pathname.startsWith("/products/")) {
     return "Product"
   }
-  if (pathname.startsWith("/events/")) {
+  if (pathname === "/events" || pathname.startsWith("/events/")) {
     return "Event Catalog"
   }
   if (pathname.startsWith("/store/")) {
