@@ -474,6 +474,43 @@ function normalizedPickupCountries(
   ).sort()
 }
 
+function hasSamePickupPublicTerms(
+  left: OrderPickupFulfillmentSchema,
+  right: OrderPickupFulfillmentSchema
+): boolean {
+  return (
+    left.option.title === right.option.title &&
+    left.option.location === right.option.location &&
+    left.option.geohash?.toLowerCase() === right.option.geohash?.toLowerCase()
+  )
+}
+
+function hasSamePickupCountryTerms(
+  leftCountries: readonly string[] | null,
+  rightCountries: readonly string[] | null
+): boolean {
+  return (
+    leftCountries !== null &&
+    rightCountries !== null &&
+    leftCountries.length === rightCountries.length &&
+    leftCountries.every((country, index) => country === rightCountries[index])
+  )
+}
+
+function hasSameExactPickupTerms(
+  left: OrderPickupFulfillmentSchema,
+  right: OrderPickupFulfillmentSchema
+): boolean {
+  const leftCountries = normalizedPickupCountries(left.option.countries)
+  const rightCountries = normalizedPickupCountries(right.option.countries)
+  return (
+    hasSamePickupPublicTerms(left, right) &&
+    (leftCountries === null ||
+      rightCountries === null ||
+      hasSamePickupCountryTerms(leftCountries, rightCountries))
+  )
+}
+
 function hasSameMerchantPickupTerms(
   left: OrderPickupFulfillmentSchema,
   right: OrderPickupFulfillmentSchema
@@ -481,14 +518,8 @@ function hasSameMerchantPickupTerms(
   const leftCountries = normalizedPickupCountries(left.option.countries)
   const rightCountries = normalizedPickupCountries(right.option.countries)
   return (
-    leftCountries !== null &&
-    rightCountries !== null &&
-    left.option.title === right.option.title &&
-    left.option.location === right.option.location &&
-    left.option.geohash?.toLowerCase() ===
-      right.option.geohash?.toLowerCase() &&
-    leftCountries.length === rightCountries.length &&
-    leftCountries.every((country, index) => country === rightCountries[index])
+    hasSamePickupPublicTerms(left, right) &&
+    hasSamePickupCountryTerms(leftCountries, rightCountries)
   )
 }
 
@@ -532,7 +563,9 @@ export function hasSamePickupFulfillmentGraph(
     return false
   }
 
-  if (hasSamePickupEvidenceRevision(left.option, right.option)) return true
+  if (hasSamePickupEvidenceRevision(left.option, right.option)) {
+    return hasSameExactPickupTerms(left, right)
+  }
 
   return (
     leftAuthority.mode === "merchant_handoff" &&

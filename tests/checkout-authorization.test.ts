@@ -119,6 +119,7 @@ function pickupFulfillment(
       createdAt: 5,
       title: "Chicago pickup",
       location: "Market entrance",
+      countries: ["US"],
     },
     handoffMode: "organizer_handoff",
     handlerPubkey: ORGANIZER,
@@ -498,6 +499,57 @@ describe("checkout authorization refresh", () => {
     expect(result).toEqual({ status: "ok", items: [item] })
     expect(shippingRead).toBe(false)
     expect(handlerAuthorizationCount).toBe(1)
+  })
+
+  it("authorizes a same-revision legacy pickup snapshot without countries", async () => {
+    const refreshedProduct = pickupProduct()
+    const current = pickupFulfillment()
+    const legacy = structuredClone(current)
+    delete legacy.option.countries
+    const item = createCartItemFromProduct(refreshedProduct, legacy)
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      reviewedItems: [item],
+      rawItems: [item],
+      refreshedProducts: [refreshedProduct],
+      readShippingOptions: async () => [],
+      resolveProductFulfillment: async () => ({
+        status: "pickup",
+        product: refreshedProduct,
+        fulfillment: current,
+      }),
+      authorizePickupHandlers: async () => {},
+    })
+
+    expect(result).toEqual({
+      status: "ok",
+      items: [createCartItemFromProduct(refreshedProduct, current)],
+    })
+  })
+
+  it("blocks a changed present pickup country set", async () => {
+    const refreshedProduct = pickupProduct()
+    const reviewed = pickupFulfillment()
+    const item = createCartItemFromProduct(refreshedProduct, reviewed)
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      reviewedItems: [item],
+      rawItems: [item],
+      refreshedProducts: [refreshedProduct],
+      readShippingOptions: async () => [],
+      resolveProductFulfillment: async () => ({
+        status: "pickup",
+        product: refreshedProduct,
+        fulfillment: pickupFulfillment({
+          option: { ...reviewed.option, countries: ["CA"] },
+        }),
+      }),
+      authorizePickupHandlers: async () => {},
+    })
+
+    expect(result).toEqual({ status: "changed" })
   })
 
   it("normalizes the bounded historical own-product handoff during checkout", async () => {

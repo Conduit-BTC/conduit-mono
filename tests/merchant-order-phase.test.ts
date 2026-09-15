@@ -99,6 +99,7 @@ const pickupFulfillment = {
     createdAt: 13,
     title: "Market entrance pickup",
     location: "100 Public Square",
+    countries: ["US"],
   },
   costSats: 0,
   sourceCost: {
@@ -724,6 +725,71 @@ describe("merchant order phase", () => {
       pickup: null,
       hasPickupClaim: false,
     })
+  })
+
+  it("keeps equivalent merchant booth records in one pickup lane", () => {
+    const firstPickup = {
+      ...pickupFulfillment,
+      handoffMode: "merchant_handoff" as const,
+      handlerPubkey: merchantPubkey,
+      option: {
+        ...pickupFulfillment.option,
+        coordinate: `30406:${merchantPubkey}:coffee-booth`,
+        eventId: "5".repeat(64),
+        createdAt: 14,
+      },
+    }
+    const secondPickup = {
+      ...firstPickup,
+      product: {
+        ...firstPickup.product,
+        coordinate: `30402:${merchantPubkey}:tea`,
+        eventId: "6".repeat(64),
+        createdAt: 15,
+      },
+      option: {
+        ...firstPickup.option,
+        coordinate: `30406:${merchantPubkey}:tea-booth`,
+        eventId: "7".repeat(64),
+        createdAt: 16,
+      },
+    }
+    const pickupItem = (fulfillment: typeof firstPickup) =>
+      orderItem({
+        productId: fulfillment.product.coordinate,
+        fulfillment,
+        shippingOptionId: fulfillment.option.coordinate,
+        shippingOptionDTag: fulfillment.option.coordinate
+          .split(":")
+          .slice(2)
+          .join(":"),
+      })
+
+    expect(
+      getMerchantOrderFulfillment([
+        pickupItem(firstPickup),
+        pickupItem(secondPickup),
+      ])
+    ).toMatchObject({ mode: "pickup", hasPickupClaim: true })
+
+    for (const incompatible of [
+      { ...secondPickup, handlerPubkey: "c".repeat(64) },
+      {
+        ...secondPickup,
+        calendar: { ...secondPickup.calendar, eventId: "8".repeat(64) },
+      },
+      {
+        ...secondPickup,
+        option: { ...secondPickup.option, title: "Different booth" },
+      },
+    ]) {
+      expect(
+        getMerchantOrderFulfillment([
+          pickupItem(firstPickup),
+          pickupItem(incompatible),
+        ])
+      ).toMatchObject({ mode: "unknown", hasPickupClaim: true })
+    }
   })
 
   it("keeps legacy physical orders shipping-safe but restricts pickup conflicts", () => {
