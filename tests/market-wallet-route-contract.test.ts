@@ -222,6 +222,22 @@ describe("Market wallet route contracts", () => {
     expect(content).not.toContain("balanceMsats")
     expect(content).not.toContain("refreshBalance: true")
     expect(content).toContain('label="Wallets"')
+    expect(content).toMatch(
+      /\{connected \? null : \(\s*<HeaderAction\s+label="Wallets"/
+    )
+  })
+
+  it("keeps the device-owned wallet surface reachable without a signer", async () => {
+    const content = await readFile(
+      "apps/market/src/components/MarketHeader.tsx",
+      "utf8"
+    )
+    const guestWallets = content.match(
+      /\{connected \? null : \(\s*<HeaderAction[\s\S]*?\/>\s*\)\}/
+    )
+    expect(guestWallets?.[0]).toContain('label="Wallets"')
+    expect(guestWallets?.[0]).toContain('to: "/wallet"')
+    expect(guestWallets?.[0]).not.toContain("enabled=")
   })
 
   it("keeps header destinations named and current without crowding narrow screens", async () => {

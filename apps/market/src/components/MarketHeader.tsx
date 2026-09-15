@@ -20,7 +20,13 @@ import {
   type ReactNode,
 } from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
-import { config, formatNpub, useAuth, useProfile } from "@conduit/core"
+import {
+  config,
+  formatNpub,
+  useAuth,
+  useProfile,
+  useUnreadDirectMessageCount,
+} from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
@@ -86,6 +92,7 @@ function HeaderAction({
   className,
   labelClassName = "hidden xl:inline",
   count,
+  badge,
   onClick,
 }: {
   label: string
@@ -96,6 +103,8 @@ function HeaderAction({
   className?: string
   labelClassName?: string
   count?: number
+  /** Count pinned to the icon's top-right corner; hidden at zero. */
+  badge?: number
   onClick: () => void
 }) {
   return (
@@ -116,7 +125,21 @@ function HeaderAction({
         className
       )}
     >
-      {icon}
+      {typeof badge === "number" ? (
+        <span className="relative inline-flex">
+          {icon}
+          {badge > 0 ? (
+            <span
+              aria-hidden="true"
+              className="absolute -right-2.5 -top-2 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary-500 px-1 text-[10px] font-semibold leading-none tabular-nums text-white"
+            >
+              {badge > 99 ? "99+" : badge}
+            </span>
+          ) : null}
+        </span>
+      ) : (
+        icon
+      )}
       <span className={labelClassName}>{label}</span>
       {typeof count === "number" ? (
         <span className="tabular-nums text-[var(--text-muted)]">({count})</span>
@@ -328,6 +351,9 @@ export function MarketHeader() {
   const currentQuery = typeof search.q === "string" ? search.q : ""
   const isBrowseRoute = pathname === "/products"
   const connected = status === "connected" && !!pubkey
+  const unreadMessages = useUnreadDirectMessageCount(
+    connected ? pubkey : null
+  ).count
   const authPending = status === "connecting" || status === "restoring"
   const displayName = connected
     ? (profile?.displayName ?? profile?.name ?? formatNpub(pubkey, 6))
@@ -530,24 +556,18 @@ export function MarketHeader() {
           aria-label="Market navigation"
           className="market-header-utility-nav flex min-w-0 items-center gap-1.5"
         >
-          <HeaderAction
-            label="Wallets"
-            icon={<Wallet className="size-4" aria-hidden="true" />}
-            active={pathname === "/wallet"}
-            labelClassName="hidden xl:inline"
-            onClick={() => void navigate({ to: "/wallet" })}
-          />
-          <HeaderAction
-            label="Messages"
-            icon={<MessagesSquare className="size-4" aria-hidden="true" />}
-            enabled={connected}
-            active={pathname === "/messages"}
-            labelClassName="hidden lg:inline"
-            onClick={() => handleProtectedRoute("/messages")}
-          />
+          {connected ? null : (
+            <HeaderAction
+              label="Wallets"
+              icon={<Wallet className="size-6" aria-hidden="true" />}
+              active={pathname === "/wallet"}
+              labelClassName="hidden lg:inline"
+              onClick={() => void navigate({ to: "/wallet" })}
+            />
+          )}
           <HeaderAction
             label="Orders"
-            icon={<ReceiptText className="size-4" aria-hidden="true" />}
+            icon={<ReceiptText className="size-6" aria-hidden="true" />}
             enabled={connected}
             active={pathname === "/orders"}
             labelClassName="hidden lg:inline"
@@ -558,11 +578,23 @@ export function MarketHeader() {
             ariaLabel={`Cart, ${cart.totals.count} ${
               cart.totals.count === 1 ? "item" : "items"
             }`}
-            icon={<ShoppingCart className="size-4" aria-hidden="true" />}
+            icon={<ShoppingCart className="size-6" aria-hidden="true" />}
             active={pathname === "/cart"}
-            labelClassName="hidden sm:inline"
-            count={cart.totals.count}
+            labelClassName="sr-only"
+            badge={cart.totals.count}
             onClick={() => void navigate({ to: "/cart" })}
+          />
+          <HeaderAction
+            label="Messages"
+            ariaLabel={
+              connected ? `Messages, ${unreadMessages} unread` : "Messages"
+            }
+            icon={<MessagesSquare className="size-6" aria-hidden="true" />}
+            enabled={connected}
+            active={pathname === "/messages"}
+            labelClassName="sr-only"
+            badge={unreadMessages}
+            onClick={() => handleProtectedRoute("/messages")}
           />
         </nav>
 
