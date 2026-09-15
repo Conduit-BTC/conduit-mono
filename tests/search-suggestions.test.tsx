@@ -4,6 +4,7 @@ import {
   SearchSuggestions,
   getSearchSuggestionInputProps,
   getSearchSuggestionOptionId,
+  flattenSearchSuggestionGroups,
 } from "../packages/ui/src/components/SearchSuggestions"
 
 describe("SearchSuggestions", () => {
@@ -64,5 +65,44 @@ describe("SearchSuggestions", () => {
     expect(html).toContain(">Seller<")
     expect(html).toContain("alice@conduit.market")
     expect(html).toContain("Some search relays did not answer.")
+  })
+
+  it("labels each group and keeps one flat option index across them", () => {
+    const groups = [
+      {
+        id: "stores",
+        heading: "Stores",
+        items: [{ id: "store-1", label: "Alice Storefront", badge: "Seller" }],
+      },
+      {
+        id: "accounts",
+        heading: "Accounts",
+        items: [{ id: "account-1", label: "Alicia Reader" }],
+      },
+      { id: "empty", heading: "Empty", items: [] },
+    ]
+    expect(
+      flattenSearchSuggestionGroups(groups).map((item) => item.id)
+    ).toEqual(["store-1", "account-1"])
+
+    const html = renderToStaticMarkup(
+      <SearchSuggestions
+        id="lb"
+        ariaLabel="Matching stores and accounts"
+        groups={groups}
+        activeIndex={1}
+        onActiveIndexChange={() => {}}
+        onSelect={() => {}}
+      />
+    )
+    expect(html).toContain('role="group" aria-labelledby="stores-heading"')
+    expect(html).toContain('id="stores-heading"')
+    expect(html).toContain(">Stores<")
+    expect(html).toContain(">Accounts<")
+    expect(html).not.toContain(">Empty<")
+    expect(html).toContain('id="lb-option-0"')
+    expect(html).toContain(
+      'id="lb-option-1" role="option" aria-selected="true"'
+    )
   })
 })

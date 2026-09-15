@@ -13,6 +13,22 @@ export interface SearchSuggestionItem {
   fallback?: React.ReactNode
 }
 
+export interface SearchSuggestionGroup {
+  id: string
+  heading: string
+  items: readonly SearchSuggestionItem[]
+}
+
+/**
+ * Options in render order. Keyboard navigation and selection stay index
+ * based, so a grouped list behaves like one flat listbox.
+ */
+export function flattenSearchSuggestionGroups(
+  groups: readonly SearchSuggestionGroup[]
+): SearchSuggestionItem[] {
+  return groups.flatMap((group) => [...group.items])
+}
+
 export function getSearchSuggestionOptionId(
   listboxId: string,
   index: number
@@ -113,7 +129,10 @@ export function useSearchSuggestionKeyboard(
 
 export interface SearchSuggestionsProps {
   id: string
-  items: readonly SearchSuggestionItem[]
+  /** Ungrouped options; ignored when `groups` is set. */
+  items?: readonly SearchSuggestionItem[]
+  /** Labelled option groups rendered in order inside one listbox. */
+  groups?: readonly SearchSuggestionGroup[]
   activeIndex: number
   onActiveIndexChange: (index: number) => void
   onSelect: (item: SearchSuggestionItem, index: number) => void
@@ -128,6 +147,7 @@ export interface SearchSuggestionsProps {
 export function SearchSuggestions({
   id,
   items,
+  groups,
   activeIndex,
   onActiveIndexChange,
   onSelect,
@@ -143,6 +163,18 @@ export function SearchSuggestions({
     activeRef.current?.scrollIntoView({ block: "nearest" })
   }, [activeIndex])
 
+  const sections: SearchSuggestionGroup[] = groups
+    ? groups.filter((group) => group.items.length > 0)
+    : [{ id: `${id}-options`, heading: heading ?? "", items: items ?? [] }]
+  const total = sections.reduce((count, group) => count + group.items.length, 0)
+  const spinner = (
+    <LoaderCircle
+      className="size-3.5 animate-spin motion-reduce:animate-none"
+      aria-hidden="true"
+    />
+  )
+  let optionIndex = -1
+
   return (
     <div
       className={cn(
@@ -150,15 +182,10 @@ export function SearchSuggestions({
         className
       )}
     >
-      {heading ? (
+      {heading || (loading && !groups) ? (
         <div className="flex items-center justify-between px-3 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
           <span>{heading}</span>
-          {loading ? (
-            <LoaderCircle
-              className="size-3.5 animate-spin motion-reduce:animate-none"
-              aria-hidden="true"
-            />
-          ) : null}
+          {loading ? spinner : null}
         </div>
       ) : null}
       <div
@@ -167,51 +194,77 @@ export function SearchSuggestions({
         aria-label={ariaLabel ?? heading}
         className="max-h-80 overflow-y-auto p-1"
       >
-        {items.length === 0 && emptyMessage ? (
+        {total === 0 && emptyMessage ? (
           <div className="px-3 py-2 text-sm text-[var(--text-muted)]">
             {emptyMessage}
           </div>
         ) : null}
-        {items.map((item, index) => {
-          const active = index === activeIndex
+        {sections.map((group, groupIndex) => {
+          const groupHeadingId = `${group.id}-heading`
+          const showGroupHeading = !!groups && !!group.heading
           return (
             <div
-              key={item.id}
-              id={getSearchSuggestionOptionId(id, index)}
-              ref={active ? activeRef : undefined}
-              role="option"
-              aria-selected={active}
-              tabIndex={-1}
-              onMouseDown={(event) => event.preventDefault()}
-              onMouseEnter={() => onActiveIndexChange(index)}
-              onClick={() => onSelect(item, index)}
-              className={cn(
-                "flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-left text-sm transition-colors",
-                "text-[var(--text-primary)]",
-                active ? "bg-[var(--muted)]" : "hover:bg-[var(--muted)]"
-              )}
+              key={group.id}
+              role="group"
+              aria-labelledby={showGroupHeading ? groupHeadingId : undefined}
             >
-              <Avatar className="size-8 shrink-0">
-                {item.imageUrl ? (
-                  <AvatarImage src={item.imageUrl} alt="" />
-                ) : null}
-                <AvatarFallback className="bg-[var(--avatar-bg)] text-xs text-white">
-                  {item.fallback ?? item.label.slice(0, 1).toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate font-medium">{item.label}</span>
-                {item.description ? (
-                  <span className="truncate text-xs text-[var(--text-muted)]">
-                    {item.description}
-                  </span>
-                ) : null}
-              </span>
-              {item.badge ? (
-                <Badge variant="secondary" className="shrink-0 text-[10px]">
-                  {item.badge}
-                </Badge>
+              {showGroupHeading ? (
+                <div
+                  id={groupHeadingId}
+                  className="flex items-center justify-between px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wider text-[var(--text-muted)]"
+                >
+                  <span>{group.heading}</span>
+                  {loading && groupIndex === 0 && !heading ? spinner : null}
+                </div>
               ) : null}
+              {group.items.map((item) => {
+                optionIndex += 1
+                const index = optionIndex
+                const active = index === activeIndex
+                return (
+                  <div
+                    key={item.id}
+                    id={getSearchSuggestionOptionId(id, index)}
+                    ref={active ? activeRef : undefined}
+                    role="option"
+                    aria-selected={active}
+                    tabIndex={-1}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onMouseEnter={() => onActiveIndexChange(index)}
+                    onClick={() => onSelect(item, index)}
+                    className={cn(
+                      "flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-left text-sm transition-colors",
+                      "text-[var(--text-primary)]",
+                      active ? "bg-[var(--muted)]" : "hover:bg-[var(--muted)]"
+                    )}
+                  >
+                    <Avatar className="size-8 shrink-0">
+                      {item.imageUrl ? (
+                        <AvatarImage src={item.imageUrl} alt="" />
+                      ) : null}
+                      <AvatarFallback className="bg-[var(--avatar-bg)] text-xs text-white">
+                        {item.fallback ?? item.label.slice(0, 1).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate font-medium">{item.label}</span>
+                      {item.description ? (
+                        <span className="truncate text-xs text-[var(--text-muted)]">
+                          {item.description}
+                        </span>
+                      ) : null}
+                    </span>
+                    {item.badge ? (
+                      <Badge
+                        variant="secondary"
+                        className="shrink-0 text-[10px]"
+                      >
+                        {item.badge}
+                      </Badge>
+                    ) : null}
+                  </div>
+                )
+              })}
             </div>
           )
         })}

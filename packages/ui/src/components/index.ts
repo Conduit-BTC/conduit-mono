@@ -1,9 +1,11 @@
 export { Avatar, AvatarImage, AvatarFallback } from "./Avatar"
 export {
   SearchSuggestions,
+  flattenSearchSuggestionGroups,
   getSearchSuggestionInputProps,
   getSearchSuggestionOptionId,
   useSearchSuggestionKeyboard,
+  type SearchSuggestionGroup,
   type SearchSuggestionItem,
   type SearchSuggestionsProps,
   type UseSearchSuggestionKeyboardInput,
