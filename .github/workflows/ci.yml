@@ -147,7 +147,7 @@ jobs:
           set -euo pipefail
 
           if [[ "$EVENT_NAME" == "push" ]]; then
-            shards='["market","merchant"]'
+            shards='["market","merchant","commerce"]'
           else
             base_sha="$(git merge-base "$RAW_BASE_SHA" "$HEAD_SHA")"
             shards="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA")"

@@ -11,16 +11,8 @@ const smokeDiscovery = process.env.PLAYWRIGHT_SMOKE_DISCOVERY === "true"
 const marketPort = process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 const merchantPort = process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
 const relayPort = process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"
-const relayUrl = `ws://127.0.0.1:${relayPort}`
-const e2eEnv = [
-  `VITE_E2E_RELAY_URL=${relayUrl}`,
-  "VITE_DISABLE_DEVTOOLS=true",
-  "VITE_ENABLE_TELEMETRY=true",
-  "VITE_ENABLE_TELEMETRY_TEST_HOOKS=true",
-  "VITE_TELEMETRY_ALLOWED_HOSTS=127.0.0.1",
-  "VITE_PLAUSIBLE_SRC=data:text/javascript,",
-].join(" ")
 const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"
+const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"
 const smokeResultFile = process.env.PLAYWRIGHT_SMOKE_RESULT_FILE
 const smokeEvidenceValues = {
   baseSha: process.env.PLAYWRIGHT_SMOKE_BASE_SHA ?? "",
@@ -42,32 +34,35 @@ if (CI && !smokeDiscovery && !smokeResultFile) {
   )
 }
 const ciReporters: ReporterDescription[] = smokeResultFile
-  ? [["json", { outputFile: smokeResultFile }]]
+  ? [
+      [
+        "./scripts/ci/playwright_smoke_reporter.ts",
+        { outputFile: smokeResultFile },
+      ],
+    ]
   : [["null"]]
 
-if (!new Set(["all", "market", "merchant"]).has(smokeArea)) {
+if (!new Set(["all", "market", "merchant", "commerce"]).has(smokeArea)) {
   throw new Error(`Unknown Playwright smoke area: ${smokeArea}`)
 }
 
 const webServer = [
   {
-    command: `RELAY_EPHEMERAL=true RELAY_FAULT_MODE=none RELAY_PORT=${relayPort} bun scripts/dev/relay_bun.ts`,
+    command: "bun scripts/dev/run_playwright_web_server.ts relay",
     url: `http://127.0.0.1:${relayPort}/health`,
     reuseExistingServer: false,
     timeout: 30_000,
   },
-  // Until the dedicated @commerce lane in CND-193 lands, dual-tagged
-  // cross-app smoke runs in both existing shards and needs both apps.
   {
-    command: `${e2eEnv} bun run --filter @conduit/market dev --mode mock --host 127.0.0.1 --port ${marketPort}`,
+    command: "bun scripts/dev/run_playwright_web_server.ts market",
     url: `http://127.0.0.1:${marketPort}/products`,
-    reuseExistingServer: !CI,
+    reuseExistingServer: !CI && !commerceIncluded,
     timeout: 120_000,
   },
   {
-    command: `${e2eEnv} bun run --filter @conduit/merchant dev --mode mock --host 127.0.0.1 --port ${merchantPort}`,
+    command: "bun scripts/dev/run_playwright_web_server.ts merchant",
     url: `http://127.0.0.1:${merchantPort}/`,
-    reuseExistingServer: !CI,
+    reuseExistingServer: !CI && !commerceIncluded,
     timeout: 120_000,
   },
 ]
@@ -79,8 +74,8 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: CI,
   retries: CI ? 1 : 0,
-  // The current area shards share one relay and both app servers for dual-tagged
-  // cross-app smoke. Keep them single-worker until CND-193 isolates @commerce.
+  // Area shards share one isolated relay. Keep each selected area single-worker
+  // so the commerce lane can make exact replay and side-effect assertions.
   workers: smokeArea === "all" ? (CI ? 2 : undefined) : 1,
   reporter: CI ? ciReporters : "list",
   grep:
