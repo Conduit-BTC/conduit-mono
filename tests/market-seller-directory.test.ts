@@ -109,3 +109,43 @@ describe("other accounts capping", () => {
     expect(hook).toMatch(/limitAccountMatches\(\s*excludeDiscoveredSellers\(/)
   })
 })
+
+describe("storefront matches on the product search", () => {
+  it("answers the name query from the discovered catalog, above product results", async () => {
+    const model = await readFile(
+      "apps/market/src/hooks/useMarketBrowseModel.ts",
+      "utf8"
+    )
+    expect(model).toMatch(
+      /filterSellersByName\(\s*groupDiscoveredSellers\(productData\),\s*getMerchantIdentity,\s*query\s*\)/
+    )
+    expect(model).toContain("matchingSellers,")
+
+    const route = await readFile(
+      "apps/market/src/routes/products/index.tsx",
+      "utf8"
+    )
+    expect(route).toContain('aria-labelledby="matching-stores-heading"')
+    expect(route).toContain("MATCHING_STORE_LIMIT")
+    expect(route).toContain('to="/sellers"')
+    // The row sits before the result count, and the grid stays product-only.
+    expect(route.indexOf("matching-stores-heading")).toBeLessThan(
+      route.indexOf("{filtered.length} {filtered.length === 1")
+    )
+  })
+
+  it("keeps the header box a product search and gives Sellers its own field", async () => {
+    const header = await readFile(
+      "apps/market/src/components/MarketHeader.tsx",
+      "utf8"
+    )
+    expect(header).not.toContain('"/sellers"')
+    expect(header).toContain('const isBrowseRoute = pathname === "/products"')
+    expect(header).toContain('heading: "Stores"')
+    expect(header).toContain('heading: "Accounts"')
+
+    const sellers = await readFile("apps/market/src/routes/sellers.tsx", "utf8")
+    expect(sellers).toContain('aria-label="Filter sellers"')
+    expect(sellers).toContain("updateSearch({ q: trimmed || undefined })")
+  })
+})

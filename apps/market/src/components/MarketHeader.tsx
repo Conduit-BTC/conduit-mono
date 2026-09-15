@@ -40,6 +40,7 @@ import {
   DropdownMenuTrigger,
   Input,
   SearchSuggestions,
+  flattenSearchSuggestionGroups,
   ThemeToggleButton,
   cn,
   getSearchSuggestionInputProps,
@@ -351,10 +352,8 @@ export function MarketHeader() {
   )
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const currentQuery = typeof search.q === "string" ? search.q : ""
-  const isSellersRoute = pathname === "/sellers"
-  const isBrowseRoute = pathname === "/products" || isSellersRoute
-  /** Search stays on the browse page you are on; elsewhere it opens the catalog. */
-  const searchRoute = isSellersRoute ? "/sellers" : "/products"
+  /** The header box is the product search; the Sellers page filters itself. */
+  const isBrowseRoute = pathname === "/products"
   const connected = status === "connected" && !!pubkey
   const authPending = status === "connecting" || status === "restoring"
   const displayName = connected
@@ -378,9 +377,41 @@ export function MarketHeader() {
         : undefined,
     [accountSearch.data]
   )
+  /**
+   * Storefronts come first and always open a storefront; everyone else is a
+   * plain account and opens the public profile.
+   */
+  const orderedMatches = useMemo(() => {
+    const matches = accountMatches ?? []
+    return [
+      ...matches.filter((match) => match.isSeller),
+      ...matches.filter((match) => !match.isSeller),
+    ]
+  }, [accountMatches])
+  const suggestionGroups = useMemo(
+    () =>
+      [
+        {
+          id: `${ACCOUNT_SUGGESTIONS_LISTBOX_ID}-stores`,
+          heading: "Stores",
+          // The group heading already says these are storefronts.
+          items: toAccountSuggestionItems(
+            orderedMatches.filter((match) => match.isSeller)
+          ).map((item) => ({ ...item, badge: undefined })),
+        },
+        {
+          id: `${ACCOUNT_SUGGESTIONS_LISTBOX_ID}-accounts`,
+          heading: "Accounts",
+          items: toAccountSuggestionItems(
+            orderedMatches.filter((match) => !match.isSeller)
+          ),
+        },
+      ].filter((group) => group.items.length > 0),
+    [orderedMatches]
+  )
   const accountItems = useMemo(
-    () => toAccountSuggestionItems(accountMatches ?? []),
-    [accountMatches]
+    () => flattenSearchSuggestionGroups(suggestionGroups),
+    [suggestionGroups]
   )
   const activeSuggestion = resolveActiveSuggestionIndex(
     accountItems,
@@ -409,7 +440,7 @@ export function MarketHeader() {
   }, [accountSearch.activeQuery])
 
   function selectAccountSuggestion(index: number): void {
-    const match = accountMatches?.[index]
+    const match = orderedMatches[index]
     if (!match) return
     setSuggestionsDismissed(true)
     setSearchDirty(false)
@@ -433,9 +464,11 @@ export function MarketHeader() {
     // (stale, trimmed) query back and clobbers in-flight keystrokes, which
     // shows up as dropped/reordered characters.
     if (searchInputRef.current === document.activeElement) return
-    setSearchValue(currentQuery)
+    // Only the catalog query belongs in this box. Another page's `q`, such as
+    // the Sellers filter, must not look like a pending product search.
+    setSearchValue(isBrowseRoute ? currentQuery : "")
     setSearchDirty(false)
-  }, [currentQuery, pathname])
+  }, [currentQuery, isBrowseRoute, pathname])
 
   useEffect(() => {
     let lastScrollY = window.scrollY
@@ -511,7 +544,7 @@ export function MarketHeader() {
       }
 
       navigate({
-        to: searchRoute,
+        to: "/products",
         // Keep the perspective and any other browse parameter; only q changes.
         search: (previous: Record<string, unknown>) => ({
           ...previous,
@@ -528,13 +561,12 @@ export function MarketHeader() {
     navigate,
     normalizedSearchValue,
     searchDirty,
-    searchRoute,
   ])
 
   function submitSearch(): void {
     navigate({
-      to: searchRoute,
-      // Staying on a browse page keeps its perspective; arriving fresh does not.
+      to: "/products",
+      // Staying on the catalog keeps its perspective; arriving fresh does not.
       search: isBrowseRoute
         ? (previous: Record<string, unknown>) => ({
             ...previous,
@@ -625,15 +657,16 @@ export function MarketHeader() {
               <div className="absolute inset-x-0 top-full z-50 mt-2">
                 <SearchSuggestions
                   id={ACCOUNT_SUGGESTIONS_LISTBOX_ID}
-                  heading="Accounts"
-                  ariaLabel="Matching accounts"
-                  items={accountItems}
+                  ariaLabel="Matching stores and accounts"
+                  groups={suggestionGroups}
                   activeIndex={activeSuggestion}
                   onActiveIndexChange={setActiveSuggestion}
                   onSelect={(_item, index) => selectAccountSuggestion(index)}
                   loading={accountSearch.isFetching}
                   emptyMessage={
-                    accountSearch.isFetching ? "Searching accounts..." : null
+                    accountSearch.isFetching
+                      ? "Searching stores and accounts..."
+                      : null
                   }
                   footer={
                     accountEvidence ??

@@ -1,17 +1,14 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { Store } from "lucide-react"
-import { useCallback } from "react"
-import {
-  PROFILE_SEARCH_MIN_QUERY_LENGTH,
-  formatNpub,
-  pubkeyToNpub,
-} from "@conduit/core"
-import { Avatar, AvatarFallback, AvatarImage, Badge } from "@conduit/ui"
+import { Search, Store } from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { PROFILE_SEARCH_MIN_QUERY_LENGTH } from "@conduit/core"
+import { Avatar, AvatarFallback, AvatarImage, Badge, Input } from "@conduit/ui"
 import {
   MARKET_SOURCE_OPTIONS,
   MarketBrowseNavigation,
 } from "../components/MarketBrowseNavigation"
 import { MerchantAvatarFallback } from "../components/MerchantIdentity"
+import { SellerCard } from "../components/SellerCard"
 import { useSellerDirectory } from "../hooks/useSellerDirectory"
 import {
   describeAccountSearchEvidence,
@@ -59,6 +56,25 @@ function SellersPage() {
     },
     [navigate]
   )
+  const [queryValue, setQueryValue] = useState(search.q ?? "")
+  const queryInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    // Mirror the URL into the field only while the user is not typing, so a
+    // debounced navigate cannot echo a stale value back over keystrokes.
+    if (queryInputRef.current === document.activeElement) return
+    setQueryValue(search.q ?? "")
+  }, [search.q])
+
+  useEffect(() => {
+    const trimmed = queryValue.trim()
+    if (trimmed === (search.q ?? "")) return
+    const timeoutId = window.setTimeout(() => {
+      updateSearch({ q: trimmed || undefined })
+    }, 260)
+    return () => window.clearTimeout(timeoutId)
+  }, [queryValue, search.q, updateSearch])
+
   const evidence = describeAccountSearchEvidence(directory.accountSearch.data)
   const showNetworkSection =
     directory.query.trim().length >= PROFILE_SEARCH_MIN_QUERY_LENGTH
@@ -85,9 +101,24 @@ function SellersPage() {
           </h1>
           <p className="mt-2 max-w-3xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Storefronts discovered from the same network perspective as the
-            catalog. Use the search box to filter by name or to look up other
-            accounts on search relays.
+            catalog. Filter them by name here, or look up other accounts on
+            search relays.
           </p>
+        </div>
+        <div className="relative max-w-md">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--text-muted)]"
+            aria-hidden="true"
+          />
+          <Input
+            ref={queryInputRef}
+            value={queryValue}
+            onChange={(event) => setQueryValue(event.target.value)}
+            placeholder="Filter sellers by name"
+            aria-label="Filter sellers"
+            autoComplete="off"
+            className="h-11 bg-[var(--surface-elevated)] pl-9"
+          />
         </div>
       </header>
 
@@ -119,45 +150,15 @@ function SellersPage() {
           </p>
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {directory.filteredSellers.map((seller) => {
-              const identity = directory.getIdentity(seller.pubkey)
-              return (
-                <li key={seller.pubkey}>
-                  <Link
-                    to="/store/$pubkey"
-                    params={{ pubkey: pubkeyToNpub(seller.pubkey) }}
-                    className="flex h-full items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                  >
-                    <Avatar className="size-11 shrink-0">
-                      {identity.picture ? (
-                        <AvatarImage src={identity.picture} alt="" />
-                      ) : null}
-                      <AvatarFallback className="bg-transparent">
-                        <MerchantAvatarFallback />
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span
-                        className={
-                          identity.status === "resolved"
-                            ? "truncate font-medium text-[var(--text-primary)]"
-                            : "truncate font-medium text-[var(--text-muted)]"
-                        }
-                      >
-                        {identity.displayName}
-                      </span>
-                      <span className="truncate text-xs text-[var(--text-muted)]">
-                        {formatNpub(seller.pubkey, 6)}
-                      </span>
-                    </span>
-                    <Badge variant="secondary" className="shrink-0 text-[10px]">
-                      {seller.listingCount}{" "}
-                      {seller.listingCount === 1 ? "listing" : "listings"}
-                    </Badge>
-                  </Link>
-                </li>
-              )
-            })}
+            {directory.filteredSellers.map((seller) => (
+              <li key={seller.pubkey}>
+                <SellerCard
+                  pubkey={seller.pubkey}
+                  identity={directory.getIdentity(seller.pubkey)}
+                  listingCount={seller.listingCount}
+                />
+              </li>
+            ))}
           </ul>
         )}
       </section>

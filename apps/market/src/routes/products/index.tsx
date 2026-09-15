@@ -2,10 +2,11 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { ChevronDown, X } from "lucide-react"
 import { EVENT_KINDS, normalizePubkey, pubkeyToNpub } from "@conduit/core"
 import {
@@ -31,6 +32,7 @@ import {
   MarketBrowseNavigation,
 } from "../../components/MarketBrowseNavigation"
 import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCard"
+import { SellerCard } from "../../components/SellerCard"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
 import { normalizeFacetValues } from "../../lib/facets"
@@ -41,6 +43,8 @@ import {
 import type { ProductCatalogSourceMode } from "../../lib/productCatalogRead"
 
 const PAGE_SIZE = 12
+/** Storefront matches shown inline; the rest stay one link away on /sellers. */
+const MATCHING_STORE_LIMIT = 6
 const COLLAPSED_TAG_CLOUD_HEIGHT = 76
 const SORT_OPTIONS: Array<{
   value: MarketBrowseSortOption
@@ -168,6 +172,7 @@ function ProductsPage() {
     hasMore,
     hasUnavailablePriceForSort,
     isUpdatingListings,
+    matchingSellers,
     productCards,
     productData,
     productsQuery,
@@ -185,6 +190,10 @@ function ProductsPage() {
   } = browseModel
   const { status } = auth
   const connected = status === "connected"
+  const visibleMatchingSellers = useMemo(
+    () => matchingSellers.slice(0, MATCHING_STORE_LIMIT),
+    [matchingSellers]
+  )
   const shouldCollapseTagCloud =
     !showAllTags && (!tagCloudMeasured || tagCloudOverflows)
 
@@ -614,6 +623,42 @@ function ProductsPage() {
           ))}
         </div>
       )}
+
+      {visibleMatchingSellers.length > 0 ? (
+        <section
+          aria-labelledby="matching-stores-heading"
+          className="space-y-3"
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2
+              id="matching-stores-heading"
+              className="text-base font-semibold text-[var(--text-primary)]"
+            >
+              Stores matching &quot;{search.q}&quot;
+            </h2>
+            <Link
+              to="/sellers"
+              search={{ q: search.q }}
+              className="text-sm text-secondary-400 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+            >
+              {matchingSellers.length > visibleMatchingSellers.length
+                ? `See all ${matchingSellers.length} stores`
+                : "See all sellers"}
+            </Link>
+          </div>
+          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {visibleMatchingSellers.map((seller) => (
+              <li key={seller.pubkey}>
+                <SellerCard
+                  pubkey={seller.pubkey}
+                  identity={getMerchantIdentity(seller.pubkey)}
+                  listingCount={seller.listingCount}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       <div className="relative flex min-h-8 items-center pr-44 text-xs text-[var(--text-muted)]">
         <span>

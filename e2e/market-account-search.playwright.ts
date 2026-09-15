@@ -76,12 +76,19 @@ test("market header suggests locally known accounts and opens the storefront fro
   await input.click()
   await input.pressSequentially("ali", { delay: 40 })
 
-  const listbox = page.getByRole("listbox", { name: "Matching accounts" })
+  const listbox = page.getByRole("listbox", {
+    name: "Matching stores and accounts",
+  })
   await expect(listbox).toBeVisible()
   await expect(input).toHaveAttribute("aria-expanded", "true")
-  const seller = listbox.getByRole("option", { name: /Alice Storefront/ })
+  const stores = listbox.getByRole("group", { name: "Stores" })
+  const seller = stores.getByRole("option", { name: /Alice Storefront/ })
   await expect(seller).toBeVisible()
-  await expect(seller).toContainText("Seller")
+  await expect(
+    listbox
+      .getByRole("group", { name: "Accounts" })
+      .getByRole("option", { name: /Alicia Reader/ })
+  ).toBeVisible()
   await expect(
     listbox.getByRole("option", { name: /Alicia Reader/ })
   ).toBeVisible()
@@ -110,11 +117,11 @@ test("market header keeps Enter as a product search when no suggestion is active
   await input.click()
   await input.pressSequentially("alice", { delay: 40 })
   await expect(
-    page.getByRole("listbox", { name: "Matching accounts" })
+    page.getByRole("listbox", { name: "Matching stores and accounts" })
   ).toBeVisible()
   await page.keyboard.press("Escape")
   await expect(
-    page.getByRole("listbox", { name: "Matching accounts" })
+    page.getByRole("listbox", { name: "Matching stores and accounts" })
   ).toBeHidden()
   await page.keyboard.press("Enter")
   await expect(page).toHaveURL(/\/products\?q=alice$/)
@@ -142,7 +149,7 @@ test("sellers tab lists discovered storefronts and filters by name @market", asy
   ).toBeVisible()
 
   await page
-    .getByRole("combobox", { name: "Search products and accounts" })
+    .getByRole("textbox", { name: "Filter sellers" })
     .fill("zzzz-no-match")
   await expect(page).toHaveURL(/\/sellers\?.*q=zzzz-no-match/)
   await expect(directory).toContainText("No discovered seller name matches")
@@ -151,7 +158,7 @@ test("sellers tab lists discovered storefronts and filters by name @market", asy
   ).toBeVisible()
 })
 
-test("sellers search stays on the sellers page and keeps its perspective @market", async ({
+test("sellers page filters with its own field while Enter still searches products @market", async ({
   page,
 }) => {
   await installTestSigner(page, SELLER_PUBKEY)
@@ -159,10 +166,7 @@ test("sellers search stays on the sellers page and keeps its perspective @market
   await seedAccounts(page)
   await page.goto("http://127.0.0.1:7000/sellers?source=combined")
 
-  const input = page.getByRole("combobox", {
-    name: "Search products and accounts",
-  })
-  await input.fill("alice")
+  await page.getByRole("textbox", { name: "Filter sellers" }).fill("alice")
   await expect(page).toHaveURL(/\/sellers\?.*q=alice/)
   await expect(page).toHaveURL(/source=combined/)
   await expect(
@@ -171,13 +175,37 @@ test("sellers search stays on the sellers page and keeps its perspective @market
       .getByRole("link", { name: /Alice Storefront/ })
   ).toBeVisible()
 
+  const header = page.getByRole("combobox", {
+    name: "Search products and accounts",
+  })
+  await header.click()
+  await header.pressSequentially("alice", { delay: 40 })
   await page.keyboard.press("Escape")
   await page.keyboard.press("Enter")
-  await expect(page).toHaveURL(/\/sellers\?.*q=alice/)
-  await expect(page).toHaveURL(/source=combined/)
+  await expect(page).toHaveURL(/\/products\?q=alice$/)
+})
+
+test("product search lists matching storefronts above the product results @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, SELLER_PUBKEY)
+  await page.goto("http://127.0.0.1:7000/products")
+  await seedAccounts(page)
+  await page.goto("http://127.0.0.1:7000/products?source=combined&q=alice")
+
+  const stores = page.locator(
+    'section[aria-labelledby="matching-stores-heading"]'
+  )
+  await expect(stores).toBeVisible()
   await expect(
-    page
-      .locator('section[aria-labelledby="discovered-sellers-heading"]')
-      .getByRole("link", { name: /Alice Storefront/ })
-  ).toBeVisible()
+    stores.getByRole("link", { name: /Alice Storefront/ })
+  ).toHaveAttribute("href", /\/store\/npub1/)
+  await expect(stores.getByRole("link", { name: /See all/ })).toHaveAttribute(
+    "href",
+    /\/sellers\?q=alice/
+  )
+  // The store row answers the name query; product filtering stays product-only.
+  await expect(
+    page.getByRole("link", { name: /Account search fixture/ })
+  ).toHaveCount(0)
 })
