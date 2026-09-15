@@ -465,6 +465,7 @@ export function canSubmitExternalPaymentReport(
     !!lifecycle &&
     !publicZapSigner &&
     !!lifecycle.invoice &&
+    lifecycle.phase !== "completed" &&
     lifecycle.paymentStatus === "manual_required" &&
     lifecycle.proofDeliveryStatus === "not_started"
   )
@@ -2022,7 +2023,10 @@ export async function submitExternalPaymentProof(
   reopenEvidence?: MerchantInvoiceReopenEvidence,
   accountPubkey?: string | null,
   authenticatedPubkey?: string | null,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  // Claim authorization ends before payment becomes paid; delivery keeps its
+  // separate session guard so a successful claim can publish its own proof.
+  authorizeClaim?: (lifecycle: OrderLifecycle) => boolean
 ): Promise<OrderPaymentRuntimeState | undefined> {
   if (inFlight.has(orderId)) return runtimeStates.get(orderId)
   inFlight.add(orderId)
@@ -2049,19 +2053,22 @@ export async function submitExternalPaymentProof(
     const proofClaim = await claimExternalOrderPaymentProof(
       orderId,
       proofDeliveryClaimId,
-      merchantInvoiceAction && merchantInvoiceValidation?.ok && lifecycle
-        ? {
-            merchantInvoice: {
-              buyerPubkey: merchantInvoiceAction.recipientPubkey,
-              merchantPubkey: merchantInvoiceAction.senderPubkey,
-              totalMsats: lifecycle.totalMsats,
-              invoice: merchantInvoiceValidation.invoice,
-              paymentHash: merchantInvoiceValidation.paymentHash,
-              expiresAt: merchantInvoiceValidation.expiresAt,
-              ...(reopenEvidence ? { reopenEvidence } : {}),
-            },
-          }
-        : undefined
+      {
+        authorizeClaim,
+        ...(merchantInvoiceAction && merchantInvoiceValidation?.ok && lifecycle
+          ? {
+              merchantInvoice: {
+                buyerPubkey: merchantInvoiceAction.recipientPubkey,
+                merchantPubkey: merchantInvoiceAction.senderPubkey,
+                totalMsats: lifecycle.totalMsats,
+                invoice: merchantInvoiceValidation.invoice,
+                paymentHash: merchantInvoiceValidation.paymentHash,
+                expiresAt: merchantInvoiceValidation.expiresAt,
+                ...(reopenEvidence ? { reopenEvidence } : {}),
+              },
+            }
+          : {}),
+      }
     )
     emit(orderId, { lifecycle: proofClaim.lifecycle })
     if (proofClaim.status !== "claimed") return runtimeStates.get(orderId)

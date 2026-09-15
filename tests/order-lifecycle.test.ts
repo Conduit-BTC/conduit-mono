@@ -1272,6 +1272,127 @@ describe("order payment admission", () => {
     })
   })
 
+  it("rejects completed and public manual reports before claiming payment evidence", async () => {
+    const manual: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      proofDeliveryStatus: "not_started",
+      invoice: "lnbc1external",
+    }
+    for (const blocked of [
+      { ...manual, phase: "completed" as const },
+      { ...manual, checkoutMode: "public_zap_as_shopper" as const },
+      { ...manual, checkoutMode: "anonymous_public_zap" as const },
+    ]) {
+      await withMockOrderPaymentDb({ lifecycle: blocked }, async (state) => {
+        const result = await claimExternalOrderPaymentProof(
+          blocked.orderId,
+          "blocked-report",
+          { authorizeClaim: () => true }
+        )
+        expect(result.status).toBe("preserved")
+        expect(state.lifecycle()).toEqual(blocked)
+      })
+    }
+  })
+
+  it("authorizes an already-paid private report once without reopening cancellation", async () => {
+    const cancelled: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      proofDeliveryStatus: "not_started",
+      invoice: "lnbc1external",
+      phase: "cancelled",
+    }
+    let authorizations = 0
+    const authorizeClaim = (current: OrderLifecycle) => {
+      authorizations += 1
+      expect(current.paymentStatus).toBe("manual_required")
+      return current.invoice === cancelled.invoice
+    }
+    await withMockOrderPaymentDb({ lifecycle: cancelled }, async (state) => {
+      const result = await claimExternalOrderPaymentProof(
+        cancelled.orderId,
+        "cancelled-report",
+        { authorizeClaim }
+      )
+      expect(result.status).toBe("claimed")
+      expect(state.lifecycle()).toMatchObject({
+        phase: "cancelled",
+        paymentStatus: "paid",
+        proofDeliveryStatus: "pending",
+        invoice: cancelled.invoice,
+      })
+      expect(
+        (
+          await claimExternalOrderPaymentProof(
+            cancelled.orderId,
+            "duplicate-report",
+            { authorizeClaim }
+          )
+        ).status
+      ).toBe("preserved")
+      expect(authorizations).toBe(1)
+    })
+  })
+
+  it("rechecks projected authority and exact identities after the transaction reads storage", async () => {
+    const original: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      proofDeliveryStatus: "not_started",
+      invoice: "lnbc1original",
+    }
+    for (const change of [
+      { buyerPubkey: "another-buyer" },
+      { merchantPubkey: "another-merchant" },
+      { invoice: "lnbc1another" },
+      { phase: "completed" as const },
+      {},
+    ]) {
+      await withMockOrderPaymentDb({ lifecycle: original }, async (state) => {
+        let projectedAccessAllowsReport = true
+        let inspected: OrderLifecycle | undefined
+        const claim = claimExternalOrderPaymentProof(
+          original.orderId,
+          "stale-report",
+          {
+            authorizeClaim: (current) => {
+              inspected = current
+              return (
+                projectedAccessAllowsReport &&
+                current.buyerPubkey === original.buyerPubkey &&
+                current.merchantPubkey === original.merchantPubkey &&
+                current.invoice === original.invoice
+              )
+            },
+          }
+        )
+        // The queued transaction must see newer local state and projected authority.
+        const changed = { ...original, ...change }
+        await db.orderLifecycles.put(changed)
+        if (Object.keys(change).length === 0)
+          projectedAccessAllowsReport = false
+        expect((await claim).status).toBe("preserved")
+        if (changed.phase === "completed") {
+          expect(inspected).toBeUndefined()
+        } else {
+          expect(inspected).toEqual(changed)
+        }
+        expect(state.lifecycle()).toEqual(changed)
+      })
+    }
+  })
+
   it("atomically binds handoff and reporting to one exact merchant invoice", async () => {
     const awaiting: OrderLifecycle = {
       ...lifecycle,

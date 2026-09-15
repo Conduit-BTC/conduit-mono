@@ -17,6 +17,7 @@ import {
   runOrderPaymentWithUpdatedAddress,
   runOrderPrivateFallback,
   signShopperCheckoutZapRequest,
+  submitExternalPaymentProof,
   validateMerchantInvoicePaymentAction,
   type OrderPaymentDependencies,
   type OrderPaymentContext,
@@ -459,6 +460,74 @@ describe("runOrderPayment", () => {
         })
       )
     ).toBe(true)
+  })
+
+  it("preserves cancelled private reporting but rejects completed orders", () => {
+    expect(
+      canSubmitExternalPaymentReport(
+        lifecycle({
+          checkoutMode: "private_checkout",
+          publicZapSigner: undefined,
+          phase: "cancelled",
+        })
+      )
+    ).toBe(true)
+    expect(
+      canSubmitExternalPaymentReport(
+        lifecycle({
+          checkoutMode: "private_checkout",
+          publicZapSigner: undefined,
+          phase: "completed",
+        })
+      )
+    ).toBe(false)
+  })
+
+  it("passes report authorization the fresh transactional invoice before recording an attestation", async () => {
+    const original = lifecycle({
+      orderId: "stale-service-report",
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoice: "lnbc1selected",
+    })
+    const changed = { ...original, invoice: "lnbc1replacement" }
+    const table = db.orderLifecycles
+    const originalGet = table.get
+    const originalPut = table.put
+    const originalTransaction = db.transaction
+    let reads = 0
+    let writes = 0
+    let authorizedInvoice: string | undefined
+    table.get = (async () =>
+      reads++ === 0 ? original : changed) as typeof table.get
+    table.put = (async () => {
+      writes += 1
+      return original.orderId
+    }) as typeof table.put
+    db.transaction = ((...args: unknown[]) =>
+      (args.at(-1) as () => Promise<unknown>)()) as typeof db.transaction
+    try {
+      await submitExternalPaymentProof(
+        original.orderId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => true,
+        (current) => {
+          authorizedInvoice = current.invoice
+          return current.invoice === original.invoice
+        }
+      )
+      expect(reads).toBe(2)
+      expect(authorizedInvoice).toBe(changed.invoice)
+      expect(writes).toBe(0)
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+      db.transaction = originalTransaction
+    }
   })
 
   it("revalidates projected merchant invoices at the payment boundary", () => {
