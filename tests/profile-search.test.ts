@@ -11,6 +11,7 @@ import {
   searchNetworkProfiles,
   planProfileSearchRelayUrls,
   searchProfiles,
+  applyProfileSearchSellerFlags,
   summarizeProfileSearchRelays,
   PROFILE_SEARCH_MAX_RELAYS,
   type ProfileSearchDependencies,
@@ -24,6 +25,7 @@ const CAROL = "c".repeat(64)
 const MALICE = "d".repeat(64)
 const ERIN = "e".repeat(64)
 const FRANK = "f".repeat(64)
+const GRACE = "9".repeat(64)
 
 function profileEvent(
   pubkey: string,
@@ -1019,5 +1021,72 @@ describe("profile search device reads and retirement", () => {
     expect(merged.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
     expect(merged.matches[0]?.profile.name).toBe("alice")
     expect(merged.superseded).toEqual([])
+  })
+})
+
+describe("late seller lookups", () => {
+  it("publishes a seller lookup that answered after its budget", async () => {
+    let release: (value: Set<string>) => void = () => {}
+    const blocked = new Promise<Set<string>>((resolve) => {
+      release = resolve
+    })
+    const settled: Set<string>[] = []
+
+    const outcome = await searchCachedProfiles(
+      {
+        query: "gra",
+        sellerLookupBudgetMs: 20,
+        onSellerFlagsSettled: (sellerPubkeys) => settled.push(sellerPubkeys),
+      },
+      deps({
+        loadCachedProfiles: async () => [
+          {
+            pubkey: GRACE,
+            name: "grace",
+            eventCreatedAt: 100,
+            eventId: "cached",
+            cachedAt: 1,
+          },
+        ],
+        loadSellerPubkeys: () => blocked,
+      })
+    )
+
+    expect(outcome.matches[0]?.isSeller).toBe(false)
+    expect(outcome.device.sellerFlags).toBe("partial")
+    expect(settled).toEqual([])
+
+    release(new Set([GRACE]))
+    await blocked
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(settled).toEqual([new Set([GRACE])])
+
+    const corrected = applyProfileSearchSellerFlags(outcome, settled[0]!, 5)
+    expect(corrected.matches[0]?.isSeller).toBe(true)
+    expect(corrected.device.sellerFlags).toBe("read")
+  })
+
+  it("keeps seller-first order when the flags arrive late", () => {
+    const base = result({
+      query: "ali",
+      matches: [
+        match({
+          pubkey: ALICIA,
+          profile: { pubkey: ALICIA, name: "Alicia" },
+          score: 1,
+        }),
+        match({
+          pubkey: MALICE,
+          profile: { pubkey: MALICE, name: "Malice" },
+          score: 3,
+        }),
+      ],
+    })
+
+    const corrected = applyProfileSearchSellerFlags(base, new Set([MALICE]), 5)
+    expect(corrected.matches.map((entry) => entry.pubkey)).toEqual([
+      MALICE,
+      ALICIA,
+    ])
   })
 })

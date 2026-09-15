@@ -169,6 +169,12 @@ export interface ProfileSearchQuery {
   /** Cached phase only; `Infinity` waits for the seller lookup. */
   sellerLookupBudgetMs?: number
   /**
+   * Cached phase only. Called when a seller lookup that outran its budget
+   * finally answers, so the result already on screen can be corrected
+   * without another keystroke.
+   */
+  onSellerFlagsSettled?: (sellerPubkeys: Set<string>) => void
+  /**
    * Active account. Its validated signed relay list supplies the NIP-50 read
    * relays for this search; a guest plan never reuses an account plan.
    */
@@ -445,7 +451,8 @@ interface SellerFlagOutcome {
 async function flagSellers(
   matches: ProfileSearchMatch[],
   deps: ProfileSearchDependencies,
-  budgetMs = Infinity
+  budgetMs = Infinity,
+  onSettled?: (sellerPubkeys: Set<string>) => void
 ): Promise<SellerFlagOutcome> {
   if (matches.length === 0) return { matches, state: "not_read" }
   const lookup = deps
@@ -469,6 +476,11 @@ async function flagSellers(
       : sellerPubkeys === null
         ? "unavailable"
         : "partial"
+  if (state === "partial" && onSettled) {
+    void lookup.then((pubkeys) => {
+      if (pubkeys) onSettled(pubkeys)
+    })
+  }
   const resolved = sellerPubkeys ?? knownSellerPubkeys
   return {
     matches: matches.map((match) => ({
@@ -476,6 +488,29 @@ async function flagSellers(
       isSeller: resolved.has(match.pubkey),
     })),
     state,
+  }
+}
+
+/**
+ * Applies a seller lookup that answered after its budget. Rows keep their
+ * order rules, so a storefront that arrives late is ranked and navigated as
+ * a seller without waiting for the next keystroke.
+ */
+export function applyProfileSearchSellerFlags(
+  result: ProfileSearchResult,
+  sellerPubkeys: ReadonlySet<string>,
+  limit: number = PROFILE_SEARCH_DEFAULT_LIMIT
+): ProfileSearchResult {
+  return {
+    ...result,
+    matches: rankProfileSearchMatches(
+      result.matches.map((match) => ({
+        ...match,
+        isSeller: sellerPubkeys.has(match.pubkey),
+      })),
+      limit
+    ),
+    device: { ...result.device, sellerFlags: "read" },
   }
 }
 
@@ -517,7 +552,8 @@ export async function searchCachedProfiles(
   const sellers = await flagSellers(
     candidates,
     deps,
-    input.sellerLookupBudgetMs ?? CACHED_SELLER_LOOKUP_BUDGET_MS
+    input.sellerLookupBudgetMs ?? CACHED_SELLER_LOOKUP_BUDGET_MS,
+    input.onSellerFlagsSettled
   )
 
   return {

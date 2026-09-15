@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
+  applyProfileSearchSellerFlags,
   PROFILE_SEARCH_DEFAULT_LIMIT,
   PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH,
   PROFILE_SEARCH_MIN_QUERY_LENGTH,
@@ -90,6 +91,7 @@ export function useProfileSearch(
   const networkEligible =
     eligible && normalized.length >= PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH
   const [settledQuery, setSettledQuery] = useState("")
+  const queryClient = useQueryClient()
 
   useEffect(() => {
     if (!eligible) {
@@ -106,14 +108,35 @@ export function useProfileSearch(
     return () => window.clearTimeout(timeoutId)
   }, [eligible, settleMs, trimmed])
 
+  const cachedKey = getProfileSearchQueryKey(
+    trimmed,
+    limit,
+    "cached",
+    accountPubkey
+  )
   const cachedQuery = useQuery({
-    queryKey: getProfileSearchQueryKey(trimmed, limit, "cached", accountPubkey),
+    queryKey: cachedKey,
     enabled: eligible,
     staleTime: 30_000,
     gcTime: 5 * 60_000,
     retry: false,
     queryFn: ({ signal }) =>
-      searchCachedProfiles({ query: trimmed, limit, signal }),
+      searchCachedProfiles({
+        query: trimmed,
+        limit,
+        signal,
+        // A seller lookup that outran its display budget still answers.
+        // Publishing it back keeps a storefront from being offered as a
+        // plain account until the next keystroke.
+        onSellerFlagsSettled: (sellerPubkeys) => {
+          queryClient.setQueryData<ProfileSearchResult>(
+            cachedKey,
+            (previous) =>
+              previous &&
+              applyProfileSearchSellerFlags(previous, sellerPubkeys, limit)
+          )
+        },
+      }),
   })
 
   const networkQuery = useQuery({
