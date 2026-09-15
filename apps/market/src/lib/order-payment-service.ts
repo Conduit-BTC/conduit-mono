@@ -18,6 +18,8 @@ import {
   getOrderPublicZapSigner,
   getNdk,
   getOrderLifecycle,
+  getOrderLifecyclePaymentAdmission,
+  loadSelectedProfileContext,
   isValidSignedPublicNostrEvent,
   isGuestOrderDataExpired,
   normalizePubkey,
@@ -70,6 +72,7 @@ import {
   rememberOrderPaymentClaim,
 } from "./order-payment-session"
 import {
+  assessOrderPaymentAddress,
   checkOrderPaymentAddressUpdate,
   type OrderPaymentAddressUpdate,
 } from "./order-payment-address"
@@ -295,6 +298,8 @@ export interface OrderPaymentRuntimeState {
 
 export interface OrderPaymentDependencies {
   getOrderLifecycle: typeof getOrderLifecycle
+  getOrderLifecyclePaymentAdmission: typeof getOrderLifecyclePaymentAdmission
+  loadSelectedProfileContext: typeof loadSelectedProfileContext
   checkOrderPaymentAddressUpdate: typeof checkOrderPaymentAddressUpdate
   claimOrderLifecycleUpdatedAddressPayment: typeof claimOrderLifecycleUpdatedAddressPayment
   anonZapSignerPubkey: string | null
@@ -326,6 +331,8 @@ export interface OrderPaymentDependencies {
 
 const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
   getOrderLifecycle,
+  getOrderLifecyclePaymentAdmission,
+  loadSelectedProfileContext,
   checkOrderPaymentAddressUpdate,
   claimOrderLifecycleUpdatedAddressPayment,
   anonZapSignerPubkey: normalizePubkey(config.anonZapSignerPubkey),
@@ -1013,6 +1020,73 @@ export async function runOrderPayment(
   return runOrderPaymentInternal(ctx, dependencyOverrides)
 }
 
+class OrderPaymentAuthorityError extends Error {}
+
+function assertOrderPaymentSession(ctx: OrderPaymentContext): void {
+  if (
+    ctx.shouldContinue?.() === false ||
+    (ctx.authenticatedPubkey && ctx.authenticatedPubkey !== ctx.buyerPubkey) ||
+    (ctx.buyerIdentity?.kind === "guest_ephemeral" &&
+      (ctx.buyerIdentity.pubkey !== ctx.buyerPubkey ||
+        ctx.buyerIdentity.orderId !== ctx.orderId ||
+        ctx.buyerIdentity.merchantPubkey !== ctx.merchantPubkey))
+  ) {
+    throw new OrderPaymentAuthorityError(
+      "The connected account changed. Reopen the order before trying payment again."
+    )
+  }
+}
+
+function assertAdmittedPaymentAddress(
+  status: Awaited<ReturnType<typeof checkOrderPaymentAddressUpdate>>["status"]
+): void {
+  switch (status) {
+    case "unchanged":
+    case "unavailable":
+      return
+    case "current_address_unusable":
+      throw new OrderPaymentAuthorityError(
+        "The merchant's current profile no longer has a usable Lightning address. No payment was attempted."
+      )
+    case "current_address_changed":
+    case "updated":
+      throw new OrderPaymentAuthorityError(
+        "The merchant's payment address changed. Check the updated address on Orders before retrying. No payment was attempted."
+      )
+    case "not_eligible":
+      throw new OrderPaymentAuthorityError(
+        "This order no longer accepts payment with its saved Lightning address."
+      )
+  }
+}
+
+async function assertOrderPaymentProfileAdmission(
+  lifecycle: OrderLifecycle,
+  ctx: OrderPaymentContext,
+  dependencies: OrderPaymentDependencies
+): Promise<void> {
+  assertOrderPaymentSession(ctx)
+  const result = await dependencies.checkOrderPaymentAddressUpdate(
+    lifecycle,
+    ctx
+  )
+  assertOrderPaymentSession(ctx)
+  assertAdmittedPaymentAddress(result.status)
+  // Include stronger observations and local-storage failure that arrived while
+  // the network read was pending, before the claim clears retained invoices.
+  const selected = await dependencies.loadSelectedProfileContext(
+    ctx.merchantPubkey
+  )
+  assertOrderPaymentSession(ctx)
+  assertAdmittedPaymentAddress(
+    assessOrderPaymentAddress(
+      selected,
+      ctx.merchantPubkey,
+      lifecycle.merchantLightningAddress ?? ""
+    )
+  )
+}
+
 /** Buyer-confirmed destination recovery; the ordinary snapshot gate stays strict. */
 export async function runOrderPaymentWithUpdatedAddress(
   ctx: OrderPaymentContext,
@@ -1227,6 +1301,47 @@ async function runOrderPaymentInternal(
   inFlight.add(orderId)
 
   try {
+    if (!preparedClaim) {
+      let snapshot: OrderLifecycle | null = null
+      try {
+        assertOrderPaymentSession(ctx)
+        snapshot = (await dependencies.getOrderLifecycle(orderId)) ?? null
+        assertOrderPaymentSession(ctx)
+        const admission = dependencies.getOrderLifecyclePaymentAdmission(
+          snapshot ?? undefined,
+          claimInput
+        )
+        if (!snapshot || admission !== "admissible") {
+          clearSessionClaim = true
+          emit(orderId, {
+            running: false,
+            stage: null,
+            error:
+              !snapshot || admission === "missing"
+                ? "Order payment state is unavailable."
+                : admission === "snapshot_mismatch"
+                  ? "Payment details no longer match the delivered order."
+                  : "This order already has an active or completed payment state.",
+            lifecycle: snapshot,
+          })
+          return runtimeStates.get(orderId)!
+        }
+        // Admission precedes the claim, which clears the previous invoice.
+        await assertOrderPaymentProfileAdmission(snapshot, ctx, dependencies)
+      } catch (error) {
+        clearSessionClaim = true
+        emit(orderId, {
+          running: false,
+          stage: null,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Payment authority could not be checked.",
+          lifecycle: snapshot,
+        })
+        return runtimeStates.get(orderId)!
+      }
+    }
     const claim: OrderPaymentClaimResult = preparedClaim
       ? { status: "claimed", lifecycle: preparedClaim.lifecycle }
       : await dependencies.claimOrderLifecyclePayment(claimInput)
@@ -1301,14 +1416,51 @@ async function runOrderPaymentInternal(
       "proofDeliveryStatus"
     > | null = null
     let proofDeliveryOutcome: "pending" | "retry_needed" | "sent" = "pending"
+    let invoiceForPayment: string | undefined
+    const assertPaymentAuthority = async () => {
+      assertOrderPaymentSession(ctx)
+      preparedClaim?.assertSession?.()
+      let selected: Awaited<ReturnType<typeof loadSelectedProfileContext>>
+      try {
+        selected = await dependencies.loadSelectedProfileContext(
+          ctx.merchantPubkey
+        )
+        assertAdmittedPaymentAddress(
+          assessOrderPaymentAddress(
+            selected,
+            ctx.merchantPubkey,
+            ctx.merchantLud16!
+          )
+        )
+      } catch (error) {
+        if (error instanceof OrderPaymentAuthorityError) throw error
+        throw new OrderPaymentAuthorityError(
+          "Saved profile authority is unavailable. Restore local storage and check the payment address again."
+        )
+      }
+      assertOrderPaymentSession(ctx)
+      preparedClaim?.assertSession?.()
+      if (invoiceForPayment) {
+        const validation = validateLightningInvoiceForPayment({
+          invoice: invoiceForPayment,
+          expectedAmountMsats: ctx.totalMsats,
+        })
+        if (!validation.ok)
+          throw new OrderPaymentAuthorityError(validation.reason)
+      }
+      // Recheck durable ownership after the asynchronous profile read.
+      await patchClaim({})
+      assertOrderPaymentSession(ctx)
+      preparedClaim?.assertSession?.()
+    }
 
     try {
-      preparedClaim?.assertSession?.()
+      await assertPaymentAuthority()
       const ndk = getNdk()
       const lnurlMeta = await dependencies.fetchLnurlPayMetadata(
         ctx.merchantLud16
       )
-      preparedClaim?.assertSession?.()
+      await assertPaymentAuthority()
       let visibility = getCheckoutZapVisibility(ctx.zapMode)
       const publicZapSigner = getOrderPublicZapSigner(ctx.zapMode)
       if (
@@ -1340,6 +1492,7 @@ async function runOrderPaymentInternal(
         !ctx.preparedAnonZap &&
         ctx.anonZapPreparation
       ) {
+        await assertPaymentAuthority()
         let preparation: Awaited<
           ReturnType<typeof dependencies.prepareAnonZapCheckout>
         > | null = null
@@ -1353,6 +1506,10 @@ async function runOrderPaymentInternal(
             lnurlMetadata: lnurlMeta,
             destination: ctx.anonZapPreparation.destination,
             options: {
+              fetchImpl: async (...args) => {
+                await assertPaymentAuthority()
+                return fetch(...args)
+              },
               authorizationTimeoutMs:
                 OPTIONAL_ANON_ZAP_AUTHORIZATION_TIMEOUT_MS,
               signingTimeoutMs: OPTIONAL_ANON_ZAP_SIGNING_TIMEOUT_MS,
@@ -1362,6 +1519,7 @@ async function runOrderPaymentInternal(
           // Preparation is receipt-only. Continuing without a prepared event
           // intentionally selects the validated private-invoice fallback below.
         }
+        await assertPaymentAuthority()
         if (preparation?.status === "review_required") {
           const previousAmount = ctx.formatSatsAmount
             ? ctx.formatSatsAmount(ctx.totalSats)
@@ -1385,7 +1543,7 @@ async function runOrderPaymentInternal(
 
       const requestInvoice = async (requestedVisibility: typeof visibility) => {
         await patchClaim({}, { stage: "requesting_invoice" })
-        preparedClaim?.assertSession?.()
+        await assertPaymentAuthority()
         const zapTargetAddress =
           requestedVisibility === "public_zap"
             ? recoverCheckoutZapTargetAddress({
@@ -1411,12 +1569,18 @@ async function runOrderPaymentInternal(
             zapRelayUrls: config.zapRelayUrls,
           },
           {
-            fetchLnurlInvoice,
-            fetchZapInvoice,
+            fetchLnurlInvoice: async (...args) => {
+              await assertPaymentAuthority()
+              return fetchLnurlInvoice(...args)
+            },
+            fetchZapInvoice: async (...args) => {
+              await assertPaymentAuthority()
+              return fetchZapInvoice(...args)
+            },
             signZapRequest: async (
               draft: CheckoutZapRequestDraft
             ): Promise<SignedCheckoutZapRequest> => {
-              preparedClaim?.assertSession?.()
+              await assertPaymentAuthority()
               if (publicZapSigner === "anon") {
                 return requirePreparedAnonZap(
                   ctx,
@@ -1433,7 +1597,7 @@ async function runOrderPaymentInternal(
                 ctx.buyerPubkey,
                 ndk.signer
               )
-              preparedClaim?.assertSession?.()
+              await assertPaymentAuthority()
               return signed
             },
           }
@@ -1467,6 +1631,7 @@ async function runOrderPaymentInternal(
         try {
           validatedInvoice = await requestValidatedInvoice(visibility)
         } catch (error) {
+          if (error instanceof OrderPaymentAuthorityError) throw error
           if (visibility !== "public_zap" || publicZapSigner !== "anon") {
             throw error
           }
@@ -1506,6 +1671,7 @@ async function runOrderPaymentInternal(
         lnurlNostrPubkey,
       } = validatedInvoice.request
       const isPublicZap = visibility === "public_zap"
+      invoiceForPayment = invoice
       const invoiceValidation = validatedInvoice.validation
       const nowSeconds = Math.floor(Date.now() / 1000)
       const invoiceExpiresAt =
@@ -1537,7 +1703,7 @@ async function runOrderPaymentInternal(
       invoiceReceived = true
 
       await patchClaim({}, { stage: "paying_invoice" })
-      preparedClaim?.assertSession?.()
+      await assertPaymentAuthority()
       const payResult = await dependencies.payCheckoutInvoice({
         invoice,
         amountMsats: ctx.totalMsats,
@@ -1546,15 +1712,15 @@ async function runOrderPaymentInternal(
             ? undefined
             : lifecycle.walletPaymentAttemptId,
         paymentTarget: ctx.paymentTarget,
-        approveFee:
-          ctx.approveFee && preparedClaim?.assertSession
-            ? async (quote) => {
-                preparedClaim.assertSession?.()
-                const approved = await ctx.approveFee!(quote)
-                preparedClaim.assertSession?.()
-                return approved
-              }
-            : ctx.approveFee,
+        beforeSend: assertPaymentAuthority,
+        approveFee: ctx.approveFee
+          ? async (quote) => {
+              await assertPaymentAuthority()
+              const approved = await ctx.approveFee!(quote)
+              await assertPaymentAuthority()
+              return approved
+            }
+          : ctx.approveFee,
         timeoutMs: 60_000,
         appId: "market",
         metadata: {
@@ -1884,9 +2050,32 @@ export async function runOrderPrivateFallback(
   paymentRecoveryTransitions.add(ctx.orderId)
 
   let claim: OrderPaymentClaimResult
+  let snapshot: OrderLifecycle | null = null
   try {
+    assertOrderPaymentSession(ctx)
+    snapshot = (await dependencies.getOrderLifecycle(ctx.orderId)) ?? null
+    if (!snapshot) {
+      throw new OrderPaymentAuthorityError(
+        "Order payment state is no longer available."
+      )
+    }
+    // Every admitted legacy fallback is also an ordinary failed retry for the
+    // profile check; only its subsequent atomic claim changes payment mode.
+    await assertOrderPaymentProfileAdmission(snapshot, ctx, dependencies)
     claim =
       await dependencies.claimOrderLifecyclePrivateFallbackPayment(claimInput)
+  } catch (error) {
+    dependencies.clearOrderPaymentClaim(ctx.orderId, paymentClaimId)
+    emit(ctx.orderId, {
+      running: false,
+      stage: null,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Payment authority could not be checked.",
+      lifecycle: snapshot,
+    })
+    return runtimeStates.get(ctx.orderId)!
   } finally {
     paymentRecoveryTransitions.delete(ctx.orderId)
   }

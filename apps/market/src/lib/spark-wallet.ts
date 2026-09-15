@@ -115,6 +115,7 @@ export interface SparkPayInvoiceInput {
   idempotencyKey: string
   completionTimeoutSecs?: number
   approveFee?: WalletPaymentFeeApproval
+  beforeSend?: () => Promise<void>
 }
 
 export type SparkPayInvoiceResult =
@@ -907,6 +908,15 @@ export class SparkWalletManager {
       return {
         status: "approval_declined",
         reason: "Spark payment was not approved.",
+      }
+    }
+
+    try {
+      await input.beforeSend?.()
+    } catch (error) {
+      return {
+        status: "pre_publish_failed",
+        reason: getErrorMessage(error, "Payment is no longer authorized."),
       }
     }
 
