@@ -719,6 +719,7 @@ describe("buildOrderViewModel", () => {
     "external_wallet",
     "public_zap_as_shopper",
     "anonymous_public_zap",
+    "public_zap",
   ] as const) {
     it(`gates ${checkoutMode} invoices using effective merchant status and preserves recovery`, () => {
       const lifecycle = baseLifecycle({
@@ -730,7 +731,14 @@ describe("buildOrderViewModel", () => {
       })
       const publicReceipt =
         checkoutMode === "public_zap_as_shopper" ||
-        checkoutMode === "anonymous_public_zap"
+        checkoutMode === "anonymous_public_zap" ||
+        checkoutMode === "public_zap"
+      expect(
+        deriveManualInvoiceAccess(
+          { ...lifecycle, invoice: undefined },
+          "cancelled"
+        )
+      ).toBe("none")
       for (const status of ["cancelled", "refund_requested"] as const) {
         const vm = buildOrderViewModel({
           orderId: lifecycle.orderId,
@@ -738,6 +746,9 @@ describe("buildOrderViewModel", () => {
           messages: [merchantStatusMessage("stop", status, 2)],
         })
         expect(lifecycle.phase).toBe("in_progress")
+        if (checkoutMode === "public_zap") {
+          expect(lifecycle.publicZapSigner).toBeUndefined()
+        }
         expect(vm.merchantStatus).toBe(status)
         expect(
           deriveManualInvoiceAccess(lifecycle, vm.merchantStatus, vm.phase)

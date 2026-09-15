@@ -1292,6 +1292,7 @@ function OrderDetail({
           </StatusNotice>
           <ExternalWalletPanel
             vm={vm}
+            pricing={shopperPricing}
             busy={busy}
             guestSession={!!guestIdentity}
             autoDetectReceipt={autoDetectPublicReceipt}

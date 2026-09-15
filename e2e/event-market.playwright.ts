@@ -3959,7 +3959,7 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
       page.getByRole("button", { name: "Copy invoice", exact: true })
     ).toBeVisible()
     await expect(
-      page.getByRole("link", { name: "Open in wallet", exact: true })
+      page.getByRole("link", { name: "Open Lightning wallet", exact: true })
     ).toHaveAttribute("href", `lightning:${invoice}`)
     expect(callbackRequests).toBe(1)
     expect(
