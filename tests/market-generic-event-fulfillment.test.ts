@@ -91,8 +91,8 @@ describe("generic Market event fulfillment", () => {
       "apps/market/src/lib/checkout-authorization.ts"
     ).text()
 
-    expect(checkout).toContain("useProductCartFulfillmentBatch")
-    expect(checkout).toContain("getCartEventFulfillmentBlock")
+    expect(checkout).not.toContain("useProductCartFulfillmentBatch")
+    expect(checkout).not.toContain("getCartEventFulfillmentBlock")
     expect(checkout).toContain("authorizeCurrentCheckoutItems")
     expect(
       checkout.match(/await assertCheckoutItemsAvailable\(/g)
@@ -100,15 +100,13 @@ describe("generic Market event fulfillment", () => {
     expect(
       checkout.match(/getFreshPricingRateInput\(checkoutItems\)/g)
     ).toHaveLength(2)
-    expect(authorization).toContain("getProductEventMarketCandidates")
-    expect(authorization).toContain("resolveProductCartFulfillment")
+    expect(authorization).toContain("resolveCheckoutProductFulfillments")
     expect(authorization).toContain("assertCartPickupHandlerReady")
     expect(authorization).toContain("rebuildCurrentCartItems")
     expect(authorization).toContain("getCartCommerceFingerprint")
     expect(checkout).toContain("checkoutEvidenceIsChecking")
     expect(checkout).toContain("fulfillmentBlockingMessage")
-    expect(checkout).toContain("Event pickup must be refreshed")
-    expect(checkout).toContain("View event catalog")
+    expect(checkout).not.toContain("Event pickup must be refreshed")
     expect(hook).toContain("useEventCatalogs(references, rateInput)")
     expect(hook).toContain("return !query?.data || query.isHydrating")
   })
