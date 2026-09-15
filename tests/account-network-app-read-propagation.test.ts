@@ -331,12 +331,12 @@ describe("app account-network read propagation", () => {
       source("apps/market/src/routes/checkout.tsx"),
     ])
 
-    expect(profiles).toContain("shouldContinue: opts?.shouldContinue")
+    expect(profiles).toContain("getProfiles({ ...opts, pubkeys: [key] })")
     expect(profiles).toContain("shouldContinue: options.shouldContinue")
     expect(profiles).toContain("authenticatedPubkey,")
     expect(updateHook).toContain("authorityRef.current.authenticatedPubkey")
     expect(updateHook).toContain("authorityRef.current.authGeneration")
-    expect(updateHook).toContain("publishProfile(profile, appId, {")
+    expect(updateHook).toContain("publishProfileContext(profile, appId, {")
     for (const caller of [marketProfile, merchantProfile, merchantPayments]) {
       expect(caller).toContain("authenticatedPubkey,")
       expect(caller).toContain("authGeneration,")

@@ -2,12 +2,12 @@ import {
   getOrderPaymentAddressReplacementAdmission,
   getOrderPaymentTargetReplacementAdmission,
   getProfiles,
-  isValidLud16Address,
+  getProfilePaymentAddress,
+  hasFreshProfilePaymentAddress,
   normalizePubkey,
   type OrderLifecycle,
 } from "@conduit/core"
 import { getMerchantProfileAuthenticatedPubkey } from "../hooks/useMerchantTrustContext"
-import { hasPositiveMerchantPaymentAddressEvidence } from "./merchant-payment-readiness"
 
 export type OrderPaymentAddressUpdate = {
   orderId: string
@@ -90,34 +90,23 @@ export async function checkOrderPaymentAddressUpdate(
   }
   assertCurrentSession()
 
-  const profile = result.data[merchantPubkey]
-  if (profile?.pubkey !== merchantPubkey) {
+  const context = result.profileContexts[merchantPubkey]
+  if (context?.persistence === "unavailable") {
+    throw new Error(
+      "Saved profile authority is unavailable. Restore local storage and check the payment address again."
+    )
+  }
+  if (context?.profile.pubkey !== merchantPubkey) {
     return { status: "unavailable" }
   }
-  const frontierState = result.meta.profileFrontierStates?.[merchantPubkey]
-  const hasPositiveAddress =
-    frontierState !== "retained_valid" &&
-    frontierState !== "retained_malformed" &&
-    hasPositiveMerchantPaymentAddressEvidence({
-      meta: result.meta,
-      lud16: profile.lud16,
-    })
-  const hasKnownFrontier =
-    frontierState === "observed_valid" ||
-    frontierState === "observed_malformed" ||
-    frontierState === "retained_valid" ||
-    frontierState === "retained_malformed"
-  // Read freshness cannot erase a known contradictory signed frontier. It
-  // still controls whether a positive address may authorize replacement.
-  if (
-    hasKnownFrontier &&
-    (frontierState === "observed_malformed" ||
-      frontierState === "retained_malformed" ||
-      !isValidLud16Address(profile.lud16?.trim() ?? ""))
-  ) {
+  const hasPositiveAddress = hasFreshProfilePaymentAddress(context)
+  const hasKnownFrontier = !!context.frontier
+  const address = getProfilePaymentAddress(context)
+  // A later unavailable read cannot erase retained contradictory authority.
+  if (hasKnownFrontier && !address) {
     return { status: "current_address_unusable" }
   }
-  const newAddress = (profile.lud16 ?? "").trim().toLowerCase()
+  const newAddress = (address ?? "").toLowerCase()
   const previousAddress = snapshot.previousAddress.trim().toLowerCase()
   if (!hasPositiveAddress) {
     if (hasKnownFrontier && newAddress !== previousAddress) {

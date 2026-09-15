@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test"
-import type { getProfiles, OrderLifecycle } from "@conduit/core"
+import {
+  isValidLud16Address,
+  type getProfiles,
+  type OrderLifecycle,
+  type SelectedProfileContext,
+} from "@conduit/core"
 import { checkOrderPaymentAddressUpdate } from "../apps/market/src/lib/order-payment-address"
 
 const MERCHANT = "a".repeat(64)
@@ -41,6 +46,14 @@ function profileResult(
 ): ProfileResult {
   return {
     data: { [MERCHANT]: { pubkey: MERCHANT, lud16 } },
+    profileContexts: {
+      [MERCHANT]: context(
+        lud16,
+        meta.source === undefined || meta.source === "public"
+          ? !meta.stale
+          : false
+      ),
+    },
     meta: {
       source: "public",
       stale: false,
@@ -58,13 +71,68 @@ function profileResult(
   }
 }
 
+function context(
+  lud16: string | undefined,
+  observed = true
+): SelectedProfileContext {
+  const known = observed && isValidLud16Address(lud16?.trim() ?? "")
+  return {
+    profile: { pubkey: MERCHANT, lud16 },
+    frontier: known
+      ? {
+          eventId: "d".repeat(64),
+          eventCreatedAt: 3,
+          rawContent: JSON.stringify({ lud16 }),
+          validity: "valid",
+        }
+      : undefined,
+    freshness: known ? "observed" : "unobserved",
+    persistence: known ? "durable" : "unknown",
+    readComplete: true,
+  }
+}
+
+function setFrontier(
+  result: ProfileResult,
+  state:
+    | "observed_valid"
+    | "observed_malformed"
+    | "retained_valid"
+    | "retained_malformed"
+    | "not_observed"
+) {
+  const selected = result.profileContexts[MERCHANT]!
+  const malformed = state.endsWith("malformed")
+  result.profileContexts[MERCHANT] = {
+    ...selected,
+    freshness:
+      state === "not_observed"
+        ? "unobserved"
+        : state.startsWith("retained")
+          ? "retained"
+          : "observed",
+    frontier:
+      state === "not_observed"
+        ? undefined
+        : {
+            eventId: "d".repeat(64),
+            eventCreatedAt: 3,
+            rawContent: malformed
+              ? "invalid-json"
+              : JSON.stringify({ lud16: selected.profile.lud16 }),
+            validity: malformed ? "malformed" : "valid",
+          },
+  }
+}
+
 function observedProfileResult(
   lud16: string | undefined,
   frontierState: "observed_valid" | "observed_malformed" = "observed_valid"
 ): ProfileResult {
   const result = profileResult(lud16 ?? "")
   if (lud16 === undefined) delete result.data[MERCHANT]!.lud16
-  result.meta.profileFrontierStates = { [MERCHANT]: frontierState }
+  result.profileContexts[MERCHANT]!.profile.lud16 = lud16
+  setFrontier(result, frontierState)
   return result
 }
 
@@ -197,7 +265,7 @@ describe("checking an updated order payment address", () => {
       const result = profileResult("")
       delete result.data[MERCHANT]!.lud16
       Object.assign(result.meta, freshness)
-      result.meta.profileFrontierStates = { [MERCHANT]: "not_observed" }
+      setFrontier(result, "not_observed")
 
       expect(
         await checkOrderPaymentAddressUpdate(
@@ -224,6 +292,7 @@ describe("checking an updated order payment address", () => {
           degraded: true,
           profileFrontierStates: { [MERCHANT]: state },
         })
+        setFrontier(result, state)
         expect(
           await checkOrderPaymentAddressUpdate(
             lifecycle(),
@@ -247,9 +316,7 @@ describe("checking an updated order payment address", () => {
         stale: true,
         degraded: true,
       })
-      Object.assign(result.meta, {
-        profileFrontierStates: { [MERCHANT]: "retained_valid" },
-      })
+      setFrontier(result, "retained_valid")
       expect(
         await checkOrderPaymentAddressUpdate(
           lifecycle(),
@@ -264,7 +331,7 @@ describe("checking an updated order payment address", () => {
 
   it("does not mistake retained authority for fresh positive evidence", async () => {
     const result = profileResult("new@wallet.example")
-    result.meta.profileFrontierStates = { [MERCHANT]: "retained_valid" }
+    setFrontier(result, "retained_valid")
     expect(
       await checkOrderPaymentAddressUpdate(
         lifecycle(),
@@ -297,10 +364,11 @@ describe("checking an updated order payment address", () => {
 
   it("requires a present valid address on the exact requested merchant profile", async () => {
     const missingAddress = profileResult()
-    delete missingAddress.data[MERCHANT]!.lud16
+    missingAddress.profileContexts[MERCHANT] = context(undefined)
     const wrongMerchant = profileResult()
-    wrongMerchant.data[MERCHANT]!.pubkey = OTHER
+    wrongMerchant.profileContexts[MERCHANT]!.profile.pubkey = OTHER
     const absentMerchant = profileResult()
+    absentMerchant.profileContexts = {}
     absentMerchant.data = {
       [OTHER]: { pubkey: OTHER, lud16: "new@wallet.example" },
     }

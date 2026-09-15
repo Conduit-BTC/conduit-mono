@@ -1,16 +1,17 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import type { Profile } from "../types"
 import type { ProfileFormValues } from "../schemas"
-import { db, type CachedProfile } from "../db"
+import type { CachedProfile } from "../db"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
-import { getProfiles } from "./commerce"
+import { getProfiles, type ProfileBatchQuery } from "./commerce"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { getNdk } from "./ndk"
 import {
-  projectCachedProfile,
   projectProfileContent,
-  retainStrongestCachedProfiles,
+  createSelectedProfileContext,
+  retainSelectedProfileRows,
+  type SelectedProfileContext,
 } from "./profile-cache"
 import { publishWithPlanner } from "./relay-publish"
 import {
@@ -139,27 +140,30 @@ export function parseProfileEvent(
   return projectProfileContent(event.pubkey, event.content)
 }
 
+export type ProfileFetchOptions = Omit<
+  ProfileBatchQuery,
+  "pubkeys" | "onProgress"
+>
+
+export async function fetchProfileContext(
+  pubkey: string,
+  opts: ProfileFetchOptions = {}
+): Promise<SelectedProfileContext> {
+  const key = pubkey.trim()
+  const result = await getProfiles({ ...opts, pubkeys: [key] })
+  return (
+    result.profileContexts[key] ?? createSelectedProfileContext({ pubkey: key })
+  )
+}
+
+/** Display-only compatibility wrapper. Actions should consume the selected context. */
 export async function fetchProfile(
   pubkey: string,
-  opts?: {
-    authenticatedPubkey?: string | null
-    accountPubkey?: string | null
-    signal?: AbortSignal
-    shouldContinue?: () => boolean
-    skipCache?: boolean
-    priority?: "visible" | "background"
-  }
+  opts: ProfileFetchOptions = {}
 ): Promise<Profile> {
-  const result = await getProfiles({
-    pubkeys: [pubkey],
-    authenticatedPubkey: opts?.authenticatedPubkey,
-    accountPubkey: opts?.accountPubkey,
-    signal: opts?.signal,
-    shouldContinue: opts?.shouldContinue,
-    skipCache: opts?.skipCache,
-    priority: opts?.priority,
-  })
-  return result.data[pubkey] ?? { pubkey }
+  const key = pubkey.trim()
+  const result = await getProfiles({ ...opts, pubkeys: [key] })
+  return result.data[key] ?? { pubkey: key }
 }
 
 export function buildNip01ProfileContent(
@@ -300,54 +304,86 @@ export function assertProfilePublishRetained(
   }
 }
 
+export type PublishProfileOptions = {
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
+}
+
 export async function publishProfile(
   profile: Omit<Profile, "pubkey">,
   appId: ConduitAppId,
-  options: {
-    authenticatedPubkey?: string | null
-    shouldContinue?: () => boolean
-  } = {}
+  options: PublishProfileOptions = {}
 ): Promise<Profile> {
+  return (await publishProfileContext(profile, appId, options)).profile
+}
+
+export async function publishProfileContext(
+  profile: Omit<Profile, "pubkey">,
+  appId: ConduitAppId,
+  options: PublishProfileOptions = {}
+): Promise<SelectedProfileContext> {
   buildNip01ProfilePublishContent({ profile })
   const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
 
-  const user = await ndk.signer.user()
+  const signer = ndk.signer
+  const assertCurrentSession = () => {
+    if (options.shouldContinue?.() === false || ndk.signer !== signer) {
+      throw new Error(
+        "The connected account changed. Review the profile before saving again."
+      )
+    }
+  }
+  assertCurrentSession()
+  const user = await signer.user()
+  assertCurrentSession()
   const pubkey = user.pubkey
   const authenticatedPubkey =
     options.authenticatedPubkey?.trim().toLowerCase() === pubkey.toLowerCase()
       ? pubkey
       : null
-  const latestProfile = await fetchProfile(pubkey, {
+  const latest = await fetchProfileContext(pubkey, {
     authenticatedPubkey,
     accountPubkey: authenticatedPubkey,
     shouldContinue: options.shouldContinue,
     skipCache: true,
     priority: "visible",
+    requireCompleteEvidence: true,
+    evidenceScope: "profile_edit",
   })
-  let latestRow: CachedProfile | undefined
-  try {
-    latestRow = await db.profiles.get(pubkey)
-  } catch {
+  assertCurrentSession()
+  const observed = latest.freshness === "observed" && !!latest.frontier
+  const newProfile =
+    latest.freshness === "unobserved" &&
+    latest.readComplete &&
+    latest.persistence !== "unavailable"
+  if (
+    (!observed && !newProfile) ||
+    (latest.frontier?.validity === "malformed" && !latest.readComplete)
+  ) {
     throw new Error(
-      "Cannot safely publish a profile update while durable profile context is unavailable"
+      "The current profile could not be confirmed. Refresh it before saving."
     )
   }
 
   // Build NIP-01 snake_case content, merging partial edits onto loaded context.
   const content = buildNip01ProfilePublishContent({
     profile,
-    latestProfile,
-    latestContent: latestRow?.rawContent,
+    latestProfile: latest.profile,
+    latestContent: latest.frontier?.rawContent,
   })
   const event = new NDKEvent(ndk)
   event.kind = EVENT_KINDS.PROFILE
-  event.created_at = getNextProfileEventCreatedAt(latestRow?.eventCreatedAt)
+  event.created_at = getNextProfileEventCreatedAt(
+    latest.frontier?.eventCreatedAt
+  )
   event.content = JSON.stringify(content)
   event.tags = appendConduitClientTag([], appId)
 
   assertSafeReplaceablePublish(event)
-  await event.sign(ndk.signer)
+  assertCurrentSession()
+  await event.sign(signer)
+  assertCurrentSession()
   await publishWithPlanner(event, {
     intent: "author_event",
     authorPubkey: pubkey,
@@ -360,7 +396,7 @@ export async function publishProfile(
 
   // Reconcile against the commit-time frontier so a concurrent tab cannot
   // replace stronger profile evidence with this row after the network step.
-  const retention = await retainStrongestCachedProfiles([
+  const retention = await retainSelectedProfileRows([
     {
       ...publishedProfile,
       rawContent: event.content,
@@ -373,5 +409,9 @@ export async function publishProfile(
   const retainedProfile = retention.rows[0]
   assertProfilePublishRetained(retainedProfile, event)
 
-  return projectCachedProfile(retainedProfile)
+  return createSelectedProfileContext({
+    pubkey,
+    row: retainedProfile,
+    observed: true,
+  })
 }

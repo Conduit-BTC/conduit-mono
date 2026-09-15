@@ -6281,6 +6281,66 @@ describe("commerce gateway", () => {
     ])
   })
 
+  for (const network of ["empty", "unavailable"] as const) {
+    it(`reports unreadable durable payment authority after a successful removal write and ${network} network read`, async () => {
+      __setCommerceTestOverrides({
+        fetchEventsFanout: async () =>
+          [
+            {
+              id: "persisted-removal",
+              pubkey: "merchant",
+              created_at: 20,
+              content: "{}",
+              tags: [],
+            },
+          ] as never,
+      })
+      const query = {
+        pubkeys: ["merchant"],
+        skipCache: true,
+        evidenceScope: "payment" as const,
+      }
+      await getProfiles(query)
+      expect(cachedProfiles.get("merchant")?.rawContent).toBe("{}")
+      __setCommerceTestOverrides({
+        getCachedProfiles: async () => {
+          throw new Error("Synthetic unreadable profile storage")
+        },
+        fetchEventsFanout: async () => {
+          if (network === "unavailable")
+            throw new Error("Synthetic network outage")
+          return []
+        },
+      })
+      const result = await getProfiles(query)
+      expect(result.profileContexts.merchant).toMatchObject({
+        persistence: "unavailable",
+        freshness: "unobserved",
+        readComplete: false,
+      })
+      expect(result.profileContexts.merchant?.frontier).toBeUndefined()
+      expect(result.meta.degraded).toBe(true)
+    })
+  }
+
+  it("preserves storage unavailability from the final empty-author reread", async () => {
+    let reads = 0
+    __setCommerceTestOverrides({
+      getCachedProfiles: async () => {
+        if (++reads > 1) throw new Error("Synthetic unreadable profile storage")
+        return []
+      },
+      fetchEventsFanout: async () => [],
+    })
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment",
+    })
+    expect(result.profileContexts.merchant?.persistence).toBe("unavailable")
+    expect(result.meta.degraded).toBe(true)
+  })
+
   it("keeps the initial payment frontier when failure recovery cannot reread storage", async () => {
     let cacheReads = 0
     __setCommerceTestOverrides({
