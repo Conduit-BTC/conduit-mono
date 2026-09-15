@@ -200,9 +200,11 @@ test("product search lists matching storefronts above the product results @marke
   await expect(
     stores.getByRole("link", { name: /Alice Storefront/ })
   ).toHaveAttribute("href", /\/store\/npub1/)
+  // The perspective travels with the link; the directory reads the same
+  // source and would otherwise show a different seller set.
   await expect(stores.getByRole("link", { name: /See all/ })).toHaveAttribute(
     "href",
-    /\/sellers\?q=alice/
+    /\/sellers\?(?=[^"]*q=alice)(?=[^"]*source=combined)/
   )
   // The store row answers the name query; product filtering stays product-only.
   await expect(

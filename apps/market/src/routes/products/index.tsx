@@ -638,7 +638,9 @@ function ProductsPage() {
             </h2>
             <Link
               to="/sellers"
-              search={{ q: search.q }}
+              // Keep the browse perspective; the seller directory reads the
+              // same source and would otherwise change the seller set.
+              search={{ q: search.q, source: search.source }}
               className="text-sm text-secondary-400 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             >
               {matchingSellers.length > visibleMatchingSellers.length
