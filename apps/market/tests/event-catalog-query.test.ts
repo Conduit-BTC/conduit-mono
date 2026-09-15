@@ -25,6 +25,10 @@ import {
   type loadRawEventCatalog,
 } from "../src/lib/event-market-adapter"
 
+import { readEventCatalogProducts } from "../src/lib/event-catalog-products"
+import { getEventCatalogQueryDisplayState } from "../src/lib/event-catalog-query-state"
+import { getEventCatalogCartAction } from "../src/lib/event-market-cart-action"
+
 const organizer = "a".repeat(64)
 const merchant = "b".repeat(64)
 const collectionCoordinate = `30405:${organizer}:summer-market`
@@ -226,6 +230,380 @@ function deferred<T>() {
 }
 
 describe("shared progressive event catalogs", () => {
+  it("reuses a completed catalog on immediate navigation back", async () => {
+    const client = new QueryClient()
+    let reads = 0
+    const options = eventCatalogQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true,
+      async () => {
+        reads++
+        return raw()
+      }
+    )
+    await client.fetchQuery(options)
+    const observer = new QueryObserver(client, options)
+    const stop = observer.subscribe(() => {})
+    try {
+      expect(reads).toBe(1)
+      expect(observer.getCurrentResult().isFetching).toBe(false)
+      expect(
+        projectRawEventCatalog(observer.getCurrentResult().data!).purchaseReady
+      ).toBe(true)
+    } finally {
+      stop()
+      client.clear()
+    }
+  })
+
+  it("projects completed product evidence while other products are still hydrating", () => {
+    const snapshot = { ...raw(), complete: false, resolutionComplete: true }
+    const catalog = projectRawEventCatalog(snapshot)
+    expect(catalog.purchaseReady).toBe(true)
+    expect(catalog.products[0]?.pickupFulfillment).not.toBeNull()
+    expect(
+      projectRawEventCatalog({ ...snapshot, resolutionComplete: false })
+        .purchaseReady
+    ).toBe(false)
+  })
+
+  it("makes a finished merchant actionable while another merchant is held, then reuses the final cache", async () => {
+    const client = new QueryClient()
+    const held = deferred<ProductsByIdsResult>()
+    const progressed = deferred<void>()
+    const fast = product()
+    const slow = product({
+      id: `30402:${"c".repeat(64)}:tea`,
+      pubkey: "c".repeat(64),
+    })
+    const resolution = market()
+    resolution.organizerProductCoordinates.push(slow.id)
+    resolution.acceptedProductCoordinates.push(slow.id)
+    resolution.acceptedProductEvidence.push({
+      ...resolution.acceptedProductEvidence[0]!,
+      productCoordinate: slow.id,
+      merchantPubkey: slow.pubkey,
+    })
+    let reads = 0
+    const options = eventCatalogQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true,
+      async (_reference, loaderOptions) => {
+        const result = await readEventCatalogProducts(
+          [fast.id, slow.id],
+          {
+            shouldContinue: loaderOptions?.shouldContinue,
+            onProgress: (result) => {
+              loaderOptions?.onProgress?.({
+                reference: collectionCoordinate,
+                resolution,
+                result,
+                resolutionComplete: true,
+                complete: false,
+              })
+              if (result.data.some((entry) => entry.product.id === fast.id))
+                progressed.resolve()
+            },
+          },
+          async (ids) => {
+            reads++
+            return ids.includes(slow.id) ? held.promise : productRead()
+          },
+          async () =>
+            productRead({
+              product: slow,
+              source: "local_cache",
+              stale: true,
+              issue: "cached_only",
+              listing: "unavailable",
+            })
+        )
+        return {
+          reference: collectionCoordinate,
+          resolution,
+          result,
+          complete: true,
+        }
+      }
+    )
+    const observer = new QueryObserver(client, options)
+    const release = observer.subscribe(() => {})
+    try {
+      await progressed.promise
+      const query = observer.getCurrentResult()
+      const display = getEventCatalogQueryDisplayState(query)
+      expect(query.isFetching).toBe(true)
+      expect(display.data?.products.map((entry) => entry.product.id)).toEqual([
+        fast.id,
+        slow.id,
+      ])
+      expect(display.data!.products[1]!.pickupFulfillment).toBeNull()
+      expect(display.data!.products[1]!.evidenceState).toBe("retained")
+      const pickup = display.data!.products[0]!.pickupFulfillment
+      expect(
+        getEventCatalogCartAction({
+          state: display.data!.state,
+          purchaseReady: display.data!.purchaseReady,
+          hasPickupFulfillment: !!pickup,
+          isChecking: display.isHydrating && !pickup,
+        })
+      ).toEqual({ enabled: true, disabledLabel: null })
+      held.resolve(productRead({ product: slow }))
+      await client.fetchQuery(options)
+      const completed = getEventCatalogQueryDisplayState(
+        observer.getCurrentResult()
+      )
+      expect(completed.data?.products).toHaveLength(2)
+      expect(completed.isHydrating).toBe(false)
+      release()
+      await client.fetchQuery(options)
+      expect(reads).toBe(2)
+    } finally {
+      held.resolve(productRead({ product: slow }))
+      release()
+      client.clear()
+    }
+  })
+
+  it("limits five merchants to two active reads while publishing completed merchants before queued ones", async () => {
+    const products = ["b", "c", "d", "e", "f"].map((key) =>
+      product({ id: `30402:${key.repeat(64)}:item`, pubkey: key.repeat(64) })
+    )
+    const gates = products.map(() => deferred<void>())
+    const startedSignals = products.map(() => deferred<void>())
+    const started: number[] = []
+    const snapshots: ProductsByIdsResult[] = []
+    let active = 0
+    let peakActive = 0
+    const running = readEventCatalogProducts(
+      products.map((entry) => entry.id),
+      { onProgress: (snapshot) => snapshots.push(snapshot) },
+      async (ids) => {
+        const index = products.findIndex((entry) => entry.id === ids[0])
+        started.push(index)
+        active++
+        peakActive = Math.max(peakActive, active)
+        startedSignals[index]!.resolve()
+        try {
+          await gates[index]!.promise
+          return productRead({ product: products[index]! })
+        } finally {
+          active--
+        }
+      },
+      async () => productRead({ includeRecord: false, source: "local_cache" })
+    )
+    try {
+      await startedSignals[1]!.promise
+      expect(started).toEqual([0, 1])
+      expect(active).toBe(2)
+      gates[0]!.resolve()
+      await startedSignals[2]!.promise
+      expect(started).toEqual([0, 1, 2])
+      const progress = snapshots.at(-1)!
+      expect(progress.data.map((entry) => entry.product.id)).toEqual([
+        products[0]!.id,
+      ])
+      expect(
+        progress.diagnostics.find(
+          (entry) => entry.productId === products[0]!.id
+        )?.issue
+      ).toBeNull()
+      expect(
+        progress.diagnostics.find(
+          (entry) => entry.productId === products[4]!.id
+        )?.issue
+      ).toBe("cached_only")
+      // Keep merchant 1 held while the other worker drains the remaining queue.
+      gates[2]!.resolve()
+      await startedSignals[3]!.promise
+      gates[3]!.resolve()
+      await startedSignals[4]!.promise
+      expect(started).toEqual([0, 1, 2, 3, 4])
+      expect(peakActive).toBe(2)
+    } finally {
+      for (const gate of gates) gate.resolve()
+      await running
+    }
+    expect((await running).data.map((entry) => entry.product.id)).toEqual(
+      products.map((entry) => entry.id)
+    )
+    expect(active).toBe(0)
+  })
+
+  it("keeps a child-only cached family visible while its merchant read is queued", async () => {
+    const parent = product({
+      type: "variable",
+      images: [],
+      visibility: "private",
+    })
+    const child = product({
+      id: `30402:${merchant}:small`,
+      type: "variation",
+      visibility: "private",
+      parentProductId: parent.id,
+      specifications: [{ key: "size", value: "Small" }],
+    })
+    const prepared = prepareProductCatalog(
+      [commerceRecord(parent), commerceRecord(child)],
+      {
+        source: "local_cache",
+        stale: true,
+        degraded: true,
+        capped: false,
+        fetchedAt: 1,
+      }
+    ).items[0]
+    if (prepared?.kind !== "family") throw new Error("Expected cached family")
+    const family = { ...prepared.family.parent, family: prepared.family }
+    const resolution = market()
+    resolution.organizerProductCoordinates = [child.id]
+    resolution.acceptedProductCoordinates = [child.id]
+    resolution.acceptedProductEvidence = [
+      {
+        ...resolution.acceptedProductEvidence[0]!,
+        productCoordinate: child.id,
+      },
+    ]
+    const queuedBehind = ["c", "d", "e", "f"].map(
+      (key) => `30402:${key.repeat(64)}:other`
+    )
+    const held = deferred<ProductsByIdsResult>()
+    const queued = deferred<void>()
+    const started: string[] = []
+    const snapshots: ProductsByIdsResult[] = []
+    const running = readEventCatalogProducts(
+      [...queuedBehind, child.id],
+      {
+        onProgress: (snapshot) => snapshots.push(snapshot),
+      },
+      async (ids) => {
+        started.push(ids[0]!)
+        if (started.length === 2) queued.resolve()
+        return ids.includes(child.id)
+          ? {
+              ...productRead({ product: child }),
+              data: [
+                {
+                  ...commerceRecord(child),
+                  safety: evaluateListingSafety(child, undefined, {
+                    variationGroupRole: "variation",
+                    hasGroupImage: true,
+                  }),
+                },
+              ],
+            }
+          : held.promise
+      },
+      async () => ({
+        data: [family],
+        meta: {
+          ...productRead().meta,
+          source: "local_cache",
+          stale: true,
+          degraded: true,
+        },
+      })
+    )
+    try {
+      await queued.promise
+      expect(started).not.toContain(child.id)
+      expect(snapshots).not.toHaveLength(0)
+      for (const snapshot of snapshots) {
+        const retained = projectRawEventCatalog({
+          reference: collectionCoordinate,
+          resolution,
+          result: snapshot,
+          resolutionComplete: true,
+          complete: false,
+        })
+        expect(retained.products.map((entry) => entry.product.id)).toEqual([
+          child.id,
+        ])
+        expect(retained.products[0]?.pickupFulfillment).toBeNull()
+        expect(
+          snapshot.diagnostics.find((entry) => entry.productId === child.id)
+            ?.issue
+        ).toBe("cached_only")
+        expect(
+          snapshot.diagnostics.some((entry) => entry.productId === parent.id)
+        ).toBe(false)
+      }
+    } finally {
+      held.resolve({ ...productRead(), data: [], diagnostics: [] })
+      await running
+    }
+    const complete = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution,
+      result: await running,
+      complete: true,
+    })
+    expect(complete.products.map((entry) => entry.product.id)).toEqual([
+      child.id,
+    ])
+    expect(complete.products[0]?.pickupFulfillment).not.toBeNull()
+  })
+
+  it("does not reuse canceled progressive authorization before a remounted read emits evidence", async () => {
+    const client = new QueryClient()
+    const first = deferred<RawEventCatalog>()
+    const second = deferred<RawEventCatalog>()
+    let reads = 0
+    const options = eventCatalogQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true,
+      async (_reference, loaderOptions) => {
+        if (++reads === 1) {
+          loaderOptions?.onProgress?.({
+            ...raw(),
+            complete: false,
+            resolutionComplete: true,
+          })
+          return first.promise
+        }
+        return second.promise
+      }
+    )
+    const firstObserver = new QueryObserver(client, options)
+    const leave = firstObserver.subscribe(() => {})
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(
+      getEventCatalogQueryDisplayState(firstObserver.getCurrentResult()).data
+        ?.purchaseReady
+    ).toBe(true)
+    leave()
+    const secondObserver = new QueryObserver(client, options)
+    const stop = secondObserver.subscribe(() => {})
+    try {
+      expect(reads).toBe(2)
+      const display = getEventCatalogQueryDisplayState(
+        secondObserver.getCurrentResult()
+      )
+      expect(display.isHydrating).toBe(true)
+      expect(display.data?.products).toHaveLength(1)
+      expect(display.data?.purchaseReady).toBe(false)
+      expect(display.data?.products[0]?.pickupFulfillment).toBeNull()
+      second.resolve(raw())
+      await client.fetchQuery(options)
+      expect(
+        getEventCatalogQueryDisplayState(secondObserver.getCurrentResult()).data
+          ?.purchaseReady
+      ).toBe(true)
+    } finally {
+      first.resolve(raw())
+      second.resolve(raw())
+      stop()
+      client.clear()
+    }
+  })
+
   it("shares a matching pending detail/card query and reprices without another read", async () => {
     const client = new QueryClient()
     const pending = deferred<RawEventCatalog>()
@@ -539,6 +917,29 @@ describe("shared progressive event catalogs", () => {
     expect(
       live.products[0]?.family?.children.map((entry) => entry.product.id)
     ).toEqual([good.id])
+    const retainedFamily = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution: liveResolution,
+      result: {
+        ...result,
+        diagnostics: result.diagnostics.map((entry) => ({
+          ...entry,
+          issue: "cached_only",
+        })),
+      },
+      complete: false,
+      resolutionComplete: true,
+    })
+    expect(retainedFamily.products).toHaveLength(1)
+    expect(
+      retainedFamily.products[0]?.family?.children.map(
+        (entry) => entry.product.id
+      )
+    ).toEqual([good.id])
+    expect(retainedFamily.products[0]?.pickupFulfillment).toBeNull()
+    expect(retainedFamily.products[0]?.familyPickupFulfillments).toEqual({
+      [good.id]: null,
+    })
   })
 
   it("retains an atomic contextual child even when its parent is not organizer-listed", () => {
@@ -584,7 +985,9 @@ describe("shared progressive event catalogs", () => {
       () => true,
       loader
     )
-    client.setQueryData(options.queryKey, raw())
+    client.setQueryData(options.queryKey, raw(), {
+      updatedAt: Date.now() - 61_000,
+    })
     const refresh = client.fetchQuery(options)
     const resolution = market("stale")
     resolution.acceptedProductCoordinates = []
@@ -761,7 +1164,13 @@ describe("shared progressive event catalogs", () => {
         "account-a",
         attempted
       )
-      if (pending.length > 0) await client.fetchQuery(options)
+      if (pending.length > 0) {
+        await client.invalidateQueries({
+          queryKey: options.queryKey,
+          refetchType: "none",
+        })
+        await client.fetchQuery(options)
+      }
       expect(
         resolveProductCartFulfillmentFromCatalogs(
           product(),

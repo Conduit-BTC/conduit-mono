@@ -30,6 +30,8 @@ import type {
   CartPickupFulfillment,
 } from "./cart-model"
 
+import { readEventCatalogProducts } from "./event-catalog-products"
+
 const EVENT_COLLECTION_KIND = 30405
 
 export type EventCatalogProduct = {
@@ -563,7 +565,12 @@ export function projectEventCatalogProducts({
     const prepared = prepareEventCatalogFamily(
       record,
       resolution,
-      liveCoordinates
+      liveCoordinates,
+      // A wholly retained family may use its child's image for browsing.
+      // Exact per-child live evidence below still gates every pickup action.
+      ![record, ...(record.family?.children ?? [])].some((entry) =>
+        liveCoordinates.has(entry.product.id)
+      )
     )
     if (!prepared?.family) continue
     if (
@@ -760,16 +767,23 @@ export type RawEventCatalog = {
   result?: ProductsByIdsResult
   previewRecords?: CommerceProductRecord[]
   complete: boolean
+  /** Current event graph has finished verification; product reads may continue. */
+  resolutionComplete?: boolean
+  /** A local-only deletion snapshot is loading; browse evidence remains visible. */
+  localEvidencePending?: boolean
 }
 
 export function projectRawEventCatalog(
   raw: RawEventCatalog,
   rateInput: PricingRateInput = null,
-  allowPurchase = raw.complete
+  allowPurchase = raw.complete || raw.resolutionComplete === true
 ): EventCatalog {
   const resolution = raw.resolution
   if (!resolution) return unavailableCatalog(raw.reference, "malformed")
-  const complete = raw.complete && allowPurchase
+  const complete =
+    (raw.complete || raw.resolutionComplete === true) &&
+    allowPurchase &&
+    !raw.localEvidencePending
   const excludedProducts = new Set(resolution.browseExcludedProductCoordinates)
   const base: EventCatalog = {
     state: resolution.state,
@@ -940,6 +954,8 @@ export async function loadRawEventCatalog(
   let progressVersion = 0
   let previewRecords: CommerceProductRecord[] = []
   let latestResolution: EventMarketResolution | undefined
+  let resolutionComplete = false
+  let latestProductResult: ProductsByIdsResult | undefined
   let productReadVersion = 0
   type ProductRead = {
     key: string
@@ -960,6 +976,8 @@ export async function loadRawEventCatalog(
       canonicalNaddr,
       resolution,
       complete: false,
+      resolutionComplete,
+      result: resolutionComplete ? latestProductResult : undefined,
       previewRecords,
     }
     options.onProgress?.(snapshot)
@@ -987,10 +1005,11 @@ export async function loadRawEventCatalog(
     const targets = [...new Set(coordinates)].sort()
     const key = JSON.stringify(targets)
     if (productRead?.key === key) return productRead
+    latestProductResult = undefined
     const version = ++productReadVersion
     const current = () =>
       active() && !finished && version === productReadVersion
-    const promise = getProductsByIds(targets, {
+    const promise = readEventCatalogProducts(targets, {
       includeMerchantHiddenProductIds: targets,
       authenticatedPubkey: options.authenticatedPubkey,
       shouldContinue: current,
@@ -999,13 +1018,17 @@ export async function loadRawEventCatalog(
             if (!current() || !latestResolution) return
             // Core has reconciled this cumulative frontier against current
             // product revisions and known deletions. Supersede pending cache
-            // projections; this remains browse-only until both reads finish.
+            // projections. Only completed event and exact product evidence
+            // can authorize pickup, independently of unfinished siblings.
             ++progressVersion
             previewRecords = snapshot.data
+            latestProductResult = snapshot
             options.onProgress?.({
               reference,
               canonicalNaddr,
               resolution: latestResolution,
+              resolutionComplete,
+              result: resolutionComplete ? snapshot : undefined,
               previewRecords,
               complete: false,
             })
@@ -1053,6 +1076,7 @@ export async function loadRawEventCatalog(
         : undefined,
     })
     assertActive()
+    resolutionComplete = true
     const previewRead = updateResolution(resolution)
     const canHydrate = ["active", "ended", "partial", "stale"].includes(
       resolution.state

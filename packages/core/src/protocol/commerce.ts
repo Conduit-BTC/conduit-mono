@@ -1,3 +1,4 @@
+import { liveQuery } from "dexie"
 import {
   NDKEvent,
   giftUnwrap,
@@ -1086,6 +1087,7 @@ export function __resetCommerceTestOverrides(): void {
   testProfileCacheWriteLock = Promise.resolve()
   volatileProductSourceRelayUrls.clear()
   volatileProductTombstones.clear()
+  resetLocalProductDeletionObservation()
   successfulWrapIdsByPrincipal.clear()
   retryWrapsByPrincipal.clear()
   eventMarketInboxScanCycles.clear()
@@ -2300,6 +2302,204 @@ function selectCachedProductTombstoneUpdates(
   return Array.from(changed.values())
 }
 
+/** Local signed deletion evidence shared by retained query projections. */
+export type LocalProductDeletionSnapshot = Readonly<{
+  status: "loading" | "ready" | "unavailable"
+  revision: number
+  evidence: readonly ProductDeletionEvidence[]
+}>
+
+let localProductDeletionSnapshot: LocalProductDeletionSnapshot = {
+  status: "loading",
+  revision: 0,
+  evidence: [],
+}
+const localProductDeletionListeners = new Set<
+  (snapshot: LocalProductDeletionSnapshot) => void
+>()
+let localProductDeletionSubscription: { unsubscribe(): void } | undefined
+let localProductDeletionObservationGeneration = 0
+
+export function getLocalProductDeletionSnapshot(): LocalProductDeletionSnapshot {
+  return localProductDeletionSnapshot
+}
+
+function notifyLocalProductDeletionListeners(): void {
+  for (const listener of localProductDeletionListeners) {
+    try {
+      listener(localProductDeletionSnapshot)
+    } catch {
+      // A view observer must not interrupt retention of signed evidence or
+      // prevent another observer from revoking its previous projection.
+      console.warn("Local product deletion observer failed")
+    }
+  }
+}
+
+function setLocalProductDeletionStatus(
+  status: LocalProductDeletionSnapshot["status"]
+): void {
+  if (localProductDeletionSnapshot.status === status) return
+  localProductDeletionSnapshot = { ...localProductDeletionSnapshot, status }
+  notifyLocalProductDeletionListeners()
+}
+
+function retainLocalProductDeletionEvidence(
+  rows: readonly CachedProductTombstone[]
+): void {
+  const frontier = deletionTimestampsFromTombstones(rows)
+  for (const evidence of localProductDeletionSnapshot.evidence) {
+    const key =
+      evidence.target === "event"
+        ? scopedProductDeletionEventKey(evidence.authorPubkey, evidence.eventId)
+        : productDeletionAddressKey(evidence.addressId)
+    if (key)
+      setLatestDeletionEvidence(
+        evidence.target === "event" ? frontier.byEventId : frontier.byAddressId,
+        key,
+        evidence
+      )
+  }
+  const evidence = [
+    ...frontier.byEventId.entries(),
+    ...frontier.byAddressId.entries(),
+  ]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, item]) => item)
+  if (
+    JSON.stringify(evidence) ===
+    JSON.stringify(localProductDeletionSnapshot.evidence)
+  )
+    return
+  localProductDeletionSnapshot = {
+    ...localProductDeletionSnapshot,
+    revision: localProductDeletionSnapshot.revision + 1,
+    evidence,
+  }
+  notifyLocalProductDeletionListeners()
+}
+
+/** Observe local storage only. Dexie includes committed writes from other
+ * same-origin browser contexts; in-process observations also include validated
+ * evidence whose persistence is still pending or unavailable. */
+export function subscribeLocalProductDeletionChanges(
+  listener: (snapshot: LocalProductDeletionSnapshot) => void
+): () => void {
+  localProductDeletionListeners.add(listener)
+  if (!localProductDeletionSubscription) {
+    const generation = ++localProductDeletionObservationGeneration
+    setLocalProductDeletionStatus("loading")
+    const observer = {
+      next: (rows: CachedProductTombstone[]) => {
+        if (generation !== localProductDeletionObservationGeneration) return
+        retainLocalProductDeletionEvidence([
+          ...rows,
+          ...volatileProductTombstones.values(),
+        ])
+        setLocalProductDeletionStatus("ready")
+      },
+      error: () => {
+        if (generation !== localProductDeletionObservationGeneration) return
+        setLocalProductDeletionStatus("unavailable")
+      },
+    }
+    if (
+      testOverrides.getCachedProductTombstones ||
+      typeof indexedDB === "undefined"
+    ) {
+      // Dexie liveQuery intentionally stays silent when IndexedDB is absent.
+      // A local-only read still settles initial readiness and test repositories.
+      localProductDeletionSubscription = { unsubscribe() {} }
+      void loadCachedProductTombstones().then(observer.next, observer.error)
+    } else {
+      localProductDeletionSubscription = liveQuery(() =>
+        loadCachedProductTombstones()
+      ).subscribe(observer)
+    }
+  }
+  listener(localProductDeletionSnapshot)
+  let subscribed = true
+  return () => {
+    if (!subscribed) return
+    subscribed = false
+    localProductDeletionListeners.delete(listener)
+    if (localProductDeletionListeners.size === 0) {
+      ++localProductDeletionObservationGeneration
+      localProductDeletionSubscription?.unsubscribe()
+      localProductDeletionSubscription = undefined
+    }
+  }
+}
+
+function resetLocalProductDeletionObservation(): void {
+  ++localProductDeletionObservationGeneration
+  localProductDeletionSubscription?.unsubscribe()
+  localProductDeletionSubscription = undefined
+  localProductDeletionListeners.clear()
+  localProductDeletionSnapshot = {
+    status: "loading",
+    revision: 0,
+    evidence: [],
+  }
+}
+
+/** Remove only records contradicted by observed NIP-09 evidence. Rebuild
+ * affected family choices and summaries while retaining their read provenance. */
+export function reconcileProductRecordsWithDeletions(
+  records: CommerceProductRecord[],
+  evidence: readonly ProductDeletionEvidence[]
+): CommerceProductRecord[] {
+  const deleted = (record: CommerceProductRecord) =>
+    isProductDeletedByNip09(
+      {
+        authorPubkey: record.product.pubkey,
+        eventId: record.eventId,
+        addressId: record.dTag ? record.addressId : null,
+        createdAt: record.eventCreatedAt,
+      },
+      evidence
+    )
+  const reconciled = records.flatMap((record) => {
+    if (deleted(record)) return []
+    if (!record.family) return [record]
+    if (deleted(record.family.parent)) return []
+    const children = record.family.children.filter((child) => !deleted(child))
+    if (children.length === record.family.children.length) return [record]
+    const hasGroupImage =
+      hasMarketProductImage(record.family.parent.product) ||
+      children.some((child) => hasMarketProductImage(child.product))
+    const parent = {
+      ...record.family.parent,
+      family: undefined,
+      safety: reconcileContextualListingSafety(
+        record.family.parent.product,
+        record.family.parent.safety,
+        { variationGroupRole: "parent", hasGroupImage }
+      ),
+    }
+    const prepared = prepareProductCatalog(
+      [
+        parent,
+        ...children.map((child) => ({
+          ...child,
+          safety: reconcileContextualListingSafety(
+            child.product,
+            child.safety,
+            { variationGroupRole: "variation", hasGroupImage }
+          ),
+        })),
+      ],
+      record.family.readEvidence
+    ).items.find((item) => item.kind === "family")
+    if (prepared?.kind !== "family") return []
+    return [{ ...record, safety: parent.safety, family: prepared.family }]
+  })
+  return reconciled.length === records.length &&
+    reconciled.every((record, index) => record === records[index])
+    ? records
+    : reconciled
+}
+
 async function storeCachedProductTombstones(
   rows: CachedProductTombstone[]
 ): Promise<void> {
@@ -2310,8 +2510,9 @@ async function storeCachedProductTombstones(
       ? await testOverrides.getCachedProductTombstones()
       : []
     const rowsToStore = selectCachedProductTombstoneUpdates(rows, existingRows)
-    if (rowsToStore.length === 0) return
-    await testOverrides.putCachedProductTombstones(rowsToStore)
+    if (rowsToStore.length > 0)
+      await testOverrides.putCachedProductTombstones(rowsToStore)
+    retainLocalProductDeletionEvidence([...existingRows, ...rows])
     return
   }
 
@@ -2325,6 +2526,7 @@ async function storeCachedProductTombstones(
       await db.productTombstones.bulkPut(rowsToStore)
     }
   })
+  retainLocalProductDeletionEvidence(rows)
 }
 
 function rememberVolatileProductTombstones(
@@ -2337,6 +2539,7 @@ function rememberVolatileProductTombstones(
   for (const row of updates) {
     volatileProductTombstones.set(row.id, row)
   }
+  retainLocalProductDeletionEvidence(rows)
 }
 
 async function flushVolatileProductTombstones(): Promise<boolean> {
@@ -2519,7 +2722,19 @@ export async function cacheSignedProductDeletionEvent(
   if (tombstones.length === 0) {
     throw new Error("Deletion event does not contain a valid product target")
   }
-  await storeCachedProductTombstones(tombstones)
+  // A validated local observation revokes old projections even if durable
+  // storage fails. Preserve the write error so callers still retry persistence.
+  rememberVolatileProductTombstones(tombstones)
+  const pending = tombstones.map((row) =>
+    volatileProductTombstones.get(row.id)!
+  )
+  await storeCachedProductTombstones(pending)
+  for (const row of pending) {
+    // Do not clear stronger evidence observed while this write was in flight.
+    if (volatileProductTombstones.get(row.id) === row) {
+      volatileProductTombstones.delete(row.id)
+    }
+  }
   return tombstones
 }
 

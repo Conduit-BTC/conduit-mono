@@ -253,7 +253,8 @@ async function fixture(
     defaultOptions: { queries: { retry: false } },
   })
   const key = eventCatalogQueryIdentity(collection, scope).queryKey
-  if (!networkOnly) client.setQueryData(key, previous)
+  if (!networkOnly)
+    client.setQueryData(key, previous, { updatedAt: Date.now() - 61_000 })
   const snapshots: RawEventCatalog[] = []
   const listeners = new Set<() => void>()
   const unsubscribe = client.getQueryCache().subscribe((event) => {

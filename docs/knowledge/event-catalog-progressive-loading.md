@@ -18,8 +18,12 @@ an earlier progress or query result.
 
 For cold detail loads, the organizer product coordinates start an exact product
 read while participation and pickup verification continue. Completed merchant
-batches emit cumulative browse snapshots without waiting for slower merchants
-or family hydration. These snapshots reconcile current signed revisions and
+batches emit cumulative snapshots without waiting for slower merchants. Each
+merchant read keeps its family checks together. At most two merchant reads run
+concurrently, matching the shared exact product reader's author limit. Safe cached cards for queued
+merchants remain visible with cache-only diagnostics. Once event verification
+finishes, each completed exact product can become actionable while other
+merchants continue loading. These snapshots reconcile current signed revisions and
 local deletions before display; final reconciliation must not restore older
 terms. The overlapping read is reused at completion. If final accepted evidence
 identifies a missing or newer product, one exact read reconciles it. Coordinate
@@ -29,9 +33,31 @@ concurrency and relay budgets remain in force.
 The final read still resolves collection/calendar revisions, exact product and
 pickup frontiers, known withdrawals and same-author deletions. Independent
 product and organizer pickup checks overlap without reducing read budgets.
+Deletion checks remain isolated by product target so busy siblings cannot
+consume another product's response. A relay may return fewer events than the
+requested limit; result counts do not prove complete deletion coverage. The
+existing exact-target reads and bounded concurrency remain unchanged.
 
-While a query refreshes, fails or pauses, its display projection removes pickup
-authorization. Previously rendered content remains useful, but old readiness
+Completed catalog reads are reused for 60 seconds across matching mounts and
+return visits. The in-memory query retains browsing evidence for 30 minutes;
+full reloads still hydrate signed browser-cache records and verify them live.
+Retained event queries also observe the shared local product-deletion frontier.
+A signed deletion retracts affected cards, family choices and pickup actions on
+mounted pages and warm returns, without a relay read or extending network
+freshness. The observer stays active while catalog queries remain cached.
+Initial local reconciliation briefly withholds pickup authority, and late
+progress/final snapshots are reconciled against the same monotonic evidence.
+Storage failures preserve already observed deletion evidence. Other same-origin
+contexts are observed through Dexie; in-process validated evidence is announced
+before persistence can fail. Unaffected products keep their live read evidence.
+
+Incomplete reads remain stale. A new read clears any verification marker left
+by interrupted progress before accepting fresh progress.
+
+While a query refreshes, its display projection removes prior pickup
+authorization. Current-read progress can restore individual pickup actions only
+after the event graph and that product have been verified. Failed or paused
+refreshes remove pickup authorization. Previously rendered content remains useful, but old readiness
 is not reused. A failed or paused refresh marks retained active or partial
 evidence stale and exposes retry; terminal protocol states stay intact. This
 changes the display projection, not the shared raw evidence. Explicit checkout
