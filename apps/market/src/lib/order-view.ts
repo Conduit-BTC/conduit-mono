@@ -174,8 +174,8 @@ export type BoundMerchantInvoiceAccess =
   "none" | "pay" | "report_only" | "closed"
 
 /**
- * Keep a bound invoice as evidence after the merchant closes the order without
- * continuing to offer it for payment. Cancellation and refund states retain
+ * Keep an invoice as evidence after the merchant closes the order without
+ * continuing to offer it for payment, regardless of checkout mode. Refund states retain
  * the buyer's existing ability to report a payment that already happened.
  */
 export function deriveBoundMerchantInvoiceAccess(
@@ -184,12 +184,7 @@ export function deriveBoundMerchantInvoiceAccess(
   effectivePhase: OrderLifecyclePhase | undefined = lifecycle?.phase,
   paymentConfirmed = false
 ): BoundMerchantInvoiceAccess {
-  const hasBoundInvoice =
-    lifecycle?.checkoutMode === "pay_later" &&
-    lifecycle.invoiceStatus === "manual_required" &&
-    lifecycle.paymentStatus === "manual_required" &&
-    !!lifecycle.invoice
-  if (!hasBoundInvoice) return "none"
+  if (!lifecycle?.invoice) return "none"
 
   if (
     paymentConfirmed ||
@@ -205,6 +200,11 @@ export function deriveBoundMerchantInvoiceAccess(
   ) {
     return "report_only"
   }
+  const hasBoundInvoice =
+    lifecycle.checkoutMode === "pay_later" &&
+    lifecycle.invoiceStatus === "manual_required" &&
+    lifecycle.paymentStatus === "manual_required"
+  if (!hasBoundInvoice) return "none"
   return "pay"
 }
 

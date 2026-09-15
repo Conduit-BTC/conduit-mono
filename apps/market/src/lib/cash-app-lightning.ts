@@ -1,6 +1,7 @@
 import {
   decodeLightningInvoicePaymentHash,
   getLightningInvoiceNetwork,
+  isValidLightningInvoice,
   normalizeLightningInvoice,
   validateLightningInvoiceForPayment,
 } from "@conduit/core"
@@ -17,6 +18,7 @@ export function getCashAppLightningUrl(
     !Number.isSafeInteger(expectedAmountSats * 1_000) ||
     getLightningInvoiceNetwork(invoice) !== "mainnet" ||
     !decodeLightningInvoicePaymentHash(invoice) ||
+    !isValidLightningInvoice(invoice) ||
     !validateLightningInvoiceForPayment({
       invoice,
       expectedAmountMsats: expectedAmountSats * 1_000,

@@ -10,8 +10,11 @@ import { getCashAppLightningUrl } from "../apps/market/src/lib/cash-app-lightnin
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
-  makeBolt11Fixture,
 } from "./support/bolt11-fixture"
+import {
+  bolt11PaymentSecretField,
+  makeSignedBolt11Fixture,
+} from "./support/signed-bolt11-fixture"
 
 const previousNetwork = config.lightningNetwork
 const NOW_SECONDS = 1_800_000_000
@@ -25,11 +28,12 @@ function invoice({
   createdAt?: number
   paymentHash?: boolean
 } = {}) {
-  return makeBolt11Fixture({
+  return makeSignedBolt11Fixture({
     hrp,
     createdAt,
     fields: [
       ...(paymentHash ? [bolt11PaymentHashField()] : []),
+      bolt11PaymentSecretField(),
       bolt11PlainDescriptionField("Cash App checkout fixture"),
     ],
   })
@@ -62,6 +66,28 @@ describe("Cash App Lightning handoff", () => {
     }
     config.lightningNetwork = "mock"
     expect(getCashAppLightningUrl(invoice(), 40_000, NOW_SECONDS)).toBeNull()
+  })
+
+  it("does not offer Cash App for checksum-correct invoices that fail reader validation", () => {
+    const validFields = [
+      bolt11PaymentHashField(),
+      bolt11PaymentSecretField(),
+      bolt11PlainDescriptionField(),
+    ]
+    for (const invalid of [
+      makeSignedBolt11Fixture({ invalidSignature: true }),
+      makeSignedBolt11Fixture({
+        fields: validFields.filter((field) => field.tag !== "s"),
+      }),
+      makeSignedBolt11Fixture({
+        fields: validFields.filter((field) => field.tag !== "d"),
+      }),
+      makeSignedBolt11Fixture({
+        fields: [...validFields, { tag: "9", words: [4] }],
+      }),
+    ]) {
+      expect(getCashAppLightningUrl(invalid, 40_000, NOW_SECONDS)).toBeNull()
+    }
   })
 
   it("rejects malformed, amountless, mismatched, expired, and unbound invoices", () => {

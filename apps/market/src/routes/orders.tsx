@@ -1379,17 +1379,20 @@ function OrderDetail({
           }
         >
           <p className="text-pretty text-sm text-[var(--text-secondary)]">
-            Do not pay this invoice. If your wallet already confirms a payment,
-            report it so the merchant can verify what happened.
+            {vm.publicZapSigner
+              ? "Do not pay this invoice. Conduit can still match a public receipt for a payment already made. Keep this tab open for receipt detection."
+              : "Do not pay this invoice. If your wallet already confirms a payment, report it so the merchant can verify what happened."}
           </p>
-          <Button
-            variant="outline"
-            className="mt-4 h-10 px-4 text-sm"
-            disabled={busy}
-            onClick={() => void withBusy(reportExternalPayment)}
-          >
-            Report a payment already made
-          </Button>
+          {!vm.publicZapSigner && (
+            <Button
+              variant="outline"
+              className="mt-4 h-10 px-4 text-sm"
+              disabled={busy}
+              onClick={() => void withBusy(reportExternalPayment)}
+            >
+              Report a payment already made
+            </Button>
+          )}
         </StatusNotice>
       )}
 

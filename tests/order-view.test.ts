@@ -713,6 +713,59 @@ describe("buildOrderViewModel", () => {
     ).toBe("closed")
   })
 
+  it("closes direct invoice payment across checkout modes while retaining report access", () => {
+    for (const checkoutMode of [
+      "private_checkout",
+      "public_zap_as_shopper",
+      "anonymous_public_zap",
+      "public_zap",
+      "external_wallet",
+    ] as const) {
+      const lifecycle = baseLifecycle({
+        checkoutMode,
+        invoiceStatus: "manual_required",
+        paymentStatus: "manual_required",
+        invoice: merchantInvoice(),
+      })
+      expect(deriveBoundMerchantInvoiceAccess(lifecycle, "accepted")).toBe(
+        "none"
+      )
+      for (const status of ["cancelled", "refund_requested"] as const) {
+        expect(deriveBoundMerchantInvoiceAccess(lifecycle, status)).toBe(
+          "report_only"
+        )
+      }
+      expect(
+        deriveBoundMerchantInvoiceAccess(lifecycle, null, "cancelled")
+      ).toBe("report_only")
+      expect(
+        deriveBoundMerchantInvoiceAccess(lifecycle, null, "completed")
+      ).toBe("closed")
+      expect(deriveBoundMerchantInvoiceAccess(lifecycle, "paid")).toBe("closed")
+      expect(
+        deriveBoundMerchantInvoiceAccess(
+          lifecycle,
+          "accepted",
+          "in_progress",
+          true
+        )
+      ).toBe("closed")
+      expect(
+        deriveBoundMerchantInvoiceAccess(
+          { ...lifecycle, phase: "cancelled" },
+          "accepted",
+          "in_progress"
+        )
+      ).toBe("none")
+      expect(
+        deriveBoundMerchantInvoiceAccess(
+          { ...lifecycle, invoice: undefined },
+          "cancelled"
+        )
+      ).toBe("none")
+    }
+  })
+
   it("keeps invalid and expired message invoices blocked", () => {
     const previousNetwork = config.lightningNetwork
     config.lightningNetwork = "mainnet"

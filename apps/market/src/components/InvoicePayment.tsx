@@ -94,7 +94,7 @@ export function InvoicePayment({
           {cashAppUrl && (
             <Button
               asChild
-              className="h-12 w-full bg-[var(--cash-app-green)] text-[var(--neutral-950)] hover:bg-[var(--cash-app-green)] hover:opacity-90 sm:hidden"
+              className="h-12 w-full bg-[var(--cash-app-green)] text-[var(--neutral-950)] hover:bg-[var(--cash-app-green)] hover:opacity-90"
             >
               <a
                 href={cashAppUrl}
@@ -143,7 +143,7 @@ export function InvoicePayment({
             </p>
           )}
           {cashAppUrl && (
-            <details className="text-xs leading-5 text-[var(--text-secondary)] sm:hidden">
+            <details className="text-xs leading-5 text-[var(--text-secondary)]">
               <summary className="cursor-pointer py-2">
                 Cash App didn’t open?
               </summary>

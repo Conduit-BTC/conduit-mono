@@ -16,9 +16,14 @@ review in Orders before payment controls are available.
   `noreferrer`, and `referrerPolicy="no-referrer"`, preserving the guest order tab.
   No app-install probing, automatic redirect, server request, or payment callback
   is introduced. Links are only followed after a buyer action.
-- Cash App is offered only for a mainnet invoice with a payment hash, matching
-  order amount, valid expiry, and a matching configured network. The existing
-  order guard runs again on click. Returning from the wallet is not payment proof.
+- Cash App is offered only for a mainnet invoice with a verified BOLT11 signature,
+  payment hash and secret, valid description fields and required feature flags,
+  matching order amount, valid expiry, and a matching configured network.
+  The existing order guard runs again on click. Cancelled, refund-requested,
+  completed, and paid orders cannot start invoice payment, across checkout modes.
+  Returning from the wallet is not payment proof.
+- The Cash App action remains available at every screen width, including phone
+  landscape and tablets. Desktop also shows the single shared invoice QR.
 - A missing or stale conversion quote falls back to the invoice amount in sats.
   The guest USD display is an estimate of this invoice, not a promised Cash App
   debit. Cash funding is conditional on Cash App account eligibility.
