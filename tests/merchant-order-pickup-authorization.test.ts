@@ -474,6 +474,184 @@ describe("Merchant pickup order authorization", () => {
     ).toMatchObject({ status: "unverified" })
   })
 
+  it("verifies equivalent per-product merchant booth records together", async () => {
+    const secondProductCoordinate = `30402:${merchant}:tea`
+    const firstBoothCoordinate = `30406:${merchant}:coffee-booth`
+    const secondBoothCoordinate = `30406:${merchant}:tea-booth`
+    const boothRecord = (
+      coordinate: string,
+      eventId: string,
+      createdAt: number
+    ) => ({
+      ...market().pickup!,
+      coordinate,
+      eventId,
+      authorPubkey: merchant,
+      dTag: coordinate.split(":").slice(2).join(":"),
+      title: "Merchant booth",
+      location: "Coffee booth",
+      countries: ["US"],
+      createdAt,
+    })
+    const firstBooth = boothRecord(firstBoothCoordinate, "9".repeat(64), 104)
+    const secondBooth = boothRecord(secondBoothCoordinate, "8".repeat(64), 105)
+    const currentMarket = market()
+    currentMarket.pickup = undefined
+    currentMarket.pickupCoordinate = undefined
+    currentMarket.pickups = [firstBooth, secondBooth]
+    currentMarket.collection = {
+      ...currentMarket.collection!,
+      productCoordinates: [productCoordinate, secondProductCoordinate],
+    }
+    currentMarket.acceptedProductCoordinates = [
+      productCoordinate,
+      secondProductCoordinate,
+    ]
+    currentMarket.acceptedProductEvidence = [
+      {
+        productCoordinate,
+        eventId: "4".repeat(64),
+        createdAt: 103,
+        shippingOptionCoordinates: [firstBoothCoordinate],
+      },
+      {
+        productCoordinate: secondProductCoordinate,
+        eventId: "7".repeat(64),
+        createdAt: 106,
+        shippingOptionCoordinates: [secondBoothCoordinate],
+      },
+    ]
+    currentMarket.participationRequests = [
+      { productCoordinate, merchantPubkey: merchant },
+      { productCoordinate: secondProductCoordinate, merchantPubkey: merchant },
+    ]
+
+    const firstProduct = product({
+      shippingOptionRefs: [{ coordinate: firstBoothCoordinate }],
+    })
+    const secondProduct = product({
+      id: secondProductCoordinate,
+      title: "Tea",
+      createdAt: 106,
+      updatedAt: 106,
+      shippingOptionRefs: [{ coordinate: secondBoothCoordinate }],
+    })
+    const currentProducts = products({ product: firstProduct })
+    currentProducts.data.push({
+      product: secondProduct,
+      eventId: "7".repeat(64),
+      addressId: secondProductCoordinate,
+      dTag: "tea",
+      eventCreatedAt: 106,
+    })
+    currentProducts.diagnostics.push({
+      productId: secondProductCoordinate,
+      addressId: secondProductCoordinate,
+      issue: null,
+      coverage: { listing: "complete", deletion: "complete" },
+    })
+
+    const firstSnapshot = cloneSnapshot()
+    firstSnapshot.handoffMode = "merchant_handoff"
+    firstSnapshot.handlerPubkey = merchant
+    firstSnapshot.option = {
+      coordinate: firstBoothCoordinate,
+      eventId: firstBooth.eventId,
+      createdAt: firstBooth.createdAt,
+      title: firstBooth.title,
+      location: firstBooth.location,
+      geohash: firstBooth.geohash,
+      countries: ["US"],
+    }
+    const secondSnapshot = structuredClone(firstSnapshot)
+    secondSnapshot.product = {
+      coordinate: secondProductCoordinate,
+      merchantPubkey: merchant,
+      eventId: "7".repeat(64),
+      createdAt: 106,
+    }
+    secondSnapshot.option = {
+      coordinate: secondBoothCoordinate,
+      eventId: secondBooth.eventId,
+      createdAt: secondBooth.createdAt,
+      title: secondBooth.title,
+      location: secondBooth.location,
+      geohash: secondBooth.geohash,
+      countries: ["US"],
+    }
+    const secondItem = orderItems(secondSnapshot)[0]!
+    secondItem.productId = secondProductCoordinate
+    secondItem.title = "Tea"
+
+    const result = await verify(dependencies(currentMarket, currentProducts), [
+      ...orderItems(firstSnapshot),
+      secondItem,
+    ])
+
+    expect(result).toMatchObject({ status: "verified" })
+    expect(result.status === "verified" ? result.products : []).toHaveLength(2)
+
+    const legacyFirstSnapshot = structuredClone(firstSnapshot)
+    delete legacyFirstSnapshot.option.countries
+    expect(
+      await verify(
+        dependencies(currentMarket, currentProducts),
+        orderItems(legacyFirstSnapshot)
+      )
+    ).toMatchObject({ status: "verified" })
+
+    const presentChangedCountries = structuredClone(firstSnapshot)
+    presentChangedCountries.option.countries = ["CA"]
+    expect(
+      await verify(
+        dependencies(currentMarket, currentProducts),
+        orderItems(presentChangedCountries)
+      )
+    ).toEqual({ status: "unverified", reason: "revision_mismatch" })
+
+    const currentWithoutCountries = structuredClone(currentMarket)
+    currentWithoutCountries.pickups = [
+      { ...firstBooth, countries: [] },
+      secondBooth,
+    ]
+    expect(
+      await verify(
+        dependencies(currentWithoutCountries, currentProducts),
+        orderItems(firstSnapshot)
+      )
+    ).toEqual({ status: "unverified", reason: "revision_mismatch" })
+
+    const changedLegacyRevision = structuredClone(currentMarket)
+    changedLegacyRevision.pickups = [
+      { ...firstBooth, eventId: "5".repeat(64) },
+      secondBooth,
+    ]
+    expect(
+      await verify(
+        dependencies(changedLegacyRevision, currentProducts),
+        orderItems(legacyFirstSnapshot)
+      )
+    ).toEqual({ status: "unverified", reason: "revision_mismatch" })
+
+    for (const changedTerms of [
+      { eventId: "6".repeat(64) },
+      { createdAt: secondBooth.createdAt + 1 },
+      { title: "Different booth" },
+      { location: "Different aisle" },
+      { geohash: "dpz84" },
+      { countries: ["CA"] },
+    ] satisfies Array<Partial<typeof secondBooth>>) {
+      const changedMarket = structuredClone(currentMarket)
+      changedMarket.pickups = [firstBooth, { ...secondBooth, ...changedTerms }]
+      expect(
+        await verify(dependencies(changedMarket, currentProducts), [
+          ...orderItems(firstSnapshot),
+          secondItem,
+        ])
+      ).toEqual({ status: "unverified", reason: "revision_mismatch" })
+    }
+  })
+
   it("verifies a historical own-organizer snapshot without a receipt handoff", async () => {
     const ownProductCoordinate = `30402:${organizer}:own-coffee`
     const ownMarket = market()
@@ -523,7 +701,7 @@ describe("Merchant pickup order authorization", () => {
     ).toMatchObject({ status: "verified" })
   })
 
-  it("accepts semantically equivalent signed replacements", async () => {
+  it("accepts semantically equivalent non-pickup replacements", async () => {
     const stockReplacement = product({
       stock: 4,
       createdAt: 200,
@@ -568,15 +746,21 @@ describe("Merchant pickup order authorization", () => {
       eventId: "6".repeat(64),
       createdAt: 202,
     }
-    equivalentGraphReplacement.pickup = {
-      ...equivalentGraphReplacement.pickup!,
-      eventId: "5".repeat(64),
-      createdAt: 203,
-    }
     expect(
       await verify(dependencies(equivalentGraphReplacement))
     ).toMatchObject({
       status: "verified",
+    })
+
+    const replacedPickupRevision = market()
+    replacedPickupRevision.pickup = {
+      ...replacedPickupRevision.pickup!,
+      eventId: "5".repeat(64),
+      createdAt: 203,
+    }
+    expect(await verify(dependencies(replacedPickupRevision))).toEqual({
+      status: "unverified",
+      reason: "revision_mismatch",
     })
   })
 
@@ -1110,7 +1294,7 @@ describe("Merchant pickup order authorization", () => {
         ),
         orderItems(canonical)
       )
-    ).toEqual({ status: "unverified", reason: "cost_mismatch" })
+    ).toEqual({ status: "unverified", reason: "revision_mismatch" })
 
     const forgedRawCost = structuredClone(canonical)
     forgedRawCost.sourceCost.amount = 7

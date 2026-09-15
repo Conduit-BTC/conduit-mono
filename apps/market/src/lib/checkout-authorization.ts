@@ -1,10 +1,14 @@
-import type {
-  ParsedShippingOption,
-  PricingRateInput,
-  Product,
+import {
+  hasSamePickupEvidenceRevision,
+  resolveOrderPickupHandoffAuthority,
+  type OrderPickupFulfillmentSchema,
+  type ParsedShippingOption,
+  type PricingRateInput,
+  type Product,
 } from "@conduit/core"
 import {
   getCartCommerceFingerprint,
+  getCartItemKey,
   rebuildCurrentCartItems,
   type CartItem,
   type CartItemFulfillment,
@@ -36,6 +40,62 @@ export type CheckoutProductFulfillmentResolver = (
 export type CheckoutPickupHandlerAuthorizer = (
   items: readonly CartItem[]
 ) => Promise<void>
+
+function hasSamePickupFulfillmentEvidenceRevision(
+  left: OrderPickupFulfillmentSchema,
+  right: OrderPickupFulfillmentSchema
+): boolean {
+  const leftAuthority = resolveOrderPickupHandoffAuthority(left)
+  const rightAuthority = resolveOrderPickupHandoffAuthority(right)
+
+  return (
+    left.organizerPubkey === right.organizerPubkey &&
+    left.product.merchantPubkey === right.product.merchantPubkey &&
+    leftAuthority.mode === rightAuthority.mode &&
+    leftAuthority.handlerPubkey === rightAuthority.handlerPubkey &&
+    hasSamePickupEvidenceRevision(left.product, right.product) &&
+    hasSamePickupEvidenceRevision(left.calendar, right.calendar) &&
+    hasSamePickupEvidenceRevision(left.collection, right.collection) &&
+    hasSamePickupEvidenceRevision(left.option, right.option)
+  )
+}
+
+function getSubmitAuthorizationFingerprint(
+  items: readonly CartItem[],
+  currentItems: readonly CartItem[]
+): string {
+  const currentByKey = new Map(
+    currentItems.map((item) => [getCartItemKey(item), item])
+  )
+  return getCartCommerceFingerprint(
+    items.map((item) => {
+      const current = currentByKey.get(getCartItemKey(item))
+      if (
+        item.fulfillment?.type !== "pickup" ||
+        current?.fulfillment?.type !== "pickup" ||
+        item.fulfillment.option.countries !== undefined ||
+        current.fulfillment.option.countries === undefined ||
+        !hasSamePickupFulfillmentEvidenceRevision(
+          item.fulfillment,
+          current.fulfillment
+        )
+      ) {
+        return item
+      }
+
+      return {
+        ...item,
+        fulfillment: {
+          ...item.fulfillment,
+          option: {
+            ...item.fulfillment.option,
+            countries: current.fulfillment.option.countries,
+          },
+        },
+      }
+    })
+  )
+}
 
 /**
  * Rebuilds one checkout snapshot from authoritative 30402 and 30406 reads.
@@ -94,7 +154,7 @@ export async function authorizeCurrentCheckoutItems(input: {
   if (
     !refreshedRawItems ||
     getCartCommerceFingerprint(refreshedRawItems) !==
-      getCartCommerceFingerprint(input.rawItems)
+      getSubmitAuthorizationFingerprint(input.rawItems, refreshedRawItems)
   ) {
     return { status: "changed" }
   }
@@ -122,7 +182,7 @@ export async function authorizeCurrentCheckoutItems(input: {
 
   if (
     getCartCommerceFingerprint(prepared.items) !==
-    getCartCommerceFingerprint(input.reviewedItems)
+    getSubmitAuthorizationFingerprint(input.reviewedItems, prepared.items)
   ) {
     return { status: "changed" }
   }

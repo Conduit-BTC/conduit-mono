@@ -4,6 +4,7 @@ import {
   getEffectiveMerchantOrderStatus,
   getOrderStatusDisplay,
   getProfileName,
+  hasSamePickupFulfillmentGraph,
   isExternalPaymentReportMessage,
   isMerchantOrderAccepted,
   isMerchantOrderPaid,
@@ -162,27 +163,6 @@ function getOrderItemFulfillmentMode(
   return item.format === "digital" ? "digital" : "unknown"
 }
 
-function hasSamePickupContext(
-  left: PickupFulfillment,
-  right: PickupFulfillment
-): boolean {
-  return (
-    left.organizerPubkey === right.organizerPubkey &&
-    left.calendar.coordinate === right.calendar.coordinate &&
-    left.calendar.eventId === right.calendar.eventId &&
-    left.calendar.createdAt === right.calendar.createdAt &&
-    left.collection.coordinate === right.collection.coordinate &&
-    left.collection.eventId === right.collection.eventId &&
-    left.collection.createdAt === right.collection.createdAt &&
-    left.option.coordinate === right.option.coordinate &&
-    left.option.eventId === right.option.eventId &&
-    left.option.createdAt === right.option.createdAt &&
-    left.option.title === right.option.title &&
-    left.option.location === right.option.location &&
-    left.option.geohash === right.option.geohash
-  )
-}
-
 /**
  * Derive fulfillment only from the immutable order snapshot. Mixed,
  * unsupported, or conflicting pickup evidence stays action-restricted instead
@@ -245,7 +225,7 @@ export function getMerchantOrderFulfillment(
     !firstPickup ||
     (!firstPickup.option.location && !firstPickup.option.geohash) ||
     pickupFulfillments.some(
-      (fulfillment) => !hasSamePickupContext(firstPickup, fulfillment)
+      (fulfillment) => !hasSamePickupFulfillmentGraph(firstPickup, fulfillment)
     )
   ) {
     return {

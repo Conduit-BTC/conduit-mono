@@ -251,6 +251,12 @@ export const orderPickupFulfillmentSchema = z
         .string()
         .regex(/^[0-9bcdefghjkmnpqrstuvwxyz]{1,32}$/i)
         .optional(),
+      /** Optional only for snapshots created before pickup countries were retained. */
+      countries: z
+        .array(z.string().regex(/^[A-Z]{2}$/))
+        .min(1)
+        .max(249)
+        .optional(),
     }),
     /** Omitted only by legacy snapshots, which never authorize organizer sharing. */
     handoffMode: eventMarketHandoffModeSchema.optional(),
@@ -428,7 +434,7 @@ function canonicalPickupCoordinateIdentity(coordinate: string): string | null {
   return `${kind}:${author.toLowerCase()}:${identifier}`
 }
 
-function hasSamePickupEvidenceRevision(
+export function hasSamePickupEvidenceRevision(
   left: PickupEvidenceCoordinateSchema,
   right: PickupEvidenceCoordinateSchema
 ): boolean {
@@ -452,9 +458,88 @@ function hasSamePickupEvidenceRevision(
   )
 }
 
+function pickupEvidenceAuthor(coordinate: string): string | null {
+  const canonical = canonicalPickupCoordinateIdentity(coordinate)
+  if (!canonical) return null
+  const [kind, author] = canonical.split(":", 3)
+  return kind === "30406" ? (author ?? null) : null
+}
+
+function normalizedPickupCountries(
+  countries: readonly string[] | undefined
+): string[] | null {
+  if (countries === undefined) return null
+  return Array.from(
+    new Set(countries.map((country) => country.toUpperCase()))
+  ).sort()
+}
+
+export type PickupOptionEvidence = PickupEvidenceCoordinateSchema & {
+  title: string
+  location?: string
+  geohash?: string
+  countries?: readonly string[]
+}
+
+function hasSamePickupPublicTerms(
+  left: PickupOptionEvidence,
+  right: PickupOptionEvidence
+): boolean {
+  return (
+    left.title === right.title &&
+    left.location === right.location &&
+    left.geohash?.toLowerCase() === right.geohash?.toLowerCase()
+  )
+}
+
+function hasSamePickupCountryTerms(
+  leftCountries: readonly string[] | null,
+  rightCountries: readonly string[] | null
+): boolean {
+  return (
+    leftCountries !== null &&
+    rightCountries !== null &&
+    leftCountries.length === rightCountries.length &&
+    leftCountries.every((country, index) => country === rightCountries[index])
+  )
+}
+
+export function hasSameExactPickupOptionEvidence(
+  left: PickupOptionEvidence,
+  right: PickupOptionEvidence,
+  options: { allowMissingCountries?: "either" | "left" | "neither" } = {}
+): boolean {
+  const leftCountries = normalizedPickupCountries(left.countries)
+  const rightCountries = normalizedPickupCountries(right.countries)
+  const allowMissingCountries = options.allowMissingCountries ?? "either"
+  const countriesMatch =
+    hasSamePickupCountryTerms(leftCountries, rightCountries) ||
+    (leftCountries === null && allowMissingCountries !== "neither") ||
+    (rightCountries === null && allowMissingCountries === "either")
+  return (
+    hasSamePickupEvidenceRevision(left, right) &&
+    hasSamePickupPublicTerms(left, right) &&
+    countriesMatch
+  )
+}
+
+function hasSameMerchantPickupTerms(
+  left: OrderPickupFulfillmentSchema,
+  right: OrderPickupFulfillmentSchema
+): boolean {
+  const leftCountries = normalizedPickupCountries(left.option.countries)
+  const rightCountries = normalizedPickupCountries(right.option.countries)
+  return (
+    hasSamePickupPublicTerms(left.option, right.option) &&
+    hasSamePickupCountryTerms(leftCountries, rightCountries)
+  )
+}
+
 /**
  * Pickup items may have different merchant-owned products and per-product
- * costs, but one order must preserve one exact organizer-authored event graph.
+ * costs. Organizer handoff requires one exact pickup revision. Merchant
+ * handoff also permits distinct merchant-authored option records when their
+ * public booth terms match exactly within one event graph.
  */
 export function hasSamePickupFulfillmentGraph(
   left: OrderPickupFulfillmentSchema,
@@ -474,16 +559,32 @@ export function hasSamePickupFulfillmentGraph(
   ) {
     return false
   }
+  const leftAuthority = resolveOrderPickupHandoffAuthority(left)
+  const rightAuthority = resolveOrderPickupHandoffAuthority(right)
+  const leftMerchant = left.product.merchantPubkey.toLowerCase()
+  const rightMerchant = right.product.merchantPubkey.toLowerCase()
+  if (
+    left.organizerPubkey.toLowerCase() !==
+      right.organizerPubkey.toLowerCase() ||
+    leftMerchant !== rightMerchant ||
+    !hasSamePickupEvidenceRevision(left.calendar, right.calendar) ||
+    !hasSamePickupEvidenceRevision(left.collection, right.collection) ||
+    leftAuthority.mode !== rightAuthority.mode ||
+    leftAuthority.handlerPubkey !== rightAuthority.handlerPubkey
+  ) {
+    return false
+  }
+
+  if (hasSameExactPickupOptionEvidence(left.option, right.option)) {
+    return true
+  }
+
   return (
-    left.organizerPubkey.toLowerCase() ===
-      right.organizerPubkey.toLowerCase() &&
-    hasSamePickupEvidenceRevision(left.calendar, right.calendar) &&
-    hasSamePickupEvidenceRevision(left.collection, right.collection) &&
-    hasSamePickupEvidenceRevision(left.option, right.option) &&
-    resolveOrderPickupHandoffAuthority(left).mode ===
-      resolveOrderPickupHandoffAuthority(right).mode &&
-    resolveOrderPickupHandoffAuthority(left).handlerPubkey ===
-      resolveOrderPickupHandoffAuthority(right).handlerPubkey
+    leftAuthority.mode === "merchant_handoff" &&
+    leftAuthority.handlerPubkey === leftMerchant &&
+    pickupEvidenceAuthor(left.option.coordinate) === leftMerchant &&
+    pickupEvidenceAuthor(right.option.coordinate) === rightMerchant &&
+    hasSameMerchantPickupTerms(left, right)
   )
 }
 

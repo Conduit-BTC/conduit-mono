@@ -49,6 +49,7 @@ function pickup(event = "market-a"): CartPickupFulfillment {
       createdAt: 102,
       title: "Event pickup",
       location: "Public hall entrance",
+      countries: ["US"],
     },
     handoffMode: "organizer_handoff",
     handlerPubkey: "a".repeat(64),
@@ -258,6 +259,89 @@ describe("Market event pickup fulfillment", () => {
     expect(
       getMixedFulfillmentBlockingMessage([item(), merchantItem])
     ).toContain("different pickup handlers")
+  })
+
+  it("combines same-merchant products with equivalent merchant booth records", () => {
+    const merchantPickup = (productDTag: string, revision: string) => {
+      const fulfillment: CartPickupFulfillment = {
+        ...pickup(),
+        product: {
+          ...pickup().product,
+          coordinate: `30402:${"e".repeat(64)}:${productDTag}`,
+          eventId: revision.repeat(64),
+        },
+        option: {
+          ...pickup().option,
+          coordinate: `30406:${"e".repeat(64)}:${productDTag}-event-pickup`,
+          eventId: revision.repeat(64),
+          createdAt: 200 + Number(revision),
+          title: "Merchant pickup",
+          location: "Booth 12, Public market hall",
+          geohash: "dr5ru",
+          countries: ["US", "CA"],
+        },
+        handoffMode: "merchant_handoff",
+        handlerPubkey: "e".repeat(64),
+      }
+      return fulfillment
+    }
+    const coffeeFulfillment = merchantPickup("coffee", "1")
+    const teaFulfillment = merchantPickup("tea", "2")
+    teaFulfillment.option.countries = ["CA", "US"]
+    const coffee = item({ fulfillment: coffeeFulfillment })
+    const tea = item({
+      productId: teaFulfillment.product.coordinate,
+      title: "Tea",
+      fulfillment: teaFulfillment,
+      shippingOptionId: teaFulfillment.option.coordinate,
+    })
+
+    expect(getMixedFulfillmentBlockingMessage([coffee, tea])).toBeNull()
+    expect(isSameCartFulfillment(coffee, tea)).toBe(true)
+
+    const incompatibleTerms: Array<Partial<typeof teaFulfillment.option>> = [
+      { title: "Other pickup" },
+      { location: "Booth 13, Public market hall" },
+      { geohash: "dr5rv" },
+      { countries: ["US"] },
+    ]
+    for (const option of incompatibleTerms) {
+      const conflicting = item({
+        productId: tea.productId,
+        fulfillment: {
+          ...teaFulfillment,
+          option: { ...teaFulfillment.option, ...option },
+        },
+      })
+      expect(
+        getMixedFulfillmentBlockingMessage([coffee, conflicting])
+      ).toContain("separate orders")
+    }
+
+    const otherMerchant = "f".repeat(64)
+    const otherMerchantFulfillment: CartPickupFulfillment = {
+      ...teaFulfillment,
+      product: {
+        ...teaFulfillment.product,
+        coordinate: `30402:${otherMerchant}:tea`,
+        merchantPubkey: otherMerchant,
+      },
+      option: {
+        ...teaFulfillment.option,
+        coordinate: `30406:${otherMerchant}:tea-event-pickup`,
+      },
+      handlerPubkey: otherMerchant,
+    }
+    expect(
+      getMixedFulfillmentBlockingMessage([
+        coffee,
+        item({
+          productId: otherMerchantFulfillment.product.coordinate,
+          merchantPubkey: otherMerchant,
+          fulfillment: otherMerchantFulfillment,
+        }),
+      ])
+    ).toContain("separate orders")
   })
 
   it("never overwrites a product's snapshotted pickup identity", () => {

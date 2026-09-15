@@ -2,6 +2,7 @@ import {
   decodeEventMarketReference,
   getEventMarket,
   getProductsByIds,
+  hasSameExactPickupOptionEvidence,
   isFiatCurrencyCode,
   normalizeCommercePrice,
   resolveEventMarketProductFulfillment,
@@ -484,10 +485,10 @@ export async function verifyMerchantPickupOrderAuthorization(
       currentFulfillment.status !== "resolved" ||
       currentFulfillment.handoffMode !== snapshotAuthority.mode ||
       currentFulfillment.handoffPubkey !== snapshotAuthority.handlerPubkey ||
-      !sameCoordinate(
-        currentFulfillment.selectedPickup.coordinate,
-        item.fulfillment.option.coordinate,
-        [30406]
+      !hasSameExactPickupOptionEvidence(
+        item.fulfillment.option,
+        currentFulfillment.selectedPickup,
+        { allowMissingCountries: "left" }
       )
     ) {
       return { status: "unverified", reason: "revision_mismatch" }

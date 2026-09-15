@@ -206,6 +206,7 @@ export function buildPickupFulfillmentTerms(
       title: pickup.title,
       location: pickup.location,
       geohash: pickup.geohash,
+      countries: [...pickup.countries],
     },
     handoffMode: fulfillmentDecision.handoffMode,
     handlerPubkey: fulfillmentDecision.handoffPubkey,
@@ -1539,6 +1540,11 @@ function pickupSnapshotMatches(
     snapshot.option.title === current.option.title &&
     snapshot.option.location === current.option.location &&
     snapshot.option.geohash === current.option.geohash &&
+    (!snapshot.option.countries ||
+      (snapshot.option.countries.length === current.option.countries?.length &&
+        snapshot.option.countries.every(
+          (country, index) => country === current.option.countries?.[index]
+        ))) &&
     pickupSourceCostMatches(snapshot.sourceCost, current.sourceCost)
   )
 }

@@ -805,6 +805,7 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
                   title: item.fulfillment.option.title,
                   location: item.fulfillment.option.location ?? null,
                   geohash: item.fulfillment.option.geohash ?? null,
+                  countries: item.fulfillment.option.countries ?? null,
                 },
                 ...getCartPickupHandoffFingerprint(item.fulfillment),
                 costSats: item.fulfillment.costSats,
