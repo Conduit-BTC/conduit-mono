@@ -5,8 +5,9 @@ describe("merchant invoice route contract", () => {
     const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
     expect(source).toContain("prepareMerchantInvoicePaymentAction")
     expect(source).toContain("Do not pay this invoice.")
-    expect(source).toContain('boundMerchantInvoiceAccess !== "closed"')
-    expect(source).toContain('boundMerchantInvoiceAccess !== "report_only"')
+    expect(source).toContain('manualInvoiceAccess !== "closed"')
+    expect(source).toContain('manualInvoiceAccess !== "report_only"')
+    expect(source).toContain('manualInvoiceAccess !== "receipt_only"')
     expect(source).toContain(
       'action?.status === "blocked" && action.canReport ? action : undefined'
     )
