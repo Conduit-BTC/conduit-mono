@@ -111,13 +111,15 @@ describe("short query handling", () => {
 })
 
 describe("late seller flags", () => {
-  it("writes a settled seller lookup back into the cached result", async () => {
+  it("rebuilds the cached result once a settled seller lookup arrives", async () => {
     const hook = await readFile(
       "packages/core/src/hooks/useProfileSearch.ts",
       "utf8"
     )
-    expect(hook).toContain("onSellerFlagsSettled")
-    expect(hook).toContain("queryClient.setQueryData<ProfileSearchResult>")
-    expect(hook).toContain("applyProfileSearchSellerFlags(previous")
+    expect(hook).toContain("onSellerLookupSettled")
+    expect(hook).toContain(
+      "sellerLookupBudgetMs: sellerLookupBudgetRef.current"
+    )
+    expect(hook).toContain("queryClient.refetchQueries({")
   })
 })

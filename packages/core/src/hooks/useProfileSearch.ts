@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  applyProfileSearchSellerFlags,
   PROFILE_SEARCH_DEFAULT_LIMIT,
   PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH,
   PROFILE_SEARCH_MIN_QUERY_LENGTH,
@@ -92,6 +91,16 @@ export function useProfileSearch(
     eligible && normalized.length >= PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH
   const [settledQuery, setSettledQuery] = useState("")
   const queryClient = useQueryClient()
+  /**
+   * Set once per query when a seller lookup settles after its display
+   * budget. The repair read waits for the lookup, so the rebuilt result
+   * ranks late sellers and reports a failed lookup truthfully.
+   */
+  const sellerLookupBudgetRef = useRef<number | undefined>(undefined)
+
+  useEffect(() => {
+    sellerLookupBudgetRef.current = undefined
+  }, [accountPubkey, limit, normalized])
 
   useEffect(() => {
     if (!eligible) {
@@ -125,16 +134,14 @@ export function useProfileSearch(
         query: trimmed,
         limit,
         signal,
-        // A seller lookup that outran its display budget still answers.
-        // Publishing it back keeps a storefront from being offered as a
-        // plain account until the next keystroke.
-        onSellerFlagsSettled: (sellerPubkeys) => {
-          queryClient.setQueryData<ProfileSearchResult>(
-            cachedKey,
-            (previous) =>
-              previous &&
-              applyProfileSearchSellerFlags(previous, sellerPubkeys, limit)
-          )
+        sellerLookupBudgetMs: sellerLookupBudgetRef.current,
+        onSellerLookupSettled: () => {
+          if (sellerLookupBudgetRef.current !== undefined) return
+          sellerLookupBudgetRef.current = Infinity
+          void queryClient.refetchQueries({
+            queryKey: cachedKey,
+            exact: true,
+          })
         },
       }),
   })

@@ -11,7 +11,6 @@ import {
   searchNetworkProfiles,
   planProfileSearchRelayUrls,
   searchProfiles,
-  applyProfileSearchSellerFlags,
   summarizeProfileSearchRelays,
   PROFILE_SEARCH_MAX_RELAYS,
   type ProfileSearchDependencies,
@@ -1025,18 +1024,18 @@ describe("profile search device reads and retirement", () => {
 })
 
 describe("late seller lookups", () => {
-  it("publishes a seller lookup that answered after its budget", async () => {
+  it("reports a lookup that answered after its budget", async () => {
     let release: (value: Set<string>) => void = () => {}
     const blocked = new Promise<Set<string>>((resolve) => {
       release = resolve
     })
-    const settled: Set<string>[] = []
+    const settled: string[] = []
 
     const outcome = await searchCachedProfiles(
       {
         query: "gra",
         sellerLookupBudgetMs: 20,
-        onSellerFlagsSettled: (sellerPubkeys) => settled.push(sellerPubkeys),
+        onSellerLookupSettled: (state) => settled.push(state),
       },
       deps({
         loadCachedProfiles: async () => [
@@ -1059,34 +1058,66 @@ describe("late seller lookups", () => {
     release(new Set([GRACE]))
     await blocked
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(settled).toEqual([new Set([GRACE])])
-
-    const corrected = applyProfileSearchSellerFlags(outcome, settled[0]!, 5)
-    expect(corrected.matches[0]?.isSeller).toBe(true)
-    expect(corrected.device.sellerFlags).toBe("read")
+    expect(settled).toEqual(["read"])
   })
 
-  it("keeps seller-first order when the flags arrive late", () => {
-    const base = result({
-      query: "ali",
-      matches: [
-        match({
-          pubkey: ALICIA,
-          profile: { pubkey: ALICIA, name: "Alicia" },
-          score: 1,
-        }),
-        match({
-          pubkey: MALICE,
-          profile: { pubkey: MALICE, name: "Malice" },
-          score: 3,
-        }),
-      ],
+  it("reports a lookup that failed after its budget", async () => {
+    let reject: (error: Error) => void = () => {}
+    const blocked = new Promise<Set<string>>((_, fail) => {
+      reject = fail
     })
+    const settled: string[] = []
 
-    const corrected = applyProfileSearchSellerFlags(base, new Set([MALICE]), 5)
-    expect(corrected.matches.map((entry) => entry.pubkey)).toEqual([
-      MALICE,
-      ALICIA,
-    ])
+    await searchCachedProfiles(
+      {
+        query: "fra",
+        sellerLookupBudgetMs: 20,
+        onSellerLookupSettled: (state) => settled.push(state),
+      },
+      deps({
+        loadCachedProfiles: async () => [
+          {
+            pubkey: FRANK,
+            name: "frank",
+            eventCreatedAt: 100,
+            eventId: "cached",
+            cachedAt: 1,
+          },
+        ],
+        loadSellerPubkeys: () => blocked,
+      })
+    )
+
+    reject(new Error("products store unavailable"))
+    await blocked.catch(() => undefined)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(settled).toEqual(["unavailable"])
+  })
+
+  it("lets the repair read rank a seller that the capped result had dropped", async () => {
+    const rows = [
+      { pubkey: ALICE, name: "Alice A" },
+      { pubkey: ALICIA, name: "Alice B" },
+      { pubkey: CAROL, name: "Alice C" },
+      { pubkey: MALICE, name: "Alice D" },
+      { pubkey: ERIN, name: "Alice E" },
+      { pubkey: GRACE, name: "Alice F" },
+    ].map((row) => ({
+      ...row,
+      eventCreatedAt: 100,
+      eventId: `cached-${row.pubkey.slice(0, 4)}`,
+      cachedAt: 1,
+    }))
+    const repaired = await searchCachedProfiles(
+      { query: "alice", limit: 5, sellerLookupBudgetMs: Infinity },
+      deps({
+        loadCachedProfiles: async () => rows,
+        loadSellerPubkeys: async () => new Set([GRACE]),
+      })
+    )
+
+    expect(repaired.matches[0]?.pubkey).toBe(GRACE)
+    expect(repaired.matches[0]?.isSeller).toBe(true)
+    expect(repaired.device.sellerFlags).toBe("read")
   })
 })
