@@ -224,6 +224,34 @@ function hasExactCoordinate(
   return values.some((value) => sameCoordinate(value, coordinate, allowedKinds))
 }
 
+function normalizedPickupCountries(
+  countries: readonly string[] | undefined
+): string[] {
+  return Array.from(
+    new Set((countries ?? []).map((country) => country.trim().toUpperCase()))
+  ).sort()
+}
+
+function pickupOptionMatchesCurrentEvidence(
+  snapshot: OrderPickupFulfillmentSchema["option"],
+  current: NonNullable<EventMarketResolution["pickup"]>
+): boolean {
+  const snapshotCountries = normalizedPickupCountries(snapshot.countries)
+  const currentCountries = normalizedPickupCountries(current.countries)
+  return (
+    sameCoordinate(snapshot.coordinate, current.coordinate, [30406]) &&
+    snapshot.eventId.toLowerCase() === current.eventId.toLowerCase() &&
+    snapshot.createdAt === current.createdAt &&
+    snapshot.title === current.title &&
+    snapshot.location === current.location &&
+    snapshot.geohash?.toLowerCase() === current.geohash?.toLowerCase() &&
+    snapshotCountries.length === currentCountries.length &&
+    snapshotCountries.every(
+      (country, index) => country === currentCountries[index]
+    )
+  )
+}
+
 function organizerGraphMatches(
   snapshot: OrderPickupFulfillmentSchema,
   resolution: EventMarketResolution
@@ -484,10 +512,9 @@ export async function verifyMerchantPickupOrderAuthorization(
       currentFulfillment.status !== "resolved" ||
       currentFulfillment.handoffMode !== snapshotAuthority.mode ||
       currentFulfillment.handoffPubkey !== snapshotAuthority.handlerPubkey ||
-      !sameCoordinate(
-        currentFulfillment.selectedPickup.coordinate,
-        item.fulfillment.option.coordinate,
-        [30406]
+      !pickupOptionMatchesCurrentEvidence(
+        item.fulfillment.option,
+        currentFulfillment.selectedPickup
       )
     ) {
       return { status: "unverified", reason: "revision_mismatch" }

@@ -590,6 +590,24 @@ describe("Merchant pickup order authorization", () => {
 
     expect(result).toMatchObject({ status: "verified" })
     expect(result.status === "verified" ? result.products : []).toHaveLength(2)
+
+    for (const changedTerms of [
+      { eventId: "6".repeat(64) },
+      { createdAt: secondBooth.createdAt + 1 },
+      { title: "Different booth" },
+      { location: "Different aisle" },
+      { geohash: "dpz84" },
+      { countries: ["CA"] },
+    ] satisfies Array<Partial<typeof secondBooth>>) {
+      const changedMarket = structuredClone(currentMarket)
+      changedMarket.pickups = [firstBooth, { ...secondBooth, ...changedTerms }]
+      expect(
+        await verify(dependencies(changedMarket, currentProducts), [
+          ...orderItems(firstSnapshot),
+          secondItem,
+        ])
+      ).toEqual({ status: "unverified", reason: "revision_mismatch" })
+    }
   })
 
   it("verifies a historical own-organizer snapshot without a receipt handoff", async () => {
@@ -641,7 +659,7 @@ describe("Merchant pickup order authorization", () => {
     ).toMatchObject({ status: "verified" })
   })
 
-  it("accepts semantically equivalent signed replacements", async () => {
+  it("accepts semantically equivalent non-pickup replacements", async () => {
     const stockReplacement = product({
       stock: 4,
       createdAt: 200,
@@ -686,15 +704,21 @@ describe("Merchant pickup order authorization", () => {
       eventId: "6".repeat(64),
       createdAt: 202,
     }
-    equivalentGraphReplacement.pickup = {
-      ...equivalentGraphReplacement.pickup!,
-      eventId: "5".repeat(64),
-      createdAt: 203,
-    }
     expect(
       await verify(dependencies(equivalentGraphReplacement))
     ).toMatchObject({
       status: "verified",
+    })
+
+    const replacedPickupRevision = market()
+    replacedPickupRevision.pickup = {
+      ...replacedPickupRevision.pickup!,
+      eventId: "5".repeat(64),
+      createdAt: 203,
+    }
+    expect(await verify(dependencies(replacedPickupRevision))).toEqual({
+      status: "unverified",
+      reason: "revision_mismatch",
     })
   })
 
@@ -1228,7 +1252,7 @@ describe("Merchant pickup order authorization", () => {
         ),
         orderItems(canonical)
       )
-    ).toEqual({ status: "unverified", reason: "cost_mismatch" })
+    ).toEqual({ status: "unverified", reason: "revision_mismatch" })
 
     const forgedRawCost = structuredClone(canonical)
     forgedRawCost.sourceCost.amount = 7
