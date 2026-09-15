@@ -307,7 +307,8 @@ export interface ProductDetailQuery {
 export interface ProductsByIdsOptions {
   /**
    * Cumulative exact-coordinate browse snapshots as author batches settle.
-   * Intermediate snapshots are stale/partial and never authorize purchase.
+   * Queued and unfinished authors stay stale/partial; completed authors carry
+   * final per-coordinate diagnostics before other authors finish.
    * The last callback is the final family/deletion-reconciled return value.
    */
   onProgress?: (result: ProductsByIdsResult) => void
@@ -466,7 +467,8 @@ type CommerceTestOverrides = {
   now?: () => number
   getCachedProducts?: (
     merchantPubkey?: string,
-    authorPubkeys?: readonly string[]
+    authorPubkeys?: readonly string[],
+    selection?: { ids?: readonly string[]; parentIds?: readonly string[] }
   ) => Promise<CachedProduct[]>
   putCachedProducts?: (rows: CachedProduct[]) => Promise<void>
   getCachedProductTombstones?: (
@@ -2765,6 +2767,106 @@ async function getCachedProductRecords(
     )
 }
 
+/** Read only exact targets and same-author family context before normalization. */
+async function getCachedExactProductRecords(
+  productIds: readonly string[],
+  knownRecords: readonly CommerceProductRecord[] = []
+): Promise<CommerceProductRecord[]> {
+  const targets = new Set(productIds)
+  const authors = uniqueStrings(
+    productIds.flatMap((id) => {
+      const coordinate = parseProductAddressCoordinate(id)
+      return coordinate ? [coordinate.authorPubkey] : []
+    })
+  )
+  const readRows = async (
+    selectedAuthors: readonly string[],
+    selection: { ids?: readonly string[]; parentIds?: readonly string[] }
+  ): Promise<CachedProduct[]> => {
+    const ids = new Set(selection.ids)
+    const parents = new Set(selection.parentIds)
+    const authorSet = new Set(selectedAuthors)
+    const matches = (row: CachedProduct) =>
+      authorSet.has(row.pubkey) &&
+      parseProductAddressCoordinate(row.id)?.authorPubkey === row.pubkey &&
+      (ids.has(row.id) ||
+        (!!row.parentProductId && parents.has(row.parentProductId)))
+    if (testOverrides.getCachedProducts) {
+      // Existing fixtures may ignore the optional native-query selection.
+      return (
+        await testOverrides.getCachedProducts(
+          undefined,
+          selectedAuthors,
+          selection
+        )
+      ).filter(matches)
+    }
+    if (selection.ids) {
+      return (await db.products.bulkGet([...ids])).filter(
+        (row): row is CachedProduct => row !== undefined && matches(row)
+      )
+    }
+    return db.products
+      .where("pubkey")
+      .anyOf([...selectedAuthors])
+      .filter(matches)
+      .toArray()
+  }
+  // Keep reading prior context IDs even after a sibling changes parent/type;
+  // its newer signed row must supersede the retained family membership.
+  const readIds = uniqueStrings([
+    ...productIds,
+    ...knownRecords.map((record) => record.addressId),
+  ])
+  const direct = await readRows(authors, { ids: readIds })
+  const parentIds = new Set<string>()
+  const discoverFamily = (
+    id: string,
+    pubkey: string,
+    type: string | undefined,
+    parentId: string | undefined
+  ) => {
+    if (!targets.has(id)) return
+    if (type === "variable") parentIds.add(id)
+    if (type === "variation" && parentId) {
+      const parent = parseProductAddressCoordinate(parentId)
+      if (parent?.authorPubkey === pubkey) parentIds.add(parentId)
+    }
+  }
+  for (const row of direct)
+    discoverFamily(row.id, row.pubkey, row.type, row.parentProductId)
+  // A live target can reveal a family even if its cache write failed or the
+  // retained target still describes an older simple listing.
+  for (const record of knownRecords)
+    discoverFamily(
+      record.addressId,
+      record.product.pubkey,
+      record.product.type,
+      record.product.parentProductId
+    )
+  const contextRows = [...direct]
+  if (parentIds.size > 0) {
+    const missingParents = [...parentIds].filter((id) => !readIds.includes(id))
+    const familyAuthors = uniqueStrings(
+      [...parentIds].map(
+        (id) => parseProductAddressCoordinate(id)!.authorPubkey
+      )
+    )
+    if (missingParents.length > 0)
+      contextRows.push(
+        ...(await readRows(familyAuthors, { ids: missingParents }))
+      )
+    contextRows.push(
+      ...(await readRows(familyAuthors, { parentIds: [...parentIds] }))
+    )
+  }
+  const rows = await flushVolatileProductSourceRelayUrls([
+    ...new Map(contextRows.map((row) => [row.id, row])).values(),
+  ])
+  const deletions = await getLocalProductDeletionTimestamps(undefined, authors)
+  return filterDeletedProductRecords(rows.map(fromCachedProduct), deletions)
+}
+
 async function cacheProductRecords(
   records: CommerceProductRecord[]
 ): Promise<void> {
@@ -4367,7 +4469,8 @@ async function fetchVariationGroupRecords(
 async function fetchVariationGroupRecordBatch(
   targets: readonly CommerceProductRecord[],
   relayHintsByParent: ReadonlyMap<string, readonly string[]>,
-  options: ProductsByIdsOptions = {}
+  options: ProductsByIdsOptions = {},
+  preparedRelayLists?: Awaited<ReturnType<typeof preloadExactProductRelayLists>>
 ): Promise<{
   records: CommerceProductRecord[]
   capped: boolean
@@ -4436,7 +4539,9 @@ async function fetchVariationGroupRecordBatch(
   const {
     relayLists: sharedRelayLists,
     unavailableAuthors: relayListUnavailableAuthors,
-  } = await preloadExactProductRelayLists(allAuthors, options)
+  } =
+    preparedRelayLists ??
+    (await preloadExactProductRelayLists(allAuthors, options))
   const targetsByFamilyPlan = new Map<string, typeof validTargets>()
   for (const target of validTargets) {
     const key = JSON.stringify([target.author, target.plannedRelayHints])
@@ -5201,26 +5306,220 @@ export async function getProductsByIds(
   }
 
   const authors = uniqueStrings(addresses.map((address) => address.pubkey))
-  const wanted = new Set(
-    addresses.map((address) => `${address.kind}:${address.pubkey}:${address.d}`)
-  )
-  const cachedByAuthors = await getCachedProductRecords(
+  const wanted = new Set(lookups.flatMap((lookup) => lookup.addressId ?? []))
+  const initialCached = await getCachedExactProductRecords([...wanted])
+  const initialDeletions = await getLocalProductDeletionTimestamps(
     undefined,
-    { includeStale: true, includeMarketHidden: true },
     authors
   )
-  const cached = cachedByAuthors.filter((record) =>
-    wanted.has(record.addressId)
+  let publication = Promise.resolve<unknown>(undefined)
+  const context: ExactProductReadContext = {
+    cached: initialCached,
+    deletions: initialDeletions,
+    relayLists: { relayLists: new Map(), unavailableAuthors: new Set() },
+    completed: new Map(),
+    serialize<T>(work: () => Promise<T>) {
+      const next = publication.then(work)
+      publication = next
+      return next
+    },
+    async refreshCache(author, knownRecords = []) {
+      // A completed sibling can acquire a newer signed revision while another
+      // author is held. Reconcile the invocation's author scope once per actual
+      // publication, not once per retained snapshot in the aggregate.
+
+      context.cached = mergeCachedAndLiveProductRecords({
+        cached: context.cached,
+        live: await getCachedExactProductRecords(
+          [...wanted],
+          [...context.cached, ...knownRecords]
+        ),
+        deletionTimestamps: context.deletions,
+      })
+      return context.cached.filter(
+        (record) => !author || record.product.pubkey === author
+      )
+    },
+    async refreshDeletions() {
+      context.deletions = mergeDeletionTimestamps(
+        context.deletions,
+        await getLocalProductDeletionTimestamps(undefined, authors)
+      )
+      return context.deletions
+    },
+  }
+  const snapshots = new Map<string, ProductsByIdsResult>()
+  let latestPublished: ProductsByIdsResult | undefined
+  const aggregate = (): ProductsByIdsResult => {
+    const results = authors.map((author) => {
+      const completed = context.completed.get(author)
+      if (completed) return completed()
+      const snapshot = snapshots.get(author)
+      const authorWanted = new Set(
+        lookups.flatMap((lookup) =>
+          lookup.address?.pubkey === author && lookup.addressId
+            ? [lookup.addressId]
+            : []
+        )
+      )
+      const records = mergeCachedAndLiveProductRecords({
+        cached: context.cached.filter(
+          (record) => record.product.pubkey === author
+        ),
+        live:
+          snapshot?.data.flatMap((record) => [
+            { ...record, family: undefined },
+            ...(record.family?.children ?? []),
+          ]) ?? [],
+        deletionTimestamps: context.deletions,
+      })
+      const meta =
+        snapshot?.meta ??
+        createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
+          stale: true,
+          degraded: true,
+        })
+      return {
+        data: withProductFamilyReadEvidence(
+          filterExactProductRecordsForRead(records, authorWanted, options),
+          meta
+        ),
+        meta,
+        diagnostics:
+          snapshot?.diagnostics ??
+          lookups
+            .filter((lookup) => lookup.address?.pubkey === author)
+            .map((lookup) => ({
+              productId: lookup.productId,
+              addressId: lookup.addressId,
+              issue: "cached_only" as const,
+              coverage: {
+                listing: "unavailable" as const,
+                deletion: "unavailable" as const,
+              },
+            })),
+      }
+    })
+    const diagnosticsByProduct = new Map(
+      results.flatMap((result) =>
+        result.diagnostics.map((row) => [row.productId, row] as const)
+      )
+    )
+    const pending = context.completed.size !== authors.length
+    return {
+      data: results.flatMap((result) => result.data),
+      meta: {
+        ...createMeta(
+          "product_detail",
+          results.some((result) => result.meta.source === "local_cache")
+            ? "local_cache"
+            : "commerce",
+          PRODUCT_CAPABILITIES,
+          {
+            stale: pending || results.some((result) => result.meta.stale),
+            degraded:
+              pending ||
+              lookups.some((lookup) => !lookup.addressId) ||
+              results.some((result) => result.meta.degraded),
+            capped: results.some((result) => result.meta.capped),
+          }
+        ),
+        fetchedAt: Math.min(...results.map((result) => result.meta.fetchedAt)),
+      },
+      diagnostics: lookups.map(
+        (lookup) =>
+          diagnosticsByProduct.get(lookup.productId) ?? {
+            productId: lookup.productId,
+            addressId: null,
+            issue: "invalid_product_reference",
+          }
+      ),
+    }
+  }
+  const publish = () => {
+    latestPublished = aggregate()
+    options.onProgress?.(latestPublished)
+  }
+  // Cached families are available before relay-list discovery or queued authors.
+  if (options.shouldContinue?.() === false)
+    throw new NostrSignerError("authority_changed")
+  if (initialCached.some((record) => wanted.has(record.addressId))) publish()
+  context.relayLists = await preloadExactProductRelayLists(authors, options)
+  // Non-observing callers retain cross-author family batching. Progressive
+  // callers need independent author completion and share the same prepared stages.
+  if (!options.onProgress)
+    return readPreparedProductTargets(lookups, undefined, context, options)
+  await mapWithConcurrency(
+    authors,
+    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    async (author) => {
+      if (options.shouldContinue?.() === false)
+        throw new NostrSignerError("authority_changed")
+      await readPreparedProductTargets(
+        lookups.filter((lookup) => lookup.address?.pubkey === author),
+        author,
+        context,
+        {
+          ...options,
+          onProgress: options.onProgress
+            ? (snapshot) => {
+                if (options.shouldContinue?.() === false) return
+                snapshots.set(author, snapshot)
+                publish()
+              }
+            : undefined,
+        }
+      )
+    }
   )
+  if (options.shouldContinue?.() === false)
+    throw new NostrSignerError("authority_changed")
+  return latestPublished ?? aggregate()
+}
+
+/** Shared preparation and publication state for one exact read invocation. */
+type ExactProductLookup = {
+  productId: string
+  addressId: string | null
+  address: {
+    kind: number
+    pubkey: string
+    d: string
+    relayHints: string[]
+  } | null
+}
+type ExactProductReadContext = {
+  cached: CommerceProductRecord[]
+  deletions: DeletionTimestamps
+  relayLists: Awaited<ReturnType<typeof preloadExactProductRelayLists>>
+  completed: Map<string, () => ProductsByIdsResult>
+  serialize<T>(work: () => Promise<T>): Promise<T>
+  refreshCache(
+    author: string | undefined,
+    knownRecords?: readonly CommerceProductRecord[]
+  ): Promise<CommerceProductRecord[]>
+  refreshDeletions(): Promise<DeletionTimestamps>
+}
+
+/** Complete exact listing, family and deletion stages for prepared targets. */
+async function readPreparedProductTargets(
+  lookups: ExactProductLookup[],
+  author: string | undefined,
+  context: ExactProductReadContext,
+  options: ProductsByIdsOptions
+): Promise<ProductsByIdsResult> {
+  const addresses = lookups.flatMap((lookup) => lookup.address ?? [])
+  const wanted = new Set(lookups.flatMap((lookup) => lookup.addressId ?? []))
+  let cachedByAuthors = context.cached.filter(
+    (record) => !author || record.product.pubkey === author
+  )
+  let cached = cachedByAuthors.filter((record) => wanted.has(record.addressId))
   // Checkout needs positive live evidence for the selected listing version.
   // Deletion reads preserve monotonic known evidence, but incomplete deletion
   // discovery alone is not a global absence proof and must not veto checkout.
   let listingCoverage: ProductAvailabilityCoverage = "unavailable"
   let deletionCoverage: ProductAvailabilityCoverage = "complete"
-  let deletionTimestamps = await getLocalProductDeletionTimestamps(
-    undefined,
-    authors
-  )
+  let deletionTimestamps = context.deletions
   const routeRelayHintsByAddress = new Map<string, string[]>()
   const directReadTargetByAddress = new Map<
     string,
@@ -5274,7 +5573,7 @@ export async function getProductsByIds(
   const {
     relayLists: directRelayLists,
     unavailableAuthors: relayListUnavailableAuthors,
-  } = await preloadExactProductRelayLists(authors, options)
+  } = context.relayLists
   type DirectTargetGroup = {
     targets: typeof directReadTargets
     relayHints: string[]
@@ -5361,19 +5660,15 @@ export async function getProductsByIds(
   let directReadCapped = false
   const progressiveEvents: NDKEvent[] = []
   let progressiveKnownRecords: CommerceProductRecord[] = []
-  let progressQueue = Promise.resolve()
   const emitDirectProgress = (events: NDKEvent[]) => {
     if (!options.onProgress) return Promise.resolve()
     // Serialize cache reconciliation so an older asynchronous snapshot cannot
     // overtake a later one, including a signed deletion learned by another read.
-    progressQueue = progressQueue.then(async () => {
+    return context.serialize(async () => {
       if (options.shouldContinue?.() === false) return
       progressiveEvents.push(...events)
       const observed = dedupeProductEvents(progressiveEvents)
-      const currentDeletionTimestamps = await getLocalProductDeletionTimestamps(
-        undefined,
-        authors
-      )
+      const currentDeletionTimestamps = await context.refreshDeletions()
       if (options.shouldContinue?.() === false) return
       try {
         // Publish shared cache evidence before notifying consumers that may
@@ -5385,15 +5680,8 @@ export async function getProductsByIds(
         // Storage failure must not discard a valid network browse snapshot.
       }
       if (options.shouldContinue?.() === false) return
-      const currentCached = await getCachedProductRecords(
-        undefined,
-        { includeStale: true, includeMarketHidden: true },
-        authors
-      )
-      const currentFrontier = await getLocalProductDeletionTimestamps(
-        undefined,
-        authors
-      )
+      const currentCached = await context.refreshCache(author, observed)
+      const currentFrontier = await context.refreshDeletions()
       if (options.shouldContinue?.() === false) return
       const merged = mergeCachedAndLiveProductRecords({
         cached: currentCached,
@@ -5434,7 +5722,6 @@ export async function getProductsByIds(
         })),
       })
     })
-    return progressQueue
   }
   const directReads = await mapWithConcurrency(
     directReadEntries,
@@ -5535,6 +5822,32 @@ export async function getProductsByIds(
       return []
     }
   })()
+  const knownFamilies = new Set(
+    cached.flatMap((record) => getVariationParentAddress(record) ?? [])
+  )
+  if (
+    directRecords.some((record) => {
+      const parent = getVariationParentAddress(record)
+      return (
+        wanted.has(record.addressId) && parent && !knownFamilies.has(parent)
+      )
+    })
+  ) {
+    // Live topology may reveal a cached family after an absent or older simple
+    // target. Load its context even without observation or a successful write.
+    const familyCache = await getCachedExactProductRecords(
+      [...wanted],
+      directRecords
+    )
+    if (options.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    cachedByAuthors = mergeCachedAndLiveProductRecords({
+      cached: cachedByAuthors,
+      live: familyCache,
+      deletionTimestamps,
+    })
+    cached = cachedByAuthors.filter((record) => wanted.has(record.addressId))
+  }
   const locallyVisibleDirectRecords = filterDeletedProductRecords(
     directRecords,
     deletionTimestamps
@@ -5574,7 +5887,8 @@ export async function getProductsByIds(
   const groupRead = await fetchVariationGroupRecordBatch(
     groupTargets,
     groupRelayHintsByParent,
-    options
+    options,
+    context.relayLists
   )
   if (options.shouldContinue?.() === false)
     throw new NostrSignerError("authority_changed")
@@ -5781,37 +6095,41 @@ export async function getProductsByIds(
     capped: directReadCapped || groupReadCapped,
   })
 
-  const result = {
-    data: withProductFamilyReadEvidence(filtered, meta),
-    meta,
-    diagnostics,
+  if (!options.onProgress) {
+    return {
+      data: withProductFamilyReadEvidence(filtered, meta),
+      meta,
+      diagnostics,
+    }
   }
-  if (options.onProgress && options.shouldContinue?.() !== false) {
+  const reconcile = (): ProductsByIdsResult => {
+    const result = {
+      data: withProductFamilyReadEvidence(filtered, meta),
+      meta,
+      diagnostics,
+    }
     // Another read may learn a newer signed revision or deletion during this
     // batch. Never return older terms than a progressive snapshot already saw.
-    const currentCached = await getCachedProductRecords(
-      undefined,
-      { includeStale: true, includeMarketHidden: true },
-      authors
+    const currentCached = context.cached.filter(
+      (record) => record.product.pubkey === author
     )
     const currentFrontier = mergeDeletionTimestamps(
       deletionTimestamps,
-      await getLocalProductDeletionTimestamps(undefined, authors)
+      context.deletions
     )
     if (options.shouldContinue?.() === false)
       throw new NostrSignerError("authority_changed")
     const currentRecords = mergeCachedAndLiveProductRecords({
       cached: [],
-      live: [...merged, ...progressiveKnownRecords, ...currentCached].filter(
-        (record) =>
-          wanted.has(record.addressId) ||
-          neededParentAddresses.has(record.addressId) ||
-          (record.product.parentProductId
-            ? neededParentAddresses.has(record.product.parentProductId)
-            : false)
-      ),
+      live: [...merged, ...progressiveKnownRecords, ...currentCached],
       deletionTimestamps: currentFrontier,
-    })
+    }).filter(
+      (record) =>
+        wanted.has(record.addressId) ||
+        neededParentAddresses.has(record.addressId) ||
+        (!!record.product.parentProductId &&
+          neededParentAddresses.has(record.product.parentProductId))
+    )
     const previousByAddress = new Map(
       merged.map((record) => [record.addressId, record])
     )
@@ -5871,9 +6189,18 @@ export async function getProductsByIds(
       }
       result.data = withProductFamilyReadEvidence(currentFiltered, result.meta)
     }
-    options.onProgress(result)
+    return result
   }
-  return result
+  return context.serialize(async () => {
+    await context.refreshCache(author, liveContext)
+    await context.refreshDeletions()
+    if (options.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    if (author) context.completed.set(author, reconcile)
+    const result = reconcile()
+    options.onProgress?.(result)
+    return result
+  })
 }
 
 function resolveProductAvailabilityIssue(input: {

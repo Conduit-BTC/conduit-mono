@@ -30,8 +30,6 @@ import type {
   CartPickupFulfillment,
 } from "./cart-model"
 
-import { readEventCatalogProducts } from "./event-catalog-products"
-
 const EVENT_COLLECTION_KIND = 30405
 
 export type EventCatalogProduct = {
@@ -1009,7 +1007,7 @@ export async function loadRawEventCatalog(
     const version = ++productReadVersion
     const current = () =>
       active() && !finished && version === productReadVersion
-    const promise = readEventCatalogProducts(targets, {
+    const promise = getProductsByIds(targets, {
       includeMerchantHiddenProductIds: targets,
       authenticatedPubkey: options.authenticatedPubkey,
       shouldContinue: current,
