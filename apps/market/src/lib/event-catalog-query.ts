@@ -8,6 +8,8 @@ import {
   type RawEventCatalog,
 } from "./event-market-adapter"
 
+import { eventCatalogCacheCoherence } from "./event-catalog-cache-coherence"
+
 export type EventCatalogQueryScope = {
   relayScope: string | null | undefined
   authenticatedPubkey: string | null
@@ -43,6 +45,7 @@ export function eventCatalogQueryOptions(
   loader: typeof loadRawEventCatalog = loadRawEventCatalog
 ) {
   const identity = eventCatalogQueryIdentity(reference, scope)
+  const coherence = eventCatalogCacheCoherence(client)
   return queryOptions({
     queryKey: identity.queryKey,
     queryFn: async ({ signal }) => {
@@ -62,16 +65,21 @@ export function eventCatalogQueryOptions(
         signal,
         onProgress: (snapshot: RawEventCatalog) => {
           if (active())
-            client.setQueryData<RawEventCatalog>(identity.queryKey, {
-              ...snapshot,
-              complete: false,
-            })
+            client.setQueryData<RawEventCatalog>(
+              identity.queryKey,
+              coherence.reconcile({
+                ...snapshot,
+                complete: false,
+              })
+            )
         },
       })
+      await coherence.settled()
       if (!active())
         throw new DOMException("Event catalog read cancelled", "AbortError")
-      return result
+      return coherence.reconcile(result)
     },
+    select: coherence.reconcile,
     // Reuse a completed read across detail/card mounts and short return visits.
     // Incomplete snapshots remain stale so an interrupted read is resumed.
     staleTime: (query) => (query.state.data?.complete ? 60_000 : 0),

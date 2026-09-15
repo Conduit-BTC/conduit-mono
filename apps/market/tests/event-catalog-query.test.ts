@@ -573,6 +573,7 @@ describe("shared progressive event catalogs", () => {
     )
     const firstObserver = new QueryObserver(client, options)
     const leave = firstObserver.subscribe(() => {})
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(
       getEventCatalogQueryDisplayState(firstObserver.getCurrentResult()).data
         ?.purchaseReady

@@ -769,6 +769,8 @@ export type RawEventCatalog = {
   complete: boolean
   /** Current event graph has finished verification; product reads may continue. */
   resolutionComplete?: boolean
+  /** A local-only deletion snapshot is loading; browse evidence remains visible. */
+  localEvidencePending?: boolean
 }
 
 export function projectRawEventCatalog(
@@ -779,7 +781,9 @@ export function projectRawEventCatalog(
   const resolution = raw.resolution
   if (!resolution) return unavailableCatalog(raw.reference, "malformed")
   const complete =
-    (raw.complete || raw.resolutionComplete === true) && allowPurchase
+    (raw.complete || raw.resolutionComplete === true) &&
+    allowPurchase &&
+    !raw.localEvidencePending
   const excludedProducts = new Set(resolution.browseExcludedProductCoordinates)
   const base: EventCatalog = {
     state: resolution.state,

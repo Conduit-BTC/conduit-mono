@@ -41,6 +41,16 @@ existing exact-target reads and bounded concurrency remain unchanged.
 Completed catalog reads are reused for 60 seconds across matching mounts and
 return visits. The in-memory query retains browsing evidence for 30 minutes;
 full reloads still hydrate signed browser-cache records and verify them live.
+Retained event queries also observe the shared local product-deletion frontier.
+A signed deletion retracts affected cards, family choices and pickup actions on
+mounted pages and warm returns, without a relay read or extending network
+freshness. The observer stays active while catalog queries remain cached.
+Initial local reconciliation briefly withholds pickup authority, and late
+progress/final snapshots are reconciled against the same monotonic evidence.
+Storage failures preserve already observed deletion evidence. Other same-origin
+contexts are observed through Dexie; in-process validated evidence is announced
+before persistence can fail. Unaffected products keep their live read evidence.
+
 Incomplete reads remain stale. A new read clears any verification marker left
 by interrupted progress before accepting fresh progress.
 
