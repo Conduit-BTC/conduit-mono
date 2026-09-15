@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   PROFILE_SEARCH_DEFAULT_LIMIT,
+  PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH,
   PROFILE_SEARCH_MIN_QUERY_LENGTH,
   mergeProfileSearchResults,
   normalizeProfileSearchText,
@@ -32,7 +33,8 @@ export interface UseProfileSearchResult {
   /**
    * Cached matches as soon as the local scan answers, then the merged result
    * once relays for the same query answer. Evidence stays `not_queried` until
-   * the network phase for `activeQuery` completes.
+   * the network phase for `activeQuery` completes, and for queries too short
+   * to send to a relay it stays `not_queried` for good.
    */
   data: ProfileSearchResult | undefined
   /** True while any phase for `activeQuery` is still outstanding. */
@@ -83,6 +85,10 @@ export function useProfileSearch(
   const eligible =
     (options.enabled ?? true) &&
     normalized.length >= PROFILE_SEARCH_MIN_QUERY_LENGTH
+  // A one-character query still answers from the device cache, but relays
+  // only index enough text to answer from two characters up.
+  const networkEligible =
+    eligible && normalized.length >= PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH
   const [settledQuery, setSettledQuery] = useState("")
 
   useEffect(() => {
@@ -117,7 +123,7 @@ export function useProfileSearch(
       "network",
       accountPubkey
     ),
-    enabled: eligible && settledQuery.length > 0,
+    enabled: networkEligible && settledQuery.length > 0,
     staleTime: 60_000,
     gcTime: 5 * 60_000,
     retry: false,
@@ -143,8 +149,9 @@ export function useProfileSearch(
     return mergeProfileSearchResults(cachedData, networkData, limit)
   }, [cachedData, eligible, limit, networkData])
 
-  const isSettling = eligible && settledQuery !== trimmed
-  const networkDone = networkData !== undefined || networkQuery.isError
+  const isSettling = networkEligible && settledQuery !== trimmed
+  const networkDone =
+    !networkEligible || networkData !== undefined || networkQuery.isError
   return {
     activeQuery: eligible ? trimmed : "",
     settledQuery: eligible ? settledQuery : "",

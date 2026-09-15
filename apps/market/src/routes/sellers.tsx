@@ -1,7 +1,11 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { Store } from "lucide-react"
 import { useCallback } from "react"
-import { formatNpub, pubkeyToNpub } from "@conduit/core"
+import {
+  PROFILE_SEARCH_MIN_QUERY_LENGTH,
+  formatNpub,
+  pubkeyToNpub,
+} from "@conduit/core"
 import { Avatar, AvatarFallback, AvatarImage, Badge } from "@conduit/ui"
 import {
   MARKET_SOURCE_OPTIONS,
@@ -56,7 +60,8 @@ function SellersPage() {
     [navigate]
   )
   const evidence = describeAccountSearchEvidence(directory.accountSearch.data)
-  const showNetworkSection = directory.query.length >= 2
+  const showNetworkSection =
+    directory.query.trim().length >= PROFILE_SEARCH_MIN_QUERY_LENGTH
 
   return (
     <div className="mx-auto max-w-6xl space-y-7">

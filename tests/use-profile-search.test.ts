@@ -26,6 +26,12 @@ function result(query: string): ProfileSearchResult {
     relaysCompleted: 0,
     relaysDegraded: 0,
     verified: true,
+    device: {
+      profileCache: "read",
+      sellerFlags: "read",
+      cachedFrontiers: "not_read",
+    },
+    superseded: [],
   }
 }
 
@@ -83,5 +89,23 @@ describe("profile search query keys", () => {
       "utf8"
     )
     expect(hook).toContain("authenticatedPubkey: accountPubkey")
+  })
+})
+
+describe("short query handling", () => {
+  it("keeps the relay phase disabled and settled for one-character queries", async () => {
+    const hook = await readFile(
+      "packages/core/src/hooks/useProfileSearch.ts",
+      "utf8"
+    )
+    expect(hook).toContain(
+      "normalized.length >= PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH"
+    )
+    expect(hook).toContain(
+      "enabled: networkEligible && settledQuery.length > 0"
+    )
+    expect(hook).toMatch(
+      /const networkDone =\s*!networkEligible \|\| networkData !== undefined \|\| networkQuery\.isError/
+    )
   })
 })

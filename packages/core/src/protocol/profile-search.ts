@@ -13,7 +13,13 @@ import { parseProfileEvent } from "./profiles"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { loadRelaySettingsPlanningSnapshot } from "./relay-settings"
 
-export const PROFILE_SEARCH_MIN_QUERY_LENGTH = 2
+export const PROFILE_SEARCH_MIN_QUERY_LENGTH = 1
+/**
+ * Relays index kind-0 text. A single character matches most of the network,
+ * so the relay read starts one character later than the device scan; a short
+ * query still answers from the cache instead of being ignored.
+ */
+export const PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH = 2
 export const PROFILE_SEARCH_DEFAULT_LIMIT = 5
 const NETWORK_FETCH_LIMIT = 24
 const LOCAL_CACHE_SCAN_LIMIT = 5_000
@@ -424,6 +430,10 @@ export async function searchNetworkProfiles(
   const normalizedQuery = normalizeProfileSearchText(query)
   const limit = input.limit ?? PROFILE_SEARCH_DEFAULT_LIMIT
   if (normalizedQuery.length < PROFILE_SEARCH_MIN_QUERY_LENGTH) {
+    return emptyResult(query)
+  }
+
+  if (normalizedQuery.length < PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH) {
     return emptyResult(query)
   }
 
