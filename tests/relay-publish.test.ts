@@ -362,6 +362,49 @@ describe("planPublishRelays", () => {
     expect(ndkPublishCalls).toBe(0)
   })
 
+  it("retains an exact relay rejection after another authenticated target ACKs", async () => {
+    const acceptedRelay = "wss://accepted-auth-write.example"
+    const rejectedRelay = "wss://rejected-auth-write.example"
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.GIFT_WRAP,
+      publish: async () => new Set(),
+    })
+    const relayAuthentication = {
+      expectedPubkey: AUTHOR_PUBKEY,
+      sessionScope: {},
+      signer: {
+        authMethod: "nip07" as const,
+        getPublicKey: async () => AUTHOR_PUBKEY,
+        signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
+      },
+    }
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async ({ relayUrl }) =>
+        relayUrl === acceptedRelay ? "acked" : "rejected",
+    })
+
+    const result = await publishWithPlanner(event, {
+      intent: "recipient_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      authenticatedPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: {
+        get: async (pubkey) => accountNetworkState(pubkey, []),
+      },
+      recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
+      exclusiveRelayUrls: [acceptedRelay, rejectedRelay],
+      deliveryMode: "critical",
+      relayAuthentication,
+    })
+
+    expect(result.successfulRelayUrls).toEqual([acceptedRelay])
+    expect(result.failedRelayUrls).toEqual([rejectedRelay])
+    expect(result.rejectedRelayUrls).toEqual([rejectedRelay])
+    expect(result.relayFailureMessages[rejectedRelay]).toBe(
+      "Relay rejected the event"
+    )
+  })
+
   it("does not repeat an auth-capable exact write after its bounded timeout", async () => {
     const relayUrl = "wss://auth.nostr1.com"
     let exactWriteCalls = 0

@@ -147,6 +147,8 @@ export interface PublishWithPlannerResult {
   successfulRelayUrls: string[]
   /** URLs that failed (rejection or no ack). Empty on fallback path. */
   failedRelayUrls: string[]
+  /** Failed URLs that explicitly rejected the event rather than timing out. */
+  rejectedRelayUrls?: string[]
   /** Per-relay failure detail when NDK exposes a rejection reason. */
   relayFailureMessages: Record<string, string>
 }
@@ -307,21 +309,25 @@ function mergePublishResults(
   results: readonly {
     successfulRelayUrls: readonly string[]
     failedRelayUrls: readonly string[]
+    rejectedRelayUrls?: readonly string[]
     relayFailureMessages: Record<string, string>
   }[]
 ): {
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
+  rejectedRelayUrls: string[]
   relayFailureMessages: Record<string, string>
 } {
   const successful = new Set<string>()
   const failed = new Set<string>()
+  const rejected = new Set<string>()
   const relayFailureMessages: Record<string, string> = {}
 
   for (const result of results) {
     for (const url of result.successfulRelayUrls) {
       successful.add(url)
       failed.delete(url)
+      rejected.delete(url)
       delete relayFailureMessages[url]
     }
     for (const url of result.failedRelayUrls) {
@@ -330,11 +336,16 @@ function mergePublishResults(
       relayFailureMessages[url] =
         result.relayFailureMessages[url] ?? "No acknowledgement before timeout"
     }
+    for (const url of result.rejectedRelayUrls ?? []) {
+      if (successful.has(url) || !failed.has(url)) continue
+      rejected.add(url)
+    }
   }
 
   return {
     successfulRelayUrls: Array.from(successful),
     failedRelayUrls: Array.from(failed),
+    rejectedRelayUrls: Array.from(rejected),
     relayFailureMessages,
   }
 }
@@ -444,6 +455,7 @@ function createPublishDiagnosticsError(input: {
   attemptedRelayUrls: readonly string[]
   successfulRelayUrls: readonly string[]
   failedRelayUrls: readonly string[]
+  rejectedRelayUrls?: readonly string[]
   relayFailureMessages: Record<string, string>
   thrown: unknown
 }): RelayPublishDiagnosticsError {
@@ -463,6 +475,7 @@ function createPublishDiagnosticsError(input: {
       attemptedRelayUrls: [...input.attemptedRelayUrls],
       successfulRelayUrls: [...input.successfulRelayUrls],
       failedRelayUrls: [...input.failedRelayUrls],
+      rejectedRelayUrls: [...(input.rejectedRelayUrls ?? [])],
       relayFailureMessages: { ...input.relayFailureMessages },
     },
     input.thrown
@@ -1102,6 +1115,7 @@ export async function publishWithPlanner(
           attemptedRelayUrls,
           successfulRelayUrls: fallback.successfulRelayUrls,
           failedRelayUrls: fallback.failedRelayUrls,
+          rejectedRelayUrls: fallback.rejectedRelayUrls,
           relayFailureMessages: fallback.relayFailureMessages,
           thrown: fallback.thrown,
         })
@@ -1111,6 +1125,7 @@ export async function publishWithPlanner(
         attemptedRelayUrls,
         successfulRelayUrls: fallback.successfulRelayUrls,
         failedRelayUrls: fallback.failedRelayUrls,
+        rejectedRelayUrls: fallback.rejectedRelayUrls,
         relayFailureMessages: fallback.relayFailureMessages,
       }
     }
@@ -1184,6 +1199,7 @@ export async function publishWithPlanner(
           attemptedRelayUrls,
           successfulRelayUrls: merged.successfulRelayUrls,
           failedRelayUrls: merged.failedRelayUrls,
+          rejectedRelayUrls: merged.rejectedRelayUrls,
           relayFailureMessages: merged.relayFailureMessages,
         }
       }
@@ -1219,6 +1235,7 @@ export async function publishWithPlanner(
         attemptedRelayUrls,
         successfulRelayUrls: merged.successfulRelayUrls,
         failedRelayUrls: merged.failedRelayUrls,
+        rejectedRelayUrls: merged.rejectedRelayUrls,
         relayFailureMessages: merged.relayFailureMessages,
         thrown: retry?.thrown ?? primary.thrown,
       })
@@ -1261,6 +1278,7 @@ export async function publishWithPlanner(
           attemptedRelayUrls,
           successfulRelayUrls: merged.successfulRelayUrls,
           failedRelayUrls: merged.failedRelayUrls,
+          rejectedRelayUrls: merged.rejectedRelayUrls,
           relayFailureMessages: merged.relayFailureMessages,
         }
       }
@@ -1274,6 +1292,7 @@ export async function publishWithPlanner(
         attemptedRelayUrls,
         successfulRelayUrls: merged.successfulRelayUrls,
         failedRelayUrls: merged.failedRelayUrls,
+        rejectedRelayUrls: merged.rejectedRelayUrls,
         relayFailureMessages: merged.relayFailureMessages,
         thrown: fallback.thrown,
       })
@@ -1289,6 +1308,7 @@ export async function publishWithPlanner(
           ? merged.successfulRelayUrls
           : retrySuccessfulRelayUrls,
       failedRelayUrls: merged.failedRelayUrls,
+      rejectedRelayUrls: merged.rejectedRelayUrls,
       relayFailureMessages:
         Object.keys(merged.relayFailureMessages).length > 0
           ? merged.relayFailureMessages
@@ -1303,6 +1323,7 @@ export async function publishWithPlanner(
       attemptedRelayUrls,
       successfulRelayUrls: primary.successfulRelayUrls,
       failedRelayUrls: primary.failedRelayUrls,
+      rejectedRelayUrls: primary.rejectedRelayUrls,
       relayFailureMessages: primary.relayFailureMessages,
     }
   }
@@ -1324,20 +1345,13 @@ export async function publishWithPlanner(
     broadcast.attemptedRelayUrls,
   ])
 
+  const merged = mergePublishResults([primary, broadcast])
   return {
     plan,
     attemptedRelayUrls,
-    successfulRelayUrls: mergeUnique([
-      primary.successfulRelayUrls,
-      broadcast.successfulRelayUrls,
-    ]),
-    failedRelayUrls: mergeUnique([
-      primary.failedRelayUrls,
-      broadcast.failedRelayUrls,
-    ]),
-    relayFailureMessages: mergeRelayFailureMessages([
-      primary.relayFailureMessages,
-      broadcast.relayFailureMessages,
-    ]),
+    successfulRelayUrls: merged.successfulRelayUrls,
+    failedRelayUrls: merged.failedRelayUrls,
+    rejectedRelayUrls: merged.rejectedRelayUrls,
+    relayFailureMessages: merged.relayFailureMessages,
   }
 }

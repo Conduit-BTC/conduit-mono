@@ -15,8 +15,7 @@ const MAX_AUTH_CHALLENGE_CHARS = 4 * 1024
 const NIP_01_DUPLICATE_REASON = /^duplicate:/i
 const NIP_01_REJECTION_REASON =
   /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i
-const NIP_42_AUTH_REQUIRED_REASON =
-  /(?:^|\b)(?:auth-required|not authorized)(?::|\b)/i
+const NIP_42_AUTH_REQUIRED_REASON = /^auth-required:/i
 const signerQueues = new WeakMap<object, Promise<void>>()
 
 export interface ExactRelayWriteAuthorization {
@@ -307,6 +306,7 @@ export function publishSignedEventFrameToRelay(input: {
       if (
         authorization &&
         authState !== "failed" &&
+        authState !== "accepted" &&
         NIP_42_AUTH_REQUIRED_REASON.test(reason)
       ) {
         // The relay's AUTH challenge drives the signer interaction. Preserve

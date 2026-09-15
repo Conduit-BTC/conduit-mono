@@ -1198,9 +1198,11 @@ export async function publishPrivateMessage(
         : {}),
     })
   } catch (error) {
-    if (input.shouldContinue?.() === false) throw error
     const partial = recoverPartialRelayPublishDiagnostics(error)
     if (!partial) throw error
+    // A planner diagnostic that includes a recipient ACK is durable delivery.
+    // The caller's session may have changed while a later target was winding
+    // down, but that must not make checkout retry the already accepted order.
     recipientDelivery = partial
   }
   if (
@@ -1374,10 +1376,14 @@ function buildOrderRelayDeliveryRecord(input: {
 
   const now = Date.now()
   const successful = new Set(input.recipientDelivery.successfulRelayUrls ?? [])
+  const rejectedRelayUrls = new Set(
+    input.recipientDelivery.rejectedRelayUrls ?? []
+  )
   const failures = input.recipientDelivery.relayFailureMessages ?? {}
   const relayDelivery = input.recipientRoute.relayUrls.map((relayUrl) => {
     const acked = successful.has(relayUrl)
     const rejected =
+      rejectedRelayUrls.has(relayUrl) ||
       /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
         failures[relayUrl]?.trim() ?? ""
       )
