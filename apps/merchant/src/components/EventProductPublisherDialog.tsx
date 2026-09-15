@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { Copy, Loader2, PackagePlus } from "lucide-react"
@@ -74,8 +74,9 @@ export function EventProductPublisherDialog({
   shouldContinue: () => boolean
   market: MerchantOrganizerEventMarket
   onOpenChange: (open: boolean) => void
-  onPublished: (accepted: boolean) => void | Promise<void>
+  onPublished: (accepted: boolean) => void
 }) {
+  const titleInputRef = useRef<HTMLInputElement>(null)
   const [form, setForm] = useState<EventProductPublishFormValues>(() =>
     createEmptyEventProductForm(market)
   )
@@ -141,15 +142,14 @@ export function EventProductPublisherDialog({
     return { productCoordinate, accepted }
   }
 
-  async function finishPublication(result: {
+  function finishPublication(result: {
     productCoordinate: string
     accepted: boolean
   }) {
     setAccepting(false)
     setSignerProgress(null)
     setActionState("success")
-    await onPublished(result.accepted)
-    onOpenChange(false)
+    onPublished(result.accepted)
   }
 
   const publishMutation = useMutation({
@@ -232,6 +232,16 @@ export function EventProductPublisherDialog({
     if (template) setForm(eventProductFormFromTemplate(template, market))
   }
 
+  function startAnotherPublication(): void {
+    setForm(createEmptyEventProductForm(market))
+    setSubmitted(false)
+    setActionState("dirty")
+    setSignedEvent(null)
+    setPublishedCoordinate(null)
+    setSignedAcceptance(null)
+    requestAnimationFrame(() => titleInputRef.current?.focus())
+  }
+
   return (
     <Dialog open={open} onOpenChange={(next) => !pending && onOpenChange(next)}>
       <DialogContent
@@ -265,7 +275,9 @@ export function EventProductPublisherDialog({
         >
           <fieldset disabled={pending || !!signedEvent} className="contents">
             <div className="grid gap-1.5">
-              <Label htmlFor="event-product-template">Start from</Label>
+              <Label htmlFor="event-product-template">
+                Create new or copy existing
+              </Label>
               <Select
                 value={form.templateCoordinate || BLANK_TEMPLATE}
                 onValueChange={chooseTemplate}
@@ -276,14 +288,15 @@ export function EventProductPublisherDialog({
                     placeholder={
                       templatesQuery.isPending
                         ? "Loading your products…"
-                        : "Start with a blank product"
+                        : "Create a new event product"
                     }
                   />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={BLANK_TEMPLATE}>
                     <span className="flex items-center gap-2">
-                      <PackagePlus className="h-4 w-4" /> Blank product
+                      <PackagePlus className="h-4 w-4" /> Create a new event
+                      product
                     </span>
                   </SelectItem>
                   {templates.map((template) => (
@@ -292,16 +305,21 @@ export function EventProductPublisherDialog({
                       value={template.coordinate}
                     >
                       <span className="flex items-center gap-2">
-                        <Copy className="h-4 w-4" /> {template.product.title}
+                        <Copy className="h-4 w-4" /> Copy “
+                        {template.product.title}”
                       </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              <p className="text-xs leading-5 text-[var(--text-muted)]">
+                Existing products are listed newest first. Copying creates a
+                separate event listing and leaves the original unchanged.
+              </p>
               {templatesQuery.isError && (
                 <p className="text-xs leading-5 text-[var(--text-muted)]">
-                  Existing products could not be loaded. You can still start
-                  with a blank product.
+                  Existing products could not be loaded. You can still create a
+                  new event product.
                 </p>
               )}
             </div>
@@ -309,6 +327,7 @@ export function EventProductPublisherDialog({
             <div className="grid gap-1.5">
               <Label htmlFor="event-product-title">Product title</Label>
               <Input
+                ref={titleInputRef}
                 id="event-product-title"
                 value={form.title}
                 onChange={(event) => update("title", event.target.value)}
@@ -587,6 +606,11 @@ export function EventProductPublisherDialog({
                   ? "Close"
                   : "Cancel"}
             </Button>
+            {actionState === "success" && (
+              <Button type="button" onClick={startAnotherPublication}>
+                Publish another item
+              </Button>
+            )}
             {actionState !== "success" && !signedEvent && (
               <Button type="submit" disabled={pending}>
                 {pending ? (
