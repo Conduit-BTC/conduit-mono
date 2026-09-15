@@ -19,6 +19,7 @@ import {
   getConfiguredIsolatedE2eRelayUrl,
   normalizeRelayUrl,
 } from "./relay-settings"
+import { serializeSignerOperation } from "./interactive-signer"
 
 export interface PlainNostrFilter {
   ids?: string[]
@@ -312,28 +313,6 @@ async function waitWithAbort<T>(
 }
 
 const signerQueues = new Map<string, Promise<void>>()
-
-async function serializeSignerOperation<T>(
-  sessionScope: string,
-  task: () => Promise<T>
-): Promise<T> {
-  const previous = signerQueues.get(sessionScope) ?? Promise.resolve()
-  let release!: () => void
-  const slot = new Promise<void>((resolve) => {
-    release = resolve
-  })
-  const queued = previous.catch(() => undefined).then(() => slot)
-  signerQueues.set(sessionScope, queued)
-  await previous.catch(() => undefined)
-  try {
-    return await task()
-  } finally {
-    release()
-    if (signerQueues.get(sessionScope) === queued) {
-      signerQueues.delete(sessionScope)
-    }
-  }
-}
 
 function isValidChallenge(challenge: string): boolean {
   return (
@@ -701,6 +680,7 @@ class RelayConnection {
         this.pendingAuth = null
       }
       const attempt = serializeSignerOperation(
+        signerQueues,
         authorization.sessionScope,
         async () => {
           throwIfCancelled()

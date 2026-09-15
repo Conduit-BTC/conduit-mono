@@ -45,6 +45,7 @@ import {
   normalizeSecureOrIsolatedE2eRelayUrls,
 } from "./relay-settings"
 import { waitForVisibleDocument } from "./interactive-signer"
+import { createNdkNostrEventSigner } from "./ndk-nostr-event-signer"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -741,8 +742,10 @@ export interface PublishPrivateMessageInput {
   refreshRelayLists?: boolean
   /** Skip foreground coordination for a caller-owned ephemeral guest signer. */
   signerInteraction?: "external" | "background_external" | "application_owned"
+  /** External account method eligible to answer a foreground NIP-42 challenge. */
+  relayAuthMethod?: "nip07" | "nip46"
   /** Controlled visibility seam for interactive external signer workflows. */
-  waitForSignerVisibility?: () => Promise<void>
+  waitForSignerVisibility?: (signal?: AbortSignal) => Promise<void>
   giftWrapFn?: typeof giftWrap
   /**
    * Durable exact-retry seam. Runs after wrapping and before the first relay
@@ -798,7 +801,7 @@ export interface PublishPrivateMessageInput {
 
 function createVisibilityGatedSigner(
   signer: NDKSigner,
-  waitForSignerVisibility: () => Promise<void>
+  waitForSignerVisibility: (signal?: AbortSignal) => Promise<void>
 ): NDKSigner {
   return new Proxy(signer, {
     get(target, property) {
@@ -1116,10 +1119,26 @@ export async function publishPrivateMessage(
   const externalSignerInteraction =
     (input.signerInteraction ?? "background_external") === "external"
   const waitForSignerVisibility =
-    input.waitForSignerVisibility ?? waitForVisibleDocument
+    input.waitForSignerVisibility ??
+    ((signal?: AbortSignal) => waitForVisibleDocument(undefined, signal))
   const giftWrapSigner = externalSignerInteraction
     ? createVisibilityGatedSigner(input.signer, waitForSignerVisibility)
     : input.signer
+  const relayAuthentication =
+    externalSignerInteraction &&
+    authenticatedOwnerPubkey &&
+    input.relayAuthMethod
+      ? {
+          expectedPubkey: authenticatedOwnerPubkey,
+          signer: createNdkNostrEventSigner(
+            input.signer,
+            authenticatedOwnerPubkey,
+            input.relayAuthMethod
+          ),
+          sessionScope: input.signer,
+          waitForSignerVisibility,
+        }
+      : undefined
 
   const wrappedToRecipient = await giftWrapFn(
     input.rumor,
@@ -1165,6 +1184,7 @@ export async function publishPrivateMessage(
       shouldContinue: input.shouldContinue,
       refreshRelayLists,
       deliveryMode: "critical",
+      ...(relayAuthentication ? { relayAuthentication } : {}),
       ...(accountPubkey
         ? {
             accountPubkey,
@@ -1178,9 +1198,11 @@ export async function publishPrivateMessage(
         : {}),
     })
   } catch (error) {
-    if (input.shouldContinue?.() === false) throw error
     const partial = recoverPartialRelayPublishDiagnostics(error)
     if (!partial) throw error
+    // A planner diagnostic that includes a recipient ACK is durable delivery.
+    // The caller's session may have changed while a later target was winding
+    // down, but that must not make checkout retry the already accepted order.
     recipientDelivery = partial
   }
   if (
@@ -1202,10 +1224,17 @@ export async function publishPrivateMessage(
           recipientDelivery,
         })
       : undefined
+  const selfCopySessionChangedError =
+    "Sender self-copy was skipped because the signer session changed after recipient delivery."
 
   if (wrappedToSelf) {
     if (!senderRoute || senderRoute.route === "blocked") {
       selfCopyError = "Sender has no usable NIP-17 inbox relay declaration."
+    } else if (input.shouldContinue?.() === false) {
+      // The critical recipient leg is already committed. A session change must
+      // fence off the non-critical self-copy without turning the accepted
+      // message into a retryable checkout failure.
+      selfCopyError = selfCopySessionChangedError
     } else {
       try {
         try {
@@ -1232,18 +1261,26 @@ export async function publishPrivateMessage(
               : {}),
           })
         } catch (error) {
-          if (input.shouldContinue?.() === false) throw error
-          const partial = recoverPartialRelayPublishDiagnostics(error)
-          if (!partial) throw error
-          selfDelivery = partial
+          if (input.shouldContinue?.() === false) {
+            selfCopyError = selfCopySessionChangedError
+          } else {
+            const partial = recoverPartialRelayPublishDiagnostics(error)
+            if (!partial) throw error
+            selfDelivery = partial
+          }
         }
-        const summary = summarizePrivateMessageSelfDelivery(selfDelivery)
-        selfDeliveryStatus = summary.status
-        selfCopyError = summary.error
+        if (selfDelivery) {
+          const summary = summarizePrivateMessageSelfDelivery(selfDelivery)
+          selfDeliveryStatus = summary.status
+          selfCopyError = summary.error
+        }
       } catch (error) {
-        if (input.shouldContinue?.() === false) throw error
         selfCopyError =
-          error instanceof Error ? error.message : "Self-copy publish failed"
+          input.shouldContinue?.() === false
+            ? selfCopySessionChangedError
+            : error instanceof Error
+              ? error.message
+              : "Self-copy publish failed"
       }
     }
   }
@@ -1339,10 +1376,14 @@ function buildOrderRelayDeliveryRecord(input: {
 
   const now = Date.now()
   const successful = new Set(input.recipientDelivery.successfulRelayUrls ?? [])
+  const rejectedRelayUrls = new Set(
+    input.recipientDelivery.rejectedRelayUrls ?? []
+  )
   const failures = input.recipientDelivery.relayFailureMessages ?? {}
   const relayDelivery = input.recipientRoute.relayUrls.map((relayUrl) => {
     const acked = successful.has(relayUrl)
     const rejected =
+      rejectedRelayUrls.has(relayUrl) ||
       /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
         failures[relayUrl]?.trim() ?? ""
       )
