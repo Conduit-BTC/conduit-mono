@@ -2,6 +2,7 @@ import {
   decodeEventMarketReference,
   getEventMarket,
   getProductsByIds,
+  hasSameExactPickupOptionEvidence,
   isFiatCurrencyCode,
   normalizeCommercePrice,
   resolveEventMarketProductFulfillment,
@@ -222,40 +223,6 @@ function hasExactCoordinate(
   allowedKinds: readonly number[]
 ): boolean {
   return values.some((value) => sameCoordinate(value, coordinate, allowedKinds))
-}
-
-function normalizedPickupCountries(
-  countries: readonly string[] | undefined
-): string[] {
-  return Array.from(
-    new Set((countries ?? []).map((country) => country.trim().toUpperCase()))
-  ).sort()
-}
-
-function pickupOptionMatchesCurrentEvidence(
-  snapshot: OrderPickupFulfillmentSchema["option"],
-  current: NonNullable<EventMarketResolution["pickup"]>
-): boolean {
-  const snapshotCountries =
-    snapshot.countries === undefined
-      ? null
-      : normalizedPickupCountries(snapshot.countries)
-  const currentCountries = normalizedPickupCountries(current.countries)
-  const countriesMatch =
-    snapshotCountries === null ||
-    (snapshotCountries.length === currentCountries.length &&
-      snapshotCountries.every(
-        (country, index) => country === currentCountries[index]
-      ))
-  return (
-    sameCoordinate(snapshot.coordinate, current.coordinate, [30406]) &&
-    snapshot.eventId.toLowerCase() === current.eventId.toLowerCase() &&
-    snapshot.createdAt === current.createdAt &&
-    snapshot.title === current.title &&
-    snapshot.location === current.location &&
-    snapshot.geohash?.toLowerCase() === current.geohash?.toLowerCase() &&
-    countriesMatch
-  )
 }
 
 function organizerGraphMatches(
@@ -518,9 +485,10 @@ export async function verifyMerchantPickupOrderAuthorization(
       currentFulfillment.status !== "resolved" ||
       currentFulfillment.handoffMode !== snapshotAuthority.mode ||
       currentFulfillment.handoffPubkey !== snapshotAuthority.handlerPubkey ||
-      !pickupOptionMatchesCurrentEvidence(
+      !hasSameExactPickupOptionEvidence(
         item.fulfillment.option,
-        currentFulfillment.selectedPickup
+        currentFulfillment.selectedPickup,
+        { allowMissingCountries: "left" }
       )
     ) {
       return { status: "unverified", reason: "revision_mismatch" }

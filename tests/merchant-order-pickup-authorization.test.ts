@@ -609,6 +609,18 @@ describe("Merchant pickup order authorization", () => {
       )
     ).toEqual({ status: "unverified", reason: "revision_mismatch" })
 
+    const currentWithoutCountries = structuredClone(currentMarket)
+    currentWithoutCountries.pickups = [
+      { ...firstBooth, countries: [] },
+      secondBooth,
+    ]
+    expect(
+      await verify(
+        dependencies(currentWithoutCountries, currentProducts),
+        orderItems(firstSnapshot)
+      )
+    ).toEqual({ status: "unverified", reason: "revision_mismatch" })
+
     const changedLegacyRevision = structuredClone(currentMarket)
     changedLegacyRevision.pickups = [
       { ...firstBooth, eventId: "5".repeat(64) },

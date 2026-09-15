@@ -434,7 +434,7 @@ function canonicalPickupCoordinateIdentity(coordinate: string): string | null {
   return `${kind}:${author.toLowerCase()}:${identifier}`
 }
 
-function hasSamePickupEvidenceRevision(
+export function hasSamePickupEvidenceRevision(
   left: PickupEvidenceCoordinateSchema,
   right: PickupEvidenceCoordinateSchema
 ): boolean {
@@ -468,20 +468,27 @@ function pickupEvidenceAuthor(coordinate: string): string | null {
 function normalizedPickupCountries(
   countries: readonly string[] | undefined
 ): string[] | null {
-  if (!countries?.length) return null
+  if (countries === undefined) return null
   return Array.from(
     new Set(countries.map((country) => country.toUpperCase()))
   ).sort()
 }
 
+export type PickupOptionEvidence = PickupEvidenceCoordinateSchema & {
+  title: string
+  location?: string
+  geohash?: string
+  countries?: readonly string[]
+}
+
 function hasSamePickupPublicTerms(
-  left: OrderPickupFulfillmentSchema,
-  right: OrderPickupFulfillmentSchema
+  left: PickupOptionEvidence,
+  right: PickupOptionEvidence
 ): boolean {
   return (
-    left.option.title === right.option.title &&
-    left.option.location === right.option.location &&
-    left.option.geohash?.toLowerCase() === right.option.geohash?.toLowerCase()
+    left.title === right.title &&
+    left.location === right.location &&
+    left.geohash?.toLowerCase() === right.geohash?.toLowerCase()
   )
 }
 
@@ -497,17 +504,22 @@ function hasSamePickupCountryTerms(
   )
 }
 
-function hasSameExactPickupTerms(
-  left: OrderPickupFulfillmentSchema,
-  right: OrderPickupFulfillmentSchema
+export function hasSameExactPickupOptionEvidence(
+  left: PickupOptionEvidence,
+  right: PickupOptionEvidence,
+  options: { allowMissingCountries?: "either" | "left" | "neither" } = {}
 ): boolean {
-  const leftCountries = normalizedPickupCountries(left.option.countries)
-  const rightCountries = normalizedPickupCountries(right.option.countries)
+  const leftCountries = normalizedPickupCountries(left.countries)
+  const rightCountries = normalizedPickupCountries(right.countries)
+  const allowMissingCountries = options.allowMissingCountries ?? "either"
+  const countriesMatch =
+    hasSamePickupCountryTerms(leftCountries, rightCountries) ||
+    (leftCountries === null && allowMissingCountries !== "neither") ||
+    (rightCountries === null && allowMissingCountries === "either")
   return (
+    hasSamePickupEvidenceRevision(left, right) &&
     hasSamePickupPublicTerms(left, right) &&
-    (leftCountries === null ||
-      rightCountries === null ||
-      hasSamePickupCountryTerms(leftCountries, rightCountries))
+    countriesMatch
   )
 }
 
@@ -518,7 +530,7 @@ function hasSameMerchantPickupTerms(
   const leftCountries = normalizedPickupCountries(left.option.countries)
   const rightCountries = normalizedPickupCountries(right.option.countries)
   return (
-    hasSamePickupPublicTerms(left, right) &&
+    hasSamePickupPublicTerms(left.option, right.option) &&
     hasSamePickupCountryTerms(leftCountries, rightCountries)
   )
 }
@@ -563,8 +575,8 @@ export function hasSamePickupFulfillmentGraph(
     return false
   }
 
-  if (hasSamePickupEvidenceRevision(left.option, right.option)) {
-    return hasSameExactPickupTerms(left, right)
+  if (hasSameExactPickupOptionEvidence(left.option, right.option)) {
+    return true
   }
 
   return (

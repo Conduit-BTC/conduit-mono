@@ -1,4 +1,5 @@
 import {
+  hasSamePickupEvidenceRevision,
   resolveOrderPickupHandoffAuthority,
   type OrderPickupFulfillmentSchema,
   type ParsedShippingOption,
@@ -40,29 +41,22 @@ export type CheckoutPickupHandlerAuthorizer = (
   items: readonly CartItem[]
 ) => Promise<void>
 
-function hasSamePickupEvidenceRevision(
+function hasSamePickupFulfillmentEvidenceRevision(
   left: OrderPickupFulfillmentSchema,
   right: OrderPickupFulfillmentSchema
 ): boolean {
   const leftAuthority = resolveOrderPickupHandoffAuthority(left)
   const rightAuthority = resolveOrderPickupHandoffAuthority(right)
-  const hasSameRevision = (
-    leftEvidence: { coordinate: string; eventId: string; createdAt: number },
-    rightEvidence: { coordinate: string; eventId: string; createdAt: number }
-  ) =>
-    leftEvidence.coordinate === rightEvidence.coordinate &&
-    leftEvidence.eventId === rightEvidence.eventId &&
-    leftEvidence.createdAt === rightEvidence.createdAt
 
   return (
     left.organizerPubkey === right.organizerPubkey &&
     left.product.merchantPubkey === right.product.merchantPubkey &&
     leftAuthority.mode === rightAuthority.mode &&
     leftAuthority.handlerPubkey === rightAuthority.handlerPubkey &&
-    hasSameRevision(left.product, right.product) &&
-    hasSameRevision(left.calendar, right.calendar) &&
-    hasSameRevision(left.collection, right.collection) &&
-    hasSameRevision(left.option, right.option)
+    hasSamePickupEvidenceRevision(left.product, right.product) &&
+    hasSamePickupEvidenceRevision(left.calendar, right.calendar) &&
+    hasSamePickupEvidenceRevision(left.collection, right.collection) &&
+    hasSamePickupEvidenceRevision(left.option, right.option)
   )
 }
 
@@ -81,7 +75,10 @@ function getSubmitAuthorizationFingerprint(
         current?.fulfillment?.type !== "pickup" ||
         item.fulfillment.option.countries !== undefined ||
         current.fulfillment.option.countries === undefined ||
-        !hasSamePickupEvidenceRevision(item.fulfillment, current.fulfillment)
+        !hasSamePickupFulfillmentEvidenceRevision(
+          item.fulfillment,
+          current.fulfillment
+        )
       ) {
         return item
       }
