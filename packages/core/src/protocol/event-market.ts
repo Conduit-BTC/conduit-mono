@@ -3017,6 +3017,12 @@ async function eventMarketParticipantRelayPlans(input: {
   candidateEvents: readonly SignedPublicNostrEvent[]
   sourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
   fallbackRelayUrls: readonly string[]
+  /**
+   * A verified broad read just observed these sources. A final exact
+   * reconciliation gives them a bounded chance to answer before older
+   * NIP-65 hints consume the per-author cap.
+   */
+  prioritizeObservedSources?: boolean
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
@@ -3098,14 +3104,24 @@ async function eventMarketParticipantRelayPlans(input: {
       for (const relayUrl of plan.ownerSelectedRelayUrls ?? []) {
         ownerSelectedRelayUrls.add(relayUrl)
       }
+      const relayGroups = input.prioritizeObservedSources
+        ? [
+            observedRelaysByAuthor.get(author) ?? [],
+            plan.hintRelayUrls,
+            input.fallbackRelayUrls,
+            plan.relayUrls,
+          ]
+        : [
+            plan.hintRelayUrls,
+            observedRelaysByAuthor.get(author) ?? [],
+            input.fallbackRelayUrls,
+            plan.relayUrls,
+          ]
       return [
         author,
         mergeRelayUrlsWithOwnerAuthority(
           plan.ownerSelectedRelayUrls ?? [],
-          plan.hintRelayUrls,
-          observedRelaysByAuthor.get(author) ?? [],
-          input.fallbackRelayUrls,
-          plan.relayUrls
+          ...relayGroups
         ),
       ]
     })
@@ -3490,6 +3506,8 @@ async function fetchEventMarketProductRequestFrontiers(input: {
   candidateCoordinates: readonly string[]
   candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
   relayUrls: string[]
+  /** Prefer verified broad-read sources during a final exact reconciliation. */
+  prioritizeObservedSources?: boolean
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
@@ -3531,6 +3549,7 @@ async function fetchEventMarketProductRequestFrontiers(input: {
     candidateEvents: input.candidateEvents,
     sourceRelayUrlsById: input.candidateSourceRelayUrlsById,
     fallbackRelayUrls: input.relayUrls,
+    prioritizeObservedSources: input.prioritizeObservedSources,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
@@ -3695,6 +3714,91 @@ function mergeRawSignedEventGroups(
     }
   }
   return { events: Array.from(events.values()), sourceRelayUrlsById }
+}
+
+function organizerFrontierReconciliationCandidates(input: {
+  organizerProductCoordinates: readonly string[]
+  broadCandidates: ReturnType<typeof rawSignedEvents>
+  earlyFrontier: ReturnType<typeof rawSignedEvents>
+}): ReturnType<typeof rawSignedEvents> {
+  const organizerCoordinates = new Set(input.organizerProductCoordinates)
+  const latestBroadEventsByCoordinate = new Map<
+    string,
+    SignedPublicNostrEvent
+  >()
+  const latestEarlyEventsByCoordinate = new Map<
+    string,
+    SignedPublicNostrEvent
+  >()
+
+  const recordLatestEvent = (
+    eventsByCoordinate: Map<string, SignedPublicNostrEvent>,
+    coordinate: string,
+    event: SignedPublicNostrEvent
+  ) => {
+    const existing = eventsByCoordinate.get(coordinate)
+    if (!existing || compareAddressableEvents(event, existing) < 0) {
+      eventsByCoordinate.set(coordinate, event)
+    }
+  }
+
+  for (const event of input.earlyFrontier.events) {
+    if (
+      event.kind !== EVENT_KINDS.PRODUCT ||
+      !isValidSignedPublicNostrEvent(event)
+    ) {
+      continue
+    }
+    const coordinate = eventCoordinate(event, [EVENT_KINDS.PRODUCT])
+    if (coordinate && organizerCoordinates.has(coordinate.coordinate)) {
+      recordLatestEvent(
+        latestEarlyEventsByCoordinate,
+        coordinate.coordinate,
+        event
+      )
+    }
+  }
+
+  const sourceRelayUrlsById = new Map<string, string[]>()
+  for (const event of input.broadCandidates.events) {
+    if (
+      event.kind !== EVENT_KINDS.PRODUCT ||
+      !isValidSignedPublicNostrEvent(event)
+    ) {
+      continue
+    }
+    const coordinate = eventCoordinate(event, [EVENT_KINDS.PRODUCT])
+    if (!coordinate || !organizerCoordinates.has(coordinate.coordinate)) {
+      continue
+    }
+    recordLatestEvent(
+      latestBroadEventsByCoordinate,
+      coordinate.coordinate,
+      event
+    )
+  }
+
+  const candidatesById = new Map<string, SignedPublicNostrEvent>()
+  for (const [coordinate, event] of latestBroadEventsByCoordinate) {
+    const early = latestEarlyEventsByCoordinate.get(coordinate)
+    // An exact frontier that already observed this revision (or a newer one)
+    // is sufficient current evidence. Re-reading it just to duplicate source
+    // provenance would multiply bounded deletion reads for historic revisions.
+    if (early && compareAddressableEvents(early, event) <= 0) continue
+
+    const eventId = event.id.toLowerCase()
+    const observedSources =
+      input.broadCandidates.sourceRelayUrlsById.get(eventId) ?? []
+    candidatesById.set(eventId, event)
+    sourceRelayUrlsById.set(
+      eventId,
+      mergeRelayUrls(sourceRelayUrlsById.get(eventId) ?? [], observedSources)
+    )
+  }
+  return {
+    events: Array.from(candidatesById.values()),
+    sourceRelayUrlsById,
+  }
 }
 
 function cacheableEventMarketAddressId(
@@ -4852,6 +4956,7 @@ export async function getEventMarket(
     await completeParticipationProgress(organizerFrontierResult)
   }
   const rawOrganizerPickupFrontiers = rawSignedEvents(organizerPickupResult)
+  const rawOrganizerRequestFrontiers = rawSignedEvents(organizerFrontierResult)
   const rawRequestCandidates = rawSignedEvents(requestResult)
 
   const candidateCoordinates = candidateProductCoordinates({
@@ -4878,6 +4983,48 @@ export async function getEventMarket(
       return !!coordinate && additionalCoordinateSet.has(coordinate.coordinate)
     }
   )
+  const organizerReconciliationCandidates =
+    organizerFrontierReconciliationCandidates({
+      organizerProductCoordinates,
+      broadCandidates: rawRequestCandidates,
+      earlyFrontier: rawOrganizerRequestFrontiers,
+    })
+  const organizerReconciliationCoordinates = candidateProductCoordinates({
+    candidateEvents: organizerReconciliationCandidates.events,
+    candidateCoordinates: [],
+  })
+  let organizerReconciliationFrontierResult: EventMarketProductRequestFrontierResult =
+    {
+      events: [],
+      relays: [],
+      eventsVerified: true,
+      participationBudget,
+    }
+  if (
+    participationBudget.state === "within_budget" &&
+    organizerReconciliationCoordinates.length > 0
+  ) {
+    organizerReconciliationFrontierResult =
+      await fetchEventMarketProductRequestFrontiers({
+        candidateEvents: organizerReconciliationCandidates.events,
+        candidateCoordinates: organizerReconciliationCoordinates.map(
+          (coordinate) => coordinate.coordinate
+        ),
+        candidateSourceRelayUrlsById:
+          organizerReconciliationCandidates.sourceRelayUrlsById,
+        relayUrls: relayUrlsWithoutObservedFailures(
+          relayUrls,
+          organizerRecordRelays
+        ),
+        prioritizeObservedSources: true,
+        authenticatedPubkey: input.authenticatedPubkey,
+        ownerSelectedRelayUrls,
+        accountNetworkLocalStateRepository:
+          input.accountNetworkLocalStateRepository,
+        shouldContinue: input.shouldContinue,
+        signal: input.signal,
+      })
+  }
   let additionalFrontierResult: EventMarketProductRequestFrontierResult = {
     events: [],
     relays: [],
@@ -4919,6 +5066,7 @@ export async function getEventMarket(
   const requestFrontierResult: EventMarketProductRequestFrontierResult = {
     ...mergeEventMarketFrontierResults([
       organizerFrontierResult,
+      organizerReconciliationFrontierResult,
       additionalFrontierResult,
     ]),
     participationBudget,
