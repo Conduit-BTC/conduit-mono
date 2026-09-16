@@ -25,7 +25,7 @@ const staticCredentialRules = [
   {
     rule: "fixed private scalar",
     pattern:
-      /\b(?:const|let|var)\s+[A-Z0-9_]*(?:PRIVATE|SECRET)[A-Z0-9_]*\s*=\s*(?:new\s+Uint8Array\s*\(\s*32\s*\)\.fill\s*\(|Uint8Array\.from\s*\(\s*\{\s*length\s*:\s*32\s*\}\s*,|["'`][0-9a-f]+["'`]\.repeat\s*\(|["'`][0-9a-f]{64}["'`])/gi,
+      /\b(?:const|let|var)\s+(?:[A-Z0-9_]*(?:PRIVATE|SECRET)[A-Z0-9_]*|key|keyBytes|sk)\s*=\s*(?:new\s+Uint8Array\s*\(\s*32\s*\)\.fill\s*\(|Uint8Array\.from\s*\(\s*\{\s*length\s*:\s*32\s*\}\s*,|["'`][0-9a-f]+["'`]\.repeat\s*\(|["'`][0-9a-f]{64}["'`])/gi,
   },
   {
     rule: "fixed credential variable",
@@ -285,13 +285,65 @@ function findHistoryCredentialFixtures(
 }
 
 describe("Playwright smoke credential fixtures", () => {
+  it("rejects fixed scalar constructors under generic key names", () => {
+    for (const name of ["key", "keyBytes", "sk"]) {
+      // An unfinished constructor is enough to exercise the rule. No scalar
+      // value is created or embedded in this regression or authored history.
+      const declaration = [
+        "const ",
+        name,
+        " = new ",
+        "Uint8Array",
+        "(32)",
+        ".fill(",
+      ].join("")
+      const expected = [
+        {
+          file: "tests/synthetic-signing.test.ts",
+          line: 1,
+          rule: "fixed private scalar",
+        },
+      ]
+      expect(
+        findStaticCredentialFixtures(expected[0]!.file, declaration)
+      ).toEqual(expected)
+      expect(
+        scanAddedHunks(
+          "synthetic-commit",
+          [
+            "diff --git a/tests/synthetic-signing.test.ts b/tests/synthetic-signing.test.ts",
+            "--- a/tests/synthetic-signing.test.ts",
+            "+++ b/tests/synthetic-signing.test.ts",
+            "@@ -0,0 +1 @@",
+            "+" + declaration,
+          ].join("\n")
+        )
+      ).toEqual([{ ...expected[0], commit: "synthetic-commit" }])
+      expect(
+        findStaticCredentialFixtures(
+          expected[0]!.file,
+          ["const ", name, " = generateSecretKey()"].join("")
+        )
+      ).toEqual([])
+    }
+    expect(
+      findStaticCredentialFixtures(
+        "tests/public-data.test.ts",
+        [
+          'const key = "cache-entry"',
+          "const keyBytes = new Uint8Array(16)",
+        ].join("\n")
+      )
+    ).toEqual([])
+  })
+
   it("keeps the scanner non-vacuous without constructing credentials", () => {
     const expectedStaticRuleSnapshots = [
       ["encoded secret key", /\bnsec1[0-9a-z]+\b/gi.source, "gi"],
       ["secret-key encoding", /\bnsecEncode\s*\(/g.source, "g"],
       [
         "fixed private scalar",
-        /\b(?:const|let|var)\s+[A-Z0-9_]*(?:PRIVATE|SECRET)[A-Z0-9_]*\s*=\s*(?:new\s+Uint8Array\s*\(\s*32\s*\)\.fill\s*\(|Uint8Array\.from\s*\(\s*\{\s*length\s*:\s*32\s*\}\s*,|["'`][0-9a-f]+["'`]\.repeat\s*\(|["'`][0-9a-f]{64}["'`])/gi
+        /\b(?:const|let|var)\s+(?:[A-Z0-9_]*(?:PRIVATE|SECRET)[A-Z0-9_]*|key|keyBytes|sk)\s*=\s*(?:new\s+Uint8Array\s*\(\s*32\s*\)\.fill\s*\(|Uint8Array\.from\s*\(\s*\{\s*length\s*:\s*32\s*\}\s*,|["'`][0-9a-f]+["'`]\.repeat\s*\(|["'`][0-9a-f]{64}["'`])/gi
           .source,
         "gi",
       ],
