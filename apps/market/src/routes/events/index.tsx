@@ -46,10 +46,11 @@ import {
 import type { ProductCatalogSourceMode } from "../../lib/productCatalogRead"
 
 const WINDOW_LABELS: Record<EventTimelineWindow, string> = {
-  upcoming: "Upcoming",
+  upcoming: "Open & upcoming",
   "7d": "Next 7 days",
   "30d": "Next 30 days",
   past: "Past events",
+  history: "History",
   all: "All dates",
 }
 
@@ -191,6 +192,31 @@ function EventsTimelinePage() {
           })
         }
       />
+
+      <div
+        role="group"
+        aria-label="Event views"
+        className="flex flex-wrap gap-2"
+      >
+        <Button
+          variant={
+            !search.window || search.window === "upcoming"
+              ? "secondary"
+              : "outline"
+          }
+          aria-pressed={!search.window || search.window === "upcoming"}
+          onClick={() => updateSearch({ window: undefined })}
+        >
+          Open & upcoming
+        </Button>
+        <Button
+          variant={search.window === "history" ? "secondary" : "outline"}
+          aria-pressed={search.window === "history"}
+          onClick={() => updateSearch({ window: "history" })}
+        >
+          History
+        </Button>
+      </div>
 
       <section
         aria-label="Event filters"
@@ -370,7 +396,11 @@ function EventsTimelinePage() {
         <section aria-label="Event results">
           <div className="mb-4 flex items-center justify-between gap-3">
             <h2 className="font-display text-xl font-semibold text-[var(--text-primary)]">
-              {search.window === "past" ? "Past events" : "Event timeline"}
+              {search.window === "history"
+                ? "Event history"
+                : search.window === "past"
+                  ? "Past events"
+                  : "Event timeline"}
             </h2>
             <span className="text-sm tabular-nums text-[var(--text-muted)]">
               {filteredMarkets.length}{" "}

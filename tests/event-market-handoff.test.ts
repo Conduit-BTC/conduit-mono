@@ -18,6 +18,7 @@ import {
   buildEventMarketHandoffAckPayload,
   buildEventMarketHandoffAckRumor,
   buildEventMarketReadyReceiptPayload,
+  buildEventMarketCollectionDraft,
   buildEventMarketReadyReceiptRumor,
   config,
   EVENT_KINDS,
@@ -34,6 +35,7 @@ import {
   parseEventMarketPrivateDeliveryProgress,
   parseEventMarketPrivateDeliveryRecord,
   parseEventMarketReadyReceiptRumor,
+  parseEventMarketCollectionEvent,
   publishEventMarketFulfillmentRevocation,
   publishEventMarketHandoffAck,
   publishEventMarketReadyReceipt,
@@ -542,6 +544,95 @@ describe("event-market private handoff payloads", () => {
         eventMarketReadyReceiptSchema.safeParse(missingAssertion).success
       ).toBe(false)
     }
+  })
+
+  it("issues the original order receipt after a verified lifecycle-only close", () => {
+    const original = finalizeEvent(
+      {
+        ...buildEventMarketCollectionDraft({
+          dTag: "market-catalog",
+          title: "Market catalog",
+          eventCoordinate: CALENDAR,
+          pickupCoordinate: PICKUP,
+          productCoordinates: [PRODUCT],
+          orderAcceptance: "open",
+        }),
+        created_at: EVIDENCE_CREATED_AT / 1_000 + 1,
+      },
+      ORGANIZER_SECRET
+    )
+    const closed = finalizeEvent(
+      {
+        ...original,
+        created_at: original.created_at + 10,
+        tags: original.tags.map((tag) =>
+          tag[0] === "conduit_event_market"
+            ? ["conduit_event_market", "1", "closed"]
+            : tag
+        ),
+      },
+      ORGANIZER_SECRET
+    )
+    const order = pickupOrder()
+    const fulfillment = order.items[0]!.fulfillment!
+    if (fulfillment.type !== "pickup") throw new Error("Expected pickup")
+    fulfillment.collection = {
+      coordinate: COLLECTION,
+      eventId: original.id,
+      createdAt: original.created_at * 1_000,
+    }
+    const market = {
+      ...activeMarket(),
+      state: "ended" as const,
+      collection: parseEventMarketCollectionEvent(closed)!,
+    }
+    const input = {
+      order,
+      market,
+      fulfillmentState: "paid" as const,
+      issuedAt: ISSUED_AT,
+    }
+    expect(() => buildEventMarketReadyReceiptPayload(input)).toThrow(
+      "graph is not current"
+    )
+    const payload = buildEventMarketReadyReceiptPayload({
+      ...input,
+      collectionLifecycleEvidence: [original, closed],
+    })
+    expect(payload.collection).toEqual(fulfillment.collection)
+    expect(order.items[0]!.fulfillment).toEqual(fulfillment)
+    expect(payload.collection.eventId).not.toBe(closed.id)
+
+    const removedPickup = { ...market, pickups: [] }
+    expect(() =>
+      buildEventMarketReadyReceiptPayload({
+        ...input,
+        market: removedPickup,
+        collectionLifecycleEvidence: [original, closed],
+      })
+    ).toThrow("pickup is not current")
+    const removedProduct = { ...market, acceptedProductEvidence: [] }
+    expect(() =>
+      buildEventMarketReadyReceiptPayload({
+        ...input,
+        market: removedProduct,
+        collectionLifecycleEvidence: [original, closed],
+      })
+    ).toThrow("does not select")
+    const changedPickup = {
+      ...market,
+      pickups: market.pickups.map((pickup) => ({
+        ...pickup,
+        eventId: "e".repeat(64),
+      })),
+    }
+    expect(() =>
+      buildEventMarketReadyReceiptPayload({
+        ...input,
+        market: changedPickup,
+        collectionLifecycleEvidence: [original, closed],
+      })
+    ).toThrow("pickup is not current")
   })
 
   it("round-trips exact authority and rejects sensitive or free-form fields", () => {

@@ -541,6 +541,9 @@ export function OrganizerEventMarketPanel({
   retryingRecord,
   onCopy,
   onEdit,
+  lifecyclePending,
+  lifecycleError,
+  onOrderAcceptance,
   onRefresh,
   onMembership,
   onRetryDelivery,
@@ -558,6 +561,9 @@ export function OrganizerEventMarketPanel({
   retryingRecord: MerchantOrganizerRecordDelivery["record"] | null
   onCopy: (url: string) => void
   onEdit: () => void
+  lifecyclePending: boolean
+  lifecycleError?: string
+  onOrderAcceptance: (value: "open" | "closed") => void
   onRefresh: () => void
   onMembership: (
     item: MerchantOrganizerParticipation,
@@ -567,8 +573,16 @@ export function OrganizerEventMarketPanel({
 }) {
   const shopperUrl = getEventMarketUrl(market.naddr)
   const merchantUrl = getMerchantEventParticipationUrl(market.naddr)
-  const showEdit = market.state === "active" || market.state === "ended"
-  const canChangeMembership = market.state === "active" && !actionsDisabled
+  const recordsResolved = eventMarketRequiredRecordsResolved(market.source)
+  const showEdit =
+    market.state === "active" ||
+    market.state === "ended" ||
+    (market.state === "partial" && recordsResolved)
+  const canChangeMembership = showEdit && !actionsDisabled
+  const canAcceptProducts =
+    (market.state === "active" ||
+      (market.state === "partial" && recordsResolved)) &&
+    !actionsDisabled
   const pendingRequests = market.participation.filter(
     (item) => item.status === "pending"
   )
@@ -583,6 +597,7 @@ export function OrganizerEventMarketPanel({
   )
   const actionability = getEventActionabilityPresentation({
     state: market.state,
+    orderAcceptance: market.orderAcceptance,
     availableProductCount: availableProducts.length,
     unresolvedProductCount:
       organizerOnlyProducts.length +
@@ -758,6 +773,49 @@ export function OrganizerEventMarketPanel({
               />
             </div>
           </div>
+
+          <section
+            className="space-y-2 rounded-xl border border-[var(--border)] p-3"
+            aria-label="Event availability"
+          >
+            <h3 className="text-balance text-sm font-semibold text-[var(--text-primary)]">
+              {market.orderAcceptance === "closed"
+                ? "Closed to new orders"
+                : market.orderAcceptance === "open"
+                  ? "Open until you close it"
+                  : "Availability follows the scheduled hours"}
+            </h3>
+            <p className="text-pretty text-sm text-[var(--text-muted)]">
+              Closing stops new orders and product acceptance. Existing orders,
+              payments, pickup, and the event record remain available.
+            </p>
+            {showEdit && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={actionsDisabled || lifecyclePending}
+                onClick={() =>
+                  onOrderAcceptance(
+                    market.orderAcceptance === "open" ? "closed" : "open"
+                  )
+                }
+              >
+                {lifecyclePending
+                  ? "Updating availability…"
+                  : market.orderAcceptance === "open"
+                    ? "Close event"
+                    : market.orderAcceptance === "closed" ||
+                        market.state === "ended"
+                      ? "Reopen event"
+                      : "Keep open beyond scheduled hours"}
+              </Button>
+            )}
+            {lifecycleError && (
+              <p role="alert" className="text-pretty text-sm text-error">
+                {lifecycleError}
+              </p>
+            )}
+          </section>
 
           <div className="flex flex-wrap gap-2">
             {showEdit && (
@@ -951,7 +1009,7 @@ export function OrganizerEventMarketPanel({
                         : undefined
                     }
                     organizerPubkey={market.organizerPubkey}
-                    pending={membershipPending || !canChangeMembership}
+                    pending={membershipPending || !canAcceptProducts}
                     onMembership={onMembership}
                   />
                 ))

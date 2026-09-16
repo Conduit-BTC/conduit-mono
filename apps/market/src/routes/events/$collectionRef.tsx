@@ -26,6 +26,7 @@ import {
   eventMarketRequiredRecordsResolved,
   formatEventRelayReadCoverage,
   getEventActionabilityPresentation,
+  useTimeBoundaryNow,
 } from "@conduit/ui"
 import { EventCatalogBrowser } from "../../components/EventCatalogBrowser"
 import { CopyButton } from "../../components/CopyButton"
@@ -158,6 +159,7 @@ function EventCatalogProductCard({
   const cartQuantity = sameFulfillment ? (existing?.quantity ?? 0) : 0
   const cartAction = getEventCatalogCartAction({
     state: catalog.state,
+    orderAcceptance: catalog.collection?.orderAcceptance,
     purchaseReady,
     hasPickupFulfillment: pickupFulfillment !== null,
     isChecking: isChecking && !pickupFulfillment,
@@ -428,6 +430,12 @@ function EventCatalogPage() {
   const [cartNotice, setCartNotice] = useState<string | null>(null)
   const query = useEventMarket(collectionRef, shopperPricing.quote)
   const catalog = query.data
+  const scheduleBoundaries = useMemo(
+    () =>
+      catalog?.calendar ? [catalog.calendar.start, catalog.calendar.end] : [],
+    [catalog?.calendar]
+  )
+  const scheduleNow = useTimeBoundaryNow(scheduleBoundaries)
   const isChecking = query.isHydrating
   const organizerPubkey = catalog?.organizerPubkey ?? ""
   const authenticatedPubkey =
@@ -541,6 +549,7 @@ function EventCatalogPage() {
   const archived = catalog.state === "ended"
   const actionability = getEventActionabilityPresentation({
     state: catalog.state,
+    orderAcceptance: catalog.collection?.orderAcceptance,
     ...productAvailability,
     requiredEventRecordsResolved,
   })
@@ -610,6 +619,15 @@ function EventCatalogPage() {
             />
           ) : null}
         </div>
+        {collection.orderAcceptance === "open" &&
+        calendar.end <= scheduleNow ? (
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            Scheduled time has passed.{" "}
+            {catalog.state === "stale" || isChecking
+              ? "Refresh to confirm whether the event is still open."
+              : "This event remains open until the organizer closes it."}
+          </p>
+        ) : null}
         <dl className="flex flex-col gap-x-6 gap-y-2 text-sm text-[var(--text-secondary)] sm:flex-row sm:flex-wrap">
           <div className="flex min-w-0 items-start gap-2">
             <CalendarDays

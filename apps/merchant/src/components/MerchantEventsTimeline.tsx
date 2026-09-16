@@ -66,10 +66,11 @@ const RELATIONSHIP_LABELS: Record<MerchantEventRelationshipFilter, string> = {
 }
 
 const WINDOW_LABELS: Record<MerchantEventTimelineWindow, string> = {
-  upcoming: "Upcoming",
+  upcoming: "Open & upcoming",
   "7d": "Next 7 days",
   "30d": "Next 30 days",
   past: "Past events",
+  history: "History",
   all: "All dates",
 }
 
@@ -217,6 +218,31 @@ export function MerchantEventsTimeline({
         <Button type="button" onClick={onCreate} disabled={createDisabled}>
           <Plus aria-hidden="true" />
           Create event
+        </Button>
+      </div>
+
+      <div
+        role="group"
+        aria-label="Event views"
+        className="flex flex-wrap gap-2"
+      >
+        <Button
+          variant={
+            !search.window || search.window === "upcoming"
+              ? "secondary"
+              : "outline"
+          }
+          aria-pressed={!search.window || search.window === "upcoming"}
+          onClick={() => onSearchChange({ ...search, window: "upcoming" })}
+        >
+          Open & upcoming
+        </Button>
+        <Button
+          variant={search.window === "history" ? "secondary" : "outline"}
+          aria-pressed={search.window === "history"}
+          onClick={() => onSearchChange({ ...search, window: "history" })}
+        >
+          History
         </Button>
       </div>
 

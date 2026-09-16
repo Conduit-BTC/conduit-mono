@@ -8,7 +8,7 @@
   upcoming kind-`30405` collections with two-sided membership semantics.
 - **Owner:** Commerce/Core maintainers
 - **Started:** 2026-08-11
-- **Next review:** 2026-09-15
+- **Next review:** 2026-10-16
 - **Rollout control:** only the reviewed event-market builders and the explicit
   Merchant Events / Local pickup workflows may emit this shape; generic product
   and collection writers cannot enter the lane.
@@ -42,19 +42,23 @@ sufficient for official membership.
 
 ## Behavior Matrix
 
-| Observed state                          | Reads                                                | Writes                                                        | User-visible state        |
-| --------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------- | ------------------------- |
-| Current exact event graph               | Resolve exact signed frontiers                       | Explicit event workflow may emit the bounded extension        | Active or ended catalog   |
-| Previously valid graph, lookup degraded | Retain cached signed evidence and mark stale/partial | No semantic replacement from uncertain evidence               | Degraded, retryable       |
-| Absent within a complete bounded plan   | Report missing                                       | New organizer flow may create; updates require known identity | Missing / create action   |
-| Partial or unavailable lookup           | Do not infer absence or deletion                     | Block consequential updates that require unresolved evidence  | Partial / unavailable     |
-| Malformed or conflicting signed state   | Preserve for diagnostics, exclude from authority     | Block                                                         | Unsupported / conflicting |
+| Observed state                          | Reads                                                | Writes                                                        | User-visible state                    |
+| --------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------- |
+| Current exact event graph               | Resolve exact signed frontiers                       | Explicit event workflow may emit the bounded extension        | Open, closed, or legacy ended catalog |
+| Previously valid graph, lookup degraded | Retain cached signed evidence and mark stale/partial | No semantic replacement from uncertain evidence               | Degraded, retryable                   |
+| Absent within a complete bounded plan   | Report missing                                       | New organizer flow may create; updates require known identity | Missing / create action               |
+| Partial or unavailable lookup           | Do not infer absence or deletion                     | Block consequential updates that require unresolved evidence  | Partial / unavailable                 |
+| Malformed or conflicting signed state   | Preserve for diagnostics, exclude from authority     | Block                                                         | Unsupported / conflicting             |
 
 ## Bounds And Prohibitions
 
 - Allowed public kinds are `31922`/`31923`, `30405`, `30406`, and participating
   merchant `30402` records. No Conduit-only event kind, registry, location tag,
-  delegation tag, or destination predicate is emitted.
+  delegation tag, or destination predicate is emitted. The explicit event-market
+  collection writer may additionally emit the versioned `conduit_event_market`
+  acceptance declaration documented in [event lifecycle](./event-market-lifecycle.md).
+  Generic collection writers cannot emit it. This is a reviewed extension, not
+  a claim of upstream or third-party client support.
 - Only the organizer authors the calendar, collection, and optional organizer
   pickup. A merchant authors its product and optional booth pickup.
 - Reads use at most eight relay hints and bounded planner sources. Participation

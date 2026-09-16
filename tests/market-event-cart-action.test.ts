@@ -66,3 +66,14 @@ describe("Market event catalog cart action", () => {
     expect(main).toContain('root === "event-market"')
   })
 })
+
+it("names explicit organizer closure independently of the advertised end", () => {
+  expect(
+    getEventCatalogCartAction({
+      state: "ended",
+      orderAcceptance: "closed",
+      purchaseReady: false,
+      hasPickupFulfillment: true,
+    })
+  ).toEqual({ enabled: false, disabledLabel: "Event closed" })
+})

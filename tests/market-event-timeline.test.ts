@@ -297,3 +297,69 @@ describe("Market event timeline", () => {
     ).toContain("9:00 AM")
   })
 })
+
+describe("event lifecycle timeline", () => {
+  it("keeps an explicitly open event visible across its scheduled end and separates history from past dates", () => {
+    const event = market({ suffix: "overtime", start: NOW - 60_000, end: NOW })
+    event.collection!.orderAcceptance = "open"
+    for (const now of [NOW - 1, NOW, NOW + 86_400_000]) {
+      expect(filterAndSortEventMarkets([event], {}, now)).toHaveLength(1)
+      expect(
+        filterAndSortEventMarkets([event], { window: "history" }, now)
+      ).toHaveLength(0)
+    }
+    const [overtime] = filterAndSortEventMarkets(
+      [event],
+      { window: "past" },
+      NOW
+    )
+    expect(getEventTimelineStatus(overtime!, NOW).label).toBe(
+      "Scheduled time has passed · Open"
+    )
+    event.state = "stale"
+    expect(
+      getEventTimelineStatus(
+        filterAndSortEventMarkets([event], {}, NOW)[0]!,
+        NOW
+      ).label
+    ).toContain("Refresh needed")
+  })
+
+  it("keeps early closure in history without pretending its scheduled date is past", () => {
+    const event = market({
+      suffix: "closed-early",
+      start: NOW + 60_000,
+      end: NOW + 120_000,
+      state: "ended",
+    })
+    event.collection!.orderAcceptance = "closed"
+    expect(filterAndSortEventMarkets([event], {}, NOW)).toHaveLength(0)
+    expect(
+      filterAndSortEventMarkets([event], { window: "past" }, NOW)
+    ).toHaveLength(0)
+    const [historical] = filterAndSortEventMarkets(
+      [event],
+      { window: "history" },
+      NOW
+    )
+    expect(getEventTimelineStatus(historical!, NOW).label).toBe("Closed")
+    expect(
+      filterAndSortEventMarkets([event], { window: "7d" }, NOW)
+    ).toHaveLength(1)
+    expect(
+      filterAndSortEventMarkets([event], { window: "all" }, NOW)
+    ).toHaveLength(1)
+  })
+
+  it("preserves legacy past events in history without reopening them", () => {
+    const event = market({
+      suffix: "legacy",
+      start: NOW - 120_000,
+      end: NOW - 60_000,
+    })
+    expect(filterAndSortEventMarkets([event], {}, NOW)).toHaveLength(0)
+    expect(
+      filterAndSortEventMarkets([event], { window: "history" }, NOW)
+    ).toHaveLength(1)
+  })
+})

@@ -151,7 +151,14 @@ export interface EventMarketPickupDraftInput {
   clientAppId?: ConduitAppId
 }
 
+export type EventMarketOrderAcceptance = "open" | "closed"
+
+/** Conduit event-market extension; not part of NIP-52 or Open Markets. */
+const EVENT_MARKET_LIFECYCLE_TAG = "conduit_event_market"
+
 export interface EventMarketCollectionDraftInput {
+  /** Omitted only for legacy events whose scheduled end closes ordering. */
+  orderAcceptance?: EventMarketOrderAcceptance
   dTag: string
   title: string
   eventCoordinate: string
@@ -213,6 +220,10 @@ export interface ParsedEventMarketPickup {
 }
 
 export interface ParsedEventMarketCollection {
+  /** Exact verified revision used for lossless lifecycle-only updates. */
+  signedEvent?: SignedPublicNostrEvent
+  /** Omitted only for legacy events whose scheduled end closes ordering. */
+  orderAcceptance?: EventMarketOrderAcceptance
   coordinate: string
   eventId: string
   authorPubkey: string
@@ -673,6 +684,13 @@ function uniqueCoordinates(
 export function buildEventMarketCollectionDraft(
   input: EventMarketCollectionDraftInput
 ): EventMarketEventDraft {
+  if (
+    input.orderAcceptance !== undefined &&
+    input.orderAcceptance !== "open" &&
+    input.orderAcceptance !== "closed"
+  ) {
+    throw new Error("Event order acceptance must be open or closed.")
+  }
   const dTag = normalizeDTag(input.dTag)
   const title = normalizeRequiredText(input.title, "Collection title", 200)
   const eventCoordinate = uniqueCoordinates(
@@ -731,6 +749,9 @@ export function buildEventMarketCollectionDraft(
     ...pickupCoordinates.map((coordinate) => ["shipping_option", coordinate]),
     ...productCoordinates.map((coordinate) => ["a", coordinate]),
   ]
+  if (input.orderAcceptance) {
+    tags.push([EVENT_MARKET_LIFECYCLE_TAG, "1", input.orderAcceptance])
+  }
   if (summary) tags.push(["summary", summary])
   if (image) tags.push(["image", image])
   if (location) tags.push(["location", location])
@@ -961,6 +982,21 @@ export function parseEventMarketCollectionEvent(
   const image = optionalSingleTag(event.tags, "image")
   const location = optionalSingleTag(event.tags, "location")
   const geohash = optionalSingleTag(event.tags, "g")
+  const lifecycleTags = event.tags.filter(
+    (tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG
+  )
+  const lifecycle = lifecycleTags[0]
+  if (
+    lifecycleTags.length > 1 ||
+    (lifecycle &&
+      (lifecycle.length !== 3 ||
+        lifecycle[1] !== "1" ||
+        (lifecycle[2] !== "open" && lifecycle[2] !== "closed")))
+  ) {
+    return null
+  }
+  const orderAcceptance = lifecycle?.[2] as
+    EventMarketOrderAcceptance | undefined
   if (
     !coordinate ||
     !title ||
@@ -1003,6 +1039,7 @@ export function parseEventMarketCollectionEvent(
   }
 
   return {
+    signedEvent: { ...event, tags: event.tags.map((tag) => [...tag]) },
     coordinate: coordinate.coordinate,
     eventId: event.id.toLowerCase(),
     authorPubkey: coordinate.authorPubkey,
@@ -1013,6 +1050,7 @@ export function parseEventMarketCollectionEvent(
     ...(image ? { image } : {}),
     ...(location ? { location } : {}),
     ...(geohash ? { geohash: geohash.toLowerCase() } : {}),
+    ...(orderAcceptance ? { orderAcceptance } : {}),
     eventCoordinates: Array.from(new Set(eventCoordinates)),
     pickupCoordinates: Array.from(new Set(pickupCoordinates)),
     productCoordinates: Array.from(new Set(productCoordinates)),
@@ -1160,6 +1198,19 @@ export interface EventMarketResolution {
   coverage: EventMarketRelayCoverage
   /** Signed NIP-09 evidence behind a terminal deleted resolution. */
   deletion?: EventMarketDeletedRecordEvidence
+}
+
+/** Schedule/organizer intent only. Purchase authorization also requires the
+ * resolution's verified graph, live evidence, and product participation. */
+export function getEventMarketOrderAcceptance(
+  market: Pick<EventMarketResolution, "collection" | "calendar">,
+  nowMs = Date.now()
+): EventMarketOrderAcceptance | "legacy-open" | "legacy-ended" | "unknown" {
+  if (market.collection?.orderAcceptance) {
+    return market.collection.orderAcceptance
+  }
+  if (!market.collection || !market.calendar) return "unknown"
+  return nowMs >= market.calendar.end ? "legacy-ended" : "legacy-open"
 }
 
 export interface ResolveEventMarketEvidenceInput {
@@ -1364,6 +1415,18 @@ function resolveAddressableRecord<T>(input: {
         deletionEvidenceById.set(evidence.deletionEventId, evidence)
       }
       continue
+    }
+    // Opting in is monotonic while signed evidence is retained. A client
+    // unaware of the extension cannot reopen an event by stripping its tag.
+    if (
+      input.coordinate.kind === EVENT_KINDS.PRODUCT_COLLECTION &&
+      !candidate.tags.some((tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG) &&
+      candidates.some(
+        (event) =>
+          parseEventMarketCollectionEvent(event)?.orderAcceptance !== undefined
+      )
+    ) {
+      return { state: "malformed" }
     }
     const parsed = input.parse(candidate)
     return parsed
@@ -2128,10 +2191,11 @@ export function resolveEventMarketEvidence(
     ...participation,
   }
   const nowMs = input.nowMs ?? Date.now()
-  // Once the exact current calendar revision is present, an ended event is a
-  // stronger fact than incomplete relay coverage. Partial coverage may remain
-  // purchase-ready only while the signed event window is still active.
-  if (readState === "partial" && nowMs >= calendarResult.value.end) {
+  const acceptance = getEventMarketOrderAcceptance(resolved, nowMs)
+  const orderingEnded = acceptance === "closed" || acceptance === "legacy-ended"
+  // Explicit signed closure (or a legacy scheduled end) is stronger than
+  // partial coverage. Explicitly open events may run beyond advertised hours.
+  if (readState === "partial" && orderingEnded) {
     return { ...resolved, state: "ended" }
   }
   if (readState === "partial") return { ...resolved, state: "partial" }
@@ -2151,7 +2215,7 @@ export function resolveEventMarketEvidence(
   }
   return {
     ...resolved,
-    state: nowMs >= calendarResult.value.end ? "ended" : "active",
+    state: orderingEnded ? "ended" : "active",
   }
 }
 
@@ -3989,6 +4053,89 @@ export async function getRetainedEventMarketCollectionEvidence(input: {
   }
 }
 
+/** Preserve known event history and signed lifecycle frontiers independently
+ * of the bounded, disposable product discovery cache. These rows remain
+ * retained evidence; retention never grants live purchase authorization. */
+export function selectEventMarketEvidenceForRetention(
+  rows: readonly CachedEventMarketEvidence[],
+  transientLimit = EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER
+): CachedEventMarketEvidence[] {
+  const keep = new Set<string>()
+  const graphByCoordinate = new Map<string, CachedEventMarketEvidence[]>()
+  const deletions: SignedPublicNostrEvent[] = []
+  for (const row of rows) {
+    const event = row.signedEvent
+    if (!isValidSignedPublicNostrEvent(event)) continue
+    if (event.kind === EVENT_KINDS.DELETION) {
+      keep.add(row.id)
+      deletions.push(event)
+      continue
+    }
+    if (
+      event.pubkey.toLowerCase() !== row.organizerPubkey ||
+      event.kind === EVENT_KINDS.PRODUCT
+    )
+      continue
+    const coordinate = eventCoordinate(event, EVENT_MARKET_ADDRESSABLE_KINDS)
+    if (!coordinate) continue
+    const values = graphByCoordinate.get(coordinate.coordinate) ?? []
+    values.push(row)
+    graphByCoordinate.set(coordinate.coordinate, values)
+  }
+  for (const revisions of graphByCoordinate.values()) {
+    revisions.sort((left, right) =>
+      compareAddressableEvents(left.signedEvent, right.signedEvent)
+    )
+    const newest = revisions[0]!
+    keep.add(newest.id)
+    const coordinate = eventCoordinate(
+      newest.signedEvent,
+      EVENT_MARKET_ADDRESSABLE_KINDS
+    )!
+    // Exact-event deletion can leave an older revision as the current record.
+    const surviving = revisions.find(
+      (row) =>
+        deletionEvidenceForAddressableEvent(
+          row.signedEvent,
+          coordinate,
+          deletions
+        ).length === 0
+    )
+    if (surviving) keep.add(surviving.id)
+    if (newest.kind === EVENT_KINDS.PRODUCT_COLLECTION) {
+      const lifecycle = revisions.find(
+        (row) =>
+          parseEventMarketCollectionEvent(row.signedEvent)?.orderAcceptance !==
+          undefined
+      )
+      if (lifecycle) keep.add(lifecycle.id)
+      // Existing orders bind exact collection event IDs. Keep every source
+      // revision in the current graph's status-only chain, including its
+      // legacy starting revision, so cache pressure cannot strand fulfillment.
+      // Edits to any other tag/content end this chain; product history remains
+      // in the separately bounded transient cache.
+      const current = surviving ?? newest
+      const graphIdentity = (event: SignedPublicNostrEvent) =>
+        JSON.stringify([
+          event.content,
+          event.tags.filter((tag) => tag[0] !== EVENT_MARKET_LIFECYCLE_TAG),
+        ])
+      const currentGraph = graphIdentity(current.signedEvent)
+      for (const revision of revisions) {
+        if (graphIdentity(revision.signedEvent) === currentGraph) {
+          keep.add(revision.id)
+        }
+      }
+    }
+  }
+  const transient = rows
+    .filter((row) => !keep.has(row.id))
+    .sort((left, right) => right.cachedAt - left.cachedAt)
+    .slice(0, Math.max(0, transientLimit))
+  for (const row of transient) keep.add(row.id)
+  return rows.filter((row) => keep.has(row.id))
+}
+
 async function persistEventMarketEvidence(input: {
   organizerPubkey: string
   events: readonly SignedPublicNostrEvent[]
@@ -4078,17 +4225,9 @@ async function persistEventMarketEvidence(input: {
         return
       }
       const keep = new Set(
-        organizerRows
-          .sort((left, right) => {
-            const leftDeletion = left.kind === EVENT_KINDS.DELETION ? 1 : 0
-            const rightDeletion = right.kind === EVENT_KINDS.DELETION ? 1 : 0
-            if (leftDeletion !== rightDeletion) {
-              return rightDeletion - leftDeletion
-            }
-            return right.cachedAt - left.cachedAt
-          })
-          .slice(0, EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER)
-          .map((row) => row.id)
+        selectEventMarketEvidenceForRetention(organizerRows).map(
+          (row) => row.id
+        )
       )
       await db.eventMarketEvidence.bulkDelete(
         organizerRows.filter((row) => !keep.has(row.id)).map((row) => row.id)
@@ -5433,6 +5572,8 @@ export interface OrganizerEventMarketPickupPublishInput {
 }
 
 export interface OrganizerEventMarketCollectionPublishInput {
+  /** Omitted only for legacy events whose scheduled end closes ordering. */
+  orderAcceptance?: EventMarketOrderAcceptance
   dTag: string
   title: string
   eventCoordinate?: string
@@ -5485,6 +5626,15 @@ export interface PublishOrganizerCollectionUpdateInput {
   ) => void | Promise<void>
   onSignedRecord?: (record: OrganizerEventMarketSignedRecord) => void
   now?: () => number
+}
+
+export interface PublishOrganizerCollectionOrderAcceptanceInput extends Omit<
+  PublishOrganizerCollectionUpdateInput,
+  "collection"
+> {
+  /** The strongest known exact signed collection revision; never a projection. */
+  sourceEvent: SignedPublicNostrEvent
+  orderAcceptance: EventMarketOrderAcceptance
 }
 
 export interface PublishEventMarketPickupOptionInput {
@@ -5646,6 +5796,7 @@ function collectionPublishDraft(
   const eventCoordinate = input.eventCoordinate ?? input.calendarCoordinate
   if (!eventCoordinate) throw new Error("Collection requires a calendar event.")
   return buildEventMarketCollectionDraft({
+    orderAcceptance: input.orderAcceptance,
     dTag: input.dTag,
     title: input.title,
     eventCoordinate,
@@ -5952,6 +6103,84 @@ export async function publishOrganizerCollectionUpdate(
     authenticatedPubkey: input.authenticatedPubkey,
   })
   const signedEvent = signature.signedEvent
+  await input.onSignedEvent?.({ record: "collection", signedEvent })
+  const record = await publishSignedEventMarketRecord({
+    record: "collection",
+    organizerPubkey,
+    authenticatedPubkey: signature.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+    signedEvent,
+  })
+  input.onSignedRecord?.(record)
+  requireAcknowledged(record)
+  return record
+}
+
+/** Change only organizer order acceptance, retaining arbitrary public metadata,
+ * content, and tag ordering so existing-order graph continuity remains exact. */
+export async function publishOrganizerCollectionOrderAcceptance(
+  input: PublishOrganizerCollectionOrderAcceptanceInput
+): Promise<OrganizerEventMarketSignedRecord> {
+  const organizerPubkey = normalizePubkey(input.organizerPubkey)
+  const source = parseEventMarketCollectionEvent(input.sourceEvent)
+  if (
+    !organizerPubkey ||
+    !source ||
+    source.authorPubkey !== organizerPubkey ||
+    source.eventCoordinates.length !== 1 ||
+    source.pickupCoordinates.length > 1 ||
+    source.unsupportedReferences.length > 0 ||
+    (input.orderAcceptance !== "open" && input.orderAcceptance !== "closed")
+  ) {
+    throw new Error(
+      "A valid organizer collection is required to change event availability."
+    )
+  }
+  requireOrganizerCollectionGraph({
+    organizerPubkey,
+    collection: {
+      dTag: source.dTag,
+      title: source.title,
+      eventCoordinate: source.eventCoordinates[0],
+      pickupCoordinates: source.pickupCoordinates,
+    },
+  })
+  const tags = input.sourceEvent.tags.map((tag) =>
+    tag[0] === EVENT_MARKET_LIFECYCLE_TAG
+      ? [EVENT_MARKET_LIFECYCLE_TAG, "1", input.orderAcceptance]
+      : [...tag]
+  )
+  if (!tags.some((tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG)) {
+    tags.push([EVENT_MARKET_LIFECYCLE_TAG, "1", input.orderAcceptance])
+  }
+  const expectedTags = JSON.stringify(tags)
+  const content = input.sourceEvent.content
+  const createdAt = nextReplaceableCreatedAt(
+    Math.max(
+      input.sourceEvent.created_at,
+      normalizePreviousCreatedAt(input.previousCreatedAt)
+    ),
+    input.now ?? Date.now
+  )
+  const signature = await signEventMarketDraft({
+    draft: {
+      kind: EVENT_KINDS.PRODUCT_COLLECTION,
+      content,
+      tags,
+    },
+    createdAt,
+    organizerPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+  })
+  const signedEvent = signature.signedEvent
+  if (
+    signedEvent.kind !== EVENT_KINDS.PRODUCT_COLLECTION ||
+    signedEvent.created_at !== createdAt ||
+    signedEvent.content !== content ||
+    JSON.stringify(signedEvent.tags) !== expectedTags
+  ) {
+    throw new Error("Signer changed the event availability update.")
+  }
   await input.onSignedEvent?.({ record: "collection", signedEvent })
   const record = await publishSignedEventMarketRecord({
     record: "collection",
