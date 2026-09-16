@@ -697,6 +697,41 @@ describe("shared progressive event catalogs", () => {
     }
   })
 
+  it("does not restart a stale event read when the window regains focus", async () => {
+    const client = new QueryClient()
+    let reads = 0
+    const observer = new QueryObserver(client, {
+      ...eventCatalogQueryOptions(
+        client,
+        collectionCoordinate,
+        scope,
+        () => true,
+        async () => {
+          reads++
+          return raw()
+        }
+      ),
+      // Force the completed result stale so the regression does not wait for
+      // the production cache window to expire.
+      staleTime: 0,
+    })
+    const release = observer.subscribe(() => {})
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(reads).toBe(1)
+
+      client.getQueryCache().onFocus()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(reads).toBe(1)
+      expect(observer.getCurrentResult().data?.complete).toBe(true)
+    } finally {
+      release()
+      client.clear()
+    }
+  })
+
   it("shows organizer-only cached cards without inventing acceptance or pickup authority", () => {
     const resolution = market("stale")
     resolution.acceptedProductCoordinates = []

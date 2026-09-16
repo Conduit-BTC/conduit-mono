@@ -88,6 +88,7 @@ export function eventCatalogQueryOptions(
     // Incomplete snapshots remain stale so an interrupted read is resumed.
     staleTime: (query) => (query.state.data?.complete ? 60_000 : 0),
     gcTime: 30 * 60_000,
+    refetchOnWindowFocus: false,
     retry: false,
   })
 }
