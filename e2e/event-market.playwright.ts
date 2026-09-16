@@ -1826,7 +1826,7 @@ test("event catalog shops products by search, merchant, and sort before technica
   const createdAt = market.initialCollection.created_at + 1
   const secondMerchantSecret = generateSecretKey()
   const longMerchantName =
-    "Peter No Taxation Without Representation Ryszkiewicz"
+    "Synthetic Merchant With An Intentionally Long Display Name"
   const organizerNip05Suffix = "@identity.conduit.market"
   const organizerNip05Name = "o".repeat(100 - organizerNip05Suffix.length)
   const organizerNip05 = `${organizerNip05Name}${organizerNip05Suffix}`
@@ -2028,7 +2028,7 @@ test("event catalog shops products by search, merchant, and sort before technica
   await merchant.click()
   await page.getByRole("option", { name: new RegExp(longMerchantName) }).click()
   await expect(titles).toHaveText(["Cedar Mug"])
-  await search.fill("representation")
+  await search.fill("intentionally")
   // Merchant names are searchable, and the selected merchant narrows results.
   await expect(titles).toHaveText(["Blue Tote", "Cedar Mug"])
   await search.fill("no matching item")
