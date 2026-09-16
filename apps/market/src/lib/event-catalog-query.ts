@@ -1,4 +1,4 @@
-import { queryOptions, type QueryClient } from "@tanstack/react-query"
+import { hashKey, queryOptions, type QueryClient } from "@tanstack/react-query"
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
@@ -46,6 +46,8 @@ export function eventCatalogQueryOptions(
 ) {
   const identity = eventCatalogQueryIdentity(reference, scope)
   const coherence = eventCatalogCacheCoherence(client)
+  const ownerKey = hashKey(identity.queryKey)
+  const reconcile = (raw: RawEventCatalog) => coherence.reconcile(raw, ownerKey)
   return queryOptions({
     queryKey: identity.queryKey,
     queryFn: async ({ signal }) => {
@@ -67,19 +69,21 @@ export function eventCatalogQueryOptions(
           if (active())
             client.setQueryData<RawEventCatalog>(
               identity.queryKey,
-              coherence.reconcile({
+              reconcile({
                 ...snapshot,
                 complete: false,
               })
             )
         },
       })
-      await coherence.settled()
       if (!active())
         throw new DOMException("Event catalog read cancelled", "AbortError")
-      return coherence.reconcile(result)
+      await coherence.settled(result, ownerKey, signal)
+      if (!active())
+        throw new DOMException("Event catalog read cancelled", "AbortError")
+      return reconcile(result)
     },
-    select: coherence.reconcile,
+    select: reconcile,
     // Reuse a completed read across detail/card mounts and short return visits.
     // Incomplete snapshots remain stale so an interrupted read is resumed.
     staleTime: (query) => (query.state.data?.complete ? 60_000 : 0),

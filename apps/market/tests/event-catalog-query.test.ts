@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { QueryClient, QueryObserver } from "@tanstack/react-query"
+import { hashKey, QueryClient, QueryObserver } from "@tanstack/react-query"
 import {
   encodeEventMarketNaddr,
   evaluateListingSafety,
@@ -26,6 +26,7 @@ import {
 } from "../src/lib/event-market-adapter"
 
 import { readEventCatalogProducts } from "../src/lib/event-catalog-products"
+import { eventCatalogCacheCoherence } from "../src/lib/event-catalog-cache-coherence"
 import { getEventCatalogQueryDisplayState } from "../src/lib/event-catalog-query-state"
 import { getEventCatalogCartAction } from "../src/lib/event-market-cart-action"
 
@@ -334,6 +335,12 @@ describe("shared progressive event catalogs", () => {
     const release = observer.subscribe(() => {})
     try {
       await progressed.promise
+      // Local evidence settles independently while the slow merchant remains
+      // held. Progress cannot borrow authority before that reconciliation.
+      await eventCatalogCacheCoherence(client).settled(
+        observer.getCurrentResult().data!,
+        hashKey(options.queryKey)
+      )
       const query = observer.getCurrentResult()
       const display = getEventCatalogQueryDisplayState(query)
       expect(query.isFetching).toBe(true)
