@@ -143,7 +143,9 @@ purchase authority. These preview records enter the existing local revision and
 deletion reconciliation before projection; projection never reconstructs a removed
 preview from older graph evidence. Completed, excluded, unsafe, malformed-price
 and unsupported family previews do not gain this pending-card fallback. This
-reuses evidence already read and adds no relay or cache read.
+reuses evidence already read and adds no relay or cache read. Source safety comes
+from the canonical full product parser, preserving signed tags and legacy-content
+checks even when the display projection omits those fields.
 
 ## Checkout is independent of catalog browsing
 

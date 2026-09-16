@@ -784,6 +784,7 @@ export function buildEventCatalogProductPreviewRecords(
         if (
           !preview ||
           preview.priceStatus !== "resolved" ||
+          !preview.sourceSafety ||
           preview.type !== "simple" ||
           !coordinate ||
           !resolution.collectionCoordinate ||
@@ -832,14 +833,15 @@ export function buildEventCatalogProductPreviewRecords(
           eventId: preview.eventId,
           eventCreatedAt: preview.createdAt / 1_000,
           dTag: coordinate.dTag,
-          safety: evaluateListingSafety(product),
+          safety: preview.sourceSafety,
         }
         return isEventCatalogRecordSafetyAllowed(
-          record,
+          { ...record, safety: evaluateListingSafety(product) },
           resolution,
           undefined,
           true
-        )
+        ) &&
+          isEventCatalogRecordSafetyAllowed(record, resolution, undefined, true)
           ? [record]
           : []
       }

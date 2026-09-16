@@ -1,7 +1,16 @@
 import { describe, expect, it } from "bun:test"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import { hashKey, QueryClient, QueryObserver } from "@tanstack/react-query"
 import {
   encodeEventMarketNaddr,
+  buildEventMarketCalendarDraft,
+  buildEventMarketCollectionDraft,
+  buildEventMarketPickupDraft,
+  resolveEventMarketEvidence,
   evaluateListingSafety,
   prepareProductCatalog,
   type CommerceProductRecord,
@@ -238,6 +247,7 @@ function pendingPreviewCatalog(): RawEventCatalog {
   const candidate = product()
   resolution.acceptedProductEvidence[0]!.productPreview = {
     coordinate: candidate.id,
+    sourceSafety: evaluateListingSafety(candidate),
     eventId: "4".repeat(64),
     createdAt: candidate.createdAt,
     title: candidate.title,
@@ -273,6 +283,120 @@ function pendingPreviewCatalog(): RawEventCatalog {
 }
 
 describe("pending event product previews", () => {
+  for (const source of [
+    "signed tag",
+    "legacy tags",
+    "legacy summary",
+  ] as const) {
+    it(`preserves ${source} safety when the bounded display fields look innocuous`, () => {
+      const organizerKey = generateSecretKey()
+      const merchantKey = generateSecretKey()
+      const owner = getPublicKey(organizerKey)
+      const author = getPublicKey(merchantKey)
+      const collection = `30405:${owner}:market`
+      const calendar = `31923:${owner}:calendar`
+      const pickup = `30406:${owner}:pickup`
+      const coordinate = `30402:${author}:coffee`
+      const sign = (draft: {
+        kind: number
+        content: string
+        tags: string[][]
+      }) => finalizeEvent({ ...draft, created_at: 100 }, organizerKey)
+      const graph = [
+        sign(
+          buildEventMarketCalendarDraft({
+            kind: 31923,
+            dTag: "calendar",
+            title: "Public market",
+            start: 100,
+            end: 10000,
+          })
+        ),
+        sign(
+          buildEventMarketPickupDraft({
+            dTag: "pickup",
+            title: "Event pickup",
+            price: 0,
+            currency: "SATS",
+            countries: ["US"],
+            location: "Public hall",
+          })
+        ),
+        sign(
+          buildEventMarketCollectionDraft({
+            dTag: "market",
+            title: "Market",
+            eventCoordinate: calendar,
+            pickupCoordinate: pickup,
+            productCoordinates: [coordinate],
+          })
+        ),
+      ]
+      const listing = finalizeEvent(
+        {
+          kind: 30402,
+          created_at: 100,
+          content:
+            source === "signed tag"
+              ? "Coffee beans"
+              : JSON.stringify({
+                  title: "Coffee",
+                  summary:
+                    source === "legacy summary"
+                      ? "Counterfeit goods"
+                      : "Coffee beans",
+                  price: 2000,
+                  currency: "SATS",
+                  images: [{ url: "https://cdn.conduit.market/coffee.png" }],
+                  tags: source === "legacy tags" ? ["counterfeit"] : [],
+                }),
+          tags: [
+            ["d", "coffee"],
+            ["title", "Coffee"],
+            ["summary", "Coffee beans"],
+            ["type", "simple", "physical"],
+            ["price", "2000", "SATS"],
+            ["image", "https://cdn.conduit.market/coffee.png"],
+            ["a", collection],
+            ["shipping_option", pickup],
+            ...(source === "signed tag" ? [["t", "counterfeit"]] : []),
+          ],
+        },
+        merchantKey
+      )
+      const resolution = resolveEventMarketEvidence({
+        reference: collection,
+        events: graph,
+        productRequestEvents: [listing],
+        nowMs: 200_000,
+      })
+      expect(resolution.acceptedProductCoordinates).toEqual([coordinate])
+      expect(
+        resolution.acceptedProductEvidence[0]!.productPreview
+      ).toMatchObject({ title: "Coffee", summary: "Coffee beans" })
+      const result = productRead({ includeRecord: false, issue: "pending" })
+      result.diagnostics = [
+        { productId: coordinate, addressId: coordinate, issue: "pending" },
+      ]
+      const previews = buildEventCatalogProductPreviewRecords(
+        resolution,
+        [],
+        result
+      )
+      expect(previews).toEqual([])
+      expect(
+        projectRawEventCatalog({
+          reference: collection,
+          resolution,
+          result,
+          previewRecords: previews,
+          resolutionComplete: true,
+          complete: false,
+        }).products
+      ).toEqual([])
+    })
+  }
+
   it("shows a signed preview while exact hydration is pending without pickup authority", () => {
     const snapshot = pendingPreviewCatalog()
     expect(snapshot.result!.data).toEqual([])
@@ -310,6 +434,19 @@ describe("pending event product previews", () => {
       expect(projectRawEventCatalog(snapshot).products).toEqual([])
     })
   }
+
+  it("withholds a display preview whose full source safety is unavailable", () => {
+    const snapshot = pendingPreviewCatalog()
+    delete snapshot.resolution!.acceptedProductEvidence[0]!.productPreview!
+      .sourceSafety
+    expect(
+      buildEventCatalogProductPreviewRecords(
+        snapshot.resolution!,
+        [],
+        snapshot.result
+      )
+    ).toEqual([])
+  })
 
   for (const guard of [
     "complete",
