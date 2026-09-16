@@ -15,6 +15,8 @@ import {
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
   getRelayHealth,
+  planRelayReads,
+  refreshNdkRelaySettings,
   refreshNdkRelaySettingsWhenIdle,
   verifySignedPublicNostrEvents,
 } from "@conduit/core"
@@ -1234,7 +1236,122 @@ describe("NDK relay worker verification fallback", () => {
 
     await expect(read).rejects.toMatchObject({ name: "AbortError" })
     expect(closeRequests).toBe(1)
+    expect(getRelayHealth("wss://abort-active.example")).toBeUndefined()
   })
+
+  for (const [label, teardown] of [
+    ["disconnect", disconnectNdk],
+    ["immediate settings refresh", () => refreshNdkRelaySettings()],
+  ] as const) {
+    it(`cancels six shared reads on local ${label} without shrinking discovery`, async () => {
+      const plan = () =>
+        planRelayReads({ intent: "commerce_products", maxRelays: 6 })
+      const initialPlan = plan().relayUrls
+      expect(initialPlan.length).toBeGreaterThan(1)
+      const relayUrl = initialPlan[0]!
+      const eventsByRelay = new Map(
+        initialPlan.map((url, index) => [
+          url,
+          finalizeEvent(
+            {
+              kind: EVENT_KINDS.PROFILE,
+              created_at: 100 + index,
+              tags: [],
+              content: JSON.stringify({ name: `Public fixture ${index}` }),
+            },
+            generateSecretKey()
+          ),
+        ])
+      )
+      let requestCount = 0
+      let releaseRequests!: () => void
+      const allRequests = new Promise<void>((resolve) => {
+        releaseRequests = resolve
+      })
+      let reply = false
+      class LocalTeardownWebSocket {
+        static CONNECTING = 0
+        static OPEN = 1
+        static CLOSED = 3
+        readyState = 0
+        onopen: ((event: Event) => void) | null = null
+        onmessage: ((event: MessageEvent<string>) => void) | null = null
+        onerror: ((event: Event) => void) | null = null
+        onclose: ((event: Event) => void) | null = null
+
+        constructor(readonly url: string) {
+          queueMicrotask(() => {
+            this.readyState = LocalTeardownWebSocket.OPEN
+            this.onopen?.(new Event("open"))
+          })
+        }
+
+        send(payload: string): void {
+          const [type, subId] = JSON.parse(payload) as [string, string]
+          if (type !== "REQ") return
+          if (++requestCount === 6) releaseRequests()
+          if (!reply) return
+          queueMicrotask(() => {
+            this.onmessage?.({
+              data: JSON.stringify([
+                "EVENT",
+                subId,
+                eventsByRelay.get(this.url),
+              ]),
+            } as MessageEvent<string>)
+            this.onmessage?.({
+              data: JSON.stringify(["EOSE", subId]),
+            } as MessageEvent<string>)
+          })
+        }
+
+        close(): void {
+          this.readyState = LocalTeardownWebSocket.CLOSED
+          this.onclose?.(new Event("close"))
+        }
+      }
+      Object.defineProperty(globalThis, "WebSocket", {
+        configurable: true,
+        writable: true,
+        value: LocalTeardownWebSocket,
+      })
+      Object.defineProperty(globalThis, "Worker", {
+        configurable: true,
+        writable: true,
+        value: undefined,
+      })
+      const reads = Promise.allSettled(
+        Array.from({ length: 6 }, () =>
+          fetchEventsFanoutDetailed(
+            { kinds: [EVENT_KINDS.PROFILE] },
+            { relayUrls: [relayUrl], fetchTimeoutMs: 5_000 }
+          )
+        )
+      )
+      await allRequests
+      teardown()
+      const results = await reads
+      expect(getRelayHealth(relayUrl)).toBeUndefined()
+      for (const result of results) {
+        expect(result.status).toBe("rejected")
+        if (result.status === "rejected")
+          expect(result.reason).toMatchObject({ name: "AbortError" })
+      }
+      expect(plan().relayUrls).toEqual(initialPlan)
+      reply = true
+      const retry = await fetchEventsFanoutDetailed(
+        { kinds: [EVENT_KINDS.PROFILE] },
+        { relayUrls: plan().relayUrls }
+      )
+      expect(retry.events.map((event) => event.id).sort()).toEqual(
+        [...eventsByRelay.values()].map((event) => event.id).sort()
+      )
+      expect(retry.relays.every((relay) => relay.status === "success")).toBe(
+        true
+      )
+      expect(getRelayHealth(relayUrl)?.consecutiveFailures).toBe(0)
+    })
+  }
 
   it("removes an aborted queued read before it opens a relay connection", async () => {
     const constructedUrls: string[] = []
