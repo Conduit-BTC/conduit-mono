@@ -329,9 +329,9 @@ export function MerchantEventMarketPanel({
         shouldContinue={shouldContinue}
         market={market}
         onOpenChange={setPublisherOpen}
-        onPublished={async (accepted) => {
+        onPublished={(accepted) => {
           setPublishedAccepted(accepted)
-          await onRefresh()
+          void onRefresh()
         }}
       />
     </>

@@ -1,4 +1,4 @@
-import { queryOptions, type QueryClient } from "@tanstack/react-query"
+import { hashKey, queryOptions, type QueryClient } from "@tanstack/react-query"
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
@@ -7,6 +7,8 @@ import {
   loadRawEventCatalog,
   type RawEventCatalog,
 } from "./event-market-adapter"
+
+import { eventCatalogCacheCoherence } from "./event-catalog-cache-coherence"
 
 export type EventCatalogQueryScope = {
   relayScope: string | null | undefined
@@ -43,28 +45,49 @@ export function eventCatalogQueryOptions(
   loader: typeof loadRawEventCatalog = loadRawEventCatalog
 ) {
   const identity = eventCatalogQueryIdentity(reference, scope)
+  const coherence = eventCatalogCacheCoherence(client)
+  const ownerKey = hashKey(identity.queryKey)
+  const reconcile = (raw: RawEventCatalog) => coherence.reconcile(raw, ownerKey)
   return queryOptions({
     queryKey: identity.queryKey,
     queryFn: async ({ signal }) => {
       const active = () => !signal.aborted && shouldContinue()
+      // A cancelled read can retain a successful progress snapshot. Its event
+      // verification belongs to that read, never to the new transport.
+      const retained = client.getQueryData<RawEventCatalog>(identity.queryKey)
+      if (retained?.resolutionComplete) {
+        client.setQueryData(identity.queryKey, {
+          ...retained,
+          resolutionComplete: false,
+        })
+      }
       const result = await loader(identity.reference, {
         authenticatedPubkey: scope.authenticatedPubkey,
         shouldContinue: active,
         signal,
         onProgress: (snapshot: RawEventCatalog) => {
           if (active())
-            client.setQueryData<RawEventCatalog>(identity.queryKey, {
-              ...snapshot,
-              complete: false,
-            })
+            client.setQueryData<RawEventCatalog>(
+              identity.queryKey,
+              reconcile({
+                ...snapshot,
+                complete: false,
+              })
+            )
         },
       })
       if (!active())
         throw new DOMException("Event catalog read cancelled", "AbortError")
-      return result
+      await coherence.settled(result, ownerKey, signal)
+      if (!active())
+        throw new DOMException("Event catalog read cancelled", "AbortError")
+      return reconcile(result)
     },
-    staleTime: 0,
-    refetchOnMount: "always",
+    select: reconcile,
+    // Reuse a completed read across detail/card mounts and short return visits.
+    // Incomplete snapshots remain stale so an interrupted read is resumed.
+    staleTime: (query) => (query.state.data?.complete ? 60_000 : 0),
+    gcTime: 30 * 60_000,
     retry: false,
   })
 }
