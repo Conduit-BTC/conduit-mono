@@ -9,12 +9,12 @@ local projection of signed source terms and does not restart relay reads.
 
 The shared event reader emits cumulative verified organizer snapshots as relays
 finish. Local event evidence can render before relay planning completes. Safe
-cached product details load in one author-scoped batch. These snapshots support
-browsing only: cached requests never grant current merchant participation or
+cached product details load through the shared exact product reader. These
+snapshots support browsing only: cached requests never grant current merchant participation or
 pickup authorization. Each progress header starts without product records;
-only its own deletion-aware cache batch or a current network product snapshot
-can restore cards. A missing or failed cache batch must not borrow records from
-an earlier progress or query result.
+only a reconciled snapshot from that reader can restore cards. The adapter
+does not start a duplicate cache read. A missing or failed cache read must not
+borrow records from an earlier progress or query result.
 
 For cold detail loads, the organizer product coordinates start an exact product
 read while participation and pickup verification continue. Completed merchant
@@ -25,9 +25,11 @@ most two complete author pipelines run concurrently. The Market adapter calls
 that reader directly, without a second app scheduler or cache-seeding pass.
 Initial cached products and relay-list preparation are shared across the read.
 Safe cached cards and child-only families for queued merchants remain visible
-with cache-only diagnostics. Once event verification
-finishes, each completed exact product can become actionable while other
-merchants continue loading. These snapshots reconcile current signed revisions and
+with cache-only diagnostics. Uncached coordinates awaiting a read carry a
+`pending` diagnostic, including mixed cached and uncached targets for one author.
+Once event verification finishes, each completed exact product can become
+actionable while other merchants continue loading. These snapshots reconcile
+current signed revisions and
 local deletions before display; final reconciliation must not restore older
 terms. The overlapping read is reused at completion. If final accepted evidence
 identifies a missing or newer product, one exact read reconciles it. Coordinate
@@ -105,6 +107,12 @@ An author becomes complete only after its direct listing reads, family
 reconciliation and exact deletion checks finish. Its final diagnostics can then
 support pickup actions while another author is still pending. Provisional direct
 results remain non-authorizing. A completed author frees a queue slot immediately.
+Cache preparation is ordered within each author pipeline. An author awaiting
+its cache operation does not put other authors behind a shared promise queue.
+Read results merge synchronously into the current invocation evidence after
+each await, preserving newer revisions and deletions learned in the meantime.
+This removes application-level serialization; a database-wide stall can still
+affect multiple independent operations.
 The shared reader retains alias diagnostics and compatible relay-hint plans.
 Calls without a progress observer retain cross-author bulk family batching.
 Both modes use the same prepared read pipeline; progressive callers schedule
@@ -177,8 +185,9 @@ Coverage includes shared reads and local repricing, failed refreshes, scope
 changes, cancellation, cache-only browsing, hidden event products, variable
 choices, cross-cache withdrawals/deletions and a later live re-request. Browser
 checks exercise cold product progress with empty caches and a held sibling
-merchant, header progress, warm product-to-event navigation, retained
-cards, variation selection and deletion after a cached preview. Timeline checks
+merchant, a completed graph with a fast merchant Add-enabled while a sibling
+exact product read remains held, header progress, warm product-to-event
+navigation, retained cards, variation selection and deletion after a cached preview. Timeline checks
 cover delayed sibling reads, cache progress, deadline retention, signed removal
 and local connection teardown followed by successful discovery retry. Signed
 revision regressions cover mounted and warm withdrawal, stock, price, topology,

@@ -2,7 +2,6 @@ import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
   getEventMarket,
-  getCachedProductsByIds,
   getProductEventMarketFulfillmentClaims,
   getProductsByIds,
   hasExactLiveProductAvailabilityEvidence,
@@ -956,7 +955,6 @@ export async function loadRawEventCatalog(
       throw new DOMException("Event catalog read cancelled", "AbortError")
   }
   let finished = false
-  let progressVersion = 0
   let previewRecords: CommerceProductRecord[] = []
   let latestResolution: EventMarketResolution | undefined
   let resolutionComplete = false
@@ -967,16 +965,12 @@ export async function loadRawEventCatalog(
     promise: Promise<{ result: ProductsByIdsResult } | { error: unknown }>
   }
   let productRead: ProductRead | undefined
-  const emitPreview = async (
-    resolution: EventMarketResolution,
-    version: number
-  ) => {
-    if (!active() || finished || version !== progressVersion) return
-    // Earlier records may predate a signed deletion or withdrawal in the
-    // product cache. Only this progress version's reconciled batch can restore
-    // cards; the header remains available while that local read runs.
+  const emitPreview = (resolution: EventMarketResolution) => {
+    if (!active() || finished) return
+    // Earlier records may predate a signed deletion or withdrawal. Emit the
+    // header now; the shared exact reader owns reconciled cache hydration.
     previewRecords = []
-    const snapshot = {
+    options.onProgress?.({
       reference,
       canonicalNaddr,
       resolution,
@@ -984,26 +978,7 @@ export async function loadRawEventCatalog(
       resolutionComplete,
       result: resolutionComplete ? latestProductResult : undefined,
       previewRecords,
-    }
-    options.onProgress?.(snapshot)
-    if (!options.onProgress || !resolution.collection) return
-    const coordinates = resolution.organizerProductCoordinates
-    try {
-      const result = await getCachedProductsByIds([...coordinates], {
-        includeStale: true,
-        includeMarketHidden: true,
-      })
-      if (!active() || finished || version !== progressVersion) return
-      previewRecords = result.data
-    } catch {
-      // Storage may be unavailable; the current network read still runs.
-    }
-    if (active() && !finished && version === progressVersion) {
-      options.onProgress?.({
-        ...snapshot,
-        previewRecords,
-      })
-    }
+    })
   }
 
   const startProductRead = (coordinates: readonly string[]) => {
@@ -1022,10 +997,9 @@ export async function loadRawEventCatalog(
         ? (snapshot) => {
             if (!current() || !latestResolution) return
             // Core has reconciled this cumulative frontier against current
-            // product revisions and known deletions. Supersede pending cache
-            // projections. Only completed event and exact product evidence
-            // can authorize pickup, independently of unfinished siblings.
-            ++progressVersion
+            // product revisions and known deletions. Only completed event and
+            // exact product evidence can authorize pickup, independently of
+            // unfinished siblings.
             previewRecords = snapshot.data
             latestProductResult = snapshot
             options.onProgress?.({
@@ -1048,7 +1022,7 @@ export async function loadRawEventCatalog(
   }
   const updateResolution = (resolution: EventMarketResolution) => {
     latestResolution = resolution
-    const preview = emitPreview(resolution, ++progressVersion)
+    emitPreview(resolution)
     if (
       options.onProgress &&
       ["active", "ended", "partial", "stale"].includes(resolution.state) &&
@@ -1063,7 +1037,6 @@ export async function loadRawEventCatalog(
       ++productReadVersion
       productRead = undefined
     }
-    return preview
   }
 
   try {
@@ -1076,13 +1049,13 @@ export async function loadRawEventCatalog(
       signal: options.signal,
       onProgress: options.onProgress
         ? (snapshot) => {
-            void updateResolution(snapshot)
+            updateResolution(snapshot)
           }
         : undefined,
     })
     assertActive()
     resolutionComplete = true
-    const previewRead = updateResolution(resolution)
+    updateResolution(resolution)
     const canHydrate = ["active", "ended", "partial", "stale"].includes(
       resolution.state
     )
@@ -1121,7 +1094,6 @@ export async function loadRawEventCatalog(
         })
       }
     }
-    await previewRead
     assertActive()
     finished = true
     return {

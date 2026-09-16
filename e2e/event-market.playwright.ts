@@ -4111,6 +4111,139 @@ test("cold event catalog shows a completed merchant product before a slower merc
   }
 })
 
+test("verified event catalog enables a completed merchant while another exact product read is held @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic independently actionable catalog",
+    organizerHandoffEnabled: true,
+  })
+  const fast = createMerchantProductEvent({
+    dTag: "fast-merchant-product",
+    title: "Synthetic fast merchant product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const slowSecret = generateSecretKey()
+  const slow = signEvent(slowSecret, {
+    kind: fast.kind,
+    created_at: fast.created_at,
+    content: "Synthetic slow merchant product fixture.",
+    tags: fast.tags.map((tag) =>
+      tag[0] === "d"
+        ? ["d", "slow-merchant-product"]
+        : tag[0] === "title"
+          ? ["title", "Synthetic slow merchant product"]
+          : tag
+    ),
+  })
+  expect(slow.pubkey).not.toBe(fast.pubkey)
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [
+      ...market.initialCollection.tags,
+      ["a", eventCoordinate(fast)],
+      ["a", eventCoordinate(slow)],
+    ],
+  })
+  relay.seed(
+    fast,
+    slow,
+    collection,
+    ...[MERCHANT_SECRET, slowSecret].map((secret) =>
+      signEvent(secret, {
+        kind: 10002,
+        created_at: fast.created_at,
+        content: "",
+        tags: [["r", FIXTURE_RELAY]],
+      })
+    )
+  )
+  // Participation's bounded frontier has a limit; commerce's exact product
+  // read does not. Hold only the latter so signed event/pickup verification
+  // can finish for both merchants while the slow commerce read stays pending.
+  const isSlowExactRead = (request: RelayRequest) =>
+    request.filters.some(
+      (filter) =>
+        filter.kinds?.includes(30402) &&
+        filter.authors?.includes(slow.pubkey) &&
+        Array.isArray(filter["#d"]) &&
+        (filter["#d"] as string[]).includes("slow-merchant-product") &&
+        filter.limit === undefined
+    )
+  const held = relay.holdRelayRequests(isSlowExactRead)
+  const startedAt = Date.now()
+  const fastCard = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic fast merchant product" })
+  const slowCard = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic slow merchant product" })
+  try {
+    // This is the context's first Market-origin navigation: neither product
+    // has been read into its commerce cache by a product page or warm visit.
+    await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+    await held.captured
+    await expect
+      .poll(() =>
+        relay.requests.some((request) =>
+          request.matchedEventIds.includes(fast.id)
+        )
+      )
+      .toBe(true)
+    await expect(fastCard).toBeVisible()
+    await expect(
+      fastCard.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(
+      slowCard.getByRole("button", { name: "Add", exact: true })
+    ).toHaveCount(0)
+    await expect(page.getByTestId("event-refresh-status")).toBeVisible()
+    const slowExactReads = relay.requests.filter(isSlowExactRead)
+    expect(slowExactReads.length).toBeGreaterThan(0)
+    expect(
+      slowExactReads.every((request) => request.matchedEventIds.length === 0)
+    ).toBe(true)
+    expect(
+      relay.requests.some(
+        (request) =>
+          request.filters.some(
+            (filter) =>
+              filter.kinds?.includes(30402) &&
+              filter.authors?.includes(slow.pubkey) &&
+              typeof filter.limit === "number"
+          ) && request.matchedEventIds.includes(slow.id)
+      )
+    ).toBe(true)
+    console.log(
+      "Synthetic independent purchase readiness:",
+      JSON.stringify({
+        fastAddReadyMs: Date.now() - startedAt,
+        heldExactProductReads: slowExactReads.length,
+        heldExactProductResponses: 0,
+        slowParticipationVerified: true,
+      })
+    )
+  } finally {
+    held.release()
+  }
+  for (const card of [fastCard, slowCard]) {
+    await expect(card).toBeVisible()
+    await expect(
+      card.getByText("Pickup from event organizer", { exact: true })
+    ).toBeVisible()
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+  }
+})
+
 test("event catalog paints before held product reads and keeps cached browsing closed to purchase @market", async ({
   page,
 }) => {

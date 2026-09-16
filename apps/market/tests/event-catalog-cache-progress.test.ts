@@ -121,6 +121,7 @@ async function fixture(
   const cacheStarted = deferred()
   let cacheFailure = false
   let productNetworkReads = 0
+  let unscopedAuthorCacheReads = 0
   __setCommerceTestOverrides({
     now: () => nowMs,
     getRelayLists: async () => new Map(),
@@ -131,7 +132,8 @@ async function fixture(
         return []
       return [new NDKEvent(undefined, listing)]
     },
-    getCachedProducts: async (merchantPubkey, authors) => {
+    getCachedProducts: async (merchantPubkey, authors, selection) => {
+      if (authors && !selection) unscopedAuthorCacheReads++
       if (cacheGate) {
         cacheStarted.resolve()
         await cacheGate.promise
@@ -226,6 +228,7 @@ async function fixture(
   }
   if (negative !== "none") await applyNegative(negative)
   if (networkOnly) cachedProducts = []
+  unscopedAuthorCacheReads = 0
   cacheGate = deferred()
   const plan = deferred<Map<string, never>>()
   const network = deferred<FetchEventsFanoutResult>()
@@ -297,6 +300,7 @@ async function fixture(
   return {
     snapshots,
     productNetworkReads: () => productNetworkReads,
+    unscopedAuthorCacheReads: () => unscopedAuthorCacheReads,
     waitForProduct: () =>
       new Promise<void>((resolve) => {
         const notify = () => {
@@ -362,9 +366,9 @@ describe("event catalog composed cache progress", () => {
     try {
       await run.cacheStarted
       run.releaseCache()
-      // Header, cache, direct batch and final product snapshots all finish
-      // while event planning is held. The early product read found nothing.
-      await run.waitForSnapshots(4)
+      // Header, direct batch and final product snapshots all finish while
+      // event planning is held. The early product read found nothing.
+      await run.waitForSnapshots(3)
       expect(run.productNetworkReads()).toBe(1)
       expect(
         projectRawEventCatalog(run.snapshots.at(-1)!).products
@@ -412,6 +416,9 @@ describe("event catalog composed cache progress", () => {
       run.releaseCache()
       await run.waitForSnapshots(2)
       const preview = projectRawEventCatalog(run.snapshots.at(-1)!)
+      // The shared exact reader owns cached hydration; no duplicate broad
+      // author scan runs beside its scoped target read.
+      expect(run.unscopedAuthorCacheReads()).toBe(0)
       expect(preview.products).toHaveLength(1)
       expect(preview.purchaseReady).toBe(false)
       expect(run.snapshots.at(-1)!.complete).toBe(false)
@@ -420,7 +427,7 @@ describe("event catalog composed cache progress", () => {
     }
   })
 
-  it("does not reuse earlier preview records when a newer progress cache check fails", async () => {
+  it("does not reuse earlier preview records after a stronger deletion when storage fails", async () => {
     const run = await fixture("none")
     try {
       await run.cacheStarted
@@ -431,7 +438,7 @@ describe("event catalog composed cache progress", () => {
       ).toHaveLength(1)
       const previousCount = run.snapshots.length
       await run.laterFailure()
-      await run.waitForSnapshots(previousCount + 2)
+      await run.waitForSnapshots(previousCount + 1)
       expect(
         projectRawEventCatalog(run.snapshots.at(-1)!).products
       ).toHaveLength(0)

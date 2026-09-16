@@ -147,6 +147,275 @@ async function afterFastRead(fastReturned: ReturnType<typeof gate>) {
 }
 
 describe("progressive exact product reads", () => {
+  for (const phase of ["write", "read"] as const) {
+    it(`finishes another author and starts queued work while one cache ${phase} is held`, async () => {
+      const records = [
+        listing(fastSecret, "held-cache"),
+        listing(slowSecret, "independent-cache"),
+        listing(generateSecretKey(), "queued-cache"),
+      ]
+      const held = gate()
+      const entered = gate()
+      const independentFinished = gate()
+      const queuedStarted = gate()
+      let armedRead = false
+      let heldOnce = false
+      __setCommerceTestOverrides({
+        getCachedProducts: async (merchant, authors) => {
+          if (phase === "read" && armedRead && authors && !heldOnce) {
+            heldOnce = true
+            entered.release()
+            await held.promise
+          }
+          return products.filter(
+            (row) =>
+              (!merchant || row.pubkey === merchant) &&
+              (!authors || authors.includes(row.pubkey))
+          )
+        },
+        putCachedProducts: async (rows) => {
+          if (rows.some((row) => row.pubkey === records[0]!.pubkey)) {
+            if (phase === "write" && !heldOnce) {
+              heldOnce = true
+              entered.release()
+              await held.promise
+            }
+            armedRead = true
+          }
+          for (const row of rows)
+            products = [
+              ...products.filter((current) => current.id !== row.id),
+              row,
+            ]
+        },
+        fetchEventsFanout: async (filter) => {
+          if (!filter.kinds?.includes(30402)) return []
+          const index = records.findIndex((record) =>
+            filter.authors?.includes(record.pubkey)
+          )
+          if (index === 1) await entered.promise
+          if (index === 2) queuedStarted.release()
+          return index < 0 ? [] : [records[index]!]
+        },
+      })
+      const snapshots: ProductsByIdsResult[] = []
+      const read = getProductsByIds(records.map(address), {
+        onProgress: (snapshot) => {
+          snapshots.push(snapshot)
+          if (
+            snapshot.diagnostics.find(
+              (row) => row.addressId === address(records[1]!)
+            )?.issue === null
+          )
+            independentFinished.release()
+        },
+      })
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      try {
+        await entered.promise
+        const completed = await Promise.race([
+          Promise.all([
+            independentFinished.promise,
+            queuedStarted.promise,
+          ]).then(() => true),
+          new Promise<boolean>((resolve) => {
+            timeout = setTimeout(() => resolve(false), 500)
+          }),
+        ])
+        expect(completed).toBe(true)
+        expect(
+          snapshots
+            .at(-1)!
+            .diagnostics.find((row) => row.addressId === address(records[0]!))
+            ?.issue
+        ).not.toBeNull()
+      } finally {
+        clearTimeout(timeout)
+        held.release()
+        await read.catch(() => undefined)
+      }
+      expect((await read).diagnostics.every((row) => row.issue === null)).toBe(
+        true
+      )
+      expect(snapshots.at(-1)).toEqual(await read)
+    })
+  }
+
+  it("retains live-only family identities when an older concurrent cache read settles", async () => {
+    const first = listing(fastSecret, "stale-cache-read")
+    const parent = listing(slowSecret, "concurrent-family", [
+      ["type", "variable", "physical"],
+    ])
+    const child = listing(slowSecret, "concurrent-child", [
+      ["type", "variation", "physical"],
+      ["a", address(parent)],
+      ["spec", "size", "small"],
+    ])
+    const remaining = listing(slowSecret, "concurrent-remaining", [
+      ["type", "variation", "physical"],
+      ["a", address(parent)],
+      ["spec", "size", "large"],
+    ])
+    const reparented = listing(
+      slowSecret,
+      "concurrent-child",
+      [
+        ["type", "variation", "physical"],
+        ["a", `30402:${parent.pubkey}:other-family`],
+        ["spec", "size", "small"],
+      ],
+      150
+    )
+    const queued = listing(generateSecretKey(), "after-overlap")
+    const cacheHeld = gate()
+    const cacheEntered = gate()
+    const familyFinished = gate()
+    const firstFinished = gate()
+    const queuedHeld = gate()
+    let armFirstRead = false
+    let heldOnce = false
+    let failFamilyWrites = true
+    __setCommerceTestOverrides({
+      getCachedProducts: async (_merchant, authors) => {
+        const captured = products.filter(
+          (row) => !authors || authors.includes(row.pubkey)
+        )
+        if (armFirstRead && authors && !heldOnce) {
+          heldOnce = true
+          cacheEntered.release()
+          await cacheHeld.promise
+        }
+        return captured
+      },
+      putCachedProducts: async (rows) => {
+        if (
+          failFamilyWrites &&
+          rows.some((row) => row.pubkey === parent.pubkey)
+        )
+          throw new Error("Storage unavailable")
+        for (const row of rows)
+          products = [
+            ...products.filter((current) => current.id !== row.id),
+            row,
+          ]
+        if (rows.some((row) => row.pubkey === first.pubkey)) armFirstRead = true
+      },
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(30402)) return []
+        if (filter.authors?.includes(parent.pubkey)) {
+          await cacheEntered.promise
+          return [parent, child, remaining]
+        }
+        if (filter.authors?.includes(queued.pubkey)) {
+          await queuedHeld.promise
+          return [queued]
+        }
+        return [first]
+      },
+    })
+    const snapshots: ProductsByIdsResult[] = []
+    const read = getProductsByIds([first, parent, queued].map(address), {
+      onProgress: (snapshot) => {
+        snapshots.push(snapshot)
+        if (
+          snapshot.diagnostics.find((row) => row.addressId === address(parent))
+            ?.issue === null
+        )
+          familyFinished.release()
+        if (
+          snapshot.diagnostics.find((row) => row.addressId === address(first))
+            ?.issue === null
+        )
+          firstFinished.release()
+      },
+    })
+    try {
+      await familyFinished.promise
+      expect(products.some((row) => row.id === address(child))).toBe(false)
+      cacheHeld.release()
+      await firstFinished.promise
+      failFamilyWrites = false
+      await cacheSignedProductListingEvent(reparented)
+    } finally {
+      cacheHeld.release()
+      queuedHeld.release()
+      await read.catch(() => undefined)
+    }
+    const family = (await read).data.find(
+      (record) => record.addressId === address(parent)
+    )!.family!
+    expect(family.children.map((record) => record.addressId)).toEqual([
+      address(remaining),
+    ])
+    expect(snapshots.at(-1)).toEqual(await read)
+  })
+
+  it("distinguishes cached and uncached coordinates of the same queued author", async () => {
+    const queuedSecret = generateSecretKey()
+    const cached = listing(queuedSecret, "queued-cached")
+    const uncached = listing(queuedSecret, "queued-uncached")
+    const filtered = listing(queuedSecret, "queued-hidden", [
+      ["visibility", "private"],
+    ])
+    await cacheSignedProductListingEvent(cached)
+    await cacheSignedProductListingEvent(filtered)
+    const blockers = [
+      listing(fastSecret, "blocker-a"),
+      listing(slowSecret, "blocker-b"),
+    ]
+    const held = gate()
+    const bothStarted = gate()
+    let started = 0
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(30402)) return []
+        if (
+          blockers.some((record) => filter.authors?.includes(record.pubkey))
+        ) {
+          if (++started === 2) bothStarted.release()
+          await held.promise
+        }
+        return [...blockers, cached, uncached, filtered].filter((record) =>
+          filter.authors?.includes(record.pubkey)
+        )
+      },
+    })
+    const snapshots: ProductsByIdsResult[] = []
+    const read = getProductsByIds(
+      [...blockers, cached, uncached, filtered].map(address),
+      {
+        onProgress: (snapshot) => snapshots.push(snapshot),
+      }
+    )
+    try {
+      await bothStarted.promise
+      const snapshot = snapshots.at(-1)!
+      expect(
+        snapshot.diagnostics.find((row) => row.addressId === address(cached))
+          ?.issue
+      ).toBe("cached_only")
+      expect(
+        snapshot.diagnostics.find((row) => row.addressId === address(uncached))
+          ?.issue
+      ).toBe("pending")
+      expect(
+        snapshot.diagnostics.find((row) => row.addressId === address(filtered))
+          ?.issue
+      ).toBe("pending")
+      expect(snapshot.data.map((row) => row.addressId)).toEqual([
+        address(cached),
+      ])
+    } finally {
+      held.release()
+      await read.catch(() => undefined)
+    }
+    expect(
+      (await read).diagnostics.find(
+        (row) => row.addressId === address(filtered)
+      )?.issue
+    ).toBe("listing_filtered")
+  })
+
   it("emits the completed author batch before a held sibling without adding requests", async () => {
     const fast = [
       listing(fastSecret, "fast-one"),
@@ -178,7 +447,7 @@ describe("progressive exact product reads", () => {
       expect(
         snapshots[1]!.diagnostics.find((row) => row.addressId === address(slow))
           ?.issue
-      ).toBe("cached_only")
+      ).toBe("pending")
       expect(
         (await getCachedProductsByIds(fast.map(address))).data
       ).toHaveLength(2)
@@ -255,7 +524,7 @@ describe("progressive exact product reads", () => {
       await Promise.all([finished[0]!.promise, started[2]!.promise])
       expect(completedAuthors.has(listings[1]!.pubkey)).toBe(false)
       expect(snapshots.at(-1)!.diagnostics[0]!.issue).toBeNull()
-      expect(snapshots.at(-1)!.diagnostics[4]!.issue).toBe("cached_only")
+      expect(snapshots.at(-1)!.diagnostics[4]!.issue).toBe("pending")
       for (const index of [2, 3, 4]) {
         await started[index]!.promise
         held[index]!.release()
