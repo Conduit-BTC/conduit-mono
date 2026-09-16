@@ -697,143 +697,99 @@ describe("shared progressive event catalogs", () => {
     }
   })
 
-  it("does not restart a stale event read when the window regains focus", async () => {
-    const client = new QueryClient()
-    let reads = 0
-    const observer = new QueryObserver(client, {
-      ...eventCatalogQueryOptions(
+  type FocusRecoveryCase = {
+    name: string
+    load: () => Promise<RawEventCatalog>
+    initialData?: RawEventCatalog
+    staleTime?: number
+    expectedReadsAfterFocus: number
+    expectedError: boolean
+    expectedComplete?: boolean
+  }
+
+  const focusRecoveryCases: FocusRecoveryCase[] = [
+    {
+      name: "does not restart a stale event read when the window regains focus",
+      load: async () => raw(),
+      staleTime: 0,
+      expectedReadsAfterFocus: 1,
+      expectedError: false,
+      expectedComplete: true,
+    },
+    {
+      name: "restarts a stale incomplete event read when the window regains focus",
+      load: async () => ({ ...raw(), complete: false }),
+      expectedReadsAfterFocus: 2,
+      expectedError: false,
+      expectedComplete: false,
+    },
+    {
+      name: "restarts a failed event read when the window regains focus",
+      load: async () => {
+        throw new Error("relay unavailable")
+      },
+      expectedReadsAfterFocus: 2,
+      expectedError: true,
+    },
+    {
+      name: "restarts a failed refresh that retained a completed event catalog",
+      load: async () => {
+        throw new Error("relay unavailable")
+      },
+      initialData: raw(),
+      staleTime: 0,
+      expectedReadsAfterFocus: 2,
+      expectedError: true,
+      expectedComplete: true,
+    },
+  ]
+
+  for (const scenario of focusRecoveryCases) {
+    it(scenario.name, async () => {
+      const client = new QueryClient()
+      let reads = 0
+      const baseOptions = eventCatalogQueryOptions(
         client,
         collectionCoordinate,
         scope,
         () => true,
         async () => {
           reads++
-          return raw()
+          return scenario.load()
         }
-      ),
-      // Force the completed result stale so the regression does not wait for
-      // the production cache window to expire.
-      staleTime: 0,
+      )
+      if (scenario.initialData)
+        client.setQueryData(baseOptions.queryKey, scenario.initialData)
+      const observer = new QueryObserver(client, {
+        ...baseOptions,
+        ...(scenario.staleTime === undefined
+          ? {}
+          : { staleTime: scenario.staleTime }),
+      })
+      const release = observer.subscribe(() => {})
+      const expectState = () => {
+        const result = observer.getCurrentResult()
+        expect(result.isError).toBe(scenario.expectedError)
+        if (scenario.expectedComplete !== undefined)
+          expect(result.data?.complete).toBe(scenario.expectedComplete)
+      }
+
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(reads).toBe(1)
+        expectState()
+
+        client.getQueryCache().onFocus()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        expect(reads).toBe(scenario.expectedReadsAfterFocus)
+        expectState()
+      } finally {
+        release()
+        client.clear()
+      }
     })
-    const release = observer.subscribe(() => {})
-
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-      expect(reads).toBe(1)
-
-      client.getQueryCache().onFocus()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-
-      expect(reads).toBe(1)
-      expect(observer.getCurrentResult().data?.complete).toBe(true)
-    } finally {
-      release()
-      client.clear()
-    }
-  })
-
-  it("restarts a stale incomplete event read when the window regains focus", async () => {
-    const client = new QueryClient()
-    let reads = 0
-    const options = eventCatalogQueryOptions(
-      client,
-      collectionCoordinate,
-      scope,
-      () => true,
-      async () => {
-        reads++
-        return { ...raw(), complete: false }
-      }
-    )
-    const observer = new QueryObserver(client, options)
-    const release = observer.subscribe(() => {})
-
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-      expect(reads).toBe(1)
-      expect(observer.getCurrentResult().data?.complete).toBe(false)
-
-      client.getQueryCache().onFocus()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-
-      expect(reads).toBe(2)
-      expect(observer.getCurrentResult().data?.complete).toBe(false)
-    } finally {
-      release()
-      client.clear()
-    }
-  })
-
-  it("restarts a failed event read when the window regains focus", async () => {
-    const client = new QueryClient()
-    let reads = 0
-    const options = eventCatalogQueryOptions(
-      client,
-      collectionCoordinate,
-      scope,
-      () => true,
-      async () => {
-        reads++
-        throw new Error("relay unavailable")
-      }
-    )
-    const observer = new QueryObserver(client, options)
-    const release = observer.subscribe(() => {})
-
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-      expect(reads).toBe(1)
-      expect(observer.getCurrentResult().isError).toBe(true)
-
-      client.getQueryCache().onFocus()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-
-      expect(reads).toBe(2)
-      expect(observer.getCurrentResult().isError).toBe(true)
-    } finally {
-      release()
-      client.clear()
-    }
-  })
-
-  it("restarts a failed refresh that retained a completed event catalog", async () => {
-    const client = new QueryClient()
-    let reads = 0
-    const baseOptions = eventCatalogQueryOptions(
-      client,
-      collectionCoordinate,
-      scope,
-      () => true,
-      async () => {
-        reads++
-        throw new Error("relay unavailable")
-      }
-    )
-    client.setQueryData(baseOptions.queryKey, raw())
-    const observer = new QueryObserver(client, {
-      ...baseOptions,
-      // Make the retained completed snapshot eligible for the initial refresh.
-      staleTime: 0,
-    })
-    const release = observer.subscribe(() => {})
-
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-      expect(reads).toBe(1)
-      expect(observer.getCurrentResult().isError).toBe(true)
-      expect(observer.getCurrentResult().data?.complete).toBe(true)
-
-      client.getQueryCache().onFocus()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-
-      expect(reads).toBe(2)
-      expect(observer.getCurrentResult().isError).toBe(true)
-      expect(observer.getCurrentResult().data?.complete).toBe(true)
-    } finally {
-      release()
-      client.clear()
-    }
-  })
+  }
 
   it("shows organizer-only cached cards without inventing acceptance or pickup authority", () => {
     const resolution = market("stale")
