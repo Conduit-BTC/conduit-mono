@@ -28,6 +28,8 @@ export interface ExactRelayWriteAuthorization {
   waitForSignerVisibility?: (signal?: AbortSignal) => Promise<void>
   /** Re-check live account authority before and after the signer interaction. */
   shouldContinue?: () => boolean
+  /** Suppress later relay-auth prompts in this foreground publish attempt. */
+  onSignerFailure?: () => void
   /** Deterministic clock seam for NIP-42 auth-event tests. */
   now?: () => number
 }
@@ -149,7 +151,10 @@ export function publishSignedEventFrameToRelay(input: {
       return
     }
 
-    const timeout = setTimeout(() => finish("timed_out"), input.timeoutMs)
+    const timeout = setTimeout(() => {
+      if (authState === "signing") authorization?.onSignerFailure?.()
+      finish("timed_out")
+    }, input.timeoutMs)
     socket.onopen = () => {
       try {
         socket?.send(frame)
@@ -222,11 +227,12 @@ export function publishSignedEventFrameToRelay(input: {
               const signerPubkey = (await authorization.signer.getPublicKey())
                 .trim()
                 .toLowerCase()
-              if (
-                signerPubkey !== expectedAuthPubkey ||
-                signal.aborted ||
-                settled
-              ) {
+              if (signerPubkey !== expectedAuthPubkey) {
+                authorization.onSignerFailure?.()
+                finish("timed_out")
+                return
+              }
+              if (signal.aborted || settled) {
                 finish("timed_out")
                 return
               }
@@ -243,17 +249,19 @@ export function publishSignedEventFrameToRelay(input: {
                 ],
                 content: "",
               })
+              const exactAuthEvent = isExactAuthEvent({
+                event: signed,
+                expectedPubkey: expectedAuthPubkey,
+                relayUrl,
+                challenge,
+                createdAt,
+              })
+              if (!exactAuthEvent) authorization.onSignerFailure?.()
               if (
                 signal.aborted ||
                 settled ||
                 authorization.shouldContinue?.() === false ||
-                !isExactAuthEvent({
-                  event: signed,
-                  expectedPubkey: expectedAuthPubkey,
-                  relayUrl,
-                  challenge,
-                  createdAt,
-                })
+                !exactAuthEvent
               ) {
                 finish("timed_out")
                 return
@@ -263,6 +271,7 @@ export function publishSignedEventFrameToRelay(input: {
               socket?.send(JSON.stringify(["AUTH", signed]))
             } catch {
               authState = "failed"
+              authorization.onSignerFailure?.()
               finish("timed_out")
             }
           }

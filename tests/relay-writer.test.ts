@@ -357,6 +357,66 @@ describe("exact relay writer", () => {
     expect(socket.closeCalls).toBe(1)
   })
 
+  it("reports a signer-level auth failure to the enclosing publish attempt", async () => {
+    const socket = new WriterTestSocket()
+    let signerFailures = 0
+    const result = publishSignedEventFrameToRelay({
+      relayUrl: "wss://auth.nostr1.com/",
+      signedEvent: signedEvent(),
+      timeoutMs: 100,
+      authorization: {
+        expectedPubkey: AUTH_PUBKEY,
+        signer: {
+          ...authSigner(),
+          signEvent: async () => {
+            throw new Error("signer denied the request")
+          },
+        },
+        sessionScope: {},
+        onSignerFailure: () => {
+          signerFailures += 1
+        },
+      },
+      createWebSocket: () => socket as unknown as WebSocket,
+    })
+
+    socket.open()
+    socket.message(JSON.stringify(["AUTH", "denied-challenge"]))
+
+    await expect(result).resolves.toBe("timed_out")
+    expect(signerFailures).toBe(1)
+    expect(socket.closeCalls).toBe(1)
+  })
+
+  it("reports an unresolved signer prompt when the exact-write deadline expires", async () => {
+    const socket = new WriterTestSocket()
+    let signerFailures = 0
+    const result = publishSignedEventFrameToRelay({
+      relayUrl: "wss://auth.nostr1.com/",
+      signedEvent: signedEvent(),
+      timeoutMs: 10,
+      authorization: {
+        expectedPubkey: AUTH_PUBKEY,
+        signer: {
+          ...authSigner(),
+          signEvent: async () => await new Promise<never>(() => undefined),
+        },
+        sessionScope: {},
+        onSignerFailure: () => {
+          signerFailures += 1
+        },
+      },
+      createWebSocket: () => socket as unknown as WebSocket,
+    })
+
+    socket.open()
+    socket.message(JSON.stringify(["AUTH", "held-challenge"]))
+
+    await expect(result).resolves.toBe("timed_out")
+    expect(signerFailures).toBe(1)
+    expect(socket.closeCalls).toBe(1)
+  })
+
   it("rejects an auth event signed by a different account", async () => {
     const socket = new WriterTestSocket()
     const wrongSecret = generateSecretKey()

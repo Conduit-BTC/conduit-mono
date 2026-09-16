@@ -586,6 +586,7 @@ async function publishToRelayUrls(input: {
     const relayFailureMessages: Record<string, string> = {}
     const attemptedRelayUrls: string[] = []
     let authenticatedPreflightFailure: unknown = null
+    let signerFailureSuppressed = false
 
     // Serialize auth-capable relay writes so one foreground action cannot open
     // concurrent external-signer prompts. Each target still receives the same
@@ -623,6 +624,9 @@ async function publishToRelayUrls(input: {
         waitForSignerVisibility:
           input.relayAuthentication.waitForSignerVisibility,
         shouldContinue: input.shouldContinue,
+        onSignerFailure: () => {
+          signerFailureSuppressed = true
+        },
       }
       const status = await writeExactFrame({
         relayUrl,
@@ -643,6 +647,7 @@ async function publishToRelayUrls(input: {
       } else {
         relayFailureMessages[relayUrl] = "No acknowledgement before timeout"
       }
+      if (signerFailureSuppressed) break
     }
 
     return {

@@ -446,6 +446,51 @@ describe("planPublishRelays", () => {
     expect(exactWriteCalls).toBe(1)
   })
 
+  it("suppresses later auth prompts after a session-level signer failure and permits a fresh retry", async () => {
+    const firstRelay = "wss://first-auth-prompt.example"
+    const secondRelay = "wss://second-auth-prompt.example"
+    const attempts: string[] = []
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.GIFT_WRAP,
+      publish: async () => new Set(),
+    })
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async (input) => {
+        attempts.push(input.relayUrl)
+        input.authorization?.onSignerFailure?.()
+        return "timed_out"
+      },
+    })
+    const publish = async () =>
+      await publishWithPlanner(event, {
+        intent: "recipient_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        authenticatedPubkey: AUTHOR_PUBKEY,
+        accountPubkey: AUTHOR_PUBKEY,
+        accountNetworkLocalStateRepository: {
+          get: async (pubkey) => accountNetworkState(pubkey, []),
+        },
+        recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
+        exclusiveRelayUrls: [firstRelay, secondRelay],
+        deliveryMode: "critical",
+        relayAuthentication: {
+          expectedPubkey: AUTHOR_PUBKEY,
+          sessionScope: {},
+          signer: {
+            authMethod: "nip07",
+            getPublicKey: async () => AUTHOR_PUBKEY,
+            signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
+          },
+        },
+      })
+
+    await expect(publish()).rejects.toThrow("required exclusive relay set")
+    expect(attempts).toEqual([firstRelay])
+
+    await expect(publish()).rejects.toThrow("required exclusive relay set")
+    expect(attempts).toEqual([firstRelay, firstRelay])
+  })
+
   it("rejects relay authentication without matching foreground account authority", async () => {
     let exactWriteCalls = 0
     const event = signedTestEvent({

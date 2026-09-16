@@ -1657,6 +1657,98 @@ describe("publishPrivateMessage", () => {
     expect(result.selfCopyError).toBeNull()
   })
 
+  it("stops before wrapping when signer identity resolves after the session changes", async () => {
+    let releaseSignerUser!: () => void
+    let markSignerUserStarted!: () => void
+    const signerUserStarted = new Promise<void>((resolve) => {
+      markSignerUserStarted = resolve
+    })
+    const signerUserBlocked = new Promise<void>((resolve) => {
+      releaseSignerUser = resolve
+    })
+    let sessionCurrent = true
+    let encryptCalls = 0
+    let signCalls = 0
+    let wrapCalls = 0
+    const heldSigner = {
+      user: async () => {
+        markSignerUserStarted()
+        await signerUserBlocked
+        return { pubkey: "sender" }
+      },
+      encrypt: async () => {
+        encryptCalls += 1
+        return "ciphertext"
+      },
+      sign: async () => {
+        signCalls += 1
+        return "signature"
+      },
+    } as unknown as NDKSigner
+
+    const publishing = publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer: heldSigner,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+      shouldContinue: () => sessionCurrent,
+      giftWrapFn: (async () => {
+        wrapCalls += 1
+        return wrap("unexpected-wrap")
+      }) as never,
+      publishFn: (async () => {
+        throw new Error("publish must not start")
+      }) as never,
+    })
+
+    await signerUserStarted
+    sessionCurrent = false
+    releaseSignerUser()
+
+    await expect(publishing).rejects.toThrow("signer session changed")
+    expect(wrapCalls).toBe(0)
+    expect(encryptCalls).toBe(0)
+    expect(signCalls).toBe(0)
+  })
+
+  it("checks the session immediately before each background gift-wrap signer operation", async () => {
+    let sessionCurrent = true
+    let encryptCalls = 0
+    const backgroundSigner = {
+      user: async () => ({ pubkey: "sender" }),
+      encrypt: async () => {
+        encryptCalls += 1
+        return "ciphertext"
+      },
+    } as unknown as NDKSigner
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer: backgroundSigner,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+        shouldContinue: () => sessionCurrent,
+        signerInteraction: "background_external",
+        giftWrapFn: (async (_rumor, recipient, workflowSigner) => {
+          sessionCurrent = false
+          await workflowSigner.encrypt(recipient, "seal", "nip44")
+          return wrap("unexpected-wrap")
+        }) as never,
+        publishFn: (async () => {
+          throw new Error("publish must not start")
+        }) as never,
+      })
+    ).rejects.toThrow("signer session changed")
+    expect(encryptCalls).toBe(0)
+  })
+
   it("records an explicit recipient relay rejection in the durable order retry state", async () => {
     const recipientA = "wss://recipient-a.inbox.conduit.market"
     const recipientB = "wss://recipient-b.inbox.conduit.market"

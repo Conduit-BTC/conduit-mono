@@ -799,22 +799,52 @@ export interface PublishPrivateMessageInput {
   ) => Promise<readonly string[]>
 }
 
-function createVisibilityGatedSigner(
+function assertPrivateMessageSignerSessionCurrent(
+  shouldContinue: (() => boolean) | undefined
+): void {
+  if (shouldContinue?.() === false) {
+    throw new Error("Private message signer session changed.")
+  }
+}
+
+function createInteractionGatedSigner(
   signer: NDKSigner,
-  waitForSignerVisibility: (signal?: AbortSignal) => Promise<void>
+  waitForSignerVisibility: (() => Promise<void>) | undefined,
+  shouldContinue: (() => boolean) | undefined
 ): NDKSigner {
+  const beforeSignerOperation = async () => {
+    assertPrivateMessageSignerSessionCurrent(shouldContinue)
+    await waitForSignerVisibility?.()
+    assertPrivateMessageSignerSessionCurrent(shouldContinue)
+  }
+  const afterSignerOperation = () => {
+    assertPrivateMessageSignerSessionCurrent(shouldContinue)
+  }
+
   return new Proxy(signer, {
     get(target, property) {
+      if (property === "user") {
+        return async (...args: Parameters<NDKSigner["user"]>) => {
+          await beforeSignerOperation()
+          const result = await target.user(...args)
+          afterSignerOperation()
+          return result
+        }
+      }
       if (property === "sign") {
         return async (...args: Parameters<NDKSigner["sign"]>) => {
-          await waitForSignerVisibility()
-          return target.sign(...args)
+          await beforeSignerOperation()
+          const result = await target.sign(...args)
+          afterSignerOperation()
+          return result
         }
       }
       if (property === "encrypt") {
         return async (...args: Parameters<NDKSigner["encrypt"]>) => {
-          await waitForSignerVisibility()
-          return target.encrypt(...args)
+          await beforeSignerOperation()
+          const result = await target.encrypt(...args)
+          afterSignerOperation()
+          return result
         }
       }
 
@@ -952,7 +982,9 @@ export async function publishPrivateMessage(
   if (input.rumor.pubkey?.trim().toLowerCase() !== senderPubkey) {
     throw new Error("Private message rumor author does not match sender")
   }
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   const signerPubkey = (await input.signer.user()).pubkey.trim().toLowerCase()
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   if (signerPubkey !== senderPubkey) {
     throw new Error("Private message signer does not match sender")
   }
@@ -1121,9 +1153,16 @@ export async function publishPrivateMessage(
   const waitForSignerVisibility =
     input.waitForSignerVisibility ??
     ((signal?: AbortSignal) => waitForVisibleDocument(undefined, signal))
-  const giftWrapSigner = externalSignerInteraction
-    ? createVisibilityGatedSigner(input.signer, waitForSignerVisibility)
-    : input.signer
+  const giftWrapSigner =
+    externalSignerInteraction || input.shouldContinue
+      ? createInteractionGatedSigner(
+          input.signer,
+          externalSignerInteraction
+            ? () => waitForSignerVisibility()
+            : undefined,
+          input.shouldContinue
+        )
+      : input.signer
   const relayAuthentication =
     externalSignerInteraction &&
     authenticatedOwnerPubkey &&
