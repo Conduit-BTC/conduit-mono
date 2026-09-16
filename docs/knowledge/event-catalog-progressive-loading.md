@@ -42,9 +42,10 @@ Completed catalog reads are reused for 60 seconds across matching mounts and
 return visits. The in-memory query retains browsing evidence for 30 minutes;
 full reloads still hydrate signed browser-cache records and verify them live.
 Regaining browser focus does not restart a successfully completed catalog read.
-Incomplete or failed reads remain stale and use focus as a recovery signal.
-Users can refresh explicitly, while a stale remount still follows the normal
-query refresh path.
+Incomplete or failed reads remain stale and use focus as a recovery signal,
+including refresh failures that retain an older completed snapshot. Users can
+refresh explicitly, while a stale remount still follows the normal query
+refresh path.
 Retained event queries also observe the shared local product-deletion frontier.
 A signed deletion retracts affected cards, family choices and pickup actions on
 mounted pages and warm returns, without a relay read or extending network

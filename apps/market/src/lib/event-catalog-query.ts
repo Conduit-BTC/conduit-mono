@@ -91,7 +91,8 @@ export function eventCatalogQueryOptions(
     // A completed catalog stays quiet on focus, even after its freshness
     // window expires. Interrupted and failed reads still use focus as a
     // recovery signal.
-    refetchOnWindowFocus: (query) => !query.state.data?.complete,
+    refetchOnWindowFocus: (query) =>
+      query.state.status === "error" || !query.state.data?.complete,
     retry: false,
   })
 }

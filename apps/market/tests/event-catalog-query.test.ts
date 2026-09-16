@@ -796,6 +796,45 @@ describe("shared progressive event catalogs", () => {
     }
   })
 
+  it("restarts a failed refresh that retained a completed event catalog", async () => {
+    const client = new QueryClient()
+    let reads = 0
+    const baseOptions = eventCatalogQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true,
+      async () => {
+        reads++
+        throw new Error("relay unavailable")
+      }
+    )
+    client.setQueryData(baseOptions.queryKey, raw())
+    const observer = new QueryObserver(client, {
+      ...baseOptions,
+      // Make the retained completed snapshot eligible for the initial refresh.
+      staleTime: 0,
+    })
+    const release = observer.subscribe(() => {})
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(reads).toBe(1)
+      expect(observer.getCurrentResult().isError).toBe(true)
+      expect(observer.getCurrentResult().data?.complete).toBe(true)
+
+      client.getQueryCache().onFocus()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(reads).toBe(2)
+      expect(observer.getCurrentResult().isError).toBe(true)
+      expect(observer.getCurrentResult().data?.complete).toBe(true)
+    } finally {
+      release()
+      client.clear()
+    }
+  })
+
   it("shows organizer-only cached cards without inventing acceptance or pickup authority", () => {
     const resolution = market("stale")
     resolution.acceptedProductCoordinates = []
