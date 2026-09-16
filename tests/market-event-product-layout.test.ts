@@ -45,4 +45,24 @@ describe("Market event product layout", () => {
     expect(event).toContain("<EventActorProvenance")
     expect(event).toContain('copyLabel="Copy pickup handler npub"')
   })
+
+  it("keeps long handler names compact while Details reveals the full identity", async () => {
+    const event = await source(
+      "apps/market/src/routes/events/$collectionRef.tsx"
+    )
+    const pickupStart = event.indexOf('<details className="group/pickup')
+    const pickupEnd = event.indexOf("</details>", pickupStart)
+    const pickupDetails = event.slice(pickupStart, pickupEnd)
+
+    expect(pickupStart).toBeGreaterThan(-1)
+    expect(pickupEnd).toBeGreaterThan(pickupStart)
+    expect(pickupDetails).toContain('className="min-w-0 flex-1"')
+    expect(pickupDetails).toContain('className="block truncate"')
+    expect(pickupDetails).toContain(
+      "title={`Handled by ${handlerIdentity.displayName}`}"
+    )
+    expect(
+      pickupDetails.match(/<EventActorName identity=\{handlerIdentity\}\s*\/>/g)
+    ).toHaveLength(2)
+  })
 })
