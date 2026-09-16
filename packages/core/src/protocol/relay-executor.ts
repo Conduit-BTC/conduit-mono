@@ -1,4 +1,7 @@
-import { isValidSignedPublicNostrEvent } from "./signed-event"
+import {
+  isExactRelayAuthEvent,
+  isValidSignedPublicNostrEvent,
+} from "./signed-event"
 import { config } from "../config"
 import {
   assertProtectedReadAuthorization,
@@ -482,26 +485,6 @@ function assertRequest(
   }
 }
 
-function exactAuthEvent(
-  signed: SignedNostrEvent,
-  draft: UnsignedNostrEvent,
-  relayUrl: string,
-  challenge: string
-): boolean {
-  return (
-    isValidSignedPublicNostrEvent(signed) &&
-    signed.kind === 22_242 &&
-    signed.pubkey === draft.pubkey &&
-    signed.created_at === draft.created_at &&
-    signed.content === "" &&
-    JSON.stringify(signed.tags) ===
-      JSON.stringify([
-        ["relay", relayUrl],
-        ["challenge", challenge],
-      ])
-  )
-}
-
 type PendingAuth = {
   eventId: string
   resolve: () => void
@@ -777,7 +760,15 @@ class RelayConnection {
             authorization,
             authorization.expectedPubkey
           )
-          if (!exactAuthEvent(signed, draft, this.url, challenge)) {
+          if (
+            !isExactRelayAuthEvent({
+              event: signed,
+              expectedPubkey: draft.pubkey,
+              relayUrl: this.url,
+              challenge,
+              createdAt: draft.created_at,
+            })
+          ) {
             suppressProtectedReadAuthentication(authorization, {
               scope: "session",
               reason: "signer_unavailable",

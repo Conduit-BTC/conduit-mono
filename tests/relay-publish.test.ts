@@ -17,6 +17,7 @@ import {
   publishSignedEventToRelay,
   publishWithPlanner,
   setActiveRelaySettingsScope,
+  type PublishWithPlannerInput,
   type RelayList,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -128,6 +129,47 @@ function signedRawTestEvent(
     },
     AUTHOR_SECRET
   )
+}
+
+function authenticatedPublishInput(
+  relayUrls: readonly string[],
+  overrides: {
+    event?: NDKEvent
+    input?: Partial<
+      Omit<PublishWithPlannerInput, "intent" | "exclusiveRelayUrls">
+    >
+  } = {}
+): { event: NDKEvent; input: PublishWithPlannerInput } {
+  return {
+    event:
+      overrides.event ??
+      signedTestEvent({
+        kind: EVENT_KINDS.GIFT_WRAP,
+        publish: async () => new Set(),
+      }),
+    input: {
+      intent: "recipient_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      authenticatedPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: {
+        get: async (pubkey) => accountNetworkState(pubkey, []),
+      },
+      recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
+      exclusiveRelayUrls: relayUrls,
+      deliveryMode: "critical",
+      relayAuthentication: {
+        expectedPubkey: AUTHOR_PUBKEY,
+        sessionScope: {},
+        signer: {
+          authMethod: "nip07",
+          getPublicKey: async () => AUTHOR_PUBKEY,
+          signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
+        },
+      },
+      ...overrides.input,
+    },
+  }
 }
 
 function installRelayPublishWebSocket(
@@ -310,50 +352,30 @@ describe("planPublishRelays", () => {
     const relayUrl = "wss://auth.nostr1.com"
     let ndkPublishCalls = 0
     let exactWriteCalls = 0
-    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
-      get: async (pubkey) => accountNetworkState(pubkey, []),
-    }
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.GIFT_WRAP,
-      publish: async () => {
-        ndkPublishCalls += 1
-        return new Set()
-      },
+    const fixture = authenticatedPublishInput([relayUrl], {
+      event: signedTestEvent({
+        kind: EVENT_KINDS.GIFT_WRAP,
+        publish: async () => {
+          ndkPublishCalls += 1
+          return new Set()
+        },
+      }),
     })
-    const relayAuthentication = {
-      expectedPubkey: AUTHOR_PUBKEY,
-      sessionScope: {},
-      signer: {
-        authMethod: "nip07" as const,
-        getPublicKey: async () => AUTHOR_PUBKEY,
-        signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
-      },
-    }
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async (input) => {
         exactWriteCalls += 1
         expect(input.relayUrl).toBe(relayUrl)
-        expect(input.signedEvent).toEqual(event.rawEvent())
+        expect(input.signedEvent).toEqual(fixture.event.rawEvent())
         expect(input.timeoutMs).toBe(15_000)
-        expect(input.authorization).toMatchObject({
-          expectedPubkey: AUTHOR_PUBKEY,
-          signer: relayAuthentication.signer,
-        })
+        expect(input.authorization?.expectedPubkey).toBe(AUTHOR_PUBKEY)
+        expect(input.authorization?.signer).toBe(
+          fixture.input.relayAuthentication?.signer
+        )
         return "acked"
       },
     })
 
-    const result = await publishWithPlanner(event, {
-      intent: "recipient_event",
-      authorPubkey: AUTHOR_PUBKEY,
-      authenticatedPubkey: AUTHOR_PUBKEY,
-      accountPubkey: AUTHOR_PUBKEY,
-      accountNetworkLocalStateRepository: repository,
-      recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
-      exclusiveRelayUrls: [relayUrl],
-      deliveryMode: "critical",
-      relayAuthentication,
-    })
+    const result = await publishWithPlanner(fixture.event, fixture.input)
 
     expect(result.attemptedRelayUrls).toEqual([relayUrl])
     expect(result.successfulRelayUrls).toEqual([relayUrl])
@@ -365,37 +387,13 @@ describe("planPublishRelays", () => {
   it("retains an exact relay rejection after another authenticated target ACKs", async () => {
     const acceptedRelay = "wss://accepted-auth-write.example"
     const rejectedRelay = "wss://rejected-auth-write.example"
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.GIFT_WRAP,
-      publish: async () => new Set(),
-    })
-    const relayAuthentication = {
-      expectedPubkey: AUTHOR_PUBKEY,
-      sessionScope: {},
-      signer: {
-        authMethod: "nip07" as const,
-        getPublicKey: async () => AUTHOR_PUBKEY,
-        signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
-      },
-    }
+    const fixture = authenticatedPublishInput([acceptedRelay, rejectedRelay])
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async ({ relayUrl }) =>
         relayUrl === acceptedRelay ? "acked" : "rejected",
     })
 
-    const result = await publishWithPlanner(event, {
-      intent: "recipient_event",
-      authorPubkey: AUTHOR_PUBKEY,
-      authenticatedPubkey: AUTHOR_PUBKEY,
-      accountPubkey: AUTHOR_PUBKEY,
-      accountNetworkLocalStateRepository: {
-        get: async (pubkey) => accountNetworkState(pubkey, []),
-      },
-      recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
-      exclusiveRelayUrls: [acceptedRelay, rejectedRelay],
-      deliveryMode: "critical",
-      relayAuthentication,
-    })
+    const result = await publishWithPlanner(fixture.event, fixture.input)
 
     expect(result.successfulRelayUrls).toEqual([acceptedRelay])
     expect(result.failedRelayUrls).toEqual([rejectedRelay])
@@ -408,10 +406,7 @@ describe("planPublishRelays", () => {
   it("does not repeat an auth-capable exact write after its bounded timeout", async () => {
     const relayUrl = "wss://auth.nostr1.com"
     let exactWriteCalls = 0
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.GIFT_WRAP,
-      publish: async () => new Set(),
-    })
+    const fixture = authenticatedPublishInput([relayUrl])
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async () => {
         exactWriteCalls += 1
@@ -420,27 +415,7 @@ describe("planPublishRelays", () => {
     })
 
     await expect(
-      publishWithPlanner(event, {
-        intent: "recipient_event",
-        authorPubkey: AUTHOR_PUBKEY,
-        authenticatedPubkey: AUTHOR_PUBKEY,
-        accountPubkey: AUTHOR_PUBKEY,
-        accountNetworkLocalStateRepository: {
-          get: async (pubkey) => accountNetworkState(pubkey, []),
-        },
-        recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
-        exclusiveRelayUrls: [relayUrl],
-        deliveryMode: "critical",
-        relayAuthentication: {
-          expectedPubkey: AUTHOR_PUBKEY,
-          sessionScope: {},
-          signer: {
-            authMethod: "nip07",
-            getPublicKey: async () => AUTHOR_PUBKEY,
-            signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
-          },
-        },
-      })
+      publishWithPlanner(fixture.event, fixture.input)
     ).rejects.toThrow("required exclusive relay set")
 
     expect(exactWriteCalls).toBe(1)
@@ -450,10 +425,7 @@ describe("planPublishRelays", () => {
     const firstRelay = "wss://first-auth-prompt.example"
     const secondRelay = "wss://second-auth-prompt.example"
     const attempts: string[] = []
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.GIFT_WRAP,
-      publish: async () => new Set(),
-    })
+    const fixture = authenticatedPublishInput([firstRelay, secondRelay])
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async (input) => {
         attempts.push(input.relayUrl)
@@ -462,27 +434,7 @@ describe("planPublishRelays", () => {
       },
     })
     const publish = async () =>
-      await publishWithPlanner(event, {
-        intent: "recipient_event",
-        authorPubkey: AUTHOR_PUBKEY,
-        authenticatedPubkey: AUTHOR_PUBKEY,
-        accountPubkey: AUTHOR_PUBKEY,
-        accountNetworkLocalStateRepository: {
-          get: async (pubkey) => accountNetworkState(pubkey, []),
-        },
-        recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
-        exclusiveRelayUrls: [firstRelay, secondRelay],
-        deliveryMode: "critical",
-        relayAuthentication: {
-          expectedPubkey: AUTHOR_PUBKEY,
-          sessionScope: {},
-          signer: {
-            authMethod: "nip07",
-            getPublicKey: async () => AUTHOR_PUBKEY,
-            signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
-          },
-        },
-      })
+      await publishWithPlanner(fixture.event, fixture.input)
 
     await expect(publish()).rejects.toThrow("required exclusive relay set")
     expect(attempts).toEqual([firstRelay])
@@ -493,9 +445,8 @@ describe("planPublishRelays", () => {
 
   it("rejects relay authentication without matching foreground account authority", async () => {
     let exactWriteCalls = 0
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.GIFT_WRAP,
-      publish: async () => new Set(),
+    const fixture = authenticatedPublishInput(["wss://auth.nostr1.com"], {
+      input: { authenticatedPubkey: OTHER_AUTHOR_PUBKEY },
     })
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async () => {
@@ -505,24 +456,7 @@ describe("planPublishRelays", () => {
     })
 
     await expect(
-      publishWithPlanner(event, {
-        intent: "recipient_event",
-        authorPubkey: AUTHOR_PUBKEY,
-        authenticatedPubkey: OTHER_AUTHOR_PUBKEY,
-        accountPubkey: AUTHOR_PUBKEY,
-        recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
-        exclusiveRelayUrls: ["wss://auth.nostr1.com"],
-        deliveryMode: "critical",
-        relayAuthentication: {
-          expectedPubkey: AUTHOR_PUBKEY,
-          sessionScope: {},
-          signer: {
-            authMethod: "nip07",
-            getPublicKey: async () => AUTHOR_PUBKEY,
-            signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
-          },
-        },
-      })
+      publishWithPlanner(fixture.event, fixture.input)
     ).rejects.toThrow("active foreground account")
     expect(exactWriteCalls).toBe(0)
   })
@@ -536,9 +470,8 @@ describe("planPublishRelays", () => {
       get: async (pubkey) =>
         accountNetworkState(pubkey, exclusionCommitted ? [excludedRelay] : []),
     }
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.GIFT_WRAP,
-      publish: async () => new Set(),
+    const fixture = authenticatedPublishInput([firstRelay, excludedRelay], {
+      input: { accountNetworkLocalStateRepository: repository },
     })
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async ({ relayUrl }) => {
@@ -548,25 +481,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    const result = await publishWithPlanner(event, {
-      intent: "recipient_event",
-      authorPubkey: AUTHOR_PUBKEY,
-      authenticatedPubkey: AUTHOR_PUBKEY,
-      accountPubkey: AUTHOR_PUBKEY,
-      accountNetworkLocalStateRepository: repository,
-      recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
-      exclusiveRelayUrls: [firstRelay, excludedRelay],
-      deliveryMode: "critical",
-      relayAuthentication: {
-        expectedPubkey: AUTHOR_PUBKEY,
-        sessionScope: {},
-        signer: {
-          authMethod: "nip07",
-          getPublicKey: async () => AUTHOR_PUBKEY,
-          signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
-        },
-      },
-    })
+    const result = await publishWithPlanner(fixture.event, fixture.input)
 
     expect(attempts).toEqual([firstRelay])
     expect(result.attemptedRelayUrls).toEqual([firstRelay])
@@ -579,9 +494,8 @@ describe("planPublishRelays", () => {
     const secondRelay = "wss://second-auth-session.example"
     const attempts: string[] = []
     let current = true
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.GIFT_WRAP,
-      publish: async () => new Set(),
+    const fixture = authenticatedPublishInput([firstRelay, secondRelay], {
+      input: { shouldContinue: () => current },
     })
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async ({ relayUrl }) => {
@@ -591,28 +505,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    const result = await publishWithPlanner(event, {
-      intent: "recipient_event",
-      authorPubkey: AUTHOR_PUBKEY,
-      authenticatedPubkey: AUTHOR_PUBKEY,
-      accountPubkey: AUTHOR_PUBKEY,
-      accountNetworkLocalStateRepository: {
-        get: async (pubkey) => accountNetworkState(pubkey, []),
-      },
-      recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
-      exclusiveRelayUrls: [firstRelay, secondRelay],
-      deliveryMode: "critical",
-      shouldContinue: () => current,
-      relayAuthentication: {
-        expectedPubkey: AUTHOR_PUBKEY,
-        sessionScope: {},
-        signer: {
-          authMethod: "nip07",
-          getPublicKey: async () => AUTHOR_PUBKEY,
-          signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
-        },
-      },
-    })
+    const result = await publishWithPlanner(fixture.event, fixture.input)
 
     expect(attempts).toEqual([firstRelay])
     expect(result.attemptedRelayUrls).toEqual([firstRelay])
@@ -631,9 +524,8 @@ describe("planPublishRelays", () => {
         return accountNetworkState(pubkey, [])
       },
     }
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.GIFT_WRAP,
-      publish: async () => new Set(),
+    const fixture = authenticatedPublishInput([firstRelay, secondRelay], {
+      input: { accountNetworkLocalStateRepository: repository },
     })
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async ({ relayUrl }) => {
@@ -643,25 +535,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    const result = await publishWithPlanner(event, {
-      intent: "recipient_event",
-      authorPubkey: AUTHOR_PUBKEY,
-      authenticatedPubkey: AUTHOR_PUBKEY,
-      accountPubkey: AUTHOR_PUBKEY,
-      accountNetworkLocalStateRepository: repository,
-      recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
-      exclusiveRelayUrls: [firstRelay, secondRelay],
-      deliveryMode: "critical",
-      relayAuthentication: {
-        expectedPubkey: AUTHOR_PUBKEY,
-        sessionScope: {},
-        signer: {
-          authMethod: "nip07",
-          getPublicKey: async () => AUTHOR_PUBKEY,
-          signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
-        },
-      },
-    })
+    const result = await publishWithPlanner(fixture.event, fixture.input)
 
     expect(attempts).toEqual([firstRelay])
     expect(result.attemptedRelayUrls).toEqual([firstRelay])

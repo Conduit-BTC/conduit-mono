@@ -3,7 +3,7 @@ import { getConfiguredIsolatedE2eRelayUrl } from "./relay-settings"
 import type { NostrEventSigner } from "./nostr-event-signer"
 import { serializeSignerOperation } from "./interactive-signer"
 import {
-  isValidSignedPublicNostrEvent,
+  isExactRelayAuthEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
 
@@ -52,30 +52,6 @@ function normalizeExpectedPubkey(value: string): string | null {
   return /^[0-9a-f]{64}$/.test(normalized) ? normalized : null
 }
 
-function isExactAuthEvent(input: {
-  event: SignedPublicNostrEvent
-  expectedPubkey: string
-  relayUrl: string
-  challenge: string
-  createdAt: number
-}): boolean {
-  const { event, expectedPubkey, relayUrl, challenge, createdAt } = input
-  return (
-    isValidSignedPublicNostrEvent(event) &&
-    event.kind === 22_242 &&
-    event.pubkey.toLowerCase() === expectedPubkey &&
-    event.created_at === createdAt &&
-    event.content === "" &&
-    event.tags.length === 2 &&
-    event.tags[0]?.length === 2 &&
-    event.tags[0]?.[0] === "relay" &&
-    event.tags[0]?.[1] === relayUrl &&
-    event.tags[1]?.length === 2 &&
-    event.tags[1]?.[0] === "challenge" &&
-    event.tags[1]?.[1] === challenge
-  )
-}
-
 /**
  * Publish one already-signed event over one single-use WebSocket. This writer
  * is intentionally independent from ambient NDK/read connections so session
@@ -118,7 +94,7 @@ export function publishSignedEventFrameToRelay(input: {
     let settled = false
     let authChallenge: string | null = null
     let authEventId: string | null = null
-    let authState: "idle" | "signing" | "sent" | "accepted" | "failed" = "idle"
+    let authState: "idle" | "signing" | "sent" | "accepted" = "idle"
     const authAbortController = new AbortController()
 
     const finish = (status: ExactRelayWriteStatus) => {
@@ -249,7 +225,7 @@ export function publishSignedEventFrameToRelay(input: {
                 ],
                 content: "",
               })
-              const exactAuthEvent = isExactAuthEvent({
+              const exactAuthEvent = isExactRelayAuthEvent({
                 event: signed,
                 expectedPubkey: expectedAuthPubkey,
                 relayUrl,
@@ -270,7 +246,6 @@ export function publishSignedEventFrameToRelay(input: {
               authState = "sent"
               socket?.send(JSON.stringify(["AUTH", signed]))
             } catch {
-              authState = "failed"
               authorization.onSignerFailure?.()
               finish("timed_out")
             }
@@ -295,7 +270,6 @@ export function publishSignedEventFrameToRelay(input: {
           return
         }
         if (parsed[2] === false) {
-          authState = "failed"
           const reason = typeof parsed[3] === "string" ? parsed[3].trim() : ""
           finish(
             NIP_01_REJECTION_REASON.test(reason) ? "rejected" : "timed_out"
@@ -314,7 +288,6 @@ export function publishSignedEventFrameToRelay(input: {
       const reason = typeof parsed[3] === "string" ? parsed[3].trim() : ""
       if (
         authorization &&
-        authState !== "failed" &&
         authState !== "accepted" &&
         NIP_42_AUTH_REQUIRED_REASON.test(reason)
       ) {

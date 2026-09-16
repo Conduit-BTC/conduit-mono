@@ -585,7 +585,6 @@ async function publishToRelayUrls(input: {
     const rejectedRelayUrls: string[] = []
     const relayFailureMessages: Record<string, string> = {}
     const attemptedRelayUrls: string[] = []
-    let authenticatedPreflightFailure: unknown = null
     let signerFailureSuppressed = false
 
     // Serialize auth-capable relay writes so one foreground action cannot open
@@ -611,7 +610,6 @@ async function publishToRelayUrls(input: {
         // any relay has ACKed this immutable frame, preserve that durable
         // success and stop opening new signer-authenticated connections.
         if (successfulRelayUrls.length === 0) throw error
-        authenticatedPreflightFailure = error
         break
       }
       const relayUrl = freshlyEligibleRelayUrls[0]
@@ -659,12 +657,11 @@ async function publishToRelayUrls(input: {
       thrown:
         successfulRelayUrls.length >= input.requiredRelayCount
           ? null
-          : (authenticatedPreflightFailure ??
-            (attemptedRelayUrls.length === 0 && input.accountPubkey != null
-              ? new Error(
-                  "Refusing to publish because no account-eligible relay target remains."
-                )
-              : new Error("No required relay acknowledged the event."))),
+          : attemptedRelayUrls.length === 0 && input.accountPubkey != null
+            ? new Error(
+                "Refusing to publish because no account-eligible relay target remains."
+              )
+            : new Error("No required relay acknowledged the event."),
     }
   }
 
