@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url"
 import { expect, test, type Page } from "@playwright/test"
 import { nip19, nip44 } from "nostr-tools"
 import {
@@ -1430,6 +1431,7 @@ async function publishMerchantProductFromEvent(
     discoveryMode?: "direct" | "followed"
     identity?: "merchant" | "organizer"
     rejectAcceptanceOnce?: boolean
+    completionAction?: "done" | "leave_open"
   }
 ): Promise<SignedEvent> {
   await gotoAs(
@@ -1470,17 +1472,20 @@ async function publishMerchantProductFromEvent(
   await expect(
     editor.getByText("Lightning payments are not set up", { exact: true })
   ).toBeVisible({ timeout: 15_000 })
-  const templateSelector = editor.getByLabel("Start from")
+  const templateSelector = editor.getByLabel("Create new or copy existing")
   if (options.templateTitle) {
     await templateSelector.click()
     await page
-      .getByRole("option", { name: options.templateTitle, exact: true })
+      .getByRole("option", {
+        name: `Copy “${options.templateTitle}”`,
+        exact: true,
+      })
       .click()
     await expect(editor.getByLabel("Product title")).toHaveValue(
       options.templateTitle
     )
   } else {
-    await expect(templateSelector).toContainText("Blank product")
+    await expect(templateSelector).toContainText("Create a new event product")
   }
   await editor.getByLabel("Product title").fill(options.productTitle)
   await editor
@@ -1535,9 +1540,8 @@ async function publishMerchantProductFromEvent(
       .getByRole("button", { name: "Retry acceptance", exact: true })
       .click()
   }
-  await expect(editor).toBeHidden({ timeout: 30_000 })
   await expect(
-    page.getByText(
+    editor.getByText(
       options.identity === "organizer"
         ? "Product published and accepted into your event."
         : "Product published. Organizer acceptance is pending.",
@@ -1546,6 +1550,16 @@ async function publishMerchantProductFromEvent(
       }
     )
   ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    editor.getByRole("button", { name: "Done", exact: true })
+  ).toBeEnabled()
+  await expect(
+    editor.getByRole("button", { name: "Publish another item", exact: true })
+  ).toBeEnabled()
+  if (options.completionAction !== "leave_open") {
+    await editor.getByRole("button", { name: "Done", exact: true }).click()
+    await expect(editor).toBeHidden({ timeout: 30_000 })
+  }
 
   const published = uniquePublishedEvents(
     relay.publications.slice(publishStart)
@@ -3444,13 +3458,52 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
     title: "Synthetic Owner Product Event",
     organizerHandoffEnabled: true,
   })
-  const product = await publishMerchantProductFromEvent(page, relay, market, {
+  const productPublishStart = relay.publications.length
+  const completionRefresh = relay.holdRelayRequests((request) => {
+    const acceptedCollection = uniquePublishedEvents(
+      relay.publications.slice(productPublishStart)
+    ).find((event) => event.kind === 30405)
+    if (
+      !acceptedCollection ||
+      !relay.events().some((event) => event.id === acceptedCollection.id)
+    ) {
+      return false
+    }
+    return request.filters.some((filter) =>
+      eventMatchesFilter(acceptedCollection, filter)
+    )
+  })
+  const productPromise = publishMerchantProductFromEvent(page, relay, market, {
     eventTitle: "Synthetic Owner Product Event",
     productTitle: "Synthetic Owner Product",
     handoffMode: "merchant",
     identity: "organizer",
     rejectAcceptanceOnce: true,
+    completionAction: "leave_open",
   })
+  await completionRefresh.captured
+  try {
+    const editor = page.getByRole("dialog", {
+      name: "Publish a product to Synthetic Owner Product Event",
+    })
+    await expect(
+      editor.getByRole("button", { name: "Done", exact: true })
+    ).toBeEnabled()
+    await editor
+      .getByRole("button", { name: "Publish another item", exact: true })
+      .click()
+    await expect(editor).toBeVisible()
+    await expect(editor.getByLabel("Product title")).toHaveValue("")
+    await expect(editor.getByLabel("Product title")).toBeFocused()
+    await expect(
+      editor.getByLabel("Create new or copy existing")
+    ).toContainText("Create a new event product")
+    await editor.getByRole("button", { name: "Cancel", exact: true }).click()
+    await expect(editor).toBeHidden()
+  } finally {
+    completionRefresh.release()
+  }
+  const product = await productPromise
   const accepted = uniquePublishedEvents(relay.publications).filter(
     (event) =>
       event.kind === 30405 &&
@@ -3907,7 +3960,7 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
       page.getByRole("button", { name: "Copy invoice", exact: true })
     ).toBeVisible()
     await expect(
-      page.getByRole("link", { name: "Open in wallet", exact: true })
+      page.getByRole("link", { name: "Open Lightning wallet", exact: true })
     ).toHaveAttribute("href", `lightning:${invoice}`)
     expect(callbackRequests).toBe(1)
     expect(
@@ -4113,7 +4166,7 @@ test("event catalog paints before held product reads and keeps cached browsing c
     card.getByRole("button", { name: "Add", exact: true })
   ).toBeEnabled()
   // Exercise the actual in-app product-to-event link with matching catalog
-  // evidence already present, while its refresh is deliberately held.
+  // evidence already present. A return visit must not start another check.
   await gotoAs(
     page,
     marketUrl,
@@ -4138,8 +4191,9 @@ test("event catalog paints before held product reads and keeps cached browsing c
     await expect(card).toBeVisible()
     timings.warmNavigationMs = Date.now() - navigationStarted
     await expect(
-      card.getByRole("button", { name: "Checking pickup…", exact: true })
-    ).toBeDisabled()
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
   } finally {
     navigationRead.release()
   }
@@ -4194,6 +4248,299 @@ test("event catalog paints before held product reads and keeps cached browsing c
   expect(relay.publications).toHaveLength(publications)
   console.log("Event loading timings (synthetic, ms):", JSON.stringify(timings))
 })
+
+test("event catalogs honor cross-tab signed listing withdrawals while mounted and on a warm return without relay rechecks @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay, "catalog-reader")
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic cross-tab withdrawal catalog",
+    organizerHandoffEnabled: true,
+  })
+  const products = [
+    "Mounted withdrawal",
+    "Warm withdrawal",
+    "Retained product",
+  ].map((title, index) =>
+    createMerchantProductEvent({
+      dTag: `cross-tab-withdrawal-${index}`,
+      title: `Synthetic ${title}`,
+      collectionCoordinate: market.collectionCoordinate,
+      pickupCoordinate: market.pickupCoordinate!,
+      createdAt: market.initialCollection.created_at + 1,
+    })
+  )
+  relay.seed(
+    ...products,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: market.initialCollection.created_at + 2,
+      content: market.initialCollection.content,
+      tags: [
+        ...market.initialCollection.tags,
+        ...products.map((product) => ["a", eventCoordinate(product)]),
+      ],
+    })
+  )
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const cards = products.map((product) =>
+    page.getByRole("listitem").filter({
+      hasText: product.tags.find((tag) => tag[0] === "title")![1]!,
+    })
+  )
+  for (const card of cards) {
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+  }
+  await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+
+  // A separate same-origin document owns a different module instance. Its
+  // real Dexie commit must reach the reader through browser change broadcasts.
+  const writer = await page.context().newPage()
+  await relay.install(writer, "revision-writer")
+  const writerUrl = `${marketUrl}/__synthetic-revision-writer.html`
+  await writer.route(writerUrl, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Synthetic local revision writer</title>",
+    })
+  )
+  await writer.goto(writerUrl)
+  const commerceUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/protocol/commerce.ts", import.meta.url))}`
+  const persistWithdrawal = async (product: SignedEvent) => {
+    const signed = signEvent(MERCHANT_SECRET, {
+      kind: 30402,
+      created_at: product.created_at + 10,
+      content: product.content,
+      tags: product.tags.filter(
+        (tag) => tag[0] !== "a" && tag[0] !== "shipping_option"
+      ),
+    })
+    const retained = await writer.evaluate(
+      async ({ moduleUrl, event }) => {
+        const { cacheSignedProductListingEvent } = await import(moduleUrl)
+        const record = await cacheSignedProductListingEvent({
+          ...event,
+          rawEvent: () => event,
+        })
+        return record.eventId === event.id
+      },
+      { moduleUrl: commerceUrl, event: signed }
+    )
+    expect(retained).toBe(true)
+  }
+  const isReaderCatalogRead = (request: RelayRequest) =>
+    request.clientId === "catalog-reader" &&
+    request.filters.some((filter) =>
+      filter.kinds?.some((kind) =>
+        [5, 30402, 30405, 30406, 31922, 31923].includes(kind)
+      )
+    )
+  const readerCatalogReads = () =>
+    relay.requests.filter(isReaderCatalogRead).length
+  const timings: Record<string, number> = {}
+  const beforeMountedWithdrawal = readerCatalogReads()
+  const heldMounted = relay.holdRelayRequests(isReaderCatalogRead)
+  try {
+    const started = Date.now()
+    await persistWithdrawal(products[0]!)
+    await expect(
+      cards[0]!.getByRole("button", { name: "Add", exact: true })
+    ).toHaveCount(0)
+    await expect(
+      cards[0]!.getByText("Pickup from event organizer", { exact: true })
+    ).toHaveCount(0)
+    timings.mountedWithdrawalMs = Date.now() - started
+    for (const card of cards.slice(1)) {
+      await expect(
+        card.getByRole("button", { name: "Add", exact: true })
+      ).toBeEnabled()
+    }
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+    expect(readerCatalogReads()).toBe(beforeMountedWithdrawal)
+  } finally {
+    heldMounted.release()
+  }
+
+  try {
+    // The catalog cards have no detail link. Use a real SPA link to unmount
+    // every event consumer while retaining the completed query in this tab.
+    await page.getByRole("link", { name: "About", exact: true }).click()
+    await expect(page).toHaveURL(/\/about$/)
+    const beforeWarmWithdrawal = readerCatalogReads()
+    const heldWarm = relay.holdRelayRequests(isReaderCatalogRead)
+    try {
+      await persistWithdrawal(products[1]!)
+      const started = Date.now()
+      await page.goBack()
+      await expect(page).toHaveURL(/\/events\//)
+      for (const card of cards.slice(0, 2)) {
+        await expect(
+          card.getByRole("button", { name: "Add", exact: true })
+        ).toHaveCount(0)
+        await expect(
+          card.getByText("Pickup from event organizer", { exact: true })
+        ).toHaveCount(0)
+      }
+      timings.warmReturnMs = Date.now() - started
+      await expect(
+        cards[2]!.getByRole("button", { name: "Add", exact: true })
+      ).toBeEnabled()
+      await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+      expect(readerCatalogReads()).toBe(beforeWarmWithdrawal)
+      console.log(
+        "Synthetic cross-tab event revision convergence:",
+        JSON.stringify({
+          localWithdrawals: 2,
+          ...timings,
+          remainingAddableProducts: 1,
+          mountedCatalogRechecks: 0,
+          warmCatalogRechecks: 0,
+        })
+      )
+    } finally {
+      heldWarm.release()
+    }
+  } finally {
+    await writer.close()
+  }
+})
+
+for (const mounted of [true, false]) {
+  test(`event catalog revokes a superseded cross-tab graph ${mounted ? "while mounted" : "on warm return"} without relay rechecks @market`, async ({
+    page,
+  }) => {
+    test.setTimeout(120_000)
+    const relay = createRelayHarness()
+    await installSyntheticEnvironment(page, relay, "graph-catalog-reader")
+    const market = await publishOrganizerMarket(page, relay, {
+      title: "Synthetic cross-tab graph catalog",
+      organizerHandoffEnabled: true,
+    })
+    const products = ["First graph product", "Second graph product"].map(
+      (title, index) =>
+        createMerchantProductEvent({
+          dTag: `cross-tab-graph-${index}`,
+          title: `Synthetic ${title}`,
+          collectionCoordinate: market.collectionCoordinate,
+          pickupCoordinate: market.pickupCoordinate!,
+          createdAt: market.initialCollection.created_at + 1,
+        })
+    )
+    const collection = signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: market.initialCollection.created_at + 2,
+      content: market.initialCollection.content,
+      tags: [
+        ...market.initialCollection.tags,
+        ...products.map((product) => ["a", eventCoordinate(product)]),
+      ],
+    })
+    relay.seed(...products, collection)
+    await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+    const cards = products.map((product) =>
+      page.getByRole("listitem").filter({
+        hasText: product.tags.find((tag) => tag[0] === "title")![1]!,
+      })
+    )
+    for (const card of cards)
+      await expect(
+        card.getByRole("button", { name: "Add", exact: true })
+      ).toBeEnabled()
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+
+    const writer = await page.context().newPage()
+    const writerUrl = `${marketUrl}/__synthetic-graph-writer.html`
+    await writer.route(writerUrl, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Synthetic local graph writer</title>",
+      })
+    )
+    await writer.goto(writerUrl)
+    const isCatalogRead = (request: RelayRequest) =>
+      request.clientId === "graph-catalog-reader" &&
+      request.filters.some((filter) =>
+        filter.kinds?.some((kind) =>
+          [5, 30402, 30405, 30406, 31922, 31923].includes(kind)
+        )
+      )
+    const catalogReads = () => relay.requests.filter(isCatalogRead).length
+    if (!mounted) {
+      await page.getByRole("link", { name: "About", exact: true }).click()
+      await expect(page).toHaveURL(/\/about$/)
+    }
+    const before = catalogReads()
+    const held = relay.holdRelayRequests(isCatalogRead)
+    const started = Date.now()
+    try {
+      // Persist actual signed evidence in a second same-origin document, as an
+      // independent event surface would. The production observer validates and
+      // selects the row before reconciling the retained catalog.
+      const original = mounted ? collection : market.calendarEvent
+      const revised = signEvent(ORGANIZER_SECRET, {
+        kind: original.kind,
+        created_at: original.created_at + 10,
+        content: original.content,
+        tags: original.tags.map((tag) =>
+          tag[0] === "title" ? ["title", "Synthetic revised graph"] : tag
+        ),
+      })
+      const dbUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url))}`
+      await writer.evaluate(
+        async ({ moduleUrl, event }) => {
+          const { db } = await import(moduleUrl)
+          await db.eventMarketEvidence.put({
+            id: event.id,
+            organizerPubkey: event.pubkey,
+            kind: event.kind,
+            signedEvent: event,
+            sourceRelayUrls: [],
+            cachedAt: Date.now(),
+          })
+        },
+        { moduleUrl: dbUrl, event: revised }
+      )
+      if (!mounted) {
+        await page.goBack()
+        await expect(page).toHaveURL(/\/events\//)
+      }
+      for (const card of cards) {
+        await expect(card).toBeVisible()
+        await expect(
+          card.getByRole("button", { name: "Add", exact: true })
+        ).toHaveCount(0)
+        await expect(
+          card.getByRole("button", { name: "Checking pickup…", exact: true })
+        ).toHaveCount(0)
+      }
+      await expect(
+        page
+          .getByRole("button", { name: "Refresh evidence", exact: true })
+          .first()
+      ).toBeEnabled()
+      await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+      expect(catalogReads()).toBe(before)
+      console.log(
+        "Synthetic cross-tab event graph convergence:",
+        JSON.stringify({
+          mounted,
+          observedRevisionKind: revised.kind,
+          reconciliationMs: Date.now() - started,
+          retainedBrowseProducts: cards.length,
+          remainingAddableProducts: 0,
+          catalogRechecks: 0,
+        })
+      )
+    } finally {
+      held.release()
+      await writer.close()
+    }
+  })
+}
 
 test("event variation choices remain stable while cached pickup authorization refreshes @market", async ({
   page,
