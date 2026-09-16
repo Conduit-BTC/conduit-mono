@@ -3556,6 +3556,9 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   })
   await completionRefresh.captured
   try {
+    // Finish the helper's success assertions before resetting that same editor.
+    // The refresh remains held, so publication must still complete independently.
+    await productPromise
     const editor = page.getByRole("dialog", {
       name: "Publish a product to Synthetic Owner Product Event",
     })
