@@ -54,7 +54,12 @@ afterEach(() => {
 
 async function fixture(
   negative: "deletion" | "withdrawal" | "none",
-  networkOnly: boolean | "missing-first" = false
+  networkOnly: boolean | "missing-first" = false,
+  options: {
+    holdProductPlan?: boolean
+    emptyCache?: boolean
+    failedCache?: boolean
+  } = {}
 ) {
   const nowMs = Date.now()
   const createdAt = Math.floor(nowMs / 1000) - 1000
@@ -120,11 +125,16 @@ async function fixture(
   let cacheGate: ReturnType<typeof deferred<void>> | undefined
   const cacheStarted = deferred()
   let cacheFailure = false
+  const productPlan = deferred<Map<string, never>>()
+  let productPlanReads = 0
   let productNetworkReads = 0
   let unscopedAuthorCacheReads = 0
   __setCommerceTestOverrides({
     now: () => nowMs,
-    getRelayLists: async () => new Map(),
+    getRelayLists: async () => {
+      productPlanReads++
+      return options.holdProductPlan ? productPlan.promise : new Map()
+    },
     fetchEventsFanout: async (filter) => {
       if (!networkOnly || !filter.kinds?.includes(30402)) return []
       productNetworkReads++
@@ -227,7 +237,8 @@ async function fixture(
     }
   }
   if (negative !== "none") await applyNegative(negative)
-  if (networkOnly) cachedProducts = []
+  if (networkOnly || options.emptyCache) cachedProducts = []
+  cacheFailure = options.failedCache ?? false
   unscopedAuthorCacheReads = 0
   cacheGate = deferred()
   const plan = deferred<Map<string, never>>()
@@ -259,6 +270,7 @@ async function fixture(
   if (!networkOnly)
     client.setQueryData(key, previous, { updatedAt: Date.now() - 61_000 })
   const snapshots: RawEventCatalog[] = []
+  const graphCompleted = deferred()
   const listeners = new Set<() => void>()
   const unsubscribe = client.getQueryCache().subscribe((event) => {
     const current = client.getQueryData<RawEventCatalog>(key)
@@ -269,6 +281,7 @@ async function fixture(
       !current.complete
     ) {
       snapshots.push(current)
+      if (current.resolutionComplete) graphCompleted.resolve()
       for (const notify of listeners) notify()
     }
   })
@@ -285,10 +298,16 @@ async function fixture(
           listeners.add(notify)
         })
   const loaderSettled = deferred()
+  let loaderComplete = false
+  let loaderError: unknown
   const loader: typeof loadRawEventCatalog = async (...args) => {
     try {
       return await loadRawEventCatalog(...args)
+    } catch (error) {
+      loaderError = error
+      throw error
     } finally {
+      loaderComplete = true
       loaderSettled.resolve()
     }
   }
@@ -299,6 +318,12 @@ async function fixture(
     .catch(() => undefined)
   return {
     snapshots,
+    graphCompleted: graphCompleted.promise,
+    loaderSettled: loaderSettled.promise,
+    loaderComplete: () => loaderComplete,
+    loaderError: () => loaderError,
+    productPlanReads: () => productPlanReads,
+    cancel: () => client.cancelQueries({ queryKey: key }),
     productNetworkReads: () => productNetworkReads,
     unscopedAuthorCacheReads: () => unscopedAuthorCacheReads,
     waitForProduct: () =>
@@ -315,11 +340,37 @@ async function fixture(
       }),
     cacheStarted: cacheStarted.promise,
     waitForSnapshots,
-    async completeNetwork(failed = false) {
+    async completeNetwork(
+      failed = false,
+      terminal?: "deleted" | "removed-products"
+    ) {
       plan.resolve(new Map())
+      const finalGraph = [...graph, listing]
+      if (terminal) {
+        const collectionEvent = graph.find((event) => event.kind === 30405)!
+        finalGraph.push(
+          finalizeEvent(
+            terminal === "deleted"
+              ? {
+                  kind: 5,
+                  content: "",
+                  tags: [["a", collection]],
+                  created_at: createdAt + 1,
+                }
+              : {
+                  ...collectionEvent,
+                  tags: collectionEvent.tags.filter(
+                    (tag) => !(tag[0] === "a" && tag[1] === product)
+                  ),
+                  created_at: createdAt + 1,
+                },
+            organizerKey
+          )
+        )
+      }
       const events = failed
         ? []
-        : [...graph, listing].map((event) => new NDKEvent(undefined, event))
+        : finalGraph.map((event) => new NDKEvent(undefined, event))
       network.resolve({
         events,
         relays: [
@@ -354,6 +405,7 @@ async function fixture(
       await client.cancelQueries({ queryKey: key })
       cacheGate?.resolve()
       plan.resolve(new Map())
+      productPlan.resolve(new Map())
       network.resolve({ events: [], relays: [], eventsVerified: true })
       await pending
       await loaderSettled.promise
@@ -498,6 +550,110 @@ describe("event catalog composed cache progress", () => {
         expect(
           projectRawEventCatalog(run.snapshots.at(-1)!).products
         ).toHaveLength(0)
+      } finally {
+        await run.cleanup()
+      }
+    })
+  }
+})
+
+describe("event cache completion boundary", () => {
+  for (const order of ["graph-first", "cache-first"] as const) {
+    it(`retains cached browse in ${order} order without waiting for product relay planning`, async () => {
+      const run = await fixture("none", false, { holdProductPlan: true })
+      try {
+        await run.cacheStarted
+        if (order === "cache-first") {
+          run.releaseCache()
+          await run.waitForProduct()
+        }
+        const reading = run.completeNetwork(true)
+        await run.graphCompleted
+        if (order === "graph-first") {
+          expect(run.loaderComplete()).toBe(false)
+          run.releaseCache()
+        }
+        const completed = await reading
+        expect(completed?.complete).toBe(true)
+        const catalog = projectRawEventCatalog(completed!)
+        expect(catalog.state).toBe("stale")
+        expect(catalog.products).toHaveLength(1)
+        expect(catalog.products[0]!.pickupFulfillment).toBeNull()
+        expect(catalog.purchaseReady).toBe(false)
+        expect(run.productPlanReads()).toBe(1)
+        expect(run.productNetworkReads()).toBe(0)
+        expect(run.unscopedAuthorCacheReads()).toBe(0)
+      } finally {
+        await run.cleanup()
+      }
+    })
+  }
+
+  for (const cache of ["empty", "failed", "deletion", "withdrawal"] as const) {
+    it(`settles a graph-first ${cache} cache without restoring unsafe cards or waiting for relays`, async () => {
+      const run = await fixture(
+        cache === "deletion" || cache === "withdrawal" ? cache : "none",
+        false,
+        {
+          holdProductPlan: true,
+          emptyCache: cache === "empty",
+          failedCache: cache === "failed",
+        }
+      )
+      try {
+        await run.cacheStarted
+        const reading = run.completeNetwork(true)
+        await run.graphCompleted
+        run.releaseCache()
+        const completed = await reading
+        expect(completed?.complete).toBe(true)
+        const catalog = projectRawEventCatalog(completed!)
+        expect(catalog.products).toEqual([])
+        expect(catalog.purchaseReady).toBe(false)
+        expect(run.productNetworkReads()).toBe(0)
+        expect(run.unscopedAuthorCacheReads()).toBe(0)
+      } finally {
+        await run.cleanup()
+      }
+    })
+  }
+
+  it("cancels a local-cache wait without awaiting storage or publishing late progress", async () => {
+    const run = await fixture("none", false, { holdProductPlan: true })
+    try {
+      await run.cacheStarted
+      const reading = run.completeNetwork(true)
+      await run.graphCompleted
+      await run.cancel()
+      await run.loaderSettled
+      await reading
+      expect(run.loaderError()).toMatchObject({ name: "AbortError" })
+      const count = run.snapshots.length
+      run.releaseCache()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(run.snapshots).toHaveLength(count)
+      expect(run.productNetworkReads()).toBe(0)
+    } finally {
+      await run.cleanup()
+    }
+  })
+
+  for (const terminal of ["deleted", "removed-products"] as const) {
+    it(`does not wait for obsolete cache or restore cards after ${terminal}`, async () => {
+      const run = await fixture("none", false, { holdProductPlan: true })
+      try {
+        await run.cacheStarted
+        const reading = run.completeNetwork(false, terminal)
+        await run.graphCompleted
+        await run.loaderSettled
+        const count = run.snapshots.length
+        run.releaseCache()
+        const completed = await reading
+        expect(completed?.complete).toBe(true)
+        expect(projectRawEventCatalog(completed!).products).toEqual([])
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(run.snapshots).toHaveLength(count)
+        expect(run.productNetworkReads()).toBe(0)
       } finally {
         await run.cleanup()
       }

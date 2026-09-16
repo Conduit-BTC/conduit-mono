@@ -146,6 +146,156 @@ async function afterFastRead(fastReturned: ReturnType<typeof gate>) {
   await new Promise((resolve) => setTimeout(resolve, 20))
 }
 
+describe("exact product cache stage", () => {
+  for (const cache of ["empty", "populated", "deleted"] as const) {
+    it(`reports the reconciled ${cache} snapshot before held relay discovery`, async () => {
+      const candidate = listing(fastSecret, "cache-stage")
+      if (cache !== "empty") await cacheSignedProductListingEvent(candidate)
+      if (cache === "deleted")
+        await cacheSignedProductDeletionEvent(deletion(candidate))
+      const held = gate()
+      const discoveryEntered = gate()
+      let discoveryStarted = false
+      let cacheReads = 0
+      const snapshots: ProductsByIdsResult[] = []
+      const progress: ProductsByIdsResult[] = []
+      __setCommerceTestOverrides({
+        getCachedProducts: async (_merchant, authors) => {
+          cacheReads++
+          return products.filter(
+            (row) => !authors || authors.includes(row.pubkey)
+          )
+        },
+        fetchEventsFanout: async (filter) =>
+          filter.kinds?.includes(30402) ? [candidate] : [],
+      })
+      __setCommerceTestOverrides({
+        getRelayLists: async () => {
+          discoveryStarted = true
+          discoveryEntered.release()
+          await held.promise
+          return new Map()
+        },
+      })
+      const read = getProductsByIds([address(candidate)], {
+        onCacheReady: (snapshot) => {
+          expect(discoveryStarted).toBe(false)
+          snapshots.push(snapshot)
+        },
+        onProgress: (snapshot) => progress.push(snapshot),
+      })
+      try {
+        await discoveryEntered.promise
+        expect(snapshots).toHaveLength(1)
+        const snapshot = snapshots[0]!
+        expect(snapshot.data.map((record) => record.addressId)).toEqual(
+          cache === "populated" ? [address(candidate)] : []
+        )
+        expect(snapshot.diagnostics[0]!.issue).toBe(
+          cache === "populated" ? "cached_only" : "pending"
+        )
+        expect(snapshot.meta).toMatchObject({ stale: true, degraded: true })
+        expect(cacheReads).toBe(1)
+        expect(progress).toHaveLength(cache === "populated" ? 1 : 0)
+        if (cache === "populated") expect(snapshot).toBe(progress[0])
+      } finally {
+        held.release()
+        await read.catch(() => undefined)
+      }
+      expect(snapshots).toHaveLength(1)
+    })
+  }
+
+  it("suppresses the cache-stage callback if account authority changes during cache I/O", async () => {
+    const candidate = listing(fastSecret, "cancel-cache-stage")
+    const held = gate()
+    const entered = gate()
+    let active = true
+    let callbacks = 0
+    let relayReads = 0
+    __setCommerceTestOverrides({
+      getCachedProducts: async () => {
+        entered.release()
+        await held.promise
+        return []
+      },
+    })
+    __setCommerceTestOverrides({
+      getRelayLists: async () => {
+        relayReads++
+        return new Map()
+      },
+    })
+    const read = getProductsByIds([address(candidate)], {
+      shouldContinue: () => active,
+      onCacheReady: () => {
+        callbacks++
+      },
+      onProgress: () => {
+        callbacks++
+      },
+    })
+    await entered.promise
+    active = false
+    held.release()
+    await expect(read).rejects.toThrow("authority_changed")
+    expect(callbacks).toBe(0)
+    expect(relayReads).toBe(0)
+  })
+
+  it("preserves a cache-read rejection without signaling successful cache readiness", async () => {
+    const candidate = listing(fastSecret, "failed-cache-stage")
+    let callbacks = 0
+    let relayReads = 0
+    __setCommerceTestOverrides({
+      getCachedProducts: async () => {
+        throw new Error("Storage unavailable")
+      },
+    })
+    __setCommerceTestOverrides({
+      getRelayLists: async () => {
+        relayReads++
+        return new Map()
+      },
+    })
+    await expect(
+      getProductsByIds([address(candidate)], {
+        onCacheReady: () => {
+          callbacks++
+        },
+        onProgress: () => {
+          callbacks++
+        },
+      })
+    ).rejects.toThrow("Storage unavailable")
+    expect(callbacks).toBe(0)
+    expect(relayReads).toBe(0)
+  })
+
+  for (const ids of [[], ["invalid-product-reference"]]) {
+    it(`signals the existing empty result for ${ids.length ? "invalid" : "empty"} targets`, async () => {
+      const snapshots: ProductsByIdsResult[] = []
+      const progress: ProductsByIdsResult[] = []
+      const result = await getProductsByIds(ids, {
+        onCacheReady: (snapshot) => snapshots.push(snapshot),
+        onProgress: (snapshot) => progress.push(snapshot),
+      })
+      expect(snapshots).toEqual([result])
+      expect(progress).toEqual([result])
+      expect(result.data).toEqual([])
+      snapshots.length = 0
+      progress.length = 0
+      await getProductsByIds(ids, {
+        shouldContinue: () => false,
+        onCacheReady: (snapshot) => snapshots.push(snapshot),
+        onProgress: (snapshot) => progress.push(snapshot),
+      })
+      expect(snapshots).toEqual([])
+      expect(progress).toEqual([])
+    })
+  }
+})
+
 describe("progressive exact product reads", () => {
   for (const phase of ["write", "read"] as const) {
     it(`finishes another author and starts queued work while one cache ${phase} is held`, async () => {
@@ -1125,7 +1275,7 @@ describe("progressive exact product reads", () => {
             completed.release()
         },
       })
-      let readsBeforeRevision = 0
+      let readsBeforeRevision: number
       try {
         // Positive exact evidence is published only after this author completes.
         await completed.promise

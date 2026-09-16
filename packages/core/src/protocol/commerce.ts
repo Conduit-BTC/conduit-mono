@@ -315,6 +315,14 @@ export interface ProductDetailQuery {
 
 export interface ProductsByIdsOptions {
   /**
+   * One initial locally reconciled snapshot, including an empty cache, before
+   * relay discovery. Success-only: an initial cache failure or cancellation
+   * before this stage finishes emits no callback; observe the returned promise
+   * for those outcomes. Cache readiness does not grant product authority or
+   * change the existing onProgress publication sequence.
+   */
+  onCacheReady?: (result: ProductsByIdsResult) => void
+  /**
    * Cumulative exact-coordinate browse snapshots as author batches settle.
    * Queued and unfinished authors stay stale/partial; completed authors carry
    * final per-coordinate diagnostics before other authors finish.
@@ -5655,6 +5663,8 @@ export async function getProductsByIds(
       })),
     }
     if (options.shouldContinue?.() !== false) options.onProgress?.(result)
+    if (options.onCacheReady && options.shouldContinue?.() !== false)
+      options.onCacheReady(result)
     return result
   }
 
@@ -5802,6 +5812,8 @@ export async function getProductsByIds(
   if (options.shouldContinue?.() === false)
     throw new NostrSignerError("authority_changed")
   if (initialCached.some((record) => wanted.has(record.addressId))) publish()
+  if (options.onCacheReady && options.shouldContinue?.() !== false)
+    options.onCacheReady(latestPublished ?? aggregate())
   context.relayLists = await preloadExactProductRelayLists(authors, options)
   // Non-observing callers retain cross-author family batching. Progressive
   // callers need independent author completion and share the same prepared stages.

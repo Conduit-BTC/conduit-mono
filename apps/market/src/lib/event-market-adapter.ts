@@ -1100,6 +1100,7 @@ export async function loadRawEventCatalog(
   let productReadVersion = 0
   type ProductRead = {
     key: string
+    cacheReady: Promise<void>
     promise: Promise<{ result: ProductsByIdsResult } | { error: unknown }>
   }
   let productRead: ProductRead | undefined
@@ -1136,10 +1137,21 @@ export async function loadRawEventCatalog(
     const version = ++productReadVersion
     const current = () =>
       active() && !finished && version === productReadVersion
+    let settleCache!: () => void
+    const cacheReady = new Promise<void>((resolve) => {
+      settleCache = resolve
+    })
     const promise = getProductsByIds(targets, {
       includeMerchantHiddenProductIds: targets,
       authenticatedPubkey: options.authenticatedPubkey,
       shouldContinue: current,
+      onCacheReady: (snapshot) => {
+        if (current()) {
+          previewRecords = snapshot.data
+          latestProductResult = snapshot
+        }
+        settleCache()
+      },
       onProgress: options.onProgress
         ? (snapshot) => {
             if (!current() || !latestResolution) return
@@ -1153,10 +1165,17 @@ export async function loadRawEventCatalog(
           }
         : undefined,
     }).then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error })
+      (result) => {
+        settleCache()
+        return { result }
+      },
+      (error: unknown) => {
+        // Initial storage failure or cancellation must also settle the local wait.
+        settleCache()
+        return { error }
+      }
     )
-    productRead = { key, promise }
+    productRead = { key, cacheReady, promise }
     return productRead
   }
   const updateResolution = (resolution: EventMarketResolution) => {
@@ -1234,6 +1253,22 @@ export async function loadRawEventCatalog(
           shouldContinue: active,
         })
       }
+    } else if (canHydrate && productRead) {
+      // A stale graph can finish before local product hydration. Preserve that
+      // reconciled browse snapshot without waiting for relay discovery or reads.
+      const localRead = productRead
+      await new Promise<void>((resolve) => {
+        const settle = () => {
+          options.signal?.removeEventListener("abort", settle)
+          resolve()
+        }
+        if (options.signal?.aborted) {
+          settle()
+          return
+        }
+        options.signal?.addEventListener("abort", settle, { once: true })
+        void localRead.cacheReady.then(settle)
+      })
     }
     assertActive()
     finished = true
