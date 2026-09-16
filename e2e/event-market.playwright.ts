@@ -4201,6 +4201,10 @@ test("verified event catalog enables a completed merchant while another exact pr
     await expect(
       fastCard.getByRole("button", { name: "Add", exact: true })
     ).toBeEnabled()
+    await expect(slowCard).toBeVisible()
+    await expect(
+      slowCard.getByRole("button", { name: "Checking pickup…", exact: true })
+    ).toBeDisabled()
     await expect(
       slowCard.getByRole("button", { name: "Add", exact: true })
     ).toHaveCount(0)

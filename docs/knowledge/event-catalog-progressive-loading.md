@@ -137,6 +137,14 @@ helpers retain their own bounded fanout. It is not a global app connection limit
 Batched relay-list preparation and current event-graph verification remain
 prerequisites; this change does not guarantee public-relay response times.
 
+The event graph's verified simple-product preview can keep a pending card visible
+while its exact product read continues. It is display-only, with no pickup or
+purchase authority. These preview records enter the existing local revision and
+deletion reconciliation before projection; projection never reconstructs a removed
+preview from older graph evidence. Completed, excluded, unsafe, malformed-price
+and unsupported family previews do not gain this pending-card fallback. This
+reuses evidence already read and adds no relay or cache read.
+
 ## Checkout is independent of catalog browsing
 
 Checkout displays the selected cart pickup snapshot and uses the normal

@@ -16,6 +16,7 @@ import {
 } from "../src/lib/event-catalog-query"
 import {
   projectRawEventCatalog,
+  buildEventCatalogProductPreviewRecords,
   resolveProductCartFulfillmentFromCatalogs,
   getProductEventMarketCandidates,
   eventCatalogNeedsProductRefresh,
@@ -25,7 +26,10 @@ import {
   type loadRawEventCatalog,
 } from "../src/lib/event-market-adapter"
 
-import { eventCatalogCacheCoherence } from "../src/lib/event-catalog-cache-coherence"
+import {
+  eventCatalogCacheCoherence,
+  reconcileEventCatalog,
+} from "../src/lib/event-catalog-cache-coherence"
 import { getEventCatalogQueryDisplayState } from "../src/lib/event-catalog-query-state"
 import { getEventCatalogCartAction } from "../src/lib/event-market-cart-action"
 
@@ -228,6 +232,194 @@ function deferred<T>() {
   })
   return { promise, resolve, reject }
 }
+
+function pendingPreviewCatalog(): RawEventCatalog {
+  const resolution = market()
+  const candidate = product()
+  resolution.acceptedProductEvidence[0]!.productPreview = {
+    coordinate: candidate.id,
+    eventId: "4".repeat(64),
+    createdAt: candidate.createdAt,
+    title: candidate.title,
+    summary: candidate.summary,
+    type: candidate.type,
+    format: candidate.format,
+    stock: candidate.stock,
+    images: candidate.images,
+    priceStatus: "resolved",
+    price: candidate.price,
+    currency: candidate.currency,
+    priceSats: candidate.priceSats,
+    sourcePrice: candidate.sourcePrice,
+  }
+  const result = productRead({
+    includeRecord: false,
+    issue: "pending",
+    listing: "unavailable",
+    stale: true,
+  })
+  return {
+    reference: collectionCoordinate,
+    resolution,
+    result,
+    previewRecords: buildEventCatalogProductPreviewRecords(
+      resolution,
+      [],
+      result
+    ),
+    complete: false,
+    resolutionComplete: true,
+  }
+}
+
+describe("pending event product previews", () => {
+  it("shows a signed preview while exact hydration is pending without pickup authority", () => {
+    const snapshot = pendingPreviewCatalog()
+    expect(snapshot.result!.data).toEqual([])
+    expect(snapshot.previewRecords).toHaveLength(1)
+    const catalog = projectRawEventCatalog(snapshot)
+    expect(catalog.products).toHaveLength(1)
+    expect(catalog.products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupFulfillment: null,
+      participation: { purchaseReady: false },
+      product: { id: productCoordinate, title: "Coffee", price: 2000 },
+    })
+    expect(catalog.unresolvedProductCoordinates).toEqual([])
+    expect(catalog.products[0]!.familyPickupFulfillments).toBeUndefined()
+  })
+
+  for (const issue of [
+    "listing_filtered",
+    "product_missing",
+    "invalid_product_reference",
+    "lookup_unavailable",
+    "lookup_partial",
+    "cached_only",
+  ] as const) {
+    it(`does not revive a preview after ${issue}`, () => {
+      const snapshot = pendingPreviewCatalog()
+      snapshot.result!.diagnostics[0]!.issue = issue
+      expect(
+        buildEventCatalogProductPreviewRecords(
+          snapshot.resolution!,
+          [],
+          snapshot.result
+        )
+      ).toEqual([])
+      expect(projectRawEventCatalog(snapshot).products).toEqual([])
+    })
+  }
+
+  for (const guard of [
+    "complete",
+    "localEvidencePending",
+    "localGraphSuperseded",
+  ] as const) {
+    it(`withholds pending preview when ${guard}`, () => {
+      const snapshot = pendingPreviewCatalog()
+      snapshot[guard] = true
+      expect(projectRawEventCatalog(snapshot).products).toEqual([])
+    })
+  }
+
+  it("does not replace a stronger exact product withdrawal with an accepted preview", () => {
+    const snapshot = pendingPreviewCatalog()
+    snapshot.result!.data = [
+      commerceRecord(product({ collectionRefs: [], createdAt: 104_000 }), {
+        eventId: "5".repeat(64),
+        eventCreatedAt: 104,
+      }),
+    ]
+    expect(projectRawEventCatalog(snapshot).products).toEqual([])
+  })
+
+  it("keeps a deleted preview removed after local reconciliation without rebuilding it from the graph", () => {
+    const snapshot = pendingPreviewCatalog()
+    const reconciled = reconcileEventCatalog(snapshot, {
+      status: "ready",
+      revision: 1,
+      evidence: [
+        {
+          target: "address",
+          deletionEventId: "d".repeat(64),
+          authorPubkey: merchant,
+          deletedAt: 104,
+          addressId: productCoordinate,
+        },
+      ],
+    })
+    expect(reconciled.previewRecords).toEqual([])
+    expect(reconciled.result!.diagnostics[0]!.issue).toBe("pending")
+    expect(projectRawEventCatalog(reconciled).products).toEqual([])
+    // A late older progress payload crosses the same retained frontier again.
+    expect(
+      projectRawEventCatalog(
+        reconcileEventCatalog(snapshot, {
+          status: "ready",
+          revision: 1,
+          evidence: [
+            {
+              target: "address",
+              deletionEventId: "d".repeat(64),
+              authorPubkey: merchant,
+              deletedAt: 104,
+              addressId: productCoordinate,
+            },
+          ],
+        })
+      ).products
+    ).toEqual([])
+  })
+
+  it("honors a newer local withdrawal of a pending display preview", () => {
+    const snapshot = pendingPreviewCatalog()
+    const newer = commerceRecord(
+      product({ collectionRefs: [], createdAt: 104_000 }),
+      { eventId: "5".repeat(64), eventCreatedAt: 104 }
+    )
+    const reconciled = reconcileEventCatalog(
+      snapshot,
+      { status: "ready", revision: 0, evidence: [] },
+      [newer]
+    )
+    expect(reconciled.previewRecords![0]!.eventId).toBe(newer.eventId)
+    expect(projectRawEventCatalog(reconciled).products).toEqual([])
+  })
+
+  for (const change of [
+    "identity",
+    "revision",
+    "timestamp",
+    "merchant",
+    "price",
+    "family",
+    "unsafe",
+    "image",
+    "excluded",
+  ] as const) {
+    it(`rejects ${change} preview evidence without inventing a replacement`, () => {
+      const snapshot = pendingPreviewCatalog()
+      const resolution = snapshot.resolution!
+      const evidence = resolution.acceptedProductEvidence[0]!
+      const preview = evidence.productPreview!
+      if (change === "identity") preview.coordinate = `30402:${merchant}:other`
+      if (change === "revision") preview.eventId = "6".repeat(64)
+      if (change === "timestamp") preview.createdAt += 1000
+      if (change === "merchant") evidence.merchantPubkey = organizer
+      if (change === "price")
+        evidence.productPreview = { ...preview, priceStatus: "malformed" }
+      if (change === "family") preview.type = "variation"
+      if (change === "unsafe") preview.title = "Counterfeit goods"
+      if (change === "image") preview.images = []
+      if (change === "excluded")
+        resolution.browseExcludedProductCoordinates = [productCoordinate]
+      expect(
+        buildEventCatalogProductPreviewRecords(resolution, [], snapshot.result)
+      ).toEqual([])
+    })
+  }
+})
 
 describe("shared progressive event catalogs", () => {
   it("reuses a completed catalog on immediate navigation back", async () => {

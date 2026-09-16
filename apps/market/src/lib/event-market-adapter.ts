@@ -1,6 +1,7 @@
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
+  evaluateListingSafety,
   getEventMarket,
   getProductEventMarketFulfillmentClaims,
   getProductsByIds,
@@ -756,6 +757,96 @@ export function projectEventCatalogHydration({
   }
 }
 
+/** Display projection only: never insert these records into the exact reader or cache. */
+export function buildEventCatalogProductPreviewRecords(
+  resolution: EventMarketResolution,
+  records: readonly CommerceProductRecord[],
+  result?: ProductsByIdsResult
+): CommerceProductRecord[] {
+  const represented = new Set(
+    [...records, ...(result?.data ?? [])].flatMap((record) => [
+      record.addressId,
+      ...(record.family?.children.map((child) => child.addressId) ?? []),
+    ])
+  )
+  const excluded = new Set(resolution.browseExcludedProductCoordinates)
+  const previews =
+    resolution.acceptedProductEvidence.flatMap<CommerceProductRecord>(
+      (evidence) => {
+        const preview = evidence.productPreview
+        const diagnostic = result?.diagnostics.find(
+          (row) => row.addressId === evidence.productCoordinate
+        )
+        const coordinate = decodeEventMarketReference(
+          evidence.productCoordinate,
+          [30402]
+        )
+        if (
+          !preview ||
+          preview.priceStatus !== "resolved" ||
+          preview.type !== "simple" ||
+          !coordinate ||
+          !resolution.collectionCoordinate ||
+          coordinate.authorPubkey !== evidence.merchantPubkey ||
+          preview.coordinate !== evidence.productCoordinate ||
+          preview.eventId !== evidence.eventId ||
+          preview.createdAt !== evidence.createdAt ||
+          !Number.isSafeInteger(preview.createdAt / 1_000) ||
+          !resolution.acceptedProductCoordinates.includes(
+            evidence.productCoordinate
+          ) ||
+          represented.has(evidence.productCoordinate) ||
+          excluded.has(evidence.productCoordinate) ||
+          (result && diagnostic?.issue !== "pending")
+        )
+          return []
+        // The verified preview intentionally carries no general discovery visibility,
+        // zap policy, family topology, or checkout terms. Conservative display defaults
+        // stay private and non-purchasable until the exact reader supplies those facts.
+        const product: Product = {
+          id: preview.coordinate,
+          pubkey: coordinate.authorPubkey,
+          title: preview.title,
+          summary: preview.summary,
+          type: "simple",
+          format: preview.format,
+          stock: preview.stock,
+          price: preview.price,
+          currency: preview.currency,
+          priceSats: preview.priceSats,
+          sourcePrice: preview.sourcePrice,
+          images: preview.images,
+          visibility: "private",
+          specifications: [],
+          tags: [],
+          publicZapEnabled: false,
+          publicZapPolicyKnown: false,
+          zapMessagePolicy: "generic_only",
+          collectionRefs: [resolution.collectionCoordinate],
+          createdAt: preview.createdAt,
+          updatedAt: preview.createdAt,
+        }
+        const record: CommerceProductRecord = {
+          product,
+          addressId: preview.coordinate,
+          eventId: preview.eventId,
+          eventCreatedAt: preview.createdAt / 1_000,
+          dTag: coordinate.dTag,
+          safety: evaluateListingSafety(product),
+        }
+        return isEventCatalogRecordSafetyAllowed(
+          record,
+          resolution,
+          undefined,
+          true
+        )
+          ? [record]
+          : []
+      }
+    )
+  return [...records, ...previews]
+}
+
 /** Rate-independent signed evidence shared by event and product surfaces. */
 export type RawEventCatalog = {
   reference: string
@@ -820,12 +911,57 @@ export function projectRawEventCatalog(
       result: raw.result,
       rateInput,
     })
+    // These display records crossed the same local revision/deletion boundary as
+    // the exact result. Never reconstruct a removed preview from graph evidence.
+    const pendingCoordinates = new Set(
+      !raw.complete && !raw.localEvidencePending && !raw.localGraphSuperseded
+        ? raw.result.diagnostics
+            .filter((row) => row.issue === "pending")
+            .map((row) => row.addressId)
+        : []
+    )
+    const exactCoordinates = new Set(
+      raw.result.data.flatMap((record) => [
+        record.addressId,
+        ...(record.family?.children.map((child) => child.addressId) ?? []),
+      ])
+    )
+    const pendingProducts = (
+      raw.previewRecords ?? []
+    ).flatMap<EventCatalogProduct>((record) => {
+      if (
+        !pendingCoordinates.has(record.addressId) ||
+        exactCoordinates.has(record.addressId) ||
+        excludedProducts.has(record.addressId) ||
+        record.product.type !== "simple" ||
+        !resolution.acceptedProductCoordinates.includes(record.addressId) ||
+        !isEventCatalogRecordSafetyAllowed(record, resolution, undefined, true)
+      )
+        return []
+      const participation = resolveEventMarketProductParticipation(
+        record.product,
+        resolution
+      )
+      if (!participation.requested) return []
+      return [
+        {
+          product: record.product,
+          evidenceState: "retained",
+          participation: { ...participation, purchaseReady: false },
+          pickupFulfillment: null,
+        },
+      ]
+    })
+    const products = [...hydrated.products, ...pendingProducts]
     return {
       ...base,
       ...hydrated,
-      products: complete
-        ? hydrated.products
-        : hydrated.products.map(browseOnlyProduct),
+      unresolvedProductCoordinates:
+        hydrated.unresolvedProductCoordinates.filter(
+          (coordinate) =>
+            !pendingProducts.some((entry) => entry.product.id === coordinate)
+        ),
+      products: complete ? products : products.map(browseOnlyProduct),
       purchaseReady:
         complete &&
         (resolution.state === "active" || resolution.state === "partial"),
@@ -976,7 +1112,11 @@ export async function loadRawEventCatalog(
       complete: false,
       resolutionComplete,
       result: resolutionComplete ? latestProductResult : undefined,
-      previewRecords,
+      previewRecords: buildEventCatalogProductPreviewRecords(
+        resolution,
+        previewRecords,
+        latestProductResult
+      ),
     })
   }
 
@@ -1008,7 +1148,11 @@ export async function loadRawEventCatalog(
               resolution: latestResolution,
               resolutionComplete,
               result: resolutionComplete ? snapshot : undefined,
-              previewRecords,
+              previewRecords: buildEventCatalogProductPreviewRecords(
+                latestResolution,
+                previewRecords,
+                snapshot
+              ),
               complete: false,
             })
           }
