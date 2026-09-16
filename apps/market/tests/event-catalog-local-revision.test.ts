@@ -523,3 +523,83 @@ it("does not reopen local observations when a removed query's loader completes l
   expect(starts).toBe(0)
   client.clear()
 })
+
+for (const mode of ["deletion", "withdrawal"]) {
+  it(`does not restore a pending preview after local ${mode} or late progress`, async () => {
+    const f = await fixture()
+    const coffee = f.raw.result!.data.find(
+      (record) => record.addressId === f.products[0]
+    )!
+    const pending: RawEventCatalog = {
+      ...f.raw,
+      complete: false,
+      previewRecords: [coffee],
+      result: {
+        ...f.raw.result!,
+        data: f.raw.result!.data.filter(
+          (record) => record.addressId !== f.products[0]
+        ),
+        diagnostics: f.raw.result!.diagnostics.map((diagnostic) =>
+          diagnostic.addressId === f.products[0]
+            ? { ...diagnostic, issue: "pending" as const }
+            : diagnostic
+        ),
+      },
+    }
+    const client = new QueryClient()
+    let finish!: (raw: RawEventCatalog) => void
+    let emit: ((raw: RawEventCatalog) => void) | undefined
+    let reads = 0
+    const options = eventCatalogQueryOptions(
+      client,
+      f.collection,
+      scope,
+      () => true,
+      async (_reference, readOptions) => {
+        reads++
+        emit = readOptions?.onProgress
+        emit?.(pending)
+        return new Promise<RawEventCatalog>((resolve) => {
+          finish = resolve
+        })
+      }
+    )
+    const observer = new QueryObserver(client, options)
+    const stop = observer.subscribe(() => {})
+    const reading = client.fetchQuery(options)
+    try {
+      await settleObserver()
+      const before = projectRawEventCatalog(observer.getCurrentResult().data!)
+      expect(before.products).toHaveLength(2)
+      expect(
+        before.products.find((entry) => entry.product.id === f.products[0])!
+          .pickupFulfillment
+      ).toBeNull()
+      if (mode === "deletion") await f.deleteCoffee()
+      else await f.reviseCoffee("withdrawal")
+      await settleObserver()
+      const assertCurrent = () => {
+        const catalog = projectRawEventCatalog(
+          observer.getCurrentResult().data!
+        )
+        expect(catalog.products.map((entry) => entry.product.id)).toEqual([
+          f.products[1]!,
+        ])
+        expect(catalog.products[0]!.pickupFulfillment).not.toBeNull()
+      }
+      assertCurrent()
+      emit?.(pending)
+      assertCurrent()
+      finish({ ...pending, complete: true })
+      await reading
+      assertCurrent()
+      expect(reads).toBe(1)
+      expect(f.relayReads()).toBe(0)
+    } finally {
+      finish({ ...pending, complete: true })
+      await reading
+      stop()
+      client.clear()
+    }
+  })
+}
