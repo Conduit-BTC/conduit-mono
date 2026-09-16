@@ -373,6 +373,8 @@ describe("buyer order publishing", () => {
             ...input,
             accountNetworkLocalStateRepository: repository,
             recipientInboxRelays: [excludedRelayUrl, eligibleRelayUrl],
+            // Keep the non-critical self-copy off live inbox discovery.
+            senderInboxRelays: [eligibleRelayUrl],
             inspectOwnInboxReadiness: async () => ({
               state: "ready",
               eventId: "c".repeat(64),
