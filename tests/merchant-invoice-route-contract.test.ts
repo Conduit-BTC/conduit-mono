@@ -3,10 +3,23 @@ import { describe, expect, it } from "bun:test"
 describe("merchant invoice route contract", () => {
   it("retains bound-invoice reporting and order-status guards", async () => {
     const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
+    const panel = await Bun.file(
+      "apps/market/src/components/ExternalWalletPanel.tsx"
+    ).text()
+    const prepareGate = panel.indexOf("if (requiresPreparation)")
+    const invoiceControls = panel.indexOf("<InvoicePayment")
+
     expect(source).toContain("prepareMerchantInvoicePaymentAction")
+    expect(source).toContain("pricing={shopperPricing}")
+    expect(source).not.toContain("function ExternalWalletPanel")
+    expect(prepareGate).toBeGreaterThan(-1)
+    expect(invoiceControls).toBeGreaterThan(prepareGate)
+    expect(panel).toContain("onBeforeInvoiceUse={canUseInvoice}")
+    expect(panel).toContain("return onBeforeInvoiceUse()")
     expect(source).toContain("Do not pay this invoice.")
-    expect(source).toContain('boundMerchantInvoiceAccess !== "closed"')
-    expect(source).toContain('boundMerchantInvoiceAccess !== "report_only"')
+    expect(source).toContain('manualInvoiceAccess !== "closed"')
+    expect(source).toContain('manualInvoiceAccess !== "report_only"')
+    expect(source).toContain('manualInvoiceAccess !== "receipt_only"')
     expect(source).toContain(
       'action?.status === "blocked" && action.canReport ? action : undefined'
     )

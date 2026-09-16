@@ -141,7 +141,7 @@ describe("Market event catalog route", () => {
       orders.lastIndexOf("runOrderPrivateFallback(ctx)")
     )
     expect(checkout).toContain("sourceShippingCost: item.sourceShippingCost")
-    expect(authorization).toContain("resolveProductCartFulfillment")
+    expect(authorization).toContain("resolveCheckoutProductFulfillments")
     expect(authorization).toContain("assertCartPickupHandlerReady")
     expect(authorization).toContain("getCartCommerceFingerprint")
     const placeOrderStart = checkout.indexOf("async function placeOrder()")

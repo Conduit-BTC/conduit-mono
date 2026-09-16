@@ -197,27 +197,12 @@ describe("shopper merchant payment readiness", () => {
 })
 
 describe("checkout evidence labels", () => {
-  it("names the exact pending evidence instead of generic fulfillment", () => {
+  it("uses ordinary product availability while the order is reviewed", () => {
     expect(
-      getCheckoutEvidenceCheckingLabel({
-        availabilityChecking: true,
-        eventPickupChecking: false,
-        organizerInboxChecking: false,
-      })
+      getCheckoutEvidenceCheckingLabel({ availabilityChecking: true })
     ).toBe("Checking product availability")
     expect(
-      getCheckoutEvidenceCheckingLabel({
-        availabilityChecking: false,
-        eventPickupChecking: true,
-        organizerInboxChecking: false,
-      })
-    ).toBe("Checking signed event pickup")
-    expect(
-      getCheckoutEvidenceCheckingLabel({
-        availabilityChecking: false,
-        eventPickupChecking: false,
-        organizerInboxChecking: true,
-      })
-    ).toBe("Checking organizer pickup inbox")
+      getCheckoutEvidenceCheckingLabel({ availabilityChecking: false })
+    ).toBeNull()
   })
 })

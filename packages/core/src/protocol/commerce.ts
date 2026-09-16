@@ -1,3 +1,4 @@
+import { liveQuery } from "dexie"
 import {
   NDKEvent,
   giftUnwrap,
@@ -252,11 +253,20 @@ export interface CommerceProductRecord {
   product: Product
   safety?: ListingSafetyEvaluation
   family?: PreparedProductFamily<CommerceProductRecord>
+  /** In-memory evidence behind exact family eligibility, never extra results. */
+  exactReadContext?: RetainedProductFamilyContext
   eventId: string
   addressId: string
   dTag: string | null
   eventCreatedAt: number
   sourceRelayUrls?: string[]
+}
+
+interface RetainedProductFamilyContext {
+  /** Raw revisions, without nested projections; shared by one family's results. */
+  records: CommerceProductRecord[]
+  includeMarketHidden?: boolean
+  includeMerchantHiddenProductIds?: readonly string[]
 }
 
 export interface MarketplaceProductsQuery {
@@ -1086,6 +1096,8 @@ export function __resetCommerceTestOverrides(): void {
   testProfileCacheWriteLock = Promise.resolve()
   volatileProductSourceRelayUrls.clear()
   volatileProductTombstones.clear()
+  resetLocalProductDeletionObservation()
+  resetLocalProductRevisionObservation()
   successfulWrapIdsByPrincipal.clear()
   retryWrapsByPrincipal.clear()
   eventMarketInboxScanCycles.clear()
@@ -1616,7 +1628,60 @@ function filterProductRecordsForRead(
     : prepared.filter(isMarketRenderableRecord)
 }
 
+/** Preserve the inputs to family eligibility after projecting exact targets.
+ * Local deletions can then reuse the same selector without another relay read. */
 function filterExactProductRecordsForRead(
+  records: CommerceProductRecord[],
+  wanted: ReadonlySet<string>,
+  options: ProductsByIdsOptions = {}
+): CommerceProductRecord[] {
+  const selected = selectExactProductRecordsForRead(records, wanted, options)
+  const familyAddress = (record: CommerceProductRecord) =>
+    record.product.type === "variable"
+      ? record.addressId
+      : record.product.type === "variation"
+        ? record.product.parentProductId
+        : undefined
+  const contexts = new Map<string, RetainedProductFamilyContext>()
+  for (const record of selected) {
+    const parentAddress = familyAddress(record)
+    if (parentAddress && !contexts.has(parentAddress)) {
+      contexts.set(parentAddress, {
+        records: [],
+        includeMarketHidden: options.includeMarketHidden,
+      })
+    }
+  }
+  if (contexts.size === 0) return selected
+  for (const record of records) {
+    const parentAddress = familyAddress(record)
+    const context = parentAddress ? contexts.get(parentAddress) : undefined
+    if (!context) continue
+    // Keep evidence separate from nested result projections.
+    const candidate = { ...record }
+    delete candidate.family
+    delete candidate.exactReadContext
+    context.records.push(candidate)
+  }
+  const hiddenAddresses = new Set(
+    (options.includeMerchantHiddenProductIds ?? [])
+      .map((id) => getProductLookupIds(id).addressId)
+      .filter((id): id is string => !!id)
+  )
+  for (const context of contexts.values()) {
+    context.includeMerchantHiddenProductIds = context.records
+      .map((record) => record.addressId)
+      .filter((address) => hiddenAddresses.has(address))
+  }
+  return selected.map((record) => {
+    const parentAddress = familyAddress(record)
+    return parentAddress
+      ? { ...record, exactReadContext: contexts.get(parentAddress) }
+      : record
+  })
+}
+
+function selectExactProductRecordsForRead(
   records: CommerceProductRecord[],
   wanted: ReadonlySet<string>,
   options: ProductsByIdsOptions = {}
@@ -2095,27 +2160,53 @@ function selectCachedProductUpdates(
 
 async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
   if (rows.length === 0) return
-
-  if (testOverrides.putCachedProducts) {
-    const existingRows = testOverrides.getCachedProducts
-      ? await testOverrides.getCachedProducts()
-      : []
-    const rowsToStore = selectCachedProductUpdates(rows, existingRows)
-    if (rowsToStore.length === 0) return
-    await testOverrides.putCachedProducts(rowsToStore)
-    return
-  }
-
-  const ids = Array.from(new Set(rows.map((row) => row.id)))
-  await db.transaction("rw", db.products, async () => {
-    const existingRows = (await db.products.bulkGet(ids)).filter(
-      (row): row is CachedProduct => row !== undefined
-    )
-    const rowsToStore = selectCachedProductUpdates(rows, existingRows)
-    if (rowsToStore.length > 0) {
-      await db.products.bulkPut(rowsToStore)
+  let selectedRows = rows
+  try {
+    if (testOverrides.putCachedProducts) {
+      const existingRows = testOverrides.getCachedProducts
+        ? await testOverrides.getCachedProducts()
+        : []
+      const rowsToStore = selectCachedProductUpdates(rows, existingRows)
+      const ids = new Set(rows.map((row) => row.id))
+      selectedRows = [
+        ...existingRows.filter((row) => ids.has(row.id)),
+        ...rowsToStore,
+      ]
+      retainLocalProductRevisionEvidence(selectedRows)
+      if (rowsToStore.length > 0)
+        await testOverrides.putCachedProducts(rowsToStore)
+    } else {
+      const ids = Array.from(new Set(rows.map((row) => row.id)))
+      await db.transaction("rw", db.products, async () => {
+        const existingRows = (await db.products.bulkGet(ids)).filter(
+          (row): row is CachedProduct => row !== undefined
+        )
+        const rowsToStore = selectCachedProductUpdates(rows, existingRows)
+        selectedRows = [...existingRows, ...rowsToStore]
+        // Known signed evidence does not depend on successful persistence.
+        // Include an already persisted winner even when there is no write.
+        retainLocalProductRevisionEvidence(selectedRows)
+        if (rowsToStore.length > 0) await db.products.bulkPut(rowsToStore)
+      })
     }
-  })
+    for (const row of selectedRows) {
+      const pending = volatileProductRevisionRows.get(row.id)
+      if (pending && shouldReplaceCachedProduct(pending, row)) {
+        volatileProductRevisionRows.delete(row.id)
+      }
+    }
+  } catch (error) {
+    for (const row of selectedRows) {
+      const pending = volatileProductRevisionRows.get(row.id)
+      if (!pending || shouldReplaceCachedProduct(pending, row)) {
+        volatileProductRevisionRows.set(row.id, row)
+      }
+    }
+    retainLocalProductRevisionEvidence(selectedRows)
+    throw error
+  } finally {
+    pruneLocalProductRevisionEvidence()
+  }
 }
 
 function clearPersistedVolatileProductSourceRelayUrls(
@@ -2300,6 +2391,462 @@ function selectCachedProductTombstoneUpdates(
   return Array.from(changed.values())
 }
 
+/** Selected local product revisions, scoped to a retained catalog's dependencies. */
+export type LocalProductRevisionSnapshot = Readonly<{
+  status: "loading" | "ready" | "unavailable"
+  records: readonly CommerceProductRecord[]
+}>
+
+type LocalProductRevisionObserver = {
+  ids: Set<string>
+  status: LocalProductRevisionSnapshot["status"]
+  listener: (snapshot: LocalProductRevisionSnapshot) => void
+  subscription?: { unsubscribe(): void }
+}
+const localProductRevisionObservers = new Set<LocalProductRevisionObserver>()
+const localProductRevisionRecords = new Map<string, CommerceProductRecord>()
+// Failed saves remain evidence even with no retained query. Successful rows are
+// retained only while a consumer references them; IndexedDB owns durable storage.
+const volatileProductRevisionRows = new Map<string, CachedProduct>()
+
+function notifyLocalProductRevisionObserver(
+  observer: LocalProductRevisionObserver
+): void {
+  try {
+    observer.listener({
+      status: observer.status,
+      records: [...observer.ids].flatMap((id) => {
+        const record = localProductRevisionRecords.get(id)
+        return record ? [record] : []
+      }),
+    })
+  } catch {
+    console.warn("Local product revision observer failed")
+  }
+}
+
+function retainLocalProductRevisionEvidence(
+  rows: readonly CachedProduct[]
+): void {
+  const changed = new Set<string>()
+  for (const row of rows) {
+    const candidate = fromCachedProduct(row)
+    const existing = localProductRevisionRecords.get(candidate.addressId)
+    if (
+      existing &&
+      (existing.eventId === candidate.eventId ||
+        !shouldReplaceProductRecord(existing, candidate))
+    )
+      continue
+    localProductRevisionRecords.set(candidate.addressId, candidate)
+    changed.add(candidate.addressId)
+  }
+  for (const observer of localProductRevisionObservers) {
+    if ([...changed].some((id) => observer.ids.has(id))) {
+      notifyLocalProductRevisionObserver(observer)
+    }
+  }
+}
+
+function pruneLocalProductRevisionEvidence(): void {
+  const retained = new Set(volatileProductRevisionRows.keys())
+  for (const observer of localProductRevisionObservers) {
+    for (const id of observer.ids) retained.add(id)
+  }
+  for (const id of localProductRevisionRecords.keys()) {
+    if (!retained.has(id)) localProductRevisionRecords.delete(id)
+  }
+}
+
+/** Local I/O only: primary-key reads observe relevant cross-tab commits without
+ * rescanning the product table. Same-tab writes also deliver failed-save evidence. */
+export function subscribeLocalProductRevisionChanges(
+  addressIds: readonly string[],
+  listener: (snapshot: LocalProductRevisionSnapshot) => void
+): () => void {
+  const observer: LocalProductRevisionObserver = {
+    ids: new Set(addressIds),
+    status: addressIds.length ? "loading" : "ready",
+    listener,
+  }
+  localProductRevisionObservers.add(observer)
+  notifyLocalProductRevisionObserver(observer)
+  if (observer.ids.size > 0) {
+    const ids = [...observer.ids]
+    const load = async (): Promise<CachedProduct[]> => {
+      if (testOverrides.getCachedProducts) {
+        return (await testOverrides.getCachedProducts()).filter((row) =>
+          observer.ids.has(row.id)
+        )
+      }
+      return (await db.products.bulkGet(ids)).filter(
+        (row): row is CachedProduct => !!row
+      )
+    }
+    const delivery = {
+      next: (rows: CachedProduct[]) => {
+        if (!localProductRevisionObservers.has(observer)) return
+        retainLocalProductRevisionEvidence(rows)
+        observer.status = "ready"
+        notifyLocalProductRevisionObserver(observer)
+      },
+      error: () => {
+        if (!localProductRevisionObservers.has(observer)) return
+        observer.status = "unavailable"
+        notifyLocalProductRevisionObserver(observer)
+      },
+    }
+    if (testOverrides.getCachedProducts || typeof indexedDB === "undefined") {
+      void load().then(delivery.next, delivery.error)
+    } else observer.subscription = liveQuery(load).subscribe(delivery)
+  }
+  return () => {
+    localProductRevisionObservers.delete(observer)
+    observer.subscription?.unsubscribe()
+    pruneLocalProductRevisionEvidence()
+  }
+}
+
+function resetLocalProductRevisionObservation(): void {
+  for (const observer of localProductRevisionObservers)
+    observer.subscription?.unsubscribe()
+  localProductRevisionObservers.clear()
+  localProductRevisionRecords.clear()
+  volatileProductRevisionRows.clear()
+}
+
+/** Re-project only existing targets after merging stronger local dependencies.
+ * A changed family is browse evidence until its exact read is completed again. */
+export function reconcileProductRecordsWithRevisions(
+  records: CommerceProductRecord[],
+  revisions: readonly CommerceProductRecord[]
+): CommerceProductRecord[] {
+  const winners = new Map<string, CommerceProductRecord>()
+  for (const revision of revisions) {
+    const previous = winners.get(revision.addressId)
+    if (!previous || shouldReplaceProductRecord(previous, revision))
+      winners.set(revision.addressId, revision)
+  }
+  const replace = (record: CommerceProductRecord) => {
+    const candidate = winners.get(record.addressId)
+    return candidate &&
+      candidate.eventId !== record.eventId &&
+      shouldReplaceProductRecord(record, candidate)
+      ? candidate
+      : record
+  }
+  const contexts = new Map<
+    RetainedProductFamilyContext,
+    Map<string, CommerceProductRecord> | null
+  >()
+  const result = records.flatMap((record) => {
+    const context = record.exactReadContext
+    if (context) {
+      if (!contexts.has(context)) {
+        const next = context.records.map(replace)
+        contexts.set(
+          context,
+          next.every((candidate, index) => candidate === context.records[index])
+            ? null
+            : new Map(
+                filterExactProductRecordsForRead(
+                  next,
+                  new Set(next.map((candidate) => candidate.addressId)),
+                  context
+                ).map((candidate) => [candidate.addressId, candidate])
+              )
+        )
+      }
+      const prepared = contexts.get(context)
+      if (!prepared) return [record]
+      const next = prepared.get(record.addressId)
+      if (!next) return []
+      return [
+        next.family && record.family
+          ? {
+              ...next,
+              family: {
+                ...next.family,
+                readEvidence: {
+                  ...record.family.readEvidence,
+                  stale: true,
+                  degraded: true,
+                },
+              },
+            }
+          : next,
+      ]
+    }
+    const inputs = record.family
+      ? [record.family.parent, ...record.family.children]
+      : [record]
+    const next = inputs.map(replace)
+    if (next.every((candidate, index) => candidate === inputs[index]))
+      return [record]
+    const selected = filterExactProductRecordsForRead(
+      next,
+      new Set([record.addressId])
+    )
+    return selected.map((candidate) =>
+      candidate.family && record.family
+        ? {
+            ...candidate,
+            family: {
+              ...candidate.family,
+              readEvidence: {
+                ...record.family.readEvidence,
+                stale: true,
+                degraded: true,
+              },
+            },
+          }
+        : candidate
+    )
+  })
+  return result.length === records.length &&
+    result.every((record, index) => record === records[index])
+    ? records
+    : result
+}
+
+/** Local signed deletion evidence shared by retained query projections. */
+export type LocalProductDeletionSnapshot = Readonly<{
+  status: "loading" | "ready" | "unavailable"
+  revision: number
+  evidence: readonly ProductDeletionEvidence[]
+}>
+
+let localProductDeletionSnapshot: LocalProductDeletionSnapshot = {
+  status: "loading",
+  revision: 0,
+  evidence: [],
+}
+const localProductDeletionListeners = new Set<
+  (snapshot: LocalProductDeletionSnapshot) => void
+>()
+let localProductDeletionSubscription: { unsubscribe(): void } | undefined
+let localProductDeletionObservationGeneration = 0
+
+export function getLocalProductDeletionSnapshot(): LocalProductDeletionSnapshot {
+  return localProductDeletionSnapshot
+}
+
+function notifyLocalProductDeletionListeners(): void {
+  for (const listener of localProductDeletionListeners) {
+    try {
+      listener(localProductDeletionSnapshot)
+    } catch {
+      // A view observer must not interrupt retention of signed evidence or
+      // prevent another observer from revoking its previous projection.
+      console.warn("Local product deletion observer failed")
+    }
+  }
+}
+
+function setLocalProductDeletionStatus(
+  status: LocalProductDeletionSnapshot["status"]
+): void {
+  if (localProductDeletionSnapshot.status === status) return
+  localProductDeletionSnapshot = { ...localProductDeletionSnapshot, status }
+  notifyLocalProductDeletionListeners()
+}
+
+function retainLocalProductDeletionEvidence(
+  rows: readonly CachedProductTombstone[]
+): void {
+  const frontier = deletionTimestampsFromTombstones(rows)
+  for (const evidence of localProductDeletionSnapshot.evidence) {
+    const key =
+      evidence.target === "event"
+        ? scopedProductDeletionEventKey(evidence.authorPubkey, evidence.eventId)
+        : productDeletionAddressKey(evidence.addressId)
+    if (key)
+      setLatestDeletionEvidence(
+        evidence.target === "event" ? frontier.byEventId : frontier.byAddressId,
+        key,
+        evidence
+      )
+  }
+  const evidence = [
+    ...frontier.byEventId.entries(),
+    ...frontier.byAddressId.entries(),
+  ]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, item]) => item)
+  if (
+    JSON.stringify(evidence) ===
+    JSON.stringify(localProductDeletionSnapshot.evidence)
+  )
+    return
+  localProductDeletionSnapshot = {
+    ...localProductDeletionSnapshot,
+    revision: localProductDeletionSnapshot.revision + 1,
+    evidence,
+  }
+  notifyLocalProductDeletionListeners()
+}
+
+/** Observe local storage only. Dexie includes committed writes from other
+ * same-origin browser contexts; in-process observations also include validated
+ * evidence whose persistence is still pending or unavailable. */
+export function subscribeLocalProductDeletionChanges(
+  listener: (snapshot: LocalProductDeletionSnapshot) => void
+): () => void {
+  localProductDeletionListeners.add(listener)
+  if (!localProductDeletionSubscription) {
+    const generation = ++localProductDeletionObservationGeneration
+    setLocalProductDeletionStatus("loading")
+    const observer = {
+      next: (rows: CachedProductTombstone[]) => {
+        if (generation !== localProductDeletionObservationGeneration) return
+        retainLocalProductDeletionEvidence([
+          ...rows,
+          ...volatileProductTombstones.values(),
+        ])
+        setLocalProductDeletionStatus("ready")
+      },
+      error: () => {
+        if (generation !== localProductDeletionObservationGeneration) return
+        setLocalProductDeletionStatus("unavailable")
+      },
+    }
+    if (
+      testOverrides.getCachedProductTombstones ||
+      typeof indexedDB === "undefined"
+    ) {
+      // Dexie liveQuery intentionally stays silent when IndexedDB is absent.
+      // A local-only read still settles initial readiness and test repositories.
+      localProductDeletionSubscription = { unsubscribe() {} }
+      void loadCachedProductTombstones().then(observer.next, observer.error)
+    } else {
+      localProductDeletionSubscription = liveQuery(() =>
+        loadCachedProductTombstones()
+      ).subscribe(observer)
+    }
+  }
+  listener(localProductDeletionSnapshot)
+  let subscribed = true
+  return () => {
+    if (!subscribed) return
+    subscribed = false
+    localProductDeletionListeners.delete(listener)
+    if (localProductDeletionListeners.size === 0) {
+      ++localProductDeletionObservationGeneration
+      localProductDeletionSubscription?.unsubscribe()
+      localProductDeletionSubscription = undefined
+    }
+  }
+}
+
+function resetLocalProductDeletionObservation(): void {
+  ++localProductDeletionObservationGeneration
+  localProductDeletionSubscription?.unsubscribe()
+  localProductDeletionSubscription = undefined
+  localProductDeletionListeners.clear()
+  localProductDeletionSnapshot = {
+    status: "loading",
+    revision: 0,
+    evidence: [],
+  }
+}
+
+/** Remove only records contradicted by observed NIP-09 evidence. Rebuild
+ * affected family choices and summaries while retaining their read provenance. */
+export function reconcileProductRecordsWithDeletions(
+  records: CommerceProductRecord[],
+  evidence: readonly ProductDeletionEvidence[]
+): CommerceProductRecord[] {
+  const deleted = (record: CommerceProductRecord) =>
+    isProductDeletedByNip09(
+      {
+        authorPubkey: record.product.pubkey,
+        eventId: record.eventId,
+        addressId: record.dTag ? record.addressId : null,
+        createdAt: record.eventCreatedAt,
+      },
+      evidence
+    )
+  // Multiple exact targets may share a family. Re-evaluate it once per snapshot.
+  const resolvedContexts = new Map<
+    RetainedProductFamilyContext,
+    Map<string, CommerceProductRecord> | null
+  >()
+  const reconciled = records.flatMap((record) => {
+    if (deleted(record)) return []
+    const context = record.exactReadContext
+    if (context) {
+      if (!resolvedContexts.has(context)) {
+        const remaining = context.records.filter(
+          (candidate) => !deleted(candidate)
+        )
+        resolvedContexts.set(
+          context,
+          remaining.length === context.records.length
+            ? null
+            : new Map(
+                filterExactProductRecordsForRead(
+                  remaining,
+                  new Set(remaining.map((candidate) => candidate.addressId)),
+                  context
+                ).map((candidate) => [candidate.addressId, candidate])
+              )
+        )
+      }
+      const resolved = resolvedContexts.get(context)
+      if (!resolved) return [record]
+      const next = resolved.get(record.addressId)
+      if (!next) return []
+      return [
+        next.family && record.family
+          ? {
+              ...next,
+              family: {
+                ...next.family,
+                readEvidence: record.family.readEvidence,
+              },
+            }
+          : next,
+      ]
+    }
+    if (!record.family) return [record]
+    if (deleted(record.family.parent)) return []
+    const children = record.family.children.filter((child) => !deleted(child))
+    if (children.length === record.family.children.length) return [record]
+    const hasGroupImage =
+      hasMarketProductImage(record.family.parent.product) ||
+      children.some((child) => hasMarketProductImage(child.product))
+    const parent = {
+      ...record.family.parent,
+      family: undefined,
+      safety: reconcileContextualListingSafety(
+        record.family.parent.product,
+        record.family.parent.safety,
+        { variationGroupRole: "parent", hasGroupImage }
+      ),
+    }
+    const prepared = prepareProductCatalog(
+      [
+        parent,
+        ...children.map((child) => ({
+          ...child,
+          safety: reconcileContextualListingSafety(
+            child.product,
+            child.safety,
+            { variationGroupRole: "variation", hasGroupImage }
+          ),
+        })),
+      ],
+      record.family.readEvidence
+    ).items.find((item) => item.kind === "family")
+    if (prepared?.kind !== "family") return []
+    return [{ ...record, safety: parent.safety, family: prepared.family }]
+  })
+  return reconciled.length === records.length &&
+    reconciled.every((record, index) => record === records[index])
+    ? records
+    : reconciled
+}
+
 async function storeCachedProductTombstones(
   rows: CachedProductTombstone[]
 ): Promise<void> {
@@ -2310,21 +2857,33 @@ async function storeCachedProductTombstones(
       ? await testOverrides.getCachedProductTombstones()
       : []
     const rowsToStore = selectCachedProductTombstoneUpdates(rows, existingRows)
-    if (rowsToStore.length === 0) return
-    await testOverrides.putCachedProductTombstones(rowsToStore)
+    if (rowsToStore.length > 0)
+      await testOverrides.putCachedProductTombstones(rowsToStore)
+    retainLocalProductDeletionEvidence([...existingRows, ...rowsToStore])
     return
   }
 
   const ids = Array.from(new Set(rows.map((row) => row.id)))
-  await db.transaction("rw", db.productTombstones, async () => {
-    const existingRows = (await db.productTombstones.bulkGet(ids)).filter(
-      (row): row is CachedProductTombstone => row !== undefined
-    )
-    const rowsToStore = selectCachedProductTombstoneUpdates(rows, existingRows)
-    if (rowsToStore.length > 0) {
-      await db.productTombstones.bulkPut(rowsToStore)
+  const selectedRows = await db.transaction(
+    "rw",
+    db.productTombstones,
+    async () => {
+      const existingRows = (await db.productTombstones.bulkGet(ids)).filter(
+        (row): row is CachedProductTombstone => row !== undefined
+      )
+      const rowsToStore = selectCachedProductTombstoneUpdates(
+        rows,
+        existingRows
+      )
+      if (rowsToStore.length > 0) {
+        await db.productTombstones.bulkPut(rowsToStore)
+      }
+      // An older incoming row may cause no write. Still publish the stronger
+      // persisted winner before a retained catalog can project this observation.
+      return [...existingRows, ...rowsToStore]
     }
-  })
+  )
+  retainLocalProductDeletionEvidence(selectedRows)
 }
 
 function rememberVolatileProductTombstones(
@@ -2337,6 +2896,7 @@ function rememberVolatileProductTombstones(
   for (const row of updates) {
     volatileProductTombstones.set(row.id, row)
   }
+  retainLocalProductDeletionEvidence(rows)
 }
 
 async function flushVolatileProductTombstones(): Promise<boolean> {
@@ -2519,7 +3079,19 @@ export async function cacheSignedProductDeletionEvent(
   if (tombstones.length === 0) {
     throw new Error("Deletion event does not contain a valid product target")
   }
-  await storeCachedProductTombstones(tombstones)
+  // A validated local observation revokes old projections even if durable
+  // storage fails. Preserve the write error so callers still retry persistence.
+  rememberVolatileProductTombstones(tombstones)
+  const pending = tombstones.map((row) =>
+    volatileProductTombstones.get(row.id)!
+  )
+  await storeCachedProductTombstones(pending)
+  for (const row of pending) {
+    // Do not clear stronger evidence observed while this write was in flight.
+    if (volatileProductTombstones.get(row.id) === row) {
+      volatileProductTombstones.delete(row.id)
+    }
+  }
   return tombstones
 }
 

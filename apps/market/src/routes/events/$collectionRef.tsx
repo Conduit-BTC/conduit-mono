@@ -160,7 +160,7 @@ function EventCatalogProductCard({
     state: catalog.state,
     purchaseReady,
     hasPickupFulfillment: pickupFulfillment !== null,
-    isChecking,
+    isChecking: isChecking && !pickupFulfillment,
   })
   const canAdd = cartAction.enabled
 
@@ -697,7 +697,7 @@ function EventCatalogPage() {
           <EventCatalogProductCard
             entry={entry}
             catalog={catalog}
-            purchaseReady={!archived && !isChecking && catalog.purchaseReady}
+            purchaseReady={!archived && catalog.purchaseReady}
             isChecking={isChecking}
             identity={merchantIdentities.getIdentity(entry.product.pubkey)}
             organizerIdentity={organizerIdentity}

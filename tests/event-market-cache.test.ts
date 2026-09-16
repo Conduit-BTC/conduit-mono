@@ -548,6 +548,197 @@ afterEach(() => {
 })
 
 describe("event-market retained evidence", () => {
+  it("requires an advertised organizer pickup only when a selected product uses it", async () => {
+    const organizerGraph = graph([PRODUCT])
+    const organizerPickup = organizerGraph[1]!
+    let product = productRevision(103, true)
+    let organizerPickupAvailable = true
+    let organizerDeletion: SignedPublicNostrEvent | undefined = undefined
+    const filters: TagFilter[] = []
+    cacheHarness()
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        const filter = rawFilter as TagFilter
+        filters.push(filter)
+        const events = [
+          ...organizerGraph.filter(
+            (event) =>
+              organizerPickupAvailable || event.id !== organizerPickup.id
+          ),
+          merchantPickupEvent(),
+          product,
+          ...(organizerDeletion ? [organizerDeletion] : []),
+        ].filter(
+          (event) =>
+            (!filter.kinds || filter.kinds.includes(event.kind as never)) &&
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            ["a", "d", "e"].every((tagName) => {
+              const values = filter[`#${tagName}` as "#a" | "#d" | "#e"]
+              return (
+                !values ||
+                event.tags.some(
+                  (tag) => tag[0] === tagName && values.includes(tag[1]!)
+                )
+              )
+            })
+        )
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+    const read = () =>
+      getEventMarket({
+        reference: COLLECTION,
+        selectedProductCoordinates: [PRODUCT],
+        nowMs: 1_750_000_000_000,
+      })
+    expect((await read()).state).toBe("active")
+    organizerPickupAvailable = false
+    expect((await read()).state).toBe("stale")
+
+    product = merchantPickupProductRevision(104)
+    filters.length = 0
+    const merchantPickup = await read()
+    expect(merchantPickup.state).toBe("active")
+    expect(merchantPickup.pickups.map((pickup) => pickup.coordinate)).toEqual([
+      MERCHANT_PICKUP,
+    ])
+    expect(
+      filters.some(
+        (filter) =>
+          filter.authors?.includes(ORGANIZER) &&
+          (filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION as never) ||
+            filter["#a"]?.includes(PICKUP) ||
+            filter["#e"]?.includes(organizerPickup.id))
+      )
+    ).toBe(false)
+
+    organizerDeletion = sign(
+      { kind: EVENT_KINDS.DELETION, content: "", tags: [["a", PICKUP]] },
+      105
+    )
+    // Browse still observes the organizer pickup deletion and retains it.
+    expect(
+      (
+        await getEventMarket({
+          reference: COLLECTION,
+          nowMs: 1_750_000_000_000,
+        })
+      ).state
+    ).toBe("deleted")
+    expect((await read()).state).toBe("active")
+    product = productRevision(106, true)
+    expect((await read()).state).toBe("deleted")
+  })
+
+  it("checks only selected event products and retains their withdrawal and deletion safeguards", async () => {
+    const otherMerchant = getPublicKey(generateSecretKey())
+    const unrelatedProducts = Array.from(
+      { length: 70 },
+      (_, index) => `${EVENT_KINDS.PRODUCT}:${otherMerchant}:unrelated-${index}`
+    )
+    let organizerEvents = graph([PRODUCT, ...unrelatedProducts])
+    let productEvents = [productRevision(103, true)]
+    const filters: TagFilter[] = []
+    cacheHarness()
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        const filter = rawFilter as TagFilter
+        filters.push(filter)
+        const events = [...organizerEvents, ...productEvents].filter(
+          (event) =>
+            (!filter.kinds || filter.kinds.includes(event.kind as never)) &&
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            ["a", "d", "e"].every((tagName) => {
+              const values = filter[`#${tagName}` as "#a" | "#d" | "#e"]
+              return (
+                !values ||
+                event.tags.some(
+                  (tag) => tag[0] === tagName && values.includes(tag[1]!)
+                )
+              )
+            })
+        )
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+    const readSelected = () =>
+      getEventMarket({
+        reference: COLLECTION,
+        selectedProductCoordinates: [PRODUCT],
+        nowMs: 1_750_000_000_000,
+      })
+    const current = await readSelected()
+    expect(current.state).toBe("active")
+    expect(current.collection?.productCoordinates).toHaveLength(71)
+    expect(current.acceptedProductCoordinates).toEqual([PRODUCT])
+    expect(current.participationBudget.targetCount).toBe(1)
+    expect(
+      filters.some(
+        (filter) => filter.kinds?.includes(EVENT_KINDS.PRODUCT) && filter["#a"]
+      )
+    ).toBe(false)
+    expect(
+      filters.some((filter) => filter.authors?.includes(otherMerchant))
+    ).toBe(false)
+    expect(filters.every((filter) => filter.kinds?.length === 1)).toBe(true)
+    expect(
+      filters
+        .flatMap((filter) => filter["#d"] ?? [])
+        .every((dTag) =>
+          ["catalog", "calendar", "pickup", "coffee"].includes(dTag)
+        )
+    ).toBe(true)
+
+    productEvents = [productRevision(104, false)]
+    expect((await readSelected()).acceptedProductCoordinates).toEqual([])
+    // An older positive read cannot erase the retained signed withdrawal.
+    productEvents = [productRevision(103, true)]
+    expect((await readSelected()).acceptedProductCoordinates).toEqual([])
+    productEvents = [
+      productRevision(105, true),
+      signAs(
+        MERCHANT_SECRET,
+        { kind: EVENT_KINDS.DELETION, tags: [["a", PRODUCT]] },
+        106
+      ),
+    ]
+    expect((await readSelected()).acceptedProductCoordinates).toEqual([])
+    productEvents = [productRevision(107, true)]
+    expect((await readSelected()).acceptedProductCoordinates).toEqual([PRODUCT])
+    organizerEvents = [
+      ...organizerEvents.filter(
+        (event) => event.kind !== EVENT_KINDS.PRODUCT_COLLECTION
+      ),
+      sign(
+        buildEventMarketCollectionDraft({
+          dTag: "catalog",
+          title: "Market catalog",
+          eventCoordinate: CALENDAR,
+          pickupCoordinate: PICKUP,
+          productCoordinates: unrelatedProducts,
+        }),
+        108
+      ),
+    ]
+    expect((await readSelected()).acceptedProductCoordinates).toEqual([])
+  })
+
   it("never turns a remote naddr loopback hint into signed-in relay I/O", async () => {
     const remoteLoopbackRelay = "ws://127.0.0.1:4789"
     const portableRelay = "wss://portable.relay.conduit.market/events"
@@ -1628,9 +1819,11 @@ describe("event-market retained evidence", () => {
     ]
     cacheHarness()
     let otherPickupRead: "live" | "failed" | "empty" = "live"
+    const readFilters: TagFilter[] = []
     __setEventMarketTestOverrides({
       fetchEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
+        readFilters.push(filter)
         const omitted =
           otherPickupRead !== "live" &&
           !!filter.authors?.includes(otherMerchant) &&
@@ -1666,6 +1859,20 @@ describe("event-market retained evidence", () => {
     await expect(
       getEventMarket({ reference: COLLECTION, nowMs: 1_750_000_000_000 })
     ).resolves.toMatchObject({ state: "active" })
+
+    readFilters.length = 0
+    const selected = await getEventMarket({
+      reference: COLLECTION,
+      selectedProductCoordinates: [PRODUCT],
+      nowMs: 1_750_000_000_000,
+    })
+    expect(selected.acceptedProductCoordinates).toEqual([PRODUCT])
+    expect(selected.pickups.map((pickup) => pickup.coordinate)).toEqual([
+      MERCHANT_PICKUP,
+    ])
+    expect(
+      readFilters.some((filter) => filter.authors?.includes(otherMerchant))
+    ).toBe(false)
 
     const productEvents = records.filter(
       (event) => event.kind === EVENT_KINDS.PRODUCT

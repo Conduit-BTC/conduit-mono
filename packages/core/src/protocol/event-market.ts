@@ -1,4 +1,5 @@
 import { NDKEvent, nip19, type NDKFilter } from "@nostr-dev-kit/ndk"
+import { liveQuery } from "dexie"
 import { db, type CachedEventMarketEvidence } from "../db"
 import type { ProductSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
@@ -1156,6 +1157,8 @@ export interface EventMarketResolution {
 
 export interface ResolveEventMarketEvidenceInput {
   reference: string
+  /** Restrict participation authorization to these exact products. */
+  selectedProductCoordinates?: readonly string[]
   events?: readonly SignedPublicNostrEvent[]
   collectionEvents?: readonly SignedPublicNostrEvent[]
   calendarEvents?: readonly SignedPublicNostrEvent[]
@@ -1230,8 +1233,8 @@ function normalizePubkey(value: string | null | undefined): string | null {
 }
 
 function compareAddressableEvents(
-  left: SignedPublicNostrEvent,
-  right: SignedPublicNostrEvent
+  left: Pick<SignedPublicNostrEvent, "created_at" | "id">,
+  right: Pick<SignedPublicNostrEvent, "created_at" | "id">
 ): number {
   if (left.created_at !== right.created_at) {
     return right.created_at - left.created_at
@@ -1256,12 +1259,12 @@ function validDeletionEvents(
   return events.filter(
     (event) =>
       event.kind === EVENT_KINDS.DELETION &&
-      isValidSignedPublicNostrEvent(event)
+      isVerifiedLocalEventMarketEvent(event)
   )
 }
 
 function deletionEvidenceForAddressableEvent(
-  event: SignedPublicNostrEvent | undefined,
+  event: Pick<SignedPublicNostrEvent, "created_at" | "id"> | undefined,
   coordinate: AddressableEventCoordinate,
   deletions: readonly SignedPublicNostrEvent[]
 ): EventMarketDeletionEvidence[] {
@@ -1606,6 +1609,33 @@ function directMerchantPickupCoordinatesFromProductEvidence(input: {
   )
 }
 
+function collectionPickupCoordinatesForProducts(input: {
+  events: readonly SignedPublicNostrEvent[]
+  collectionCoordinate: string
+  organizerProducts: readonly string[]
+  pickupCoordinates: readonly string[]
+}): string[] {
+  const selected = new Set<string>()
+  for (const event of currentEventMarketProductRequests(input).values()) {
+    const product = projectSignedProductFulfillmentEvidence(event)
+    const references = [
+      ...(product.shippingOptionRefs ?? []).map(
+        (reference) => reference.coordinate
+      ),
+      ...(product.shippingOptionId ? [product.shippingOptionId] : []),
+    ]
+    for (const coordinate of input.pickupCoordinates) {
+      if (
+        references.includes(coordinate) ||
+        references.includes(input.collectionCoordinate)
+      ) {
+        selected.add(coordinate)
+      }
+    }
+  }
+  return [...selected]
+}
+
 function getCurrentParticipation(
   events: readonly SignedPublicNostrEvent[],
   organizerPubkey: string,
@@ -1760,6 +1790,17 @@ function participationBudgetForEvidence(input: {
   }
 }
 
+function normalizeSelectedProductCoordinates(
+  coordinates: readonly string[] | undefined
+): string[] | undefined | null {
+  if (coordinates === undefined) return undefined
+  const normalized = coordinates.map((coordinate) =>
+    parseAddressableCoordinate(coordinate, [EVENT_KINDS.PRODUCT])
+  )
+  if (normalized.some((coordinate) => !coordinate)) return null
+  return [...new Set(normalized.map((coordinate) => coordinate!.coordinate))]
+}
+
 export function resolveEventMarketEvidence(
   input: ResolveEventMarketEvidenceInput
 ): EventMarketResolution {
@@ -1768,6 +1809,22 @@ export function resolveEventMarketEvidence(
   ])
   const coverage = input.coverage ?? COMPLETE_LOCAL_COVERAGE
   if (!decoded) return emptyResolution(input.reference, "malformed", coverage)
+  const selectedCoordinates = normalizeSelectedProductCoordinates(
+    input.selectedProductCoordinates
+  )
+  if (selectedCoordinates === null)
+    return emptyResolution(input.reference, "malformed", coverage)
+  const selectedProducts = selectedCoordinates
+    ? new Set(selectedCoordinates)
+    : undefined
+  const productRequestEvents = (input.productRequestEvents ?? []).filter(
+    (event) =>
+      !selectedProducts ||
+      event.kind !== EVENT_KINDS.PRODUCT ||
+      selectedProducts.has(
+        eventCoordinate(event, [EVENT_KINDS.PRODUCT])?.coordinate ?? ""
+      )
+  )
 
   const expectedOrganizer = input.expectedOrganizerPubkey
     ? normalizePubkey(input.expectedOrganizerPubkey)
@@ -1813,28 +1870,45 @@ export function resolveEventMarketEvidence(
   }
 
   const collection = collectionResult.value
+  const organizerProductCoordinates = collection.productCoordinates.filter(
+    (coordinate) => !selectedProducts || selectedProducts.has(coordinate)
+  )
   const includeParticipation = input.includeParticipation !== false
   const participationBudget = includeParticipation
     ? participationBudgetForEvidence({
-        organizerProductCoordinates: collection.productCoordinates,
-        productRequestEvents: input.productRequestEvents ?? [],
+        organizerProductCoordinates,
+        productRequestEvents,
         networkBudget: input.participationBudget,
       })
     : EMPTY_PARTICIPATION_BUDGET
   const directMerchantPickupCoordinates =
     includeParticipation && participationBudget.state === "within_budget"
       ? directMerchantPickupCoordinatesFromProductEvidence({
-          events: input.productRequestEvents ?? [],
+          events: productRequestEvents,
           collectionCoordinate: collection.coordinate,
-          organizerProducts: collection.productCoordinates,
+          organizerProducts: organizerProductCoordinates,
         })
       : []
-  const collectionPickupCoordinates = collection.pickupCoordinates.map(
+  const requiredCollectionPickupCoordinates = selectedProducts
+    ? collectionPickupCoordinatesForProducts({
+        events: productRequestEvents,
+        collectionCoordinate: collection.coordinate,
+        organizerProducts: organizerProductCoordinates,
+        pickupCoordinates: collection.pickupCoordinates,
+      })
+    : collection.pickupCoordinates
+  const declaredCollectionPickupCoordinates = collection.pickupCoordinates.map(
     (coordinate) =>
       parseAddressableCoordinate(coordinate, [EVENT_KINDS.SHIPPING_OPTION])
   )
+  const collectionPickupCoordinates =
+    declaredCollectionPickupCoordinates.filter(
+      (coordinate) =>
+        coordinate &&
+        requiredCollectionPickupCoordinates.includes(coordinate.coordinate)
+    )
   const pickupTargetCount = new Set([
-    ...collection.pickupCoordinates,
+    ...requiredCollectionPickupCoordinates,
     ...directMerchantPickupCoordinates.map(
       (coordinate) => coordinate.coordinate
     ),
@@ -1856,7 +1930,7 @@ export function resolveEventMarketEvidence(
     organizerPubkey: decoded.authorPubkey,
     collectionCoordinate: collection.coordinate,
     organizerProductCoordinates: includeParticipation
-      ? [...collection.productCoordinates]
+      ? [...organizerProductCoordinates]
       : [],
     acceptedProductCoordinates: [] as string[],
     acceptedProductEvidence: [] as EventMarketAcceptedProductEvidence[],
@@ -1885,7 +1959,7 @@ export function resolveEventMarketEvidence(
   )
   if (
     !calendarCoordinate ||
-    collectionPickupCoordinates.some((value) => !value)
+    declaredCollectionPickupCoordinates.some((value) => !value)
   ) {
     return { ...base, state: "malformed", collection }
   }
@@ -2008,9 +2082,7 @@ export function resolveEventMarketEvidence(
       calendar: calendarResult.value,
       ...(organizerPickup ? { pickup: organizerPickup } : {}),
       pickups,
-      organizerOnlyProductCoordinates: [
-        ...collection.productCoordinates,
-      ].sort(),
+      organizerOnlyProductCoordinates: [...organizerProductCoordinates].sort(),
       acceptedProductCoordinates: [],
       acceptedProductEvidence: [],
       participationRequests: [],
@@ -2018,12 +2090,12 @@ export function resolveEventMarketEvidence(
   }
   const participation = includeParticipation
     ? getCurrentParticipation(
-        input.productRequestEvents ?? [],
+        productRequestEvents,
         decoded.authorPubkey,
         collection,
         pickups,
         collection.coordinate,
-        collection.productCoordinates
+        organizerProductCoordinates
       )
     : {
         acceptedProductCoordinates: [],
@@ -2103,6 +2175,8 @@ export function resolveEventMarketProductParticipation(
 }
 
 export interface GetEventMarketInput {
+  /** Exact checkout products; skips unrelated catalog participation reads. */
+  selectedProductCoordinates?: readonly string[]
   /** Browse-only organizer snapshots. Final purchase evidence is returned by the promise. */
   onProgress?: (resolution: EventMarketResolution) => void
   reference: string
@@ -2177,6 +2251,13 @@ export class EventMarketDiscoveryBoundError extends Error {
 }
 
 interface EventMarketTestOverrides {
+  observeCachedEvidence?: (
+    organizerPubkey: string,
+    observer: {
+      next: (rows: CachedEventMarketEvidence[]) => void
+      error: () => void
+    }
+  ) => { unsubscribe(): void }
   fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
   getRelayLists?: typeof getRelayLists
   getRelayListsDetailed?: typeof getRelayListsDetailed
@@ -2213,6 +2294,11 @@ export function __setEventMarketTestOverrides(
 
 export function __resetEventMarketTestOverrides(): void {
   eventMarketTestOverrides = {}
+  for (const state of localEventMarketEvidence.values()) {
+    state.subscription?.unsubscribe()
+  }
+  localEventMarketEvidence.clear()
+  volatileEventMarketEvidence.clear()
 }
 
 function mergeRelayUrls(...groups: readonly (readonly string[])[]): string[] {
@@ -3531,6 +3617,251 @@ function scopedCacheableEventMarketEvents(input: {
   })
 }
 
+export interface LocalEventMarketEvidenceSnapshot {
+  status: "loading" | "ready" | "unavailable"
+  events: readonly SignedPublicNostrEvent[]
+}
+
+interface LocalEventMarketEvidenceState {
+  snapshot: LocalEventMarketEvidenceSnapshot
+  listeners: Set<(snapshot: LocalEventMarketEvidenceSnapshot) => void>
+  subscription?: { unsubscribe(): void }
+}
+
+const localEventMarketEvidence = new Map<
+  string,
+  LocalEventMarketEvidenceState
+>()
+// Failed writes remain evidence even when no catalog is currently mounted.
+const volatileEventMarketEvidence = new Map<string, SignedPublicNostrEvent[]>()
+const verifiedLocalEventMarketEvents = new WeakSet<SignedPublicNostrEvent>()
+
+function isVerifiedLocalEventMarketEvent(
+  event: SignedPublicNostrEvent
+): boolean {
+  return (
+    verifiedLocalEventMarketEvents.has(event) ||
+    isValidSignedPublicNostrEvent(event)
+  )
+}
+
+function mergeLocalEventMarketEvidence(
+  retained: readonly SignedPublicNostrEvent[],
+  incoming: readonly SignedPublicNostrEvent[],
+  incomingVerified = false
+): SignedPublicNostrEvent[] {
+  const selected = new Map<string, SignedPublicNostrEvent>()
+  for (const event of [...retained, ...incoming]) {
+    if (!incomingVerified && !isVerifiedLocalEventMarketEvent(event)) continue
+    const coordinate = eventCoordinate(event, EVENT_MARKET_ADDRESSABLE_KINDS)
+    if (event.kind !== EVENT_KINDS.DELETION && !coordinate) continue
+    // Keep prior revisions: an exact-event deletion may remove the newest
+    // revision while a different, still-newer-than-the-view revision survives.
+    if (verifiedLocalEventMarketEvents.has(event)) {
+      selected.set(event.id, event)
+    } else {
+      // Snapshot records are immutable, so repeated catalog projection need not
+      // redo cryptography for every product/dependency on every render.
+      const retained = { ...event, tags: event.tags.map((tag) => [...tag]) }
+      retained.tags.forEach(Object.freeze)
+      Object.freeze(retained.tags)
+      Object.freeze(retained)
+      verifiedLocalEventMarketEvents.add(retained)
+      selected.set(retained.id, retained)
+    }
+  }
+  return [...selected.values()].sort((left, right) =>
+    left.id.localeCompare(right.id)
+  )
+}
+
+function retainLocalEventMarketEvidence(
+  organizerPubkey: string,
+  events: readonly SignedPublicNostrEvent[],
+  status?: LocalEventMarketEvidenceSnapshot["status"]
+): void {
+  const state = localEventMarketEvidence.get(organizerPubkey)
+  if (!state) return
+  const next = mergeLocalEventMarketEvidence(state.snapshot.events, events)
+  const nextStatus = status ?? state.snapshot.status
+  if (
+    nextStatus === state.snapshot.status &&
+    next.length === state.snapshot.events.length &&
+    next.every((event, index) => event.id === state.snapshot.events[index]?.id)
+  )
+    return
+  state.snapshot = { status: nextStatus, events: next }
+  Object.freeze(next)
+  for (const listener of state.listeners) {
+    try {
+      listener(state.snapshot)
+    } catch {
+      console.warn("Local event market evidence observer failed")
+    }
+  }
+}
+
+export function getLocalEventMarketEvidenceSnapshot(
+  organizerPubkey: string
+): LocalEventMarketEvidenceSnapshot {
+  return (
+    localEventMarketEvidence.get(organizerPubkey)?.snapshot ?? {
+      status: "loading",
+      events: volatileEventMarketEvidence.get(organizerPubkey) ?? [],
+    }
+  )
+}
+
+/** One organizer-scoped local subscription, including same-origin tab writes.
+ * It never opens a relay or promotes cached evidence to live authority. */
+export function subscribeLocalEventMarketEvidenceChanges(
+  organizerPubkey: string,
+  listener: (snapshot: LocalEventMarketEvidenceSnapshot) => void
+): () => void {
+  let state = localEventMarketEvidence.get(organizerPubkey)
+  if (!state) {
+    state = {
+      snapshot: getLocalEventMarketEvidenceSnapshot(organizerPubkey),
+      listeners: new Set(),
+    }
+    localEventMarketEvidence.set(organizerPubkey, state)
+  }
+  state.listeners.add(listener)
+  if (!state.subscription) {
+    const current = state
+    const observer = {
+      next: (rows: CachedEventMarketEvidence[]) => {
+        if (localEventMarketEvidence.get(organizerPubkey) !== current) return
+        retainLocalEventMarketEvidence(
+          organizerPubkey,
+          rows
+            .filter(
+              (row) =>
+                row.organizerPubkey === organizerPubkey &&
+                row.kind === row.signedEvent.kind
+            )
+            .map((row) => row.signedEvent),
+          "ready"
+        )
+      },
+      error: () => {
+        if (localEventMarketEvidence.get(organizerPubkey) !== current) return
+        retainLocalEventMarketEvidence(organizerPubkey, [], "unavailable")
+      },
+    }
+    // Install before a test repository may deliver synchronously.
+    state.subscription = { unsubscribe() {} }
+    if (eventMarketTestOverrides.observeCachedEvidence) {
+      state.subscription = eventMarketTestOverrides.observeCachedEvidence(
+        organizerPubkey,
+        observer
+      )
+    } else if (
+      eventMarketTestOverrides.loadCachedEvidence ||
+      typeof indexedDB === "undefined"
+    ) {
+      void loadCachedEventMarketEvidence(organizerPubkey).then(
+        observer.next,
+        observer.error
+      )
+    } else {
+      state.subscription = liveQuery(() =>
+        db.eventMarketEvidence
+          .where("organizerPubkey")
+          .equals(organizerPubkey)
+          .toArray()
+      ).subscribe(observer)
+    }
+  }
+  listener(state.snapshot)
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    state.listeners.delete(listener)
+    if (state.listeners.size === 0) {
+      state.subscription?.unsubscribe()
+      localEventMarketEvidence.delete(organizerPubkey)
+    }
+  }
+}
+
+/** Compare only dependencies of an already verified resolution. Stronger local
+ * evidence can revoke old authority; a fresh reader must authorize new terms. */
+export function getEventMarketSupersededEvidence(
+  resolution: EventMarketResolution,
+  events: readonly SignedPublicNostrEvent[],
+  records: readonly {
+    addressId: string
+    eventId: string
+    eventCreatedAt: number
+  }[] = []
+): {
+  graph: boolean
+  productCoordinates: string[]
+  pickupCoordinates: string[]
+} {
+  const valid = events.filter(isVerifiedLocalEventMarketEvent)
+  const deletions = validDeletionEvents(valid)
+  const superseded = (record: {
+    coordinate: string
+    eventId: string
+    createdAt: number
+  }) => {
+    const coordinate = parseAddressableCoordinate(record.coordinate)
+    if (!coordinate) return false
+    const revision = {
+      id: record.eventId,
+      created_at: record.createdAt / 1_000,
+    }
+    if (
+      deletionEvidenceForAddressableEvent(revision, coordinate, deletions)
+        .length > 0
+    )
+      return true
+    return valid.some(
+      (event) =>
+        eventHasCoordinateShape(event, coordinate) &&
+        compareAddressableEvents(event, revision) < 0 &&
+        deletionEvidenceForAddressableEvent(event, coordinate, deletions)
+          .length === 0
+    )
+  }
+  return {
+    graph: [resolution.collection, resolution.calendar].some(
+      (record) => !!record && superseded(record)
+    ),
+    productCoordinates: resolution.acceptedProductEvidence
+      .filter((record) => {
+        const revision = records
+          .filter(
+            (candidate) => candidate.addressId === record.productCoordinate
+          )
+          .map((candidate) => ({
+            eventId: candidate.eventId,
+            createdAt: candidate.eventCreatedAt * 1_000,
+          }))
+          .reduce(
+            (latest, candidate) =>
+              compareAddressableEvents(
+                { id: candidate.eventId, created_at: candidate.createdAt },
+                { id: latest.eventId, created_at: latest.createdAt }
+              ) < 0
+                ? candidate
+                : latest,
+            record
+          )
+        return superseded({ coordinate: record.productCoordinate, ...revision })
+      })
+      .map((record) => record.productCoordinate),
+    pickupCoordinates: [
+      ...new Set(
+        resolution.pickups.filter(superseded).map((record) => record.coordinate)
+      ),
+    ],
+  }
+}
+
 async function loadCachedEventMarketEvidence(
   organizerPubkey: string
 ): Promise<CachedEventMarketEvidence[]> {
@@ -3650,11 +3981,34 @@ async function persistEventMarketEvidence(input: {
   cachedAt?: number
 }): Promise<void> {
   const scopedEvents = scopedCacheableEventMarketEvents(input)
+  if (scopedEvents.length === 0) return
+  volatileEventMarketEvidence.set(
+    input.organizerPubkey,
+    mergeLocalEventMarketEvidence(
+      volatileEventMarketEvidence.get(input.organizerPubkey) ?? [],
+      scopedEvents,
+      true
+    )
+  )
+  retainLocalEventMarketEvidence(
+    input.organizerPubkey,
+    volatileEventMarketEvidence.get(input.organizerPubkey) ?? []
+  )
+  const clearPersisted = () => {
+    const persistedIds = new Set(scopedEvents.map((event) => event.id))
+    const pending = (
+      volatileEventMarketEvidence.get(input.organizerPubkey) ?? []
+    ).filter((event) => !persistedIds.has(event.id))
+    if (pending.length > 0)
+      volatileEventMarketEvidence.set(input.organizerPubkey, pending)
+    else volatileEventMarketEvidence.delete(input.organizerPubkey)
+  }
   if (eventMarketTestOverrides.persistCachedEvidence) {
     await eventMarketTestOverrides.persistCachedEvidence({
       ...input,
       events: scopedEvents,
     })
+    clearPersisted()
     return
   }
   const cachedAt = input.cachedAt ?? Date.now()
@@ -3697,6 +4051,10 @@ async function persistEventMarketEvidence(input: {
         .where("organizerPubkey")
         .equals(input.organizerPubkey)
         .toArray()
+      retainLocalEventMarketEvidence(
+        input.organizerPubkey,
+        organizerRows.map((row) => row.signedEvent)
+      )
       if (
         organizerRows.length <= EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER
       ) {
@@ -3719,6 +4077,7 @@ async function persistEventMarketEvidence(input: {
         organizerRows.filter((row) => !keep.has(row.id)).map((row) => row.id)
       )
     })
+    clearPersisted()
   } catch {
     // Cache persistence is best-effort; live signed evidence remains usable.
   }
@@ -3970,6 +4329,7 @@ function resolveEventMarketBrowseEvidence(
   const resolution = addResolutionSources(
     resolveEventMarketEvidence({
       reference: input.reference,
+      selectedProductCoordinates: input.selectedProductCoordinates,
       events: records.events,
       // Positive cached or incomplete merchant requests never authorize pickup.
       productRequestEvents: [],
@@ -4038,6 +4398,11 @@ export async function getEventMarket(
     EVENT_KINDS.PRODUCT_COLLECTION,
   ])
   if (!decoded) return emptyResolution(input.reference, "malformed")
+  const selectedProductCoordinates = normalizeSelectedProductCoordinates(
+    input.selectedProductCoordinates
+  )
+  if (selectedProductCoordinates === null)
+    return emptyResolution(decoded.coordinate, "malformed")
   const expectedOrganizer = input.expectedOrganizerPubkey
     ? normalizePubkey(input.expectedOrganizerPubkey)
     : null
@@ -4092,28 +4457,41 @@ export async function getEventMarket(
   const { relayUrls, ownerSelectedRelayUrls } = readPlan
   const observedAt = input.nowMs ?? Date.now()
   const [recordResult, cachedRecords] = await Promise.all([
-    fetchEventMarketRecords({
-      organizerPubkey: decoded.authorPubkey,
-      relayUrls,
-      accountPubkey: input.authenticatedPubkey,
-      authenticatedPubkey: input.authenticatedPubkey,
-      ownerSelectedRelayUrls,
-      accountNetworkLocalStateRepository:
-        input.accountNetworkLocalStateRepository,
-      shouldContinue: input.shouldContinue,
-      signal: input.signal,
-      onProgress: input.onProgress
-        ? (result) => {
-            observedRecords = rawSignedEvents(result)
-            emitBrowseProgress()
-          }
-        : undefined,
-    }),
+    selectedProductCoordinates
+      ? fetchEventMarketOrganizerRecordFrontiers({
+          coordinates: [decoded],
+          relayUrls,
+          accountPubkey: input.authenticatedPubkey,
+          authenticatedPubkey: input.authenticatedPubkey,
+          ownerSelectedRelayUrls,
+          accountNetworkLocalStateRepository:
+            input.accountNetworkLocalStateRepository,
+          shouldContinue: input.shouldContinue,
+          signal: input.signal,
+        })
+      : fetchEventMarketRecords({
+          organizerPubkey: decoded.authorPubkey,
+          relayUrls,
+          accountPubkey: input.authenticatedPubkey,
+          authenticatedPubkey: input.authenticatedPubkey,
+          ownerSelectedRelayUrls,
+          accountNetworkLocalStateRepository:
+            input.accountNetworkLocalStateRepository,
+          shouldContinue: input.shouldContinue,
+          signal: input.signal,
+          onProgress: input.onProgress
+            ? (result) => {
+                observedRecords = rawSignedEvents(result)
+                emitBrowseProgress()
+              }
+            : undefined,
+        }),
     cachedRecordsPromise,
   ])
   assertEventMarketReadCurrent(input)
   const broadLiveRecords = rawSignedEvents(recordResult)
-  const authorReadReachedCap = eventMarketAuthorReadReachedCap(recordResult)
+  const authorReadReachedCap =
+    !selectedProductCoordinates && eventMarketAuthorReadReachedCap(recordResult)
   const collectionFrontierResult = authorReadReachedCap
     ? await fetchEventMarketOrganizerRecordFrontiers({
         coordinates: [decoded],
@@ -4139,23 +4517,24 @@ export async function getEventMarket(
     events: preliminaryOrganizerRecords.events,
     collectionCoordinates: [decoded.coordinate],
   })
-  const calendarFrontierResult = authorReadReachedCap
-    ? await fetchEventMarketOrganizerRecordFrontiers({
-        coordinates: calendarCoordinates,
-        relayUrls: relayUrlsWithoutObservedFailures(
-          relayUrls,
-          recordResult.relays,
-          collectionFrontierResult.relays
-        ),
-        accountPubkey: input.authenticatedPubkey,
-        authenticatedPubkey: input.authenticatedPubkey,
-        ownerSelectedRelayUrls,
-        accountNetworkLocalStateRepository:
-          input.accountNetworkLocalStateRepository,
-        shouldContinue: input.shouldContinue,
-        signal: input.signal,
-      })
-    : { events: [], relays: [], eventsVerified: true }
+  const calendarFrontierResult =
+    selectedProductCoordinates || authorReadReachedCap
+      ? await fetchEventMarketOrganizerRecordFrontiers({
+          coordinates: calendarCoordinates,
+          relayUrls: relayUrlsWithoutObservedFailures(
+            relayUrls,
+            recordResult.relays,
+            collectionFrontierResult.relays
+          ),
+          accountPubkey: input.authenticatedPubkey,
+          authenticatedPubkey: input.authenticatedPubkey,
+          ownerSelectedRelayUrls,
+          accountNetworkLocalStateRepository:
+            input.accountNetworkLocalStateRepository,
+          shouldContinue: input.shouldContinue,
+          signal: input.signal,
+        })
+      : { events: [], relays: [], eventsVerified: true }
   const rawCalendarFrontiers = rawSignedEvents(calendarFrontierResult)
   const liveRecords = mergeRawSignedEventGroups(
     broadLiveRecords,
@@ -4188,28 +4567,33 @@ export async function getEventMarket(
     organizerRecords.events,
     [decoded.coordinate]
   )
+  const requestedProductCoordinates =
+    selectedProductCoordinates ?? organizerProductCoordinates
   const [{ requestResult, requestFrontierResult }, organizerPickupResult] =
     await Promise.all([
       (async () => {
-        const requestResult = await fetchEventMarketProductRequests({
-          collectionCoordinates: [decoded.coordinate],
-          relayUrls: relayUrlsWithoutObservedFailures(
-            relayUrls,
-            organizerRecordRelays
-          ),
-          accountPubkey: input.authenticatedPubkey,
-          authenticatedPubkey: input.authenticatedPubkey,
-          ownerSelectedRelayUrls,
-          accountNetworkLocalStateRepository:
-            input.accountNetworkLocalStateRepository,
-          shouldContinue: input.shouldContinue,
-          signal: input.signal,
-        })
+        const requestResult: FetchEventsFanoutResult =
+          selectedProductCoordinates
+            ? { events: [], relays: [], eventsVerified: true }
+            : await fetchEventMarketProductRequests({
+                collectionCoordinates: [decoded.coordinate],
+                relayUrls: relayUrlsWithoutObservedFailures(
+                  relayUrls,
+                  organizerRecordRelays
+                ),
+                accountPubkey: input.authenticatedPubkey,
+                authenticatedPubkey: input.authenticatedPubkey,
+                ownerSelectedRelayUrls,
+                accountNetworkLocalStateRepository:
+                  input.accountNetworkLocalStateRepository,
+                shouldContinue: input.shouldContinue,
+                signal: input.signal,
+              })
         const rawRequestCandidates = rawSignedEvents(requestResult)
         const requestFrontierResult =
           await fetchEventMarketProductRequestFrontiers({
             candidateEvents: rawRequestCandidates.events,
-            candidateCoordinates: organizerProductCoordinates,
+            candidateCoordinates: requestedProductCoordinates,
             candidateSourceRelayUrlsById:
               rawRequestCandidates.sourceRelayUrlsById,
             relayUrls: relayUrlsWithoutObservedFailures(
@@ -4227,7 +4611,11 @@ export async function getEventMarket(
         return { requestResult, requestFrontierResult }
       })(),
       fetchEventMarketPickupFrontiers({
-        coordinates: organizerPickupCoordinates,
+        // Selected orders determine organizer pickup use from the live product
+        // frontier below; an unused organizer offer is not checkout authority.
+        coordinates: selectedProductCoordinates
+          ? []
+          : organizerPickupCoordinates,
         candidateEvents: organizerRecords.events,
         candidateSourceRelayUrlsById: organizerRecords.sourceRelayUrlsById,
         relayUrls: relayUrlsWithoutObservedFailures(
@@ -4250,7 +4638,7 @@ export async function getEventMarket(
     requestFrontierResult.participationBudget.state === "within_budget"
       ? candidateProductCoordinates({
           candidateEvents: rawRequestCandidates.events,
-          candidateCoordinates: organizerProductCoordinates,
+          candidateCoordinates: requestedProductCoordinates,
         }).map((coordinate) => coordinate.coordinate)
       : []
   const productRequestEvents = participationEvidenceForCollection({
@@ -4264,13 +4652,30 @@ export async function getEventMarket(
       ? directMerchantPickupCoordinatesFromProductEvidence({
           events: productRequestEvents,
           collectionCoordinate: decoded.coordinate,
-          organizerProducts: organizerProductCoordinates,
+          organizerProducts: requestedProductCoordinates,
         })
       : []
+  const requiredOrganizerPickupCoordinates = selectedProductCoordinates
+    ? new Set(
+        collectionPickupCoordinatesForProducts({
+          events: productRequestEvents,
+          collectionCoordinate: decoded.coordinate,
+          organizerProducts: requestedProductCoordinates,
+          pickupCoordinates: organizerPickupCoordinates.map(
+            (coordinate) => coordinate.coordinate
+          ),
+        })
+      )
+    : undefined
   const pickupCoordinatesByIdentity = new Map(
-    [...organizerPickupCoordinates, ...directMerchantPickupCoordinates].map(
-      (coordinate) => [coordinate.coordinate, coordinate]
-    )
+    [
+      ...organizerPickupCoordinates.filter(
+        (coordinate) =>
+          !requiredOrganizerPickupCoordinates ||
+          requiredOrganizerPickupCoordinates.has(coordinate.coordinate)
+      ),
+      ...directMerchantPickupCoordinates,
+    ].map((coordinate) => [coordinate.coordinate, coordinate])
   )
   const pickupCoordinates = Array.from(pickupCoordinatesByIdentity.values())
   const pickupBudget: EventMarketParticipationBudget = {
@@ -4295,9 +4700,18 @@ export async function getEventMarket(
           pickupBudget,
         }
       : await fetchEventMarketPickupFrontiers({
-          coordinates: directMerchantPickupCoordinates,
-          candidateEvents: requestEvidence.events,
-          candidateSourceRelayUrlsById: requestEvidence.sourceRelayUrlsById,
+          coordinates: selectedProductCoordinates
+            ? pickupCoordinates
+            : directMerchantPickupCoordinates,
+          candidateEvents: selectedProductCoordinates
+            ? [...organizerRecords.events, ...requestEvidence.events]
+            : requestEvidence.events,
+          candidateSourceRelayUrlsById: selectedProductCoordinates
+            ? new Map([
+                ...organizerRecords.sourceRelayUrlsById,
+                ...requestEvidence.sourceRelayUrlsById,
+              ])
+            : requestEvidence.sourceRelayUrlsById,
           relayUrls: relayUrlsWithoutObservedFailures(
             relayUrls,
             organizerRecordRelays,
@@ -4338,6 +4752,7 @@ export async function getEventMarket(
   })
   const resolution = resolveEventMarketEvidence({
     reference: decoded.coordinate,
+    selectedProductCoordinates,
     events: records.events,
     livePickupEventIds: records.liveEventIds,
     productRequestEvents,

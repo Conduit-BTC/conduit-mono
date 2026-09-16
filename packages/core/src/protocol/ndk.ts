@@ -544,8 +544,21 @@ export function __setNdkVerifyTimeoutMsForTests(timeoutMs: number): void {
 
 export function __resetNdkTestState(): void {
   activeSignerLease = null
-  if (ndkInstance) ndkInstance.signer = undefined
-  closeAllRelayConnections()
+  // Detach test-owned relays first: NDK treats simultaneous disconnects in a
+  // populated pool as an outage and can reconnect during fixture teardown.
+  if (ndkInstance) {
+    const relays = new Set(
+      ndkInstance.pools.flatMap((pool) => Array.from(pool.relays.values()))
+    )
+    for (const pool of ndkInstance.pools) {
+      const urls = [...pool.relays.keys()]
+      pool.relays.clear()
+      // With the relays detached, removeRelay clears their temporary timers.
+      for (const url of urls) pool.removeRelay(url)
+    }
+    for (const relay of relays) relay.disconnect()
+  }
+  disconnectNdk()
   if (verifyWorker) {
     verifyWorker.onmessage = null
     verifyWorker.onerror = null
