@@ -253,11 +253,20 @@ export interface CommerceProductRecord {
   product: Product
   safety?: ListingSafetyEvaluation
   family?: PreparedProductFamily<CommerceProductRecord>
+  /** In-memory evidence behind exact family eligibility, never extra results. */
+  exactReadContext?: RetainedProductFamilyContext
   eventId: string
   addressId: string
   dTag: string | null
   eventCreatedAt: number
   sourceRelayUrls?: string[]
+}
+
+interface RetainedProductFamilyContext {
+  /** Raw revisions, without nested projections; shared by one family's results. */
+  records: CommerceProductRecord[]
+  includeMarketHidden?: boolean
+  includeMerchantHiddenProductIds?: readonly string[]
 }
 
 export interface MarketplaceProductsQuery {
@@ -1618,7 +1627,60 @@ function filterProductRecordsForRead(
     : prepared.filter(isMarketRenderableRecord)
 }
 
+/** Preserve the inputs to family eligibility after projecting exact targets.
+ * Local deletions can then reuse the same selector without another relay read. */
 function filterExactProductRecordsForRead(
+  records: CommerceProductRecord[],
+  wanted: ReadonlySet<string>,
+  options: ProductsByIdsOptions = {}
+): CommerceProductRecord[] {
+  const selected = selectExactProductRecordsForRead(records, wanted, options)
+  const familyAddress = (record: CommerceProductRecord) =>
+    record.product.type === "variable"
+      ? record.addressId
+      : record.product.type === "variation"
+        ? record.product.parentProductId
+        : undefined
+  const contexts = new Map<string, RetainedProductFamilyContext>()
+  for (const record of selected) {
+    const parentAddress = familyAddress(record)
+    if (parentAddress && !contexts.has(parentAddress)) {
+      contexts.set(parentAddress, {
+        records: [],
+        includeMarketHidden: options.includeMarketHidden,
+      })
+    }
+  }
+  if (contexts.size === 0) return selected
+  for (const record of records) {
+    const parentAddress = familyAddress(record)
+    const context = parentAddress ? contexts.get(parentAddress) : undefined
+    if (!context) continue
+    // Keep evidence separate from nested result projections.
+    const candidate = { ...record }
+    delete candidate.family
+    delete candidate.exactReadContext
+    context.records.push(candidate)
+  }
+  const hiddenAddresses = new Set(
+    (options.includeMerchantHiddenProductIds ?? [])
+      .map((id) => getProductLookupIds(id).addressId)
+      .filter((id): id is string => !!id)
+  )
+  for (const context of contexts.values()) {
+    context.includeMerchantHiddenProductIds = context.records
+      .map((record) => record.addressId)
+      .filter((address) => hiddenAddresses.has(address))
+  }
+  return selected.map((record) => {
+    const parentAddress = familyAddress(record)
+    return parentAddress
+      ? { ...record, exactReadContext: contexts.get(parentAddress) }
+      : record
+  })
+}
+
+function selectExactProductRecordsForRead(
   records: CommerceProductRecord[],
   wanted: ReadonlySet<string>,
   options: ProductsByIdsOptions = {}
@@ -2459,8 +2521,48 @@ export function reconcileProductRecordsWithDeletions(
       },
       evidence
     )
+  // Multiple exact targets may share a family. Re-evaluate it once per snapshot.
+  const resolvedContexts = new Map<
+    RetainedProductFamilyContext,
+    Map<string, CommerceProductRecord> | null
+  >()
   const reconciled = records.flatMap((record) => {
     if (deleted(record)) return []
+    const context = record.exactReadContext
+    if (context) {
+      if (!resolvedContexts.has(context)) {
+        const remaining = context.records.filter(
+          (candidate) => !deleted(candidate)
+        )
+        resolvedContexts.set(
+          context,
+          remaining.length === context.records.length
+            ? null
+            : new Map(
+                filterExactProductRecordsForRead(
+                  remaining,
+                  new Set(remaining.map((candidate) => candidate.addressId)),
+                  context
+                ).map((candidate) => [candidate.addressId, candidate])
+              )
+        )
+      }
+      const resolved = resolvedContexts.get(context)
+      if (!resolved) return [record]
+      const next = resolved.get(record.addressId)
+      if (!next) return []
+      return [
+        next.family && record.family
+          ? {
+              ...next,
+              family: {
+                ...next.family,
+                readEvidence: record.family.readEvidence,
+              },
+            }
+          : next,
+      ]
+    }
     if (!record.family) return [record]
     if (deleted(record.family.parent)) return []
     const children = record.family.children.filter((child) => !deleted(child))

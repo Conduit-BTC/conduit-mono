@@ -60,6 +60,27 @@ The accumulated candidate set remains available while relay responses arrive,
 so an individual relay's omission is not interpreted as removal of either a
 product observation or deletion evidence.
 
+### Retained exact family eligibility
+
+An exact read may return only a requested variation even though its eligibility
+was established using a parent and other family members. The retained result
+keeps those signed revision inputs and the original merchant-hidden allowance
+in an in-memory `exactReadContext`, separate from the returned product set.
+Context does not make a parent or sibling organizer-accepted, and it is not
+persisted as a new signed listing or checkout authorization.
+
+Local deletion reconciliation removes contradicted revisions from that context
+and runs the same exact eligibility selector used by fresh reads. This covers
+both parent deletion and removal of a sibling supplying required family image
+context. Affected family targets share one reevaluation; unaffected records and
+network freshness are preserved. Late snapshots pass through the same deletion
+frontier. A subsequent successful read of a valid newer revision can restore
+eligibility without weakening the retained deletion evidence.
+
+Regression coverage must compose the real exact reader, retained query, local
+signed deletion and catalog action projection. Separate tests of grouped
+families and mocked standalone children do not establish this lifecycle.
+
 ## Delivery and Durable Retry
 
 Merchant persists the exact signed kind `5` event and its immutable relay plan
