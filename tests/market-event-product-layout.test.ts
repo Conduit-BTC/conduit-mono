@@ -30,6 +30,21 @@ describe("Market event product layout", () => {
     )
   })
 
+  it("defaults to merchant groups with only search and merchant controls", async () => {
+    const browser = await source(
+      "apps/market/src/components/EventCatalogBrowser.tsx"
+    )
+
+    expect(browser).toContain("browse.groups.map")
+    expect(browser).toContain('placeholder="Search products or merchants"')
+    expect(browser).toContain('searchPlaceholder="Find a merchant"')
+    expect(browser).toContain("onMerchantChange")
+    expect(browser).not.toContain("SORT_OPTIONS")
+    expect(browser).not.toContain('aria-label="Sort products"')
+    expect(browser).not.toContain("All products")
+    expect(browser).not.toContain("By merchant")
+  })
+
   it("keeps pickup disclosure from stretching the standard product card", async () => {
     const [card, event] = await Promise.all([
       source("apps/market/src/components/ProductGridCard.tsx"),

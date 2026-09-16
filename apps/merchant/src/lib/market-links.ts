@@ -67,6 +67,16 @@ export function getEventMarketUrl(
   return buildMarketEventCatalogUrl(inferMarketOrigin(location), naddr)
 }
 
+export function getEventMarketMerchantFilterUrl(
+  naddr: string,
+  merchantPubkey: string,
+  location?: ConduitBrowserLocation
+): string {
+  return buildMarketEventCatalogUrl(inferMarketOrigin(location), naddr, {
+    merchantPubkey,
+  })
+}
+
 export function getMerchantEventParticipationUrl(
   naddr: string,
   location?: ConduitBrowserLocation

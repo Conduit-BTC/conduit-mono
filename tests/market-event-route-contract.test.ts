@@ -13,6 +13,21 @@ describe("Market event catalog route", () => {
     expect(tree).toContain("'/events/$collectionRef'")
   })
 
+  it("keeps merchant selection as durable search state on the same route", async () => {
+    const route = await Bun.file(
+      "apps/market/src/routes/events/$collectionRef.tsx"
+    ).text()
+
+    expect(route).toContain("validateSearch: parseEventCatalogSearch")
+    expect(route).toContain("const search = Route.useSearch()")
+    expect(route).toContain("useNavigate({ from: Route.fullPath })")
+    expect(route).toContain("next.merchant = pubkeyToNpub(normalized)")
+    expect(route).toContain("merchant={selectedMerchantPubkey}")
+    expect(route).toContain("onMerchantChange={updateMerchantFilter}")
+    expect(route).toContain("{ merchantPubkey: selectedMerchantPubkey }")
+    expect(route).not.toContain('createFileRoute("/events/$collectionRef/')
+  })
+
   it("keeps Nostr reads in one adapter and renders organizer-neutral provenance", async () => {
     const route = await Bun.file(
       "apps/market/src/routes/events/$collectionRef.tsx"
