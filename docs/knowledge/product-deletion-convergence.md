@@ -43,6 +43,12 @@ event does not prove that an earlier observed tombstone disappeared. Removing
 or weakening validated evidence requires stronger protocol evidence, not relay
 omission.
 
+The post-commit local notification carries the transaction's selected evidence,
+including an existing winner when an older incoming deletion needs no write.
+The asynchronous storage observer is not the only path for adopting evidence
+already discovered by a transaction. Persistence tests exercise this production
+branch so their notification behavior cannot be stronger than runtime behavior.
+
 ## Read-Surface Contract
 
 All product read surfaces resolve candidate product records through the same

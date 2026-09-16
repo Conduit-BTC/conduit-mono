@@ -10,6 +10,7 @@ import {
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
   __setCommerceTestOverrides,
+  db,
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
   getLocalProductDeletionSnapshot,
@@ -44,14 +45,19 @@ function deletion(address: string, timestamp = 110, eventId?: string) {
   )
 }
 
-async function record(name: string, type = "simple", parent?: string) {
+async function record(
+  name: string,
+  type = "simple",
+  parent?: string,
+  createdAt = 100
+) {
   return cacheSignedProductListingEvent(
     new NDKEvent(
       undefined,
       finalizeEvent(
         {
           kind: 30402,
-          created_at: 100,
+          created_at: createdAt,
           content: "",
           tags: [
             ["d", name],
@@ -111,6 +117,103 @@ afterEach(() => {
 })
 
 describe("local product deletion observation", () => {
+  for (const mode of [
+    "no write",
+    "metadata merge",
+    "newer incoming",
+  ] as const) {
+    it(`retains the transaction winner before returning (${mode})`, async () => {
+      const candidate = await record("coffee", "simple", undefined, 200)
+      const later = await record("coffee", "simple", undefined, 400)
+      const observer = observe()
+      await observer.ready
+      const stored = deletion(
+        candidate.addressId,
+        mode === "newer incoming" ? 100 : 300
+      )
+      // Another context committed this row; observer delivery is still pending.
+      tombstones = [
+        {
+          id: `a:${candidate.addressId}`,
+          pubkey: author,
+          addressId: candidate.addressId,
+          deletedAt: stored.created_at!,
+          deletionEventId: stored.id,
+          signedEvent: stored.rawEvent(),
+          sourceRelayUrls: [],
+          observedLocally: mode !== "metadata merge",
+          cachedAt: 1,
+        },
+      ]
+      // Exercise the production transaction branch, not the stronger persistence
+      // override. Only the database operations and observer delivery are controlled.
+      __setCommerceTestOverrides({
+        putCachedProductTombstones: undefined,
+        fetchEventsFanout: async () => {
+          throw new Error("Unexpected relay read")
+        },
+      })
+      const table = db.productTombstones
+      const originalGet = table.bulkGet
+      const originalPut = table.bulkPut
+      const originalTransaction = db.transaction
+      let reads = 0
+      let writes = 0
+      table.bulkGet = (async (ids: string[]) => {
+        reads++
+        return ids.map((id) => tombstones.find((row) => row.id === id))
+      }) as typeof table.bulkGet
+      table.bulkPut = (async (rows: CachedProductTombstone[]) => {
+        writes++
+        tombstones = rows
+        return rows.at(-1)!.id
+      }) as typeof table.bulkPut
+      db.transaction = ((...args: unknown[]) =>
+        (args.at(-1) as () => Promise<unknown>)()) as typeof db.transaction
+      try {
+        await cacheSignedProductDeletionEvent(
+          deletion(candidate.addressId, mode === "newer incoming" ? 300 : 100)
+        )
+        const snapshot = getLocalProductDeletionSnapshot()
+        expect(tombstones[0]?.deletedAt).toBe(300)
+        expect(snapshot.evidence[0]?.deletedAt).toBe(300)
+        expect(observer.snapshots.at(-1)).toBe(snapshot)
+        expect(
+          reconcileProductRecordsWithDeletions(
+            [candidate, later],
+            snapshot.evidence
+          )
+        ).toEqual([later])
+        expect(reads).toBe(1)
+        expect(writes).toBe(mode === "no write" ? 0 : 1)
+
+        // Delayed empty/older observations cannot weaken the adopted winner.
+        observer.unsubscribe()
+        tombstones = []
+        const empty = observe()
+        expect((await empty.ready).evidence).toEqual(snapshot.evidence)
+        empty.unsubscribe()
+        const old = deletion(candidate.addressId, 100)
+        tombstones = [
+          {
+            id: `a:${candidate.addressId}`,
+            pubkey: author,
+            addressId: candidate.addressId,
+            deletedAt: 100,
+            deletionEventId: old.id,
+            signedEvent: old.rawEvent(),
+            cachedAt: 1,
+          },
+        ]
+        expect((await observe().ready).evidence).toEqual(snapshot.evidence)
+      } finally {
+        table.bulkGet = originalGet
+        table.bulkPut = originalPut
+        db.transaction = originalTransaction
+      }
+    })
+  }
+
   it("announces committed signed evidence before the write returns without relay I/O", async () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async () => {

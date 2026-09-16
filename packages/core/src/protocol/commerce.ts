@@ -2614,21 +2614,31 @@ async function storeCachedProductTombstones(
     const rowsToStore = selectCachedProductTombstoneUpdates(rows, existingRows)
     if (rowsToStore.length > 0)
       await testOverrides.putCachedProductTombstones(rowsToStore)
-    retainLocalProductDeletionEvidence([...existingRows, ...rows])
+    retainLocalProductDeletionEvidence([...existingRows, ...rowsToStore])
     return
   }
 
   const ids = Array.from(new Set(rows.map((row) => row.id)))
-  await db.transaction("rw", db.productTombstones, async () => {
-    const existingRows = (await db.productTombstones.bulkGet(ids)).filter(
-      (row): row is CachedProductTombstone => row !== undefined
-    )
-    const rowsToStore = selectCachedProductTombstoneUpdates(rows, existingRows)
-    if (rowsToStore.length > 0) {
-      await db.productTombstones.bulkPut(rowsToStore)
+  const selectedRows = await db.transaction(
+    "rw",
+    db.productTombstones,
+    async () => {
+      const existingRows = (await db.productTombstones.bulkGet(ids)).filter(
+        (row): row is CachedProductTombstone => row !== undefined
+      )
+      const rowsToStore = selectCachedProductTombstoneUpdates(
+        rows,
+        existingRows
+      )
+      if (rowsToStore.length > 0) {
+        await db.productTombstones.bulkPut(rowsToStore)
+      }
+      // An older incoming row may cause no write. Still publish the stronger
+      // persisted winner before a retained catalog can project this observation.
+      return [...existingRows, ...rowsToStore]
     }
-  })
-  retainLocalProductDeletionEvidence(rows)
+  )
+  retainLocalProductDeletionEvidence(selectedRows)
 }
 
 function rememberVolatileProductTombstones(
