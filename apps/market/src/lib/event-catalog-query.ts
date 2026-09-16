@@ -16,6 +16,16 @@ export type EventCatalogQueryScope = {
   authGeneration: number
 }
 
+function hasUnavailableRelayCoverage(catalog: RawEventCatalog | undefined) {
+  const coverage = catalog?.resolution?.coverage
+  return Boolean(
+    coverage &&
+    coverage.attemptedRelayCount > 0 &&
+    coverage.completeRelayCount === 0 &&
+    coverage.partialRelayCount === 0
+  )
+}
+
 export function eventCatalogQueryIdentity(
   reference: string,
   scope: EventCatalogQueryScope
@@ -86,13 +96,19 @@ export function eventCatalogQueryOptions(
     select: reconcile,
     // Reuse a completed read across detail/card mounts and short return visits.
     // Incomplete snapshots remain stale so an interrupted read is resumed.
-    staleTime: (query) => (query.state.data?.complete ? 60_000 : 0),
+    staleTime: (query) =>
+      query.state.data?.complete &&
+      !hasUnavailableRelayCoverage(query.state.data)
+        ? 60_000
+        : 0,
     gcTime: 30 * 60_000,
-    // A completed catalog stays quiet on focus, even after its freshness
-    // window expires. Interrupted and failed reads still use focus as a
-    // recovery signal.
+    // A successfully completed catalog stays quiet on focus, even after its
+    // freshness window expires. Interrupted, failed, and all-relay-unavailable
+    // reads still use focus as a recovery signal.
     refetchOnWindowFocus: (query) =>
-      query.state.status === "error" || !query.state.data?.complete,
+      query.state.status === "error" ||
+      !query.state.data?.complete ||
+      hasUnavailableRelayCoverage(query.state.data),
     retry: false,
   })
 }

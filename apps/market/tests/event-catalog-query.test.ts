@@ -717,6 +717,27 @@ describe("shared progressive event catalogs", () => {
       expectedComplete: true,
     },
     {
+      name: "restarts a completed event read when every relay is unavailable",
+      load: async () => {
+        const catalog = raw()
+        return {
+          ...catalog,
+          resolution: {
+            ...catalog.resolution,
+            coverage: {
+              attemptedRelayCount: 2,
+              completeRelayCount: 0,
+              partialRelayCount: 0,
+              failedRelayCount: 2,
+            },
+          },
+        }
+      },
+      expectedReadsAfterFocus: 2,
+      expectedError: false,
+      expectedComplete: true,
+    },
+    {
       name: "restarts a stale incomplete event read when the window regains focus",
       load: async () => ({ ...raw(), complete: false }),
       expectedReadsAfterFocus: 2,
