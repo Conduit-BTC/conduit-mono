@@ -6476,16 +6476,26 @@ async function readPreparedProductTargets(
     )
     if (options.shouldContinue?.() === false)
       throw new NostrSignerError("authority_changed")
-    const currentRecords = mergeCachedAndLiveProductRecords({
+    const currentMerged = mergeCachedAndLiveProductRecords({
       cached: [],
       live: [...merged, ...progressiveKnownRecords, ...currentCached],
       deletionTimestamps: currentFrontier,
-    }).filter(
+    })
+    // A completed target can gain variants or change parent while another
+    // author is pending. Select family context from the current signed winners.
+    const currentParentAddresses = new Set(
+      currentMerged.flatMap((record) => {
+        if (!wanted.has(record.addressId)) return []
+        const parentAddress = getVariationParentAddress(record)
+        return parentAddress ? [parentAddress] : []
+      })
+    )
+    const currentRecords = currentMerged.filter(
       (record) =>
         wanted.has(record.addressId) ||
-        neededParentAddresses.has(record.addressId) ||
+        currentParentAddresses.has(record.addressId) ||
         (!!record.product.parentProductId &&
-          neededParentAddresses.has(record.product.parentProductId))
+          currentParentAddresses.has(record.product.parentProductId))
     )
     const previousByAddress = new Map(
       merged.map((record) => [record.addressId, record])

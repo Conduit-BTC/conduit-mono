@@ -1063,6 +1063,129 @@ describe("progressive exact product reads", () => {
     }
   }
 
+  for (const change of ["simple-to-variable", "reparent"] as const) {
+    it(`retains a completed author's late ${change} family without another relay read`, async () => {
+      const oldParent = listing(fastSecret, "old-parent", [
+        ["type", "variable", "physical"],
+      ])
+      const newParent = listing(
+        fastSecret,
+        "new-parent",
+        [["type", "variable", "physical"]],
+        150
+      )
+      const old =
+        change === "simple-to-variable"
+          ? listing(fastSecret, "changing-target")
+          : listing(fastSecret, "changing-target", [
+              ["type", "variation", "physical"],
+              ["a", address(oldParent)],
+              ["spec", "size", "small"],
+            ])
+      const newer = listing(
+        fastSecret,
+        "changing-target",
+        change === "simple-to-variable"
+          ? [["type", "variable", "physical"]]
+          : [
+              ["type", "variation", "physical"],
+              ["a", address(newParent)],
+              ["spec", "size", "small"],
+            ],
+        150
+      )
+      const child = listing(
+        fastSecret,
+        "new-child",
+        [
+          ["type", "variation", "physical"],
+          ["a", address(newer)],
+          ["spec", "size", "large"],
+        ],
+        150
+      )
+      const slow = listing(slowSecret, "held-after-topology-change")
+      const { held, filters } = installHeldRead(
+        change === "simple-to-variable" ? [old] : [oldParent, old],
+        slow
+      )
+      const completed = gate()
+      const snapshots: ProductsByIdsResult[] = []
+      const read = getProductsByIds([old, slow].map(address), {
+        onProgress: (snapshot) => {
+          snapshots.push(snapshot)
+          if (
+            hasExactLiveProductAvailabilityEvidence(
+              snapshot.diagnostics.find(
+                (row) => row.addressId === address(old)
+              ),
+              address(old)
+            )
+          )
+            completed.release()
+        },
+      })
+      let readsBeforeRevision = 0
+      try {
+        // Positive exact evidence is published only after this author completes.
+        await completed.promise
+        expect(
+          filters.some((filter) => filter.authors?.includes(slow.pubkey))
+        ).toBe(true)
+        readsBeforeRevision = filters.length
+        for (const event of change === "simple-to-variable"
+          ? [newer, child]
+          : [newParent, newer]) {
+          await cacheSignedProductListingEvent(event)
+        }
+        const cached = await getCachedProductsByIds([address(old)])
+        expect(
+          cached.data
+            .flatMap((record) => [record, ...(record.family?.children ?? [])])
+            .find((record) => record.addressId === address(old))?.eventId
+        ).toBe(newer.id)
+      } finally {
+        held.release()
+        await read.catch(() => undefined)
+      }
+      const final = await read
+      const selected = final.data.find(
+        (record) => record.addressId === address(old)
+      )!
+      const diagnostic = final.diagnostics.find(
+        (row) => row.addressId === address(old)
+      )!
+      expect(selected?.eventId).toBe(newer.id)
+      expect(diagnostic.issue).toBe("cached_only")
+      expect(
+        hasExactLiveProductAvailabilityEvidence(diagnostic, address(old))
+      ).toBe(false)
+      expect(final.meta).toMatchObject({
+        source: "local_cache",
+        stale: true,
+        degraded: true,
+      })
+      if (change === "simple-to-variable") {
+        expect(
+          selected.family?.children.map((record) => record.addressId)
+        ).toEqual([address(child)])
+      } else {
+        expect(selected.product.parentProductId).toBe(address(newParent))
+        expect(
+          selected.exactReadContext?.records.map((record) => record.addressId)
+        ).toContain(address(newParent))
+        expect(
+          selected.exactReadContext?.records.map((record) => record.addressId)
+        ).not.toContain(address(oldParent))
+      }
+      expect(
+        final.data.find((record) => record.addressId === address(slow))?.eventId
+      ).toBe(slow.id)
+      expect(filters).toHaveLength(readsBeforeRevision)
+      expect(snapshots.at(-1)).toEqual(final)
+    })
+  }
+
   it("keeps the completed result identical with and without observation", async () => {
     const records = [
       listing(fastSecret, "unchanged-final"),
