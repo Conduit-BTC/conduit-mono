@@ -967,9 +967,8 @@ export async function loadRawEventCatalog(
   let productRead: ProductRead | undefined
   const emitPreview = (resolution: EventMarketResolution) => {
     if (!active() || finished) return
-    // Earlier records may predate a signed deletion or withdrawal. Emit the
-    // header now; the shared exact reader owns reconciled cache hydration.
-    previewRecords = []
+    // Reuse only this read generation's reconciled product evidence as the
+    // graph advances. A new target set starts with an empty header.
     options.onProgress?.({
       reference,
       canonicalNaddr,
@@ -986,6 +985,7 @@ export async function loadRawEventCatalog(
     const key = JSON.stringify(targets)
     if (productRead?.key === key) return productRead
     latestProductResult = undefined
+    previewRecords = []
     const version = ++productReadVersion
     const current = () =>
       active() && !finished && version === productReadVersion
@@ -1022,7 +1022,6 @@ export async function loadRawEventCatalog(
   }
   const updateResolution = (resolution: EventMarketResolution) => {
     latestResolution = resolution
-    emitPreview(resolution)
     if (
       options.onProgress &&
       ["active", "ended", "partial", "stale"].includes(resolution.state) &&
@@ -1036,7 +1035,10 @@ export async function loadRawEventCatalog(
     } else {
       ++productReadVersion
       productRead = undefined
+      latestProductResult = undefined
+      previewRecords = []
     }
+    emitPreview(resolution)
   }
 
   try {

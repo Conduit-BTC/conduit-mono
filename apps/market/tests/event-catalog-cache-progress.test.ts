@@ -315,15 +315,19 @@ async function fixture(
       }),
     cacheStarted: cacheStarted.promise,
     waitForSnapshots,
-    async completeNetwork() {
+    async completeNetwork(failed = false) {
       plan.resolve(new Map())
-      const events = [...graph, listing].map(
-        (event) => new NDKEvent(undefined, event)
-      )
+      const events = failed
+        ? []
+        : [...graph, listing].map((event) => new NDKEvent(undefined, event))
       network.resolve({
         events,
         relays: [
-          { relayUrl: relay, status: "success", eventCount: events.length },
+          {
+            relayUrl: relay,
+            status: failed ? "failed" : "success",
+            eventCount: events.length,
+          },
         ],
         eventsVerified: true,
       })
@@ -400,6 +404,26 @@ describe("event catalog composed cache progress", () => {
       expect(preview.purchaseReady).toBe(false)
       expect(preview.products[0]?.pickupFulfillment).toBeNull()
       expect(run.snapshots.at(-1)!.complete).toBe(false)
+    } finally {
+      await run.cleanup()
+    }
+  })
+
+  it("retains this read's safe cached cards when final graph verification is unavailable", async () => {
+    const run = await fixture("none")
+    try {
+      await run.cacheStarted
+      run.releaseCache()
+      await run.waitForProduct()
+      const completed = await run.completeNetwork(true)
+      expect(completed?.complete).toBe(true)
+      expect(completed?.resolution?.acceptedProductCoordinates).toHaveLength(0)
+      const catalog = projectRawEventCatalog(completed!)
+      expect(catalog.state).toBe("stale")
+      expect(catalog.products).toHaveLength(1)
+      expect(catalog.products[0]?.pickupFulfillment).toBeNull()
+      expect(catalog.purchaseReady).toBe(false)
+      expect(run.unscopedAuthorCacheReads()).toBe(0)
     } finally {
       await run.cleanup()
     }

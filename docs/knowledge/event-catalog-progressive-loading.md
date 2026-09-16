@@ -11,10 +11,12 @@ The shared event reader emits cumulative verified organizer snapshots as relays
 finish. Local event evidence can render before relay planning completes. Safe
 cached product details load through the shared exact product reader. These
 snapshots support browsing only: cached requests never grant current merchant participation or
-pickup authorization. Each progress header starts without product records;
-only a reconciled snapshot from that reader can restore cards. The adapter
-does not start a duplicate cache read. A missing or failed cache read must not
-borrow records from an earlier progress or query result.
+pickup authorization. Each new target read starts without product records;
+only a reconciled snapshot from that reader can restore cards. Later event
+progress for the same targets keeps those safe previews, including a final
+stale graph with unavailable live participation evidence. A changed target set
+or terminal graph clears them. The adapter does not start a duplicate cache
+read or borrow records from an earlier query or obsolete product read.
 
 For cold detail loads, the organizer product coordinates start an exact product
 read while participation and pickup verification continue. Completed merchant
