@@ -458,7 +458,7 @@ describe("progressive exact product reads", () => {
     const read = getProductsByIds([fast, slow].map(address), {
       onProgress: (snapshot) => snapshots.push(snapshot),
     })
-    let deletionIndex = 0
+    let deletionIndex: number
     try {
       await afterFastRead(fastReturned)
       expect(snapshots[0]?.data.map((record) => record.addressId)).toContain(
@@ -702,68 +702,96 @@ describe("progressive exact product reads", () => {
     }
   }
 
-  for (const change of ["reparent", "simple"] as const) {
-    it(`rereads a known cached sibling after its ${change} revision leaves a completed family`, async () => {
-      const parent = listing(fastSecret, "changing-family", [
-        ["type", "variable", "physical"],
-      ])
-      const child = listing(fastSecret, "moving-child", [
-        ["type", "variation", "physical"],
-        ["a", address(parent)],
-        ["spec", "size", "small"],
-      ])
-      const remaining = listing(fastSecret, "remaining-child", [
-        ["type", "variation", "physical"],
-        ["a", address(parent)],
-        ["spec", "size", "large"],
-      ])
-      const reparented =
-        change === "simple"
-          ? listing(fastSecret, "moving-child", [], 150)
-          : listing(
-              fastSecret,
-              "moving-child",
-              [
-                ["type", "variation", "physical"],
-                ["a", `30402:${parent.pubkey}:different-family`],
-                ["spec", "size", "small"],
-              ],
-              150
+  for (const persisted of [true, false]) {
+    for (const change of ["reparent", "simple"] as const) {
+      it(`rereads a ${persisted ? "cached" : "live-only"} sibling after its ${change} revision leaves a completed family`, async () => {
+        const parent = listing(fastSecret, "changing-family", [
+          ["type", "variable", "physical"],
+        ])
+        const child = listing(fastSecret, "moving-child", [
+          ["type", "variation", "physical"],
+          ["a", address(parent)],
+          ["spec", "size", "small"],
+        ])
+        const remaining = listing(fastSecret, "remaining-child", [
+          ["type", "variation", "physical"],
+          ["a", address(parent)],
+          ["spec", "size", "large"],
+        ])
+        const reparented =
+          change === "simple"
+            ? listing(fastSecret, "moving-child", [], 150)
+            : listing(
+                fastSecret,
+                "moving-child",
+                [
+                  ["type", "variation", "physical"],
+                  ["a", `30402:${parent.pubkey}:different-family`],
+                  ["spec", "size", "small"],
+                ],
+                150
+              )
+        for (const record of persisted
+          ? [parent, child, remaining]
+          : [parent, remaining])
+          await cacheSignedProductListingEvent(record)
+        if (!persisted) {
+          __setCommerceTestOverrides({
+            putCachedProducts: async () => {
+              throw new Error("Storage unavailable")
+            },
+          })
+        }
+        const slow = listing(slowSecret, "held-after-family")
+        const { held, fastReturned } = installHeldRead(
+          [parent, child, remaining],
+          slow
+        )
+        const snapshots: ProductsByIdsResult[] = []
+        const read = getProductsByIds([parent, slow].map(address), {
+          onProgress: (snapshot) => snapshots.push(snapshot),
+        })
+        try {
+          await afterFastRead(fastReturned)
+          expect(
+            snapshots
+              .at(-1)!
+              .data.find((record) => record.addressId === address(parent))!
+              .family!.children.some(
+                (record) => record.addressId === address(child)
+              )
+          ).toBe(true)
+          // The live child has never been persisted in this case. Its identity
+          // must survive the failed write so a later unrelated author publication
+          // can still select a revision that no longer belongs to this family.
+          if (!persisted) {
+            expect(products.some((row) => row.id === address(child))).toBe(
+              false
             )
-      for (const record of [parent, child, remaining])
-        await cacheSignedProductListingEvent(record)
-      const slow = listing(slowSecret, "held-after-family")
-      const { held, fastReturned } = installHeldRead(
-        [parent, child, remaining],
-        slow
-      )
-      const snapshots: ProductsByIdsResult[] = []
-      const read = getProductsByIds([parent, slow].map(address), {
-        onProgress: (snapshot) => snapshots.push(snapshot),
+            __setCommerceTestOverrides({
+              putCachedProducts: async (rows) => {
+                for (const row of rows)
+                  products = [
+                    ...products.filter((current) => current.id !== row.id),
+                    row,
+                  ]
+              },
+            })
+          }
+          await cacheSignedProductListingEvent(reparented)
+        } finally {
+          held.release()
+          await read.catch(() => undefined)
+        }
+        const family = (await read).data.find(
+          (record) => record.addressId === address(parent)
+        )!.family!
+        expect(family.children.map((record) => record.addressId)).toEqual([
+          address(remaining),
+        ])
+        expect(snapshots.at(-1)).toEqual(await read)
       })
-      try {
-        await afterFastRead(fastReturned)
-        expect(
-          snapshots
-            .at(-1)!
-            .data.find((record) => record.addressId === address(parent))!
-            .family!.children.some(
-              (record) => record.addressId === address(child)
-            )
-        ).toBe(true)
-        await cacheSignedProductListingEvent(reparented)
-      } finally {
-        held.release()
-        await read.catch(() => undefined)
-      }
-      const family = (await read).data.find(
-        (record) => record.addressId === address(parent)
-      )!.family!
-      expect(family.children.map((record) => record.addressId)).toEqual([
-        address(remaining),
-      ])
-      expect(snapshots.at(-1)).toEqual(await read)
-    })
+    }
   }
 
   it("keeps the completed result identical with and without observation", async () => {

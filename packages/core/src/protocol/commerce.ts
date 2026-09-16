@@ -5436,16 +5436,18 @@ export async function getProductsByIds(
       return next
     },
     async refreshCache(author, knownRecords = []) {
-      // A completed sibling can acquire a newer signed revision while another
-      // author is held. Reconcile the invocation's author scope once per actual
-      // publication, not once per retained snapshot in the aggregate.
-
-      context.cached = mergeCachedAndLiveProductRecords({
+      // Retain validated live evidence for the whole invocation even when its
+      // cache write failed. Its identities must remain lookup targets after a
+      // sibling's newer revision changes parent or type.
+      const retained = mergeCachedAndLiveProductRecords({
         cached: context.cached,
-        live: await getCachedExactProductRecords(
-          [...wanted],
-          [...context.cached, ...knownRecords]
-        ),
+        live: [...knownRecords],
+        deletionTimestamps: context.deletions,
+      })
+      // Reconcile once per publication, not once per retained author snapshot.
+      context.cached = mergeCachedAndLiveProductRecords({
+        cached: retained,
+        live: await getCachedExactProductRecords([...wanted], retained),
         deletionTimestamps: context.deletions,
       })
       return context.cached.filter(
