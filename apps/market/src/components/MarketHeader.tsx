@@ -531,13 +531,6 @@ export function MarketHeader() {
           className="market-header-utility-nav flex min-w-0 items-center gap-1.5"
         >
           <HeaderAction
-            label="Wallets"
-            icon={<Wallet className="size-4" aria-hidden="true" />}
-            active={pathname === "/wallet"}
-            labelClassName="hidden xl:inline"
-            onClick={() => void navigate({ to: "/wallet" })}
-          />
-          <HeaderAction
             label="Messages"
             icon={<MessagesSquare className="size-4" aria-hidden="true" />}
             enabled={connected}
