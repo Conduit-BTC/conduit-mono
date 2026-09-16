@@ -732,6 +732,70 @@ describe("shared progressive event catalogs", () => {
     }
   })
 
+  it("restarts a stale incomplete event read when the window regains focus", async () => {
+    const client = new QueryClient()
+    let reads = 0
+    const options = eventCatalogQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true,
+      async () => {
+        reads++
+        return { ...raw(), complete: false }
+      }
+    )
+    const observer = new QueryObserver(client, options)
+    const release = observer.subscribe(() => {})
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(reads).toBe(1)
+      expect(observer.getCurrentResult().data?.complete).toBe(false)
+
+      client.getQueryCache().onFocus()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(reads).toBe(2)
+      expect(observer.getCurrentResult().data?.complete).toBe(false)
+    } finally {
+      release()
+      client.clear()
+    }
+  })
+
+  it("restarts a failed event read when the window regains focus", async () => {
+    const client = new QueryClient()
+    let reads = 0
+    const options = eventCatalogQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true,
+      async () => {
+        reads++
+        throw new Error("relay unavailable")
+      }
+    )
+    const observer = new QueryObserver(client, options)
+    const release = observer.subscribe(() => {})
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(reads).toBe(1)
+      expect(observer.getCurrentResult().isError).toBe(true)
+
+      client.getQueryCache().onFocus()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(reads).toBe(2)
+      expect(observer.getCurrentResult().isError).toBe(true)
+    } finally {
+      release()
+      client.clear()
+    }
+  })
+
   it("shows organizer-only cached cards without inventing acceptance or pickup authority", () => {
     const resolution = market("stale")
     resolution.acceptedProductCoordinates = []

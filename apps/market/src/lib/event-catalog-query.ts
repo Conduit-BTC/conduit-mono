@@ -88,7 +88,10 @@ export function eventCatalogQueryOptions(
     // Incomplete snapshots remain stale so an interrupted read is resumed.
     staleTime: (query) => (query.state.data?.complete ? 60_000 : 0),
     gcTime: 30 * 60_000,
-    refetchOnWindowFocus: false,
+    // A completed catalog stays quiet on focus, even after its freshness
+    // window expires. Interrupted and failed reads still use focus as a
+    // recovery signal.
+    refetchOnWindowFocus: (query) => !query.state.data?.complete,
     retry: false,
   })
 }
