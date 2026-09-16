@@ -415,7 +415,16 @@ describe("event catalog composed cache progress", () => {
       await run.cacheStarted
       run.releaseCache()
       await run.waitForProduct()
+      const firstFinalSnapshot = run.snapshots.length
       const completed = await run.completeNetwork(true)
+      const finalSnapshots = run.snapshots.slice(firstFinalSnapshot)
+      expect(finalSnapshots.length).toBeGreaterThan(0)
+      for (const snapshot of finalSnapshots) {
+        const progress = projectRawEventCatalog(snapshot)
+        expect(progress.products).toHaveLength(1)
+        expect(progress.products[0]?.pickupFulfillment).toBeNull()
+        expect(progress.purchaseReady).toBe(false)
+      }
       expect(completed?.complete).toBe(true)
       expect(completed?.resolution?.acceptedProductCoordinates).toHaveLength(0)
       const catalog = projectRawEventCatalog(completed!)

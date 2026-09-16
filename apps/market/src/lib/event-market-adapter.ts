@@ -1113,7 +1113,12 @@ export async function loadRawEventCatalog(
       resolution,
       complete: false,
       resolutionComplete,
-      result: resolutionComplete ? latestProductResult : undefined,
+      // Match the completed return: without accepted participation evidence,
+      // this remains safe retained browsing rather than an exact catalog result.
+      result:
+        resolutionComplete && resolution.acceptedProductCoordinates.length > 0
+          ? latestProductResult
+          : undefined,
       previewRecords: buildEventCatalogProductPreviewRecords(
         resolution,
         previewRecords,
@@ -1144,19 +1149,7 @@ export async function loadRawEventCatalog(
             // unfinished siblings.
             previewRecords = snapshot.data
             latestProductResult = snapshot
-            options.onProgress?.({
-              reference,
-              canonicalNaddr,
-              resolution: latestResolution,
-              resolutionComplete,
-              result: resolutionComplete ? snapshot : undefined,
-              previewRecords: buildEventCatalogProductPreviewRecords(
-                latestResolution,
-                previewRecords,
-                snapshot
-              ),
-              complete: false,
-            })
+            emitPreview(latestResolution)
           }
         : undefined,
     }).then(
