@@ -55,6 +55,25 @@ Storage failures preserve already observed deletion evidence. Other same-origin
 contexts are observed through Dexie; in-process validated evidence is announced
 before persistence can fail. Unaffected products keep their live read evidence.
 
+Retained queries also watch the selected local signed product revisions for
+all their product and family dependencies. Scoped primary-key observation keeps
+new stock, prices, withdrawals and topology changes ahead of older catalog
+snapshots. The selected transaction winner is retained even when an incoming
+row loses or persistence fails. Changed records pass through the same exact
+family selector; their old live diagnostic cannot authorize the new revision.
+A fresh exact read restores authority. Until then safe details remain visible
+with pickup unavailable, rather than an ongoing network-check indicator.
+
+Collection, calendar, pickup and participant evidence lives in a separate
+organizer-scoped store. Retained catalog queries observe that store as well.
+Stronger signed collection/calendar revisions revoke the old graph; stronger
+pickup or participant evidence revokes only the affected product authority.
+Local evidence never grants new graph authority, and relay omission cannot
+restore superseded evidence. Initial local reads settle through the existing
+subscriptions, without duplicate reads. Each query retains its dependency IDs
+after a card is removed, releasing them when that query leaves the cache.
+These updates do not renew network freshness or initiate full catalog rechecks.
+
 Incomplete reads remain stale. A new read clears any verification marker left
 by interrupted progress before accepting fresh progress.
 
@@ -161,7 +180,12 @@ checks exercise cold product progress with empty caches and a held sibling
 merchant, header progress, warm product-to-event navigation, retained
 cards, variation selection and deletion after a cached preview. Timeline checks
 cover delayed sibling reads, cache progress, deadline retention, signed removal
-and local connection teardown followed by successful discovery retry.
+and local connection teardown followed by successful discovery retry. Signed
+revision regressions cover mounted and warm withdrawal, stock, price, topology,
+separate event evidence, delayed snapshots, and fresh restoration. Real
+same-origin cross-tab browser coverage persists signed withdrawals through the
+core writer and verifies that unrelated cards remain actionable with zero
+catalog relay rechecks.
 
 Public network latency is not a CI dependency. Synthetic signer/relay results
 do not replace maintainer preview validation with the relevant real accounts

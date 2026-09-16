@@ -382,6 +382,9 @@ describe("event catalog composed cache progress", () => {
     const run = await fixture("none", true)
     try {
       await run.cacheStarted
+      // The local coherence observer can start a cache read before the
+      // independent organizer reader emits its first browse snapshot.
+      await run.waitForSnapshots(1)
       expect(projectRawEventCatalog(run.snapshots[0]!).products).toHaveLength(0)
       run.releaseCache()
       // The event relay plan remains held for this whole assertion. The only
@@ -402,6 +405,9 @@ describe("event catalog composed cache progress", () => {
     const run = await fixture("none")
     try {
       await run.cacheStarted
+      // The local coherence observer can start a cache read before the
+      // independent organizer reader emits its first browse snapshot.
+      await run.waitForSnapshots(1)
       expect(projectRawEventCatalog(run.snapshots[0]!).products).toHaveLength(0)
       run.releaseCache()
       await run.waitForSnapshots(2)
@@ -440,6 +446,7 @@ describe("event catalog composed cache progress", () => {
       const run = await fixture(negative)
       try {
         await run.cacheStarted
+        await run.waitForSnapshots(1)
         expect(run.snapshots[0]?.resolution?.collection?.title).toBe(
           "Market catalog"
         )
