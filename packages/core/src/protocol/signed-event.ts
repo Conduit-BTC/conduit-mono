@@ -64,3 +64,25 @@ export function isValidSignedPublicNostrEvent(
     return false
   }
 }
+
+export function isExactRelayAuthEvent(input: {
+  event: SignedPublicNostrEvent
+  expectedPubkey: string
+  relayUrl: string
+  challenge: string
+  createdAt: number
+}): boolean {
+  const { event, expectedPubkey, relayUrl, challenge, createdAt } = input
+  return (
+    isValidSignedPublicNostrEvent(event) &&
+    event.kind === 22_242 &&
+    event.pubkey.toLowerCase() === expectedPubkey.toLowerCase() &&
+    event.created_at === createdAt &&
+    event.content === "" &&
+    JSON.stringify(event.tags) ===
+      JSON.stringify([
+        ["relay", relayUrl],
+        ["challenge", challenge],
+      ])
+  )
+}
