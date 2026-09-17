@@ -1,6 +1,7 @@
 import { ChevronDown, Minus, Plus, ShoppingCart, Zap } from "lucide-react"
 import { Link, useNavigate } from "@tanstack/react-router"
 import {
+  config,
   formatNpub,
   getProfileName,
   pubkeyToNpub,
@@ -28,6 +29,7 @@ import {
 import { useCart } from "../hooks/useCart"
 import {
   useCartLnurlPreflights,
+  useCartOrderRoutePreflights,
   useCartReadiness,
 } from "../hooks/useCartReadiness"
 import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapability"
@@ -82,6 +84,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     return map
   }, [merchantPubkeys, profiles.data])
   useCartLnurlPreflights(lud16ByMerchant)
+  useCartOrderRoutePreflights(merchantPubkeys, {
+    enabled: config.checkoutOrderRoutePrefetchEnabled,
+  })
   const routeMode = getCartHudRouteMode(pathname)
   const [expanded, setExpanded] = useState(routeMode === "expanded")
   const [activeMerchant, setActiveMerchant] = useState<string | null>(

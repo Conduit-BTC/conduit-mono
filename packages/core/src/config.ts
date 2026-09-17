@@ -119,6 +119,8 @@ export interface ConduitConfig {
   dmCompatibilityOrderRelayUrls: string[]
   /** Redeploy-controlled flag for the validated-order compatibility lane. */
   dmCompatibilityOrderRoutingEnabled: boolean
+  /** Redeploy-controlled speculative kind-10050 warming for cart merchants. */
+  checkoutOrderRoutePrefetchEnabled: boolean
   zapRelayUrls: string[]
   cacheApiUrl: string | null
   lightningNetwork: "mainnet" | "signet" | "testnet" | "mock"
@@ -146,6 +148,7 @@ function getViteEnv(): {
   cacheApiUrl: string
   lightningNetwork: string
   dmCompatibilityOrderRouting: string
+  checkoutOrderRoutePrefetch: string
   nip89RelayHint: string
   nip89MarketPubkey: string
   nip89MerchantPubkey: string
@@ -168,6 +171,8 @@ function getViteEnv(): {
       lightningNetwork: import.meta.env.VITE_LIGHTNING_NETWORK ?? "",
       dmCompatibilityOrderRouting:
         import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "",
+      checkoutOrderRoutePrefetch:
+        import.meta.env.VITE_CHECKOUT_ORDER_ROUTE_PREFETCH ?? "",
       nip89RelayHint: import.meta.env.VITE_NIP89_RELAY_HINT ?? "",
       nip89MarketPubkey: import.meta.env.VITE_NIP89_MARKET_PUBKEY ?? "",
       nip89MerchantPubkey: import.meta.env.VITE_NIP89_MERCHANT_PUBKEY ?? "",
@@ -189,6 +194,7 @@ function getViteEnv(): {
     cacheApiUrl: "",
     lightningNetwork: "",
     dmCompatibilityOrderRouting: "",
+    checkoutOrderRoutePrefetch: "",
     nip89RelayHint: "",
     nip89MarketPubkey: "",
     nip89MerchantPubkey: "",
@@ -443,6 +449,9 @@ const dmCompatibilityOrderRelayUrls = uniqueConfiguredRelayUrls(
 const dmCompatibilityOrderRoutingEnabled = ["1", "true", "on"].includes(
   env.dmCompatibilityOrderRouting.trim().toLowerCase()
 )
+const checkoutOrderRoutePrefetchEnabled = ["1", "true", "on"].includes(
+  env.checkoutOrderRoutePrefetch.trim().toLowerCase()
+)
 const zapRelayUrls = uniqueConfiguredRelayUrls(CANONICAL_ZAP_PUBLIC_RELAYS)
 const commerceRelayUrls = uniqueConfiguredRelayUrls([
   ...appWriteRelayUrls,
@@ -477,6 +486,7 @@ const configuredRelayConfig: ConduitConfig = {
   dmInboxDefaultRelayUrls,
   dmCompatibilityOrderRelayUrls,
   dmCompatibilityOrderRoutingEnabled,
+  checkoutOrderRoutePrefetchEnabled,
   zapRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
   lightningNetwork: (env.lightningNetwork ||

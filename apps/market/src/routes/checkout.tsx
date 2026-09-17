@@ -103,8 +103,10 @@ import {
 import { SignerSwitch } from "../components/SignerSwitch"
 import { type CartItem, useCart } from "../hooks/useCart"
 import {
+  cancelMerchantOrderRoutePreflights,
   merchantLnurlPreflightQueryOptions,
   normalizeMerchantLnurlAddress,
+  startMerchantOrderRoutePreflight,
   useCartReadiness,
   useMerchantLnurlPreflight,
   type MerchantCartRefreshResult,
@@ -2115,9 +2117,11 @@ function CheckoutPage() {
 
   async function assertCheckoutItemsAvailable(
     checkoutMode: CheckoutTelemetryMode,
-    rateInput: PricingRateInput = btcUsdRateQuery.data ?? null
+    rateInput: PricingRateInput = btcUsdRateQuery.data ?? null,
+    preparedRefreshResult?: MerchantCartRefreshResult
   ): Promise<CartItem[]> {
-    const refreshResult = await checkoutAvailability.refresh()
+    const refreshResult =
+      preparedRefreshResult ?? (await checkoutAvailability.refresh())
     if (refreshResult.decision.status === "unverified") {
       recordCheckoutStepResult({
         checkoutMode,
@@ -2504,10 +2508,15 @@ function CheckoutPage() {
     setStep(isGuestCheckout ? "sending" : "signing")
 
     try {
-      const freshPricingRate = await getFreshPricingRateInput(checkoutItems)
+      startOrderRouteEvidenceWarm(selectedMerchant)
+      const [freshPricingRate, refreshedAvailability] = await Promise.all([
+        getFreshPricingRateInput(checkoutItems),
+        checkoutAvailability.refresh(),
+      ])
       const authoritativeCheckoutItems = await assertCheckoutItemsAvailable(
         "order_first",
-        freshPricingRate
+        freshPricingRate,
+        refreshedAvailability
       )
       const checkoutPricing = buildCheckoutPricingIntent(
         authoritativeCheckoutItems,
@@ -2633,7 +2642,7 @@ function CheckoutPage() {
 
       setStep("sending")
       orderDeliveryStartedAt = performance.now()
-
+      await cancelOrderRouteEvidenceWarms()
       const delivery = await publishBuyerOrderMessage(
         rumor,
         ndk,
@@ -2871,6 +2880,64 @@ function CheckoutPage() {
     )
   }
 
+  function startOrderRouteEvidenceWarm(merchantPubkey: string): void {
+    if (!config.checkoutOrderRoutePrefetchEnabled) return
+    startMerchantOrderRoutePreflight(queryClient, merchantPubkey, {
+      accountPubkey: signedBuyerPubkey,
+      authenticatedPubkey: draftOwnerIdentity,
+      relayScope: session.relayScope,
+      authGeneration,
+      bounded: false,
+      shouldContinue: () => authGenerationRef.current === authGeneration,
+    })
+  }
+
+  async function cancelOrderRouteEvidenceWarms(): Promise<void> {
+    if (!config.checkoutOrderRoutePrefetchEnabled) return
+    await cancelMerchantOrderRoutePreflights(queryClient)
+  }
+
+  async function getFreshMerchantPaymentEvidence(merchantPubkey: string) {
+    const refreshedProfileResult = await getProfiles({
+      pubkeys: [merchantPubkey],
+      accountPubkey: signedBuyerPubkey,
+      authenticatedPubkey: signedBuyerPubkey,
+      skipCache: true,
+      requireCompleteEvidence: true,
+      evidenceScope: "payment",
+      priority: "visible",
+      shouldContinue: () => authGenerationRef.current === authGeneration,
+    })
+    const refreshedProfileState = getMerchantPaymentProfileState({
+      isLoading: false,
+      isFetching: false,
+      lookupSettled: true,
+      evidenceIncomplete: isCommerceReadIncomplete(refreshedProfileResult.meta),
+      positiveAddressEvidence: hasPositiveMerchantPaymentAddressEvidence({
+        meta: refreshedProfileResult.meta,
+        lud16: refreshedProfileResult.data[merchantPubkey]?.lud16,
+      }),
+    })
+    const currentMerchantLud16 = getMerchantPaymentLud16({
+      profileState: refreshedProfileState,
+      lud16: refreshedProfileResult.data[merchantPubkey]?.lud16,
+    })
+    if (refreshedProfileState !== "available") {
+      throw new Error(
+        "The merchant payment profile could not be confirmed from relays. You can still send the order first."
+      )
+    }
+    if (!currentMerchantLud16) {
+      throw new Error(
+        "The merchant's current profile does not include a Lightning address. You can still send the order first."
+      )
+    }
+    return {
+      currentMerchantLud16,
+      currentLnurlMetadata: await getFreshLnurlMetadata(currentMerchantLud16),
+    }
+  }
+
   /**
    * Fast zap / direct payment. Publishes the order, creates the durable order
    * lifecycle record, hands payment to the route-independent service, and
@@ -3014,48 +3081,20 @@ function CheckoutPage() {
 
       const checkoutMode = requestedCheckoutMode
       const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
-      const refreshedProfileResult = await getProfiles({
-        pubkeys: [selectedMerchant],
-        accountPubkey: signedBuyerPubkey,
-        authenticatedPubkey: signedBuyerPubkey,
-        skipCache: true,
-        requireCompleteEvidence: true,
-        evidenceScope: "payment",
-        priority: "visible",
-        shouldContinue: () => authGenerationRef.current === authGeneration,
-      })
-      const refreshedProfileState = getMerchantPaymentProfileState({
-        isLoading: false,
-        isFetching: false,
-        lookupSettled: true,
-        evidenceIncomplete: isCommerceReadIncomplete(
-          refreshedProfileResult.meta
-        ),
-        positiveAddressEvidence: hasPositiveMerchantPaymentAddressEvidence({
-          meta: refreshedProfileResult.meta,
-          lud16: refreshedProfileResult.data[selectedMerchant]?.lud16,
-        }),
-      })
-      const currentMerchantLud16 = getMerchantPaymentLud16({
-        profileState: refreshedProfileState,
-        lud16: refreshedProfileResult.data[selectedMerchant]?.lud16,
-      })
-      if (refreshedProfileState !== "available") {
-        throw new Error(
-          "The merchant payment profile could not be confirmed from relays. You can still send the order first."
-        )
-      }
-      if (!currentMerchantLud16) {
-        throw new Error(
-          "The merchant's current profile does not include a Lightning address. You can still send the order first."
-        )
-      }
-      const currentLnurlMetadata =
-        await getFreshLnurlMetadata(currentMerchantLud16)
-      const freshPricingRate = await getFreshPricingRateInput(checkoutItems)
+      startOrderRouteEvidenceWarm(selectedMerchant)
+      const [
+        { currentMerchantLud16, currentLnurlMetadata },
+        freshPricingRate,
+        refreshedAvailability,
+      ] = await Promise.all([
+        getFreshMerchantPaymentEvidence(selectedMerchant),
+        getFreshPricingRateInput(checkoutItems),
+        checkoutAvailability.refresh(),
+      ])
       const authoritativeCheckoutItems = await assertCheckoutItemsAvailable(
         requestedCheckoutMode,
-        freshPricingRate
+        freshPricingRate,
+        refreshedAvailability
       )
       const authoritativeDestinationEligibility =
         getCartFulfillmentLane(authoritativeCheckoutItems) !== "shipping"
@@ -3270,6 +3309,7 @@ function CheckoutPage() {
         stepName: "direct_payment",
       })
       orderDeliveryStartedAt = performance.now()
+      await cancelOrderRouteEvidenceWarms()
       const orderDelivery = await publishBuyerOrderMessage(
         orderRumor,
         ndk,

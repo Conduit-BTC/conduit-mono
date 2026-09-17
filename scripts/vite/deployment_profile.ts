@@ -6,6 +6,7 @@ export type DeploymentProfileName = "preview" | "production" | "staging"
 
 export interface PublicDeploymentFeatures {
   dmCompatibilityOrderRoutingEnabled: boolean
+  checkoutOrderRoutePrefetchEnabled: boolean
 }
 
 export interface PublicDeploymentProfile {
@@ -86,6 +87,13 @@ function assertProfile(
       `Deployment profile ${name} must explicitly set dmCompatibilityOrderRoutingEnabled.`
     )
   }
+  if (
+    typeof value.publicFeatures.checkoutOrderRoutePrefetchEnabled !== "boolean"
+  ) {
+    throw new Error(
+      `Deployment profile ${name} must explicitly set checkoutOrderRoutePrefetchEnabled.`
+    )
+  }
 }
 
 export function parsePagesProfiles(value: unknown): PagesProfilesFile {
@@ -147,6 +155,9 @@ export function resolveDeploymentProfile(
       publicFeatures: {
         dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(
           env.VITE_DM_BOOTSTRAP_WRITES?.trim().toLowerCase() ?? ""
+        ),
+        checkoutOrderRoutePrefetchEnabled: ["1", "true", "on"].includes(
+          env.VITE_CHECKOUT_ORDER_ROUTE_PREFETCH?.trim().toLowerCase() ?? ""
         ),
       },
     }

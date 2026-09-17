@@ -8,7 +8,7 @@ import {
 } from "../scripts/vite/deployment_profile"
 
 describe("deployment profiles", () => {
-  it("enables compatibility order routing in preview only", () => {
+  it("keeps public rollout switches explicit by deployment profile", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",
     })
@@ -26,6 +26,15 @@ describe("deployment profiles", () => {
     expect(staging.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
       false
     )
+    expect(preview.publicFeatures.checkoutOrderRoutePrefetchEnabled).toBe(true)
+    expect(production.publicFeatures.checkoutOrderRoutePrefetchEnabled).toBe(
+      false
+    )
+    expect(staging.publicFeatures.checkoutOrderRoutePrefetchEnabled).toBe(true)
+    expect(
+      resolveDeploymentProfile({}).publicFeatures
+        .checkoutOrderRoutePrefetchEnabled
+    ).toBe(false)
   })
 
   it("selects Cloudflare preview and production without dashboard feature vars", () => {
@@ -69,6 +78,15 @@ describe("deployment profiles", () => {
       parsePagesProfiles(explicitFalse).profiles.preview.publicFeatures
         .dmCompatibilityOrderRoutingEnabled
     ).toBe(false)
+
+    const missingPrefetch = structuredClone(profiles) as unknown as {
+      profiles: { preview: { publicFeatures: Record<string, unknown> } }
+    }
+    delete missingPrefetch.profiles.preview.publicFeatures
+      .checkoutOrderRoutePrefetchEnabled
+    expect(() => parsePagesProfiles(missingPrefetch)).toThrow(
+      "must explicitly set checkoutOrderRoutePrefetchEnabled"
+    )
   })
 
   it("emits only whitelisted public build state and matches effective config", () => {
@@ -88,6 +106,7 @@ describe("deployment profiles", () => {
     expect(manifest.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
       true
     )
+    expect(manifest.publicFeatures.checkoutOrderRoutePrefetchEnabled).toBe(true)
     expect(manifest.publicConfigDigest).toBe(profile.configDigest)
     expect(Object.keys(manifest).sort()).toEqual([
       "app",
@@ -118,6 +137,9 @@ describe("deployment profiles", () => {
     )
     expect(workflow).toContain(
       "manifest.publicFeatures?.dmCompatibilityOrderRoutingEnabled !== true"
+    )
+    expect(workflow).toContain(
+      "manifest.publicFeatures?.checkoutOrderRoutePrefetchEnabled !== true"
     )
     expect(workflow).toContain("throw new Error(")
   })

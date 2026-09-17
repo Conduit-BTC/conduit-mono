@@ -1,9 +1,10 @@
 import { useLayoutEffect, useMemo, useRef } from "react"
-import { useQueries, useQuery } from "@tanstack/react-query"
+import { useQueries, useQuery, type QueryClient } from "@tanstack/react-query"
 import {
   fetchLnurlPayMetadata,
   getProductsByIds,
   isValidLud16Address,
+  resolveInboxDeclaration,
   useAuth,
   useConduitSession,
 } from "@conduit/core"
@@ -68,6 +69,12 @@ const readinessReadLimiter = createBoundedLimiter(
 const lnurlPreflightLimiter = createBoundedLimiter(
   CART_READINESS_MAX_CONCURRENT_READS
 )
+const orderRoutePreflightLimiter = createBoundedLimiter(
+  CART_READINESS_MAX_CONCURRENT_READS
+)
+const merchantOrderRoutePreflightQueryPrefix = [
+  "merchant-order-route-preflight",
+] as const
 
 export function merchantCartAvailabilityQueryKey(
   merchantPubkey: string,
@@ -337,5 +344,144 @@ export function useCartLnurlPreflights(
     queries: normalizedAddresses.map((address) =>
       merchantLnurlPreflightQueryOptions(address)
     ),
+  })
+}
+
+export type MerchantOrderRoutePreflightOptions = {
+  accountPubkey: string | null
+  authenticatedPubkey: string | null
+  relayScope?: string | null
+  authGeneration: number
+  bounded?: boolean
+  shouldContinue?: () => boolean
+}
+
+function normalizeOrderRoutePreflightKeyPart(
+  value: string | null | undefined,
+  fallback: string
+): string {
+  return value?.trim().toLowerCase() || fallback
+}
+
+export function merchantOrderRoutePreflightQueryKey(
+  merchantPubkey: string,
+  options: Pick<
+    MerchantOrderRoutePreflightOptions,
+    "accountPubkey" | "authenticatedPubkey" | "relayScope" | "authGeneration"
+  >
+): readonly unknown[] {
+  return [
+    ...merchantOrderRoutePreflightQueryPrefix,
+    normalizeOrderRoutePreflightKeyPart(merchantPubkey, "no-merchant"),
+    normalizeOrderRoutePreflightKeyPart(options.accountPubkey, "guest"),
+    normalizeOrderRoutePreflightKeyPart(options.authenticatedPubkey, "guest"),
+    options.relayScope?.trim() || "no-relay-scope",
+    options.authGeneration,
+  ]
+}
+
+export function merchantOrderRoutePreflightQueryOptions(
+  merchantPubkey: string,
+  options: MerchantOrderRoutePreflightOptions
+) {
+  const normalizedMerchant = merchantPubkey.trim().toLowerCase()
+  return {
+    queryKey: merchantOrderRoutePreflightQueryKey(normalizedMerchant, options),
+    queryFn: ({ signal }: { signal: AbortSignal }) => {
+      const read = () =>
+        resolveInboxDeclaration(normalizedMerchant, {
+          requestingAccountPubkey: options.accountPubkey,
+          authenticatedPubkey: options.authenticatedPubkey,
+          freshnessMs: CART_READINESS_LEASE_MS,
+          signal,
+          shouldContinue: () =>
+            !signal.aborted && (options.shouldContinue?.() ?? true),
+        })
+      return options.bounded === false
+        ? read()
+        : orderRoutePreflightLimiter(read)
+    },
+    staleTime: CART_READINESS_LEASE_MS,
+    gcTime: 5 * 60_000,
+    retry: false,
+  }
+}
+
+/**
+ * Starts a submit-time route warm without extending the foreground checkout
+ * boundary. Failure stays advisory because the send path always performs the
+ * final typed declaration resolution before it stages an immutable route.
+ */
+export function startMerchantOrderRoutePreflight(
+  queryClient: Pick<QueryClient, "fetchQuery">,
+  merchantPubkey: string,
+  options: MerchantOrderRoutePreflightOptions
+): void {
+  void queryClient
+    .fetchQuery({
+      ...merchantOrderRoutePreflightQueryOptions(merchantPubkey, options),
+      staleTime: 0,
+    })
+    .catch(() => undefined)
+}
+
+/**
+ * Releases relay-read capacity held by speculative merchant route reads before
+ * the authoritative send-time resolver runs. Completed signed evidence stays
+ * in the Core cache; cancellation neither supplies nor removes send authority.
+ */
+export async function cancelMerchantOrderRoutePreflights(
+  queryClient: Pick<QueryClient, "cancelQueries">
+): Promise<void> {
+  await queryClient.cancelQueries({
+    queryKey: merchantOrderRoutePreflightQueryPrefix,
+  })
+}
+
+/**
+ * Warms typed kind-10050 evidence for merchants with cart intent. The read is
+ * content-free: it carries only the public merchant key and current account
+ * network authority. Checkout still re-resolves typed evidence before staging
+ * an immutable delivery route.
+ */
+export function useCartOrderRoutePreflights(
+  merchantPubkeys: readonly string[],
+  options: { enabled?: boolean } = {}
+): void {
+  const auth = useAuth()
+  const session = useConduitSession()
+  const authGenerationRef = useRef(auth.authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = auth.authGeneration
+  }, [auth.authGeneration])
+  const accountPubkey = session.mode === "signed_in" ? session.pubkey : null
+  const authenticatedPubkey =
+    auth.status === "connected" && auth.pubkey === accountPubkey
+      ? accountPubkey
+      : null
+  const uniqueMerchantPubkeys = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          merchantPubkeys
+            .map((pubkey) => pubkey.trim().toLowerCase())
+            .filter(Boolean)
+        )
+      ).sort(),
+    [merchantPubkeys]
+  )
+  const readAuthGeneration = auth.authGeneration
+
+  useQueries({
+    queries: uniqueMerchantPubkeys.map((merchantPubkey) => ({
+      ...merchantOrderRoutePreflightQueryOptions(merchantPubkey, {
+        accountPubkey,
+        authenticatedPubkey,
+        relayScope: session.relayScope,
+        authGeneration: readAuthGeneration,
+        shouldContinue: () => authGenerationRef.current === readAuthGeneration,
+      }),
+      enabled: options.enabled ?? true,
+    })),
   })
 }
