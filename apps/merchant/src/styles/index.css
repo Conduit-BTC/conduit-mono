@@ -106,7 +106,7 @@ body {
   }
 
   body.event-sign-print-preview-open .event-sign-qr-frame {
-    width: 3.25in !important;
-    height: 3.25in !important;
+    width: 3.125in !important;
+    height: 3.125in !important;
   }
 }

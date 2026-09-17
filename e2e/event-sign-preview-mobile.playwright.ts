@@ -62,16 +62,25 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
       ".event-sign-sheet-stage"
     )
     const sheetElement = element.querySelector<HTMLElement>(".event-sign-sheet")
+    const bannerElement =
+      element.querySelector<HTMLElement>(".event-sign-banner")
     const qrElement = element.querySelector<HTMLElement>(".event-sign-qr-frame")
     const scanCopyElement = element.querySelector<HTMLElement>(
       ".event-sign-scan-copy"
     )
-    if (!stageElement || !sheetElement || !qrElement || !scanCopyElement) {
+    if (
+      !stageElement ||
+      !sheetElement ||
+      !bannerElement ||
+      !qrElement ||
+      !scanCopyElement
+    ) {
       throw new Error("Mobile printable sign preview is incomplete.")
     }
     const previewBounds = element.getBoundingClientRect()
     const stageBounds = stageElement.getBoundingClientRect()
     const sheetBounds = sheetElement.getBoundingClientRect()
+    const bannerBounds = bannerElement.getBoundingClientRect()
     const qrBounds = qrElement.getBoundingClientRect()
     const scanCopyBounds = scanCopyElement.getBoundingClientRect()
     return {
@@ -83,6 +92,9 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
       sheetWidth: sheetBounds.width,
       sheetHeight: sheetBounds.height,
       sheetBottom: sheetBounds.bottom,
+      bannerWidth: bannerBounds.width,
+      bannerHeight: bannerBounds.height,
+      bannerObjectFit: getComputedStyle(bannerElement).objectFit,
       qrWidth: qrBounds.width,
       qrHeight: qrBounds.height,
       scanCopyBottom: scanCopyBounds.bottom,
@@ -94,6 +106,9 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
   expect(screenLayout.stageWidth).toBeLessThanOrEqual(screenLayout.previewWidth)
   expect(screenLayout.sheetWidth).toBeCloseTo(screenLayout.stageWidth, 1)
   expect(screenLayout.sheetHeight).toBeCloseTo(screenLayout.stageHeight, 1)
+  expect(screenLayout.bannerWidth).toBeCloseTo(screenLayout.sheetWidth, 1)
+  expect(screenLayout.bannerWidth / screenLayout.bannerHeight).toBeCloseTo(3, 1)
+  expect(screenLayout.bannerObjectFit).toBe("cover")
   expect(screenLayout.qrWidth).toBeCloseTo(screenLayout.qrHeight, 1)
   expect(screenLayout.scanCopyBottom).toBeLessThanOrEqual(
     screenLayout.sheetBottom + 1
@@ -107,18 +122,27 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
   await expect(closeButton).toBeHidden()
   const printLayout = await preview.evaluate((element) => {
     const sheetElement = element.querySelector<HTMLElement>(".event-sign-sheet")
-    if (!sheetElement) throw new Error("Printable sign sheet is missing.")
+    const bannerElement =
+      element.querySelector<HTMLElement>(".event-sign-banner")
+    if (!sheetElement || !bannerElement) {
+      throw new Error("Printable sign sheet is incomplete.")
+    }
     const sheetBounds = sheetElement.getBoundingClientRect()
+    const bannerBounds = bannerElement.getBoundingClientRect()
     return {
       sheetWidth: sheetBounds.width,
       sheetHeight: sheetBounds.height,
       sheetTransform: getComputedStyle(sheetElement).transform,
+      bannerWidth: bannerBounds.width,
+      bannerHeight: bannerBounds.height,
     }
   })
   expect(printLayout).toEqual({
     sheetWidth: 816,
     sheetHeight: 1_056,
     sheetTransform: "none",
+    bannerWidth: 816,
+    bannerHeight: 272,
   })
 
   await page.emulateMedia({ media: "screen" })

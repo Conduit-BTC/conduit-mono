@@ -135,9 +135,23 @@ async function expectPrintableSignInsideLetterSheet(
       clientHeight: element.clientHeight,
       scrollHeight: element.scrollHeight,
       sheetHeight: sheetBounds.height,
+      banner: relativeBounds(".event-sign-banner"),
       eventTitle: relativeBounds(".event-sign-event-title"),
+      merchantLockup: element.querySelector(".event-sign-merchant-lockup")
+        ? relativeBounds(".event-sign-merchant-lockup")
+        : null,
+      merchantAvatar: element.querySelector(".event-sign-avatar")
+        ? relativeBounds(".event-sign-avatar")
+        : null,
       merchantName: element.querySelector(".event-sign-merchant-name")
         ? relativeBounds(".event-sign-merchant-name")
+        : null,
+      merchantNameFontSize: element.querySelector(".event-sign-merchant-name")
+        ? Number.parseFloat(
+            getComputedStyle(
+              element.querySelector(".event-sign-merchant-name")!
+            ).fontSize
+          )
         : null,
       location: relativeBounds(".event-sign-location"),
       qr: relativeBounds(".event-sign-qr-frame"),
@@ -147,8 +161,13 @@ async function expectPrintableSignInsideLetterSheet(
   })
 
   expect(metrics.scrollHeight).toBeLessThanOrEqual(metrics.clientHeight + 1)
+  expect(metrics.banner.width).toBeCloseTo(816, 1)
+  expect(metrics.banner.height).toBeCloseTo(272, 1)
   for (const bounds of [
+    metrics.banner,
     metrics.eventTitle,
+    metrics.merchantLockup,
+    metrics.merchantAvatar,
     metrics.merchantName,
     metrics.location,
     metrics.qr,
@@ -160,6 +179,18 @@ async function expectPrintableSignInsideLetterSheet(
   }
   expect(metrics.qr.width).toBeGreaterThanOrEqual(300)
   expect(metrics.qr.height).toBeGreaterThanOrEqual(300)
+  if (
+    metrics.merchantLockup &&
+    metrics.merchantAvatar &&
+    metrics.merchantNameFontSize
+  ) {
+    expect(metrics.merchantAvatar.width).toBeGreaterThanOrEqual(96)
+    expect(metrics.merchantAvatar.height).toBeGreaterThanOrEqual(96)
+    expect(metrics.merchantNameFontSize).toBeGreaterThanOrEqual(48)
+    expect(metrics.qr.top - metrics.merchantLockup.bottom).toBeLessThanOrEqual(
+      12
+    )
+  }
 }
 
 type HeldPublicationAck = {
