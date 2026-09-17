@@ -886,6 +886,20 @@ describe("shared progressive event catalogs", () => {
       expectedComplete: true,
     },
     {
+      name: "restarts a completed event read when accepted-product hydration is unavailable",
+      load: async () => ({
+        ...raw(),
+        result: productRead({
+          includeRecord: false,
+          issue: "lookup_unavailable",
+          listing: "unavailable",
+        }),
+      }),
+      expectedReadsAfterFocus: 2,
+      expectedError: false,
+      expectedComplete: true,
+    },
+    {
       name: "restarts a stale incomplete event read when the window regains focus",
       load: async () => ({ ...raw(), complete: false }),
       expectedReadsAfterFocus: 2,

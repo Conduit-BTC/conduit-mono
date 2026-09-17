@@ -26,6 +26,31 @@ function hasUnavailableRelayCoverage(catalog: RawEventCatalog | undefined) {
   )
 }
 
+function hasUnavailableAcceptedProductCoverage(
+  catalog: RawEventCatalog | undefined
+) {
+  const acceptedCoordinates = new Set(
+    catalog?.resolution?.acceptedProductCoordinates ?? []
+  )
+  if (acceptedCoordinates.size === 0) return false
+
+  return Boolean(
+    catalog?.result?.diagnostics.some(
+      (diagnostic) =>
+        acceptedCoordinates.has(diagnostic.productId) &&
+        (diagnostic.issue === "lookup_unavailable" ||
+          diagnostic.coverage?.listing === "unavailable")
+    )
+  )
+}
+
+function hasUnavailableCatalogCoverage(catalog: RawEventCatalog | undefined) {
+  return (
+    hasUnavailableRelayCoverage(catalog) ||
+    hasUnavailableAcceptedProductCoverage(catalog)
+  )
+}
+
 export function eventCatalogQueryIdentity(
   reference: string,
   scope: EventCatalogQueryScope
@@ -98,7 +123,7 @@ export function eventCatalogQueryOptions(
     // Incomplete snapshots remain stale so an interrupted read is resumed.
     staleTime: (query) =>
       query.state.data?.complete &&
-      !hasUnavailableRelayCoverage(query.state.data)
+      !hasUnavailableCatalogCoverage(query.state.data)
         ? 60_000
         : 0,
     gcTime: 30 * 60_000,
@@ -108,7 +133,7 @@ export function eventCatalogQueryOptions(
     refetchOnWindowFocus: (query) =>
       query.state.status === "error" ||
       !query.state.data?.complete ||
-      hasUnavailableRelayCoverage(query.state.data),
+      hasUnavailableCatalogCoverage(query.state.data),
     retry: false,
   })
 }
