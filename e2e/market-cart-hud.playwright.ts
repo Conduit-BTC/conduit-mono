@@ -1,12 +1,14 @@
 import { expect, test, type Page } from "@playwright/test"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 
-const MERCHANTS = Array.from({ length: 10 }, (_, index) =>
-  String(index + 1)
-    .repeat(64)
-    .slice(0, 64)
-)
+const MERCHANT_SECRETS = Array.from({ length: 10 }, () => generateSecretKey())
+const MERCHANTS = MERCHANT_SECRETS.map(getPublicKey)
 const MERCHANT_A = MERCHANTS[0]!
 const MERCHANT_B = MERCHANTS[1]!
 
@@ -35,27 +37,52 @@ async function seedCart(page: Page, merchantCount: number): Promise<void> {
 
 async function seedMerchantProfile(
   page: Page,
-  profile: { pubkey: string; name: string; lud16?: string }
+  profile: { pubkey: string; name: string; lud16?: string },
+  includeSignedFrontier = false
 ): Promise<void> {
-  await page.evaluate((row) => {
-    return new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open("conduit")
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => {
-        const transaction = request.result.transaction("profiles", "readwrite")
-        transaction.objectStore("profiles").put({
-          pubkey: row.pubkey,
-          name: row.name,
-          displayName: row.name,
-          ...(row.lud16 ? { lud16: row.lud16 } : {}),
-          cachedAt: Date.now(),
-        })
-        transaction.oncomplete = () => resolve()
-        transaction.onerror = () => reject(transaction.error)
-        transaction.onabort = () => reject(transaction.error)
-      }
-    })
-  }, profile)
+  const event = includeSignedFrontier
+    ? finalizeEvent(
+        {
+          kind: 0,
+          created_at: Math.floor(Date.now() / 1_000),
+          tags: [],
+          content: JSON.stringify({ name: profile.name, lud16: profile.lud16 }),
+        },
+        MERCHANT_SECRETS[MERCHANTS.indexOf(profile.pubkey)]!
+      )
+    : undefined
+  await page.evaluate(
+    ({ row, event }) => {
+      return new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const transaction = request.result.transaction(
+            "profiles",
+            "readwrite"
+          )
+          transaction.objectStore("profiles").put({
+            pubkey: row.pubkey,
+            name: row.name,
+            displayName: row.name,
+            ...(row.lud16 ? { lud16: row.lud16 } : {}),
+            ...(event
+              ? {
+                  rawContent: event.content,
+                  eventId: event.id,
+                  eventCreatedAt: event.created_at,
+                }
+              : {}),
+            cachedAt: Date.now(),
+          })
+          transaction.oncomplete = () => resolve()
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      })
+    },
+    { row: profile, event }
+  )
 }
 
 async function expectInsideHud(page: Page): Promise<void> {
@@ -373,6 +400,19 @@ test("market cart presence starts one shared merchant-scoped LNURL preflight wit
   await expect(
     page.getByRole("region", { name: "Cart inventory" })
   ).toBeVisible()
+  // Display-only cache fields cannot authorize provider preflight.
+  await page.waitForTimeout(1_000)
+  expect(lnurlRequests).toHaveLength(0)
+  await seedMerchantProfile(
+    page,
+    {
+      pubkey: MERCHANT_B,
+      name: "Lamp Merchant",
+      lud16: "payments@merchant-fixture.dev",
+    },
+    true
+  )
+  await page.goto(`${marketUrl}/products`)
   await expect
     .poll(() => lnurlRequests.length, { timeout: 15_000 })
     .toBeGreaterThanOrEqual(1)
