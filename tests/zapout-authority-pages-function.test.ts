@@ -191,9 +191,7 @@ function post(
     },
     body: JSON.stringify({
       receipts: events,
-      ...(options.recordSettlement === undefined
-        ? {}
-        : { recordSettlement: options.recordSettlement }),
+      ...options,
     }),
   })
 }
@@ -205,10 +203,8 @@ function dependencies(options: {
   metadataError?: Error
   nowMs?: number
   recordSettlement?: Parameters<
-    Parameters<typeof verifyZapoutAuthorityRequest>[2]["recordSettlement"]
-  > extends never
-    ? never
-    : Parameters<typeof verifyZapoutAuthorityRequest>[2]["recordSettlement"]
+    typeof verifyZapoutAuthorityRequest
+  >[2]["recordSettlement"]
 }) {
   const fetchLnurlMetadata = mock(async () => {
     if (options.metadataError) throw options.metadataError

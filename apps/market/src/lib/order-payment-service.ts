@@ -359,24 +359,20 @@ export interface OrderReceiptObservationDependencies {
 async function reportZapoutSettlement(receipt: NDKEvent): Promise<void> {
   if (typeof window === "undefined") return
 
-  try {
-    const response = await fetch("/api/zapout-authority", {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        receipts: [receipt.rawEvent()],
-        recordSettlement: true,
-      }),
-      keepalive: true,
-      signal: AbortSignal.timeout(5_500),
-    })
-    await response.body?.cancel()
-  } catch {
-    // Reporting must not delay or change payment and proof-delivery state.
-  }
+  const response = await fetch("/api/zapout-authority", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      receipts: [receipt.rawEvent()],
+      recordSettlement: true,
+    }),
+    keepalive: true,
+    signal: AbortSignal.timeout(5_500),
+  })
+  await response.body?.cancel()
 }
 
 const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDependencies =

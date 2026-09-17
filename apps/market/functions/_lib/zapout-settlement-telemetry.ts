@@ -139,36 +139,26 @@ export async function recordZapoutSettlement(
     )
     if (!uuid) return
 
-    const abortController = new AbortController()
-    const timeout = setTimeout(
-      () => abortController.abort(),
-      options.timeoutMs ?? DEFAULT_TIMEOUT_MS
-    )
-
-    try {
-      const fetchImpl =
-        options.fetchImpl ??
-        ((input: string, init: RequestInit) => fetch(input, init))
-      const response = await fetchImpl(captureUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          token: projectToken,
-          distinct_id: SERVICE_DISTINCT_ID,
-          event: EVENT_NAME,
-          timestamp,
-          uuid,
-          properties: {
-            $process_person_profile: false,
-            settled_amount_sats: settledAmountSats,
-          },
-        }),
-        signal: abortController.signal,
-      })
-      await response.body?.cancel()
-    } finally {
-      clearTimeout(timeout)
-    }
+    const fetchImpl =
+      options.fetchImpl ??
+      ((input: string, init: RequestInit) => fetch(input, init))
+    const response = await fetchImpl(captureUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        token: projectToken,
+        distinct_id: SERVICE_DISTINCT_ID,
+        event: EVENT_NAME,
+        timestamp,
+        uuid,
+        properties: {
+          $process_person_profile: false,
+          settled_amount_sats: settledAmountSats,
+        },
+      }),
+      signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    })
+    await response.body?.cancel()
   } catch {
     // Settlement telemetry is best effort and must never affect payment state.
   }
