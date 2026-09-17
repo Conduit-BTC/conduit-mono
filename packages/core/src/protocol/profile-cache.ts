@@ -414,6 +414,19 @@ let profileCacheWriteLock: Promise<void> = Promise.resolve()
 // Failed writes remain until equal or stronger durable evidence is confirmed.
 const unpersistedProfileRows = new Map<string, CachedProfile>()
 
+function selectRetainedProfileRow(
+  pubkey: string,
+  durable: CachedProfile | undefined
+): CachedProfile | undefined {
+  const pending = unpersistedProfileRows.get(pubkey)
+  if (!pending) return durable
+  if (!hasKnownProfileFrontier(durable)) return pending
+  if (compareCachedProfileFrontiers(durable, pending) >= 0) {
+    unpersistedProfileRows.delete(pubkey)
+  }
+  return retainStrongestCachedProfileRow(durable, pending)
+}
+
 export function __setProfileCacheTestOverrides(
   overrides: ProfileCacheTestOverrides
 ): void {
@@ -474,6 +487,24 @@ export function createSelectedProfileContext(input: {
           : "unknown"),
     readComplete: input.readComplete ?? false,
   }
+}
+
+/**
+ * Select the exact durable or session-retained kind-0 owner synchronously.
+ *
+ * Callers that already hold an IndexedDB transaction can read `db.profiles`
+ * inside that transaction, then use this helper without opening another async
+ * boundary that could separate the durable row from the session frontier.
+ */
+export function createRetainedSelectedProfileContext(
+  pubkey: string,
+  durable: CachedProfile | undefined
+): SelectedProfileContext {
+  return createSelectedProfileContext({
+    pubkey,
+    row: selectRetainedProfileRow(pubkey, durable),
+    storageAvailable: true,
+  })
 }
 
 /** Compare selected contexts using the same NIP-01 frontier order as persistence. */
@@ -584,16 +615,9 @@ export async function loadProfileCacheSnapshot(pubkeys: string[]): Promise<{
     storageAvailable = false
     rows = []
   }
-  const selected = pubkeys.map((pubkey, index) => {
-    const durable = rows[index]
-    const pending = unpersistedProfileRows.get(pubkey)
-    if (!pending) return durable
-    if (!hasKnownProfileFrontier(durable)) return pending
-    if (compareCachedProfileFrontiers(durable, pending) >= 0) {
-      unpersistedProfileRows.delete(pubkey)
-    }
-    return retainStrongestCachedProfileRow(durable, pending)
-  })
+  const selected = pubkeys.map((pubkey, index) =>
+    selectRetainedProfileRow(pubkey, rows[index])
+  )
   return { rows: selected, storageAvailable }
 }
 

@@ -12,6 +12,7 @@ import {
   fetchLnurlInvoice,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
+  fenceClaimedOrderLifecyclePaymentAuthority,
   generateId,
   hasEffectiveMerchantInvoiceReopenEvidence,
   getAnonZapDraftTag,
@@ -314,6 +315,7 @@ export interface OrderPaymentDependencies {
   claimOrderPaymentProofDelivery: typeof claimOrderPaymentProofDelivery
   claimExternalOrderPaymentProof: typeof claimExternalOrderPaymentProof
   patchClaimedOrderLifecyclePayment: typeof patchClaimedOrderLifecyclePayment
+  fenceClaimedOrderLifecyclePaymentAuthority: typeof fenceClaimedOrderLifecyclePaymentAuthority
   recordOrderPaymentPreparationFailure: typeof recordOrderPaymentPreparationFailure
   recordOrderPaymentProofDelivery: typeof recordOrderPaymentProofDelivery
   recordOrderPaymentWalletSuccessRecovery: typeof recordOrderPaymentWalletSuccessRecovery
@@ -347,6 +349,7 @@ const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
   claimOrderPaymentProofDelivery,
   claimExternalOrderPaymentProof,
   patchClaimedOrderLifecyclePayment,
+  fenceClaimedOrderLifecyclePaymentAuthority,
   recordOrderPaymentPreparationFailure,
   recordOrderPaymentProofDelivery,
   recordOrderPaymentWalletSuccessRecovery,
@@ -1046,6 +1049,40 @@ export async function runOrderPayment(
 
 class OrderPaymentAuthorityError extends Error {}
 
+function preclaimPaymentContractPatch(
+  lifecycle: OrderLifecycle
+): Parameters<typeof patchClaimedOrderLifecyclePayment>[2] {
+  return {
+    paymentClaimId: undefined,
+    merchantLightningAddress: lifecycle.merchantLightningAddress,
+    checkoutMode: lifecycle.checkoutMode,
+    publicZapSigner: lifecycle.publicZapSigner,
+    publicZapFallback: lifecycle.publicZapFallback,
+    zapContent: lifecycle.zapContent,
+    walletPaymentAttemptId: lifecycle.walletPaymentAttemptId,
+    invoiceStatus: lifecycle.invoiceStatus,
+    paymentStatus: lifecycle.paymentStatus,
+    proofDeliveryStatus: lifecycle.proofDeliveryStatus,
+    zapReceiptStatus: lifecycle.zapReceiptStatus,
+    invoice: lifecycle.invoice,
+    paymentHash: lifecycle.paymentHash,
+    preimage: lifecycle.preimage,
+    feeMsats: lifecycle.feeMsats,
+    zapRequestId: lifecycle.zapRequestId,
+    zapRequestCreatedAt: lifecycle.zapRequestCreatedAt,
+    zapReceiptId: lifecycle.zapReceiptId,
+    zapReceiptRelayUrls: lifecycle.zapReceiptRelayUrls,
+    zapLnurl: lifecycle.zapLnurl,
+    zapReceiptPubkey: lifecycle.zapReceiptPubkey,
+    invoiceExpiresAt: lifecycle.invoiceExpiresAt,
+    zapReceiptObservationDeadline: lifecycle.zapReceiptObservationDeadline,
+    phase: lifecycle.phase,
+    lastError: lifecycle.lastError,
+    deliveryNotice: lifecycle.deliveryNotice,
+    completedAt: lifecycle.completedAt,
+  }
+}
+
 function assertOrderPaymentSession(ctx: OrderPaymentContext): void {
   if (
     ctx.shouldContinue?.() === false ||
@@ -1148,6 +1185,7 @@ export async function runOrderPaymentWithUpdatedAddress(
   paymentRecoveryTransitions.add(ctx.orderId)
   const paymentClaimId = generateId()
   let claim: OrderPaymentClaimResult
+  let preclaimLifecycle: OrderLifecycle
   let remembered = false
   try {
     const lifecycle = await dependencies.getOrderLifecycle(ctx.orderId)
@@ -1167,6 +1205,7 @@ export async function runOrderPaymentWithUpdatedAddress(
         "Order payment details changed. Check the merchant payment address again."
       )
     }
+    preclaimLifecycle = lifecycle
     const current = await dependencies.checkOrderPaymentAddressUpdate(
       lifecycle,
       {
@@ -1222,6 +1261,7 @@ export async function runOrderPaymentWithUpdatedAddress(
   return runOrderPaymentInternal(ctx, dependencyOverrides, {
     paymentClaimId,
     lifecycle: claim.lifecycle,
+    preclaimLifecycle: claim.preclaimLifecycle ?? preclaimLifecycle,
     assertSession,
   })
 }
@@ -1229,6 +1269,7 @@ export async function runOrderPaymentWithUpdatedAddress(
 type PreparedOrderPaymentClaim = {
   paymentClaimId: string
   lifecycle: OrderLifecycle
+  preclaimLifecycle: OrderLifecycle
   assertSession?: () => void
 }
 
@@ -1323,6 +1364,7 @@ async function runOrderPaymentInternal(
     return runtimeStates.get(orderId)!
   }
   inFlight.add(orderId)
+  let preclaimLifecycle = preparedClaim?.preclaimLifecycle ?? null
 
   try {
     if (!preparedClaim) {
@@ -1350,6 +1392,7 @@ async function runOrderPaymentInternal(
           })
           return runtimeStates.get(orderId)!
         }
+        preclaimLifecycle = snapshot
         // Admission precedes the claim, which clears the previous invoice.
         await assertOrderPaymentProfileAdmission(snapshot, ctx, dependencies)
       } catch (error) {
@@ -1385,6 +1428,7 @@ async function runOrderPaymentInternal(
       })
       return runtimeStates.get(orderId)!
     }
+    preclaimLifecycle = claim.preclaimLifecycle ?? preclaimLifecycle
 
     const lifecycle = claim.lifecycle
     claimHeartbeat = dependencies.schedulePaymentClaimHeartbeat(
@@ -1441,41 +1485,69 @@ async function runOrderPaymentInternal(
     > | null = null
     let proofDeliveryOutcome: "pending" | "retry_needed" | "sent" = "pending"
     let invoiceForPayment: string | undefined
+    const restoredAuthorityFailure: {
+      current: {
+        error: OrderPaymentAuthorityError
+        lifecycle: OrderLifecycle
+      } | null
+    } = { current: null }
+    const restorePreclaimPaymentContract = async (
+      error: OrderPaymentAuthorityError
+    ): Promise<never> => {
+      if (!preclaimLifecycle) throw error
+      const restored = await patchClaim(
+        preclaimPaymentContractPatch(preclaimLifecycle),
+        {
+          running: false,
+          stage: null,
+          error: error.message,
+        }
+      )
+      restoredAuthorityFailure.current = { error, lifecycle: restored }
+      throw error
+    }
     const assertPaymentAuthority = async () => {
-      assertOrderPaymentSession(ctx)
-      preparedClaim?.assertSession?.()
-      let selected: Awaited<ReturnType<typeof loadSelectedProfileContext>>
       try {
-        selected = await dependencies.loadSelectedProfileContext(
-          ctx.merchantPubkey
-        )
+        assertOrderPaymentSession(ctx)
+        preparedClaim?.assertSession?.()
+        const fence =
+          await dependencies.fenceClaimedOrderLifecyclePaymentAuthority(
+            orderId,
+            paymentClaimId,
+            ctx.merchantPubkey
+          )
+        if (fence.status !== "fenced") {
+          clearSessionClaim = true
+          throw new PaymentClaimSupersededError(fence.lifecycle)
+        }
+        emit(orderId, { lifecycle: fence.lifecycle })
+        assertOrderPaymentSession(ctx)
+        preparedClaim?.assertSession?.()
+        if (invoiceForPayment) {
+          const validation = validateLightningInvoiceForPayment({
+            invoice: invoiceForPayment,
+            expectedAmountMsats: ctx.totalMsats,
+          })
+          if (!validation.ok)
+            throw new OrderPaymentAuthorityError(validation.reason)
+        }
         assertAdmittedPaymentAddress(
           assessOrderPaymentAddress(
-            selected,
+            fence.selectedProfileContext,
             ctx.merchantPubkey,
             ctx.merchantLud16!
           )
         )
       } catch (error) {
-        if (error instanceof OrderPaymentAuthorityError) throw error
-        throw new OrderPaymentAuthorityError(
-          "Saved profile authority is unavailable. Restore local storage and check the payment address again."
-        )
+        if (error instanceof PaymentClaimSupersededError) throw error
+        const authorityError =
+          error instanceof OrderPaymentAuthorityError
+            ? error
+            : new OrderPaymentAuthorityError(
+                "Saved profile authority is unavailable. Restore local storage and check the payment address again."
+              )
+        await restorePreclaimPaymentContract(authorityError)
       }
-      assertOrderPaymentSession(ctx)
-      preparedClaim?.assertSession?.()
-      if (invoiceForPayment) {
-        const validation = validateLightningInvoiceForPayment({
-          invoice: invoiceForPayment,
-          expectedAmountMsats: ctx.totalMsats,
-        })
-        if (!validation.ok)
-          throw new OrderPaymentAuthorityError(validation.reason)
-      }
-      // Recheck durable ownership after the asynchronous profile read.
-      await patchClaim({})
-      assertOrderPaymentSession(ctx)
-      preparedClaim?.assertSession?.()
     }
 
     try {
@@ -1753,6 +1825,9 @@ async function runOrderPaymentInternal(
           amountMsats: ctx.totalMsats,
         },
       })
+      if (restoredAuthorityFailure.current) {
+        throw restoredAuthorityFailure.current.error
+      }
 
       if (payResult.status === "retryable_failure") {
         await patchClaim(
@@ -1941,6 +2016,15 @@ async function runOrderPaymentInternal(
       return runtimeStates.get(orderId)!
     } catch (e) {
       const message = e instanceof Error ? e.message : "Payment failed"
+      if (restoredAuthorityFailure.current && !paymentMoved) {
+        emit(orderId, {
+          running: false,
+          stage: null,
+          error: restoredAuthorityFailure.current.error.message,
+          lifecycle: restoredAuthorityFailure.current.lifecycle,
+        })
+        return runtimeStates.get(orderId)!
+      }
       if (e instanceof PaymentClaimSupersededError && !paymentMoved) {
         emit(orderId, {
           running: false,
@@ -2128,7 +2212,11 @@ export async function runOrderPrivateFallback(
       zapContent: "",
     },
     dependencyOverrides,
-    { paymentClaimId, lifecycle: claim.lifecycle }
+    {
+      paymentClaimId,
+      lifecycle: claim.lifecycle,
+      preclaimLifecycle: claim.preclaimLifecycle ?? snapshot!,
+    }
   )
 }
 

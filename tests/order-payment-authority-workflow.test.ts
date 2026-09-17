@@ -10,7 +10,9 @@ import {
   __resetRelayListTestOverrides,
   __setCommerceTestOverrides,
   __setRelayListTestOverrides,
+  createSelectedProfileContext,
   getProfiles,
+  patchClaimedOrderLifecyclePayment,
   type CachedProfile,
   type OrderLifecycle,
 } from "@conduit/core"
@@ -107,6 +109,26 @@ function dependencies(): Partial<OrderPaymentDependencies> {
   return {
     rememberOrderPaymentClaim: () => true,
     clearOrderPaymentClaim: () => true,
+    fenceClaimedOrderLifecyclePaymentAuthority: async (
+      orderId,
+      paymentClaimId,
+      merchantPubkey
+    ) => {
+      const result = await patchClaimedOrderLifecyclePayment(
+        orderId,
+        paymentClaimId,
+        {}
+      )
+      if (result.status !== "patched") return result
+      return {
+        status: "fenced",
+        lifecycle: result.lifecycle,
+        selectedProfileContext: createSelectedProfileContext({
+          pubkey: merchantPubkey,
+          row: profile,
+        }),
+      }
+    },
     fetchLnurlPayMetadata: async () => {
       counts.metadata += 1
       await afterMetadata?.()

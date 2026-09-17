@@ -2,7 +2,10 @@ import { describe, expect, it } from "bun:test"
 import { type NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 import {
+  claimOrderLifecyclePayment as claimOrderLifecyclePaymentProduction,
   createSelectedProfileContext,
+  patchClaimedOrderLifecyclePayment as patchClaimedOrderLifecyclePaymentProduction,
+  weblnSendPayment,
   type ParsedOrderMessage,
 } from "@conduit/core"
 
@@ -26,7 +29,14 @@ import {
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
 import { buildZapRequestContent } from "../apps/market/src/lib/checkout-payment"
-import { AMBIGUOUS_PAYMENT_WARNING } from "../apps/market/src/lib/payment-rails"
+import {
+  AMBIGUOUS_PAYMENT_WARNING,
+  payCheckoutInvoice,
+} from "../apps/market/src/lib/payment-rails"
+import {
+  WalletPaymentCoordinator,
+  WalletProviderRegistry,
+} from "../apps/market/src/lib/wallet-payment-coordinator"
 import type { OrderLifecycle } from "../packages/core/src/db"
 import {
   bolt11PaymentHashField,
@@ -177,6 +187,24 @@ function paymentDependencies(
   const renewOrderLifecyclePaymentClaim: OrderPaymentDependencies["renewOrderLifecyclePaymentClaim"] =
     (orderId, paymentClaimId) =>
       patchClaimedOrderLifecyclePayment(orderId, paymentClaimId, {})
+  const loadSelectedProfileContext =
+    overrides.loadSelectedProfileContext ??
+    (async (pubkey: string) => createSelectedProfileContext({ pubkey }))
+  const fenceClaimedOrderLifecyclePaymentAuthority: OrderPaymentDependencies["fenceClaimedOrderLifecyclePaymentAuthority"] =
+    async (orderId, paymentClaimId, merchantPubkey) => {
+      const result = await patchClaimedOrderLifecyclePayment(
+        orderId,
+        paymentClaimId,
+        {}
+      )
+      if (result.status !== "patched") return result
+      return {
+        status: "fenced",
+        lifecycle: result.lifecycle,
+        selectedProfileContext:
+          await loadSelectedProfileContext(merchantPubkey),
+      }
+    }
   const claimOrderLifecyclePrivateFallbackPayment: OrderPaymentDependencies["claimOrderLifecyclePrivateFallbackPayment"] =
     async (input) => {
       const lifecycle = await db.orderLifecycles.get(input.orderId)
@@ -219,11 +247,11 @@ function paymentDependencies(
     // exercise real admission and the real transaction against stored snapshots.
     getOrderLifecyclePaymentAdmission: () => "admissible",
     checkOrderPaymentAddressUpdate: async () => ({ status: "unchanged" }),
-    loadSelectedProfileContext: async (pubkey) =>
-      createSelectedProfileContext({ pubkey }),
+    loadSelectedProfileContext,
     claimOrderLifecyclePayment,
     claimOrderLifecyclePrivateFallbackPayment,
     patchClaimedOrderLifecyclePayment,
+    fenceClaimedOrderLifecyclePaymentAuthority,
     recordOrderPaymentPreparationFailure: async () => ({
       status: "missing",
       lifecycle: null,
@@ -2597,7 +2625,11 @@ describe("reviewed merchant payment address recovery", () => {
             expect(stored.orderId).toBe(orderId)
             expect(stored.checkoutMode).toBe(checkoutMode)
             expect(stored.totalMsats).toBe(1_000)
-            expect(stored.merchantLightningAddress).toBe(reviewed.newAddress)
+            expect(stored.merchantLightningAddress).toBe(
+              scenario === "session_during_invoice"
+                ? reviewed.previousAddress
+                : reviewed.newAddress
+            )
             expect(railCalls).toBe(scenario === "success" ? 1 : 0)
             expect(state.lifecycle?.paymentStatus).toBe(
               scenario === "success" ? "manual_required" : "failed"
@@ -2843,7 +2875,9 @@ describe("executor payment authority", () => {
           expect(walletCalls).toBe(boundary === "fee" ? 1 : 0)
           expect(sends).toBe(0)
           expect(stored.paymentClaimId).toBeUndefined()
-          expect(stored.paymentStatus).toBe("failed")
+          expect(stored.paymentStatus).toBe("not_started")
+          expect(stored.invoiceStatus).toBe("not_requested")
+          expect(stored.invoice).toBeUndefined()
           expect(cleared).toBe(1)
           expect(isOrderPaymentRunning(orderId)).toBe(false)
         } finally {
@@ -2855,7 +2889,7 @@ describe("executor payment authority", () => {
     }
   }
 
-  it("fences a competing durable claim after awaiting selected profile authority", async () => {
+  it("stops when the stable authority fence observes a competing durable claim", async () => {
     const orderId = "executor-profile-read-claim-race"
     let stored = lifecycle({
       orderId,
@@ -2883,9 +2917,9 @@ describe("executor payment authority", () => {
           zapMode: "private_checkout",
         }),
         paymentDependencies({
-          loadSelectedProfileContext: async () => {
+          fenceClaimedOrderLifecyclePaymentAuthority: async () => {
             stored = { ...stored, paymentClaimId: "competing-owner" }
-            return selectedContext()
+            return { status: "claim_mismatch", lifecycle: stored }
           },
           fetchLnurlPayMetadata: async () => {
             providers += 1
@@ -2901,4 +2935,240 @@ describe("executor payment authority", () => {
       table.put = originalPut
     }
   })
+
+  for (const rail of [
+    {
+      name: "WebLN",
+      paymentTarget: { type: "webln" as const },
+    },
+    {
+      name: "NWC",
+      paymentTarget: {
+        type: "wallet" as const,
+        walletId: "nwc-wallet",
+        providerId: "nwc" as const,
+      },
+    },
+    {
+      name: "Spark",
+      paymentTarget: {
+        type: "wallet" as const,
+        walletId: "spark-wallet",
+        providerId: "spark" as const,
+      },
+    },
+  ]) {
+    it(`blocks ${rail.name} and restores the retained invoice when authority changes during the final fence`, async () => {
+      const orderId = `executor-final-fence-${rail.name}`
+      const retainedInvoice = privateInvoice("lnbc10n", 6)
+      const replacementInvoice = privateInvoice("lnbc10n", 7)
+      const retainedWalletPaymentAttemptId = "legacy-retained-attempt"
+      let stored = lifecycle({
+        orderId,
+        checkoutMode: "private_checkout",
+        publicZapSigner: undefined,
+        merchantLightningAddress: address,
+        paymentTarget: rail.paymentTarget,
+        invoice: retainedInvoice,
+        invoiceStatus: "failed",
+        paymentStatus: "failed",
+        proofDeliveryStatus: "retry_needed",
+        zapReceiptStatus: "timed_out",
+        walletPaymentAttemptId: retainedWalletPaymentAttemptId,
+        paymentHash: "retained-payment-hash",
+        preimage: "retained-preimage",
+        feeMsats: 21,
+        zapRequestId: "retained-zap-request",
+        zapRequestCreatedAt: 1_700_000_000,
+        zapReceiptId: "retained-zap-receipt",
+        zapReceiptRelayUrls: ["wss://retained.example"],
+        zapLnurl: "lnurl1retained",
+        zapReceiptPubkey: "f".repeat(64),
+        invoiceExpiresAt: 1_900_000_000_000,
+        zapReceiptObservationDeadline: 1_900_000_060_000,
+        lastError: "Retained payment failure",
+        deliveryNotice: "Retained delivery notice",
+      })
+      const before = structuredClone(stored)
+      let removed = false
+      let sends = 0
+      let railEntries = 0
+      let claimedWalletPaymentAttemptId: string | undefined
+      let signalFinalFence!: () => void
+      let releaseFinalFence!: () => void
+      const finalFenceStarted = new Promise<void>((resolve) => {
+        signalFinalFence = resolve
+      })
+      const finalFenceGate = new Promise<void>((resolve) => {
+        releaseFinalFence = resolve
+      })
+      const walletPaymentCoordinator = new WalletPaymentCoordinator(
+        new WalletProviderRegistry([
+          {
+            providerId: "nwc",
+            payInvoice: async () => {
+              sends += 1
+              return { status: "paid", preimage: "nwc-preimage" }
+            },
+          },
+          {
+            providerId: "spark",
+            payInvoice: async () => {
+              sends += 1
+              return { status: "paid", preimage: "spark-preimage" }
+            },
+          },
+        ]),
+        {
+          isTargetEligible: async () => {
+            railEntries += 1
+            signalFinalFence()
+            await finalFenceGate
+            return true
+          },
+        }
+      )
+      const originalWindow = Object.getOwnPropertyDescriptor(
+        globalThis,
+        "window"
+      )
+      if (rail.paymentTarget.type === "webln") {
+        Object.defineProperty(globalThis, "window", {
+          configurable: true,
+          value: {
+            webln: {
+              enable: async () => {
+                railEntries += 1
+                signalFinalFence()
+                await finalFenceGate
+              },
+              sendPayment: async () => {
+                sends += 1
+                return { preimage: "webln-preimage" }
+              },
+            },
+          },
+        })
+      }
+
+      const dependencies = paymentDependencies({
+        getOrderLifecycle: async () => stored,
+        claimOrderLifecyclePayment: claimOrderLifecyclePaymentProduction,
+        patchClaimedOrderLifecyclePayment:
+          patchClaimedOrderLifecyclePaymentProduction,
+        fenceClaimedOrderLifecyclePaymentAuthority: async (
+          _fenceOrderId,
+          paymentClaimId,
+          _merchantPubkey
+        ) => {
+          if (stored.paymentClaimId !== paymentClaimId) {
+            return { status: "claim_mismatch", lifecycle: stored }
+          }
+          claimedWalletPaymentAttemptId = stored.walletPaymentAttemptId
+          return {
+            status: "fenced",
+            lifecycle: stored,
+            selectedProfileContext: selectedContext(removed),
+          }
+        },
+        fetchLnurlPayMetadata: async () => lnurlMetadata(false),
+        requestCheckoutLnurlInvoice: async () => ({
+          invoice: replacementInvoice,
+          zapRelayUrls: [],
+          shouldWaitForZapReceipt: false,
+        }),
+        payCheckoutInvoice: (request) =>
+          payCheckoutInvoice(request, {
+            walletPaymentCoordinator,
+            hasWebLN: () => true,
+            weblnSendPayment,
+            recordPaymentAttemptResult: () => undefined,
+          }),
+      })
+      const table = db.orderLifecycles as typeof db.orderLifecycles & {
+        get: typeof db.orderLifecycles.get
+        put: typeof db.orderLifecycles.put
+      }
+      const originalGet = table.get
+      const originalPut = table.put
+      const restoreTransaction = mockImmediateOrderLifecycleTransaction()
+      table.get = (async () => stored) as typeof table.get
+      table.put = (async (next: OrderLifecycle) => {
+        stored = next
+        return next.orderId
+      }) as typeof table.put
+
+      try {
+        const payment = runOrderPayment(
+          basePaymentContext({
+            orderId,
+            merchantLud16: address,
+            zapMode: "private_checkout",
+            paymentTarget: rail.paymentTarget,
+          }),
+          dependencies
+        )
+        await finalFenceStarted
+        removed = true
+        releaseFinalFence()
+        const result = await payment
+
+        expect(railEntries).toBe(1)
+        expect(sends).toBe(0)
+        expect(result.error).toContain("usable Lightning address")
+        if (rail.paymentTarget.type === "wallet") {
+          expect(claimedWalletPaymentAttemptId).toMatch(/^[0-9a-f-]{36}$/i)
+          expect(claimedWalletPaymentAttemptId).not.toBe(
+            retainedWalletPaymentAttemptId
+          )
+        } else {
+          expect(claimedWalletPaymentAttemptId).toBeUndefined()
+        }
+        expect(stored).toMatchObject({
+          merchantLightningAddress: before.merchantLightningAddress,
+          checkoutMode: before.checkoutMode,
+          publicZapSigner: before.publicZapSigner,
+          publicZapFallback: before.publicZapFallback,
+          zapContent: before.zapContent,
+          walletPaymentAttemptId: before.walletPaymentAttemptId,
+          invoiceStatus: before.invoiceStatus,
+          paymentStatus: before.paymentStatus,
+          proofDeliveryStatus: before.proofDeliveryStatus,
+          zapReceiptStatus: before.zapReceiptStatus,
+          invoice: before.invoice,
+          paymentHash: before.paymentHash,
+          preimage: before.preimage,
+          feeMsats: before.feeMsats,
+          zapRequestId: before.zapRequestId,
+          zapRequestCreatedAt: before.zapRequestCreatedAt,
+          zapReceiptId: before.zapReceiptId,
+          zapReceiptRelayUrls: before.zapReceiptRelayUrls,
+          zapLnurl: before.zapLnurl,
+          zapReceiptPubkey: before.zapReceiptPubkey,
+          invoiceExpiresAt: before.invoiceExpiresAt,
+          zapReceiptObservationDeadline: before.zapReceiptObservationDeadline,
+          phase: before.phase,
+          lastError: before.lastError,
+          deliveryNotice: before.deliveryNotice,
+          completedAt: before.completedAt,
+          paymentClaimId: undefined,
+        })
+        expect(stored.paymentClaimedAt).toBeUndefined()
+        expect(stored.paymentClaimLeaseExpiresAt).toBeUndefined()
+        expect(result.lifecycle?.invoice).toBe(retainedInvoice)
+        expect(isOrderPaymentRunning(orderId)).toBe(false)
+      } finally {
+        table.get = originalGet
+        table.put = originalPut
+        restoreTransaction()
+        if (rail.paymentTarget.type === "webln") {
+          if (originalWindow) {
+            Object.defineProperty(globalThis, "window", originalWindow)
+          } else {
+            delete (globalThis as { window?: unknown }).window
+          }
+        }
+      }
+    })
+  }
 })
