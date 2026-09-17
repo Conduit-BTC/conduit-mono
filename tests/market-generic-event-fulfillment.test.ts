@@ -17,7 +17,7 @@ describe("generic Market event fulfillment", () => {
       expect(route).not.toContain("createCartItemFromProduct")
     }
     expect(resolvedCard).toContain("useProductCartFulfillment")
-    expect(resolvedCard).toContain("isSameCartFulfillment")
+    expect(resolvedCard).toContain("isSameCartLineFulfillment")
     expect(resolvedCard).toContain("View event catalog")
     expect(resolvedCard).toContain("cartActionDisabled={blocked}")
   })
@@ -66,10 +66,18 @@ describe("generic Market event fulfillment", () => {
     )
     expect(resolvedCard).toContain("cartItemInputFromProductSelection(")
     expect(resolvedCard).toContain(
-      "selectCartItem(cart.items, selectedIdentity)"
+      "item.merchantPubkey === selectedProduct.pubkey"
     )
-    expect(resolvedCard).toContain("cart.removeItem(selectedIdentity)")
-    expect(resolvedCard).toContain("cart.setQuantity(selectedIdentity")
+    expect(resolvedCard).toContain("item.productId === selectedProduct.id")
+    expect(resolvedCard).toContain(
+      "isSameCartLineFulfillment(item, cartCandidate)"
+    )
+    expect(resolvedCard).toContain("cart.addItem(cartCandidate, 1)")
+    expect(resolvedCard).toContain(
+      "cart.incrementItem(existing, 1, selectedProduct.stock)"
+    )
+    expect(resolvedCard).toContain("cart.removeItem(existing)")
+    expect(resolvedCard).toContain("cart.decrementItem(existing)")
     expect(resolvedCard).toContain("selectedProductId={selectedProduct.id}")
     expect(variations).toContain("familyProductId:")
     expect(variations).toContain("selectedSpecifications:")

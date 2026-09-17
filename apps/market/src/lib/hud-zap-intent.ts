@@ -4,6 +4,7 @@ const HUD_ZAP_INTENT_TTL_MS = 30_000
 
 export type HudZapAuthorization = {
   merchantPubkey: string
+  purchaseId: string
   buyerPubkey: string
   cartFingerprint: string
   totalMsats: number
@@ -18,12 +19,14 @@ export function armHudZapIntent(intent: HudZapAuthorization): void {
 
 export function consumeHudZapIntent(
   merchantPubkey: string | undefined,
+  purchaseId: string | undefined,
   nowMs = Date.now()
 ): HudZapAuthorization | null {
   const intent = pendingIntent
   pendingIntent = null
   return intent &&
     merchantPubkey === intent.merchantPubkey &&
+    purchaseId === intent.purchaseId &&
     nowMs >= intent.createdAt &&
     nowMs - intent.createdAt <= HUD_ZAP_INTENT_TTL_MS
     ? intent
@@ -32,6 +35,7 @@ export function consumeHudZapIntent(
 
 export type HudZapAuthorizationInput = {
   merchantPubkey: string | undefined
+  purchaseId: string | undefined
   buyerPubkey: string | null
   items: readonly CartItem[]
   totalMsats: number | null
@@ -52,6 +56,7 @@ export function getHudZapAuthorizationBindingMismatch(
   input: Omit<HudZapAuthorizationInput, "nowMs">
 ): "changed" | null {
   return input.merchantPubkey !== authorization.merchantPubkey ||
+    input.purchaseId !== authorization.purchaseId ||
     input.buyerPubkey !== authorization.buyerPubkey ||
     input.totalMsats !== authorization.totalMsats ||
     getCartCommerceFingerprint(input.items) !== authorization.cartFingerprint

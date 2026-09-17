@@ -14,12 +14,14 @@ import {
   getCartItemStockForAvailability,
   getCartProductAvailability,
   getCartItemKey,
+  getCartPurchaseReference,
   getCartCostSummary,
   getCartCommerceFingerprint,
   getCartPublicZapPolicy,
   getCartTotals,
   getProductAddAvailability,
   groupCartItems,
+  groupCartPurchases,
   getCartAvailabilityReadDecision,
   getCartAvailabilityVerificationMessage,
   isCartAvailabilityReadComplete,
@@ -218,6 +220,91 @@ describe("cart model", () => {
       "merchant-a",
     ])
     expect(groups.map((group) => group.merchantAddedAt)).toEqual([400, 100])
+  })
+
+  it("partitions purchases by merchant, delivery, and exact pickup graph", () => {
+    const eventA = pickupFulfillment()
+    const eventB = {
+      ...pickupFulfillment(),
+      calendar: {
+        ...pickupFulfillment().calendar,
+        coordinate: `31922:${"a".repeat(64)}:event-b`,
+        eventId: "5".repeat(64),
+        createdAt: 201,
+      },
+    }
+    const merchantA = eventA.product.merchantPubkey
+    const merchantB = "c".repeat(64)
+    const groups = groupCartPurchases([
+      item({
+        merchantPubkey: merchantA,
+        productId: `30402:${merchantA}:shipping`,
+        title: "Shipped",
+        format: "physical",
+        fulfillment: { type: "shipping" },
+      }),
+      item({
+        merchantPubkey: merchantA,
+        productId: `30402:${merchantA}:pickup-a-1`,
+        title: "Event A first",
+        format: "physical",
+        fulfillment: eventA,
+      }),
+      item({
+        merchantPubkey: merchantA,
+        productId: `30402:${merchantA}:pickup-a-2`,
+        title: "Event A second",
+        format: "physical",
+        fulfillment: {
+          ...eventA,
+          product: {
+            ...eventA.product,
+            coordinate: `30402:${merchantA}:pickup-a-2`,
+            eventId: "6".repeat(64),
+          },
+        },
+      }),
+      item({
+        merchantPubkey: merchantA,
+        productId: `30402:${merchantA}:pickup-b`,
+        title: "Event B",
+        format: "physical",
+        fulfillment: eventB,
+      }),
+      item({
+        merchantPubkey: merchantB,
+        productId: `30402:${merchantB}:digital`,
+        title: "Other merchant",
+        format: "digital",
+        fulfillment: { type: "digital" },
+      }),
+    ])
+
+    expect(groups).toHaveLength(4)
+    expect(
+      groups.map((group) => ({
+        merchant: group.merchantPubkey,
+        kind: group.kind,
+        titles: group.items.map((entry) => entry.title),
+      }))
+    ).toEqual([
+      {
+        merchant: merchantB,
+        kind: "delivery",
+        titles: ["Other merchant"],
+      },
+      { merchant: merchantA, kind: "delivery", titles: ["Shipped"] },
+      {
+        merchant: merchantA,
+        kind: "pickup",
+        titles: ["Event A first", "Event A second"],
+      },
+      { merchant: merchantA, kind: "pickup", titles: ["Event B"] },
+    ])
+    expect(new Set(groups.map((group) => group.id)).size).toBe(4)
+    expect(
+      new Set(groups.map((group) => getCartPurchaseReference(group.id))).size
+    ).toBe(4)
   })
 
   it("adds new items and increments existing products", () => {
@@ -821,6 +908,43 @@ describe("cart model", () => {
       currency: "USD",
       normalizedCurrency: "USD",
     })
+  })
+
+  it("migrates duplicate legacy product rows without merging fulfillment terms", () => {
+    const merchantPubkey = "b".repeat(64)
+    const productId = `30402:${merchantPubkey}:shared-fulfillment`
+    const pickup = {
+      ...pickupFulfillment(),
+      product: {
+        ...pickupFulfillment().product,
+        coordinate: productId,
+        merchantPubkey,
+      },
+    }
+    const shipping = item({
+      merchantPubkey,
+      productId,
+      format: "physical",
+      fulfillment: { type: "shipping" },
+    })
+    const eventPickup = item({
+      merchantPubkey,
+      productId,
+      format: "physical",
+      fulfillment: pickup,
+    })
+
+    for (const items of [
+      [shipping, eventPickup],
+      [eventPickup, shipping],
+    ]) {
+      const parsed = parsePersistedCart({ version: 2, items })
+      expect(parsed.state.items).toHaveLength(2)
+      expect(
+        parsed.state.items.map((entry) => entry.fulfillment?.type).sort()
+      ).toEqual(["pickup", "shipping"])
+      expect(parsed.state.items.map((entry) => entry.quantity)).toEqual([1, 1])
+    }
   })
 
   it("round-trips signed pickup fulfillment through persisted cart storage", () => {

@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { useCart } from "../hooks/useCart"
 import { useEventActorIdentity } from "../hooks/useEventActorIdentity"
 import { useProductCartFulfillment } from "../hooks/useProductCartFulfillment"
-import { isSameCartFulfillment, selectCartItem } from "../lib/cart-model"
+import { isSameCartLineFulfillment } from "../lib/cart-model"
 import {
   cartItemInputFromProductSelection,
   getDefaultProductSelection,
@@ -67,16 +67,14 @@ export function ResolvedProductGridCard({
           })
         : null
     : null
-  const selectedIdentity = {
-    merchantPubkey: selectedProduct.pubkey,
-    productId: selectedProduct.id,
-  }
-  const existing = selectCartItem(cart.items, selectedIdentity)
-  const sameFulfillment =
-    !!existing &&
-    !!cartCandidate &&
-    isSameCartFulfillment(existing, cartCandidate)
-  const existingFulfillmentConflict = !!existing && !sameFulfillment
+  const existing = cartCandidate
+    ? cart.items.find(
+        (item) =>
+          item.merchantPubkey === selectedProduct.pubkey &&
+          item.productId === selectedProduct.id &&
+          isSameCartLineFulfillment(item, cartCandidate)
+      )
+    : undefined
   const pickupHandoff =
     resolution?.status === "pickup"
       ? getPickupHandoffSummary(resolution.fulfillment)
@@ -84,17 +82,12 @@ export function ResolvedProductGridCard({
   const pickupHandlerIdentity = useEventActorIdentity(
     pickupHandoff?.handlerPubkey
   )
-  const cartQuantity = sameFulfillment ? existing.quantity : 0
+  const cartQuantity = existing?.quantity ?? 0
   const blocked =
-    fulfillment.isChecking ||
-    resolution?.status === "blocked" ||
-    !cartCandidate ||
-    existingFulfillmentConflict
+    fulfillment.isChecking || resolution?.status === "blocked" || !cartCandidate
   const disabledLabel = fulfillment.isChecking
     ? "Checking pickup"
-    : existingFulfillmentConflict
-      ? "Review cart"
-      : "View event"
+    : "View event"
 
   useEffect(() => {
     setSelectedProductId(defaultSelection.id)
@@ -105,23 +98,25 @@ export function ResolvedProductGridCard({
     if (blocked || !cartCandidate) return
     cart.addItem(cartCandidate, 1)
   }
+  const increment = (selection = selectedProduct) => {
+    if (selection.id !== selectedProduct.id || !existing) return
+    cart.incrementItem(existing, 1, selectedProduct.stock)
+  }
   const decrement = (selection = selectedProduct) => {
     if (selection.id !== selectedProduct.id) return
-    if (!existing || !sameFulfillment) return
+    if (!existing) return
     if (existing.quantity <= 1) {
-      cart.removeItem(selectedIdentity)
+      cart.removeItem(existing)
       return
     }
-    cart.setQuantity(selectedIdentity, existing.quantity - 1)
+    cart.decrementItem(existing)
   }
 
   const notice = fulfillment.isChecking
     ? "Checking current signed event pickup evidence before this listing can be added."
-    : existingFulfillmentConflict
-      ? "This listing is already in your cart with different fulfillment. Remove that line before adding it here."
-      : resolution?.status === "blocked"
-        ? resolution.reason
-        : null
+    : resolution?.status === "blocked"
+      ? resolution.reason
+      : null
   const showPickupNotice = !!pickupHandoff && !!pickupHandlerIdentity && !notice
 
   return (
@@ -137,7 +132,7 @@ export function ResolvedProductGridCard({
       allowZeroPrice={resolution?.status === "pickup"}
       cartQuantity={cartQuantity}
       onAddToCart={add}
-      onIncrement={add}
+      onIncrement={increment}
       onDecrement={decrement}
       cartActionDisabled={blocked}
       cartActionDisabledLabel={disabledLabel}

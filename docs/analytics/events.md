@@ -204,9 +204,10 @@ search, or title data.
 
 ### `cart_clear`
 
-Emitted when a buyer clears a full cart or a merchant cart group. It may record
-cart composition buckets, but must not include product, merchant, buyer, price,
-search, or title data. Checkout success cleanup should not emit this event.
+Emitted when a buyer clears a full cart or one compatible purchase group. It
+may record cart composition buckets, but must not include product, merchant,
+buyer, price, search, purchase, or title data. Checkout success cleanup should
+not emit this event.
 
 <!-- telemetry-event: checkout_initiated properties=event_name,app,page_url,page_path,surface,status,count_bucket,product_type,time_bucket -->
 
