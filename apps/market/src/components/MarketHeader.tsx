@@ -377,17 +377,6 @@ export function MarketHeader() {
         : undefined,
     [accountSearch.data]
   )
-  /**
-   * Storefronts come first and always open a storefront; everyone else is a
-   * plain account and opens the public profile.
-   */
-  const orderedMatches = useMemo(() => {
-    const matches = accountMatches ?? []
-    return [
-      ...matches.filter((match) => match.isSeller),
-      ...matches.filter((match) => !match.isSeller),
-    ]
-  }, [accountMatches])
   const suggestionGroups = useMemo(
     () =>
       [
@@ -396,18 +385,18 @@ export function MarketHeader() {
           heading: "Stores",
           // The group heading already says these are storefronts.
           items: toAccountSuggestionItems(
-            orderedMatches.filter((match) => match.isSeller)
+            (accountMatches ?? []).filter((match) => match.isSeller)
           ).map((item) => ({ ...item, badge: undefined })),
         },
         {
           id: `${ACCOUNT_SUGGESTIONS_LISTBOX_ID}-accounts`,
           heading: "Accounts",
           items: toAccountSuggestionItems(
-            orderedMatches.filter((match) => !match.isSeller)
+            (accountMatches ?? []).filter((match) => !match.isSeller)
           ),
         },
       ].filter((group) => group.items.length > 0),
-    [orderedMatches]
+    [accountMatches]
   )
   const accountItems = useMemo(
     () => flattenSearchSuggestionGroups(suggestionGroups),
@@ -438,7 +427,7 @@ export function MarketHeader() {
   }, [accountSearch.activeQuery])
 
   function selectAccountSuggestion(index: number): void {
-    const match = orderedMatches[index]
+    const match = accountMatches?.[index]
     if (!match) return
     setSuggestionsDismissed(true)
     setSearchDirty(false)

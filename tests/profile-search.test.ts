@@ -10,11 +10,11 @@ import {
   searchCachedProfiles,
   searchNetworkProfiles,
   planProfileSearchRelayUrls,
-  searchProfiles,
   summarizeProfileSearchRelays,
   PROFILE_SEARCH_MAX_RELAYS,
   type ProfileSearchDependencies,
   type ProfileSearchMatch,
+  type ProfileSearchQuery,
   type ProfileSearchResult,
 } from "../packages/core/src/protocol/profile-search"
 
@@ -91,6 +91,17 @@ function deps(
     }),
     ...overrides,
   }
+}
+
+async function runProfileSearch(
+  input: ProfileSearchQuery,
+  dependencies: Partial<ProfileSearchDependencies> = {}
+): Promise<ProfileSearchResult> {
+  const [cached, network] = await Promise.all([
+    searchCachedProfiles(input, dependencies),
+    searchNetworkProfiles(input, dependencies),
+  ])
+  return mergeProfileSearchResults(cached, network, input.limit)
 }
 
 describe("profile search text matching", () => {
@@ -379,10 +390,10 @@ describe("account-scoped search plan", () => {
   })
 })
 
-describe("searchProfiles", () => {
+describe("profile search phase integration", () => {
   it("skips relay traffic for queries below the minimum length", async () => {
     let fetched = 0
-    const result = await searchProfiles(
+    const result = await runProfileSearch(
       { query: "a" },
       deps({
         fetchEvents: async () => {
@@ -398,7 +409,7 @@ describe("searchProfiles", () => {
 
   it("merges local cache and network hits, keeps the newest kind-0 per pubkey, and flags sellers", async () => {
     const filters: unknown[] = []
-    const result = await searchProfiles(
+    const result = await runProfileSearch(
       { query: "Alice", limit: 5 },
       deps({
         loadCachedProfiles: async () => [
@@ -443,7 +454,7 @@ describe("searchProfiles", () => {
   })
 
   it("keeps local matches and reports unavailability when every relay fails", async () => {
-    const result = await searchProfiles(
+    const result = await runProfileSearch(
       { query: "alice" },
       deps({
         loadCachedProfiles: async () => [
@@ -460,7 +471,7 @@ describe("searchProfiles", () => {
   })
 
   it("keeps a capped or partially answered relay read partial even with matches", async () => {
-    const capped = await searchProfiles(
+    const capped = await runProfileSearch(
       { query: "alice" },
       deps({
         fetchEvents: async () => ({
@@ -480,7 +491,7 @@ describe("searchProfiles", () => {
     expect(capped.evidence).toBe("lookup_partial")
     expect(capped.relaysDegraded).toBe(1)
 
-    const partial = await searchProfiles(
+    const partial = await runProfileSearch(
       { query: "alice" },
       deps({
         fetchEvents: async () => ({
@@ -533,7 +544,7 @@ describe("searchProfiles", () => {
   })
 
   it("reports a partial lookup when only some relays answer", async () => {
-    const result = await searchProfiles(
+    const result = await runProfileSearch(
       { query: "alice" },
       deps({
         planSearchRelayUrls: () => ["wss://one.example", "wss://two.example"],
@@ -633,7 +644,7 @@ describe("searchProfiles", () => {
     const controller = new AbortController()
     controller.abort()
     await expect(
-      searchProfiles(
+      runProfileSearch(
         { query: "alice", signal: controller.signal },
         deps({
           fetchEvents: async () => {
@@ -1018,7 +1029,7 @@ describe("profile search device reads and retirement", () => {
     const network = await searchNetworkProfiles({ query: "ali" }, replacedDeps)
     expect(network.superseded.map((entry) => entry.pubkey)).toEqual([ALICE])
 
-    const merged = await searchProfiles({ query: "ali" }, replacedDeps)
+    const merged = await runProfileSearch({ query: "ali" }, replacedDeps)
     expect(merged.matches).toEqual([])
   })
 
@@ -1030,7 +1041,7 @@ describe("profile search device reads and retirement", () => {
       eventId: "cached",
       cachedAt: 1,
     }
-    const merged = await searchProfiles(
+    const merged = await runProfileSearch(
       { query: "ali" },
       deps({
         loadCachedProfiles: async () => [cachedRow],

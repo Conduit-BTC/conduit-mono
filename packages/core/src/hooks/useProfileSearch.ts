@@ -28,8 +28,6 @@ export interface UseProfileSearchOptions {
 export interface UseProfileSearchResult {
   /** The trimmed query being searched; empty when nothing is eligible. */
   activeQuery: string
-  /** The query sent to relays; empty while the settle timer is running. */
-  settledQuery: string
   /**
    * Cached matches as soon as the local scan answers, then the merged result
    * once relays for the same query answer. Evidence stays `not_queried` until
@@ -43,8 +41,6 @@ export interface UseProfileSearchResult {
   isNetworkFetching: boolean
   /** True while any phase for `activeQuery` is still outstanding. */
   isFetching: boolean
-  /** True while the input has changed and the settle timer is still running. */
-  isSettling: boolean
 }
 
 export function getProfileSearchQueryKey(
@@ -214,11 +210,9 @@ export function useProfileSearch(
   const isNetworkFetching = networkEligible && (isSettling || !networkDone)
   return {
     activeQuery: eligible ? trimmed : "",
-    settledQuery: eligible ? settledQuery : "",
     data,
     isDeviceFetching,
     isNetworkFetching,
     isFetching: isDeviceFetching || isNetworkFetching,
-    isSettling,
   }
 }

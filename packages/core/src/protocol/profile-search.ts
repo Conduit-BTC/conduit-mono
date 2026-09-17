@@ -114,17 +114,6 @@ export function mergeProfileSearchDeviceEvidence(
   }
 }
 
-/** True when a device read failed, so the list may be missing accounts. */
-export function hasUnavailableProfileSearchDeviceRead(
-  device: ProfileSearchDeviceEvidence
-): boolean {
-  return (
-    device.profileCache === "unavailable" ||
-    device.sellerFlags === "unavailable" ||
-    device.cachedFrontiers === "unavailable"
-  )
-}
-
 function emptyDeviceEvidence(): ProfileSearchDeviceEvidence {
   return {
     profileCache: "not_read",
@@ -740,17 +729,4 @@ function collectSupersededFrontiers(
     }
   }
   return superseded
-}
-
-/** Runs both phases and returns the merged result once the network answers. */
-export async function searchProfiles(
-  input: ProfileSearchQuery,
-  dependencies: Partial<ProfileSearchDependencies> = {}
-): Promise<ProfileSearchResult> {
-  const limit = input.limit ?? PROFILE_SEARCH_DEFAULT_LIMIT
-  const [cached, network] = await Promise.all([
-    searchCachedProfiles(input, dependencies),
-    searchNetworkProfiles(input, dependencies),
-  ])
-  return mergeProfileSearchResults(cached, network, limit)
 }
