@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { db, type StoredPaymentAttempt } from "../packages/core/src/db"
+import {
+  db,
+  type CachedProfile,
+  type StoredPaymentAttempt,
+} from "../packages/core/src/db"
 import {
   GUEST_ORDER_LOCAL_RETENTION_MS,
   LEGACY_ORDER_PAYMENT_RECOVERY_GRACE_MS,
@@ -15,6 +19,7 @@ import {
   claimOrderLifecycleUpdatedAddressPayment,
   claimOrderPaymentProofDelivery,
   deriveOrderLifecyclePhase,
+  fenceClaimedOrderLifecyclePaymentAuthority,
   getOrderLifecyclePaymentAdmission,
   getOrderPaymentTargetReplacementAdmission,
   getOrderPaymentAddressReplacementAdmission,
@@ -52,14 +57,18 @@ async function withMockOrderPaymentDb<T>(
   initial: {
     lifecycle?: OrderLifecycle
     paymentAttempt?: StoredPaymentAttempt
+    profile?: CachedProfile
   },
   run: (state: {
     lifecycle: () => OrderLifecycle | undefined
     paymentAttempt: () => StoredPaymentAttempt | undefined
+    profile: () => CachedProfile | undefined
+    transactionTables: () => unknown[][]
   }) => Promise<T>
 ): Promise<T> {
   let lifecycle = initial.lifecycle
   let paymentAttempt = initial.paymentAttempt
+  let profile = initial.profile
   const lifecycleTable = db.orderLifecycles as typeof db.orderLifecycles & {
     get: typeof db.orderLifecycles.get
     put: typeof db.orderLifecycles.put
@@ -69,13 +78,20 @@ async function withMockOrderPaymentDb<T>(
       get: typeof db.paymentAttempts.get
       put: typeof db.paymentAttempts.put
     }
+  const profileTable = db.profiles as typeof db.profiles & {
+    get: typeof db.profiles.get
+    put: typeof db.profiles.put
+  }
   const database = db as typeof db & { transaction: typeof db.transaction }
   const originalLifecycleGet = lifecycleTable.get
   const originalLifecyclePut = lifecycleTable.put
   const originalPaymentAttemptGet = paymentAttemptTable.get
   const originalPaymentAttemptPut = paymentAttemptTable.put
+  const originalProfileGet = profileTable.get
+  const originalProfilePut = profileTable.put
   const originalTransaction = database.transaction
   let transactionTail: Promise<unknown> = Promise.resolve()
+  const transactionTables: unknown[][] = []
 
   lifecycleTable.get = (async (orderId: string) =>
     lifecycle?.orderId === orderId
@@ -93,8 +109,15 @@ async function withMockOrderPaymentDb<T>(
     paymentAttempt = next
     return next.id
   }) as typeof paymentAttemptTable.put
+  profileTable.get = (async (pubkey: string) =>
+    profile?.pubkey === pubkey ? profile : undefined) as typeof profileTable.get
+  profileTable.put = (async (next: CachedProfile) => {
+    profile = next
+    return next.pubkey
+  }) as typeof profileTable.put
   database.transaction = ((...args: unknown[]) => {
     const scope = args.at(-1) as () => Promise<unknown>
+    transactionTables.push(args.slice(1, -1))
     const result = transactionTail.then(scope, scope)
     transactionTail = result.then(
       () => undefined,
@@ -107,12 +130,16 @@ async function withMockOrderPaymentDb<T>(
     return await run({
       lifecycle: () => lifecycle,
       paymentAttempt: () => paymentAttempt,
+      profile: () => profile,
+      transactionTables: () => transactionTables,
     })
   } finally {
     lifecycleTable.get = originalLifecycleGet
     lifecycleTable.put = originalLifecyclePut
     paymentAttemptTable.get = originalPaymentAttemptGet
     paymentAttemptTable.put = originalPaymentAttemptPut
+    profileTable.get = originalProfileGet
+    profileTable.put = originalProfilePut
     database.transaction = originalTransaction
   }
 }
@@ -724,6 +751,9 @@ describe("order payment admission", () => {
       const result = await claimOrderLifecyclePayment(input)
 
       expect(result.status).toBe("claimed")
+      if (result.status === "claimed") {
+        expect(result.preclaimLifecycle).toEqual(lifecycle)
+      }
       expect(state.lifecycle()).toMatchObject({
         paymentClaimId: input.paymentClaimId,
         invoiceStatus: "requesting",
@@ -838,6 +868,130 @@ describe("order payment admission", () => {
       expect(terminal.status).toBe("patched")
       expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
     })
+  })
+
+  it("selects profile authority and renews the matching payment claim together", async () => {
+    const claimed: OrderLifecycle = {
+      ...lifecycle,
+      paymentClaimId: input.paymentClaimId,
+      paymentClaimedAt: Date.now(),
+      paymentClaimLeaseExpiresAt: Date.now() + 1,
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+    }
+    const profile: CachedProfile = {
+      pubkey: claimed.merchantPubkey,
+      rawContent: "{}",
+      eventId: "d".repeat(64),
+      eventCreatedAt: 2,
+      cachedAt: Date.now(),
+    }
+    await withMockOrderPaymentDb(
+      { lifecycle: claimed, profile },
+      async (state) => {
+        const fenced = await fenceClaimedOrderLifecyclePaymentAuthority(
+          claimed.orderId,
+          input.paymentClaimId,
+          claimed.merchantPubkey
+        )
+        expect(fenced.status).toBe("fenced")
+        if (fenced.status !== "fenced") throw new Error("claim not fenced")
+        expect(fenced.selectedProfileContext.frontier).toMatchObject({
+          eventId: profile.eventId,
+          rawContent: profile.rawContent,
+          validity: "valid",
+        })
+        expect(fenced.lifecycle.paymentClaimLeaseExpiresAt).toBeGreaterThan(
+          claimed.paymentClaimLeaseExpiresAt!
+        )
+
+        await db.orderLifecycles.put({
+          ...state.lifecycle()!,
+          paymentClaimId: "competing-claim",
+        })
+        const stale = await fenceClaimedOrderLifecyclePaymentAuthority(
+          claimed.orderId,
+          input.paymentClaimId,
+          claimed.merchantPubkey
+        )
+        expect(stale.status).toBe("claim_mismatch")
+      }
+    )
+  })
+
+  it("serializes the payment fence behind a stronger profile retention transaction", async () => {
+    const claimed: OrderLifecycle = {
+      ...lifecycle,
+      paymentClaimId: input.paymentClaimId,
+      paymentClaimedAt: Date.now(),
+      paymentClaimLeaseExpiresAt: Date.now() + 1,
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+    }
+    const originalProfile: CachedProfile = {
+      pubkey: claimed.merchantPubkey,
+      rawContent: JSON.stringify({ lud16: "old@example.com" }),
+      eventId: "c".repeat(64),
+      eventCreatedAt: 1,
+      cachedAt: Date.now(),
+    }
+    const strongerProfile: CachedProfile = {
+      ...originalProfile,
+      rawContent: "{}",
+      eventId: "d".repeat(64),
+      eventCreatedAt: 2,
+    }
+
+    await withMockOrderPaymentDb(
+      { lifecycle: claimed, profile: originalProfile },
+      async (state) => {
+        let releaseProfileWrite!: () => void
+        let signalProfileWrite!: () => void
+        const profileWriteStarted = new Promise<void>((resolve) => {
+          signalProfileWrite = resolve
+        })
+        const profileWriteGate = new Promise<void>((resolve) => {
+          releaseProfileWrite = resolve
+        })
+        const profileWrite = db.transaction("rw", db.profiles, async () => {
+          signalProfileWrite()
+          await profileWriteGate
+          await db.profiles.put(strongerProfile)
+        })
+        await profileWriteStarted
+
+        let fenceSettled = false
+        const fence = fenceClaimedOrderLifecyclePaymentAuthority(
+          claimed.orderId,
+          input.paymentClaimId,
+          claimed.merchantPubkey
+        ).finally(() => {
+          fenceSettled = true
+        })
+        await Promise.resolve()
+        expect(fenceSettled).toBe(false)
+
+        releaseProfileWrite()
+        await profileWrite
+        const result = await fence
+        expect(result.status).toBe("fenced")
+        if (result.status !== "fenced") throw new Error("claim not fenced")
+        expect(result.selectedProfileContext.frontier).toMatchObject({
+          eventId: strongerProfile.eventId,
+          rawContent: strongerProfile.rawContent,
+        })
+        expect(state.profile()).toEqual(strongerProfile)
+        expect(
+          state
+            .transactionTables()
+            .some(
+              (tables) =>
+                tables.includes(db.orderLifecycles) &&
+                tables.includes(db.profiles)
+            )
+        ).toBe(true)
+      }
+    )
   })
 
   it("transfers pending proof work when exact receipt evidence fences a payment claim", async () => {

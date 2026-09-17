@@ -96,6 +96,43 @@ describe("WalletPaymentCoordinator", () => {
     expect(nwcPay).toHaveBeenCalledTimes(0)
   })
 
+  it("rechecks admission after wallet registration before calling the provider", async () => {
+    let admitted = true
+    const pay = mock(async () => ({
+      status: "paid" as const,
+      preimage: "paid",
+    }))
+    const coordinator = new WalletPaymentCoordinator(
+      new WalletProviderRegistry([registeredProvider("spark", pay)]),
+      {
+        isTargetEligible: async () => {
+          admitted = false
+          return true
+        },
+      }
+    )
+    await expect(
+      coordinator.payInvoice(
+        { walletId: "spark-personal", providerId: "spark" },
+        {
+          invoice: "lnbc1invoice",
+          amountMsats: 21_000,
+          idempotencyKey: "attempt-admission",
+          timeoutMs: 30_000,
+          appId: "market",
+          beforeSend: async () => {
+            if (!admitted) throw new Error("Payment authority changed")
+          },
+        }
+      )
+    ).resolves.toEqual({
+      status: "failed",
+      phase: "before_publish",
+      reason: "Payment authority changed",
+    })
+    expect(pay).toHaveBeenCalledTimes(0)
+  })
+
   it("fails before publication when the exact provider is unavailable", async () => {
     const sparkPay = mock(async () => ({
       status: "paid" as const,
@@ -244,6 +281,57 @@ describe("WalletPaymentCoordinator", () => {
       feeMsats: 3,
     })
     expect(payInvoice).toHaveBeenCalledTimes(1)
+  })
+
+  it("passes admission through the NWC adapter without replacing its rejection reason", async () => {
+    let rejectDuringPreconnect = false
+    let admitted = true
+    const payInvoice = mock(async () => ({
+      preimage: "nwc-preimage",
+      fees_paid: 3,
+    }))
+    __buyerNwcSessionTestInternals.__setClientFactory(
+      () =>
+        ({
+          getInfo: async () => ({
+            methods: ["pay_invoice"],
+            network: "mainnet",
+          }),
+          getBalance: async () => ({ balance: 0 }),
+          payInvoice,
+          close: () => undefined,
+          pool: {
+            ensureRelay: async () => {
+              if (rejectDuringPreconnect) admitted = false
+            },
+          },
+        }) as never
+    )
+    const session = getBuyerNwcSession(NWC_WALLET_ID)
+    session.setConnection(NWC_CONNECTION)
+    await session.warm()
+    rejectDuringPreconnect = true
+
+    const result = await marketAdapterCoordinator.payInvoice(
+      { walletId: NWC_WALLET_ID, providerId: "nwc" },
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        idempotencyKey: "attempt-nwc",
+        timeoutMs: 1_000,
+        appId: "market",
+        beforeSend: async () => {
+          if (!admitted) throw new Error("Payment authority changed")
+        },
+      }
+    )
+
+    expect(result).toEqual({
+      status: "failed",
+      phase: "before_publish",
+      reason: "Payment authority changed",
+    })
+    expect(payInvoice).toHaveBeenCalledTimes(0)
   })
 
   it("fails before publication when live NWC info reports a different network", async () => {
