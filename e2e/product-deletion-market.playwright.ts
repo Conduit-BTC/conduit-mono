@@ -171,7 +171,7 @@ test("Market hides a stale cached product after durable tombstone evidence @mark
   await installValidTestSigner(page)
   await page.goto(`${marketUrl}/products?source=combined`)
   await expect(
-    page.getByRole("textbox", { name: "Search products" })
+    page.getByRole("combobox", { name: "Search products" })
   ).toBeVisible()
 
   await seedProduct(page)

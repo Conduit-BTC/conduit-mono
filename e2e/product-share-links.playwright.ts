@@ -264,7 +264,7 @@ async function getStableShareButton(
 async function openRedMarketVariation(page: Page): Promise<Locator> {
   await page.goto(`${marketUrl}/products`)
   await expect(
-    page.getByRole("textbox", { name: "Search products" })
+    page.getByRole("combobox", { name: "Search products" })
   ).toBeVisible()
   await seedCachedProductFamily(page)
   await page.goto(RED_URL)
