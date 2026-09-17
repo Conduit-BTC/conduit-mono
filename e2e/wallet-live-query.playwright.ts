@@ -169,7 +169,7 @@ test("market wallet descriptors converge across tabs through Dexie liveQuery @ma
     0
   )
 
-  const search = secondPage.getByRole("textbox", { name: "Search products" })
+  const search = secondPage.getByRole("combobox", { name: "Search products" })
   await search.fill("wallet subscription cleanup")
   await search.press("Enter")
   await expect(secondPage).toHaveURL(/\/products/)
