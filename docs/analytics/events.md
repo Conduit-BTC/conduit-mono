@@ -343,11 +343,21 @@ static service-level distinct ID and disables PostHog person-profile processing.
 Emitted only after the server re-verifies the public NIP-57 receipt authority
 for a Conduit Zap Out observed by the payment lifecycle. The sole business
 property is the exact positive whole-satoshi invoice amount that the verified
-receipt marks paid. It must not include app, route, session, buyer, merchant,
-order, product, invoice, payment hash, preimage, receipt, relay, wallet, fee, or
-payment-rail data. Authority-unavailable, invalid, unpaid, private-checkout, and
-non-Zap-Out flows do not emit this event. Delivery is best effort and may
-undercount; payment state never depends on telemetry availability.
+receipt marks paid. The event uses a shared static service identity, disables
+person-profile processing, rounds its timestamp to the UTC calendar day, and
+uses a server-secret-derived opaque UUID only to deduplicate the same verified
+receipt. PostHog ingestion disables IP capture. The raw receipt identifier and
+secret never leave the server.
+
+It must not include app, route, session, buyer, merchant, order, product,
+public key, comment, invoice, payment hash, preimage, receipt, relay, wallet,
+connection, fee, or payment-rail data. Authority-unavailable, invalid, unpaid,
+private-checkout, and non-Zap-Out flows do not emit this event. Delivery is best
+effort and may undercount; payment state never depends on telemetry
+availability. Aggregate reporting must call this observed verified public-Zap-
+Out volume rather than total platform sales or merchant revenue. Exact amounts
+can be distinctive, so the event is privacy-minimized rather than guaranteed
+unlinkable from separate public receipt data.
 
 ## Agent Use
 
