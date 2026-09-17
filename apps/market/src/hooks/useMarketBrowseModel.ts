@@ -26,6 +26,10 @@ import {
   type MarketProductCardView,
 } from "../lib/marketBrowseModel"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
+import {
+  filterSellersByName,
+  groupDiscoveredSellers,
+} from "../lib/sellerDirectory"
 import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
 import { useShopperPresets } from "./useShopperPresets"
 import { useMerchantIdentities } from "./useMerchantIdentities"
@@ -271,6 +275,20 @@ export function useMarketBrowseModel({
       selectedTags,
     ]
   )
+  /**
+   * Storefronts whose own name matches the text query, taken from the same
+   * discovered catalog. Product filtering stays product-only; this list is a
+   * separate answer to "did you mean this store?".
+   */
+  const matchingSellers = useMemo(() => {
+    const query = search.q?.trim() ?? ""
+    if (!query) return []
+    return filterSellersByName(
+      groupDiscoveredSellers(productData),
+      getMerchantIdentity,
+      query
+    )
+  }, [getMerchantIdentity, productData, search.q])
   const storeFacetSortProducts = useMemo(
     () =>
       filterProductsByFacets(productData, {
@@ -331,6 +349,7 @@ export function useMarketBrowseModel({
     ),
     hasMore: visibleCount < filtered.length,
     hasUnavailablePriceForSort,
+    matchingSellers,
     isUpdatingListings: preparedProductsQuery.isHydrating,
     productCards,
     productData,

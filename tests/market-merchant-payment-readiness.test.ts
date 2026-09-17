@@ -1,13 +1,34 @@
+import {
+  hasFreshProfilePaymentAddress,
+  type SelectedProfileContext,
+} from "@conduit/core"
 import { describe, expect, it } from "bun:test"
 import {
   getMerchantPaymentLud16,
   getMerchantPaymentProfileState,
   getMerchantPaymentReadiness,
-  hasPositiveMerchantPaymentAddressEvidence,
 } from "../apps/market/src/lib/merchant-payment-readiness"
 import { getCheckoutEvidenceCheckingLabel } from "../apps/market/src/lib/checkout-validation"
 
 const checkoutSource = Bun.file("apps/market/src/routes/checkout.tsx").text()
+
+function paymentContext(
+  lud16: string,
+  freshness: SelectedProfileContext["freshness"]
+): SelectedProfileContext {
+  return {
+    profile: { pubkey: "a".repeat(64), lud16 },
+    frontier: {
+      eventId: "b".repeat(64),
+      eventCreatedAt: 1,
+      rawContent: JSON.stringify({ lud16 }),
+      validity: "valid",
+    },
+    freshness,
+    persistence: "durable",
+    readComplete: false,
+  }
+}
 
 describe("shopper merchant payment readiness", () => {
   it("uses strict profile evidence for checkout blockers despite richer cached display data", async () => {
@@ -39,7 +60,7 @@ describe("shopper merchant payment readiness", () => {
     expect(source).toContain("requireCompleteEvidence: true")
     expect(source).toContain('evidenceScope: "payment"')
     expect(source).toContain(
-      "lud16: refreshedProfileResult.data[selectedMerchant]?.lud16"
+      "refreshedProfileResult.profileContexts[selectedMerchant]"
     )
     expect(source).toMatch(
       /getFreshLnurlMetadata\(\s*currentMerchantLud16\s*\)/
@@ -82,10 +103,9 @@ describe("shopper merchant payment readiness", () => {
 
   it("accepts a live positive address without treating partial coverage as absence", () => {
     const lud16 = "merchant@wallet.example"
-    const positiveAddressEvidence = hasPositiveMerchantPaymentAddressEvidence({
-      meta: { source: "public", stale: false },
-      lud16,
-    })
+    const positiveAddressEvidence = hasFreshProfilePaymentAddress(
+      paymentContext(lud16, "observed")
+    )
 
     expect(positiveAddressEvidence).toBe(true)
     expect(
@@ -103,15 +123,11 @@ describe("shopper merchant payment readiness", () => {
   })
 
   it("rejects cache-only or stale addresses as positive payment evidence", () => {
-    for (const meta of [
-      { source: "local_cache" as const, stale: true },
-      { source: "public" as const, stale: true },
-    ]) {
+    for (const freshness of ["retained", "unobserved"] as const) {
       expect(
-        hasPositiveMerchantPaymentAddressEvidence({
-          meta,
-          lud16: "cached@wallet.example",
-        })
+        hasFreshProfilePaymentAddress(
+          paymentContext("cached@wallet.example", freshness)
+        )
       ).toBe(false)
     }
   })

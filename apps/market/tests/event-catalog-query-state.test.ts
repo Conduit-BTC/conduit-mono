@@ -235,7 +235,9 @@ describe("event catalog refresh presentation", () => {
     )
     const retained = raw()
     const before = JSON.stringify(retained)
-    client.setQueryData(options.queryKey, retained)
+    client.setQueryData(options.queryKey, retained, {
+      updatedAt: Date.now() - 61_000,
+    })
     const observer = new QueryObserver(client, options)
     const release = observer.subscribe(() => {})
     try {
@@ -273,7 +275,9 @@ describe("event catalog refresh presentation", () => {
       () => true,
       async () => raw()
     )
-    client.setQueryData(options.queryKey, raw())
+    client.setQueryData(options.queryKey, raw(), {
+      updatedAt: Date.now() - 61_000,
+    })
     onlineManager.setOnline(false)
     const observer = new QueryObserver(client, options)
     const release = observer.subscribe(() => {})

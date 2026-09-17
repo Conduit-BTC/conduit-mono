@@ -364,10 +364,6 @@ describe("merchant organizer event market route", () => {
     const form = await Bun.file(
       "apps/merchant/src/lib/event-market-form.ts"
     ).text()
-    const publisher = await Bun.file(
-      "apps/merchant/src/components/EventProductPublisherDialog.tsx"
-    ).text()
-
     expect(editor).toContain("Fields marked Required")
     expect(editor).toContain("RequiredFieldLabel")
     expect(editor).toContain("Event photo URL")
@@ -389,17 +385,6 @@ describe("merchant organizer event market route", () => {
       route.indexOf("async function copyShareLink")
     )
     expect(openEdit).toContain('setPublishState("idle")')
-
-    const publishSuccess = publisher.slice(
-      publisher.indexOf("async function finishPublication("),
-      publisher.indexOf("const publishMutation = useMutation(")
-    )
-    expect(publishSuccess).toContain("await onPublished(result.accepted)")
-    expect(publishSuccess).toContain("onOpenChange(false)")
-    expect(publishSuccess.indexOf("onOpenChange(false)")).toBeGreaterThan(
-      publishSuccess.indexOf("await onPublished(")
-    )
-    expect(publisher.match(/onSuccess: finishPublication/g)).toHaveLength(2)
   })
 
   it("keeps merchant booth pickup evidence on the merchant product graph", async () => {

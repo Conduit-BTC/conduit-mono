@@ -470,6 +470,32 @@ describe("cart model", () => {
       ).toBeNull()
     })
 
+    it("keeps pending evidence unverified without claiming cached or missing terms", () => {
+      const cartItems = [item()]
+      const availability = getCartProductAvailability(cartItems, [
+        refreshedProduct(cartItems[0]!),
+      ])
+      const decision = getCartAvailabilityReadDecision({
+        productIds: [cartItems[0]!.productId],
+        availability,
+        meta: partialMeta,
+        diagnostics: [
+          {
+            productId: cartItems[0]!.productId,
+            addressId: cartItems[0]!.productId,
+            issue: "pending",
+            coverage: { listing: "unavailable", deletion: "unavailable" },
+          },
+        ],
+        querySucceeded: true,
+      })
+      expect(decision.status).toBe("unverified")
+      expect(isCartAvailabilityReadComplete(decision)).toBe(false)
+      expect(getCartAvailabilityVerificationMessage(cartItems, decision)).toBe(
+        "Availability for Notebook is still being checked."
+      )
+    })
+
     it("keeps sold-out and over-quantity inventory blocks after verification", () => {
       const soldOutItems = [item({ stock: 1, quantity: 1 })]
       const soldOutAvailability = getCartProductAvailability(soldOutItems, [
