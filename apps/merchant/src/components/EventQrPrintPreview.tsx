@@ -1,14 +1,16 @@
-import { useEffect, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import {
   AlertTriangle,
   CalendarDays,
   MapPin,
   Printer,
   RefreshCw,
+  X,
 } from "lucide-react"
 import {
   Button,
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -21,6 +23,9 @@ import {
   type EventQrSignSheet,
 } from "../lib/event-signage"
 import type { MerchantOrganizerEventMarketState } from "../lib/event-market"
+
+const LETTER_WIDTH_PX = 816
+const LETTER_HEIGHT_PX = 1_056
 
 function DecorativeImage({
   src,
@@ -59,116 +64,145 @@ function DecorativeImage({
 
 export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
   const merchant = sheet.merchant
+  const stageRef = useRef<HTMLDivElement>(null)
+  const [screenScale, setScreenScale] = useState(1)
+
+  useLayoutEffect(() => {
+    const stage = stageRef.current
+    if (!stage) return
+
+    const updateScale = () => {
+      const width = stage.getBoundingClientRect().width
+      if (width <= 0) return
+      const nextScale = Math.min(width / LETTER_WIDTH_PX, 1)
+      setScreenScale((currentScale) =>
+        Math.abs(currentScale - nextScale) < 0.001 ? currentScale : nextScale
+      )
+    }
+
+    updateScale()
+    const observer = new ResizeObserver(updateScale)
+    observer.observe(stage)
+    return () => observer.disconnect()
+  }, [])
 
   return (
-    <article
-      className="event-sign-sheet flex w-full max-w-[8.5in] flex-col overflow-hidden bg-white text-neutral-950 shadow-xl"
-      data-testid="event-sign-sheet"
-      data-event-sign-kind={sheet.kind}
-      data-qr-value={sheet.qrValue}
+    <div
+      ref={stageRef}
+      className="event-sign-sheet-stage w-full max-w-[8.5in] overflow-hidden"
+      style={{ height: LETTER_HEIGHT_PX * screenScale }}
+      data-testid="event-sign-sheet-stage"
     >
-      <header className="event-sign-brand flex items-center justify-between gap-6 border-b-4 border-primary-500 px-10 py-6">
-        <img
-          src="/images/logo/logo-full.svg"
-          alt="Conduit"
-          className="h-auto w-44"
-        />
-        <span className="text-lg font-semibold text-primary-700">
-          https://conduit.market
-        </span>
-      </header>
-
-      <DecorativeImage
-        src={sheet.bannerUrl}
-        alt=""
-        className="event-sign-banner h-32 w-full bg-neutral-950 object-contain"
-        fallback={getEventSignImageFallback(sheet.eventTitle)}
-        fallbackClassName="event-sign-banner flex h-32 w-full items-center justify-center bg-primary-50 font-display text-7xl font-semibold text-primary-700"
-      />
-
-      <div className="event-sign-body flex flex-1 flex-col items-center px-12 py-4 text-center">
-        {merchant ? (
-          <div className="mb-3 flex max-w-full items-center justify-center gap-4">
-            <DecorativeImage
-              src={merchant.imageUrl}
-              alt=""
-              className="event-sign-avatar size-16 shrink-0 rounded-full border-2 border-primary-500 object-cover"
-              fallback={merchant.fallback}
-              fallbackClassName="event-sign-avatar flex size-16 shrink-0 items-center justify-center rounded-full border-2 border-primary-500 bg-primary-50 text-xl font-semibold text-primary-800"
-            />
-            <div className="min-w-0 text-left">
-              <p className="text-pretty text-sm font-semibold text-primary-700">
-                Shop this merchant at the event
-              </p>
-              <h2 className="event-sign-merchant-name line-clamp-1 break-words font-display text-3xl font-semibold leading-tight text-neutral-950">
-                {merchant.name}
-              </h2>
-            </div>
-          </div>
-        ) : (
-          <p className="mb-3 text-pretty text-base font-semibold text-primary-700">
-            Shop the event
-          </p>
-        )}
-
-        <h1 className="event-sign-event-title line-clamp-2 max-w-2xl break-words font-display text-4xl font-semibold leading-tight text-neutral-950">
-          {sheet.eventTitle}
-        </h1>
-
-        <dl className="mt-5 grid w-full max-w-2xl gap-3 text-left text-base">
-          <div className="flex items-start gap-3 rounded-xl bg-neutral-100 px-4 py-3">
-            <CalendarDays
-              className="mt-0.5 size-5 shrink-0 text-primary-700"
-              aria-hidden="true"
-            />
-            <div>
-              <dt className="font-semibold text-neutral-950">When</dt>
-              <dd className="event-sign-schedule line-clamp-2 break-words leading-6 text-neutral-700">
-                {sheet.schedule}
-              </dd>
-            </div>
-          </div>
-          <div className="flex items-start gap-3 rounded-xl bg-neutral-100 px-4 py-3">
-            <MapPin
-              className="mt-0.5 size-5 shrink-0 text-primary-700"
-              aria-hidden="true"
-            />
-            <div>
-              <dt className="font-semibold text-neutral-950">Where</dt>
-              <dd className="event-sign-location line-clamp-2 break-words leading-6 text-neutral-700">
-                {sheet.location}
-              </dd>
-            </div>
-          </div>
-        </dl>
-
-        <div
-          className="event-sign-qr-frame mt-4 size-[19rem] max-w-full shrink-0 rounded-2xl border-2 border-neutral-950 bg-white p-5"
-          role="img"
-          aria-label={
-            merchant
-              ? `${merchant.name} event catalog QR code`
-              : "Event catalog QR code"
-          }
-        >
-          <QRCodeSVG
-            value={sheet.qrValue}
-            size={272}
-            level="M"
-            marginSize={4}
-            className="size-full"
+      <article
+        className="event-sign-sheet flex h-[11in] w-[8.5in] origin-top-left flex-col overflow-hidden bg-white text-neutral-950 shadow-xl"
+        style={{ transform: `scale(${screenScale})` }}
+        data-testid="event-sign-sheet"
+        data-event-sign-kind={sheet.kind}
+        data-qr-value={sheet.qrValue}
+      >
+        <header className="event-sign-brand flex items-center justify-between gap-6 border-b-4 border-primary-500 px-10 py-6">
+          <img
+            src="/images/logo/logo-full.svg"
+            alt="Conduit"
+            className="h-auto w-44"
           />
-        </div>
+          <span className="text-lg font-semibold text-primary-700">
+            https://conduit.market
+          </span>
+        </header>
 
-        <p className="event-sign-scan-heading mt-3 max-w-xl text-balance font-display text-2xl font-semibold text-neutral-950">
-          Scan to shop on conduit.market
-        </p>
-        <p className="event-sign-scan-copy mt-1 max-w-xl text-pretty text-sm leading-6 text-neutral-600">
-          Scan for current availability and event details. Listings and event
-          participation can change.
-        </p>
-      </div>
-    </article>
+        <DecorativeImage
+          src={sheet.bannerUrl}
+          alt=""
+          className="event-sign-banner h-32 w-full bg-neutral-950 object-contain"
+          fallback={getEventSignImageFallback(sheet.eventTitle)}
+          fallbackClassName="event-sign-banner flex h-32 w-full items-center justify-center bg-primary-50 font-display text-7xl font-semibold text-primary-700"
+        />
+
+        <div className="event-sign-body flex flex-1 flex-col items-center px-12 py-4 text-center">
+          {merchant ? (
+            <div className="mb-3 flex max-w-full items-center justify-center gap-4">
+              <DecorativeImage
+                src={merchant.imageUrl}
+                alt=""
+                className="event-sign-avatar size-16 shrink-0 rounded-full border-2 border-primary-500 object-cover"
+                fallback={merchant.fallback}
+                fallbackClassName="event-sign-avatar flex size-16 shrink-0 items-center justify-center rounded-full border-2 border-primary-500 bg-primary-50 text-xl font-semibold text-primary-800"
+              />
+              <div className="min-w-0 text-left">
+                <p className="text-pretty text-sm font-semibold text-primary-700">
+                  Shop this merchant at the event
+                </p>
+                <h2 className="event-sign-merchant-name line-clamp-1 break-words font-display text-3xl font-semibold leading-tight text-neutral-950">
+                  {merchant.name}
+                </h2>
+              </div>
+            </div>
+          ) : (
+            <p className="mb-3 text-pretty text-base font-semibold text-primary-700">
+              Shop the event
+            </p>
+          )}
+
+          <h1 className="event-sign-event-title line-clamp-2 max-w-2xl break-words font-display text-4xl font-semibold leading-tight text-neutral-950">
+            {sheet.eventTitle}
+          </h1>
+
+          <dl className="mt-5 grid w-full max-w-2xl gap-3 text-left text-base">
+            <div className="flex items-start gap-3 rounded-xl bg-neutral-100 px-4 py-3">
+              <CalendarDays
+                className="mt-0.5 size-5 shrink-0 text-primary-700"
+                aria-hidden="true"
+              />
+              <div>
+                <dt className="font-semibold text-neutral-950">When</dt>
+                <dd className="event-sign-schedule line-clamp-2 break-words leading-6 text-neutral-700">
+                  {sheet.schedule}
+                </dd>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 rounded-xl bg-neutral-100 px-4 py-3">
+              <MapPin
+                className="mt-0.5 size-5 shrink-0 text-primary-700"
+                aria-hidden="true"
+              />
+              <div>
+                <dt className="font-semibold text-neutral-950">Where</dt>
+                <dd className="event-sign-location line-clamp-2 break-words leading-6 text-neutral-700">
+                  {sheet.location}
+                </dd>
+              </div>
+            </div>
+          </dl>
+
+          <div
+            className="event-sign-qr-frame mt-4 size-[19rem] shrink-0 rounded-2xl border-2 border-neutral-950 bg-white p-5"
+            role="img"
+            aria-label={
+              merchant
+                ? `${merchant.name} event catalog QR code`
+                : "Event catalog QR code"
+            }
+          >
+            <QRCodeSVG
+              value={sheet.qrValue}
+              size={272}
+              level="M"
+              marginSize={4}
+              className="size-full"
+            />
+          </div>
+
+          <p className="event-sign-scan-heading mt-3 max-w-xl text-balance font-display text-2xl font-semibold text-neutral-950">
+            Scan to shop on conduit.market
+          </p>
+          <p className="event-sign-scan-copy mt-1 max-w-xl text-pretty text-sm leading-6 text-neutral-600">
+            Scan for current availability and event details. Listings and event
+            participation can change.
+          </p>
+        </div>
+      </article>
+    </div>
   )
 }
 
@@ -223,15 +257,29 @@ export function EventQrPrintPreview({
         className="event-sign-print-dialog max-w-[min(72rem,calc(100vw-2rem))] translate-x-0 translate-y-0 gap-0 p-0"
         data-testid="event-sign-print-preview"
         data-event-sign-print-root
+        showCloseButton={false}
       >
-        <div className="event-sign-print-controls space-y-4 border-b border-[var(--border)] bg-[var(--surface-dialog)] p-6 pr-14">
-          <DialogHeader>
-            <DialogTitle className="text-balance">{title}</DialogTitle>
-            <DialogDescription className="text-pretty leading-6">
-              Review each US Letter portrait page, then use your browser’s
-              native print dialog to print or save a PDF.
-            </DialogDescription>
-          </DialogHeader>
+        <div className="event-sign-print-controls space-y-4 border-b border-[var(--border)] bg-[var(--surface-dialog)] p-6">
+          <div className="flex items-start justify-between gap-4">
+            <DialogHeader>
+              <DialogTitle className="text-balance">{title}</DialogTitle>
+              <DialogDescription className="text-pretty leading-6">
+                Review each US Letter portrait page, then use your browser’s
+                native print dialog to print or save a PDF.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogClose asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-11 shrink-0"
+                aria-label="Close"
+              >
+                <X className="size-4" aria-hidden="true" />
+              </Button>
+            </DialogClose>
+          </div>
 
           {evidenceNotice ? (
             <div

@@ -5412,6 +5412,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
     )
     .toBe(1)
   await page.emulateMedia({ media: "print" })
+  await expect(printPreview.getByRole("button", { name: "Close" })).toBeHidden()
   const eventPrintRootBounds = await printPreview.boundingBox()
   expect(eventPrintRootBounds).not.toBeNull()
   expect(eventPrintRootBounds!.x).toBeCloseTo(0, 1)

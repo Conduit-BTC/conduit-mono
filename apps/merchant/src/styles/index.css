@@ -17,8 +17,8 @@ body {
   background-color: var(--background);
 }
 
+.event-sign-sheet-stage,
 .event-sign-sheet {
-  aspect-ratio: 8.5 / 11;
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
 }
@@ -78,20 +78,29 @@ body {
     background: white !important;
   }
 
+  body.event-sign-print-preview-open .event-sign-sheet-stage {
+    width: 8.5in !important;
+    height: 11in !important;
+    max-width: none !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    break-after: page;
+    page-break-after: always;
+  }
+
   body.event-sign-print-preview-open .event-sign-sheet {
     width: 8.5in !important;
     height: 11in !important;
     max-width: none !important;
     margin: 0 !important;
     overflow: hidden !important;
-    break-after: page;
-    page-break-after: always;
+    transform: none !important;
     box-shadow: none !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
 
-  body.event-sign-print-preview-open .event-sign-sheet:last-child {
+  body.event-sign-print-preview-open .event-sign-sheet-stage:last-child {
     break-after: auto;
     page-break-after: auto;
   }
