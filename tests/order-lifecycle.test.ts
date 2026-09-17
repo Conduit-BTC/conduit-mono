@@ -1426,7 +1426,7 @@ describe("order payment admission", () => {
     })
   })
 
-  it("rejects completed and public manual reports before claiming payment evidence", async () => {
+  it("rejects completed manual reports before claiming payment evidence", async () => {
     const manual: OrderLifecycle = {
       ...lifecycle,
       checkoutMode: "private_checkout",
@@ -1436,11 +1436,7 @@ describe("order payment admission", () => {
       proofDeliveryStatus: "not_started",
       invoice: "lnbc1external",
     }
-    for (const blocked of [
-      { ...manual, phase: "completed" as const },
-      { ...manual, checkoutMode: "public_zap_as_shopper" as const },
-      { ...manual, checkoutMode: "anonymous_public_zap" as const },
-    ]) {
+    for (const blocked of [{ ...manual, phase: "completed" as const }]) {
       await withMockOrderPaymentDb({ lifecycle: blocked }, async (state) => {
         const result = await claimExternalOrderPaymentProof(
           blocked.orderId,
@@ -1452,6 +1448,39 @@ describe("order payment admission", () => {
       })
     }
   })
+
+  it.each([
+    ["public_zap_as_shopper", "shopper"],
+    ["anonymous_public_zap", "anon"],
+  ] as const)(
+    "allows a buyer-attested report while %s receipt observation remains available",
+    async (checkoutMode, publicZapSigner) => {
+      const manual: OrderLifecycle = {
+        ...lifecycle,
+        checkoutMode,
+        publicZapSigner,
+        invoiceStatus: "manual_required",
+        paymentStatus: "manual_required",
+        proofDeliveryStatus: "not_started",
+        zapReceiptStatus: "waiting",
+        invoice: "lnbc1external",
+      }
+
+      await withMockOrderPaymentDb({ lifecycle: manual }, async (state) => {
+        const result = await claimExternalOrderPaymentProof(
+          manual.orderId,
+          "public-report"
+        )
+        expect(result.status).toBe("claimed")
+        expect(state.lifecycle()).toMatchObject({
+          paymentStatus: "paid",
+          proofDeliveryStatus: "pending",
+          publicZapSigner,
+          zapReceiptStatus: "waiting",
+        })
+      })
+    }
+  )
 
   it("authorizes an already-paid private report once without reopening cancellation", async () => {
     const cancelled: OrderLifecycle = {

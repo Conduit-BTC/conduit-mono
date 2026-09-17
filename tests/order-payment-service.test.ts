@@ -476,7 +476,7 @@ describe("runOrderPayment", () => {
     }
   })
 
-  it("only accepts the first private manual-wallet payment report", () => {
+  it("only accepts the first manual-wallet payment report", () => {
     expect(
       canSubmitExternalPaymentReport(lifecycle({ publicZapSigner: undefined }))
     ).toBe(true)
@@ -498,6 +498,22 @@ describe("runOrderPayment", () => {
         lifecycle({
           checkoutMode: "private_checkout",
           publicZapSigner: undefined,
+        })
+      )
+    ).toBe(true)
+    expect(
+      canSubmitExternalPaymentReport(
+        lifecycle({
+          checkoutMode: "anonymous_public_zap",
+          publicZapSigner: "anon",
+        })
+      )
+    ).toBe(true)
+    expect(
+      canSubmitExternalPaymentReport(
+        lifecycle({
+          checkoutMode: "public_zap_as_shopper",
+          publicZapSigner: "shopper",
         })
       )
     ).toBe(true)
@@ -2290,7 +2306,7 @@ describe("runOrderPayment", () => {
     }
   )
 
-  it("reports a newly observed public Zap Out receipt without affecting payment state", async () => {
+  it("records a newly observed public Zap Out receipt without affecting payment state", async () => {
     const orderId = "observed-zapout-settlement"
     const waiting = lifecycle({
       orderId,
@@ -2317,8 +2333,6 @@ describe("runOrderPayment", () => {
       id: "f".repeat(64),
       rawEvent: () => ({ id: "f".repeat(64) }),
     } as unknown as NDKEvent
-    const reported: unknown[] = []
-
     await observeOrderPublicZapReceipt(orderId, undefined, {
       getOrderLifecycle: async () => waiting,
       waitForZapReceipt: async () => receipt,
@@ -2327,12 +2341,8 @@ describe("runOrderPayment", () => {
         lifecycle: observed,
         proofDeliveryClaimed: false,
       }),
-      reportZapoutSettlement: async (value) => {
-        reported.push(value)
-      },
     })
 
-    expect(reported).toEqual([receipt])
     expect(observed).toMatchObject({
       paymentStatus: "paid",
       zapReceiptStatus: "observed",

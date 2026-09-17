@@ -21,12 +21,12 @@ export const allowedTelemetryProperties = new Set([
   "count_bucket",
   "result_count_bucket",
   "amount_bucket",
-  "settled_amount_sats",
+  "estimated_gmv_sats",
   "product_type",
 ])
 
-const settlementTelemetryEventName = "zapout_settled"
-const settlementTelemetryProperty = "settled_amount_sats"
+const gmvTelemetryEventName = "commerce_gmv_estimated"
+const gmvTelemetryProperty = "estimated_gmv_sats"
 
 export const allowedProviderTelemetryEventNames = new Set([
   "$pageleave",
@@ -223,8 +223,8 @@ export function validateTelemetryEvents(
         )
       }
       if (
-        property === settlementTelemetryProperty &&
-        event.eventName !== settlementTelemetryEventName
+        property === gmvTelemetryProperty &&
+        event.eventName !== gmvTelemetryEventName
       ) {
         errors.push(
           `Telemetry event ${event.eventName} cannot use server-only property: ${property}`
@@ -233,12 +233,12 @@ export function validateTelemetryEvents(
     }
 
     if (
-      event.eventName === settlementTelemetryEventName &&
+      event.eventName === gmvTelemetryEventName &&
       (event.properties.length !== 1 ||
-        event.properties[0] !== settlementTelemetryProperty)
+        event.properties[0] !== gmvTelemetryProperty)
     ) {
       errors.push(
-        `${settlementTelemetryEventName} must use only ${settlementTelemetryProperty}`
+        `${gmvTelemetryEventName} must use only ${gmvTelemetryProperty}`
       )
     }
   }
