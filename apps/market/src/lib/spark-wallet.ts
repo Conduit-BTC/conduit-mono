@@ -54,6 +54,52 @@ export interface SparkSdkPayment {
   }
 }
 
+export interface SparkFundsState {
+  availableSats: number
+  ownedSats: number
+  incomingSats: number
+  observedAt: number
+}
+
+export interface SparkCheckoutReceiveRequest {
+  walletId: string
+  network: SparkWalletNetwork
+  id: string
+  paymentRequest: string
+  paymentHash: string
+  providerStatus: string
+  requiredNetSats: number
+  grossFundingSats: number
+  expirySecs: number
+  createdAt: number
+  expiresAt: number
+}
+
+export type SparkCheckoutReceiveState =
+  "pending" | "funded_pending_claim" | "spendable" | "unresolved_failure"
+
+export type SparkCheckoutReceiveFailureReason =
+  | "invoice_expired_unresolved"
+  | "provider_unresolved"
+  | "receive_not_found"
+  | "lookup_unavailable"
+  | "conflicting_evidence"
+  | "insufficient_available_funds"
+
+export interface SparkCheckoutReceiveReconciliation {
+  state: SparkCheckoutReceiveState
+  providerStatus: string | null
+  failureReason: SparkCheckoutReceiveFailureReason | null
+  funds: SparkFundsState
+}
+
+export interface SparkCheckoutReceiveInput {
+  description: string
+  requiredNetSats: number
+  grossFundingSats: number
+  expirySecs: number
+}
+
 export interface SparkSdkClient {
   addEventListener?(listener: () => void): Promise<string>
   removeEventListener?(listenerId: string): Promise<boolean>
@@ -93,6 +139,13 @@ export interface SparkSdkClient {
         }
       | { type: "sparkAddress" }
   }): Promise<{ paymentRequest: string; fee: bigint }>
+  getFundsState?(): Promise<SparkFundsState>
+  createCheckoutReceive?(
+    request: SparkCheckoutReceiveInput
+  ): Promise<SparkCheckoutReceiveRequest>
+  reconcileCheckoutReceive?(
+    request: SparkCheckoutReceiveRequest
+  ): Promise<SparkCheckoutReceiveReconciliation>
 }
 
 export interface SparkSdkFactory {
@@ -349,6 +402,59 @@ export class SparkWalletManager {
   async getBalance(walletId: string): Promise<number> {
     const info = await this.#getClient(walletId).getInfo({ ensureSynced: true })
     return info.balanceSats
+  }
+
+  async getFundsState(walletId: string): Promise<SparkFundsState> {
+    const client = this.#getClient(walletId)
+    if (!client.getFundsState) {
+      throw new Error(
+        "This Spark adapter cannot inspect complete checkout funds state."
+      )
+    }
+    return client.getFundsState()
+  }
+
+  async createCheckoutReceive(
+    walletId: string,
+    input: SparkCheckoutReceiveInput
+  ): Promise<SparkCheckoutReceiveRequest> {
+    const client = this.#getClient(walletId)
+    if (!client.createCheckoutReceive) {
+      throw new Error(
+        "This Spark adapter cannot create a recoverable checkout receive request."
+      )
+    }
+    const request = await client.createCheckoutReceive(input)
+    if (
+      request.walletId !== walletId ||
+      request.network !== this.#factory.network
+    ) {
+      throw new Error(
+        "The Spark checkout receive request belongs to a different wallet or network."
+      )
+    }
+    return request
+  }
+
+  async reconcileCheckoutReceive(
+    walletId: string,
+    request: SparkCheckoutReceiveRequest
+  ): Promise<SparkCheckoutReceiveReconciliation> {
+    if (
+      request.walletId !== walletId ||
+      request.network !== this.#factory.network
+    ) {
+      throw new Error(
+        "The Spark checkout receive request belongs to a different wallet or network."
+      )
+    }
+    const client = this.#getClient(walletId)
+    if (!client.reconcileCheckoutReceive) {
+      throw new Error(
+        "This Spark adapter cannot reconcile a checkout receive request."
+      )
+    }
+    return client.reconcileCheckoutReceive(request)
   }
 
   async listPayments(walletId: string): Promise<SparkPaymentSummary[]> {
