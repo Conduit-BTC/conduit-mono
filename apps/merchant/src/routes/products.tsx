@@ -152,7 +152,10 @@ import {
   resolveOrganizerEventMarket,
   type MerchantOrganizerEventMarket,
 } from "../lib/event-market"
-import { rememberDiscoveredEventMarket } from "../lib/event-market-workflow"
+import {
+  expectedOrganizerEventMarketTitleFrontiers,
+  rememberDiscoveredEventMarket,
+} from "../lib/event-market-workflow"
 import { ensureMerchantBoothPickup } from "../lib/event-market-pickup"
 import {
   getMerchantProductEventContext,
@@ -245,9 +248,12 @@ type ProductSort = "updated_desc" | "title_asc" | "price_asc" | "price_desc"
 type EditFulfillmentResolution =
   "ready" | "resolving" | "unresolved" | "verifying_pickup"
 
-function getShareableProductUrl(productAddressId: string): string | null {
+function getShareableProductUrl(
+  productAddressId: string,
+  sourceRelayUrls: readonly string[]
+): string | null {
   try {
-    return getProductUrl(productAddressId)
+    return getProductUrl(productAddressId, sourceRelayUrls)
   } catch {
     return null
   }
@@ -2714,9 +2720,17 @@ function ProductsPage() {
                     eventTitle={eventMarket?.title}
                     onOpenEvent={() => {
                       if (!pubkey) return
+                      const titleFrontiers =
+                        expectedOrganizerEventMarketTitleFrontiers(eventMarket)
                       rememberDiscoveredEventMarket(pubkey, {
                         reference: eventProductContext.naddr,
-                        title: eventMarket?.title,
+                        ...(titleFrontiers.titleCollectionEventId &&
+                        titleFrontiers.titleCalendarEventId
+                          ? {
+                              title: eventMarket?.title,
+                              ...titleFrontiers,
+                            }
+                          : {}),
                         savedAt: Date.now(),
                       })
                       const eventUrl = new URL(
@@ -2838,7 +2852,10 @@ function ProductsPage() {
 
             const isActive =
               item.safety.state === "active" || isConstrainedVariationFamily
-            const productUrl = getShareableProductUrl(item.addressId)
+            const productUrl = getShareableProductUrl(
+              item.addressId,
+              item.sourceRelayUrls
+            )
 
             return (
               <div key={item.addressId} className="grid gap-2">
@@ -3153,7 +3170,7 @@ function ProductsPage() {
                   market={localPickupQuery.data}
                   organizerInboxState={organizerInboxState}
                   availableMarkets={(
-                    organizerEventMarketsQuery.data ?? []
+                    organizerEventMarketsQuery.data?.markets ?? []
                   ).filter((market) => market.state === "active")}
                   resolving={localPickupQuery.isFetching}
                   readFailed={localPickupQuery.isError}

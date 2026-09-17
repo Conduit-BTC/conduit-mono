@@ -187,7 +187,9 @@ export function useMerchantReadiness() {
     : shippingConfig
   const hasNwc = useMemo(() => hasNwcConfigured(rawNwcUri), [rawNwcUri])
   const profileComplete = isProfileComplete(profile)
-  const paymentsComplete = isPaymentsComplete(profile)
+  const paymentsComplete = isPaymentsComplete(
+    profileQuery.profileContext?.profile
+  )
   const shippingCheckPending =
     !!pubkey &&
     !hasAuthoritativeStoredShipping &&

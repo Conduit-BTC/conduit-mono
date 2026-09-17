@@ -200,6 +200,19 @@ The boundary provides:
   per-relay failures are preserved as typed observations without putting
   challenge or account identifiers in logs or telemetry. NDK remains only at
   the existing signer and gift-unwrap edges.
+- **Authenticated recipient writes.** A foreground signed-in NIP-07 or NIP-46
+  order send may answer a recipient inbox relay's NIP-42 challenge only when
+  the active account, authenticated session, event author, and auth signer all
+  identify the same pubkey. The auth event is bound to the exact relay and
+  challenge; after its matching positive `OK`, the writer resends the same
+  already-signed gift wrap on that socket. Authentication never widens the
+  recipient's exclusive relay set, installs a global relay policy, creates a
+  replacement wrap, or prompts from guest/background delivery.
+  Before each exact socket opens, the writer re-reads the account's durable
+  relay exclusions and skips targets that are no longer eligible. Interactive
+  auth prompts are serialized by signer session; a socket timeout cancels any
+  visibility wait, and a dispatched signer request keeps its slot until it
+  settles so a later relay cannot open an overlapping prompt.
 - **Validated-order compatibility routing (temporary, CND-208).** When a validated
   kind-16 order-lifecycle send finds no usable recipient declaration, the write
   may use a maximum of three relays from the explicit private-inbox
@@ -344,3 +357,8 @@ material, wallet credentials or recovery material, or wallet balances.
   responses, multi-relay partial success, account isolation, cleanup, and the
   complete-empty versus unavailable distinction. The canonical matrix lives in
   `docs/knowledge/nip42-protected-read-rollout.md`.
+- Foreground auth-required recipient writes sign one relay/challenge-bound
+  NIP-42 event, wait for its matching positive `OK`, then resend the exact gift
+  wrap. Tests reject cross-account authority, changed challenges, invalid auth
+  events, background prompts, stale relay admission, overlapping signer
+  requests, fallback widening, and replacement-wrap retries.

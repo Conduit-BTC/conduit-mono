@@ -9,6 +9,7 @@ import {
   useState,
 } from "react"
 import {
+  getProfilePaymentAddress,
   buildOrderStatusTimeline,
   clearProtectedReadAuthenticationSuppression,
   convertCommerceAmountToSats,
@@ -86,6 +87,11 @@ import {
   cn,
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
+import {
+  EventActorName,
+  EventActorProvenance,
+} from "../components/EventActorIdentity"
+import { normalizeEventActorPubkey } from "../lib/event-actor-identity"
 import { OrderCardScroller } from "../components/OrderCardScroller"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
 import { OrderItemsCard } from "../components/OrderItemsCard"
@@ -110,6 +116,7 @@ import {
   type OrderQueueTab,
 } from "../lib/order-phase"
 import {
+  getMerchantPickupOrganizerProfileRelayHints,
   getMerchantPickupAuthorizationMessage,
   verifyMerchantPickupOrderAuthorization,
 } from "../lib/order-pickup-authorization"
@@ -379,13 +386,31 @@ function DetailRow({
 
 function PickupFulfillmentCard({
   pickup,
+  accountPubkey,
+  authenticatedPubkey,
+  shouldContinue,
+  organizerProfileRelayHints,
 }: {
   pickup: MerchantOrderPickupContext
+  accountPubkey: string | null
+  shouldContinue: () => boolean
+  authenticatedPubkey: string | null
+  organizerProfileRelayHints: string[]
 }) {
   const publicPlace =
     pickup.option.location ??
     (pickup.option.geohash ? `Geohash ${pickup.option.geohash}` : null)
-
+  const organizerIdentityPubkey = normalizeEventActorPubkey(
+    pickup.organizerPubkey
+  )
+  const organizerProfileQuery = useProfile(organizerIdentityPubkey, {
+    accountPubkey,
+    authenticatedPubkey,
+    shouldContinue,
+    relayHints: organizerProfileRelayHints,
+    priority: "visible",
+    maxUnresolvedRefetches: 1,
+  })
   return (
     <section className={panelCard} data-testid="merchant-order-pickup">
       <div className="flex items-start justify-between gap-3">
@@ -416,16 +441,18 @@ function PickupFulfillmentCard({
 
       <div className="mt-4 space-y-2 text-xs">
         <DetailRow label="Organizer">
-          <span
-            className="max-w-[9rem] truncate font-mono"
-            title={pickup.organizerPubkey}
-          >
-            {formatNpub(pickup.organizerPubkey, 8)}
+          <span className="flex min-w-0 max-w-[13rem] flex-col items-end">
+            <EventActorName
+              pubkey={pickup.organizerPubkey}
+              profile={organizerProfileQuery.data}
+              className="max-w-full text-right text-xs"
+            />
+            <EventActorProvenance
+              pubkey={pickup.organizerPubkey}
+              copyLabel="Copy pickup organizer npub"
+              className="max-w-full text-[11px]"
+            />
           </span>
-          <CopyInline
-            value={pickup.organizerPubkey}
-            label="Copy pickup organizer pubkey"
-          />
         </DetailRow>
         <DetailRow label="Event">
           <span
@@ -749,7 +776,8 @@ function OrdersPage() {
   }, [])
 
   const nwc = useMerchantPaymentAutomation()
-  const profileLud16 = merchantProfileQuery.data?.lud16?.trim() ?? ""
+  const profileLud16 =
+    getProfilePaymentAddress(merchantProfileQuery.profileContext) ?? ""
   const profileInvoiceAvailable = isValidLud16Address(profileLud16)
   const nwcInvoiceAvailable =
     !!nwc.connection && nwc.canCreateInvoices && nwc.addressStatus === "match"
@@ -3442,7 +3470,17 @@ function OrdersPage() {
                       )}
 
                     {pickupAuthorizationVerified && orderFulfillment.pickup && (
-                      <PickupFulfillmentCard pickup={orderFulfillment.pickup} />
+                      <PickupFulfillmentCard
+                        pickup={orderFulfillment.pickup}
+                        accountPubkey={authenticatedPubkey}
+                        authenticatedPubkey={authenticatedPubkey}
+                        shouldContinue={() =>
+                          authGenerationRef.current === authGeneration
+                        }
+                        organizerProfileRelayHints={getMerchantPickupOrganizerProfileRelayHints(
+                          pickupAuthorizationQuery.data
+                        )}
+                      />
                     )}
 
                     {selectedUsesOrganizerHandoff && selectedOrder && (

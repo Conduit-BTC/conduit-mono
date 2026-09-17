@@ -212,7 +212,7 @@ describe("Market wallet route contracts", () => {
     ])
   })
 
-  it("does not put wallet balance in the global Market header by default", async () => {
+  it("keeps wallet access in the account menu without a redundant header action", async () => {
     const content = await readFile(
       "apps/market/src/components/MarketHeader.tsx",
       "utf8"
@@ -221,7 +221,10 @@ describe("Market wallet route contracts", () => {
     expect(content).not.toContain("Connected wallet balance")
     expect(content).not.toContain("balanceMsats")
     expect(content).not.toContain("refreshBalance: true")
-    expect(content).toContain('label="Wallets"')
+    expect(content).toMatch(
+      /<AccountMenuLink[\s\S]*?label="Wallets"[\s\S]*?to="\/wallet"/
+    )
+    expect(content).not.toMatch(/<HeaderAction\s+label="Wallets"/)
   })
 
   it("keeps header destinations named and current without crowding narrow screens", async () => {
@@ -307,7 +310,7 @@ describe("Market wallet route contracts", () => {
       /const canAttemptLightningPayment =\s+paymentPathEnabled &&\s+!wallets\.loading/
     )
     expect(content).toMatch(
-      /const allowsManualLightningFallback =\s+paymentPathEnabled &&\s+!wallets\.loading/
+      /const manualInvoiceEligible =\s+paymentPathEnabled &&\s+!wallets\.loading/
     )
   })
 

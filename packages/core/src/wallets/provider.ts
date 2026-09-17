@@ -29,6 +29,8 @@ export interface WalletPayInvoiceInput {
   appId: ConduitAppId
   metadata?: Record<string, unknown>
   approveFee?: WalletPaymentFeeApproval
+  /** Recheck authority immediately before dispatch, after provider preparation. */
+  beforeSend?: () => Promise<void>
 }
 
 export type WalletPayInvoiceResult =

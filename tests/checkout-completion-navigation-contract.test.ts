@@ -27,6 +27,19 @@ describe("checkout completion navigation contracts", () => {
     expect(paymentTracker).not.toContain('<Link to="/cart">Back to cart</Link>')
   })
 
+  it("scopes relay authentication to both foreground signed order sends", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const relayAuthForOrder =
+      checkoutRoute.match(
+        /authMethod \? \{ relayAuthMethod: authMethod \} : \{\}/g
+      ) ?? []
+
+    expect(checkoutRoute).toContain("method: authMethod")
+    expect(relayAuthForOrder).toHaveLength(2)
+  })
+
   it("uses the published fast-checkout total for degraded success telemetry", async () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
@@ -287,7 +300,7 @@ describe("checkout completion navigation contracts", () => {
     expect(checkoutRoute).toContain("verifiedZeroCostPickup ? (")
     expect(checkoutRoute).toContain("onClick={placeOrder}")
     expect(checkoutRoute).toContain('"Send order"')
-    expect(checkoutRoute).toContain("!guestManualInvoiceEligible")
+    expect(checkoutRoute).toContain("!manualInvoiceEligible")
     expect(checkoutRoute).toContain("Connect signer to send order")
     expect(checkoutRoute).toContain("Send order and show invoice")
     expect(checkoutRoute).toContain(
@@ -304,12 +317,16 @@ describe("checkout completion navigation contracts", () => {
       "apps/market/src/routes/orders.tsx"
     ).text()
 
+    const invoicePanel = await Bun.file(
+      "apps/market/src/components/ExternalWalletPanel.tsx"
+    ).text()
+
     expect(checkoutRoute).toContain(
       "Keep this tab open until the payment is reported"
     )
-    expect(ordersRoute).toContain("Closing it ends")
-    expect(ordersRoute).toContain("local access to this guest order")
-    expect(ordersRoute).toContain(
+    expect(invoicePanel).toContain("Closing it ends")
+    expect(invoicePanel).toContain("local access to this guest order")
+    expect(invoicePanel).toContain(
       "merchant can use the private recovery contact"
     )
     expect(ordersRoute).toContain("disabled={!activeBuyerPubkey}")

@@ -18,6 +18,7 @@ import {
   getProfileName,
   normalizeCurrencyCode,
   pubkeyToNpub,
+  useProfile,
   useProfiles,
   type Profile,
   type ProductImage,
@@ -33,15 +34,17 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  eventMarketRequiredRecordsResolved,
+  formatEventRelayReadCoverage,
+  getEventActionabilityPresentation,
   QRCodeSVG,
   StatusPill,
 } from "@conduit/ui"
+import { type OrganizerCollectionMembershipAction } from "../lib/event-market-workflow"
 import {
-  getOrganizerEventMarketDisplayState,
-  type OrganizerCollectionMembershipAction,
-} from "../lib/event-market-workflow"
-import {
+  getResolvedEventMarketRelayHints,
   isParticipationHandoffVerified,
+  isParticipationProductAvailable,
   isParticipationProductPreviewVerified,
   type MerchantOrganizerEventMarket,
   type MerchantOrganizerParticipation,
@@ -49,6 +52,7 @@ import {
 } from "../lib/event-market"
 import {
   getEventMarketUrl,
+  getEventMarketMerchantFilterUrl,
   getMerchantEventParticipationUrl,
   getStorefrontUrl,
 } from "../lib/market-links"
@@ -56,34 +60,15 @@ import {
   getMerchantProfileState,
   type MerchantProfileState,
 } from "../lib/event-market-participation-identity"
-
-function statusMeta(state: MerchantOrganizerEventMarket["state"]): {
-  label: string
-  tone: "success" | "info" | "warning" | "error" | "neutral"
-} {
-  switch (state) {
-    case "active":
-      return { label: "Active", tone: "success" }
-    case "ended":
-      return { label: "Ended", tone: "neutral" }
-    case "deleted":
-      return { label: "Deleted", tone: "error" }
-    case "partial":
-      return { label: "Partial relay view", tone: "warning" }
-    case "stale":
-      return { label: "Saved evidence", tone: "warning" }
-    case "unavailable":
-      return { label: "Relays unavailable", tone: "error" }
-    case "missing":
-      return { label: "Missing records", tone: "warning" }
-    case "conflicting":
-      return { label: "Conflicting records", tone: "error" }
-    case "malformed":
-      return { label: "Malformed records", tone: "error" }
-    default:
-      return { label: "Unsupported records", tone: "error" }
-  }
-}
+import {
+  getOrganizerEventParticipantPubkeys,
+  normalizeEventActorPubkey,
+} from "../lib/event-actor-identity"
+import {
+  EventActorName,
+  EventActorProvenance,
+  EventPickupHandlerIdentity,
+} from "./EventActorIdentity"
 
 function formatSchedule(market: MerchantOrganizerEventMarket): string {
   if (market.calendarKind === 31922) {
@@ -110,28 +95,34 @@ function formatSchedule(market: MerchantOrganizerEventMarket): string {
 }
 
 function RelayEvidenceNotice({
-  unavailable,
+  destructive,
+  label,
+  message,
   refreshing,
   onRefresh,
 }: {
-  unavailable: boolean
+  destructive: boolean
+  label: string
+  message: string
   refreshing: boolean
   onRefresh: () => void
 }) {
-  const Icon = unavailable ? WifiOff : AlertTriangle
+  const Icon = destructive ? AlertTriangle : WifiOff
   return (
     <div
+      role="alert"
       className={
-        unavailable
+        destructive
           ? "flex items-center justify-between gap-3 rounded-xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error"
           : "flex items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--text-primary)]"
       }
     >
-      <span className="flex items-center gap-2">
+      <span className="flex items-start gap-2">
         <Icon className="h-4 w-4 shrink-0" />
-        {unavailable
-          ? "Live event evidence is unavailable. Consequential actions remain blocked."
-          : "This is a degraded relay view. Verify current event evidence before acting."}
+        <span>
+          <span className="block font-semibold">{label}</span>
+          <span className="mt-1 block leading-5">{message}</span>
+        </span>
       </span>
       <Button
         type="button"
@@ -258,9 +249,7 @@ function SignedProductPreview({
           {productPreview.summary?.trim() || "No signed product description."}
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]">
-          <span>Merchant {formatNpub(item.merchantPubkey, 6)}</span>
-          <span aria-hidden="true">{"\u00b7"}</span>
-          <span>Exact signed listing</span>
+          <span>Exact merchant-signed listing</span>
           {productPreview.stock === 0 ? (
             <>
               <span aria-hidden="true">{"\u00b7"}</span>
@@ -381,6 +370,7 @@ function ParticipationRow({
   item,
   merchantProfile,
   merchantProfileState,
+  handlerProfile,
   organizerPubkey,
   pending,
   onMembership,
@@ -388,6 +378,7 @@ function ParticipationRow({
   item: MerchantOrganizerParticipation
   merchantProfile?: Profile
   merchantProfileState: MerchantProfileState
+  handlerProfile?: Profile
   organizerPubkey: string
   pending: boolean
   onMembership: (
@@ -430,13 +421,11 @@ function ParticipationRow({
                   : "Pending request"}
             </StatusPill>
             {item.handoffMode && item.handlerPubkey && (
-              <span>
-                {item.handoffMode === "organizer_handoff"
-                  ? "Organizer hands out"
-                  : "Merchant hands out"}
-                {" \u00b7 "}
-                {formatNpub(item.handlerPubkey, 6)}
-              </span>
+              <EventPickupHandlerIdentity
+                handoffMode={item.handoffMode}
+                handlerPubkey={item.handlerPubkey}
+                profile={handlerProfile}
+              />
             )}
             {!removable && (!handoffVerified || !previewVerified) && (
               <span>
@@ -577,8 +566,6 @@ export function OrganizerEventMarketPanel({
   ) => void
   onRetryDelivery: (delivery: MerchantOrganizerRecordDelivery) => void
 }) {
-  const status = statusMeta(market.state)
-  const displayState = getOrganizerEventMarketDisplayState(market.state)
   const shopperUrl = getEventMarketUrl(market.naddr)
   const merchantUrl = getMerchantEventParticipationUrl(market.naddr)
   const showEdit = market.state === "active" || market.state === "ended"
@@ -592,11 +579,43 @@ export function OrganizerEventMarketPanel({
   const organizerOnlyProducts = market.participation.filter(
     (item) => item.status === "organizer_only"
   )
-  const merchantPubkeys = useMemo(
-    () => market.participation.map((item) => item.merchantPubkey),
-    [market.participation]
+  const availableProducts = acceptedProducts.filter((item) =>
+    isParticipationProductAvailable(item, market.organizerPubkey)
   )
-  const merchantProfilesQuery = useProfiles(merchantPubkeys, {
+  const actionability = getEventActionabilityPresentation({
+    state: market.state,
+    availableProductCount: availableProducts.length,
+    unresolvedProductCount:
+      organizerOnlyProducts.length +
+      (acceptedProducts.length - availableProducts.length),
+    requiredEventRecordsResolved: eventMarketRequiredRecordsResolved(
+      market.source
+    ),
+  })
+  const relayCoverage = formatEventRelayReadCoverage(market.source.coverage)
+  const organizerIdentityPubkey = normalizeEventActorPubkey(
+    market.organizerPubkey
+  )
+  const participantPubkeys = useMemo(
+    () =>
+      getOrganizerEventParticipantPubkeys({
+        organizerPubkey: market.organizerPubkey,
+        participantPubkeys: market.participation.flatMap((item) => [
+          item.merchantPubkey,
+          item.handlerPubkey,
+        ]),
+      }),
+    [market.organizerPubkey, market.participation]
+  )
+  const organizerProfileQuery = useProfile(organizerIdentityPubkey, {
+    accountPubkey,
+    authenticatedPubkey,
+    shouldContinue,
+    relayHints: getResolvedEventMarketRelayHints(market.source),
+    priority: "visible",
+    maxUnresolvedRefetches: 1,
+  })
+  const participantProfilesQuery = useProfiles(participantPubkeys, {
     accountPubkey,
     authenticatedPubkey,
     shouldContinue,
@@ -604,22 +623,64 @@ export function OrganizerEventMarketPanel({
     maxUnresolvedRefetches: 1,
   })
 
+  function profileQueryForActor(pubkey: string) {
+    return pubkey.trim().toLowerCase() === market.organizerPubkey.toLowerCase()
+      ? organizerProfileQuery
+      : participantProfilesQuery
+  }
+
+  function eventActorProfile(pubkey: string): Profile | undefined {
+    return profileQueryForActor(pubkey).getProfile(pubkey.trim().toLowerCase())
+  }
+
   function merchantProfileState(
     pubkey: string | undefined
   ): MerchantProfileState {
     if (!pubkey) return "unresolved"
+    const profileQuery = profileQueryForActor(pubkey)
     return getMerchantProfileState({
-      hasProfile: merchantProfilesQuery.hasProfile(pubkey),
-      lookupSettled: merchantProfilesQuery.lookupSettled,
-      error: merchantProfilesQuery.error,
+      hasProfile: profileQuery.hasProfile(pubkey.trim().toLowerCase()),
+      lookupSettled: profileQuery.lookupSettled,
+      error: profileQuery.error,
     })
   }
 
+  const acceptedMerchantCounts = new Map<string, number>()
+  for (const item of acceptedProducts) {
+    if (!isParticipationProductPreviewVerified(item)) continue
+    const pubkey = item.merchantPubkey.toLowerCase()
+    acceptedMerchantCounts.set(
+      pubkey,
+      (acceptedMerchantCounts.get(pubkey) ?? 0) + 1
+    )
+  }
+  const merchantBoothLinks = Array.from(
+    acceptedMerchantCounts,
+    ([pubkey, productCount]) => {
+      const name =
+        getProfileName(eventActorProfile(pubkey)) || formatNpub(pubkey)
+      return {
+        pubkey,
+        name,
+        productCount,
+        url: getEventMarketMerchantFilterUrl(market.naddr, pubkey),
+      }
+    }
+  ).sort(
+    (a, b) =>
+      a.name.localeCompare(b.name, undefined, {
+        sensitivity: "base",
+        numeric: true,
+      }) || a.pubkey.localeCompare(b.pubkey)
+  )
+
   return (
     <div className="space-y-5">
-      {(displayState === "degraded" || displayState === "unavailable") && (
+      {actionability.prominent && (
         <RelayEvidenceNotice
-          unavailable={displayState === "unavailable"}
+          destructive={actionability.tone === "destructive"}
+          label={actionability.label}
+          message={actionability.message}
           refreshing={refreshing}
           onRefresh={onRefresh}
         />
@@ -634,15 +695,35 @@ export function OrganizerEventMarketPanel({
           />
         )}
         <CardHeader>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <CardTitle className="text-2xl">{market.title}</CardTitle>
-              <CardDescription className="mt-2 max-w-2xl leading-6">
-                {market.summary ?? "No public event summary."}
-              </CardDescription>
-            </div>
-            <StatusPill variant={status.tone}>{status.label}</StatusPill>
+          <div>
+            <Badge variant={actionability.tone}>{actionability.label}</Badge>
+            <CardTitle className="mt-3 text-balance text-2xl">
+              {market.title}
+            </CardTitle>
+            <CardDescription className="mt-2 max-w-2xl text-pretty leading-6">
+              {market.summary ?? "No public event summary."}
+            </CardDescription>
           </div>
+          {!actionability.prominent ? (
+            <p
+              className="text-pretty text-sm font-medium text-[var(--text-secondary)]"
+              role={actionability.role}
+              aria-live="polite"
+              data-testid="organizer-event-actionability-status"
+            >
+              {actionability.message}
+            </p>
+          ) : null}
+          {relayCoverage ? (
+            <p
+              className="text-pretty text-xs tabular-nums text-[var(--text-muted)]"
+              role="status"
+              aria-label={`Relay read coverage: ${relayCoverage}`}
+              data-testid="organizer-event-relay-read-coverage"
+            >
+              {relayCoverage}
+            </p>
+          ) : null}
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 text-sm sm:grid-cols-2">
@@ -664,11 +745,13 @@ export function OrganizerEventMarketPanel({
               <div>
                 <div className="font-medium text-[var(--text-primary)]">
                   {market.pickupCoordinate
-                    ? market.pickupTitle
+                    ? market.source.pickup
+                      ? market.pickupTitle
+                      : "Organizer handoff unresolved"
                     : "Organizer handoff not offered"}
                 </div>
                 <div className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
-                  {market.pickupCoordinate ? (
+                  {market.pickupCoordinate && market.source.pickup ? (
                     <>
                       {market.pickupLocation ??
                         market.pickupGeohash ??
@@ -678,6 +761,8 @@ export function OrganizerEventMarketPanel({
                         ? "No added pickup fee"
                         : `${market.pickupPrice} ${market.pickupCurrency ?? "SAT"}`}
                     </>
+                  ) : market.pickupCoordinate ? (
+                    "Current organizer handoff terms could not be resolved."
                   ) : (
                     "Merchants can still offer their own pickup point."
                   )}
@@ -690,8 +775,17 @@ export function OrganizerEventMarketPanel({
             <div className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
               Organizer signer
             </div>
-            <div className="mt-1 font-mono text-sm text-[var(--text-primary)]">
-              {formatNpub(market.organizerPubkey, 12)}
+            <div className="mt-1 min-w-0">
+              <EventActorName
+                pubkey={market.organizerPubkey}
+                profile={eventActorProfile(market.organizerPubkey)}
+                className="block text-sm"
+              />
+              <EventActorProvenance
+                pubkey={market.organizerPubkey}
+                copyLabel="Copy organizer signer npub"
+                className="mt-0.5 max-w-full text-xs"
+              />
             </div>
           </div>
 
@@ -716,6 +810,16 @@ export function OrganizerEventMarketPanel({
               Refresh evidence
             </Button>
           </div>
+          {market.state === "partial" ? (
+            <div
+              className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]"
+              role="status"
+              aria-live="polite"
+            >
+              Event products remain visible. Updating the event or changing
+              product acceptance requires a complete current event read.
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -776,6 +880,85 @@ export function OrganizerEventMarketPanel({
               </div>
             </div>
           </section>
+
+          {merchantBoothLinks.length > 0 ? (
+            <section
+              aria-labelledby="merchant-booth-links-title"
+              className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+            >
+              <div>
+                <h3
+                  id="merchant-booth-links-title"
+                  className="font-semibold text-[var(--text-primary)]"
+                >
+                  Merchant booth links
+                </h3>
+                <p className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+                  Each QR opens this event with one accepted merchant selected.
+                  Use it on booth signage so shoppers land on that merchant’s
+                  products and can still return to the full event.
+                </p>
+              </div>
+              <div className="space-y-2">
+                {merchantBoothLinks.map((merchant) => (
+                  <details
+                    key={merchant.pubkey}
+                    className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5"
+                  >
+                    <summary className="cursor-pointer rounded text-sm font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+                      {merchant.name}{" "}
+                      <span className="font-normal text-[var(--text-muted)]">
+                        · {merchant.productCount}{" "}
+                        {merchant.productCount === 1 ? "product" : "products"}
+                      </span>
+                    </summary>
+                    <div className="mt-4 grid gap-4 sm:grid-cols-[12.5rem_minmax(0,1fr)]">
+                      <div
+                        role="img"
+                        aria-label={`${merchant.name} event catalog QR code`}
+                        className="w-fit rounded-xl border border-[var(--border)] bg-white p-3"
+                      >
+                        <QRCodeSVG value={merchant.url} size={176} level="M" />
+                      </div>
+                      <div className="min-w-0 space-y-3">
+                        <div className="break-all font-mono text-xs leading-5 text-[var(--text-muted)]">
+                          {merchant.url}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => onCopy(merchant.url)}
+                          >
+                            {copiedUrl === merchant.url ? <Check /> : <Copy />}
+                            {copiedUrl === merchant.url
+                              ? "Booth link copied"
+                              : "Copy booth link"}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            asChild
+                          >
+                            <a
+                              href={merchant.url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <ExternalLink />
+                              Open filtered catalog
+                            </a>
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </details>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           <section
             aria-labelledby="merchant-event-link-title"
@@ -865,12 +1048,17 @@ export function OrganizerEventMarketPanel({
                     item={item}
                     merchantProfile={
                       item.merchantPubkey
-                        ? merchantProfilesQuery.getProfile(item.merchantPubkey)
+                        ? eventActorProfile(item.merchantPubkey)
                         : undefined
                     }
                     merchantProfileState={merchantProfileState(
                       item.merchantPubkey
                     )}
+                    handlerProfile={
+                      item.handlerPubkey
+                        ? eventActorProfile(item.handlerPubkey)
+                        : undefined
+                    }
                     organizerPubkey={market.organizerPubkey}
                     pending={membershipPending || !canChangeMembership}
                     onMembership={onMembership}
@@ -900,12 +1088,17 @@ export function OrganizerEventMarketPanel({
                     item={item}
                     merchantProfile={
                       item.merchantPubkey
-                        ? merchantProfilesQuery.getProfile(item.merchantPubkey)
+                        ? eventActorProfile(item.merchantPubkey)
                         : undefined
                     }
                     merchantProfileState={merchantProfileState(
                       item.merchantPubkey
                     )}
+                    handlerProfile={
+                      item.handlerPubkey
+                        ? eventActorProfile(item.handlerPubkey)
+                        : undefined
+                    }
                     organizerPubkey={market.organizerPubkey}
                     pending={membershipPending || !canChangeMembership}
                     onMembership={onMembership}
@@ -939,12 +1132,17 @@ export function OrganizerEventMarketPanel({
                     item={item}
                     merchantProfile={
                       item.merchantPubkey
-                        ? merchantProfilesQuery.getProfile(item.merchantPubkey)
+                        ? eventActorProfile(item.merchantPubkey)
                         : undefined
                     }
                     merchantProfileState={merchantProfileState(
                       item.merchantPubkey
                     )}
+                    handlerProfile={
+                      item.handlerPubkey
+                        ? eventActorProfile(item.handlerPubkey)
+                        : undefined
+                    }
                     organizerPubkey={market.organizerPubkey}
                     pending={membershipPending || !canChangeMembership}
                     onMembership={onMembership}

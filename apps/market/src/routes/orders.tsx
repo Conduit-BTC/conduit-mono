@@ -21,11 +21,11 @@ import {
   getNdk,
   getProductImageCandidates,
   getOrderPublicZapSigner,
+  getOrderLifecycle,
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
   hasWebLN,
   listOrderLifecycles,
-  normalizeLightningInvoice,
   ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
   pruneExpiredGuestOrderData,
   prepareProtectedReadRefreshState,
@@ -68,8 +68,6 @@ import {
 } from "@conduit/ui"
 import {
   ChevronRight,
-  Copy,
-  ExternalLink,
   LoaderCircle,
   MapPin,
   MessageCircle,
@@ -77,9 +75,13 @@ import {
   RotateCw,
   ShoppingBag,
 } from "lucide-react"
-import { QRCodeSVG } from "qrcode.react"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CopyButton } from "../components/CopyButton"
+import { ExternalWalletPanel } from "../components/ExternalWalletPanel"
+import {
+  EventActorName,
+  EventActorProvenance,
+} from "../components/EventActorIdentity"
 import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME,
@@ -101,9 +103,11 @@ import { useWallets } from "../hooks/useWallets"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
-  deriveBoundMerchantInvoiceAccess,
+  canClaimManualInvoiceReport,
+  deriveManualInvoiceAccess,
   deriveOrderHeaderStatus,
   getOrderFilterPhase,
+  getOrderPaymentFailureDetail,
   getOrderPaymentMethodLabel,
   isZeroCostPickupOrder,
   type OrderHeaderStatus,
@@ -130,15 +134,24 @@ import {
   resendOrderProof,
   runOrderPrivateFallback,
   runOrderPayment,
+  runOrderPaymentWithUpdatedAddress,
   submitExternalPaymentProof,
   subscribeOrderPayment,
   validateMerchantInvoicePaymentAction,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
 import {
+  checkOrderPaymentAddressUpdate,
+  type OrderPaymentAddressUpdate,
+} from "../lib/order-payment-address"
+import {
   getNextOrderPaymentLeaseExpiry,
   reconcileOrderPaymentForDisplay,
 } from "../lib/order-payment-recovery"
+import {
+  getEventActorIdentityView,
+  normalizeEventActorPubkey,
+} from "../lib/event-actor-identity"
 
 type PriceFormatter = (
   price: CommercePriceLike,
@@ -634,205 +647,6 @@ function OrderTimeline({
   )
 }
 
-/** External-wallet QR fallback (CND-120): shown when payment is manual_required. */
-function ExternalWalletPanel({
-  vm,
-  onMarkPaid,
-  onBeforeInvoiceUse,
-  onPrepareMerchantInvoice,
-  merchantInvoicePrepared,
-  boundMerchantInvoiceExpiresAt,
-  busy,
-  guestSession,
-  autoDetectReceipt,
-}: {
-  vm: OrderViewModel
-  onMarkPaid: () => void
-  onBeforeInvoiceUse: () => boolean
-  onPrepareMerchantInvoice: () => void
-  merchantInvoicePrepared: boolean
-  boundMerchantInvoiceExpiresAt: number | null
-  busy: boolean
-  guestSession: boolean
-  autoDetectReceipt: boolean
-}) {
-  const [copied, setCopied] = useState(false)
-  const [nowSeconds, setNowSeconds] = useState(() =>
-    Math.floor(Date.now() / 1_000)
-  )
-  const invoice = vm.invoice
-  const merchantInvoice = vm.merchantInvoiceAction
-  const hasBoundMerchantInvoice =
-    vm.checkoutMode === "pay_later" &&
-    vm.paymentStatus === "manual_required" &&
-    !!invoice &&
-    boundMerchantInvoiceExpiresAt !== null
-  const isMerchantInvoice = !!merchantInvoice || hasBoundMerchantInvoice
-  const merchantInvoiceExpiry =
-    merchantInvoice?.expiresAt ??
-    (hasBoundMerchantInvoice ? boundMerchantInvoiceExpiresAt : null)
-  useEffect(() => {
-    if (merchantInvoiceExpiry === null) return
-    const remainingMs = merchantInvoiceExpiry * 1_000 - Date.now()
-    const timer = window.setTimeout(
-      () => setNowSeconds(Math.floor(Date.now() / 1_000)),
-      Math.max(0, Math.min(remainingMs, 2_147_483_647))
-    )
-    return () => window.clearTimeout(timer)
-  }, [merchantInvoiceExpiry, nowSeconds])
-  if (!invoice) return null
-  if (merchantInvoice?.status === "payable" && !merchantInvoicePrepared) {
-    return (
-      <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
-        <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-          Merchant invoice ready
-        </h2>
-        <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
-          Confirm this invoice before opening it. Orders will keep this exact
-          invoice attached to the payment report.
-        </p>
-        <Button
-          className="mt-4 h-10 px-4 text-sm"
-          disabled={busy}
-          onClick={onPrepareMerchantInvoice}
-        >
-          Use merchant invoice
-        </Button>
-      </section>
-    )
-  }
-  const merchantInvoiceExpired =
-    isMerchantInvoice &&
-    merchantInvoiceExpiry !== null &&
-    merchantInvoiceExpiry <= nowSeconds
-  const merchantInvoiceBlocked =
-    merchantInvoice?.status === "blocked" || merchantInvoiceExpired
-  const merchantInvoiceCanReport =
-    merchantInvoice?.status === "blocked"
-      ? merchantInvoice.canReport
-      : merchantInvoiceExpired
-  const merchantInvoiceError =
-    merchantInvoice?.status === "blocked"
-      ? merchantInvoice.reason
-      : merchantInvoiceExpired
-        ? "The invoice returned by the merchant is already expired."
-        : null
-  if (merchantInvoiceBlocked) {
-    return (
-      <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
-        <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-          Invoice unavailable
-        </h2>
-        <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
-          {merchantInvoiceError}
-        </p>
-        {merchantInvoiceCanReport && (
-          <div className="mt-4 space-y-2">
-            <Button
-              variant="outline"
-              className="h-10 px-4 text-sm"
-              disabled={busy}
-              onClick={onMarkPaid}
-            >
-              Report a payment already made
-            </Button>
-            <p className="text-pretty text-xs text-[var(--text-secondary)]">
-              Only report this if your wallet confirms it paid this exact
-              invoice before expiry.
-            </p>
-          </div>
-        )}
-      </section>
-    )
-  }
-  const bolt11 = normalizeLightningInvoice(invoice)
-  const copy = async () => {
-    if (!onBeforeInvoiceUse()) return
-    try {
-      await navigator.clipboard.writeText(invoice)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      /* clipboard unavailable */
-    }
-  }
-  return (
-    <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
-      <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-        {isMerchantInvoice
-          ? "Pay merchant invoice"
-          : "Pay with an external wallet"}
-      </h2>
-      <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
-        {autoDetectReceipt
-          ? "Check your wallet first if an automatic payment was already attempted. Otherwise scan or copy this invoice and pay it once. Conduit will match the public Lightning receipt and notify the merchant automatically."
-          : isMerchantInvoice
-            ? "Scan, copy, or open this merchant invoice. After your wallet confirms payment, report it to the merchant for verification."
-            : "Automatic payment did not complete. Check your wallet first, then pay this same invoice once and report it to the merchant for verification. This invoice can only settle once, so paying it again is safe if nothing was sent."}
-      </p>
-      {guestSession && (
-        <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
-          {autoDetectReceipt
-            ? "Return to this same tab after paying so Conduit can finish receipt detection. Closing it ends local access to this guest order."
-            : "Keep this tab open until the payment is reported. Closing it ends local access to this guest order. The merchant can use the private recovery contact submitted at checkout."}
-        </p>
-      )}
-      <div className="mt-4 flex flex-col items-start gap-4 sm:flex-row">
-        <div className="rounded-xl bg-white p-3">
-          <QRCodeSVG value={bolt11} size={156} level="M" />
-        </div>
-        <div className="min-w-0 flex-1 space-y-3">
-          <div className="flex flex-wrap gap-2">
-            <Button asChild className="h-10 px-4 text-sm">
-              <a
-                href={`lightning:${bolt11}`}
-                onClick={(event) => {
-                  if (!onBeforeInvoiceUse()) event.preventDefault()
-                }}
-              >
-                <ExternalLink className="h-4 w-4" />
-                Open in wallet
-              </a>
-            </Button>
-            <Button
-              variant="outline"
-              className="h-10 px-4 text-sm"
-              onClick={copy}
-            >
-              <Copy className="h-4 w-4" />
-              {copied ? "Copied" : "Copy invoice"}
-            </Button>
-          </div>
-          <div className="max-h-24 overflow-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 font-mono text-xs leading-5 break-all text-[var(--text-secondary)]">
-            {invoice}
-          </div>
-          {autoDetectReceipt ? (
-            <p className="text-xs leading-5 text-[var(--text-secondary)]">
-              Waiting for the matching receipt. If your wallet confirms payment,
-              do not pay this invoice again while detection completes.
-            </p>
-          ) : (
-            <>
-              <Button
-                variant="primary"
-                className="h-10 px-4 text-sm"
-                disabled={busy}
-                onClick={onMarkPaid}
-              >
-                Report payment to merchant
-              </Button>
-              <p className="text-xs text-[var(--text-secondary)]">
-                Only report after your wallet confirms payment. This does not
-                verify settlement; the merchant will confirm it.
-              </p>
-            </>
-          )}
-        </div>
-      </div>
-    </section>
-  )
-}
-
 function OrderDetail({
   row,
   buyerPubkey,
@@ -845,14 +659,18 @@ function OrderDetail({
   authenticatedPubkey?: string | null
 }) {
   const { vm, headerStatus } = row
-  const { authGeneration } = useAuth()
+  const currentViewRef = useRef(vm)
+  useLayoutEffect(() => {
+    currentViewRef.current = vm
+  }, [vm])
+  const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
   const shouldContinueBuyerSession = guestIdentity
     ? undefined
-    : () => authGenerationRef.current === authGeneration
+    : () => isAuthGenerationCurrent(authGeneration)
   const shouldContinueAccountRead = () =>
     authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
@@ -867,9 +685,42 @@ function OrderDetail({
     maxUnresolvedRefetches: 1,
   })
   const merchantName = getMerchantDisplayName(profile, row.merchantPubkey)
+  const eventActorPubkeys = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          vm.pickupFulfillments.flatMap((pickup) => [
+            getPickupHandoffSummary(pickup).handlerPubkey,
+            normalizeEventActorPubkey(pickup.organizerPubkey),
+          ])
+        )
+      ),
+    [vm.pickupFulfillments]
+  )
+  const eventActorProfiles = useProfiles(eventActorPubkeys, {
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: shouldContinueAccountRead,
+    enabled: eventActorPubkeys.length > 0,
+    priority: "visible",
+    refetchUnresolvedMs: 12_000,
+    maxUnresolvedRefetches: 2,
+  })
+  const eventActorIdentity = useCallback(
+    (pubkey: string) =>
+      getEventActorIdentityView({
+        pubkey,
+        profile: eventActorProfiles.data[normalizeEventActorPubkey(pubkey)],
+      }),
+    [eventActorProfiles.data]
+  )
   const [busy, setBusy] = useState(false)
   const [privateFallbackOpen, setPrivateFallbackOpen] = useState(false)
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
+  const [paymentAddressUpdate, setPaymentAddressUpdate] = useState<{
+    ctx: OrderPaymentContext
+    update: OrderPaymentAddressUpdate
+  } | null>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
@@ -1072,7 +923,7 @@ function OrderDetail({
     }
   }, [])
 
-  async function retryPayment(): Promise<void> {
+  async function verifyRetryFreshness(): Promise<void> {
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
       row.lifecycle?.merchantPubkey ?? row.merchantPubkey,
@@ -1085,10 +936,54 @@ function OrderDetail({
       authenticatedPubkey,
       shouldContinue: shouldContinueBuyerSession,
     })
+  }
 
+  async function retryPayment(): Promise<void> {
+    await verifyRetryFreshness()
     const ctx = await persistTargetAndBuildServiceCtx()
+    const lifecycle = await getOrderLifecycle(vm.orderId)
+    if (
+      lifecycle &&
+      vm.phase !== "cancelled" &&
+      vm.phase !== "completed" &&
+      !vm.merchantInvoiceAction
+    ) {
+      const check = await checkOrderPaymentAddressUpdate(lifecycle, ctx)
+      if (check.status === "updated") {
+        setPaymentAddressUpdate({ ctx, update: check.update })
+        return
+      }
+      if (check.status === "current_address_unusable") {
+        throw new Error(
+          "The merchant's current profile no longer has a usable Lightning address. No invoice was requested."
+        )
+      }
+      if (check.status === "current_address_changed") {
+        throw new Error(
+          "The merchant's payment address changed. This order cannot safely switch addresses. Contact the merchant before retrying. No invoice was requested."
+        )
+      }
+      if (check.status === "unavailable") {
+        setRecoveryError(
+          "We couldn't check for an updated merchant address. This retry uses the saved address."
+        )
+      }
+    }
+    await runRetryPayment(ctx)
+    // The completed attempt's saved result supersedes the address-check notice.
+    setRecoveryError(null)
+  }
+
+  async function runRetryPayment(
+    ctx: OrderPaymentContext,
+    update?: OrderPaymentAddressUpdate
+  ): Promise<void> {
+    const run = (context: OrderPaymentContext) =>
+      update
+        ? runOrderPaymentWithUpdatedAddress(context, update)
+        : runOrderPayment(context)
     if (ctx.zapMode !== "anonymous_public_zap") {
-      await runOrderPayment(ctx)
+      await run(ctx)
       return
     }
 
@@ -1108,32 +1003,38 @@ function OrderDetail({
       )
     }
     const preparedAnonZap = await signAuthorizedAnonZapCheckout(authorization)
-    await runOrderPayment({
+    await run({
       ...ctx,
       zapContent: preparedAnonZap.rawEvent.content,
       preparedAnonZap,
     })
   }
 
+  async function confirmPaymentAddressUpdate(): Promise<void> {
+    const pending = paymentAddressUpdate
+    if (!pending) return
+    setPaymentAddressUpdate(null)
+    if (
+      vm.phase === "cancelled" ||
+      vm.phase === "completed" ||
+      vm.merchantInvoiceAction
+    ) {
+      throw new Error(
+        "This order no longer accepts an updated payment address."
+      )
+    }
+    await verifyRetryFreshness()
+    await runRetryPayment(pending.ctx, pending.update)
+  }
+
   async function continuePrivateFallback(): Promise<void> {
-    const pickupFreshness = await verifyPickupCartFreshness(
-      row.lifecycle?.items ?? [],
-      row.lifecycle?.merchantPubkey ?? row.merchantPubkey,
-      authenticatedPubkey,
-      () => authGenerationRef.current === authGeneration
-    )
-    if (!pickupFreshness.fresh) throw new Error(pickupFreshness.reason)
-    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [], undefined, {
-      requestingAccountPubkey: authenticatedPubkey,
-      authenticatedPubkey,
-      shouldContinue: shouldContinueBuyerSession,
-    })
+    await verifyRetryFreshness()
     const ctx = await persistTargetAndBuildServiceCtx()
     setPrivateFallbackOpen(false)
     await runOrderPrivateFallback(ctx)
   }
 
-  const boundMerchantInvoiceAccess = deriveBoundMerchantInvoiceAccess(
+  const manualInvoiceAccess = deriveManualInvoiceAccess(
     row.lifecycle,
     vm.merchantStatus,
     vm.phase,
@@ -1149,8 +1050,9 @@ function OrderDetail({
 
   function beginMerchantInvoicePayment(): boolean {
     if (
-      boundMerchantInvoiceAccess === "report_only" ||
-      boundMerchantInvoiceAccess === "closed"
+      manualInvoiceAccess === "report_only" ||
+      manualInvoiceAccess === "receipt_only" ||
+      manualInvoiceAccess === "closed"
     ) {
       setRecoveryError("This order no longer accepts payment.")
       return false
@@ -1172,6 +1074,9 @@ function OrderDetail({
   }
 
   async function prepareCurrentMerchantInvoice(): Promise<void> {
+    if (!shouldContinueAccountRead()) {
+      throw new Error("Your account changed. Reopen the order to continue.")
+    }
     const action = vm.merchantInvoiceAction
     if (!action || action.status !== "payable") {
       throw new Error("This merchant invoice is no longer payable.")
@@ -1183,8 +1088,13 @@ function OrderDetail({
   }
 
   async function reportExternalPayment(): Promise<void> {
-    if (boundMerchantInvoiceAccess === "closed") {
+    if (manualInvoiceAccess === "closed") {
       throw new Error("The merchant already confirmed this payment.")
+    }
+    if (manualInvoiceAccess === "receipt_only") {
+      throw new Error(
+        "A matching public receipt is required to confirm this payment."
+      )
     }
     const action = vm.merchantInvoiceAction
     const unboundPaidInvoice =
@@ -1196,7 +1106,15 @@ function OrderDetail({
       merchantInvoiceReopenEvidence,
       authenticatedPubkey ?? null,
       authenticatedPubkey ?? null,
-      shouldContinueBuyerSession
+      shouldContinueBuyerSession,
+      (lifecycle) =>
+        shouldContinueAccountRead() &&
+        canClaimManualInvoiceReport(
+          vm,
+          currentViewRef.current,
+          lifecycle,
+          buyerPubkey
+        )
     )
   }
 
@@ -1218,6 +1136,11 @@ function OrderDetail({
   const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"
   const recoveredBeforeWallet =
     row.lifecycle?.lastError === ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR
+  const paymentRecoveryError =
+    recoveryError ??
+    (!busy && showRetryPayment && !recoveredBeforeWallet
+      ? getOrderPaymentFailureDetail(row.lifecycle, vm)
+      : null)
   const showAnonPaymentRecovery =
     showRetryPayment &&
     vm.publicZapSigner === "anon" &&
@@ -1226,16 +1149,17 @@ function OrderDetail({
     !zeroCostPickupOrder && vm.paymentStatus === "ambiguous"
   const showExternalWallet =
     !zeroCostPickupOrder &&
-    boundMerchantInvoiceAccess !== "closed" &&
-    boundMerchantInvoiceAccess !== "report_only" &&
+    manualInvoiceAccess !== "closed" &&
+    manualInvoiceAccess !== "report_only" &&
+    manualInvoiceAccess !== "receipt_only" &&
     (vm.paymentStatus === "manual_required" || !!vm.merchantInvoiceAction)
   const autoDetectPublicReceipt =
     !zeroCostPickupOrder &&
-    vm.publicZapSigner === "anon" &&
+    !!vm.publicZapSigner &&
     vm.zapReceiptStatus === "waiting"
   const publicReceiptNotObserved =
     !zeroCostPickupOrder &&
-    vm.publicZapSigner === "anon" &&
+    !!vm.publicZapSigner &&
     vm.zapReceiptStatus === "receipt_not_observed"
   const showResendProof =
     !zeroCostPickupOrder &&
@@ -1358,7 +1282,8 @@ function OrderDetail({
         </section>
       </>
 
-      {boundMerchantInvoiceAccess === "report_only" && (
+      {(manualInvoiceAccess === "report_only" ||
+        manualInvoiceAccess === "receipt_only") && (
         <StatusNotice
           variant="warning"
           title="Order no longer accepts payment"
@@ -1369,17 +1294,20 @@ function OrderDetail({
           }
         >
           <p className="text-pretty text-sm text-[var(--text-secondary)]">
-            Do not pay this invoice. If your wallet already confirms a payment,
-            report it so the merchant can verify what happened.
+            {manualInvoiceAccess === "receipt_only"
+              ? "Do not pay this invoice. If your wallet already confirms payment, Conduit can still match its public receipt and notify the merchant."
+              : "Do not pay this invoice. If your wallet already confirms a payment, report it so the merchant can verify what happened."}
           </p>
-          <Button
-            variant="outline"
-            className="mt-4 h-10 px-4 text-sm"
-            disabled={busy}
-            onClick={() => void withBusy(reportExternalPayment)}
-          >
-            Report a payment already made
-          </Button>
+          {manualInvoiceAccess === "report_only" && (
+            <Button
+              variant="outline"
+              className="mt-4 h-10 px-4 text-sm"
+              disabled={busy}
+              onClick={() => void withBusy(reportExternalPayment)}
+            >
+              Report a payment already made
+            </Button>
+          )}
         </StatusNotice>
       )}
 
@@ -1416,7 +1344,7 @@ function OrderDetail({
                 : vm.merchantInvoiceAction?.status === "blocked"
                   ? "Orders checked the latest merchant invoice but could not make it payable."
                   : vm.merchantInvoiceAction
-                    ? "Orders checked the latest merchant invoice against this saved order. Confirm it once before payment controls appear."
+                    ? "Orders checked the merchant invoice against this saved order. Payment details appear automatically below."
                     : vm.publicZapFallback
                       ? "Your order is still ready. The optional public checkout note was unavailable, so this invoice is private. Pay it once, then report the payment so the merchant can verify it."
                       : "No automatic wallet was available. Pay the invoice below, then report the payment to the merchant for verification."}
@@ -1424,13 +1352,13 @@ function OrderDetail({
           </StatusNotice>
           <ExternalWalletPanel
             vm={vm}
+            pricing={shopperPricing}
             busy={busy}
             guestSession={!!guestIdentity}
             autoDetectReceipt={autoDetectPublicReceipt}
             onBeforeInvoiceUse={beginMerchantInvoicePayment}
-            onPrepareMerchantInvoice={() =>
-              void withBusy(prepareCurrentMerchantInvoice)
-            }
+            onPrepareMerchantInvoice={prepareCurrentMerchantInvoice}
+            preparationScope={`${authGeneration}:${authenticatedPubkey ?? "guest"}:${buyerPubkey}:${vm.orderId}`}
             merchantInvoicePrepared={merchantInvoicePrepared}
             boundMerchantInvoiceExpiresAt={boundMerchantInvoiceExpiresAt}
             onMarkPaid={() => void withBusy(reportExternalPayment)}
@@ -1559,7 +1487,7 @@ function OrderDetail({
               {wallets.loading
                 ? "Wait while Conduit checks the Portable and Connected Wallets saved on this device."
                 : publicReceiptNotObserved
-                  ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays during this guest session."
+                  ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays while this order remains available on this device."
                   : showAmbiguousPayment
                     ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
                     : showRetryPayment && retryWalletTargetIsStale
@@ -1576,12 +1504,12 @@ function OrderDetail({
                                 : "No funds moved. You can retry payment for this order."
                             : "Payment went through; the receipt didn't reach the merchant."}
             </span>
-            {recoveryError && (
+            {paymentRecoveryError && (
               <p
                 role="alert"
                 className="w-full text-sm text-[var(--destructive)]"
               >
-                {recoveryError}
+                {paymentRecoveryError}
               </p>
             )}
             {showRetryPayment && wallets.initializationError && (
@@ -1617,6 +1545,55 @@ function OrderDetail({
           </div>
         </StatusNotice>
       )}
+
+      <AlertDialog
+        open={!!paymentAddressUpdate}
+        onOpenChange={(open) => {
+          if (!open) setPaymentAddressUpdate(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Merchant updated their payment address
+            </AlertDialogTitle>
+            <AlertDialogDescription className="leading-6">
+              Review the new address before retrying this order. The order total
+              and payment method stay the same. If you selected a wallet,
+              confirming may pay immediately.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <dl className="grid gap-3 text-sm">
+            <div>
+              <dt className="text-[var(--text-secondary)]">Saved address</dt>
+              <dd className="break-all">
+                {paymentAddressUpdate?.update.previousAddress}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[var(--text-secondary)]">Updated address</dt>
+              <dd className="break-all">
+                {paymentAddressUpdate?.update.newAddress}
+              </dd>
+            </div>
+          </dl>
+          <AlertDialogFooter>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => setPaymentAddressUpdate(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() => void withBusy(confirmPaymentAddressUpdate)}
+            >
+              Use updated address and retry
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={privateFallbackOpen}
@@ -1732,11 +1709,15 @@ function OrderDetail({
                         <dt className="text-[var(--text-muted)]">
                           Pickup handler
                         </dt>
-                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
-                          <span>{formatNpub(handoff.handlerPubkey, 8)}</span>
-                          <CopyButton
-                            value={handoff.handlerPubkey}
-                            label="Copy pickup handler npub"
+                        <dd className="mt-1 min-w-0">
+                          <EventActorName
+                            identity={eventActorIdentity(handoff.handlerPubkey)}
+                            className="block truncate"
+                          />
+                          <EventActorProvenance
+                            pubkey={handoff.handlerPubkey}
+                            copyLabel="Copy pickup handler npub"
+                            className="mt-1"
                           />
                         </dd>
                       </div>
@@ -1759,11 +1740,17 @@ function OrderDetail({
                         <dt className="text-[var(--text-muted)]">
                           Event organizer
                         </dt>
-                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
-                          <span>{formatNpub(pickup.organizerPubkey, 8)}</span>
-                          <CopyButton
-                            value={pickup.organizerPubkey}
-                            label="Copy event organizer npub"
+                        <dd className="mt-1 min-w-0">
+                          <EventActorName
+                            identity={eventActorIdentity(
+                              pickup.organizerPubkey
+                            )}
+                            className="block truncate"
+                          />
+                          <EventActorProvenance
+                            pubkey={pickup.organizerPubkey}
+                            copyLabel="Copy event organizer npub"
+                            className="mt-1"
                           />
                         </dd>
                       </div>
@@ -1880,7 +1867,7 @@ function OrderDetail({
                   </span>
                   <CopyButton value={vm.orderId} label="Copy order id" />
                 </DetailRow>
-                <DetailRow label="Order npub">
+                <DetailRow label="Merchant npub">
                   <span className="font-mono text-xs">
                     {formatNpub(row.merchantPubkey, 8)}
                   </span>

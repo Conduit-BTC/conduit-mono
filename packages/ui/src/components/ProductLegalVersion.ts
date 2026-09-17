@@ -11,11 +11,12 @@ export const WEBSITE_TERMS_URL =
   "https://conduit.market/terms-of-service" as const
 
 export const PRODUCT_LEGAL_VERSION =
-  "conduit-product-legal-v1.1-2026-08-09" as const
-export const PRODUCT_LEGAL_EFFECTIVE_DATE = "2026-08-09" as const
-export const PRODUCT_LEGAL_EFFECTIVE_DATE_LABEL = "August 9, 2026" as const
-export const PRODUCT_LEGAL_LAST_UPDATED_DATE = "2026-08-09" as const
-export const PRODUCT_LEGAL_LAST_UPDATED_DATE_LABEL = "August 9, 2026" as const
+  "conduit-product-legal-v1.2-2026-09-17" as const
+export const PRODUCT_LEGAL_EFFECTIVE_DATE = "2026-09-17" as const
+export const PRODUCT_LEGAL_EFFECTIVE_DATE_LABEL = "September 17, 2026" as const
+export const PRODUCT_LEGAL_LAST_UPDATED_DATE = "2026-09-17" as const
+export const PRODUCT_LEGAL_LAST_UPDATED_DATE_LABEL =
+  "September 17, 2026" as const
 
 const PRODUCT_LEGAL_PATHS = new Set<string>([
   PRODUCT_PRIVACY_PATH,
@@ -45,11 +46,18 @@ export const PRODUCT_LEGAL_VERSION_HISTORY = Object.freeze([
       "packages/ui/src/legal/versions/product-legal-v1.0-2026-08-09.tsx",
   }),
   Object.freeze({
+    version: "conduit-product-legal-v1.1-2026-08-09",
+    effectiveDate: "2026-08-09",
+    lastUpdatedDate: "2026-08-09",
+    archivedSource:
+      "packages/ui/src/legal/versions/product-legal-v1.1-2026-08-09.tsx",
+  }),
+  Object.freeze({
     version: PRODUCT_LEGAL_VERSION,
     effectiveDate: PRODUCT_LEGAL_EFFECTIVE_DATE,
     lastUpdatedDate: PRODUCT_LEGAL_LAST_UPDATED_DATE,
     archivedSource:
-      "packages/ui/src/legal/versions/product-legal-v1.1-2026-08-09.tsx",
+      "packages/ui/src/legal/versions/product-legal-v1.2-2026-09-17.tsx",
   }),
 ])
 

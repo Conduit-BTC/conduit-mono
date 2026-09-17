@@ -19,9 +19,11 @@ import { Route as OrdersRouteImport } from './routes/orders'
 import { Route as PreferencesRouteImport } from './routes/preferences'
 import { Route as PrivacyPolicyRouteImport } from './routes/privacy-policy'
 import { Route as ProfileRouteImport } from './routes/profile'
+import { Route as SellersRouteImport } from './routes/sellers'
 import { Route as TermsOfServiceRouteImport } from './routes/terms-of-service'
 import { Route as WalletRouteImport } from './routes/wallet'
 import { Route as ZapoutsRouteImport } from './routes/zapouts'
+import { Route as EventsIndexRouteImport } from './routes/events/index'
 import { Route as EventsCollectionRefRouteImport } from './routes/events/$collectionRef'
 import { Route as ProductsIndexRouteImport } from './routes/products/index'
 import { Route as ProductsProductIdRouteImport } from './routes/products/$productId'
@@ -78,6 +80,11 @@ const ProfileRoute = ProfileRouteImport.update({
   path: '/profile',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SellersRoute = SellersRouteImport.update({
+  id: '/sellers',
+  path: '/sellers',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TermsOfServiceRoute = TermsOfServiceRouteImport.update({
   id: '/terms-of-service',
   path: '/terms-of-service',
@@ -91,6 +98,11 @@ const WalletRoute = WalletRouteImport.update({
 const ZapoutsRoute = ZapoutsRouteImport.update({
   id: '/zapouts',
   path: '/zapouts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EventsIndexRoute = EventsIndexRouteImport.update({
+  id: '/events/',
+  path: '/events/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const EventsCollectionRefRoute = EventsCollectionRefRouteImport.update({
@@ -130,6 +142,7 @@ export interface FileRoutesByFullPath {
   '/preferences': typeof PreferencesRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
+  '/sellers': typeof SellersRoute
   '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
@@ -137,6 +150,7 @@ export interface FileRoutesByFullPath {
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
+  '/events/': typeof EventsIndexRoute
   '/products/': typeof ProductsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -150,6 +164,7 @@ export interface FileRoutesByTo {
   '/preferences': typeof PreferencesRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
+  '/sellers': typeof SellersRoute
   '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
@@ -157,6 +172,7 @@ export interface FileRoutesByTo {
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
+  '/events': typeof EventsIndexRoute
   '/products': typeof ProductsIndexRoute
 }
 export interface FileRoutesById {
@@ -171,6 +187,7 @@ export interface FileRoutesById {
   '/preferences': typeof PreferencesRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
+  '/sellers': typeof SellersRoute
   '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
@@ -178,6 +195,7 @@ export interface FileRoutesById {
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
+  '/events/': typeof EventsIndexRoute
   '/products/': typeof ProductsIndexRoute
 }
 export interface FileRouteTypes {
@@ -193,6 +211,7 @@ export interface FileRouteTypes {
     | '/preferences'
     | '/privacy-policy'
     | '/profile'
+    | '/sellers'
     | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
@@ -200,6 +219,7 @@ export interface FileRouteTypes {
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
+    | '/events/'
     | '/products/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -213,6 +233,7 @@ export interface FileRouteTypes {
     | '/preferences'
     | '/privacy-policy'
     | '/profile'
+    | '/sellers'
     | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
@@ -220,6 +241,7 @@ export interface FileRouteTypes {
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
+    | '/events'
     | '/products'
   id:
     | '__root__'
@@ -233,6 +255,7 @@ export interface FileRouteTypes {
     | '/preferences'
     | '/privacy-policy'
     | '/profile'
+    | '/sellers'
     | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
@@ -240,6 +263,7 @@ export interface FileRouteTypes {
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
+    | '/events/'
     | '/products/'
   fileRoutesById: FileRoutesById
 }
@@ -254,6 +278,7 @@ export interface RootRouteChildren {
   PreferencesRoute: typeof PreferencesRoute
   PrivacyPolicyRoute: typeof PrivacyPolicyRoute
   ProfileRoute: typeof ProfileRoute
+  SellersRoute: typeof SellersRoute
   TermsOfServiceRoute: typeof TermsOfServiceRoute
   WalletRoute: typeof WalletRoute
   ZapoutsRoute: typeof ZapoutsRoute
@@ -261,6 +286,7 @@ export interface RootRouteChildren {
   ProductsProductIdRoute: typeof ProductsProductIdRoute
   StorePubkeyRoute: typeof StorePubkeyRoute
   UProfileRefRoute: typeof UProfileRefRoute
+  EventsIndexRoute: typeof EventsIndexRoute
   ProductsIndexRoute: typeof ProductsIndexRoute
 }
 
@@ -336,6 +362,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProfileRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/sellers': {
+      id: '/sellers'
+      path: '/sellers'
+      fullPath: '/sellers'
+      preLoaderRoute: typeof SellersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/terms-of-service': {
       id: '/terms-of-service'
       path: '/terms-of-service'
@@ -355,6 +388,13 @@ declare module '@tanstack/react-router' {
       path: '/zapouts'
       fullPath: '/zapouts'
       preLoaderRoute: typeof ZapoutsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/events/': {
+      id: '/events/'
+      path: '/events'
+      fullPath: '/events/'
+      preLoaderRoute: typeof EventsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/events/$collectionRef': {
@@ -406,6 +446,7 @@ const rootRouteChildren: RootRouteChildren = {
   PreferencesRoute: PreferencesRoute,
   PrivacyPolicyRoute: PrivacyPolicyRoute,
   ProfileRoute: ProfileRoute,
+  SellersRoute: SellersRoute,
   TermsOfServiceRoute: TermsOfServiceRoute,
   WalletRoute: WalletRoute,
   ZapoutsRoute: ZapoutsRoute,
@@ -413,6 +454,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProductsProductIdRoute: ProductsProductIdRoute,
   StorePubkeyRoute: StorePubkeyRoute,
   UProfileRefRoute: UProfileRefRoute,
+  EventsIndexRoute: EventsIndexRoute,
   ProductsIndexRoute: ProductsIndexRoute,
 }
 export const routeTree = rootRouteImport

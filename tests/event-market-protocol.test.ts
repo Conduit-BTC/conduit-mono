@@ -166,7 +166,16 @@ describe("event-market protocol fixtures", () => {
     ])
 
     const timed = parseEventMarketCalendarEvent(
-      signDraft(ORGANIZER_SECRET, timedDraft)
+      signRaw({
+        kind: timedDraft.kind,
+        tags: [
+          ...timedDraft.tags,
+          ["t", "V4V"],
+          ["t", " Chicago "],
+          ["t", "V4V"],
+        ],
+        content: timedDraft.content,
+      })
     )
     expect(timed).toMatchObject({
       coordinate: `${EVENT_KINDS.CALENDAR_TIME}:${ORGANIZER_PUBKEY}:night-market`,
@@ -175,7 +184,64 @@ describe("event-market protocol fixtures", () => {
       startTzid: "America/New_York",
       endTzid: "America/New_York",
       geohash: "dr5reg",
+      topics: ["V4V", "Chicago"],
     })
+  })
+
+  it("publishes calendar summaries as interoperable NIP-52 content", () => {
+    const dateDraft = buildEventMarketCalendarDraft({
+      kind: EVENT_KINDS.CALENDAR_DATE,
+      dTag: "summary-date",
+      title: "Summary date",
+      summary: "An all-day public description.",
+      content: "",
+      start: "2027-06-01",
+    })
+    const timedDraft = buildEventMarketCalendarDraft({
+      kind: EVENT_KINDS.CALENDAR_TIME,
+      dTag: "summary-time",
+      title: "Summary time",
+      summary: "A timed public description.",
+      content: "",
+      start: 1_812_000_000,
+    })
+
+    expect(dateDraft.content).toBe("An all-day public description.")
+    expect(dateDraft.tags).toContainEqual([
+      "summary",
+      "An all-day public description.",
+    ])
+    expect(timedDraft.content).toBe("A timed public description.")
+    expect(timedDraft.tags).toContainEqual([
+      "summary",
+      "A timed public description.",
+    ])
+    expect(
+      parseEventMarketCalendarEvent(signDraft(ORGANIZER_SECRET, dateDraft))
+    ).toMatchObject({
+      content: "An all-day public description.",
+      summary: "An all-day public description.",
+    })
+    expect(
+      parseEventMarketCalendarEvent(signDraft(ORGANIZER_SECRET, timedDraft))
+    ).toMatchObject({
+      content: "A timed public description.",
+      summary: "A timed public description.",
+    })
+  })
+
+  it("preserves an explicit detailed NIP-52 calendar description", () => {
+    const draft = buildEventMarketCalendarDraft({
+      kind: EVENT_KINDS.CALENDAR_TIME,
+      dTag: "detailed-description",
+      title: "Detailed description",
+      summary: "Brief public summary.",
+      content: "Full public event description.",
+      start: 1_812_000_000,
+    })
+
+    expect(draft.content).toBe("Full public event description.")
+    expect(draft.tags).toContainEqual(["summary", "Brief public summary."])
   })
 
   it("parses the bounded timed-calendar day frontier without throwing past it", () => {

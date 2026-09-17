@@ -27,6 +27,10 @@ import {
 import { CopyButton } from "../../components/CopyButton"
 import { LivePresenceIndicator } from "../../components/LivePresenceIndicator"
 import {
+  EventActorName,
+  EventActorProvenance,
+} from "../../components/EventActorIdentity"
+import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
   getMerchantDisplayName,
@@ -40,6 +44,7 @@ import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useLivePresenceCount } from "../../hooks/useLivePresenceCount"
 import { useProductCartFulfillment } from "../../hooks/useProductCartFulfillment"
+import { useEventActorIdentity } from "../../hooks/useEventActorIdentity"
 import {
   useProgressiveProductDetail,
   useProgressiveProducts,
@@ -72,13 +77,20 @@ type DescriptionMetrics = {
   expandedHeight: number
 }
 
-function getMarketProductShareUrl(productAddressId: string): string | null {
+function getMarketProductShareUrl(
+  productAddressId: string,
+  sourceRelayUrls: readonly string[]
+): string | null {
   const marketOrigin =
     typeof window === "undefined"
       ? "https://shop.conduit.market"
       : window.location.origin
   try {
-    return buildMarketProductShareUrl(marketOrigin, productAddressId)
+    return buildMarketProductShareUrl(
+      marketOrigin,
+      productAddressId,
+      sourceRelayUrls
+    )
   } catch {
     return null
   }
@@ -187,6 +199,9 @@ function ProductPage() {
     productCartResolution?.status === "pickup"
       ? getPickupHandoffSummary(productCartResolution.fulfillment)
       : null
+  const pickupHandlerIdentity = useEventActorIdentity(
+    productPickupHandoff?.handlerPubkey
+  )
   const productCartCandidate = productCartResolution
     ? productCartResolution.status === "pickup"
       ? cartItemInputFromProductSelection(
@@ -223,9 +238,11 @@ function ProductPage() {
       ? "This listing is already in your cart with different fulfillment. Remove that line before adding it here."
       : productCartResolution?.status === "blocked"
         ? productCartResolution.reason
-        : productPickupHandoff
-          ? `${productPickupHandoff.label}. The exact pickup author is ${formatNpub(productPickupHandoff.handlerPubkey, 10)}. No delivery address is requested. ${getPickupHandoffPrivacyCopy(productPickupHandoff)}`
-          : null
+        : null
+  const showPickupIdentityNotice =
+    !!productPickupHandoff &&
+    !!pickupHandlerIdentity &&
+    !productFulfillmentNotice
   const cartQuantity = cartFulfillmentMatches ? cartItem.quantity : 0
   const productAddAvailability = getProductAddAvailability(
     selectedProduct?.stock,
@@ -248,8 +265,17 @@ function ProductPage() {
     () => (product ? getProductDisplaySummary(product) : null),
     [product]
   )
+  const selectedProductSourceRelayUrls =
+    selectedProduct && selectedProduct.id !== product?.id
+      ? (family?.children.find(
+          (variation) => variation.product.id === selectedProduct.id
+        )?.sourceRelayUrls ?? [])
+      : productQuery.sourceRelayUrls
   const productShareUrl = selectedProduct
-    ? getMarketProductShareUrl(selectedProduct.id)
+    ? getMarketProductShareUrl(
+        selectedProduct.id,
+        selectedProductSourceRelayUrls
+      )
     : null
   const productPresenceCount = useLivePresenceCount({
     canonicalId: selectedProduct?.id,
@@ -791,9 +817,27 @@ function ProductPage() {
                   </Button>
                 </div>
 
-                {productFulfillmentNotice ? (
+                {productFulfillmentNotice || showPickupIdentityNotice ? (
                   <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs leading-5 text-[var(--text-secondary)]">
-                    <span>{productFulfillmentNotice}</span>{" "}
+                    {showPickupIdentityNotice &&
+                    productPickupHandoff &&
+                    pickupHandlerIdentity ? (
+                      <>
+                        <span>
+                          {productPickupHandoff.label}. Handled by{" "}
+                          <EventActorName identity={pickupHandlerIdentity} />.
+                          No delivery address is requested.{" "}
+                          {getPickupHandoffPrivacyCopy(productPickupHandoff)}
+                        </span>
+                        <EventActorProvenance
+                          pubkey={productPickupHandoff.handlerPubkey}
+                          copyLabel="Copy pickup handler npub"
+                          className="mt-1 flex"
+                        />{" "}
+                      </>
+                    ) : (
+                      <span>{productFulfillmentNotice}</span>
+                    )}{" "}
                     {productEventNaddr ? (
                       <Link
                         to="/events/$collectionRef"

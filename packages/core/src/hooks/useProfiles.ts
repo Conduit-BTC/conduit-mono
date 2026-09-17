@@ -8,13 +8,14 @@ import {
   getProfiles,
   type CommerceQueryMeta,
   type CommerceReadPolicy,
-  type CommerceResult,
+  type ProfileBatchResult,
 } from "../protocol/commerce"
 import {
   hasProfileContent,
   mergeRicherProfile,
   mergeRicherProfiles,
   type ProfileMap,
+  type SelectedProfileContext,
 } from "../protocol/profile-cache"
 import type { Profile } from "../types"
 
@@ -59,6 +60,8 @@ export interface UseProfilesResult {
   profiles: ProfileMap
   /** Exact latest query projection before richer display-cache enrichment. */
   evidenceProfiles: ProfileMap
+  /** Selected action context; never enriched from display caches. */
+  profileContexts: Record<string, SelectedProfileContext>
   unresolvedPubkeys: string[]
   isLoading: boolean
   isFetching: boolean
@@ -67,7 +70,7 @@ export interface UseProfilesResult {
   unresolvedRefetchLimitReached: boolean
   meta: CommerceQueryMeta | null
   error: unknown
-  refetch: UseQueryResult<CommerceResult<ProfileMap>>["refetch"]
+  refetch: UseQueryResult<ProfileBatchResult>["refetch"]
   getProfile: (pubkey: string) => Profile | undefined
   hasProfile: (pubkey: string) => boolean
 }
@@ -284,6 +287,24 @@ export function useProfiles(
     () => withBareProfiles(unique, query.data?.data ?? EMPTY_PROFILE_MAP),
     [query.data, unique]
   )
+  const profileContexts = useMemo(() => {
+    const contexts = query.data?.profileContexts ?? {}
+    if (!query.error && !query.isPlaceholderData && !query.isFetching) {
+      return contexts
+    }
+    // A failed or pending new read does not re-observe the preceding result.
+    // Retain its veto evidence without presenting it as fresh action authority.
+    return Object.fromEntries(
+      Object.entries(contexts).map(([pubkey, context]) => [
+        pubkey,
+        {
+          ...context,
+          freshness: context.frontier ? "retained" : "unobserved",
+          readComplete: false,
+        } satisfies SelectedProfileContext,
+      ])
+    )
+  }, [query.data, query.error, query.isFetching, query.isPlaceholderData])
   const unresolvedPubkeys = useMemo(
     () => unique.filter((pubkey) => !hasProfileContent(profiles[pubkey])),
     [profiles, unique]
@@ -316,6 +337,7 @@ export function useProfiles(
     data: profiles,
     profiles,
     evidenceProfiles,
+    profileContexts,
     unresolvedPubkeys,
     isLoading: query.isLoading,
     isFetching: query.isFetching,

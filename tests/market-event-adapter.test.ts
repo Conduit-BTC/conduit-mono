@@ -13,6 +13,7 @@ import {
   buildPickupFulfillmentTerms,
   buildEventCatalogFamilyPickupFulfillments,
   getCartEventFulfillmentBlock,
+  getEventCatalogProductAvailability,
   getProductEventMarketCandidates,
   pickupItemMatchesCanonicalSnapshot,
   projectEventCatalogHydration,
@@ -370,6 +371,10 @@ describe("Market event adapter", () => {
     expect(projection.products).toHaveLength(1)
     expect(projection.products[0]!.evidenceState).toBe("retained")
     expect(projection.products[0]!.pickupFulfillment).toBeNull()
+    expect(getEventCatalogProductAvailability(projection)).toEqual({
+      availableProductCount: 0,
+      unresolvedProductCount: 1,
+    })
   })
 
   it("keeps exact per-product live evidence purchasable when the wider batch is stale", () => {
@@ -382,6 +387,63 @@ describe("Market event adapter", () => {
     expect(projection.products).toHaveLength(1)
     expect(projection.products[0]!.evidenceState).toBe("live")
     expect(projection.products[0]!.pickupFulfillment).not.toBeNull()
+    expect(getEventCatalogProductAvailability(projection)).toEqual({
+      availableProductCount: 1,
+      unresolvedProductCount: 0,
+    })
+  })
+
+  it("projects every accepted product beyond the transport author chunk size", () => {
+    const records = Array.from({ length: 65 }, (_, index) => {
+      const author = (index + 1).toString(16).padStart(64, "0")
+      const coordinate = `30402:${author}:event-product-${index}`
+      return commerceRecord(
+        product({
+          id: coordinate,
+          pubkey: author,
+          title: `Event product ${index}`,
+        }),
+        { eventId: String(index + 1).repeat(64) }
+      )
+    })
+    const resolution = marketWithAcceptedRecords(records)
+    const projection = projectEventCatalogHydration({
+      resolution,
+      result: {
+        data: records,
+        diagnostics: records.map((record) => ({
+          productId: record.addressId,
+          addressId: record.addressId,
+          issue: null,
+          coverage: { listing: "complete", deletion: "complete" },
+        })),
+        meta: {
+          source: "commerce",
+          stale: false,
+          degraded: false,
+          capped: false,
+          capabilities: {
+            sortModes: [],
+            textSearch: false,
+            protectedSummaries: false,
+            canonicalFreshness: true,
+            cursorPagination: false,
+          },
+          fetchedAt: 1,
+        },
+      },
+    })
+
+    expect(projection.productReadState).toBe("ready")
+    expect(projection.acceptedProductCount).toBe(records.length)
+    expect(projection.unresolvedProductCoordinates).toEqual([])
+    expect(projection.products).toHaveLength(records.length)
+    expect(
+      projection.products.every(
+        ({ evidenceState, pickupFulfillment }) =>
+          evidenceState === "live" && pickupFulfillment !== null
+      )
+    ).toBe(true)
   })
 
   it("preserves unresolved acceptance under an unavailable read without inventing product details", () => {
@@ -481,6 +543,10 @@ describe("Market event adapter", () => {
     expect(projected.products[0]!.pickupFulfillment).not.toBeNull()
     expect(projected.products[1]!.evidenceState).toBe("retained")
     expect(projected.products[1]!.pickupFulfillment).toBeNull()
+    expect(getEventCatalogProductAvailability(projected)).toEqual({
+      availableProductCount: 1,
+      unresolvedProductCount: 2,
+    })
   })
 
   it("distinguishes a complete empty organizer collection from degraded hydration", () => {
@@ -677,6 +743,10 @@ describe("Market event adapter", () => {
     ).toEqual([child.id])
     expect(projected.products[0]!.familyPickupFulfillments).toEqual({
       [child.id]: null,
+    })
+    expect(getEventCatalogProductAvailability(projected)).toEqual({
+      availableProductCount: 0,
+      unresolvedProductCount: 1,
     })
   })
 

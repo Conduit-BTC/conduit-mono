@@ -49,6 +49,8 @@ export type ProductGridCardProps = {
   cartActionDisabledLabel?: string
   /** `null` keeps the card on the current workflow surface. */
   onProductActivate?: (() => void) | null
+  /** Override storefront navigation when browsing within an event. */
+  onMerchantActivate?: () => void
 }
 
 export function ProductGridCard({
@@ -73,6 +75,7 @@ export function ProductGridCard({
   cartActionDisabled = false,
   cartActionDisabledLabel,
   onProductActivate,
+  onMerchantActivate,
 }: ProductGridCardProps) {
   const navigate = useNavigate()
   const defaultSelection = useMemo(
@@ -172,11 +175,13 @@ export function ProductGridCard({
                 params: { productId: selectedProduct.id },
               })))
       }
-      onMerchantActivate={() =>
-        navigate({
-          to: "/store/$pubkey",
-          params: { pubkey: pubkeyToNpub(product.pubkey) },
-        })
+      onMerchantActivate={
+        onMerchantActivate ??
+        (() =>
+          navigate({
+            to: "/store/$pubkey",
+            params: { pubkey: pubkeyToNpub(product.pubkey) },
+          }))
       }
       onInvalidImage={() => onInvalidImage?.(product.id)}
       action={

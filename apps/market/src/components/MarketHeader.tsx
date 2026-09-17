@@ -12,6 +12,7 @@ import {
   Wallet,
 } from "lucide-react"
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -20,7 +21,13 @@ import {
   type ReactNode,
 } from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
-import { config, formatNpub, useAuth, useProfile } from "@conduit/core"
+import {
+  config,
+  formatNpub,
+  useAuth,
+  useProfile,
+  useProfileSearch,
+} from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
@@ -32,12 +39,26 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Input,
+  SearchSuggestions,
+  flattenSearchSuggestionGroups,
   ThemeToggleButton,
   cn,
+  getSearchSuggestionInputProps,
+  useSearchSuggestionKeyboard,
 } from "@conduit/ui"
 
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
+import {
+  ACCOUNT_SEARCH_CANDIDATE_LIMIT,
+  limitAccountMatches,
+  resolveActiveSuggestionIndex,
+  describeAccountSearchEvidence,
+  getAccountSuggestionTarget,
+  toAccountSuggestionItems,
+} from "../lib/accountSearch"
+
+const ACCOUNT_SUGGESTIONS_LISTBOX_ID = "market-account-suggestions"
 
 type NavState = "top" | "scrolled" | "hidden"
 
@@ -324,8 +345,14 @@ export function MarketHeader() {
   const [searchDirty, setSearchDirty] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [navState, setNavState] = useState<NavState>("top")
+  const [searchFocused, setSearchFocused] = useState(false)
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false)
+  const [activeSuggestionId, setActiveSuggestionId] = useState<string | null>(
+    null
+  )
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const currentQuery = typeof search.q === "string" ? search.q : ""
+  /** The header box is the product search; the Sellers page filters itself. */
   const isBrowseRoute = pathname === "/products"
   const connected = status === "connected" && !!pubkey
   const authPending = status === "connecting" || status === "restoring"
@@ -338,6 +365,85 @@ export function MarketHeader() {
       isBrowseRoute && searchDirty && normalizedSearchValue !== currentQuery,
     [currentQuery, isBrowseRoute, normalizedSearchValue, searchDirty]
   )
+  const accountSearch = useProfileSearch(searchValue, {
+    enabled: searchFocused && searchDirty && !suggestionsDismissed,
+    limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT,
+    accountPubkey: connected ? pubkey : null,
+  })
+  const accountMatches = useMemo(
+    () =>
+      accountSearch.data
+        ? limitAccountMatches(accountSearch.data.matches)
+        : undefined,
+    [accountSearch.data]
+  )
+  const suggestionGroups = useMemo(
+    () =>
+      [
+        {
+          id: `${ACCOUNT_SUGGESTIONS_LISTBOX_ID}-stores`,
+          heading: "Stores",
+          // The group heading already says these are storefronts.
+          items: toAccountSuggestionItems(
+            (accountMatches ?? []).filter((match) => match.isSeller)
+          ).map((item) => ({ ...item, badge: undefined })),
+        },
+        {
+          id: `${ACCOUNT_SUGGESTIONS_LISTBOX_ID}-accounts`,
+          heading: "Accounts",
+          items: toAccountSuggestionItems(
+            (accountMatches ?? []).filter((match) => !match.isSeller)
+          ),
+        },
+      ].filter((group) => group.items.length > 0),
+    [accountMatches]
+  )
+  const accountItems = useMemo(
+    () => flattenSearchSuggestionGroups(suggestionGroups),
+    [suggestionGroups]
+  )
+  const activeSuggestion = resolveActiveSuggestionIndex(
+    accountItems,
+    activeSuggestionId
+  )
+  const setActiveSuggestion = useCallback(
+    (index: number) => {
+      setActiveSuggestionId(
+        index >= 0 ? (accountItems[index]?.id ?? null) : null
+      )
+    },
+    [accountItems]
+  )
+  const accountEvidence = describeAccountSearchEvidence(accountSearch.data)
+  const suggestionsOpen =
+    searchFocused &&
+    searchDirty &&
+    !suggestionsDismissed &&
+    accountSearch.activeQuery.length > 0 &&
+    (accountItems.length > 0 || !!accountEvidence || accountSearch.isFetching)
+
+  useEffect(() => {
+    setActiveSuggestionId(null)
+  }, [accountSearch.activeQuery])
+
+  function selectAccountSuggestion(index: number): void {
+    const match = accountMatches?.[index]
+    if (!match) return
+    setSuggestionsDismissed(true)
+    setSearchDirty(false)
+    setSearchValue("")
+    searchInputRef.current?.blur()
+    void navigate(getAccountSuggestionTarget(match))
+  }
+
+  const onSearchKeyDown = useSearchSuggestionKeyboard({
+    open: suggestionsOpen,
+    count: accountItems.length,
+    activeIndex: activeSuggestion,
+    onActiveIndexChange: setActiveSuggestion,
+    onSelectActive: () => selectAccountSuggestion(activeSuggestion),
+    onDismiss: () => setSuggestionsDismissed(true),
+  })
 
   useEffect(() => {
     // Mirror the URL query into the input only when the user isn't actively
@@ -345,9 +451,11 @@ export function MarketHeader() {
     // (stale, trimmed) query back and clobbers in-flight keystrokes, which
     // shows up as dropped/reordered characters.
     if (searchInputRef.current === document.activeElement) return
-    setSearchValue(currentQuery)
+    // Only the catalog query belongs in this box. Another page's `q`, such as
+    // the Sellers filter, must not look like a pending product search.
+    setSearchValue(isBrowseRoute ? currentQuery : "")
     setSearchDirty(false)
-  }, [currentQuery, pathname])
+  }, [currentQuery, isBrowseRoute, pathname])
 
   useEffect(() => {
     let lastScrollY = window.scrollY
@@ -424,9 +532,11 @@ export function MarketHeader() {
 
       navigate({
         to: "/products",
-        search: {
+        // Keep the perspective and any other browse parameter; only q changes.
+        search: (previous: Record<string, unknown>) => ({
+          ...previous,
           q: normalizedSearchValue || undefined,
-        },
+        }),
         replace: true,
       })
     }, 260)
@@ -443,10 +553,14 @@ export function MarketHeader() {
   function submitSearch(): void {
     navigate({
       to: "/products",
-      search: {
-        q: normalizedSearchValue || undefined,
-      },
-      replace: pathname === "/products",
+      // Staying on the catalog keeps its perspective; arriving fresh does not.
+      search: isBrowseRoute
+        ? (previous: Record<string, unknown>) => ({
+            ...previous,
+            q: normalizedSearchValue || undefined,
+          })
+        : { q: normalizedSearchValue || undefined },
+      replace: isBrowseRoute,
     })
     setSearchDirty(false)
   }
@@ -501,10 +615,20 @@ export function MarketHeader() {
               onChange={(event) => {
                 setSearchValue(event.target.value)
                 setSearchDirty(true)
+                setSuggestionsDismissed(false)
               }}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setSearchFocused(false)}
+              onKeyDown={onSearchKeyDown}
               placeholder="Search"
-              aria-label="Search products"
+              aria-label="Search products and accounts"
+              autoComplete="off"
               className="h-11 bg-[var(--surface-elevated)] pl-9 pr-9 focus-visible:ring-offset-0"
+              {...getSearchSuggestionInputProps({
+                listboxId: ACCOUNT_SUGGESTIONS_LISTBOX_ID,
+                open: suggestionsOpen,
+                activeIndex: activeSuggestion,
+              })}
             />
             <div className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 text-[var(--text-muted)]">
               {pendingSearch ? (
@@ -516,13 +640,34 @@ export function MarketHeader() {
                 </span>
               )}
             </div>
-            {!isBrowseRoute &&
+            {suggestionsOpen ? (
+              <div className="absolute inset-x-0 top-full z-50 mt-2">
+                <SearchSuggestions
+                  id={ACCOUNT_SUGGESTIONS_LISTBOX_ID}
+                  ariaLabel="Matching stores and accounts"
+                  groups={suggestionGroups}
+                  activeIndex={activeSuggestion}
+                  onActiveIndexChange={setActiveSuggestion}
+                  onSelect={(_item, index) => selectAccountSuggestion(index)}
+                  loading={accountSearch.isFetching}
+                  emptyMessage={
+                    accountSearch.isFetching
+                      ? "Searching stores and accounts..."
+                      : null
+                  }
+                  footer={
+                    accountEvidence ??
+                    (isBrowseRoute ? null : "Press Enter to search products")
+                  }
+                />
+              </div>
+            ) : !isBrowseRoute &&
               searchDirty &&
-              normalizedSearchValue.length > 0 && (
-                <div className="pointer-events-none absolute left-1 top-full mt-1 text-[11px] text-[var(--text-muted)]">
-                  Press Enter to search
-                </div>
-              )}
+              normalizedSearchValue.length > 0 ? (
+              <div className="pointer-events-none absolute left-1 top-full mt-1 text-[11px] text-[var(--text-muted)]">
+                Press Enter to search
+              </div>
+            ) : null}
           </form>
         </div>
 
@@ -530,13 +675,6 @@ export function MarketHeader() {
           aria-label="Market navigation"
           className="market-header-utility-nav flex min-w-0 items-center gap-1.5"
         >
-          <HeaderAction
-            label="Wallets"
-            icon={<Wallet className="size-4" aria-hidden="true" />}
-            active={pathname === "/wallet"}
-            labelClassName="hidden xl:inline"
-            onClick={() => void navigate({ to: "/wallet" })}
-          />
           <HeaderAction
             label="Messages"
             icon={<MessagesSquare className="size-4" aria-hidden="true" />}

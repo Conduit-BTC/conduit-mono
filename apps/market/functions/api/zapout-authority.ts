@@ -26,6 +26,7 @@ import {
   type AnonZapPagesEnv,
   type AnonZapPagesFunctionContext,
 } from "../_lib/anon-zap-checkout-auth"
+import { recordZapoutSettlement } from "../_lib/zapout-settlement-telemetry"
 
 type ZapoutAuthorityStatus = "verified" | "invalid" | "authority_unavailable"
 
@@ -42,6 +43,7 @@ type ZapoutAuthorityDependencies = {
     options?: { timeoutMs?: number }
   ) => Promise<LnurlPayMetadata>
   nowMs: () => number
+  recordSettlement: typeof recordZapoutSettlement
 }
 
 type AuthorityResolution =
@@ -100,6 +102,7 @@ const defaultDependencies: ZapoutAuthorityDependencies = {
   fetchProfileEvents: fetchZapoutAuthorityProfileEvents,
   fetchLnurlMetadata: fetchLnurlPayMetadata,
   nowMs: Date.now,
+  recordSettlement: recordZapoutSettlement,
 }
 
 function selectCurrentLud16(
@@ -242,9 +245,10 @@ async function resolvePaymentTimeAuthority(
   }
 }
 
-async function readAuthorityRequest(
-  request: Request
-): Promise<OmfZapoutReceiptEvent[]> {
+async function readAuthorityRequest(request: Request): Promise<{
+  receipts: OmfZapoutReceiptEvent[]
+  recordSettlement: boolean
+}> {
   const contentLength = Number(request.headers.get("content-length") ?? "0")
   if (
     Number.isFinite(contentLength) &&
@@ -277,7 +281,16 @@ async function readAuthorityRequest(
   ) {
     throw new Error("Authority request is invalid.")
   }
-  return body.receipts as OmfZapoutReceiptEvent[]
+  if (
+    body.recordSettlement !== undefined &&
+    typeof body.recordSettlement !== "boolean"
+  ) {
+    throw new Error("Authority request is invalid.")
+  }
+  return {
+    receipts: body.receipts as OmfZapoutReceiptEvent[],
+    recordSettlement: body.recordSettlement === true,
+  }
 }
 
 export async function verifyZapoutAuthorityRequest(
@@ -292,7 +305,8 @@ export async function verifyZapoutAuthorityRequest(
       env
     )
     if (requestRateLimitError) return requestRateLimitError
-    const events = await readAuthorityRequest(request)
+    const { receipts: events, recordSettlement } =
+      await readAuthorityRequest(request)
     const relayUrls = getAnonZapCommerceRelays(env)
     const allowedLnurlHosts = new Set(
       (env.ANON_ZAP_LNURL_ALLOWED_HOSTS ?? "")
@@ -388,6 +402,11 @@ export async function verifyZapoutAuthorityRequest(
               )
             },
           })
+          if (recordSettlement && verification.status === "verified") {
+            await dependencies
+              .recordSettlement(verification.receipt, env)
+              .catch(() => undefined)
+          }
           return { id: event.id, status: verification.status }
         })
       )

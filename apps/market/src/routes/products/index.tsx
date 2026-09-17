@@ -2,10 +2,11 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { ChevronDown, X } from "lucide-react"
 import { EVENT_KINDS, normalizePubkey, pubkeyToNpub } from "@conduit/core"
 import {
@@ -26,7 +27,12 @@ import {
   PRODUCT_GRID_CLASS_NAME,
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
+import {
+  MARKET_SOURCE_OPTIONS,
+  MarketBrowseNavigation,
+} from "../../components/MarketBrowseNavigation"
 import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCard"
+import { SellerCard } from "../../components/SellerCard"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
 import { normalizeFacetValues } from "../../lib/facets"
@@ -37,17 +43,9 @@ import {
 import type { ProductCatalogSourceMode } from "../../lib/productCatalogRead"
 
 const PAGE_SIZE = 12
+/** Storefront matches shown inline; the rest stay one link away on /sellers. */
+const MATCHING_STORE_LIMIT = 6
 const COLLAPSED_TAG_CLOUD_HEIGHT = 76
-const CATALOG_SOURCE_OPTIONS: ProductCatalogSourceMode[] = [
-  "combined",
-  "following",
-  "conduit",
-]
-const CATALOG_SOURCE_LABELS: Record<ProductCatalogSourceMode, string> = {
-  combined: "Following + Conduit",
-  following: "Following",
-  conduit: "Conduit",
-}
 const SORT_OPTIONS: Array<{
   value: MarketBrowseSortOption
   label: string
@@ -82,7 +80,7 @@ export const Route = createFileRoute("/products/")({
       )
         ? (raw.sort as MarketBrowseSortOption)
         : undefined,
-      source: CATALOG_SOURCE_OPTIONS.includes(
+      source: MARKET_SOURCE_OPTIONS.includes(
         raw.source as ProductCatalogSourceMode
       )
         ? (raw.source as ProductCatalogSourceMode)
@@ -109,50 +107,6 @@ function FilterRemoveButton({
     >
       <X className="h-3.5 w-3.5" aria-hidden="true" />
     </button>
-  )
-}
-
-function CatalogSourceControl({
-  catalogSource,
-  connected,
-  onSelect,
-}: {
-  catalogSource: ProductCatalogSourceMode
-  connected: boolean
-  onSelect: (source: ProductCatalogSourceMode) => void
-}) {
-  return (
-    <section className="flex min-h-10 flex-col gap-2 text-xs sm:flex-row sm:items-center">
-      <div className="shrink-0 font-medium uppercase tracking-wider text-[var(--text-muted)]">
-        Catalog
-      </div>
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <div className="inline-flex rounded-full border border-[var(--border)] bg-[var(--surface)] p-1">
-          {CATALOG_SOURCE_OPTIONS.map((source) => {
-            const selected = catalogSource === source
-            return (
-              <button
-                key={source}
-                type="button"
-                disabled={!connected && source !== "conduit"}
-                onClick={() => onSelect(source)}
-                className={[
-                  "h-7 rounded-full px-3 font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-                  selected
-                    ? "bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-sm)]"
-                    : "text-[var(--text-muted)] hover:text-[var(--text-primary)]",
-                  !connected && source !== "conduit"
-                    ? "pointer-events-none opacity-45"
-                    : "",
-                ].join(" ")}
-              >
-                {CATALOG_SOURCE_LABELS[source]}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-    </section>
   )
 }
 
@@ -218,6 +172,7 @@ function ProductsPage() {
     hasMore,
     hasUnavailablePriceForSort,
     isUpdatingListings,
+    matchingSellers,
     productCards,
     productData,
     productsQuery,
@@ -235,6 +190,10 @@ function ProductsPage() {
   } = browseModel
   const { status } = auth
   const connected = status === "connected"
+  const visibleMatchingSellers = useMemo(
+    () => matchingSellers.slice(0, MATCHING_STORE_LIMIT),
+    [matchingSellers]
+  )
   const shouldCollapseTagCloud =
     !showAllTags && (!tagCloudMeasured || tagCloudOverflows)
 
@@ -399,10 +358,11 @@ function ProductsPage() {
         </section>
       )}
 
-      <CatalogSourceControl
-        catalogSource={catalogSource}
+      <MarketBrowseNavigation
+        active="catalog"
+        source={catalogSource}
         connected={connected}
-        onSelect={(source) =>
+        onSelectSource={(source) =>
           updateSearch({
             source: source === "combined" ? undefined : source,
           })
@@ -663,6 +623,44 @@ function ProductsPage() {
           ))}
         </div>
       )}
+
+      {visibleMatchingSellers.length > 0 ? (
+        <section
+          aria-labelledby="matching-stores-heading"
+          className="space-y-3"
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2
+              id="matching-stores-heading"
+              className="text-base font-semibold text-[var(--text-primary)]"
+            >
+              Stores matching &quot;{search.q}&quot;
+            </h2>
+            <Link
+              to="/sellers"
+              // Keep the browse perspective; the seller directory reads the
+              // same source and would otherwise change the seller set.
+              search={{ q: search.q, source: search.source }}
+              className="text-sm text-secondary-400 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+            >
+              {matchingSellers.length > visibleMatchingSellers.length
+                ? `See all ${matchingSellers.length} stores`
+                : "See all sellers"}
+            </Link>
+          </div>
+          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {visibleMatchingSellers.map((seller) => (
+              <li key={seller.pubkey}>
+                <SellerCard
+                  pubkey={seller.pubkey}
+                  identity={getMerchantIdentity(seller.pubkey)}
+                  listingCount={seller.listingCount}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       <div className="relative flex min-h-8 items-center pr-44 text-xs text-[var(--text-muted)]">
         <span>

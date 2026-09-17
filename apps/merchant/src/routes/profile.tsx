@@ -77,6 +77,7 @@ function ProfilePage() {
     evidenceScope: "profile_edit",
     maxUnresolvedRefetches: 2,
   })
+  const selectedProfile = profileQuery.profileContext?.profile
   const updateMutation = useUpdateProfile("merchant", {
     authenticatedPubkey,
     authGeneration,
@@ -98,21 +99,21 @@ function ProfilePage() {
   }, [editingPubkey, pubkey])
 
   useEffect(() => {
-    if (editing || !profileQuery.data) return
-    setForm(profileToFormValues(profileQuery.data))
-  }, [editing, profileQuery.data])
+    if (editing || !selectedProfile) return
+    setForm(profileToFormValues(selectedProfile))
+  }, [editing, selectedProfile])
 
   useEffect(() => {
-    if (!editing || !profileQuery.data) return
-    const latest = profileToFormValues(profileQuery.data)
+    if (!editing || !selectedProfile) return
+    const latest = profileToFormValues(selectedProfile)
     const baseline = editBaselineRef.current
     setForm((draft) =>
       baseline ? reconcileProfileFormDraft(draft, baseline, latest) : latest
     )
     editBaselineRef.current = latest
-  }, [editing, profileQuery.data])
+  }, [editing, selectedProfile])
 
-  const profileData = profileQuery.data
+  const profileData = selectedProfile
   const profileBannerUrl = normalizePublicMediaUrl(profileData?.banner)
   const formPictureUrl = normalizePublicMediaUrl(form.picture)
   const formBannerUrl = normalizePublicMediaUrl(form.banner)
@@ -495,7 +496,7 @@ function ProfilePage() {
                         editBaselineRef.current = null
                         setProfileSaveSucceeded(false)
                         if (profileQuery.data) {
-                          setForm(profileToFormValues(profileQuery.data))
+                          setForm(profileToFormValues(selectedProfile))
                         }
                       }}
                     >
