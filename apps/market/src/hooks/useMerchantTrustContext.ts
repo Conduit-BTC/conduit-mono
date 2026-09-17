@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
+  getProfilePaymentAddress,
+  hasFreshProfilePaymentAddress,
   buildMerchantTrustSocialSummary,
   fetchMerchantTrustSocialSummary,
   formatNpub,
@@ -16,7 +18,6 @@ import {
 } from "@conduit/core"
 import {
   getMerchantPaymentProfileState,
-  hasPositiveMerchantPaymentAddressEvidence,
   type MerchantPaymentProfileState,
 } from "../lib/merchant-payment-readiness"
 
@@ -167,10 +168,9 @@ export function useMerchantTrustContext({
         isFetching: profileQuery.isFetching,
         lookupSettled: profileQuery.lookupSettled,
         evidenceIncomplete: isCommerceReadIncomplete(profileQuery.meta),
-        positiveAddressEvidence: hasPositiveMerchantPaymentAddressEvidence({
-          meta: profileQuery.meta,
-          lud16: profileQuery.evidenceData?.lud16,
-        }),
+        positiveAddressEvidence: hasFreshProfilePaymentAddress(
+          profileQuery.profileContext
+        ),
         error: profileQuery.error,
       })
     : "unavailable"
@@ -203,7 +203,7 @@ export function useMerchantTrustContext({
   return {
     merchantPubkey: merchantPubkey ?? null,
     profile,
-    profileEvidenceLud16: profileQuery.evidenceData?.lud16,
+    profileEvidenceLud16: getProfilePaymentAddress(profileQuery.profileContext),
     profileState,
     profileEvidenceState,
     socialState,

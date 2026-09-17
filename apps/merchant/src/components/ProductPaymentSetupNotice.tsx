@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef } from "react"
 import { Link } from "@tanstack/react-router"
 import { AlertTriangle } from "lucide-react"
 import {
+  getProfilePaymentAddress,
   isCommerceReadIncomplete,
   normalizePubkey,
   useAuth,
@@ -40,7 +41,7 @@ export function ProductPaymentSetupNotice({
     evidenceScope: "payment",
   })
   const state = getProductPaymentSetupState({
-    lud16: profileQuery.evidenceData?.lud16,
+    lud16: getProfilePaymentAddress(profileQuery.profileContext),
     lookupSettled: profileQuery.lookupSettled,
     evidenceIncomplete: isCommerceReadIncomplete(profileQuery.meta),
     error: profileQuery.error,

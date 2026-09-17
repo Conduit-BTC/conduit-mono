@@ -52,6 +52,7 @@ import {
 } from "../lib/event-market"
 import {
   getEventMarketUrl,
+  getEventMarketMerchantFilterUrl,
   getMerchantEventParticipationUrl,
   getStorefrontUrl,
 } from "../lib/market-links"
@@ -644,6 +645,35 @@ export function OrganizerEventMarketPanel({
     })
   }
 
+  const acceptedMerchantCounts = new Map<string, number>()
+  for (const item of acceptedProducts) {
+    if (!isParticipationProductPreviewVerified(item)) continue
+    const pubkey = item.merchantPubkey.toLowerCase()
+    acceptedMerchantCounts.set(
+      pubkey,
+      (acceptedMerchantCounts.get(pubkey) ?? 0) + 1
+    )
+  }
+  const merchantBoothLinks = Array.from(
+    acceptedMerchantCounts,
+    ([pubkey, productCount]) => {
+      const name =
+        getProfileName(eventActorProfile(pubkey)) || formatNpub(pubkey)
+      return {
+        pubkey,
+        name,
+        productCount,
+        url: getEventMarketMerchantFilterUrl(market.naddr, pubkey),
+      }
+    }
+  ).sort(
+    (a, b) =>
+      a.name.localeCompare(b.name, undefined, {
+        sensitivity: "base",
+        numeric: true,
+      }) || a.pubkey.localeCompare(b.pubkey)
+  )
+
   return (
     <div className="space-y-5">
       {actionability.prominent && (
@@ -850,6 +880,85 @@ export function OrganizerEventMarketPanel({
               </div>
             </div>
           </section>
+
+          {merchantBoothLinks.length > 0 ? (
+            <section
+              aria-labelledby="merchant-booth-links-title"
+              className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+            >
+              <div>
+                <h3
+                  id="merchant-booth-links-title"
+                  className="font-semibold text-[var(--text-primary)]"
+                >
+                  Merchant booth links
+                </h3>
+                <p className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+                  Each QR opens this event with one accepted merchant selected.
+                  Use it on booth signage so shoppers land on that merchant’s
+                  products and can still return to the full event.
+                </p>
+              </div>
+              <div className="space-y-2">
+                {merchantBoothLinks.map((merchant) => (
+                  <details
+                    key={merchant.pubkey}
+                    className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5"
+                  >
+                    <summary className="cursor-pointer rounded text-sm font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+                      {merchant.name}{" "}
+                      <span className="font-normal text-[var(--text-muted)]">
+                        · {merchant.productCount}{" "}
+                        {merchant.productCount === 1 ? "product" : "products"}
+                      </span>
+                    </summary>
+                    <div className="mt-4 grid gap-4 sm:grid-cols-[12.5rem_minmax(0,1fr)]">
+                      <div
+                        role="img"
+                        aria-label={`${merchant.name} event catalog QR code`}
+                        className="w-fit rounded-xl border border-[var(--border)] bg-white p-3"
+                      >
+                        <QRCodeSVG value={merchant.url} size={176} level="M" />
+                      </div>
+                      <div className="min-w-0 space-y-3">
+                        <div className="break-all font-mono text-xs leading-5 text-[var(--text-muted)]">
+                          {merchant.url}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => onCopy(merchant.url)}
+                          >
+                            {copiedUrl === merchant.url ? <Check /> : <Copy />}
+                            {copiedUrl === merchant.url
+                              ? "Booth link copied"
+                              : "Copy booth link"}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            asChild
+                          >
+                            <a
+                              href={merchant.url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <ExternalLink />
+                              Open filtered catalog
+                            </a>
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </details>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           <section
             aria-labelledby="merchant-event-link-title"

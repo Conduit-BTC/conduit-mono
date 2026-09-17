@@ -1,4 +1,4 @@
-import { isValidLud16Address, type CommerceQueryMeta } from "@conduit/core"
+import { isValidLud16Address } from "@conduit/core"
 import type { MerchantLnurlPreflightStatus } from "./cart-readiness"
 
 export type MerchantPaymentProfileState =
@@ -27,22 +27,6 @@ export function getMerchantPaymentProfileState(input: {
   if (input.error) return "unavailable"
   if (input.positiveAddressEvidence) return "available"
   return input.evidenceIncomplete ? "unavailable" : "available"
-}
-
-/**
- * A live signed Lightning address is positive action evidence even when some
- * planned relays time out or cap their results. Complete relay coverage is
- * still required before an empty read can prove that the address is absent.
- */
-export function hasPositiveMerchantPaymentAddressEvidence(input: {
-  meta: Pick<CommerceQueryMeta, "source" | "stale"> | null | undefined
-  lud16: string | null | undefined
-}): boolean {
-  return (
-    input.meta?.source === "public" &&
-    !input.meta.stale &&
-    isValidLud16Address(input.lud16?.trim() ?? "")
-  )
 }
 
 /**

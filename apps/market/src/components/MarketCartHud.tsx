@@ -1,6 +1,7 @@
 import { ChevronDown, Minus, Plus, ShoppingCart, Zap } from "lucide-react"
 import { Link, useNavigate } from "@tanstack/react-router"
 import {
+  getProfilePaymentAddress,
   formatNpub,
   getProfileName,
   pubkeyToNpub,
@@ -77,10 +78,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const lud16ByMerchant = useMemo(() => {
     const map = new Map<string, string | undefined>()
     for (const merchantPubkey of merchantPubkeys) {
-      map.set(merchantPubkey, profiles.data[merchantPubkey]?.lud16)
+      map.set(
+        merchantPubkey,
+        getProfilePaymentAddress(profiles.profileContexts[merchantPubkey])
+      )
     }
     return map
-  }, [merchantPubkeys, profiles.data])
+  }, [merchantPubkeys, profiles.profileContexts])
   useCartLnurlPreflights(lud16ByMerchant)
   const routeMode = getCartHudRouteMode(pathname)
   const [expanded, setExpanded] = useState(routeMode === "expanded")
@@ -130,7 +134,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const activeProfile = selectedMerchant
     ? profiles.data[selectedMerchant]
     : undefined
-  const merchantLud16 = activeProfile?.lud16
+  const merchantLud16 = getProfilePaymentAddress(
+    selectedMerchant ? profiles.profileContexts[selectedMerchant] : undefined
+  )
   const activeSummary = activeGroup
     ? getCartCostSummary(activeGroup.items, shopperPricing.quote)
     : null

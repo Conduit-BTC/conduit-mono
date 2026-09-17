@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  decodeLightningInvoiceAmount,
+  decodeLightningInvoiceMetadata,
+  decodeLightningInvoicePaymentHash,
+  getLightningInvoiceNetwork,
+} from "@conduit/core"
+
+import {
   FirstPartySparkSdkFactory,
   getDefaultSparkAccountNumber,
   getSparkConfiguration,
@@ -77,6 +84,306 @@ describe("first-party Spark SDK adapter", () => {
   it("uses Spark's documented account defaults for supported networks", () => {
     expect(getDefaultSparkAccountNumber("mainnet")).toBe(1)
     expect(getDefaultSparkAccountNumber("regtest")).toBe(0)
+  })
+
+  it("creates an exact pure-BOLT11 checkout receive and exposes full funds state", async () => {
+    const invoice = makeReceiveInvoice({
+      amountSats: 1_050,
+      expirySeconds: 300,
+    })
+    const nativeReceive = createLightningReceiveResult(invoice)
+    let createInput:
+      Parameters<SparkNativeWallet["createLightningInvoice"]>[0] | null = null
+    const wallet = createNativeWallet({
+      async getBalance() {
+        return {
+          balance: 1_400n,
+          satsBalance: {
+            available: 1_000n,
+            owned: 1_250n,
+            incoming: 150n,
+          },
+        }
+      },
+      async createLightningInvoice(input) {
+        createInput = input
+        return nativeReceive
+      },
+      async getLightningReceiveRequest(id) {
+        return id === nativeReceive.id ? nativeReceive : null
+      },
+    })
+    const observedAt = 1_800_000_010_000
+    const client = await openClient(
+      createFactory(wallet, {}, "mainnet", { now: () => observedAt })
+    )
+
+    const request = await client.createCheckoutReceive?.({
+      description: "Guest checkout",
+      requiredNetSats: 1_000,
+      grossFundingSats: 1_050,
+      expirySecs: 300,
+    })
+
+    expect(createInput).toEqual({
+      amountSats: 1_050,
+      memo: "Guest checkout",
+      expirySeconds: 300,
+      includeSparkAddress: false,
+      includeSparkInvoice: false,
+    })
+    expect(request).toEqual({
+      walletId: "wallet-personal",
+      network: "mainnet",
+      id: "lightning-receive",
+      paymentRequest: invoice,
+      paymentHash: "07".repeat(32),
+      providerStatus: "INVOICE_CREATED",
+      requiredNetSats: 1_000,
+      grossFundingSats: 1_050,
+      expirySecs: 300,
+      createdAt: 1_800_000_000_000,
+      expiresAt: 1_800_000_300_000,
+    })
+    await expect(client.getFundsState?.()).resolves.toEqual({
+      availableSats: 1_000,
+      ownedSats: 1_250,
+      incomingSats: 150,
+      observedAt,
+    })
+    await expect(client.reconcileCheckoutReceive?.(request!)).resolves.toEqual({
+      state: "pending",
+      providerStatus: "INVOICE_CREATED",
+      failureReason: null,
+      funds: {
+        availableSats: 1_000,
+        ownedSats: 1_250,
+        incomingSats: 150,
+        observedAt,
+      },
+    })
+  })
+
+  it("canonicalizes fractional provider timestamps while retaining receive identity", async () => {
+    const invoice = makeReceiveInvoice({
+      amountSats: 1_050,
+      expirySeconds: 300,
+    })
+    const nativeReceive = createLightningReceiveResult(invoice, {
+      createdAt: new Date(1_800_000_000_375).toISOString(),
+      expiresAt: new Date(1_800_000_300_375).toISOString(),
+    })
+    const wallet = createNativeWallet({
+      async getBalance() {
+        return {
+          balance: 1_050n,
+          satsBalance: {
+            available: 1_050n,
+            owned: 1_050n,
+            incoming: 0n,
+          },
+        }
+      },
+      async createLightningInvoice() {
+        return nativeReceive
+      },
+      async getLightningReceiveRequest() {
+        return { ...nativeReceive, status: "TRANSFER_COMPLETED" }
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    const request = await client.createCheckoutReceive?.({
+      description: "Guest checkout",
+      requiredNetSats: 1_000,
+      grossFundingSats: 1_050,
+      expirySecs: 300,
+    })
+
+    expect(request).toMatchObject({
+      createdAt: 1_800_000_000_000,
+      expiresAt: 1_800_000_300_000,
+    })
+    await expect(
+      client.reconcileCheckoutReceive?.(request!)
+    ).resolves.toMatchObject({
+      state: "spendable",
+      providerStatus: "TRANSFER_COMPLETED",
+      failureReason: null,
+    })
+  })
+
+  it("reconciles every receive status without treating unrelated balance as proof", async () => {
+    const invoice = makeReceiveInvoice({
+      amountSats: 1_050,
+      expirySeconds: 300,
+    })
+    const nativeReceive = createLightningReceiveResult(invoice)
+    let availableSats = 50_000n
+    let observedAt = 1_800_000_010_000
+    let lookup: "record" | "missing" | "throw" = "record"
+    let currentReceive = nativeReceive
+    const wallet = createNativeWallet({
+      async getBalance() {
+        return {
+          balance: availableSats,
+          satsBalance: {
+            available: availableSats,
+            owned: availableSats,
+            incoming: 0n,
+          },
+        }
+      },
+      async createLightningInvoice() {
+        return nativeReceive
+      },
+      async getLightningReceiveRequest() {
+        if (lookup === "throw") throw new Error("provider unavailable")
+        return lookup === "missing" ? null : currentReceive
+      },
+    })
+    const client = await openClient(
+      createFactory(wallet, {}, "mainnet", { now: () => observedAt })
+    )
+    const request = (await client.createCheckoutReceive?.({
+      description: "Guest checkout",
+      requiredNetSats: 1_000,
+      grossFundingSats: 1_050,
+      expirySecs: 300,
+    }))!
+    const reconcile = () => client.reconcileCheckoutReceive!(request)
+
+    await expect(reconcile()).resolves.toMatchObject({
+      state: "pending",
+      failureReason: null,
+    })
+
+    observedAt = request.expiresAt
+    await expect(reconcile()).resolves.toMatchObject({
+      state: "unresolved_failure",
+      failureReason: "invoice_expired_unresolved",
+    })
+
+    for (const status of [
+      "TRANSFER_CREATED",
+      "PAYMENT_PREIMAGE_RECOVERED",
+      "LIGHTNING_PAYMENT_RECEIVED",
+    ]) {
+      currentReceive = { ...nativeReceive, status }
+      await expect(reconcile()).resolves.toMatchObject({
+        state: "funded_pending_claim",
+        providerStatus: status,
+        failureReason: null,
+      })
+    }
+
+    currentReceive = { ...nativeReceive, status: "TRANSFER_COMPLETED" }
+    availableSats = 1_000n
+    await expect(reconcile()).resolves.toMatchObject({
+      state: "spendable",
+      failureReason: null,
+    })
+    availableSats = 999n
+    await expect(reconcile()).resolves.toMatchObject({
+      state: "unresolved_failure",
+      failureReason: "insufficient_available_funds",
+    })
+
+    for (const status of [
+      "FUTURE_VALUE",
+      "TRANSFER_CREATION_FAILED",
+      "REFUND_SIGNING_COMMITMENTS_QUERYING_FAILED",
+      "REFUND_SIGNING_FAILED",
+      "PAYMENT_PREIMAGE_RECOVERING_FAILED",
+      "TRANSFER_FAILED",
+      "UNKNOWN_STATUS",
+    ]) {
+      currentReceive = { ...nativeReceive, status }
+      await expect(reconcile()).resolves.toMatchObject({
+        state: "unresolved_failure",
+        providerStatus: status,
+        failureReason: "provider_unresolved",
+      })
+    }
+
+    lookup = "missing"
+    await expect(reconcile()).resolves.toMatchObject({
+      state: "unresolved_failure",
+      providerStatus: null,
+      failureReason: "receive_not_found",
+    })
+    lookup = "throw"
+    await expect(reconcile()).resolves.toMatchObject({
+      state: "unresolved_failure",
+      providerStatus: null,
+      failureReason: "lookup_unavailable",
+    })
+    lookup = "record"
+    currentReceive = createLightningReceiveResult(invoice, {
+      paymentHash: "08".repeat(32),
+    })
+    await expect(reconcile()).resolves.toMatchObject({
+      state: "unresolved_failure",
+      providerStatus: "INVOICE_CREATED",
+      failureReason: "conflicting_evidence",
+    })
+  })
+
+  it("rejects conflicting checkout network evidence", async () => {
+    const invoice = makeReceiveInvoice({
+      amountSats: 1_050,
+      expirySeconds: 300,
+    })
+    const request = {
+      description: "Guest checkout",
+      requiredNetSats: 1_000,
+      grossFundingSats: 1_050,
+      expirySecs: 300,
+    }
+
+    for (const nativeReceive of [
+      createLightningReceiveResult(invoice, { network: "REGTEST" }),
+      createLightningReceiveResult(invoice, { bitcoinNetwork: "REGTEST" }),
+    ]) {
+      const client = await openClient(
+        createFactory(
+          createNativeWallet({
+            async createLightningInvoice() {
+              return nativeReceive
+            },
+          })
+        )
+      )
+      await expect(client.createCheckoutReceive?.(request)).rejects.toThrow()
+    }
+  })
+
+  it("rejects a one-second provider expiry mismatch", async () => {
+    const invoice = makeReceiveInvoice({
+      amountSats: 1_050,
+      expirySeconds: 300,
+    })
+    const nativeReceive = createLightningReceiveResult(invoice, {
+      expiresAt: new Date(1_800_000_301_375).toISOString(),
+    })
+    const client = await openClient(
+      createFactory(
+        createNativeWallet({
+          async createLightningInvoice() {
+            return nativeReceive
+          },
+        })
+      )
+    )
+
+    await expect(
+      client.createCheckoutReceive?.({
+        description: "Guest checkout",
+        requiredNetSats: 1_000,
+        grossFundingSats: 1_050,
+        expirySecs: 300,
+      })
+    ).rejects.toThrow("Spark returned conflicting checkout expiry evidence.")
   })
 
   it("validates mainnet receive outputs before returning them", async () => {
@@ -335,7 +642,14 @@ describe("first-party Spark SDK adapter", () => {
         return { privateEnabled: true }
       },
       async getBalance() {
-        return { balance: 21_000n }
+        return {
+          balance: 21_000n,
+          satsBalance: {
+            available: 21_000n,
+            owned: 21_000n,
+            incoming: 0n,
+          },
+        }
       },
     })
     const factory = new FirstPartySparkSdkFactory({
@@ -1362,7 +1676,8 @@ async function waitForTestCondition(condition: () => boolean): Promise<void> {
 function createFactory(
   wallet: SparkNativeWallet,
   moduleOverrides: Partial<SparkNativeModule> = {},
-  network: "mainnet" | "regtest" = "mainnet"
+  network: "mainnet" | "regtest" = "mainnet",
+  options: { now?: () => number } = {}
 ) {
   const nativeNetwork = network === "mainnet" ? "MAINNET" : "REGTEST"
   return new FirstPartySparkSdkFactory({
@@ -1383,6 +1698,7 @@ function createFactory(
       ...moduleOverrides,
     }),
     wait: async () => undefined,
+    now: options.now,
   })
 }
 
@@ -1408,7 +1724,10 @@ function createNativeWallet(
       return { privateEnabled: true }
     },
     async getBalance() {
-      return { balance: 0n }
+      return {
+        balance: 0n,
+        satsBalance: { available: 0n, owned: 0n, incoming: 0n },
+      }
     },
     async getTransfers() {
       return { transfers: [], offset: 0 }
@@ -1429,13 +1748,10 @@ function createNativeWallet(
       }
     },
     async createLightningInvoice() {
-      return {
-        id: "lightning-receive",
-        status: "INVOICE_CREATED",
-        invoice: {
-          encodedInvoice: "lnbc1receive",
-        },
-      }
+      return createLightningReceiveResult(makeReceiveInvoice())
+    },
+    async getLightningReceiveRequest() {
+      return null
     },
     async getLightningSendFeeEstimate() {
       return 0
@@ -1472,10 +1788,14 @@ function makeLightningInvoice(paymentHashHex: string): string {
 
 function makeReceiveInvoice({
   amountSats,
+  createdAt = 1_800_000_000,
+  expirySeconds,
   network = "mainnet",
   includePaymentHash = true,
 }: {
   amountSats?: number
+  createdAt?: number
+  expirySeconds?: number
   network?: "mainnet" | "regtest"
   includePaymentHash?: boolean
 } = {}): string {
@@ -1483,25 +1803,75 @@ function makeReceiveInvoice({
   const hrp = amountSats === undefined ? prefix : `${prefix}${amountSats * 10}n`
   return makeBolt11Fixture({
     hrp,
-    fields: includePaymentHash
-      ? [
-          {
-            tag: "p",
-            words: bytesToBolt11Words(new Uint8Array(32).fill(7)),
-          },
-        ]
-      : [],
+    createdAt,
+    fields: [
+      ...(includePaymentHash
+        ? [
+            {
+              tag: "p",
+              words: bytesToBolt11Words(new Uint8Array(32).fill(7)),
+            },
+          ]
+        : []),
+      ...(expirySeconds === undefined
+        ? []
+        : [{ tag: "x", words: numberToBolt11Words(expirySeconds) }]),
+    ],
   })
 }
 
-function createLightningReceiveResult(paymentRequest: string) {
+function createLightningReceiveResult(
+  paymentRequest: string,
+  overrides: {
+    id?: string
+    status?: string
+    network?: string
+    bitcoinNetwork?: string
+    paymentHash?: string
+    createdAt?: string
+    expiresAt?: string
+  } = {}
+) {
+  const metadata = decodeLightningInvoiceMetadata(paymentRequest)
+  const invoiceNetwork = getLightningInvoiceNetwork(paymentRequest)
+  const nativeNetwork = invoiceNetwork === "regtest" ? "REGTEST" : "MAINNET"
+  const amount = decodeLightningInvoiceAmount(paymentRequest)
   return {
-    id: "lightning-receive",
-    status: "INVOICE_CREATED",
+    id: overrides.id ?? "lightning-receive",
+    status: overrides.status ?? "INVOICE_CREATED",
+    network: overrides.network ?? nativeNetwork,
     invoice: {
       encodedInvoice: paymentRequest,
+      bitcoinNetwork: overrides.bitcoinNetwork ?? nativeNetwork,
+      paymentHash:
+        overrides.paymentHash ??
+        decodeLightningInvoicePaymentHash(paymentRequest) ??
+        "07".repeat(32),
+      amount: {
+        originalValue: amount.sats ?? 0,
+        originalUnit: "SATOSHI",
+      },
+      createdAt:
+        overrides.createdAt ??
+        new Date((metadata.createdAt ?? 0) * 1_000).toISOString(),
+      expiresAt:
+        overrides.expiresAt ??
+        new Date((metadata.expiresAt ?? 0) * 1_000).toISOString(),
     },
   }
+}
+
+function numberToBolt11Words(value: number): number[] {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error("Invalid BOLT11 numeric fixture")
+  }
+  const words: number[] = []
+  let remaining = BigInt(value)
+  do {
+    words.unshift(Number(remaining & 31n))
+    remaining >>= 5n
+  } while (remaining > 0n)
+  return words
 }
 
 function makeInvalidAmountReceiveInvoice(

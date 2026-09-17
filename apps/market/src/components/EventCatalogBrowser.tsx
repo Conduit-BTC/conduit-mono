@@ -1,6 +1,5 @@
 import { Search } from "lucide-react"
 import { useMemo, useState, type ReactNode } from "react"
-import type { PricingRateInput } from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
@@ -8,37 +7,26 @@ import {
   Button,
   Combobox,
   Input,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
 } from "@conduit/ui"
-import {
-  buildEventCatalogBrowse,
-  type EventCatalogSort,
-} from "../lib/event-catalog-browse"
+import { buildEventCatalogBrowse } from "../lib/event-catalog-browse"
 import type { EventCatalogProduct } from "../lib/event-market-adapter"
 import type { MerchantIdentityView } from "../lib/marketBrowseModel"
 import { PRODUCT_GRID_CLASS_NAME } from "./ProductGridCard"
 
-const SORT_OPTIONS: { value: EventCatalogSort; label: string }[] = [
-  { value: "name", label: "Name A–Z" },
-  { value: "price-asc", label: "Price: low to high" },
-  { value: "price-desc", label: "Price: high to low" },
-  { value: "merchant", label: "Merchant A–Z" },
-]
-
 export function EventCatalogBrowser({
   products,
   identities,
-  btcUsdRate,
+  merchant,
+  selectedMerchantName,
+  onMerchantChange,
   children,
   renderProduct,
 }: {
   products: EventCatalogProduct[]
   identities: Record<string, MerchantIdentityView>
-  btcUsdRate: PricingRateInput
+  merchant: string
+  selectedMerchantName?: string
+  onMerchantChange: (merchantPubkey: string) => void
   children?: ReactNode
   renderProduct: (
     entry: EventCatalogProduct,
@@ -47,9 +35,6 @@ export function EventCatalogBrowser({
   ) => ReactNode
 }) {
   const [search, setSearch] = useState("")
-  const [merchant, setMerchant] = useState("")
-  const [sort, setSort] = useState<EventCatalogSort>("name")
-  const [grouped, setGrouped] = useState(false)
   const browse = useMemo(
     () =>
       buildEventCatalogBrowse({
@@ -62,26 +47,39 @@ export function EventCatalogBrowser({
         ),
         search,
         merchant,
-        sort,
-        btcUsdRate,
       }),
-    [products, identities, search, merchant, sort, btcUsdRate]
+    [products, identities, search, merchant]
+  )
+  const productIndexes = useMemo(
+    () =>
+      new Map(
+        browse.groups
+          .flatMap((group) => group.products)
+          .map((entry, index) => [
+            `${entry.product.pubkey}:${entry.product.id}`,
+            index,
+          ])
+      ),
+    [browse.groups]
   )
   const hasFilters = search.trim().length > 0 || merchant !== ""
   const clearFilters = () => {
     setSearch("")
-    setMerchant("")
+    onMerchantChange("")
   }
   const selectMerchant = (pubkey: string) => {
-    setMerchant(pubkey)
     setSearch("")
+    onMerchantChange(pubkey)
   }
   const renderGrid = (entries: EventCatalogProduct[]) => (
     <ul className={PRODUCT_GRID_CLASS_NAME}>
-      {entries.map((entry, index) => (
+      {entries.map((entry) => (
         <li key={entry.product.id} className="min-w-0 space-y-2">
-          {renderProduct(entry, index, () =>
-            selectMerchant(entry.product.pubkey)
+          {renderProduct(
+            entry,
+            productIndexes.get(`${entry.product.pubkey}:${entry.product.id}`) ??
+              0,
+            () => selectMerchant(entry.product.pubkey)
           )}
         </li>
       ))}
@@ -90,53 +88,29 @@ export function EventCatalogBrowser({
 
   return (
     <section aria-labelledby="event-products-heading" className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h2
-            id="event-products-heading"
-            className="text-balance text-2xl font-semibold text-[var(--text-primary)]"
-          >
-            Shop the event
-          </h2>
-          <p
-            role="status"
-            aria-live="polite"
-            className="text-sm tabular-nums text-[var(--text-secondary)]"
-          >
-            {hasFilters
-              ? `${browse.products.length} of ${products.length}`
-              : products.length}{" "}
-            {products.length === 1 ? "product" : "products"}
-            {!hasFilters && browse.merchants.length > 0
-              ? ` · ${browse.merchants.length} ${browse.merchants.length === 1 ? "merchant" : "merchants"}`
-              : ""}
-          </p>
-        </div>
-        <div
-          role="group"
-          aria-label="Product view"
-          className="flex rounded-lg border border-[var(--border)] p-1"
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2
+          id="event-products-heading"
+          className="text-balance text-2xl font-semibold text-[var(--text-primary)]"
         >
-          <Button
-            size="sm"
-            variant={grouped ? "ghost" : "primary"}
-            aria-pressed={!grouped}
-            onClick={() => setGrouped(false)}
-          >
-            All products
-          </Button>
-          <Button
-            size="sm"
-            variant={grouped ? "primary" : "ghost"}
-            aria-pressed={grouped}
-            onClick={() => setGrouped(true)}
-          >
-            By merchant
-          </Button>
-        </div>
+          Shop the event
+        </h2>
+        <p
+          role="status"
+          aria-live="polite"
+          className="text-sm tabular-nums text-[var(--text-secondary)]"
+        >
+          {hasFilters
+            ? `${browse.products.length} of ${products.length}`
+            : products.length}{" "}
+          {products.length === 1 ? "product" : "products"}
+          {!hasFilters && browse.merchants.length > 0
+            ? ` · ${browse.merchants.length} ${browse.merchants.length === 1 ? "merchant" : "merchants"}`
+            : ""}
+        </p>
       </div>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-[minmax(0,1fr)_15rem_13rem]">
-        <div className="relative col-span-2 min-w-0 lg:col-span-1">
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_15rem]">
+        <div className="relative min-w-0">
           <Search
             aria-hidden="true"
             className="pointer-events-none absolute left-3 top-3 size-4 text-[var(--text-muted)]"
@@ -157,13 +131,17 @@ export function EventCatalogBrowser({
           <Combobox
             id="event-merchant"
             value={merchant || "all"}
-            onValueChange={(value) => setMerchant(value === "all" ? "" : value)}
+            onValueChange={(value) =>
+              onMerchantChange(value === "all" ? "" : value)
+            }
             searchPlaceholder="Find a merchant"
             emptyText="No matching merchants"
             selectedLabel={
               merchant
                 ? (browse.merchants.find((entry) => entry.pubkey === merchant)
-                    ?.name ?? "Selected merchant")
+                    ?.name ??
+                  selectedMerchantName ??
+                  "Selected merchant")
                 : "All merchants"
             }
             options={[
@@ -180,31 +158,11 @@ export function EventCatalogBrowser({
             ]}
           />
         </div>
-        <Select
-          value={sort}
-          onValueChange={(value) => setSort(value as EventCatalogSort)}
-        >
-          <SelectTrigger aria-label="Sort products" className="h-10">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {SORT_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
       </div>
       {hasFilters ? (
         <Button variant="ghost" size="sm" onClick={clearFilters}>
           Clear filters
         </Button>
-      ) : null}
-      {browse.hasUnavailablePriceForSort ? (
-        <p className="text-pretty text-sm text-[var(--text-secondary)]">
-          Products without a comparable price appear last.
-        </p>
       ) : null}
       {children}
       {browse.products.length === 0 && products.length > 0 ? (
@@ -216,7 +174,7 @@ export function EventCatalogBrowser({
             Try another search or clear your filters to browse this event.
           </p>
         </div>
-      ) : grouped ? (
+      ) : (
         <div className="space-y-8">
           {browse.groups.map((group) => (
             <section
@@ -245,8 +203,6 @@ export function EventCatalogBrowser({
             </section>
           ))}
         </div>
-      ) : (
-        renderGrid(browse.products)
       )}
     </section>
   )
