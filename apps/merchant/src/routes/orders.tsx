@@ -9,6 +9,7 @@ import {
   useState,
 } from "react"
 import {
+  getProfilePaymentAddress,
   buildOrderStatusTimeline,
   clearProtectedReadAuthenticationSuppression,
   convertCommerceAmountToSats,
@@ -775,7 +776,8 @@ function OrdersPage() {
   }, [])
 
   const nwc = useMerchantPaymentAutomation()
-  const profileLud16 = merchantProfileQuery.data?.lud16?.trim() ?? ""
+  const profileLud16 =
+    getProfilePaymentAddress(merchantProfileQuery.profileContext) ?? ""
   const profileInvoiceAvailable = isValidLud16Address(profileLud16)
   const nwcInvoiceAvailable =
     !!nwc.connection && nwc.canCreateInvoices && nwc.addressStatus === "match"
