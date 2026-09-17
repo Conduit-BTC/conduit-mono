@@ -1358,6 +1358,130 @@ describe("SparkWalletManager", () => {
     expect(sendCalls).toHaveLength(0)
   })
 
+  it("forwards checkout receive evidence only for its exact wallet and network", async () => {
+    const funds = {
+      availableSats: 1_000,
+      ownedSats: 1_250,
+      incomingSats: 250,
+      observedAt: 1_800_000_010_000,
+    }
+    const request = {
+      walletId: "wallet-personal",
+      network: "mainnet" as const,
+      id: "receive-1",
+      paymentRequest: "lnbc1checkout",
+      paymentHash: "07".repeat(32),
+      providerStatus: "INVOICE_CREATED",
+      requiredNetSats: 1_000,
+      grossFundingSats: 1_050,
+      expirySecs: 300,
+      createdAt: 1_800_000_000_000,
+      expiresAt: 1_800_000_300_000,
+    }
+    let createCalls = 0
+    let reconcileCalls = 0
+    let checkoutRequest = request
+    const manager = new SparkWalletManager({
+      network: "mainnet",
+      async open() {
+        return {
+          ...createNoopSdkClient(),
+          async getFundsState() {
+            return funds
+          },
+          async createCheckoutReceive() {
+            createCalls += 1
+            return checkoutRequest
+          },
+          async reconcileCheckoutReceive() {
+            reconcileCalls += 1
+            return {
+              state: "pending" as const,
+              providerStatus: "INVOICE_CREATED",
+              failureReason: null,
+              funds,
+            }
+          },
+        }
+      },
+    })
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: ["synthetic", "noncredential", "input"].join("-"),
+      accountNumber: 0,
+    })
+
+    await expect(manager.getFundsState("wallet-personal")).resolves.toEqual(
+      funds
+    )
+    await expect(
+      manager.createCheckoutReceive("wallet-personal", {
+        description: "Guest checkout",
+        requiredNetSats: 1_000,
+        grossFundingSats: 1_050,
+        expirySecs: 300,
+      })
+    ).resolves.toEqual(request)
+    checkoutRequest = { ...request, walletId: "wallet-other" }
+    await expect(
+      manager.createCheckoutReceive("wallet-personal", {
+        description: "Guest checkout",
+        requiredNetSats: 1_000,
+        grossFundingSats: 1_050,
+        expirySecs: 300,
+      })
+    ).rejects.toThrow("different wallet or network")
+    checkoutRequest = { ...request, network: "regtest" }
+    await expect(
+      manager.createCheckoutReceive("wallet-personal", {
+        description: "Guest checkout",
+        requiredNetSats: 1_000,
+        grossFundingSats: 1_050,
+        expirySecs: 300,
+      })
+    ).rejects.toThrow("different wallet or network")
+    await expect(
+      manager.reconcileCheckoutReceive("wallet-personal", request)
+    ).resolves.toMatchObject({ state: "pending" })
+    await expect(
+      manager.reconcileCheckoutReceive("wallet-other", request)
+    ).rejects.toThrow("different wallet or network")
+    await expect(
+      manager.reconcileCheckoutReceive("wallet-personal", {
+        ...request,
+        network: "regtest",
+      })
+    ).rejects.toThrow("different wallet or network")
+    expect(createCalls).toBe(3)
+    expect(reconcileCalls).toBe(1)
+  })
+
+  it("fails closed when a Spark adapter lacks checkout receive capabilities", async () => {
+    const manager = new SparkWalletManager({
+      network: "mainnet",
+      async open() {
+        return createNoopSdkClient()
+      },
+    })
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: ["synthetic", "noncredential", "input"].join("-"),
+      accountNumber: 0,
+    })
+
+    await expect(manager.getFundsState("wallet-personal")).rejects.toThrow(
+      "cannot inspect complete checkout funds state"
+    )
+    await expect(
+      manager.createCheckoutReceive("wallet-personal", {
+        description: "Guest checkout",
+        requiredNetSats: 1_000,
+        grossFundingSats: 1_050,
+        expirySecs: 300,
+      })
+    ).rejects.toThrow("cannot create a recoverable checkout receive request")
+  })
+
   it("keeps multiple Spark wallet clients isolated", async () => {
     const disconnectedWallets: string[] = []
     const openCalls: string[] = []
