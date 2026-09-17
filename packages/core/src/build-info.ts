@@ -10,6 +10,7 @@ export interface ConduitBuildInfo {
   publicConfigDigest: string | null
   publicFeatures: {
     dmCompatibilityOrderRoutingEnabled: boolean
+    checkoutOrderRoutePrefetchEnabled: boolean
   }
 }
 
@@ -46,6 +47,11 @@ export const conduitBuildInfo: ConduitBuildInfo = Object.freeze({
   publicFeatures: Object.freeze({
     dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(
       (import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "").trim().toLowerCase()
+    ),
+    checkoutOrderRoutePrefetchEnabled: ["1", "true", "on"].includes(
+      (import.meta.env.VITE_CHECKOUT_ORDER_ROUTE_PREFETCH ?? "")
+        .trim()
+        .toLowerCase()
     ),
   }),
 })

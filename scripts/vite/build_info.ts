@@ -109,6 +109,11 @@ export function createConduitBuildContract(appDir: string): {
         ? "true"
         : "false"
     ),
+    "import.meta.env.VITE_CHECKOUT_ORDER_ROUTE_PREFETCH": JSON.stringify(
+      profile.publicFeatures.checkoutOrderRoutePrefetchEnabled
+        ? "true"
+        : "false"
+    ),
     "import.meta.env.VITE_LIGHTNING_NETWORK": JSON.stringify(
       profile.lightningNetwork
     ),

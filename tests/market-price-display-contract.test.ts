@@ -53,7 +53,7 @@ describe("Market shopper price display contract", () => {
     )
     const placeOrder = checkout.indexOf("async function placeOrder")
     const freshPricing = checkout.indexOf(
-      "await getFreshPricingRateInput(checkoutItems)",
+      "getFreshPricingRateInput(checkoutItems),",
       placeOrder
     )
     const authoritativeItems = checkout.indexOf(

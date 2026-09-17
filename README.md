@@ -101,33 +101,34 @@ bun run dev:merchant:mainnet
 
 `.env.local` should remain for personal overrides only. Keep mode files minimal and let the shared core relay defaults handle the broader fallback strategy unless a mode truly needs different values.
 
-| Variable                       | Default (dev)              | Description                                              |
-| ------------------------------ | -------------------------- | -------------------------------------------------------- |
-| `VITE_RELAY_URL`               | —                          | Optional single relay hint also added to fallback relays |
-| `VITE_DEFAULT_RELAY_URL`       | —                          | Optional single relay added to fallback relay discovery  |
-| `VITE_DEFAULT_RELAYS`          | —                          | Optional comma-separated relays added to fallback reads  |
-| `VITE_APP_WRITE_RELAY_URLS`    | —                          | Optional comma-separated app write relay additions       |
-| `VITE_PUBLIC_RELAY_URLS`       | —                          | Optional comma-separated public relay override/additions |
-| `VITE_COMMERCE_RELAY_URLS`     | —                          | Optional comma-separated commerce relay additions        |
-| `VITE_LIGHTNING_NETWORK`       | `mainnet`                  | `mainnet`, `signet`, `testnet`, or `mock`                |
-| `VITE_BLOSSOM_SERVER_URL`      | —                          | Blossom media server for product images                  |
-| `VITE_CACHE_API_URL`           | —                          | Optional cache/acceleration API endpoint                 |
-| `VITE_ENABLE_TELEMETRY`        | `false`                    | Enables privacy-filtered telemetry                       |
-| `VITE_TELEMETRY_ALLOWED_HOSTS` | —                          | Required comma-separated telemetry host allowlist        |
-| `VITE_PLAUSIBLE_DOMAIN`        | —                          | Legacy nonofficial/dev Plausible site domain             |
-| `VITE_PLAUSIBLE_SRC`           | —                          | Legacy nonofficial/dev Plausible script URL              |
-| `VITE_POSTHOG_KEY`             | —                          | Optional official Product browser project key            |
-| `VITE_POSTHOG_HOST`            | `https://e.conduit.market` | Ignored off official hosts; official hosts pin the proxy |
-| `VITE_NIP89_RELAY_HINT`        | `VITE_RELAY_URL`           | Relay hint for Conduit NIP-89 handler metadata           |
-| `VITE_NIP89_MARKET_PUBKEY`     | —                          | Official Conduit Market handler pubkey                   |
-| `VITE_NIP89_MERCHANT_PUBKEY`   | —                          | Official Conduit Merchant Portal handler pubkey          |
-| `VITE_APP_VERSION`             | app package version        | Build-time app version surfaced on About pages           |
-| `VITE_BUILD_COMMIT`            | current git commit         | Commit SHA surfaced on About pages                       |
-| `VITE_BUILD_BRANCH`            | current git branch         | Branch or preview ref surfaced on About pages            |
-| `VITE_BUILD_TIME`              | current build time         | Build timestamp surfaced on About pages                  |
-| `VITE_SOURCE_URL`              | GitHub repository URL      | Source repository link surfaced on About pages           |
-| `VITE_RELEASE_CHANNEL`         | local/preview/prod         | Release channel surfaced on About pages                  |
-| `VITE_DM_BOOTSTRAP_WRITES`     | profile-controlled         | Legacy compiled input for validated-order compatibility  |
+| Variable                             | Default (dev)              | Description                                              |
+| ------------------------------------ | -------------------------- | -------------------------------------------------------- |
+| `VITE_RELAY_URL`                     | —                          | Optional single relay hint also added to fallback relays |
+| `VITE_DEFAULT_RELAY_URL`             | —                          | Optional single relay added to fallback relay discovery  |
+| `VITE_DEFAULT_RELAYS`                | —                          | Optional comma-separated relays added to fallback reads  |
+| `VITE_APP_WRITE_RELAY_URLS`          | —                          | Optional comma-separated app write relay additions       |
+| `VITE_PUBLIC_RELAY_URLS`             | —                          | Optional comma-separated public relay override/additions |
+| `VITE_COMMERCE_RELAY_URLS`           | —                          | Optional comma-separated commerce relay additions        |
+| `VITE_LIGHTNING_NETWORK`             | `mainnet`                  | `mainnet`, `signet`, `testnet`, or `mock`                |
+| `VITE_BLOSSOM_SERVER_URL`            | —                          | Blossom media server for product images                  |
+| `VITE_CACHE_API_URL`                 | —                          | Optional cache/acceleration API endpoint                 |
+| `VITE_ENABLE_TELEMETRY`              | `false`                    | Enables privacy-filtered telemetry                       |
+| `VITE_TELEMETRY_ALLOWED_HOSTS`       | —                          | Required comma-separated telemetry host allowlist        |
+| `VITE_PLAUSIBLE_DOMAIN`              | —                          | Legacy nonofficial/dev Plausible site domain             |
+| `VITE_PLAUSIBLE_SRC`                 | —                          | Legacy nonofficial/dev Plausible script URL              |
+| `VITE_POSTHOG_KEY`                   | —                          | Optional official Product browser project key            |
+| `VITE_POSTHOG_HOST`                  | `https://e.conduit.market` | Ignored off official hosts; official hosts pin the proxy |
+| `VITE_NIP89_RELAY_HINT`              | `VITE_RELAY_URL`           | Relay hint for Conduit NIP-89 handler metadata           |
+| `VITE_NIP89_MARKET_PUBKEY`           | —                          | Official Conduit Market handler pubkey                   |
+| `VITE_NIP89_MERCHANT_PUBKEY`         | —                          | Official Conduit Merchant Portal handler pubkey          |
+| `VITE_APP_VERSION`                   | app package version        | Build-time app version surfaced on About pages           |
+| `VITE_BUILD_COMMIT`                  | current git commit         | Commit SHA surfaced on About pages                       |
+| `VITE_BUILD_BRANCH`                  | current git branch         | Branch or preview ref surfaced on About pages            |
+| `VITE_BUILD_TIME`                    | current build time         | Build timestamp surfaced on About pages                  |
+| `VITE_SOURCE_URL`                    | GitHub repository URL      | Source repository link surfaced on About pages           |
+| `VITE_RELEASE_CHANNEL`               | local/preview/prod         | Release channel surfaced on About pages                  |
+| `VITE_DM_BOOTSTRAP_WRITES`           | profile-controlled         | Legacy compiled input for validated-order compatibility  |
+| `VITE_CHECKOUT_ORDER_ROUTE_PREFETCH` | profile-controlled         | Cart-intent kind-10050 route warming                     |
 
 When telemetry is enabled, `VITE_TELEMETRY_ALLOWED_HOSTS` must list every
 permitted hostname. A `*.` prefix allows exactly one preview subdomain label;

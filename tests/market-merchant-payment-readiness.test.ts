@@ -39,7 +39,7 @@ describe("shopper merchant payment readiness", () => {
     expect(source).toContain("requireCompleteEvidence: true")
     expect(source).toContain('evidenceScope: "payment"')
     expect(source).toContain(
-      "lud16: refreshedProfileResult.data[selectedMerchant]?.lud16"
+      "lud16: refreshedProfileResult.data[merchantPubkey]?.lud16"
     )
     expect(source).toMatch(
       /getFreshLnurlMetadata\(\s*currentMerchantLud16\s*\)/

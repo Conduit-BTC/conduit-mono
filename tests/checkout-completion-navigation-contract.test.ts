@@ -57,8 +57,8 @@ describe("checkout completion navigation contracts", () => {
       placeOrderStart
     )
     const placeOrderSource = checkoutRoute.slice(placeOrderStart, placeOrderEnd)
-    const orderAvailability = placeOrderSource.indexOf(
-      'await assertCheckoutItemsAvailable(\n        "order_first",\n        freshPricingRate\n      )'
+    const orderAvailability = placeOrderSource.search(
+      /await assertCheckoutItemsAvailable\(\s*"order_first",\s*freshPricingRate,\s*refreshedAvailability\s*\)/
     )
     const orderStarted = placeOrderSource.indexOf("orderSubmitStarted = true")
     const orderStartedTelemetry = placeOrderSource.indexOf(
@@ -91,7 +91,7 @@ describe("checkout completion navigation contracts", () => {
     )
     const payNowSource = checkoutRoute.slice(payNowStart, payNowEnd)
     const paymentAvailability = payNowSource.search(
-      /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode,\s*freshPricingRate\s*\)/
+      /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode,\s*freshPricingRate,\s*refreshedAvailability\s*\)/
     )
     const signedOrderReady = payNowSource.indexOf(
       "orderRumor.content = JSON.stringify(orderPayload)"
@@ -115,7 +115,7 @@ describe("checkout completion navigation contracts", () => {
     expect(payNowSource).toContain("let directPaymentStarted = false")
     expect(
       payNowSource.match(
-        /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode,\s*freshPricingRate\s*\)/g
+        /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode,\s*freshPricingRate,\s*refreshedAvailability\s*\)/g
       )
     ).toHaveLength(1)
     expect(signedOrderReady).toBeGreaterThan(paymentAvailability)
@@ -184,7 +184,7 @@ describe("checkout completion navigation contracts", () => {
     )
     const payNowSource = checkoutRoute.slice(payNowIndex, payNowEnd)
     const availabilityIndex = payNowSource.search(
-      /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode\s*\)/
+      /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode,\s*freshPricingRate,\s*refreshedAvailability\s*\)/
     )
     const authorizationIndex = payNowSource.indexOf(
       "assertClaimedZapAuthorization(",
@@ -267,12 +267,89 @@ describe("checkout completion navigation contracts", () => {
     const runningGuard = observerLoop.indexOf(
       "isOrderPaymentRunning(lifecycle.orderId)"
     )
-    const observerStart = observerLoop.indexOf(
-      "observeOrderPublicZapReceipt("
-    )
+    const observerStart = observerLoop.indexOf("observeOrderPublicZapReceipt(")
 
     expect(runningGuard).toBeGreaterThan(-1)
     expect(observerStart).toBeGreaterThan(runningGuard)
+  })
+
+  it("overlaps independent submit reads without weakening final authorization", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const messaging = await Bun.file(
+      "packages/core/src/protocol/messaging.ts"
+    ).text()
+    const placeOrder = checkoutRoute.slice(
+      checkoutRoute.indexOf("async function placeOrder(): Promise<void>"),
+      checkoutRoute.indexOf("// ─── Fast zap path")
+    )
+    const payNow = checkoutRoute.slice(
+      checkoutRoute.indexOf("async function payNow("),
+      checkoutRoute.indexOf("// --- Full-screen transition states")
+    )
+    const placeOrderWarm = placeOrder.indexOf(
+      "startOrderRouteEvidenceWarm(selectedMerchant)"
+    )
+    const placeOrderParallelReads = placeOrder.indexOf("await Promise.all([")
+    const payNowWarm = payNow.indexOf(
+      "startOrderRouteEvidenceWarm(selectedMerchant)"
+    )
+    const payNowParallelReads = payNow.indexOf("await Promise.all([")
+    const placeOrderCancel = placeOrder.indexOf(
+      "await cancelOrderRouteEvidenceWarms()"
+    )
+    const placeOrderDeliveryTiming = placeOrder.indexOf(
+      "orderDeliveryStartedAt = performance.now()"
+    )
+    const placeOrderPublish = placeOrder.indexOf(
+      "await publishBuyerOrderMessage("
+    )
+    const payNowCancel = payNow.indexOf("await cancelOrderRouteEvidenceWarms()")
+    const payNowDeliveryTiming = payNow.indexOf(
+      "orderDeliveryStartedAt = performance.now()"
+    )
+    const payNowPublish = payNow.indexOf("await publishBuyerOrderMessage(")
+
+    expect(placeOrder).toContain(
+      "const [freshPricingRate, refreshedAvailability] = await Promise.all(["
+    )
+    expect(placeOrder).toContain("checkoutAvailability.refresh(),")
+    expect(payNow).toContain(
+      "getFreshMerchantPaymentEvidence(selectedMerchant)"
+    )
+    expect(payNow).toContain("getFreshPricingRateInput(checkoutItems)")
+    expect(payNow).toContain("checkoutAvailability.refresh(),")
+    expect(placeOrderWarm).toBeGreaterThan(-1)
+    expect(placeOrderWarm).toBeLessThan(placeOrderParallelReads)
+    expect(payNowWarm).toBeGreaterThan(-1)
+    expect(payNowWarm).toBeLessThan(payNowParallelReads)
+    expect(placeOrder).not.toContain(
+      "await startOrderRouteEvidenceWarm(selectedMerchant)"
+    )
+    expect(payNow).not.toContain(
+      "await startOrderRouteEvidenceWarm(selectedMerchant)"
+    )
+    expect(placeOrderDeliveryTiming).toBeLessThan(placeOrderCancel)
+    expect(placeOrderCancel).toBeGreaterThan(placeOrderParallelReads)
+    expect(placeOrderCancel).toBeLessThan(placeOrderPublish)
+    expect(payNowDeliveryTiming).toBeLessThan(payNowCancel)
+    expect(payNowCancel).toBeGreaterThan(payNowParallelReads)
+    expect(payNowCancel).toBeLessThan(payNowPublish)
+    expect(checkoutRoute).toContain(
+      "if (!config.checkoutOrderRoutePrefetchEnabled) return"
+    )
+    expect(checkoutRoute).toContain(
+      "await cancelMerchantOrderRoutePreflights(queryClient)"
+    )
+    expect(checkoutRoute).toContain(
+      "preparedRefreshResult ?? (await checkoutAvailability.refresh())"
+    )
+    expect(checkoutRoute).toContain("bounded: false")
+    expect(checkoutRoute).toContain("staleTime: 0")
+    expect(messaging).toContain(
+      "const resolvedRecipientDeclaration = await resolveDeclarationForSend("
+    )
   })
 
   it("preserves exact-order recovery on ambiguous reads and resumes direct payment without republishing", async () => {

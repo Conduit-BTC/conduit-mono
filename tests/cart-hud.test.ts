@@ -231,6 +231,8 @@ describe("Market cart HUD policy", () => {
     // readiness and the LNURL preflight, not from HUD-local wallet probing.
     expect(hud).toContain("useMerchantCheckoutCapability({")
     expect(hud).toContain("useCartReadiness(cart.items)")
+    expect(hud).toContain("useCartOrderRoutePreflights(merchantPubkeys")
+    expect(hud).toContain("config.checkoutOrderRoutePrefetchEnabled")
     expect(hud).not.toContain("useWallet()")
     expect(hud).not.toContain("refreshBalance: true")
     expect(hud).not.toContain("getKnownWalletPaymentConstraint")
