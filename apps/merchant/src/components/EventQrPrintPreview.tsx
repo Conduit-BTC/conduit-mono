@@ -81,7 +81,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
       <DecorativeImage
         src={sheet.bannerUrl}
         alt=""
-        className="event-sign-banner h-40 w-full object-cover"
+        className="event-sign-banner h-40 w-full bg-neutral-950 object-contain"
         fallback={getEventSignImageFallback(sheet.eventTitle)}
         fallbackClassName="event-sign-banner flex h-40 w-full items-center justify-center bg-primary-50 font-display text-7xl font-semibold text-primary-700"
       />
