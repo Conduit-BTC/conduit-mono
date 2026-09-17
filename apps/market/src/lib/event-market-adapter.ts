@@ -1,8 +1,8 @@
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
+  evaluateListingSafety,
   getEventMarket,
-  getCachedProductsByIds,
   getProductEventMarketFulfillmentClaims,
   getProductsByIds,
   hasExactLiveProductAvailabilityEvidence,
@@ -29,8 +29,6 @@ import type {
   CartItemFulfillment,
   CartPickupFulfillment,
 } from "./cart-model"
-
-import { readEventCatalogProducts } from "./event-catalog-products"
 
 const EVENT_COLLECTION_KIND = 30405
 
@@ -760,6 +758,98 @@ export function projectEventCatalogHydration({
   }
 }
 
+/** Display projection only: never insert these records into the exact reader or cache. */
+export function buildEventCatalogProductPreviewRecords(
+  resolution: EventMarketResolution,
+  records: readonly CommerceProductRecord[],
+  result?: ProductsByIdsResult
+): CommerceProductRecord[] {
+  const represented = new Set(
+    [...records, ...(result?.data ?? [])].flatMap((record) => [
+      record.addressId,
+      ...(record.family?.children.map((child) => child.addressId) ?? []),
+    ])
+  )
+  const excluded = new Set(resolution.browseExcludedProductCoordinates)
+  const previews =
+    resolution.acceptedProductEvidence.flatMap<CommerceProductRecord>(
+      (evidence) => {
+        const preview = evidence.productPreview
+        const diagnostic = result?.diagnostics.find(
+          (row) => row.addressId === evidence.productCoordinate
+        )
+        const coordinate = decodeEventMarketReference(
+          evidence.productCoordinate,
+          [30402]
+        )
+        if (
+          !preview ||
+          preview.priceStatus !== "resolved" ||
+          !preview.sourceSafety ||
+          preview.type !== "simple" ||
+          !coordinate ||
+          !resolution.collectionCoordinate ||
+          coordinate.authorPubkey !== evidence.merchantPubkey ||
+          preview.coordinate !== evidence.productCoordinate ||
+          preview.eventId !== evidence.eventId ||
+          preview.createdAt !== evidence.createdAt ||
+          !Number.isSafeInteger(preview.createdAt / 1_000) ||
+          !resolution.acceptedProductCoordinates.includes(
+            evidence.productCoordinate
+          ) ||
+          represented.has(evidence.productCoordinate) ||
+          excluded.has(evidence.productCoordinate) ||
+          (result && diagnostic?.issue !== "pending")
+        )
+          return []
+        // The verified preview intentionally carries no general discovery visibility,
+        // zap policy, family topology, or checkout terms. Conservative display defaults
+        // stay private and non-purchasable until the exact reader supplies those facts.
+        const product: Product = {
+          id: preview.coordinate,
+          pubkey: coordinate.authorPubkey,
+          title: preview.title,
+          summary: preview.summary,
+          type: "simple",
+          format: preview.format,
+          stock: preview.stock,
+          price: preview.price,
+          currency: preview.currency,
+          priceSats: preview.priceSats,
+          sourcePrice: preview.sourcePrice,
+          images: preview.images,
+          visibility: "private",
+          specifications: [],
+          tags: [],
+          publicZapEnabled: false,
+          publicZapPolicyKnown: false,
+          zapMessagePolicy: "generic_only",
+          collectionRefs: [resolution.collectionCoordinate],
+          createdAt: preview.createdAt,
+          updatedAt: preview.createdAt,
+        }
+        const record: CommerceProductRecord = {
+          product,
+          addressId: preview.coordinate,
+          eventId: preview.eventId,
+          eventCreatedAt: preview.createdAt / 1_000,
+          dTag: coordinate.dTag,
+          safety: preview.sourceSafety,
+        }
+        return isEventCatalogRecordSafetyAllowed(
+          { ...record, safety: evaluateListingSafety(product) },
+          resolution,
+          undefined,
+          true
+        ) &&
+          isEventCatalogRecordSafetyAllowed(record, resolution, undefined, true)
+          ? [record]
+          : []
+      }
+    )
+  return [...records, ...previews]
+}
+
 /** Rate-independent signed evidence shared by event and product surfaces. */
 export type RawEventCatalog = {
   reference: string
@@ -824,12 +914,57 @@ export function projectRawEventCatalog(
       result: raw.result,
       rateInput,
     })
+    // These display records crossed the same local revision/deletion boundary as
+    // the exact result. Never reconstruct a removed preview from graph evidence.
+    const pendingCoordinates = new Set(
+      !raw.complete && !raw.localEvidencePending && !raw.localGraphSuperseded
+        ? raw.result.diagnostics
+            .filter((row) => row.issue === "pending")
+            .map((row) => row.addressId)
+        : []
+    )
+    const exactCoordinates = new Set(
+      raw.result.data.flatMap((record) => [
+        record.addressId,
+        ...(record.family?.children.map((child) => child.addressId) ?? []),
+      ])
+    )
+    const pendingProducts = (
+      raw.previewRecords ?? []
+    ).flatMap<EventCatalogProduct>((record) => {
+      if (
+        !pendingCoordinates.has(record.addressId) ||
+        exactCoordinates.has(record.addressId) ||
+        excludedProducts.has(record.addressId) ||
+        record.product.type !== "simple" ||
+        !resolution.acceptedProductCoordinates.includes(record.addressId) ||
+        !isEventCatalogRecordSafetyAllowed(record, resolution, undefined, true)
+      )
+        return []
+      const participation = resolveEventMarketProductParticipation(
+        record.product,
+        resolution
+      )
+      if (!participation.requested) return []
+      return [
+        {
+          product: record.product,
+          evidenceState: "retained",
+          participation: { ...participation, purchaseReady: false },
+          pickupFulfillment: null,
+        },
+      ]
+    })
+    const products = [...hydrated.products, ...pendingProducts]
     return {
       ...base,
       ...hydrated,
-      products: complete
-        ? hydrated.products
-        : hydrated.products.map(browseOnlyProduct),
+      unresolvedProductCoordinates:
+        hydrated.unresolvedProductCoordinates.filter(
+          (coordinate) =>
+            !pendingProducts.some((entry) => entry.product.id === coordinate)
+        ),
+      products: complete ? products : products.map(browseOnlyProduct),
       purchaseReady:
         complete &&
         (resolution.state === "active" || resolution.state === "partial"),
@@ -959,7 +1094,6 @@ export async function loadRawEventCatalog(
       throw new DOMException("Event catalog read cancelled", "AbortError")
   }
   let finished = false
-  let progressVersion = 0
   let previewRecords: CommerceProductRecord[] = []
   let latestResolution: EventMarketResolution | undefined
   let resolutionComplete = false
@@ -967,46 +1101,32 @@ export async function loadRawEventCatalog(
   let productReadVersion = 0
   type ProductRead = {
     key: string
+    cacheReady: Promise<void>
     promise: Promise<{ result: ProductsByIdsResult } | { error: unknown }>
   }
   let productRead: ProductRead | undefined
-  const emitPreview = async (
-    resolution: EventMarketResolution,
-    version: number
-  ) => {
-    if (!active() || finished || version !== progressVersion) return
-    // Earlier records may predate a signed deletion or withdrawal in the
-    // product cache. Only this progress version's reconciled batch can restore
-    // cards; the header remains available while that local read runs.
-    previewRecords = []
-    const snapshot = {
+  const emitPreview = (resolution: EventMarketResolution) => {
+    if (!active() || finished) return
+    // Reuse only this read generation's reconciled product evidence as the
+    // graph advances. A new target set starts with an empty header.
+    options.onProgress?.({
       reference,
       canonicalNaddr,
       resolution,
       complete: false,
       resolutionComplete,
-      result: resolutionComplete ? latestProductResult : undefined,
-      previewRecords,
-    }
-    options.onProgress?.(snapshot)
-    if (!options.onProgress || !resolution.collection) return
-    const coordinates = resolution.organizerProductCoordinates
-    try {
-      const result = await getCachedProductsByIds([...coordinates], {
-        includeStale: true,
-        includeMarketHidden: true,
-      })
-      if (!active() || finished || version !== progressVersion) return
-      previewRecords = result.data
-    } catch {
-      // Storage may be unavailable; the current network read still runs.
-    }
-    if (active() && !finished && version === progressVersion) {
-      options.onProgress?.({
-        ...snapshot,
+      // Match the completed return: without accepted participation evidence,
+      // this remains safe retained browsing rather than an exact catalog result.
+      result:
+        resolutionComplete && resolution.acceptedProductCoordinates.length > 0
+          ? latestProductResult
+          : undefined,
+      previewRecords: buildEventCatalogProductPreviewRecords(
+        resolution,
         previewRecords,
-      })
-    }
+        latestProductResult
+      ),
+    })
   }
 
   const startProductRead = (coordinates: readonly string[]) => {
@@ -1014,44 +1134,53 @@ export async function loadRawEventCatalog(
     const key = JSON.stringify(targets)
     if (productRead?.key === key) return productRead
     latestProductResult = undefined
+    previewRecords = []
     const version = ++productReadVersion
     const current = () =>
       active() && !finished && version === productReadVersion
-    const promise = readEventCatalogProducts(targets, {
+    let settleCache!: () => void
+    const cacheReady = new Promise<void>((resolve) => {
+      settleCache = resolve
+    })
+    const promise = getProductsByIds(targets, {
       includeMerchantHiddenProductIds: targets,
       authenticatedPubkey: options.authenticatedPubkey,
       shouldContinue: current,
+      onCacheReady: (snapshot) => {
+        if (current()) {
+          previewRecords = snapshot.data
+          latestProductResult = snapshot
+        }
+        settleCache()
+      },
       onProgress: options.onProgress
         ? (snapshot) => {
             if (!current() || !latestResolution) return
             // Core has reconciled this cumulative frontier against current
-            // product revisions and known deletions. Supersede pending cache
-            // projections. Only completed event and exact product evidence
-            // can authorize pickup, independently of unfinished siblings.
-            ++progressVersion
+            // product revisions and known deletions. Only completed event and
+            // exact product evidence can authorize pickup, independently of
+            // unfinished siblings.
             previewRecords = snapshot.data
             latestProductResult = snapshot
-            options.onProgress?.({
-              reference,
-              canonicalNaddr,
-              resolution: latestResolution,
-              resolutionComplete,
-              result: resolutionComplete ? snapshot : undefined,
-              previewRecords,
-              complete: false,
-            })
+            emitPreview(latestResolution)
           }
         : undefined,
     }).then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error })
+      (result) => {
+        settleCache()
+        return { result }
+      },
+      (error: unknown) => {
+        // Initial storage failure or cancellation must also settle the local wait.
+        settleCache()
+        return { error }
+      }
     )
-    productRead = { key, promise }
+    productRead = { key, cacheReady, promise }
     return productRead
   }
   const updateResolution = (resolution: EventMarketResolution) => {
     latestResolution = resolution
-    const preview = emitPreview(resolution, ++progressVersion)
     if (
       options.onProgress &&
       ["active", "ended", "partial", "stale"].includes(resolution.state) &&
@@ -1065,8 +1194,10 @@ export async function loadRawEventCatalog(
     } else {
       ++productReadVersion
       productRead = undefined
+      latestProductResult = undefined
+      previewRecords = []
     }
-    return preview
+    emitPreview(resolution)
   }
 
   try {
@@ -1079,13 +1210,13 @@ export async function loadRawEventCatalog(
       signal: options.signal,
       onProgress: options.onProgress
         ? (snapshot) => {
-            void updateResolution(snapshot)
+            updateResolution(snapshot)
           }
         : undefined,
     })
     assertActive()
     resolutionComplete = true
-    const previewRead = updateResolution(resolution)
+    updateResolution(resolution)
     const canHydrate = ["active", "ended", "partial", "stale"].includes(
       resolution.state
     )
@@ -1123,8 +1254,23 @@ export async function loadRawEventCatalog(
           shouldContinue: active,
         })
       }
+    } else if (canHydrate && productRead) {
+      // A stale graph can finish before local product hydration. Preserve that
+      // reconciled browse snapshot without waiting for relay discovery or reads.
+      const localRead = productRead
+      await new Promise<void>((resolve) => {
+        const settle = () => {
+          options.signal?.removeEventListener("abort", settle)
+          resolve()
+        }
+        if (options.signal?.aborted) {
+          settle()
+          return
+        }
+        options.signal?.addEventListener("abort", settle, { once: true })
+        void localRead.cacheReady.then(settle)
+      })
     }
-    await previewRead
     assertActive()
     finished = true
     return {

@@ -399,6 +399,7 @@ const AVAILABILITY_ISSUE_PRIORITY: readonly ProductAvailabilityIssue[] = [
   "lookup_unavailable",
   "lookup_partial",
   "cached_only",
+  "pending",
 ]
 
 function describeAvailabilityIssue(
@@ -418,6 +419,8 @@ function describeAvailabilityIssue(
       return "Product availability could not be checked because no relay responded. Check your connection and try again."
     case "lookup_partial":
       return `Some relays did not respond, so availability for ${subject} could not be confirmed. Try again.`
+    case "pending":
+      return `Availability for ${subject} is still being checked.`
     case "cached_only":
       return `${subject} ${single ? "was" : "were"} confirmed only from a local snapshot. Try again to verify current availability.`
   }
