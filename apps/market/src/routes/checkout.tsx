@@ -183,6 +183,7 @@ import {
   initializeCheckoutShippingSession,
   writeCheckoutShippingSession,
 } from "../lib/checkout-session"
+import { awaitOrderDeliveryPresentation } from "../lib/checkout-delivery-timing"
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
@@ -2405,18 +2406,29 @@ function CheckoutPage() {
       setStep("sending")
       orderDeliveryStartedAt = performance.now()
 
-      const [delivery] = await Promise.all([
-        publishBuyerOrderMessage(rumor, ndk, selectedMerchant, buyerIdentity, {
-          accountPubkey: signedBuyerPubkey,
-          authenticatedPubkey: draftOwnerIdentity,
-          shouldContinue: shouldContinueBuyerSession,
-        }),
-        new Promise((resolve) => window.setTimeout(resolve, 900)),
-      ])
+      const { delivery, deliveryLatencyMs } =
+        await awaitOrderDeliveryPresentation({
+          now: () => performance.now(),
+          publish: () =>
+            publishBuyerOrderMessage(
+              rumor,
+              ndk,
+              selectedMerchant,
+              buyerIdentity,
+              {
+                accountPubkey: signedBuyerPubkey,
+                authenticatedPubkey: draftOwnerIdentity,
+                shouldContinue: shouldContinueBuyerSession,
+              }
+            ),
+          startedAt: orderDeliveryStartedAt,
+          waitForPresentation: () =>
+            new Promise((resolve) => window.setTimeout(resolve, 900)),
+        })
       orderDelivered = true
       recordCheckoutStepResult({
         checkoutMode: "order_first",
-        latencyMs: performance.now() - orderDeliveryStartedAt,
+        latencyMs: deliveryLatencyMs,
         status: "success",
         stepName: "order_delivery",
         amountSats: orderTotalSats,
