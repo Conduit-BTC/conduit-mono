@@ -284,6 +284,14 @@ describe("event sign print media", () => {
 
     expect(component).toContain("window.print()")
     expect(component).toContain("marginSize={4}")
+    expect(component).toContain("event-sign-merchant-name line-clamp-1")
+    expect(component).toContain("event-sign-event-title line-clamp-2")
+    expect(component).toContain("event-sign-location line-clamp-2")
+    expect(component).toContain("event-sign-qr-frame mt-4 size-[19rem]")
+    expect(component).toContain("translate-x-0 translate-y-0")
+    expect(component).not.toMatch(
+      /event-sign-print-dialog[^\n]+overflow-hidden/
+    )
     expect(styles).toContain("@media print")
     expect(styles).toContain("@page")
     expect(styles).toContain("size: letter portrait")
@@ -294,5 +302,10 @@ describe("event sign print media", () => {
     expect(styles).toContain("page-break-after: always")
     expect(styles).toContain("print-color-adjust: exact")
     expect(styles).toContain(".event-sign-print-controls")
+    expect(styles).toContain("> :not([data-event-sign-print-root])")
+    expect(styles).toContain("display: none !important")
+    expect(styles).toContain("position: static !important")
+    expect(styles).toContain("animation: none !important")
+    expect(styles).toContain("height: fit-content")
   })
 })

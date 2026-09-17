@@ -81,26 +81,26 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
       <DecorativeImage
         src={sheet.bannerUrl}
         alt=""
-        className="event-sign-banner h-40 w-full bg-neutral-950 object-contain"
+        className="event-sign-banner h-32 w-full bg-neutral-950 object-contain"
         fallback={getEventSignImageFallback(sheet.eventTitle)}
-        fallbackClassName="event-sign-banner flex h-40 w-full items-center justify-center bg-primary-50 font-display text-7xl font-semibold text-primary-700"
+        fallbackClassName="event-sign-banner flex h-32 w-full items-center justify-center bg-primary-50 font-display text-7xl font-semibold text-primary-700"
       />
 
-      <div className="event-sign-body flex flex-1 flex-col items-center px-12 py-8 text-center">
+      <div className="event-sign-body flex flex-1 flex-col items-center px-12 py-4 text-center">
         {merchant ? (
-          <div className="mb-5 flex max-w-full items-center justify-center gap-4">
+          <div className="mb-3 flex max-w-full items-center justify-center gap-4">
             <DecorativeImage
               src={merchant.imageUrl}
               alt=""
-              className="event-sign-avatar size-20 rounded-full border-2 border-primary-500 object-cover"
+              className="event-sign-avatar size-16 shrink-0 rounded-full border-2 border-primary-500 object-cover"
               fallback={merchant.fallback}
-              fallbackClassName="event-sign-avatar flex size-20 shrink-0 items-center justify-center rounded-full border-2 border-primary-500 bg-primary-50 text-2xl font-semibold text-primary-800"
+              fallbackClassName="event-sign-avatar flex size-16 shrink-0 items-center justify-center rounded-full border-2 border-primary-500 bg-primary-50 text-xl font-semibold text-primary-800"
             />
             <div className="min-w-0 text-left">
               <p className="text-pretty text-sm font-semibold text-primary-700">
                 Shop this merchant at the event
               </p>
-              <h2 className="text-balance break-words font-display text-3xl font-semibold leading-tight text-neutral-950">
+              <h2 className="event-sign-merchant-name line-clamp-1 break-words font-display text-3xl font-semibold leading-tight text-neutral-950">
                 {merchant.name}
               </h2>
             </div>
@@ -111,7 +111,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
           </p>
         )}
 
-        <h1 className="max-w-2xl text-balance break-words font-display text-4xl font-semibold leading-tight text-neutral-950">
+        <h1 className="event-sign-event-title line-clamp-2 max-w-2xl break-words font-display text-4xl font-semibold leading-tight text-neutral-950">
           {sheet.eventTitle}
         </h1>
 
@@ -123,7 +123,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
             />
             <div>
               <dt className="font-semibold text-neutral-950">When</dt>
-              <dd className="text-pretty leading-6 text-neutral-700">
+              <dd className="event-sign-schedule line-clamp-2 break-words leading-6 text-neutral-700">
                 {sheet.schedule}
               </dd>
             </div>
@@ -135,7 +135,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
             />
             <div>
               <dt className="font-semibold text-neutral-950">Where</dt>
-              <dd className="text-pretty leading-6 text-neutral-700">
+              <dd className="event-sign-location line-clamp-2 break-words leading-6 text-neutral-700">
                 {sheet.location}
               </dd>
             </div>
@@ -143,7 +143,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
         </dl>
 
         <div
-          className="event-sign-qr-frame mt-6 size-[19rem] max-w-full rounded-2xl border-2 border-neutral-950 bg-white p-5"
+          className="event-sign-qr-frame mt-4 size-[19rem] max-w-full shrink-0 rounded-2xl border-2 border-neutral-950 bg-white p-5"
           role="img"
           aria-label={
             merchant
@@ -160,10 +160,10 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
           />
         </div>
 
-        <p className="mt-5 max-w-xl text-balance font-display text-2xl font-semibold text-neutral-950">
+        <p className="event-sign-scan-heading mt-3 max-w-xl text-balance font-display text-2xl font-semibold text-neutral-950">
           Scan to shop on conduit.market
         </p>
-        <p className="mt-2 max-w-xl text-pretty text-sm leading-6 text-neutral-600">
+        <p className="event-sign-scan-copy mt-1 max-w-xl text-pretty text-sm leading-6 text-neutral-600">
           Scan for current availability and event details. Listings and event
           participation can change.
         </p>
@@ -220,7 +220,7 @@ export function EventQrPrintPreview({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="event-sign-print-dialog max-w-[min(72rem,calc(100vw-2rem))] gap-0 overflow-hidden p-0"
+        className="event-sign-print-dialog max-w-[min(72rem,calc(100vw-2rem))] translate-x-0 translate-y-0 gap-0 p-0"
         data-testid="event-sign-print-preview"
         data-event-sign-print-root
       >
