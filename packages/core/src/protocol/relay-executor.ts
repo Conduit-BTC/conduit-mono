@@ -1,4 +1,7 @@
-import { isValidSignedPublicNostrEvent } from "./signed-event"
+import {
+  isExactRelayAuthEvent,
+  isValidSignedPublicNostrEvent,
+} from "./signed-event"
 import { config } from "../config"
 import {
   assertProtectedReadAuthorization,
@@ -19,6 +22,7 @@ import {
   getConfiguredIsolatedE2eRelayUrl,
   normalizeRelayUrl,
 } from "./relay-settings"
+import { serializeSignerOperation } from "./interactive-signer"
 
 export interface PlainNostrFilter {
   ids?: string[]
@@ -313,28 +317,6 @@ async function waitWithAbort<T>(
 
 const signerQueues = new Map<string, Promise<void>>()
 
-async function serializeSignerOperation<T>(
-  sessionScope: string,
-  task: () => Promise<T>
-): Promise<T> {
-  const previous = signerQueues.get(sessionScope) ?? Promise.resolve()
-  let release!: () => void
-  const slot = new Promise<void>((resolve) => {
-    release = resolve
-  })
-  const queued = previous.catch(() => undefined).then(() => slot)
-  signerQueues.set(sessionScope, queued)
-  await previous.catch(() => undefined)
-  try {
-    return await task()
-  } finally {
-    release()
-    if (signerQueues.get(sessionScope) === queued) {
-      signerQueues.delete(sessionScope)
-    }
-  }
-}
-
 function isValidChallenge(challenge: string): boolean {
   return (
     challenge.length > 0 &&
@@ -501,26 +483,6 @@ function assertRequest(
       throw new Error("Private inbox filter is not recipient-scoped kind 1059")
     }
   }
-}
-
-function exactAuthEvent(
-  signed: SignedNostrEvent,
-  draft: UnsignedNostrEvent,
-  relayUrl: string,
-  challenge: string
-): boolean {
-  return (
-    isValidSignedPublicNostrEvent(signed) &&
-    signed.kind === 22_242 &&
-    signed.pubkey === draft.pubkey &&
-    signed.created_at === draft.created_at &&
-    signed.content === "" &&
-    JSON.stringify(signed.tags) ===
-      JSON.stringify([
-        ["relay", relayUrl],
-        ["challenge", challenge],
-      ])
-  )
 }
 
 type PendingAuth = {
@@ -701,6 +663,7 @@ class RelayConnection {
         this.pendingAuth = null
       }
       const attempt = serializeSignerOperation(
+        signerQueues,
         authorization.sessionScope,
         async () => {
           throwIfCancelled()
@@ -797,7 +760,15 @@ class RelayConnection {
             authorization,
             authorization.expectedPubkey
           )
-          if (!exactAuthEvent(signed, draft, this.url, challenge)) {
+          if (
+            !isExactRelayAuthEvent({
+              event: signed,
+              expectedPubkey: draft.pubkey,
+              relayUrl: this.url,
+              challenge,
+              createdAt: draft.created_at,
+            })
+          ) {
             suppressProtectedReadAuthentication(authorization, {
               scope: "session",
               reason: "signer_unavailable",

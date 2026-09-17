@@ -1024,6 +1024,7 @@ function CheckoutPage() {
     signer,
     capabilities,
     authGeneration,
+    method: authMethod,
     status: authStatus,
   } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -2393,6 +2394,7 @@ function CheckoutPage() {
         publishBuyerOrderMessage(rumor, ndk, selectedMerchant, buyerIdentity, {
           accountPubkey: signedBuyerPubkey,
           authenticatedPubkey: draftOwnerIdentity,
+          ...(authMethod ? { relayAuthMethod: authMethod } : {}),
           shouldContinue: shouldContinueBuyerSession,
         }),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
@@ -2916,6 +2918,7 @@ function CheckoutPage() {
         {
           accountPubkey: signedBuyerPubkey,
           authenticatedPubkey: draftOwnerIdentity,
+          ...(authMethod ? { relayAuthMethod: authMethod } : {}),
           shouldContinue: shouldContinueBuyerSession,
         }
       )
