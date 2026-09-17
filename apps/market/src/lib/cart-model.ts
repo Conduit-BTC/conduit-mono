@@ -22,6 +22,8 @@ import {
 export const CART_STORAGE_VERSION = 2
 
 export type CartItem = {
+  /** Local line incarnation. Present on canonical carts, never sent in orders. */
+  cartLineId?: string
   productId: string
   /** Variable parent coordinate when productId identifies a variation child. */
   familyProductId?: string
@@ -92,9 +94,17 @@ export type CartState = {
   items: CartItem[]
 }
 
-export type CartItemIdentity = Pick<CartItem, "merchantPubkey" | "productId">
+export type CartItemIdentity = Pick<
+  CartItem,
+  "merchantPubkey" | "productId"
+> & {
+  cartLineId?: string
+}
 
-export type CartItemInput = Omit<CartItem, "merchantAddedAt" | "quantity">
+export type CartItemInput = Omit<
+  CartItem,
+  "cartLineId" | "merchantAddedAt" | "quantity"
+>
 
 export type PersistedCartState = {
   version: typeof CART_STORAGE_VERSION
@@ -112,6 +122,11 @@ export type MerchantCartGroup = {
   items: CartItem[]
   totalItems: number
   merchantAddedAt: number
+}
+
+export type CartPurchaseGroup = MerchantCartGroup & {
+  id: string
+  kind: "delivery" | "pickup"
 }
 
 export type CartTotals = {
@@ -726,7 +741,8 @@ export function isSameCartItem(
 ): boolean {
   return (
     item.merchantPubkey === identity.merchantPubkey &&
-    item.productId === identity.productId
+    item.productId === identity.productId &&
+    (!identity.cartLineId || item.cartLineId === identity.cartLineId)
   )
 }
 
@@ -940,7 +956,10 @@ export function parsePersistedCart(value: unknown): ParsedPersistedCart {
     .filter((item): item is CartItem => item !== null)
   const deduplicated = new Map<string, CartItem>()
   for (const parsedItem of parsedItems) {
-    const key = getCartItemKey(parsedItem)
+    const key = JSON.stringify([
+      getCartItemKey(parsedItem),
+      getCartLineFulfillmentId(parsedItem),
+    ])
     const current = deduplicated.get(key)
     if (!current) {
       deduplicated.set(key, parsedItem)
@@ -1110,6 +1129,149 @@ export function groupCartItems(items: CartItem[]): MerchantCartGroup[] {
     })
 }
 
+function getPickupPurchaseCompatibilityKey(
+  fulfillment: CartPickupFulfillment
+): string {
+  const authority = resolveOrderPickupHandoffAuthority(fulfillment)
+  const coordinateIdentity = (coordinate: string) => {
+    const [kind, author, ...identifier] = coordinate.split(":")
+    return `${kind}:${author?.toLowerCase()}:${identifier.join(":")}`
+  }
+  const evidence = (entry: PickupEvidenceCoordinate) => [
+    coordinateIdentity(entry.coordinate),
+    entry.eventId.toLowerCase(),
+    entry.createdAt,
+  ]
+  return JSON.stringify([
+    "pickup",
+    fulfillment.organizerPubkey.toLowerCase(),
+    evidence(fulfillment.calendar),
+    evidence(fulfillment.collection),
+    evidence(fulfillment.option),
+    authority.mode,
+    authority.handlerPubkey,
+  ])
+}
+
+function getPickupLineFulfillmentKey(
+  fulfillment: CartPickupFulfillment
+): string {
+  return JSON.stringify([
+    getPickupPurchaseCompatibilityKey(fulfillment),
+    fulfillment.product.coordinate,
+    fulfillment.product.eventId.toLowerCase(),
+    fulfillment.product.createdAt,
+    fulfillment.product.merchantPubkey.toLowerCase(),
+    fulfillment.option.title,
+    fulfillment.option.location ?? null,
+    fulfillment.option.geohash ?? null,
+    fulfillment.costSats,
+    fulfillment.sourceCost.amount,
+    fulfillment.sourceCost.currency,
+    fulfillment.sourceCost.normalizedCurrency,
+  ])
+}
+
+/**
+ * Exact local line identity. This intentionally remains stricter than order
+ * grouping so a future compatibility expansion cannot rebind quantities that
+ * were added under a different signed pickup snapshot.
+ */
+export function getCartLineFulfillmentId(
+  item: Pick<CartItem, "format" | "fulfillment">
+): string {
+  return item.fulfillment?.type === "pickup"
+    ? getPickupLineFulfillmentKey(item.fulfillment)
+    : getCartItemFulfillmentType(item)
+}
+
+export function isSameCartLineFulfillment(
+  left: Pick<CartItem, "format" | "fulfillment">,
+  right: Pick<CartItem, "format" | "fulfillment">
+): boolean {
+  return getCartLineFulfillmentId(left) === getCartLineFulfillmentId(right)
+}
+
+export function getCartPurchaseGroupId(
+  item: Pick<CartItem, "merchantPubkey" | "format" | "fulfillment">
+): string {
+  const compatibility =
+    item.fulfillment?.type === "pickup"
+      ? getPickupPurchaseCompatibilityKey(item.fulfillment)
+      : "delivery"
+  return JSON.stringify([item.merchantPubkey, compatibility])
+}
+
+/** Stable, display-only cue for distinguishing otherwise identical choices. */
+export function getCartPurchaseReference(purchaseId: string): string {
+  let hash = 2_166_136_261
+  for (let index = 0; index < purchaseId.length; index += 1) {
+    hash = Math.imul(hash ^ purchaseId.charCodeAt(index), 16_777_619)
+  }
+  return (hash >>> 0).toString(36).toUpperCase().padStart(7, "0")
+}
+
+/**
+ * Purchasable partitions preserve the current exact pickup compatibility
+ * contract. PRs that intentionally change pickup equivalence should deepen
+ * the shared compatibility helper rather than weakening this grouping layer.
+ */
+export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
+  const merchantOrder = new Map(
+    groupCartItems(items).map((group, index) => [
+      group.merchantPubkey,
+      { merchantAddedAt: group.merchantAddedAt, index },
+    ])
+  )
+  const groups: Array<CartPurchaseGroup & { firstSeenIndex: number }> = []
+
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index]
+    if (!item) continue
+    const kind = isPickupCartItem(item) ? "pickup" : "delivery"
+    const existing = groups.find(
+      (group) =>
+        group.merchantPubkey === item.merchantPubkey &&
+        group.kind === kind &&
+        (kind === "delivery" || isSameCartFulfillment(group.items[0]!, item))
+    )
+    if (existing) {
+      existing.items.push(item)
+      existing.totalItems += item.quantity
+      continue
+    }
+
+    groups.push({
+      id: getCartPurchaseGroupId(item),
+      kind,
+      merchantPubkey: item.merchantPubkey,
+      items: [item],
+      totalItems: item.quantity,
+      merchantAddedAt:
+        merchantOrder.get(item.merchantPubkey)?.merchantAddedAt ??
+        item.merchantAddedAt ??
+        index,
+      firstSeenIndex: index,
+    })
+  }
+
+  return groups.sort((left, right) => {
+    const leftMerchant = merchantOrder.get(left.merchantPubkey)
+    const rightMerchant = merchantOrder.get(right.merchantPubkey)
+    if ((leftMerchant?.index ?? 0) !== (rightMerchant?.index ?? 0)) {
+      return (leftMerchant?.index ?? 0) - (rightMerchant?.index ?? 0)
+    }
+    return left.firstSeenIndex - right.firstSeenIndex
+  })
+}
+
+export function selectCartPurchase(
+  items: CartItem[],
+  purchaseId: string
+): CartPurchaseGroup | undefined {
+  return groupCartPurchases(items).find((group) => group.id === purchaseId)
+}
+
 export function getCartTotals(items: CartItem[]): CartTotals {
   return items.reduce(
     (acc, item) => {
@@ -1191,23 +1353,22 @@ export function addCartItem(
   if (item.stock === 0) return items
 
   const q = Math.max(1, Math.floor(quantity))
-  const existing = selectCartItem(items, item)
+  const existing = items.find(
+    (current) =>
+      isSameCartItem(current, item) && isSameCartLineFulfillment(current, item)
+  )
   const merchantAddedAt =
     getMerchantAddedAt(items, item.merchantPubkey) ??
     item.merchantAddedAt ??
     nextMerchantAddedAt(items)
 
   if (existing) {
-    // A product coordinate is one cart line. Never silently replace a stored
-    // event-pickup snapshot with shipment (or another event's pickup) when the
-    // same listing is added from a different catalog surface.
-    if (!isSameCartFulfillment(existing, item)) return items
     const nextQuantity = currentCartQuantity(existing) + q
     if (typeof item.stock === "number" && nextQuantity > item.stock) {
       return items
     }
     return items.map((current) =>
-      isSameCartItem(current, item)
+      current === existing
         ? {
             ...current,
             ...item,

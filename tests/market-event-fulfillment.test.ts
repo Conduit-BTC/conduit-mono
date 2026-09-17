@@ -5,6 +5,7 @@ import {
   getCartFulfillmentLane,
   getMixedFulfillmentBlockingMessage,
   isSameCartFulfillment,
+  isSameCartLineFulfillment,
   type CartItem,
   type CartPickupFulfillment,
 } from "../apps/market/src/lib/cart-model"
@@ -260,7 +261,7 @@ describe("Market event pickup fulfillment", () => {
     ).toContain("different pickup handlers")
   })
 
-  it("never overwrites a product's snapshotted pickup identity", () => {
+  it("keeps incompatible fulfillment snapshots as separate purchase lines", () => {
     const existing = item()
     const differentEvent = item({ fulfillment: pickup("market-b") })
     const differentRevision = item({
@@ -272,13 +273,35 @@ describe("Market event pickup fulfillment", () => {
         },
       },
     })
+    const newerProductRevision = item({
+      fulfillment: {
+        ...pickup(),
+        product: {
+          ...pickup().product,
+          eventId: "8".repeat(64),
+          createdAt: 199,
+        },
+      },
+    })
     const shipped = item({ fulfillment: { type: "shipping" } })
 
     expect(isSameCartFulfillment(existing, differentEvent)).toBe(false)
     expect(isSameCartFulfillment(existing, differentRevision)).toBe(false)
-    expect(addCartItem([existing], differentEvent)).toEqual([existing])
-    expect(addCartItem([existing], differentRevision)).toEqual([existing])
-    expect(addCartItem([existing], shipped)).toEqual([existing])
+    expect(isSameCartFulfillment(existing, newerProductRevision)).toBe(true)
+    expect(isSameCartLineFulfillment(existing, newerProductRevision)).toBe(
+      false
+    )
+    for (const incompatible of [
+      differentEvent,
+      differentRevision,
+      newerProductRevision,
+      shipped,
+    ]) {
+      const separated = addCartItem([existing], incompatible)
+      expect(separated).toHaveLength(2)
+      expect(separated[0]).toBe(existing)
+      expect(separated[1]).toMatchObject(incompatible)
+    }
     expect(addCartItem([existing], item())[0]?.quantity).toBe(2)
   })
 

@@ -51,8 +51,7 @@ import {
 } from "../../hooks/useProgressiveProducts"
 import {
   getProductAddAvailability,
-  isSameCartFulfillment,
-  selectCartItem,
+  isSameCartLineFulfillment,
 } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 import {
@@ -188,12 +187,6 @@ function ProductPage() {
       })
     : ""
   const merchantNip05 = getProfileNip05(merchantProfile.data)
-  const cartItem = selectedProduct
-    ? selectCartItem(cart.items, {
-        merchantPubkey: selectedProduct.pubkey,
-        productId: selectedProduct.id,
-      })
-    : null
   const productCartResolution = productCartFulfillment.resolution
   const productPickupHandoff =
     productCartResolution?.status === "pickup"
@@ -217,16 +210,19 @@ function ProductPage() {
           )
         : null
     : null
-  const cartFulfillmentMatches =
-    !!cartItem &&
-    !!productCartCandidate &&
-    isSameCartFulfillment(cartItem, productCartCandidate)
-  const cartFulfillmentConflict = !!cartItem && !cartFulfillmentMatches
+  const cartItem =
+    selectedProduct && productCartCandidate
+      ? cart.items.find(
+          (item) =>
+            item.merchantPubkey === selectedProduct.pubkey &&
+            item.productId === selectedProduct.id &&
+            isSameCartLineFulfillment(item, productCartCandidate)
+        )
+      : undefined
   const productCartBlocked =
     productCartFulfillment.isChecking ||
     productCartResolution?.status === "blocked" ||
-    !productCartCandidate ||
-    cartFulfillmentConflict
+    !productCartCandidate
   const productEventNaddr =
     productCartResolution?.status === "pickup" ||
     productCartResolution?.status === "blocked"
@@ -234,16 +230,14 @@ function ProductPage() {
       : productCartFulfillment.candidateNaddr
   const productFulfillmentNotice = productCartFulfillment.isChecking
     ? "Checking current signed event pickup evidence before this listing can be added."
-    : cartFulfillmentConflict
-      ? "This listing is already in your cart with different fulfillment. Remove that line before adding it here."
-      : productCartResolution?.status === "blocked"
-        ? productCartResolution.reason
-        : null
+    : productCartResolution?.status === "blocked"
+      ? productCartResolution.reason
+      : null
   const showPickupIdentityNotice =
     !!productPickupHandoff &&
     !!pickupHandlerIdentity &&
     !productFulfillmentNotice
-  const cartQuantity = cartFulfillmentMatches ? cartItem.quantity : 0
+  const cartQuantity = cartItem?.quantity ?? 0
   const productAddAvailability = getProductAddAvailability(
     selectedProduct?.stock,
     cartQuantity,
@@ -399,7 +393,11 @@ function ProductPage() {
       return
     }
     recordProductDetailAction("add_to_cart")
-    cart.addItem(productCartCandidate, quantity)
+    if (cartItem) {
+      cart.incrementItem(cartItem, quantity, selectedProduct.stock)
+    } else {
+      cart.addItem(productCartCandidate, quantity)
+    }
   }
 
   const productRefreshing = productQuery.isHydrating
@@ -805,15 +803,13 @@ function ProductPage() {
                       ? "Sold out"
                       : productCartFulfillment.isChecking
                         ? "Checking event pickup"
-                        : cartFulfillmentConflict
-                          ? "Review cart fulfillment"
-                          : productCartResolution?.status === "blocked"
-                            ? "Review event catalog"
-                            : productAddAvailability.remainingStock === 0
-                              ? "Stock limit reached"
-                              : cartQuantity > 0
-                                ? `Add more (${cartQuantity} in cart)`
-                                : `Add ${quantity} to cart`}
+                        : productCartResolution?.status === "blocked"
+                          ? "Review event catalog"
+                          : productAddAvailability.remainingStock === 0
+                            ? "Stock limit reached"
+                            : cartQuantity > 0
+                              ? `Add more (${cartQuantity} in cart)`
+                              : `Add ${quantity} to cart`}
                   </Button>
                 </div>
 

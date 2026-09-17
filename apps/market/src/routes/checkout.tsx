@@ -30,6 +30,7 @@ import {
   config,
   createOrderLifecycle,
   fetchLnurlPayMetadata,
+  formatNpub,
   getPriceSats,
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
@@ -100,7 +101,11 @@ import {
   EventActorProvenance,
 } from "../components/EventActorIdentity"
 import { SignerSwitch } from "../components/SignerSwitch"
-import { type CartItem, useCart } from "../hooks/useCart"
+import {
+  type CartItem,
+  type CartPurchaseClaim,
+  useCart,
+} from "../hooks/useCart"
 import {
   merchantLnurlPreflightQueryOptions,
   normalizeMerchantLnurlAddress,
@@ -132,10 +137,11 @@ import {
   getCartAvailabilityVerificationMessage,
   getCartFulfillmentLane,
   getCartItemKey,
+  getCartPurchaseReference,
   getMixedFulfillmentBlockingMessage,
   getCartPublicZapPolicy,
+  groupCartPurchases,
   isCartProductAvailabilityBlocking,
-  selectMerchantCartItems,
   type CartAvailabilityReadDecision,
   type CartProductAvailability,
 } from "../lib/cart-model"
@@ -248,6 +254,7 @@ type CheckoutStep =
 
 type CheckoutSearch = {
   merchant?: string
+  purchase?: string
   intent?: "zap"
 }
 
@@ -483,6 +490,7 @@ export const Route = createFileRoute("/checkout")({
       typeof search.merchant === "string"
         ? (normalizePubkey(search.merchant) ?? search.merchant)
         : undefined,
+    purchase: typeof search.purchase === "string" ? search.purchase : undefined,
     intent: search.intent === "zap" ? "zap" : undefined,
   }),
   component: CheckoutPage,
@@ -886,7 +894,7 @@ function OrderSummary({
           const imageUrl = normalizePublicMediaUrl(item.image)
           return (
             <div
-              key={getCartItemKey(item)}
+              key={item.cartLineId ?? getCartItemKey(item)}
               className={`grid grid-cols-[72px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0 ${
                 unavailable ? "opacity-80" : ""
               }`}
@@ -1262,24 +1270,30 @@ function CheckoutPage() {
     draftOwnerIdentity,
   ])
 
-  const selectedMerchant =
-    search.merchant ??
-    (Array.from(new Set(cart.items.map((item) => item.merchantPubkey)))
-      .length === 1
-      ? cart.items[0]?.merchantPubkey
-      : undefined)
+  const purchaseGroups = useMemo(
+    () => groupCartPurchases(cart.items),
+    [cart.items]
+  )
+  const matchingMerchantPurchases = search.merchant
+    ? purchaseGroups.filter((group) => group.merchantPubkey === search.merchant)
+    : purchaseGroups
+  const selectedPurchase = search.purchase
+    ? matchingMerchantPurchases.find((group) => group.id === search.purchase)
+    : matchingMerchantPurchases.length === 1
+      ? matchingMerchantPurchases[0]
+      : undefined
+  const selectedMerchant = selectedPurchase?.merchantPubkey
 
   const rawCheckoutItems = useMemo(() => {
-    if (!selectedMerchant) return []
-    return selectMerchantCartItems(cart.items, selectedMerchant)
-  }, [cart.items, selectedMerchant])
+    return selectedPurchase?.items ?? []
+  }, [selectedPurchase])
   // Checkout consumes the same prepared per-merchant readiness the HUD and
   // cart warmed, so arriving within the freshness lease starts no new
   // blocking read. The authoritative live refresh still happens immediately
   // before order publication.
   const checkoutReadiness = useCartReadiness(rawCheckoutItems)
-  const selectedMerchantReadiness = selectedMerchant
-    ? checkoutReadiness.byMerchant.get(selectedMerchant)
+  const selectedMerchantReadiness = selectedPurchase
+    ? checkoutReadiness.byPurchase.get(selectedPurchase.id)
     : undefined
   const emptyAvailability = useMemo(
     () => new Map<string, CartProductAvailability>(),
@@ -2276,7 +2290,9 @@ function CheckoutPage() {
   // ─── Order-first path (existing flow) ───────────────────────────────────
 
   async function placeOrder(): Promise<void> {
-    if (!selectedMerchant || checkoutItems.length === 0) return
+    if (!selectedMerchant || !selectedPurchase || checkoutItems.length === 0) {
+      return
+    }
     const signedBuyerIdentity = signedBuyerPubkey
       ? getCheckoutBuyerIdentity()
       : null
@@ -2305,6 +2321,7 @@ function CheckoutPage() {
     let checkoutRevalidationCompleted = false
     let orderDeliveryStartedAt: number | null = null
     const checkoutRevalidationStartedAt = performance.now()
+    let purchaseClaim: CartPurchaseClaim | null = null
 
     setError(null)
     setPaidNotice(null)
@@ -2328,6 +2345,10 @@ function CheckoutPage() {
           "Connect a signer or use Lightning for an order that requires payment."
         )
       }
+      purchaseClaim = await cart.capturePurchase(
+        selectedPurchase.id,
+        rawCheckoutItems
+      )
       checkoutRevalidationCompleted = true
       recordCheckoutStepResult({
         checkoutMode: "order_first",
@@ -2484,7 +2505,7 @@ function CheckoutPage() {
         deliveryNotice: deliveryNotice ?? undefined,
       })
 
-      cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
+      await cart.consumePurchase(purchaseClaim)
       setSentOrderId(orderId)
       setShowSentGlow(true)
       setStep("sent")
@@ -2506,7 +2527,7 @@ function CheckoutPage() {
       })
     } catch (e) {
       if (orderDelivered && publishedOrderId) {
-        cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
+        if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
         setPaidNotice(
           "Your order was sent, but local order tracking could not be saved on this device. Check Orders or message the merchant before trying again."
         )
@@ -2605,6 +2626,7 @@ function CheckoutPage() {
     if (
       getHudZapAuthorizationBindingMismatch(zapAuthorization, {
         merchantPubkey: selectedMerchant,
+        purchaseId: selectedPurchase?.id,
         buyerPubkey: signedBuyerPubkey,
         items,
         totalMsats,
@@ -2654,7 +2676,9 @@ function CheckoutPage() {
   async function payNow(
     zapAuthorization: HudZapAuthorization | null = null
   ): Promise<void> {
-    if (!selectedMerchant || checkoutItems.length === 0) return
+    if (!selectedMerchant || !selectedPurchase || checkoutItems.length === 0) {
+      return
+    }
     const connectedBuyerIdentity = signedBuyerPubkey
       ? getCheckoutBuyerIdentity()
       : null
@@ -2687,6 +2711,7 @@ function CheckoutPage() {
     let directPaymentStarted = false
     let checkoutRevalidationCompleted = false
     let orderDeliveryStartedAt: number | null = null
+    let purchaseClaim: CartPurchaseClaim | null = null
 
     const webLnAvailableNow = hasWebLN()
     if (webLnAvailableNow !== weblnAvailable)
@@ -2851,6 +2876,10 @@ function CheckoutPage() {
         zapAuthorization,
         pricingIntent.totalMsats,
         authoritativeCheckoutItems
+      )
+      purchaseClaim = await cart.capturePurchase(
+        selectedPurchase.id,
+        rawCheckoutItems
       )
       const checkoutPricing = pricingIntent
       const effectiveZapTargetAddress = getCheckoutZapTargetAddress({
@@ -3067,7 +3096,7 @@ function CheckoutPage() {
         deliveryNotice: orderDeliveryNotice ?? undefined,
       })
 
-      cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
+      await cart.consumePurchase(purchaseClaim)
       recordCheckoutSuccess({
         amountSats: checkoutPricing.totalSats,
         checkoutMode,
@@ -3140,7 +3169,7 @@ function CheckoutPage() {
       // persistence) must not return the buyer to a retry path that republishes.
       if (orderDelivered && publishedOrderId) {
         const deliveredAmountSats = publishedTotalSats ?? total
-        cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
+        if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
         setPaidNotice(
           "Your order was sent, but local order tracking could not be saved on this device. Check Orders or message the merchant before trying again."
         )
@@ -3216,14 +3245,20 @@ function CheckoutPage() {
   payNowRef.current = payNow
   useEffect(() => {
     if (search.intent !== "zap" || autoZapStartedRef.current) return
-    const authorization = consumeHudZapIntent(selectedMerchant)
+    const authorization = consumeHudZapIntent(
+      selectedMerchant,
+      selectedPurchase?.id
+    )
     if (authorization) setAutoZapAuthorization(authorization)
     void navigate({
       to: "/checkout",
-      search: { merchant: selectedMerchant },
+      search: {
+        merchant: selectedMerchant,
+        purchase: selectedPurchase?.id,
+      },
       replace: true,
     })
-  }, [navigate, search.intent, selectedMerchant])
+  }, [navigate, search.intent, selectedMerchant, selectedPurchase?.id])
 
   // The HUD arms zap out from capability-only readiness, so checkout is the
   // first place the merchant payment endpoint is known. Wait while that answer
@@ -3270,6 +3305,7 @@ function CheckoutPage() {
     }
     const rejection = getHudZapAuthorizationRejection(autoZapAuthorization, {
       merchantPubkey: selectedMerchant,
+      purchaseId: selectedPurchase?.id,
       buyerPubkey: signedBuyerPubkey,
       items: checkoutItems,
       totalMsats:
@@ -3301,6 +3337,7 @@ function CheckoutPage() {
     hasUnavailableCheckoutItems,
     pricingPreview,
     selectedMerchant,
+    selectedPurchase?.id,
     signedBuyerPubkey,
   ])
 
@@ -3454,18 +3491,77 @@ function CheckoutPage() {
 
   // ─── Empty / multi-merchant guards ──────────────────────────────────────
 
+  if (!cart.hydrated) {
+    return (
+      <div
+        role="status"
+        className="flex min-h-[50vh] items-center justify-center text-sm text-[var(--text-secondary)]"
+      >
+        Loading your cart…
+      </div>
+    )
+  }
+
   if (!selectedMerchant && cart.items.length > 0) {
+    const choices = search.merchant ? matchingMerchantPurchases : purchaseGroups
     return (
       <div className="space-y-6">
         <CheckoutBreadcrumb current="order" />
         <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
-          <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Choose a store cart before ordering
+          <h1 className="text-balance text-4xl font-semibold text-[var(--text-primary)]">
+            Choose a purchase before ordering
           </h1>
-          <p className="mt-3 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
-            Orders are sent one store at a time. Head back to your cart and pick
-            the store you want to review first.
+          <p className="mt-3 max-w-2xl text-pretty text-sm leading-7 text-[var(--text-secondary)]">
+            Orders use one merchant and one compatible delivery or event pickup
+            group at a time. Nothing else in your cart will be removed.
           </p>
+          {choices.length > 0 ? (
+            <div className="mt-6 grid gap-3 sm:grid-cols-2">
+              {choices.map((group) => {
+                const purchaseReference = getCartPurchaseReference(group.id)
+                const pickup =
+                  group.items[0]?.fulfillment?.type === "pickup"
+                    ? group.items[0].fulfillment
+                    : null
+                const label = pickup
+                  ? `Event pickup · ${pickup.option.title}`
+                  : group.items.some((item) => item.format !== "digital")
+                    ? "Shipping / delivery"
+                    : "Digital delivery"
+                return (
+                  <Button
+                    key={group.id}
+                    asChild
+                    variant="outline"
+                    className="h-auto min-h-20 justify-start px-4 py-3 text-left"
+                  >
+                    <Link
+                      to="/checkout"
+                      search={{
+                        merchant: pubkeyToNpub(group.merchantPubkey),
+                        purchase: group.id,
+                      }}
+                    >
+                      <span>
+                        <span className="block font-medium">{label}</span>
+                        <span className="mt-1 block text-xs font-normal text-[var(--text-muted)]">
+                          {group.items[0]?.title ?? "Cart purchase"} · Ref{" "}
+                          {purchaseReference} ·{" "}
+                          {formatNpub(group.merchantPubkey, 6)} ·{" "}
+                          {group.totalItems} item
+                          {group.totalItems === 1 ? "" : "s"}
+                        </span>
+                      </span>
+                    </Link>
+                  </Button>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="mt-5 text-sm text-[var(--text-secondary)]">
+              That purchase is no longer in your cart.
+            </p>
+          )}
           <div className="mt-6">
             <Button asChild className="h-11 px-4 text-sm">
               <Link to="/cart">
@@ -3568,7 +3664,10 @@ function CheckoutPage() {
           <Button asChild variant="outline" className="shrink-0">
             <Link
               to="/cart"
-              search={{ merchant: pubkeyToNpub(selectedMerchant!) }}
+              search={{
+                merchant: pubkeyToNpub(selectedMerchant!),
+                purchase: selectedPurchase?.id,
+              }}
             >
               Review cart
             </Link>
@@ -3593,7 +3692,10 @@ function CheckoutPage() {
           <Button asChild variant="outline" className="shrink-0">
             <Link
               to="/cart"
-              search={{ merchant: pubkeyToNpub(selectedMerchant!) }}
+              search={{
+                merchant: pubkeyToNpub(selectedMerchant!),
+                purchase: selectedPurchase?.id,
+              }}
             >
               Review cart
             </Link>

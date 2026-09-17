@@ -24,20 +24,29 @@ describe("Market cart identity contract", () => {
     expect(sources[0]).toContain("<ResolvedProductGridCard")
     expect(sources[2]).toContain("<ResolvedProductGridCard")
     expect(resolvedCard).toContain(
-      "selectCartItem(cart.items, selectedIdentity)"
+      "item.merchantPubkey === selectedProduct.pubkey"
+    )
+    expect(resolvedCard).toContain("item.productId === selectedProduct.id")
+    expect(resolvedCard).toContain(
+      "isSameCartLineFulfillment(item, cartCandidate)"
     )
     expect(resolvedCard).toContain("cartItemInputFromProductSelection(")
-    expect(resolvedCard).toContain("cart.removeItem(selectedIdentity)")
-    expect(resolvedCard).toContain("cart.setQuantity(selectedIdentity")
+    expect(resolvedCard).toContain("cart.addItem(cartCandidate, 1)")
+    expect(resolvedCard).toContain(
+      "cart.incrementItem(existing, 1, selectedProduct.stock)"
+    )
+    expect(resolvedCard).toContain("cart.removeItem(existing)")
+    expect(resolvedCard).toContain("cart.decrementItem(existing)")
   })
 
-  it("persists a versioned cart and protects unsupported future versions", () => {
-    const hook = readFileSync(
-      new URL("../apps/market/src/hooks/useCart.ts", import.meta.url),
+  it("persists a versioned canonical cart and keeps its fallback explicit", () => {
+    const repository = readFileSync(
+      new URL("../apps/market/src/lib/cart-repository.ts", import.meta.url),
       "utf8"
     )
-    expect(hook).toContain("serializeCartState")
-    expect(hook).toContain("storageWritable = result.writable")
-    expect(hook).toContain("&& storageWritable")
+    expect(repository).toContain("export const CART_RECORD_VERSION = 1")
+    expect(repository).toContain('db.transaction(\n        "rw"')
+    expect(repository).toContain("parseStoredRecord(stored)")
+    expect(repository).toContain('publishRecord(record, "memory")')
   })
 })
