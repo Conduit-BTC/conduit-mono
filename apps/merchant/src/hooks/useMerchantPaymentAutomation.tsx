@@ -11,6 +11,8 @@ import {
   type ReactNode,
 } from "react"
 import {
+  getProfilePaymentAddress,
+  loadSelectedProfileContext,
   clearProtectedReadAuthenticationSuppression,
   getMerchantConversationList,
   nwcGetInfo,
@@ -95,7 +97,7 @@ export function MerchantPaymentAutomationProvider({
   })
   const info = infoQuery.data ?? null
   const addressStatus = getMerchantNwcAddressStatus({
-    profileLud16: profileQuery.data?.lud16,
+    profileLud16: getProfilePaymentAddress(profileQuery.profileContext),
     connectionLud16: nwc.connection?.lud16,
     walletLud16: info?.lud16,
   })
@@ -157,18 +159,38 @@ export function MerchantPaymentAutomationProvider({
     let checked = 0
     let verified = 0
 
+    const assertCurrentProfileAuthority = async () => {
+      const current = await loadSelectedProfileContext(pubkey)
+      if (authGenerationRef.current !== authGeneration) {
+        throw new Error("The connected account changed. Check payments again.")
+      }
+      const currentStatus = getMerchantNwcAddressStatus({
+        profileLud16: getProfilePaymentAddress(current),
+        connectionLud16: connection.lud16,
+        walletLud16: info?.lud16,
+      })
+      if (currentStatus === "mismatch" || currentStatus === "missing_profile") {
+        throw new Error(
+          "The current profile no longer confirms this payment wallet."
+        )
+      }
+    }
+
     try {
       const result = await verifyMerchantPaymentCandidates({
         candidates,
         confirmedEvidence: confirmedEvidenceRef.current,
-        lookupInvoice: (candidate) =>
-          nwcLookupInvoice(
+        lookupInvoice: async (candidate) => {
+          await assertCurrentProfileAuthority()
+          return nwcLookupInvoice(
             connection,
             { invoice: candidate.invoice },
             10_000,
             "merchant"
-          ),
+          )
+        },
         publishConfirmation: async (candidate) => {
+          await assertCurrentProfileAuthority()
           await publishMerchantOrderMessage({
             merchantPubkey: pubkey,
             buyerPubkey: candidate.buyerPubkey,
@@ -229,6 +251,7 @@ export function MerchantPaymentAutomationProvider({
     }
   }, [
     authGeneration,
+    info?.lud16,
     canVerifyPayments,
     candidates,
     conversationReadUnavailable,
