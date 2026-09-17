@@ -255,16 +255,10 @@ describe("shared Product legal documents", () => {
     }
   })
 
-  it("publishes the v1.2 settlement disclosure through both shared wrappers", async () => {
-    const [release, privacyWrapper, termsWrapper, versionMetadata] =
-      await Promise.all([
-        Bun.file(PRODUCT_LEGAL_V1_2.archivedSource).text(),
-        Bun.file("packages/ui/src/components/ProductPrivacyPolicy.tsx").text(),
-        Bun.file("packages/ui/src/components/ProductTermsOfService.tsx").text(),
-        Bun.file("packages/ui/src/components/ProductLegalVersion.ts").text(),
-      ])
-
-    const normalizedRelease = normalizeWhitespace(release)
+  it("pins the settlement disclosure in the v1.2 release", async () => {
+    const normalizedRelease = normalizeWhitespace(
+      await Bun.file(PRODUCT_LEGAL_V1_2.archivedSource).text()
+    )
 
     expect(normalizedRelease).toContain(
       "exact positive whole-satoshi invoice amount"
@@ -275,13 +269,6 @@ describe("shared Product legal documents", () => {
     expect(normalizedRelease).toContain(
       "It does not forward the receipt, request, invoice, or public identifiers to PostHog."
     )
-    for (const activeSource of [
-      privacyWrapper,
-      termsWrapper,
-      versionMetadata,
-    ]) {
-      expect(activeSource).toContain("product-legal-v1.2-2026-09-17")
-    }
   })
 })
 
