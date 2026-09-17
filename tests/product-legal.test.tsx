@@ -34,6 +34,8 @@ const PRODUCT_LEGAL_V1_1 = Object.freeze({
     "packages/ui/src/legal/versions/product-legal-v1.1-2026-08-09.tsx",
   sha256: "94d3447fcbcf435f59fd17d21a897c76eceff44a94a33f4a58277cc39c168aaa",
 })
+const PRODUCT_LEGAL_V1_2_CANDIDATE_SOURCE =
+  "packages/ui/src/legal/versions/product-legal-v1.2-2026-09-16.tsx"
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ")
@@ -234,6 +236,35 @@ describe("shared Product legal documents", () => {
     for (const wrapper of [privacyWrapper, termsWrapper]) {
       expect(wrapper).toContain("product-legal-v1.1-2026-08-09")
       expect(wrapper).not.toContain("product-legal-v1.0-2026-08-09")
+    }
+  })
+
+  it("keeps the v1.2 settlement-disclosure candidate inactive until coordinated publication", async () => {
+    const [candidate, privacyWrapper, termsWrapper, versionMetadata] =
+      await Promise.all([
+        Bun.file(PRODUCT_LEGAL_V1_2_CANDIDATE_SOURCE).text(),
+        Bun.file("packages/ui/src/components/ProductPrivacyPolicy.tsx").text(),
+        Bun.file("packages/ui/src/components/ProductTermsOfService.tsx").text(),
+        Bun.file("packages/ui/src/components/ProductLegalVersion.ts").text(),
+      ])
+
+    const normalizedCandidate = normalizeWhitespace(candidate)
+
+    expect(normalizedCandidate).toContain(
+      "exact positive whole-satoshi invoice amount"
+    )
+    expect(normalizedCandidate).toContain(
+      "an unusually distinctive amount and day may be correlatable"
+    )
+    expect(normalizedCandidate).toContain(
+      "It does not forward the receipt, request, invoice, or public identifiers to PostHog."
+    )
+    for (const activeSource of [
+      privacyWrapper,
+      termsWrapper,
+      versionMetadata,
+    ]) {
+      expect(activeSource).not.toContain("product-legal-v1.2-2026-09-16")
     }
   })
 })
