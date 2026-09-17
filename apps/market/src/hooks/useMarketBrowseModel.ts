@@ -87,8 +87,10 @@ export function useMarketBrowseModel({
     sort: "newest",
   })
   const normalizedSearchQuery = search.q?.trim() ?? ""
+  const catalogAuthorPubkeys = productsQuery.catalogAuthorPubkeys
   const globalSearchEnabled =
     normalizedSearchQuery.length > 0 &&
+    catalogAuthorPubkeys !== undefined &&
     allowsGlobalProductSearch({
       catalogSource: effectiveCatalogSource,
       anonymous: usesAnonymousPerspective,
@@ -99,12 +101,14 @@ export function useMarketBrowseModel({
       pubkey,
       catalogSource: effectiveCatalogSource,
       anonymous: usesAnonymousPerspective,
+      authorPubkeys: catalogAuthorPubkeys,
     }),
     queryFn: ({ signal }) =>
       getMarketplaceProducts({
         authenticatedPubkey: status === "connected" ? pubkey : null,
         shouldContinue: () => !signal.aborted && shouldContinueAccountRead(),
         textQuery: normalizedSearchQuery,
+        authorPubkeys: catalogAuthorPubkeys,
         sort: "newest",
         readPolicy: {
           maxRelays: 12,

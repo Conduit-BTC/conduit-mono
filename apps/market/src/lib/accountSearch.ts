@@ -7,6 +7,7 @@ import {
   type ProfileSearchResult,
 } from "@conduit/core"
 import type { SearchSuggestionItem } from "@conduit/ui"
+import type { SellerEligibilityState } from "./sellerDirectory"
 
 export const ACCOUNT_SUGGESTION_LIMIT = 5
 /**
@@ -131,6 +132,33 @@ export function describeAccountSearchEvidence(
   const sentences = [
     describeAccountSearchDeviceEvidence(result),
     describeAccountSearchRelayEvidence(result),
+  ].filter((sentence): sentence is string => !!sentence)
+  return sentences.length > 0 ? sentences.join(" ") : null
+}
+
+/** Names an incomplete author boundary separately from relay-search evidence. */
+export function describeAccountSearchEligibility(
+  state: SellerEligibilityState
+): string | null {
+  switch (state) {
+    case "loading":
+      return "Checking eligible accounts..."
+    case "ready":
+      return null
+    case "partial":
+      return "Eligible account sources are incomplete. Some followed accounts may be missing."
+    case "unavailable":
+      return "Eligible account sources are unavailable right now."
+  }
+}
+
+export function describeScopedAccountSearchEvidence(
+  result: ProfileSearchResult | undefined,
+  eligibilityState: SellerEligibilityState
+): string | null {
+  const sentences = [
+    describeAccountSearchEligibility(eligibilityState),
+    describeAccountSearchEvidence(result),
   ].filter((sentence): sentence is string => !!sentence)
   return sentences.length > 0 ? sentences.join(" ") : null
 }

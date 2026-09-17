@@ -155,6 +155,12 @@ export interface ProfileSearchQuery {
   query: string
   limit?: number
   signal?: AbortSignal
+  /**
+   * Optional author boundary applied before ranking and limiting. An empty
+   * list is an authoritative empty scope and performs no relay I/O; omission
+   * preserves the generic unscoped search contract.
+   */
+  authorPubkeys?: readonly string[]
   /** Cached phase only; `Infinity` waits for the seller lookup. */
   sellerLookupBudgetMs?: number
   /**
@@ -413,6 +419,17 @@ function emptyResult(query: string): ProfileSearchResult {
   }
 }
 
+function normalizeProfileSearchAuthors(
+  authorPubkeys: readonly string[] | undefined
+): string[] | undefined {
+  if (authorPubkeys === undefined) return undefined
+  return Array.from(
+    new Set(
+      authorPubkeys.map((pubkey) => pubkey.trim().toLowerCase()).filter(Boolean)
+    )
+  ).sort()
+}
+
 function toMatch(
   profile: Profile,
   source: ProfileSearchSource,
@@ -501,6 +518,9 @@ export async function searchCachedProfiles(
   if (normalizedQuery.length < PROFILE_SEARCH_MIN_QUERY_LENGTH) {
     return emptyResult(query)
   }
+  const authorPubkeys = normalizeProfileSearchAuthors(input.authorPubkeys)
+  if (authorPubkeys?.length === 0) return emptyResult(query)
+  const authorSet = authorPubkeys ? new Set(authorPubkeys) : null
 
   let profileCache: ProfileSearchDeviceReadState = "read"
   const cachedRows: CachedProfile[] = await deps
@@ -511,6 +531,7 @@ export async function searchCachedProfiles(
     })
   const candidates: ProfileSearchMatch[] = []
   for (const row of cachedRows) {
+    if (authorSet && !authorSet.has(row.pubkey.toLowerCase())) continue
     const match = toMatch(
       projectCachedProfile(row),
       "local_cache",
@@ -559,6 +580,9 @@ export async function searchNetworkProfiles(
   if (normalizedQuery.length < PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH) {
     return emptyResult(query)
   }
+  const authorPubkeys = normalizeProfileSearchAuthors(input.authorPubkeys)
+  if (authorPubkeys?.length === 0) return emptyResult(query)
+  const authorSet = authorPubkeys ? new Set(authorPubkeys) : null
 
   const relayUrls = await deps.planSearchRelayUrls(
     input.authenticatedPubkey ?? null
@@ -577,6 +601,7 @@ export async function searchNetworkProfiles(
       const result = await deps.fetchEvents(
         {
           kinds: [EVENT_KINDS.PROFILE],
+          authors: authorPubkeys,
           search: query,
           limit: NETWORK_FETCH_LIMIT,
         },
@@ -588,7 +613,9 @@ export async function searchNetworkProfiles(
         }
       )
       summary = { ...summary, ...summarizeProfileSearchRelays(result) }
-      const events = pickLatestEventPerPubkey(result.events)
+      const events = pickLatestEventPerPubkey(result.events).filter(
+        (event) => !authorSet || authorSet.has(event.pubkey.toLowerCase())
+      )
       // A relay can answer with a kind-0 event this device already replaced.
       // Reconcile before scoring so a stale name is never offered as a match.
       cachedFrontiers = events.length > 0 ? "read" : "not_read"

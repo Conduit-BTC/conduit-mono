@@ -19,11 +19,15 @@ import { SellerCard } from "../components/SellerCard"
 import { useSellerDirectory } from "../hooks/useSellerDirectory"
 import {
   describeAccountSearchSource,
+  describeScopedAccountSearchEvidence,
   getAccountSuggestionDescription,
   getAccountSuggestionLabel,
   getAccountSuggestionTarget,
 } from "../lib/accountSearch"
-import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
+import {
+  DEFAULT_MARKET_CATALOG_SOURCE,
+  type ProductCatalogSourceMode,
+} from "../lib/productCatalogRead"
 
 export interface SellersSearch {
   source?: ProductCatalogSourceMode
@@ -46,8 +50,9 @@ function SellersPage() {
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
   const directory = useSellerDirectory({
-    catalogSource: search.source ?? "combined",
+    catalogSource: search.source ?? DEFAULT_MARKET_CATALOG_SOURCE,
     query: search.q ?? "",
+    accountSearchSettleMs: 0,
   })
   const updateSearch = useCallback(
     (updates: Partial<SellersSearch>) => {
@@ -83,7 +88,16 @@ function SellersPage() {
   }, [queryValue, search.q, updateSearch])
 
   const showNetworkSection =
-    directory.query.trim().length >= PROFILE_SEARCH_MIN_QUERY_LENGTH
+    directory.query.length >= PROFILE_SEARCH_MIN_QUERY_LENGTH
+  const accountSearchStatus =
+    describeScopedAccountSearchEvidence(
+      directory.accountSearch.data,
+      directory.eligibilityState
+    ) ??
+    describeAccountSearchSource(directory.accountSearch.data, {
+      device: directory.accountSearch.isDeviceFetching,
+      network: directory.accountSearch.isNetworkFetching,
+    })
 
   return (
     <div className="mx-auto max-w-6xl space-y-7">
@@ -92,7 +106,10 @@ function SellersPage() {
         source={directory.effectiveSource}
         connected={directory.connected}
         onSelectSource={(source) =>
-          updateSearch({ source: source === "combined" ? undefined : source })
+          updateSearch({
+            source:
+              source === DEFAULT_MARKET_CATALOG_SOURCE ? undefined : source,
+          })
         }
       />
 
@@ -107,8 +124,8 @@ function SellersPage() {
           </h1>
           <p className="mt-2 max-w-3xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Storefronts discovered from the same network perspective as the
-            catalog. Filter them by name here, or look up other accounts on
-            search relays.
+            catalog. Filter them by name here, or look up other eligible
+            accounts on search relays.
           </p>
         </div>
         <div className="relative max-w-md">
@@ -194,21 +211,37 @@ function SellersPage() {
               id="network-accounts-heading"
               className="text-lg font-semibold text-[var(--text-primary)]"
             >
-              Other accounts
+              Other eligible accounts
             </h2>
             <span className="text-sm text-[var(--text-muted)]">
-              {describeAccountSearchSource(directory.accountSearch.data, {
-                device: directory.accountSearch.isDeviceFetching,
-                network: directory.accountSearch.isNetworkFetching,
-              })}
+              {accountSearchStatus}
             </span>
           </div>
           {directory.networkAccounts.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--text-muted)]">
-              {directory.accountSearch.isFetching
-                ? "Looking for accounts with this name..."
-                : "No other accounts to show for this search."}
-            </p>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-[var(--border)] px-4 py-4 text-sm text-[var(--text-muted)]">
+              <p>
+                {directory.eligibilityState === "loading"
+                  ? "Checking eligible accounts..."
+                  : directory.eligibilityState === "unavailable"
+                    ? "Eligible accounts could not be loaded."
+                    : directory.accountSearch.isFetching
+                      ? "Looking for eligible accounts with this name..."
+                      : directory.eligibilityState === "partial"
+                        ? "Eligible account results may be incomplete. No matches yet."
+                        : "No other eligible accounts matched this search."}
+              </p>
+              {directory.eligibilityState === "partial" ||
+              directory.eligibilityState === "unavailable" ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={directory.retry}
+                >
+                  Try again
+                </Button>
+              ) : null}
+            </div>
           ) : (
             <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {directory.networkAccounts.map((match) => (

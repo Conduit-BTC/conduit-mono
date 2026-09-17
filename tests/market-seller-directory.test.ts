@@ -1,32 +1,28 @@
 import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
-import type { ProfileSearchMatch } from "../packages/core/src/protocol/profile-search"
-import {
-  ACCOUNT_SEARCH_CANDIDATE_LIMIT,
-  ACCOUNT_SUGGESTION_LIMIT,
-  describeAccountSearchSource,
-  limitAccountMatches,
-} from "../apps/market/src/lib/accountSearch"
 import {
   excludeDiscoveredSellers,
   filterSellersByName,
+  getSellerEligibilityState,
   groupDiscoveredSellers,
   isSellerDirectoryUnavailable,
 } from "../apps/market/src/lib/sellerDirectory"
+import type { ProfileSearchMatch } from "../packages/core/src/protocol/profile-search"
 import type { Product } from "../packages/core/src/types"
 
 const SELLER = "1".repeat(64)
-const BUYER = "2".repeat(64)
+const OTHER_SELLER = "2".repeat(64)
+const OTHER_ACCOUNT = "3".repeat(64)
 
-function match(overrides: Partial<ProfileSearchMatch> & { pubkey: string }) {
+function match(pubkey: string): ProfileSearchMatch {
   return {
-    profile: { pubkey: overrides.pubkey },
+    pubkey,
+    profile: { pubkey },
     isSeller: false,
     source: "network",
     score: 1,
     frontier: {},
-    ...overrides,
-  } as ProfileSearchMatch
+  }
 }
 
 describe("seller directory", () => {
@@ -34,43 +30,85 @@ describe("seller directory", () => {
     { id: "p1", pubkey: SELLER, type: "simple", createdAt: 10 },
     { id: "p2", pubkey: SELLER, type: "variable", createdAt: 30 },
     { id: "p3", pubkey: SELLER, type: "variation", createdAt: 40 },
-    { id: "p4", pubkey: BUYER, type: "simple", createdAt: 20 },
+    { id: "p4", pubkey: OTHER_SELLER, type: "simple", createdAt: 20 },
   ] as unknown as Product[]
 
   it("groups listings per seller without counting variations", () => {
     expect(groupDiscoveredSellers(products)).toEqual([
       { pubkey: SELLER, listingCount: 2, latestListingAt: 30 },
-      { pubkey: BUYER, listingCount: 1, latestListingAt: 20 },
+      { pubkey: OTHER_SELLER, listingCount: 1, latestListingAt: 20 },
     ])
   })
 
-  it("filters only resolved names and excludes discovered sellers from network results", () => {
+  it("matches every public name field and ranks before applying the catalog order", () => {
     const sellers = groupDiscoveredSellers(products)
     const getIdentity = (pubkey: string) =>
       pubkey === SELLER
         ? {
             pubkey,
-            displayName: "Alice Store",
+            displayName: "Wonderland Goods",
+            searchProfile: {
+              pubkey,
+              name: "alice",
+              displayName: "Wonderland Goods",
+              nip05: "shop@alice.example",
+            },
             status: "resolved" as const,
             relayHints: [],
           }
         : {
             pubkey,
-            displayName: "npub1...",
-            status: "pending" as const,
+            displayName: "Alice Outlet",
+            searchProfile: {
+              pubkey,
+              displayName: "Alice Outlet",
+            },
+            status: "resolved" as const,
             relayHints: [],
           }
     expect(
       filterSellersByName(sellers, getIdentity, "ALICE").map((s) => s.pubkey)
+    ).toEqual([SELLER, OTHER_SELLER])
+    expect(
+      filterSellersByName(sellers, getIdentity, "shop").map((s) => s.pubkey)
     ).toEqual([SELLER])
-    expect(filterSellersByName(sellers, getIdentity, "npub")).toEqual([])
     expect(filterSellersByName(sellers, getIdentity, "")).toHaveLength(2)
     expect(
       excludeDiscoveredSellers(
-        [match({ pubkey: SELLER }), match({ pubkey: "3".repeat(64) })],
+        [match(SELLER), match(OTHER_ACCOUNT)],
         sellers
-      ).map((m) => m.pubkey)
-    ).toEqual(["3".repeat(64)])
+      ).map((entry) => entry.pubkey)
+    ).toEqual([OTHER_ACCOUNT])
+  })
+
+  it("keeps incomplete eligibility distinct from a completed author set", () => {
+    const ready = {
+      authorPubkeys: [SELLER],
+      source: "combined" as const,
+      followLookupStatus: "ready" as const,
+      discoveryStale: false,
+    }
+    expect(getSellerEligibilityState(ready)).toBe("ready")
+    expect(
+      getSellerEligibilityState({
+        ...ready,
+        followLookupStatus: "loading",
+      })
+    ).toBe("partial")
+    expect(
+      getSellerEligibilityState({
+        ...ready,
+        authorPubkeys: [],
+        followLookupStatus: "error",
+      })
+    ).toBe("unavailable")
+    expect(
+      getSellerEligibilityState({
+        ...ready,
+        authorPubkeys: undefined,
+        followLookupStatus: "loading",
+      })
+    ).toBe("loading")
   })
 
   it("distinguishes a cold unavailable read from a completed empty read", () => {
@@ -132,79 +170,6 @@ describe("seller directory", () => {
   })
 })
 
-describe("other accounts capping", () => {
-  it("describes cache-only account matches without claiming relay provenance", () => {
-    expect(
-      describeAccountSearchSource(
-        {
-          query: "a",
-          matches: [match({ pubkey: BUYER, source: "local_cache" })],
-          evidence: "not_queried",
-          relaysPlanned: 0,
-          relaysCompleted: 0,
-          relaysDegraded: 0,
-          verified: true,
-          device: {
-            profileCache: "read",
-            sellerFlags: "read",
-            cachedFrontiers: "not_read",
-          },
-          superseded: [],
-        },
-        { device: false, network: false }
-      )
-    ).toBe("From this device")
-  })
-
-  it("does not describe a delayed device read as relay activity", () => {
-    expect(
-      describeAccountSearchSource(undefined, { device: true, network: false })
-    ).toBe("Searching this device...")
-  })
-
-  it("describes an outstanding network phase as relay activity", () => {
-    expect(
-      describeAccountSearchSource(undefined, { device: true, network: true })
-    ).toBe("Searching relays...")
-  })
-
-  it("removes discovered sellers before applying the display cap", async () => {
-    const sellers = Array.from(
-      { length: ACCOUNT_SUGGESTION_LIMIT },
-      (_, i) => ({
-        pubkey: `a${i}`.padEnd(64, "0"),
-        listingCount: 1,
-        latestListingAt: 1,
-      })
-    )
-    const others = Array.from({ length: 3 }, (_, i) => ({
-      pubkey: `b${i}`.padEnd(64, "0"),
-    }))
-    const candidates = [
-      ...sellers.map((seller) => match({ pubkey: seller.pubkey })),
-      ...others.map((other) => match({ pubkey: other.pubkey })),
-    ]
-    expect(candidates.length).toBeLessThanOrEqual(
-      ACCOUNT_SEARCH_CANDIDATE_LIMIT
-    )
-
-    const shown = limitAccountMatches(
-      excludeDiscoveredSellers(candidates, sellers),
-      ACCOUNT_SUGGESTION_LIMIT
-    )
-    expect(shown.map((entry) => entry.pubkey)).toEqual(
-      others.map((other) => other.pubkey)
-    )
-
-    const hook = await readFile(
-      "apps/market/src/hooks/useSellerDirectory.ts",
-      "utf8"
-    )
-    expect(hook).toContain("limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT")
-    expect(hook).toMatch(/limitAccountMatches\(\s*excludeDiscoveredSellers\(/)
-  })
-})
-
 describe("storefront matches on the product search", () => {
   it("answers the name query from the discovered catalog, above product results", async () => {
     const model = await readFile(
@@ -229,7 +194,7 @@ describe("storefront matches on the product search", () => {
     )
   })
 
-  it("keeps the header box a product search and gives Sellers its own field", async () => {
+  it("keeps product submit behavior while restoring scoped account suggestions", async () => {
     const header = await readFile(
       "apps/market/src/components/MarketHeader.tsx",
       "utf8"
@@ -238,9 +203,15 @@ describe("storefront matches on the product search", () => {
     expect(header).toContain('const isBrowseRoute = pathname === "/products"')
     expect(header).toContain('heading: "Stores"')
     expect(header).toContain('heading: "Accounts"')
+    expect(header).toContain("useSellerDirectory({")
+    expect(header).toContain("catalogSource: routeCatalogSource")
+    expect(header).toContain("sellerDirectory.accountSearch")
+    expect(header).toContain("Eligible accounts could not be loaded.")
 
     const sellers = await readFile("apps/market/src/routes/sellers.tsx", "utf8")
     expect(sellers).toContain('aria-label="Filter sellers"')
     expect(sellers).toContain("updateSearch({ q: trimmed || undefined })")
+    expect(sellers).toContain("Other eligible accounts")
+    expect(sellers).toContain("search relays")
   })
 })
