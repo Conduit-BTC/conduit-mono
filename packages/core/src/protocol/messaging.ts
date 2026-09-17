@@ -939,11 +939,22 @@ export class PrivateMessageRelayReadinessError extends Error {
 function recordValidatedOrderCompatibilityOutcome(
   input: PublishPrivateMessageInput,
   validatedOrder: boolean,
-  outcome: Nip17CompatibilityResultTelemetryInput
+  outcome: Pick<
+    Nip17CompatibilityResultTelemetryInput,
+    "declarationClass" | "deliveryRoute" | "ackOutcome"
+  > & {
+    blockReason?: Nip17CompatibilityResultTelemetryInput["blockReason"]
+  }
 ): void {
   if (!validatedOrder || input.shouldContinue?.() === false) return
+  const telemetryOutcome: Nip17CompatibilityResultTelemetryInput = {
+    ...outcome,
+    action: "order_delivery",
+    repairOutcome: "not_applicable",
+    blockReason: outcome.blockReason ?? "not_applicable",
+  }
   try {
-    input.onNip17CompatibilityOutcome?.(outcome)
+    input.onNip17CompatibilityOutcome?.(telemetryOutcome)
   } catch {
     // Diagnostics are best-effort and must never affect message delivery.
   }
@@ -951,7 +962,8 @@ function recordValidatedOrderCompatibilityOutcome(
   recordBrowserTelemetryEvent({
     app: input.telemetryApp,
     eventName: "nip17_compatibility_result",
-    properties: buildNip17CompatibilityResultTelemetryProperties(outcome),
+    properties:
+      buildNip17CompatibilityResultTelemetryProperties(telemetryOutcome),
   })
 }
 
@@ -1056,11 +1068,9 @@ export async function publishPrivateMessage(
     // excludes every target. Do not reinterpret it as missing and activate the
     // non-standard compatibility lane.
     recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
-      action: "order_delivery",
       declarationClass: "declared",
       deliveryRoute: "blocked",
       ackOutcome: "not_applicable",
-      repairOutcome: "not_applicable",
       blockReason: "recipient_relays_excluded",
     })
     throw new PrivateMessageRelayReadinessError("recipient_relays_excluded")
@@ -1091,11 +1101,9 @@ export async function publishPrivateMessage(
             ? "recipient_declaration_distribution_pending"
             : (recipientRoute.blockedReason ?? "recipient_not_ready")
     recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
-      action: "order_delivery",
       declarationClass: recipientDeclaration.state,
       deliveryRoute: "blocked",
       ackOutcome: "not_applicable",
-      repairOutcome: "not_applicable",
       blockReason: readinessReason,
     })
     throw new PrivateMessageRelayReadinessError(readinessReason)
@@ -1180,12 +1188,9 @@ export async function publishPrivateMessage(
     )
   } catch (error) {
     recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
-      action: "order_delivery",
       declarationClass: recipientDeclaration.state,
       deliveryRoute: recipientRoute.route,
       ackOutcome: "unavailable",
-      repairOutcome: "not_applicable",
-      blockReason: "not_applicable",
     })
     throw error
   }
@@ -1218,12 +1223,9 @@ export async function publishPrivateMessage(
     })
   } catch (error) {
     recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
-      action: "order_delivery",
       declarationClass: recipientDeclaration.state,
       deliveryRoute: recipientRoute.route,
       ackOutcome: "unavailable",
-      repairOutcome: "not_applicable",
-      blockReason: "not_applicable",
     })
     throw error
   }
@@ -1263,12 +1265,9 @@ export async function publishPrivateMessage(
           ? "zero"
           : "unavailable"
       recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
-        action: "order_delivery",
         declarationClass: recipientDeclaration.state,
         deliveryRoute: recipientRoute.route,
         ackOutcome,
-        repairOutcome: "not_applicable",
-        blockReason: "not_applicable",
       })
       throw error
     }
@@ -1278,12 +1277,9 @@ export async function publishPrivateMessage(
     recipientDelivery.successfulRelayUrls.length === 0
   ) {
     recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
-      action: "order_delivery",
       declarationClass: recipientDeclaration.state,
       deliveryRoute: recipientRoute.route,
       ackOutcome: "zero",
-      repairOutcome: "not_applicable",
-      blockReason: "not_applicable",
     })
     throw new Error("Recipient delivery completed without a relay ACK.")
   }
@@ -1293,12 +1289,9 @@ export async function publishPrivateMessage(
       ? "partial_success"
       : "full_success"
   recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
-    action: "order_delivery",
     declarationClass: recipientDeclaration.state,
     deliveryRoute: recipientRoute.route,
     ackOutcome: deliveryStatus === "partial_success" ? "partial" : "positive",
-    repairOutcome: "not_applicable",
-    blockReason: "not_applicable",
   })
   const orderRelayDelivery =
     input.rumorKind === EVENT_KINDS.ORDER

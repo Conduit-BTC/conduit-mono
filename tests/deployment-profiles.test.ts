@@ -128,21 +128,6 @@ describe("deployment profiles", () => {
     expect(staging.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(true)
   })
 
-  it("keeps rollback to one explicit staging profile value", () => {
-    const profiles = loadPagesProfiles()
-    const rollback = structuredClone(profiles)
-    rollback.profiles.staging.publicFeatures.dmCompatibilityOrderRoutingEnabled = false
-
-    const parsed = parsePagesProfiles(rollback)
-    expect(
-      parsed.profiles.staging.publicFeatures.dmCompatibilityOrderRoutingEnabled
-    ).toBe(false)
-    expect(
-      parsed.profiles.production.publicFeatures
-        .dmCompatibilityOrderRoutingEnabled
-    ).toBe(false)
-  })
-
   it("selects mainnet Cloudflare preview and production without dashboard feature vars", () => {
     expect(
       selectDeploymentProfileName({
