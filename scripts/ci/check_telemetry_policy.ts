@@ -21,6 +21,7 @@ export const allowedTelemetryProperties = new Set([
   "count_bucket",
   "result_count_bucket",
   "amount_bucket",
+  "settled_amount_sats",
   "product_type",
   "declaration_class",
   "delivery_route",
@@ -28,6 +29,9 @@ export const allowedTelemetryProperties = new Set([
   "repair_outcome",
   "block_reason",
 ])
+
+const settlementTelemetryEventName = "zapout_settled"
+const settlementTelemetryProperty = "settled_amount_sats"
 
 export const allowedProviderTelemetryEventNames = new Set([
   "$pageleave",
@@ -223,6 +227,24 @@ export function validateTelemetryEvents(
           `Telemetry event ${event.eventName} uses disallowed property: ${property}`
         )
       }
+      if (
+        property === settlementTelemetryProperty &&
+        event.eventName !== settlementTelemetryEventName
+      ) {
+        errors.push(
+          `Telemetry event ${event.eventName} cannot use server-only property: ${property}`
+        )
+      }
+    }
+
+    if (
+      event.eventName === settlementTelemetryEventName &&
+      (event.properties.length !== 1 ||
+        event.properties[0] !== settlementTelemetryProperty)
+    ) {
+      errors.push(
+        `${settlementTelemetryEventName} must use only ${settlementTelemetryProperty}`
+      )
     }
   }
 

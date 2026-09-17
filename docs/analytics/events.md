@@ -27,6 +27,7 @@ Runtime telemetry events may only use these fields:
 - `count_bucket`
 - `result_count_bucket`
 - `amount_bucket`
+- `settled_amount_sats` (server-only on `zapout_settled`)
 - `product_type`
 - `declaration_class`
 - `delivery_route`
@@ -44,6 +45,19 @@ and non-identifying, and every property passes the allowlist and redaction
 controls in this document. Maintainers must review the provider window at least
 quarterly and select a shorter plan or self-hosted retention policy when
 PostHog makes one available.
+
+The server-only `zapout_settled` event is deliberately narrower than browser
+telemetry. It uses one static service identity, disables person-profile
+processing and provider IP capture, rounds its timestamp to the UTC settlement
+day, and uses an HMAC-derived event UUID for retry deduplication. The HMAC
+secret and public receipt identifier stay outside PostHog.
+
+Production activation requires the Market Pages runtime to provide both
+`POSTHOG_PROJECT_TOKEN` and a random, secret-store-only
+`ZAPOUT_SETTLEMENT_TELEMETRY_HMAC_SECRET` of at least 32 characters. Keep that
+secret stable across deployments so retries retain one deduplication key. An
+approved `POSTHOG_HOST` may select the US or EU PostHog ingest origin. Missing
+or invalid configuration disables this event without affecting checkout.
 
 Redaction happens before provider delivery. Events that fail the event-name or
 property allowlist must be dropped rather than repaired downstream. Browser
@@ -352,6 +366,29 @@ bounded outcome status, and a latency bucket. It must not include request
 contents, origins, URLs, pubkeys, amounts, invoices, checkout/session keys,
 rate-limit keys, or any other request or user identifier. The Worker uses one
 static service-level distinct ID and disables PostHog person-profile processing.
+
+<!-- telemetry-event: zapout_settled properties=settled_amount_sats -->
+
+### `zapout_settled`
+
+Emitted only after the server re-verifies the public NIP-57 receipt authority
+for a Conduit Zap Out observed by the payment lifecycle. The sole business
+property is the exact positive whole-satoshi invoice amount that the verified
+receipt marks paid. The event uses a shared static service identity, disables
+person-profile processing, rounds its timestamp to the UTC calendar day, and
+uses a server-secret-derived opaque UUID only to deduplicate the same verified
+receipt. PostHog ingestion disables IP capture. The raw receipt identifier and
+secret never leave the server.
+
+It must not include app, route, session, buyer, merchant, order, product,
+public key, comment, invoice, payment hash, preimage, receipt, relay, wallet,
+connection, fee, or payment-rail data. Authority-unavailable, invalid, unpaid,
+private-checkout, and non-Zap-Out flows do not emit this event. Delivery is best
+effort and may undercount; payment state never depends on telemetry
+availability. Aggregate reporting must call this observed verified public-Zap-
+Out volume rather than total platform sales or merchant revenue. Exact amounts
+can be distinctive, so the event is privacy-minimized rather than guaranteed
+unlinkable from separate public receipt data.
 
 ## Agent Use
 

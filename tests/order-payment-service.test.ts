@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import { type NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 import type { ParsedOrderMessage } from "@conduit/core"
 
@@ -14,8 +14,10 @@ import {
   isOrderPaymentRunning,
   observeOrderPublicZapReceipt,
   runOrderPayment,
+  runOrderPaymentWithUpdatedAddress,
   runOrderPrivateFallback,
   signShopperCheckoutZapRequest,
+  submitExternalPaymentProof,
   validateMerchantInvoicePaymentAction,
   type OrderPaymentDependencies,
   type OrderPaymentContext,
@@ -458,6 +460,74 @@ describe("runOrderPayment", () => {
         })
       )
     ).toBe(true)
+  })
+
+  it("preserves cancelled private reporting but rejects completed orders", () => {
+    expect(
+      canSubmitExternalPaymentReport(
+        lifecycle({
+          checkoutMode: "private_checkout",
+          publicZapSigner: undefined,
+          phase: "cancelled",
+        })
+      )
+    ).toBe(true)
+    expect(
+      canSubmitExternalPaymentReport(
+        lifecycle({
+          checkoutMode: "private_checkout",
+          publicZapSigner: undefined,
+          phase: "completed",
+        })
+      )
+    ).toBe(false)
+  })
+
+  it("passes report authorization the fresh transactional invoice before recording an attestation", async () => {
+    const original = lifecycle({
+      orderId: "stale-service-report",
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoice: "lnbc1selected",
+    })
+    const changed = { ...original, invoice: "lnbc1replacement" }
+    const table = db.orderLifecycles
+    const originalGet = table.get
+    const originalPut = table.put
+    const originalTransaction = db.transaction
+    let reads = 0
+    let writes = 0
+    let authorizedInvoice: string | undefined
+    table.get = (async () =>
+      reads++ === 0 ? original : changed) as typeof table.get
+    table.put = (async () => {
+      writes += 1
+      return original.orderId
+    }) as typeof table.put
+    db.transaction = ((...args: unknown[]) =>
+      (args.at(-1) as () => Promise<unknown>)()) as typeof db.transaction
+    try {
+      await submitExternalPaymentProof(
+        original.orderId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => true,
+        (current) => {
+          authorizedInvoice = current.invoice
+          return current.invoice === original.invoice
+        }
+      )
+      expect(reads).toBe(2)
+      expect(authorizedInvoice).toBe(changed.invoice)
+      expect(writes).toBe(0)
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+      db.transaction = originalTransaction
+    }
   })
 
   it("revalidates projected merchant invoices at the payment boundary", () => {
@@ -942,6 +1012,8 @@ describe("runOrderPayment", () => {
         },
       })
       const state = await runOrderPayment(context, dependencies)
+      expect(state.lifecycle?.invoice).toBe(invoice)
+      expect(state.lifecycle?.paymentClaimId).toBeUndefined()
       const retryState = await runOrderPayment(context, dependencies)
 
       expect(state.lifecycle?.invoiceStatus).toBe("failed")
@@ -2094,144 +2166,217 @@ describe("runOrderPayment", () => {
     }
   })
 
-  it("resumes only complete, unexpired anon receipt contexts", () => {
-    const now = Date.now()
-    const observable = lifecycle({
-      checkoutMode: "anonymous_public_zap",
-      zapReceiptStatus: "waiting",
-      zapRequestId: "zap-request-id",
-      zapRequestCreatedAt: Math.floor(now / 1000) - 10,
-      zapLnurl: "lnurl1test",
-      zapReceiptPubkey: "a".repeat(64),
-      zapReceiptRelayUrls: ["wss://relay.example"],
-      zapReceiptObservationDeadline: now + 60_000,
-    })
+  it.each(["anon", "shopper"] as const)(
+    "resumes only complete, unexpired %s receipt contexts",
+    (publicZapSigner) => {
+      const now = Date.now()
+      const observable = lifecycle({
+        checkoutMode:
+          publicZapSigner === "anon"
+            ? "anonymous_public_zap"
+            : "public_zap_as_shopper",
+        publicZapSigner,
+        zapReceiptStatus: "waiting",
+        zapRequestId: "zap-request-id",
+        zapRequestCreatedAt: Math.floor(now / 1000) - 10,
+        zapLnurl: "lnurl1test",
+        zapReceiptPubkey: "a".repeat(64),
+        zapReceiptRelayUrls: ["wss://relay.example"],
+        zapReceiptObservationDeadline: now + 60_000,
+      })
 
-    expect(canObserveOrderPublicZapReceipt(observable, now)).toBe(true)
-    expect(
-      canObserveOrderPublicZapReceipt(
-        { ...observable, zapReceiptRelayUrls: [] },
-        now
-      )
-    ).toBe(false)
-    expect(
-      canObserveOrderPublicZapReceipt(
-        {
-          ...observable,
-          buyerIdentityKind: "guest_ephemeral",
-          createdAt: now - 24 * 60 * 60 * 1_000 - 1,
-        },
-        now
-      )
-    ).toBe(false)
-    for (const proofDeliveryStatus of [
-      "not_started",
-      "pending",
-      "retry_needed",
-      "failed",
-    ] as const) {
+      expect(canObserveOrderPublicZapReceipt(observable, now)).toBe(true)
+      expect(
+        canObserveOrderPublicZapReceipt(
+          {
+            ...observable,
+            checkoutMode: "private_checkout",
+            publicZapSigner: undefined,
+          },
+          now
+        )
+      ).toBe(false)
+      expect(
+        canObserveOrderPublicZapReceipt(
+          { ...observable, zapReceiptRelayUrls: [] },
+          now
+        )
+      ).toBe(false)
+      expect(
+        canObserveOrderPublicZapReceipt(
+          {
+            ...observable,
+            buyerIdentityKind: "guest_ephemeral",
+            createdAt: now - 24 * 60 * 60 * 1_000 - 1,
+          },
+          now
+        )
+      ).toBe(false)
+      for (const proofDeliveryStatus of [
+        "not_started",
+        "pending",
+        "retry_needed",
+        "failed",
+      ] as const) {
+        expect(
+          canObserveOrderPublicZapReceipt(
+            {
+              ...observable,
+              zapReceiptStatus: "observed",
+              zapReceiptId: "zap-receipt-id",
+              proofDeliveryStatus,
+            },
+            now
+          )
+        ).toBe(true)
+      }
       expect(
         canObserveOrderPublicZapReceipt(
           {
             ...observable,
             zapReceiptStatus: "observed",
-            zapReceiptId: "zap-receipt-id",
-            proofDeliveryStatus,
+            proofDeliveryStatus: "sent",
           },
           now
         )
-      ).toBe(true)
+      ).toBe(false)
     }
-    expect(
-      canObserveOrderPublicZapReceipt(
-        {
-          ...observable,
-          zapReceiptStatus: "observed",
-          proofDeliveryStatus: "sent",
-        },
-        now
-      )
-    ).toBe(false)
-  })
+  )
 
-  it("uses current durable truth after a receipt observer wait", async () => {
-    const orderId = "deferred-receipt-timeout-race"
-    const accountPubkey = "b".repeat(64)
-    let current = lifecycle({
+  it("reports a newly observed public Zap Out receipt without affecting payment state", async () => {
+    const orderId = "observed-zapout-settlement"
+    const waiting = lifecycle({
       orderId,
       checkoutMode: "anonymous_public_zap",
       publicZapSigner: "anon",
-      invoice: privateInvoice(),
       invoiceStatus: "received",
       paymentStatus: "paying",
       proofDeliveryStatus: "pending",
       zapReceiptStatus: "waiting",
-      zapRequestId: "zap-request-current",
+      zapRequestId: "zap-request-id",
       zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
       zapLnurl: "lnurl1test",
       zapReceiptPubkey: "a".repeat(64),
       zapReceiptRelayUrls: ["wss://relay.example"],
-      zapReceiptObservationDeadline: Date.now() - 1,
+      zapReceiptObservationDeadline: Date.now() + 60_000,
     })
-    let releaseWait!: (receipt: null) => void
-    let waitStarted = false
-    let timeoutCalls = 0
-    const shouldContinue = () => true
-    const receiptWait = new Promise<null>((resolve) => {
-      releaseWait = resolve
+    const observed = lifecycle({
+      ...waiting,
+      paymentStatus: "paid",
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
     })
+    const receipt = {
+      id: "f".repeat(64),
+      rawEvent: () => ({ id: "f".repeat(64) }),
+    } as unknown as NDKEvent
+    const reported: unknown[] = []
 
-    const observation = observeOrderPublicZapReceipt(
-      orderId,
-      undefined,
-      {
-        getOrderLifecycle: async () => current,
-        waitForZapReceipt: async (input) => {
-          expect(input.accountPubkey).toBe(accountPubkey)
-          expect(input.shouldContinue).toBe(shouldContinue)
-          waitStarted = true
-          return receiptWait
-        },
-        recordOrderPaymentReceiptTimeout: async () => {
-          timeoutCalls += 1
-          if (
-            current.paymentStatus === "paid" ||
-            current.zapReceiptStatus === "observed"
-          ) {
-            return { status: "preserved", lifecycle: current }
-          }
-          throw new Error("must preserve stronger evidence")
-        },
+    await observeOrderPublicZapReceipt(orderId, undefined, {
+      getOrderLifecycle: async () => waiting,
+      waitForZapReceipt: async () => receipt,
+      recordObservedOrderPaymentReceipt: async () => ({
+        status: "recorded",
+        lifecycle: observed,
+        proofDeliveryClaimed: false,
+      }),
+      reportZapoutSettlement: async (value) => {
+        reported.push(value)
       },
-      accountPubkey,
-      accountPubkey,
-      shouldContinue
-    )
-
-    for (let index = 0; index < 5 && !waitStarted; index += 1) {
-      await Promise.resolve()
-    }
-    expect(waitStarted).toBe(true)
-    current = {
-      ...current,
-      paymentStatus: "paid",
-      proofDeliveryStatus: "sent",
-      zapReceiptStatus: "observed",
-      zapReceiptId: "zap-receipt-current",
-      lastError: undefined,
-    }
-    releaseWait(null)
-    await observation
-
-    expect(timeoutCalls).toBe(1)
-    expect(current).toMatchObject({
-      paymentStatus: "paid",
-      proofDeliveryStatus: "sent",
-      zapReceiptStatus: "observed",
-      zapReceiptId: "zap-receipt-current",
     })
-    expect(current.lastError).toBeUndefined()
+
+    expect(reported).toEqual([receipt])
+    expect(observed).toMatchObject({
+      paymentStatus: "paid",
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
+    })
   })
+
+  it.each(["anon", "shopper"] as const)(
+    "uses current durable truth after a %s receipt observer wait",
+    async (publicZapSigner) => {
+      const orderId = `deferred-${publicZapSigner}-receipt-timeout-race`
+      const accountPubkey = "b".repeat(64)
+      let current = lifecycle({
+        orderId,
+        checkoutMode:
+          publicZapSigner === "anon"
+            ? "anonymous_public_zap"
+            : "public_zap_as_shopper",
+        publicZapSigner,
+        invoice: privateInvoice(),
+        invoiceStatus: "received",
+        paymentStatus: "paying",
+        proofDeliveryStatus: "pending",
+        zapReceiptStatus: "waiting",
+        zapRequestId: "zap-request-current",
+        zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+        zapLnurl: "lnurl1test",
+        zapReceiptPubkey: "a".repeat(64),
+        zapReceiptRelayUrls: ["wss://relay.example"],
+        zapReceiptObservationDeadline: Date.now() - 1,
+      })
+      let releaseWait!: (receipt: null) => void
+      let waitStarted = false
+      let timeoutCalls = 0
+      const shouldContinue = () => true
+      const receiptWait = new Promise<null>((resolve) => {
+        releaseWait = resolve
+      })
+
+      const observation = observeOrderPublicZapReceipt(
+        orderId,
+        undefined,
+        {
+          getOrderLifecycle: async () => current,
+          waitForZapReceipt: async (input) => {
+            expect(input.accountPubkey).toBe(accountPubkey)
+            expect(input.shouldContinue).toBe(shouldContinue)
+            waitStarted = true
+            return receiptWait
+          },
+          recordOrderPaymentReceiptTimeout: async () => {
+            timeoutCalls += 1
+            if (
+              current.paymentStatus === "paid" ||
+              current.zapReceiptStatus === "observed"
+            ) {
+              return { status: "preserved", lifecycle: current }
+            }
+            throw new Error("must preserve stronger evidence")
+          },
+        },
+        accountPubkey,
+        accountPubkey,
+        shouldContinue
+      )
+
+      for (let index = 0; index < 5 && !waitStarted; index += 1) {
+        await Promise.resolve()
+      }
+      expect(waitStarted).toBe(true)
+      current = {
+        ...current,
+        paymentStatus: "paid",
+        proofDeliveryStatus: "sent",
+        zapReceiptStatus: "observed",
+        zapReceiptId: "zap-receipt-current",
+        lastError: undefined,
+      }
+      releaseWait(null)
+      await observation
+
+      expect(timeoutCalls).toBe(1)
+      expect(current).toMatchObject({
+        paymentStatus: "paid",
+        proofDeliveryStatus: "sent",
+        zapReceiptStatus: "observed",
+        zapReceiptId: "zap-receipt-current",
+      })
+      expect(current.lastError).toBeUndefined()
+    }
+  )
 
   it("releases the order in-flight lock when lifecycle patching fails", async () => {
     const ctx = basePaymentContext({
@@ -2301,4 +2446,171 @@ describe("runOrderPayment", () => {
       table.put = originalPut
     }
   })
+})
+
+describe("reviewed merchant payment address recovery", () => {
+  for (const checkoutMode of ["private_checkout", "external_wallet"] as const) {
+    for (const scenario of [
+      "success",
+      "profile_changed",
+      "order_changed",
+      "claim_lost",
+      "session_changed",
+      "session_during_invoice",
+    ] as const) {
+      it(`keeps the ${checkoutMode} recovery boundary safe: ${scenario}`, async () => {
+        const orderId = `updated-address-${checkoutMode}-${scenario}`
+        let sessionCurrent = true
+        let stored = lifecycle({
+          orderId,
+          merchantLightningAddress: "merchant@old-wallet.dev",
+          checkoutMode,
+          publicZapSigner: undefined,
+          invoice: undefined,
+          invoiceStatus: "failed",
+          paymentStatus: "failed",
+        })
+        const reviewed = {
+          orderId,
+          merchantPubkey: stored.merchantPubkey,
+          previousAddress: stored.merchantLightningAddress!,
+          newAddress: "merchant@new-wallet.dev",
+          expectedUpdatedAt: stored.updatedAt,
+        }
+        const context = basePaymentContext({
+          orderId,
+          authenticatedPubkey: "buyer",
+          accountPubkey: "buyer",
+          merchantLud16: reviewed.previousAddress,
+          zapMode: "private_checkout",
+          shouldContinue: () => sessionCurrent,
+        })
+        if (scenario === "order_changed")
+          stored = { ...stored, updatedAt: stored.updatedAt + 1 }
+        const table = db.orderLifecycles
+        const originalGet = table.get
+        const originalPut = table.put
+        table.get = (async () => stored) as typeof table.get
+        table.put = (async (next: OrderLifecycle) => {
+          stored = next
+          return next.orderId
+        }) as typeof table.put
+        const endpoints: string[] = []
+        let claims = 0
+        let railCalls = 0
+        let cleared = 0
+        const dependencies = paymentDependencies({
+          getOrderLifecycle: async () => stored,
+          checkOrderPaymentAddressUpdate: async () => {
+            if (scenario === "session_changed") sessionCurrent = false
+            return {
+              status: "updated",
+              update: {
+                ...reviewed,
+                newAddress:
+                  scenario === "profile_changed"
+                    ? "merchant@third-wallet.dev"
+                    : reviewed.newAddress,
+              },
+            }
+          },
+          rememberOrderPaymentClaim: () => true,
+          clearOrderPaymentClaim: () => {
+            cleared += 1
+          },
+          claimOrderLifecyclePayment: async () => {
+            throw new Error("must reuse the atomic recovery claim")
+          },
+          claimOrderLifecycleUpdatedAddressPayment: async (
+            input,
+            version,
+            address,
+            shouldContinue
+          ) => {
+            claims += 1
+            expect(input.merchantLightningAddress).toBe(
+              reviewed.previousAddress
+            )
+            expect(version).toBe(reviewed.expectedUpdatedAt)
+            expect(shouldContinue?.()).toBe(true)
+            if (scenario === "claim_lost")
+              return { status: "unsafe_state", lifecycle: stored }
+            stored = {
+              ...stored,
+              merchantLightningAddress: address,
+              paymentClaimId: input.paymentClaimId,
+              invoiceStatus: "requesting",
+              paymentStatus: "not_started",
+            }
+            return { status: "claimed", lifecycle: stored }
+          },
+          fetchLnurlPayMetadata: async (address) => {
+            endpoints.push(address)
+            return lnurlMetadata(false)
+          },
+          requestCheckoutLnurlInvoice: async (request) => {
+            expect(request.visibility).toBe("private_checkout")
+            expect(request.amountMsats).toBe(1_000)
+            if (scenario === "session_during_invoice") sessionCurrent = false
+            return {
+              invoice: privateInvoice(),
+              zapRelayUrls: [],
+              shouldWaitForZapReceipt: false,
+            }
+          },
+          payCheckoutInvoice: async (request) => {
+            railCalls += 1
+            expect(request.paymentTarget).toEqual(context.paymentTarget)
+            return {
+              status: "manual_required",
+              reason: "Use an external wallet.",
+            }
+          },
+        })
+        try {
+          if (scenario === "success" || scenario === "session_during_invoice") {
+            const state = await runOrderPaymentWithUpdatedAddress(
+              context,
+              reviewed,
+              dependencies
+            )
+            expect(endpoints).toEqual([reviewed.newAddress])
+            expect(claims).toBe(1)
+            expect(stored.orderId).toBe(orderId)
+            expect(stored.checkoutMode).toBe(checkoutMode)
+            expect(stored.totalMsats).toBe(1_000)
+            expect(stored.merchantLightningAddress).toBe(reviewed.newAddress)
+            expect(railCalls).toBe(scenario === "success" ? 1 : 0)
+            expect(state.lifecycle?.paymentStatus).toBe(
+              scenario === "success" ? "manual_required" : "failed"
+            )
+            expect(cleared).toBe(1)
+          } else {
+            await expect(
+              runOrderPaymentWithUpdatedAddress(context, reviewed, dependencies)
+            ).rejects.toThrow(
+              scenario === "profile_changed"
+                ? "could not be confirmed"
+                : scenario === "session_changed"
+                  ? "connected account changed"
+                  : scenario === "order_changed"
+                    ? "payment details changed"
+                    : "payment state changed"
+            )
+            expect(endpoints).toEqual([])
+            expect(railCalls).toBe(0)
+            expect(stored.merchantLightningAddress).toBe(
+              reviewed.previousAddress
+            )
+            expect(claims).toBe(scenario === "claim_lost" ? 1 : 0)
+            expect(cleared).toBe(scenario === "claim_lost" ? 1 : 0)
+          }
+          expect(isOrderPaymentRunning(orderId)).toBe(false)
+        } finally {
+          table.get = originalGet
+          table.put = originalPut
+        }
+      })
+    }
+  }
 })

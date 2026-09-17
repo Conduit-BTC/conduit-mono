@@ -277,6 +277,13 @@ export {
   type UseNip05VerificationResult,
 } from "./hooks/useNip05Verification"
 export {
+  getProfileSearchQueryKey,
+  selectProfileSearchPhaseResult,
+  useProfileSearch,
+  type UseProfileSearchOptions,
+  type UseProfileSearchResult,
+} from "./hooks/useProfileSearch"
+export {
   getProfileQueryPerspectiveKey,
   getProfileSingletonQueryKey,
   useProfiles,

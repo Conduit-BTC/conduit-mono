@@ -8,7 +8,7 @@ import {
 } from "../lib/event-market-adapter"
 import { useEventCatalogs } from "./useEventMarket"
 
-// Shared catalog queries retain staleTime: 0 and refetchOnMount: "always".
+// Shared catalog queries reuse recently completed evidence across mounts.
 // Checkout's explicit freshness verification remains a separate live read.
 export function useProductCartFulfillmentBatch(
   products: readonly Product[],
@@ -57,9 +57,12 @@ export function useProductCartFulfillmentBatch(
   for (const product of products) {
     const candidates = getProductEventMarketCandidates(product)
     if (
-      candidates.some(
-        (candidate) => !catalogs.get(candidate.canonicalNaddr)?.data
-      )
+      candidates.some((candidate) => {
+        const query = catalogs.get(candidate.canonicalNaddr)
+        // A browse-only progress snapshot is not a completed freshness
+        // decision. Keep checkout checking until this read settles.
+        return !query?.data || query.isHydrating
+      })
     )
       continue
     resolutionsByProductId.set(

@@ -19,8 +19,9 @@ export function getEventCatalogQueryDisplayState(
     ? projectRawEventCatalog(
         query.data,
         rateInput,
-        query.data.complete &&
-          !query.isFetching &&
+        (query.isFetching
+          ? !query.data.complete && query.data.resolutionComplete === true
+          : query.data.complete) &&
           !query.isError &&
           !query.isPaused &&
           relaySettingsReady

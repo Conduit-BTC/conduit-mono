@@ -1,7 +1,16 @@
 import { describe, expect, it } from "bun:test"
-import { QueryClient, QueryObserver } from "@tanstack/react-query"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+import { hashKey, QueryClient, QueryObserver } from "@tanstack/react-query"
 import {
   encodeEventMarketNaddr,
+  buildEventMarketCalendarDraft,
+  buildEventMarketCollectionDraft,
+  buildEventMarketPickupDraft,
+  resolveEventMarketEvidence,
   evaluateListingSafety,
   prepareProductCatalog,
   type CommerceProductRecord,
@@ -16,6 +25,7 @@ import {
 } from "../src/lib/event-catalog-query"
 import {
   projectRawEventCatalog,
+  buildEventCatalogProductPreviewRecords,
   resolveProductCartFulfillmentFromCatalogs,
   getProductEventMarketCandidates,
   eventCatalogNeedsProductRefresh,
@@ -24,6 +34,13 @@ import {
   type RawEventCatalog,
   type loadRawEventCatalog,
 } from "../src/lib/event-market-adapter"
+
+import {
+  eventCatalogCacheCoherence,
+  reconcileEventCatalog,
+} from "../src/lib/event-catalog-cache-coherence"
+import { getEventCatalogQueryDisplayState } from "../src/lib/event-catalog-query-state"
+import { getEventCatalogCartAction } from "../src/lib/event-market-cart-action"
 
 const organizer = "a".repeat(64)
 const merchant = "b".repeat(64)
@@ -225,7 +242,523 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+function pendingPreviewCatalog(): RawEventCatalog {
+  const resolution = market()
+  const candidate = product()
+  resolution.acceptedProductEvidence[0]!.productPreview = {
+    coordinate: candidate.id,
+    sourceSafety: evaluateListingSafety(candidate),
+    eventId: "4".repeat(64),
+    createdAt: candidate.createdAt,
+    title: candidate.title,
+    summary: candidate.summary,
+    type: candidate.type,
+    format: candidate.format,
+    stock: candidate.stock,
+    images: candidate.images,
+    priceStatus: "resolved",
+    price: candidate.price,
+    currency: candidate.currency,
+    priceSats: candidate.priceSats,
+    sourcePrice: candidate.sourcePrice,
+  }
+  const result = productRead({
+    includeRecord: false,
+    issue: "pending",
+    listing: "unavailable",
+    stale: true,
+  })
+  return {
+    reference: collectionCoordinate,
+    resolution,
+    result,
+    previewRecords: buildEventCatalogProductPreviewRecords(
+      resolution,
+      [],
+      result
+    ),
+    complete: false,
+    resolutionComplete: true,
+  }
+}
+
+describe("pending event product previews", () => {
+  for (const source of [
+    "signed tag",
+    "legacy tags",
+    "legacy summary",
+  ] as const) {
+    it(`preserves ${source} safety when the bounded display fields look innocuous`, () => {
+      const organizerKey = generateSecretKey()
+      const merchantKey = generateSecretKey()
+      const owner = getPublicKey(organizerKey)
+      const author = getPublicKey(merchantKey)
+      const collection = `30405:${owner}:market`
+      const calendar = `31923:${owner}:calendar`
+      const pickup = `30406:${owner}:pickup`
+      const coordinate = `30402:${author}:coffee`
+      const sign = (draft: {
+        kind: number
+        content: string
+        tags: string[][]
+      }) => finalizeEvent({ ...draft, created_at: 100 }, organizerKey)
+      const graph = [
+        sign(
+          buildEventMarketCalendarDraft({
+            kind: 31923,
+            dTag: "calendar",
+            title: "Public market",
+            start: 100,
+            end: 10000,
+          })
+        ),
+        sign(
+          buildEventMarketPickupDraft({
+            dTag: "pickup",
+            title: "Event pickup",
+            price: 0,
+            currency: "SATS",
+            countries: ["US"],
+            location: "Public hall",
+          })
+        ),
+        sign(
+          buildEventMarketCollectionDraft({
+            dTag: "market",
+            title: "Market",
+            eventCoordinate: calendar,
+            pickupCoordinate: pickup,
+            productCoordinates: [coordinate],
+          })
+        ),
+      ]
+      const listing = finalizeEvent(
+        {
+          kind: 30402,
+          created_at: 100,
+          content:
+            source === "signed tag"
+              ? "Coffee beans"
+              : JSON.stringify({
+                  title: "Coffee",
+                  summary:
+                    source === "legacy summary"
+                      ? "Counterfeit goods"
+                      : "Coffee beans",
+                  price: 2000,
+                  currency: "SATS",
+                  images: [{ url: "https://cdn.conduit.market/coffee.png" }],
+                  tags: source === "legacy tags" ? ["counterfeit"] : [],
+                }),
+          tags: [
+            ["d", "coffee"],
+            ["title", "Coffee"],
+            ["summary", "Coffee beans"],
+            ["type", "simple", "physical"],
+            ["price", "2000", "SATS"],
+            ["image", "https://cdn.conduit.market/coffee.png"],
+            ["a", collection],
+            ["shipping_option", pickup],
+            ...(source === "signed tag" ? [["t", "counterfeit"]] : []),
+          ],
+        },
+        merchantKey
+      )
+      const resolution = resolveEventMarketEvidence({
+        reference: collection,
+        events: graph,
+        productRequestEvents: [listing],
+        nowMs: 200_000,
+      })
+      expect(resolution.acceptedProductCoordinates).toEqual([coordinate])
+      expect(
+        resolution.acceptedProductEvidence[0]!.productPreview
+      ).toMatchObject({ title: "Coffee", summary: "Coffee beans" })
+      const result = productRead({ includeRecord: false, issue: "pending" })
+      result.diagnostics = [
+        { productId: coordinate, addressId: coordinate, issue: "pending" },
+      ]
+      const previews = buildEventCatalogProductPreviewRecords(
+        resolution,
+        [],
+        result
+      )
+      expect(previews).toEqual([])
+      expect(
+        projectRawEventCatalog({
+          reference: collection,
+          resolution,
+          result,
+          previewRecords: previews,
+          resolutionComplete: true,
+          complete: false,
+        }).products
+      ).toEqual([])
+    })
+  }
+
+  it("shows a signed preview while exact hydration is pending without pickup authority", () => {
+    const snapshot = pendingPreviewCatalog()
+    expect(snapshot.result!.data).toEqual([])
+    expect(snapshot.previewRecords).toHaveLength(1)
+    const catalog = projectRawEventCatalog(snapshot)
+    expect(catalog.products).toHaveLength(1)
+    expect(catalog.products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupFulfillment: null,
+      participation: { purchaseReady: false },
+      product: { id: productCoordinate, title: "Coffee", price: 2000 },
+    })
+    expect(catalog.unresolvedProductCoordinates).toEqual([])
+    expect(catalog.products[0]!.familyPickupFulfillments).toBeUndefined()
+  })
+
+  for (const issue of [
+    "listing_filtered",
+    "product_missing",
+    "invalid_product_reference",
+    "lookup_unavailable",
+    "lookup_partial",
+    "cached_only",
+  ] as const) {
+    it(`does not revive a preview after ${issue}`, () => {
+      const snapshot = pendingPreviewCatalog()
+      snapshot.result!.diagnostics[0]!.issue = issue
+      expect(
+        buildEventCatalogProductPreviewRecords(
+          snapshot.resolution!,
+          [],
+          snapshot.result
+        )
+      ).toEqual([])
+      expect(projectRawEventCatalog(snapshot).products).toEqual([])
+    })
+  }
+
+  it("withholds a display preview whose full source safety is unavailable", () => {
+    const snapshot = pendingPreviewCatalog()
+    delete snapshot.resolution!.acceptedProductEvidence[0]!.productPreview!
+      .sourceSafety
+    expect(
+      buildEventCatalogProductPreviewRecords(
+        snapshot.resolution!,
+        [],
+        snapshot.result
+      )
+    ).toEqual([])
+  })
+
+  for (const guard of [
+    "complete",
+    "localEvidencePending",
+    "localGraphSuperseded",
+  ] as const) {
+    it(`withholds pending preview when ${guard}`, () => {
+      const snapshot = pendingPreviewCatalog()
+      snapshot[guard] = true
+      expect(projectRawEventCatalog(snapshot).products).toEqual([])
+    })
+  }
+
+  it("does not replace a stronger exact product withdrawal with an accepted preview", () => {
+    const snapshot = pendingPreviewCatalog()
+    snapshot.result!.data = [
+      commerceRecord(product({ collectionRefs: [], createdAt: 104_000 }), {
+        eventId: "5".repeat(64),
+        eventCreatedAt: 104,
+      }),
+    ]
+    expect(projectRawEventCatalog(snapshot).products).toEqual([])
+  })
+
+  it("keeps a deleted preview removed after local reconciliation without rebuilding it from the graph", () => {
+    const snapshot = pendingPreviewCatalog()
+    const reconciled = reconcileEventCatalog(snapshot, {
+      status: "ready",
+      revision: 1,
+      evidence: [
+        {
+          target: "address",
+          deletionEventId: "d".repeat(64),
+          authorPubkey: merchant,
+          deletedAt: 104,
+          addressId: productCoordinate,
+        },
+      ],
+    })
+    expect(reconciled.previewRecords).toEqual([])
+    expect(reconciled.result!.diagnostics[0]!.issue).toBe("pending")
+    expect(projectRawEventCatalog(reconciled).products).toEqual([])
+    // A late older progress payload crosses the same retained frontier again.
+    expect(
+      projectRawEventCatalog(
+        reconcileEventCatalog(snapshot, {
+          status: "ready",
+          revision: 1,
+          evidence: [
+            {
+              target: "address",
+              deletionEventId: "d".repeat(64),
+              authorPubkey: merchant,
+              deletedAt: 104,
+              addressId: productCoordinate,
+            },
+          ],
+        })
+      ).products
+    ).toEqual([])
+  })
+
+  it("honors a newer local withdrawal of a pending display preview", () => {
+    const snapshot = pendingPreviewCatalog()
+    const newer = commerceRecord(
+      product({ collectionRefs: [], createdAt: 104_000 }),
+      { eventId: "5".repeat(64), eventCreatedAt: 104 }
+    )
+    const reconciled = reconcileEventCatalog(
+      snapshot,
+      { status: "ready", revision: 0, evidence: [] },
+      [newer]
+    )
+    expect(reconciled.previewRecords![0]!.eventId).toBe(newer.eventId)
+    expect(projectRawEventCatalog(reconciled).products).toEqual([])
+  })
+
+  for (const change of [
+    "identity",
+    "revision",
+    "timestamp",
+    "merchant",
+    "price",
+    "family",
+    "unsafe",
+    "image",
+    "excluded",
+  ] as const) {
+    it(`rejects ${change} preview evidence without inventing a replacement`, () => {
+      const snapshot = pendingPreviewCatalog()
+      const resolution = snapshot.resolution!
+      const evidence = resolution.acceptedProductEvidence[0]!
+      const preview = evidence.productPreview!
+      if (change === "identity") preview.coordinate = `30402:${merchant}:other`
+      if (change === "revision") preview.eventId = "6".repeat(64)
+      if (change === "timestamp") preview.createdAt += 1000
+      if (change === "merchant") evidence.merchantPubkey = organizer
+      if (change === "price")
+        evidence.productPreview = { ...preview, priceStatus: "malformed" }
+      if (change === "family") preview.type = "variation"
+      if (change === "unsafe") preview.title = "Counterfeit goods"
+      if (change === "image") preview.images = []
+      if (change === "excluded")
+        resolution.browseExcludedProductCoordinates = [productCoordinate]
+      expect(
+        buildEventCatalogProductPreviewRecords(resolution, [], snapshot.result)
+      ).toEqual([])
+    })
+  }
+})
+
 describe("shared progressive event catalogs", () => {
+  it("reuses a completed catalog on immediate navigation back", async () => {
+    const client = new QueryClient()
+    let reads = 0
+    const options = eventCatalogQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true,
+      async () => {
+        reads++
+        return raw()
+      }
+    )
+    await client.fetchQuery(options)
+    const observer = new QueryObserver(client, options)
+    const stop = observer.subscribe(() => {})
+    try {
+      expect(reads).toBe(1)
+      expect(observer.getCurrentResult().isFetching).toBe(false)
+      expect(
+        projectRawEventCatalog(observer.getCurrentResult().data!).purchaseReady
+      ).toBe(true)
+    } finally {
+      stop()
+      client.clear()
+    }
+  })
+
+  it("projects completed product evidence while other products are still hydrating", () => {
+    const snapshot = { ...raw(), complete: false, resolutionComplete: true }
+    const catalog = projectRawEventCatalog(snapshot)
+    expect(catalog.purchaseReady).toBe(true)
+    expect(catalog.products[0]?.pickupFulfillment).not.toBeNull()
+    expect(
+      projectRawEventCatalog({ ...snapshot, resolutionComplete: false })
+        .purchaseReady
+    ).toBe(false)
+  })
+
+  it("makes a finished merchant actionable while another merchant is held, then reuses the final cache", async () => {
+    const client = new QueryClient()
+    const held = deferred<ProductsByIdsResult>()
+    const progressed = deferred<void>()
+    const fast = product()
+    const slow = product({
+      id: `30402:${"c".repeat(64)}:tea`,
+      pubkey: "c".repeat(64),
+    })
+    const resolution = market()
+    resolution.organizerProductCoordinates.push(slow.id)
+    resolution.acceptedProductCoordinates.push(slow.id)
+    resolution.acceptedProductEvidence.push({
+      ...resolution.acceptedProductEvidence[0]!,
+      productCoordinate: slow.id,
+      merchantPubkey: slow.pubkey,
+    })
+    let reads = 0
+    const options = eventCatalogQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true,
+      async (_reference, loaderOptions) => {
+        reads++
+        const fastResult = productRead()
+        const cachedSlow = productRead({
+          product: slow,
+          source: "local_cache",
+          stale: true,
+          issue: "cached_only",
+          listing: "unavailable",
+        })
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        loaderOptions?.onProgress?.({
+          reference: collectionCoordinate,
+          resolution,
+          result: {
+            ...fastResult,
+            data: [...fastResult.data, ...cachedSlow.data],
+            diagnostics: [...fastResult.diagnostics, ...cachedSlow.diagnostics],
+            meta: { ...fastResult.meta, stale: true, degraded: true },
+          },
+          resolutionComplete: true,
+          complete: false,
+        })
+        progressed.resolve()
+        const slowResult = await held.promise
+        const result = {
+          ...fastResult,
+          data: [...fastResult.data, ...slowResult.data],
+          diagnostics: [...fastResult.diagnostics, ...slowResult.diagnostics],
+        }
+        return {
+          reference: collectionCoordinate,
+          resolution,
+          result,
+          complete: true,
+        }
+      }
+    )
+    const observer = new QueryObserver(client, options)
+    const release = observer.subscribe(() => {})
+    try {
+      await progressed.promise
+      // Local evidence settles independently while the slow merchant remains
+      // held. Progress cannot borrow authority before that reconciliation.
+      await eventCatalogCacheCoherence(client).settled(
+        observer.getCurrentResult().data!,
+        hashKey(options.queryKey)
+      )
+      const query = observer.getCurrentResult()
+      const display = getEventCatalogQueryDisplayState(query)
+      expect(query.isFetching).toBe(true)
+      expect(display.data?.products.map((entry) => entry.product.id)).toEqual([
+        fast.id,
+        slow.id,
+      ])
+      expect(display.data!.products[1]!.pickupFulfillment).toBeNull()
+      expect(display.data!.products[1]!.evidenceState).toBe("retained")
+      const pickup = display.data!.products[0]!.pickupFulfillment
+      expect(
+        getEventCatalogCartAction({
+          state: display.data!.state,
+          purchaseReady: display.data!.purchaseReady,
+          hasPickupFulfillment: !!pickup,
+          isChecking: display.isHydrating && !pickup,
+        })
+      ).toEqual({ enabled: true, disabledLabel: null })
+      held.resolve(productRead({ product: slow }))
+      await client.fetchQuery(options)
+      const completed = getEventCatalogQueryDisplayState(
+        observer.getCurrentResult()
+      )
+      expect(completed.data?.products).toHaveLength(2)
+      expect(completed.isHydrating).toBe(false)
+      release()
+      await client.fetchQuery(options)
+      expect(reads).toBe(1)
+    } finally {
+      held.resolve(productRead({ product: slow }))
+      release()
+      client.clear()
+    }
+  })
+
+  it("does not reuse canceled progressive authorization before a remounted read emits evidence", async () => {
+    const client = new QueryClient()
+    const first = deferred<RawEventCatalog>()
+    const second = deferred<RawEventCatalog>()
+    let reads = 0
+    const options = eventCatalogQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true,
+      async (_reference, loaderOptions) => {
+        if (++reads === 1) {
+          loaderOptions?.onProgress?.({
+            ...raw(),
+            complete: false,
+            resolutionComplete: true,
+          })
+          return first.promise
+        }
+        return second.promise
+      }
+    )
+    const firstObserver = new QueryObserver(client, options)
+    const leave = firstObserver.subscribe(() => {})
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(
+      getEventCatalogQueryDisplayState(firstObserver.getCurrentResult()).data
+        ?.purchaseReady
+    ).toBe(true)
+    leave()
+    const secondObserver = new QueryObserver(client, options)
+    const stop = secondObserver.subscribe(() => {})
+    try {
+      expect(reads).toBe(2)
+      const display = getEventCatalogQueryDisplayState(
+        secondObserver.getCurrentResult()
+      )
+      expect(display.isHydrating).toBe(true)
+      expect(display.data?.products).toHaveLength(1)
+      expect(display.data?.purchaseReady).toBe(false)
+      expect(display.data?.products[0]?.pickupFulfillment).toBeNull()
+      second.resolve(raw())
+      await client.fetchQuery(options)
+      expect(
+        getEventCatalogQueryDisplayState(secondObserver.getCurrentResult()).data
+          ?.purchaseReady
+      ).toBe(true)
+    } finally {
+      first.resolve(raw())
+      second.resolve(raw())
+      stop()
+      client.clear()
+    }
+  })
+
   it("shares a matching pending detail/card query and reprices without another read", async () => {
     const client = new QueryClient()
     const pending = deferred<RawEventCatalog>()
@@ -539,6 +1072,29 @@ describe("shared progressive event catalogs", () => {
     expect(
       live.products[0]?.family?.children.map((entry) => entry.product.id)
     ).toEqual([good.id])
+    const retainedFamily = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution: liveResolution,
+      result: {
+        ...result,
+        diagnostics: result.diagnostics.map((entry) => ({
+          ...entry,
+          issue: "cached_only",
+        })),
+      },
+      complete: false,
+      resolutionComplete: true,
+    })
+    expect(retainedFamily.products).toHaveLength(1)
+    expect(
+      retainedFamily.products[0]?.family?.children.map(
+        (entry) => entry.product.id
+      )
+    ).toEqual([good.id])
+    expect(retainedFamily.products[0]?.pickupFulfillment).toBeNull()
+    expect(retainedFamily.products[0]?.familyPickupFulfillments).toEqual({
+      [good.id]: null,
+    })
   })
 
   it("retains an atomic contextual child even when its parent is not organizer-listed", () => {
@@ -584,7 +1140,9 @@ describe("shared progressive event catalogs", () => {
       () => true,
       loader
     )
-    client.setQueryData(options.queryKey, raw())
+    client.setQueryData(options.queryKey, raw(), {
+      updatedAt: Date.now() - 61_000,
+    })
     const refresh = client.fetchQuery(options)
     const resolution = market("stale")
     resolution.acceptedProductCoordinates = []
@@ -761,7 +1319,13 @@ describe("shared progressive event catalogs", () => {
         "account-a",
         attempted
       )
-      if (pending.length > 0) await client.fetchQuery(options)
+      if (pending.length > 0) {
+        await client.invalidateQueries({
+          queryKey: options.queryKey,
+          refetchType: "none",
+        })
+        await client.fetchQuery(options)
+      }
       expect(
         resolveProductCartFulfillmentFromCatalogs(
           product(),
