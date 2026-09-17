@@ -2053,7 +2053,7 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
   )
   await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
   const catalogUrl = page.url()
-  const shopHeading = page.getByRole("heading", { name: "Shop the event" })
+  const eventProducts = page.getByRole("region", { name: "Event products" })
   const banner = page.getByRole("img", { name: `${eventTitle} banner` })
   const cards = page.getByRole("listitem").filter({
     has: page.getByRole("heading", {
@@ -2069,7 +2069,13 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
     hasText: /^Technical details\s*$/,
   })
   const technicalDetails = technicalSummary.locator("..")
-  await expect(shopHeading).toBeVisible()
+  await expect(eventProducts).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: "Shop the event" })
+  ).toHaveCount(0)
+  await expect(
+    page.getByText("4 products · 2 merchants", { exact: true })
+  ).toHaveCount(0)
   await expect(banner).toBeVisible()
   await expect(titles).toHaveText(groupedProductTitles)
   await expect(
@@ -2083,6 +2089,50 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
   await expect(
     cards.first().getByRole("button", { name: "Alpine Goods", exact: true })
   ).toBeVisible()
+  const about = page.getByRole("button", {
+    name: "About this event",
+    exact: true,
+  })
+  const share = page.getByRole("button", { name: /^Share event/ })
+  const eventSummary = page.getByText(
+    "Synthetic browser-only organizer catalog.",
+    { exact: true }
+  )
+  await expect(about).toHaveAttribute("aria-expanded", "false")
+  await expect(eventSummary).toBeHidden()
+  await about.click()
+  await expect(about).toHaveAttribute("aria-expanded", "true")
+  await expect(eventSummary).toBeVisible()
+  await page.setViewportSize({ width: 710, height: 900 })
+  const [
+    aboutBounds,
+    shareBounds,
+    summaryBounds,
+    searchBounds,
+    merchantBounds,
+  ] = await Promise.all([
+    about.boundingBox(),
+    share.boundingBox(),
+    eventSummary.boundingBox(),
+    search.boundingBox(),
+    merchant.boundingBox(),
+  ])
+  expect(aboutBounds).not.toBeNull()
+  expect(shareBounds).not.toBeNull()
+  expect(summaryBounds).not.toBeNull()
+  expect(searchBounds).not.toBeNull()
+  expect(merchantBounds).not.toBeNull()
+  expect(aboutBounds!.x).toBeLessThan(shareBounds!.x)
+  expect(summaryBounds!.y).toBeGreaterThanOrEqual(
+    Math.max(
+      aboutBounds!.y + aboutBounds!.height,
+      shareBounds!.y + shareBounds!.height
+    )
+  )
+  expect(merchantBounds!.y).toBeGreaterThanOrEqual(
+    searchBounds!.y + searchBounds!.height
+  )
+  await page.setViewportSize({ width: 1280, height: 900 })
   await expect(technicalDetails).not.toHaveAttribute("open", "")
   const longMerchantCard = cards.filter({
     has: page.getByRole("heading", { name: "Blue Tote", exact: true }),
@@ -5213,9 +5263,7 @@ const loadRawEventCatalog = async (...args) => {
     card.getByRole("button", { name: "Add", exact: true })
   ).toBeEnabled()
   await expect(warning).toHaveCount(0)
-  await expect(page.getByTestId("event-actionability-status")).toHaveText(
-    "1 product available."
-  )
+  await expect(page.getByTestId("event-actionability-status")).toHaveCount(0)
   expect(relay.publications).toHaveLength(publicationCount)
 })
 
@@ -5241,9 +5289,7 @@ test("event availability copy excludes retained products without pickup authorit
   const card = page
     .getByRole("listitem")
     .filter({ hasText: "Synthetic availability product" })
-  await expect(page.getByTestId("event-actionability-status")).toContainText(
-    "1 product available."
-  )
+  await expect(page.getByTestId("event-actionability-status")).toHaveCount(0)
   await expect(
     card.getByRole("button", { name: "Add", exact: true })
   ).toBeEnabled()
@@ -5315,7 +5361,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   ).toBeVisible({ timeout: 30_000 })
   await expect(
     page.getByText("Pickup details are shown on each product.", { exact: true })
-  ).toBeVisible()
+  ).toHaveCount(0)
   await expect(
     page.getByText(
       "The organizer has not accepted any products for this event.",
@@ -5686,13 +5732,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   await expect(
     page.getByText(MERCHANT_PRODUCT_TITLE, { exact: true })
   ).toBeVisible()
-  await expect(page.getByTestId("event-actionability-status")).toContainText(
-    "2 products available."
-  )
-  await expect(page.getByTestId("event-actionability-status")).toHaveAttribute(
-    "role",
-    "status"
-  )
+  await expect(page.getByTestId("event-actionability-status")).toHaveCount(0)
   const technicalDetails = page
     .locator("summary")
     .filter({ hasText: /^Technical details\s*$/ })
