@@ -2,6 +2,11 @@ import { NDKEvent, nip19, type NDKFilter } from "@nostr-dev-kit/ndk"
 import { liveQuery } from "dexie"
 import { db, type CachedEventMarketEvidence } from "../db"
 import type { ProductSchema } from "../schemas"
+import { parseProductEvent } from "./products"
+import {
+  evaluateListingSafety,
+  type ListingSafetyEvaluation,
+} from "./listing-safety"
 import { EVENT_KINDS } from "./kinds"
 import { waitForVisibleDocument } from "./interactive-signer"
 import {
@@ -1046,6 +1051,8 @@ type EventMarketProductPreviewBase = Pick<
   createdAt: number
   /** Bounded display media copied from the same signed revision. */
   images: ProductSchema["images"]
+  /** Exact-reader safety evaluated before display-only fields omit source evidence. */
+  sourceSafety?: ListingSafetyEvaluation
 }
 
 /**
@@ -1661,8 +1668,18 @@ function getCurrentParticipation(
   ): EventMarketProductPreview | undefined => {
     const product = projectSignedProductPreviewEvidence(event)
     if (!product) return undefined
+    let sourceSafety: ListingSafetyEvaluation | undefined
+    try {
+      // Use the exact reader's parser and safety policy. The bounded preview
+      // omits tags and may prefer different display text from legacy content.
+      sourceSafety = evaluateListingSafety(parseProductEvent(event))
+    } catch {
+      // A display preview can survive malformed full listing evidence, but
+      // Market must not treat it as a safety-checked browse card.
+    }
     return {
       coordinate: productCoordinate,
+      ...(sourceSafety ? { sourceSafety } : {}),
       eventId: event.id.toLowerCase(),
       createdAt: event.created_at * 1_000,
       ...product,
