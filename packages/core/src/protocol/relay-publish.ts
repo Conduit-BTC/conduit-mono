@@ -139,6 +139,26 @@ export interface PublishWithPlannerResult {
   relayFailureMessages: Record<string, string>
 }
 
+export interface ProgressivePublishSnapshot extends PublishWithPlannerResult {
+  /** Relays whose current attempt has not reached a terminal outcome yet. */
+  pendingRelayUrls: string[]
+  /** Relays that returned a machine-readable NIP-01 rejection. */
+  rejectedRelayUrls: string[]
+  /** Relays that closed, errored, or did not acknowledge before timeout. */
+  timedOutRelayUrls: string[]
+}
+
+/**
+ * Two milestones for one immutable publish fanout. `accepted` resolves after
+ * the first positive relay acknowledgement and rejects only after every
+ * bounded attempt finishes with zero acknowledgements. `settled` always
+ * resolves with the final per-relay outcome, including the zero-ACK case.
+ */
+export interface ProgressivePublishMilestones {
+  accepted: Promise<ProgressivePublishSnapshot>
+  settled: Promise<ProgressivePublishSnapshot>
+}
+
 export class RelayPublishDiagnosticsError extends Error {
   readonly diagnostics: PublishWithPlannerResult
   readonly cause: unknown
@@ -194,6 +214,14 @@ interface RelayPublishTestOverrides {
     "get"
   >
   ownerRelayListEvidenceRepository?: OwnerRelayListEvidenceRepository
+  progressiveRelayPublish?: (input: {
+    event: NDKEvent
+    relayUrl: string
+    timeoutMs: number
+  }) => Promise<{
+    status: ExactRelayWriteStatus
+    failureMessage?: string
+  }>
 }
 
 let testOverrides: RelayPublishTestOverrides = {}
@@ -456,30 +484,16 @@ function createPublishDiagnosticsError(input: {
   )
 }
 
-async function publishToRelayUrls(input: {
-  event: NDKEvent
-  ndk: ReturnType<typeof getNdk>
+async function resolveRelayPublishTargets(input: {
   relayUrls: readonly string[]
-  requiredRelayCount: number
-  timeoutMs: number
   accountPubkey?: string | null
-  /** Active account required to exercise owner-selected ws:// authority. */
   authenticatedPubkey?: string | null
-  /** Exact target subset selected by the authenticated account owner. */
   ownerSelectedRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
   >
-  shouldContinue?: () => boolean
-}): Promise<{
-  attemptedRelayUrls: string[]
-  successfulRelayUrls: string[]
-  failedRelayUrls: string[]
-  relayFailureMessages: Record<string, string>
-  rejectedRelayUrls: string[]
-  thrown: unknown
-}> {
+}): Promise<{ candidateRelayUrls: string[]; relayUrls: string[] }> {
   const candidateRelayUrls =
     config.e2eRelayIsolationEnabled && input.relayUrls.length > 0
       ? (() => {
@@ -521,6 +535,42 @@ async function publishToRelayUrls(input: {
             ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
             repository: accountNetworkLocalStateRepository,
           })
+
+  return { candidateRelayUrls, relayUrls }
+}
+
+async function publishToRelayUrls(input: {
+  event: NDKEvent
+  ndk: ReturnType<typeof getNdk>
+  relayUrls: readonly string[]
+  requiredRelayCount: number
+  timeoutMs: number
+  accountPubkey?: string | null
+  /** Active account required to exercise owner-selected ws:// authority. */
+  authenticatedPubkey?: string | null
+  /** Exact target subset selected by the authenticated account owner. */
+  ownerSelectedRelayUrls?: readonly string[]
+  accountNetworkLocalStateRepository?: Pick<
+    AccountNetworkLocalStateRepository,
+    "get"
+  >
+  shouldContinue?: () => boolean
+}): Promise<{
+  attemptedRelayUrls: string[]
+  successfulRelayUrls: string[]
+  failedRelayUrls: string[]
+  relayFailureMessages: Record<string, string>
+  rejectedRelayUrls: string[]
+  thrown: unknown
+}> {
+  const { candidateRelayUrls, relayUrls } = await resolveRelayPublishTargets({
+    relayUrls: input.relayUrls,
+    accountPubkey: input.accountPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
+  })
 
   // NDKEvent.publish() reads the instance from the event itself even when the
   // relay set was built with an NDK instance. Gift-wrap helpers can return an
@@ -617,6 +667,217 @@ async function publishToRelayUrls(input: {
     rejectedRelayUrls: Array.from(rejectedRelayUrls),
     thrown,
   }
+}
+
+async function publishNdkEventToRelay(input: {
+  event: NDKEvent
+  ndk: ReturnType<typeof getNdk>
+  relayUrl: string
+  timeoutMs: number
+}): Promise<{ status: ExactRelayWriteStatus; failureMessage?: string }> {
+  input.event.ndk ??= input.ndk
+  const relaySet = NDKRelaySet.fromRelayUrls([input.relayUrl], input.ndk)
+  const relay = relaySet.relays.values().next().value
+  if (!relay) {
+    return {
+      status: "timed_out",
+      failureMessage: "Relay target was unavailable",
+    }
+  }
+
+  try {
+    const accepted = await relay.publish(input.event, input.timeoutMs)
+    return accepted
+      ? { status: "acked" }
+      : {
+          status: "timed_out",
+          failureMessage: "Relay did not acknowledge the event",
+        }
+  } catch (error) {
+    if (isDuplicateRelayAcceptance(error)) return { status: "acked" }
+    return {
+      status: isExplicitRelayRejection(error) ? "rejected" : "timed_out",
+      failureMessage: getPublishErrorMessage(error),
+    }
+  }
+}
+
+/**
+ * Publish one already-signed event to an exclusive relay plan without making
+ * checkout wait for the slowest target. This is intentionally opt-in: existing
+ * planner callers retain their all-settled return contract until migrated.
+ */
+export async function publishWithPlannerProgressive(
+  event: NDKEvent,
+  input: PublishWithPlannerInput
+): Promise<ProgressivePublishMilestones> {
+  if (event.kind !== EVENT_KINDS.GIFT_WRAP) {
+    throw new Error("Progressive publishing is limited to gift wraps.")
+  }
+  if (!input.exclusiveRelayUrls) {
+    throw new Error("Progressive publishing requires an exclusive relay plan.")
+  }
+  if (input.deliveryMode !== "critical") {
+    throw new Error("Progressive publishing requires critical delivery mode.")
+  }
+  assertSafeReplaceablePublish(event, input.replaceableSafety)
+  assertValidSignedPublish(event, input)
+  assertPublishSessionCurrent(input.shouldContinue)
+
+  const plan = await planPublishRelays(input)
+  const ownerSelectedRelayUrls =
+    hasAuthenticatedAuthorRelayContext(input) &&
+    input.accountPubkey?.trim().toLowerCase() ===
+      input.authenticatedPubkey?.trim().toLowerCase()
+      ? normalizeOwnerSelectedRelayUrls(input.ownerSelectedRelayUrls ?? [])
+      : []
+  const targets = await resolveRelayPublishTargets({
+    relayUrls: plan.primaryRelayUrls,
+    accountPubkey: input.accountPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
+  })
+  if (targets.relayUrls.length === 0) {
+    throw new Error(
+      targets.candidateRelayUrls.length > 0 && input.accountPubkey != null
+        ? "Refusing to publish because no account-eligible relay target remains."
+        : "Refusing to publish without a valid exclusive relay target."
+    )
+  }
+  // Account policy reads above are asynchronous. Re-check the live signer
+  // session before constructing milestones or recording any relay attempt.
+  assertPublishSessionCurrent(input.shouldContinue)
+
+  const ndk = testOverrides.getNdk ? testOverrides.getNdk() : getNdk()
+  event.ndk ??= ndk
+  event.publishStatus = "pending"
+  const statuses = new Map<string, "pending" | ExactRelayWriteStatus>(
+    targets.relayUrls.map((relayUrl) => [relayUrl, "pending"])
+  )
+  const relayFailureMessages: Record<string, string> = {}
+  let accepted = false
+  let resolveAccepted!: (snapshot: ProgressivePublishSnapshot) => void
+  let rejectAccepted!: (error: unknown) => void
+  const acceptedPromise = new Promise<ProgressivePublishSnapshot>(
+    (resolve, reject) => {
+      resolveAccepted = resolve
+      rejectAccepted = reject
+    }
+  )
+
+  const snapshot = (): ProgressivePublishSnapshot => {
+    const successfulRelayUrls: string[] = []
+    const rejectedRelayUrls: string[] = []
+    const timedOutRelayUrls: string[] = []
+    const pendingRelayUrls: string[] = []
+    for (const [relayUrl, status] of statuses) {
+      if (status === "acked") successfulRelayUrls.push(relayUrl)
+      else if (status === "rejected") rejectedRelayUrls.push(relayUrl)
+      else if (status === "timed_out") timedOutRelayUrls.push(relayUrl)
+      else pendingRelayUrls.push(relayUrl)
+    }
+    return {
+      plan,
+      attemptedRelayUrls: [...targets.relayUrls],
+      successfulRelayUrls,
+      failedRelayUrls: [...rejectedRelayUrls, ...timedOutRelayUrls],
+      relayFailureMessages: { ...relayFailureMessages },
+      pendingRelayUrls,
+      rejectedRelayUrls,
+      timedOutRelayUrls,
+    }
+  }
+
+  const attemptRelay = async (relayUrl: string, timeoutMs: number) => {
+    assertPublishSessionCurrent(input.shouldContinue)
+    const outcome = testOverrides.progressiveRelayPublish
+      ? await testOverrides.progressiveRelayPublish({
+          event,
+          relayUrl,
+          timeoutMs,
+        })
+      : await publishNdkEventToRelay({ event, ndk, relayUrl, timeoutMs })
+    statuses.set(relayUrl, outcome.status)
+    if (outcome.status === "acked") {
+      delete relayFailureMessages[relayUrl]
+      recordRelaySuccess(relayUrl)
+      if (!accepted) {
+        accepted = true
+        event.publishStatus = "success"
+        resolveAccepted(snapshot())
+      }
+      return
+    }
+    relayFailureMessages[relayUrl] =
+      outcome.failureMessage ?? "No acknowledgement before publish timeout"
+    recordRelayFailure(relayUrl)
+  }
+
+  const runRound = async (relayUrls: readonly string[], timeoutMs: number) => {
+    for (const relayUrl of relayUrls) {
+      statuses.set(relayUrl, "pending")
+      delete relayFailureMessages[relayUrl]
+    }
+    await Promise.all(
+      relayUrls.map(async (relayUrl) => {
+        try {
+          await attemptRelay(relayUrl, timeoutMs)
+        } catch (error) {
+          statuses.set(relayUrl, "timed_out")
+          relayFailureMessages[relayUrl] = getPublishErrorMessage(error)
+          recordRelayFailure(relayUrl)
+        }
+      })
+    )
+  }
+
+  const settled = (async (): Promise<ProgressivePublishSnapshot> => {
+    await runRound(targets.relayUrls, CRITICAL_PUBLISH_TIMEOUT_MS)
+    if (!accepted) {
+      assertPublishSessionCurrent(input.shouldContinue)
+      const retryTargets = await resolveRelayPublishTargets({
+        relayUrls: targets.relayUrls,
+        accountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.authenticatedPubkey,
+        ownerSelectedRelayUrls,
+        accountNetworkLocalStateRepository:
+          input.accountNetworkLocalStateRepository,
+      })
+      const retryRelayUrls = retryTargets.relayUrls.filter(
+        (relayUrl) => statuses.get(relayUrl) !== "acked"
+      )
+      if (retryRelayUrls.length > 0) {
+        await runRound(retryRelayUrls, CRITICAL_RETRY_PUBLISH_TIMEOUT_MS)
+      }
+    }
+    const finalSnapshot = snapshot()
+    if (!accepted) {
+      const error = createPublishDiagnosticsError({
+        message: "Could not publish to the required exclusive relay set.",
+        plan,
+        attemptedRelayUrls: finalSnapshot.attemptedRelayUrls,
+        successfulRelayUrls: finalSnapshot.successfulRelayUrls,
+        failedRelayUrls: finalSnapshot.failedRelayUrls,
+        relayFailureMessages: finalSnapshot.relayFailureMessages,
+        thrown: new Error("No relay acknowledged the event."),
+      })
+      event.publishStatus = "error"
+      event.publishError = error
+      rejectAccepted(error)
+    }
+    return finalSnapshot
+  })().catch((error) => {
+    if (!accepted) {
+      event.publishStatus = "error"
+      event.publishError = error
+      rejectAccepted(error)
+    }
+    return snapshot()
+  })
+
+  return { accepted: acceptedPromise, settled }
 }
 
 export type ExclusiveRelayPublishStatus = ExactRelayWriteStatus
