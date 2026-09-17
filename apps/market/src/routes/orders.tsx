@@ -164,6 +164,7 @@ import {
 import {
   doesCartMatchOrderAttempt,
   forgetCheckoutOrderAttempt,
+  hasCheckoutPaymentProgress,
 } from "../lib/checkout-order-attempt"
 import {
   doesAuthorizedAnonZapPricingMatchOrder,
@@ -1065,10 +1066,7 @@ function OrderDetail({
     if (!current) {
       throw new Error("The saved checkout state could not be reloaded.")
     }
-    if (
-      current.paymentStatus === "not_started" &&
-      current.invoiceStatus === "not_requested"
-    ) {
+    if (!hasCheckoutPaymentProgress(current)) {
       throw new Error(
         "Payment did not start. This order remains recoverable; do not submit another order."
       )

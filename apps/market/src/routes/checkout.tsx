@@ -202,6 +202,7 @@ import {
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   forgetCheckoutOrderAttempt,
+  hasCheckoutPaymentProgress,
   listCheckoutOrderAttemptIds,
   requiresCheckoutOrderRecovery,
 } from "../lib/checkout-order-attempt"
@@ -1192,6 +1193,15 @@ function CheckoutPage() {
       )
     }
     forgetCheckoutOrderAttempt(orderId)
+  }
+
+  async function resolveCheckoutOrderAttemptAfterPaymentProgress(
+    orderId: string
+  ): Promise<boolean> {
+    const current = await getOrderLifecycle(orderId).catch(() => undefined)
+    if (!current || !hasCheckoutPaymentProgress(current)) return false
+    await resolveCheckoutOrderAttempt(orderId)
+    return true
   }
   const signerBlockedMessage =
     authSignerReadiness === "unavailable"
@@ -3348,6 +3358,9 @@ function CheckoutPage() {
             : undefined,
         formatSatsAmount: (sats) =>
           shopperPricing.formatSatsAmount(sats).primary,
+        beforeBackgroundProofDelivery: async () => {
+          await startOrderPostAcceptanceWork?.()
+        },
       }
 
       if (!shouldContinueBuyerSession()) {
@@ -3359,14 +3372,14 @@ function CheckoutPage() {
         paymentWorkStarted = true
         try {
           await runOrderPayment(serviceCtx)
-          await resolveCheckoutOrderAttempt(orderId)
+          await resolveCheckoutOrderAttemptAfterPaymentProgress(orderId)
         } finally {
           void startOrderPostAcceptanceWork?.()
         }
       } else {
         paymentWorkStarted = true
         void runOrderPayment(serviceCtx)
-          .then(() => resolveCheckoutOrderAttempt(orderId))
+          .then(() => resolveCheckoutOrderAttemptAfterPaymentProgress(orderId))
           .catch(() => {})
           .finally(() => {
             void startOrderPostAcceptanceWork?.()

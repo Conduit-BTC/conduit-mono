@@ -246,6 +246,14 @@ describe("checkout completion navigation contracts", () => {
     expect(checkoutRoute).toContain("delivery.startPostAcceptanceWork ?? null")
     expect(checkoutRoute).toContain(".finally(() => {")
     expect(checkoutRoute).toContain("isAuthGenerationCurrent(authGeneration)")
+    expect(checkoutRoute).toContain(
+      "resolveCheckoutOrderAttemptAfterPaymentProgress(orderId)"
+    )
+    expect(checkoutRoute).toContain("hasCheckoutPaymentProgress(current)")
+    expect(checkoutRoute).toContain("beforeBackgroundProofDelivery:")
+    expect(checkoutRoute).not.toContain(
+      ".then(() => resolveCheckoutOrderAttempt(orderId))"
+    )
   })
 
   it("preserves exact-order recovery on ambiguous reads and resumes direct payment without republishing", async () => {

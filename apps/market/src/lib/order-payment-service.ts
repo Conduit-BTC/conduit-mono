@@ -278,6 +278,8 @@ export interface OrderPaymentContext {
   paymentTarget: CheckoutPaymentTarget
   approveFee?: WalletPaymentFeeApproval
   formatSatsAmount?: (sats: number) => string
+  /** Caller-owned signer work that detached receipt proof delivery must follow. */
+  beforeBackgroundProofDelivery?: () => Promise<unknown>
 }
 
 export interface OrderPaymentRuntimeState {
@@ -314,6 +316,7 @@ export interface OrderPaymentDependencies {
   ) => ReturnType<typeof setInterval>
   cancelPaymentClaimHeartbeat: (timer: ReturnType<typeof setInterval>) => void
   reportPaymentClaimHeartbeatError: () => void
+  observeOrderPublicZapReceipt: typeof observeOrderPublicZapReceipt
 }
 
 const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
@@ -344,6 +347,7 @@ const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
       "Payment recovery lease renewal failed; guarded payment checkpoints remain active."
     )
   },
+  observeOrderPublicZapReceipt,
 }
 
 export interface OrderReceiptObservationDependencies {
@@ -838,7 +842,8 @@ export async function observeOrderPublicZapReceipt(
   dependencyOverrides: Partial<OrderReceiptObservationDependencies> = {},
   accountPubkey?: string | null,
   authenticatedPubkey?: string | null,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  proofDeliveryBarrier?: Promise<unknown>
 ): Promise<void> {
   const dependencies = {
     ...defaultOrderReceiptObservationDependencies,
@@ -855,6 +860,7 @@ export async function observeOrderPublicZapReceipt(
     if (!hasPublicReceiptContext(lifecycle)) return
 
     if (lifecycle.zapReceiptStatus === "observed" && lifecycle.zapReceiptId) {
+      await proofDeliveryBarrier?.catch(() => undefined)
       await deliverReceiptLinkedProof(
         lifecycle as typeof lifecycle & {
           invoice: string
@@ -940,6 +946,7 @@ export async function observeOrderPublicZapReceipt(
           !hasPublicReceiptContext(updated)
         )
           return
+        await proofDeliveryBarrier?.catch(() => undefined)
         await deliverReceiptLinkedProof(
           updated as typeof updated & {
             zapReceiptId: string
@@ -981,7 +988,8 @@ export async function observeOrderPublicZapReceipt(
           dependencies,
           accountPubkey,
           authenticatedPubkey,
-          shouldContinue
+          shouldContinue,
+          proofDeliveryBarrier
         )
       }, ZAP_RECEIPT_RESCAN_DELAY_MS)
       receiptRescanTimers.set(orderId, timer)
@@ -1457,13 +1465,17 @@ async function runOrderPaymentInternal(
           { running: false, stage: null }
         )
         if (isPublicZap && zapRequestId) {
-          void observeOrderPublicZapReceipt(
+          const proofDeliveryBarrier = Promise.resolve().then(() =>
+            ctx.beforeBackgroundProofDelivery?.()
+          )
+          void dependencies.observeOrderPublicZapReceipt(
             orderId,
             ctx.buyerIdentity,
             {},
             ctx.accountPubkey,
             ctx.authenticatedPubkey,
-            ctx.shouldContinue
+            ctx.shouldContinue,
+            proofDeliveryBarrier
           )
         }
         return runtimeStates.get(orderId)!
@@ -1595,13 +1607,17 @@ async function runOrderPaymentInternal(
 
       if (validatedInvoice.request.shouldWaitForZapReceipt && zapRequestId) {
         emit(orderId, { stage: "checking_receipt" })
-        void observeOrderPublicZapReceipt(
+        const proofDeliveryBarrier = Promise.resolve().then(() =>
+          ctx.beforeBackgroundProofDelivery?.()
+        )
+        void dependencies.observeOrderPublicZapReceipt(
           orderId,
           ctx.buyerIdentity,
           {},
           ctx.accountPubkey,
           ctx.authenticatedPubkey,
-          ctx.shouldContinue
+          ctx.shouldContinue,
+          proofDeliveryBarrier
         )
       }
 
