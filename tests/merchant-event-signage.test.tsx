@@ -234,7 +234,7 @@ describe("event sign composition", () => {
     ).toHaveLength(3)
     expect(markup).toContain("See the event catalog for location details")
     expect(markup).toContain("Scan for current availability")
-    expect(markup).toContain("conduit.market")
+    expect(markup).toContain("https://conduit.market")
     expect(markup).toContain(
       `data-qr-value="${merchantSheet.qrValue.replaceAll("&", "&amp;")}"`
     )

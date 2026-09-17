@@ -5307,6 +5307,9 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   await expect(eventSignSheet).toHaveAttribute("data-event-sign-kind", "event")
   await expect(eventSignSheet).toHaveCount(1)
   await expect(
+    eventSignSheet.getByText("https://conduit.market", { exact: true })
+  ).toBeVisible()
+  await expect(
     printPreview.getByRole("img", { name: "Event catalog QR code" })
   ).toBeVisible()
   const eventSignTarget = await eventSignSheet.getAttribute("data-qr-value")

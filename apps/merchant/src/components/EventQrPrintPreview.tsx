@@ -74,7 +74,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
           className="h-auto w-44"
         />
         <span className="text-lg font-semibold text-primary-700">
-          conduit.market
+          https://conduit.market
         </span>
       </header>
 
