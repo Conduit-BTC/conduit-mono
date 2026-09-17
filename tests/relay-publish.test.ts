@@ -175,6 +175,7 @@ function authenticatedPublishInput(
 function installRelayPublishWebSocket(
   options: {
     accepted?: boolean
+    authTransportFailureRelayUrl?: string
     closeAfterResponse?: boolean
     closeBeforeResponse?: boolean
     closeDelayMs?: number
@@ -223,8 +224,22 @@ function installRelayPublishWebSocket(
         string,
         SignedPublicNostrEvent | undefined,
       ]
+      if (
+        frame[0] === "AUTH" &&
+        this.url === options.authTransportFailureRelayUrl
+      ) {
+        throw new Error("AUTH frame transport failed")
+      }
       if (frame[0] !== "EVENT" || !frame[1]?.id) return
       sentEvents.push(frame[1])
+      if (this.url === options.authTransportFailureRelayUrl) {
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: JSON.stringify(["AUTH", "relay-auth-challenge"]),
+          } as MessageEvent<string>)
+        })
+        return
+      }
       if (options.closeBeforeResponse) {
         queueMicrotask(() => this.close())
         return
@@ -382,6 +397,47 @@ describe("planPublishRelays", () => {
     expect(result.failedRelayUrls).toEqual([])
     expect(exactWriteCalls).toBe(1)
     expect(ndkPublishCalls).toBe(0)
+  })
+
+  it("continues to a later exact relay after an AUTH-frame transport failure", async () => {
+    const firstRelay = "wss://first-auth-transport.example"
+    const secondRelay = "wss://second-auth-transport.example"
+    const socket = installRelayPublishWebSocket({
+      authTransportFailureRelayUrl: firstRelay,
+    })
+
+    try {
+      const fixture = authenticatedPublishInput([firstRelay, secondRelay], {
+        input: {
+          relayAuthentication: {
+            expectedPubkey: AUTHOR_PUBKEY,
+            sessionScope: {},
+            signer: {
+              authMethod: "nip07",
+              getPublicKey: async () => AUTHOR_PUBKEY,
+              signEvent: async (event) =>
+                finalizeEvent(
+                  {
+                    kind: event.kind,
+                    created_at: event.created_at,
+                    tags: event.tags,
+                    content: event.content,
+                  },
+                  AUTHOR_SECRET
+                ),
+            },
+          },
+        },
+      })
+
+      const result = await publishWithPlanner(fixture.event, fixture.input)
+
+      expect(socket.openedUrls).toEqual([firstRelay, secondRelay])
+      expect(result.successfulRelayUrls).toEqual([secondRelay])
+      expect(result.failedRelayUrls).toEqual([firstRelay])
+    } finally {
+      socket.restore()
+    }
   })
 
   it("retains an exact relay rejection after another authenticated target ACKs", async () => {

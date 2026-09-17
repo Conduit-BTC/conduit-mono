@@ -244,7 +244,12 @@ export function publishSignedEventFrameToRelay(input: {
               }
               authEventId = signed.id
               authState = "sent"
-              socket?.send(JSON.stringify(["AUTH", signed]))
+              try {
+                socket?.send(JSON.stringify(["AUTH", signed]))
+              } catch {
+                finish("timed_out")
+                return
+              }
             } catch {
               authorization.onSignerFailure?.()
               finish("timed_out")
