@@ -124,7 +124,9 @@ export async function signShopperCheckoutZapRequest(
  * duplicate merchant order.
  *
  * Privacy: invoice/preimage/payment-hash live only in the local lifecycle
- * record and the proof DM. Nothing here is forwarded to telemetry.
+ * record and the proof DM. A verified public Zap Out receipt may trigger the
+ * separate server-side aggregate settlement counter; no payment artifact is
+ * forwarded to telemetry.
  */
 
 const ZAP_RECEIPT_SCAN_MS = 5_000
@@ -351,6 +353,30 @@ export interface OrderReceiptObservationDependencies {
   waitForZapReceipt: typeof waitForZapReceipt
   recordObservedOrderPaymentReceipt: typeof recordObservedOrderPaymentReceipt
   recordOrderPaymentReceiptTimeout: typeof recordOrderPaymentReceiptTimeout
+  reportZapoutSettlement: (receipt: NDKEvent) => Promise<void>
+}
+
+async function reportZapoutSettlement(receipt: NDKEvent): Promise<void> {
+  if (typeof window === "undefined") return
+
+  try {
+    const response = await fetch("/api/zapout-authority", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        receipts: [receipt.rawEvent()],
+        recordSettlement: true,
+      }),
+      keepalive: true,
+      signal: AbortSignal.timeout(5_500),
+    })
+    await response.body?.cancel()
+  } catch {
+    // Reporting must not delay or change payment and proof-delivery state.
+  }
 }
 
 const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDependencies =
@@ -359,6 +385,7 @@ const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDepende
     waitForZapReceipt,
     recordObservedOrderPaymentReceipt,
     recordOrderPaymentReceiptTimeout,
+    reportZapoutSettlement,
   }
 
 function requirePreparedAnonZap(
@@ -913,6 +940,7 @@ export async function observeOrderPublicZapReceipt(
           proofDeliveryClaimId,
         })
       emit(orderId, { lifecycle: receiptRecord.lifecycle })
+      void dependencies.reportZapoutSettlement(receipt).catch(() => undefined)
       if (receiptRecord.status === "recorded") {
         const updated = receiptRecord.lifecycle
         const shouldDeliverProof = updated.proofDeliveryStatus !== "sent"

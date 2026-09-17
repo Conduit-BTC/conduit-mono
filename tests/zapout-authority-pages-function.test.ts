@@ -178,7 +178,10 @@ function env(rateLimitSuccess = true) {
   }
 }
 
-function post(events = [receipt()]): Request {
+function post(
+  events = [receipt()],
+  options: { recordSettlement?: boolean } = {}
+): Request {
   return new Request("https://shop.conduit.market/api/zapout-authority", {
     method: "POST",
     headers: {
@@ -186,7 +189,12 @@ function post(events = [receipt()]): Request {
       origin: "https://shop.conduit.market",
       "cf-connecting-ip": "203.0.113.20",
     },
-    body: JSON.stringify({ receipts: events }),
+    body: JSON.stringify({
+      receipts: events,
+      ...(options.recordSettlement === undefined
+        ? {}
+        : { recordSettlement: options.recordSettlement }),
+    }),
   })
 }
 
@@ -196,11 +204,19 @@ function dependencies(options: {
   lnurlMetadata?: LnurlPayMetadata
   metadataError?: Error
   nowMs?: number
+  recordSettlement?: Parameters<
+    Parameters<typeof verifyZapoutAuthorityRequest>[2]["recordSettlement"]
+  > extends never
+    ? never
+    : Parameters<typeof verifyZapoutAuthorityRequest>[2]["recordSettlement"]
 }) {
   const fetchLnurlMetadata = mock(async () => {
     if (options.metadataError) throw options.metadataError
     return options.lnurlMetadata ?? metadata()
   })
+  const recordSettlement = mock(
+    options.recordSettlement ?? (async () => undefined)
+  )
   return {
     value: {
       async fetchProfileEvents() {
@@ -211,8 +227,10 @@ function dependencies(options: {
       },
       fetchLnurlMetadata,
       nowMs: () => options.nowMs ?? NOW_SECONDS * 1000,
+      recordSettlement,
     } as Parameters<typeof verifyZapoutAuthorityRequest>[2],
     fetchLnurlMetadata,
+    recordSettlement,
   }
 }
 
@@ -298,6 +316,51 @@ describe("Zapouts payment-time authority Pages function", () => {
     })
     expect(deps.fetchLnurlMetadata).toHaveBeenCalledWith(LUD16, {
       timeoutMs: 2_500,
+    })
+  })
+
+  it("records only explicitly requested verified settlements", async () => {
+    const event = receipt()
+    const deps = dependencies({})
+    const recorded = await verifyZapoutAuthorityRequest(
+      post([event], { recordSettlement: true }),
+      env(),
+      deps.value
+    )
+
+    expect(await recorded.json()).toEqual({
+      results: [{ id: event.id, status: "verified" }],
+    })
+    expect(deps.recordSettlement).toHaveBeenCalledTimes(1)
+    expect(deps.recordSettlement.mock.calls[0]?.[0]).toMatchObject({
+      id: event.id,
+      amountMsats: 42_000,
+    })
+
+    const verificationOnly = dependencies({})
+    await verifyZapoutAuthorityRequest(
+      post([event]),
+      env(),
+      verificationOnly.value
+    )
+    expect(verificationOnly.recordSettlement).toHaveBeenCalledTimes(0)
+  })
+
+  it("keeps settlement telemetry failure out of verified authority results", async () => {
+    const event = receipt()
+    const deps = dependencies({
+      async recordSettlement() {
+        throw new Error("telemetry unavailable")
+      },
+    })
+    const response = await verifyZapoutAuthorityRequest(
+      post([event], { recordSettlement: true }),
+      env(),
+      deps.value
+    )
+
+    expect(await response.json()).toEqual({
+      results: [{ id: event.id, status: "verified" }],
     })
   })
 
