@@ -306,7 +306,7 @@ describe("real NIP-07 test signer", () => {
 
       expect(firstRumor).not.toBeNull()
       expect(secondRumor).not.toBeNull()
-      expect(firstRumor?.id).toBe(secondRumor?.id)
+      expect(firstRumor?.id === secondRumor?.id).toBe(true)
       expect(
         count([
           { rumor: firstRumor, wrapId: first.id },
@@ -347,7 +347,11 @@ describe("real NIP-07 test signer", () => {
         sender,
         wrap: senderCopy,
       })
-      expect(senderCopyRumor?.tags).toContainEqual(["p", recipient.pubkey])
+      const senderCopyTargetsRecipient =
+        senderCopyRumor?.tags.some(
+          ([name, value]) => name === "p" && value === recipient.pubkey
+        ) ?? false
+      expect(senderCopyTargetsRecipient).toBe(true)
 
       const wrapperKeyAssignments = new Map<string, string>()
       const receiverCopy = createPrivateGiftWrapFixture({
@@ -557,7 +561,11 @@ describe("real NIP-07 test signer", () => {
       )
 
       const wraps = await readAuthenticatedGiftWraps(recipient, relayUrl)
-      expect(wraps.map((event) => event.id)).toEqual([recipientWrap.id])
+      const matchingRecipientWrapCount = wraps.filter(
+        (event) => event.id === recipientWrap.id
+      ).length
+      expect(wraps.length).toBe(1)
+      expect(matchingRecipientWrapCount).toBe(1)
       expect(relay.counters.authAccepted).toBe(1)
       expect(relay.counters.protectedRequests).toBe(1)
     } finally {

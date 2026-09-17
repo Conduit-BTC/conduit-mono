@@ -10,6 +10,9 @@ const normalizeLines = (value: string) => value.replaceAll("\r\n", "\n")
 const commerceSmoke = normalizeLines(
   await Bun.file("e2e/commerce.playwright.ts").text()
 )
+const commerceFixtures = normalizeLines(
+  await Bun.file("tests/e2e-commerce-fixtures.test.ts").text()
+)
 
 const unsafeEvidenceRules = [
   {
@@ -120,6 +123,24 @@ const unsafeCommerceSourceRules = [
   },
 ] as const
 
+const unsafeCommerceFixtureRules = [
+  {
+    rule: "direct identity-bearing fixture assertion",
+    pattern:
+      /expect\(\s*[A-Za-z0-9_$?[\].]+\??\.(?:id|pubkey|tags)\s*\)\.(?:not\.)?(?:toBe|toContain|toContainEqual|toEqual|toMatch|toMatchObject)/g,
+  },
+  {
+    rule: "identity-bearing fixture expected value",
+    pattern:
+      /\.(?:toBe|toContain|toContainEqual|toEqual|toMatch|toMatchObject)\(\s*(?:\[\s*(?:["'][^"'\r\n]*["']\s*,\s*)?)?[A-Za-z0-9_$?[\].]+\??\.(?:id|pubkey|tags)\b/g,
+  },
+  {
+    rule: "identity-bearing fixture collection assertion",
+    pattern:
+      /expect\(\s*[A-Za-z0-9_$?[\].]+\.map\(\s*\([^)]*\)\s*=>\s*[A-Za-z0-9_$?[\].]+\??\.(?:id|pubkey|tags)\s*\)\s*\)\.(?:toContain|toContainEqual|toEqual|toMatchObject)/g,
+  },
+] as const
+
 function sourceLine(source: string, offset: number): number {
   return source.slice(0, offset).split("\n").length
 }
@@ -222,6 +243,33 @@ describe("Playwright smoke content safety", () => {
     }
   })
 
+  it("detects identity-bearing commerce fixture assertions", () => {
+    const unsafeSources = [
+      [
+        "direct identity-bearing fixture assertion",
+        "expect(firstRumor?.id).toBe(secondRumor?.id)",
+      ],
+      [
+        "identity-bearing fixture expected value",
+        'expect(tags).toContainEqual(["p", recipient.pubkey])',
+      ],
+      [
+        "identity-bearing fixture collection assertion",
+        "expect(wraps.map((event) => event.id)).toEqual(expected)",
+      ],
+    ] as const
+
+    for (const [expectedRule, source] of unsafeSources) {
+      expect(
+        unsafeCommerceFixtureRules.some(
+          ({ pattern, rule }) =>
+            rule === expectedRule &&
+            Array.from(source.matchAll(pattern)).length > 0
+        )
+      ).toBe(true)
+    }
+  })
+
   it("keeps content-bearing values out of assertion failure output", async () => {
     const findings: UnsafeEvidenceFinding[] = []
     const glob = new Bun.Glob("e2e/**/*.playwright.ts")
@@ -265,6 +313,23 @@ describe("Playwright smoke content safety", () => {
       (left, right) =>
         left.line - right.line || left.rule.localeCompare(right.rule)
     )
+
+    expect(findings).toEqual([])
+  })
+
+  it("keeps commerce fixture identities out of assertion failure output", () => {
+    const findings = unsafeCommerceFixtureRules
+      .flatMap(({ pattern, rule }) =>
+        Array.from(commerceFixtures.matchAll(pattern), (match) => ({
+          file: "tests/e2e-commerce-fixtures.test.ts",
+          line: sourceLine(commerceFixtures, match.index),
+          rule,
+        }))
+      )
+      .sort(
+        (left, right) =>
+          left.line - right.line || left.rule.localeCompare(right.rule)
+      )
 
     expect(findings).toEqual([])
   })
