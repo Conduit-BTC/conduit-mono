@@ -132,6 +132,7 @@ import {
 import {
   canObserveOrderPublicZapReceipt,
   getOrderPaymentState,
+  isOrderPaymentRunning,
   isMerchantInvoicePaymentActionBound,
   observeOrderPublicZapReceipt,
   prepareMerchantInvoicePaymentAction,
@@ -2249,6 +2250,7 @@ function OrdersPage() {
     const resumeReceiptObservers = () => {
       if (document.visibilityState === "hidden") return
       for (const lifecycle of lifecycles) {
+        if (isOrderPaymentRunning(lifecycle.orderId)) continue
         if (!canObserveOrderPublicZapReceipt(lifecycle)) continue
         const identity =
           guestIdentity?.orderId === lifecycle.orderId

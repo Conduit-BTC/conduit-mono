@@ -256,6 +256,25 @@ describe("checkout completion navigation contracts", () => {
     )
   })
 
+  it("keeps Orders receipt observation behind active checkout payment work", async () => {
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+    const observerLoop = ordersRoute.slice(
+      ordersRoute.indexOf("const resumeReceiptObservers = () =>"),
+      ordersRoute.indexOf("resumeReceiptObservers()")
+    )
+    const runningGuard = observerLoop.indexOf(
+      "isOrderPaymentRunning(lifecycle.orderId)"
+    )
+    const observerStart = observerLoop.indexOf(
+      "observeOrderPublicZapReceipt("
+    )
+
+    expect(runningGuard).toBeGreaterThan(-1)
+    expect(observerStart).toBeGreaterThan(runningGuard)
+  })
+
   it("preserves exact-order recovery on ambiguous reads and resumes direct payment without republishing", async () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
