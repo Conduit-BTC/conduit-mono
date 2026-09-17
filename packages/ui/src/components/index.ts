@@ -1,4 +1,15 @@
 export { Avatar, AvatarImage, AvatarFallback } from "./Avatar"
+export {
+  SearchSuggestions,
+  flattenSearchSuggestionGroups,
+  getSearchSuggestionInputProps,
+  getSearchSuggestionOptionId,
+  useSearchSuggestionKeyboard,
+  type SearchSuggestionGroup,
+  type SearchSuggestionItem,
+  type SearchSuggestionsProps,
+  type UseSearchSuggestionKeyboardInput,
+} from "./SearchSuggestions"
 export { QRCodeSVG } from "qrcode.react"
 export { AccountMenu, type AccountMenuProps } from "./AccountMenu"
 export {
@@ -119,6 +130,11 @@ export {
 export { Skeleton } from "./Skeleton"
 export { Switch } from "./Switch"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
+export { SegmentedControl, SegmentedControlItem } from "./SegmentedControl"
+export type {
+  SegmentedControlProps,
+  SegmentedControlItemProps,
+} from "./SegmentedControl"
 export {
   RelaySettingsPanel,
   UnpublishedRelayChangesDialog,
@@ -146,6 +162,11 @@ export {
   type ProductCardProps,
   type ProductCartActionProps,
 } from "./ProductCard"
+export {
+  EventMarketCard,
+  type EventMarketCardProps,
+  type EventMarketCardStatusTone,
+} from "./EventMarketCard"
 export {
   ClaveConnectButton,
   claveConnectUrl,

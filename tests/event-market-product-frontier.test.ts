@@ -187,7 +187,10 @@ function installReadHarness(
   })
 }
 
-async function resolveDeletionStarvationCase(tagName: "a" | "e") {
+async function resolveDeletionStarvationCase(
+  tagName: "a" | "e",
+  relayLimit: number
+) {
   const request = productRevision("coffee", 100, true)
   const sibling = productRevision("sibling", 100, true)
   const siblingCoordinate = `${EVENT_KINDS.PRODUCT}:${MERCHANT}:sibling`
@@ -246,7 +249,7 @@ async function resolveDeletionStarvationCase(tagName: "a" | "e") {
             )
           )
           .sort((left, right) => right.created_at - left.created_at)
-          .slice(0, filter.limit ?? 500),
+          .slice(0, Math.min(filter.limit ?? 500, relayLimit)),
       }
     }
     return { events: [] }
@@ -547,6 +550,74 @@ describe("event-market exact product request frontiers", () => {
     expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
   })
 
+  it("keeps event catalog deletion checks isolated by product and author", async () => {
+    const merchants = [
+      MERCHANT_SECRET,
+      ...Array.from({ length: 7 }, () => generateSecretKey()),
+    ]
+    const requests = merchants.flatMap((secret, merchantIndex) =>
+      Array.from({ length: 7 }, (_, productIndex) =>
+        sign(
+          secret,
+          {
+            kind: EVENT_KINDS.PRODUCT,
+            tags: [
+              ["d", `product-${merchantIndex}-${productIndex}`],
+              ["title", "Product"],
+              ["price", "25", "USD"],
+              ["a", COLLECTION],
+              ["shipping_option", PICKUP],
+            ],
+          },
+          100
+        )
+      )
+    )
+    const coordinates = requests.map(
+      (event) =>
+        `${EVENT_KINDS.PRODUCT}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")![1]}`
+    )
+    const deletionFilters: TagFilter[] = []
+    installReadHarness((filter) => {
+      if (filter.authors?.includes(ORGANIZER))
+        return { events: graph(coordinates) }
+      if (filter.kinds?.[0] === EVENT_KINDS.PRODUCT) {
+        if (filter["#a"]?.includes(COLLECTION)) return { events: requests }
+        return {
+          events: requests.filter(
+            (event) =>
+              filter.authors?.includes(event.pubkey) &&
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1]!)
+              )
+          ),
+        }
+      }
+      if (filter.kinds?.[0] === EVENT_KINDS.DELETION)
+        deletionFilters.push(filter)
+      return { events: [] }
+    })
+    const result = await getEventMarket({
+      reference: COLLECTION,
+      nowMs: NOW_MS,
+    })
+    expect(result.acceptedProductCoordinates.slice().sort()).toEqual(
+      coordinates.slice().sort()
+    )
+    expect(deletionFilters).toHaveLength(112)
+    for (const filter of deletionFilters) {
+      expect(filter["#a"] ?? filter["#e"]).toHaveLength(1)
+      expect(filter.authors).toHaveLength(1)
+      const author = filter.authors![0]!
+      for (const coordinate of filter["#a"] ?? []) {
+        expect(coordinate.split(":")[1]).toBe(author)
+      }
+      for (const id of filter["#e"] ?? []) {
+        expect(requests.find((event) => event.id === id)?.pubkey).toBe(author)
+      }
+    }
+  })
+
   it("bounds exact deletion queries for 500 revisions of one coordinate", async () => {
     const revisions = Array.from({ length: 500 }, (_, index) =>
       productRevision("coffee", 100 + index, true)
@@ -581,6 +652,9 @@ describe("event-market exact product request frontiers", () => {
     expect(eventDeletionFilters).toHaveLength(
       EVENT_MARKET_PARTICIPATION_REVISIONS_PER_TARGET_LIMIT
     )
+    expect(
+      eventDeletionFilters.every((filter) => filter["#e"]?.length === 1)
+    ).toBe(true)
     expect(deletionFilters).toHaveLength(
       EVENT_MARKET_PARTICIPATION_REVISIONS_PER_TARGET_LIMIT + 1
     )
@@ -775,43 +849,51 @@ describe("event-market exact product request frontiers", () => {
     expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
   })
 
-  it("isolates an exact coordinate tombstone from 501 newer sibling deletions", async () => {
-    const { result, targetValue, deletionFilters } =
-      await resolveDeletionStarvationCase("a")
+  it.each([500, 100])(
+    "isolates an exact coordinate tombstone from sibling deletions with relay cap %i",
+    async (relayLimit) => {
+      const { result, targetValue, deletionFilters } =
+        await resolveDeletionStarvationCase("a", relayLimit)
 
-    expect(
-      deletionFilters.some(
-        (filter) =>
-          filter["#a"]?.length === 1 && filter["#a"][0] === targetValue
-      )
-    ).toBe(true)
-    expect(
-      deletionFilters.every(
-        (filter) => !filter["#a"] || filter["#a"]?.length === 1
-      )
-    ).toBe(true)
-    expect(result.acceptedProductCoordinates).toEqual([])
-    expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
-  }, 15_000)
+      expect(result.acceptedProductCoordinates).toEqual([])
+      expect(
+        deletionFilters.some(
+          (filter) =>
+            filter["#a"]?.length === 1 && filter["#a"][0] === targetValue
+        )
+      ).toBe(true)
+      expect(
+        deletionFilters.every(
+          (filter) => !filter["#a"] || filter["#a"]?.length === 1
+        )
+      ).toBe(true)
+      expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
+    },
+    15_000
+  )
 
-  it("isolates an exact event tombstone from 501 newer sibling deletions", async () => {
-    const { result, targetValue, deletionFilters } =
-      await resolveDeletionStarvationCase("e")
+  it.each([500, 100])(
+    "isolates an exact event tombstone from sibling deletions with relay cap %i",
+    async (relayLimit) => {
+      const { result, targetValue, deletionFilters } =
+        await resolveDeletionStarvationCase("e", relayLimit)
 
-    expect(
-      deletionFilters.some(
-        (filter) =>
-          filter["#e"]?.length === 1 && filter["#e"][0] === targetValue
-      )
-    ).toBe(true)
-    expect(
-      deletionFilters.every(
-        (filter) => !filter["#e"] || filter["#e"]?.length === 1
-      )
-    ).toBe(true)
-    expect(result.acceptedProductCoordinates).toEqual([])
-    expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
-  }, 15_000)
+      expect(result.acceptedProductCoordinates).toEqual([])
+      expect(
+        deletionFilters.some(
+          (filter) =>
+            filter["#e"]?.length === 1 && filter["#e"][0] === targetValue
+        )
+      ).toBe(true)
+      expect(
+        deletionFilters.every(
+          (filter) => !filter["#e"] || filter["#e"]?.length === 1
+        )
+      ).toBe(true)
+      expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
+    },
+    15_000
+  )
 
   it("merges a failed exact-deletion batch into partial relay coverage", async () => {
     const request = productRevision("coffee", 100, true)

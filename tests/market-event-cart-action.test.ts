@@ -2,6 +2,17 @@ import { describe, expect, it } from "bun:test"
 import { getEventCatalogCartAction } from "../apps/market/src/lib/event-market-cart-action"
 
 describe("Market event catalog cart action", () => {
+  it("does not reuse previous pickup authorization during a refresh", () => {
+    expect(
+      getEventCatalogCartAction({
+        state: "active",
+        purchaseReady: true,
+        hasPickupFulfillment: true,
+        isChecking: true,
+      })
+    ).toEqual({ enabled: false, disabledLabel: "Checking pickup…" })
+  })
+
   it("keeps an active exact pickup product addable", () => {
     expect(
       getEventCatalogCartAction({

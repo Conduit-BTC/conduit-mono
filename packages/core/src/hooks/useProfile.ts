@@ -1,4 +1,7 @@
-import { hasProfileContent } from "../protocol/profile-cache"
+import {
+  hasProfileContent,
+  type SelectedProfileContext,
+} from "../protocol/profile-cache"
 import type { Profile } from "../types"
 import {
   useProfiles,
@@ -26,6 +29,7 @@ export function useProfile(
     ...profilesQuery,
     data,
     evidenceData,
+    profileContext: pubkey ? profilesQuery.profileContexts[pubkey] : undefined,
     isPlaceholderData: !!pubkey && !hasProfileContent(data),
   }
 }
@@ -43,6 +47,7 @@ export type UseProfileResult = Omit<
 > & {
   data: Profile | undefined
   evidenceData: Profile | undefined
+  profileContext: SelectedProfileContext | undefined
   profiles: UseProfilesResult["profiles"]
   getProfile: UseProfilesResult["getProfile"]
   hasProfile: UseProfilesResult["hasProfile"]

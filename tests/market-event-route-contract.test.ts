@@ -32,6 +32,24 @@ describe("Market event catalog route", () => {
     expect(route.toLowerCase()).not.toContain("chicago")
   })
 
+  it("labels the organizer and canonical catalog reference in technical details", async () => {
+    const route = await Bun.file(
+      "apps/market/src/routes/events/$collectionRef.tsx"
+    ).text()
+    const technicalDetails = route.slice(
+      route.indexOf('<details className="group/technical')
+    )
+
+    expect(technicalDetails).toContain("<EventActorName")
+    expect(technicalDetails).toContain("identity={organizerIdentity}")
+    expect(technicalDetails).toContain("pubkey={organizerPubkey}")
+    expect(technicalDetails).toContain('copyLabel="Copy organizer npub"')
+    expect(technicalDetails).toContain('label="Event catalog naddr"')
+    expect(technicalDetails).toContain("value={catalog.canonicalNaddr}")
+    expect(technicalDetails).toContain('copyLabel="Copy event catalog naddr"')
+    expect(technicalDetails).not.toContain("Copy canonical event link")
+  })
+
   it("shows degraded, deleted, conflict, archive, and unlinked-product states", async () => {
     const [route, presentation] = await Promise.all([
       Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
@@ -96,8 +114,8 @@ describe("Market event catalog route", () => {
     expect(adapter).toContain("buildEventCatalogFamilyPickupFulfillments")
     expect(adapter).toContain("buildPickupFulfillmentSnapshot(")
     expect(route).toContain("entry.familyPickupFulfillments?.[")
-    expect(route).toContain("authorizedChildren")
-    expect(route).toContain("prepareProductCatalog(")
+    expect(route).toContain("const family = entry.family")
+    expect(route).not.toContain("authorizedChildren")
     expect(route).toContain("selectedProduct.id === product.id")
     expect(route).toContain('product.type !== "variable"')
     expect(route).toContain("cartItemInputFromProductSelection(")
@@ -123,7 +141,7 @@ describe("Market event catalog route", () => {
       orders.lastIndexOf("runOrderPrivateFallback(ctx)")
     )
     expect(checkout).toContain("sourceShippingCost: item.sourceShippingCost")
-    expect(authorization).toContain("resolveProductCartFulfillment")
+    expect(authorization).toContain("resolveCheckoutProductFulfillments")
     expect(authorization).toContain("assertCartPickupHandlerReady")
     expect(authorization).toContain("getCartCommerceFingerprint")
     const placeOrderStart = checkout.indexOf("async function placeOrder()")
