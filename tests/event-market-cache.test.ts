@@ -17,6 +17,7 @@ import {
   decodeEventMarketReference,
   EVENT_KINDS,
   getEventMarket,
+  getCachedEventMarketSignedEvidenceByIds,
   getOrganizerEventMarkets,
   getOrganizerEventMarketsDetailed,
   parseProductEvent,
@@ -548,6 +549,43 @@ afterEach(() => {
 })
 
 describe("event-market retained evidence", () => {
+  it("loads only exact signature-verified historical evidence by id", async () => {
+    const [calendar, pickup, collection] = graph([PRODUCT])
+    const request = productRevision(103, true)
+    const evidence = [calendar!, pickup!, collection!, request]
+    __setEventMarketTestOverrides({
+      loadCachedEvidence: async () => [
+        ...evidence.map((signedEvent) => ({
+          id: signedEvent.id,
+          organizerPubkey: ORGANIZER,
+          kind: signedEvent.kind,
+          signedEvent,
+          sourceRelayUrls: ["wss://read.example"],
+          cachedAt: 1,
+        })),
+        {
+          id: "f".repeat(64),
+          organizerPubkey: ORGANIZER,
+          kind: request.kind,
+          signedEvent: { ...request, id: "f".repeat(64) },
+          sourceRelayUrls: [],
+          cachedAt: 1,
+        },
+      ],
+    })
+
+    const result = await getCachedEventMarketSignedEvidenceByIds({
+      organizerPubkey: ORGANIZER,
+      eventIds: [request.id, collection!.id, "e".repeat(64), request.id],
+    })
+
+    expect(result.events.map((event) => event.id)).toEqual([
+      request.id,
+      collection!.id,
+    ])
+    expect(result.missingEventIds).toEqual(["e".repeat(64)])
+  })
+
   it("requires an advertised organizer pickup only when a selected product uses it", async () => {
     const organizerGraph = graph([PRODUCT])
     const organizerPickup = organizerGraph[1]!

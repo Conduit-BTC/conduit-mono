@@ -2,6 +2,7 @@ import { normalizePubkey, pubkeyToNpub } from "@conduit/core"
 
 export interface EventCatalogSearch {
   merchant?: string
+  purchase?: "booth"
 }
 
 export function parseEventCatalogSearch(
@@ -11,5 +12,8 @@ export function parseEventCatalogSearch(
     typeof raw.merchant === "string"
       ? (normalizePubkey(raw.merchant) ?? undefined)
       : undefined
-  return merchant ? { merchant: pubkeyToNpub(merchant) } : {}
+  return {
+    ...(merchant ? { merchant: pubkeyToNpub(merchant) } : {}),
+    ...(raw.purchase === "booth" ? { purchase: "booth" as const } : {}),
+  }
 }

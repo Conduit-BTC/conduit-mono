@@ -1,7 +1,6 @@
 import {
   getNdk,
   publishMerchantOrderMessage,
-  type EventMarketResolution,
   type MerchantOrderDelivery,
   type OrderSchema,
 } from "@conduit/core"
@@ -9,7 +8,7 @@ import {
   eventMarketHandoffDeliveryNeedsRetry,
   issueOrganizerReadyReceipt,
 } from "./event-market-handoff"
-import { verifyMerchantPickupOrderAuthorization } from "./order-pickup-authorization"
+import { verifyAndCheckpointMerchantPickupOrderAuthorization } from "./order-pickup-authority-checkpoint"
 
 export interface MerchantPaymentConfirmationInput {
   merchantPubkey: string
@@ -23,6 +22,39 @@ export interface MerchantPaymentConfirmationInput {
   authenticatedPubkey?: string | null
   /** Live account session authority for pickup-evidence reads. */
   shouldContinue?: () => boolean
+}
+
+export type MerchantOrganizerPickupReadyInput = Pick<
+  MerchantPaymentConfirmationInput,
+  | "merchantPubkey"
+  | "buyerPubkey"
+  | "orderId"
+  | "delivery"
+  | "authenticatedPubkey"
+  | "shouldContinue"
+>
+
+/**
+ * Notify the buyer only after the exact organizer receipt has been delivered.
+ * This signed merchant status is presentation authority for pickup readiness;
+ * it does not replace settlement evidence.
+ */
+export async function publishMerchantOrganizerPickupReady(
+  input: MerchantOrganizerPickupReadyInput,
+  publish: typeof publishMerchantOrderMessage = publishMerchantOrderMessage
+): Promise<void> {
+  await publish({
+    merchantPubkey: input.merchantPubkey,
+    buyerPubkey: input.buyerPubkey,
+    orderId: input.orderId,
+    type: "status_update",
+    tags: [["status", "ready_for_pickup"]],
+    payload: { status: "ready_for_pickup" },
+    delivery: input.delivery,
+    signerInteraction: "external",
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+  })
 }
 
 type ReleaseResult = "delivered" | "needs_attention"
@@ -48,17 +80,15 @@ const defaults: PaymentConfirmationDependencies = {
   },
   async release(input) {
     if (!input.order) throw new Error("The authenticated order is unavailable.")
-    let market: EventMarketResolution | null = null
-    const authorization = await verifyMerchantPickupOrderAuthorization({
-      items: input.order.items,
-      merchantPubkey: input.merchantPubkey,
-      authenticatedPubkey: input.authenticatedPubkey,
-      shouldContinue: input.shouldContinue,
-      onVerifiedMarket: (verified) => {
-        market = verified
-      },
-    })
-    if (authorization.status !== "verified" || !market) {
+    const authorization =
+      await verifyAndCheckpointMerchantPickupOrderAuthorization({
+        orderId: input.orderId,
+        items: input.order.items,
+        merchantPubkey: input.merchantPubkey,
+        authenticatedPubkey: input.authenticatedPubkey,
+        shouldContinue: input.shouldContinue,
+      })
+    if (authorization.status !== "verified") {
       throw new Error("Current signed pickup evidence is unavailable.")
     }
     const signer = getNdk().signer
@@ -70,16 +100,18 @@ const defaults: PaymentConfirmationDependencies = {
       // separately. Do not depend on a not-yet-refreshed UI payment projection.
       paymentAuthenticated: true,
       authorizationConfirmed: input.authorizeOrganizerRelease,
-      market,
+      market: authorization.market,
       signer,
       transport: {
         authenticatedPubkey: input.authenticatedPubkey,
         shouldContinue: input.shouldContinue,
       },
     })
-    return eventMarketHandoffDeliveryNeedsRetry(delivery)
-      ? "needs_attention"
-      : "delivered"
+    if (eventMarketHandoffDeliveryNeedsRetry(delivery)) {
+      return "needs_attention"
+    }
+    await publishMerchantOrganizerPickupReady(input)
+    return "delivered"
   },
 }
 

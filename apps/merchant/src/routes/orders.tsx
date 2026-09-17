@@ -44,6 +44,7 @@ import {
   type MerchantOrderAction,
   type MerchantOrderReopenTransition,
   type MerchantOrderState,
+  type MerchantPresentSaleAuthorizationSchema,
   type KnownOrderStatus,
   type Profile,
   type OrderSummary,
@@ -71,6 +72,7 @@ import {
   MessagingReadinessNotice,
   toMessagingReadinessNoticeState,
   OrderMessagesWidget,
+  QRCodeSVG,
   RefreshChip,
   Select,
   SelectContent,
@@ -84,6 +86,7 @@ import {
   SheetTrigger,
   StatusPill,
   StatusStepper,
+  Textarea,
   cn,
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
@@ -120,6 +123,7 @@ import {
   getMerchantPickupAuthorizationMessage,
   verifyMerchantPickupOrderAuthorization,
 } from "../lib/order-pickup-authorization"
+import { verifyAndCheckpointMerchantPickupOrderAuthorization } from "../lib/order-pickup-authority-checkpoint"
 import {
   buildMerchantOrderActionView,
   captureMerchantPaymentConfirmationTarget,
@@ -178,6 +182,7 @@ import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomat
 import { OrderStockPanel } from "../components/OrderStockPanel"
 import {
   confirmMerchantPayment,
+  publishMerchantOrganizerPickupReady,
   type MerchantPaymentConfirmationInput,
 } from "../lib/order-payment-release"
 import {
@@ -195,6 +200,13 @@ import {
   loadCoordinatedMerchantHandoffFallback,
   rememberCoordinatedMerchantHandoffFallback,
 } from "../lib/event-market-handoff-fallback"
+import {
+  canRenderMerchantPresentSaleDirectWrapQr,
+  deliverMerchantPresentSaleAuthorization,
+  getMerchantPresentSaleDeliveryMode,
+  prepareMerchantPresentSaleAuthorization,
+  type MerchantPresentSaleDeliveryResult,
+} from "../lib/merchant-present-sale-authorization"
 
 type OrdersSearch = { order?: string; queue?: OrderQueueTab }
 
@@ -731,7 +743,21 @@ function OrdersPage() {
     useState(false)
   const [organizerReleaseConfirmed, setOrganizerReleaseConfirmed] =
     useState(false)
+  const [confirmingMerchantPresentSale, setConfirmingMerchantPresentSale] =
+    useState(false)
+  const [merchantPresentUnitsConfirmed, setMerchantPresentUnitsConfirmed] =
+    useState(false)
+  const [merchantPresentDelivery, setMerchantPresentDelivery] = useState<{
+    orderId: string
+    result: MerchantPresentSaleDeliveryResult
+    expired: boolean
+  } | null>(null)
   const orderActionLockRef = useRef(false)
+  const merchantPresentAuthorizationDraftRef = useRef<{
+    orderId: string
+    authorization: MerchantPresentSaleAuthorizationSchema
+  } | null>(null)
+  const merchantPresentExpiryTimerRef = useRef<number | null>(null)
   const stockDecisionStoreRef = useRef(new ProductStockDecisionStore())
   const pendingStockDeliveryStoreRef = useRef(
     new PendingProductStockDeliveryStore()
@@ -770,6 +796,15 @@ function OrdersPage() {
     const timer = setTimeout(check, 1000)
     return () => clearTimeout(timer)
   }, [])
+
+  useEffect(
+    () => () => {
+      if (merchantPresentExpiryTimerRef.current !== null) {
+        window.clearTimeout(merchantPresentExpiryTimerRef.current)
+      }
+    },
+    []
+  )
 
   const flash = useCallback((message: string) => {
     setSuccessFlash(message)
@@ -1072,6 +1107,11 @@ function OrdersPage() {
   )
   const selectedOrder =
     selectedOrderMessage?.type === "order" ? selectedOrderMessage.payload : null
+  const merchantPresentDeliveryMode =
+    selectedOrder && pubkey
+      ? getMerchantPresentSaleDeliveryMode(selectedOrder, pubkey)
+      : null
+  const selectedIsMerchantPresentSale = merchantPresentDeliveryMode !== null
   const selectedPickupSnapshot = selectedOrder?.items.flatMap((item) =>
     item.fulfillment?.type === "pickup" ? [item.fulfillment] : []
   )[0]
@@ -1233,6 +1273,14 @@ function OrdersPage() {
     setConfirmingOrganizerFallback(false)
     setConfirmingOrganizerRelease(false)
     setOrganizerReleaseConfirmed(false)
+    setConfirmingMerchantPresentSale(false)
+    setMerchantPresentUnitsConfirmed(false)
+    setMerchantPresentDelivery(null)
+    if (merchantPresentExpiryTimerRef.current !== null) {
+      window.clearTimeout(merchantPresentExpiryTimerRef.current)
+      merchantPresentExpiryTimerRef.current = null
+    }
+    merchantPresentAuthorizationDraftRef.current = null
     const pendingStockDeliveries =
       pubkey && selected
         ? pendingStockDeliveryStoreRef.current.getForOrder(
@@ -1333,7 +1381,8 @@ function OrdersPage() {
       !!orderSummary &&
       snapshottedOrderFulfillment.hasPickupClaim,
     queryFn: ({ signal }) =>
-      verifyMerchantPickupOrderAuthorization({
+      verifyAndCheckpointMerchantPickupOrderAuthorization({
+        orderId: selected!.orderId,
         items: orderSummary!.items,
         merchantPubkey: pubkey!,
         authenticatedPubkey: signerConnected ? pubkey : null,
@@ -1472,7 +1521,8 @@ function OrdersPage() {
     if (!pubkey || !orderSummary) {
       throw new Error("Current signed pickup evidence is unavailable.")
     }
-    const result = await verifyMerchantPickupOrderAuthorization({
+    const result = await verifyAndCheckpointMerchantPickupOrderAuthorization({
+      orderId: selected!.orderId,
       items: orderSummary.items,
       merchantPubkey: pubkey,
       authenticatedPubkey: signerConnected ? pubkey : null,
@@ -1496,7 +1546,7 @@ function OrdersPage() {
     orderSummary,
     pubkey,
     queryClient,
-    selected?.id,
+    selected,
     signerConnected,
     snapshottedOrderFulfillment.hasPickupClaim,
   ])
@@ -1549,10 +1599,21 @@ function OrdersPage() {
     !merchantOrderState.shippingUpdated
   const canRequestPaymentOutOfBand =
     communicationState === "guest_out_of_band" &&
+    !selectedIsMerchantPresentSale &&
     selectedQueue === "unpaid_review" &&
     !merchantPaid &&
     !merchantOrderState.paymentObserved &&
     !!merchantOrderState.accepted
+  const merchantPresentOrderTerminal = [
+    "cancelled",
+    "complete",
+    "delivered",
+  ].includes((merchantOrderState.status ?? "").toLowerCase())
+  const canConfirmMerchantPresentAvailability =
+    selectedIsMerchantPresentSale &&
+    !!merchantOrderState.accepted &&
+    (!merchantPaid || selectedOrderIsZeroCost) &&
+    !merchantPresentOrderTerminal
   const actionView = buildMerchantOrderActionView({
     actions: orderActions,
     canSendInvoice,
@@ -1586,6 +1647,15 @@ function OrdersPage() {
     : null
   const selectedStockDelivery =
     stockDelivery?.orderId === selected?.orderId ? stockDelivery : null
+  const selectedMerchantPresentDeliveryRecord =
+    merchantPresentDelivery &&
+    merchantPresentDelivery.orderId === selected?.orderId
+      ? merchantPresentDelivery
+      : null
+  const selectedMerchantPresentDelivery =
+    selectedMerchantPresentDeliveryRecord?.result ?? null
+  const selectedMerchantPresentDeliveryExpired =
+    selectedMerchantPresentDeliveryRecord?.expired ?? false
   const stockDeliveryCanRetry =
     selectedStockDelivery?.notice.state === "partial" ||
     selectedStockDelivery?.notice.state === "retry_needed"
@@ -2065,7 +2135,7 @@ function OrdersPage() {
         }
         const ndk = getNdk()
         if (!ndk.signer) throw new Error("Merchant signer is not connected.")
-        return issueOrganizerReadyReceipt({
+        const delivery = await issueOrganizerReadyReceipt({
           merchantPubkey: pubkey,
           order: selectedOrder,
           paymentAuthenticated: merchantPaid,
@@ -2077,6 +2147,17 @@ function OrdersPage() {
             shouldContinue: () => authGenerationRef.current === authGeneration,
           },
         })
+        if (!eventMarketHandoffDeliveryNeedsRetry(delivery)) {
+          await publishMerchantOrganizerPickupReady({
+            merchantPubkey: pubkey,
+            buyerPubkey: selectedOrder.buyerPubkey,
+            orderId: selectedOrder.id,
+            delivery: operationalDelivery,
+            authenticatedPubkey: signerConnected ? pubkey : null,
+            shouldContinue: () => authGenerationRef.current === authGeneration,
+          })
+        }
+        return delivery
       }),
     onSuccess: async (delivery) => {
       setConfirmingOrganizerRelease(false)
@@ -2440,9 +2521,126 @@ function OrdersPage() {
     },
   })
 
+  const merchantPresentAuthorizationMutation = useMutation({
+    mutationFn: (unitsConfirmed: boolean) =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        if (!pubkey || !selectedOrder || !selected) {
+          throw new Error("The authenticated booth order is unavailable.")
+        }
+        if (!unitsConfirmed) {
+          throw new Error(
+            "Confirm the exact physical units before issuing booth availability."
+          )
+        }
+        if (!selectedIsMerchantPresentSale) {
+          throw new Error(
+            "This is a remote order. Merchant-present availability cannot be added after checkout."
+          )
+        }
+        if (!merchantOrderState.accepted) {
+          throw new Error(
+            "Accept the exact booth order before confirming physical availability."
+          )
+        }
+        if (merchantPresentOrderTerminal) {
+          throw new Error(
+            "A closed order cannot receive a new booth availability authorization."
+          )
+        }
+        if (merchantPaid && !selectedOrderIsZeroCost) {
+          throw new Error(
+            "This order is already marked paid. Do not replace its pre-payment booth authorization."
+          )
+        }
+
+        // This is deliberately a fresh current-evidence check, not the
+        // historical checkpoint used to preserve an existing order after an
+        // arrangement change. The merchant's explicit unit confirmation may
+        // resolve cached stock uncertainty, but it cannot revive a changed
+        // price, product revision, payment lane, or pickup authority.
+        const verification = await verifyMerchantPickupOrderAuthorization({
+          items: selectedOrder.items,
+          merchantPubkey: pubkey,
+          authenticatedPubkey: signerConnected ? pubkey : null,
+          shouldContinue: () => authGenerationRef.current === authGeneration,
+        })
+        if (verification.status !== "verified") {
+          throw new Error(getMerchantPickupAuthorizationMessage(verification))
+        }
+
+        const ndk = getNdk()
+        if (!ndk.signer) {
+          throw new Error("Merchant signer is not connected.")
+        }
+        const previous =
+          merchantPresentAuthorizationDraftRef.current?.orderId ===
+          selectedOrder.id
+            ? merchantPresentAuthorizationDraftRef.current.authorization
+            : null
+        const authorization = prepareMerchantPresentSaleAuthorization({
+          order: selectedOrder,
+          merchantPubkey: pubkey,
+          previous,
+        })
+        // Persist in memory before transport so a retry reuses the same nonce.
+        merchantPresentAuthorizationDraftRef.current = {
+          orderId: selectedOrder.id,
+          authorization,
+        }
+        const result = await deliverMerchantPresentSaleAuthorization({
+          authorization,
+          order: selectedOrder,
+          merchantPubkey: pubkey,
+          signer: ndk.signer,
+          authenticatedPubkey: signerConnected ? pubkey : null,
+          shouldContinue: () => authGenerationRef.current === authGeneration,
+        })
+        return { orderId: selected.orderId, result }
+      }),
+    onSuccess: async (delivery) => {
+      if (merchantPresentExpiryTimerRef.current !== null) {
+        window.clearTimeout(merchantPresentExpiryTimerRef.current)
+      }
+      setMerchantPresentDelivery({ ...delivery, expired: false })
+      const delayMs = Math.max(
+        0,
+        delivery.result.expiresAt * 1_000 - Date.now() + 50
+      )
+      merchantPresentExpiryTimerRef.current = window.setTimeout(
+        () => {
+          setMerchantPresentDelivery((current) =>
+            current?.orderId === delivery.orderId &&
+            current.result.expiresAt === delivery.result.expiresAt
+              ? { ...current, expired: true }
+              : current
+          )
+          merchantPresentExpiryTimerRef.current = null
+        },
+        Math.min(delayMs, 2_147_483_647)
+      )
+      setConfirmingMerchantPresentSale(false)
+      setMerchantPresentUnitsConfirmed(false)
+      if (delivery.result.mode === "guest_direct") {
+        flash("Guest booth authorization is ready for direct transfer")
+      } else if (delivery.result.deliveryStatus === "partial_success") {
+        flash(
+          "Booth authorization reached only part of the buyer relay set; retry uses the same authorization"
+        )
+      } else if (delivery.result.selfCopyError) {
+        flash(
+          "Booth authorization sent to the buyer; your recovery copy needs attention"
+        )
+      } else {
+        flash("Booth availability authorization sent to the buyer")
+      }
+      await invalidateOrderQueries()
+    },
+  })
+
   const orderActionPending =
     stockUpdateMutation.isPending ||
     confirmPaymentMutation.isPending ||
+    merchantPresentAuthorizationMutation.isPending ||
     organizerReceiptMutation.isPending ||
     coordinatedFallbackMutation.isPending ||
     reopenOrderMutation.isPending ||
@@ -2720,9 +2918,11 @@ function OrdersPage() {
                         {!buyerInboxKnown && (
                           <p className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-warning">
                             {isGuestOrder
-                              ? orderSummary.guestContact
-                                ? "This guest has no Nostr reply inbox. Contact them by phone or email; fulfillment actions below are recorded to your encrypted order history."
-                                : "This guest has no Nostr reply inbox and the order is missing required contact details. Fulfillment actions below are recorded only to your encrypted order history."
+                              ? selectedIsMerchantPresentSale
+                                ? "This guest is physically present for an immediate booth sale. Transfer only the exact authorization shown below; this does not create a guest inbox or require recovery contact while the sale finishes in person."
+                                : orderSummary.guestContact
+                                  ? "This guest has no Nostr reply inbox. Contact them by phone or email; fulfillment actions below are recorded to your encrypted order history."
+                                  : "This guest has no Nostr reply inbox and the order is missing required contact details. Fulfillment actions below are recorded only to your encrypted order history."
                               : "This partial order history does not prove the buyer has a Nostr reply inbox. Actions are recorded to your encrypted order history until the order identity is recovered."}
                           </p>
                         )}
@@ -2770,6 +2970,217 @@ function OrdersPage() {
                                 attempt.
                               </p>
                             )}
+
+                          {selectedIsMerchantPresentSale && selectedOrder && (
+                            <div
+                              className="rounded-md border border-[var(--border-default)] p-3"
+                              data-testid="merchant-present-sale-authorization"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <h4 className="text-sm font-semibold">
+                                    Booth availability
+                                  </h4>
+                                  <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+                                    Confirm the exact physical units in front of
+                                    you before the buyer pays. This
+                                    authorization covers physical availability
+                                    only. It does not approve a price or payment
+                                    destination, prove settlement, or confirm
+                                    handoff.
+                                  </p>
+                                </div>
+                                <StatusPill
+                                  variant={
+                                    selectedMerchantPresentDeliveryExpired
+                                      ? "warning"
+                                      : selectedMerchantPresentDelivery?.mode ===
+                                            "signed_in_private" &&
+                                          (selectedMerchantPresentDelivery.deliveryStatus ===
+                                            "partial_success" ||
+                                            selectedMerchantPresentDelivery.selfCopyError)
+                                        ? "warning"
+                                        : selectedMerchantPresentDelivery
+                                          ? "success"
+                                          : "warning"
+                                  }
+                                >
+                                  {selectedMerchantPresentDeliveryExpired
+                                    ? "Expired"
+                                    : selectedMerchantPresentDelivery
+                                      ? selectedMerchantPresentDelivery.mode ===
+                                        "guest_direct"
+                                        ? "Ready to transfer"
+                                        : selectedMerchantPresentDelivery.deliveryStatus ===
+                                            "partial_success"
+                                          ? "Partially delivered"
+                                          : selectedMerchantPresentDelivery.selfCopyError
+                                            ? "Buyer sent / recovery pending"
+                                            : "Sent privately"
+                                      : "Needs merchant confirmation"}
+                                </StatusPill>
+                              </div>
+
+                              {selectedMerchantPresentDelivery?.mode ===
+                                "signed_in_private" &&
+                                !selectedMerchantPresentDeliveryExpired &&
+                                (selectedMerchantPresentDelivery.deliveryStatus ===
+                                  "partial_success" ||
+                                  selectedMerchantPresentDelivery.selfCopyError) && (
+                                  <p className="mt-3 text-xs leading-5 text-warning">
+                                    The buyer delivery or your recovery copy was
+                                    incomplete. Retry reuses the same one-use
+                                    authorization until it expires.
+                                  </p>
+                                )}
+
+                              {!merchantOrderState.accepted && (
+                                <p className="mt-3 text-xs leading-5 text-warning">
+                                  Accept this exact order before confirming the
+                                  booth units.
+                                </p>
+                              )}
+                              {merchantPaid && !selectedOrderIsZeroCost && (
+                                <p className="mt-3 text-xs leading-5 text-warning">
+                                  This order is already marked paid. Keep its
+                                  original pre-payment authorization rather than
+                                  issuing another one.
+                                </p>
+                              )}
+                              {merchantPresentAuthorizationMutation.error && (
+                                <p
+                                  className="mt-3 text-sm leading-6 text-error"
+                                  role="alert"
+                                >
+                                  {merchantPresentAuthorizationMutation.error instanceof
+                                  Error
+                                    ? merchantPresentAuthorizationMutation.error
+                                        .message
+                                    : "Booth availability could not be confirmed."}
+                                </p>
+                              )}
+
+                              {selectedMerchantPresentDeliveryExpired && (
+                                <p className="mt-3 text-xs leading-5 text-warning">
+                                  This availability authorization expired. The
+                                  merchant must review the current order and
+                                  physical units again before payment.
+                                </p>
+                              )}
+
+                              {selectedMerchantPresentDelivery?.mode ===
+                                "guest_direct" &&
+                                !selectedMerchantPresentDeliveryExpired && (
+                                  <div className="mt-4 space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                                    <div>
+                                      <div className="text-sm font-medium text-[var(--text-primary)]">
+                                        Guest direct handoff
+                                      </div>
+                                      <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+                                        Have the buyer scan or copy this exact
+                                        encrypted wrap on this device. It
+                                        expires at{" "}
+                                        {new Date(
+                                          selectedMerchantPresentDelivery.expiresAt *
+                                            1_000
+                                        ).toLocaleTimeString()}
+                                        . Nothing is published to a guest inbox.
+                                      </p>
+                                    </div>
+                                    {canRenderMerchantPresentSaleDirectWrapQr(
+                                      selectedMerchantPresentDelivery.transferValue
+                                    ) ? (
+                                      <div
+                                        className="mx-auto w-fit rounded-xl bg-white p-3"
+                                        role="img"
+                                        aria-label="Guest booth authorization QR code"
+                                      >
+                                        <QRCodeSVG
+                                          value={
+                                            selectedMerchantPresentDelivery.transferValue
+                                          }
+                                          size={184}
+                                          level="L"
+                                        />
+                                      </div>
+                                    ) : (
+                                      <p className="rounded-md border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
+                                        This encrypted wrap is too large for one
+                                        reliable QR code. Use the exact copy
+                                        transfer below.
+                                      </p>
+                                    )}
+                                    <Textarea
+                                      readOnly
+                                      rows={3}
+                                      aria-label="Guest booth authorization encrypted wrap"
+                                      value={
+                                        selectedMerchantPresentDelivery.transferValue
+                                      }
+                                      className="w-full resize-none rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 font-mono text-[0.6875rem] text-[var(--text-secondary)]"
+                                    />
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      className="w-full"
+                                      onClick={() => {
+                                        if (!navigator.clipboard) {
+                                          flash(
+                                            "Copy is unavailable; use the encrypted wrap field"
+                                          )
+                                          return
+                                        }
+                                        void navigator.clipboard
+                                          .writeText(
+                                            selectedMerchantPresentDelivery.transferValue
+                                          )
+                                          .then(() =>
+                                            flash(
+                                              "Encrypted guest authorization copied"
+                                            )
+                                          )
+                                          .catch(() =>
+                                            flash(
+                                              "Copy failed; let the buyer scan the QR code"
+                                            )
+                                          )
+                                      }}
+                                    >
+                                      <Copy
+                                        className="size-4"
+                                        aria-hidden="true"
+                                      />
+                                      Copy encrypted wrap
+                                    </Button>
+                                  </div>
+                                )}
+
+                              {canConfirmMerchantPresentAvailability && (
+                                <Button
+                                  className="mt-3"
+                                  size="sm"
+                                  disabled={orderActionPending}
+                                  onClick={() => {
+                                    merchantPresentAuthorizationMutation.reset()
+                                    setMerchantPresentUnitsConfirmed(false)
+                                    setConfirmingMerchantPresentSale(true)
+                                  }}
+                                >
+                                  {selectedMerchantPresentDelivery
+                                    ? !selectedMerchantPresentDeliveryExpired &&
+                                      selectedMerchantPresentDelivery.mode ===
+                                        "signed_in_private" &&
+                                      (selectedMerchantPresentDelivery.deliveryStatus ===
+                                        "partial_success" ||
+                                        selectedMerchantPresentDelivery.selfCopyError)
+                                      ? "Retry same authorization"
+                                      : "Confirm exact units again"
+                                    : "Confirm items at booth"}
+                                </Button>
+                              )}
+                            </div>
+                          )}
 
                           {selectedUsesOrganizerHandoff &&
                             (merchantPaid || selectedOrderIsZeroCost) &&
@@ -3844,6 +4255,123 @@ function OrdersPage() {
                   readOnly={!buyerInboxKnown}
                   resolveItem={(id) => productLookup.get(id)}
                 />
+
+                <AlertDialog
+                  open={confirmingMerchantPresentSale}
+                  onOpenChange={(open) => {
+                    if (merchantPresentAuthorizationMutation.isPending) return
+                    setConfirmingMerchantPresentSale(open)
+                    if (!open) setMerchantPresentUnitsConfirmed(false)
+                  }}
+                >
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Confirm items at the booth
+                      </AlertDialogTitle>
+                      <AlertDialogDescription className="text-pretty">
+                        Review this signed order and physically confirm every
+                        unit before the buyer pays. The short-lived
+                        authorization does not approve payment terms or prove
+                        payment or handoff.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    {selectedOrder && (
+                      <div className="space-y-3">
+                        <ul className="space-y-2 rounded-lg border border-[var(--border)] p-3">
+                          {selectedOrder.items.map((item) => (
+                            <li
+                              key={item.productId}
+                              className="flex items-start justify-between gap-4 text-sm"
+                            >
+                              <span className="min-w-0 text-[var(--text-primary)]">
+                                {item.title ||
+                                  productLookup.get(item.productId)?.title ||
+                                  "Product"}
+                              </span>
+                              <span className="shrink-0 text-right text-[var(--text-secondary)]">
+                                {item.quantity} ×{" "}
+                                {formatMerchantOrderAmount(
+                                  item.priceAtPurchase,
+                                  item.currency
+                                )}
+                              </span>
+                            </li>
+                          ))}
+                          <li className="flex items-center justify-between gap-4 border-t border-[var(--border)] pt-2 text-sm font-semibold text-[var(--text-primary)]">
+                            <span>Exact order total</span>
+                            <span>
+                              {formatMerchantOrderAmount(
+                                selectedOrder.subtotal,
+                                selectedOrder.currency
+                              )}
+                            </span>
+                          </li>
+                        </ul>
+                        <div className="flex items-start gap-3 rounded-lg border border-[var(--border)] p-3">
+                          <Checkbox
+                            id="merchant-present-units-confirmation"
+                            checked={merchantPresentUnitsConfirmed}
+                            onCheckedChange={(checked) =>
+                              setMerchantPresentUnitsConfirmed(checked === true)
+                            }
+                          />
+                          <Label
+                            htmlFor="merchant-present-units-confirmation"
+                            className="text-sm leading-6"
+                          >
+                            I have these exact physical units at the booth and
+                            reserve them for this order. I understand this does
+                            not confirm the price, payment destination,
+                            settlement, or handoff.
+                          </Label>
+                        </div>
+                        {merchantPresentAuthorizationMutation.error && (
+                          <p
+                            className="text-sm leading-6 text-error"
+                            role="alert"
+                          >
+                            {merchantPresentAuthorizationMutation.error instanceof
+                            Error
+                              ? merchantPresentAuthorizationMutation.error
+                                  .message
+                              : "Booth availability could not be confirmed."}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    <AlertDialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={
+                          merchantPresentAuthorizationMutation.isPending
+                        }
+                        onClick={() => setConfirmingMerchantPresentSale(false)}
+                      >
+                        Go back
+                      </Button>
+                      <Button
+                        type="button"
+                        disabled={
+                          merchantPresentAuthorizationMutation.isPending ||
+                          !merchantPresentUnitsConfirmed
+                        }
+                        onClick={() =>
+                          merchantPresentAuthorizationMutation.mutate(true)
+                        }
+                      >
+                        {merchantPresentAuthorizationMutation.isPending
+                          ? merchantPresentDeliveryMode === "guest_direct"
+                            ? "Preparing transfer…"
+                            : "Sending authorization…"
+                          : merchantPresentDeliveryMode === "guest_direct"
+                            ? "Prepare direct transfer"
+                            : "Confirm and send"}
+                      </Button>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
 
                 <AlertDialog
                   open={confirmingOrganizerRelease}

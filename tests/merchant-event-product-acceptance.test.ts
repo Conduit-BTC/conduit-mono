@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { acceptOwnEventProduct } from "../apps/merchant/src/lib/event-product-acceptance"
-import type {
-  MerchantOrganizerEventMarket,
-  MerchantOrganizerRecordDelivery,
+import {
+  publishMerchantOrganizerMembership,
+  type MerchantOrganizerEventMarket,
+  type MerchantOrganizerRecordDelivery,
 } from "../apps/merchant/src/lib/event-market"
 
 const OWNER_SECRET = generateSecretKey()
@@ -140,6 +141,67 @@ describe("organizer own-product acceptance", () => {
       "current signed product"
     )
     expect(h.published).toHaveLength(0)
+  })
+  it("rejects a contradictory pickup before organizer acceptance", async () => {
+    const h = harness({
+      ...market,
+      participation: [
+        market.participation[0]!,
+        {
+          ...market.participation[0]!,
+          productCoordinate: PRIOR_PRODUCT,
+          status: "accepted",
+          pickupCoordinate: `30406:${OWNER}:different-booth`,
+        },
+      ],
+    } as MerchantOrganizerEventMarket)
+
+    await expect(acceptOwnEventProduct(input, h.deps)).rejects.toThrow(
+      "conflicts with the merchant's event handoff arrangement"
+    )
+    expect(h.published).toHaveLength(0)
+  })
+
+  it("enforces the invariant at the shared organizer membership boundary", async () => {
+    const candidate = market.participation[0]!
+    const conflictingMarket = {
+      ...market,
+      participation: [
+        candidate,
+        {
+          ...candidate,
+          productCoordinate: PRIOR_PRODUCT,
+          status: "accepted" as const,
+          pickupCoordinate: `30406:${OWNER}:different-booth`,
+        },
+      ],
+    } as MerchantOrganizerEventMarket
+
+    await expect(
+      publishMerchantOrganizerMembership({
+        organizerPubkey: OWNER,
+        market: conflictingMarket,
+        item: candidate,
+        action: "accept",
+      })
+    ).rejects.toThrow("conflicts with the merchant's event handoff arrangement")
+  })
+
+  it("accepts another product only when the merchant/event handoff matches", async () => {
+    const h = harness({
+      ...market,
+      participation: [
+        market.participation[0]!,
+        {
+          ...market.participation[0]!,
+          productCoordinate: PRIOR_PRODUCT,
+          status: "accepted",
+        },
+      ],
+    } as MerchantOrganizerEventMarket)
+
+    expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)
+    expect(h.published).toHaveLength(1)
   })
   it("does not call a zero-ACK collection publication accepted", async () => {
     const h = harness()

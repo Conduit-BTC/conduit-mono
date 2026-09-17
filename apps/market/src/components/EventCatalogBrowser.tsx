@@ -19,6 +19,7 @@ export function EventCatalogBrowser({
   merchant,
   selectedMerchantName,
   onMerchantChange,
+  merchantLocked = false,
   children,
   renderProduct,
 }: {
@@ -27,6 +28,7 @@ export function EventCatalogBrowser({
   merchant: string
   selectedMerchantName?: string
   onMerchantChange: (merchantPubkey: string) => void
+  merchantLocked?: boolean
   children?: ReactNode
   renderProduct: (
     entry: EventCatalogProduct,
@@ -63,11 +65,14 @@ export function EventCatalogBrowser({
     [browse.groups]
   )
   const hasFilters = search.trim().length > 0 || merchant !== ""
+  const hasClearableFilters =
+    search.trim().length > 0 || (!merchantLocked && merchant !== "")
   const clearFilters = () => {
     setSearch("")
-    onMerchantChange("")
+    if (!merchantLocked) onMerchantChange("")
   }
   const selectMerchant = (pubkey: string) => {
+    if (merchantLocked) return
     setSearch("")
     onMerchantChange(pubkey)
   }
@@ -119,9 +124,12 @@ export function EventCatalogBrowser({
           <Combobox
             id="event-merchant"
             value={merchant || "all"}
-            onValueChange={(value) =>
-              onMerchantChange(value === "all" ? "" : value)
-            }
+            onValueChange={(value) => {
+              if (!merchantLocked) {
+                onMerchantChange(value === "all" ? "" : value)
+              }
+            }}
+            disabled={merchantLocked}
             searchPlaceholder="Find a merchant"
             emptyText="No matching merchants"
             selectedLabel={
@@ -147,9 +155,9 @@ export function EventCatalogBrowser({
           />
         </div>
       </div>
-      {hasFilters ? (
+      {hasClearableFilters ? (
         <Button variant="ghost" size="sm" onClick={clearFilters}>
-          Clear filters
+          {merchantLocked ? "Clear search" : "Clear filters"}
         </Button>
       ) : null}
       {children}

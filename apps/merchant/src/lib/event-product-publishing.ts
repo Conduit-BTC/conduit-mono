@@ -14,6 +14,13 @@ import {
   type MerchantOrganizerEventMarket,
 } from "./event-market"
 import {
+  applyMerchantEventHandoffPreference,
+  ensureMerchantEventHandoffPreference,
+  type MerchantEventHandoffPreference,
+  type MerchantEventHandoffStorage,
+} from "./merchant-event-handoff-arrangement"
+import { loadMerchantEventHandoffTransition } from "./merchant-event-handoff-transition"
+import {
   buildProductLocalPickupMetadata,
   getMerchantBoothPickupFormError,
 } from "./product-local-pickup"
@@ -93,9 +100,10 @@ export function createFreshEventProductDTag(
 }
 
 export function createEmptyEventProductForm(
-  market: MerchantOrganizerEventMarket
+  market: MerchantOrganizerEventMarket,
+  preference?: MerchantEventHandoffPreference | null
 ): EventProductPublishFormValues {
-  return {
+  const form: EventProductPublishFormValues = {
     templateCoordinate: "",
     title: "",
     summary: "",
@@ -110,16 +118,20 @@ export function createEmptyEventProductForm(
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
   }
+  return preference
+    ? applyMerchantEventHandoffPreference(form, preference)
+    : form
 }
 
 export function eventProductFormFromTemplate(
   template: EventProductTemplate,
-  market: MerchantOrganizerEventMarket
+  market: MerchantOrganizerEventMarket,
+  preference?: MerchantEventHandoffPreference | null
 ): EventProductPublishFormValues {
   const product = template.product
   const source = product.sourcePrice
   return {
-    ...createEmptyEventProductForm(market),
+    ...createEmptyEventProductForm(market, preference),
     templateCoordinate: template.coordinate,
     title: product.title,
     summary: product.summary ?? "",
@@ -200,12 +212,15 @@ export async function publishEventProduct(input: {
   shouldContinue?: () => boolean
   marketReference: string
   form: EventProductPublishFormValues
+  handoffStorage?: MerchantEventHandoffStorage | null
   onSignedLocal?: (event: NDKEvent) => void | Promise<void>
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void
 }): Promise<EventProductPublishResult> {
-  const validation = validateEventProductPublishForm(input.form)
-  if (!validation.canPublish) {
-    throw new Error(validation.firstError ?? "Product form is not publishable.")
+  const initialValidation = validateEventProductPublishForm(input.form)
+  if (!initialValidation.product.canPublish) {
+    throw new Error(
+      initialValidation.product.firstError ?? "Product form is not publishable."
+    )
   }
 
   const market = await resolveOrganizerEventMarket(
@@ -215,13 +230,35 @@ export async function publishEventProduct(input: {
     undefined,
     input.shouldContinue
   )
-  const dTag = createFreshEventProductDTag(
-    input.form.title,
-    input.form.templateCoordinate
+  const transition = loadMerchantEventHandoffTransition(
+    input.merchantPubkey,
+    market.collectionCoordinate,
+    input.handoffStorage
   )
+  const preference = await ensureMerchantEventHandoffPreference({
+    merchantPubkey: input.merchantPubkey,
+    market,
+    requested: {
+      mode: input.form.handoffMode,
+      merchantPickup: {
+        title: "Merchant pickup",
+        location: input.form.merchantPickupLocation,
+        country: input.form.merchantPickupCountry,
+      },
+    },
+    transition,
+    storage: input.handoffStorage,
+  })
+  const form = applyMerchantEventHandoffPreference(input.form, preference)
+  const validation = validateEventProductPublishForm(form)
+  if (!validation.canPublish) {
+    throw new Error(validation.firstError ?? "Product form is not publishable.")
+  }
+
+  const dTag = createFreshEventProductDTag(form.title, form.templateCoordinate)
   let signerRequestOffset = 0
   const pickupMetadata =
-    input.form.handoffMode === "organizer_handoff"
+    preference.mode === "organizer_handoff"
       ? buildProductLocalPickupMetadata(market, {
           handoffMode: "organizer_handoff",
         })
@@ -232,10 +269,12 @@ export async function publishEventProduct(input: {
               authorPubkey: input.merchantPubkey,
               authenticatedPubkey: input.authenticatedPubkey,
               shouldContinue: input.shouldContinue,
-              dTag: `${dTag}-event-pickup`,
-              title: "Merchant pickup",
-              location: input.form.merchantPickupLocation.trim(),
-              country: input.form.merchantPickupCountry.trim().toUpperCase(),
+              dTag: preference.merchantPickup!.dTag,
+              title: preference.merchantPickup!.title,
+              location: preference.merchantPickup!.location,
+              geohash: preference.merchantPickup!.geohash,
+              countries: preference.merchantPickup!.countries,
+              storage: input.handoffStorage,
               onSignerRequest: () => {
                 signerRequestOffset = 1
                 input.onSignerRequest?.({
@@ -247,9 +286,9 @@ export async function publishEventProduct(input: {
             })
           ).coordinate,
         })
-  const currency = input.form.currency.trim().toUpperCase() || "SATS"
+  const currency = form.currency.trim().toUpperCase() || "SATS"
   const price = normalizePublishableProductPrice(
-    parsePlainDecimalAmount(input.form.price, "Price"),
+    parsePlainDecimalAmount(form.price, "Price"),
     currency,
     { allowZero: true }
   )
@@ -257,19 +296,19 @@ export async function publishEventProduct(input: {
   const product: ProductSchema = canonicalizeProductPrice({
     id: `30402:${input.merchantPubkey}:${dTag}`,
     pubkey: input.merchantPubkey,
-    title: input.form.title.trim(),
-    summary: input.form.summary.trim() || undefined,
+    title: form.title.trim(),
+    summary: form.summary.trim() || undefined,
     price,
     currency,
     type: "simple",
     specifications: [],
     ...pickupMetadata,
     visibility: "private",
-    stock: parseProductStockInput(input.form.stock),
-    images: [{ url: input.form.imageUrl.trim() }],
+    stock: parseProductStockInput(form.stock),
+    images: [{ url: form.imageUrl.trim() }],
     tags: validation.product.tags,
-    publicZapEnabled: input.form.publicZapEnabled,
-    zapMessagePolicy: input.form.zapMessagePolicy,
+    publicZapEnabled: form.publicZapEnabled,
+    zapMessagePolicy: form.zapMessagePolicy,
     publicZapPolicyKnown: true,
     createdAt: now,
     updatedAt: now,

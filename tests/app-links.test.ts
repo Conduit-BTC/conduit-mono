@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 
 import {
   buildMarketEventCatalogUrl,
+  buildMarketEventMerchantBoothUrl,
   buildMerchantOrderReviewUrl,
   buildMerchantEventParticipationUrl,
   encodeEventMarketNaddr,
@@ -152,6 +153,27 @@ describe("event market links", () => {
         `https://shop.conduit.market/events/${EVENT_NADDR}?merchant=${MERCHANT_NPUB}`
       )
     }
+  })
+
+  it("builds an explicit merchant booth entry without granting commerce authority", () => {
+    const url = new URL(
+      buildMarketEventMerchantBoothUrl(
+        "https://shop.conduit.market",
+        EVENT_NADDR,
+        MERCHANT_PUBKEY
+      )
+    )
+
+    expect(url.pathname).toBe(`/events/${EVENT_NADDR}`)
+    expect(url.searchParams.get("merchant")).toMatch(/^npub1/)
+    expect(url.searchParams.get("purchase")).toBe("booth")
+    expect(() =>
+      buildMarketEventMerchantBoothUrl(
+        "https://shop.conduit.market",
+        EVENT_NADDR,
+        "not-a-pubkey"
+      )
+    ).toThrow("valid merchant public key")
   })
 
   it("rejects attacker origins and non-exact naddr values", () => {

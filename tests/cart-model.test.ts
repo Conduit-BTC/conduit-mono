@@ -27,6 +27,7 @@ import {
   isCartAvailabilityReadComplete,
   isCartProductAvailabilityBlocking,
   parsePersistedCart,
+  rebuildCurrentCartItems,
   removeCartItem,
   selectCartItem,
   selectCartItemQuantity,
@@ -305,6 +306,101 @@ describe("cart model", () => {
     expect(
       new Set(groups.map((group) => getCartPurchaseReference(group.id))).size
     ).toBe(4)
+  })
+
+  it("separates merchant-present candidates from remote pickup and preserves only compatible intent", () => {
+    const merchant = "b".repeat(64)
+    const merchantPickup = {
+      ...pickupFulfillment(),
+      option: {
+        ...pickupFulfillment().option,
+        coordinate: `30406:${merchant}:merchant-booth`,
+      },
+      handoffMode: "merchant_handoff" as const,
+      handlerPubkey: merchant,
+    }
+    const purchaseIntent = {
+      kind: "merchant_present_candidate" as const,
+      merchantPubkey: merchant,
+      collectionCoordinate: merchantPickup.collection.coordinate,
+    }
+    const remote = item({
+      merchantPubkey: merchant,
+      productId: `30402:${merchant}:remote-pickup`,
+      format: "physical",
+      fulfillment: {
+        ...merchantPickup,
+        product: {
+          ...merchantPickup.product,
+          coordinate: `30402:${merchant}:remote-pickup`,
+        },
+      },
+    })
+    const boothOne = item({
+      ...remote,
+      productId: `30402:${merchant}:booth-one`,
+      fulfillment: {
+        ...merchantPickup,
+        product: {
+          ...merchantPickup.product,
+          coordinate: `30402:${merchant}:booth-one`,
+        },
+      },
+      purchaseIntent,
+    })
+    const boothTwo = item({
+      ...boothOne,
+      productId: `30402:${merchant}:booth-two`,
+      fulfillment: {
+        ...merchantPickup,
+        product: {
+          ...merchantPickup.product,
+          coordinate: `30402:${merchant}:booth-two`,
+        },
+      },
+    })
+
+    const groups = groupCartPurchases([remote, boothOne, boothTwo])
+    expect(groups).toHaveLength(2)
+    expect(
+      groups.map((group) => group.items.map((entry) => entry.productId))
+    ).toEqual([[remote.productId], [boothOne.productId, boothTwo.productId]])
+
+    const rebuilt = rebuildCurrentCartItems(
+      [boothOne],
+      [refreshedProduct(boothOne)],
+      new Map([[boothOne.productId, boothOne.fulfillment!]])
+    )
+    expect(rebuilt?.[0]?.purchaseIntent).toEqual(purchaseIntent)
+
+    const changedHandoff = rebuildCurrentCartItems(
+      [boothOne],
+      [refreshedProduct(boothOne)],
+      new Map([[boothOne.productId, pickupFulfillment()]])
+    )
+    expect(changedHandoff?.[0]?.purchaseIntent).toBeUndefined()
+    expect(getCartCommerceFingerprint(changedHandoff ?? [])).not.toBe(
+      getCartCommerceFingerprint([boothOne])
+    )
+
+    expect(
+      parsePersistedCart(serializeCartState({ items: [boothOne] })).state
+        .items[0]?.purchaseIntent
+    ).toEqual(purchaseIntent)
+    expect(
+      parsePersistedCart({
+        version: 2,
+        items: [
+          {
+            ...boothOne,
+            purchaseIntent: {
+              ...purchaseIntent,
+              collectionCoordinate: "30405:not-a-pubkey:event",
+            },
+          },
+        ],
+      }).state.items
+    ).toEqual([])
   })
 
   it("adds new items and increments existing products", () => {

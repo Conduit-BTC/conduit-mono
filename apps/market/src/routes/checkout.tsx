@@ -27,6 +27,7 @@ import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
+  buildMerchantPresentSaleReviewedCommerceFingerprint,
   config,
   createOrderLifecycle,
   fetchLnurlPayMetadata,
@@ -41,6 +42,7 @@ import {
   hasWebLN,
   isCommerceReadIncomplete,
   getNdk,
+  getMerchantPresentSaleCommerceFingerprintRef,
   getShippingOptionsByCoordinates,
   normalizePubkey,
   normalizePublicMediaUrl,
@@ -135,11 +137,13 @@ import {
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityVerificationMessage,
   getCartFulfillmentLane,
+  getCartCommerceFingerprint,
   getCartItemKey,
   getCartPurchaseReference,
   getMixedFulfillmentBlockingMessage,
   getCartPublicZapPolicy,
   groupCartPurchases,
+  hasCompatibleMerchantPresentPurchaseIntent,
   isCartProductAvailabilityBlocking,
   type CartAvailabilityReadDecision,
   type CartProductAvailability,
@@ -212,6 +216,10 @@ import {
   clearSessionGuestOrderSigningIdentity,
   createSessionGuestOrderSigningIdentity,
 } from "../lib/guest-order-identity"
+import {
+  clearMerchantPresentOrderReview,
+  persistMerchantPresentOrderReview,
+} from "../lib/merchant-present-order-authorization"
 import {
   consumeHudZapIntent,
   getHudZapAuthorizationBindingMismatch,
@@ -1353,6 +1361,16 @@ function CheckoutPage() {
     ]
   )
   const checkoutItems = preparedFulfillment.items
+  const hasMerchantPresentCandidate = rawCheckoutItems.some(
+    (item) => item.purchaseIntent?.kind === "merchant_present_candidate"
+  )
+  const isMerchantPresentCheckout =
+    selectedPurchase?.kind === "pickup" &&
+    rawCheckoutItems.length > 0 &&
+    rawCheckoutItems.every(hasCompatibleMerchantPresentPurchaseIntent)
+  const merchantPresentIntent = isMerchantPresentCheckout
+    ? rawCheckoutItems[0]?.purchaseIntent
+    : undefined
   const fulfillmentLane = useMemo(
     () => getCartFulfillmentLane(checkoutItems),
     [checkoutItems]
@@ -1369,7 +1387,10 @@ function CheckoutPage() {
   const mixedFulfillmentMessage =
     getMixedFulfillmentBlockingMessage(checkoutItems)
   // Pickup is reviewed from the cart; live authorization runs at submission.
-  const fulfillmentBlockingMessage = mixedFulfillmentMessage
+  const fulfillmentBlockingMessage =
+    hasMerchantPresentCandidate && !isMerchantPresentCheckout
+      ? "This booth purchase no longer matches an explicit merchant-owned event handoff. Return to the event booth link and review the current listings before ordering."
+      : mixedFulfillmentMessage
   const checkoutAvailability = {
     availabilityByProductId:
       selectedMerchantReadiness?.availabilityByProductId ?? emptyAvailability,
@@ -1430,12 +1451,16 @@ function CheckoutPage() {
       : publicZapPolicy.missingPolicyProductIds.length > 0
         ? "At least one product is missing public zap policy metadata, so checkout will use a private invoice."
         : null
-  const requiresCheckoutDetailsStep = isShippingCheckout || isGuestCheckout
+  const requiresCheckoutDetailsStep =
+    isShippingCheckout || (isGuestCheckout && !isMerchantPresentCheckout)
   const requiresBothContactMethods = isGuestCheckout && !isPickupCheckout
-  const requiresPickupRecoveryContact = isGuestCheckout && isPickupCheckout
+  const requiresPickupRecoveryContact =
+    isGuestCheckout && isPickupCheckout && !isMerchantPresentCheckout
   const liveShippingErrors = useMemo(() => {
     if (isPickupCheckout) {
-      return isGuestCheckout ? validateGuestPickupContactFields(shipping) : []
+      return isGuestCheckout && !isMerchantPresentCheckout
+        ? validateGuestPickupContactFields(shipping)
+        : []
     }
     if (isAllDigital) {
       return isGuestCheckout ? validateGuestContactFields(shipping) : []
@@ -1443,7 +1468,13 @@ function CheckoutPage() {
     return isGuestCheckout
       ? validateGuestShippingFields(shipping)
       : validateShippingFields(shipping)
-  }, [isAllDigital, isGuestCheckout, isPickupCheckout, shipping])
+  }, [
+    isAllDigital,
+    isGuestCheckout,
+    isMerchantPresentCheckout,
+    isPickupCheckout,
+    shipping,
+  ])
 
   const physicalItemsMissingShippingZone =
     isShippingCheckout && hasPhysicalItemsMissingShippingZone(checkoutItems)
@@ -1511,11 +1542,12 @@ function CheckoutPage() {
     publicZapPolicy.publicZapsAllowed
       ? "anonymous_public_zap"
       : "private_checkout"
-  const selectedZapMode = isPickupCheckout
-    ? "private_checkout"
-    : isGuestCheckout
-      ? guestZapMode
-      : zapMode
+  const selectedZapMode =
+    isPickupCheckout || isMerchantPresentCheckout
+      ? "private_checkout"
+      : isGuestCheckout
+        ? guestZapMode
+        : zapMode
 
   const zapVisibility = getCheckoutZapVisibility(selectedZapMode)
   const zapContentEditable = isPublicZapContentEditable(
@@ -1768,6 +1800,7 @@ function CheckoutPage() {
     addressValidForDirectPayment: currentAddressValidity.canDirectPay,
   }
   const fastEligible =
+    !isMerchantPresentCheckout &&
     paymentPathEnabled &&
     !fulfillmentBlockingMessage &&
     isFastCheckoutEligible(fastEligibilityInput)
@@ -1783,6 +1816,7 @@ function CheckoutPage() {
       : getSelectedPaymentUnavailableReasons(fastEligibilityInput)
   const firstFastUnavailableReason = fastUnavailableReasons[0]
   const manualInvoiceEligible =
+    !isMerchantPresentCheckout &&
     paymentPathEnabled &&
     !wallets.loading &&
     usesManualInvoice &&
@@ -1795,6 +1829,7 @@ function CheckoutPage() {
       pricingReady: true,
     })
   const pricingOnlyFastCheckoutBlocker =
+    !isMerchantPresentCheckout &&
     paymentRequired &&
     !fulfillmentBlockingMessage &&
     pricingPreviewIsStale &&
@@ -1924,7 +1959,7 @@ function CheckoutPage() {
     nextShipping: ShippingFormState
   ): ShippingValidationError[] {
     if (isPickupCheckout) {
-      return isGuestCheckout
+      return isGuestCheckout && !isMerchantPresentCheckout
         ? validateGuestPickupContactFields(nextShipping)
         : []
     }
@@ -2282,6 +2317,53 @@ function CheckoutPage() {
     }))
   }
 
+  async function getCurrentMerchantPresentPaymentDestination(
+    merchantPubkey: string,
+    totalMsats: number
+  ): Promise<string | null> {
+    if (totalMsats === 0) return null
+    const refreshedProfileResult = await getProfiles({
+      pubkeys: [merchantPubkey],
+      accountPubkey: signedBuyerPubkey,
+      authenticatedPubkey: signedBuyerPubkey,
+      skipCache: true,
+      requireCompleteEvidence: true,
+      evidenceScope: "payment",
+      priority: "visible",
+      shouldContinue: () => authGenerationRef.current === authGeneration,
+    })
+    const currentProfileContext =
+      refreshedProfileResult.profileContexts[merchantPubkey]
+    const currentProfileState = getMerchantPaymentProfileState({
+      isLoading: false,
+      isFetching: false,
+      lookupSettled: true,
+      evidenceIncomplete: isCommerceReadIncomplete(refreshedProfileResult.meta),
+      positiveAddressEvidence: hasFreshProfilePaymentAddress(
+        currentProfileContext
+      ),
+    })
+    const currentMerchantLud16 = getMerchantPaymentLud16({
+      profileState: currentProfileState,
+      lud16: getProfilePaymentAddress(currentProfileContext),
+    })
+    if (!currentMerchantLud16) {
+      throw new Error(
+        "The merchant's current signed payment destination could not be confirmed. Ask the merchant to refresh their profile before starting this booth sale."
+      )
+    }
+    const metadata = await getFreshLnurlMetadata(currentMerchantLud16)
+    if (
+      totalMsats < metadata.minSendable ||
+      totalMsats > metadata.maxSendable
+    ) {
+      throw new Error(
+        "The reviewed booth total is outside the merchant's current Lightning payment range. Ask the merchant to use another payment path."
+      )
+    }
+    return currentMerchantLud16
+  }
+
   // ─── Order-first path (existing flow) ───────────────────────────────────
 
   async function placeOrder(): Promise<void> {
@@ -2292,7 +2374,13 @@ function CheckoutPage() {
       ? getCheckoutBuyerIdentity()
       : null
     if (signedBuyerPubkey && !signedBuyerIdentity) return
-    if (!signedBuyerIdentity && !(isGuestCheckout && verifiedZeroCostPickup)) {
+    if (
+      !signedBuyerIdentity &&
+      !(
+        isGuestCheckout &&
+        (verifiedZeroCostPickup || isMerchantPresentCheckout)
+      )
+    ) {
       return
     }
     if (checkoutEvidenceIsChecking) {
@@ -2314,6 +2402,7 @@ function CheckoutPage() {
     let guestOrderIdToClear: string | null = null
     let orderSubmitStarted = false
     let purchaseClaim: CartPurchaseClaim | null = null
+    let merchantPresentReviewOrderId: string | null = null
 
     setError(null)
     setPaidNotice(null)
@@ -2332,11 +2421,41 @@ function CheckoutPage() {
       if (checkoutPricing.status !== "ok") {
         throw new Error(checkoutPricing.reason)
       }
-      if (!signedBuyerPubkey && checkoutPricing.paymentRequired) {
+      if (
+        !signedBuyerPubkey &&
+        checkoutPricing.paymentRequired &&
+        !isMerchantPresentCheckout
+      ) {
         throw new Error(
           "Connect a signer or use Lightning for an order that requires payment."
         )
       }
+      const authoritativeMerchantPresent =
+        isMerchantPresentCheckout &&
+        authoritativeCheckoutItems.every(
+          hasCompatibleMerchantPresentPurchaseIntent
+        )
+      if (isMerchantPresentCheckout && !authoritativeMerchantPresent) {
+        throw new Error(
+          "The selected listings no longer use the reviewed merchant-owned event handoff. Return to the booth and review the current products."
+        )
+      }
+      const merchantPresentPaymentDestination = authoritativeMerchantPresent
+        ? await getCurrentMerchantPresentPaymentDestination(
+            selectedMerchant,
+            checkoutPricing.totalMsats
+          )
+        : null
+      const reviewedCommerceFingerprint = authoritativeMerchantPresent
+        ? buildMerchantPresentSaleReviewedCommerceFingerprint({
+            cartCommerceFingerprint: getCartCommerceFingerprint(
+              authoritativeCheckoutItems
+            ),
+            merchantPubkey: selectedMerchant,
+            paymentDestination: merchantPresentPaymentDestination,
+            totalSats: checkoutPricing.totalSats,
+          })
+        : null
       purchaseClaim = await cart.capturePurchase(
         selectedPurchase.id,
         rawCheckoutItems
@@ -2363,15 +2482,32 @@ function CheckoutPage() {
       const buyerIdentityKind = guestIdentity
         ? ("guest_ephemeral" as const)
         : ("signed_in" as const)
-      const guestContact = buildGuestContact()
-      if (guestIdentity && !guestContact) {
+      const guestContact = authoritativeMerchantPresent
+        ? undefined
+        : buildGuestContact()
+      if (guestIdentity && !guestContact && !authoritativeMerchantPresent) {
         throw new Error("Email or phone is required for guest pickup recovery.")
       }
       const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
       const currency = "SATS"
       const items = checkoutPricing.items
 
-      const payload = {
+      const firstMerchantPresentFulfillment = authoritativeMerchantPresent
+        ? authoritativeCheckoutItems[0]?.fulfillment
+        : undefined
+      if (
+        authoritativeMerchantPresent &&
+        (firstMerchantPresentFulfillment?.type !== "pickup" ||
+          !merchantPresentIntent ||
+          firstMerchantPresentFulfillment.collection.coordinate !==
+            merchantPresentIntent.collectionCoordinate ||
+          !reviewedCommerceFingerprint)
+      ) {
+        throw new Error(
+          "The booth purchase context no longer matches the selected event collection. Return to the booth and review the current listings."
+        )
+      }
+      const payload = orderSchema.parse({
         id: orderId,
         merchantPubkey: selectedMerchant,
         buyerPubkey,
@@ -2386,10 +2522,30 @@ function CheckoutPage() {
         shippingCostStatus: checkoutPricing.shippingCost.status,
         shippingAddress: buildShippingAddress(),
         guestContact,
+        purchaseContext:
+          authoritativeMerchantPresent &&
+          firstMerchantPresentFulfillment?.type === "pickup" &&
+          reviewedCommerceFingerprint
+            ? {
+                type: "merchant_present",
+                merchantPubkey: selectedMerchant,
+                collection: firstMerchantPresentFulfillment.collection,
+                reviewedCommerceFingerprintRef:
+                  getMerchantPresentSaleCommerceFingerprintRef(
+                    reviewedCommerceFingerprint
+                  ),
+              }
+            : undefined,
         note: guestIdentity ? buildBuyerNote() : buildContactNote(),
         createdAt: orderCreatedAt,
+      })
+      if (reviewedCommerceFingerprint) {
+        persistMerchantPresentOrderReview({
+          order: payload,
+          reviewedCommerceFingerprint,
+        })
+        merchantPresentReviewOrderId = orderId
       }
-      orderSchema.parse(payload)
 
       const ndk = getNdk()
       const rumor = new NDKEvent(ndk)
@@ -2439,9 +2595,11 @@ function CheckoutPage() {
         buyerIdentityKind,
         merchantPubkey: selectedMerchant,
         checkoutMode: "pay_later",
-        merchantLightningAddress: checkoutPricing.paymentRequired
-          ? (merchantLud16 ?? undefined)
-          : undefined,
+        merchantLightningAddress: authoritativeMerchantPresent
+          ? (merchantPresentPaymentDestination ?? undefined)
+          : checkoutPricing.paymentRequired
+            ? (merchantLud16 ?? undefined)
+            : undefined,
         items: buildLifecycleItems(items),
         itemSubtotalSats: checkoutPricing.itemSubtotalSats,
         shippingCostSats:
@@ -2534,6 +2692,9 @@ function CheckoutPage() {
       setError(e instanceof Error ? e.message : "Failed to send order")
       if (!orderDelivered && guestOrderIdToClear) {
         clearSessionGuestOrderSigningIdentity(guestOrderIdToClear)
+      }
+      if (!orderDelivered && merchantPresentReviewOrderId) {
+        clearMerchantPresentOrderReview(merchantPresentReviewOrderId)
       }
       setStep("payment")
       paymentInFlightRef.current = false
@@ -3608,12 +3769,26 @@ function CheckoutPage() {
         </div>
       ) : null}
 
-      {!checkoutAvailability.isChecking && !hasUnavailableCheckoutItems && (
-        <CheckoutAvailabilityNotice
-          lastQuantityReported={checkoutUsesLastReportedQuantity}
-          partialCoverage={checkoutAvailabilityPartial}
-        />
-      )}
+      {!isMerchantPresentCheckout &&
+        !checkoutAvailability.isChecking &&
+        !hasUnavailableCheckoutItems && (
+          <CheckoutAvailabilityNotice
+            lastQuantityReported={checkoutUsesLastReportedQuantity}
+            partialCoverage={checkoutAvailabilityPartial}
+          />
+        )}
+
+      {isMerchantPresentCheckout ? (
+        <div
+          role="status"
+          className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
+        >
+          Current signed listing stock is checked before this order is sent.
+          That listing value is not booth availability: payment stays locked
+          until the merchant reviews these exact items and confirms they are
+          physically present.
+        </div>
+      ) : null}
 
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]">
         <section className="space-y-5">
@@ -4081,25 +4256,27 @@ function CheckoutPage() {
                   Send Order
                 </h1>
                 <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
-                  {isGuestCheckout
-                    ? "Send the order with a temporary guest key, then pay the Lightning invoice with your wallet."
-                    : directCheckoutEligible
-                      ? selectedPaymentTarget.type === "manual"
-                        ? "Send the order and show its Lightning invoice for manual payment."
-                        : selectedPaymentTarget.type === "webln"
-                          ? weblnAvailable
-                            ? "Your browser wallet is ready. Zap out now, or send the order first and pay later."
-                            : "Your selected browser wallet is unavailable. You can still create the order and retry payment from Orders."
-                          : wallet.status === "pay-capable"
-                            ? "Your selected wallet is ready. Zap out now, or send the order first and pay later."
-                            : "Create the order now, then resolve the selected wallet before retrying payment."
-                      : pricingOnlyFastCheckoutBlocker
-                        ? "Conduit is refreshing the price conversion before offering zap out. You can still send the order first."
-                        : "Send the order to the merchant first. They can confirm shipping and reply with payment details."}
+                  {isMerchantPresentCheckout
+                    ? "Send this exact booth order to the merchant. Payment stays locked until they confirm the items and physical handoff in person."
+                    : isGuestCheckout
+                      ? "Send the order with a temporary guest key, then pay the Lightning invoice with your wallet."
+                      : directCheckoutEligible
+                        ? selectedPaymentTarget.type === "manual"
+                          ? "Send the order and show its Lightning invoice for manual payment."
+                          : selectedPaymentTarget.type === "webln"
+                            ? weblnAvailable
+                              ? "Your browser wallet is ready. Zap out now, or send the order first and pay later."
+                              : "Your selected browser wallet is unavailable. You can still create the order and retry payment from Orders."
+                            : wallet.status === "pay-capable"
+                              ? "Your selected wallet is ready. Zap out now, or send the order first and pay later."
+                              : "Create the order now, then resolve the selected wallet before retrying payment."
+                        : pricingOnlyFastCheckoutBlocker
+                          ? "Conduit is refreshing the price conversion before offering zap out. You can still send the order first."
+                          : "Send the order to the merchant first. They can confirm shipping and reply with payment details."}
                 </p>
               </div>
 
-              {!isGuestCheckout && (
+              {!isGuestCheckout && !isMerchantPresentCheckout && (
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div className="min-w-0 flex-1">
@@ -4486,36 +4663,53 @@ function CheckoutPage() {
                     </div>
                     <ul className="mt-4 space-y-3 text-sm leading-7 text-[var(--text-secondary)]">
                       <li>
-                        1. Your order is sent to the merchant through Nostr.
+                        {isMerchantPresentCheckout
+                          ? "1. This exact booth order is sent privately to the merchant."
+                          : "1. Your order is sent to the merchant through Nostr."}
                       </li>
                       <li>
-                        {verifiedZeroCostPickup
-                          ? "2. No payment is required. The merchant reviews the order and coordinates pickup."
+                        {isMerchantPresentCheckout
+                          ? "2. The merchant checks the goods in front of you and transfers a signed confirmation before you pay."
+                          : verifiedZeroCostPickup
+                            ? "2. No payment is required. The merchant reviews the order and coordinates pickup."
+                            : isGuestCheckout
+                              ? "2. Pay the invoice shown here and send the receipt before closing this tab."
+                              : "2. The merchant reviews the order and replies with payment details."}
+                      </li>
+                      <li>
+                        {isMerchantPresentCheckout
+                          ? "3. After settlement, the merchant confirms payment and physical handoff."
                           : isGuestCheckout
-                            ? "2. Pay the invoice shown here and send the receipt before closing this tab."
-                            : "2. The merchant reviews the order and replies with payment details."}
-                      </li>
-                      <li>
-                        {isGuestCheckout
-                          ? isPickupCheckout
-                            ? "3. The merchant can use your submitted email or phone only if guest recovery is needed."
-                            : "3. The merchant follows up using the phone and email contact details submitted at checkout."
-                          : "3. You track order updates from the merchant in your order history."}
+                            ? isPickupCheckout
+                              ? "3. The merchant can use your submitted email or phone only if guest recovery is needed."
+                              : "3. The merchant follows up using the phone and email contact details submitted at checkout."
+                            : "3. You track order updates from the merchant in your order history."}
                       </li>
                     </ul>
-                    {!wallets.loading && fastUnavailableReasons.length > 0 && (
-                      <div className="mt-4 border-t border-[var(--border)] pt-4">
-                        <div className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                          Zap out unavailable
+                    {isMerchantPresentCheckout && isGuestCheckout ? (
+                      <p className="mt-4 border-t border-[var(--border)] pt-4 text-xs leading-5 text-[var(--text-muted)]">
+                        This immediate sale uses a one-order guest identity in
+                        this tab and sends no recovery contact or reply inbox.
+                        Finish payment and handoff with the merchant present. If
+                        the tab is lost before then, restart the sale.
+                      </p>
+                    ) : null}
+                    {!isMerchantPresentCheckout &&
+                      !wallets.loading &&
+                      fastUnavailableReasons.length > 0 && (
+                        <div className="mt-4 border-t border-[var(--border)] pt-4">
+                          <div className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                            Zap out unavailable
+                          </div>
+                          <ul className="mt-3 space-y-2 text-xs leading-5 text-[var(--text-secondary)]">
+                            {fastUnavailableReasons.map((reason) => (
+                              <li key={reason}>- {reason}</li>
+                            ))}
+                          </ul>
                         </div>
-                        <ul className="mt-3 space-y-2 text-xs leading-5 text-[var(--text-secondary)]">
-                          {fastUnavailableReasons.map((reason) => (
-                            <li key={reason}>- {reason}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {!wallets.loading &&
+                      )}
+                    {!isMerchantPresentCheckout &&
+                      !wallets.loading &&
                       !wallets.initializationError &&
                       eligibleWallets.length === 0 && (
                         <div className="mt-4 border-t border-[var(--border)] pt-4 text-xs text-[var(--text-muted)]">
@@ -4640,7 +4834,26 @@ function CheckoutPage() {
                       </Button>
                     )}
 
+                  {isGuestCheckout && isMerchantPresentCheckout ? (
+                    <Button
+                      className="h-11 px-5 text-sm"
+                      disabled={
+                        checkoutEvidenceIsChecking ||
+                        hasUnavailableCheckoutItems ||
+                        fulfillmentBlockingMessage !== null ||
+                        hasUnpricedCheckoutItems
+                      }
+                      onClick={placeOrder}
+                    >
+                      <OrderIcon className="h-4 w-4" />
+                      {checkoutEvidenceCheckingLabel
+                        ? checkoutEvidenceCheckingLabel
+                        : "Send booth order for merchant confirmation"}
+                    </Button>
+                  ) : null}
+
                   {isGuestCheckout &&
+                    !isMerchantPresentCheckout &&
                     !fastEligible &&
                     (verifiedZeroCostPickup ? (
                       <Button
@@ -4698,7 +4911,9 @@ function CheckoutPage() {
                           ? "Update cart quantities"
                           : hasUnpricedCheckoutItems
                             ? "Price unavailable"
-                            : "Send order"}
+                            : isMerchantPresentCheckout
+                              ? "Send booth order for merchant confirmation"
+                              : "Send order"}
                     </Button>
                   )}
                 </div>

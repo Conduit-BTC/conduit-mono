@@ -571,6 +571,6 @@ describe("Market event pickup fulfillment", () => {
     )
     expect(
       buildOrderTimeline(vm).find((row) => row.key === "fulfillment")?.title
-    ).toBe("Pickup from event organizer")
+    ).toBe("Awaiting merchant confirmation")
   })
 })

@@ -24,7 +24,8 @@ export interface EnsureMerchantBoothPickupInput {
   title: string
   location?: string
   geohash?: string
-  country: string
+  country?: string
+  countries?: readonly string[]
   onSignerRequest?: () => void
   storage?: Pick<Storage, "getItem" | "setItem"> | null
 }
@@ -141,6 +142,16 @@ export async function ensureMerchantBoothPickup(
 ): Promise<EnsuredMerchantBoothPickup> {
   const authorPubkey = input.authorPubkey.trim().toLowerCase()
   const coordinate = `30406:${authorPubkey}:${input.dTag}`
+  const countries = Array.from(
+    new Set(
+      (input.countries ?? (input.country ? [input.country] : []))
+        .map((country) => country.trim().toUpperCase())
+        .filter(Boolean)
+    )
+  )
+  if (countries.length === 0) {
+    throw new Error("Merchant pickup country is required.")
+  }
   const storage = getStorage(input.storage)
   if (!storage) {
     throw new Error(
@@ -152,7 +163,7 @@ export async function ensureMerchantBoothPickup(
     title: input.title,
     price: 0,
     currency: "SAT",
-    countries: [input.country],
+    countries,
     location: input.location,
     geohash: input.geohash,
     content: "",

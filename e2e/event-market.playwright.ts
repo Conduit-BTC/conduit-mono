@@ -734,6 +734,46 @@ async function readCanonicalCartLines(
   )
 }
 
+async function readCanonicalCartPurchaseIntents(page: Page): Promise<
+  Array<{
+    productId: string
+    purchaseIntent: unknown
+  }>
+> {
+  return page.evaluate(
+    () =>
+      new Promise<
+        Array<{
+          productId: string
+          purchaseIntent: unknown
+        }>
+      >((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction("shoppingCarts", "readonly")
+          const get = transaction.objectStore("shoppingCarts").get("market")
+          transaction.oncomplete = () => {
+            const lines = Array.isArray(get.result?.lines)
+              ? get.result.lines
+              : []
+            resolve(
+              lines.map(
+                (line: {
+                  item: { productId: string; purchaseIntent?: unknown }
+                }) => ({
+                  productId: line.item.productId,
+                  purchaseIntent: line.item.purchaseIntent ?? null,
+                })
+              )
+            )
+          }
+        }
+      })
+  )
+}
+
 async function installSyntheticEnvironment(
   page: Page,
   relay: RelayHarness,
@@ -1584,6 +1624,28 @@ async function publishMerchantProductFromEvent(
     await page.getByLabel("Open a known event").fill(market.canonicalNaddr)
     await page.getByRole("button", { name: "Open", exact: true }).click()
   }
+  const handoffSetup = page.getByTestId("merchant-event-handoff-setup")
+  await expect(handoffSetup).toBeVisible({ timeout: 30_000 })
+  if (options.handoffMode === "organizer") {
+    await handoffSetup
+      .getByRole("button", { name: /Organizer hands it out/ })
+      .click()
+  } else {
+    await handoffSetup.getByRole("button", { name: /I hand it out/ }).click()
+    await handoffSetup
+      .getByLabel("Pickup point or booth")
+      .fill("Synthetic Fixture Hall, Booth 12")
+    await handoffSetup.getByLabel("Country").fill("US")
+  }
+  await handoffSetup
+    .getByRole("button", { name: "Use this arrangement", exact: true })
+    .click()
+  await expect(
+    handoffSetup.getByRole("button", {
+      name: "Update arrangement",
+      exact: true,
+    })
+  ).toBeVisible({ timeout: 30_000 })
   const publishProductButton = page.getByRole("button", {
     name: "Publish product",
     exact: true,
@@ -1626,15 +1688,6 @@ async function publishMerchantProductFromEvent(
       "https://cdn.conduit.market/conduit-test/synthetic-pickup-product.svg"
     )
   await editor.getByLabel("Tags").fill("synthetic, event, pickup")
-
-  if (options.handoffMode === "organizer") {
-    await editor.getByRole("button", { name: /Organizer hands it out/ }).click()
-  } else {
-    await editor
-      .getByLabel("Pickup point or booth")
-      .fill("Synthetic Fixture Hall, Booth 12")
-    await editor.getByLabel("Country").fill("US")
-  }
 
   const publishStart = relay.publications.length
   if (options.rejectAcceptanceOnce) relay.rejectKind(30405, true)
@@ -3749,10 +3802,9 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
     rejectAcceptanceOnce: true,
     completionAction: "leave_open",
   })
-  await completionRefresh.captured
   try {
-    // Finish the helper's success assertions before resetting that same editor.
-    // The refresh remains held, so publication must still complete independently.
+    // Publication completes before the post-dialog readback begins. Holding
+    // that readback must not erase the signed success or block another item.
     await productPromise
     const editor = page.getByRole("dialog", {
       name: "Publish a product to Synthetic Owner Product Event",
@@ -3771,6 +3823,7 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
     ).toContainText("Create a new event product")
     await editor.getByRole("button", { name: "Cancel", exact: true }).click()
     await expect(editor).toBeHidden()
+    await completionRefresh.captured
   } finally {
     completionRefresh.release()
   }
@@ -4153,7 +4206,7 @@ test("a stale event tab does not announce an add rejected at the stock limit @ma
   )
 })
 
-test("guest booth checkout reaches a manual invoice without reading unselected pickup options @market", async ({
+test("guest remote merchant pickup reaches a manual invoice without reading unselected pickup options @market", async ({
   context,
   page,
 }) => {
@@ -4433,8 +4486,10 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
     await orderAck.captured
 
     await concurrentLiveProduct.hover()
-    await concurrentIncrement.click()
-    await concurrentAdd.click()
+    await concurrentIncrement.focus()
+    await concurrentIncrement.press("Enter")
+    await concurrentAdd.focus()
+    await concurrentAdd.press("Enter")
     await expect
       .poll(() => readCanonicalCartLines(concurrentTab))
       .toEqual(
@@ -4547,6 +4602,447 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
   } finally {
     held.release()
   }
+})
+
+test("merchant-present guest and signed-in purchases stay isolated and merchant-authorized @market @merchant", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(180_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic merchant-present market",
+    organizerHandoffEnabled: false,
+  })
+  const createdAt = market.initialCollection.created_at + 1
+  const merchantPickup = signEvent(MERCHANT_SECRET, {
+    kind: 30406,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "merchant-present-booth"],
+      ["title", "Synthetic merchant booth"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Synthetic public hall"],
+    ],
+  })
+  const firstProduct = createMerchantProductEvent({
+    dTag: "merchant-present-first",
+    title: "Synthetic booth coffee",
+    priceSats: 1_000,
+    stock: 5,
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: eventCoordinate(merchantPickup),
+    createdAt,
+  })
+  const secondProduct = createMerchantProductEvent({
+    dTag: "merchant-present-second",
+    title: "Synthetic booth pastry",
+    priceSats: 2_000,
+    stock: 5,
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: eventCoordinate(merchantPickup),
+    createdAt,
+  })
+  const metadata = JSON.stringify([
+    ["text/plain", "Synthetic merchant-present sale"],
+  ])
+  let metadataRequests = 0
+  const installPaymentMetadataRoute = (targetPage: Page) =>
+    targetPage.route("https://merchant-fixture.dev/**", async (route) => {
+      const url = new URL(route.request().url())
+      expect(url.pathname).toBe("/.well-known/lnurlp/merchant")
+      metadataRequests += 1
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          tag: "payRequest",
+          callback: "https://merchant-fixture.dev/callback",
+          minSendable: 1_000,
+          maxSendable: 10_000_000,
+          metadata,
+        }),
+      })
+    })
+  await installPaymentMetadataRoute(page)
+  relay.seed(
+    createInboxDeclaration("merchant", createdAt),
+    createInboxDeclaration("buyer", createdAt),
+    signEvent(MERCHANT_SECRET, {
+      kind: 0,
+      created_at: createdAt,
+      tags: [],
+      content: JSON.stringify({
+        name: "Synthetic booth merchant",
+        lud16: "merchant@merchant-fixture.dev",
+      }),
+    }),
+    merchantPickup,
+    firstProduct,
+    secondProduct,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: createdAt + 1,
+      content: market.initialCollection.content,
+      tags: [
+        ...market.initialCollection.tags,
+        ["a", eventCoordinate(firstProduct)],
+        ["a", eventCoordinate(secondProduct)],
+      ],
+    })
+  )
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  const boothUrl = `${marketUrl}/events/${market.canonicalNaddr}?merchant=${MERCHANT_PUBKEY}&purchase=booth`
+  await page.goto(boothUrl)
+  await expect(
+    page.getByText("Shopping in person with Synthetic booth merchant", {
+      exact: true,
+    })
+  ).toBeVisible({ timeout: 30_000 })
+  for (const title of ["Synthetic booth coffee", "Synthetic booth pastry"]) {
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: title })
+      .getByRole("button", { name: "Add", exact: true })
+      .click()
+  }
+
+  // The same signed pickup remains a separate remote purchase when it is
+  // added from ordinary event browsing in another same-origin tab.
+  const remoteTab = await context.newPage()
+  await installSyntheticEnvironment(remoteTab, relay, "remote-pickup-cart")
+  await remoteTab.goto(`${marketUrl}/events/${market.canonicalNaddr}`)
+  await remoteTab
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic booth coffee" })
+    .getByRole("button", { name: "Add", exact: true })
+    .click()
+
+  const publicationStart = relay.publications.length
+  await page.goto(`${marketUrl}/cart`)
+  await expect(page.getByLabel(/Clear .* purchase/)).toHaveCount(2)
+  const boothPurchase = page
+    .getByRole("button", { name: "Review 2 items", exact: true })
+    .locator("xpath=ancestor::section[1]")
+  await boothPurchase
+    .getByRole("button", { name: "Order", exact: true })
+    .click()
+
+  await expect(
+    page.getByRole("heading", { name: "Send Order", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByLabel("Email", { exact: true })).toHaveCount(0)
+  await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
+  await expect(page.getByText("Availability may still change")).toHaveCount(0)
+  await expect(
+    page.getByText(/That listing value is not booth availability/)
+  ).toBeVisible()
+
+  const submit = page.getByRole("button", {
+    name: "Send booth order for merchant confirmation",
+    exact: true,
+  })
+  await expect(submit).toBeEnabled({ timeout: 30_000 })
+  await submit.click()
+  await expect(page).toHaveURL(/\/orders\?order=/, { timeout: 30_000 })
+  await expect(
+    page.getByText("Waiting for merchant confirmation", { exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByRole("button", { name: "Copy invoice", exact: true })
+  ).toHaveCount(0)
+  expect(metadataRequests).toBeGreaterThan(0)
+
+  const privateOrders = uniquePrivatePublications(
+    decryptPrivatePublications(
+      relay.publications,
+      MERCHANT_SECRET,
+      publicationStart
+    )
+  ).filter((message) => rumorType(message.rumor) === "order")
+  expect(privateOrders).toHaveLength(1)
+  const orderPayload = JSON.parse(privateOrders[0]!.rumor.content) as {
+    id: string
+    buyerPubkey: string
+    buyerIdentityKind?: string
+    guestContact?: unknown
+    shippingAddress?: unknown
+    items: Array<{ productId: string; quantity: number }>
+    purchaseContext?: {
+      type: string
+      merchantPubkey: string
+      collection: { coordinate: string }
+      reviewedCommerceFingerprintRef: string
+    }
+  }
+  expect(orderPayload.items.map((item) => item.productId).sort()).toEqual(
+    [eventCoordinate(firstProduct), eventCoordinate(secondProduct)].sort()
+  )
+  expect(orderPayload.items.map((item) => item.quantity)).toEqual([1, 1])
+  expect(orderPayload.buyerIdentityKind).toBe("guest_ephemeral")
+  expect(orderPayload.guestContact).toBeUndefined()
+  expect(orderPayload.shippingAddress).toBeUndefined()
+  expect(orderPayload.purchaseContext).toEqual({
+    type: "merchant_present",
+    merchantPubkey: MERCHANT_PUBKEY,
+    collection: expect.objectContaining({
+      coordinate: market.collectionCoordinate,
+    }),
+    reviewedCommerceFingerprintRef: expect.stringMatching(/^[0-9a-f]{64}$/),
+  })
+
+  const merchantPage = await context.newPage()
+  await installSyntheticEnvironment(merchantPage, relay, "merchant-booth")
+  await gotoAs(merchantPage, merchantUrl, "/orders", "merchant", {
+    order: orderPayload.id,
+  })
+  await expect(
+    merchantPage
+      .getByText("Synthetic booth coffee", { exact: true })
+      .filter({ visible: true })
+      .first()
+  ).toBeVisible({ timeout: 30_000 })
+  const acceptOrder = merchantPage.getByRole("button", {
+    name: "Accept order",
+    exact: true,
+  })
+  await expect(acceptOrder).toBeEnabled({ timeout: 30_000 })
+  await acceptOrder.click()
+  const confirmBoothItems = merchantPage.getByRole("button", {
+    name: "Confirm items at booth",
+    exact: true,
+  })
+  await expect(confirmBoothItems).toBeEnabled({ timeout: 30_000 })
+  await confirmBoothItems.click()
+  const boothConfirmation = merchantPage.getByRole("alertdialog", {
+    name: "Confirm items at the booth",
+  })
+  await boothConfirmation
+    .getByRole("checkbox", { name: /I have these exact physical units/ })
+    .click()
+  await boothConfirmation
+    .getByRole("button", { name: "Prepare direct transfer", exact: true })
+    .click()
+  const directWrap = merchantPage.getByLabel(
+    "Guest booth authorization encrypted wrap",
+    { exact: true }
+  )
+  await expect(directWrap).toBeVisible({ timeout: 30_000 })
+  const directWrapValue = await directWrap.inputValue()
+  const directWrapEvent = JSON.parse(directWrapValue) as {
+    kind: number
+    tags: string[][]
+  }
+  expect(directWrapEvent.kind).toBe(1059)
+  expect(directWrapEvent.tags).toContainEqual(["p", orderPayload.buyerPubkey])
+
+  await page
+    .getByLabel("Paste merchant booth confirmation", { exact: true })
+    .fill(directWrapValue)
+  await page
+    .getByRole("button", { name: "Verify confirmation", exact: true })
+    .click()
+  await expect(page.getByText("Ready to pay", { exact: true })).toBeVisible({
+    timeout: 30_000,
+  })
+
+  const confirmPayment = merchantPage.getByRole("button", {
+    name: "Confirm payment received",
+    exact: true,
+  })
+  await expect(confirmPayment).toBeEnabled({ timeout: 30_000 })
+  await confirmPayment.click()
+  const paymentConfirmation = merchantPage.getByRole("alertdialog", {
+    name: "Confirm payment received?",
+  })
+  await paymentConfirmation
+    .getByRole("button", { name: "Record payment received", exact: true })
+    .click()
+  const completeHandoff = merchantPage.getByRole("button", {
+    name: "Mark picked up / complete",
+    exact: true,
+  })
+  await expect(completeHandoff).toBeEnabled({ timeout: 30_000 })
+  await completeHandoff.click()
+  await expect(
+    merchantPage.getByText("Complete", { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
+
+  const organizerOrderMessages = uniquePrivatePublications(
+    decryptPrivatePublications(
+      relay.publications,
+      ORGANIZER_SECRET,
+      publicationStart
+    )
+  ).filter((message) =>
+    ["order", "status_update", "organizer_fulfillment_receipt"].includes(
+      rumorType(message.rumor) ?? ""
+    )
+  )
+  expect(organizerOrderMessages).toEqual([])
+
+  await expect
+    .poll(() => readCanonicalCartLines(remoteTab))
+    .toEqual([
+      {
+        productId: eventCoordinate(firstProduct),
+        quantity: 1,
+      },
+    ])
+
+  await test.step("signed-in buyer receives the same exact merchant confirmation privately", async () => {
+    await remoteTab.goto(`${marketUrl}/cart`)
+    await remoteTab.getByLabel(/Clear .* purchase/).click()
+    await remoteTab
+      .getByRole("alertdialog", { name: "Clear this purchase?" })
+      .getByRole("button", { name: "Clear cart", exact: true })
+      .click()
+    await expect.poll(() => readCanonicalCartLines(remoteTab)).toEqual([])
+
+    const signedInPage = await context.newPage()
+    await installSyntheticEnvironment(signedInPage, relay, "signed-in-booth")
+    await installPaymentMetadataRoute(signedInPage)
+    await gotoAs(
+      signedInPage,
+      marketUrl,
+      `/events/${market.canonicalNaddr}`,
+      "buyer",
+      { merchant: MERCHANT_PUBKEY, purchase: "booth" }
+    )
+    await expect(
+      signedInPage.getByText(
+        "Shopping in person with Synthetic booth merchant",
+        { exact: true }
+      )
+    ).toBeVisible({ timeout: 30_000 })
+    for (const [index, title] of [
+      "Synthetic booth coffee",
+      "Synthetic booth pastry",
+    ].entries()) {
+      await signedInPage
+        .getByRole("listitem")
+        .filter({ hasText: title })
+        .getByRole("button", { name: "Add", exact: true })
+        .click()
+      await expect
+        .poll(async () => {
+          const actual = (await readCanonicalCartLines(signedInPage))
+            .map((line) => line.productId)
+            .sort()
+          const expected = [
+            eventCoordinate(firstProduct),
+            eventCoordinate(secondProduct),
+          ]
+            .slice(0, index + 1)
+            .sort()
+          return (
+            actual.length === expected.length &&
+            actual.every(
+              (productId, itemIndex) => productId === expected[itemIndex]
+            )
+          )
+        })
+        .toBe(true)
+    }
+
+    const signedInPurchaseIntents =
+      await readCanonicalCartPurchaseIntents(signedInPage)
+    const expectedSignedInProductIds = new Set([
+      eventCoordinate(firstProduct),
+      eventCoordinate(secondProduct),
+    ])
+    expect(signedInPurchaseIntents.length).toBe(2)
+    expect(
+      signedInPurchaseIntents.every(
+        ({ productId, purchaseIntent }) =>
+          expectedSignedInProductIds.has(productId) &&
+          purchaseIntent.kind === "merchant_present_candidate" &&
+          purchaseIntent.merchantPubkey === MERCHANT_PUBKEY &&
+          purchaseIntent.collectionCoordinate === market.collectionCoordinate
+      )
+    ).toBe(true)
+
+    const signedInPublicationStart = relay.publications.length
+    await gotoAs(signedInPage, marketUrl, "/checkout", "buyer", {
+      merchant: nip19.npubEncode(MERCHANT_PUBKEY),
+    })
+    await expect(
+      signedInPage.getByRole("heading", { name: "Send Order", exact: true })
+    ).toBeVisible({ timeout: 30_000 })
+    const sendSignedInOrder = signedInPage.getByRole("button", {
+      name: "Send booth order for merchant confirmation",
+      exact: true,
+    })
+    await expect(sendSignedInOrder).toBeEnabled({ timeout: 30_000 })
+    await sendSignedInOrder.click()
+    await expect(
+      signedInPage.getByText("Waiting for merchant confirmation", {
+        exact: true,
+      })
+    ).toBeVisible({ timeout: 30_000 })
+
+    const signedInPrivateOrders = uniquePrivatePublications(
+      decryptPrivatePublications(
+        relay.publications,
+        MERCHANT_SECRET,
+        signedInPublicationStart
+      )
+    ).filter((message) => rumorType(message.rumor) === "order")
+    expect(signedInPrivateOrders).toHaveLength(1)
+    const signedInOrder = JSON.parse(
+      signedInPrivateOrders[0]!.rumor.content
+    ) as {
+      id: string
+      buyerPubkey: string
+      buyerIdentityKind?: string
+      purchaseContext?: { type?: string; merchantPubkey?: string }
+    }
+    expect(signedInOrder).toMatchObject({
+      buyerPubkey: BUYER_PUBKEY,
+      buyerIdentityKind: "signed_in",
+      purchaseContext: {
+        type: "merchant_present",
+        merchantPubkey: MERCHANT_PUBKEY,
+      },
+    })
+
+    await gotoAs(merchantPage, merchantUrl, "/orders", "merchant", {
+      order: signedInOrder.id,
+    })
+    const acceptSignedInOrder = merchantPage.getByRole("button", {
+      name: "Accept order",
+      exact: true,
+    })
+    await expect(acceptSignedInOrder).toBeEnabled({ timeout: 30_000 })
+    await acceptSignedInOrder.click()
+    const confirmSignedInItems = merchantPage.getByRole("button", {
+      name: "Confirm items at booth",
+      exact: true,
+    })
+    await expect(confirmSignedInItems).toBeEnabled({ timeout: 30_000 })
+    await confirmSignedInItems.click()
+    const signedInConfirmation = merchantPage.getByRole("alertdialog", {
+      name: "Confirm items at the booth",
+    })
+    await signedInConfirmation
+      .getByRole("checkbox", { name: /I have these exact physical units/ })
+      .click()
+    await signedInConfirmation
+      .getByRole("button", { name: "Confirm and send", exact: true })
+      .click()
+    await expect(
+      merchantPage.getByText("Sent privately", { exact: true })
+    ).toBeVisible({ timeout: 30_000 })
+
+    await signedInPage.reload()
+    await expect(
+      signedInPage.getByText("Ready to pay", { exact: true })
+    ).toBeVisible({ timeout: 30_000 })
+  })
 })
 
 test("cold event catalog shows a completed merchant product before a slower merchant finishes @market", async ({

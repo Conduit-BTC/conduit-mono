@@ -41,12 +41,17 @@ describe("Market verified zero-cost pickup route contract", () => {
     const placeOrder = checkout.slice(placeOrderStart, payNowStart)
 
     expect(placeOrderStart).toBeGreaterThan(-1)
-    expect(placeOrder).toContain(
-      "!signedBuyerIdentity && !(isGuestCheckout && verifiedZeroCostPickup)"
+    expect(placeOrder).toMatch(
+      /!signedBuyerIdentity\s+&&\s+!\(\s*isGuestCheckout\s+&&\s+\(verifiedZeroCostPickup \|\| isMerchantPresentCheckout\)\s*\)/
     )
     expect(placeOrder).toContain("createSessionGuestOrderSigningIdentity(")
     expect(placeOrder).toContain("guestIdentity ?? signedBuyerIdentity")
-    expect(placeOrder).toContain("guestContact")
+    expect(placeOrder).toContain(
+      "const guestContact = authoritativeMerchantPresent"
+    )
+    expect(placeOrder).toContain(
+      "if (guestIdentity && !guestContact && !authoritativeMerchantPresent)"
+    )
     expect(placeOrder).toContain('checkoutMode: "pay_later"')
     expect(placeOrder).not.toContain("runOrderPayment")
     expect(checkout).toContain('"Send order"')
@@ -68,10 +73,10 @@ describe("Market verified zero-cost pickup route contract", () => {
       /const canAttemptLightningPayment =\s+paymentPathEnabled &&/
     )
     expect(checkout).toMatch(
-      /const manualInvoiceEligible =\s+paymentPathEnabled &&/
+      /const manualInvoiceEligible =\s+!isMerchantPresentCheckout &&\s+paymentPathEnabled &&/
     )
     expect(checkout).toContain(
-      "const fastEligible =\n    paymentPathEnabled &&"
+      "const fastEligible =\n    !isMerchantPresentCheckout &&\n    paymentPathEnabled &&"
     )
     expect(payNow).toContain(
       'if (pricingPreview.status === "ok" && !pricingPreview.paymentRequired)'

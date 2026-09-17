@@ -195,6 +195,8 @@ export interface ProductListingPublishTarget {
   dTag: string
   previousEventCreatedAt?: number
   fulfillmentIntent: ProductFulfillmentIntent
+  /** Workflow-owned signed metadata; callers must not accept arbitrary input. */
+  additionalProductTags?: readonly (readonly string[])[]
 }
 
 type SignedProductWrite = {
@@ -464,7 +466,7 @@ export function applyProductFulfillmentIntentForPublication(input: {
 export function getCanonicalProductWriteFingerprint(
   listing: Pick<
     ProductListingPublishTarget,
-    "product" | "dTag" | "fulfillmentIntent"
+    "product" | "dTag" | "fulfillmentIntent" | "additionalProductTags"
   >
 ): string {
   const product = applyProductFulfillmentIntentForPublication({
@@ -478,6 +480,11 @@ export function getCanonicalProductWriteFingerprint(
     dTag: listing.dTag,
     clientAppId: "merchant",
   })
+  if (listing.additionalProductTags?.length) {
+    productDraft.tags.push(
+      ...listing.additionalProductTags.map((tag) => [...tag])
+    )
+  }
   const shippingDraft =
     listing.fulfillmentIntent.kind === "fixed_standard"
       ? buildFixedShippingOptionEventDraft({
@@ -519,6 +526,11 @@ async function signProductWrite(
     dTag: listing.dTag,
     clientAppId: "merchant",
   })
+  if (listing.additionalProductTags?.length) {
+    productDraft.tags.push(
+      ...listing.additionalProductTags.map((tag) => [...tag])
+    )
+  }
   const productEvent = new NDKEvent(ndk)
   productEvent.kind = productDraft.kind
   productEvent.created_at = createdAt
@@ -765,6 +777,7 @@ export async function signAndPublishProductListing(input: {
   dTag: string
   previousEventCreatedAt?: number
   fulfillmentIntent: ProductFulfillmentIntent
+  additionalProductTags?: readonly (readonly string[])[]
   onSignedLocal: (event: NDKEvent) => Promise<void>
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void
 }): Promise<PublishWithPlannerResult> {
@@ -778,6 +791,9 @@ export async function signAndPublishProductListing(input: {
         dTag: input.dTag,
         previousEventCreatedAt: input.previousEventCreatedAt,
         fulfillmentIntent: input.fulfillmentIntent,
+        ...(input.additionalProductTags
+          ? { additionalProductTags: input.additionalProductTags }
+          : {}),
       },
     ],
     onSignerRequest: input.onSignerRequest,

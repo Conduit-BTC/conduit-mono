@@ -61,7 +61,10 @@ describe("Market event catalog cart action", () => {
     expect(hook).toContain("session.relayScope")
     expect(hook).toContain("enabled: session.relaySettingsReady")
     expect(route).toContain("onAddToCart={add}")
-    expect(route).toContain("cartActionDisabled={!cartAction.enabled}")
+    expect(route).toContain(
+      "const canAdd = cartAction.enabled && !boothContextBlocked"
+    )
+    expect(route).toContain("cartActionDisabled={!canAdd}")
     expect(route).toContain("Refresh evidence")
     expect(main).toContain('root === "event-market"')
   })

@@ -363,6 +363,36 @@ function isBuyerOrderPaid(
   )
 }
 
+export type OrganizerHandoffJourneyState =
+  | "awaiting_merchant_confirmation"
+  | "preparing_pickup"
+  | "ready_for_pickup"
+  | "collected"
+
+/**
+ * Project the buyer-visible organizer handoff journey from signed order state.
+ * Payment remains merchant-owned: a buyer-side payment alone cannot advance
+ * the order beyond awaiting merchant confirmation.
+ */
+export function getOrganizerHandoffJourneyState(
+  vm: OrderViewModel
+): OrganizerHandoffJourneyState | null {
+  const organizerHandoff = vm.pickupFulfillments.some(
+    (pickup) => getPickupHandoffSummary(pickup).mode === "organizer_handoff"
+  )
+  if (!organizerHandoff) return null
+  if (isCompletedMerchantStatus(vm.merchantStatus)) return "collected"
+  if (vm.merchantStatus === "ready_for_pickup") return "ready_for_pickup"
+  if (
+    vm.merchantStatus === "paid" ||
+    vm.merchantStatus === "processing" ||
+    (vm.merchantStatus === "accepted" && isZeroCostPickupOrder(vm))
+  ) {
+    return "preparing_pickup"
+  }
+  return "awaiting_merchant_confirmation"
+}
+
 /** Best-effort human title from an order item product reference. */
 export function deriveItemDisplayTitle(productId: string): string {
   const segments = productId.split(":")
@@ -998,7 +1028,11 @@ export function computeOrderTimelineStatuses(
   // 6. Fulfillment / shipping
   let fulfillment: StatusStepperRowStatus = "waiting"
   if (shipped) fulfillment = "complete"
-  else if (vm.merchantStatus === "processing") fulfillment = "in_progress"
+  else if (
+    vm.merchantStatus === "processing" ||
+    vm.merchantStatus === "ready_for_pickup"
+  )
+    fulfillment = "in_progress"
 
   // 7. Complete
   const complete: StatusStepperRowStatus = completed
@@ -1041,6 +1075,7 @@ export function getOrderFilterPhase(
     isBuyerOrderPaid(vm) ||
     vm.merchantStatus === "accepted" ||
     vm.merchantStatus === "processing" ||
+    vm.merchantStatus === "ready_for_pickup" ||
     vm.merchantStatus === "shipped"
   ) {
     return "in_progress"
@@ -1057,9 +1092,10 @@ export function buildOrderTimeline(
   const pickupHandoff = vm.pickupFulfillments[0]
     ? getPickupHandoffSummary(vm.pickupFulfillments[0])
     : null
+  const organizerJourney = getOrganizerHandoffJourneyState(vm)
   const rowOrder: readonly OrderTimelineRowKey[] = isZeroCostPickupOrder(vm)
     ? ["order_sent", "merchant_confirmation", "fulfillment", "complete"]
-    : vm.buyerIdentityKind === "guest_ephemeral"
+    : vm.buyerIdentityKind === "guest_ephemeral" && !organizerJourney
       ? TIMELINE_ROW_ORDER.slice(0, 4)
       : vm.requiresShipping || vm.requiresPickup
         ? TIMELINE_ROW_ORDER
@@ -1075,18 +1111,32 @@ export function buildOrderTimeline(
       subtitle =
         "Paid the merchant directly over Lightning — no invoice needed."
     } else if (key === "fulfillment" && vm.requiresPickup) {
-      title =
-        status === "complete"
-          ? "Pickup complete"
-          : (pickupHandoff?.label ?? "Event pickup")
-      subtitle =
-        status === "complete"
-          ? "The pickup order was marked complete."
-          : pickupHandoff?.mode === "organizer_handoff"
-            ? isZeroCostPickupOrder(vm)
-              ? "No payment is required. The organizer handles pickup after the merchant sends the minimal private pickup receipt."
-              : "The organizer handles pickup after the merchant confirms payment and sends the minimal private pickup receipt."
+      if (organizerJourney === "collected") {
+        title = "Collected"
+        subtitle = "The organizer recorded collection of this order."
+      } else if (organizerJourney === "ready_for_pickup") {
+        title = "Ready for pickup"
+        subtitle =
+          "The merchant authorized the minimal organizer pickup receipt. Show the pickup code to the organizer when you collect the order."
+      } else if (organizerJourney === "preparing_pickup") {
+        title = "Preparing pickup"
+        subtitle =
+          "The merchant is preparing the order before authorizing organizer collection."
+      } else if (organizerJourney === "awaiting_merchant_confirmation") {
+        title = "Awaiting merchant confirmation"
+        subtitle = isZeroCostPickupOrder(vm)
+          ? "The merchant must confirm the order before sending the organizer a minimal pickup receipt."
+          : "The merchant must confirm payment before sending the organizer a minimal pickup receipt."
+      } else {
+        title =
+          status === "complete"
+            ? "Pickup complete"
+            : (pickupHandoff?.label ?? "Event pickup")
+        subtitle =
+          status === "complete"
+            ? "The pickup order was marked complete."
             : "The merchant handles pickup at the signed merchant booth location. No organizer receipt is sent."
+      }
     } else if (
       key === "payment" &&
       vm.paymentStatus === "ambiguous" &&
@@ -1131,6 +1181,7 @@ export interface OrderHeaderStatus {
  */
 export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
   const paid = isBuyerOrderPaid(vm)
+  const organizerJourney = getOrganizerHandoffJourneyState(vm)
 
   if (vm.merchantStatus === "cancelled" || vm.phase === "cancelled") {
     return {
@@ -1151,12 +1202,39 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
     }
   }
   if (isCompletedMerchantStatus(vm.merchantStatus)) {
+    if (organizerJourney === "collected") {
+      return {
+        tone: "success",
+        primaryLabel: "Collected",
+        detailLabel: "Organizer recorded collection",
+        actionNeeded: false,
+        showSpinner: false,
+      }
+    }
     return {
       tone: "success",
       primaryLabel: "Completed",
       detailLabel: "Delivered",
       actionNeeded: false,
       showSpinner: false,
+    }
+  }
+  if (organizerJourney === "ready_for_pickup") {
+    return {
+      tone: "success",
+      primaryLabel: "Ready for pickup",
+      detailLabel: "Organizer pickup authorized",
+      actionNeeded: false,
+      showSpinner: false,
+    }
+  }
+  if (organizerJourney === "preparing_pickup") {
+    return {
+      tone: "info",
+      primaryLabel: "Preparing pickup",
+      detailLabel: "Waiting for organizer release",
+      actionNeeded: false,
+      showSpinner: true,
     }
   }
   if (vm.orderDeliveryStatus === "failed") {
@@ -1286,6 +1364,18 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       }
     }
     if (vm.proofDeliveryStatus === "sent") {
+      if (organizerJourney === "awaiting_merchant_confirmation") {
+        return {
+          tone: "info",
+          primaryLabel: "Awaiting merchant confirmation",
+          detailLabel:
+            vm.buyerIdentityKind === "guest_ephemeral"
+              ? "Recovery contact stays with the merchant"
+              : "Merchant must authorize organizer pickup",
+          actionNeeded: false,
+          showSpinner: vm.buyerIdentityKind !== "guest_ephemeral",
+        }
+      }
       if (vm.buyerIdentityKind === "guest_ephemeral") {
         return {
           tone: "success",

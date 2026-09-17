@@ -80,12 +80,18 @@ export type OrderFlow = "prepaid" | "invoice"
 const ACCEPTED_STATUSES = new Set([
   "accepted",
   "processing",
+  "ready_for_pickup",
   "shipped",
   "complete",
   "delivered",
 ])
 const SHIPPED_STATUSES = new Set(["shipped", "complete", "delivered"])
 const DELIVERED_STATUSES = new Set(["delivered", "complete"])
+const PICKUP_READY_STATUSES = new Set([
+  "ready_for_pickup",
+  "complete",
+  "delivered",
+])
 const PAID_STATUSES = new Set(["paid", "shipped", "complete", "delivered"])
 const TERMINAL_ACTION_STATUSES = new Set([
   "cancelled",
@@ -365,6 +371,16 @@ export function isMerchantOrderAccepted(state: MerchantOrderState): boolean {
   )
 }
 
+/** Readiness is fulfillment authority only; it never implies payment. */
+export function isMerchantOrderReadyForPickup(
+  state: MerchantOrderState
+): boolean {
+  return (
+    getMerchantOrderFulfillmentMode(state) === "pickup" &&
+    PICKUP_READY_STATUSES.has(normalizeStatus(state.status))
+  )
+}
+
 function titleCase(value: string): string {
   return (
     value
@@ -389,6 +405,7 @@ const ORDER_STATUS_DISPLAYS: Record<KnownOrderStatus, OrderStatusDisplay> = {
   paid: { tone: "info", label: "Paid" },
   accepted: { tone: "info", label: "Accepted" },
   processing: { tone: "info", label: "Processing" },
+  ready_for_pickup: { tone: "success", label: "Ready for pickup" },
   shipped: { tone: "info", label: "Shipped" },
   complete: { tone: "success", label: "Complete" },
   delivered: { tone: "success", label: "Delivered" },
