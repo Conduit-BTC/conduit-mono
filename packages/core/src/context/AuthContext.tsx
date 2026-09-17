@@ -518,7 +518,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   const connected = useRef(false)
   const authEpoch = useRef(0)
   const isAuthGenerationCurrent = useCallback(
-    (generation: number) => authEpoch.current === generation,
+    (generation: number) =>
+      connected.current && authEpoch.current === generation,
     []
   )
   const remoteSignerRecoveryRef = useRef<RemoteSignerRecoveryState | null>(
@@ -1372,8 +1373,10 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   const disconnect = useCallback(
     async () => {
       // Cancel background payment work before asynchronous credential cleanup.
+      // Keep the invalidated epoch private so a render during queued cleanup
+      // cannot capture it as a fresh, current continuation generation.
+      connected.current = false
       authEpoch.current += 1
-      setAuthGeneration(authEpoch.current)
       const expectedSession =
         recoverySession.current ??
         authorityDisplacedSession.current ??
