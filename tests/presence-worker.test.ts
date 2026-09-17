@@ -13,6 +13,7 @@ import {
   type PresenceEnv,
   type PresenceRoomState,
 } from "../apps/presence/src"
+import { hashLivePresenceScope } from "../apps/market/src/lib/live-presence"
 
 const ROOM_KEY = "a".repeat(64)
 const SECOND_ROOM_KEY = "b".repeat(64)
@@ -491,19 +492,32 @@ describe("presence room counts", () => {
     expect(active.messages).toEqual(['{"count":1}'])
   })
 
-  it("keeps counts isolated between rooms inside the shared gateway", () => {
+  it("keeps exact product-coordinate hashes isolated inside the shared gateway", async () => {
+    const productCoordinate = `30402:${"a".repeat(64)}:hat`
+    const [productRoomKey, trailingWhitespaceRoomKey] = await Promise.all([
+      hashLivePresenceScope({
+        canonicalId: productCoordinate,
+        hostname: "preview.example.com",
+        pageType: "product",
+      }),
+      hashLivePresenceScope({
+        canonicalId: `${productCoordinate} `,
+        hostname: "preview.example.com",
+        pageType: "product",
+      }),
+    ])
     const state = new FakeRoomState()
     const firstRoomSocket = new FakeSocket()
     const secondRoomSocket = new FakeSocket()
-    state.addSocket(firstRoomSocket, ROOM_KEY)
-    state.addSocket(secondRoomSocket, SECOND_ROOM_KEY)
+    state.addSocket(firstRoomSocket, productRoomKey)
+    state.addSocket(secondRoomSocket, trailingWhitespaceRoomKey)
     const room = createTestRoom(state)
 
-    room.webSocketClose(closedSocket(ROOM_KEY))
+    room.webSocketClose(closedSocket(productRoomKey))
     expect(firstRoomSocket.messages).toEqual(['{"count":1}'])
     expect(secondRoomSocket.messages).toEqual([])
 
-    room.webSocketClose(closedSocket(SECOND_ROOM_KEY))
+    room.webSocketClose(closedSocket(trailingWhitespaceRoomKey))
     expect(firstRoomSocket.messages).toEqual(['{"count":1}'])
     expect(secondRoomSocket.messages).toEqual(['{"count":1}'])
   })

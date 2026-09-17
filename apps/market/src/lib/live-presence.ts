@@ -47,6 +47,16 @@ export interface LivePresenceRequestRevision {
   revision: number
 }
 
+export function getLivePresenceCanonicalId(
+  canonicalId: string | null | undefined
+): string | null {
+  if (typeof canonicalId !== "string" || canonicalId.trim().length === 0) {
+    return null
+  }
+
+  return canonicalId
+}
+
 export function advanceLivePresenceRequestRevision(
   current: LivePresenceRequestRevision,
   requestKey: string | null
@@ -68,7 +78,7 @@ export async function hashLivePresenceScope(input: {
   pageType: LivePresencePageType
   subtle?: SubtleCrypto
 }): Promise<string> {
-  const canonicalId = input.canonicalId.trim()
+  const canonicalId = getLivePresenceCanonicalId(input.canonicalId)
   const hostname = input.hostname.trim().toLowerCase()
   if (!canonicalId || !hostname) {
     throw new Error("Live presence requires a hostname and canonical page ID")

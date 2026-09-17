@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { conduitBuildInfo } from "@conduit/core"
 import {
   advanceLivePresenceRequestRevision,
+  getLivePresenceCanonicalId,
   hashLivePresenceScope,
   isLivePresencePermitted,
   resolveLivePresenceWebSocketUrl,
@@ -65,14 +66,14 @@ export function useLivePresenceCount({
   pageType,
 }: UseLivePresenceCountOptions): number | null | undefined {
   const endpoint = resolveLivePresenceWebSocketUrl()
-  const normalizedCanonicalId = canonicalId?.trim() || null
+  const exactCanonicalId = getLivePresenceCanonicalId(canonicalId)
   const permitted = isLivePresencePermitted({
     featureEnabled: isLivePresenceFeatureEnabled(),
     globalPrivacyControl: getGlobalPrivacyControl(),
   })
   const requestKey =
-    permitted && endpoint && normalizedCanonicalId
-      ? JSON.stringify([endpoint, pageType, normalizedCanonicalId])
+    permitted && endpoint && exactCanonicalId
+      ? JSON.stringify([endpoint, pageType, exactCanonicalId])
       : null
   const requestRevisionRef = useRef({ requestKey, revision: 0 })
   requestRevisionRef.current = advanceLivePresenceRequestRevision(
@@ -87,7 +88,7 @@ export function useLivePresenceCount({
   }>({ count: null, requestKey: null, requestRevision: -1 })
 
   useEffect(() => {
-    if (!requestKey || !endpoint || !normalizedCanonicalId) return
+    if (!requestKey || !endpoint || !exactCanonicalId) return
 
     const runtime = getBrowserRuntime()
     if (!runtime) return
@@ -96,7 +97,7 @@ export function useLivePresenceCount({
     let stopSession: (() => void) | null = null
 
     void hashLivePresenceScope({
-      canonicalId: normalizedCanonicalId,
+      canonicalId: exactCanonicalId,
       hostname: window.location.hostname,
       pageType,
     })
@@ -122,7 +123,7 @@ export function useLivePresenceCount({
       disposed = true
       stopSession?.()
     }
-  }, [endpoint, normalizedCanonicalId, pageType, requestKey, requestRevision])
+  }, [endpoint, exactCanonicalId, pageType, requestKey, requestRevision])
 
   if (!requestKey) return undefined
 

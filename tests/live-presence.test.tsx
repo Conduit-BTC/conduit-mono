@@ -16,6 +16,7 @@ import {
   LIVE_PRESENCE_STALE_AFTER_MS,
   advanceLivePresenceRequestRevision,
   buildLivePresenceWebSocketUrl,
+  getLivePresenceCanonicalId,
   hashLivePresenceScope,
   isLivePresencePermitted,
   parseLivePresenceCount,
@@ -159,6 +160,27 @@ describe("live presence privacy boundary", () => {
     expect(productHash).toMatch(/^[0-9a-f]{64}$/)
     expect(repeatedHash).toBe(productHash)
     expect(storeHash).not.toBe(productHash)
+  })
+
+  it("preserves exact addressable-event identifier bytes in product scopes", async () => {
+    const productCoordinate = `30402:${"a".repeat(64)}:hat`
+    const trailingWhitespaceCoordinate = `${productCoordinate} `
+    const productHash = await hashLivePresenceScope({
+      canonicalId: productCoordinate,
+      hostname: "preview.example.com",
+      pageType: "product",
+    })
+    const trailingWhitespaceHash = await hashLivePresenceScope({
+      canonicalId: trailingWhitespaceCoordinate,
+      hostname: "preview.example.com",
+      pageType: "product",
+    })
+
+    expect(getLivePresenceCanonicalId(trailingWhitespaceCoordinate)).toBe(
+      trailingWhitespaceCoordinate
+    )
+    expect(getLivePresenceCanonicalId(" \t\n")).toBeNull()
+    expect(trailingWhitespaceHash).not.toBe(productHash)
   })
 
   it("accepts only credential-free WSS base URLs without query data", () => {
