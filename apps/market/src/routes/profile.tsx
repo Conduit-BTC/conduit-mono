@@ -100,6 +100,7 @@ function ProfilePage() {
     evidenceScope: "profile_edit",
     maxUnresolvedRefetches: 2,
   })
+  const selectedProfile = profileQuery.profileContext?.profile
   const updateMutation = useUpdateProfile("market", {
     authenticatedPubkey,
     authGeneration,
@@ -120,19 +121,19 @@ function ProfilePage() {
   }, [editingPubkey, pubkey])
 
   useEffect(() => {
-    if (editing || !profileQuery.data) return
-    setForm(profileToForm(profileQuery.data))
-  }, [editing, profileQuery.data])
+    if (editing || !selectedProfile) return
+    setForm(profileToForm(selectedProfile))
+  }, [editing, selectedProfile])
 
   useEffect(() => {
-    if (!editing || !profileQuery.data) return
-    const latest = profileToForm(profileQuery.data)
+    if (!editing || !selectedProfile) return
+    const latest = profileToForm(selectedProfile)
     const baseline = editBaselineRef.current
     setForm((draft) =>
       baseline ? reconcileProfileFormDraft(draft, baseline, latest) : latest
     )
     editBaselineRef.current = latest
-  }, [editing, profileQuery.data])
+  }, [editing, selectedProfile])
 
   const displayName =
     profileQuery.data?.displayName?.trim() ||
@@ -143,8 +144,8 @@ function ProfilePage() {
   const profileNip05 = getProfileNip05(profileQuery.data)
   const fallbackLetter = (displayName?.[0] ?? pubkey?.[0] ?? "?").toUpperCase()
   const savedProfileForm = useMemo(
-    () => profileToForm(profileQuery.data),
-    [profileQuery.data]
+    () => profileToForm(selectedProfile),
+    [selectedProfile]
   )
   const reconciledProfileForm = useMemo(
     () =>
@@ -186,16 +187,16 @@ function ProfilePage() {
     setEditingPubkey(null)
     editBaselineRef.current = null
     setProfileSaveSucceeded(false)
-    if (!profileQuery.data) {
+    if (!selectedProfile) {
       setForm(EMPTY_FORM)
       return
     }
-    setForm(profileToForm(profileQuery.data))
+    setForm(profileToForm(selectedProfile))
   }
 
   function startEditing(): void {
-    if (!canEditProfile || !profileQuery.data || !pubkey) return
-    const baseline = profileToForm(profileQuery.data)
+    if (!canEditProfile || !selectedProfile || !pubkey) return
+    const baseline = profileToForm(selectedProfile)
     editBaselineRef.current = baseline
     setForm(baseline)
     setEditingPubkey(pubkey)
@@ -218,7 +219,7 @@ function ProfilePage() {
     if (!editing || !hasProfileChanges || updateMutation.isPending) return
     setProfileSaveSucceeded(false)
     updateMutation.mutate(
-      buildProfileUpdatePayload(reconciledProfileForm, profileQuery.data),
+      buildProfileUpdatePayload(reconciledProfileForm, selectedProfile),
       {
         onSuccess: () => {
           setProfileSaveSucceeded(true)
