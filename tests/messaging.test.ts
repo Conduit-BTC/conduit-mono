@@ -1137,6 +1137,84 @@ describe("publishPrivateMessage", () => {
     expect(visibilityChecks).toBe(2)
   })
 
+  it("scopes foreground relay authentication to the active account signer", async () => {
+    let visible = false
+    let restoreVisibility = () => {}
+    const visibleAgain = new Promise<void>((resolve) => {
+      restoreVisibility = resolve
+    })
+    let signerCalls = 0
+    let visibilityChecks = 0
+    const signer = {
+      user: async () => ({ pubkey: INBOX_OWNER }),
+      sign: async (event: {
+        kind: number
+        created_at: number
+        tags: string[][]
+        content: string
+      }) => {
+        signerCalls += 1
+        return finalizeEvent(event, INBOX_OWNER_SECRET).sig
+      },
+    } as unknown as NDKSigner
+
+    const publishing = publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.ORDER, {
+        pubkey: INBOX_OWNER,
+        tags: [["p", INBOX_PEER]],
+      }),
+      senderPubkey: INBOX_OWNER,
+      recipientPubkey: INBOX_PEER,
+      accountPubkey: INBOX_OWNER,
+      authenticatedPubkey: INBOX_OWNER,
+      accountNetworkLocalStateRepository:
+        createInMemoryAccountNetworkLocalStateRepository(),
+      signer,
+      signerInteraction: "external",
+      relayAuthMethod: "nip07",
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: ["wss://auth.nostr1.com"],
+      waitForSignerVisibility: async () => {
+        visibilityChecks += 1
+        if (!visible) await visibleAgain
+      },
+      giftWrapFn: (async () => wrap("wrap-recipient")) as never,
+      publishFn: (async (_event, options) => {
+        const relayAuthentication = options.relayAuthentication
+        expect(relayAuthentication?.expectedPubkey).toBe(INBOX_OWNER)
+        expect(relayAuthentication?.signer.authMethod).toBe("nip07")
+        expect(relayAuthentication?.sessionScope).toBe(signer)
+        await relayAuthentication!.waitForSignerVisibility?.()
+        const signed = await relayAuthentication!.signer.signEvent({
+          kind: 22_242,
+          pubkey: INBOX_OWNER,
+          created_at: 1_700_000_100,
+          tags: [
+            ["relay", "wss://auth.nostr1.com"],
+            ["challenge", "challenge-1"],
+          ],
+          content: "",
+        })
+        expect(signed.pubkey).toBe(INBOX_OWNER)
+        return {
+          successfulRelayUrls: [options.exclusiveRelayUrls?.[0]],
+          failedRelayUrls: [],
+        } as never
+      }) as never,
+    })
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(signerCalls).toBe(0)
+
+    visible = true
+    restoreVisibility()
+    await publishing
+
+    expect(signerCalls).toBe(1)
+    expect(visibilityChecks).toBe(1)
+  })
+
   it("keeps the guest companion capability one-use and recipient-inbox strict", async () => {
     const first = guestOrderCompanionFixture()
     const input = {
@@ -1633,6 +1711,234 @@ describe("publishPrivateMessage", () => {
     })
   }
 
+  it("keeps an acknowledged recipient delivery when the session changes during partial diagnostics", async () => {
+    const recipientA = "wss://recipient-a.inbox.conduit.market"
+    const recipientB = "wss://recipient-b.inbox.conduit.market"
+    let sessionCurrent = true
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [recipientA, recipientB],
+      shouldContinue: () => sessionCurrent,
+      giftWrapFn: (async () => wrap("recipient-wrap")) as never,
+      publishFn: (async (_event, options) => {
+        const attemptedRelayUrls = [...(options.exclusiveRelayUrls ?? [])]
+        sessionCurrent = false
+        throw new RelayPublishDiagnosticsError(
+          "One recipient relay acknowledged before the session changed.",
+          {
+            plan: {
+              intent: "recipient_event",
+              primaryRelayUrls: attemptedRelayUrls,
+              broadcastRelayUrls: [],
+              parkedRelayUrls: [],
+            },
+            attemptedRelayUrls,
+            successfulRelayUrls: [recipientA],
+            failedRelayUrls: [recipientB],
+            relayFailureMessages: {
+              [recipientB]: "No acknowledgement before timeout",
+            },
+          },
+          new Error("session changed after recipient acknowledgement")
+        )
+      }) as never,
+    })
+
+    expect(result.recipientDelivery.successfulRelayUrls).toEqual([recipientA])
+    expect(result.deliveryStatus).toBe("partial_success")
+    expect(result.selfCopyError).toBeNull()
+  })
+
+  it("keeps a compatibility ACK without recording telemetry after the session changes", async () => {
+    const compatibilityA = "wss://compatibility-a.conduit.market"
+    const compatibilityB = "wss://compatibility-b.conduit.market"
+    const outcomes: unknown[] = []
+    let sessionCurrent = true
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [],
+      shouldContinue: () => sessionCurrent,
+      compatibilityOrderRoute: {
+        enabled: true,
+        relayUrls: [compatibilityA, compatibilityB],
+      },
+      resolveCompatibilityRecipientReadRelays: async () => [],
+      onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
+      giftWrapFn: (async () => wrap("recipient-wrap")) as never,
+      publishFn: (async (_event, options) => {
+        const attemptedRelayUrls = [...(options.exclusiveRelayUrls ?? [])]
+        sessionCurrent = false
+        throw new RelayPublishDiagnosticsError(
+          "One compatibility relay acknowledged before the session changed.",
+          {
+            plan: {
+              intent: "recipient_event",
+              primaryRelayUrls: attemptedRelayUrls,
+              broadcastRelayUrls: [],
+              parkedRelayUrls: [],
+            },
+            attemptedRelayUrls,
+            successfulRelayUrls: [compatibilityA],
+            failedRelayUrls: [compatibilityB],
+            relayFailureMessages: {
+              [compatibilityB]: "No acknowledgement before timeout",
+            },
+          },
+          new Error("session changed after compatibility acknowledgement")
+        )
+      }) as never,
+    })
+
+    expect(result.deliveryRoute).toBe("compatibility_order")
+    expect(result.recipientDelivery.successfulRelayUrls).toEqual([
+      compatibilityA,
+    ])
+    expect(result.deliveryStatus).toBe("partial_success")
+    expect(outcomes).toEqual([])
+  })
+
+  it("stops before wrapping when signer identity resolves after the session changes", async () => {
+    let releaseSignerUser!: () => void
+    let markSignerUserStarted!: () => void
+    const signerUserStarted = new Promise<void>((resolve) => {
+      markSignerUserStarted = resolve
+    })
+    const signerUserBlocked = new Promise<void>((resolve) => {
+      releaseSignerUser = resolve
+    })
+    let sessionCurrent = true
+    let encryptCalls = 0
+    let signCalls = 0
+    let wrapCalls = 0
+    const heldSigner = {
+      user: async () => {
+        markSignerUserStarted()
+        await signerUserBlocked
+        return { pubkey: "sender" }
+      },
+      encrypt: async () => {
+        encryptCalls += 1
+        return "ciphertext"
+      },
+      sign: async () => {
+        signCalls += 1
+        return "signature"
+      },
+    } as unknown as NDKSigner
+
+    const publishing = publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer: heldSigner,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+      shouldContinue: () => sessionCurrent,
+      giftWrapFn: (async () => {
+        wrapCalls += 1
+        return wrap("unexpected-wrap")
+      }) as never,
+      publishFn: (async () => {
+        throw new Error("publish must not start")
+      }) as never,
+    })
+
+    await signerUserStarted
+    sessionCurrent = false
+    releaseSignerUser()
+
+    await expect(publishing).rejects.toThrow("signer session changed")
+    expect(wrapCalls).toBe(0)
+    expect(encryptCalls).toBe(0)
+    expect(signCalls).toBe(0)
+  })
+
+  it("checks the session immediately before each background gift-wrap signer operation", async () => {
+    let sessionCurrent = true
+    let encryptCalls = 0
+    const backgroundSigner = {
+      user: async () => ({ pubkey: "sender" }),
+      encrypt: async () => {
+        encryptCalls += 1
+        return "ciphertext"
+      },
+    } as unknown as NDKSigner
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer: backgroundSigner,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+        shouldContinue: () => sessionCurrent,
+        signerInteraction: "background_external",
+        giftWrapFn: (async (_rumor, recipient, workflowSigner) => {
+          sessionCurrent = false
+          await workflowSigner.encrypt(recipient, "seal", "nip44")
+          return wrap("unexpected-wrap")
+        }) as never,
+        publishFn: (async () => {
+          throw new Error("publish must not start")
+        }) as never,
+      })
+    ).rejects.toThrow("signer session changed")
+    expect(encryptCalls).toBe(0)
+  })
+
+  it("records an explicit recipient relay rejection in the durable order retry state", async () => {
+    const recipientA = "wss://recipient-a.inbox.conduit.market"
+    const recipientB = "wss://recipient-b.inbox.conduit.market"
+    const wrapSigner = NDKPrivateKeySigner.generate()
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [recipientA, recipientB],
+      giftWrapFn: (async () => {
+        const wrapped = new NDKEvent()
+        wrapped.kind = EVENT_KINDS.GIFT_WRAP
+        wrapped.created_at = 100
+        wrapped.tags = [["p", "recipient"]]
+        wrapped.content = "encrypted test fixture"
+        await wrapped.sign(wrapSigner)
+        return wrapped
+      }) as never,
+      publishFn: (async () => ({
+        successfulRelayUrls: [recipientA],
+        failedRelayUrls: [recipientB],
+        rejectedRelayUrls: [recipientB],
+        // Keep this deliberately human-readable. The durable record must use
+        // the publisher's structured rejection state rather than infer it.
+        relayFailureMessages: { [recipientB]: "Relay rejected the event" },
+      })) as never,
+    })
+
+    expect(result.orderRelayDelivery?.relayDelivery).toEqual([
+      expect.objectContaining({ relayUrl: recipientA, status: "acked" }),
+      expect.objectContaining({ relayUrl: recipientB, status: "rejected" }),
+    ])
+  })
+
   it("attaches an NDK instance before the real gift-wrap encryption path", async () => {
     const senderSigner = NDKPrivateKeySigner.generate()
     const recipientSigner = NDKPrivateKeySigner.generate()
@@ -1722,6 +2028,47 @@ describe("publishPrivateMessage", () => {
 
     expect(published).toEqual(["wrap-recipient", "wrap-sender"])
     expect(result.selfCopyError).toBe("self relay rejected")
+  })
+
+  it("keeps an accepted order delivered when the signer session changes before self-copy", async () => {
+    let sessionCurrent = true
+    const published: string[] = []
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+      senderInboxRelays: ["wss://sender.inbox.conduit.market"],
+      inspectOwnInboxReadiness: readyOwnInbox,
+      shouldContinue: () => sessionCurrent,
+      giftWrapFn: (async (_rumor, recipient) =>
+        wrap(`wrap-${recipient.pubkey}`)) as never,
+      publishFn: (async (event) => {
+        published.push(event.id)
+        if (event.id !== "wrap-recipient") {
+          throw new Error("stale self-copy transport must not start")
+        }
+        sessionCurrent = false
+        return {
+          successfulRelayUrls: ["wss://recipient.inbox.conduit.market"],
+          failedRelayUrls: [],
+        }
+      }) as never,
+    })
+
+    expect(published).toEqual(["wrap-recipient"])
+    expect(result.recipientDelivery.successfulRelayUrls).toEqual([
+      "wss://recipient.inbox.conduit.market",
+    ])
+    expect(result.wrappedToRecipient.id).toBe("wrap-recipient")
+    expect(result.selfDelivery).toBeNull()
+    expect(result.selfDeliveryStatus).toBeNull()
+    expect(result.selfCopyError).toBe(
+      "Sender self-copy was skipped because the signer session changed after recipient delivery."
+    )
   })
 
   it("delivers a validated order over the compatibility route when the recipient has no declaration", async () => {
