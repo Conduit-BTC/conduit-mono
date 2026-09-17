@@ -25,6 +25,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  useTimeBoundaryNow,
 } from "@conduit/ui"
 import { useMerchantEventTimeline } from "../hooks/useMerchantEventTimeline"
 import {
@@ -35,6 +36,7 @@ import { rememberDiscoveredEventMarket } from "../lib/event-market-workflow"
 import {
   filterAndSortMerchantEventTimeline,
   formatMerchantEventTimelineSchedule,
+  getMerchantEventTimelineBoundaries,
   getMerchantEventTimelineStatus,
   MERCHANT_EVENT_RELATIONSHIP_FILTERS,
   MERCHANT_EVENT_TIMELINE_WINDOWS,
@@ -119,7 +121,11 @@ export function MerchantEventsTimeline({
     currentReference,
     storageRevision,
   })
-  const nowMs = Date.now()
+  const timelineBoundaries = useMemo(
+    () => getMerchantEventTimelineBoundaries(discovery.items, search.window),
+    [discovery.items, search.window]
+  )
+  const nowMs = useTimeBoundaryNow(timelineBoundaries)
   const visibleItems = useMemo(
     () => filterAndSortMerchantEventTimeline(discovery.items, search, nowMs),
     [discovery.items, nowMs, search]

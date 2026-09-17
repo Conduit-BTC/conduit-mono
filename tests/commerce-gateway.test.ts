@@ -13,6 +13,8 @@ import {
   getEventMarketPrivateMessageList,
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
+  decodeProductReference,
+  encodeProductNaddr,
   getConversationDetail,
   getFollowPubkeys,
   getAtomicProductDetail,
@@ -23,13 +25,16 @@ import {
   getProductImageCandidates,
   getProductDetail,
   getProductsByIds,
+  getCachedProductsByIds,
   getProfiles,
   __resetRelayHealth,
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
   applyE2eRelayIsolation,
+  createRelaySettingsFromPreferences,
   createInMemoryOwnerRelayListEvidenceRepository,
   recordRelayFailure,
+  saveRelaySettings,
   setActiveRelaySettingsScope,
 } from "@conduit/core"
 import { config, EVENT_KINDS } from "@conduit/core"
@@ -299,6 +304,37 @@ function makeSignedProductEvent(params: {
   return new NDKEvent(undefined, signed)
 }
 
+function makeSignedGammaProductEvent(params: {
+  secretKey?: Uint8Array
+  dTag: string
+  createdAt: number
+  title: string
+  type: "variable" | "variation"
+  parentProductId?: string
+  size?: string
+}): NDKEvent {
+  const signed = finalizeEvent(
+    {
+      kind: EVENT_KINDS.PRODUCT,
+      created_at: params.createdAt,
+      content: `${params.title} description`,
+      tags: [
+        ["d", params.dTag],
+        ["title", params.title],
+        ["price", "25000", "SATS"],
+        ["type", params.type, "physical"],
+        ["visibility", "public"],
+        ...(params.parentProductId ? [["a", params.parentProductId]] : []),
+        ...(params.size ? [["spec", "size", params.size]] : []),
+        ["stock", "5"],
+        ["image", "https://cdn.conduit.market/conduit-test/product.png"],
+      ],
+    },
+    params.secretKey ?? MERCHANT_A_SECRET
+  )
+  return new NDKEvent(undefined, signed)
+}
+
 function composeCheckoutAvailability(
   result: Awaited<ReturnType<typeof getProductsByIds>>,
   input: {
@@ -444,6 +480,1262 @@ afterEach(async () => {
 })
 
 describe("commerce gateway", () => {
+  it("uses a safe naddr source hint for an otherwise undiscoverable product", async () => {
+    const sourceRelayUrl = "wss://source-only.conduit.market"
+    const unsafeRelayUrl = "ws://127.0.0.1:7447"
+    const product = makeSignedProductEvent({
+      dTag: "source-hinted-detail",
+      createdAt: 100,
+      title: "Source Hinted Detail",
+    })
+    const addressId = `30402:${product.pubkey}:source-hinted-detail`
+    const productId = encodeProductNaddr(addressId, [
+      unsafeRelayUrl,
+      sourceRelayUrl,
+    ])
+    const productRelayAttempts: string[][] = []
+    attachEventSourceRelayUrl(product, unsafeRelayUrl)
+    attachEventSourceRelayUrl(product, sourceRelayUrl)
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const relayUrls = options?.relayUrls ?? []
+        productRelayAttempts.push([...relayUrls])
+        return relayUrls.includes(sourceRelayUrl) ? ([product] as never) : []
+      },
+    })
+
+    const result = await getProductDetail({ productId })
+
+    expect(result.data?.addressId).toBe(addressId)
+    expect(
+      productRelayAttempts.some((relayUrls) => relayUrls[0] === sourceRelayUrl)
+    ).toBe(true)
+    expect(productRelayAttempts.flat()).not.toContain(unsafeRelayUrl)
+
+    productRelayAttempts.length = 0
+    const cartRevalidation = await getProductsByIds([addressId])
+
+    expect(cartRevalidation.diagnostics).toEqual([
+      {
+        productId: addressId,
+        addressId,
+        issue: null,
+        coverage: { listing: "complete", deletion: "complete" },
+      },
+    ])
+    expect(
+      productRelayAttempts.some((relayUrls) => relayUrls[0] === sourceRelayUrl)
+    ).toBe(true)
+    expect(productRelayAttempts.flat()).not.toContain(unsafeRelayUrl)
+  })
+
+  it("caps final hinted detail, parent and sibling plans at six relays", async () => {
+    const previousDiscovery = config.commerceDiscoveryRelayUrls
+    const source = "wss://bounded-source.conduit.market"
+    const pubkey = "f".repeat(64)
+    const parentAddress = `30402:${pubkey}:bounded-parent`
+    const childAddress = `30402:${pubkey}:bounded-child`
+    const events = [
+      makeGammaProductEvent({
+        pubkey,
+        id: "bounded-parent-event",
+        dTag: "bounded-parent",
+        createdAt: 100,
+        title: "Bounded parent",
+        type: "variable",
+      }),
+      makeGammaProductEvent({
+        pubkey,
+        id: "bounded-child-event",
+        dTag: "bounded-child",
+        createdAt: 101,
+        title: "Bounded child",
+        type: "variation",
+        parentProductId: parentAddress,
+        size: "Only",
+      }),
+    ]
+    const attempts: Array<{ relays: string[]; family: boolean }> = []
+    config.commerceDiscoveryRelayUrls = Array.from(
+      { length: 10 },
+      (_, index) => `wss://discovery-${index}.conduit.market`
+    )
+    try {
+      __setCommerceTestOverrides({
+        fetchEventsFanout: async (filter, options) => {
+          if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+          attempts.push({
+            relays: [...(options?.relayUrls ?? [])],
+            family: !!filter["#a"],
+          })
+          return events.filter(
+            (event) =>
+              (!filter["#d"] ||
+                event.tags.some(
+                  (tag) =>
+                    tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                )) &&
+              (!filter["#a"] ||
+                event.tags.some(
+                  (tag) =>
+                    tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+                ))
+          ) as never
+        },
+      })
+      const result = await getProductDetail({
+        productId: encodeProductNaddr(childAddress, [source]),
+      })
+      expect(result.data?.addressId).toBe(parentAddress)
+      expect(attempts).toHaveLength(3)
+      expect(attempts.some((attempt) => attempt.family)).toBe(true)
+      for (const attempt of attempts) {
+        expect(attempt.relays.length).toBeLessThanOrEqual(6)
+        expect(attempt.relays[0]).toBe(source)
+      }
+    } finally {
+      config.commerceDiscoveryRelayUrls = previousDiscovery
+    }
+  })
+
+  it("reports capped direct coverage when an author has more than six NIP-65 hints", async () => {
+    const authorRelayUrls = Array.from(
+      { length: 7 },
+      (_, index) => `wss://direct-author-${index}.conduit.market`
+    )
+    const product = makeSignedProductEvent({
+      dTag: "capped-direct-author-hints",
+      createdAt: 100,
+      title: "Capped direct author hints",
+    })
+    const addressId = `30402:${product.pubkey}:capped-direct-author-hints`
+    const attempts: string[][] = []
+
+    __setRelayListTestOverrides({
+      now: () => FIXED_NOW,
+      loadCached: async (pubkey) =>
+        pubkey === product.pubkey
+          ? {
+              pubkey,
+              readRelayUrls: [],
+              writeRelayUrls: authorRelayUrls,
+              eventCreatedAt: 1,
+              cachedAt: FIXED_NOW,
+            }
+          : undefined,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          attempts.push(relayUrls)
+        }
+        return {
+          events: filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? [product] : [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProductsByIds([addressId])
+
+    expect(result.data[0]?.eventId).toBe(product.id)
+    expect(result.diagnostics[0]).toMatchObject({
+      issue: null,
+      coverage: { listing: "partial" },
+    })
+    expect(result.meta.degraded).toBe(true)
+    expect(result.meta.capped).toBe(true)
+    expect(attempts.every((relayUrls) => relayUrls.length <= 6)).toBe(true)
+    expect(
+      authorRelayUrls.some(
+        (relayUrl) => !attempts.some((attempt) => attempt.includes(relayUrl))
+      )
+    ).toBe(true)
+  })
+
+  it("keeps the current naddr source ahead of older cached provenance", async () => {
+    const currentSourceRelayUrl = "wss://current-share-source.conduit.market"
+    const cachedSourceRelayUrls = Array.from(
+      { length: 4 },
+      (_, index) => `wss://old-share-source-${index}.conduit.market`
+    )
+    const cachedProduct = makeSignedProductEvent({
+      dTag: "reshared-source-hint",
+      createdAt: 100,
+      title: "Reshared Source Hint",
+    })
+    for (const relayUrl of cachedSourceRelayUrls) {
+      attachEventSourceRelayUrl(cachedProduct, relayUrl)
+    }
+    await cacheSignedProductListingEvent(cachedProduct)
+    const liveProduct = new NDKEvent(undefined, cachedProduct.rawEvent())
+    attachEventSourceRelayUrl(liveProduct, currentSourceRelayUrl)
+    const addressId = `30402:${liveProduct.pubkey}:reshared-source-hint`
+    const productRelayAttempts: string[][] = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        productRelayAttempts.push(relayUrls)
+        return relayUrls.includes(currentSourceRelayUrl)
+          ? ([liveProduct] as never)
+          : []
+      },
+    })
+
+    const detail = await getProductDetail({
+      productId: encodeProductNaddr(addressId, [currentSourceRelayUrl]),
+    })
+    const resharedNaddr = encodeProductNaddr(
+      detail.data!.addressId,
+      detail.data!.sourceRelayUrls
+    )
+
+    expect(detail.data?.sourceRelayUrls?.[0]).toBe(currentSourceRelayUrl)
+    expect(decodeProductReference(resharedNaddr)?.relayHints?.[0]).toBe(
+      currentSourceRelayUrl
+    )
+
+    productRelayAttempts.length = 0
+    const cartRevalidation = await getProductsByIds([addressId])
+
+    expect(cartRevalidation.diagnostics[0]?.issue).toBeNull()
+    expect(
+      productRelayAttempts.some((relayUrls) =>
+        relayUrls.includes(currentSourceRelayUrl)
+      )
+    ).toBe(true)
+  })
+
+  it("keeps the winning revision source ahead of losing live provenance", async () => {
+    const winningSourceRelayUrl = "wss://winning-share-source.conduit.market"
+    const losingSourceRelayUrls = Array.from(
+      { length: 4 },
+      (_, index) => `wss://losing-share-source-${index}.conduit.market`
+    )
+    const newerCachedProduct = makeSignedProductEvent({
+      dTag: "winning-source-hint",
+      createdAt: 200,
+      title: "Current Product Terms",
+    })
+    attachEventSourceRelayUrl(newerCachedProduct, winningSourceRelayUrl)
+    await cacheSignedProductListingEvent(newerCachedProduct)
+    const olderLiveProduct = makeSignedProductEvent({
+      dTag: "winning-source-hint",
+      createdAt: 100,
+      title: "Stale Product Terms",
+    })
+    for (const relayUrl of losingSourceRelayUrls) {
+      attachEventSourceRelayUrl(olderLiveProduct, relayUrl)
+    }
+    const addressId = `30402:${newerCachedProduct.pubkey}:winning-source-hint`
+    const productRelayAttempts: string[][] = []
+    let revalidating = false
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        productRelayAttempts.push(relayUrls)
+        if (!revalidating) return [olderLiveProduct] as never
+        return relayUrls.includes(winningSourceRelayUrl)
+          ? ([newerCachedProduct] as never)
+          : ([olderLiveProduct] as never)
+      },
+    })
+
+    const detail = await getProductDetail({
+      productId: encodeProductNaddr(addressId, losingSourceRelayUrls),
+    })
+    const resharedNaddr = encodeProductNaddr(
+      detail.data!.addressId,
+      detail.data!.sourceRelayUrls
+    )
+
+    expect(detail.data?.eventId).toBe(newerCachedProduct.id)
+    expect(detail.data?.product.title).toBe("Current Product Terms")
+    expect(decodeProductReference(resharedNaddr)?.relayHints?.[0]).toBe(
+      winningSourceRelayUrl
+    )
+
+    revalidating = true
+    productRelayAttempts.length = 0
+    const cartRevalidation = await getProductsByIds([addressId])
+
+    expect(cartRevalidation.data[0]?.eventId).toBe(newerCachedProduct.id)
+    expect(cartRevalidation.diagnostics[0]?.issue).toBeNull()
+    expect(
+      productRelayAttempts.some((relayUrls) =>
+        relayUrls.includes(winningSourceRelayUrl)
+      )
+    ).toBe(true)
+  })
+
+  it("combines same-author product hints into one bounded batch read", async () => {
+    const firstRelayUrl = "wss://first-product-source.conduit.market"
+    const secondRelayUrl = "wss://second-product-source.conduit.market"
+    const first = makeSignedProductEvent({
+      dTag: "first-hinted-product",
+      createdAt: 100,
+      title: "First hinted product",
+    })
+    const second = makeSignedProductEvent({
+      dTag: "second-hinted-product",
+      createdAt: 101,
+      title: "Second hinted product",
+    })
+    attachEventSourceRelayUrl(first, firstRelayUrl)
+    attachEventSourceRelayUrl(second, secondRelayUrl)
+    const firstAddress = `30402:${first.pubkey}:first-hinted-product`
+    const secondAddress = `30402:${second.pubkey}:second-hinted-product`
+    const attempts: Array<{ dTags: string[]; relayUrls: string[] }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const dTags = filter["#d"] ?? []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        attempts.push({ dTags: [...dTags], relayUrls })
+        return [
+          ...(dTags.includes("first-hinted-product") &&
+          relayUrls.includes(firstRelayUrl)
+            ? [first]
+            : []),
+          ...(dTags.includes("second-hinted-product") &&
+          relayUrls.includes(secondRelayUrl)
+            ? [second]
+            : []),
+        ] as never
+      },
+    })
+
+    const result = await getProductsByIds([
+      encodeProductNaddr(firstAddress, [firstRelayUrl]),
+      encodeProductNaddr(secondAddress, [secondRelayUrl]),
+    ])
+
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      [firstAddress, secondAddress].sort()
+    )
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]?.dTags.sort()).toEqual(
+      ["first-hinted-product", "second-hinted-product"].sort()
+    )
+    expect(attempts[0]?.relayUrls.slice(0, 2)).toEqual([
+      firstRelayUrl,
+      secondRelayUrl,
+    ])
+  })
+
+  it("isolates many distinct same-author product hint plans", async () => {
+    const products = Array.from({ length: 10 }, (_, index) => {
+      const relayUrl = `wss://batch-source-${index}.conduit.market`
+      const product = makeSignedProductEvent({
+        dTag: `batch-product-${index}`,
+        createdAt: 100 + index,
+        title: `Batch product ${index}`,
+      })
+      attachEventSourceRelayUrl(product, relayUrl)
+      return {
+        product,
+        relayUrl,
+        addressId: `30402:${product.pubkey}:batch-product-${index}`,
+      }
+    })
+    for (const { product } of products) {
+      await cacheSignedProductListingEvent(product)
+    }
+    const attempts: Array<{ dTags: string[]; relayUrls: string[] }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const dTags = filter["#d"] ?? []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        attempts.push({ dTags: [...dTags], relayUrls })
+        return products
+          .filter(
+            ({ product, relayUrl }) =>
+              dTags.includes(product.dTag ?? "") && relayUrls.includes(relayUrl)
+          )
+          .map(({ product }) => product) as never
+      },
+    })
+
+    const result = await getProductsByIds(
+      products.map(({ addressId }) => addressId)
+    )
+
+    expect(attempts.length).toBeGreaterThan(1)
+    expect(attempts.length).toBeLessThanOrEqual(products.length)
+    expect(attempts.every(({ relayUrls }) => relayUrls.length <= 6)).toBe(true)
+    for (const { product, relayUrl } of products) {
+      expect(
+        attempts.some(
+          ({ dTags, relayUrls }) =>
+            dTags.includes(product.dTag ?? "") && relayUrls.includes(relayUrl)
+        )
+      ).toBe(true)
+    }
+    expect(
+      result.diagnostics.every((diagnostic) => diagnostic.issue === null)
+    ).toBe(true)
+  })
+
+  it("keeps same-author source-only variation families in independent relay plans", async () => {
+    const pubkey = MERCHANT_A_PUBKEY
+    const families = Array.from({ length: 7 }, (_, index) => {
+      const parentDTag = `shared-author-family-${index}`
+      const childDTag = `${parentDTag}-child`
+      const parentAddress = `30402:${pubkey}:${parentDTag}`
+      const childAddress = `30402:${pubkey}:${childDTag}`
+      const sourceRelayUrl = `wss://shared-author-source-${index}.conduit.market`
+      return {
+        parentDTag,
+        childDTag,
+        parentAddress,
+        childAddress,
+        sourceRelayUrl,
+        parent: makeGammaProductEvent({
+          pubkey,
+          id: `shared-author-parent-${index}`,
+          dTag: parentDTag,
+          createdAt: 100 + index * 2,
+          title: `Shared author family ${index}`,
+          type: "variable",
+        }),
+        child: makeGammaProductEvent({
+          pubkey,
+          id: `shared-author-child-${index}`,
+          dTag: childDTag,
+          createdAt: 101 + index * 2,
+          title: `Shared author family ${index} child`,
+          type: "variation",
+          parentProductId: parentAddress,
+          size: "Only",
+        }),
+      }
+    })
+    const attempts: Array<{
+      dTags: string[]
+      parentAddresses: string[]
+      relayUrls: string[]
+    }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        const dTags = [...(filter["#d"] ?? [])]
+        const parentAddresses = [...(filter["#a"] ?? [])]
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          attempts.push({ dTags, parentAddresses, relayUrls })
+        }
+        const events = families.flatMap((family) =>
+          relayUrls.includes(family.sourceRelayUrl)
+            ? [family.parent, family.child]
+            : []
+        )
+        return {
+          events: events.filter(
+            (event) =>
+              (!filter.kinds || filter.kinds.includes(event.kind)) &&
+              (!filter.authors || filter.authors.includes(event.pubkey)) &&
+              (!filter["#d"] ||
+                event.tags.some(
+                  (tag) =>
+                    tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                )) &&
+              (!filter["#a"] ||
+                event.tags.some(
+                  (tag) =>
+                    tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+                ))
+          ) as never,
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProductsByIds(
+      families.map(({ childAddress, sourceRelayUrl }) =>
+        encodeProductNaddr(childAddress, [sourceRelayUrl])
+      )
+    )
+
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      families.map(({ childAddress }) => childAddress).sort()
+    )
+    expect(
+      result.diagnostics.every((diagnostic) => diagnostic.issue === null)
+    ).toBe(true)
+    expect(attempts.every(({ relayUrls }) => relayUrls.length <= 6)).toBe(true)
+    for (const family of families) {
+      expect(
+        attempts.some(
+          ({ dTags, relayUrls }) =>
+            dTags.includes(family.childDTag) &&
+            relayUrls.includes(family.sourceRelayUrl)
+        )
+      ).toBe(true)
+      expect(
+        attempts.some(
+          ({ dTags, relayUrls }) =>
+            dTags.includes(family.parentDTag) &&
+            relayUrls.includes(family.sourceRelayUrl)
+        )
+      ).toBe(true)
+      expect(
+        attempts.some(
+          ({ parentAddresses, relayUrls }) =>
+            parentAddresses.includes(family.parentAddress) &&
+            relayUrls.includes(family.sourceRelayUrl)
+        )
+      ).toBe(true)
+    }
+  })
+
+  it("combines non-overlapping sibling hints for one complete family read", async () => {
+    const firstRelayUrl = "wss://small-variation-source.conduit.market"
+    const secondRelayUrl = "wss://large-variation-source.conduit.market"
+    const parentAddress = `30402:${MERCHANT_A_PUBKEY}:split-source-shirt`
+    const parent = makeSignedGammaProductEvent({
+      dTag: "split-source-shirt",
+      createdAt: 100,
+      title: "Split source shirt",
+      type: "variable",
+    })
+    const small = makeSignedGammaProductEvent({
+      dTag: "split-source-shirt-s",
+      createdAt: 101,
+      title: "Split source shirt - S",
+      type: "variation",
+      parentProductId: parentAddress,
+      size: "S",
+    })
+    const large = makeSignedGammaProductEvent({
+      dTag: "split-source-shirt-l",
+      createdAt: 102,
+      title: "Split source shirt - L",
+      type: "variation",
+      parentProductId: parentAddress,
+      size: "L",
+    })
+    const smallAddress = `30402:${MERCHANT_A_PUBKEY}:split-source-shirt-s`
+    const largeAddress = `30402:${MERCHANT_A_PUBKEY}:split-source-shirt-l`
+    const attempts: Array<{
+      dTags?: string[]
+      parentAddresses?: string[]
+      relayUrls: string[]
+    }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        attempts.push({
+          dTags: filter["#d"],
+          parentAddresses: filter["#a"],
+          relayUrls,
+        })
+        if (
+          !relayUrls.includes(firstRelayUrl) ||
+          !relayUrls.includes(secondRelayUrl)
+        ) {
+          return []
+        }
+        return [parent, small, large].filter(
+          (event) =>
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        ) as never
+      },
+    })
+
+    const result = await getProductsByIds([
+      encodeProductNaddr(smallAddress, [firstRelayUrl]),
+      encodeProductNaddr(largeAddress, [secondRelayUrl]),
+    ])
+
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      [smallAddress, largeAddress].sort()
+    )
+    expect(
+      result.diagnostics.every((diagnostic) => diagnostic.issue === null)
+    ).toBe(true)
+    expect(attempts).toHaveLength(3)
+    expect(
+      attempts.every(
+        ({ relayUrls }) =>
+          relayUrls.includes(firstRelayUrl) &&
+          relayUrls.includes(secondRelayUrl)
+      )
+    ).toBe(true)
+    expect(
+      attempts.some(({ dTags }) => dTags?.includes("split-source-shirt"))
+    ).toBe(true)
+    expect(
+      attempts.some(({ parentAddresses }) =>
+        parentAddresses?.includes(parentAddress)
+      )
+    ).toBe(true)
+  })
+
+  it.each(["source-hinted", "unhinted"] as const)(
+    "keeps distinct %s variation families within independent relay plans",
+    async (referenceKind) => {
+      const families = Array.from({ length: 7 }, (_, index) => {
+        const pubkey = (index + 1).toString(16).padStart(64, "0")
+        const parentDTag = `source-only-family-${index}`
+        const childDTag = `${parentDTag}-child`
+        const siblingDTag = `${parentDTag}-sibling`
+        const parentAddress = `30402:${pubkey}:${parentDTag}`
+        const childAddress = `30402:${pubkey}:${childDTag}`
+        const siblingAddress = `30402:${pubkey}:${siblingDTag}`
+        const sourceRelayUrl = `wss://family-source-${index}.conduit.market`
+        const familyRelayUrl = `wss://family-author-${index}.conduit.market`
+        return {
+          pubkey,
+          parentDTag,
+          childDTag,
+          parentAddress,
+          childAddress,
+          siblingAddress,
+          sourceRelayUrl,
+          familyRelayUrl,
+          parent: makeGammaProductEvent({
+            pubkey,
+            id: `source-only-parent-${index}`,
+            dTag: parentDTag,
+            createdAt: 100 + index * 2,
+            title: `Source-only family ${index}`,
+            type: "variable",
+          }),
+          child: makeGammaProductEvent({
+            pubkey,
+            id: `source-only-child-${index}`,
+            dTag: childDTag,
+            createdAt: 101 + index * 2,
+            title: `Source-only family ${index} child`,
+            type: "variation",
+            parentProductId: parentAddress,
+            size: "Only",
+          }),
+          sibling: makeGammaProductEvent({
+            pubkey,
+            id: `source-only-sibling-${index}`,
+            dTag: siblingDTag,
+            createdAt: 102 + index * 2,
+            title: `Source-only family ${index} sibling`,
+            type: "variation",
+            parentProductId: parentAddress,
+            size: "Other",
+          }),
+        }
+      })
+      const firstFamilyHistoricalRelayUrls = Array.from(
+        { length: 6 },
+        (_, index) => `wss://family-history-${index}.conduit.market`
+      )
+      if (referenceKind === "source-hinted") {
+        for (const relayUrl of firstFamilyHistoricalRelayUrls) {
+          attachEventSourceRelayUrl(families[0]!.child, relayUrl)
+        }
+      }
+      const familyAttempts: Array<{
+        kind: "parent" | "sibling"
+        dTags: string[]
+        parentAddresses: string[]
+        relayUrls: string[]
+      }> = []
+
+      __setRelayListTestOverrides({
+        loadCached: async (pubkey) => {
+          const family = families.find(
+            (candidate) => candidate.pubkey === pubkey
+          )
+          return family
+            ? {
+                pubkey,
+                readRelayUrls: [],
+                writeRelayUrls: [family.familyRelayUrl],
+                eventCreatedAt: 1,
+                cachedAt: FIXED_NOW,
+              }
+            : undefined
+        },
+      })
+
+      __setCommerceTestOverrides({
+        fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+          const relayUrls = [...(options?.relayUrls ?? [])]
+          const dTags = [...(filter["#d"] ?? [])]
+          const parentAddresses = [...(filter["#a"] ?? [])]
+          const parentRead = families.some(({ parentDTag }) =>
+            dTags.includes(parentDTag)
+          )
+          const directChildRead = families.some(({ childDTag }) =>
+            dTags.includes(childDTag)
+          )
+          if (
+            filter.kinds?.includes(EVENT_KINDS.PRODUCT) &&
+            (parentRead || parentAddresses.length > 0)
+          ) {
+            familyAttempts.push({
+              kind: parentRead ? "parent" : "sibling",
+              dTags,
+              parentAddresses,
+              relayUrls,
+            })
+          }
+          const events = families.flatMap((family) => [
+            ...(directChildRead &&
+            (referenceKind === "unhinted" ||
+              relayUrls.includes(family.sourceRelayUrl))
+              ? [family.child]
+              : []),
+            ...(relayUrls.includes(family.familyRelayUrl)
+              ? [family.parent, family.child, family.sibling]
+              : []),
+          ])
+          return {
+            events: events.filter(
+              (event) =>
+                (!filter.kinds || filter.kinds.includes(event.kind)) &&
+                (!filter.authors || filter.authors.includes(event.pubkey)) &&
+                (!filter["#d"] ||
+                  event.tags.some(
+                    (tag) =>
+                      tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                  )) &&
+                (!filter["#a"] ||
+                  event.tags.some(
+                    (tag) =>
+                      tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+                  ))
+            ) as never,
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: relayUrls,
+            failedRelayUrls: [],
+            cappedRelayUrls: [],
+          }
+        },
+      })
+
+      const result = await getProductsByIds(
+        families.map(({ childAddress, sourceRelayUrl }) =>
+          referenceKind === "source-hinted"
+            ? encodeProductNaddr(childAddress, [sourceRelayUrl])
+            : childAddress
+        )
+      )
+
+      expect(result.data.map((record) => record.addressId).sort()).toEqual(
+        families.map(({ childAddress }) => childAddress).sort()
+      )
+      expect(result.diagnostics).toHaveLength(families.length)
+      const firstDiagnostic = result.diagnostics.find(
+        (diagnostic) => diagnostic.addressId === families[0]!.childAddress
+      )
+      if (referenceKind === "source-hinted") {
+        // The exact selected child was read live, so it remains usable while
+        // the family coverage reports that older source hints were capped.
+        expect(firstDiagnostic?.issue).toBeNull()
+        expect(firstDiagnostic?.coverage?.listing).toBe("partial")
+        expect(result.meta.degraded).toBe(true)
+        expect(result.meta.capped).toBe(true)
+        const firstFamilyAttemptRelayUrls = new Set(
+          familyAttempts
+            .filter(
+              ({ dTags, parentAddresses }) =>
+                dTags.includes(families[0]!.parentDTag) ||
+                parentAddresses.includes(families[0]!.parentAddress)
+            )
+            .flatMap(({ relayUrls }) => relayUrls)
+        )
+        expect(
+          firstFamilyHistoricalRelayUrls.some(
+            (relayUrl) => !firstFamilyAttemptRelayUrls.has(relayUrl)
+          )
+        ).toBe(true)
+      } else {
+        expect(
+          result.diagnostics.every(
+            (diagnostic) =>
+              diagnostic.issue === null &&
+              diagnostic.coverage?.listing === "complete"
+          )
+        ).toBe(true)
+        expect(result.meta.degraded).toBe(false)
+      }
+      expect(
+        familyAttempts.every(({ relayUrls }) => relayUrls.length <= 6)
+      ).toBe(true)
+      for (const family of families) {
+        expect(
+          familyAttempts.some(
+            (attempt) =>
+              attempt.kind === "parent" &&
+              attempt.dTags.includes(family.parentDTag) &&
+              (referenceKind === "unhinted" ||
+                attempt.relayUrls.includes(family.sourceRelayUrl)) &&
+              attempt.relayUrls.includes(family.familyRelayUrl)
+          )
+        ).toBe(true)
+        expect(
+          familyAttempts.some(
+            (attempt) =>
+              attempt.kind === "sibling" &&
+              attempt.parentAddresses.includes(family.parentAddress) &&
+              (referenceKind === "unhinted" ||
+                attempt.relayUrls.includes(family.sourceRelayUrl)) &&
+              attempt.relayUrls.includes(family.familyRelayUrl)
+          )
+        ).toBe(true)
+        expect(
+          cachedProducts.some((product) => product.id === family.siblingAddress)
+        ).toBe(true)
+      }
+    }
+  )
+
+  it("isolates a malformed variation target from a valid family batch", async () => {
+    const merchantBPubkey = getPublicKey(MERCHANT_B_SECRET)
+    const validParentAddress = `30402:${MERCHANT_A_PUBKEY}:valid-batch-shirt`
+    const crossAuthorParentAddress = `30402:${merchantBPubkey}:foreign-shirt`
+    const validParent = makeSignedGammaProductEvent({
+      dTag: "valid-batch-shirt",
+      createdAt: 100,
+      title: "Valid batch shirt",
+      type: "variable",
+    })
+    const validVariation = makeSignedGammaProductEvent({
+      dTag: "valid-batch-shirt-s",
+      createdAt: 101,
+      title: "Valid batch shirt - S",
+      type: "variation",
+      parentProductId: validParentAddress,
+      size: "S",
+    })
+    const malformedVariation = makeSignedGammaProductEvent({
+      dTag: "cross-author-shirt",
+      createdAt: 102,
+      title: "Cross-author shirt",
+      type: "variation",
+      parentProductId: crossAuthorParentAddress,
+      size: "M",
+    })
+    const validVariationAddress = `30402:${MERCHANT_A_PUBKEY}:valid-batch-shirt-s`
+    const malformedVariationAddress = `30402:${MERCHANT_A_PUBKEY}:cross-author-shirt`
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        return [validParent, validVariation, malformedVariation].filter(
+          (event) =>
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        ) as never
+      },
+    })
+
+    const result = await getProductsByIds([
+      validVariationAddress,
+      malformedVariationAddress,
+    ])
+    const diagnostics = new Map(
+      result.diagnostics.map((diagnostic) => [
+        diagnostic.addressId,
+        diagnostic.issue,
+      ])
+    )
+
+    expect(result.data.map((record) => record.addressId)).toEqual([
+      validVariationAddress,
+    ])
+    expect(diagnostics.get(validVariationAddress)).toBeNull()
+    expect(diagnostics.get(malformedVariationAddress)).not.toBeNull()
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("chunks large variation-family reads and isolates a failed author chunk", async () => {
+    const families = Array.from({ length: 65 }, (_, index) => {
+      const pubkey = (index + 1).toString(16).padStart(64, "0")
+      const parentDTag = `large-family-${index}`
+      const childDTag = `${parentDTag}-child`
+      const parentAddress = `30402:${pubkey}:${parentDTag}`
+      const childAddress = `30402:${pubkey}:${childDTag}`
+      return {
+        pubkey,
+        parentDTag,
+        parentAddress,
+        childAddress,
+        parent: makeGammaProductEvent({
+          pubkey,
+          id: `batch-parent-${index}`,
+          dTag: parentDTag,
+          createdAt: 100 + index * 2,
+          title: `Large family ${index}`,
+          type: "variable",
+        }),
+        child: makeGammaProductEvent({
+          pubkey,
+          id: `batch-child-${index}`,
+          dTag: childDTag,
+          createdAt: 101 + index * 2,
+          title: `Large family ${index} child`,
+          type: "variation",
+          parentProductId: parentAddress,
+          size: "Only",
+        }),
+      }
+    })
+    const failedAuthor = families.at(-1)!.pubkey
+    const allEvents = families.flatMap(({ parent, child }) => [parent, child])
+    const familyFilters: Array<{
+      authors: string[]
+      kind: "parent" | "child"
+    }> = []
+    const relayListAuthorFilters: string[][] = []
+    let activeFamilyReads = 0
+    let maxActiveFamilyReads = 0
+
+    __setCommerceTestOverrides({
+      getRelayLists: async (pubkeys) => {
+        const authors = [...pubkeys]
+        relayListAuthorFilters.push(authors)
+        if (authors.length > 64) {
+          throw new Error("relay rejected oversized relay-list authors filter")
+        }
+        return new Map()
+      },
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return {
+            events: [],
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: relayUrls,
+            failedRelayUrls: [],
+            cappedRelayUrls: [],
+          }
+        }
+
+        const authors = [...(filter.authors ?? [])]
+        if (authors.length > 64) {
+          throw new Error("relay rejected oversized authors filter")
+        }
+        const parentRead = (filter["#d"] ?? []).some((dTag) =>
+          families.some((family) => family.parentDTag === dTag)
+        )
+        const childRead = (filter["#a"] ?? []).length > 0
+        const familyRead = parentRead || childRead
+        if (familyRead) {
+          familyFilters.push({
+            authors,
+            kind: parentRead ? "parent" : "child",
+          })
+          activeFamilyReads += 1
+          maxActiveFamilyReads = Math.max(
+            maxActiveFamilyReads,
+            activeFamilyReads
+          )
+          await new Promise((resolve) => setTimeout(resolve, 1))
+          activeFamilyReads -= 1
+        }
+
+        if (familyRead && authors.includes(failedAuthor)) {
+          return {
+            events: [],
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: [],
+            failedRelayUrls: relayUrls,
+            cappedRelayUrls: [],
+          }
+        }
+
+        const events = allEvents.filter(
+          (event) =>
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        )
+        return {
+          events,
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProductsByIds(
+      families.map(({ childAddress }) => childAddress)
+    )
+    const diagnostics = new Map(
+      result.diagnostics.map((diagnostic) => [
+        diagnostic.addressId,
+        diagnostic.issue,
+      ])
+    )
+
+    expect(familyFilters).toHaveLength(4)
+    expect(familyFilters.filter(({ kind }) => kind === "parent")).toHaveLength(
+      2
+    )
+    expect(familyFilters.filter(({ kind }) => kind === "child")).toHaveLength(2)
+    expect(familyFilters.every(({ authors }) => authors.length <= 64)).toBe(
+      true
+    )
+    expect(
+      relayListAuthorFilters.every((authors) => authors.length <= 64)
+    ).toBe(true)
+    expect(
+      relayListAuthorFilters.some((authors) => authors.length === 64)
+    ).toBe(true)
+    const relayListAuthors = new Set(relayListAuthorFilters.flat())
+    expect(families.every(({ pubkey }) => relayListAuthors.has(pubkey))).toBe(
+      true
+    )
+    expect(maxActiveFamilyReads).toBeLessThanOrEqual(4)
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      families
+        .slice(0, -1)
+        .map(({ childAddress }) => childAddress)
+        .sort()
+    )
+    expect(
+      families
+        .slice(0, -1)
+        .every(({ childAddress }) => diagnostics.get(childAddress) === null)
+    ).toBe(true)
+    expect(diagnostics.get(families.at(-1)!.childAddress)).toBe(
+      "lookup_partial"
+    )
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it.each([120, 201])(
+    "isolates saturated family coverage with %i heavy variations",
+    async (heavyCount) => {
+      const pubkey = "e".repeat(64)
+      const families = ["heavy", "small"].map((name, familyIndex) => {
+        const parentAddress = `30402:${pubkey}:saturation-${name}`
+        return {
+          parentAddress,
+          parent: makeGammaProductEvent({
+            pubkey,
+            id: `parent-${name}`,
+            dTag: `saturation-${name}`,
+            createdAt: 100,
+            title: name,
+            type: "variable",
+          }),
+          children: Array.from(
+            { length: familyIndex === 0 ? heavyCount : 120 },
+            (_, index) =>
+              makeGammaProductEvent({
+                pubkey,
+                id: `${name}-${index}`,
+                dTag: `saturation-${name}-${index}`,
+                createdAt: 101 + index,
+                title: `${name} ${index}`,
+                type: "variation",
+                parentProductId: parentAddress,
+                size: String(index),
+              })
+          ),
+        }
+      })
+      const allEvents = families.flatMap(({ parent, children }) => [
+        parent,
+        ...children,
+      ])
+      const familyQueries: string[][] = []
+      __setCommerceTestOverrides({
+        fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+          const relayUrls = [...(options?.relayUrls ?? [])]
+          const matched = !filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+            ? []
+            : allEvents.filter(
+                (event) =>
+                  (!filter.authors || filter.authors.includes(event.pubkey)) &&
+                  (!filter["#d"] ||
+                    event.tags.some(
+                      (tag) =>
+                        tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                    )) &&
+                  (!filter["#a"] ||
+                    event.tags.some(
+                      (tag) =>
+                        tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+                    ))
+              )
+          if (filter.kinds?.includes(EVENT_KINDS.PRODUCT) && filter["#a"])
+            familyQueries.push(filter["#a"])
+          const capped =
+            filter.limit !== undefined && matched.length >= filter.limit
+          return {
+            events: matched.slice(0, filter.limit) as never,
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: relayUrls,
+            failedRelayUrls: [],
+            cappedRelayUrls: capped ? relayUrls : [],
+          }
+        },
+      })
+      const selected = families.map(({ parentAddress }) => `${parentAddress}-0`)
+      const result = await getProductsByIds(selected)
+      const diagnostics = new Map(
+        result.diagnostics.map((item) => [item.addressId, item.issue])
+      )
+      expect(diagnostics.get(selected[1]!)).toBeNull()
+      expect(diagnostics.get(selected[0]!)).toBeNull()
+      expect(
+        result.diagnostics.find((item) => item.addressId === selected[1])
+          ?.coverage?.listing
+      ).toBe("complete")
+      expect(
+        result.diagnostics.find((item) => item.addressId === selected[0])
+          ?.coverage?.listing
+      ).toBe(heavyCount >= 200 ? "partial" : "complete")
+      expect(familyQueries).toEqual([
+        families.map(({ parentAddress }) => parentAddress),
+        [families[0]!.parentAddress],
+        [families[1]!.parentAddress],
+      ])
+      expect(result.meta.degraded).toBe(heavyCount >= 200)
+    }
+  )
+
+  it("keeps a selected variation's source hint in parent and sibling reads", async () => {
+    const sourceRelayUrl = "wss://variation-source.conduit.market"
+    const cachedSourceRelayUrls = Array.from(
+      { length: 4 },
+      (_, index) => `wss://variation-cache-${index}.conduit.market`
+    )
+    const parentAddress = `30402:${MERCHANT_A_PUBKEY}:hinted-shirt`
+    const parent = makeSignedGammaProductEvent({
+      dTag: "hinted-shirt",
+      createdAt: 100,
+      title: "Hinted shirt",
+      type: "variable",
+    })
+    const selectedCached = makeSignedGammaProductEvent({
+      dTag: "hinted-shirt-s",
+      createdAt: 101,
+      title: "Hinted shirt - S",
+      type: "variation",
+      parentProductId: parentAddress,
+      size: "S",
+    })
+    for (const relayUrl of cachedSourceRelayUrls) {
+      attachEventSourceRelayUrl(selectedCached, relayUrl)
+    }
+    await cacheSignedProductListingEvent(selectedCached)
+    const selected = new NDKEvent(undefined, selectedCached.rawEvent())
+    attachEventSourceRelayUrl(selected, sourceRelayUrl)
+    const sibling = makeSignedGammaProductEvent({
+      dTag: "hinted-shirt-m",
+      createdAt: 102,
+      title: "Hinted shirt - M",
+      type: "variation",
+      parentProductId: parentAddress,
+      size: "M",
+    })
+    const attempts: Array<{
+      dTags?: string[]
+      parentAddresses?: string[]
+      relayUrls: string[]
+    }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const relayUrls = options?.relayUrls ?? []
+        attempts.push({
+          dTags: filter["#d"],
+          parentAddresses: filter["#a"],
+          relayUrls: [...relayUrls],
+        })
+        if (relayUrls[0] !== sourceRelayUrl) return []
+        return [parent, selected, sibling].filter(
+          (event) =>
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        ) as never
+      },
+    })
+
+    const selectedAddress = `30402:${MERCHANT_A_PUBKEY}:hinted-shirt-s`
+    const result = await getProductDetail({
+      productId: encodeProductNaddr(selectedAddress, [sourceRelayUrl]),
+    })
+
+    expect(result.data?.addressId).toBe(parentAddress)
+    expect(
+      result.data?.family?.children.map((record) => record.addressId).sort()
+    ).toEqual(
+      [`30402:${MERCHANT_A_PUBKEY}:hinted-shirt-m`, selectedAddress].sort()
+    )
+    expect(
+      attempts.some(
+        (attempt) =>
+          attempt.dTags?.includes("hinted-shirt-s") &&
+          attempt.relayUrls[0] === sourceRelayUrl
+      )
+    ).toBe(true)
+    expect(
+      attempts.some(
+        (attempt) =>
+          attempt.dTags?.includes("hinted-shirt") &&
+          attempt.relayUrls[0] === sourceRelayUrl
+      )
+    ).toBe(true)
+    expect(
+      attempts.some(
+        (attempt) =>
+          attempt.parentAddresses?.includes(parentAddress) &&
+          attempt.relayUrls[0] === sourceRelayUrl
+      )
+    ).toBe(true)
+  })
+
   it("groups reachable Gamma variations while hiding orphan and foreign children", async () => {
     const merchantPubkey = MERCHANT_A_PUBKEY
     const foreignPubkey = getPublicKey(MERCHANT_B_SECRET)
@@ -843,7 +2135,7 @@ describe("commerce gateway", () => {
     expect(result.meta.degraded).toBe(true)
   })
 
-  it("partitions exact product batches by author without Cartesian collisions", async () => {
+  it("schedules every exact author without Cartesian collisions or unbounded concurrency", async () => {
     const merchants = Array.from({ length: 11 }, (_, index) =>
       getPublicKey(new Uint8Array(32).fill(index + 1))
     )
@@ -872,20 +2164,32 @@ describe("commerce gateway", () => {
       )
     )
     const productFilters: Array<Record<string, unknown>> = []
+    const relayFanouts: number[] = []
+    let activeReads = 0
+    let maxConcurrentReads = 0
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchEventsFanout: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
-        productFilters.push(filter as Record<string, unknown>)
-        const matches = [...crossEvents, ...wantedEvents].filter(
-          (event) =>
-            (!filter.authors || filter.authors.includes(event.pubkey)) &&
-            (!filter["#d"] ||
-              event.tags.some(
-                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
-              ))
-        )
-        return matches.slice(0, filter.limit ?? matches.length) as never
+        activeReads += 1
+        maxConcurrentReads = Math.max(maxConcurrentReads, activeReads)
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          productFilters.push(filter as Record<string, unknown>)
+          relayFanouts.push(options?.relayUrls?.length ?? 0)
+          const matches = [...crossEvents, ...wantedEvents].filter(
+            (event) =>
+              (!filter.authors || filter.authors.includes(event.pubkey)) &&
+              (!filter["#d"] ||
+                event.tags.some(
+                  (tag) =>
+                    tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                ))
+          )
+          return matches.slice(0, filter.limit ?? matches.length) as never
+        } finally {
+          activeReads -= 1
+        }
       },
     })
 
@@ -909,6 +2213,79 @@ describe("commerce gateway", () => {
           filter.limit === undefined
       )
     ).toBe(true)
+    expect(result.diagnostics.every(({ issue }) => issue === null)).toBe(true)
+    expect(maxConcurrentReads).toBeLessThanOrEqual(2)
+    expect(relayFanouts.every((relayCount) => relayCount <= 6)).toBe(true)
+    expect(result.meta.capped).toBe(false)
+  })
+
+  it("isolates one failed relay-list author without suppressing adjacent chunks", async () => {
+    const merchants = Array.from({ length: 65 }, (_, index) =>
+      getPublicKey(new Uint8Array(32).fill(index + 1))
+    )
+    const failedAuthor = merchants[17]!
+    const wantedEvents = merchants.map((pubkey, index) =>
+      makeProductEvent({
+        pubkey,
+        dTag: `isolated-item-${index}`,
+        id: `isolated-event-${index}`,
+        createdAt: 300 + index,
+        title: `Isolated ${index}`,
+      })
+    )
+    let activeRelayListReads = 0
+    let maxConcurrentRelayListReads = 0
+    let productReads = 0
+
+    __setCommerceTestOverrides({
+      getRelayLists: async (pubkeys) => {
+        activeRelayListReads += 1
+        maxConcurrentRelayListReads = Math.max(
+          maxConcurrentRelayListReads,
+          activeRelayListReads
+        )
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 1))
+          if (pubkeys.includes(failedAuthor)) {
+            throw new Error("one relay-list cache row is unavailable")
+          }
+          return new Map()
+        } finally {
+          activeRelayListReads -= 1
+        }
+      },
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        productReads += 1
+        return wantedEvents.filter(
+          (event) =>
+            filter.authors?.includes(event.pubkey) &&
+            event.tags.some(
+              (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+            )
+        ) as never
+      },
+    })
+
+    const result = await getProductsByIds(
+      merchants.map((pubkey, index) => `30402:${pubkey}:isolated-item-${index}`)
+    )
+
+    expect(result.data).toHaveLength(merchants.length - 1)
+    expect(result.diagnostics).toHaveLength(merchants.length)
+    expect(
+      result.diagnostics.filter(({ issue }) => issue === "lookup_unavailable")
+    ).toEqual([
+      expect.objectContaining({
+        addressId: `30402:${failedAuthor}:isolated-item-17`,
+      }),
+    ])
+    expect(
+      result.diagnostics.filter(({ issue }) => issue === null)
+    ).toHaveLength(merchants.length - 1)
+    expect(productReads).toBe(merchants.length - 1)
+    expect(maxConcurrentRelayListReads).toBeLessThanOrEqual(2)
+    expect(result.meta.degraded).toBe(true)
   })
 
   it("keeps a family stale until every cached sibling has live group coverage", async () => {
@@ -1815,6 +3192,62 @@ describe("commerce gateway", () => {
     })
 
     expect(result.data).toHaveLength(0)
+  })
+
+  it("reads an exact cached event product batch once without resurrecting a signed deletion", async () => {
+    const first = makeSignedProductEvent({
+      dTag: "batch-first",
+      createdAt: 100,
+      title: "First cached product",
+    })
+    const deleted = makeSignedProductEvent({
+      dTag: "batch-deleted",
+      createdAt: 100,
+      title: "Deleted cached product",
+    })
+    const unrelated = makeSignedProductEvent({
+      secretKey: MERCHANT_B_SECRET,
+      dTag: "unrelated",
+      createdAt: 100,
+      title: "Unrelated product",
+    })
+    for (const event of [first, deleted, unrelated])
+      await cacheSignedProductListingEvent(event)
+    const firstId = `30402:${first.pubkey}:batch-first`
+    const deletedId = `30402:${deleted.pubkey}:batch-deleted`
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({ createdAt: 101, tags: [["a", deletedId]] })
+    )
+    let cacheReads = 0
+    let networkReads = 0
+    let seenAuthors: readonly string[] | undefined
+    __setCommerceTestOverrides({
+      getCachedProducts: async (_merchant, authors) => {
+        cacheReads++
+        seenAuthors = authors
+        return cachedProducts.filter(
+          (row) => !authors || authors.includes(row.pubkey)
+        )
+      },
+      fetchEventsFanout: async () => {
+        networkReads++
+        throw new Error("Cached reads cannot use relays")
+      },
+      fetchEventsFanoutWithDiagnostics: async () => {
+        networkReads++
+        throw new Error("Cached reads cannot use relays")
+      },
+    })
+    const result = await getCachedProductsByIds([firstId, deletedId, firstId], {
+      includeStale: true,
+      includeMarketHidden: true,
+    })
+    expect(result.data.map((record) => record.addressId)).toEqual([firstId])
+    expect(cacheReads).toBe(1)
+    expect(seenAuthors).toEqual([first.pubkey])
+    expect(networkReads).toBe(0)
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.source).toBe("local_cache")
   })
 
   it("suppresses stale direct product detail with a local signed tombstone", async () => {
@@ -4033,6 +5466,7 @@ describe("commerce gateway", () => {
       stale: false,
       degraded: false,
       capped: false,
+      profileFrontierStates: { merchant: "observed_malformed" },
     })
 
     const paymentResult = await getProfiles({
@@ -4049,6 +5483,7 @@ describe("commerce gateway", () => {
       stale: false,
       degraded: true,
       capped: false,
+      profileFrontierStates: { merchant: "observed_malformed" },
     })
 
     __setCommerceTestOverrides({
@@ -4679,11 +6114,13 @@ describe("commerce gateway", () => {
       source: "public",
       stale: false,
       degraded: false,
+      profileFrontierStates: { merchant: "observed_valid" },
     })
     expect(secondResult.meta).toMatchObject({
       source: "public",
       stale: false,
       degraded: false,
+      profileFrontierStates: { merchant: "observed_valid" },
     })
     expect(cachedProfiles.get("merchant")).toMatchObject({
       name: "ZALGEBAR",
@@ -4692,6 +6129,440 @@ describe("commerce gateway", () => {
       eventCreatedAt: 20,
       lud16: undefined,
     })
+  })
+
+  for (const content of ["{}", "[]", JSON.stringify({ name: "Merchant" })]) {
+    for (const gap of ["older", "empty", "partial", "unavailable"] as const) {
+      it(`retains payment frontier ${content} after a later ${gap} read`, async () => {
+        let first = true
+        __setCommerceTestOverrides({
+          fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+            const relayUrls = [...(options?.relayUrls ?? [])]
+            const initial = first
+            first = false
+            if (!initial && gap === "unavailable") {
+              throw new Error("Synthetic profile outage")
+            }
+            const events = initial
+              ? [
+                  {
+                    id: "current",
+                    pubkey: "merchant",
+                    created_at: 20,
+                    content,
+                    tags: [],
+                  },
+                ]
+              : gap === "older"
+                ? [
+                    {
+                      id: "older",
+                      pubkey: "merchant",
+                      created_at: 10,
+                      content: JSON.stringify({ lud16: "old@wallet.example" }),
+                      tags: [],
+                    },
+                  ]
+                : []
+            return {
+              events: events as never,
+              attemptedRelayUrls: relayUrls,
+              successfulRelayUrls:
+                !initial && gap === "partial"
+                  ? relayUrls.slice(0, 1)
+                  : relayUrls,
+              failedRelayUrls: !initial && gap === "partial" ? relayUrls : [],
+              cappedRelayUrls: [],
+            }
+          },
+        })
+        const query = {
+          pubkeys: ["merchant"],
+          skipCache: true,
+          requireCompleteEvidence: true,
+          evidenceScope: "payment" as const,
+        }
+        await getProfiles(query)
+        const result = await getProfiles(query)
+        expect(result.data.merchant?.lud16).toBeUndefined()
+        expect(result.meta.profileFrontierStates).toEqual({
+          merchant: content === "[]" ? "retained_malformed" : "retained_valid",
+        })
+        expect(result.meta.stale).toBe(true)
+      })
+    }
+  }
+
+  it("preserves freshly observed payment authority when caching fails and on a later outage", async () => {
+    let read = 0
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => {
+        if (++read > 1) throw new Error("Synthetic profile outage")
+        return [
+          {
+            id: "unsaved",
+            pubkey: "merchant",
+            created_at: 20,
+            content: "{}",
+            tags: [],
+          },
+        ] as never
+      },
+      putCachedProfiles: async () => {
+        throw new Error("Synthetic storage failure")
+      },
+    })
+    const query = {
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment" as const,
+    }
+    const observed = await getProfiles(query)
+    expect(observed.meta.profileFrontierStates).toEqual({
+      merchant: "observed_valid",
+    })
+    const retained = await getProfiles(query)
+    expect(retained.meta.profileFrontierStates).toEqual({
+      merchant: "retained_valid",
+    })
+    expect(retained.data.merchant?.lud16).toBeUndefined()
+    expect(cachedProfiles.has("merchant")).toBe(false)
+  })
+
+  it("marks progressive retained payment evidence stale before final reconciliation", async () => {
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      eventId: "known",
+      eventCreatedAt: 20,
+      rawContent: JSON.stringify({ name: "Current Merchant" }),
+      name: "Current Merchant",
+      cachedAt: FIXED_NOW,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "older",
+            pubkey: "merchant",
+            created_at: 10,
+            content: JSON.stringify({
+              name: "Old Merchant",
+              lud16: "old@wallet.example",
+            }),
+            tags: [],
+          },
+        ] as never,
+    })
+    const progress: Array<{
+      stale: boolean
+      source: string
+      state: string | undefined
+      lud16: string | undefined
+    }> = []
+    await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment",
+      onProgress: (result) =>
+        progress.push({
+          stale: result.meta.stale,
+          source: result.meta.source,
+          state: result.meta.profileFrontierStates?.merchant,
+          lud16: result.data.merchant?.lud16,
+        }),
+    })
+    expect(progress).toEqual([
+      {
+        stale: true,
+        source: "local_cache",
+        state: "retained_valid",
+        lud16: undefined,
+      },
+    ])
+  })
+
+  for (const network of ["empty", "unavailable"] as const) {
+    it(`reports unreadable durable payment authority after a successful removal write and ${network} network read`, async () => {
+      __setCommerceTestOverrides({
+        fetchEventsFanout: async () =>
+          [
+            {
+              id: "persisted-removal",
+              pubkey: "merchant",
+              created_at: 20,
+              content: "{}",
+              tags: [],
+            },
+          ] as never,
+      })
+      const query = {
+        pubkeys: ["merchant"],
+        skipCache: true,
+        evidenceScope: "payment" as const,
+      }
+      await getProfiles(query)
+      expect(cachedProfiles.get("merchant")?.rawContent).toBe("{}")
+      __setCommerceTestOverrides({
+        getCachedProfiles: async () => {
+          throw new Error("Synthetic unreadable profile storage")
+        },
+        fetchEventsFanout: async () => {
+          if (network === "unavailable")
+            throw new Error("Synthetic network outage")
+          return []
+        },
+      })
+      const result = await getProfiles(query)
+      expect(result.profileContexts.merchant).toMatchObject({
+        persistence: "unavailable",
+        freshness: "unobserved",
+        readComplete: false,
+      })
+      expect(result.profileContexts.merchant?.frontier).toBeUndefined()
+      expect(result.meta.degraded).toBe(true)
+    })
+  }
+
+  it("preserves storage unavailability from the final empty-author reread", async () => {
+    let reads = 0
+    __setCommerceTestOverrides({
+      getCachedProfiles: async () => {
+        if (++reads > 1) throw new Error("Synthetic unreadable profile storage")
+        return []
+      },
+      fetchEventsFanout: async () => [],
+    })
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment",
+    })
+    expect(result.profileContexts.merchant?.persistence).toBe("unavailable")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("keeps the initial payment frontier when failure recovery cannot reread storage", async () => {
+    let cacheReads = 0
+    __setCommerceTestOverrides({
+      getCachedProfiles: async () => {
+        if (++cacheReads > 1) throw new Error("Synthetic storage failure")
+        return [
+          {
+            pubkey: "merchant",
+            rawContent: "{}",
+            eventId: "known",
+            eventCreatedAt: 20,
+            cachedAt: FIXED_NOW,
+          },
+        ]
+      },
+      fetchEventsFanout: async () => {
+        throw new Error("Synthetic outage")
+      },
+    })
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment",
+    })
+    expect(result.meta.profileFrontierStates).toEqual({
+      merchant: "retained_valid",
+    })
+    expect(result.data.merchant?.lud16).toBeUndefined()
+  })
+
+  it("retains unsaved authority through cache-read failure and lets a newer live repair supersede it", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "unsaved",
+            pubkey: "merchant",
+            created_at: 20,
+            content: "[]",
+            tags: [],
+          },
+        ] as never,
+      putCachedProfiles: async () => {
+        throw new Error("Synthetic storage failure")
+      },
+    })
+    const query = {
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment" as const,
+    }
+    await getProfiles(query)
+    __setCommerceTestOverrides({
+      getCachedProfiles: async () => {
+        throw new Error("Synthetic storage failure")
+      },
+      fetchEventsFanout: async () => {
+        throw new Error("Synthetic profile outage")
+      },
+    })
+    const unavailable = await getProfiles(query)
+    expect(unavailable.meta.profileFrontierStates).toEqual({
+      merchant: "retained_malformed",
+    })
+    __setCommerceTestOverrides({
+      getCachedProfiles: async (pubkeys) =>
+        pubkeys.map((pubkey) => cachedProfiles.get(pubkey)),
+      putCachedProfiles: async (rows) => {
+        for (const row of rows) cachedProfiles.set(row.pubkey, row)
+      },
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "repair",
+            pubkey: "merchant",
+            created_at: 30,
+            content: JSON.stringify({ lud16: "repaired@wallet.example" }),
+            tags: [],
+          },
+        ] as never,
+    })
+    const repaired = await getProfiles(query)
+    expect(repaired.meta.profileFrontierStates).toEqual({
+      merchant: "observed_valid",
+    })
+    expect(repaired.data.merchant?.lud16).toBe("repaired@wallet.example")
+    expect(repaired.meta.source).toBe("public")
+    expect(repaired.meta.stale).toBe(false)
+    expect(cachedProfiles.get("merchant")?.eventId).toBe("repair")
+    __setCommerceTestOverrides({ fetchEventsFanout: async () => [] })
+    const retained = await getProfiles(query)
+    expect(retained.meta.profileFrontierStates).toEqual({
+      merchant: "retained_valid",
+    })
+    expect(retained.data.merchant?.lud16).toBe("repaired@wallet.example")
+  })
+
+  it("does not discard unsaved authority for a projection-only row with the same identity", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "unsaved",
+            pubkey: "merchant",
+            created_at: 20,
+            content: "{}",
+            tags: [],
+          },
+        ] as never,
+      putCachedProfiles: async () => {
+        throw new Error("Synthetic storage failure")
+      },
+    })
+    const query = {
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment" as const,
+    }
+    await getProfiles(query)
+    __setCommerceTestOverrides({
+      getCachedProfiles: async () => [
+        {
+          pubkey: "merchant",
+          eventId: "unsaved",
+          eventCreatedAt: 20,
+          lud16: "obsolete@wallet.example",
+          cachedAt: FIXED_NOW,
+        },
+      ],
+      fetchEventsFanout: async () => {
+        throw new Error("Synthetic outage")
+      },
+    })
+    const result = await getProfiles(query)
+    expect(result.meta.profileFrontierStates).toEqual({
+      merchant: "retained_valid",
+    })
+    expect(result.data.merchant?.lud16).toBeUndefined()
+  })
+
+  for (const batch of [false, true]) {
+    it(`retains a concurrently cached frontier after an empty ${batch ? "batch author" : "profile"} result`, async () => {
+      __setCommerceTestOverrides({
+        fetchEventsFanout: async () => {
+          // Another reader finishes after this request's initial cache load.
+          cachedProfiles.set("merchant", {
+            pubkey: "merchant",
+            eventId: "concurrent-removal",
+            eventCreatedAt: 20,
+            rawContent: "{}",
+            cachedAt: FIXED_NOW,
+          })
+          return batch
+            ? ([
+                {
+                  id: "other-live",
+                  pubkey: "other",
+                  created_at: 20,
+                  content: JSON.stringify({ name: "Other Merchant" }),
+                  tags: [],
+                },
+              ] as never)
+            : []
+        },
+      })
+      const result = await getProfiles({
+        pubkeys: batch
+          ? ["merchant", "other", "genuine-miss"]
+          : ["merchant", "genuine-miss"],
+        skipCache: true,
+        evidenceScope: "payment",
+      })
+      expect(result.data.merchant?.lud16).toBeUndefined()
+      expect(result.meta.profileFrontierStates?.merchant).toBe("retained_valid")
+      expect(result.meta.source).toBe("local_cache")
+      expect(result.meta.stale).toBe(true)
+      expect(result.meta.profileFrontierStates?.["genuine-miss"]).toBe(
+        "not_observed"
+      )
+      expect(cachedProfiles.has("genuine-miss")).toBe(false)
+      if (batch)
+        expect(result.meta.profileFrontierStates?.other).toBe("observed_valid")
+    })
+  }
+
+  it("uses a concurrently committed stronger payment frontier in final evidence", async () => {
+    let cacheRead = 0
+    __setCommerceTestOverrides({
+      getCachedProfiles: async () =>
+        ++cacheRead === 1
+          ? []
+          : [
+              {
+                pubkey: "merchant",
+                rawContent: "[]",
+                eventId: "stronger",
+                eventCreatedAt: 30,
+                cachedAt: FIXED_NOW,
+                lud16: "enriched-obsolete@wallet.example",
+              },
+            ],
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "loser",
+            pubkey: "merchant",
+            created_at: 20,
+            content: JSON.stringify({ lud16: "old@wallet.example" }),
+            tags: [],
+          },
+        ] as never,
+    })
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment",
+    })
+    expect(result.data.merchant?.lud16).toBeUndefined()
+    expect(result.meta.profileFrontierStates).toEqual({
+      merchant: "retained_malformed",
+    })
+    expect(result.meta.stale).toBe(true)
   })
 
   it("shares richer profile merging without changing the durable frontier", async () => {
@@ -4923,6 +6794,7 @@ describe("commerce gateway", () => {
         source: "public",
         stale: false,
         degraded: false,
+        profileFrontierStates: { merchant: "observed_valid" },
       })
     })
   }
@@ -5163,6 +7035,9 @@ describe("commerce gateway", () => {
     expect(result.data["missing-profile"]).toEqual({
       pubkey: "missing-profile",
     })
+    expect(result.meta.profileFrontierStates).toEqual({
+      "missing-profile": "not_observed",
+    })
     expect(cachedProfiles.has("missing-profile")).toBe(false)
   })
 })
@@ -5313,6 +7188,31 @@ describe("getProductsByIds diagnostics", () => {
     const result = await getProductsByIds([addressId])
 
     expect(result.diagnostics[0]?.issue).toBe("product_missing")
+  })
+
+  it("degrades relay-list planning failures to unavailable diagnostics", async () => {
+    let productReads = 0
+    __setCommerceTestOverrides({
+      getRelayLists: async () => {
+        throw new Error("relay-list cache unavailable")
+      },
+      fetchEventsFanoutWithDiagnostics: async () => {
+        productReads += 1
+        throw new Error("product reads should not start")
+      },
+    })
+
+    const result = await getProductsByIds([addressId])
+
+    expect(result.data).toHaveLength(0)
+    expect(result.diagnostics[0]).toMatchObject({
+      productId: addressId,
+      addressId,
+      issue: "lookup_unavailable",
+      coverage: { listing: "unavailable" },
+    })
+    expect(result.meta.degraded).toBe(true)
+    expect(productReads).toBe(0)
   })
 
   it("keeps a partial read distinct from a missing listing", async () => {
@@ -5479,6 +7379,104 @@ describe("getProductsByIds diagnostics", () => {
     expect(result.meta.source).toBe("commerce")
     expect(result.meta.stale).toBe(true)
     expect(result.meta.degraded).toBe(true)
+  })
+
+  it("preserves parked author evidence through the defensive commerce fallback", async () => {
+    const originalWindow = globalThis.window
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    }
+    Object.defineProperty(globalThis, "window", {
+      value: { localStorage: storage },
+      configurable: true,
+    })
+    const parkedRelayUrl = "wss://parked-fallback-hint.conduit.market"
+    const ambientRelayUrls = Array.from(
+      { length: 7 },
+      (_, index) => `wss://parked-legacy-fallback-${index}.conduit.market`
+    )
+    const liveEvent = makeSignedProductEvent({
+      dTag: "diagnosed-parked-fallback",
+      createdAt: 100,
+      title: "Parked Fallback Hint",
+    })
+    const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-parked-fallback`
+    config.defaultRelays = []
+    config.appBackplaneRelayUrls = []
+    config.commerceDiscoveryRelayUrls = []
+    config.corePublicFallbackRelayUrls = []
+    saveRelaySettings(
+      createRelaySettingsFromPreferences(
+        ambientRelayUrls.map((url) => ({
+          url,
+          readEnabled: true,
+          writeEnabled: false,
+        })),
+        "manual"
+      ),
+      "market:guest"
+    )
+    setActiveRelaySettingsScope("market:guest")
+    const healthNow = Date.now()
+    for (const ambientRelayUrl of ambientRelayUrls) {
+      recordRelayFailure(ambientRelayUrl, healthNow)
+      recordRelayFailure(ambientRelayUrl, healthNow)
+    }
+    recordRelayFailure(parkedRelayUrl, healthNow)
+    recordRelayFailure(parkedRelayUrl, healthNow)
+    __setRelayListTestOverrides({
+      now: () => FIXED_NOW,
+      loadCached: async (pubkey) =>
+        pubkey === liveEvent.pubkey
+          ? {
+              pubkey,
+              readRelayUrls: [],
+              writeRelayUrls: [parkedRelayUrl],
+              eventCreatedAt: 1,
+              cachedAt: FIXED_NOW,
+            }
+          : undefined,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        expect(relayUrls).not.toContain(parkedRelayUrl)
+        expect(relayUrls).toEqual(ambientRelayUrls.slice(0, 6))
+        return {
+          events: filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+            ? [liveEvent]
+            : [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    try {
+      const result = await getProductsByIds([liveAddressId])
+
+      expect(result.data[0]?.eventId).toBe(liveEvent.id)
+      expect(result.diagnostics[0]).toMatchObject({
+        issue: null,
+        coverage: { listing: "partial", deletion: "partial" },
+      })
+      expect(result.meta.source).toBe("commerce")
+      expect(result.meta.stale).toBe(true)
+      expect(result.meta.degraded).toBe(true)
+      expect(result.meta.capped).toBe(false)
+    } finally {
+      setActiveRelaySettingsScope(null)
+      Object.defineProperty(globalThis, "window", {
+        value: originalWindow,
+        configurable: true,
+      })
+    }
   })
 
   it("does not certify a newer cached version from an older live address match", async () => {

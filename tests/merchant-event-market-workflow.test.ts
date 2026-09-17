@@ -3,6 +3,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
+  resolveEventMarketEvidence,
 } from "@conduit/core"
 import {
   findSavedOrganizerEventMarketReference,
@@ -215,6 +216,38 @@ describe("merchant organizer event workflow", () => {
           hydrated
         )
       ).toBe(false)
+
+      const renamed = {
+        ...market,
+        state: pickupState === "behind" ? "stale" : "missing",
+        title: "Newer signed calendar title",
+        collectionCreatedAt: 2_001,
+        collectionEventId: "e".repeat(64),
+        calendarCreatedAt: 3_001,
+        calendarEventId: "f".repeat(64),
+      }
+      expect(organizerEventMarketCanSupplySavedTitle(renamed, hydrated)).toBe(
+        true
+      )
+      const [updated] = rememberDiscoveredEventMarket(
+        MERCHANT,
+        {
+          ...hydrated!,
+          title: renamed.title,
+          ...expectedOrganizerEventMarketTitleFrontiers(renamed),
+        },
+        storage
+      )
+      expect(updated).toMatchObject({
+        title: renamed.title,
+        ...expectedOrganizerEventMarketTitleFrontiers(renamed),
+        expectedPickupCoordinate: ORGANIZER_PICKUP,
+        expectedPickupCreatedAt: 5_000,
+        expectedPickupEventId: "d".repeat(64),
+      })
+      expect(
+        organizerEventMarketReachesExpectedFrontiers(renamed, updated)
+      ).toBe(false)
       expect(
         organizerEventMarketCanSupplySavedTitle(
           {
@@ -226,6 +259,118 @@ describe("merchant organizer event workflow", () => {
       ).toBe(false)
     }
   )
+
+  it("requires validated collection and calendar records when replacing a saved title", () => {
+    const secret = generateSecretKey()
+    const author = getPublicKey(secret)
+    const collectionCoordinate = `30405:${author}:title-evidence`
+    const calendarCoordinate = `31922:${author}:title-evidence`
+    const pickupCoordinate = `30406:${author}:title-evidence`
+    const sign = (kind: number, tags: string[][], createdAt: number) =>
+      finalizeEvent({ kind, tags, created_at: createdAt, content: "" }, secret)
+    const calendarTags = [
+      ["d", "title-evidence"],
+      ["title", "New signed title"],
+      ["start", "2027-01-01"],
+      ["end", "2027-01-02"],
+    ]
+    const collectionTags = [
+      ["d", "title-evidence"],
+      ["title", "Event collection"],
+      ["a", calendarCoordinate],
+      ["shipping_option", pickupCoordinate],
+    ]
+    const oldCalendar = sign(
+      31922,
+      calendarTags.map((tag) =>
+        tag[0] === "title" ? ["title", "Old signed title"] : tag
+      ),
+      100
+    )
+    const oldCollection = sign(30405, collectionTags, 100)
+    const calendar = sign(31922, calendarTags, 200)
+    const collection = sign(30405, collectionTags, 200)
+    const saved = {
+      reference: collectionCoordinate,
+      savedAt: 1,
+      title: "Old signed title",
+      titleCollectionCoordinate: collectionCoordinate,
+      titleCollectionCreatedAt: 100_000,
+      titleCollectionEventId: oldCollection.id,
+      titleCalendarCoordinate: calendarCoordinate,
+      titleCalendarCreatedAt: 100_000,
+      titleCalendarEventId: oldCalendar.id,
+      expectedPickupCoordinate: pickupCoordinate,
+      expectedPickupCreatedAt: 100_000,
+      expectedPickupEventId: "a".repeat(64),
+    }
+    const cases = [
+      ...(["collection", "calendar"] as const).flatMap((record) => {
+        const target = record === "collection" ? collection : calendar
+        const other = record === "collection" ? calendar : collection
+        const coordinate =
+          record === "collection" ? collectionCoordinate : calendarCoordinate
+        return [
+          {
+            state: "deleted",
+            events: [collection, calendar, sign(5, [["a", coordinate]], 300)],
+            titleAllowed: false,
+          },
+          {
+            state: "malformed",
+            events: [
+              other,
+              sign(
+                target.kind,
+                target.tags.filter((tag) => tag[0] !== "title"),
+                200
+              ),
+            ],
+            titleAllowed: false,
+          },
+          {
+            state: "missing",
+            events: [other, { ...target, sig: "0".repeat(128) }],
+            titleAllowed: false,
+          },
+        ]
+      }),
+      {
+        state: "conflicting",
+        events: [
+          calendar,
+          sign(30405, [...collectionTags, ["a", `31922:${author}:other`]], 200),
+        ],
+        titleAllowed: false,
+      },
+      { state: "missing", events: [collection, calendar], titleAllowed: true },
+    ]
+    for (const scenario of cases) {
+      const resolution = resolveEventMarketEvidence({
+        reference: collectionCoordinate,
+        events: scenario.events,
+        nowMs: 1_800_000_000_000,
+      })
+      expect(resolution.state).toBe(scenario.state)
+      const candidate = {
+        state: resolution.state,
+        title: resolution.calendar?.title ?? "",
+        collectionCoordinate: resolution.collectionCoordinate,
+        collectionCreatedAt: resolution.collection?.createdAt,
+        collectionEventId: resolution.collection?.eventId,
+        calendarCoordinate: resolution.calendarCoordinate,
+        calendarCreatedAt: resolution.calendar?.createdAt,
+        calendarEventId: resolution.calendar?.eventId,
+        pickupCoordinate: resolution.pickupCoordinate,
+      }
+      expect(organizerEventMarketCanSupplySavedTitle(candidate, saved)).toBe(
+        scenario.titleAllowed
+      )
+      expect(
+        organizerEventMarketReachesExpectedFrontiers(candidate, saved)
+      ).toBe(false)
+    }
+  })
 
   it("uses one deterministic shortened coordinate label across relay hints", () => {
     const first = encodeEventMarketNaddr(COLLECTION, [

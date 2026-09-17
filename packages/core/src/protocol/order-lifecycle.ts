@@ -9,6 +9,7 @@ import {
 } from "../db"
 import {
   decodeLightningInvoicePaymentHash,
+  isValidLud16Address,
   normalizeLightningInvoice,
   validateLightningInvoiceForPayment,
 } from "./lightning"
@@ -217,6 +218,8 @@ export type ProjectedMerchantInvoiceClaim = {
 export type ExternalOrderPaymentProofClaimOptions = {
   merchantInvoice?: ProjectedMerchantInvoiceClaim
   nowMs?: number
+  /** Recheck current action authority after reading storage, before claiming. */
+  authorizeClaim?: (lifecycle: OrderLifecycle) => boolean
 }
 
 type AdmittedProjectedMerchantInvoice = {
@@ -568,6 +571,104 @@ export async function claimOrderLifecyclePayment(
     await db.orderLifecycles.put(claimed)
     return { status: "claimed", lifecycle: claimed }
   })
+}
+
+export function getOrderPaymentAddressReplacementAdmission(
+  lifecycle: OrderLifecycle | undefined
+): "replaceable" | "missing" | "unsafe_state" {
+  if (!lifecycle) return "missing"
+  if (
+    lifecycle.orderDeliveryStatus !== "sent" ||
+    lifecycle.phase === "completed" ||
+    lifecycle.phase === "cancelled" ||
+    lifecycle.completedAt !== undefined ||
+    lifecycle.checkoutMode === "pay_later" ||
+    lifecycle.paymentStatus !== "failed" ||
+    lifecycle.invoiceStatus !== "failed" ||
+    lifecycle.proofDeliveryStatus !== "not_started" ||
+    lifecycle.zapReceiptStatus !== "not_applicable" ||
+    lifecycle.paymentClaimId ||
+    lifecycle.proofDeliveryClaimId ||
+    lifecycle.invoice ||
+    lifecycle.paymentHash ||
+    lifecycle.preimage ||
+    lifecycle.feeMsats !== undefined ||
+    lifecycle.zapReceiptId ||
+    lifecycle.invoiceExpiresAt !== undefined ||
+    lifecycle.zapReceiptObservationDeadline !== undefined
+  ) {
+    return "unsafe_state"
+  }
+  return "replaceable"
+}
+
+/**
+ * Replace a reviewed Lightning address and claim its first payment atomically.
+ * Only a definite failed preparation may change destinations. The old snapshot,
+ * its revision, and the buyer session must still match when the claim is saved.
+ */
+export async function claimOrderLifecycleUpdatedAddressPayment(
+  input: OrderPaymentClaimInput,
+  expectedUpdatedAt: number,
+  newMerchantLightningAddress: string,
+  shouldContinue?: () => boolean
+): Promise<OrderPaymentClaimResult> {
+  if (!input.paymentClaimId.trim()) {
+    throw new Error("Payment claim ID is required.")
+  }
+  const address = newMerchantLightningAddress.trim().toLowerCase()
+
+  return db.transaction(
+    "rw",
+    db.orderLifecycles,
+    db.paymentAttempts,
+    async () => {
+      const lifecycle = await db.orderLifecycles.get(input.orderId)
+      const admission = getOrderPaymentAddressReplacementAdmission(lifecycle)
+      if (!lifecycle || admission === "missing") {
+        return { status: "missing", lifecycle: null }
+      }
+      if (admission !== "replaceable") {
+        return { status: "unsafe_state", lifecycle }
+      }
+      if (
+        lifecycle.updatedAt !== expectedUpdatedAt ||
+        !paymentClaimMatchesLifecycle(lifecycle, input)
+      ) {
+        return { status: "snapshot_mismatch", lifecycle }
+      }
+      if (
+        !isValidLud16Address(address) ||
+        address === lifecycle.merchantLightningAddress?.trim().toLowerCase()
+      ) {
+        return { status: "unsafe_state", lifecycle }
+      }
+      // Attempt rows are created only after wallet success, a receipt, or a
+      // buyer payment report. Even an incomplete row must veto replacement.
+      const attempt = await db.paymentAttempts.get(input.orderId)
+      if (attempt) {
+        return { status: "unsafe_state", lifecycle }
+      }
+      const claimed = buildClaimedOrderLifecycle(
+        lifecycle,
+        input,
+        Math.max(Date.now(), lifecycle.updatedAt + 1),
+        {
+          merchantLightningAddress: address,
+          walletPaymentAttemptId:
+            input.paymentTarget.type === "wallet"
+              ? createWalletPaymentAttemptId()
+              : undefined,
+        }
+      )
+      // Check after all reads, immediately before the only persistent mutation.
+      if (shouldContinue && !shouldContinue()) {
+        return { status: "unsafe_state", lifecycle }
+      }
+      await db.orderLifecycles.put(claimed)
+      return { status: "claimed", lifecycle: claimed }
+    }
+  )
 }
 
 export type OrderPaymentTargetReplacementAdmission =
@@ -1058,9 +1159,13 @@ export async function claimExternalOrderPaymentProof(
     if (
       !normalizedClaimId ||
       publicZapSigner ||
+      lifecycle.phase === "completed" ||
       lifecycle.proofDeliveryStatus !== "not_started" ||
       (!admittedMerchantInvoice && !existingManualInvoiceIsAdmissible)
     ) {
+      return { status: "preserved", lifecycle }
+    }
+    if (options.authorizeClaim?.(lifecycle) === false) {
       return { status: "preserved", lifecycle }
     }
     const claimed = mergeOrderLifecyclePatch(

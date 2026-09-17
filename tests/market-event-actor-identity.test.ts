@@ -1,10 +1,20 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { formatNpub } from "@conduit/core"
+import {
+  __resetCommerceTestOverrides,
+  __resetRelayListTestOverrides,
+  __setCommerceTestOverrides,
+  __setRelayListTestOverrides,
+  formatNpub,
+  getProfiles,
+  orderPickupFulfillmentSchema,
+  pubkeyToNpub,
+} from "@conduit/core"
 import { EventActorName } from "../apps/market/src/components/EventActorIdentity"
 import {
   getEventActorIdentityView,
+  normalizeEventActorPubkey,
   selectEventHandoffIdentity,
   type EventActorIdentityView,
 } from "../apps/market/src/lib/event-actor-identity"
@@ -12,7 +22,98 @@ import {
 const handlerPubkey = "a".repeat(64)
 const organizerPubkey = "b".repeat(64)
 
+afterEach(() => {
+  __resetCommerceTestOverrides()
+  __resetRelayListTestOverrides()
+})
+
 describe("Market event actor identity", () => {
+  it("matches a schema-valid uppercase order organizer to its lowercase profile", () => {
+    const organizer = orderPickupFulfillmentSchema.shape.organizerPubkey.parse(
+      organizerPubkey.toUpperCase()
+    )
+    expect(
+      getEventActorIdentityView({
+        pubkey: organizer,
+        profile: { pubkey: organizerPubkey, displayName: "Event organizer" },
+      })
+    ).toEqual({ displayName: "Event organizer" })
+    expect(pubkeyToNpub(organizer)).toBe(pubkeyToNpub(organizerPubkey))
+  })
+
+  it("hydrates both order actors through a strict lowercase profile read", async () => {
+    const organizer = orderPickupFulfillmentSchema.shape.organizerPubkey.parse(
+      organizerPubkey.toUpperCase()
+    )
+    const pubkeys = [handlerPubkey, normalizeEventActorPubkey(organizer)]
+    const authorFilters: string[][] = []
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) => ({
+        pubkey,
+        readRelayUrls: [],
+        writeRelayUrls: ["wss://profiles.conduit.market"],
+        eventCreatedAt: 1,
+        cachedAt: Date.now(),
+      }),
+    })
+    __setCommerceTestOverrides({
+      getCachedProducts: async () => [],
+      getCachedProfiles: async (keys) => keys.map(() => undefined),
+      putCachedProfiles: async () => {},
+      fetchEventsFanout: async (filter) => {
+        const authors = filter.authors ?? []
+        authorFilters.push([...authors])
+        if (authors.some((key) => !/^[0-9a-f]{64}$/.test(key))) return []
+        return [handlerPubkey, organizerPubkey]
+          .filter((key) => authors.includes(key))
+          .map((pubkey) => ({
+            id: pubkey,
+            pubkey,
+            created_at: 10,
+            kind: 0,
+            content: JSON.stringify({
+              display_name:
+                pubkey === handlerPubkey ? "Pickup handler" : "Event organizer",
+            }),
+            tags: [],
+          })) as never
+      },
+    })
+
+    const profiles = await getProfiles({ pubkeys, skipCache: true })
+    expect(authorFilters.length).toBeGreaterThan(0)
+    for (const authors of authorFilters) {
+      expect(authors).toEqual(pubkeys)
+    }
+    for (const [pubkey, name] of [
+      [handlerPubkey, "Pickup handler"],
+      [organizer, "Event organizer"],
+    ]) {
+      const identity = getEventActorIdentityView({
+        pubkey,
+        profile: profiles.data[normalizeEventActorPubkey(pubkey)],
+      })
+      expect(
+        renderToStaticMarkup(createElement(EventActorName, { identity }))
+      ).toContain(name)
+      expect(pubkeyToNpub(pubkey)).toBe(
+        pubkeyToNpub(normalizeEventActorPubkey(pubkey))
+      )
+    }
+    expect(organizer).toBe(organizerPubkey.toUpperCase())
+
+    const orders = await Bun.file("apps/market/src/routes/orders.tsx").text()
+    expect(orders).toContain(
+      "normalizeEventActorPubkey(pickup.organizerPubkey)"
+    )
+    expect(orders).toContain(
+      "profile: eventActorProfiles.data[normalizeEventActorPubkey(pubkey)]"
+    )
+    expect(orders).toMatch(
+      /<EventActorProvenance\s+pubkey=\{pickup.organizerPubkey\}/
+    )
+  })
+
   it("prefers a hydrated profile name without changing the signed pubkey", () => {
     expect(
       getEventActorIdentityView({

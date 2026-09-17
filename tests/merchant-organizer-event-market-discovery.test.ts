@@ -246,30 +246,45 @@ describe("Merchant organizer event discovery evidence", () => {
     ])
   })
 
-  it("does not retain a card over newly observed invalidating evidence", () => {
+  it("defers non-terminal invalid observations for signed-frontier reconciliation", () => {
     const retained = projectOrganizerEventMarketsReadResult(
       organizerRead("complete", [eventMarket()])
     ).markets
 
-    for (const state of [
-      "deleted",
-      "malformed",
-      "conflicting",
-      "unsupported",
-    ] as const) {
-      const invalidatingResolution = {
-        ...eventMarket(),
-        state,
-        calendar: undefined,
-      }
-      const incomplete = projectOrganizerEventMarketsReadResult(
-        organizerRead("partial", [invalidatingResolution])
-      )
+    for (const state of ["malformed", "conflicting", "unsupported"] as const) {
+      for (const readState of ["partial", "complete"] as const) {
+        const invalidatingResolution = {
+          ...eventMarket(),
+          state,
+        }
+        const observed = projectOrganizerEventMarketsReadResult(
+          organizerRead(readState, [invalidatingResolution])
+        )
 
-      expect(retainMerchantOrganizerEventMarkets(retained, incomplete)).toEqual(
-        []
-      )
+        expect(retainMerchantOrganizerEventMarkets(retained, observed)).toEqual(
+          [
+            expect.objectContaining({
+              collectionCoordinate: COLLECTION,
+              state: "stale",
+              source: expect.objectContaining({ state: "stale" }),
+            }),
+          ]
+        )
+      }
     }
+  })
+
+  it("does not retain a card over observed terminal deletion evidence", () => {
+    const retained = projectOrganizerEventMarketsReadResult(
+      organizerRead("complete", [eventMarket()])
+    ).markets
+    const deleted = projectOrganizerEventMarketsReadResult(
+      organizerRead("partial", [
+        { ...eventMarket(), state: "deleted", calendar: undefined },
+      ])
+    )
+
+    expect(retainMerchantOrganizerEventMarkets(retained, deleted)).toEqual([])
   })
 
   it("preserves truncated organizer discovery and relay coverage facts", () => {

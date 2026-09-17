@@ -7,6 +7,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react"
 import {
+  buildEventMarketShareRelayHints,
   encodeEventMarketNaddr,
   normalizePubkey,
   pubkeyToNpub,
@@ -22,6 +23,7 @@ import {
   SelectValue,
   EventMarketCard,
   getOrganizerDiscoveryPresentation,
+  useTimeBoundaryNow,
 } from "@conduit/ui"
 import {
   MARKET_SOURCE_OPTIONS,
@@ -33,7 +35,9 @@ import { useMerchantIdentities } from "../../hooks/useMerchantIdentities"
 import {
   EVENT_TIMELINE_WINDOWS,
   filterAndSortEventMarkets,
+  getEventTimelinePresentationPerspective,
   formatEventTimelineSchedule,
+  getEventTimelineBoundaries,
   getEventTimelineFacets,
   getEventTimelineStatus,
   type EventTimelineSearch,
@@ -109,7 +113,11 @@ function EventsTimelinePage() {
     },
     [navigate]
   )
-  const nowMs = Date.now()
+  const timelineBoundaries = useMemo(
+    () => getEventTimelineBoundaries(discovery.markets, search.window),
+    [discovery.markets, search.window]
+  )
+  const nowMs = useTimeBoundaryNow(timelineBoundaries)
   const filteredMarkets = useMemo(
     () => filterAndSortEventMarkets(discovery.markets, search, nowMs),
     [discovery.markets, nowMs, search]
@@ -138,7 +146,10 @@ function EventsTimelinePage() {
     ? getOrganizerDiscoveryPresentation({
         state: discovery.data.state,
         eventCount: discovery.markets.length,
-        perspective: discovery.data.perspective,
+        perspective: getEventTimelinePresentationPerspective(
+          discovery.data.perspective,
+          discovery.isRefreshStale
+        ),
         candidateScanCoverage: discovery.data.candidateScanCoverage,
         searchedOrganizerCount: discovery.data.searchedOrganizerCount,
         incompleteOrganizerCount: discovery.data.incompleteOrganizerCount,
@@ -153,6 +164,17 @@ function EventsTimelinePage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-7">
+      <MarketBrowseNavigation
+        active="events"
+        source={discovery.effectiveSource}
+        connected={connected}
+        onSelectSource={(source) =>
+          updateSearch({
+            source: source === "combined" ? undefined : source,
+          })
+        }
+      />
+
       <header className="space-y-3">
         <div className="flex items-center gap-2 text-sm font-medium text-secondary-400">
           <CalendarDays className="h-4 w-4" aria-hidden="true" />
@@ -169,17 +191,6 @@ function EventsTimelinePage() {
           </p>
         </div>
       </header>
-
-      <MarketBrowseNavigation
-        active="events"
-        source={discovery.effectiveSource}
-        connected={connected}
-        onSelectSource={(source) =>
-          updateSearch({
-            source: source === "combined" ? undefined : source,
-          })
-        }
-      />
 
       <section
         aria-label="Event filters"
@@ -371,12 +382,11 @@ function EventsTimelinePage() {
               const organizer = organizerIdentities.getIdentity(
                 market.organizerPubkey
               )
-              const relayHints = Array.from(
-                new Set([
-                  ...(market.collection.sourceRelayUrls ?? []),
-                  ...(market.calendar.sourceRelayUrls ?? []),
-                ])
-              )
+              const relayHints = buildEventMarketShareRelayHints([
+                market.collection.sourceRelayUrls,
+                market.calendar.sourceRelayUrls,
+                ...market.pickups.map((pickup) => pickup.sourceRelayUrls),
+              ])
               const naddr = encodeEventMarketNaddr(
                 market.collection.coordinate,
                 relayHints

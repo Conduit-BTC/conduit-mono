@@ -3,6 +3,7 @@ import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
 } from "./protocol/event-market"
+import { normalizePubkey, pubkeyToNpub } from "./utils"
 
 export type ConduitBrowserLocation = Pick<
   Location,
@@ -163,7 +164,8 @@ export function buildMerchantOrderReviewUrl(
 /** Build a stable Market product URL from a kind-30402 address coordinate. */
 export function buildMarketProductShareUrl(
   marketOrigin: string,
-  productAddressId: string
+  productAddressId: string,
+  sourceRelayUrls: readonly string[] = []
 ): string {
   let url: URL
   try {
@@ -175,7 +177,7 @@ export function buildMarketProductShareUrl(
     throw new Error("Product share URL requires a safe Market origin.")
   }
 
-  const naddr = encodeProductNaddr(productAddressId)
+  const naddr = encodeProductNaddr(productAddressId, sourceRelayUrls)
   url.pathname = `/products/${naddr}`
   return url.toString()
 }
@@ -192,10 +194,15 @@ export function normalizeExactEventCatalogNaddr(value: string): string {
   return encodeEventMarketNaddr(decoded.coordinate, decoded.relayHints)
 }
 
+export interface MarketEventCatalogUrlOptions {
+  merchantPubkey?: string
+}
+
 /** Build a canonical Market event-catalog URL on a safe Conduit origin. */
 export function buildMarketEventCatalogUrl(
   marketOrigin: string,
-  eventNaddr: string
+  eventNaddr: string,
+  options: MarketEventCatalogUrlOptions = {}
 ): string {
   let url: URL
   try {
@@ -209,6 +216,15 @@ export function buildMarketEventCatalogUrl(
 
   const naddr = normalizeExactEventCatalogNaddr(eventNaddr)
   url.pathname = `/events/${naddr}`
+  if (options.merchantPubkey !== undefined) {
+    const merchantPubkey = normalizePubkey(options.merchantPubkey)
+    if (!merchantPubkey) {
+      throw new Error(
+        "Event catalog merchant filter requires a valid public key."
+      )
+    }
+    url.searchParams.set("merchant", pubkeyToNpub(merchantPubkey))
+  }
   return url.toString()
 }
 

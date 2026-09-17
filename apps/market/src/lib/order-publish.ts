@@ -36,7 +36,11 @@ export type BuyerMessageDeliveryResult = {
 }
 
 export type OrderCompanionNotificationStatus =
-  "sent" | "skipped_non_declared_route" | "skipped_non_order" | "failed"
+  | "sent"
+  | "skipped_non_declared_route"
+  | "skipped_non_order"
+  | "skipped_session_changed"
+  | "failed"
 
 export type BuyerOrderSigningIdentity =
   | {
@@ -62,6 +66,7 @@ type BuyerOrderPublishDependencies = {
   signerInteraction?: "external" | "background_external"
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
+  relayAuthMethod?: "nip07" | "nip46"
   shouldContinue?: () => boolean
 }
 
@@ -152,6 +157,11 @@ async function publishOrderCompanionNotification(input: {
   if (messageType !== "order") return "skipped_non_order"
   if (input.deliveryRoute !== "declared_inbox") {
     return "skipped_non_declared_route"
+  }
+  // The merchant already ACKed the authoritative order. Do not construct or
+  // wrap the advisory companion with a stale signed-in session.
+  if (input.shouldContinue?.() === false) {
+    return "skipped_session_changed"
   }
 
   try {
@@ -274,6 +284,11 @@ export async function publishBuyerOrderMessage(
       buyerIdentity.kind === "guest_ephemeral"
         ? "application_owned"
         : (dependencies.signerInteraction ?? "external"),
+    ...(buyerIdentity.kind !== "guest_ephemeral" &&
+    (dependencies.signerInteraction ?? "external") === "external" &&
+    dependencies.relayAuthMethod
+      ? { relayAuthMethod: dependencies.relayAuthMethod }
+      : {}),
     // Checkout-created kind-16 orders are locally validated, so the merchant
     // leg may use the bounded compatibility route when the merchant has
     // no usable NIP-17 declaration (CND-208). Guest orders gain no reply

@@ -67,6 +67,9 @@ describe("Merchant live account authority", () => {
     const hook = await source(
       "apps/merchant/src/hooks/useMerchantEventTimeline.ts"
     )
+    const hydration = await source(
+      "apps/merchant/src/lib/merchant-event-relationship-hydration.ts"
+    )
     const component = await source(
       "apps/merchant/src/components/MerchantEventsTimeline.tsx"
     )
@@ -83,11 +86,10 @@ describe("Merchant live account authority", () => {
       /session.relayScope[\s\S]{0,80}authenticatedPubkey,[\s\S]{0,30}authGeneration/
     )
     expect(hook).toMatch(
-      /resolveRelationshipMarkets\([\s\S]{0,100}authenticatedPubkey: string \| null/
+      /resolveOrganizerEventMarketResolution\([\s\S]{0,100}authenticatedPubkey,[\s\S]{0,80}hydrationSignal/
     )
-    expect(
-      hook.match(/signal\?\.aborted \|\| shouldContinue\?\.\(\) === false/g)
-    ).toHaveLength(2)
+    expect(hydration).toContain("input.signal?.aborted")
+    expect(hydration).toContain('stop("caller")')
     expect(component).toMatch(
       /useProfiles\([\s\S]{0,100}accountPubkey: authenticatedPubkey,[\s\S]{0,50}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => authGenerationRef.current === authGeneration/
     )

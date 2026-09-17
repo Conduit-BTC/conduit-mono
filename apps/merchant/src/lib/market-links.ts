@@ -49,8 +49,15 @@ export function getProfileUrl(pubkey: string): string {
   return `${inferMarketOrigin()}/u/${encodeURIComponent(pubkeyToNpub(pubkey))}`
 }
 
-export function getProductUrl(productAddressId: string): string {
-  return buildMarketProductShareUrl(inferMarketOrigin(), productAddressId)
+export function getProductUrl(
+  productAddressId: string,
+  sourceRelayUrls: readonly string[] = []
+): string {
+  return buildMarketProductShareUrl(
+    inferMarketOrigin(),
+    productAddressId,
+    sourceRelayUrls
+  )
 }
 
 export function getEventMarketUrl(
@@ -58,6 +65,16 @@ export function getEventMarketUrl(
   location?: ConduitBrowserLocation
 ): string {
   return buildMarketEventCatalogUrl(inferMarketOrigin(location), naddr)
+}
+
+export function getEventMarketMerchantFilterUrl(
+  naddr: string,
+  merchantPubkey: string,
+  location?: ConduitBrowserLocation
+): string {
+  return buildMarketEventCatalogUrl(inferMarketOrigin(location), naddr, {
+    merchantPubkey,
+  })
 }
 
 export function getMerchantEventParticipationUrl(

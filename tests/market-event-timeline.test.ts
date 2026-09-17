@@ -3,11 +3,74 @@ import {
   filterAndSortEventMarkets,
   formatEventTimelineSchedule,
   getEventTimelineFacets,
+  getEventTimelinePresentationPerspective,
   getEventTimelineStatus,
 } from "../apps/market/src/lib/eventTimeline"
 import type { EventMarketResolution } from "@conduit/core"
+import { getOrganizerDiscoveryPresentation } from "@conduit/ui"
 
 const NOW = Date.UTC(2027, 5, 1, 12)
+
+describe("event timeline perspective presentation", () => {
+  const conduitPerspective = {
+    source: "conduit" as const,
+    coverage: "complete" as const,
+    eventObserved: false,
+    snapshotState: "curated" as const,
+    truncated: false,
+    authorCount: 4,
+  }
+
+  it("qualifies verified cards when the Conduit perspective refresh is stale", () => {
+    const perspective = getEventTimelinePresentationPerspective(
+      conduitPerspective,
+      true
+    )
+
+    expect(perspective).toEqual({
+      ...conduitPerspective,
+      coverage: "limited",
+    })
+    expect(
+      getOrganizerDiscoveryPresentation({
+        state: "complete",
+        eventCount: 2,
+        perspective,
+        candidateScanCoverage: {
+          plannedReadCount: 4,
+          completeReadCount: 4,
+        },
+        searchedOrganizerCount: 2,
+        incompleteOrganizerCount: 0,
+      }).message
+    ).toBe(
+      "Showing 2 events. Completed 4 of 4 planned bounded relay collection reads. The available Conduit perspective snapshot may be incomplete."
+    )
+  })
+
+  it("preserves current and already-incomplete perspective coverage", () => {
+    expect(
+      getEventTimelinePresentationPerspective(conduitPerspective, false)
+    ).toBe(conduitPerspective)
+
+    const unavailablePerspective = {
+      ...conduitPerspective,
+      coverage: "unavailable" as const,
+    }
+    expect(
+      getEventTimelinePresentationPerspective(unavailablePerspective, true)
+    ).toBe(unavailablePerspective)
+  })
+
+  it("limits stale Following and Combined presentation coverage", () => {
+    for (const source of ["following", "combined"] as const) {
+      const perspective = { ...conduitPerspective, source }
+      expect(
+        getEventTimelinePresentationPerspective(perspective, true)
+      ).toEqual({ ...perspective, coverage: "limited" })
+    }
+  })
+})
 
 function market(input: {
   suffix: string
@@ -78,6 +141,35 @@ function market(input: {
   }
 }
 
+function dateMarket(input: {
+  suffix: string
+  startDate: string
+  endDate?: string
+}): EventMarketResolution {
+  const start = Date.parse(`${input.startDate}T00:00:00Z`)
+  const end = input.endDate
+    ? Date.parse(`${input.endDate}T00:00:00Z`)
+    : start + 86_400_000
+  const result = market({ suffix: input.suffix, start, end })
+  const calendarCoordinate = result.calendarCoordinate!.replace(
+    "31923:",
+    "31922:"
+  )
+  return {
+    ...result,
+    calendarCoordinate,
+    calendar: {
+      ...result.calendar!,
+      coordinate: calendarCoordinate,
+      kind: 31922,
+      start,
+      end,
+      startDate: input.startDate,
+      ...(input.endDate ? { endDate: input.endDate } : {}),
+    },
+  }
+}
+
 describe("Market event timeline", () => {
   const past = market({
     suffix: "past",
@@ -117,6 +209,41 @@ describe("Market event timeline", () => {
         NOW
       ).map((item) => item.reference)
     ).toEqual([soon.reference, later.reference, past.reference])
+  })
+
+  it("keeps a no-end date event upcoming through its start date and displays explicit ends exclusively", () => {
+    const singleDay = dateMarket({
+      suffix: "single-day",
+      startDate: "2027-06-01",
+    })
+    const explicitSingleDay = dateMarket({
+      suffix: "explicit-single-day",
+      startDate: "2027-06-01",
+      endDate: "2027-06-02",
+    })
+    const multiDay = dateMarket({
+      suffix: "multi-day",
+      startDate: "2027-06-01",
+      endDate: "2027-06-03",
+    })
+
+    expect(filterAndSortEventMarkets([singleDay], {}, NOW)).toHaveLength(1)
+    expect(
+      filterAndSortEventMarkets(
+        [explicitSingleDay],
+        { window: "past" },
+        Date.UTC(2027, 5, 2)
+      )
+    ).toHaveLength(1)
+    const explicitSingleDaySchedule = formatEventTimelineSchedule(
+      explicitSingleDay.calendar!,
+      "en-US"
+    )
+    expect(explicitSingleDaySchedule).toBe("2027-06-01")
+    expect(explicitSingleDaySchedule).not.toContain("2027-06-02")
+    expect(formatEventTimelineSchedule(multiDay.calendar!, "en-US")).toBe(
+      "2027-06-01 to 2027-06-02"
+    )
   })
 
   it("filters locally by date, organizer, location, and signed topic", () => {

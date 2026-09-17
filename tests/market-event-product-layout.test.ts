@@ -6,10 +6,11 @@ async function source(path: string): Promise<string> {
 
 describe("Market event product layout", () => {
   it("shares the standard responsive product grid with the main catalog", async () => {
-    const [card, products, event] = await Promise.all([
+    const [card, products, event, browser] = await Promise.all([
       source("apps/market/src/components/ProductGridCard.tsx"),
       source("apps/market/src/routes/products/index.tsx"),
       source("apps/market/src/routes/events/$collectionRef.tsx"),
+      source("apps/market/src/components/EventCatalogBrowser.tsx"),
     ])
 
     expect(card).toContain("export const PRODUCT_GRID_CLASS_NAME")
@@ -19,10 +20,14 @@ describe("Market event product layout", () => {
     expect(products.match(/className={PRODUCT_GRID_CLASS_NAME}/g)?.length).toBe(
       2
     )
-    expect(event).toContain(
-      "className={`mt-6 ${PRODUCT_GRID_CLASS_NAME} items-start`}"
+    expect(event).toContain("<EventCatalogBrowser")
+    expect(browser).toContain(
+      'import { PRODUCT_GRID_CLASS_NAME } from "./ProductGridCard"'
     )
-    expect(event).not.toContain(
+    expect(browser).toContain(
+      "<ul className={`${PRODUCT_GRID_CLASS_NAME} items-start`}>"
+    )
+    expect(browser).not.toContain(
       'className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3"'
     )
   })
@@ -44,15 +49,33 @@ describe("Market event product layout", () => {
   })
 
   it("allows floating variation panels outside the event catalog on hover-capable desktops", async () => {
+    const browser = await source(
+      "apps/market/src/components/EventCatalogBrowser.tsx"
+    )
+
+    expect(browser).toContain(
+      "<ul className={`${PRODUCT_GRID_CLASS_NAME} items-start`}>"
+    )
+    expect(browser).not.toContain("overflow-hidden")
+  })
+
+  it("keeps long handler names compact while Details reveals the full identity", async () => {
     const event = await source(
       "apps/market/src/routes/events/$collectionRef.tsx"
     )
+    const pickupStart = event.indexOf('<details className="group/pickup')
+    const pickupEnd = event.indexOf("</details>", pickupStart)
+    const pickupDetails = event.slice(pickupStart, pickupEnd)
 
-    expect(event).toContain(
-      'className="overflow-hidden rounded-3xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)] [@media(min-width:768px)_and_(hover:hover)]:overflow-visible"'
+    expect(pickupStart).toBeGreaterThan(-1)
+    expect(pickupEnd).toBeGreaterThan(pickupStart)
+    expect(pickupDetails).toContain('className="min-w-0 flex-1"')
+    expect(pickupDetails).toContain('className="block truncate"')
+    expect(pickupDetails).toContain(
+      "title={`Handled by ${handlerIdentity.displayName}`}"
     )
-    expect(event).toContain(
-      'className="h-48 w-full rounded-t-3xl border-b border-[var(--border)] bg-[var(--surface-elevated)] object-contain sm:h-64"'
-    )
+    expect(
+      pickupDetails.match(/<EventActorName identity=\{handlerIdentity\}\s*\/>/g)
+    ).toHaveLength(2)
   })
 })

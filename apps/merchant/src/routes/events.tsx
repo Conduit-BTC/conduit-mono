@@ -829,6 +829,13 @@ function MyEventsPanel({
   onPublished?: (reference: string) => void
   onSelected?: (reference: string) => void
 }) {
+  const initiatingPanelMounted = useRef(true)
+  useLayoutEffect(() => {
+    initiatingPanelMounted.current = true
+    return () => {
+      initiatingPanelMounted.current = false
+    }
+  }, [])
   const queryClient = useQueryClient()
   const organizerAuthorityMutationScope = useMemo(
     () => ({ id: `merchant-organizer-event-authority:${organizerPubkey}` }),
@@ -1278,7 +1285,9 @@ function MyEventsPanel({
       setEditorOpen(false)
       setEditingMarket(null)
       await refreshMarketQueries(reference)
-      onPublished?.(reference)
+      if (initiatingPanelMounted.current && shouldContinue()) {
+        onPublished?.(reference)
+      }
     },
     onError: (error) => {
       setPublishError(

@@ -41,6 +41,27 @@ describe("telemetry policy", () => {
     )
   })
 
+  it("keeps exact settlement value isolated to its server-only event", () => {
+    expect(
+      validateTelemetryEvents([
+        {
+          eventName: "checkout_result",
+          properties: ["event_name", "settled_amount_sats"],
+        },
+      ])
+    ).toContain(
+      "Telemetry event checkout_result cannot use server-only property: settled_amount_sats"
+    )
+    expect(
+      validateTelemetryEvents([
+        {
+          eventName: "zapout_settled",
+          properties: ["settled_amount_sats", "app"],
+        },
+      ])
+    ).toContain("zapout_settled must use only settled_amount_sats")
+  })
+
   it("validates the repo telemetry allowlist", () => {
     expect(checkTelemetryPolicy(process.cwd()).errors).toEqual([])
   })

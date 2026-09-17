@@ -4,6 +4,10 @@ export type EventActorIdentityView = {
   displayName: string
 }
 
+export function normalizeEventActorPubkey(pubkey: string): string {
+  return pubkey.trim().toLowerCase()
+}
+
 export function selectEventHandoffIdentity(input: {
   mode: "merchant_handoff" | "organizer_handoff"
   handlerPubkey: string
@@ -26,7 +30,9 @@ export function getEventActorIdentityView(input: {
   return {
     displayName:
       getProfileName(
-        input.profile?.pubkey === input.pubkey ? input.profile : undefined
+        input.profile?.pubkey === normalizeEventActorPubkey(input.pubkey)
+          ? input.profile
+          : undefined
       ) ?? formatNpub(input.pubkey, 8),
   }
 }
