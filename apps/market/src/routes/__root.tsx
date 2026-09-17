@@ -291,6 +291,9 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/events" || pathname.startsWith("/events/")) {
     return "Event Catalog"
   }
+  if (pathname === "/sellers") {
+    return "Sellers"
+  }
   if (pathname.startsWith("/store/")) {
     return "Storefront"
   }
