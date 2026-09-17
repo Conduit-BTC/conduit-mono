@@ -1677,6 +1677,26 @@ async function acceptMerchantProduct(
     "a",
     eventCoordinate(productEvent),
   ])
+  const shopperHref = await page
+    .getByRole("link", { name: "Open shopper catalog", exact: true })
+    .getAttribute("href")
+  expect(shopperHref).toBeTruthy()
+  const boothUrl = new URL(shopperHref!)
+  boothUrl.searchParams.set("merchant", nip19.npubEncode(productEvent.pubkey))
+  const boothHeading = page.getByRole("heading", {
+    name: "Merchant booth links",
+    exact: true,
+  })
+  await expect(boothHeading).toBeVisible()
+  const boothSection = boothHeading.locator("..").locator("..")
+  const boothLink = boothSection.locator(`a[href="${boothUrl.toString()}"]`)
+  await expect(boothLink).toHaveCount(1)
+  const boothDetails = boothLink.locator("xpath=ancestor::details")
+  await boothDetails.locator("summary").click()
+  await expect(boothLink).toBeVisible()
+  await expect(
+    boothDetails.getByRole("img", { name: /event catalog QR code$/ })
+  ).toBeVisible()
   return acceptedCollection!
 }
 
@@ -1788,7 +1808,7 @@ test("event banners remain fully contained on every surface and viewport @market
   }
 })
 
-test("event catalog shops products by search, merchant, and sort before technical pickup records @market", async ({
+test("event catalog shops merchant groups with a URL-addressable filter before technical pickup records @market", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -1874,6 +1894,12 @@ test("event catalog shops products by search, merchant, and sort before technica
     { title: "Cedar Mug", price: 2000, secret: secondMerchantSecret },
     { title: "Dawn Coffee", price: 4000, secret: MERCHANT_SECRET },
   ]
+  const groupedProductTitles = [
+    "Amber Mug",
+    "Dawn Coffee",
+    "Blue Tote",
+    "Cedar Mug",
+  ]
   const products = productSpecs.map((spec, index) => {
     const template = createMerchantProductEvent({
       dTag: `shopping-product-${index}`,
@@ -1940,14 +1966,13 @@ test("event catalog shops products by search, merchant, and sort before technica
     name: "Search products or merchants",
   })
   const merchant = page.getByRole("combobox", { name: "Merchant", exact: true })
-  const sort = page.getByRole("combobox", { name: "Sort products" })
   const technicalSummary = page.locator("summary").filter({
     hasText: /^Technical details\s*$/,
   })
   const technicalDetails = technicalSummary.locator("..")
   await expect(shopHeading).toBeVisible()
   await expect(banner).toBeVisible()
-  await expect(titles).toHaveText(productSpecs.map((spec) => spec.title))
+  await expect(titles).toHaveText(groupedProductTitles)
   await expect(
     cards.getByRole("button", { name: "Add", exact: true })
   ).toHaveCount(4)
@@ -1960,7 +1985,10 @@ test("event catalog shops products by search, merchant, and sort before technica
     cards.first().getByRole("button", { name: "Alpine Goods", exact: true })
   ).toBeVisible()
   await expect(technicalDetails).not.toHaveAttribute("open", "")
-  const longHandlerDetails = cards.nth(1).locator("details")
+  const longMerchantCard = cards.filter({
+    has: page.getByRole("heading", { name: "Blue Tote", exact: true }),
+  })
+  const longHandlerDetails = longMerchantCard.locator("details")
   const longHandlerSummary = longHandlerDetails.locator("summary")
   await expect(
     longHandlerSummary.getByTitle(`Handled by ${longMerchantName}`)
@@ -1977,57 +2005,47 @@ test("event catalog shops products by search, merchant, and sort before technica
   await longHandlerSummary.click()
   await expect(longHandlerDetails).not.toHaveAttribute("open", "")
   // Geohash-only pickups retain their location; readable text takes precedence.
-  for (const [index, location] of [pickupGeohash, pickupLocation].entries()) {
-    const details = cards.nth(index).locator("details")
+  for (const [title, location] of [
+    ["Amber Mug", pickupGeohash],
+    ["Blue Tote", pickupLocation],
+  ] as const) {
+    const details = cards
+      .filter({
+        has: page.getByRole("heading", { name: title, exact: true }),
+      })
+      .locator("details")
     await details.locator("summary").click()
     await expect(details.getByText(location, { exact: true })).toBeVisible()
-    if (index === 1) {
+    if (title === "Blue Tote") {
       await expect(
         details.getByText(pickupGeohash, { exact: true })
       ).toHaveCount(0)
     }
     await details.locator("summary").click()
   }
+  for (const name of ["Alpine Goods", longMerchantName]) {
+    const heading = page.getByRole("heading", { name, exact: true })
+    await expect(heading).toBeVisible()
+    await expect(heading.locator("..")).toContainText("2 products")
+  }
+  await expect(
+    page.getByRole("combobox", { name: "Sort products" })
+  ).toHaveCount(0)
   await expect(
     page.getByRole("button", { name: "All products", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
-
-  await sort.click()
-  await page
-    .getByRole("option", { name: "Price: low to high", exact: true })
-    .click()
-  await expect(titles).toHaveText([
-    "Blue Tote",
-    "Cedar Mug",
-    "Amber Mug",
-    "Dawn Coffee",
-  ])
-  await sort.click()
-  await page
-    .getByRole("option", { name: "Price: high to low", exact: true })
-    .click()
-  await expect(titles).toHaveText([
-    "Dawn Coffee",
-    "Amber Mug",
-    "Cedar Mug",
-    "Blue Tote",
-  ])
-  await sort.click()
-  await page.getByRole("option", { name: "Merchant A–Z", exact: true }).click()
-  await expect(titles).toHaveText([
-    "Amber Mug",
-    "Dawn Coffee",
-    "Blue Tote",
-    "Cedar Mug",
-  ])
-  await sort.click()
-  await page.getByRole("option", { name: "Name A–Z", exact: true }).click()
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "By merchant", exact: true })
+  ).toHaveCount(0)
 
   await search.fill("mug")
   await expect(titles).toHaveText(["Amber Mug", "Cedar Mug"])
   await merchant.click()
   await page.getByRole("option", { name: new RegExp(longMerchantName) }).click()
   await expect(titles).toHaveText(["Cedar Mug"])
+  expect(new URL(page.url()).searchParams.get("merchant")).toBe(
+    nip19.npubEncode(getPublicKey(secondMerchantSecret))
+  )
   await search.fill("intentionally")
   // Merchant names are searchable, and the selected merchant narrows results.
   await expect(titles).toHaveText(["Blue Tote", "Cedar Mug"])
@@ -2039,44 +2057,43 @@ test("event catalog shops products by search, merchant, and sort before technica
   await page.getByRole("button", { name: "Clear filters", exact: true }).click()
   await expect(search).toHaveValue("")
   await expect(merchant).toContainText("All merchants")
-  await expect(titles).toHaveText(productSpecs.map((spec) => spec.title))
+  await expect(titles).toHaveText(groupedProductTitles)
+  expect(new URL(page.url()).searchParams.has("merchant")).toBe(false)
 
   await merchant.click()
   await page.getByRole("option", { name: /Alpine Goods/ }).click()
   await expect(titles).toHaveText(["Amber Mug", "Dawn Coffee"])
   await merchant.click()
-  await page.keyboard.press("ArrowUp")
-  await page.keyboard.press("Enter")
+  await page.getByRole("option", { name: /All merchants/ }).click()
   await expect(merchant).toContainText("All merchants")
-  await expect(titles).toHaveText(productSpecs.map((spec) => spec.title))
-  await merchant.click()
-  await page.keyboard.press("Enter")
-  await expect(merchant).toContainText("All merchants")
-  await expect(titles).toHaveText(productSpecs.map((spec) => spec.title))
+  await expect(titles).toHaveText(groupedProductTitles)
 
   await cards
     .first()
     .getByRole("button", { name: "Alpine Goods", exact: true })
     .click()
   await expect(titles).toHaveText(["Amber Mug", "Dawn Coffee"])
-  expect(page.url()).toBe(catalogUrl)
+  expect(new URL(page.url()).searchParams.get("merchant")).toBe(
+    nip19.npubEncode(MERCHANT_PUBKEY)
+  )
+  await page.reload()
+  await expect(merchant).toContainText("Alpine Goods")
+  await expect(titles).toHaveText(["Amber Mug", "Dawn Coffee"])
+  const expectedSharedUrl = new URL(page.url())
+  expectedSharedUrl.searchParams.delete(SYNTHETIC_IDENTITY_SEARCH_KEY)
+  await page.getByRole("button", { name: /^Share this view/ }).click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __eventCatalogCopiedValue?: string })
+            .__eventCatalogCopiedValue
+      )
+    )
+    .toBe(expectedSharedUrl.toString())
   await page.getByRole("button", { name: "Clear filters", exact: true }).click()
-  await page.getByRole("button", { name: "By merchant", exact: true }).click()
-  await expect(
-    page.getByRole("button", { name: "By merchant", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
-  for (const name of ["Alpine Goods", longMerchantName]) {
-    const heading = page.getByRole("heading", { name, exact: true })
-    await expect(heading).toBeVisible()
-    await expect(heading.locator("..")).toContainText("2 products")
-  }
-  await expect(titles).toHaveText([
-    "Amber Mug",
-    "Dawn Coffee",
-    "Blue Tote",
-    "Cedar Mug",
-  ])
-  await page.getByRole("button", { name: "All products", exact: true }).click()
+  await expect(titles).toHaveText(groupedProductTitles)
+  expect(page.url()).toBe(catalogUrl)
 
   // Add many accepted merchant-owned pickup records through valid products.
   // The collection itself supports at most one organizer pickup; each merchant
@@ -2159,11 +2176,11 @@ test("event catalog shops products by search, merchant, and sort before technica
     await page
       .getByRole("button", { name: "Clear filters", exact: true })
       .click()
-    await expect(titles).toHaveText(productSpecs.map((spec) => spec.title))
+    await expect(titles).toHaveText(groupedProductTitles)
     await expect(technicalDetails).not.toHaveAttribute("open", "")
-    const collapsedHandler = cards
-      .nth(1)
-      .getByTitle(`Handled by ${longMerchantName}`)
+    const collapsedHandler = longMerchantCard.getByTitle(
+      `Handled by ${longMerchantName}`
+    )
     const handlerSize = await collapsedHandler.evaluate((element) => ({
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
