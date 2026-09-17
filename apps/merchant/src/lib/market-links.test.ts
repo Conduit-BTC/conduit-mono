@@ -4,6 +4,7 @@ import {
   pubkeyToNpub,
 } from "@conduit/core"
 import {
+  getEventMarketMerchantFilterUrl,
   getEventMarketUrl,
   getProfileUrl,
   getProductUrl,
@@ -35,6 +36,12 @@ test("builds storefront and profile links on the Market app", () => {
 test("builds canonical event catalog links on the Market app", () => {
   expect(getEventMarketUrl(eventNaddr)).toBe(
     `https://shop.conduit.market/events/${eventNaddr}`
+  )
+})
+
+test("builds merchant-filtered links on the existing event catalog", () => {
+  expect(getEventMarketMerchantFilterUrl(eventNaddr, pubkey)).toBe(
+    `https://shop.conduit.market/events/${eventNaddr}?merchant=${npub}`
   )
 })
 
