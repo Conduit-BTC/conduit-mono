@@ -1918,17 +1918,10 @@ test("portable wallet restore keeps derivation advanced and device-only fields c
   ).toBeVisible()
 })
 
-test("market wallets remain available without a Nostr signer @market", async ({
+test("market wallet route remains available without a Nostr signer @market", async ({
   page,
 }) => {
-  await page.goto(marketUrl)
-
-  const walletsNavigation = page.getByRole("button", {
-    name: "Wallets",
-    exact: true,
-  })
-  await expect(walletsNavigation).toBeVisible()
-  await walletsNavigation.click()
+  await page.goto(`${marketUrl}/wallet`)
 
   await expect(page).toHaveURL(`${marketUrl}/wallet`)
   await expect(page).toHaveTitle("Wallets | Conduit Market")

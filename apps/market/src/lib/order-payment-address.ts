@@ -6,6 +6,7 @@ import {
   hasFreshProfilePaymentAddress,
   normalizePubkey,
   type OrderLifecycle,
+  type SelectedProfileContext,
 } from "@conduit/core"
 import { getMerchantProfileAuthenticatedPubkey } from "../hooks/useMerchantTrustContext"
 
@@ -37,6 +38,32 @@ type OrderPaymentAddressCheck =
         | "current_address_changed"
     }
   | { status: "updated"; update: OrderPaymentAddressUpdate }
+
+/** Assess the selected signed authority independently of lifecycle admission. */
+export function assessOrderPaymentAddress(
+  context: SelectedProfileContext | undefined,
+  merchantPubkey: string,
+  savedAddress: string
+):
+  | "unchanged"
+  | "unavailable"
+  | "current_address_unusable"
+  | "current_address_changed" {
+  if (context?.persistence === "unavailable") {
+    throw new Error(
+      "Saved profile authority is unavailable. Restore local storage and check the payment address again."
+    )
+  }
+  if (context?.profile.pubkey !== merchantPubkey || !context.frontier) {
+    return "unavailable"
+  }
+  const address = getProfilePaymentAddress(context)
+  if (!address) return "current_address_unusable"
+  if (address.toLowerCase() !== savedAddress.trim().toLowerCase()) {
+    return "current_address_changed"
+  }
+  return "unchanged"
+}
 
 /** Check current signed payment evidence without changing the saved order. */
 export async function checkOrderPaymentAddressUpdate(
@@ -91,25 +118,23 @@ export async function checkOrderPaymentAddressUpdate(
   assertCurrentSession()
 
   const context = result.profileContexts[merchantPubkey]
-  if (context?.persistence === "unavailable") {
-    throw new Error(
-      "Saved profile authority is unavailable. Restore local storage and check the payment address again."
-    )
-  }
-  if (context?.profile.pubkey !== merchantPubkey) {
-    return { status: "unavailable" }
+  const assessment = assessOrderPaymentAddress(
+    context,
+    merchantPubkey,
+    snapshot.previousAddress
+  )
+  if (
+    assessment === "current_address_unusable" ||
+    assessment === "unavailable"
+  ) {
+    return { status: assessment }
   }
   const hasPositiveAddress = hasFreshProfilePaymentAddress(context)
-  const hasKnownFrontier = !!context.frontier
   const address = getProfilePaymentAddress(context)
-  // A later unavailable read cannot erase retained contradictory authority.
-  if (hasKnownFrontier && !address) {
-    return { status: "current_address_unusable" }
-  }
   const newAddress = (address ?? "").toLowerCase()
   const previousAddress = snapshot.previousAddress.trim().toLowerCase()
   if (!hasPositiveAddress) {
-    if (hasKnownFrontier && newAddress !== previousAddress) {
+    if (assessment === "current_address_changed") {
       return { status: "current_address_changed" }
     }
     return { status: "unavailable" }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Moon, Sun, SunMoon } from "lucide-react"
 import { useTheme } from "../hooks/useTheme"
 import {
@@ -14,11 +14,8 @@ export type ThemeToggleButtonProps = {
   cycle?: readonly ThemePreference[]
 }
 
-const compactPreferenceLabels: Record<ThemePreference, string> = {
-  system: "System",
-  "day-market": "Day",
-  "night-market": "Night",
-}
+/** Silent marker that makes a repeated announcement a new text change. */
+const REPEAT_MARKER = "\u200b"
 
 function getThemePreferenceLabel(preference: ThemePreference): string {
   if (preference === "system") return "System"
@@ -32,28 +29,16 @@ export function ThemeToggleButton({
   cycle = DEFAULT_THEME_TOGGLE_CYCLE,
 }: ThemeToggleButtonProps) {
   const { preference, setPreference } = useTheme()
-  const [feedback, setFeedback] = useState<{
-    preference: ThemePreference
-    visible: boolean
-  } | null>(null)
-
-  useEffect(() => {
-    if (!feedback?.visible) return
-    const timeout = window.setTimeout(() => {
-      setFeedback((current) =>
-        current === feedback ? { ...current, visible: false } : current
-      )
-    }, 320)
-    return () => window.clearTimeout(timeout)
-  }, [feedback])
+  /**
+   * Only this button's own activations speak. Another tab or the device can
+   * change the preference at any time; those updates change the icon, and the
+   * live region keeps the last locally chosen text so it is neither cleared
+   * nor repeated as if this button had performed them.
+   */
+  const [announcement, setAnnouncement] = useState("")
 
   const nextPreference = getNextThemePreferenceInCycle(preference, cycle)
   const label = `Appearance: ${getThemePreferenceLabel(preference)}. Switch to ${getThemePreferenceLabel(nextPreference)}`
-  const feedbackLabel = feedback
-    ? getThemePreferenceLabel(feedback.preference)
-    : ""
-  const feedbackVisible =
-    feedback?.visible && feedback.preference === preference
   const Icon =
     preference === "system" ? SunMoon : preference === "day-market" ? Sun : Moon
 
@@ -70,31 +55,18 @@ export function ThemeToggleButton({
         )}
         onClick={() => {
           setPreference(nextPreference)
-          setFeedback({ preference: nextPreference, visible: true })
+          setAnnouncement((current) => {
+            const text = `Appearance set to ${getThemePreferenceLabel(nextPreference)}.`
+            return current === text ? `${text}${REPEAT_MARKER}` : text
+          })
         }}
       >
         <span
           aria-hidden="true"
           data-theme-toggle-icon=""
-          className={cn(
-            "inline-flex size-5 transition-[opacity,transform] duration-[80ms] ease-out motion-reduce:transform-none motion-reduce:transition-none",
-            feedbackVisible ? "scale-90 opacity-0" : "scale-100 opacity-100"
-          )}
+          className="inline-flex size-5"
         >
           <Icon className="size-5" />
-        </span>
-        <span
-          aria-hidden="true"
-          data-theme-toggle-feedback=""
-          data-state={feedbackVisible ? "visible" : "hidden"}
-          className={cn(
-            "pointer-events-none absolute inset-0 flex items-center justify-center whitespace-nowrap text-[11px] font-medium leading-none transition-[opacity,transform] duration-[80ms] ease-out motion-reduce:transform-none motion-reduce:transition-none",
-            feedbackVisible
-              ? "translate-y-0 opacity-100"
-              : "translate-y-0.5 opacity-0"
-          )}
-        >
-          {feedback ? compactPreferenceLabels[feedback.preference] : ""}
         </span>
       </button>
       <span
@@ -104,7 +76,7 @@ export function ThemeToggleButton({
         aria-atomic="true"
         className="sr-only"
       >
-        {feedbackLabel ? `Appearance set to ${feedbackLabel}.` : ""}
+        {announcement}
       </span>
     </>
   )
