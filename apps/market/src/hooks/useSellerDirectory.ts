@@ -10,6 +10,7 @@ import {
   excludeDiscoveredSellers,
   filterSellersByName,
   groupDiscoveredSellers,
+  isSellerDirectoryUnavailable,
 } from "../lib/sellerDirectory"
 import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
 import { useMerchantIdentities } from "./useMerchantIdentities"
@@ -71,11 +72,22 @@ export function useSellerDirectory(input: {
       ),
     [accountSearch.data, sellers]
   )
+  const isFetching = productsQuery.isInitialLoading || productsQuery.isHydrating
+  const isUnavailable = isSellerDirectoryUnavailable({
+    hasSellers: sellers.length > 0,
+    isFetching,
+    error: productsQuery.error,
+    meta: productsQuery.meta,
+    isRefreshPaused: productsQuery.isRefreshPaused,
+    discoveryStale: productsQuery.discoveryStale,
+  })
 
   return {
     connected,
     effectiveSource,
-    isFetching: productsQuery.isInitialLoading || productsQuery.isHydrating,
+    isFetching,
+    isUnavailable,
+    retry: productsQuery.refetch,
     sellers,
     filteredSellers,
     getIdentity: identities.getIdentity,

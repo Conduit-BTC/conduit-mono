@@ -1,5 +1,7 @@
 import {
+  isCommerceReadIncomplete,
   normalizeProfileSearchText,
+  type CommerceFreshnessMeta,
   type Product,
   type ProfileSearchMatch,
 } from "@conduit/core"
@@ -9,6 +11,29 @@ export interface DiscoveredSeller {
   pubkey: string
   listingCount: number
   latestListingAt: number
+}
+
+/**
+ * An empty directory is authoritative only after a completed catalog read.
+ * Existing sellers remain useful during a degraded refresh, while a cold
+ * unavailable read must not be presented as confirmed absence.
+ */
+export function isSellerDirectoryUnavailable(input: {
+  hasSellers: boolean
+  isFetching: boolean
+  error: unknown
+  meta: CommerceFreshnessMeta | null
+  isRefreshPaused: boolean
+  discoveryStale: boolean
+}): boolean {
+  if (input.hasSellers || input.isFetching) return false
+  return (
+    !!input.error ||
+    !input.meta ||
+    input.isRefreshPaused ||
+    input.discoveryStale ||
+    isCommerceReadIncomplete(input.meta)
+  )
 }
 
 /** Groups discovered listings by author. Variations count toward the parent. */

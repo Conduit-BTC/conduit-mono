@@ -2,7 +2,14 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { Search, Store } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { PROFILE_SEARCH_MIN_QUERY_LENGTH } from "@conduit/core"
-import { Avatar, AvatarFallback, AvatarImage, Badge, Input } from "@conduit/ui"
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+  Badge,
+  Button,
+  Input,
+} from "@conduit/ui"
 import {
   MARKET_SOURCE_OPTIONS,
   MarketBrowseNavigation,
@@ -139,7 +146,22 @@ function SellersPage() {
             {directory.isFetching ? " · updating" : ""}
           </span>
         </div>
-        {directory.filteredSellers.length === 0 ? (
+        {directory.isUnavailable ? (
+          <div
+            role="status"
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-[var(--border)] px-4 py-4 text-sm text-[var(--text-muted)]"
+          >
+            <p>Sellers could not be loaded from this perspective.</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={directory.retry}
+            >
+              Try again
+            </Button>
+          </div>
+        ) : directory.filteredSellers.length === 0 ? (
           <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--text-muted)]">
             {directory.sellers.length === 0
               ? directory.isFetching

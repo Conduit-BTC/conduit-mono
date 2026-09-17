@@ -11,6 +11,7 @@ import {
   excludeDiscoveredSellers,
   filterSellersByName,
   groupDiscoveredSellers,
+  isSellerDirectoryUnavailable,
 } from "../apps/market/src/lib/sellerDirectory"
 import type { Product } from "../packages/core/src/types"
 
@@ -70,6 +71,64 @@ describe("seller directory", () => {
         sellers
       ).map((m) => m.pubkey)
     ).toEqual(["3".repeat(64)])
+  })
+
+  it("distinguishes a cold unavailable read from a completed empty read", () => {
+    const completed = {
+      stale: false,
+      degraded: false,
+      capped: false,
+    }
+    const empty = {
+      hasSellers: false,
+      isFetching: false,
+      error: null,
+      meta: completed,
+      isRefreshPaused: false,
+      discoveryStale: false,
+    }
+
+    expect(isSellerDirectoryUnavailable(empty)).toBe(false)
+    expect(
+      isSellerDirectoryUnavailable({ ...empty, error: new Error("offline") })
+    ).toBe(true)
+    expect(isSellerDirectoryUnavailable({ ...empty, meta: null })).toBe(true)
+    expect(
+      isSellerDirectoryUnavailable({
+        ...empty,
+        meta: { ...completed, degraded: true },
+      })
+    ).toBe(true)
+  })
+
+  it("keeps loading and retained sellers out of the unavailable state", () => {
+    const unavailable = {
+      hasSellers: false,
+      isFetching: false,
+      error: new Error("offline"),
+      meta: null,
+      isRefreshPaused: false,
+      discoveryStale: false,
+    }
+
+    expect(
+      isSellerDirectoryUnavailable({ ...unavailable, isFetching: true })
+    ).toBe(false)
+    expect(
+      isSellerDirectoryUnavailable({ ...unavailable, hasSellers: true })
+    ).toBe(false)
+  })
+
+  it("offers retry for the unavailable directory without changing empty copy", async () => {
+    const route = await readFile("apps/market/src/routes/sellers.tsx", "utf8")
+    expect(route).toContain("directory.isUnavailable")
+    expect(route).toContain(
+      "Sellers could not be loaded from this perspective."
+    )
+    expect(route).toContain("onClick={directory.retry}")
+    expect(route).toContain(
+      "No sellers have been discovered from this perspective yet."
+    )
   })
 })
 
