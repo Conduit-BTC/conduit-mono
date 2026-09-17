@@ -623,6 +623,12 @@ describe("event-market participation resolution", () => {
         handoffMode: "organizer_handoff",
         handoffPubkey: ORGANIZER_PUBKEY,
         productPreview: {
+          sourceSafety: expect.objectContaining({
+            state: "hidden",
+            marketVisible: false,
+            purchasable: false,
+            source: "client_rules",
+          }),
           coordinate: PRODUCT_COORDINATE,
           eventId: request.id,
           createdAt: request.created_at * 1_000,

@@ -491,7 +491,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.goto(`${marketUrl}/products`)
     await assertMobileViewport(page)
 
-    const search = page.getByRole("textbox", { name: "Search products" })
+    const search = page.getByRole("combobox", { name: "Search products" })
     await expectMobileSafeFont(search)
     await search.tap()
     await search.fill("relay")
@@ -522,7 +522,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.goto(`${marketUrl}/products?q=relay`)
     await assertMobileViewport(page)
     await expectMobileSafeFont(
-      page.getByRole("textbox", { name: "Search products" })
+      page.getByRole("combobox", { name: "Search products" })
     )
 
     await page.setViewportSize({
@@ -532,7 +532,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.goto(`${marketUrl}/products?q=relay`)
     await assertMobileViewport(page)
     await expectMobileSafeFont(
-      page.getByRole("textbox", { name: "Search products" })
+      page.getByRole("combobox", { name: "Search products" })
     )
     await expectMobileTouchTarget(page.locator('button[title="Cart"]'))
   })

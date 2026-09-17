@@ -10,25 +10,32 @@ export interface CachedProfileRetentionResult {
   displacedPubkeys: Set<string>
 }
 
-function profileFrontierCreatedAt(row: CachedProfile): number | undefined {
-  return typeof row.eventCreatedAt === "number" &&
-    Number.isSafeInteger(row.eventCreatedAt) &&
-    row.eventCreatedAt >= 0
-    ? row.eventCreatedAt
+/** Kind-0 replacement frontier: the event timestamp and id behind a profile. */
+export interface ProfileFrontier {
+  createdAt?: number
+  eventId?: string
+}
+
+function frontierCreatedAt(frontier: ProfileFrontier): number | undefined {
+  return typeof frontier.createdAt === "number" &&
+    Number.isSafeInteger(frontier.createdAt) &&
+    frontier.createdAt >= 0
+    ? frontier.createdAt
     : undefined
 }
 
 /**
- * Compare cached kind-0 frontiers using NIP-01 replacement ordering.
- * A positive result means `candidate` wins; a negative result means `current`
- * wins. Known frontiers always dominate legacy projection-only rows.
+ * Compare two kind-0 frontiers using NIP-01 replacement ordering: the newer
+ * `created_at` wins and the lowest id wins a tie. A positive result means
+ * `candidate` wins; a negative result means `current` wins. Known frontiers
+ * always dominate frontiers without a timestamp.
  */
-export function compareCachedProfileFrontiers(
-  candidate: CachedProfile,
-  current: CachedProfile
+export function compareProfileFrontiers(
+  candidate: ProfileFrontier,
+  current: ProfileFrontier
 ): -1 | 0 | 1 {
-  const candidateCreatedAt = profileFrontierCreatedAt(candidate)
-  const currentCreatedAt = profileFrontierCreatedAt(current)
+  const candidateCreatedAt = frontierCreatedAt(candidate)
+  const currentCreatedAt = frontierCreatedAt(current)
 
   if (candidateCreatedAt === undefined && currentCreatedAt === undefined)
     return 0
@@ -43,6 +50,21 @@ export function compareCachedProfileFrontiers(
   if (!candidateId) return -1
   if (!currentId) return 1
   return candidateId < currentId ? 1 : -1
+}
+
+/**
+ * Compare cached kind-0 frontiers using NIP-01 replacement ordering.
+ * A positive result means `candidate` wins; a negative result means `current`
+ * wins. Known frontiers always dominate legacy projection-only rows.
+ */
+export function compareCachedProfileFrontiers(
+  candidate: CachedProfile,
+  current: CachedProfile
+): -1 | 0 | 1 {
+  return compareProfileFrontiers(
+    { createdAt: candidate.eventCreatedAt, eventId: candidate.eventId },
+    { createdAt: current.eventCreatedAt, eventId: current.eventId }
+  )
 }
 
 function uniqueProfileSourceRelayUrls(
@@ -120,9 +142,13 @@ function mergeSameCachedProfileFrontier(
   current: CachedProfile,
   candidate: CachedProfile
 ): CachedProfile {
+  const currentCreatedAt = frontierCreatedAt({
+    createdAt: current.eventCreatedAt,
+  })
   const sameKnownEvent =
-    profileFrontierCreatedAt(current) !== undefined &&
-    profileFrontierCreatedAt(current) === profileFrontierCreatedAt(candidate) &&
+    currentCreatedAt !== undefined &&
+    currentCreatedAt ===
+      frontierCreatedAt({ createdAt: candidate.eventCreatedAt }) &&
     !!current.eventId &&
     current.eventId === candidate.eventId
   const authoritativeRawContent = sameKnownEvent
