@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { readFileSync, writeFileSync } from "node:fs"
+import { resolve } from "node:path"
 
 import { smokeAreaTags, type SmokeArea } from "../../e2e/helpers/smoke-areas"
 import { safePlaywrightSmokeTitle } from "./playwright_smoke_reporter"
@@ -168,7 +169,7 @@ export function buildPlaywrightSmokeManifest(
       name: safePlaywrightSmokeTitle({
         file,
         line,
-        sourceFile: spec.file ?? "",
+        sourceFile: file === "unknown" ? "" : resolve(file),
         title: spec.title ?? "untitled test",
       }),
       tags: areas.map((area) => smokeAreaTags[area]),

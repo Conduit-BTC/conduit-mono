@@ -326,6 +326,34 @@ describe("Playwright smoke area validation", () => {
     ).toEqual(expected)
   })
 
+  it("preserves static titles when discovery reports a source basename", async () => {
+    const title =
+      "E2E-COM-01..06 buyer and merchant settle once across reload @commerce"
+    const source = normalizeLines(
+      await Bun.file("e2e/commerce.playwright.ts").text()
+    )
+    const line =
+      source
+        .split("\n")
+        .findIndex((candidate) => candidate.includes(`test("${title}"`)) + 1
+
+    expect(line).toBeGreaterThan(0)
+    expect(
+      buildPlaywrightSmokeManifest(
+        reportWithSpecs([
+          {
+            file: "commerce.playwright.ts",
+            line,
+            tags: ["commerce"],
+            title,
+          },
+        ]),
+        ["commerce"],
+        smokeEvidence
+      ).tests[0]?.name
+    ).toBe(title)
+  })
+
   it("rejects orphaned Playwright smoke tests", () => {
     expect(() =>
       validatePlaywrightSmokeAreas(
