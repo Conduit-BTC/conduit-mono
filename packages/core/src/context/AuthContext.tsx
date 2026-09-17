@@ -68,6 +68,8 @@ export interface AuthContextValue {
   restorePendingPubkey: string | null
   signer: NDKSigner | null
   authGeneration: number
+  /** Live authority check that remains current after a calling view unmounts. */
+  isAuthGenerationCurrent: (expectedGeneration: number) => boolean
   method: AuthMethod | null
   rememberedMethod: AuthMethod | null
   status: AuthStatus
@@ -515,6 +517,10 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   const connecting = useRef(false)
   const connected = useRef(false)
   const authEpoch = useRef(0)
+  const isAuthGenerationCurrent = useCallback(
+    (expectedGeneration: number) => authEpoch.current === expectedGeneration,
+    []
+  )
   const remoteSignerRecoveryRef = useRef<RemoteSignerRecoveryState | null>(
     null
   )
@@ -1558,6 +1564,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         restorePendingPubkey,
         signer,
         authGeneration,
+        isAuthGenerationCurrent,
         method,
         rememberedMethod,
         status,

@@ -344,6 +344,97 @@ describe("durable order delivery staging", () => {
     )
   })
 
+  for (const callbackOrder of ["accepted_first", "settled_first"] as const) {
+    it(`converges accepted and settled transactions when ${callbackOrder}`, async () => {
+      const secondRelay = "wss://backup-orders.conduit.market"
+      const store = memoryRepository()
+      await stageOrderRelayDelivery(
+        {
+          lifecycle: lifecycleInput(),
+          prepared: {
+            ...prepared,
+            relayPlan: [
+              prepared.relayPlan[0]!,
+              { relayUrl: secondRelay, source: "declared" },
+            ],
+          },
+          leaseOwner: "foreground",
+        },
+        { repository: store.repository, now: () => 100 }
+      )
+      const begun = await beginOrderRelayDeliveryAttempt(
+        {
+          orderId: "order-id",
+          buyerPubkey: BUYER,
+          leaseOwner: "foreground",
+          relayUrls: [RELAY, secondRelay],
+        },
+        { repository: store.repository, now: () => 110 }
+      )
+      const accepted = () =>
+        recordOrderRelayDeliveryOutcomes(
+          {
+            orderId: "order-id",
+            buyerPubkey: BUYER,
+            leaseOwner: "foreground",
+            wrapId: begun.wrapId,
+            outcomes: [
+              {
+                relayUrl: RELAY,
+                status: "acked",
+                generation: begun.generationsByRelay[RELAY]!,
+              },
+            ],
+            releaseLease: false,
+          },
+          { repository: store.repository, now: () => 120 }
+        )
+      const settled = () =>
+        recordOrderRelayDeliveryOutcomes(
+          {
+            orderId: "order-id",
+            buyerPubkey: BUYER,
+            leaseOwner: "foreground",
+            wrapId: begun.wrapId,
+            outcomes: [
+              {
+                relayUrl: RELAY,
+                status: "acked",
+                generation: begun.generationsByRelay[RELAY]!,
+              },
+              {
+                relayUrl: secondRelay,
+                status: "timed_out",
+                generation: begun.generationsByRelay[secondRelay]!,
+              },
+            ],
+            releaseLease: true,
+          },
+          { repository: store.repository, now: () => 130 }
+        )
+
+      if (callbackOrder === "accepted_first") {
+        await accepted()
+        expect(store.read()?.orderRelayDelivery?.deliveryLeaseOwner).toBe(
+          "foreground"
+        )
+        await settled()
+      } else {
+        await settled()
+        await accepted()
+      }
+
+      expect(store.read()?.orderDeliveryStatus).toBe("sent")
+      expect(store.read()?.orderRelayDelivery?.relayDelivery).toEqual([
+        expect.objectContaining({ relayUrl: RELAY, status: "acked" }),
+        expect.objectContaining({ relayUrl: secondRelay, status: "timed_out" }),
+      ])
+      expect(
+        store.read()?.orderRelayDelivery?.deliveryLeaseOwner
+      ).toBeUndefined()
+    })
+  }
+
   it("does not begin an attempt when the buyer changes during the durable claim", async () => {
     const store = memoryRepository()
     await stageOrderRelayDelivery(

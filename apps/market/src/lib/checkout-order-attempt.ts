@@ -65,6 +65,16 @@ export function requiresCheckoutOrderRecovery(input: {
   )
 }
 
+export function hasCheckoutPaymentProgress(input: {
+  paymentStatus: string
+  invoiceStatus: string
+}): boolean {
+  return !(
+    input.paymentStatus === "not_started" &&
+    input.invoiceStatus === "not_requested"
+  )
+}
+
 function getLocalStorage(): StorageLike | null {
   if (typeof window === "undefined") return null
   try {
