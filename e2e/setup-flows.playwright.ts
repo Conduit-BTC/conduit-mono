@@ -462,12 +462,40 @@ async function exerciseProfileEditAfterDisplayEnrichment(
     .first()
   await expect(editButton).toBeEnabled({ timeout: 30_000 })
   await editButton.click()
-  await expect(page.locator("#profile-display-name")).toHaveValue(
-    `Cached ${profileName}`
+  // Cached display enrichment must not become an edit baseline or be
+  // republished as though it belonged to the selected signed event.
+  await expect(page.locator("#profile-display-name")).toHaveValue("")
+  await expect(page.locator("#profile-picture")).toHaveValue("")
+  await expect(page.locator("#profile-name")).toHaveValue(
+    `current-${profileName}`
   )
   await expect(page.locator("#profile-about")).toHaveValue(
     `Current ${profileName} bio`
   )
+  await page.locator("#profile-about").fill(`Edited ${profileName} bio`)
+  await page.getByRole("button", { name: "Save changes", exact: true }).click()
+  await expect(
+    page.getByText("Profile signed and saved.", { exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect
+    .poll(async () => {
+      const profiles = await readTestRelayEvents({
+        authors: [pubkey],
+        kinds: [0],
+      })
+      const latest = profiles.sort((left, right) => {
+        if (left.created_at !== right.created_at) {
+          return right.created_at - left.created_at
+        }
+        return left.id.localeCompare(right.id)
+      })[0]
+      if (!latest || latest.created_at <= createdAt) return null
+      return JSON.parse(latest.content) as Record<string, unknown>
+    })
+    .toEqual({
+      name: `current-${profileName}`,
+      about: `Edited ${profileName} bio`,
+    })
 }
 
 async function exerciseProfileRepairAfterMalformedFrontier(
@@ -1890,17 +1918,10 @@ test("portable wallet restore keeps derivation advanced and device-only fields c
   ).toBeVisible()
 })
 
-test("market wallets remain available without a Nostr signer @market", async ({
+test("market wallet route remains available without a Nostr signer @market", async ({
   page,
 }) => {
-  await page.goto(marketUrl)
-
-  const walletsNavigation = page.getByRole("button", {
-    name: "Wallets",
-    exact: true,
-  })
-  await expect(walletsNavigation).toBeVisible()
-  await walletsNavigation.click()
+  await page.goto(`${marketUrl}/wallet`)
 
   await expect(page).toHaveURL(`${marketUrl}/wallet`)
   await expect(page).toHaveTitle("Wallets | Conduit Market")

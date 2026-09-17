@@ -7,10 +7,12 @@ import {
   MapPin,
   RefreshCw,
 } from "lucide-react"
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   buildMarketEventCatalogUrl,
+  normalizePubkey,
+  pubkeyToNpub,
   useAuth,
   useConduitSession,
   useProfile,
@@ -65,6 +67,7 @@ import {
   getEventCatalogProductAvailability,
   type EventCatalog,
 } from "../../lib/event-market-adapter"
+import { parseEventCatalogSearch } from "../../lib/event-catalog-search"
 import {
   getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
@@ -72,6 +75,7 @@ import {
 
 export const Route = createFileRoute("/events/$collectionRef")({
   component: EventCatalogPage,
+  validateSearch: parseEventCatalogSearch,
 })
 
 type CatalogStateCopy = {
@@ -425,6 +429,21 @@ function EventCatalogPage() {
   const shouldContinueAccountRead = () =>
     authGenerationRef.current === authGeneration
   const { collectionRef } = Route.useParams()
+  const search = Route.useSearch()
+  const navigate = useNavigate({ from: Route.fullPath })
+  const selectedMerchantPubkey = normalizePubkey(search.merchant) ?? ""
+  const updateMerchantFilter = (merchantPubkey: string) => {
+    const normalized = merchantPubkey ? normalizePubkey(merchantPubkey) : null
+    navigate({
+      search: (previous) => {
+        const next = { ...previous }
+        if (normalized) next.merchant = pubkeyToNpub(normalized)
+        else delete next.merchant
+        return next
+      },
+      replace: true,
+    })
+  }
   const shopperPricing = useShopperPricing()
   const session = useConduitSession()
   const [cartNotice, setCartNotice] = useState<string | null>(null)
@@ -462,9 +481,12 @@ function EventCatalogPage() {
   const merchantPubkeys = useMemo(
     () =>
       Array.from(
-        new Set(catalog?.products.map(({ product }) => product.pubkey) ?? [])
+        new Set([
+          ...(catalog?.products.map(({ product }) => product.pubkey) ?? []),
+          ...(selectedMerchantPubkey ? [selectedMerchantPubkey] : []),
+        ])
       ),
-    [catalog?.products]
+    [catalog?.products, selectedMerchantPubkey]
   )
   const merchantIdentities = useMerchantIdentities({
     accountPubkey,
@@ -474,6 +496,9 @@ function EventCatalogPage() {
     visibleMerchantPubkeys: merchantPubkeys,
     relayHintsByPubkey: {},
   })
+  const selectedMerchantName = selectedMerchantPubkey
+    ? merchantIdentities.getIdentity(selectedMerchantPubkey).displayName
+    : undefined
 
   const awaitingHeader =
     isChecking &&
@@ -611,10 +636,19 @@ function EventCatalogPage() {
             <ShareLinkButton
               url={buildMarketEventCatalogUrl(
                 window.location.origin,
-                catalog.canonicalNaddr
+                catalog.canonicalNaddr,
+                selectedMerchantPubkey
+                  ? { merchantPubkey: selectedMerchantPubkey }
+                  : undefined
               )}
-              shareTitle={calendar.title}
-              idleLabel="Share event"
+              shareTitle={
+                selectedMerchantName
+                  ? `${selectedMerchantName} at ${calendar.title}`
+                  : calendar.title
+              }
+              idleLabel={
+                selectedMerchantPubkey ? "Share this view" : "Share event"
+              }
               className="shrink-0"
             />
           ) : null}
@@ -710,7 +744,9 @@ function EventCatalogPage() {
         key={collection.coordinate}
         products={catalog.products}
         identities={merchantIdentities.identitiesByPubkey}
-        btcUsdRate={shopperPricing.quote}
+        merchant={selectedMerchantPubkey}
+        selectedMerchantName={selectedMerchantName}
+        onMerchantChange={updateMerchantFilter}
         renderProduct={(entry, index, onMerchantActivate) => (
           <EventCatalogProductCard
             entry={entry}
@@ -776,8 +812,9 @@ function EventCatalogPage() {
           </summary>
           <p className="mt-2 text-pretty">
             These products remain accepted for this event, but their details
-            cannot be loaded yet. They are not included in search, merchant
-            counts, or sorting. Checkout remains disabled for these items.
+            cannot be loaded yet. They are not included in search results,
+            merchant counts, or merchant groups. Checkout remains disabled for
+            these items.
           </p>
           <Button
             variant="outline"

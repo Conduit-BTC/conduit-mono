@@ -58,12 +58,47 @@ Anonymous reliability, performance, and public commerce page counters:
 - Error counts by category
 - Storefront pageview and browse-action counts by sanitized public store route
 
+### Verified Public-Zap Settlement Volume (optional, server-only)
+
+After the existing receipt-authority boundary positively verifies a public
+NIP-57 receipt for a Conduit Zap Out, the server may emit one
+`zapout_settled` event. Its only business property is the exact positive
+whole-satoshi amount proven equal across the authorized request, BOLT11
+invoice, and paid receipt.
+
+This is a narrow exception to the bucket-only amount rule for browser and
+operational telemetry. The event must:
+
+- use a shared static service identity with PostHog person-profile processing
+  disabled;
+- round its event timestamp to the UTC calendar day;
+- use a secret-key-derived opaque event UUID only to deduplicate the same
+  verified receipt;
+- prevent the raw receipt identifier and HMAC secret from leaving the server;
+- prevent PostHog from recording the requesting browser's IP address; and
+- omit buyer, merchant, signer, wallet, session, order, product, public key,
+  route, URL, comment, invoice, payment hash, preimage, receipt, relay,
+  connection, fee, and payment-rail data.
+
+Invalid, authority-unavailable, unpaid, private-checkout, and non-Zap-Out
+flows must not emit the event. Capture is best effort and must not control
+payment, proof delivery, order state, or retry behavior. Exact amounts can be
+distinctive and public zap receipts are public protocol data, so reporting is
+privacy-minimized rather than guaranteed unlinkable. Aggregate reporting must
+describe the resulting metric as observed verified public-Zap-Out volume and a
+possible undercount, not total platform sales, merchant revenue, or funds
+processed by Conduit.
+
 Allowed fields:
 
 - `event_name`, `app`, `page_url`, `page_path`, `network`, `status`,
   `latency_bucket`, `count`, `time_bucket`, `surface`, `action`, `step`,
   `mode`, `rail`, `method`, `event_family`, `count_bucket`,
   `result_count_bucket`, `amount_bucket`, `product_type`
+
+The server-only `zapout_settled` event additionally allows
+`settled_amount_sats` under the constraints above. No other event may use that
+field or send an exact payment amount.
 
 Disallowed fields:
 
@@ -132,6 +167,8 @@ Expose only aggregate KPIs:
 - Weekly order-event count
 - Product catalog growth
 - Checkout success rate (aggregate)
+- Observed verified public-Zap-Out settled volume in sats (aggregate,
+  best-effort lower bound)
 
 No per-user journey replay, no active-user identity drilldowns, and no joining
 public page performance data to signer, buyer, wallet, or session identity.

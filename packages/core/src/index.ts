@@ -274,6 +274,17 @@ export {
   type UseNip05VerificationResult,
 } from "./hooks/useNip05Verification"
 export {
+  useUnreadDirectMessageCount,
+  type UnreadDirectMessageCountState,
+} from "./hooks/useUnreadDirectMessageCount"
+export {
+  getProfileSearchQueryKey,
+  selectProfileSearchPhaseResult,
+  useProfileSearch,
+  type UseProfileSearchOptions,
+  type UseProfileSearchResult,
+} from "./hooks/useProfileSearch"
+export {
   getProfileQueryPerspectiveKey,
   getProfileSingletonQueryKey,
   useProfiles,

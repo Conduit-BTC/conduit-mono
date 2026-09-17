@@ -99,6 +99,7 @@ export async function payCheckoutInvoice(
     walletPaymentAttemptId?: string
     paymentTarget: CheckoutPaymentTarget
     approveFee?: WalletPaymentFeeApproval
+    beforeSend?: () => Promise<void>
     timeoutMs: number
     appId: ConduitAppId
     metadata?: Record<string, unknown>
@@ -131,6 +132,7 @@ export async function payCheckoutInvoice(
         appId: input.appId,
         metadata: input.metadata,
         approveFee: input.approveFee,
+        beforeSend: input.beforeSend,
       }
     )
     if (result.status === "paid") {
@@ -198,6 +200,7 @@ export async function payCheckoutInvoice(
     try {
       const result = await dependencies.weblnSendPayment({
         invoice: input.invoice,
+        beforeSend: input.beforeSend,
       })
 
       recordPaymentAttemptResult({
@@ -216,7 +219,11 @@ export async function payCheckoutInvoice(
     } catch (error) {
       const message = getErrorMessage(error, "Browser wallet payment failed")
       const phase = getWeblnPaymentFailurePhase(error)
-      if (phase === "unavailable" || phase === "enable") {
+      if (
+        phase === "unavailable" ||
+        phase === "enable" ||
+        phase === "admission"
+      ) {
         recordPaymentAttemptResult({
           amountSats,
           latencyMs: Date.now() - startedAt,

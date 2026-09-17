@@ -9,12 +9,17 @@ import {
 } from "../db"
 import {
   decodeLightningInvoicePaymentHash,
+  isValidLud16Address,
   normalizeLightningInvoice,
   validateLightningInvoiceForPayment,
 } from "./lightning"
 import { getEffectiveMerchantOrderStatus } from "./order-status"
 import { extractOrderSummary } from "./order-summary"
 import type { ParsedOrderMessage } from "./orders"
+import {
+  createRetainedSelectedProfileContext,
+  type SelectedProfileContext,
+} from "./profile-cache"
 
 export const GUEST_ORDER_LOCAL_RETENTION_MS = 24 * 60 * 60 * 1_000
 
@@ -142,7 +147,12 @@ export type OrderPaymentClaimInput = {
 }
 
 export type OrderPaymentClaimResult =
-  | { status: "claimed"; lifecycle: OrderLifecycle }
+  | {
+      status: "claimed"
+      lifecycle: OrderLifecycle
+      /** Exact transaction snapshot to restore after a definite pre-submit veto. */
+      preclaimLifecycle?: OrderLifecycle
+    }
   | { status: "missing"; lifecycle: null }
   | {
       status: "snapshot_mismatch" | "unsafe_state"
@@ -568,8 +578,114 @@ export async function claimOrderLifecyclePayment(
     const now = Date.now()
     const claimed = buildClaimedOrderLifecycle(lifecycle, input, now)
     await db.orderLifecycles.put(claimed)
-    return { status: "claimed", lifecycle: claimed }
+    return {
+      status: "claimed",
+      lifecycle: claimed,
+      preclaimLifecycle: lifecycle,
+    }
   })
+}
+
+export function getOrderPaymentAddressReplacementAdmission(
+  lifecycle: OrderLifecycle | undefined
+): "replaceable" | "missing" | "unsafe_state" {
+  if (!lifecycle) return "missing"
+  if (
+    lifecycle.orderDeliveryStatus !== "sent" ||
+    lifecycle.phase === "completed" ||
+    lifecycle.phase === "cancelled" ||
+    lifecycle.completedAt !== undefined ||
+    lifecycle.checkoutMode === "pay_later" ||
+    lifecycle.paymentStatus !== "failed" ||
+    lifecycle.invoiceStatus !== "failed" ||
+    lifecycle.proofDeliveryStatus !== "not_started" ||
+    lifecycle.zapReceiptStatus !== "not_applicable" ||
+    lifecycle.paymentClaimId ||
+    lifecycle.proofDeliveryClaimId ||
+    lifecycle.invoice ||
+    lifecycle.paymentHash ||
+    lifecycle.preimage ||
+    lifecycle.feeMsats !== undefined ||
+    lifecycle.zapReceiptId ||
+    lifecycle.invoiceExpiresAt !== undefined ||
+    lifecycle.zapReceiptObservationDeadline !== undefined
+  ) {
+    return "unsafe_state"
+  }
+  return "replaceable"
+}
+
+/**
+ * Replace a reviewed Lightning address and claim its first payment atomically.
+ * Only a definite failed preparation may change destinations. The old snapshot,
+ * its revision, and the buyer session must still match when the claim is saved.
+ */
+export async function claimOrderLifecycleUpdatedAddressPayment(
+  input: OrderPaymentClaimInput,
+  expectedUpdatedAt: number,
+  newMerchantLightningAddress: string,
+  shouldContinue?: () => boolean
+): Promise<OrderPaymentClaimResult> {
+  if (!input.paymentClaimId.trim()) {
+    throw new Error("Payment claim ID is required.")
+  }
+  const address = newMerchantLightningAddress.trim().toLowerCase()
+
+  return db.transaction(
+    "rw",
+    db.orderLifecycles,
+    db.paymentAttempts,
+    async () => {
+      const lifecycle = await db.orderLifecycles.get(input.orderId)
+      const admission = getOrderPaymentAddressReplacementAdmission(lifecycle)
+      if (!lifecycle || admission === "missing") {
+        return { status: "missing", lifecycle: null }
+      }
+      if (admission !== "replaceable") {
+        return { status: "unsafe_state", lifecycle }
+      }
+      if (
+        lifecycle.updatedAt !== expectedUpdatedAt ||
+        !paymentClaimMatchesLifecycle(lifecycle, input)
+      ) {
+        return { status: "snapshot_mismatch", lifecycle }
+      }
+      if (
+        !isValidLud16Address(address) ||
+        address === lifecycle.merchantLightningAddress?.trim().toLowerCase()
+      ) {
+        return { status: "unsafe_state", lifecycle }
+      }
+      // Attempt rows are created only after wallet success, a receipt, or a
+      // buyer payment report. Even an incomplete row must veto replacement.
+      const attempt = await db.paymentAttempts.get(input.orderId)
+      if (attempt) {
+        return { status: "unsafe_state", lifecycle }
+      }
+      const claimed = buildClaimedOrderLifecycle(
+        lifecycle,
+        input,
+        Math.max(Date.now(), lifecycle.updatedAt + 1),
+        {
+          merchantLightningAddress: address,
+          walletPaymentAttemptId:
+            input.paymentTarget.type === "wallet"
+              ? createWalletPaymentAttemptId()
+              : undefined,
+        }
+      )
+      // Check after all reads, immediately before the only persistent mutation.
+      if (shouldContinue && !shouldContinue()) {
+        return { status: "unsafe_state", lifecycle }
+      }
+      await db.orderLifecycles.put(claimed)
+      return {
+        status: "claimed",
+        lifecycle: claimed,
+        preclaimLifecycle: lifecycle,
+      }
+    }
+  )
 }
 
 export type OrderPaymentTargetReplacementAdmission =
@@ -668,7 +784,11 @@ export async function claimOrderLifecyclePrivateFallbackPayment(
           : undefined,
     })
     await db.orderLifecycles.put(claimed)
-    return { status: "claimed", lifecycle: claimed }
+    return {
+      status: "claimed",
+      lifecycle: claimed,
+      preclaimLifecycle: lifecycle,
+    }
   })
 }
 
@@ -789,6 +909,56 @@ export async function patchClaimedOrderLifecyclePayment(
     )
     await db.orderLifecycles.put(updated)
     return { status: "patched", lifecycle: updated }
+  })
+}
+
+export type ClaimedOrderLifecyclePaymentAuthorityFenceResult =
+  | {
+      status: "fenced"
+      lifecycle: OrderLifecycle
+      selectedProfileContext: SelectedProfileContext
+    }
+  | { status: "missing"; lifecycle: null }
+  | { status: "claim_mismatch"; lifecycle: OrderLifecycle }
+
+/**
+ * Renew one payment claim and select its merchant profile under one durable
+ * boundary. The final profile selection is synchronous after the transaction's
+ * writes, so a committed profile contradiction cannot land between profile
+ * admission and claim admission.
+ */
+export async function fenceClaimedOrderLifecyclePaymentAuthority(
+  orderId: string,
+  paymentClaimId: string,
+  merchantPubkey: string
+): Promise<ClaimedOrderLifecyclePaymentAuthorityFenceResult> {
+  return db.transaction("rw", db.orderLifecycles, db.profiles, async () => {
+    const lifecycle = await db.orderLifecycles.get(orderId)
+    if (!lifecycle) return { status: "missing", lifecycle: null }
+    if (
+      !paymentClaimId ||
+      !lifecycle.paymentClaimId ||
+      lifecycle.paymentClaimId !== paymentClaimId
+    ) {
+      return { status: "claim_mismatch", lifecycle }
+    }
+
+    const now = Date.now()
+    const updated = mergeOrderLifecyclePatch(
+      lifecycle,
+      { paymentClaimLeaseExpiresAt: now + ORDER_PAYMENT_CLAIM_LEASE_MS },
+      now
+    )
+    await db.orderLifecycles.put(updated)
+    const durableProfile = await db.profiles.get(merchantPubkey)
+    return {
+      status: "fenced",
+      lifecycle: updated,
+      selectedProfileContext: createRetainedSelectedProfileContext(
+        merchantPubkey,
+        durableProfile
+      ),
+    }
   })
 }
 

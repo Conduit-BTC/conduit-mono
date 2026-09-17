@@ -22,6 +22,8 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  getProfilePaymentAddress,
+  hasFreshProfilePaymentAddress,
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
@@ -172,7 +174,6 @@ import {
   getMerchantPaymentLud16,
   getMerchantPaymentProfileState,
   getMerchantPaymentReadiness,
-  hasPositiveMerchantPaymentAddressEvidence,
 } from "../lib/merchant-payment-readiness"
 import {
   clearCheckoutShippingSession,
@@ -1023,6 +1024,8 @@ function CheckoutPage() {
     signer,
     capabilities,
     authGeneration,
+    method: authMethod,
+    isAuthGenerationCurrent,
     status: authStatus,
   } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -1160,7 +1163,7 @@ function CheckoutPage() {
     authSignerReadiness === "pending" || restorePendingPubkey !== null
   const isGuestCheckout = !authPending && authSignerReadiness === "disconnected"
   const shouldContinueBuyerSession = signedBuyerPubkey
-    ? () => authGenerationRef.current === authGeneration
+    ? () => isAuthGenerationCurrent(authGeneration)
     : undefined
   const signerBlockedMessage =
     authSignerReadiness === "unavailable"
@@ -2392,6 +2395,7 @@ function CheckoutPage() {
         publishBuyerOrderMessage(rumor, ndk, selectedMerchant, buyerIdentity, {
           accountPubkey: signedBuyerPubkey,
           authenticatedPubkey: draftOwnerIdentity,
+          ...(authMethod ? { relayAuthMethod: authMethod } : {}),
           shouldContinue: shouldContinueBuyerSession,
         }),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
@@ -2730,14 +2734,15 @@ function CheckoutPage() {
         evidenceIncomplete: isCommerceReadIncomplete(
           refreshedProfileResult.meta
         ),
-        positiveAddressEvidence: hasPositiveMerchantPaymentAddressEvidence({
-          meta: refreshedProfileResult.meta,
-          lud16: refreshedProfileResult.data[selectedMerchant]?.lud16,
-        }),
+        positiveAddressEvidence: hasFreshProfilePaymentAddress(
+          refreshedProfileResult.profileContexts[selectedMerchant]
+        ),
       })
       const currentMerchantLud16 = getMerchantPaymentLud16({
         profileState: refreshedProfileState,
-        lud16: refreshedProfileResult.data[selectedMerchant]?.lud16,
+        lud16: getProfilePaymentAddress(
+          refreshedProfileResult.profileContexts[selectedMerchant]
+        ),
       })
       if (refreshedProfileState !== "available") {
         throw new Error(
@@ -2914,6 +2919,7 @@ function CheckoutPage() {
         {
           accountPubkey: signedBuyerPubkey,
           authenticatedPubkey: draftOwnerIdentity,
+          ...(authMethod ? { relayAuthMethod: authMethod } : {}),
           shouldContinue: shouldContinueBuyerSession,
         }
       )

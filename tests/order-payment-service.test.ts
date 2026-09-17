@@ -1,7 +1,13 @@
 import { describe, expect, it } from "bun:test"
-import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import { type NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
-import type { ParsedOrderMessage } from "@conduit/core"
+import {
+  claimOrderLifecyclePayment as claimOrderLifecyclePaymentProduction,
+  createSelectedProfileContext,
+  patchClaimedOrderLifecyclePayment as patchClaimedOrderLifecyclePaymentProduction,
+  weblnSendPayment,
+  type ParsedOrderMessage,
+} from "@conduit/core"
 
 import { db } from "../packages/core/src/db"
 import {
@@ -14,6 +20,7 @@ import {
   isOrderPaymentRunning,
   observeOrderPublicZapReceipt,
   runOrderPayment,
+  runOrderPaymentWithUpdatedAddress,
   runOrderPrivateFallback,
   signShopperCheckoutZapRequest,
   submitExternalPaymentProof,
@@ -22,7 +29,14 @@ import {
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
 import { buildZapRequestContent } from "../apps/market/src/lib/checkout-payment"
-import { AMBIGUOUS_PAYMENT_WARNING } from "../apps/market/src/lib/payment-rails"
+import {
+  AMBIGUOUS_PAYMENT_WARNING,
+  payCheckoutInvoice,
+} from "../apps/market/src/lib/payment-rails"
+import {
+  WalletPaymentCoordinator,
+  WalletProviderRegistry,
+} from "../apps/market/src/lib/wallet-payment-coordinator"
 import type { OrderLifecycle } from "../packages/core/src/db"
 import {
   bolt11PaymentHashField,
@@ -173,6 +187,24 @@ function paymentDependencies(
   const renewOrderLifecyclePaymentClaim: OrderPaymentDependencies["renewOrderLifecyclePaymentClaim"] =
     (orderId, paymentClaimId) =>
       patchClaimedOrderLifecyclePayment(orderId, paymentClaimId, {})
+  const loadSelectedProfileContext =
+    overrides.loadSelectedProfileContext ??
+    (async (pubkey: string) => createSelectedProfileContext({ pubkey }))
+  const fenceClaimedOrderLifecyclePaymentAuthority: OrderPaymentDependencies["fenceClaimedOrderLifecyclePaymentAuthority"] =
+    async (orderId, paymentClaimId, merchantPubkey) => {
+      const result = await patchClaimedOrderLifecyclePayment(
+        orderId,
+        paymentClaimId,
+        {}
+      )
+      if (result.status !== "patched") return result
+      return {
+        status: "fenced",
+        lifecycle: result.lifecycle,
+        selectedProfileContext:
+          await loadSelectedProfileContext(merchantPubkey),
+      }
+    }
   const claimOrderLifecyclePrivateFallbackPayment: OrderPaymentDependencies["claimOrderLifecyclePrivateFallbackPayment"] =
     async (input) => {
       const lifecycle = await db.orderLifecycles.get(input.orderId)
@@ -210,9 +242,16 @@ function paymentDependencies(
     }
 
   return {
+    getOrderLifecycle: async (orderId) => db.orderLifecycles.get(orderId),
+    // This harness replaces the claim implementation; composed workflow tests
+    // exercise real admission and the real transaction against stored snapshots.
+    getOrderLifecyclePaymentAdmission: () => "admissible",
+    checkOrderPaymentAddressUpdate: async () => ({ status: "unchanged" }),
+    loadSelectedProfileContext,
     claimOrderLifecyclePayment,
     claimOrderLifecyclePrivateFallbackPayment,
     patchClaimedOrderLifecyclePayment,
+    fenceClaimedOrderLifecyclePaymentAuthority,
     recordOrderPaymentPreparationFailure: async () => ({
       status: "missing",
       lifecycle: null,
@@ -369,6 +408,10 @@ describe("runOrderPayment", () => {
     const originalGet = table.get
     const originalPut = table.put
     let heartbeat: (() => void) | null = null
+    let reportHeartbeatStarted!: () => void
+    const heartbeatStarted = new Promise<void>((resolve) => {
+      reportHeartbeatStarted = resolve
+    })
     let cancelCalls = 0
     let renewCalls = 0
     let renewalErrors = 0
@@ -404,6 +447,7 @@ describe("runOrderPayment", () => {
           },
           schedulePaymentClaimHeartbeat: (handler) => {
             heartbeat = handler
+            reportHeartbeatStarted()
             return 77 as unknown as ReturnType<typeof setInterval>
           },
           cancelPaymentClaimHeartbeat: () => {
@@ -412,9 +456,7 @@ describe("runOrderPayment", () => {
         })
       )
 
-      for (let index = 0; index < 5 && !heartbeat; index += 1) {
-        await Promise.resolve()
-      }
+      await heartbeatStarted
       expect(heartbeat).not.toBeNull()
       heartbeat!()
       await Promise.resolve()
@@ -801,6 +843,7 @@ describe("runOrderPayment", () => {
         merchantLud16: "merchant@wallet.example",
       }),
       paymentDependencies({
+        getOrderLifecycle: async () => existing,
         claimOrderLifecyclePayment: async () => ({
           status: "snapshot_mismatch",
           lifecycle: existing,
@@ -928,6 +971,7 @@ describe("runOrderPayment", () => {
           merchantLud16: "merchant@wallet.example",
         }),
         paymentDependencies({
+          getOrderLifecycle: async () => existing,
           claimOrderLifecyclePayment: async () => ({
             status: "unsafe_state",
             lifecycle: existing,
@@ -1011,6 +1055,8 @@ describe("runOrderPayment", () => {
         },
       })
       const state = await runOrderPayment(context, dependencies)
+      expect(state.lifecycle?.invoice).toBe(invoice)
+      expect(state.lifecycle?.paymentClaimId).toBeUndefined()
       const retryState = await runOrderPayment(context, dependencies)
 
       expect(state.lifecycle?.invoiceStatus).toBe("failed")
@@ -1512,7 +1558,8 @@ describe("runOrderPayment", () => {
   it("keeps paid state retryable when account authority changes before proof delivery", async () => {
     const orderId = "proof-delivery-account-change"
     const invoice = privateInvoice()
-    const shouldContinue = () => false
+    let sessionCurrent = true
+    const shouldContinue = () => sessionCurrent
     let stored = lifecycle({
       orderId,
       checkoutMode: "private_checkout",
@@ -1550,12 +1597,15 @@ describe("runOrderPayment", () => {
             zapRelayUrls: [],
             shouldWaitForZapReceipt: false,
           }),
-          payCheckoutInvoice: async () => ({
-            status: "paid",
-            rail: "nwc",
-            preimage: "11".repeat(32),
-            paymentHash: "22".repeat(32),
-          }),
+          payCheckoutInvoice: async () => {
+            sessionCurrent = false
+            return {
+              status: "paid",
+              rail: "nwc",
+              preimage: "11".repeat(32),
+              paymentHash: "22".repeat(32),
+            }
+          },
           savePaymentAttempt: async () => {},
           updatePaymentAttempt: async () => {},
           publishBuyerOrderMessage: async (
@@ -2240,6 +2290,56 @@ describe("runOrderPayment", () => {
     }
   )
 
+  it("reports a newly observed public Zap Out receipt without affecting payment state", async () => {
+    const orderId = "observed-zapout-settlement"
+    const waiting = lifecycle({
+      orderId,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+      proofDeliveryStatus: "pending",
+      zapReceiptStatus: "waiting",
+      zapRequestId: "zap-request-id",
+      zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+      zapLnurl: "lnurl1test",
+      zapReceiptPubkey: "a".repeat(64),
+      zapReceiptRelayUrls: ["wss://relay.example"],
+      zapReceiptObservationDeadline: Date.now() + 60_000,
+    })
+    const observed = lifecycle({
+      ...waiting,
+      paymentStatus: "paid",
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
+    })
+    const receipt = {
+      id: "f".repeat(64),
+      rawEvent: () => ({ id: "f".repeat(64) }),
+    } as unknown as NDKEvent
+    const reported: unknown[] = []
+
+    await observeOrderPublicZapReceipt(orderId, undefined, {
+      getOrderLifecycle: async () => waiting,
+      waitForZapReceipt: async () => receipt,
+      recordObservedOrderPaymentReceipt: async () => ({
+        status: "recorded",
+        lifecycle: observed,
+        proofDeliveryClaimed: false,
+      }),
+      reportZapoutSettlement: async (value) => {
+        reported.push(value)
+      },
+    })
+
+    expect(reported).toEqual([receipt])
+    expect(observed).toMatchObject({
+      paymentStatus: "paid",
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
+    })
+  })
+
   it.each(["anon", "shopper"] as const)(
     "uses current durable truth after a %s receipt observer wait",
     async (publicZapSigner) => {
@@ -2325,7 +2425,7 @@ describe("runOrderPayment", () => {
     }
   )
 
-  it("releases the order in-flight lock when lifecycle patching fails", async () => {
+  it("releases the order in-flight lock when preclaim lifecycle loading fails", async () => {
     const ctx = basePaymentContext({
       orderId: "order-payment-lock-test-patch-failure",
     })
@@ -2339,9 +2439,8 @@ describe("runOrderPayment", () => {
     }) as typeof table.get
 
     try {
-      await expect(runOrderPayment(ctx, paymentDependencies())).rejects.toThrow(
-        "IndexedDB unavailable"
-      )
+      const result = await runOrderPayment(ctx, paymentDependencies())
+      expect(result.error).toBe("IndexedDB unavailable")
       expect(isOrderPaymentRunning(ctx.orderId)).toBe(false)
     } finally {
       table.get = originalGet
@@ -2393,4 +2492,683 @@ describe("runOrderPayment", () => {
       table.put = originalPut
     }
   })
+})
+
+describe("reviewed merchant payment address recovery", () => {
+  for (const checkoutMode of ["private_checkout", "external_wallet"] as const) {
+    for (const scenario of [
+      "success",
+      "profile_changed",
+      "order_changed",
+      "claim_lost",
+      "session_changed",
+      "session_during_invoice",
+    ] as const) {
+      it(`keeps the ${checkoutMode} recovery boundary safe: ${scenario}`, async () => {
+        const orderId = `updated-address-${checkoutMode}-${scenario}`
+        let sessionCurrent = true
+        let stored = lifecycle({
+          orderId,
+          merchantLightningAddress: "merchant@old-wallet.dev",
+          checkoutMode,
+          publicZapSigner: undefined,
+          invoice: undefined,
+          invoiceStatus: "failed",
+          paymentStatus: "failed",
+        })
+        const reviewed = {
+          orderId,
+          merchantPubkey: stored.merchantPubkey,
+          previousAddress: stored.merchantLightningAddress!,
+          newAddress: "merchant@new-wallet.dev",
+          expectedUpdatedAt: stored.updatedAt,
+        }
+        const context = basePaymentContext({
+          orderId,
+          authenticatedPubkey: "buyer",
+          accountPubkey: "buyer",
+          merchantLud16: reviewed.previousAddress,
+          zapMode: "private_checkout",
+          shouldContinue: () => sessionCurrent,
+        })
+        if (scenario === "order_changed")
+          stored = { ...stored, updatedAt: stored.updatedAt + 1 }
+        const table = db.orderLifecycles
+        const originalGet = table.get
+        const originalPut = table.put
+        table.get = (async () => stored) as typeof table.get
+        table.put = (async (next: OrderLifecycle) => {
+          stored = next
+          return next.orderId
+        }) as typeof table.put
+        const endpoints: string[] = []
+        let claims = 0
+        let railCalls = 0
+        let cleared = 0
+        const dependencies = paymentDependencies({
+          getOrderLifecycle: async () => stored,
+          checkOrderPaymentAddressUpdate: async () => {
+            if (scenario === "session_changed") sessionCurrent = false
+            return {
+              status: "updated",
+              update: {
+                ...reviewed,
+                newAddress:
+                  scenario === "profile_changed"
+                    ? "merchant@third-wallet.dev"
+                    : reviewed.newAddress,
+              },
+            }
+          },
+          rememberOrderPaymentClaim: () => true,
+          clearOrderPaymentClaim: () => {
+            cleared += 1
+          },
+          claimOrderLifecyclePayment: async () => {
+            throw new Error("must reuse the atomic recovery claim")
+          },
+          claimOrderLifecycleUpdatedAddressPayment: async (
+            input,
+            version,
+            address,
+            shouldContinue
+          ) => {
+            claims += 1
+            expect(input.merchantLightningAddress).toBe(
+              reviewed.previousAddress
+            )
+            expect(version).toBe(reviewed.expectedUpdatedAt)
+            expect(shouldContinue?.()).toBe(true)
+            if (scenario === "claim_lost")
+              return { status: "unsafe_state", lifecycle: stored }
+            stored = {
+              ...stored,
+              merchantLightningAddress: address,
+              paymentClaimId: input.paymentClaimId,
+              invoiceStatus: "requesting",
+              paymentStatus: "not_started",
+            }
+            return { status: "claimed", lifecycle: stored }
+          },
+          fetchLnurlPayMetadata: async (address) => {
+            endpoints.push(address)
+            return lnurlMetadata(false)
+          },
+          requestCheckoutLnurlInvoice: async (request) => {
+            expect(request.visibility).toBe("private_checkout")
+            expect(request.amountMsats).toBe(1_000)
+            if (scenario === "session_during_invoice") sessionCurrent = false
+            return {
+              invoice: privateInvoice(),
+              zapRelayUrls: [],
+              shouldWaitForZapReceipt: false,
+            }
+          },
+          payCheckoutInvoice: async (request) => {
+            railCalls += 1
+            expect(request.paymentTarget).toEqual(context.paymentTarget)
+            return {
+              status: "manual_required",
+              reason: "Use an external wallet.",
+            }
+          },
+        })
+        try {
+          if (scenario === "success" || scenario === "session_during_invoice") {
+            const state = await runOrderPaymentWithUpdatedAddress(
+              context,
+              reviewed,
+              dependencies
+            )
+            expect(endpoints).toEqual([reviewed.newAddress])
+            expect(claims).toBe(1)
+            expect(stored.orderId).toBe(orderId)
+            expect(stored.checkoutMode).toBe(checkoutMode)
+            expect(stored.totalMsats).toBe(1_000)
+            expect(stored.merchantLightningAddress).toBe(
+              scenario === "session_during_invoice"
+                ? reviewed.previousAddress
+                : reviewed.newAddress
+            )
+            expect(railCalls).toBe(scenario === "success" ? 1 : 0)
+            expect(state.lifecycle?.paymentStatus).toBe(
+              scenario === "success" ? "manual_required" : "failed"
+            )
+            expect(cleared).toBe(1)
+          } else {
+            await expect(
+              runOrderPaymentWithUpdatedAddress(context, reviewed, dependencies)
+            ).rejects.toThrow(
+              scenario === "profile_changed"
+                ? "could not be confirmed"
+                : scenario === "session_changed"
+                  ? "connected account changed"
+                  : scenario === "order_changed"
+                    ? "payment details changed"
+                    : "payment state changed"
+            )
+            expect(endpoints).toEqual([])
+            expect(railCalls).toBe(0)
+            expect(stored.merchantLightningAddress).toBe(
+              reviewed.previousAddress
+            )
+            expect(claims).toBe(scenario === "claim_lost" ? 1 : 0)
+            expect(cleared).toBe(scenario === "claim_lost" ? 1 : 0)
+          }
+          expect(isOrderPaymentRunning(orderId)).toBe(false)
+        } finally {
+          table.get = originalGet
+          table.put = originalPut
+        }
+      })
+    }
+  }
+})
+
+describe("executor payment authority", () => {
+  const address = "merchant@wallet.example"
+  const selectedContext = (removed = false) =>
+    createSelectedProfileContext({
+      pubkey: "merchant",
+      row: {
+        pubkey: "merchant",
+        cachedAt: Date.now(),
+        eventId: "d".repeat(64),
+        eventCreatedAt: 3,
+        rawContent: JSON.stringify(removed ? {} : { lud16: address }),
+      },
+    })
+
+  for (const admission of [
+    "missing",
+    "snapshot_mismatch",
+    "unsafe_state",
+  ] as const) {
+    it(`does not reread admission through a claim after observing ${admission}`, async () => {
+      const stored = lifecycle({ orderId: `executor-rejected-${admission}` })
+      let claims = 0
+      let profiles = 0
+      const result = await runOrderPayment(
+        basePaymentContext({ orderId: stored.orderId }),
+        paymentDependencies({
+          getOrderLifecycle: async () =>
+            admission === "missing" ? undefined : stored,
+          getOrderLifecyclePaymentAdmission: () => admission,
+          checkOrderPaymentAddressUpdate: async () => {
+            profiles += 1
+            return { status: "unchanged" }
+          },
+          claimOrderLifecyclePayment: async () => {
+            claims += 1
+            throw new Error("The original rejection must stop this attempt")
+          },
+        })
+      )
+      expect(result.running).toBe(false)
+      expect(result.error).toContain(
+        admission === "missing"
+          ? "unavailable"
+          : admission === "snapshot_mismatch"
+            ? "no longer match"
+            : "active or completed"
+      )
+      expect(claims).toBe(0)
+      expect(profiles).toBe(0)
+      expect(isOrderPaymentRunning(stored.orderId)).toBe(false)
+    })
+  }
+
+  for (const mode of ["private_checkout", "anonymous_public_zap"] as const) {
+    for (const status of [
+      "current_address_unusable",
+      "current_address_changed",
+    ] as const) {
+      it(`preserves the ${mode} retained invoice when preclaim authority is ${status}`, async () => {
+        const stored = lifecycle({
+          orderId: `executor-preclaim-${mode}-${status}`,
+          checkoutMode: mode,
+          publicZapSigner: mode === "anonymous_public_zap" ? "anon" : undefined,
+          merchantLightningAddress: address,
+          invoiceStatus: "failed",
+          paymentStatus: "failed",
+          invoice: privateInvoice(),
+        })
+        const before = structuredClone(stored)
+        let claims = 0
+        let providers = 0
+        let cleared = 0
+        const rejectClaim = async () => {
+          claims += 1
+          throw new Error("Admission must precede the claim")
+        }
+        const dependencies = paymentDependencies({
+          getOrderLifecycle: async () => stored,
+          checkOrderPaymentAddressUpdate: async () => ({ status }),
+          claimOrderLifecyclePayment: rejectClaim,
+          claimOrderLifecyclePrivateFallbackPayment: rejectClaim,
+          fetchLnurlPayMetadata: async () => {
+            providers += 1
+            throw new Error("Blocked authority must not reach the provider")
+          },
+          clearOrderPaymentClaim: () => {
+            cleared += 1
+            return true
+          },
+        })
+        const context = basePaymentContext({
+          orderId: stored.orderId,
+          merchantLud16: address,
+          zapMode: mode,
+        })
+        const result = await (mode === "anonymous_public_zap"
+          ? runOrderPrivateFallback(context, dependencies)
+          : runOrderPayment(context, dependencies))
+        expect(result.error).toContain(
+          status === "current_address_unusable"
+            ? "usable Lightning address"
+            : "payment address changed"
+        )
+        expect(stored).toEqual(before)
+        expect(claims).toBe(0)
+        expect(providers).toBe(0)
+        expect(cleared).toBe(1)
+        expect(isOrderPaymentRunning(stored.orderId)).toBe(false)
+      })
+    }
+  }
+
+  for (const boundary of ["metadata", "invoice", "fee"] as const) {
+    const changes =
+      boundary === "fee"
+        ? (["profile", "session", "expiry"] as const)
+        : (["profile", "session"] as const)
+    for (const change of changes) {
+      it(`stops payment when ${change} changes during awaited ${boundary}`, async () => {
+        const orderId = `executor-${boundary}-${change}`
+        let stored = lifecycle({
+          orderId,
+          checkoutMode: "private_checkout",
+          publicZapSigner: undefined,
+          merchantLightningAddress: address,
+          invoice: undefined,
+          invoiceStatus: "not_requested",
+          paymentStatus: "not_started",
+        })
+        let removed = false
+        let sessionCurrent = true
+        const originalNow = Date.now
+        const now = Date.now()
+        const changeAuthority = () => {
+          if (change === "profile") removed = true
+          else if (change === "session") sessionCurrent = false
+          else Date.now = () => now + 3_601_000
+        }
+        const table = db.orderLifecycles
+        const originalGet = table.get
+        const originalPut = table.put
+        table.get = (async () => stored) as typeof table.get
+        table.put = (async (next: OrderLifecycle) => {
+          stored = next
+          return next.orderId
+        }) as typeof table.put
+        let invoiceCalls = 0
+        let walletCalls = 0
+        let sends = 0
+        let cleared = 0
+        try {
+          const result = await runOrderPayment(
+            basePaymentContext({
+              orderId,
+              merchantLud16: address,
+              zapMode: "private_checkout",
+              shouldContinue: () => sessionCurrent,
+              approveFee: async () => {
+                await Promise.resolve()
+                if (boundary === "fee") changeAuthority()
+                return true
+              },
+            }),
+            paymentDependencies({
+              loadSelectedProfileContext: async () => selectedContext(removed),
+              fetchLnurlPayMetadata: async () => {
+                await Promise.resolve()
+                if (boundary === "metadata") changeAuthority()
+                return lnurlMetadata(false)
+              },
+              requestCheckoutLnurlInvoice: async () => {
+                invoiceCalls += 1
+                await Promise.resolve()
+                if (boundary === "invoice") changeAuthority()
+                return {
+                  invoice: privateInvoice(),
+                  zapRelayUrls: [],
+                  shouldWaitForZapReceipt: false,
+                }
+              },
+              payCheckoutInvoice: async (request) => {
+                walletCalls += 1
+                await request.approveFee!({
+                  amountSats: 1,
+                  feeSats: 1,
+                  totalSats: 2,
+                })
+                sends += 1
+                return {
+                  status: "manual_required",
+                  reason: "Synthetic wallet must never send",
+                }
+              },
+              clearOrderPaymentClaim: () => {
+                cleared += 1
+                return true
+              },
+            })
+          )
+          expect(result.error).toContain(
+            change === "profile"
+              ? "usable Lightning address"
+              : change === "session"
+                ? "connected account changed"
+                : "expired"
+          )
+          expect(invoiceCalls).toBe(boundary === "metadata" ? 0 : 1)
+          expect(walletCalls).toBe(boundary === "fee" ? 1 : 0)
+          expect(sends).toBe(0)
+          expect(stored.paymentClaimId).toBeUndefined()
+          expect(stored.paymentStatus).toBe("not_started")
+          expect(stored.invoiceStatus).toBe("not_requested")
+          expect(stored.invoice).toBeUndefined()
+          expect(cleared).toBe(1)
+          expect(isOrderPaymentRunning(orderId)).toBe(false)
+        } finally {
+          Date.now = originalNow
+          table.get = originalGet
+          table.put = originalPut
+        }
+      })
+    }
+  }
+
+  it("stops when the stable authority fence observes a competing durable claim", async () => {
+    const orderId = "executor-profile-read-claim-race"
+    let stored = lifecycle({
+      orderId,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      merchantLightningAddress: address,
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+    })
+    const table = db.orderLifecycles
+    const originalGet = table.get
+    const originalPut = table.put
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+    let providers = 0
+    try {
+      const result = await runOrderPayment(
+        basePaymentContext({
+          orderId,
+          merchantLud16: address,
+          zapMode: "private_checkout",
+        }),
+        paymentDependencies({
+          fenceClaimedOrderLifecyclePaymentAuthority: async () => {
+            stored = { ...stored, paymentClaimId: "competing-owner" }
+            return { status: "claim_mismatch", lifecycle: stored }
+          },
+          fetchLnurlPayMetadata: async () => {
+            providers += 1
+            return lnurlMetadata()
+          },
+        })
+      )
+      expect(providers).toBe(0)
+      expect(result.lifecycle?.paymentClaimId).toBe("competing-owner")
+      expect(isOrderPaymentRunning(orderId)).toBe(false)
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+    }
+  })
+
+  for (const rail of [
+    {
+      name: "WebLN",
+      paymentTarget: { type: "webln" as const },
+    },
+    {
+      name: "NWC",
+      paymentTarget: {
+        type: "wallet" as const,
+        walletId: "nwc-wallet",
+        providerId: "nwc" as const,
+      },
+    },
+    {
+      name: "Spark",
+      paymentTarget: {
+        type: "wallet" as const,
+        walletId: "spark-wallet",
+        providerId: "spark" as const,
+      },
+    },
+  ]) {
+    it(`blocks ${rail.name} and restores the retained invoice when authority changes during the final fence`, async () => {
+      const orderId = `executor-final-fence-${rail.name}`
+      const retainedInvoice = privateInvoice("lnbc10n", 6)
+      const replacementInvoice = privateInvoice("lnbc10n", 7)
+      const retainedWalletPaymentAttemptId = "legacy-retained-attempt"
+      let stored = lifecycle({
+        orderId,
+        checkoutMode: "private_checkout",
+        publicZapSigner: undefined,
+        merchantLightningAddress: address,
+        paymentTarget: rail.paymentTarget,
+        invoice: retainedInvoice,
+        invoiceStatus: "failed",
+        paymentStatus: "failed",
+        proofDeliveryStatus: "retry_needed",
+        zapReceiptStatus: "timed_out",
+        walletPaymentAttemptId: retainedWalletPaymentAttemptId,
+        paymentHash: "retained-payment-hash",
+        preimage: "retained-preimage",
+        feeMsats: 21,
+        zapRequestId: "retained-zap-request",
+        zapRequestCreatedAt: 1_700_000_000,
+        zapReceiptId: "retained-zap-receipt",
+        zapReceiptRelayUrls: ["wss://retained.example"],
+        zapLnurl: "lnurl1retained",
+        zapReceiptPubkey: "f".repeat(64),
+        invoiceExpiresAt: 1_900_000_000_000,
+        zapReceiptObservationDeadline: 1_900_000_060_000,
+        lastError: "Retained payment failure",
+        deliveryNotice: "Retained delivery notice",
+      })
+      const before = structuredClone(stored)
+      let removed = false
+      let sends = 0
+      let railEntries = 0
+      let claimedWalletPaymentAttemptId: string | undefined
+      let signalFinalFence!: () => void
+      let releaseFinalFence!: () => void
+      const finalFenceStarted = new Promise<void>((resolve) => {
+        signalFinalFence = resolve
+      })
+      const finalFenceGate = new Promise<void>((resolve) => {
+        releaseFinalFence = resolve
+      })
+      const walletPaymentCoordinator = new WalletPaymentCoordinator(
+        new WalletProviderRegistry([
+          {
+            providerId: "nwc",
+            payInvoice: async () => {
+              sends += 1
+              return { status: "paid", preimage: "nwc-preimage" }
+            },
+          },
+          {
+            providerId: "spark",
+            payInvoice: async () => {
+              sends += 1
+              return { status: "paid", preimage: "spark-preimage" }
+            },
+          },
+        ]),
+        {
+          isTargetEligible: async () => {
+            railEntries += 1
+            signalFinalFence()
+            await finalFenceGate
+            return true
+          },
+        }
+      )
+      const originalWindow = Object.getOwnPropertyDescriptor(
+        globalThis,
+        "window"
+      )
+      if (rail.paymentTarget.type === "webln") {
+        Object.defineProperty(globalThis, "window", {
+          configurable: true,
+          value: {
+            webln: {
+              enable: async () => {
+                railEntries += 1
+                signalFinalFence()
+                await finalFenceGate
+              },
+              sendPayment: async () => {
+                sends += 1
+                return { preimage: "webln-preimage" }
+              },
+            },
+          },
+        })
+      }
+
+      const dependencies = paymentDependencies({
+        getOrderLifecycle: async () => stored,
+        claimOrderLifecyclePayment: claimOrderLifecyclePaymentProduction,
+        patchClaimedOrderLifecyclePayment:
+          patchClaimedOrderLifecyclePaymentProduction,
+        fenceClaimedOrderLifecyclePaymentAuthority: async (
+          _fenceOrderId,
+          paymentClaimId,
+          _merchantPubkey
+        ) => {
+          if (stored.paymentClaimId !== paymentClaimId) {
+            return { status: "claim_mismatch", lifecycle: stored }
+          }
+          claimedWalletPaymentAttemptId = stored.walletPaymentAttemptId
+          return {
+            status: "fenced",
+            lifecycle: stored,
+            selectedProfileContext: selectedContext(removed),
+          }
+        },
+        fetchLnurlPayMetadata: async () => lnurlMetadata(false),
+        requestCheckoutLnurlInvoice: async () => ({
+          invoice: replacementInvoice,
+          zapRelayUrls: [],
+          shouldWaitForZapReceipt: false,
+        }),
+        payCheckoutInvoice: (request) =>
+          payCheckoutInvoice(request, {
+            walletPaymentCoordinator,
+            hasWebLN: () => true,
+            weblnSendPayment,
+            recordPaymentAttemptResult: () => undefined,
+          }),
+      })
+      const table = db.orderLifecycles as typeof db.orderLifecycles & {
+        get: typeof db.orderLifecycles.get
+        put: typeof db.orderLifecycles.put
+      }
+      const originalGet = table.get
+      const originalPut = table.put
+      const restoreTransaction = mockImmediateOrderLifecycleTransaction()
+      table.get = (async () => stored) as typeof table.get
+      table.put = (async (next: OrderLifecycle) => {
+        stored = next
+        return next.orderId
+      }) as typeof table.put
+
+      try {
+        const payment = runOrderPayment(
+          basePaymentContext({
+            orderId,
+            merchantLud16: address,
+            zapMode: "private_checkout",
+            paymentTarget: rail.paymentTarget,
+          }),
+          dependencies
+        )
+        await finalFenceStarted
+        removed = true
+        releaseFinalFence()
+        const result = await payment
+
+        expect(railEntries).toBe(1)
+        expect(sends).toBe(0)
+        expect(result.error).toContain("usable Lightning address")
+        if (rail.paymentTarget.type === "wallet") {
+          expect(claimedWalletPaymentAttemptId).toMatch(/^[0-9a-f-]{36}$/i)
+          expect(claimedWalletPaymentAttemptId).not.toBe(
+            retainedWalletPaymentAttemptId
+          )
+        } else {
+          expect(claimedWalletPaymentAttemptId).toBeUndefined()
+        }
+        expect(stored).toMatchObject({
+          merchantLightningAddress: before.merchantLightningAddress,
+          checkoutMode: before.checkoutMode,
+          publicZapSigner: before.publicZapSigner,
+          publicZapFallback: before.publicZapFallback,
+          zapContent: before.zapContent,
+          walletPaymentAttemptId: before.walletPaymentAttemptId,
+          invoiceStatus: before.invoiceStatus,
+          paymentStatus: before.paymentStatus,
+          proofDeliveryStatus: before.proofDeliveryStatus,
+          zapReceiptStatus: before.zapReceiptStatus,
+          invoice: before.invoice,
+          paymentHash: before.paymentHash,
+          preimage: before.preimage,
+          feeMsats: before.feeMsats,
+          zapRequestId: before.zapRequestId,
+          zapRequestCreatedAt: before.zapRequestCreatedAt,
+          zapReceiptId: before.zapReceiptId,
+          zapReceiptRelayUrls: before.zapReceiptRelayUrls,
+          zapLnurl: before.zapLnurl,
+          zapReceiptPubkey: before.zapReceiptPubkey,
+          invoiceExpiresAt: before.invoiceExpiresAt,
+          zapReceiptObservationDeadline: before.zapReceiptObservationDeadline,
+          phase: before.phase,
+          lastError: before.lastError,
+          deliveryNotice: before.deliveryNotice,
+          completedAt: before.completedAt,
+          paymentClaimId: undefined,
+        })
+        expect(stored.paymentClaimedAt).toBeUndefined()
+        expect(stored.paymentClaimLeaseExpiresAt).toBeUndefined()
+        expect(result.lifecycle?.invoice).toBe(retainedInvoice)
+        expect(isOrderPaymentRunning(orderId)).toBe(false)
+      } finally {
+        table.get = originalGet
+        table.put = originalPut
+        restoreTransaction()
+        if (rail.paymentTarget.type === "webln") {
+          if (originalWindow) {
+            Object.defineProperty(globalThis, "window", originalWindow)
+          } else {
+            delete (globalThis as { window?: unknown }).window
+          }
+        }
+      }
+    })
+  }
 })

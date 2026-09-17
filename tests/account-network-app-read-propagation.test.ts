@@ -60,8 +60,19 @@ describe("app account-network read propagation", () => {
       orders.match(/row\.merchantPubkey,\s+authenticatedPubkey/g)?.length ?? 0
     ).toBeGreaterThanOrEqual(2)
     expect(
-      orders.match(/authGenerationRef\.current === authGeneration/g)?.length
-    ).toBeGreaterThanOrEqual(6)
+      orders.match(
+        /authGenerationRef\.current === authGeneration|isAuthGenerationCurrent\(authGeneration\)/g
+      )?.length
+    ).toBeGreaterThanOrEqual(5)
+    expect(orders).toMatch(
+      /const shouldContinueBuyerSession = guestIdentity\s+\? undefined\s+: \(\) => isAuthGenerationCurrent\(authGeneration\)/
+    )
+    expect(checkout).toMatch(
+      /const shouldContinueBuyerSession = signedBuyerPubkey\s+\? \(\) => isAuthGenerationCurrent\(authGeneration\)/
+    )
+    expect(orders).toContain(
+      "async function continuePrivateFallback(): Promise<void> {\n    await verifyRetryFreshness()"
+    )
   })
 
   it("threads account-only exclusions through exact products and cart suggestions", async () => {
@@ -328,12 +339,12 @@ describe("app account-network read propagation", () => {
       source("apps/market/src/routes/checkout.tsx"),
     ])
 
-    expect(profiles).toContain("shouldContinue: opts?.shouldContinue")
+    expect(profiles).toContain("getProfiles({ ...opts, pubkeys: [key] })")
     expect(profiles).toContain("shouldContinue: options.shouldContinue")
     expect(profiles).toContain("authenticatedPubkey,")
     expect(updateHook).toContain("authorityRef.current.authenticatedPubkey")
     expect(updateHook).toContain("authorityRef.current.authGeneration")
-    expect(updateHook).toContain("publishProfile(profile, appId, {")
+    expect(updateHook).toContain("publishProfileContext(profile, appId, {")
     for (const caller of [marketProfile, merchantProfile, merchantPayments]) {
       expect(caller).toContain("authenticatedPubkey,")
       expect(caller).toContain("authGeneration,")

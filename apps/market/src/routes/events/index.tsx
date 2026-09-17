@@ -165,6 +165,17 @@ function EventsTimelinePage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-7">
+      <MarketBrowseNavigation
+        active="events"
+        source={discovery.effectiveSource}
+        connected={connected}
+        onSelectSource={(source) =>
+          updateSearch({
+            source: source === "combined" ? undefined : source,
+          })
+        }
+      />
+
       <header className="space-y-3">
         <div className="flex items-center gap-2 text-sm font-medium text-secondary-400">
           <CalendarDays className="h-4 w-4" aria-hidden="true" />
@@ -181,17 +192,6 @@ function EventsTimelinePage() {
           </p>
         </div>
       </header>
-
-      <MarketBrowseNavigation
-        active="events"
-        source={discovery.effectiveSource}
-        connected={connected}
-        onSelectSource={(source) =>
-          updateSearch({
-            source: source === "combined" ? undefined : source,
-          })
-        }
-      />
 
       <div
         role="group"

@@ -1,4 +1,6 @@
 import {
+  getProfilePaymentAddress,
+  loadSelectedProfileContext,
   canMockInvoice,
   db,
   fetchLnurlInvoice,
@@ -579,31 +581,14 @@ export function createMerchantInvoiceModule(
   }
 }
 
-export function getAuthoritativeMerchantProfileLud16(profile: {
-  rawContent?: unknown
-}): string | null {
-  if (typeof profile.rawContent !== "string") return null
-  try {
-    const raw = JSON.parse(profile.rawContent) as unknown
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
-    return normalizeLud16(
-      typeof (raw as Record<string, unknown>).lud16 === "string"
-        ? ((raw as Record<string, unknown>).lud16 as string)
-        : null
-    )
-  } catch {
-    return null
-  }
-}
-
 async function getStoredMerchantProfileLud16(
   merchantPubkey: string
 ): Promise<string | null> {
   const merchant = normalizePubkey(merchantPubkey)
   if (!merchant) return null
-  const profile = await db.profiles.get(merchant)
-  if (!profile) return null
-  return getAuthoritativeMerchantProfileLud16(profile)
+  return (
+    getProfilePaymentAddress(await loadSelectedProfileContext(merchant)) ?? null
+  )
 }
 
 export function createDefaultMerchantInvoiceModule(
