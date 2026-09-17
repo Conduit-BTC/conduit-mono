@@ -1755,18 +1755,12 @@ async function acceptMerchantProduct(
   })
   await expect(boothHeading).toBeVisible()
   const boothSection = boothHeading.locator("xpath=ancestor::section")
-  const boothDetails = boothSection.locator("details")
-  const boothCount = await boothDetails.count()
-  expect(boothCount).toBeGreaterThan(0)
-  for (let index = 0; index < boothCount; index += 1) {
-    const details = boothDetails.nth(index)
-    if (!(await details.getAttribute("open"))) {
-      await details.locator("summary").click()
-    }
-  }
   const boothLink = boothSection.locator(`a[href="${boothUrl.toString()}"]`)
   await expect(boothLink).toHaveCount(1)
   const selectedBoothDetails = boothLink.locator("xpath=ancestor::details")
+  if (!(await selectedBoothDetails.getAttribute("open"))) {
+    await selectedBoothDetails.locator("summary").click()
+  }
   await expect(boothLink).toBeVisible()
   await expect(
     selectedBoothDetails.getByRole("img", { name: /event catalog QR code$/ })
