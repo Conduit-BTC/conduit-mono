@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import { type NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 import type { ParsedOrderMessage } from "@conduit/core"
 
@@ -2239,6 +2239,56 @@ describe("runOrderPayment", () => {
       ).toBe(false)
     }
   )
+
+  it("reports a newly observed public Zap Out receipt without affecting payment state", async () => {
+    const orderId = "observed-zapout-settlement"
+    const waiting = lifecycle({
+      orderId,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+      proofDeliveryStatus: "pending",
+      zapReceiptStatus: "waiting",
+      zapRequestId: "zap-request-id",
+      zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+      zapLnurl: "lnurl1test",
+      zapReceiptPubkey: "a".repeat(64),
+      zapReceiptRelayUrls: ["wss://relay.example"],
+      zapReceiptObservationDeadline: Date.now() + 60_000,
+    })
+    const observed = lifecycle({
+      ...waiting,
+      paymentStatus: "paid",
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
+    })
+    const receipt = {
+      id: "f".repeat(64),
+      rawEvent: () => ({ id: "f".repeat(64) }),
+    } as unknown as NDKEvent
+    const reported: unknown[] = []
+
+    await observeOrderPublicZapReceipt(orderId, undefined, {
+      getOrderLifecycle: async () => waiting,
+      waitForZapReceipt: async () => receipt,
+      recordObservedOrderPaymentReceipt: async () => ({
+        status: "recorded",
+        lifecycle: observed,
+        proofDeliveryClaimed: false,
+      }),
+      reportZapoutSettlement: async (value) => {
+        reported.push(value)
+      },
+    })
+
+    expect(reported).toEqual([receipt])
+    expect(observed).toMatchObject({
+      paymentStatus: "paid",
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
+    })
+  })
 
   it.each(["anon", "shopper"] as const)(
     "uses current durable truth after a %s receipt observer wait",
