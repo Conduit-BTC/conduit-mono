@@ -226,6 +226,56 @@ describe("checkout completion navigation contracts", () => {
     )
   })
 
+  it("uses durable first-ACK completion without the former checkout delay floor", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const orderPublish = await Bun.file(
+      "apps/market/src/lib/order-publish.ts"
+    ).text()
+
+    expect(checkoutRoute).not.toContain(
+      "new Promise((resolve) => window.setTimeout(resolve, 900))"
+    )
+    expect(orderPublish).toContain('recipientDeliveryBoundary: "accepted"')
+    expect(orderPublish).toContain("onRecipientPublishAccepted:")
+    expect(orderPublish).toContain("ackOnly: true, releaseLease: false")
+    expect(orderPublish).toContain("ackOnly: false,")
+    expect(orderPublish).toContain("releaseLease: true")
+    expect(orderPublish).toContain("pending.has(relayUrl)")
+    expect(checkoutRoute).toContain("delivery.startPostAcceptanceWork ?? null")
+    expect(checkoutRoute).toContain(".finally(() => {")
+    expect(checkoutRoute).toContain("isAuthGenerationCurrent(authGeneration)")
+  })
+
+  it("preserves exact-order recovery on ambiguous reads and resumes direct payment without republishing", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+
+    expect(checkoutRoute.match(/stagedOrderReadFailed = true/g)).toHaveLength(2)
+    expect(
+      checkoutRoute.match(/shouldPreserveCheckoutOrderAttempt\(e\)/g)
+    ).toHaveLength(2)
+    expect(checkoutRoute).toContain("!preserveExactOrderAttempt &&")
+    expect(checkoutRoute).toContain(
+      "The staged order remains fenced for exact recovery; do not create another order."
+    )
+    expect(ordersRoute).toContain("const showContinueAcceptedCheckout =")
+    expect(ordersRoute).toContain(
+      'row.lifecycle.paymentStatus === "not_started"'
+    )
+    expect(ordersRoute).toContain(
+      'row.lifecycle.invoiceStatus === "not_requested"'
+    )
+    expect(ordersRoute).toContain("await retryPayment()")
+    expect(ordersRoute).toContain("await finishAcceptedOrderRecovery(current)")
+    expect(ordersRoute).toContain("continuing will not send")
+  })
+
   it("preflights and snapshots the authenticated signer before checkout work", async () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"

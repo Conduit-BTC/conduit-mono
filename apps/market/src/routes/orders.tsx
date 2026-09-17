@@ -19,6 +19,7 @@ import {
   formatNpub,
   formatPubkey,
   getNdk,
+  getOrderLifecycle,
   getProductImageCandidates,
   getOrderPublicZapSigner,
   getWalletDisplayLabels,
@@ -1047,6 +1048,34 @@ function OrderDetail({
     })
   }
 
+  async function continueAcceptedCheckoutPayment(): Promise<void> {
+    const lifecycle = row.lifecycle
+    if (
+      !lifecycle ||
+      lifecycle.orderDeliveryStatus !== "sent" ||
+      lifecycle.checkoutMode === "pay_later" ||
+      lifecycle.paymentStatus !== "not_started" ||
+      lifecycle.invoiceStatus !== "not_requested"
+    ) {
+      throw new Error("This checkout no longer needs pre-payment recovery.")
+    }
+
+    await retryPayment()
+    const current = await getOrderLifecycle(lifecycle.orderId)
+    if (!current) {
+      throw new Error("The saved checkout state could not be reloaded.")
+    }
+    if (
+      current.paymentStatus === "not_started" &&
+      current.invoiceStatus === "not_requested"
+    ) {
+      throw new Error(
+        "Payment did not start. This order remains recoverable; do not submit another order."
+      )
+    }
+    await finishAcceptedOrderRecovery(current)
+  }
+
   async function continuePrivateFallback(): Promise<void> {
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
@@ -1200,9 +1229,19 @@ function OrderDetail({
   const showRetryOrderDelivery =
     row.lifecycle?.orderDeliveryStatus === "pending" &&
     !!row.lifecycle.orderRelayDelivery
+  const showContinueAcceptedCheckout =
+    !zeroCostPickupOrder &&
+    row.lifecycle?.orderDeliveryStatus === "sent" &&
+    row.lifecycle.checkoutRecoveryPending === true &&
+    row.lifecycle.checkoutMode !== "pay_later" &&
+    row.lifecycle.paymentStatus === "not_started" &&
+    row.lifecycle.invoiceStatus === "not_requested"
   const showFinishAcceptedOrderRecovery =
     row.lifecycle?.orderDeliveryStatus === "sent" &&
-    row.lifecycle.checkoutRecoveryPending === true
+    row.lifecycle.checkoutRecoveryPending === true &&
+    !showContinueAcceptedCheckout
+  const showPaymentRecoveryAction =
+    showRetryPayment || showContinueAcceptedCheckout
 
   const replyMutation = useMutation({
     mutationFn: async () => {
@@ -1380,6 +1419,21 @@ function OrderDetail({
         </StatusNotice>
       )}
 
+      {showContinueAcceptedCheckout && (
+        <StatusNotice
+          variant="warning"
+          title="Order accepted; payment has not started"
+          detail="Continue this checkout"
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            A delivery relay accepted this order before checkout closed.
+            Continue payment for this same order below. Relay acceptance does
+            not prove the merchant has read it, and continuing will not send
+            another order.
+          </p>
+        </StatusNotice>
+      )}
+
       {(manualInvoiceAccess === "report_only" ||
         manualInvoiceAccess === "receipt_only") && (
         <StatusNotice
@@ -1472,14 +1526,16 @@ function OrderDetail({
         </div>
       )}
 
-      {(showRetryPayment || showAmbiguousPayment || showResendProof) && (
+      {(showPaymentRecoveryAction ||
+        showAmbiguousPayment ||
+        showResendProof) && (
         <StatusNotice
           variant={TONE_VARIANT[headerStatus.tone]}
           title={headerStatus.primaryLabel}
           detail={headerStatus.detailLabel}
         >
           <div className="flex flex-wrap items-end gap-3">
-            {showRetryPayment && (
+            {showPaymentRecoveryAction && (
               <div className="grid min-w-[15rem] gap-1.5">
                 <label
                   htmlFor={`retry-wallet-${vm.orderId}`}
@@ -1528,7 +1584,7 @@ function OrderDetail({
                 </Select>
               </div>
             )}
-            {showRetryPayment && (
+            {showPaymentRecoveryAction && (
               <Button
                 className="h-11 px-4 text-sm"
                 disabled={
@@ -1537,10 +1593,16 @@ function OrderDetail({
                   !selectedStoredPaymentTarget ||
                   !buildServiceCtx()
                 }
-                onClick={() => void withBusy(retryPayment)}
+                onClick={() =>
+                  void withBusy(
+                    showContinueAcceptedCheckout
+                      ? continueAcceptedCheckoutPayment
+                      : retryPayment
+                  )
+                }
               >
                 <RotateCw className="h-4 w-4" />
-                {recoveredBeforeWallet
+                {showContinueAcceptedCheckout || recoveredBeforeWallet
                   ? "Continue payment"
                   : "Try payment again"}
               </Button>
@@ -1588,19 +1650,22 @@ function OrderDetail({
                   ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays while this order remains available on this device."
                   : showAmbiguousPayment
                     ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
-                    : showRetryPayment && retryWalletTargetIsStale
+                    : showPaymentRecoveryAction && retryWalletTargetIsStale
                       ? "The previously selected saved wallet is unavailable. Explicitly choose another wallet, browser wallet, or manual payment."
-                      : showRetryPayment && !selectedStoredPaymentTarget
+                      : showPaymentRecoveryAction &&
+                          !selectedStoredPaymentTarget
                         ? "Choose the exact wallet or manual payment path for this retry."
-                        : showRetryPayment && !buildServiceCtx()
+                        : showPaymentRecoveryAction && !buildServiceCtx()
                           ? "The saved payment target is unavailable. Unlock or reconnect it, or explicitly choose another option."
-                          : showRetryPayment
-                            ? recoveredBeforeWallet
-                              ? "Conduit closed before the invoice reached a wallet. Continuing reuses this order; no funds moved."
-                              : showAnonPaymentRecovery
-                                ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
-                                : "No funds moved. You can retry payment for this order."
-                            : "Payment went through; the receipt didn't reach the merchant."}
+                          : showContinueAcceptedCheckout
+                            ? "Continue payment for the accepted order. This does not resend the order."
+                            : showRetryPayment
+                              ? recoveredBeforeWallet
+                                ? "Conduit closed before the invoice reached a wallet. Continuing reuses this order; no funds moved."
+                                : showAnonPaymentRecovery
+                                  ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
+                                  : "No funds moved. You can retry payment for this order."
+                              : "Payment went through; the receipt didn't reach the merchant."}
             </span>
             {paymentRecoveryError && (
               <p
@@ -1610,7 +1675,7 @@ function OrderDetail({
                 {paymentRecoveryError}
               </p>
             )}
-            {showRetryPayment && wallets.initializationError && (
+            {showPaymentRecoveryAction && wallets.initializationError && (
               <div
                 role="alert"
                 className="w-full rounded-xl border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-3 text-sm leading-6 text-[var(--text-secondary)]"
