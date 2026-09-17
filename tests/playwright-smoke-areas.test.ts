@@ -260,23 +260,70 @@ describe("Playwright smoke area validation", () => {
         {
           file: "e2e/alpha.playwright.ts",
           line: 10,
-          name: "buyer checkout completes",
+          name: "redacted smoke test",
           tags: ["@market"],
         },
         {
           file: "e2e/commerce.playwright.ts",
           line: 30,
-          name: "buyer and seller complete commerce",
+          name: "redacted smoke test",
           tags: ["@commerce"],
         },
         {
           file: "e2e/zeta.playwright.ts",
           line: 20,
-          name: "seller fulfills an order",
+          name: "redacted smoke test",
           tags: ["@merchant"],
         },
       ],
     })
+  })
+
+  it("canonicalizes dynamic titles identically during discovery and execution", () => {
+    const discovered = reportWithSpecs([
+      {
+        file: "e2e/manual-checkout-invoice.playwright.ts",
+        line: 48,
+        tags: ["market"],
+        title: "signed-in manual checkout fixture-specific title @market",
+      },
+    ])
+    const expected = buildPlaywrightSmokeManifest(
+      discovered,
+      ["market"],
+      smokeEvidence
+    )
+    const executed: PlaywrightJsonReport = {
+      ...reportWithSpecs([
+        {
+          file: "e2e/manual-checkout-invoice.playwright.ts",
+          line: 48,
+          ok: true,
+          tags: ["market"],
+          tests: [
+            {
+              expectedStatus: "passed",
+              results: [{ status: "passed" }],
+              status: "expected",
+            },
+          ],
+          title: "redacted smoke test",
+        },
+      ]),
+      config: { metadata: { smokeEvidence } },
+      errors: [],
+      stats: { flaky: 0, skipped: 0, unexpected: 0 },
+    }
+
+    expect(expected.tests[0]?.name).toBe("redacted smoke test")
+    expect(
+      validatePlaywrightSmokeExecution(
+        executed,
+        expected,
+        ["market"],
+        smokeEvidence
+      )
+    ).toEqual(expected)
   })
 
   it("rejects orphaned Playwright smoke tests", () => {

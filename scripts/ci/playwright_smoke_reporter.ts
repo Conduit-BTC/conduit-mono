@@ -181,8 +181,17 @@ function hasControlCharacter(value: string): boolean {
   })
 }
 
-function safeTitle(test: TestCase, file: string): string {
-  const title = test.title
+export function safePlaywrightSmokeTitle({
+  file,
+  line,
+  sourceFile,
+  title,
+}: {
+  file: string
+  line: number
+  sourceFile: string
+  title: string
+}): string {
   if (
     title.length === 0 ||
     title.length > 240 ||
@@ -193,9 +202,8 @@ function safeTitle(test: TestCase, file: string): string {
     return redactedTitle
   }
 
-  const isStaticLiteral = staticTitlesForFile(test.location.file).some(
-    (candidate) =>
-      candidate.line === test.location.line && candidate.title === title
+  const isStaticLiteral = staticTitlesForFile(sourceFile).some(
+    (candidate) => candidate.line === line && candidate.title === title
   )
   const isAllowlistedDynamic = (allowlistedDynamicTitles[file] ?? []).some(
     (pattern) => pattern.test(title)
@@ -284,7 +292,12 @@ export class PrivacySafeSmokeReporter implements Reporter {
           status: test.outcome(),
         },
       ],
-      title: safeTitle(test, file),
+      title: safePlaywrightSmokeTitle({
+        file,
+        line: test.location.line,
+        sourceFile: test.location.file,
+        title: test.title,
+      }),
     })
   }
 

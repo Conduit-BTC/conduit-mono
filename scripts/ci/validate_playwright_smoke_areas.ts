@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process"
 import { readFileSync, writeFileSync } from "node:fs"
 
 import { smokeAreaTags, type SmokeArea } from "../../e2e/helpers/smoke-areas"
+import { safePlaywrightSmokeTitle } from "./playwright_smoke_reporter"
 
 type PlaywrightJsonSpec = {
   file?: string
@@ -159,10 +160,17 @@ export function buildPlaywrightSmokeManifest(
     if (areas.length === 0) continue
 
     // Keep the manifest content-free and stable across runner workspaces.
+    const file = manifestFile(spec.file)
+    const line = spec.line ?? 0
     tests.push({
-      file: manifestFile(spec.file),
+      file,
       line: spec.line ?? null,
-      name: spec.title ?? "untitled test",
+      name: safePlaywrightSmokeTitle({
+        file,
+        line,
+        sourceFile: spec.file ?? "",
+        title: spec.title ?? "untitled test",
+      }),
       tags: areas.map((area) => smokeAreaTags[area]),
     })
   }

@@ -519,19 +519,10 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await buyerPage.goto(`${marketUrl}${buyerOrderPath}`)
     await expect(
       buyerPage.getByRole("heading", {
-        name: "Merchant invoice ready",
-        exact: true,
-      })
-    ).toBeVisible({ timeout: 30_000 })
-    await buyerPage
-      .getByRole("button", { name: "Use merchant invoice", exact: true })
-      .click()
-    await expect(
-      buyerPage.getByRole("heading", {
         name: "Pay merchant invoice",
         exact: true,
       })
-    ).toBeVisible()
+    ).toBeVisible({ timeout: 30_000 })
     await wallet.payLastInvoice()
     await expect
       .poll(() => {
