@@ -1,15 +1,69 @@
 import { db, type OrderLifecycle, type OrderRelayDeliveryStatus } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
+import { EVENT_KINDS } from "./kinds"
 import {
   filterEligibleAccountRelayUrls,
   orderEquivalentAccountRelayOperations,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
+import { deriveOrderLifecyclePhase } from "./order-lifecycle"
 import { publishSignedEventToRelay } from "./relay-publish"
-import type { SignedPublicNostrEvent } from "./signed-event"
+import {
+  normalizeSecureOrIsolatedE2eRelayUrls,
+  tryNormalizeRelayUrl,
+} from "./relay-settings"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
 const RETRY_DELAY_MS = 60_000
-const LEASE_MS = 30_000
+const FOREGROUND_RETRY_DELAY_MS = 15_000
+export const ORDER_RELAY_DELIVERY_LEASE_MS = 30_000
+
+export type PreparedOrderRelayDelivery = {
+  rumorId: string
+  signedRecipientWrap: SignedPublicNostrEvent
+  route: NonNullable<OrderLifecycle["orderDeliveryRoute"]>
+  relayPlan: Array<{
+    relayUrl: string
+    source: NonNullable<
+      OrderLifecycle["orderRelayDelivery"]
+    >["relayDelivery"][number]["source"]
+  }>
+}
+
+export type StagedOrderLifecycleInput = Pick<
+  OrderLifecycle,
+  | "orderId"
+  | "buyerPubkey"
+  | "buyerIdentityKind"
+  | "merchantPubkey"
+  | "checkoutMode"
+  | "publicZapSigner"
+  | "publicZapFallback"
+  | "merchantLightningAddress"
+  | "paymentTarget"
+  | "items"
+  | "itemSubtotalSats"
+  | "shippingCostSats"
+  | "totalSats"
+  | "totalMsats"
+  | "currency"
+  | "pricingQuote"
+  | "zapContent"
+  | "shippingAddress"
+  | "contactNote"
+  | "guestContact"
+  | "addressValidity"
+  | "shippingZoneEligibility"
+  | "createdAt"
+>
+
+export type OrderRelayDeliveryStageResult = {
+  lifecycle: OrderLifecycle
+  inserted: boolean
+}
 
 export interface OrderRelayDeliveryRepository {
   get(orderId: string): Promise<OrderLifecycle | undefined>
@@ -18,6 +72,10 @@ export interface OrderRelayDeliveryRepository {
     orderId: string,
     updater: (current: OrderLifecycle) => OrderLifecycle
   ): Promise<OrderLifecycle | undefined>
+  stage?(
+    record: OrderLifecycle,
+    assertCompatible: (current: OrderLifecycle) => void
+  ): Promise<OrderRelayDeliveryStageResult>
 }
 
 export type OrderRelayDeliveryPublisher = (input: {
@@ -28,6 +86,7 @@ export type OrderRelayDeliveryPublisher = (input: {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  shouldContinue?: () => boolean
 }) => Promise<OrderRelayDeliveryStatus>
 
 export interface RetryOrderRelayDeliveryOptions {
@@ -39,6 +98,10 @@ export interface RetryOrderRelayDeliveryOptions {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  /** Explicit foreground recovery may replay a same-session guest wrap. */
+  allowGuest?: boolean
+  /** Live account/session guard checked before every new relay write. */
+  shouldContinue?: () => boolean
 }
 
 const dexieRepository: OrderRelayDeliveryRepository = {
@@ -53,6 +116,16 @@ const dexieRepository: OrderRelayDeliveryRepository = {
       await db.orderLifecycles.put(next)
       return next
     }),
+  stage: async (record, assertCompatible) =>
+    db.transaction("rw", db.orderLifecycles, async () => {
+      const current = await db.orderLifecycles.get(record.orderId)
+      if (current) {
+        assertCompatible(current)
+        return { lifecycle: current, inserted: false }
+      }
+      await db.orderLifecycles.put(record)
+      return { lifecycle: record, inserted: true }
+    }),
 }
 
 async function defaultPublisher(
@@ -65,6 +138,7 @@ async function defaultPublisher(
     accountPubkey: input.accountPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
   })
 }
 
@@ -85,6 +159,422 @@ function hasRetryablePublicTarget(
   )
 }
 
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize)
+  if (!value || typeof value !== "object") return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalize(entry)])
+  )
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  return (
+    JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right))
+  )
+}
+
+function immutableLifecycleSnapshot(
+  lifecycle: OrderLifecycle | StagedOrderLifecycleInput
+): unknown {
+  return {
+    orderId: lifecycle.orderId,
+    buyerPubkey: lifecycle.buyerPubkey,
+    buyerIdentityKind: lifecycle.buyerIdentityKind,
+    merchantPubkey: lifecycle.merchantPubkey,
+    checkoutMode: lifecycle.checkoutMode,
+    publicZapSigner: lifecycle.publicZapSigner,
+    publicZapFallback: lifecycle.publicZapFallback,
+    merchantLightningAddress: lifecycle.merchantLightningAddress,
+    paymentTarget: lifecycle.paymentTarget,
+    walletPaymentAttemptId:
+      "walletPaymentAttemptId" in lifecycle
+        ? lifecycle.walletPaymentAttemptId
+        : undefined,
+    items: lifecycle.items,
+    itemSubtotalSats: lifecycle.itemSubtotalSats,
+    shippingCostSats: lifecycle.shippingCostSats,
+    totalSats: lifecycle.totalSats,
+    totalMsats: lifecycle.totalMsats,
+    currency: lifecycle.currency,
+    pricingQuote: lifecycle.pricingQuote,
+    zapContent: lifecycle.zapContent,
+    shippingAddress: lifecycle.shippingAddress,
+    contactNote: lifecycle.contactNote,
+    guestContact: lifecycle.guestContact,
+    addressValidity: lifecycle.addressValidity,
+    shippingZoneEligibility: lifecycle.shippingZoneEligibility,
+    createdAt: lifecycle.createdAt,
+  }
+}
+
+function immutableRelayPlan(
+  delivery: NonNullable<OrderLifecycle["orderRelayDelivery"]>
+): unknown {
+  return {
+    rumorId: delivery.rumorId,
+    signedRecipientWrap: delivery.signedRecipientWrap,
+    route: delivery.route,
+    relayPlan: delivery.relayDelivery.map(({ relayUrl, source }) => ({
+      relayUrl,
+      source,
+    })),
+  }
+}
+
+export class OrderRelayDeliveryStageConflictError extends Error {
+  constructor() {
+    super("Order delivery staging conflicts with an existing order snapshot.")
+    this.name = "OrderRelayDeliveryStageConflictError"
+  }
+}
+
+export async function stageOrderRelayDelivery(
+  input: {
+    lifecycle: StagedOrderLifecycleInput
+    prepared: PreparedOrderRelayDelivery
+    leaseOwner: string
+  },
+  options: {
+    repository?: OrderRelayDeliveryRepository
+    now?: () => number
+  } = {}
+): Promise<OrderRelayDeliveryStageResult> {
+  if (
+    !/^[0-9a-f]{64}$/i.test(input.prepared.rumorId) ||
+    input.leaseOwner.trim().length === 0 ||
+    (input.lifecycle.buyerIdentityKind !== "signed_in" &&
+      input.lifecycle.buyerIdentityKind !== "guest_ephemeral")
+  ) {
+    throw new Error("Cannot stage an invalid order delivery identity.")
+  }
+  if (!isValidSignedPublicNostrEvent(input.prepared.signedRecipientWrap)) {
+    throw new Error("Cannot stage an invalid signed recipient wrap.")
+  }
+  const outerRecipients = input.prepared.signedRecipientWrap.tags.filter(
+    (tag) => tag[0] === "p" && typeof tag[1] === "string"
+  )
+  if (
+    input.prepared.signedRecipientWrap.kind !== EVENT_KINDS.GIFT_WRAP ||
+    outerRecipients.length !== 1 ||
+    outerRecipients[0]![1]!.trim().toLowerCase() !==
+      input.lifecycle.merchantPubkey.trim().toLowerCase()
+  ) {
+    throw new Error("Cannot stage a recipient wrap outside the order scope.")
+  }
+  if (
+    input.lifecycle.buyerIdentityKind === "guest_ephemeral" &&
+    (input.lifecycle.shippingAddress !== undefined ||
+      input.lifecycle.contactNote !== undefined ||
+      input.lifecycle.guestContact !== undefined)
+  ) {
+    throw new Error("Cannot stage plaintext guest fulfillment data.")
+  }
+  const relayUrls = input.prepared.relayPlan.map(({ relayUrl }) => relayUrl)
+  const normalizedRelayUrls = relayUrls.map((relayUrl) =>
+    tryNormalizeRelayUrl(relayUrl)
+  )
+  const approvedRelayUrls = new Set(
+    normalizeSecureOrIsolatedE2eRelayUrls(relayUrls)
+  )
+  if (
+    relayUrls.length === 0 ||
+    normalizedRelayUrls.some(
+      (normalized, index) =>
+        !normalized.ok ||
+        normalized.url !== relayUrls[index] ||
+        !approvedRelayUrls.has(normalized.url)
+    ) ||
+    new Set(
+      normalizedRelayUrls.flatMap((normalized) =>
+        normalized.ok ? [normalized.url] : []
+      )
+    ).size !== relayUrls.length
+  ) {
+    throw new Error("Cannot stage an invalid order relay plan.")
+  }
+
+  const repository = options.repository ?? dexieRepository
+  if (!repository.stage) {
+    throw new Error("Order relay delivery repository cannot stage records.")
+  }
+  const now = options.now ?? Date.now
+  const timestamp = now()
+  const createdAt = input.lifecycle.createdAt ?? timestamp
+  const delivery: NonNullable<OrderLifecycle["orderRelayDelivery"]> = {
+    rumorId: input.prepared.rumorId,
+    signedRecipientWrap: structuredClone(input.prepared.signedRecipientWrap),
+    route: input.prepared.route,
+    relayDelivery: input.prepared.relayPlan.map(({ relayUrl, source }) => ({
+      relayUrl,
+      source,
+      status: "pending",
+      attemptCount: 0,
+      attemptGeneration: 0,
+    })),
+    deliveryAttemptCount: 0,
+    deliveryAttemptGeneration: 0,
+    retryCount: 0,
+    deliveryLeaseOwner: input.leaseOwner,
+    deliveryLeaseExpiresAt: timestamp + ORDER_RELAY_DELIVERY_LEASE_MS,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    expiresAt: createdAt + 24 * 60 * 60 * 1_000,
+  }
+  const stagedBase = {
+    ...input.lifecycle,
+    createdAt,
+    updatedAt: timestamp,
+    orderDeliveryStatus: "pending" as const,
+    orderDeliveryRoute: input.prepared.route,
+    orderRelayDelivery: delivery,
+    checkoutRecoveryPending: true,
+    invoiceStatus: "not_requested" as const,
+    paymentStatus: "not_started" as const,
+    proofDeliveryStatus: "not_started" as const,
+    zapReceiptStatus: "not_applicable" as const,
+  }
+  const record: OrderLifecycle = {
+    ...stagedBase,
+    phase: "pending",
+  }
+
+  return await repository.stage(record, (current) => {
+    if (
+      !sameValue(
+        immutableLifecycleSnapshot(current),
+        immutableLifecycleSnapshot(record)
+      ) ||
+      !current.orderRelayDelivery ||
+      !sameValue(immutableRelayPlan(current.orderRelayDelivery), {
+        rumorId: input.prepared.rumorId,
+        signedRecipientWrap: input.prepared.signedRecipientWrap,
+        route: input.prepared.route,
+        relayPlan: input.prepared.relayPlan,
+      })
+    ) {
+      throw new OrderRelayDeliveryStageConflictError()
+    }
+  })
+}
+
+export type BegunOrderRelayDeliveryAttempt = {
+  lifecycle: OrderLifecycle
+  generationsByRelay: Readonly<Record<string, number>>
+  wrapId: string
+}
+
+export async function beginOrderRelayDeliveryAttempt(
+  input: {
+    orderId: string
+    buyerPubkey: string
+    leaseOwner: string
+    relayUrls: readonly string[]
+    shouldContinue?: () => boolean
+  },
+  options: {
+    repository?: OrderRelayDeliveryRepository
+    now?: () => number
+  } = {}
+): Promise<BegunOrderRelayDeliveryAttempt> {
+  if (input.shouldContinue?.() === false) {
+    throw new Error(
+      "Order delivery cancelled because the buyer session changed."
+    )
+  }
+  const repository = options.repository ?? dexieRepository
+  const now = options.now ?? Date.now
+  const timestamp = now()
+  const relayUrls = [...new Set(input.relayUrls)]
+  let acquired = false
+  let skippedAcknowledgedTargets = false
+  const generationsByRelay: Record<string, number> = {}
+  const lifecycle = await repository.update(input.orderId, (current) => {
+    const delivery = current.orderRelayDelivery
+    const activeOtherLease =
+      delivery?.deliveryLeaseOwner &&
+      delivery.deliveryLeaseOwner !== input.leaseOwner &&
+      (delivery.deliveryLeaseExpiresAt ?? 0) > timestamp
+    if (
+      !delivery ||
+      input.shouldContinue?.() === false ||
+      current.buyerPubkey !== input.buyerPubkey ||
+      activeOtherLease ||
+      delivery.expiresAt <= timestamp ||
+      relayUrls.length === 0 ||
+      relayUrls.some(
+        (relayUrl) =>
+          !delivery.relayDelivery.some((target) => target.relayUrl === relayUrl)
+      )
+    ) {
+      return current
+    }
+
+    const outstandingRelayUrls = relayUrls.filter((relayUrl) =>
+      delivery.relayDelivery.some(
+        (target) => target.relayUrl === relayUrl && target.status !== "acked"
+      )
+    )
+    if (outstandingRelayUrls.length === 0) {
+      skippedAcknowledgedTargets = true
+      return current
+    }
+
+    acquired = true
+    const batchGeneration = (delivery.deliveryAttemptGeneration ?? 0) + 1
+    const relayDelivery = delivery.relayDelivery.map((target) => {
+      if (
+        !outstandingRelayUrls.includes(target.relayUrl) ||
+        target.status === "acked"
+      ) {
+        return target
+      }
+      const targetGeneration = (target.attemptGeneration ?? 0) + 1
+      generationsByRelay[target.relayUrl] = targetGeneration
+      const {
+        acknowledgedAt: _acknowledgedAt,
+        rejectedAt: _rejectedAt,
+        timedOutAt: _timedOutAt,
+        ...rest
+      } = target
+      return {
+        ...rest,
+        status: "pending" as const,
+        attemptCount: target.attemptCount + 1,
+        attemptGeneration: targetGeneration,
+        lastAttemptAt: timestamp,
+      }
+    })
+    return {
+      ...current,
+      orderDeliveryStatus:
+        current.orderDeliveryStatus === "sent" ? "sent" : "pending",
+      orderRelayDelivery: {
+        ...delivery,
+        relayDelivery,
+        deliveryAttemptCount: delivery.deliveryAttemptCount + 1,
+        deliveryAttemptGeneration: batchGeneration,
+        deliveryLeaseOwner: input.leaseOwner,
+        deliveryLeaseExpiresAt: timestamp + ORDER_RELAY_DELIVERY_LEASE_MS,
+        nextRetryAt: undefined,
+        updatedAt: timestamp,
+      },
+      updatedAt: timestamp,
+    }
+  })
+
+  if (!lifecycle?.orderRelayDelivery) {
+    throw new Error(
+      "Order delivery attempt could not acquire its staged relay plan."
+    )
+  }
+  if (!acquired && !skippedAcknowledgedTargets) {
+    throw new Error(
+      "Order delivery attempt could not acquire its staged relay plan."
+    )
+  }
+  return {
+    lifecycle,
+    generationsByRelay,
+    wrapId: lifecycle.orderRelayDelivery.signedRecipientWrap.id,
+  }
+}
+
+export async function recordOrderRelayDeliveryOutcomes(
+  input: {
+    orderId: string
+    buyerPubkey: string
+    leaseOwner: string
+    wrapId: string
+    outcomes: ReadonlyArray<{
+      relayUrl: string
+      status: Exclude<OrderRelayDeliveryStatus, "pending">
+      generation: number
+    }>
+    releaseLease?: boolean
+    retryDelayMs?: number
+  },
+  options: {
+    repository?: OrderRelayDeliveryRepository
+    now?: () => number
+  } = {}
+): Promise<OrderLifecycle | undefined> {
+  const repository = options.repository ?? dexieRepository
+  const now = options.now ?? Date.now
+  const timestamp = now()
+  return await repository.update(input.orderId, (current) => {
+    const delivery = current.orderRelayDelivery
+    if (
+      !delivery ||
+      current.buyerPubkey !== input.buyerPubkey ||
+      delivery.signedRecipientWrap.id !== input.wrapId
+    ) {
+      return current
+    }
+    const outcomes = new Map<string, (typeof input.outcomes)[number]>()
+    for (const outcome of input.outcomes) {
+      const currentOutcome = outcomes.get(outcome.relayUrl)
+      if (currentOutcome?.status === "acked") continue
+      if (!currentOutcome || outcome.status === "acked") {
+        outcomes.set(outcome.relayUrl, outcome)
+      }
+    }
+    const relayDelivery = delivery.relayDelivery.map((target) => {
+      const outcome = outcomes.get(target.relayUrl)
+      if (!outcome || target.status === "acked") return target
+      const latestTargetGeneration = target.attemptGeneration ?? 0
+      if (
+        target.attemptCount <= 0 ||
+        !Number.isSafeInteger(outcome.generation) ||
+        outcome.generation <= 0 ||
+        outcome.generation > latestTargetGeneration ||
+        (outcome.status !== "acked" &&
+          (outcome.generation !== latestTargetGeneration ||
+            delivery.deliveryLeaseOwner !== input.leaseOwner))
+      ) {
+        return target
+      }
+      return {
+        ...target,
+        status: outcome.status,
+        ...(outcome.status === "acked" ? { acknowledgedAt: timestamp } : {}),
+        ...(outcome.status === "rejected" ? { rejectedAt: timestamp } : {}),
+        ...(outcome.status === "timed_out" ? { timedOutAt: timestamp } : {}),
+      }
+    })
+    const anyAcked = relayDelivery.some((target) => target.status === "acked")
+    const allAcked = relayDelivery.every((target) => target.status === "acked")
+    let nextDelivery = {
+      ...delivery,
+      relayDelivery,
+      nextRetryAt: allAcked
+        ? undefined
+        : timestamp + (input.retryDelayMs ?? FOREGROUND_RETRY_DELAY_MS),
+      updatedAt: timestamp,
+    }
+    if (
+      input.releaseLease &&
+      nextDelivery.deliveryLeaseOwner === input.leaseOwner
+    ) {
+      const {
+        deliveryLeaseOwner: _deliveryLeaseOwner,
+        deliveryLeaseExpiresAt: _deliveryLeaseExpiresAt,
+        ...released
+      } = nextDelivery
+      nextDelivery = released
+    }
+    const next = {
+      ...current,
+      orderDeliveryStatus: anyAcked ? ("sent" as const) : ("pending" as const),
+      orderRelayDelivery: nextDelivery,
+      updatedAt: timestamp,
+    }
+    return { ...next, phase: deriveOrderLifecyclePhase(next) }
+  })
+}
+
 export async function retryOrderRelayDelivery(
   orderId: string,
   activeBuyerPubkey: string,
@@ -96,11 +586,16 @@ export async function retryOrderRelayDelivery(
   const leaseOwner = options.leaseOwner ?? nextLeaseOwner()
   const timestamp = now()
 
+  if (options.shouldContinue?.() === false) {
+    return await repository.get(orderId)
+  }
+
   const claimed = await repository.update(orderId, (current) => {
     const delivery = current.orderRelayDelivery
     if (
       !delivery ||
-      current.buyerIdentityKind === "guest_ephemeral" ||
+      (current.buyerIdentityKind === "guest_ephemeral" &&
+        !options.allowGuest) ||
       current.buyerPubkey !== activeBuyerPubkey ||
       delivery.expiresAt <= timestamp ||
       !hasRetryablePublicTarget(delivery) ||
@@ -115,8 +610,7 @@ export async function retryOrderRelayDelivery(
       orderRelayDelivery: {
         ...delivery,
         deliveryLeaseOwner: leaseOwner,
-        deliveryLeaseExpiresAt: timestamp + LEASE_MS,
-        deliveryAttemptCount: delivery.deliveryAttemptCount + 1,
+        deliveryLeaseExpiresAt: timestamp + ORDER_RELAY_DELIVERY_LEASE_MS,
         retryCount: delivery.retryCount + 1,
         updatedAt: timestamp,
       },
@@ -131,95 +625,103 @@ export async function retryOrderRelayDelivery(
     return claimed
   }
 
-  const signedEvent = claimed.orderRelayDelivery.signedRecipientWrap
-  const outstanding = claimed.orderRelayDelivery.relayDelivery.filter(
-    (target) =>
-      target.status !== "acked" &&
-      normalizePublicWebSocketUrl(target.relayUrl) !== null
-  )
-  const orderedOutstanding = await orderEquivalentAccountRelayOperations({
-    accountPubkey: claimed.buyerPubkey,
-    operations: outstanding.map((target) => ({
-      relayUrl: target.relayUrl,
-      equivalenceKey: "exact-order-delivery-retry",
-      value: target,
-    })),
-    repository: options.accountNetworkLocalStateRepository,
-  })
-
-  for (const { value: target } of orderedOutstanding) {
-    const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+  try {
+    const signedEvent = claimed.orderRelayDelivery.signedRecipientWrap
+    const outstanding = claimed.orderRelayDelivery.relayDelivery.filter(
+      (target) =>
+        target.status !== "acked" &&
+        normalizePublicWebSocketUrl(target.relayUrl) !== null
+    )
+    const orderedOutstanding = await orderEquivalentAccountRelayOperations({
       accountPubkey: claimed.buyerPubkey,
-      candidateRelayUrls: [target.relayUrl],
+      operations: outstanding.map((target) => ({
+        relayUrl: target.relayUrl,
+        equivalenceKey: "exact-order-delivery-retry",
+        value: target,
+      })),
       repository: options.accountNetworkLocalStateRepository,
     })
-    if (eligibleRelayUrls.length === 0) continue
 
-    const attemptedAt = now()
-    let outcome: OrderRelayDeliveryStatus
-    try {
-      outcome = await publisher({
-        relayUrl: target.relayUrl,
-        signedEvent: {
-          ...signedEvent,
-          tags: signedEvent.tags.map((tag) => [...tag]),
-        },
-        accountPubkey: claimed.buyerPubkey,
-        accountNetworkLocalStateRepository:
-          options.accountNetworkLocalStateRepository,
-      })
-    } catch {
-      const stillEligible = await filterEligibleAccountRelayUrls({
+    for (const { value: target } of orderedOutstanding) {
+      if (options.shouldContinue?.() === false) break
+      const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
         accountPubkey: claimed.buyerPubkey,
         candidateRelayUrls: [target.relayUrl],
         repository: options.accountNetworkLocalStateRepository,
       })
-      if (stillEligible.length === 0) continue
-      outcome = "timed_out"
-    }
-    if (outcome === "pending") outcome = "timed_out"
+      if (options.shouldContinue?.() === false) break
+      if (eligibleRelayUrls.length === 0) continue
 
+      const begun = await beginOrderRelayDeliveryAttempt(
+        {
+          orderId,
+          buyerPubkey: claimed.buyerPubkey,
+          leaseOwner,
+          relayUrls: [target.relayUrl],
+          shouldContinue: options.shouldContinue,
+        },
+        { repository, now }
+      )
+      const generation = begun.generationsByRelay[target.relayUrl]
+      if (generation === undefined) continue
+      if (options.shouldContinue?.() === false) break
+      let outcome: OrderRelayDeliveryStatus
+      try {
+        outcome = await publisher({
+          relayUrl: target.relayUrl,
+          signedEvent: {
+            ...signedEvent,
+            tags: signedEvent.tags.map((tag) => [...tag]),
+          },
+          accountPubkey: claimed.buyerPubkey,
+          accountNetworkLocalStateRepository:
+            options.accountNetworkLocalStateRepository,
+          shouldContinue: options.shouldContinue,
+        })
+      } catch {
+        if (options.shouldContinue?.() === false) break
+        const stillEligible = await filterEligibleAccountRelayUrls({
+          accountPubkey: claimed.buyerPubkey,
+          candidateRelayUrls: [target.relayUrl],
+          repository: options.accountNetworkLocalStateRepository,
+        })
+        if (options.shouldContinue?.() === false) break
+        if (stillEligible.length === 0) continue
+        outcome = "timed_out"
+      }
+      if (outcome === "pending") outcome = "timed_out"
+
+      await recordOrderRelayDeliveryOutcomes(
+        {
+          orderId,
+          buyerPubkey: claimed.buyerPubkey,
+          leaseOwner,
+          wrapId: begun.wrapId,
+          outcomes: [
+            {
+              relayUrl: target.relayUrl,
+              status: outcome,
+              generation,
+            },
+          ],
+          retryDelayMs: RETRY_DELAY_MS,
+        },
+        { repository, now }
+      )
+    }
+  } finally {
     await repository.update(orderId, (current) => {
       const delivery = current.orderRelayDelivery
-      if (!delivery) return current
-      const relayDelivery = delivery.relayDelivery.map((entry) => {
-        if (entry.relayUrl !== target.relayUrl || entry.status === "acked") {
-          return entry
-        }
-        return {
-          ...entry,
-          status: outcome,
-          attemptCount: entry.attemptCount + 1,
-          lastAttemptAt: attemptedAt,
-          ...(outcome === "acked" ? { acknowledgedAt: attemptedAt } : {}),
-          ...(outcome === "rejected" ? { rejectedAt: attemptedAt } : {}),
-          ...(outcome === "timed_out" ? { timedOutAt: attemptedAt } : {}),
-        }
-      })
-      const allAcked = relayDelivery.every((entry) => entry.status === "acked")
-      const anyAcked = relayDelivery.some((entry) => entry.status === "acked")
-      return {
-        ...current,
-        orderDeliveryStatus: anyAcked ? "sent" : current.orderDeliveryStatus,
-        orderRelayDelivery: {
-          ...delivery,
-          relayDelivery,
-          nextRetryAt: allAcked ? undefined : attemptedAt + RETRY_DELAY_MS,
-          updatedAt: attemptedAt,
-        },
-        updatedAt: attemptedAt,
-      }
+      if (!delivery || delivery.deliveryLeaseOwner !== leaseOwner)
+        return current
+      const released = { ...delivery }
+      delete released.deliveryLeaseOwner
+      delete released.deliveryLeaseExpiresAt
+      return { ...current, orderRelayDelivery: released, updatedAt: now() }
     })
   }
 
-  return await repository.update(orderId, (current) => {
-    const delivery = current.orderRelayDelivery
-    if (!delivery || delivery.deliveryLeaseOwner !== leaseOwner) return current
-    const released = { ...delivery }
-    delete released.deliveryLeaseOwner
-    delete released.deliveryLeaseExpiresAt
-    return { ...current, orderRelayDelivery: released, updatedAt: now() }
-  })
+  return await repository.get(orderId)
 }
 
 export async function resumePendingOrderRelayDeliveries(

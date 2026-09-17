@@ -94,7 +94,7 @@ export function deriveOrderLifecyclePhase(
   return "pending"
 }
 
-type CreateOrderLifecycleInput = Omit<
+export type CreateOrderLifecycleInput = Omit<
   OrderLifecycle,
   "createdAt" | "updatedAt" | "phase"
 > & {
@@ -1567,13 +1567,14 @@ export async function patchOrderLifecycle(
   orderId: string,
   patch: Partial<Omit<OrderLifecycle, "orderId" | "createdAt">>
 ): Promise<OrderLifecycle | undefined> {
-  const existing = await db.orderLifecycles.get(orderId)
-  if (!existing) return undefined
+  return await db.transaction("rw", db.orderLifecycles, async () => {
+    const existing = await db.orderLifecycles.get(orderId)
+    if (!existing) return undefined
 
-  const merged = mergeOrderLifecyclePatch(existing, patch)
-
-  await db.orderLifecycles.put(merged)
-  return merged
+    const merged = mergeOrderLifecyclePatch(existing, patch)
+    await db.orderLifecycles.put(merged)
+    return merged
+  })
 }
 
 /**

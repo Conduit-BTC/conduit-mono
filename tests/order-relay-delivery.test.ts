@@ -274,6 +274,54 @@ describe("order relay delivery retry", () => {
     }
   })
 
+  it("stops before the next relay when the active account changes", async () => {
+    const candidate = lifecycle({ orderDeliveryStatus: "pending" })
+    candidate.orderRelayDelivery!.relayDelivery = [
+      {
+        relayUrl: "wss://first-retry.conduit.market",
+        source: "declared",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+      {
+        relayUrl: "wss://second-retry.conduit.market",
+        source: "declared",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+    ]
+    const store = repository(candidate)
+    const attempts: string[] = []
+    let current = true
+
+    await retryOrderRelayDelivery("order-id", BUYER, {
+      repository: store.repository,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+      leaseOwner: "worker",
+      now: () => 100,
+      shouldContinue: () => current,
+      publisher: async ({ relayUrl }) => {
+        attempts.push(relayUrl)
+        expect(
+          store
+            .read()
+            .orderRelayDelivery?.relayDelivery.find(
+              (target) => target.relayUrl === relayUrl
+            )
+        ).toMatchObject({ status: "pending", attemptCount: 2 })
+        current = false
+        return "timed_out"
+      },
+    })
+
+    expect(attempts).toEqual(["wss://first-retry.conduit.market"])
+    expect(store.read().orderRelayDelivery?.relayDelivery).toMatchObject([
+      { relayUrl: "wss://first-retry.conduit.market", attemptCount: 2 },
+      { relayUrl: "wss://second-retry.conduit.market", attemptCount: 1 },
+    ])
+    expect(store.read().orderRelayDelivery?.deliveryLeaseOwner).toBeUndefined()
+  })
+
   it("persists no failure strings or message plaintext", () => {
     const serialized = JSON.stringify(lifecycle().orderRelayDelivery)
     expect(serialized).toContain("encrypted-gift-wrap")

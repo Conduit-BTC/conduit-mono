@@ -7,6 +7,7 @@ import {
   createGuestOrderSigningIdentity,
   createSessionGuestOrderSigningIdentity,
   getSessionGuestOrderSigningIdentity,
+  listSessionGuestOrderIds,
   pruneExpiredSessionGuestOrderSigningIdentities,
 } from "../apps/market/src/lib/guest-order-identity"
 
@@ -165,6 +166,20 @@ describe("guest order signing identity", () => {
     expect(
       getSessionGuestOrderSigningIdentity("order-clear", storage)
     ).toBeNull()
+  })
+
+  it("lists content-free guest order locators for reload recovery", () => {
+    const storage = fakeStorage()
+    createSessionGuestOrderSigningIdentity("order-a", "a".repeat(64), {
+      storage,
+    })
+    createSessionGuestOrderSigningIdentity("order-b", "b".repeat(64), {
+      storage,
+    })
+
+    expect(listSessionGuestOrderIds(storage)).toEqual(
+      expect.arrayContaining(["order-a", "order-b"])
+    )
   })
 
   it("expires session guest signers after the bounded recovery window", () => {

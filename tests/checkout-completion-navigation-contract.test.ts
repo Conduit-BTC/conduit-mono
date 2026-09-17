@@ -15,7 +15,8 @@ describe("checkout completion navigation contracts", () => {
 
     expect(checkoutRoute).toContain("const navigate = useNavigate()")
     expect(ordersNavigations.length).toBeGreaterThanOrEqual(2)
-    expect(checkoutRoute).toContain("createOrderLifecycle(")
+    expect(checkoutRoute).toContain("const orderLifecycle:")
+    expect(checkoutRoute).toContain("orderLifecycle,")
   })
 
   it("does not offer cart as a terminal paid-checkout action", async () => {
@@ -193,10 +194,7 @@ describe("checkout completion navigation contracts", () => {
       "await publishBuyerOrderMessage(",
       authorizationIndex
     )
-    const lifecycleIndex = payNowSource.indexOf(
-      "await createOrderLifecycle(",
-      orderPublishIndex
-    )
+    const lifecycleIndex = payNowSource.indexOf("const orderLifecycle:")
     const sparkFeeApprovalIndex = payNowSource.indexOf(
       "sparkFeeApproval.requestApproval",
       lifecycleIndex
@@ -214,8 +212,10 @@ describe("checkout completion navigation contracts", () => {
     expect(payNowEnd).toBeGreaterThan(payNowIndex)
     expect(authorizationIndex).toBeGreaterThan(availabilityIndex)
     expect(orderPublishIndex).toBeGreaterThan(authorizationIndex)
-    expect(lifecycleIndex).toBeGreaterThan(orderPublishIndex)
-    expect(sparkFeeApprovalIndex).toBeGreaterThan(lifecycleIndex)
+    expect(lifecycleIndex).toBeGreaterThan(authorizationIndex)
+    expect(lifecycleIndex).toBeLessThan(orderPublishIndex)
+    expect(payNowSource).toContain("orderLifecycle,")
+    expect(sparkFeeApprovalIndex).toBeGreaterThan(orderPublishIndex)
     expect(sparkPaymentIndex).toBeGreaterThan(sparkFeeApprovalIndex)
     expect(otherPaymentIndex).toBeGreaterThan(sparkPaymentIndex)
     expect(checkoutRoute).not.toContain("prepareAnonZapCheckout")
