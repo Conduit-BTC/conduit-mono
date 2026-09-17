@@ -130,9 +130,10 @@ export function eventCatalogQueryOptions(
     // freshness window expires. Interrupted, failed, and all-relay-unavailable
     // reads still use focus as a recovery signal.
     refetchOnWindowFocus: (query) =>
-      query.state.status === "error" ||
-      !query.state.data?.complete ||
-      hasUnavailableCatalogEvidence(query.state.data),
+      query.state.status === "error"
+        ? "always"
+        : !query.state.data?.complete ||
+          hasUnavailableCatalogEvidence(query.state.data),
     retry: false,
   })
 }

@@ -848,6 +848,7 @@ describe("shared progressive event catalogs", () => {
   type FocusRecoveryCase = {
     name: string
     load: () => Promise<RawEventCatalog>
+    explicitRefresh?: boolean
     initialData?: RawEventCatalog
     staleTime?: number
     expectedReadsAfterFocus: number
@@ -933,8 +934,8 @@ describe("shared progressive event catalogs", () => {
       load: async () => {
         throw new Error("relay unavailable")
       },
+      explicitRefresh: true,
       initialData: raw(),
-      staleTime: 0,
       expectedReadsAfterFocus: 2,
       expectedError: true,
       expectedComplete: true,
@@ -973,6 +974,7 @@ describe("shared progressive event catalogs", () => {
 
       try {
         await new Promise((resolve) => setTimeout(resolve, 0))
+        if (scenario.explicitRefresh) await observer.refetch()
         expect(reads).toBe(1)
         expectState()
 
