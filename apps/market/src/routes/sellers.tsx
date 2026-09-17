@@ -175,10 +175,10 @@ function SellersPage() {
               Other accounts
             </h2>
             <span className="text-sm text-[var(--text-muted)]">
-              {describeAccountSearchSource(
-                directory.accountSearch.data,
-                directory.accountSearch.isFetching
-              )}
+              {describeAccountSearchSource(directory.accountSearch.data, {
+                device: directory.accountSearch.isDeviceFetching,
+                network: directory.accountSearch.isNetworkFetching,
+              })}
             </span>
           </div>
           {directory.networkAccounts.length === 0 ? (

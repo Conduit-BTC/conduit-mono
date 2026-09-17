@@ -19,9 +19,10 @@ export const ACCOUNT_SEARCH_CANDIDATE_LIMIT = 20
 
 export function describeAccountSearchSource(
   result: ProfileSearchResult | undefined,
-  isFetching: boolean
+  loading: { device: boolean; network: boolean }
 ): string {
-  if (isFetching) return "Searching relays..."
+  if (loading.network) return "Searching relays..."
+  if (loading.device) return "Searching this device..."
   const evidence = describeAccountSearchEvidence(result)
   if (evidence) return evidence
   return result?.evidence === "not_queried"

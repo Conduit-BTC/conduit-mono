@@ -92,9 +92,21 @@ describe("other accounts capping", () => {
           },
           superseded: [],
         },
-        false
+        { device: false, network: false }
       )
     ).toBe("From this device")
+  })
+
+  it("does not describe a delayed device read as relay activity", () => {
+    expect(
+      describeAccountSearchSource(undefined, { device: true, network: false })
+    ).toBe("Searching this device...")
+  })
+
+  it("describes an outstanding network phase as relay activity", () => {
+    expect(
+      describeAccountSearchSource(undefined, { device: true, network: true })
+    ).toBe("Searching relays...")
   })
 
   it("removes discovered sellers before applying the display cap", async () => {

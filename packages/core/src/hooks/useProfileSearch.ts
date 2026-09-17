@@ -37,6 +37,10 @@ export interface UseProfileSearchResult {
    * to send to a relay it stays `not_queried` for good.
    */
   data: ProfileSearchResult | undefined
+  /** True while the device-cache phase for `activeQuery` is outstanding. */
+  isDeviceFetching: boolean
+  /** True only while relay work for `activeQuery` is outstanding. */
+  isNetworkFetching: boolean
   /** True while any phase for `activeQuery` is still outstanding. */
   isFetching: boolean
   /** True while the input has changed and the settle timer is still running. */
@@ -206,12 +210,15 @@ export function useProfileSearch(
   const isSettling = networkEligible && settledQuery !== trimmed
   const networkDone =
     !networkEligible || networkData !== undefined || networkQuery.isError
+  const isDeviceFetching = eligible && cachedQuery.isFetching
+  const isNetworkFetching = networkEligible && (isSettling || !networkDone)
   return {
     activeQuery: eligible ? trimmed : "",
     settledQuery: eligible ? settledQuery : "",
     data,
-    isFetching:
-      eligible && (cachedQuery.isFetching || isSettling || !networkDone),
+    isDeviceFetching,
+    isNetworkFetching,
+    isFetching: isDeviceFetching || isNetworkFetching,
     isSettling,
   }
 }

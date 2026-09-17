@@ -109,6 +109,12 @@ describe("short query handling", () => {
     expect(hook).toMatch(
       /const networkDone =\s*!networkEligible \|\| networkData !== undefined \|\| networkQuery\.isError/
     )
+    expect(hook).toContain(
+      "const isNetworkFetching = networkEligible && (isSettling || !networkDone)"
+    )
+    expect(hook).toContain(
+      "const isDeviceFetching = eligible && cachedQuery.isFetching"
+    )
   })
 })
 
