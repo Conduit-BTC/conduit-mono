@@ -345,6 +345,38 @@ describe("account-scoped search plan", () => {
       /authenticatedPubkey\s*\?[\s\S]{0,120}: loadRelaySettingsPlanningSnapshot\(\)/
     )
   })
+
+  it("carries the active account to the final relay admission boundary", async () => {
+    const attempts: Array<{
+      accountPubkey?: string | null
+      authenticatedPubkey?: string | null
+    }> = []
+
+    await searchNetworkProfiles(
+      { query: "alice", authenticatedPubkey: ALICE },
+      deps({
+        fetchEvents: async (_filter, options) => {
+          attempts.push({
+            accountPubkey: options.accountPubkey,
+            authenticatedPubkey: options.authenticatedPubkey,
+          })
+          return {
+            events: [],
+            relays: options.relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 0,
+            })),
+            eventsVerified: true,
+          }
+        },
+      })
+    )
+
+    expect(attempts).toEqual([
+      { accountPubkey: ALICE, authenticatedPubkey: ALICE },
+    ])
+  })
 })
 
 describe("searchProfiles", () => {

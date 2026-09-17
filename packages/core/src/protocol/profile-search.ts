@@ -175,8 +175,8 @@ export interface ProfileSearchQuery {
    */
   onSellerLookupSettled?: (state: "read" | "unavailable") => void
   /**
-   * Active account. Its validated signed relay list supplies the NIP-50 read
-   * relays for this search; a guest plan never reuses an account plan.
+   * Active account. Its durable whole-relay exclusions gate the final search
+   * I/O; a guest search remains a public read without account-local policy.
    */
   authenticatedPubkey?: string | null
 }
@@ -193,7 +193,12 @@ export interface ProfileSearchDependencies {
   ) => string[] | Promise<string[]>
   fetchEvents: (
     filter: NDKFilter,
-    options: { relayUrls: string[]; signal?: AbortSignal }
+    options: {
+      relayUrls: string[]
+      accountPubkey?: string | null
+      authenticatedPubkey?: string | null
+      signal?: AbortSignal
+    }
   ) => Promise<FetchEventsFanoutResult>
 }
 
@@ -397,6 +402,8 @@ const defaultDependencies: ProfileSearchDependencies = {
   fetchEvents: (filter, options) =>
     fetchEventsFanoutDetailed(filter, {
       relayUrls: options.relayUrls,
+      accountPubkey: options.accountPubkey,
+      authenticatedPubkey: options.authenticatedPubkey,
       signal: options.signal,
       connectTimeoutMs: 1_500,
       fetchTimeoutMs: 3_000,
@@ -584,7 +591,12 @@ export async function searchNetworkProfiles(
           search: query,
           limit: NETWORK_FETCH_LIMIT,
         },
-        { relayUrls, signal: input.signal }
+        {
+          relayUrls,
+          accountPubkey: input.authenticatedPubkey ?? null,
+          authenticatedPubkey: input.authenticatedPubkey ?? null,
+          signal: input.signal,
+        }
       )
       summary = { ...summary, ...summarizeProfileSearchRelays(result) }
       const events = pickLatestEventPerPubkey(result.events)

@@ -11,7 +11,7 @@ import { MerchantAvatarFallback } from "../components/MerchantIdentity"
 import { SellerCard } from "../components/SellerCard"
 import { useSellerDirectory } from "../hooks/useSellerDirectory"
 import {
-  describeAccountSearchEvidence,
+  describeAccountSearchSource,
   getAccountSuggestionDescription,
   getAccountSuggestionLabel,
   getAccountSuggestionTarget,
@@ -75,7 +75,6 @@ function SellersPage() {
     return () => window.clearTimeout(timeoutId)
   }, [queryValue, search.q, updateSearch])
 
-  const evidence = describeAccountSearchEvidence(directory.accountSearch.data)
   const showNetworkSection =
     directory.query.trim().length >= PROFILE_SEARCH_MIN_QUERY_LENGTH
 
@@ -176,9 +175,10 @@ function SellersPage() {
               Other accounts
             </h2>
             <span className="text-sm text-[var(--text-muted)]">
-              {directory.accountSearch.isFetching
-                ? "Searching relays..."
-                : (evidence ?? "From search relays")}
+              {describeAccountSearchSource(
+                directory.accountSearch.data,
+                directory.accountSearch.isFetching
+              )}
             </span>
           </div>
           {directory.networkAccounts.length === 0 ? (

@@ -148,14 +148,37 @@ test("sellers tab lists discovered storefronts and filters by name @market", asy
     directory.getByRole("link", { name: /Alice Storefront/ })
   ).toBeVisible()
 
+  const networkAccounts = page.locator(
+    'section[aria-labelledby="network-accounts-heading"]'
+  )
+  await page.getByRole("textbox", { name: "Filter sellers" }).fill("a")
+  await expect(page).toHaveURL(/\/sellers\?.*q=a(?:&|$)/)
+  await expect(networkAccounts).toContainText("From this device")
+  await expect(networkAccounts).not.toContainText("From search relays")
+
   await page
     .getByRole("textbox", { name: "Filter sellers" })
     .fill("zzzz-no-match")
   await expect(page).toHaveURL(/\/sellers\?.*q=zzzz-no-match/)
   await expect(directory).toContainText("No discovered seller name matches")
+  await expect(networkAccounts).toBeVisible()
+})
+
+test("cache-only product search does not open an empty suggestions panel @market", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:7000/products")
+  await seedAccounts(page)
+  await page.reload()
+
+  const input = page.getByRole("combobox", {
+    name: "Search products and accounts",
+  })
+  await input.fill("~")
   await expect(
-    page.locator('section[aria-labelledby="network-accounts-heading"]')
-  ).toBeVisible()
+    page.getByRole("listbox", { name: "Matching stores and accounts" })
+  ).toBeHidden()
+  await expect(input).toHaveAttribute("aria-expanded", "false")
 })
 
 test("sellers page filters with its own field while Enter still searches products @market", async ({

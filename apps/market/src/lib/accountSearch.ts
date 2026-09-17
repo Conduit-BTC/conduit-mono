@@ -17,6 +17,18 @@ export const ACCOUNT_SUGGESTION_LIMIT = 5
  */
 export const ACCOUNT_SEARCH_CANDIDATE_LIMIT = 20
 
+export function describeAccountSearchSource(
+  result: ProfileSearchResult | undefined,
+  isFetching: boolean
+): string {
+  if (isFetching) return "Searching relays..."
+  const evidence = describeAccountSearchEvidence(result)
+  if (evidence) return evidence
+  return result?.evidence === "not_queried"
+    ? "From this device"
+    : "From search relays"
+}
+
 /**
  * Resolves the highlighted option by account, not by position. Relay results
  * merge into a list that is already on screen, so an index would silently

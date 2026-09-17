@@ -214,4 +214,18 @@ describe("highlighted suggestion", () => {
     expect(header).toContain("useState<string | null>(")
     expect(header).not.toContain("useState(-1)")
   })
+
+  it("does not open an empty cache-only suggestion panel", async () => {
+    const header = await readFile(
+      "apps/market/src/components/MarketHeader.tsx",
+      "utf8"
+    )
+    const openExpression = header.slice(
+      header.indexOf("const suggestionsOpen ="),
+      header.indexOf("useEffect", header.indexOf("const suggestionsOpen ="))
+    )
+
+    expect(openExpression).toContain("!!accountEvidence")
+    expect(openExpression).not.toContain("!!accountSearch.data")
+  })
 })

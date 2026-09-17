@@ -4,6 +4,7 @@ import type { ProfileSearchMatch } from "../packages/core/src/protocol/profile-s
 import {
   ACCOUNT_SEARCH_CANDIDATE_LIMIT,
   ACCOUNT_SUGGESTION_LIMIT,
+  describeAccountSearchSource,
   limitAccountMatches,
 } from "../apps/market/src/lib/accountSearch"
 import {
@@ -73,6 +74,29 @@ describe("seller directory", () => {
 })
 
 describe("other accounts capping", () => {
+  it("describes cache-only account matches without claiming relay provenance", () => {
+    expect(
+      describeAccountSearchSource(
+        {
+          query: "a",
+          matches: [match({ pubkey: BUYER, source: "local_cache" })],
+          evidence: "not_queried",
+          relaysPlanned: 0,
+          relaysCompleted: 0,
+          relaysDegraded: 0,
+          verified: true,
+          device: {
+            profileCache: "read",
+            sellerFlags: "read",
+            cachedFrontiers: "not_read",
+          },
+          superseded: [],
+        },
+        false
+      )
+    ).toBe("From this device")
+  })
+
   it("removes discovered sellers before applying the display cap", async () => {
     const sellers = Array.from(
       { length: ACCOUNT_SUGGESTION_LIMIT },

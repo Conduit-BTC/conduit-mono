@@ -425,15 +425,13 @@ export function MarketHeader() {
     },
     [accountItems]
   )
+  const accountEvidence = describeAccountSearchEvidence(accountSearch.data)
   const suggestionsOpen =
     searchFocused &&
     searchDirty &&
     !suggestionsDismissed &&
     accountSearch.activeQuery.length > 0 &&
-    (accountItems.length > 0 ||
-      !!accountSearch.data ||
-      accountSearch.isFetching)
-  const accountEvidence = describeAccountSearchEvidence(accountSearch.data)
+    (accountItems.length > 0 || !!accountEvidence || accountSearch.isFetching)
 
   useEffect(() => {
     setActiveSuggestionId(null)
