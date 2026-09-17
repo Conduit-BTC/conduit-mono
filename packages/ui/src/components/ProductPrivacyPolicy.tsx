@@ -2,7 +2,7 @@ import { ProductLegalPageLayout } from "./ProductLegalPageLayout"
 import {
   ProductPrivacyPolicyVersion,
   ProductPrivacyScopeNoticeVersion,
-} from "../legal/versions/product-legal-v1.1-2026-08-09"
+} from "../legal/versions/product-legal-v1.2-2026-09-17"
 
 export function ProductPrivacyPolicy({
   deploymentHostname,
