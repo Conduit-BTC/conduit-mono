@@ -900,6 +900,20 @@ describe("shared progressive event catalogs", () => {
       expectedComplete: true,
     },
     {
+      name: "does not restart a completed event read for locally superseded product evidence",
+      load: async () => ({
+        ...raw(),
+        result: productRead({
+          issue: "cached_only",
+          listing: "unavailable",
+          stale: true,
+        }),
+      }),
+      expectedReadsAfterFocus: 1,
+      expectedError: false,
+      expectedComplete: true,
+    },
+    {
       name: "restarts a stale incomplete event read when the window regains focus",
       load: async () => ({ ...raw(), complete: false }),
       expectedReadsAfterFocus: 2,
