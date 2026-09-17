@@ -35,7 +35,7 @@ export function hasWebLN(): boolean {
 /**
  * Which phase of a WebLN payment attempt failed.
  *
- * - `unavailable`, `enable`: the invoice never reached the wallet, so the
+ * - `unavailable`, `enable`, `admission`: the invoice never reached the wallet, so the
  *   payment cannot have moved and another rail may take it.
  * - `submitted`: the wallet held the invoice and then rejected. The outcome is
  *   unknown, so no rail may retry automatically, but the shopper may still be
@@ -44,7 +44,7 @@ export function hasWebLN(): boolean {
  *   preimage, so it most likely paid. Treat as ambiguous and offer nothing.
  */
 export type WeblnPaymentFailurePhase =
-  "unavailable" | "enable" | "submitted" | "settled_without_proof"
+  "unavailable" | "enable" | "admission" | "submitted" | "settled_without_proof"
 
 export const WEBLN_MISSING_PROOF_MESSAGE =
   "WebLN payment did not return a payment proof"
@@ -66,6 +66,7 @@ export class WeblnPaymentError extends Error {
 const WEBLN_PAYMENT_FAILURE_PHASES: readonly WeblnPaymentFailurePhase[] = [
   "unavailable",
   "enable",
+  "admission",
   "submitted",
   "settled_without_proof",
 ]
@@ -140,6 +141,7 @@ export async function weblnMakeInvoice(params: {
  */
 export async function weblnSendPayment(params: {
   invoice: string
+  beforeSend?: () => Promise<void>
 }): Promise<{ preimage: string; paymentHash?: string }> {
   if (typeof window === "undefined" || !window.webln) {
     throw new WeblnPaymentError("WebLN provider not available", "unavailable")
@@ -162,6 +164,18 @@ export async function weblnSendPayment(params: {
         ? error.message
         : "Browser wallet rejected the connection request",
       "enable",
+      { cause: error }
+    )
+  }
+
+  try {
+    await params.beforeSend?.()
+  } catch (error) {
+    throw new WeblnPaymentError(
+      error instanceof Error
+        ? error.message
+        : "Payment is no longer authorized.",
+      "admission",
       { cause: error }
     )
   }

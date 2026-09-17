@@ -6,12 +6,15 @@ import {
   buildMerchantEventParticipationUrl,
   encodeEventMarketNaddr,
   inferConduitAppOrigin,
+  pubkeyToNpub,
 } from "@conduit/core"
 
 const EVENT_COORDINATE = `30405:${"1".repeat(64)}:fall-market`
 const EVENT_NADDR = encodeEventMarketNaddr(EVENT_COORDINATE, [
   "wss://relay.example/events",
 ])
+const MERCHANT_PUBKEY = "2".repeat(64)
+const MERCHANT_NPUB = pubkeyToNpub(MERCHANT_PUBKEY)
 
 describe("paired Conduit app origins", () => {
   it("falls back to the canonical production apps", () => {
@@ -139,6 +142,18 @@ describe("event market links", () => {
     ).toBe(`http://127.0.0.1:7001/events?event=${EVENT_NADDR}`)
   })
 
+  it("builds a canonical merchant-filtered URL on the existing event catalog", () => {
+    for (const merchantPubkey of [MERCHANT_PUBKEY, MERCHANT_NPUB]) {
+      expect(
+        buildMarketEventCatalogUrl("https://shop.conduit.market", EVENT_NADDR, {
+          merchantPubkey,
+        })
+      ).toBe(
+        `https://shop.conduit.market/events/${EVENT_NADDR}?merchant=${MERCHANT_NPUB}`
+      )
+    }
+  })
+
   it("rejects attacker origins and non-exact naddr values", () => {
     expect(() =>
       buildMarketEventCatalogUrl("https://attacker.example", EVENT_NADDR)
@@ -155,6 +170,16 @@ describe("event market links", () => {
         `https://attacker.example/${EVENT_NADDR}`
       )
     ).toThrow("exact event catalog naddr")
+    expect(() =>
+      buildMarketEventCatalogUrl("https://shop.conduit.market", EVENT_NADDR, {
+        merchantPubkey: "not-a-pubkey",
+      })
+    ).toThrow("valid public key")
+    expect(() =>
+      buildMarketEventCatalogUrl("https://shop.conduit.market", EVENT_NADDR, {
+        merchantPubkey: "",
+      })
+    ).toThrow("valid public key")
   })
 })
 

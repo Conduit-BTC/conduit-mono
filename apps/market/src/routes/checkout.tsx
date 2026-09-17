@@ -1024,6 +1024,8 @@ function CheckoutPage() {
     signer,
     capabilities,
     authGeneration,
+    method: authMethod,
+    isAuthGenerationCurrent,
     status: authStatus,
   } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -1161,7 +1163,7 @@ function CheckoutPage() {
     authSignerReadiness === "pending" || restorePendingPubkey !== null
   const isGuestCheckout = !authPending && authSignerReadiness === "disconnected"
   const shouldContinueBuyerSession = signedBuyerPubkey
-    ? () => authGenerationRef.current === authGeneration
+    ? () => isAuthGenerationCurrent(authGeneration)
     : undefined
   const signerBlockedMessage =
     authSignerReadiness === "unavailable"
@@ -2393,6 +2395,7 @@ function CheckoutPage() {
         publishBuyerOrderMessage(rumor, ndk, selectedMerchant, buyerIdentity, {
           accountPubkey: signedBuyerPubkey,
           authenticatedPubkey: draftOwnerIdentity,
+          ...(authMethod ? { relayAuthMethod: authMethod } : {}),
           shouldContinue: shouldContinueBuyerSession,
         }),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
@@ -2916,6 +2919,7 @@ function CheckoutPage() {
         {
           accountPubkey: signedBuyerPubkey,
           authenticatedPubkey: draftOwnerIdentity,
+          ...(authMethod ? { relayAuthMethod: authMethod } : {}),
           shouldContinue: shouldContinueBuyerSession,
         }
       )

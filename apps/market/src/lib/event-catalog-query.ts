@@ -16,6 +16,40 @@ export type EventCatalogQueryScope = {
   authGeneration: number
 }
 
+function hasUnavailableRelayCoverage(catalog: RawEventCatalog | undefined) {
+  const coverage = catalog?.resolution?.coverage
+  return Boolean(
+    coverage &&
+    coverage.attemptedRelayCount > 0 &&
+    coverage.completeRelayCount === 0 &&
+    coverage.partialRelayCount === 0
+  )
+}
+
+function hasUnavailableAcceptedProductHydration(
+  catalog: RawEventCatalog | undefined
+) {
+  const acceptedCoordinates = new Set(
+    catalog?.resolution?.acceptedProductCoordinates ?? []
+  )
+  if (acceptedCoordinates.size === 0) return false
+
+  return Boolean(
+    catalog?.result?.diagnostics.some(
+      (diagnostic) =>
+        acceptedCoordinates.has(diagnostic.productId) &&
+        diagnostic.issue === "lookup_unavailable"
+    )
+  )
+}
+
+function hasUnavailableCatalogEvidence(catalog: RawEventCatalog | undefined) {
+  return (
+    hasUnavailableRelayCoverage(catalog) ||
+    hasUnavailableAcceptedProductHydration(catalog)
+  )
+}
+
 export function eventCatalogQueryIdentity(
   reference: string,
   scope: EventCatalogQueryScope
@@ -86,8 +120,20 @@ export function eventCatalogQueryOptions(
     select: reconcile,
     // Reuse a completed read across detail/card mounts and short return visits.
     // Incomplete snapshots remain stale so an interrupted read is resumed.
-    staleTime: (query) => (query.state.data?.complete ? 60_000 : 0),
+    staleTime: (query) =>
+      query.state.data?.complete &&
+      !hasUnavailableCatalogEvidence(query.state.data)
+        ? 60_000
+        : 0,
     gcTime: 30 * 60_000,
+    // A successfully completed catalog stays quiet on focus, even after its
+    // freshness window expires. Interrupted, failed, and all-relay-unavailable
+    // reads still use focus as a recovery signal.
+    refetchOnWindowFocus: (query) =>
+      query.state.status === "error"
+        ? "always"
+        : !query.state.data?.complete ||
+          hasUnavailableCatalogEvidence(query.state.data),
     retry: false,
   })
 }
