@@ -17,6 +17,7 @@ import {
   publishSignedEventToRelay,
   publishWithPlanner,
   setActiveRelaySettingsScope,
+  type PublishWithPlannerInput,
   type RelayList,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -130,9 +131,51 @@ function signedRawTestEvent(
   )
 }
 
+function authenticatedPublishInput(
+  relayUrls: readonly string[],
+  overrides: {
+    event?: NDKEvent
+    input?: Partial<
+      Omit<PublishWithPlannerInput, "intent" | "exclusiveRelayUrls">
+    >
+  } = {}
+): { event: NDKEvent; input: PublishWithPlannerInput } {
+  return {
+    event:
+      overrides.event ??
+      signedTestEvent({
+        kind: EVENT_KINDS.GIFT_WRAP,
+        publish: async () => new Set(),
+      }),
+    input: {
+      intent: "recipient_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      authenticatedPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: {
+        get: async (pubkey) => accountNetworkState(pubkey, []),
+      },
+      recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
+      exclusiveRelayUrls: relayUrls,
+      deliveryMode: "critical",
+      relayAuthentication: {
+        expectedPubkey: AUTHOR_PUBKEY,
+        sessionScope: {},
+        signer: {
+          authMethod: "nip07",
+          getPublicKey: async () => AUTHOR_PUBKEY,
+          signEvent: async () => signedRawTestEvent({ kind: 22_242 }),
+        },
+      },
+      ...overrides.input,
+    },
+  }
+}
+
 function installRelayPublishWebSocket(
   options: {
     accepted?: boolean
+    authTransportFailureRelayUrl?: string
     closeAfterResponse?: boolean
     closeBeforeResponse?: boolean
     closeDelayMs?: number
@@ -181,8 +224,22 @@ function installRelayPublishWebSocket(
         string,
         SignedPublicNostrEvent | undefined,
       ]
+      if (
+        frame[0] === "AUTH" &&
+        this.url === options.authTransportFailureRelayUrl
+      ) {
+        throw new Error("AUTH frame transport failed")
+      }
       if (frame[0] !== "EVENT" || !frame[1]?.id) return
       sentEvents.push(frame[1])
+      if (this.url === options.authTransportFailureRelayUrl) {
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: JSON.stringify(["AUTH", "relay-auth-challenge"]),
+          } as MessageEvent<string>)
+        })
+        return
+      }
       if (options.closeBeforeResponse) {
         queueMicrotask(() => this.close())
         return
@@ -304,6 +361,242 @@ describe("planPublishRelays", () => {
         exclusiveRelayUrls: [remoteWs],
       })
     ).toMatchObject({ primaryRelayUrls: [] })
+  })
+
+  it("uses one foreground NIP-42 writer for an exclusive gift-wrap publish", async () => {
+    const relayUrl = "wss://auth.nostr1.com"
+    let ndkPublishCalls = 0
+    let exactWriteCalls = 0
+    const fixture = authenticatedPublishInput([relayUrl], {
+      event: signedTestEvent({
+        kind: EVENT_KINDS.GIFT_WRAP,
+        publish: async () => {
+          ndkPublishCalls += 1
+          return new Set()
+        },
+      }),
+    })
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async (input) => {
+        exactWriteCalls += 1
+        expect(input.relayUrl).toBe(relayUrl)
+        expect(input.signedEvent).toEqual(fixture.event.rawEvent())
+        expect(input.timeoutMs).toBe(15_000)
+        expect(input.authorization?.expectedPubkey).toBe(AUTHOR_PUBKEY)
+        expect(input.authorization?.signer).toBe(
+          fixture.input.relayAuthentication?.signer
+        )
+        return "acked"
+      },
+    })
+
+    const result = await publishWithPlanner(fixture.event, fixture.input)
+
+    expect(result.attemptedRelayUrls).toEqual([relayUrl])
+    expect(result.successfulRelayUrls).toEqual([relayUrl])
+    expect(result.failedRelayUrls).toEqual([])
+    expect(exactWriteCalls).toBe(1)
+    expect(ndkPublishCalls).toBe(0)
+  })
+
+  it("continues to a later exact relay after an AUTH-frame transport failure", async () => {
+    const firstRelay = "wss://first-auth-transport.example"
+    const secondRelay = "wss://second-auth-transport.example"
+    const socket = installRelayPublishWebSocket({
+      authTransportFailureRelayUrl: firstRelay,
+    })
+
+    try {
+      const fixture = authenticatedPublishInput([firstRelay, secondRelay], {
+        input: {
+          relayAuthentication: {
+            expectedPubkey: AUTHOR_PUBKEY,
+            sessionScope: {},
+            signer: {
+              authMethod: "nip07",
+              getPublicKey: async () => AUTHOR_PUBKEY,
+              signEvent: async (event) =>
+                finalizeEvent(
+                  {
+                    kind: event.kind,
+                    created_at: event.created_at,
+                    tags: event.tags,
+                    content: event.content,
+                  },
+                  AUTHOR_SECRET
+                ),
+            },
+          },
+        },
+      })
+
+      const result = await publishWithPlanner(fixture.event, fixture.input)
+
+      expect(socket.openedUrls).toEqual([firstRelay, secondRelay])
+      expect(result.successfulRelayUrls).toEqual([secondRelay])
+      expect(result.failedRelayUrls).toEqual([firstRelay])
+    } finally {
+      socket.restore()
+    }
+  })
+
+  it("retains an exact relay rejection after another authenticated target ACKs", async () => {
+    const acceptedRelay = "wss://accepted-auth-write.example"
+    const rejectedRelay = "wss://rejected-auth-write.example"
+    const fixture = authenticatedPublishInput([acceptedRelay, rejectedRelay])
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async ({ relayUrl }) =>
+        relayUrl === acceptedRelay ? "acked" : "rejected",
+    })
+
+    const result = await publishWithPlanner(fixture.event, fixture.input)
+
+    expect(result.successfulRelayUrls).toEqual([acceptedRelay])
+    expect(result.failedRelayUrls).toEqual([rejectedRelay])
+    expect(result.rejectedRelayUrls).toEqual([rejectedRelay])
+    expect(result.relayFailureMessages[rejectedRelay]).toBe(
+      "Relay rejected the event"
+    )
+  })
+
+  it("does not repeat an auth-capable exact write after its bounded timeout", async () => {
+    const relayUrl = "wss://auth.nostr1.com"
+    let exactWriteCalls = 0
+    const fixture = authenticatedPublishInput([relayUrl])
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async () => {
+        exactWriteCalls += 1
+        return "timed_out"
+      },
+    })
+
+    await expect(
+      publishWithPlanner(fixture.event, fixture.input)
+    ).rejects.toThrow("required exclusive relay set")
+
+    expect(exactWriteCalls).toBe(1)
+  })
+
+  it("suppresses later auth prompts after a session-level signer failure and permits a fresh retry", async () => {
+    const firstRelay = "wss://first-auth-prompt.example"
+    const secondRelay = "wss://second-auth-prompt.example"
+    const attempts: string[] = []
+    const fixture = authenticatedPublishInput([firstRelay, secondRelay])
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async (input) => {
+        attempts.push(input.relayUrl)
+        input.authorization?.onSignerFailure?.()
+        return "timed_out"
+      },
+    })
+    const publish = async () =>
+      await publishWithPlanner(fixture.event, fixture.input)
+
+    await expect(publish()).rejects.toThrow("required exclusive relay set")
+    expect(attempts).toEqual([firstRelay])
+
+    await expect(publish()).rejects.toThrow("required exclusive relay set")
+    expect(attempts).toEqual([firstRelay, firstRelay])
+  })
+
+  it("rejects relay authentication without matching foreground account authority", async () => {
+    let exactWriteCalls = 0
+    const fixture = authenticatedPublishInput(["wss://auth.nostr1.com"], {
+      input: { authenticatedPubkey: OTHER_AUTHOR_PUBKEY },
+    })
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async () => {
+        exactWriteCalls += 1
+        return "acked"
+      },
+    })
+
+    await expect(
+      publishWithPlanner(fixture.event, fixture.input)
+    ).rejects.toThrow("active foreground account")
+    expect(exactWriteCalls).toBe(0)
+  })
+
+  it("rechecks each authenticated target after an earlier write commits an exclusion", async () => {
+    const firstRelay = "wss://first-auth-write.example"
+    const excludedRelay = "wss://excluded-auth-write.example"
+    let exclusionCommitted = false
+    const attempts: string[] = []
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) =>
+        accountNetworkState(pubkey, exclusionCommitted ? [excludedRelay] : []),
+    }
+    const fixture = authenticatedPublishInput([firstRelay, excludedRelay], {
+      input: { accountNetworkLocalStateRepository: repository },
+    })
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async ({ relayUrl }) => {
+        attempts.push(relayUrl)
+        exclusionCommitted = true
+        return "acked"
+      },
+    })
+
+    const result = await publishWithPlanner(fixture.event, fixture.input)
+
+    expect(attempts).toEqual([firstRelay])
+    expect(result.attemptedRelayUrls).toEqual([firstRelay])
+    expect(result.successfulRelayUrls).toEqual([firstRelay])
+    expect(result.failedRelayUrls).toEqual([])
+  })
+
+  it("preserves an authenticated relay ACK when account authority changes before the next target", async () => {
+    const firstRelay = "wss://first-auth-session.example"
+    const secondRelay = "wss://second-auth-session.example"
+    const attempts: string[] = []
+    let current = true
+    const fixture = authenticatedPublishInput([firstRelay, secondRelay], {
+      input: { shouldContinue: () => current },
+    })
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async ({ relayUrl }) => {
+        attempts.push(relayUrl)
+        current = false
+        return "acked"
+      },
+    })
+
+    const result = await publishWithPlanner(fixture.event, fixture.input)
+
+    expect(attempts).toEqual([firstRelay])
+    expect(result.attemptedRelayUrls).toEqual([firstRelay])
+    expect(result.successfulRelayUrls).toEqual([firstRelay])
+    expect(result.failedRelayUrls).toEqual([])
+  })
+
+  it("preserves an authenticated relay ACK when the next eligibility read fails", async () => {
+    const firstRelay = "wss://first-auth-eligibility.example"
+    const secondRelay = "wss://second-auth-eligibility.example"
+    const attempts: string[] = []
+    let firstRelayAcked = false
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => {
+        if (firstRelayAcked) throw new Error("eligibility storage unavailable")
+        return accountNetworkState(pubkey, [])
+      },
+    }
+    const fixture = authenticatedPublishInput([firstRelay, secondRelay], {
+      input: { accountNetworkLocalStateRepository: repository },
+    })
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async ({ relayUrl }) => {
+        attempts.push(relayUrl)
+        firstRelayAcked = true
+        return "acked"
+      },
+    })
+
+    const result = await publishWithPlanner(fixture.event, fixture.input)
+
+    expect(attempts).toEqual([firstRelay])
+    expect(result.attemptedRelayUrls).toEqual([firstRelay])
+    expect(result.successfulRelayUrls).toEqual([firstRelay])
+    expect(result.failedRelayUrls).toEqual([])
   })
 
   it("binds durable signed owner membership instead of stale self hints", async () => {
