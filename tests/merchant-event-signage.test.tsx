@@ -14,6 +14,7 @@ import {
   buildEventQrSignSheet,
   buildMerchantEventQrSignSheet,
   buildMerchantEventQrSignSheets,
+  formatEventSignSchedule,
   getEligibleEventSignMerchants,
   getEventSignEvidenceNotice,
   isMerchantEligibleForEventSign,
@@ -151,6 +152,24 @@ describe("merchant event sign eligibility", () => {
 })
 
 describe("event sign composition", () => {
+  it("treats date-based calendar ends as exclusive", () => {
+    const singleDay = market([], {
+      start: "2026-10-17",
+      end: "2026-10-18",
+    })
+    const multiDay = market([], {
+      start: "2026-10-17",
+      end: "2026-10-20",
+    })
+
+    const singleDaySchedule = formatEventSignSchedule(singleDay, "en-US")
+    const multiDaySchedule = formatEventSignSchedule(multiDay, "en-US")
+
+    expect(singleDaySchedule).toBe("Oct 17, 2026")
+    expect(multiDaySchedule).toBe("Oct 17, 2026 – Oct 19, 2026")
+    expect(multiDaySchedule).not.toContain("Oct 20")
+  })
+
   it("targets the canonical event route and the durable merchant filter", () => {
     const current = market([participation(MERCHANT_A, "bread")])
     const eventSheet = buildEventQrSignSheet(current, MERCHANT_LOCATION)

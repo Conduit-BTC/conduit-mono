@@ -21,7 +21,10 @@ import {
   formatEventRelayReadCoverage,
   getEventActionabilityPresentation,
 } from "@conduit/ui"
-import { buildMerchantEventQrSignSheet } from "../lib/event-signage"
+import {
+  buildMerchantEventQrSignSheet,
+  isMerchantEligibleForEventSign,
+} from "../lib/event-signage"
 import {
   isParticipationProductAvailable,
   getResolvedEventMarketRelayHints,
@@ -115,11 +118,11 @@ function MerchantEventSignageAction({
   onRefresh: () => void | Promise<void>
 }) {
   const [open, setOpen] = useState(false)
-  const merchantProfileQuery = useProfile(merchantPubkey, {
+  const eligible = isMerchantEligibleForEventSign(market, merchantPubkey)
+  const merchantProfileQuery = useProfile(eligible ? merchantPubkey : null, {
     accountPubkey: merchantPubkey,
     authenticatedPubkey,
     shouldContinue,
-    relayHints: getResolvedEventMarketRelayHints(market.source),
     priority: "visible",
     maxUnresolvedRefetches: 1,
   })

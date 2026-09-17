@@ -73,6 +73,30 @@ describe("Merchant event actor identity", () => {
     )
   })
 
+  it("reads an eligible merchant sign profile without organizer relay hints", async () => {
+    const source = await Bun.file(
+      "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
+    ).text()
+    const signageAction = source.slice(
+      source.indexOf("function MerchantEventSignageAction("),
+      source.indexOf("export function MerchantEventMarketPanel(")
+    )
+    const profileRead = signageAction.slice(
+      signageAction.indexOf("const merchantProfileQuery = useProfile("),
+      signageAction.indexOf("const sheet = buildMerchantEventQrSignSheet(")
+    )
+
+    expect(signageAction).toContain(
+      "isMerchantEligibleForEventSign(market, merchantPubkey)"
+    )
+    expect(profileRead).toContain("eligible ? merchantPubkey : null")
+    expect(profileRead).toContain("accountPubkey: merchantPubkey")
+    expect(profileRead).toContain("authenticatedPubkey,")
+    expect(profileRead).toContain("shouldContinue,")
+    expect(profileRead).not.toContain("relayHints")
+    expect(signageAction).toContain("merchantProfileQuery.data")
+  })
+
   it("prefers a hydrated profile name without changing signed provenance", () => {
     expect(
       getEventActorDisplayName(actorPubkey, {

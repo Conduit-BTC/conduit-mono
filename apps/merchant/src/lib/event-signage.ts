@@ -15,6 +15,7 @@ import {
   getEventMarketMerchantFilterUrl,
   getEventMarketUrl,
 } from "./market-links"
+import { formatMerchantEventTimelineSchedule } from "./merchant-event-timeline"
 
 export interface EligibleEventSignMerchant {
   pubkey: string
@@ -50,14 +51,15 @@ function cleanOptionalText(value: string | undefined): string | undefined {
 }
 
 export function formatEventSignSchedule(
-  market: MerchantOrganizerEventMarket
+  market: MerchantOrganizerEventMarket,
+  locale?: string
 ): string {
   if (market.calendarKind === 31922) {
-    return market.end ? `${market.start} - ${market.end}` : String(market.start)
+    return formatMerchantEventTimelineSchedule(market, locale)
   }
 
   try {
-    const formatter = new Intl.DateTimeFormat(undefined, {
+    const formatter = new Intl.DateTimeFormat(locale, {
       dateStyle: "medium",
       timeStyle: "short",
       timeZone: market.timezone || "UTC",
