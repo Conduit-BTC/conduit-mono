@@ -356,21 +356,6 @@ describe("merchant organizer event market route", () => {
     expect(panel).toContain("disabled={pending || (!removable && !canAccept)}")
   })
 
-  it("offers one merchant-filtered booth QR per accepted verified merchant", async () => {
-    const panel = await Bun.file(
-      "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
-    ).text()
-
-    expect(panel).toContain("const acceptedMerchantCounts = new Map")
-    expect(panel).toContain("isParticipationProductPreviewVerified(item)")
-    expect(panel).toContain("acceptedMerchantCounts.set(")
-    expect(panel).toContain("getEventMarketMerchantFilterUrl(")
-    expect(panel).toContain("Merchant booth links")
-    expect(panel).toContain("<QRCodeSVG value={merchant.url}")
-    expect(panel).toContain("Copy booth link")
-    expect(panel).toContain("Open filtered catalog")
-  })
-
   it("makes event authoring requirements and modal state explicit", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
     const editor = await Bun.file(

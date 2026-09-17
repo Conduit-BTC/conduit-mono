@@ -8,14 +8,7 @@ import {
   RefreshCw,
 } from "lucide-react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   buildMarketEventCatalogUrl,
   normalizePubkey,
@@ -73,10 +66,7 @@ import {
   getEventCatalogProductAvailability,
   type EventCatalog,
 } from "../../lib/event-market-adapter"
-import {
-  parseEventCatalogSearch,
-  type EventCatalogSearch,
-} from "../../lib/event-catalog-search"
+import { parseEventCatalogSearch } from "../../lib/event-catalog-search"
 import {
   getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
@@ -440,21 +430,18 @@ function EventCatalogPage() {
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
   const selectedMerchantPubkey = normalizePubkey(search.merchant) ?? ""
-  const updateMerchantFilter = useCallback(
-    (merchantPubkey: string) => {
-      const normalized = merchantPubkey ? normalizePubkey(merchantPubkey) : null
-      navigate({
-        search: (previous: EventCatalogSearch) => {
-          const next = { ...previous }
-          if (normalized) next.merchant = pubkeyToNpub(normalized)
-          else delete next.merchant
-          return next
-        },
-        replace: true,
-      })
-    },
-    [navigate]
-  )
+  const updateMerchantFilter = (merchantPubkey: string) => {
+    const normalized = merchantPubkey ? normalizePubkey(merchantPubkey) : null
+    navigate({
+      search: (previous) => {
+        const next = { ...previous }
+        if (normalized) next.merchant = pubkeyToNpub(normalized)
+        else delete next.merchant
+        return next
+      },
+      replace: true,
+    })
+  }
   const shopperPricing = useShopperPricing()
   const session = useConduitSession()
   const [cartNotice, setCartNotice] = useState<string | null>(null)
