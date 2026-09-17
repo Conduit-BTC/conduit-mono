@@ -16,3 +16,85 @@ body {
   color: var(--text-primary);
   background-color: var(--background);
 }
+
+.event-sign-sheet {
+  aspect-ratio: 8.5 / 11;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+@page {
+  size: letter portrait;
+  margin: 0;
+}
+
+@media print {
+  html:has(body.event-sign-print-preview-open),
+  body.event-sign-print-preview-open {
+    width: 8.5in;
+    min-width: 8.5in;
+    margin: 0 !important;
+    overflow: visible !important;
+    background: white !important;
+  }
+
+  body.event-sign-print-preview-open * {
+    visibility: hidden;
+  }
+
+  body.event-sign-print-preview-open [data-event-sign-print-root],
+  body.event-sign-print-preview-open [data-event-sign-print-root] * {
+    visibility: visible;
+  }
+
+  body.event-sign-print-preview-open [data-event-sign-print-root] {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    display: block !important;
+    width: 8.5in !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    transform: none !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+
+  body.event-sign-print-preview-open .event-sign-print-controls {
+    display: none !important;
+  }
+
+  body.event-sign-print-preview-open .event-sign-print-pages {
+    display: block !important;
+    width: 8.5in !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+  }
+
+  body.event-sign-print-preview-open .event-sign-sheet {
+    width: 8.5in !important;
+    height: 11in !important;
+    max-width: none !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    break-after: page;
+    page-break-after: always;
+    box-shadow: none !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body.event-sign-print-preview-open .event-sign-sheet:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  body.event-sign-print-preview-open .event-sign-qr-frame {
+    width: 3.25in !important;
+    height: 3.25in !important;
+  }
+}

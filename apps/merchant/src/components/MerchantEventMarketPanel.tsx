@@ -4,6 +4,7 @@ import {
   ExternalLink,
   MapPin,
   PackagePlus,
+  Printer,
   RefreshCw,
   Store,
 } from "lucide-react"
@@ -20,6 +21,7 @@ import {
   formatEventRelayReadCoverage,
   getEventActionabilityPresentation,
 } from "@conduit/ui"
+import { buildMerchantEventQrSignSheet } from "../lib/event-signage"
 import {
   isParticipationProductAvailable,
   getResolvedEventMarketRelayHints,
@@ -28,6 +30,7 @@ import {
 import { getEventMarketUrl } from "../lib/market-links"
 import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { EventProductPublisherDialog } from "./EventProductPublisherDialog"
+import { EventQrPrintPreview } from "./EventQrPrintPreview"
 
 function formatSchedule(market: MerchantOrganizerEventMarket): string {
   if (market.calendarKind === 31922) {
@@ -94,6 +97,57 @@ function getPickupSummary(market: MerchantOrganizerEventMarket): string {
     return "Organizer handoff details are unresolved. Your exact merchant pickup evidence still controls whether your product can be handed out safely."
   }
   return "Organizer handoff is available, or you can hand out from your own pickup point."
+}
+
+function MerchantEventSignageAction({
+  merchantPubkey,
+  authenticatedPubkey,
+  shouldContinue,
+  market,
+  refreshing,
+  onRefresh,
+}: {
+  merchantPubkey: string
+  authenticatedPubkey: string | null
+  shouldContinue: () => boolean
+  market: MerchantOrganizerEventMarket
+  refreshing: boolean
+  onRefresh: () => void | Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const merchantProfileQuery = useProfile(merchantPubkey, {
+    accountPubkey: merchantPubkey,
+    authenticatedPubkey,
+    shouldContinue,
+    relayHints: getResolvedEventMarketRelayHints(market.source),
+    priority: "visible",
+    maxUnresolvedRefetches: 1,
+  })
+  const sheet = buildMerchantEventQrSignSheet(
+    market,
+    merchantPubkey,
+    merchantProfileQuery.data
+  )
+
+  if (!sheet) return null
+
+  return (
+    <>
+      <Button type="button" variant="outline" onClick={() => setOpen(true)}>
+        <Printer />
+        Print my event sign
+      </Button>
+      <EventQrPrintPreview
+        open={open}
+        onOpenChange={setOpen}
+        title="My event sign preview"
+        sheets={[sheet]}
+        eventState={market.state}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+      />
+    </>
+  )
 }
 
 export function MerchantEventMarketPanel({
@@ -255,6 +309,14 @@ export function MerchantEventMarketPanel({
                   <ExternalLink /> Shopper page
                 </a>
               </Button>
+              <MerchantEventSignageAction
+                merchantPubkey={merchantPubkey}
+                authenticatedPubkey={authenticatedPubkey}
+                shouldContinue={shouldContinue}
+                market={market}
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+              />
             </div>
           </CardHeader>
           <CardContent className="grid gap-5">

@@ -1688,14 +1688,22 @@ async function acceptMerchantProduct(
     exact: true,
   })
   await expect(boothHeading).toBeVisible()
-  const boothSection = boothHeading.locator("..").locator("..")
+  const boothSection = boothHeading.locator("xpath=ancestor::section")
+  const boothDetails = boothSection.locator("details")
+  const boothCount = await boothDetails.count()
+  expect(boothCount).toBeGreaterThan(0)
+  for (let index = 0; index < boothCount; index += 1) {
+    const details = boothDetails.nth(index)
+    if (!(await details.getAttribute("open"))) {
+      await details.locator("summary").click()
+    }
+  }
   const boothLink = boothSection.locator(`a[href="${boothUrl.toString()}"]`)
   await expect(boothLink).toHaveCount(1)
-  const boothDetails = boothLink.locator("xpath=ancestor::details")
-  await boothDetails.locator("summary").click()
+  const selectedBoothDetails = boothLink.locator("xpath=ancestor::details")
   await expect(boothLink).toBeVisible()
   await expect(
-    boothDetails.getByRole("img", { name: /event catalog QR code$/ })
+    selectedBoothDetails.getByRole("img", { name: /event catalog QR code$/ })
   ).toBeVisible()
   return acceptedCollection!
 }
@@ -5290,6 +5298,103 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   await expect(
     page.getByTestId("organizer-event-relay-read-coverage")
   ).toBeVisible()
+
+  const eventsHeading = page.locator("h1").filter({ hasText: /^Events$/ })
+  await page.getByRole("button", { name: "Print event sign" }).click()
+  const printPreview = page.getByTestId("event-sign-print-preview")
+  const eventSignSheet = printPreview.getByTestId("event-sign-sheet")
+  await expect(printPreview).toBeVisible()
+  await expect(eventSignSheet).toHaveAttribute("data-event-sign-kind", "event")
+  await expect(eventSignSheet).toHaveCount(1)
+  await expect(
+    printPreview.getByRole("img", { name: "Event catalog QR code" })
+  ).toBeVisible()
+  const eventSignTarget = await eventSignSheet.getAttribute("data-qr-value")
+  expect(eventSignTarget).toBeTruthy()
+  expect(new URL(eventSignTarget!).pathname).toBe(
+    `/events/${market.canonicalNaddr}`
+  )
+  expect(new URL(eventSignTarget!).searchParams.has("merchant")).toBe(false)
+  await page.evaluate(() => {
+    const trackedWindow = window as typeof window & { __printCalls?: number }
+    trackedWindow.__printCalls = 0
+    window.print = () => {
+      trackedWindow.__printCalls = (trackedWindow.__printCalls ?? 0) + 1
+    }
+  })
+  await printPreview
+    .getByRole("button", { name: "Print / Save as PDF" })
+    .click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as typeof window & { __printCalls?: number }).__printCalls
+      )
+    )
+    .toBe(1)
+  await page.emulateMedia({ media: "print" })
+  expect(
+    await eventSignSheet.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return {
+        breakAfter: style.breakAfter,
+        height: style.height,
+        printColorAdjust: style.printColorAdjust,
+        width: style.width,
+      }
+    })
+  ).toEqual({
+    breakAfter: "auto",
+    height: "1056px",
+    printColorAdjust: "exact",
+    width: "816px",
+  })
+  await expect(eventsHeading).toHaveCSS("visibility", "hidden")
+  await page.emulateMedia({ media: "screen" })
+  await printPreview.getByRole("button", { name: "Close" }).click()
+
+  await page.getByRole("button", { name: "Print merchant sign" }).click()
+  const merchantSignSheet = printPreview.getByTestId("event-sign-sheet")
+  await expect(merchantSignSheet).toHaveAttribute(
+    "data-event-sign-kind",
+    "merchant"
+  )
+  const merchantSignTarget =
+    await merchantSignSheet.getAttribute("data-qr-value")
+  expect(merchantSignTarget).toBeTruthy()
+  expect(new URL(merchantSignTarget!).pathname).toBe(
+    `/events/${market.canonicalNaddr}`
+  )
+  expect(new URL(merchantSignTarget!).searchParams.get("merchant")).toBe(
+    nip19.npubEncode(MERCHANT_PUBKEY)
+  )
+  await printPreview.getByRole("button", { name: "Close" }).click()
+
+  await page.getByRole("button", { name: "Print all merchant signs" }).click()
+  await expect(
+    printPreview.locator('[data-event-sign-page-count="1"]')
+  ).toBeVisible()
+  await printPreview.getByRole("button", { name: "Close" }).click()
+
+  await gotoAs(page, merchantUrl, "/events", "merchant", {
+    event: market.canonicalNaddr,
+  })
+  await expect(
+    page.getByRole("button", { name: "Print my event sign" })
+  ).toBeVisible({ timeout: 30_000 })
+  await page.getByRole("button", { name: "Print my event sign" }).click()
+  const selfServiceSheet = page
+    .getByTestId("event-sign-print-preview")
+    .getByTestId("event-sign-sheet")
+  await expect(selfServiceSheet).toHaveAttribute(
+    "data-qr-value",
+    merchantSignTarget!
+  )
+  await page
+    .getByTestId("event-sign-print-preview")
+    .getByRole("button", { name: "Close" })
+    .click()
+
   await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
   await expect(
     page.getByRole("heading", {
