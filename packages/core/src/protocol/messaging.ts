@@ -6,7 +6,11 @@ import {
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
 import { buildMerchantOrderReviewUrl } from "../app-links"
-import type { OrderRelayDeliveryRecord, OrderRelayDeliveryStatus } from "../db"
+import type {
+  OrderDeliveryRoute,
+  OrderRelayDeliveryRecord,
+  OrderRelayDeliveryStatus,
+} from "../db"
 import type { InboxDeclarationEvidenceRepository } from "./inbox-declaration-evidence"
 import { EVENT_KINDS } from "./kinds"
 import {
@@ -749,6 +753,18 @@ export interface PublishPrivateMessageInput {
    * write; callers may persist the signed ciphertext wraps, never plaintext.
    */
   onWrapped?: (prepared: PreparedPrivateMessageWraps) => void | Promise<void>
+  /** Persist the exact recipient wrap and immutable route before any relay I/O. */
+  onRecipientPrepared?: (
+    prepared: PreparedPrivateMessageRecipientDelivery
+  ) => void | Promise<void>
+  /** Commit attempt fencing immediately before the first recipient relay write. */
+  onRecipientPublishStarting?: (
+    prepared: PreparedPrivateMessageRecipientDelivery
+  ) => void | Promise<void>
+  /** Persist terminal outcomes from the current recipient publish batch. */
+  onRecipientPublishSettled?: (
+    delivery: PublishWithPlannerResult
+  ) => void | Promise<void>
   /**
    * Recipient/sender kind-10050 inbox relays. NIP-17 delivery is exclusive to
    * these declarations; an empty recipient list means the peer is not ready.
@@ -825,6 +841,16 @@ export interface PreparedPrivateMessageWraps {
   rumorId: string
   wrappedToRecipient: NDKEvent
   wrappedToSelf: NDKEvent | null
+}
+
+export interface PreparedPrivateMessageRecipientDelivery {
+  rumorId: string
+  wrappedToRecipient: NDKEvent
+  deliveryRoute: OrderDeliveryRoute
+  relayPlan: Array<{
+    relayUrl: string
+    source: OrderRelayDeliveryRecord["relayDelivery"][number]["source"]
+  }>
 }
 
 export interface PublishPrivateMessageResult {
@@ -1127,6 +1153,16 @@ export async function publishPrivateMessage(
     giftWrapSigner,
     wrapParams
   )
+  const preparedRecipientDelivery: PreparedPrivateMessageRecipientDelivery = {
+    rumorId: input.rumor.id,
+    wrappedToRecipient,
+    deliveryRoute: recipientRoute.route,
+    relayPlan: recipientRoute.relayUrls.map((relayUrl) => ({
+      relayUrl,
+      source: recipientRoute.relaySources[relayUrl] ?? "declared",
+    })),
+  }
+  await input.onRecipientPrepared?.(preparedRecipientDelivery)
 
   // The self-copy is a non-critical local-recovery leg: a signer failure while
   // wrapping it must never block the critical recipient delivery below.
@@ -1155,6 +1191,8 @@ export async function publishPrivateMessage(
   })
 
   let recipientDelivery: PublishWithPlannerResult
+  let recipientDeliveryReported = false
+  await input.onRecipientPublishStarting?.(preparedRecipientDelivery)
   try {
     recipientDelivery = await publishFn(wrappedToRecipient, {
       intent: "recipient_event",
@@ -1178,10 +1216,17 @@ export async function publishPrivateMessage(
         : {}),
     })
   } catch (error) {
+    if (error instanceof RelayPublishDiagnosticsError) {
+      await input.onRecipientPublishSettled?.(error.diagnostics)
+      recipientDeliveryReported = true
+    }
     if (input.shouldContinue?.() === false) throw error
     const partial = recoverPartialRelayPublishDiagnostics(error)
     if (!partial) throw error
     recipientDelivery = partial
+  }
+  if (!recipientDeliveryReported) {
+    await input.onRecipientPublishSettled?.(recipientDelivery)
   }
   if (
     Array.isArray(recipientDelivery.successfulRelayUrls) &&
@@ -1197,6 +1242,7 @@ export async function publishPrivateMessage(
   const orderRelayDelivery =
     input.rumorKind === EVENT_KINDS.ORDER
       ? buildOrderRelayDeliveryRecord({
+          rumorId: input.rumor.id,
           wrappedToRecipient,
           recipientRoute,
           recipientDelivery,
@@ -1322,6 +1368,7 @@ function consumeValidatedGuestOrderCompanionScope(input: {
 }
 
 function buildOrderRelayDeliveryRecord(input: {
+  rumorId: string
   wrappedToRecipient: NDKEvent
   recipientRoute: DeliveryRouteSelection
   recipientDelivery: Awaited<ReturnType<typeof publishWithPlanner>>
@@ -1364,6 +1411,7 @@ function buildOrderRelayDeliveryRecord(input: {
   })
 
   return {
+    rumorId: input.rumorId,
     signedRecipientWrap,
     route,
     relayDelivery,

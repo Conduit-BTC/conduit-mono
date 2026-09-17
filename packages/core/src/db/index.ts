@@ -707,6 +707,8 @@ export interface OrderRelayDelivery {
   source: "declared" | "recipient_nip65" | "compatibility_registry"
   status: OrderRelayDeliveryStatus
   attemptCount: number
+  /** Monotonic batch that most recently started this target. */
+  attemptGeneration?: number
   lastAttemptAt?: number
   acknowledgedAt?: number
   rejectedAt?: number
@@ -719,10 +721,14 @@ export interface OrderRelayDelivery {
  * plaintext, signer material, or relay failure strings.
  */
 export interface OrderRelayDeliveryRecord {
+  /** Stable id of the plaintext rumor before it was gift-wrapped. */
+  rumorId?: string
   signedRecipientWrap: SignedPublicNostrEvent
   route: OrderDeliveryRoute
   relayDelivery: OrderRelayDelivery[]
   deliveryAttemptCount: number
+  /** Monotonic fence for late timeout/rejection outcomes. */
+  deliveryAttemptGeneration?: number
   retryCount: number
   nextRetryAt?: number
   deliveryLeaseOwner?: string
@@ -873,6 +879,8 @@ export interface OrderLifecycle {
   orderDeliveryRoute?: OrderDeliveryRoute
   /** Exact encrypted wrap + per-relay ACK state for bounded retry. */
   orderRelayDelivery?: OrderRelayDeliveryRecord
+  /** Checkout must reopen this exact order before another semantic submit. */
+  checkoutRecoveryPending?: boolean
   /**
    * Opaque owner token for the currently claimed payment flow. The token fences
    * pre-wallet lifecycle writes so a resumed stale flow cannot cross the wallet

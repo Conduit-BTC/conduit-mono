@@ -287,6 +287,15 @@ export function getSessionGuestOrderSigningIdentity(
   }
 }
 
+/** Content-free locators used to reopen staged guest orders after a reload. */
+export function listSessionGuestOrderIds(
+  storage: SessionStorageLike | null = getSessionStorage(),
+  nowMs = Date.now()
+): string[] {
+  pruneExpiredSessionGuestOrderSigningIdentities(storage, nowMs)
+  return Object.keys(readGuestOrderSignerRegistry(storage))
+}
+
 export function clearSessionGuestOrderSigningIdentity(
   orderId: string,
   storage: SessionStorageLike | null = getSessionStorage()

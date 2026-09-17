@@ -26,23 +26,25 @@ import {
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
   config,
-  createOrderLifecycle,
   fetchLnurlPayMetadata,
   getPriceSats,
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
   getAuthSignerReadiness,
+  getOrderLifecycle,
   getProfiles,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
   getTelemetryLatencyBucket,
   hasWebLN,
   isCommerceReadIncomplete,
+  listOrderLifecycles,
   getNdk,
   getShippingOptionsByCoordinates,
   normalizePubkey,
   normalizePublicMediaUrl,
   orderSchema,
+  patchOrderLifecycle,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   resolveWalletPaymentInstance,
@@ -56,6 +58,7 @@ import {
   type OrderGuestContact,
   type OrderLifecycleItem,
   type OrderShippingZoneEligibility,
+  type StagedOrderLifecycleInput,
   type NwcConnection,
   type NwcGetInfoResult,
   type Profile,
@@ -199,6 +202,11 @@ import {
 } from "../lib/checkout-payment"
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
+  forgetCheckoutOrderAttempt,
+  listCheckoutOrderAttemptIds,
+  requiresCheckoutOrderRecovery,
+} from "../lib/checkout-order-attempt"
+import {
   getDeliveryNotice,
   publishBuyerOrderMessage,
   type BuyerOrderSigningIdentity,
@@ -206,6 +214,8 @@ import {
 import {
   clearSessionGuestOrderSigningIdentity,
   createSessionGuestOrderSigningIdentity,
+  getSessionGuestOrderSigningIdentity,
+  listSessionGuestOrderIds,
 } from "../lib/guest-order-identity"
 import {
   consumeHudZapIntent,
@@ -1161,9 +1171,28 @@ function CheckoutPage() {
   const authPending =
     authSignerReadiness === "pending" || restorePendingPubkey !== null
   const isGuestCheckout = !authPending && authSignerReadiness === "disconnected"
-  const shouldContinueBuyerSession = signedBuyerPubkey
-    ? () => authGenerationRef.current === authGeneration
-    : undefined
+  const shouldContinueBuyerSession = () =>
+    authGenerationRef.current === authGeneration
+  async function resolveCheckoutOrderAttempt(orderId: string): Promise<void> {
+    if (!shouldContinueBuyerSession()) {
+      throw new Error(
+        "The accepted order remains recoverable because the buyer session changed."
+      )
+    }
+    const resolved = await patchOrderLifecycle(orderId, {
+      checkoutRecoveryPending: false,
+    })
+    if (!resolved) {
+      throw new Error("The accepted order recovery state could not be saved.")
+    }
+    if (!shouldContinueBuyerSession()) {
+      await patchOrderLifecycle(orderId, { checkoutRecoveryPending: true })
+      throw new Error(
+        "The accepted order remains recoverable because the buyer session changed."
+      )
+    }
+    forgetCheckoutOrderAttempt(orderId)
+  }
   const signerBlockedMessage =
     authSignerReadiness === "unavailable"
       ? "Your Nostr account is connected, but its signer is unavailable. Disconnect and reconnect it before sending this order. Nothing will be sent or paid until you reconnect."
@@ -1265,6 +1294,155 @@ function CheckoutPage() {
       .length === 1
       ? cart.items[0]?.merchantPubkey
       : undefined)
+
+  const checkoutRecoveryScope = `${authGeneration}:${signedBuyerPubkey ?? "guest"}:${selectedMerchant ?? "none"}`
+  const [checkoutRecoveryResolution, setCheckoutRecoveryResolution] = useState<{
+    scope: string
+    blockingMessage: string | null
+  } | null>(null)
+  const checkoutRecoveryIsChecking =
+    checkoutRecoveryResolution?.scope !== checkoutRecoveryScope
+  const checkoutRecoveryBlockingMessage =
+    checkoutRecoveryResolution?.scope === checkoutRecoveryScope
+      ? checkoutRecoveryResolution.blockingMessage
+      : null
+
+  useEffect(() => {
+    if (authPending || !selectedMerchant) return
+    let active = true
+    const resolveRecovery = async (): Promise<void> => {
+      const now = Date.now()
+      const checkoutAttemptOrderIds = new Set(
+        listCheckoutOrderAttemptIds(undefined, now)
+      )
+      const guestOrderIds = new Set(listSessionGuestOrderIds(undefined, now))
+      const locatorOrderIds = Array.from(
+        new Set([...checkoutAttemptOrderIds, ...guestOrderIds])
+      )
+      const located = await Promise.all(
+        locatorOrderIds.map(async (orderId) => ({
+          orderId,
+          lifecycle: await getOrderLifecycle(orderId),
+        }))
+      )
+      for (const entry of located) {
+        if (
+          checkoutAttemptOrderIds.has(entry.orderId) &&
+          (!entry.lifecycle?.orderRelayDelivery ||
+            entry.lifecycle.orderRelayDelivery.expiresAt <= now ||
+            entry.lifecycle.checkoutRecoveryPending !== true)
+        ) {
+          forgetCheckoutOrderAttempt(entry.orderId)
+        }
+      }
+      const activeLocated = located
+        .map((entry) => entry.lifecycle)
+        .filter(
+          (lifecycle) =>
+            lifecycle?.merchantPubkey === selectedMerchant &&
+            !!lifecycle.orderRelayDelivery &&
+            lifecycle.orderRelayDelivery.expiresAt > now &&
+            requiresCheckoutOrderRecovery({
+              checkoutRecoveryPending: lifecycle.checkoutRecoveryPending,
+              hasAttemptLocator: checkoutAttemptOrderIds.has(lifecycle.orderId),
+              hasGuestKey: guestOrderIds.has(lifecycle.orderId),
+            })
+        )
+        .sort((left, right) => right!.updatedAt - left!.updatedAt)
+      const locatedOrder = activeLocated[0]
+      if (locatedOrder) {
+        const guestIdentity = getSessionGuestOrderSigningIdentity(
+          locatedOrder.orderId,
+          undefined,
+          now
+        )
+        const belongsToCurrentBuyer = signedBuyerPubkey
+          ? locatedOrder.buyerPubkey === signedBuyerPubkey
+          : guestIdentity?.pubkey === locatedOrder.buyerPubkey
+        if (!active) return
+        if (!belongsToCurrentBuyer) {
+          const blockingMessage =
+            "An order from this cart is already staged under another buyer session. Switch back to that session and recover it from Orders before creating another order."
+          setCheckoutRecoveryResolution({
+            scope: checkoutRecoveryScope,
+            blockingMessage,
+          })
+          setError(blockingMessage)
+          return
+        }
+        setCheckoutRecoveryResolution({
+          scope: checkoutRecoveryScope,
+          blockingMessage:
+            locatedOrder.orderDeliveryStatus === "sent"
+              ? "An accepted order from this cart must be reopened in Orders before another order can be created."
+              : "A saved order from this cart must be recovered from Orders before another order can be created.",
+        })
+        void navigate({
+          to: "/orders",
+          search: { order: locatedOrder.orderId },
+          replace: true,
+        })
+        return
+      }
+
+      // IndexedDB is the fallback when durable content-free locator storage is
+      // unavailable. The staging flag remains set until checkout recovery has
+      // crossed the cart/payment boundary.
+      const fallbackRows = signedBuyerPubkey
+        ? await listOrderLifecycles(signedBuyerPubkey)
+        : []
+      const fallback = fallbackRows
+        .filter((lifecycle) => {
+          const delivery = lifecycle.orderRelayDelivery
+          if (
+            lifecycle.merchantPubkey !== selectedMerchant ||
+            !delivery ||
+            delivery.expiresAt <= now
+          ) {
+            return false
+          }
+          return lifecycle.checkoutRecoveryPending === true
+        })
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0]
+      if (!active) return
+      if (fallback) {
+        setCheckoutRecoveryResolution({
+          scope: checkoutRecoveryScope,
+          blockingMessage:
+            "A saved order from this cart must be recovered from Orders before another order can be created.",
+        })
+        void navigate({
+          to: "/orders",
+          search: { order: fallback.orderId },
+          replace: true,
+        })
+        return
+      }
+      setCheckoutRecoveryResolution({
+        scope: checkoutRecoveryScope,
+        blockingMessage: null,
+      })
+    }
+    void resolveRecovery().catch(() => {
+      if (!active) return
+      const blockingMessage =
+        "Order recovery state could not be checked. Reload before creating another order."
+      setCheckoutRecoveryResolution({
+        scope: checkoutRecoveryScope,
+        blockingMessage,
+      })
+      setError(blockingMessage)
+    })
+    return () => {
+      active = false
+    }
+  }, [
+    authPending,
+    checkoutRecoveryScope,
+    navigate,
+    selectedMerchant,
+    signedBuyerPubkey,
+  ])
 
   const rawCheckoutItems = useMemo(() => {
     if (!selectedMerchant) return []
@@ -2274,6 +2452,13 @@ function CheckoutPage() {
 
   async function placeOrder(): Promise<void> {
     if (!selectedMerchant || checkoutItems.length === 0) return
+    if (checkoutRecoveryIsChecking || checkoutRecoveryBlockingMessage) {
+      setError(
+        checkoutRecoveryBlockingMessage ??
+          "Wait while Conduit checks for a saved order from this cart."
+      )
+      return
+    }
     const signedBuyerIdentity = signedBuyerPubkey
       ? getCheckoutBuyerIdentity()
       : null
@@ -2403,46 +2588,9 @@ function CheckoutPage() {
       rumor.tags = appendConduitClientTag(rumor.tags, "market")
       rumor.content = JSON.stringify(payload)
 
-      setStep("sending")
-      orderDeliveryStartedAt = performance.now()
-
-      const { delivery, deliveryLatencyMs } =
-        await awaitOrderDeliveryPresentation({
-          now: () => performance.now(),
-          publish: () =>
-            publishBuyerOrderMessage(
-              rumor,
-              ndk,
-              selectedMerchant,
-              buyerIdentity,
-              {
-                accountPubkey: signedBuyerPubkey,
-                authenticatedPubkey: draftOwnerIdentity,
-                shouldContinue: shouldContinueBuyerSession,
-              }
-            ),
-          startedAt: orderDeliveryStartedAt,
-          waitForPresentation: () =>
-            new Promise((resolve) => window.setTimeout(resolve, 900)),
-        })
-      orderDelivered = true
-      recordCheckoutStepResult({
-        checkoutMode: "order_first",
-        latencyMs: deliveryLatencyMs,
-        status: "success",
-        stepName: "order_delivery",
-        amountSats: orderTotalSats,
-      })
-      clearCheckoutShippingSession()
-      const deliveryNotice = getDeliveryNotice(delivery, "Order")
-      if (deliveryNotice) setPaidNotice(deliveryNotice)
-
-      // Pay-later order: create a durable lifecycle so Orders shows it
-      // immediately. Address validity is recorded but not a hard block here —
-      // no funds move at checkout; the merchant requests payment later.
       const shippingAddress = buildShippingAddress()
       const addressValidity = computeAddressValidity(shippingAddress)
-      await createOrderLifecycle({
+      const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
         createdAt: orderCreatedAt,
         buyerPubkey,
@@ -2470,17 +2618,58 @@ function CheckoutPage() {
         shippingZoneEligibility: getShippingZoneEligibilityForItems(
           authoritativeCheckoutItems
         ),
-        orderDeliveryStatus: "sent",
-        orderDeliveryRoute: delivery.deliveryRoute,
-        orderRelayDelivery: delivery.orderRelayDelivery,
-        invoiceStatus: "not_requested",
-        paymentStatus: "not_started",
-        proofDeliveryStatus: "not_started",
-        zapReceiptStatus: "not_applicable",
-        deliveryNotice: deliveryNotice ?? undefined,
+      }
+
+      setStep("sending")
+      orderDeliveryStartedAt = performance.now()
+
+      const { delivery, deliveryLatencyMs } =
+        await awaitOrderDeliveryPresentation({
+          now: () => performance.now(),
+          publish: () =>
+            publishBuyerOrderMessage(
+              rumor,
+              ndk,
+              selectedMerchant,
+              buyerIdentity,
+              {
+                accountPubkey: signedBuyerPubkey,
+                authenticatedPubkey: draftOwnerIdentity,
+                shouldContinue: shouldContinueBuyerSession,
+                orderLifecycle,
+              }
+            ),
+          startedAt: orderDeliveryStartedAt,
+          waitForPresentation: () =>
+            new Promise((resolve) => window.setTimeout(resolve, 900)),
+        })
+      orderDelivered = true
+      if (!shouldContinueBuyerSession()) {
+        throw new Error(
+          "Order delivery stopped after relay acceptance because the buyer session changed."
+        )
+      }
+      recordCheckoutStepResult({
+        checkoutMode: "order_first",
+        latencyMs: deliveryLatencyMs,
+        status: "success",
+        stepName: "order_delivery",
+        amountSats: orderTotalSats,
       })
+      clearCheckoutShippingSession()
+      const deliveryNotice = getDeliveryNotice(delivery, "Order")
+      if (deliveryNotice) setPaidNotice(deliveryNotice)
+      if (deliveryNotice) {
+        await patchOrderLifecycle(orderId, { deliveryNotice })
+      }
+      if (!shouldContinueBuyerSession()) {
+        throw new Error(
+          "Order delivery stopped after relay acceptance because the buyer session changed."
+        )
+      }
 
       cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
+      await resolveCheckoutOrderAttempt(orderId)
       setSentOrderId(orderId)
       setShowSentGlow(true)
       setStep("sent")
@@ -2501,8 +2690,23 @@ function CheckoutPage() {
         replace: true,
       })
     } catch (e) {
-      if (orderDelivered && publishedOrderId) {
+      const stagedOrder = publishedOrderId
+        ? await getOrderLifecycle(publishedOrderId).catch(() => undefined)
+        : undefined
+      const acceptedOrder =
+        orderDelivered || stagedOrder?.orderDeliveryStatus === "sent"
+      const buyerSessionCurrent = shouldContinueBuyerSession()
+      if (acceptedOrder && publishedOrderId && !buyerSessionCurrent) {
+        setError(
+          "A merchant relay accepted this order, but checkout stopped because the buyer session changed. Switch back to the original session and open Orders; do not submit another order."
+        )
+        setStep("payment")
+        paymentInFlightRef.current = false
+        return
+      }
+      if (acceptedOrder && publishedOrderId) {
         cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
+        await resolveCheckoutOrderAttempt(publishedOrderId).catch(() => {})
         setPaidNotice(
           "Your order was sent, but local order tracking could not be saved on this device. Check Orders or message the merchant before trying again."
         )
@@ -2559,8 +2763,24 @@ function CheckoutPage() {
         checkoutMode: "order_first",
         status: orderSubmitStarted ? "failed" : "blocked",
       })
-      setError(e instanceof Error ? e.message : "Failed to send order")
-      if (!orderDelivered && guestOrderIdToClear) {
+      if (!orderDelivered && stagedOrder?.orderRelayDelivery) {
+        setError(
+          "Order delivery was not confirmed. The exact encrypted order was saved for retry; do not create another order."
+        )
+        if (buyerSessionCurrent) {
+          void navigate({
+            to: "/orders",
+            search: { order: stagedOrder.orderId },
+            replace: true,
+          })
+        }
+      } else {
+        setError(e instanceof Error ? e.message : "Failed to send order")
+      }
+      if (!stagedOrder && publishedOrderId) {
+        forgetCheckoutOrderAttempt(publishedOrderId)
+      }
+      if (!stagedOrder && !orderDelivered && guestOrderIdToClear) {
         clearSessionGuestOrderSigningIdentity(guestOrderIdToClear)
       }
       setStep("payment")
@@ -2651,6 +2871,13 @@ function CheckoutPage() {
     zapAuthorization: HudZapAuthorization | null = null
   ): Promise<void> {
     if (!selectedMerchant || checkoutItems.length === 0) return
+    if (checkoutRecoveryIsChecking || checkoutRecoveryBlockingMessage) {
+      setError(
+        checkoutRecoveryBlockingMessage ??
+          "Wait while Conduit checks for a saved order from this cart."
+      )
+      return
+    }
     const connectedBuyerIdentity = signedBuyerPubkey
       ? getCheckoutBuyerIdentity()
       : null
@@ -2966,37 +3193,6 @@ function CheckoutPage() {
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = JSON.stringify(orderPayload)
 
-      directPaymentStarted = true
-      recordCheckoutStepResult({
-        amountSats: checkoutPricing.totalSats,
-        checkoutMode: requestedCheckoutMode,
-        status: "started",
-        stepName: "direct_payment",
-      })
-      orderDeliveryStartedAt = performance.now()
-      const orderDelivery = await publishBuyerOrderMessage(
-        orderRumor,
-        ndk,
-        selectedMerchant,
-        buyerIdentity,
-        {
-          accountPubkey: signedBuyerPubkey,
-          authenticatedPubkey: draftOwnerIdentity,
-          shouldContinue: shouldContinueBuyerSession,
-        }
-      )
-      orderDelivered = true
-      recordCheckoutStepResult({
-        amountSats: checkoutPricing.totalSats,
-        checkoutMode: requestedCheckoutMode,
-        latencyMs: performance.now() - orderDeliveryStartedAt,
-        rail: "lightning",
-        status: "success",
-        stepName: "order_delivery",
-      })
-      clearCheckoutShippingSession()
-      const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
-
       const canAutoPay =
         !guestIdentity &&
         (selectedPaymentTarget.type === "wallet"
@@ -3009,9 +3205,7 @@ function CheckoutPage() {
         canAutoPay,
         isGuest: !!guestIdentity,
       })
-      // The order is now durably with the merchant. Persist the lifecycle so
-      // Orders can render it immediately, then hand payment to the service.
-      await createOrderLifecycle({
+      const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
         createdAt: orderCreatedAt,
         buyerPubkey,
@@ -3042,8 +3236,6 @@ function CheckoutPage() {
             }
           : undefined,
         zapContent: effectiveZapContent,
-        // The merchant receives guest fulfillment/contact data inside the
-        // encrypted order. Do not retain another plaintext copy in IndexedDB.
         shippingAddress: guestIdentity
           ? undefined
           : (shippingAddress ?? undefined),
@@ -3051,15 +3243,55 @@ function CheckoutPage() {
         guestContact: undefined,
         addressValidity: addressValidity.status as OrderAddressValidity,
         shippingZoneEligibility: authoritativeShippingZoneEligibility,
-        orderDeliveryStatus: "sent",
-        orderDeliveryRoute: orderDelivery.deliveryRoute,
-        orderRelayDelivery: orderDelivery.orderRelayDelivery,
-        invoiceStatus: "not_requested",
-        paymentStatus: "not_started",
-        proofDeliveryStatus: "not_started",
-        zapReceiptStatus: "not_applicable",
-        deliveryNotice: orderDeliveryNotice ?? undefined,
+      }
+
+      directPaymentStarted = true
+      recordCheckoutStepResult({
+        amountSats: checkoutPricing.totalSats,
+        checkoutMode: requestedCheckoutMode,
+        status: "started",
+        stepName: "direct_payment",
       })
+      orderDeliveryStartedAt = performance.now()
+      const orderDelivery = await publishBuyerOrderMessage(
+        orderRumor,
+        ndk,
+        selectedMerchant,
+        buyerIdentity,
+        {
+          accountPubkey: signedBuyerPubkey,
+          authenticatedPubkey: draftOwnerIdentity,
+          shouldContinue: shouldContinueBuyerSession,
+          orderLifecycle,
+        }
+      )
+      orderDelivered = true
+      if (!shouldContinueBuyerSession()) {
+        throw new Error(
+          "Order delivery stopped after relay acceptance because the buyer session changed."
+        )
+      }
+      recordCheckoutStepResult({
+        amountSats: checkoutPricing.totalSats,
+        checkoutMode: requestedCheckoutMode,
+        latencyMs: performance.now() - orderDeliveryStartedAt,
+        rail: "lightning",
+        status: "success",
+        stepName: "order_delivery",
+      })
+      clearCheckoutShippingSession()
+      const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
+
+      if (orderDeliveryNotice) {
+        await patchOrderLifecycle(orderId, {
+          deliveryNotice: orderDeliveryNotice,
+        })
+      }
+      if (!shouldContinueBuyerSession()) {
+        throw new Error(
+          "Order delivery stopped after relay acceptance because the buyer session changed."
+        )
+      }
 
       cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
       recordCheckoutSuccess({
@@ -3116,10 +3348,18 @@ function CheckoutPage() {
           shopperPricing.formatSatsAmount(sats).primary,
       }
 
+      if (!shouldContinueBuyerSession()) {
+        throw new Error(
+          "Payment did not start because the buyer session changed."
+        )
+      }
       if (serviceCtx.approveFee) {
         await runOrderPayment(serviceCtx)
+        await resolveCheckoutOrderAttempt(orderId)
       } else {
         void runOrderPayment(serviceCtx)
+          .then(() => resolveCheckoutOrderAttempt(orderId))
+          .catch(() => {})
       }
 
       paymentInFlightRef.current = false
@@ -3130,9 +3370,23 @@ function CheckoutPage() {
       })
     } catch (e) {
       const message = e instanceof Error ? e.message : "Payment failed"
+      const stagedOrder = publishedOrderId
+        ? await getOrderLifecycle(publishedOrderId).catch(() => undefined)
+        : undefined
+      const acceptedOrder =
+        orderDelivered || stagedOrder?.orderDeliveryStatus === "sent"
+      const buyerSessionCurrent = shouldContinueBuyerSession()
       // Once the order is delivered, later failures (like local lifecycle
       // persistence) must not return the buyer to a retry path that republishes.
-      if (orderDelivered && publishedOrderId) {
+      if (acceptedOrder && publishedOrderId && !buyerSessionCurrent) {
+        setError(
+          "A merchant relay accepted this order, but checkout stopped because the buyer session changed. Switch back to the original session and open Orders; do not submit another order."
+        )
+        setStep("payment")
+        paymentInFlightRef.current = false
+        return
+      }
+      if (acceptedOrder && publishedOrderId) {
         const deliveredAmountSats = publishedTotalSats ?? total
         cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
         setPaidNotice(
@@ -3182,8 +3436,8 @@ function CheckoutPage() {
         })
       }
 
-      // Failure before the order reached the merchant. No order was published,
-      // so a full retry can't create a duplicate.
+      // A zero-ACK result is ambiguous once a relay write began. The exact
+      // staged wrap is the only safe retry identity.
       if (directPaymentStarted) {
         recordCheckoutStepResult({
           amountSats: total,
@@ -3198,10 +3452,26 @@ function CheckoutPage() {
         rail: "lightning",
         status: directPaymentStarted ? "failed" : "blocked",
       })
-      if (!orderDelivered && guestOrderIdToClear) {
+      if (!stagedOrder && !orderDelivered && guestOrderIdToClear) {
         clearSessionGuestOrderSigningIdentity(guestOrderIdToClear)
       }
-      setError(message)
+      if (!stagedOrder && publishedOrderId) {
+        forgetCheckoutOrderAttempt(publishedOrderId)
+      }
+      if (!orderDelivered && stagedOrder?.orderRelayDelivery) {
+        setError(
+          "Order delivery was not confirmed. The exact encrypted order was saved for retry; do not create another order."
+        )
+        if (buyerSessionCurrent) {
+          void navigate({
+            to: "/orders",
+            search: { order: stagedOrder.orderId },
+            replace: true,
+          })
+        }
+      } else {
+        setError(message)
+      }
       setStep("payment")
       paymentInFlightRef.current = false
     }
@@ -4030,6 +4300,8 @@ function CheckoutPage() {
                   <Button
                     className="mt-2 h-11 w-full text-sm"
                     disabled={
+                      checkoutRecoveryIsChecking ||
+                      checkoutRecoveryBlockingMessage !== null ||
                       checkoutEvidenceIsChecking ||
                       hasUnavailableCheckoutItems ||
                       fulfillmentBlockingMessage !== null
@@ -4554,6 +4826,8 @@ function CheckoutPage() {
                     <HoldToReleaseButton
                       className="h-11 px-5 text-sm"
                       disabled={
+                        checkoutRecoveryIsChecking ||
+                        checkoutRecoveryBlockingMessage !== null ||
                         checkoutEvidenceIsChecking ||
                         hasUnavailableCheckoutItems ||
                         fulfillmentBlockingMessage !== null ||
@@ -4564,6 +4838,8 @@ function CheckoutPage() {
                       canComplete={() =>
                         directCheckoutEligible &&
                         !checkoutAvailability.isChecking &&
+                        !checkoutRecoveryIsChecking &&
+                        checkoutRecoveryBlockingMessage === null &&
                         !hasUnavailableCheckoutItems &&
                         !paymentInFlightRef.current
                       }
@@ -4597,6 +4873,8 @@ function CheckoutPage() {
                       <Button
                         className="h-11 px-5 text-sm"
                         disabled={
+                          checkoutRecoveryIsChecking ||
+                          checkoutRecoveryBlockingMessage !== null ||
                           checkoutAvailability.isChecking ||
                           hasUnavailableCheckoutItems
                         }
@@ -4633,6 +4911,8 @@ function CheckoutPage() {
                       <Button
                         className="h-11 px-5 text-sm"
                         disabled={
+                          checkoutRecoveryIsChecking ||
+                          checkoutRecoveryBlockingMessage !== null ||
                           checkoutEvidenceIsChecking ||
                           hasUnavailableCheckoutItems ||
                           fulfillmentBlockingMessage !== null
@@ -4669,6 +4949,8 @@ function CheckoutPage() {
                       }
                       className="h-11 px-5 text-sm"
                       disabled={
+                        checkoutRecoveryIsChecking ||
+                        checkoutRecoveryBlockingMessage !== null ||
                         checkoutEvidenceIsChecking ||
                         hasUnavailableCheckoutItems ||
                         fulfillmentBlockingMessage !== null ||

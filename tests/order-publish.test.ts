@@ -15,6 +15,7 @@ import {
 
 import { createGuestOrderSigningIdentity } from "../apps/market/src/lib/guest-order-identity"
 import {
+  assertStagedOrderLifecycleMatchesRumor,
   buildOrderCompanionNotificationRumor,
   buildPaymentProofRumor,
   getDeliveryNotice,
@@ -25,6 +26,16 @@ import {
 let activeSignerLease: ReturnType<typeof setSigner> | null = null
 
 describe("buyer order rumor preparation", () => {
+  it("rejects a prefilled rumor id that does not match its content", () => {
+    const rumor = orderRumor({
+      id: "stale-id",
+      getEventHash: () => "derived-id",
+    })
+    expect(() => prepareBuyerRumor(rumor, "buyer-pubkey")).toThrow(
+      "does not match"
+    )
+  })
+
   it("recreates the same payment-proof rumor id for receipt retries", () => {
     const params = {
       merchantPubkey: "merchant-pubkey",
@@ -87,8 +98,96 @@ describe("buyer order rumor preparation", () => {
   })
 })
 
+describe("staged order snapshot binding", () => {
+  const lifecycle = {
+    orderId: "guest-order",
+    createdAt: 100_000,
+    buyerPubkey: "buyer-pubkey",
+    buyerIdentityKind: "signed_in" as const,
+    merchantPubkey: "merchant-pubkey",
+    checkoutMode: "pay_later" as const,
+    items: [
+      {
+        productId: "product-id",
+        format: "physical" as const,
+        quantity: 1,
+        priceAtPurchase: 1,
+        currency: "SATS",
+      },
+    ],
+    itemSubtotalSats: 1,
+    shippingCostSats: 0,
+    totalSats: 1,
+    totalMsats: 1_000,
+    currency: "SATS" as const,
+    addressValidity: "not_required" as const,
+    shippingZoneEligibility: "not_required" as const,
+  }
+  const rumor = () =>
+    orderRumor({
+      pubkey: "buyer-pubkey",
+      content: JSON.stringify({
+        id: "guest-order",
+        merchantPubkey: "merchant-pubkey",
+        buyerPubkey: "buyer-pubkey",
+        buyerIdentityKind: "signed_in",
+        items: [
+          {
+            productId: "product-id",
+            quantity: 1,
+            priceAtPurchase: 1,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 1,
+        currency: "SATS",
+        shippingCostSats: 0,
+        shippingCostStatus: "not_required",
+        createdAt: 100_000,
+      }),
+      tags: [
+        ["p", "merchant-pubkey"],
+        ["type", "order"],
+        ["order", "guest-order"],
+        ["amount", "1"],
+        ["currency", "SATS"],
+      ],
+    })
+
+  it("accepts one exact rumor/lifecycle safety snapshot", () => {
+    expect(() =>
+      assertStagedOrderLifecycleMatchesRumor(
+        lifecycle,
+        rumor(),
+        "buyer-pubkey",
+        "merchant-pubkey"
+      )
+    ).not.toThrow()
+  })
+
+  it("rejects mismatched amount and item arithmetic", () => {
+    expect(() =>
+      assertStagedOrderLifecycleMatchesRumor(
+        { ...lifecycle, itemSubtotalSats: 2 },
+        rumor(),
+        "buyer-pubkey",
+        "merchant-pubkey"
+      )
+    ).toThrow("does not match")
+    expect(() =>
+      assertStagedOrderLifecycleMatchesRumor(
+        { ...lifecycle, totalSats: 2, totalMsats: 2_000 },
+        rumor(),
+        "buyer-pubkey",
+        "merchant-pubkey"
+      )
+    ).toThrow("does not match")
+  })
+})
+
 function orderRumor(overrides: Record<string, unknown> = {}) {
-  return {
+  const getEventHash = overrides.getEventHash
+  const rumor = {
     id: "order-rumor",
     kind: EVENT_KINDS.ORDER,
     pubkey: "",
@@ -121,6 +220,13 @@ function orderRumor(overrides: Record<string, unknown> = {}) {
       ],
     ],
     ...overrides,
+  }
+  return {
+    ...rumor,
+    getEventHash:
+      typeof getEventHash === "function"
+        ? getEventHash
+        : () => String(rumor.id),
   } as never
 }
 
@@ -533,7 +639,8 @@ describe("buyer order publishing", () => {
     expect(orderCall?.signer).toBe(guestSigner)
     expect(orderCall?.selfCopy).toBe(false)
     expect(orderCall?.accountPubkey).toBeNull()
-    expect(orderCall?.shouldContinue).toBeUndefined()
+    expect(orderCall?.shouldContinue).toBeInstanceOf(Function)
+    expect((orderCall?.shouldContinue as () => boolean)()).toBe(false)
     expect(orderCall?.signerInteraction).toBe("application_owned")
     expect(orderCall?.validatedOrderScope).toMatchObject({
       rumorId: "order-rumor",
@@ -548,7 +655,8 @@ describe("buyer order publishing", () => {
     expect(companionCall?.signer).toBe(guestSigner)
     expect(companionCall?.selfCopy).toBe(false)
     expect(companionCall?.accountPubkey).toBeNull()
-    expect(companionCall?.shouldContinue).toBeUndefined()
+    expect(companionCall?.shouldContinue).toBeInstanceOf(Function)
+    expect((companionCall?.shouldContinue as () => boolean)()).toBe(false)
     expect(companionCall?.signerInteraction).toBe("application_owned")
     expect(companionCall?.validatedOrderScope).toBeUndefined()
     expect(companionCall?.validatedGuestOrderCompanionScope).toMatchObject({

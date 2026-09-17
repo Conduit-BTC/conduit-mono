@@ -98,4 +98,41 @@ describe("guest order UI contracts", () => {
     expect(source).toContain('window.addEventListener("focus"')
     expect(source).toContain('window.addEventListener("visibilitychange"')
   })
+
+  it("reopens the same staged order after checkout reload", async () => {
+    const checkout = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+
+    expect(checkout).toContain("listSessionGuestOrderIds(undefined, now)")
+    expect(checkout).toContain("listCheckoutOrderAttemptIds(undefined, now)")
+    expect(checkout).toContain("listOrderLifecycles(signedBuyerPubkey)")
+    expect(checkout).toContain("requiresCheckoutOrderRecovery({")
+    expect(checkout).toContain("checkoutRecoveryIsChecking")
+    expect(checkout).toContain('to: "/orders"')
+  })
+
+  it("keeps recovery fenced when the buyer session changes during completion", async () => {
+    const checkout = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const orders = await Bun.file("apps/market/src/routes/orders.tsx").text()
+    const app = await Bun.file("apps/market/src/main.tsx").text()
+
+    expect(app).toContain("useLayoutEffect(() => {")
+    expect(app).toContain("identityRef.current = identity")
+    expect(checkout).toContain(
+      "await patchOrderLifecycle(orderId, { checkoutRecoveryPending: true })"
+    )
+    expect(orders).toContain(
+      "await patchOrderLifecycle(lifecycle.orderId, {\n        checkoutRecoveryPending: true,"
+    )
+    expect(orders).toContain("const detailIsActiveRef = useRef(false)")
+    expect(orders).toContain("detailIsActiveRef.current = false")
+    expect(orders).toContain(
+      "detailIsActiveRef.current &&\n    authGenerationRef.current === authGeneration"
+    )
+    expect(orders).toContain("if (!shouldContinueBuyerSession())")
+    expect(orders).toContain("doesCartMatchOrderAttempt(")
+  })
 })

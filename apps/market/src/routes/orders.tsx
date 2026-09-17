@@ -26,10 +26,12 @@ import {
   hasWebLN,
   listOrderLifecycles,
   ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
+  patchOrderLifecycle,
   pruneExpiredGuestOrderData,
   prepareProtectedReadRefreshState,
   pubkeyToNpub,
   replaceOrderPaymentTarget,
+  retryOrderRelayDelivery,
   resolveWalletPaymentInstance,
   selectProtectedReadRows,
   useAuth,
@@ -66,6 +68,7 @@ import {
   StatusStepper,
 } from "@conduit/ui"
 import {
+  Check,
   ChevronRight,
   LoaderCircle,
   MapPin,
@@ -97,6 +100,7 @@ import {
   type BuyerConversation,
 } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
+import { useCart } from "../hooks/useCart"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets } from "../hooks/useWallets"
 import {
@@ -156,6 +160,10 @@ import {
   getSessionGuestOrderSigningIdentity,
   type GuestOrderSigningIdentity,
 } from "../lib/guest-order-identity"
+import {
+  doesCartMatchOrderAttempt,
+  forgetCheckoutOrderAttempt,
+} from "../lib/checkout-order-attempt"
 import {
   doesAuthorizedAnonZapPricingMatchOrder,
   type CheckoutZapMode,
@@ -657,16 +665,27 @@ function OrderDetail({
   useLayoutEffect(() => {
     currentViewRef.current = vm
   }, [vm])
+  const detailIsActiveRef = useRef(false)
+  useLayoutEffect(() => {
+    detailIsActiveRef.current = true
+    return () => {
+      detailIsActiveRef.current = false
+    }
+  }, [])
   const { authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
-  const shouldContinueBuyerSession = guestIdentity
-    ? undefined
-    : () => authGenerationRef.current === authGeneration
+  const shouldContinueBuyerSession = () =>
+    detailIsActiveRef.current &&
+    authGenerationRef.current === authGeneration &&
+    (!guestIdentity ||
+      (guestIdentity.expiresAt > Date.now() &&
+        getSessionGuestOrderSigningIdentity(guestIdentity.orderId)?.pubkey ===
+          guestIdentity.pubkey))
   const shouldContinueAccountRead = () =>
-    authGenerationRef.current === authGeneration
+    detailIsActiveRef.current && authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
   const wallets = useWallets()
   const shopperPricing = useShopperPricing()
@@ -728,6 +747,7 @@ function OrderDetail({
     persistedRetryTarget
   )
   const sparkFeeApproval = useSparkFeeApproval()
+  const cart = useCart()
   const queryClient = useQueryClient()
 
   useEffect(() => {
@@ -912,6 +932,77 @@ function OrderDetail({
       setBusy(false)
     }
   }, [])
+
+  async function finishAcceptedOrderRecovery(
+    lifecycle = row.lifecycle
+  ): Promise<void> {
+    if (!lifecycle || lifecycle.orderDeliveryStatus !== "sent") {
+      throw new Error("The accepted order is unavailable for recovery.")
+    }
+    if (!shouldContinueBuyerSession()) {
+      throw new Error(
+        "Recovery stopped because the buyer session changed. Switch back to this order's buyer session and try again."
+      )
+    }
+    const merchantCartItems = cart.items.filter(
+      (item) => item.merchantPubkey === lifecycle.merchantPubkey
+    )
+    if (doesCartMatchOrderAttempt(merchantCartItems, lifecycle.items)) {
+      if (!shouldContinueBuyerSession()) {
+        throw new Error(
+          "Recovery stopped because the buyer session changed. Switch back to this order's buyer session and try again."
+        )
+      }
+      cart.clearMerchant(lifecycle.merchantPubkey, { emitTelemetry: false })
+    }
+    if (!shouldContinueBuyerSession()) {
+      throw new Error(
+        "Recovery stopped because the buyer session changed. Switch back to this order's buyer session and try again."
+      )
+    }
+    const resolved = await patchOrderLifecycle(lifecycle.orderId, {
+      checkoutRecoveryPending: false,
+    })
+    if (!resolved) {
+      throw new Error("The accepted order recovery state could not be saved.")
+    }
+    if (!shouldContinueBuyerSession()) {
+      await patchOrderLifecycle(lifecycle.orderId, {
+        checkoutRecoveryPending: true,
+      })
+      throw new Error(
+        "Recovery stopped because the buyer session changed. Switch back to this order's buyer session and try again."
+      )
+    }
+    forgetCheckoutOrderAttempt(lifecycle.orderId)
+    await queryClient.invalidateQueries({
+      queryKey: ["order-lifecycles", buyerPubkey],
+    })
+  }
+
+  async function retryStagedOrderDelivery(): Promise<void> {
+    const lifecycle = row.lifecycle
+    if (!lifecycle?.orderRelayDelivery) {
+      throw new Error("The saved encrypted order is unavailable for retry.")
+    }
+    const retried = await retryOrderRelayDelivery(
+      lifecycle.orderId,
+      buyerPubkey,
+      {
+        allowGuest: !!guestIdentity,
+        shouldContinue: shouldContinueBuyerSession,
+      }
+    )
+    await queryClient.invalidateQueries({
+      queryKey: ["order-lifecycles", buyerPubkey],
+    })
+    if (retried?.orderDeliveryStatus !== "sent") {
+      throw new Error(
+        "No merchant relay acknowledged the saved order yet. Retry the same order later."
+      )
+    }
+    await finishAcceptedOrderRecovery(retried)
+  }
 
   async function retryPayment(): Promise<void> {
     const pickupFreshness = await verifyPickupCartFreshness(
@@ -1106,6 +1197,12 @@ function OrderDetail({
     vm.paymentStatus === "paid" &&
     (vm.proofDeliveryStatus === "retry_needed" ||
       vm.proofDeliveryStatus === "failed")
+  const showRetryOrderDelivery =
+    row.lifecycle?.orderDeliveryStatus === "pending" &&
+    !!row.lifecycle.orderRelayDelivery
+  const showFinishAcceptedOrderRecovery =
+    row.lifecycle?.orderDeliveryStatus === "sent" &&
+    row.lifecycle.checkoutRecoveryPending === true
 
   const replyMutation = useMutation({
     mutationFn: async () => {
@@ -1221,6 +1318,67 @@ function OrderDetail({
           />
         </section>
       </>
+
+      {showRetryOrderDelivery && (
+        <StatusNotice
+          variant="warning"
+          title="Order delivery not confirmed"
+          detail="Saved encrypted order"
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            No merchant relay ACK was recorded. Retry reuses the exact encrypted
+            order and cannot create a second semantic order.
+          </p>
+          <Button
+            variant="outline"
+            className="mt-4 h-10 px-4 text-sm"
+            disabled={busy}
+            onClick={() => void withBusy(retryStagedOrderDelivery)}
+          >
+            <RotateCw className="h-4 w-4" />
+            Retry saved order
+          </Button>
+          {recoveryError && (
+            <p
+              role="alert"
+              className="mt-3 text-pretty text-sm text-[var(--destructive)]"
+            >
+              {recoveryError}
+            </p>
+          )}
+        </StatusNotice>
+      )}
+
+      {showFinishAcceptedOrderRecovery && (
+        <StatusNotice
+          variant="warning"
+          title="Order accepted by a delivery relay"
+          detail="Merchant pickup pending"
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            The order must be finalized on this device before this cart can be
+            submitted again. Relay acceptance does not prove the merchant has
+            read it.
+          </p>
+          <Button
+            variant="outline"
+            className="mt-4 h-10 px-4 text-sm"
+            disabled={busy}
+            onClick={() => void withBusy(finishAcceptedOrderRecovery)}
+          >
+            <Check className="h-4 w-4" />
+            Finish order recovery
+          </Button>
+          {recoveryError && (
+            <p
+              role="alert"
+              className="mt-3 text-pretty text-sm text-[var(--destructive)]"
+            >
+              {recoveryError}
+            </p>
+          )}
+        </StatusNotice>
+      )}
 
       {(manualInvoiceAccess === "report_only" ||
         manualInvoiceAccess === "receipt_only") && (

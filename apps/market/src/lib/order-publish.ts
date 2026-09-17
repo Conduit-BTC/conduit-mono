@@ -2,18 +2,26 @@ import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
   appendConduitClientTag,
+  beginOrderRelayDeliveryAttempt,
   cacheParsedOrderMessage,
   createOrderCompanionNotificationRumor,
   createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
+  getOrderLifecycle,
   getNdk,
   parseOrderMessageRumorEvent,
   publishPrivateMessage,
+  recordOrderRelayDeliveryOutcomes,
+  stageOrderRelayDelivery,
   type OrderDeliveryRoute,
+  type OrderLifecycleItem,
   type OrderRelayDeliveryRecord,
+  type SignedPublicNostrEvent,
+  type StagedOrderLifecycleInput,
 } from "@conduit/core"
 
 import { inferMerchantOrigin } from "./merchant-links"
+import { rememberCheckoutOrderAttempt } from "./checkout-order-attempt"
 
 /**
  * Shared buyer order-message publishing (extracted from `checkout.tsx` so the
@@ -63,10 +71,138 @@ type BuyerOrderPublishDependencies = {
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
+  /** Initial order snapshot persisted with the exact recipient wrap pre-send. */
+  orderLifecycle?: StagedOrderLifecycleInput
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
+}
+
+function canonicalizeOrderSnapshot(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeOrderSnapshot)
+  if (!value || typeof value !== "object") return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalizeOrderSnapshot(entry)])
+  )
+}
+
+function sameOrderSnapshot(left: unknown, right: unknown): boolean {
+  return (
+    JSON.stringify(canonicalizeOrderSnapshot(left)) ===
+    JSON.stringify(canonicalizeOrderSnapshot(right))
+  )
+}
+
+/** Bind the local payment/recovery snapshot to the exact plaintext order. */
+export function assertStagedOrderLifecycleMatchesRumor(
+  lifecycle: StagedOrderLifecycleInput,
+  rumor: NDKEvent,
+  buyerPubkey: string,
+  merchantPubkey: string
+): void {
+  let parsed: ReturnType<typeof parseOrderMessageRumorEvent>
+  try {
+    parsed = parseOrderMessageRumorEvent(rumor)
+  } catch {
+    throw new Error("Cannot stage an invalid order rumor.")
+  }
+  const orderTags = rumor.tags.filter((tag) => tag[0] === "order")
+  const recipientTags = rumor.tags.filter((tag) => tag[0] === "p")
+  const typeTags = rumor.tags.filter((tag) => tag[0] === "type")
+  const amountTags = rumor.tags.filter((tag) => tag[0] === "amount")
+  const currencyTags = rumor.tags.filter((tag) => tag[0] === "currency")
+  if (
+    parsed.type !== "order" ||
+    rumor.kind !== EVENT_KINDS.ORDER ||
+    orderTags.length !== 1 ||
+    recipientTags.length !== 1 ||
+    typeTags.length !== 1 ||
+    amountTags.length !== 1 ||
+    currencyTags.length !== 1 ||
+    typeTags[0]?.[1] !== "order"
+  ) {
+    throw new Error("Order rumor tags do not match the staged order.")
+  }
+
+  const payload = parsed.payload
+  const normalizedBuyer = buyerPubkey.trim().toLowerCase()
+  const normalizedMerchant = merchantPubkey.trim().toLowerCase()
+  const projectedItems: OrderLifecycleItem[] = payload.items.map((item) => ({
+    productId: item.productId,
+    familyProductId: item.familyProductId,
+    selectedSpecifications: item.selectedSpecifications?.map(
+      (specification) => ({ ...specification })
+    ),
+    title: item.title,
+    format: item.format,
+    fulfillment: item.fulfillment,
+    quantity: item.quantity,
+    priceAtPurchase: item.priceAtPurchase,
+    currency: item.currency,
+    shippingCostSats: item.shippingCostSats,
+    sourceShippingCost: item.sourceShippingCost
+      ? { ...item.sourceShippingCost }
+      : undefined,
+    shippingOptionId: item.shippingOptionId,
+    shippingOptionDTag: item.shippingOptionDTag,
+    shippingCountryRules: item.shippingCountryRules?.map((rule) => ({
+      code: rule.code,
+      restrictTo: [...rule.restrictTo],
+      exclude: [...rule.exclude],
+    })),
+    sourcePrice: item.sourcePrice ? { ...item.sourcePrice } : undefined,
+  }))
+  const shippingCostMatches =
+    payload.shippingCostStatus === "manual"
+      ? payload.shippingCostSats === undefined &&
+        lifecycle.shippingCostSats === 0
+      : (payload.shippingCostSats ?? 0) === lifecycle.shippingCostSats
+  const computedItemSubtotal = lifecycle.items.reduce(
+    (subtotal, item) => subtotal + item.priceAtPurchase * item.quantity,
+    0
+  )
+  const computedTotal = lifecycle.itemSubtotalSats + lifecycle.shippingCostSats
+  const signedInPrivateSnapshotMatches =
+    lifecycle.buyerIdentityKind === "signed_in"
+      ? sameOrderSnapshot(lifecycle.shippingAddress, payload.shippingAddress) &&
+        lifecycle.contactNote === payload.note &&
+        lifecycle.guestContact === undefined &&
+        payload.guestContact === undefined
+      : lifecycle.shippingAddress === undefined &&
+        lifecycle.contactNote === undefined &&
+        lifecycle.guestContact === undefined
+
+  if (
+    rumor.pubkey.trim().toLowerCase() !== normalizedBuyer ||
+    parsed.senderPubkey.trim().toLowerCase() !== normalizedBuyer ||
+    payload.buyerPubkey.trim().toLowerCase() !== normalizedBuyer ||
+    lifecycle.buyerPubkey.trim().toLowerCase() !== normalizedBuyer ||
+    recipientTags[0]?.[1]?.trim().toLowerCase() !== normalizedMerchant ||
+    parsed.recipientPubkey.trim().toLowerCase() !== normalizedMerchant ||
+    payload.merchantPubkey.trim().toLowerCase() !== normalizedMerchant ||
+    lifecycle.merchantPubkey.trim().toLowerCase() !== normalizedMerchant ||
+    orderTags[0]?.[1] !== lifecycle.orderId ||
+    parsed.orderId !== lifecycle.orderId ||
+    payload.id !== lifecycle.orderId ||
+    payload.buyerIdentityKind !== lifecycle.buyerIdentityKind ||
+    payload.createdAt !== lifecycle.createdAt ||
+    payload.currency !== lifecycle.currency ||
+    currencyTags[0]?.[1] !== lifecycle.currency ||
+    payload.subtotal !== lifecycle.totalSats ||
+    amountTags[0]?.[1] !== String(lifecycle.totalSats) ||
+    lifecycle.totalMsats !== lifecycle.totalSats * 1_000 ||
+    lifecycle.itemSubtotalSats !== computedItemSubtotal ||
+    lifecycle.totalSats !== computedTotal ||
+    !shippingCostMatches ||
+    !sameOrderSnapshot(projectedItems, lifecycle.items) ||
+    !signedInPrivateSnapshotMatches
+  ) {
+    throw new Error("Order rumor does not match its staged lifecycle snapshot.")
+  }
 }
 
 function resolveBuyerOrderSigningIdentity(
@@ -108,12 +244,16 @@ function assertBuyerOrderScope(
 /** Stamp the buyer pubkey + derive the rumor id (so it can be cached/wrapped). */
 export function prepareBuyerRumor(rumor: NDKEvent, buyerPubkey: string): void {
   rumor.pubkey = buyerPubkey
-  if (rumor.id) return
+  let derivedId: string
   try {
-    rumor.id = rumor.getEventHash()
-  } catch (error) {
-    console.warn("Failed to derive buyer order rumor id", error)
+    derivedId = rumor.getEventHash()
+  } catch {
+    throw new Error("Failed to derive buyer order rumor id.")
   }
+  if (rumor.id && rumor.id !== derivedId) {
+    throw new Error("Buyer order rumor id does not match its content.")
+  }
+  rumor.id = derivedId
 }
 
 /**
@@ -241,18 +381,32 @@ export async function publishBuyerOrderMessage(
   const buyerIdentity = resolveBuyerOrderSigningIdentity(ndk, buyer)
   assertBuyerOrderScope(rumor, merchantPubkey, buyerIdentity)
   prepareBuyerRumor(rumor, buyerIdentity.pubkey)
+  if (dependencies.orderLifecycle) {
+    assertStagedOrderLifecycleMatchesRumor(
+      dependencies.orderLifecycle,
+      rumor,
+      buyerIdentity.pubkey,
+      merchantPubkey
+    )
+  }
   const accountPubkey =
     buyerIdentity.kind === "guest_ephemeral"
       ? null
       : (dependencies.accountPubkey ?? null)
   const shouldContinue =
     buyerIdentity.kind === "guest_ephemeral"
-      ? undefined
+      ? dependencies.shouldContinue
       : () =>
           (dependencies.shouldContinue?.() ?? true) &&
           ndk.signer === buyerIdentity.signer
 
   const publish = dependencies.publishPrivateMessageFn ?? publishPrivateMessage
+  const orderDeliveryLeaseOwner =
+    globalThis.crypto?.randomUUID?.() ??
+    `order-delivery-${Date.now()}-${Math.random()}`
+  let orderDeliveryGenerations: Readonly<Record<string, number>> | null = null
+  let orderDeliveryWrapId: string | null = null
+  const stagedOrderId = dependencies.orderLifecycle?.orderId ?? null
   const {
     selfCopyError: buyerSelfCopyError,
     deliveryRoute,
@@ -284,7 +438,90 @@ export async function publishBuyerOrderMessage(
       senderPubkey: buyerIdentity.pubkey,
       recipientPubkey: merchantPubkey,
     }),
+    ...(dependencies.orderLifecycle
+      ? {
+          onRecipientPrepared: async (prepared) => {
+            rememberCheckoutOrderAttempt(dependencies.orderLifecycle!.orderId)
+            const staged = await stageOrderRelayDelivery({
+              lifecycle: dependencies.orderLifecycle!,
+              leaseOwner: orderDeliveryLeaseOwner,
+              prepared: {
+                rumorId: prepared.rumorId,
+                signedRecipientWrap:
+                  prepared.wrappedToRecipient.rawEvent() as SignedPublicNostrEvent,
+                route: prepared.deliveryRoute,
+                relayPlan: prepared.relayPlan,
+              },
+            })
+            const expiresAt = staged.lifecycle.orderRelayDelivery?.expiresAt
+            if (expiresAt !== undefined) {
+              rememberCheckoutOrderAttempt(staged.lifecycle.orderId, expiresAt)
+            }
+          },
+          onRecipientPublishStarting: async (prepared) => {
+            const begun = await beginOrderRelayDeliveryAttempt({
+              orderId: dependencies.orderLifecycle!.orderId,
+              buyerPubkey: buyerIdentity.pubkey,
+              leaseOwner: orderDeliveryLeaseOwner,
+              relayUrls: prepared.relayPlan.map(({ relayUrl }) => relayUrl),
+              shouldContinue,
+            })
+            orderDeliveryGenerations = begun.generationsByRelay
+            orderDeliveryWrapId = begun.wrapId
+          },
+          onRecipientPublishSettled: async (recipientDelivery) => {
+            if (
+              orderDeliveryGenerations === null ||
+              orderDeliveryWrapId === null
+            ) {
+              throw new Error("Order delivery outcomes arrived before staging.")
+            }
+            const successful = new Set(
+              recipientDelivery.successfulRelayUrls ?? []
+            )
+            const failures = recipientDelivery.relayFailureMessages ?? {}
+            await recordOrderRelayDeliveryOutcomes({
+              orderId: dependencies.orderLifecycle!.orderId,
+              buyerPubkey: buyerIdentity.pubkey,
+              leaseOwner: orderDeliveryLeaseOwner,
+              wrapId: orderDeliveryWrapId,
+              outcomes: recipientDelivery.attemptedRelayUrls.flatMap(
+                (relayUrl) => {
+                  const generation = orderDeliveryGenerations?.[relayUrl]
+                  if (generation === undefined) return []
+                  return [
+                    {
+                      relayUrl,
+                      status: successful.has(relayUrl)
+                        ? ("acked" as const)
+                        : /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
+                              failures[relayUrl]?.trim() ?? ""
+                            )
+                          ? ("rejected" as const)
+                          : ("timed_out" as const),
+                      generation,
+                    },
+                  ]
+                }
+              ),
+              releaseLease: true,
+            })
+          },
+        }
+      : {}),
   })
+
+  const stagedLifecycle = stagedOrderId
+    ? await getOrderLifecycle(stagedOrderId)
+    : undefined
+  if (
+    dependencies.orderLifecycle &&
+    stagedLifecycle?.orderDeliveryStatus !== "sent"
+  ) {
+    throw new Error(
+      "Recipient relay acceptance was not committed to the staged order."
+    )
+  }
 
   const localCacheError =
     buyerIdentity.kind === "guest_ephemeral"
@@ -314,7 +551,11 @@ export async function publishBuyerOrderMessage(
     localCacheError,
     deliveryRoute,
     companionNotification,
-    ...(orderRelayDelivery ? { orderRelayDelivery } : {}),
+    ...(stagedLifecycle?.orderRelayDelivery
+      ? { orderRelayDelivery: stagedLifecycle.orderRelayDelivery }
+      : orderRelayDelivery
+        ? { orderRelayDelivery }
+        : {}),
   }
 }
 

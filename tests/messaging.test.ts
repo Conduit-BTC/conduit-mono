@@ -559,6 +559,38 @@ describe("decryptLegacyDirectMessage", () => {
 })
 
 describe("publishPrivateMessage", () => {
+  it("requires recipient staging to finish before any relay publish", async () => {
+    const steps: string[] = []
+    const order = orderRumor()
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(order),
+        rumor: order,
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+        giftWrapFn: (async () => {
+          steps.push("wrap")
+          return wrap("recipient-wrap")
+        }) as never,
+        onRecipientPrepared: async () => {
+          steps.push("stage")
+          throw new Error("persistence failed")
+        },
+        publishFn: (async () => {
+          steps.push("publish")
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toThrow("persistence failed")
+
+    expect(steps).toEqual(["wrap", "stage"])
+  })
+
   it("rejects a rumor kind mismatch before wrapping or publishing", async () => {
     const mismatchedOrderRumor = orderRumor({
       content: JSON.stringify({ message: "Order declined" }),
