@@ -663,14 +663,14 @@ function OrderDetail({
   useLayoutEffect(() => {
     currentViewRef.current = vm
   }, [vm])
-  const { authGeneration } = useAuth()
+  const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
   const shouldContinueBuyerSession = guestIdentity
     ? undefined
-    : () => authGenerationRef.current === authGeneration
+    : () => isAuthGenerationCurrent(authGeneration)
   const shouldContinueAccountRead = () =>
     authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
