@@ -118,7 +118,6 @@ export function ProductGridCard({
   const [internalSelectedProductId, setInternalSelectedProductId] = useState(
     defaultSelection.id
   )
-  const [isVariationMenuOpen, setIsVariationMenuOpen] = useState(false)
   const [variationPanelPlacement, setVariationPanelPlacement] =
     useState<VariationPanelPlacement>("below")
   const selectedProductId =
@@ -128,9 +127,14 @@ export function ProductGridCard({
     family,
     selectedProductId
   )
-  const hasVariations = product.type === "variable" && family?.state === "ready"
+  const hasReadyFamily =
+    product.type === "variable" && family?.state === "ready"
+  const hasVariations =
+    product.type === "variable" &&
+    family?.state === "ready" &&
+    family.axes.length > 0
   const showVariationSkeleton =
-    product.type === "variable" && familyHydrating && !hasVariations
+    product.type === "variable" && familyHydrating && !hasReadyFamily
   const hasVariationControls = hasVariations || showVariationSkeleton
   const images = getProductSelectionImages(product, selectedProduct)
   const selectedCartQuantity =
@@ -162,12 +166,15 @@ export function ProductGridCard({
         { allowZero: allowZeroPrice }
       )
     : selectedPriceDisplay
+  const displayedPrice = hasReadyFamily
+    ? selectedPriceDisplay
+    : summaryPriceDisplay
   const primary =
-    family?.priceSummary.varies === true
+    !hasReadyFamily && family?.priceSummary.varies === true
       ? `From ${summaryPriceDisplay.primary}`
-      : summaryPriceDisplay.primary
-  const secondary = summaryPriceDisplay.secondary
-  const approximateUsd = summaryPriceDisplay.approximateUsd
+      : displayedPrice.primary
+  const secondary = displayedPrice.secondary
+  const approximateUsd = displayedPrice.approximateUsd
   const soldOut = selectedProduct.stock === 0
   const atStockLimit =
     !soldOut &&
@@ -192,8 +199,7 @@ export function ProductGridCard({
     "[@media(min-width:768px)_and_(hover:hover)]:pointer-events-none [@media(min-width:768px)_and_(hover:hover)]:invisible [@media(min-width:768px)_and_(hover:hover)]:opacity-0 [@media(min-width:768px)_and_(hover:hover)]:scale-y-0 [@media(min-width:768px)_and_(hover:hover)]:transition-[opacity,visibility,transform] [@media(min-width:768px)_and_(hover:hover)]:duration-200 motion-reduce:!transition-none",
     "[@media(min-width:768px)_and_(hover:hover)]:group-hover:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-hover:visible [@media(min-width:768px)_and_(hover:hover)]:group-hover:opacity-100 [@media(min-width:768px)_and_(hover:hover)]:group-hover:scale-y-100",
     "[@media(min-width:768px)_and_(hover:hover)]:group-focus-within:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:visible [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:opacity-100 [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:scale-y-100",
-    isVariationMenuOpen &&
-      "[@media(min-width:768px)_and_(hover:hover)]:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:visible [@media(min-width:768px)_and_(hover:hover)]:opacity-100 [@media(min-width:768px)_and_(hover:hover)]:scale-y-100"
+    "[@media(min-width:768px)_and_(hover:hover)]:group-has-[[data-state=open]]:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-has-[[data-state=open]]:visible [@media(min-width:768px)_and_(hover:hover)]:group-has-[[data-state=open]]:opacity-100 [@media(min-width:768px)_and_(hover:hover)]:group-has-[[data-state=open]]:scale-y-100"
   )
 
   return (
@@ -204,14 +210,9 @@ export function ProductGridCard({
         "[@media(min-width:768px)_and_(hover:hover)]:overflow-visible [@media(min-width:768px)_and_(hover:hover)]:z-10 [@media(min-width:768px)_and_(hover:hover)]:hover:z-20 [@media(min-width:768px)_and_(hover:hover)]:focus-within:z-20 [@media(min-width:768px)_and_(hover:hover)]:hover:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:focus-within:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:hover:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:hover:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:focus-within:bg-[var(--surface-overlay)] motion-reduce:transition-none",
         hasVariationControls &&
           (panelOpensAbove
-            ? "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-t-0"
-            : "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-b-0"),
-        isVariationMenuOpen &&
-          "[@media(min-width:768px)_and_(hover:hover)]:z-30 [@media(min-width:768px)_and_(hover:hover)]:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:shadow-[var(--shadow-lg)]",
-        isVariationMenuOpen &&
-          (panelOpensAbove
-            ? "[@media(min-width:768px)_and_(hover:hover)]:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:border-t-0"
-            : "[@media(min-width:768px)_and_(hover:hover)]:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:border-b-0")
+            ? "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-t-0"
+            : "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-b-0"),
+        "[@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:z-30 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:shadow-[var(--shadow-lg)]"
       )}
       onPointerEnter={(event) =>
         updateVariationPanelPlacement(event.currentTarget)
@@ -230,10 +231,7 @@ export function ProductGridCard({
       mediaClassName={cn(
         "[@media(min-width:768px)_and_(hover:hover)]:rounded-t-[calc(0.75rem-1px)]",
         panelOpensAbove &&
-          "[@media(min-width:768px)_and_(hover:hover)]:group-hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:rounded-t-none",
-        panelOpensAbove &&
-          isVariationMenuOpen &&
-          "[@media(min-width:768px)_and_(hover:hover)]:rounded-t-none"
+          "[@media(min-width:768px)_and_(hover:hover)]:group-hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:group-has-[[data-state=open]]:rounded-t-none"
       )}
       cartQuantity={selectedCartQuantity}
       soldOut={soldOut}
@@ -247,7 +245,6 @@ export function ProductGridCard({
               onSelectedProductChange?.(variation)
             }}
             compact
-            onOpenChange={setIsVariationMenuOpen}
           />
         ) : showVariationSkeleton ? (
           <ProductVariationLoadingSkeleton />

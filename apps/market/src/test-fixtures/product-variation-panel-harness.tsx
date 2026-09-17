@@ -26,6 +26,7 @@ import {
 
 const MERCHANT_PUBKEY = "a".repeat(64)
 const FAMILY_ID = `30402:${MERCHANT_PUBKEY}:conduit-shirt`
+const ZERO_AXIS_FAMILY_ID = `30402:${MERCHANT_PUBKEY}:conduit-mug`
 
 function requirePreparedFamily(
   item:
@@ -83,14 +84,43 @@ export function mountProductVariationPanelHarness(
     product({
       id: `${FAMILY_ID}-${size.toLowerCase()}`,
       title: `Conduit Shirt ${size}`,
+      price: index === 0 ? 40_000 : 25_000,
       type: "variation",
       parentProductId: FAMILY_ID,
       specifications: [{ key: "size", value: size }],
-      stock: index + 1,
+      stock: index === 0 ? 1 : 2,
+      images: [
+        {
+          url: `https://cdn.conduit.market/variation-${size.toLowerCase()}.jpg`,
+          alt: `Conduit Shirt ${size}`,
+        },
+      ],
     })
   )
   const preparedFamily = requirePreparedFamily(
     prepareProductCatalog([parent, ...variations].map(record), {
+      source: "commerce",
+      fetchedAt: 2,
+      stale: false,
+      degraded: false,
+      capped: false,
+    }).items[0]
+  )
+  const zeroAxisParent = product({
+    id: ZERO_AXIS_FAMILY_ID,
+    title: "Conduit Mug",
+    type: "variable",
+  })
+  const zeroAxisChild = product({
+    id: `${ZERO_AXIS_FAMILY_ID}-child`,
+    title: "Conduit Mug",
+    price: 30_000,
+    type: "variation",
+    parentProductId: ZERO_AXIS_FAMILY_ID,
+    stock: 3,
+  })
+  const zeroAxisFamily = requirePreparedFamily(
+    prepareProductCatalog([zeroAxisParent, zeroAxisChild].map(record), {
       source: "commerce",
       fetchedAt: 2,
       stale: false,
@@ -105,6 +135,22 @@ export function mountProductVariationPanelHarness(
 
   function ProductVariationPanelProbe() {
     const [ready, setReady] = useState(true)
+    const [quantities, setQuantities] = useState<Record<string, number>>({})
+    const addSelection = (selection: Product) => {
+      container.dataset.addedProduct = JSON.stringify({
+        id: selection.id,
+        title: selection.title,
+        price: selection.price,
+        currency: selection.currency,
+        stock: selection.stock,
+        image: selection.images[0]?.url ?? null,
+        specifications: selection.specifications,
+      })
+      setQuantities((current) => ({
+        ...current,
+        [selection.id]: (current[selection.id] ?? 0) + 1,
+      }))
+    }
     return (
       <>
         <button type="button" onClick={() => setReady((value) => !value)}>
@@ -121,6 +167,16 @@ export function mountProductVariationPanelHarness(
               familyHydrating={!ready}
               merchantName="Conduit Merchant"
               onProductActivate={() => undefined}
+              pricePreference={{ currency: "BITCOIN", bitcoinUnit: "sats" }}
+              getCartQuantity={(selection) => quantities[selection.id] ?? 0}
+              onAddToCart={addSelection}
+              onIncrement={addSelection}
+              onDecrement={(selection) =>
+                setQuantities((current) => ({
+                  ...current,
+                  [selection.id]: Math.max(0, (current[selection.id] ?? 0) - 1),
+                }))
+              }
             />
           </li>
           <li data-testid="simple-product-sibling">
@@ -151,6 +207,14 @@ export function mountProductVariationPanelHarness(
             <ProductGridCard
               product={parent}
               familyHydrating
+              merchantName="Conduit Merchant"
+              onProductActivate={() => undefined}
+            />
+          </li>
+          <li data-testid="zero-axis-variable-product-list-item">
+            <ProductGridCard
+              product={zeroAxisParent}
+              family={zeroAxisFamily}
               merchantName="Conduit Merchant"
               onProductActivate={() => undefined}
             />

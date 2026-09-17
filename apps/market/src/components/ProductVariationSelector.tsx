@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react"
 import type { Product } from "@conduit/core"
 import {
   Select,
@@ -20,7 +19,6 @@ interface ProductVariationSelectorProps {
   onSelect: (product: Product) => void
   compact?: boolean
   className?: string
-  onOpenChange?: (open: boolean) => void
 }
 
 export function ProductVariationSelector({
@@ -29,19 +27,8 @@ export function ProductVariationSelector({
   onSelect,
   compact = false,
   className,
-  onOpenChange,
 }: ProductVariationSelectorProps) {
   const model = getProductVariationSelectorModel(family, selectedProduct)
-  const openAxes = useRef(new Set<string>())
-  const modelKey = model?.axes.map((axis) => axis.key).join("\0") ?? null
-
-  useEffect(() => {
-    const axes = openAxes.current
-    return () => {
-      axes.clear()
-      onOpenChange?.(false)
-    }
-  }, [modelKey, onOpenChange])
 
   if (!model) return null
 
@@ -66,14 +53,6 @@ export function ProductVariationSelector({
           </label>
           <Select
             value={axis.selectedValue}
-            onOpenChange={(open) => {
-              if (open) {
-                openAxes.current.add(axis.key)
-              } else {
-                openAxes.current.delete(axis.key)
-              }
-              onOpenChange?.(openAxes.current.size > 0)
-            }}
             onValueChange={(value) => {
               const next = getProductSelectionForAxisValue(
                 family,

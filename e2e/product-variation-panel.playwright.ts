@@ -3,6 +3,7 @@ import { resolve } from "node:path"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const harnessUrl = "/src/test-fixtures/product-variation-panel-harness.tsx"
+const selectedVariationId = `30402:${"a".repeat(64)}:conduit-shirt-m`
 
 type Geometry = { x: number; y: number; width: number; height: number }
 type PanelStyle = {
@@ -22,13 +23,11 @@ type PanelStyle = {
 }
 
 async function mountHarness(page: Page): Promise<void> {
-  await page.route(
-    "https://cdn.conduit.market/variation-fixture.jpg",
-    (route) =>
-      route.fulfill({
-        path: resolve("apps/market/public/images/placeholders/landscape.jpg"),
-        contentType: "image/jpeg",
-      })
+  await page.route("https://cdn.conduit.market/variation-*.jpg", (route) =>
+    route.fulfill({
+      path: resolve("apps/market/public/images/placeholders/landscape.jpg"),
+      contentType: "image/jpeg",
+    })
   )
   await page.goto(`${marketUrl}/products`)
   await page.evaluate(async (fixtureUrl) => {
@@ -105,15 +104,6 @@ function expectMatchingOpaqueBackgrounds(
   expect(components?.length).toBeGreaterThanOrEqual(3)
   expect(components?.length).toBeLessThanOrEqual(4)
   expect(components?.length === 4 ? Number(components[3]) : 1).toBe(1)
-}
-
-function expectJoinedBorderColors(
-  card: Awaited<ReturnType<typeof cardStyle>>,
-  panel: PanelStyle
-): void {
-  expect(card.borderLeftColor).toBe(panel.borderLeftColor)
-  expect(card.borderRightColor).toBe(panel.borderRightColor)
-  expect(card.borderLeftColor).toBe(panel.borderBottomColor)
 }
 
 async function hasJoinedBorderColors(
@@ -302,10 +292,6 @@ test("market product variation panel preserves grid geometry across desktop mous
     expandedPanelStyle.backgroundColor
   )
   await expect.poll(() => hasJoinedBorderColors(variableCard, panel)).toBe(true)
-  expectJoinedBorderColors(
-    await cardStyle(variableCard),
-    await panelStyle(panel)
-  )
   expectUnchangedGeometry(
     initialGridGeometry,
     await Promise.all([variableItem, sibling, grid].map(geometry))
@@ -339,17 +325,79 @@ test("market product variation panel preserves grid geometry across desktop mous
     openPanelStyle.backgroundColor
   )
   await expect.poll(() => hasJoinedBorderColors(variableCard, panel)).toBe(true)
-  expectJoinedBorderColors(
-    await cardStyle(variableCard),
-    await panelStyle(panel)
-  )
   expectUnchangedGeometry(
     initialGridGeometry,
     await Promise.all([variableItem, sibling, grid].map(geometry))
   )
 
-  await page.keyboard.press("Escape")
+  await page.getByRole("option", { name: "M" }).press("Enter")
   await expect(chooseSize).toHaveAttribute("aria-expanded", "false")
+  await expect(chooseSize).toContainText("M")
+  await expect(
+    variableItem.getByText("40,000 sats", { exact: true })
+  ).toBeVisible()
+  await expect(variableItem.getByText(/From /)).not.toBeAttached()
+  await expect(
+    variableItem.getByRole("img", { name: "Conduit Shirt M" })
+  ).toHaveAttribute("src", "https://cdn.conduit.market/variation-m.jpg")
+
+  await variableItem.getByRole("button", { name: "Add" }).click()
+  await expect(
+    variableItem.getByRole("button", { name: "In cart (1)" })
+  ).toBeDisabled()
+  await variableItem.hover()
+  await expect(
+    variableItem.getByRole("button", {
+      name: "Stock limit reached for Conduit Shirt",
+    })
+  ).toBeDisabled()
+  await expect
+    .poll(() =>
+      page
+        .locator("#product-variation-panel-harness")
+        .evaluate((element) =>
+          JSON.parse(element.dataset.addedProduct ?? "null")
+        )
+    )
+    .toEqual({
+      id: selectedVariationId,
+      title: "Conduit Shirt M",
+      price: 40_000,
+      currency: "SATS",
+      stock: 1,
+      image: "https://cdn.conduit.market/variation-m.jpg",
+      specifications: [{ key: "size", value: "M" }],
+    })
+})
+
+test("market ready zero-axis families do not render an empty variation panel or remove a card seam @market", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mountHarness(page)
+
+  const item = page.getByTestId("zero-axis-variable-product-list-item")
+  const card = item.locator(":scope > div")
+  await card.hover()
+
+  await expect(item.getByRole("combobox")).not.toBeAttached()
+  await expect(
+    item.locator('[data-slot="product-variation-selector"]')
+  ).not.toBeAttached()
+  await expect(
+    item.getByRole("status", { name: "Loading product options" })
+  ).not.toBeAttached()
+  await expect
+    .poll(() =>
+      card.evaluate((element) => {
+        const style = getComputedStyle(element)
+        return {
+          borderTopWidth: style.borderTopWidth,
+          borderBottomWidth: style.borderBottomWidth,
+        }
+      })
+    )
+    .toEqual({ borderTopWidth: "1px", borderBottomWidth: "1px" })
 })
 
 test("market product variation panel opens above the card when the page ends below it @market", async ({
@@ -451,10 +499,6 @@ test("market product variation panel uses an opaque matching light overlay @mark
     expandedPanelStyle.backgroundColor
   )
   await expect.poll(() => hasJoinedBorderColors(variableCard, panel)).toBe(true)
-  expectJoinedBorderColors(
-    await cardStyle(variableCard),
-    await panelStyle(panel)
-  )
   expectOpaquePanelCorners(expandedPanelStyle)
   await page.locator("#product-variation-panel-harness").screenshot({
     path: test.info().outputPath("variation-light.png"),

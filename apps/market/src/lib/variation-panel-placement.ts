@@ -1,6 +1,6 @@
 export type VariationPanelPlacement = "below" | "above"
 
-export const EXPANDED_PRODUCT_CARD_SCALE = 1.12
+const EXPANDED_PRODUCT_CARD_SCALE = 1.12
 
 export interface VariationPanelPlacementInput {
   /** Unscaled card top edge relative to the viewport. */
@@ -12,7 +12,6 @@ export interface VariationPanelPlacementInput {
   viewportHeight: number
   /** Fixed chrome covering the bottom of the viewport, such as the cart HUD. */
   bottomInset?: number
-  scale?: number
 }
 
 /**
@@ -22,7 +21,7 @@ export interface VariationPanelPlacementInput {
 export function getVariationPanelPlacement(
   input: VariationPanelPlacementInput
 ): VariationPanelPlacement {
-  const scale = input.scale ?? EXPANDED_PRODUCT_CARD_SCALE
+  const scale = EXPANDED_PRODUCT_CARD_SCALE
   const center = input.cardTop + input.cardHeight / 2
   const scaledHalfHeight = (input.cardHeight * scale) / 2
   const scaledPanelHeight = input.panelHeight * scale

@@ -58,110 +58,11 @@ describe("Market product grid layout", () => {
     expect(resolvedCard).toContain("{...props}")
     expect(resolvedCard).not.toContain('className="h-full space-y-2"')
     expect(eventRoute).toContain('className="h-auto"')
-    expect(eventRoute).toContain(
-      "`mt-6 ${PRODUCT_GRID_CLASS_NAME} items-start`"
-    )
-  })
-
-  it("scales desktop cards without changing layout while joining variable controls", async () => {
-    const content = await readFile(
-      "apps/market/src/components/ProductGridCard.tsx",
+    const eventBrowser = await readFile(
+      "apps/market/src/components/EventCatalogBrowser.tsx",
       "utf8"
     )
-    const selector = await readFile(
-      "apps/market/src/components/ProductVariationSelector.tsx",
-      "utf8"
-    )
-    const desktopHoverMedia = "[@media(min-width:768px)_and_(hover:hover)]"
-
-    expect(content).toContain(`${desktopHoverMedia}:absolute`)
-    expect(content).toContain(`${desktopHoverMedia}:top-full`)
-    expect(content).toContain(`${desktopHoverMedia}:bottom-full`)
-    expect(content).toContain(`${desktopHoverMedia}:hover:rounded-t-none`)
-    expect(content).toContain(`${desktopHoverMedia}:hover:border-t-0`)
-    expect(content).toContain("getVariationPanelPlacement")
-    expect(content).toContain("--market-hud-height")
-    expect(content).toContain("onPointerEnter=")
-    expect(content).toContain("onFocus=")
-    expect(content).toContain(`${desktopHoverMedia}:scale-y-0`)
-    expect(content).toContain(`${desktopHoverMedia}:group-hover:scale-y-100`)
-    expect(content).toContain("origin-center")
-    expect(content).toContain(`${desktopHoverMedia}:hover:scale-[1.12]`)
-    expect(content).toContain(`${desktopHoverMedia}:focus-within:scale-[1.12]`)
-    expect(content).toContain(
-      `${desktopHoverMedia}:hover:bg-[var(--surface-overlay)]`
-    )
-    expect(content).toContain(
-      `${desktopHoverMedia}:focus-within:bg-[var(--surface-overlay)]`
-    )
-    expect(content).toContain("disableImageHoverZoom")
-    expect(content).toContain("mediaClassName")
-    expect(content).toContain(
-      `${desktopHoverMedia}:rounded-t-[calc(0.75rem-1px)]`
-    )
-    expect(content).not.toContain(`${desktopHoverMedia}:translate-y-2`)
-    expect(content).toContain(
-      `${desktopHoverMedia}:transition-[opacity,visibility,transform]`
-    )
-    expect(content).toContain(`${desktopHoverMedia}:pointer-events-none`)
-    expect(content).toContain(`${desktopHoverMedia}:invisible`)
-    expect(content).toContain(`${desktopHoverMedia}:group-hover:visible`)
-    expect(content).toContain(
-      `${desktopHoverMedia}:group-focus-within:pointer-events-auto`
-    )
-    expect(content).toContain(`${desktopHoverMedia}:group-focus-within:visible`)
-    expect(content).toContain(
-      `${desktopHoverMedia}:group-focus-within:opacity-100`
-    )
-    expect(content).toContain("motion-reduce:transition-none")
-    expect(content).toContain(`${desktopHoverMedia}:overflow-visible`)
-    expect(content).toContain(`${desktopHoverMedia}:hover:z-20`)
-    expect(content).toContain(`${desktopHoverMedia}:focus-within:z-20`)
-    expect(content).toContain(`${desktopHoverMedia}:hover:rounded-b-none`)
-    expect(content).toContain(`${desktopHoverMedia}:hover:border-b-0`)
-    expect(content).toContain(`${desktopHoverMedia}:rounded-b-xl`)
-    expect(content).toContain(`${desktopHoverMedia}:border-x`)
-    expect(content).toContain(`${desktopHoverMedia}:border-b`)
-    expect(content).toContain(
-      `${desktopHoverMedia}:bg-[var(--surface-overlay)]`
-    )
-    const variationPanelSource = content.slice(
-      content.indexOf("const variationPanelClassName"),
-      content.indexOf(
-        "return (",
-        content.indexOf("const variationPanelClassName")
-      )
-    )
-    expect(variationPanelSource).not.toContain(
-      `${desktopHoverMedia}:shadow-[var(--shadow-lg)]`
-    )
-    expect(variationPanelSource).not.toContain(
-      `${desktopHoverMedia}:bg-[var(--surface-elevated)]`
-    )
-    const variationMenuOpenSource = content.slice(
-      content.indexOf("isVariationMenuOpen &&"),
-      content.indexOf("\n       )}", content.indexOf("isVariationMenuOpen &&"))
-    )
-    expect(variationMenuOpenSource).toContain(
-      `${desktopHoverMedia}:bg-[var(--surface-overlay)]`
-    )
-    expect(content).toContain(`${desktopHoverMedia}:rounded-b-none`)
-    expect(content).toContain(`${desktopHoverMedia}:border-b-0`)
-    expect(content).toContain("onOpenChange={setIsVariationMenuOpen}")
-    expect(content).toContain(
-      "const hasVariationControls = hasVariations || showVariationSkeleton"
-    )
-    expect(content).toContain("hasVariationControls &&")
-    expect(content).toContain(
-      "hasVariationControls ? variationPanelClassName : undefined"
-    )
-    expect(content).toContain(
-      'className="space-y-2 animate-pulse motion-reduce:animate-none"'
-    )
-    expect(selector).toContain("onOpenChange?: (open: boolean) => void")
-    expect(selector).toContain("onOpenChange?.(openAxes.current.size > 0)")
-    expect(selector).toContain("onOpenChange?.(false)")
-    expect(selector).toContain("onOpenChange={(open) =>")
+    expect(eventBrowser).toContain("`${PRODUCT_GRID_CLASS_NAME} items-start`")
   })
 
   it("keeps product grid cards out of paint containment and storefront clipping", async () => {
