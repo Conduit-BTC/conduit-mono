@@ -4,6 +4,7 @@ import { installTestSigner } from "./helpers/auth"
 const BUYER_PUBKEY = "c".repeat(64)
 const MERCHANT_PUBKEY = "d".repeat(64)
 const SEED_MODULE = "/src/test-fixtures/direct-message-seed.ts"
+const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 
 async function seedMessages(
   page: Page,
@@ -49,7 +50,7 @@ test("market header shows unread cached direct messages as a live icon badge @ma
   page,
 }) => {
   await installTestSigner(page, BUYER_PUBKEY)
-  await page.goto("http://127.0.0.1:7000/products")
+  await page.goto(`${marketUrl}/products`)
   await page.waitForLoadState("networkidle")
 
   const messages = page

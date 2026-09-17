@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { db, type StoredPaymentAttempt } from "../packages/core/src/db"
+import {
+  db,
+  type CachedProfile,
+  type StoredPaymentAttempt,
+} from "../packages/core/src/db"
 import {
   GUEST_ORDER_LOCAL_RETENTION_MS,
   LEGACY_ORDER_PAYMENT_RECOVERY_GRACE_MS,
@@ -12,10 +16,13 @@ import {
   claimExternalOrderPaymentProof,
   claimOrderLifecyclePayment,
   claimOrderLifecyclePrivateFallbackPayment,
+  claimOrderLifecycleUpdatedAddressPayment,
   claimOrderPaymentProofDelivery,
   deriveOrderLifecyclePhase,
+  fenceClaimedOrderLifecyclePaymentAuthority,
   getOrderLifecyclePaymentAdmission,
   getOrderPaymentTargetReplacementAdmission,
+  getOrderPaymentAddressReplacementAdmission,
   isGuestOrderDataExpired,
   isLegacyInterruptedOrderPayment,
   patchClaimedOrderLifecyclePayment,
@@ -50,14 +57,18 @@ async function withMockOrderPaymentDb<T>(
   initial: {
     lifecycle?: OrderLifecycle
     paymentAttempt?: StoredPaymentAttempt
+    profile?: CachedProfile
   },
   run: (state: {
     lifecycle: () => OrderLifecycle | undefined
     paymentAttempt: () => StoredPaymentAttempt | undefined
+    profile: () => CachedProfile | undefined
+    transactionTables: () => unknown[][]
   }) => Promise<T>
 ): Promise<T> {
   let lifecycle = initial.lifecycle
   let paymentAttempt = initial.paymentAttempt
+  let profile = initial.profile
   const lifecycleTable = db.orderLifecycles as typeof db.orderLifecycles & {
     get: typeof db.orderLifecycles.get
     put: typeof db.orderLifecycles.put
@@ -67,13 +78,20 @@ async function withMockOrderPaymentDb<T>(
       get: typeof db.paymentAttempts.get
       put: typeof db.paymentAttempts.put
     }
+  const profileTable = db.profiles as typeof db.profiles & {
+    get: typeof db.profiles.get
+    put: typeof db.profiles.put
+  }
   const database = db as typeof db & { transaction: typeof db.transaction }
   const originalLifecycleGet = lifecycleTable.get
   const originalLifecyclePut = lifecycleTable.put
   const originalPaymentAttemptGet = paymentAttemptTable.get
   const originalPaymentAttemptPut = paymentAttemptTable.put
+  const originalProfileGet = profileTable.get
+  const originalProfilePut = profileTable.put
   const originalTransaction = database.transaction
   let transactionTail: Promise<unknown> = Promise.resolve()
+  const transactionTables: unknown[][] = []
 
   lifecycleTable.get = (async (orderId: string) =>
     lifecycle?.orderId === orderId
@@ -91,8 +109,15 @@ async function withMockOrderPaymentDb<T>(
     paymentAttempt = next
     return next.id
   }) as typeof paymentAttemptTable.put
+  profileTable.get = (async (pubkey: string) =>
+    profile?.pubkey === pubkey ? profile : undefined) as typeof profileTable.get
+  profileTable.put = (async (next: CachedProfile) => {
+    profile = next
+    return next.pubkey
+  }) as typeof profileTable.put
   database.transaction = ((...args: unknown[]) => {
     const scope = args.at(-1) as () => Promise<unknown>
+    transactionTables.push(args.slice(1, -1))
     const result = transactionTail.then(scope, scope)
     transactionTail = result.then(
       () => undefined,
@@ -105,12 +130,16 @@ async function withMockOrderPaymentDb<T>(
     return await run({
       lifecycle: () => lifecycle,
       paymentAttempt: () => paymentAttempt,
+      profile: () => profile,
+      transactionTables: () => transactionTables,
     })
   } finally {
     lifecycleTable.get = originalLifecycleGet
     lifecycleTable.put = originalLifecyclePut
     paymentAttemptTable.get = originalPaymentAttemptGet
     paymentAttemptTable.put = originalPaymentAttemptPut
+    profileTable.get = originalProfileGet
+    profileTable.put = originalProfilePut
     database.transaction = originalTransaction
   }
 }
@@ -290,6 +319,362 @@ describe("order payment admission", () => {
     paymentTarget: lifecycle.paymentTarget!,
   }
 
+  describe("updated merchant payment address", () => {
+    const failed: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      lastError: "Invoice preparation failed.",
+      walletPaymentAttemptId: "f7347f64-a8aa-4e42-a476-0db58e014564",
+      zapRequestId: "previous-request",
+      zapRequestCreatedAt: 1_700_000_000,
+      zapLnurl: "previous-lnurl",
+      zapReceiptPubkey: "previous-provider",
+      zapReceiptRelayUrls: ["wss://previous.example"],
+    }
+    const nextAddress = "merchant@new-wallet.example"
+    const manualFailed: OrderLifecycle = {
+      ...failed,
+      checkoutMode: "external_wallet",
+      publicZapSigner: undefined,
+      paymentTarget: { type: "manual" },
+      zapContent: "",
+    }
+    const manualInput: OrderPaymentClaimInput = {
+      ...input,
+      checkoutMode: "private_checkout",
+      paymentTarget: { type: "manual" },
+      zapContent: "",
+    }
+
+    it("recovers checkout-persisted private manual orders without changing their mode or target", async () => {
+      await withMockOrderPaymentDb(
+        { lifecycle: manualFailed },
+        async (state) => {
+          const result = await claimOrderLifecycleUpdatedAddressPayment(
+            manualInput,
+            manualFailed.updatedAt,
+            nextAddress
+          )
+          expect(result.status).toBe("claimed")
+          expect(state.lifecycle()).toMatchObject({
+            orderId: manualFailed.orderId,
+            checkoutMode: "external_wallet",
+            paymentTarget: { type: "manual" },
+            merchantLightningAddress: nextAddress,
+            paymentClaimId: manualInput.paymentClaimId,
+            invoiceStatus: "requesting",
+            totalMsats: manualFailed.totalMsats,
+          })
+          expect(state.lifecycle()?.walletPaymentAttemptId).toBeUndefined()
+        }
+      )
+    })
+
+    it("replaces only a failed preparation and claims the new destination atomically", async () => {
+      await withMockOrderPaymentDb({ lifecycle: failed }, async (state) => {
+        const result = await claimOrderLifecycleUpdatedAddressPayment(
+          input,
+          failed.updatedAt,
+          nextAddress
+        )
+        expect(result.status).toBe("claimed")
+        const next = state.lifecycle()!
+        expect(next.merchantLightningAddress).toBe(nextAddress)
+        expect(next.paymentClaimId).toBe(input.paymentClaimId)
+        expect(next.invoiceStatus).toBe("requesting")
+        expect(next.paymentStatus).toBe("not_started")
+        expect(next.walletPaymentAttemptId).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+        )
+        expect(next.walletPaymentAttemptId).not.toBe(
+          failed.walletPaymentAttemptId
+        )
+        expect(next.zapRequestId).toBeUndefined()
+        expect(next.zapRequestCreatedAt).toBeUndefined()
+        expect(next.zapLnurl).toBeUndefined()
+        expect(next.zapReceiptPubkey).toBeUndefined()
+        expect(next.zapReceiptRelayUrls).toBeUndefined()
+        expect(next.lastError).toBeUndefined()
+        expect(next.buyerPubkey).toBe(failed.buyerPubkey)
+        expect(next.merchantPubkey).toBe(failed.merchantPubkey)
+        expect(next.totalMsats).toBe(failed.totalMsats)
+        expect(next.items).toEqual(failed.items)
+        expect(next.checkoutMode).toBe(failed.checkoutMode)
+        expect(next.zapContent).toBe(failed.zapContent)
+      })
+    })
+
+    it("permits only one competing address replacement claim", async () => {
+      await withMockOrderPaymentDb({ lifecycle: failed }, async (state) => {
+        const results = await Promise.all([
+          claimOrderLifecycleUpdatedAddressPayment(
+            input,
+            failed.updatedAt,
+            nextAddress
+          ),
+          claimOrderLifecycleUpdatedAddressPayment(
+            { ...input, paymentClaimId: "competing-claim" },
+            failed.updatedAt,
+            "merchant@other-wallet.example"
+          ),
+        ])
+        expect(results.map((result) => result.status)).toEqual([
+          "claimed",
+          "unsafe_state",
+        ])
+        expect(state.lifecycle()?.merchantLightningAddress).toBe(nextAddress)
+        expect(state.lifecycle()?.paymentClaimId).toBe(input.paymentClaimId)
+      })
+    })
+
+    it("requires the exact old payment snapshot and reviewed revision", async () => {
+      for (const mismatch of [
+        { ...input, merchantLightningAddress: nextAddress },
+        { ...input, buyerPubkey: "another-buyer" },
+        { ...input, merchantPubkey: "another-merchant" },
+        { ...input, totalMsats: input.totalMsats + 1 },
+        { ...input, zapContent: "different comment" },
+        { ...input, items: [{ ...input.items[0]!, quantity: 3 }] },
+        { ...input, paymentTarget: { type: "manual" as const } },
+      ]) {
+        await withMockOrderPaymentDb({ lifecycle: failed }, async (state) => {
+          expect(
+            (
+              await claimOrderLifecycleUpdatedAddressPayment(
+                mismatch,
+                failed.updatedAt,
+                nextAddress
+              )
+            ).status
+          ).toBe("snapshot_mismatch")
+          expect(state.lifecycle()).toBe(failed)
+        })
+      }
+      await withMockOrderPaymentDb({ lifecycle: failed }, async (state) => {
+        expect(
+          (
+            await claimOrderLifecycleUpdatedAddressPayment(
+              input,
+              failed.updatedAt - 1,
+              nextAddress
+            )
+          ).status
+        ).toBe("snapshot_mismatch")
+        expect(state.lifecycle()).toBe(failed)
+      })
+    })
+
+    it("rejects terminal, uncertain, invoiced, or proof-bearing payment state", async () => {
+      const unsafe: Array<Partial<OrderLifecycle>> = [
+        { phase: "cancelled" },
+        { phase: "completed" },
+        { completedAt: 1_700_000_001_000 },
+        { checkoutMode: "pay_later" },
+        { feeMsats: 0 },
+        { invoiceExpiresAt: 1_700_000_001 },
+        { zapReceiptObservationDeadline: 1_700_000_001_000 },
+        { orderDeliveryStatus: "failed" },
+        { paymentStatus: "paid" },
+        { paymentStatus: "paying" },
+        { paymentStatus: "ambiguous" },
+        { paymentStatus: "manual_required" },
+        { paymentStatus: "not_started" },
+        { invoiceStatus: "received" },
+        { invoiceStatus: "manual_required" },
+        { invoiceStatus: "requesting" },
+        { invoice: "synthetic-invoice" },
+        { paymentHash: "synthetic-payment-hash" },
+        { preimage: "synthetic-preimage" },
+        { zapReceiptId: "synthetic-receipt" },
+        { zapReceiptStatus: "waiting" },
+        { zapReceiptStatus: "observed" },
+        { proofDeliveryStatus: "sent" },
+        { proofDeliveryStatus: "pending" },
+        { proofDeliveryClaimId: "proof-owner" },
+        { paymentClaimId: "payment-owner" },
+      ]
+      expect(getOrderPaymentAddressReplacementAdmission(failed)).toBe(
+        "replaceable"
+      )
+      for (const [stored, claimInput] of [
+        [failed, input],
+        [manualFailed, manualInput],
+      ] as const) {
+        for (const override of unsafe) {
+          const initial = { ...stored, ...override }
+          expect(getOrderPaymentAddressReplacementAdmission(initial)).toBe(
+            "unsafe_state"
+          )
+          await withMockOrderPaymentDb(
+            { lifecycle: initial },
+            async (state) => {
+              expect(
+                (
+                  await claimOrderLifecycleUpdatedAddressPayment(
+                    claimInput,
+                    initial.updatedAt,
+                    nextAddress
+                  )
+                ).status
+              ).toBe("unsafe_state")
+              expect(state.lifecycle()).toBe(initial)
+            }
+          )
+        }
+      }
+    })
+
+    it("rejects invalid or unchanged addresses and an ended buyer session", async () => {
+      for (const address of [
+        "",
+        "not-an-address",
+        "merchant@localhost",
+        input.merchantLightningAddress!,
+      ]) {
+        await withMockOrderPaymentDb({ lifecycle: failed }, async (state) => {
+          expect(
+            (
+              await claimOrderLifecycleUpdatedAddressPayment(
+                input,
+                failed.updatedAt,
+                address
+              )
+            ).status
+          ).toBe("unsafe_state")
+          expect(state.lifecycle()).toBe(failed)
+        })
+      }
+      await withMockOrderPaymentDb({ lifecycle: failed }, async (state) => {
+        expect(
+          (
+            await claimOrderLifecycleUpdatedAddressPayment(
+              input,
+              failed.updatedAt,
+              nextAddress,
+              () => false
+            )
+          ).status
+        ).toBe("unsafe_state")
+        expect(state.lifecycle()).toBe(failed)
+      })
+    })
+
+    it("rejects any retained payment or report attempt, even if incomplete", async () => {
+      const attempt: StoredPaymentAttempt = {
+        id: failed.orderId,
+        orderId: failed.orderId,
+        buyerPubkey: failed.buyerPubkey,
+        merchantPubkey: failed.merchantPubkey,
+        amountMsats: failed.totalMsats,
+        currency: "SATS",
+        proofDeliveryStatus: "pending",
+        createdAt: failed.createdAt,
+        updatedAt: failed.updatedAt,
+      }
+      for (const [stored, claimInput] of [
+        [failed, input],
+        [manualFailed, manualInput],
+      ] as const) {
+        for (const evidence of [
+          {},
+          { invoice: "synthetic-invoice" },
+          { paymentHash: "synthetic-payment-hash" },
+          { preimage: "synthetic-preimage" },
+          { zapReceiptId: "synthetic-receipt" },
+          { feeMsats: 0 },
+          { proofDeliveryStatus: "sent" as const },
+          { proofDeliveryStatus: "retry_needed" as const },
+        ]) {
+          const paymentAttempt = { ...attempt, ...evidence }
+          await withMockOrderPaymentDb(
+            { lifecycle: stored, paymentAttempt },
+            async (state) => {
+              expect(
+                (
+                  await claimOrderLifecycleUpdatedAddressPayment(
+                    claimInput,
+                    stored.updatedAt,
+                    nextAddress
+                  )
+                ).status
+              ).toBe("unsafe_state")
+              expect(state.lifecycle()).toBe(stored)
+              expect(state.paymentAttempt()).toBe(paymentAttempt)
+            }
+          )
+        }
+      }
+    })
+
+    it("rechecks the buyer session after asynchronous transaction reads", async () => {
+      await withMockOrderPaymentDb({ lifecycle: failed }, async (state) => {
+        let sessionCurrent = true
+        const originalGet = db.paymentAttempts.get
+        db.paymentAttempts.get = (async () => {
+          sessionCurrent = false
+          return undefined
+        }) as typeof db.paymentAttempts.get
+        try {
+          expect(
+            (
+              await claimOrderLifecycleUpdatedAddressPayment(
+                input,
+                failed.updatedAt,
+                nextAddress,
+                () => sessionCurrent
+              )
+            ).status
+          ).toBe("unsafe_state")
+          expect(state.lifecycle()).toBe(failed)
+        } finally {
+          db.paymentAttempts.get = originalGet
+        }
+      })
+    })
+
+    it("normalizes the new address without changing manual payment selection", async () => {
+      const manual: OrderLifecycle = {
+        ...failed,
+        paymentTarget: { type: "manual" },
+      }
+      await withMockOrderPaymentDb({ lifecycle: manual }, async (state) => {
+        expect(
+          (
+            await claimOrderLifecycleUpdatedAddressPayment(
+              { ...input, paymentTarget: { type: "manual" } },
+              manual.updatedAt,
+              `  ${nextAddress.toUpperCase()}  `,
+              () => true
+            )
+          ).status
+        ).toBe("claimed")
+        expect(state.lifecycle()?.merchantLightningAddress).toBe(nextAddress)
+        expect(state.lifecycle()?.paymentTarget).toEqual({ type: "manual" })
+        expect(state.lifecycle()?.walletPaymentAttemptId).toBeUndefined()
+        expect(state.lifecycle()!.updatedAt).toBeGreaterThan(manual.updatedAt)
+      })
+    })
+
+    it("reports missing lifecycle state", async () => {
+      expect(getOrderPaymentAddressReplacementAdmission(undefined)).toBe(
+        "missing"
+      )
+      await withMockOrderPaymentDb({}, async () => {
+        expect(
+          await claimOrderLifecycleUpdatedAddressPayment(
+            input,
+            failed.updatedAt,
+            nextAddress
+          )
+        ).toEqual({
+          status: "missing",
+          lifecycle: null,
+        })
+      })
+    })
+  })
+
   it("admits an exact delivered-order snapshot", () => {
     expect(getOrderLifecyclePaymentAdmission(lifecycle, input)).toBe(
       "admissible"
@@ -366,6 +751,9 @@ describe("order payment admission", () => {
       const result = await claimOrderLifecyclePayment(input)
 
       expect(result.status).toBe("claimed")
+      if (result.status === "claimed") {
+        expect(result.preclaimLifecycle).toEqual(lifecycle)
+      }
       expect(state.lifecycle()).toMatchObject({
         paymentClaimId: input.paymentClaimId,
         invoiceStatus: "requesting",
@@ -480,6 +868,130 @@ describe("order payment admission", () => {
       expect(terminal.status).toBe("patched")
       expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
     })
+  })
+
+  it("selects profile authority and renews the matching payment claim together", async () => {
+    const claimed: OrderLifecycle = {
+      ...lifecycle,
+      paymentClaimId: input.paymentClaimId,
+      paymentClaimedAt: Date.now(),
+      paymentClaimLeaseExpiresAt: Date.now() + 1,
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+    }
+    const profile: CachedProfile = {
+      pubkey: claimed.merchantPubkey,
+      rawContent: "{}",
+      eventId: "d".repeat(64),
+      eventCreatedAt: 2,
+      cachedAt: Date.now(),
+    }
+    await withMockOrderPaymentDb(
+      { lifecycle: claimed, profile },
+      async (state) => {
+        const fenced = await fenceClaimedOrderLifecyclePaymentAuthority(
+          claimed.orderId,
+          input.paymentClaimId,
+          claimed.merchantPubkey
+        )
+        expect(fenced.status).toBe("fenced")
+        if (fenced.status !== "fenced") throw new Error("claim not fenced")
+        expect(fenced.selectedProfileContext.frontier).toMatchObject({
+          eventId: profile.eventId,
+          rawContent: profile.rawContent,
+          validity: "valid",
+        })
+        expect(fenced.lifecycle.paymentClaimLeaseExpiresAt).toBeGreaterThan(
+          claimed.paymentClaimLeaseExpiresAt!
+        )
+
+        await db.orderLifecycles.put({
+          ...state.lifecycle()!,
+          paymentClaimId: "competing-claim",
+        })
+        const stale = await fenceClaimedOrderLifecyclePaymentAuthority(
+          claimed.orderId,
+          input.paymentClaimId,
+          claimed.merchantPubkey
+        )
+        expect(stale.status).toBe("claim_mismatch")
+      }
+    )
+  })
+
+  it("serializes the payment fence behind a stronger profile retention transaction", async () => {
+    const claimed: OrderLifecycle = {
+      ...lifecycle,
+      paymentClaimId: input.paymentClaimId,
+      paymentClaimedAt: Date.now(),
+      paymentClaimLeaseExpiresAt: Date.now() + 1,
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+    }
+    const originalProfile: CachedProfile = {
+      pubkey: claimed.merchantPubkey,
+      rawContent: JSON.stringify({ lud16: "old@example.com" }),
+      eventId: "c".repeat(64),
+      eventCreatedAt: 1,
+      cachedAt: Date.now(),
+    }
+    const strongerProfile: CachedProfile = {
+      ...originalProfile,
+      rawContent: "{}",
+      eventId: "d".repeat(64),
+      eventCreatedAt: 2,
+    }
+
+    await withMockOrderPaymentDb(
+      { lifecycle: claimed, profile: originalProfile },
+      async (state) => {
+        let releaseProfileWrite!: () => void
+        let signalProfileWrite!: () => void
+        const profileWriteStarted = new Promise<void>((resolve) => {
+          signalProfileWrite = resolve
+        })
+        const profileWriteGate = new Promise<void>((resolve) => {
+          releaseProfileWrite = resolve
+        })
+        const profileWrite = db.transaction("rw", db.profiles, async () => {
+          signalProfileWrite()
+          await profileWriteGate
+          await db.profiles.put(strongerProfile)
+        })
+        await profileWriteStarted
+
+        let fenceSettled = false
+        const fence = fenceClaimedOrderLifecyclePaymentAuthority(
+          claimed.orderId,
+          input.paymentClaimId,
+          claimed.merchantPubkey
+        ).finally(() => {
+          fenceSettled = true
+        })
+        await Promise.resolve()
+        expect(fenceSettled).toBe(false)
+
+        releaseProfileWrite()
+        await profileWrite
+        const result = await fence
+        expect(result.status).toBe("fenced")
+        if (result.status !== "fenced") throw new Error("claim not fenced")
+        expect(result.selectedProfileContext.frontier).toMatchObject({
+          eventId: strongerProfile.eventId,
+          rawContent: strongerProfile.rawContent,
+        })
+        expect(state.profile()).toEqual(strongerProfile)
+        expect(
+          state
+            .transactionTables()
+            .some(
+              (tables) =>
+                tables.includes(db.orderLifecycles) &&
+                tables.includes(db.profiles)
+            )
+        ).toBe(true)
+      }
+    )
   })
 
   it("transfers pending proof work when exact receipt evidence fences a payment claim", async () => {
@@ -912,6 +1424,127 @@ describe("order payment admission", () => {
         proofDeliveryStatus: "retry_needed",
       })
     })
+  })
+
+  it("rejects completed and public manual reports before claiming payment evidence", async () => {
+    const manual: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      proofDeliveryStatus: "not_started",
+      invoice: "lnbc1external",
+    }
+    for (const blocked of [
+      { ...manual, phase: "completed" as const },
+      { ...manual, checkoutMode: "public_zap_as_shopper" as const },
+      { ...manual, checkoutMode: "anonymous_public_zap" as const },
+    ]) {
+      await withMockOrderPaymentDb({ lifecycle: blocked }, async (state) => {
+        const result = await claimExternalOrderPaymentProof(
+          blocked.orderId,
+          "blocked-report",
+          { authorizeClaim: () => true }
+        )
+        expect(result.status).toBe("preserved")
+        expect(state.lifecycle()).toEqual(blocked)
+      })
+    }
+  })
+
+  it("authorizes an already-paid private report once without reopening cancellation", async () => {
+    const cancelled: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      proofDeliveryStatus: "not_started",
+      invoice: "lnbc1external",
+      phase: "cancelled",
+    }
+    let authorizations = 0
+    const authorizeClaim = (current: OrderLifecycle) => {
+      authorizations += 1
+      expect(current.paymentStatus).toBe("manual_required")
+      return current.invoice === cancelled.invoice
+    }
+    await withMockOrderPaymentDb({ lifecycle: cancelled }, async (state) => {
+      const result = await claimExternalOrderPaymentProof(
+        cancelled.orderId,
+        "cancelled-report",
+        { authorizeClaim }
+      )
+      expect(result.status).toBe("claimed")
+      expect(state.lifecycle()).toMatchObject({
+        phase: "cancelled",
+        paymentStatus: "paid",
+        proofDeliveryStatus: "pending",
+        invoice: cancelled.invoice,
+      })
+      expect(
+        (
+          await claimExternalOrderPaymentProof(
+            cancelled.orderId,
+            "duplicate-report",
+            { authorizeClaim }
+          )
+        ).status
+      ).toBe("preserved")
+      expect(authorizations).toBe(1)
+    })
+  })
+
+  it("rechecks projected authority and exact identities after the transaction reads storage", async () => {
+    const original: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      proofDeliveryStatus: "not_started",
+      invoice: "lnbc1original",
+    }
+    for (const change of [
+      { buyerPubkey: "another-buyer" },
+      { merchantPubkey: "another-merchant" },
+      { invoice: "lnbc1another" },
+      { phase: "completed" as const },
+      {},
+    ]) {
+      await withMockOrderPaymentDb({ lifecycle: original }, async (state) => {
+        let projectedAccessAllowsReport = true
+        let inspected: OrderLifecycle | undefined
+        const claim = claimExternalOrderPaymentProof(
+          original.orderId,
+          "stale-report",
+          {
+            authorizeClaim: (current) => {
+              inspected = current
+              return (
+                projectedAccessAllowsReport &&
+                current.buyerPubkey === original.buyerPubkey &&
+                current.merchantPubkey === original.merchantPubkey &&
+                current.invoice === original.invoice
+              )
+            },
+          }
+        )
+        // The queued transaction must see newer local state and projected authority.
+        const changed = { ...original, ...change }
+        await db.orderLifecycles.put(changed)
+        if (Object.keys(change).length === 0)
+          projectedAccessAllowsReport = false
+        expect((await claim).status).toBe("preserved")
+        if (changed.phase === "completed") {
+          expect(inspected).toBeUndefined()
+        } else {
+          expect(inspected).toEqual(changed)
+        }
+        expect(state.lifecycle()).toEqual(changed)
+      })
+    }
   })
 
   it("atomically binds handoff and reporting to one exact merchant invoice", async () => {

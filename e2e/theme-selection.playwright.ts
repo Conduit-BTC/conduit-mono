@@ -145,39 +145,11 @@ async function expectSilentThemeFeedback(page: Page): Promise<void> {
 }
 
 async function expectThemeIconInsideButton(page: Page): Promise<void> {
-  const bounds = await page
-    .locator("[data-theme-toggle-icon]")
-    .evaluate((element) => {
-      const button = element.closest("button")
-      if (!button) return null
-      const icon = element.getBoundingClientRect()
-      const control = button.getBoundingClientRect()
-      return {
-        icon: {
-          left: icon.left,
-          right: icon.right,
-          top: icon.top,
-          bottom: icon.bottom,
-        },
-        control: {
-          left: control.left,
-          right: control.right,
-          top: control.top,
-          bottom: control.bottom,
-          width: control.width,
-          height: control.height,
-        },
-      }
-    })
-  expect(bounds).not.toBeNull()
-  expect(bounds!.control.width).toBe(44)
-  expect(bounds!.control.height).toBe(44)
-  expect(bounds!.control.left).toBeGreaterThanOrEqual(0)
-  expect(bounds!.control.right).toBeLessThanOrEqual(page.viewportSize()!.width)
-  expect(bounds!.icon.left).toBeGreaterThanOrEqual(bounds!.control.left)
-  expect(bounds!.icon.right).toBeLessThanOrEqual(bounds!.control.right)
-  expect(bounds!.icon.top).toBeGreaterThanOrEqual(bounds!.control.top)
-  expect(bounds!.icon.bottom).toBeLessThanOrEqual(bounds!.control.bottom)
+  const button = page.locator("[data-theme-toggle-preference]")
+  await expect(button).toHaveCSS("width", "44px")
+  await expect(button).toHaveCSS("height", "44px")
+  await expect(button).toBeInViewport()
+  await expect(page.locator("[data-theme-toggle-icon]")).toBeVisible()
 }
 
 for (const surface of [

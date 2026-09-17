@@ -25,6 +25,7 @@ import {
   getProductImageCandidates,
   getProductDetail,
   getProductsByIds,
+  getCachedProductsByIds,
   getProfiles,
   __resetRelayHealth,
   __resetRelayListTestOverrides,
@@ -3193,6 +3194,62 @@ describe("commerce gateway", () => {
     expect(result.data).toHaveLength(0)
   })
 
+  it("reads an exact cached event product batch once without resurrecting a signed deletion", async () => {
+    const first = makeSignedProductEvent({
+      dTag: "batch-first",
+      createdAt: 100,
+      title: "First cached product",
+    })
+    const deleted = makeSignedProductEvent({
+      dTag: "batch-deleted",
+      createdAt: 100,
+      title: "Deleted cached product",
+    })
+    const unrelated = makeSignedProductEvent({
+      secretKey: MERCHANT_B_SECRET,
+      dTag: "unrelated",
+      createdAt: 100,
+      title: "Unrelated product",
+    })
+    for (const event of [first, deleted, unrelated])
+      await cacheSignedProductListingEvent(event)
+    const firstId = `30402:${first.pubkey}:batch-first`
+    const deletedId = `30402:${deleted.pubkey}:batch-deleted`
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({ createdAt: 101, tags: [["a", deletedId]] })
+    )
+    let cacheReads = 0
+    let networkReads = 0
+    let seenAuthors: readonly string[] | undefined
+    __setCommerceTestOverrides({
+      getCachedProducts: async (_merchant, authors) => {
+        cacheReads++
+        seenAuthors = authors
+        return cachedProducts.filter(
+          (row) => !authors || authors.includes(row.pubkey)
+        )
+      },
+      fetchEventsFanout: async () => {
+        networkReads++
+        throw new Error("Cached reads cannot use relays")
+      },
+      fetchEventsFanoutWithDiagnostics: async () => {
+        networkReads++
+        throw new Error("Cached reads cannot use relays")
+      },
+    })
+    const result = await getCachedProductsByIds([firstId, deletedId, firstId], {
+      includeStale: true,
+      includeMarketHidden: true,
+    })
+    expect(result.data.map((record) => record.addressId)).toEqual([firstId])
+    expect(cacheReads).toBe(1)
+    expect(seenAuthors).toEqual([first.pubkey])
+    expect(networkReads).toBe(0)
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.source).toBe("local_cache")
+  })
+
   it("suppresses stale direct product detail with a local signed tombstone", async () => {
     const dTag = "locally-deleted-detail"
     const staleProduct = makeSignedProductEvent({
@@ -5409,6 +5466,7 @@ describe("commerce gateway", () => {
       stale: false,
       degraded: false,
       capped: false,
+      profileFrontierStates: { merchant: "observed_malformed" },
     })
 
     const paymentResult = await getProfiles({
@@ -5425,6 +5483,7 @@ describe("commerce gateway", () => {
       stale: false,
       degraded: true,
       capped: false,
+      profileFrontierStates: { merchant: "observed_malformed" },
     })
 
     __setCommerceTestOverrides({
@@ -6055,11 +6114,13 @@ describe("commerce gateway", () => {
       source: "public",
       stale: false,
       degraded: false,
+      profileFrontierStates: { merchant: "observed_valid" },
     })
     expect(secondResult.meta).toMatchObject({
       source: "public",
       stale: false,
       degraded: false,
+      profileFrontierStates: { merchant: "observed_valid" },
     })
     expect(cachedProfiles.get("merchant")).toMatchObject({
       name: "ZALGEBAR",
@@ -6068,6 +6129,440 @@ describe("commerce gateway", () => {
       eventCreatedAt: 20,
       lud16: undefined,
     })
+  })
+
+  for (const content of ["{}", "[]", JSON.stringify({ name: "Merchant" })]) {
+    for (const gap of ["older", "empty", "partial", "unavailable"] as const) {
+      it(`retains payment frontier ${content} after a later ${gap} read`, async () => {
+        let first = true
+        __setCommerceTestOverrides({
+          fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+            const relayUrls = [...(options?.relayUrls ?? [])]
+            const initial = first
+            first = false
+            if (!initial && gap === "unavailable") {
+              throw new Error("Synthetic profile outage")
+            }
+            const events = initial
+              ? [
+                  {
+                    id: "current",
+                    pubkey: "merchant",
+                    created_at: 20,
+                    content,
+                    tags: [],
+                  },
+                ]
+              : gap === "older"
+                ? [
+                    {
+                      id: "older",
+                      pubkey: "merchant",
+                      created_at: 10,
+                      content: JSON.stringify({ lud16: "old@wallet.example" }),
+                      tags: [],
+                    },
+                  ]
+                : []
+            return {
+              events: events as never,
+              attemptedRelayUrls: relayUrls,
+              successfulRelayUrls:
+                !initial && gap === "partial"
+                  ? relayUrls.slice(0, 1)
+                  : relayUrls,
+              failedRelayUrls: !initial && gap === "partial" ? relayUrls : [],
+              cappedRelayUrls: [],
+            }
+          },
+        })
+        const query = {
+          pubkeys: ["merchant"],
+          skipCache: true,
+          requireCompleteEvidence: true,
+          evidenceScope: "payment" as const,
+        }
+        await getProfiles(query)
+        const result = await getProfiles(query)
+        expect(result.data.merchant?.lud16).toBeUndefined()
+        expect(result.meta.profileFrontierStates).toEqual({
+          merchant: content === "[]" ? "retained_malformed" : "retained_valid",
+        })
+        expect(result.meta.stale).toBe(true)
+      })
+    }
+  }
+
+  it("preserves freshly observed payment authority when caching fails and on a later outage", async () => {
+    let read = 0
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => {
+        if (++read > 1) throw new Error("Synthetic profile outage")
+        return [
+          {
+            id: "unsaved",
+            pubkey: "merchant",
+            created_at: 20,
+            content: "{}",
+            tags: [],
+          },
+        ] as never
+      },
+      putCachedProfiles: async () => {
+        throw new Error("Synthetic storage failure")
+      },
+    })
+    const query = {
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment" as const,
+    }
+    const observed = await getProfiles(query)
+    expect(observed.meta.profileFrontierStates).toEqual({
+      merchant: "observed_valid",
+    })
+    const retained = await getProfiles(query)
+    expect(retained.meta.profileFrontierStates).toEqual({
+      merchant: "retained_valid",
+    })
+    expect(retained.data.merchant?.lud16).toBeUndefined()
+    expect(cachedProfiles.has("merchant")).toBe(false)
+  })
+
+  it("marks progressive retained payment evidence stale before final reconciliation", async () => {
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      eventId: "known",
+      eventCreatedAt: 20,
+      rawContent: JSON.stringify({ name: "Current Merchant" }),
+      name: "Current Merchant",
+      cachedAt: FIXED_NOW,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "older",
+            pubkey: "merchant",
+            created_at: 10,
+            content: JSON.stringify({
+              name: "Old Merchant",
+              lud16: "old@wallet.example",
+            }),
+            tags: [],
+          },
+        ] as never,
+    })
+    const progress: Array<{
+      stale: boolean
+      source: string
+      state: string | undefined
+      lud16: string | undefined
+    }> = []
+    await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment",
+      onProgress: (result) =>
+        progress.push({
+          stale: result.meta.stale,
+          source: result.meta.source,
+          state: result.meta.profileFrontierStates?.merchant,
+          lud16: result.data.merchant?.lud16,
+        }),
+    })
+    expect(progress).toEqual([
+      {
+        stale: true,
+        source: "local_cache",
+        state: "retained_valid",
+        lud16: undefined,
+      },
+    ])
+  })
+
+  for (const network of ["empty", "unavailable"] as const) {
+    it(`reports unreadable durable payment authority after a successful removal write and ${network} network read`, async () => {
+      __setCommerceTestOverrides({
+        fetchEventsFanout: async () =>
+          [
+            {
+              id: "persisted-removal",
+              pubkey: "merchant",
+              created_at: 20,
+              content: "{}",
+              tags: [],
+            },
+          ] as never,
+      })
+      const query = {
+        pubkeys: ["merchant"],
+        skipCache: true,
+        evidenceScope: "payment" as const,
+      }
+      await getProfiles(query)
+      expect(cachedProfiles.get("merchant")?.rawContent).toBe("{}")
+      __setCommerceTestOverrides({
+        getCachedProfiles: async () => {
+          throw new Error("Synthetic unreadable profile storage")
+        },
+        fetchEventsFanout: async () => {
+          if (network === "unavailable")
+            throw new Error("Synthetic network outage")
+          return []
+        },
+      })
+      const result = await getProfiles(query)
+      expect(result.profileContexts.merchant).toMatchObject({
+        persistence: "unavailable",
+        freshness: "unobserved",
+        readComplete: false,
+      })
+      expect(result.profileContexts.merchant?.frontier).toBeUndefined()
+      expect(result.meta.degraded).toBe(true)
+    })
+  }
+
+  it("preserves storage unavailability from the final empty-author reread", async () => {
+    let reads = 0
+    __setCommerceTestOverrides({
+      getCachedProfiles: async () => {
+        if (++reads > 1) throw new Error("Synthetic unreadable profile storage")
+        return []
+      },
+      fetchEventsFanout: async () => [],
+    })
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment",
+    })
+    expect(result.profileContexts.merchant?.persistence).toBe("unavailable")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("keeps the initial payment frontier when failure recovery cannot reread storage", async () => {
+    let cacheReads = 0
+    __setCommerceTestOverrides({
+      getCachedProfiles: async () => {
+        if (++cacheReads > 1) throw new Error("Synthetic storage failure")
+        return [
+          {
+            pubkey: "merchant",
+            rawContent: "{}",
+            eventId: "known",
+            eventCreatedAt: 20,
+            cachedAt: FIXED_NOW,
+          },
+        ]
+      },
+      fetchEventsFanout: async () => {
+        throw new Error("Synthetic outage")
+      },
+    })
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment",
+    })
+    expect(result.meta.profileFrontierStates).toEqual({
+      merchant: "retained_valid",
+    })
+    expect(result.data.merchant?.lud16).toBeUndefined()
+  })
+
+  it("retains unsaved authority through cache-read failure and lets a newer live repair supersede it", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "unsaved",
+            pubkey: "merchant",
+            created_at: 20,
+            content: "[]",
+            tags: [],
+          },
+        ] as never,
+      putCachedProfiles: async () => {
+        throw new Error("Synthetic storage failure")
+      },
+    })
+    const query = {
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment" as const,
+    }
+    await getProfiles(query)
+    __setCommerceTestOverrides({
+      getCachedProfiles: async () => {
+        throw new Error("Synthetic storage failure")
+      },
+      fetchEventsFanout: async () => {
+        throw new Error("Synthetic profile outage")
+      },
+    })
+    const unavailable = await getProfiles(query)
+    expect(unavailable.meta.profileFrontierStates).toEqual({
+      merchant: "retained_malformed",
+    })
+    __setCommerceTestOverrides({
+      getCachedProfiles: async (pubkeys) =>
+        pubkeys.map((pubkey) => cachedProfiles.get(pubkey)),
+      putCachedProfiles: async (rows) => {
+        for (const row of rows) cachedProfiles.set(row.pubkey, row)
+      },
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "repair",
+            pubkey: "merchant",
+            created_at: 30,
+            content: JSON.stringify({ lud16: "repaired@wallet.example" }),
+            tags: [],
+          },
+        ] as never,
+    })
+    const repaired = await getProfiles(query)
+    expect(repaired.meta.profileFrontierStates).toEqual({
+      merchant: "observed_valid",
+    })
+    expect(repaired.data.merchant?.lud16).toBe("repaired@wallet.example")
+    expect(repaired.meta.source).toBe("public")
+    expect(repaired.meta.stale).toBe(false)
+    expect(cachedProfiles.get("merchant")?.eventId).toBe("repair")
+    __setCommerceTestOverrides({ fetchEventsFanout: async () => [] })
+    const retained = await getProfiles(query)
+    expect(retained.meta.profileFrontierStates).toEqual({
+      merchant: "retained_valid",
+    })
+    expect(retained.data.merchant?.lud16).toBe("repaired@wallet.example")
+  })
+
+  it("does not discard unsaved authority for a projection-only row with the same identity", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "unsaved",
+            pubkey: "merchant",
+            created_at: 20,
+            content: "{}",
+            tags: [],
+          },
+        ] as never,
+      putCachedProfiles: async () => {
+        throw new Error("Synthetic storage failure")
+      },
+    })
+    const query = {
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment" as const,
+    }
+    await getProfiles(query)
+    __setCommerceTestOverrides({
+      getCachedProfiles: async () => [
+        {
+          pubkey: "merchant",
+          eventId: "unsaved",
+          eventCreatedAt: 20,
+          lud16: "obsolete@wallet.example",
+          cachedAt: FIXED_NOW,
+        },
+      ],
+      fetchEventsFanout: async () => {
+        throw new Error("Synthetic outage")
+      },
+    })
+    const result = await getProfiles(query)
+    expect(result.meta.profileFrontierStates).toEqual({
+      merchant: "retained_valid",
+    })
+    expect(result.data.merchant?.lud16).toBeUndefined()
+  })
+
+  for (const batch of [false, true]) {
+    it(`retains a concurrently cached frontier after an empty ${batch ? "batch author" : "profile"} result`, async () => {
+      __setCommerceTestOverrides({
+        fetchEventsFanout: async () => {
+          // Another reader finishes after this request's initial cache load.
+          cachedProfiles.set("merchant", {
+            pubkey: "merchant",
+            eventId: "concurrent-removal",
+            eventCreatedAt: 20,
+            rawContent: "{}",
+            cachedAt: FIXED_NOW,
+          })
+          return batch
+            ? ([
+                {
+                  id: "other-live",
+                  pubkey: "other",
+                  created_at: 20,
+                  content: JSON.stringify({ name: "Other Merchant" }),
+                  tags: [],
+                },
+              ] as never)
+            : []
+        },
+      })
+      const result = await getProfiles({
+        pubkeys: batch
+          ? ["merchant", "other", "genuine-miss"]
+          : ["merchant", "genuine-miss"],
+        skipCache: true,
+        evidenceScope: "payment",
+      })
+      expect(result.data.merchant?.lud16).toBeUndefined()
+      expect(result.meta.profileFrontierStates?.merchant).toBe("retained_valid")
+      expect(result.meta.source).toBe("local_cache")
+      expect(result.meta.stale).toBe(true)
+      expect(result.meta.profileFrontierStates?.["genuine-miss"]).toBe(
+        "not_observed"
+      )
+      expect(cachedProfiles.has("genuine-miss")).toBe(false)
+      if (batch)
+        expect(result.meta.profileFrontierStates?.other).toBe("observed_valid")
+    })
+  }
+
+  it("uses a concurrently committed stronger payment frontier in final evidence", async () => {
+    let cacheRead = 0
+    __setCommerceTestOverrides({
+      getCachedProfiles: async () =>
+        ++cacheRead === 1
+          ? []
+          : [
+              {
+                pubkey: "merchant",
+                rawContent: "[]",
+                eventId: "stronger",
+                eventCreatedAt: 30,
+                cachedAt: FIXED_NOW,
+                lud16: "enriched-obsolete@wallet.example",
+              },
+            ],
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "loser",
+            pubkey: "merchant",
+            created_at: 20,
+            content: JSON.stringify({ lud16: "old@wallet.example" }),
+            tags: [],
+          },
+        ] as never,
+    })
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      evidenceScope: "payment",
+    })
+    expect(result.data.merchant?.lud16).toBeUndefined()
+    expect(result.meta.profileFrontierStates).toEqual({
+      merchant: "retained_malformed",
+    })
+    expect(result.meta.stale).toBe(true)
   })
 
   it("shares richer profile merging without changing the durable frontier", async () => {
@@ -6299,6 +6794,7 @@ describe("commerce gateway", () => {
         source: "public",
         stale: false,
         degraded: false,
+        profileFrontierStates: { merchant: "observed_valid" },
       })
     })
   }
@@ -6538,6 +7034,9 @@ describe("commerce gateway", () => {
 
     expect(result.data["missing-profile"]).toEqual({
       pubkey: "missing-profile",
+    })
+    expect(result.meta.profileFrontierStates).toEqual({
+      "missing-profile": "not_observed",
     })
     expect(cachedProfiles.has("missing-profile")).toBe(false)
   })

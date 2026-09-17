@@ -14,6 +14,7 @@ import {
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
+  getProfilePaymentAddress,
   formatNpub,
   getCachedMarketplaceProducts,
   getCachedMerchantStorefront,
@@ -809,7 +810,7 @@ function MerchantCartCard({
   onDecrement: (item: CartItem) => void
   onRemove: (item: CartItem) => void
 }) {
-  const { data: profile } = useProfile(group.merchantPubkey, {
+  const { profileContext } = useProfile(group.merchantPubkey, {
     accountPubkey,
     authenticatedPubkey,
     shouldContinue,
@@ -837,7 +838,7 @@ function MerchantCartCard({
   const { capability } = useMerchantCheckoutCapability({
     items: group.items,
     readiness,
-    merchantLud16: profile?.lud16,
+    merchantLud16: getProfilePaymentAddress(profileContext),
     wallets,
   })
   const canZapOut =

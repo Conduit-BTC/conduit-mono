@@ -1,6 +1,7 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
+import { secp256k1 } from "@noble/curves/secp256k1.js"
 import { sha256 } from "@noble/hashes/sha2.js"
-import { bytesToHex } from "@noble/hashes/utils.js"
+import { bytesToHex, concatBytes } from "@noble/hashes/utils.js"
 
 import { config } from "../config"
 import { normalizePublicHttpsUrl } from "../network-target-safety"
@@ -485,6 +486,7 @@ type Bolt11TaggedField = {
 }
 
 type ParsedBolt11Invoice = {
+  hrp: string
   values: number[]
   taggedFields: Bolt11TaggedField[]
 }
@@ -600,7 +602,7 @@ function parseBolt11Invoice(invoice: string): ParsedBolt11Invoice | null {
     index = stop
   }
 
-  return { values, taggedFields }
+  return { hrp, values, taggedFields }
 }
 
 function toWords(bytes: Uint8Array): number[] {
@@ -624,7 +626,7 @@ function toWords(bytes: Uint8Array): number[] {
   return words
 }
 
-function fromWords(words: number[]): Uint8Array | null {
+function fromWords(words: number[], pad = false): Uint8Array | null {
   const bytes: number[] = []
   let value = 0
   let bits = 0
@@ -640,8 +642,102 @@ function fromWords(words: number[]): Uint8Array | null {
     }
   }
 
-  if (bits >= 5 || value !== 0) return null
+  if (pad && bits > 0) bytes.push(value << (8 - bits))
+  else if (bits >= 5 || value !== 0) return null
   return Uint8Array.from(bytes)
+}
+
+/**
+ * Intrinsic BOLT11 reader checks for an external-wallet handoff. This does not
+ * prove routing availability, wallet support, or bind an `h` description to an
+ * order. Callers must still check amount, network, expiry and description binding.
+ * Kept separate from legacy metadata decoders and payment validation.
+ * https://github.com/lightning/bolts/blob/master/11-payment-encoding.md
+ */
+export function isValidLightningInvoice(invoice: string): boolean {
+  const parsed = parseBolt11Invoice(invoice)
+  if (!parsed) return false
+  const { hrp, values, taggedFields } = parsed
+  const fields = (tag: string) =>
+    taggedFields.filter((field) => field.tag === tag)
+  const hasDescription = fields("d").length > 0
+  const hasDescriptionHash = fields("h").length > 0
+  if (
+    fields("p").length === 0 ||
+    fields("s").length === 0 ||
+    hasDescription === hasDescriptionHash
+  )
+    return false
+
+  // Current BOLT9 invoice features, plus formerly advertised ASSUMED features.
+  // In particular payment_secret is assumed, so basic_mpp needs no explicit
+  // dependency bit. Unknown odd bits remain forward compatible.
+  const knownFeaturePairs = new Set([0, 8, 12, 14, 16, 24, 36, 44, 48])
+  try {
+    for (const { tag, words } of taggedFields) {
+      if (["p", "s", "h", "n"].includes(tag)) {
+        const byteLength = tag === "n" ? 33 : 32
+        if (
+          words.length !== (tag === "n" ? 53 : 52) ||
+          !wordsToBytes(words, byteLength)
+        )
+          return false
+      }
+      if (tag === "d") {
+        const description = fromWords(words)
+        if (!description) return false
+        new TextDecoder("utf-8", { fatal: true }).decode(description)
+      }
+      if (["c", "x", "9"].includes(tag) && words[0] === 0) return false
+      if (tag === "9") {
+        for (let bit = 0; bit < words.length * 5; bit += 2) {
+          const word = words[words.length - 1 - Math.floor(bit / 5)]!
+          if (word & (1 << (bit % 5)) && !knownFeaturePairs.has(bit)) {
+            return false
+          }
+        }
+      }
+    }
+
+    const signatureStart =
+      values.length - BECH32_CHECKSUM_WORD_COUNT - BOLT11_SIGNATURE_WORD_COUNT
+    const signature = fromWords(
+      values.slice(signatureStart, -BECH32_CHECKSUM_WORD_COUNT)
+    )
+    const signedData = fromWords(values.slice(0, signatureStart), true)
+    if (
+      !signature ||
+      signature.length !== 65 ||
+      signature[64]! > 3 ||
+      !signedData
+    )
+      return false
+    const digest = sha256(
+      concatBytes(new TextEncoder().encode(hrp), signedData)
+    )
+    const compact = signature.slice(0, 64)
+    const payee = fields("n")[0]
+    if (payee) {
+      // With an explicit payee, recovery is forbidden and low-S is mandatory.
+      return secp256k1.verify(compact, digest, wordsToBytes(payee.words, 33)!, {
+        prehash: false,
+        lowS: true,
+      })
+    }
+    // Noble's recovered encoding puts the recovery byte first; BOLT11 puts it last.
+    const publicKey = secp256k1.recoverPublicKey(
+      concatBytes(signature.slice(64), compact),
+      digest,
+      { prehash: false }
+    )
+    return secp256k1.verify(compact, digest, publicKey, {
+      prehash: false,
+      lowS: false,
+    })
+  } catch {
+    // Malformed UTF-8, public keys, signatures and impossible recovery all fail closed.
+    return false
+  }
 }
 
 function createBech32Checksum(hrp: string, words: number[]): number[] {

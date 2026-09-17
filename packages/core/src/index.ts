@@ -278,6 +278,13 @@ export {
   type UnreadDirectMessageCountState,
 } from "./hooks/useUnreadDirectMessageCount"
 export {
+  getProfileSearchQueryKey,
+  selectProfileSearchPhaseResult,
+  useProfileSearch,
+  type UseProfileSearchOptions,
+  type UseProfileSearchResult,
+} from "./hooks/useProfileSearch"
+export {
   getProfileQueryPerspectiveKey,
   getProfileSingletonQueryKey,
   useProfiles,

@@ -8,6 +8,15 @@ export interface UnreadDirectMessageCountState {
   error: unknown
 }
 
+interface UnreadDirectMessageCountSnapshot extends UnreadDirectMessageCountState {
+  principalPubkey: string
+}
+
+const EMPTY_UNREAD_DIRECT_MESSAGE_COUNT: UnreadDirectMessageCountState = {
+  count: 0,
+  error: null,
+}
+
 /**
  * Unread cached direct messages for the signed-in account. The value tracks
  * the local cache, so it updates when the inbox sync stores new messages or a
@@ -16,19 +25,19 @@ export interface UnreadDirectMessageCountState {
 export function useUnreadDirectMessageCount(
   principalPubkey: string | null | undefined
 ): UnreadDirectMessageCountState {
-  const [state, setState] = useState<UnreadDirectMessageCountState>({
-    count: 0,
-    error: null,
-  })
+  const [snapshot, setSnapshot] =
+    useState<UnreadDirectMessageCountSnapshot | null>(null)
 
   useEffect(() => {
-    setState({ count: 0, error: null })
     if (!principalPubkey) return
     return subscribeUnreadDirectMessageCount(principalPubkey, {
-      onChange: (count) => setState({ count, error: null }),
-      onError: (error) => setState({ count: 0, error }),
+      onChange: (count) => setSnapshot({ principalPubkey, count, error: null }),
+      onError: (error) => setSnapshot({ principalPubkey, count: 0, error }),
     })
   }, [principalPubkey])
 
-  return principalPubkey ? state : { count: 0, error: null }
+  if (!principalPubkey || snapshot?.principalPubkey !== principalPubkey) {
+    return EMPTY_UNREAD_DIRECT_MESSAGE_COUNT
+  }
+  return snapshot
 }

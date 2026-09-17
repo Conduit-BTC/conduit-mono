@@ -37,6 +37,7 @@ describe("unread direct message count", () => {
     expect(header).toContain("badge={unreadMessages}")
     expect(header).toContain("`Messages, ${unreadMessages} unread`")
     expect(hook).toContain("subscribeUnreadDirectMessageCount(")
+    expect(hook).toContain("snapshot?.principalPubkey !== principalPubkey")
     expect(hook).not.toMatch(/from "\.\.\/protocol\/(ndk|commerce)"/)
     expect(hook).not.toContain("fetchEvents")
   })

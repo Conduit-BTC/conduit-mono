@@ -84,8 +84,9 @@ describe("Market Events timeline route", () => {
     ])
 
     expect(route).toContain('createFileRoute("/events/")')
-    expect(navigation).toContain('to="/products"')
-    expect(navigation).toContain('to="/events"')
+    expect(navigation).toContain('to: "/products"')
+    expect(navigation).toContain('to: "/events"')
+    expect(navigation).toContain("SegmentedControl")
     expect(navigation).toContain("Following + Conduit")
     expect(navigation).toContain('aria-label="Market perspective"')
     expect(navigation).toContain("aria-pressed={selected}")
@@ -129,9 +130,10 @@ describe("Market Events timeline route", () => {
     )
     expect(
       hook.match(
-        /!signal.aborted && authGenerationRef.current === authGeneration/g
+        /!signal\.aborted\s*&&\s*authGenerationRef.current === authGeneration/g
       )
     ).toHaveLength(2)
+    expect(hook).toContain("discoveryScopeRef.current === discoveryScope")
   })
 
   it("renders reusable cards with exact event links and no product-count claim", async () => {

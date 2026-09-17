@@ -56,7 +56,7 @@ function PaymentsPage() {
     authGeneration,
   })
 
-  const profile = profileQuery.data
+  const profile = profileQuery.profileContext?.profile
   const complete = isPaymentsComplete(profile)
   const lud16 = profile?.lud16?.trim() ?? ""
   const isSavingLud16 = updateMutation.isPending

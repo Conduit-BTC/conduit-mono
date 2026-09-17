@@ -323,7 +323,7 @@ describe("Market wallet route contracts", () => {
       /const canAttemptLightningPayment =\s+paymentPathEnabled &&\s+!wallets\.loading/
     )
     expect(content).toMatch(
-      /const allowsManualLightningFallback =\s+paymentPathEnabled &&\s+!wallets\.loading/
+      /const manualInvoiceEligible =\s+paymentPathEnabled &&\s+!wallets\.loading/
     )
   })
 
