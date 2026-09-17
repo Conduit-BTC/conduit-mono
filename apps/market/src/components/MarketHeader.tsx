@@ -691,15 +691,6 @@ export function MarketHeader() {
           aria-label="Market navigation"
           className="market-header-utility-nav flex min-w-0 items-center gap-1.5"
         >
-          {connected ? null : (
-            <HeaderAction
-              label="Wallets"
-              icon={<Wallet className="size-6" aria-hidden="true" />}
-              active={pathname === "/wallet"}
-              labelClassName="hidden lg:inline"
-              onClick={() => void navigate({ to: "/wallet" })}
-            />
-          )}
           <HeaderAction
             label="Orders"
             icon={<ReceiptText className="size-6" aria-hidden="true" />}
