@@ -19,6 +19,7 @@ import { Route as OrdersRouteImport } from './routes/orders'
 import { Route as PreferencesRouteImport } from './routes/preferences'
 import { Route as PrivacyPolicyRouteImport } from './routes/privacy-policy'
 import { Route as ProfileRouteImport } from './routes/profile'
+import { Route as SellersRouteImport } from './routes/sellers'
 import { Route as TermsOfServiceRouteImport } from './routes/terms-of-service'
 import { Route as WalletRouteImport } from './routes/wallet'
 import { Route as ZapoutsRouteImport } from './routes/zapouts'
@@ -79,6 +80,11 @@ const ProfileRoute = ProfileRouteImport.update({
   path: '/profile',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SellersRoute = SellersRouteImport.update({
+  id: '/sellers',
+  path: '/sellers',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TermsOfServiceRoute = TermsOfServiceRouteImport.update({
   id: '/terms-of-service',
   path: '/terms-of-service',
@@ -136,6 +142,7 @@ export interface FileRoutesByFullPath {
   '/preferences': typeof PreferencesRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
+  '/sellers': typeof SellersRoute
   '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
@@ -157,6 +164,7 @@ export interface FileRoutesByTo {
   '/preferences': typeof PreferencesRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
+  '/sellers': typeof SellersRoute
   '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
@@ -179,6 +187,7 @@ export interface FileRoutesById {
   '/preferences': typeof PreferencesRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
+  '/sellers': typeof SellersRoute
   '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
@@ -202,6 +211,7 @@ export interface FileRouteTypes {
     | '/preferences'
     | '/privacy-policy'
     | '/profile'
+    | '/sellers'
     | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
@@ -223,6 +233,7 @@ export interface FileRouteTypes {
     | '/preferences'
     | '/privacy-policy'
     | '/profile'
+    | '/sellers'
     | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
@@ -244,6 +255,7 @@ export interface FileRouteTypes {
     | '/preferences'
     | '/privacy-policy'
     | '/profile'
+    | '/sellers'
     | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
@@ -266,6 +278,7 @@ export interface RootRouteChildren {
   PreferencesRoute: typeof PreferencesRoute
   PrivacyPolicyRoute: typeof PrivacyPolicyRoute
   ProfileRoute: typeof ProfileRoute
+  SellersRoute: typeof SellersRoute
   TermsOfServiceRoute: typeof TermsOfServiceRoute
   WalletRoute: typeof WalletRoute
   ZapoutsRoute: typeof ZapoutsRoute
@@ -349,6 +362,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProfileRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/sellers': {
+      id: '/sellers'
+      path: '/sellers'
+      fullPath: '/sellers'
+      preLoaderRoute: typeof SellersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/terms-of-service': {
       id: '/terms-of-service'
       path: '/terms-of-service'
@@ -426,6 +446,7 @@ const rootRouteChildren: RootRouteChildren = {
   PreferencesRoute: PreferencesRoute,
   PrivacyPolicyRoute: PrivacyPolicyRoute,
   ProfileRoute: ProfileRoute,
+  SellersRoute: SellersRoute,
   TermsOfServiceRoute: TermsOfServiceRoute,
   WalletRoute: WalletRoute,
   ZapoutsRoute: ZapoutsRoute,
