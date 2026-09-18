@@ -55,7 +55,7 @@ describe("Merchant event actor identity", () => {
         (match) => match[1]!
       )
     )
-    expect(reads).toHaveLength(5)
+    expect(reads).toHaveLength(6)
     for (const options of reads) {
       expect(options).toMatch(/accountPubkey[,:]/)
       expect(options).toContain("authenticatedPubkey,")
@@ -71,6 +71,30 @@ describe("Merchant event actor identity", () => {
     expect(orders).toMatch(
       /<PickupFulfillmentCard[\s\S]{0,420}authenticatedPubkey=\{authenticatedPubkey\}[\s\S]{0,180}authGenerationRef\.current === authGeneration/
     )
+  })
+
+  it("reads an eligible merchant sign profile without organizer relay hints", async () => {
+    const source = await Bun.file(
+      "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
+    ).text()
+    const signageAction = source.slice(
+      source.indexOf("function MerchantEventSignageAction("),
+      source.indexOf("export function MerchantEventMarketPanel(")
+    )
+    const profileRead = signageAction.slice(
+      signageAction.indexOf("const merchantProfileQuery = useProfile("),
+      signageAction.indexOf("const sheet = buildMerchantEventQrSignSheet(")
+    )
+
+    expect(signageAction).toContain(
+      "isMerchantEligibleForEventSign(market, merchantPubkey)"
+    )
+    expect(profileRead).toContain("eligible ? merchantPubkey : null")
+    expect(profileRead).toContain("accountPubkey: merchantPubkey")
+    expect(profileRead).toContain("authenticatedPubkey,")
+    expect(profileRead).toContain("shouldContinue,")
+    expect(profileRead).not.toContain("relayHints")
+    expect(signageAction).toContain("merchantProfileQuery.data")
   })
 
   it("prefers a hydrated profile name without changing signed provenance", () => {
