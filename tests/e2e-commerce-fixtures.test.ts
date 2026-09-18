@@ -25,29 +25,15 @@ import {
 import { startRelayServer } from "../scripts/dev/relay_bun"
 
 function startTestRelay() {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const port = 49_152 + Math.floor(Math.random() * 16_384)
-    try {
-      const relay = startRelayServer({
-        hostname: "127.0.0.1",
-        port,
-        persistence: false,
-      })
-      return {
-        relay,
-        relayUrl: `ws://127.0.0.1:${relay.server.port}`,
-      }
-    } catch (error) {
-      if (
-        !(error instanceof Error) ||
-        !("code" in error) ||
-        error.code !== "EADDRINUSE"
-      ) {
-        throw error
-      }
-    }
+  const relay = startRelayServer({
+    hostname: "127.0.0.1",
+    port: 0,
+    persistence: false,
+  })
+  return {
+    relay,
+    relayUrl: `ws://127.0.0.1:${relay.server.port}`,
   }
-  throw new Error("Unable to bind an ephemeral test relay port")
 }
 
 function createPrivateGiftWrapFixture(input: {
@@ -443,17 +429,12 @@ describe("real NIP-07 test signer", () => {
             (name) => !name.includes(secondIdentity.pubkey.slice(0, 16))
           )
       ).toBe(true)
-      const firstSuffixes = exposedNames.map(
-        (name) => name.match(/(\d+)$/)?.[1] ?? ""
-      )
-      const secondSuffixes = secondExposedNames.map(
-        (name) => name.match(/(\d+)$/)?.[1] ?? ""
-      )
-      expect(
-        new Set(firstSuffixes).size === 1 &&
-          new Set(secondSuffixes).size === 1 &&
-          Number(secondSuffixes[0]) > Number(firstSuffixes[0])
-      ).toBe(true)
+      expect(exposedNames).toEqual([
+        "__conduitRealSignEvent",
+        "__conduitRealNip44Encrypt",
+        "__conduitRealNip44Decrypt",
+      ])
+      expect(secondExposedNames).toEqual(exposedNames)
       expect(disposeRuntimeSignerIdentity(identity)).toBe(true)
       expect(disposeRuntimeSignerIdentity(identity)).toBe(false)
       expect(disposeRuntimeSignerIdentity(secondIdentity)).toBe(true)

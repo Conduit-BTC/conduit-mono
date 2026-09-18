@@ -23,14 +23,7 @@ export type RuntimePrivateRumor = {
   tags: string[][]
 }
 
-export type RealTestSignerOptions = {
-  rememberAuth?: boolean
-  relays?: Record<string, { read: boolean; write: boolean }>
-}
-
 const identitySecrets = new WeakMap<RuntimeSignerIdentity, Uint8Array>()
-let signerBindingSequence = 0
-let relaySubscriptionSequence = 0
 
 const RELAY_FRAME_TIMEOUT_MS = 5_000
 
@@ -291,10 +284,8 @@ export async function readAuthenticatedGiftWraps(
   relayUrl: string
 ): Promise<Event[]> {
   requireIdentitySecret(identity)
-  relaySubscriptionSequence += 1
-  const suffix = String(relaySubscriptionSequence)
-  const challengeSubscriptionId = `gift-wrap-challenge-${suffix}`
-  const authenticatedSubscriptionId = `gift-wrap-read-${suffix}`
+  const challengeSubscriptionId = "gift-wrap-challenge"
+  const authenticatedSubscriptionId = "gift-wrap-read"
   const { frames, socket } = await openRelaySocket(relayUrl)
 
   try {
@@ -373,15 +364,12 @@ export async function readAuthenticatedGiftWraps(
 export async function installRealTestSigner(
   page: Page,
   identity: RuntimeSignerIdentity,
-  relayUrl: string,
-  options: RealTestSignerOptions = {}
+  relayUrl: string
 ): Promise<void> {
   requireIdentitySecret(identity)
-  signerBindingSequence += 1
-  const bindingSuffix = String(signerBindingSequence)
-  const signBinding = `__conduitRealSignEvent${bindingSuffix}`
-  const encryptBinding = `__conduitRealNip44Encrypt${bindingSuffix}`
-  const decryptBinding = `__conduitRealNip44Decrypt${bindingSuffix}`
+  const signBinding = "__conduitRealSignEvent"
+  const encryptBinding = "__conduitRealNip44Encrypt"
+  const decryptBinding = "__conduitRealNip44Decrypt"
 
   await page.exposeFunction(signBinding, (event: EventTemplate) =>
     signRuntimeTestEvent(identity, event)
@@ -435,8 +423,8 @@ export async function installRealTestSigner(
     },
     {
       pubkey: identity.pubkey,
-      rememberAuth: options.rememberAuth !== false,
-      relays: options.relays ?? {
+      rememberAuth: true,
+      relays: {
         [relayUrl]: { read: true, write: true },
       },
       signEventBinding: signBinding,
