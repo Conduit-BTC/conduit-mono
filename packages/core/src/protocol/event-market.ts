@@ -1417,6 +1417,30 @@ type AddressableRecordResult<T> =
     }
   | { state: "missing" | "malformed" }
 
+function findCanonicalEventMarketLifecyclePredecessor(
+  current: SignedPublicNostrEvent,
+  sortedCandidates: readonly SignedPublicNostrEvent[],
+  isDeleted: (candidate: SignedPublicNostrEvent) => boolean
+): SignedPublicNostrEvent | undefined {
+  const inspectedTimestamps = new Set<number>()
+  for (const prior of sortedCandidates) {
+    if (
+      prior.created_at >= current.created_at ||
+      inspectedTimestamps.has(prior.created_at) ||
+      isDeleted(prior)
+    ) {
+      continue
+    }
+    // Candidates use NIP-01 order, so only the first surviving event at a
+    // timestamp can carry the canonical lifecycle declaration.
+    inspectedTimestamps.add(prior.created_at)
+    if (parseEventMarketCollectionEvent(prior)?.orderAcceptance !== undefined) {
+      return prior
+    }
+  }
+  return undefined
+}
+
 function resolveAddressableRecord<T>(input: {
   coordinate: AddressableEventCoordinate
   events: readonly SignedPublicNostrEvent[]
@@ -1460,30 +1484,19 @@ function resolveAddressableRecord<T>(input: {
     // unaware of the extension cannot reopen an event by stripping its tag.
     if (
       input.coordinate.kind === EVENT_KINDS.PRODUCT_COLLECTION &&
-      !candidate.tags.some((tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG)
-    ) {
-      const inspectedTimestamps = new Set<number>()
-      for (const prior of candidates) {
-        if (
-          prior.created_at >= candidate.created_at ||
-          inspectedTimestamps.has(prior.created_at) ||
+      !candidate.tags.some((tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG) &&
+      findCanonicalEventMarketLifecyclePredecessor(
+        candidate,
+        candidates,
+        (prior) =>
           deletionEvidenceForAddressableEvent(
             prior,
             input.coordinate,
             input.deletions
           ).length > 0
-        ) {
-          continue
-        }
-        // Candidates already use NIP-01 order, so the first surviving event
-        // at each timestamp is the only canonical revision at that frontier.
-        inspectedTimestamps.add(prior.created_at)
-        if (
-          parseEventMarketCollectionEvent(prior)?.orderAcceptance !== undefined
-        ) {
-          return { state: "malformed" }
-        }
-      }
+      )
+    ) {
+      return { state: "malformed" }
     }
     const parsed = input.parse(candidate)
     return parsed
@@ -4228,8 +4241,9 @@ export async function getRetainedEventMarketCollectionEvidence(input: {
 
 /** Preserve the strongest known event graph evidence within one strict local
  * budget. Exact collection revisions referenced by active local orders get a
- * bounded priority lane. A known-deleted revision is retained only with one
- * of its tombstones; retention never grants live purchase authorization. */
+ * bounded priority lane. Known-deleted revisions stay with a tombstone, and a
+ * lifecycle-stripped current collection stays with its canonical declaration;
+ * retention never grants live purchase authorization. */
 export function selectEventMarketEvidenceForRetention(
   rows: readonly CachedEventMarketEvidence[],
   totalLimit = EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
@@ -4248,6 +4262,10 @@ export function selectEventMarketEvidenceForRetention(
       .map((id) => id.toLowerCase())
   )
   const priorityById = new Map<string, number>()
+  const lifecyclePredecessorByCurrentId = new Map<
+    string,
+    CachedEventMarketEvidence
+  >()
   const prioritize = (row: CachedEventMarketEvidence, priority: number) => {
     priorityById.set(
       row.id,
@@ -4299,13 +4317,32 @@ export function selectEventMarketEvidenceForRetention(
         ).length === 0
     )
     prioritize(surviving ?? newest, 1)
-    if (newest.kind === EVENT_KINDS.PRODUCT_COLLECTION) {
-      const lifecycle = revisions.find(
-        (row) =>
-          parseEventMarketCollectionEvent(row.signedEvent)?.orderAcceptance !==
-          undefined
+    if (
+      surviving?.signedEvent.kind === EVENT_KINDS.PRODUCT_COLLECTION &&
+      !surviving.signedEvent.tags.some(
+        (tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG
       )
-      if (lifecycle) prioritize(lifecycle, 1)
+    ) {
+      const predecessor = findCanonicalEventMarketLifecyclePredecessor(
+        surviving.signedEvent,
+        revisions.map((row) => row.signedEvent),
+        (candidate) =>
+          deletionEvidenceForVerifiedAddressableEvent(
+            candidate,
+            coordinate,
+            deletions
+          ).length > 0
+      )
+      if (predecessor) {
+        const row = revisions.find(
+          (candidate) => candidate.signedEvent.id === predecessor.id
+        )!
+        prioritize(row, 1)
+        lifecyclePredecessorByCurrentId.set(
+          surviving.signedEvent.id.toLowerCase(),
+          row
+        )
+      }
     }
   }
   const selected = [...validRows]
@@ -4321,6 +4358,35 @@ export function selectEventMarketEvidenceForRetention(
   const selectedIds = new Set(
     selected.map((row) => row.signedEvent.id.toLowerCase())
   )
+  const missingLifecyclePredecessors = Array.from(
+    lifecyclePredecessorByCurrentId.entries()
+  ).filter(
+    ([currentId, predecessor]) =>
+      selectedIds.has(currentId) &&
+      !selectedIds.has(predecessor.signedEvent.id.toLowerCase())
+  )
+  const protectedLifecycleIds = new Set(
+    missingLifecyclePredecessors.flatMap(([currentId, predecessor]) => [
+      currentId,
+      predecessor.signedEvent.id.toLowerCase(),
+    ])
+  )
+  const evictableIndices = selected
+    .flatMap((row, index) =>
+      protectedLifecycleIds.has(row.signedEvent.id.toLowerCase()) ? [] : [index]
+    )
+    .reverse()
+  for (const [currentId, predecessor] of missingLifecyclePredecessors) {
+    const replacementIndex =
+      evictableIndices.shift() ??
+      selected.findIndex(
+        (row) => row.signedEvent.id.toLowerCase() === currentId
+      )
+    if (replacementIndex < 0) continue
+    selectedIds.delete(selected[replacementIndex]!.signedEvent.id.toLowerCase())
+    selected[replacementIndex] = predecessor
+    selectedIds.add(predecessor.signedEvent.id.toLowerCase())
+  }
   return selected.filter((row) => {
     const event = row.signedEvent
     if (event.kind === EVENT_KINDS.DELETION) return true

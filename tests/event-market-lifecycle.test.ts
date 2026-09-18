@@ -326,6 +326,51 @@ describe("event market lifecycle", () => {
     ).toBe("malformed")
   })
 
+  it("retains a stripped current revision atomically with its lifecycle predecessor", async () => {
+    const closed = collection("closed", 200)
+    const stripped = collection(undefined, 300)
+    const unrelated = Array.from({ length: 749 }, (_, index) =>
+      row(
+        sign(
+          buildEventMarketCollectionDraft({
+            dTag: `unrelated-${index}`,
+            title: `Unrelated ${index}`,
+            eventCoordinate: calendarCoordinate,
+          }),
+          400 + index
+        ),
+        1_000 + index
+      )
+    )
+    __setEventMarketTestOverrides({
+      loadCachedCollectionEvidence: async () => [
+        row(stripped, 10_000),
+        row(closed, 1),
+        ...unrelated,
+      ],
+    })
+
+    const retained = await getRetainedEventMarketCollectionEvidence({
+      organizerPubkeys: [author],
+    })
+    const retainedIds = new Set(retained.events.map((event) => event.id))
+    expect(retainedIds.has(stripped.id)).toBe(true)
+    expect(retainedIds.has(closed.id)).toBe(true)
+    expect(resolve(retained.events, beforeEnd).state).toBe("malformed")
+
+    const single = selectEventMarketEvidenceForRetention(
+      [row(stripped, 10_000), row(closed, 1)],
+      1
+    )
+    expect(single.map((entry) => entry.id)).toEqual([closed.id])
+    expect(
+      resolve(
+        single.map((entry) => entry.signedEvent),
+        beforeEnd
+      ).state
+    ).toBe("ended")
+  }, 15_000)
+
   it("preserves exact existing-order source revisions through a status-only chain under cache pressure", () => {
     const legacy = collection(undefined, 100)
     const open = collection("open", 200)
