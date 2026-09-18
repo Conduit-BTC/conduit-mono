@@ -103,6 +103,7 @@ export interface SparkCheckoutReceiveInput {
 export interface SparkLightningSendReconciliationInput {
   transferId: string
   paymentRequest: string
+  amountSats: number
   maxFeeSats: number
   completionTimeoutSecs?: number
 }
