@@ -530,6 +530,20 @@ describe("event market lifecycle", () => {
     expect(selectEventMarketEvidenceForRetention(rows, 12)).toHaveLength(12)
   })
 
+  it("verifies signed rows at the public retention boundary", () => {
+    const valid = collection("open", 100)
+    const invalid = {
+      ...collection("closed", 200),
+      sig: "0".repeat(128),
+    }
+
+    expect(
+      selectEventMarketEvidenceForRetention([row(invalid), row(valid)], 2).map(
+        (entry) => entry.id
+      )
+    ).toEqual([valid.id])
+  })
+
   it("never retains a deleted revision without its exact or coordinate tombstone", () => {
     const deleted = sign(
       buildEventMarketCollectionDraft({

@@ -3852,7 +3852,7 @@ function retainLocalEventMarketEvidence(
     options.replace ? [] : state.snapshot.events,
     events
   )
-  const next = selectEventMarketEvidenceForRetention(
+  const next = selectVerifiedEventMarketEvidenceForRetention(
     merged.map((event) => ({
       id: event.id.toLowerCase(),
       organizerPubkey,
@@ -4266,12 +4266,23 @@ export function selectEventMarketEvidenceForRetention(
   totalLimit = EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
   pinnedCollectionEventIds: readonly string[] = []
 ): CachedEventMarketEvidence[] {
+  return selectVerifiedEventMarketEvidenceForRetention(
+    rows.filter((row) => isValidSignedPublicNostrEvent(row.signedEvent)),
+    totalLimit,
+    pinnedCollectionEventIds
+  )
+}
+
+// In-memory evidence has already crossed mergeLocalEventMarketEvidence's
+// signature boundary. Storage and public callers must use the wrapper above.
+function selectVerifiedEventMarketEvidenceForRetention(
+  validRows: readonly CachedEventMarketEvidence[],
+  totalLimit: number,
+  pinnedCollectionEventIds: readonly string[] = []
+): CachedEventMarketEvidence[] {
   const limit = Math.max(0, Math.floor(totalLimit))
   if (limit === 0) return []
 
-  const validRows = rows.filter((row) =>
-    isValidSignedPublicNostrEvent(row.signedEvent)
-  )
   const pinnedIds = new Set(
     pinnedCollectionEventIds
       .filter((id) => HEX_64.test(id))
@@ -4507,7 +4518,7 @@ async function persistEventMarketEvidence(input: {
     pinSnapshot: ActiveOrderCollectionEvidencePinSnapshot
   ) => {
     if (pinSnapshot.status !== "ready") return
-    const boundedVolatileEvents = selectEventMarketEvidenceForRetention(
+    const boundedVolatileEvents = selectVerifiedEventMarketEvidenceForRetention(
       mergedVolatileEvents.map((event) => ({
         id: event.id.toLowerCase(),
         organizerPubkey: input.organizerPubkey,
