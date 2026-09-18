@@ -7,12 +7,17 @@ export interface EventCatalogCartAction {
 
 export function getEventCatalogCartAction(input: {
   state: EventCatalog["state"]
+  orderAcceptance?: "open" | "closed"
   purchaseReady: boolean
   hasPickupFulfillment: boolean
   isChecking?: boolean
 }): EventCatalogCartAction {
   if (input.state === "ended") {
-    return { enabled: false, disabledLabel: "Event ended" }
+    return {
+      enabled: false,
+      disabledLabel:
+        input.orderAcceptance === "closed" ? "Event closed" : "Event ended",
+    }
   }
 
   if (input.isChecking) {

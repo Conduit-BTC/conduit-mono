@@ -189,6 +189,7 @@ export function MerchantEventMarketPanel({
     getMerchantProductAvailability(market)
   const actionability = getEventActionabilityPresentation({
     state: market.state,
+    orderAcceptance: market.orderAcceptance,
     availableProductCount,
     unresolvedProductCount,
     requiredEventRecordsResolved: eventMarketRequiredRecordsResolved(
