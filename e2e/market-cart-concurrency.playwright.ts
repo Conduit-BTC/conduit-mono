@@ -460,6 +460,148 @@ test("delayed product quote refreshes cannot restore a line removed in another t
   ).toBeVisible()
 })
 
+test("delayed product mutations preserve a newer signed cart snapshot @market", async ({
+  context,
+}) => {
+  const staleSnapshot = {
+    ...legacyCart.items[0]!,
+    productId: `30402:${MERCHANT}:retained-snapshot`,
+    title: "Older signed snapshot",
+    price: 1_000,
+    priceSats: 1_000,
+    format: "physical" as const,
+    fulfillment: { type: "shipping" as const },
+    shippingCostSats: 100,
+    shippingOptionId: "older-shipping",
+    shippingOptionDTag: "older-shipping",
+    shippingCountries: ["US"],
+    shippingCountryRules: [
+      { code: "US", name: "United States", restrictTo: [], exclude: [] },
+    ],
+    productUpdatedAt: 100,
+    canonicalShippingResolved: true,
+    publicZapEnabled: true,
+    zapMessagePolicy: "custom" as const,
+    publicZapPolicyKnown: true,
+    stock: 10,
+    quantity: 1,
+  }
+  await seedLegacyCart(context, { version: 2, items: [staleSnapshot] })
+
+  const currentTab = await context.newPage()
+  const staleTab = await context.newPage()
+  await delayCartNotifications(staleTab)
+  await Promise.all([
+    currentTab.goto(`${marketUrl}/cart`),
+    staleTab.goto(`${marketUrl}/cart`),
+  ])
+
+  const renderedStaleItem = await staleTab.evaluate(async () => {
+    const modulePath = "/src/lib/cart-repository.ts"
+    const repository = (await import(/* @vite-ignore */ modulePath)) as {
+      getCartRepositorySnapshot(): { items: CartItem[] }
+    }
+    return repository.getCartRepositorySnapshot().items[0]
+  })
+  expect(renderedStaleItem?.cartLineId).toBeTruthy()
+
+  const newerResult = await currentTab.evaluate(async () => {
+    const modulePath = "/src/lib/cart-repository.ts"
+    const repository = (await import(/* @vite-ignore */ modulePath)) as {
+      getCartRepositorySnapshot(): { items: CartItem[] }
+      refreshAndIncrementCartRepositoryItem(
+        identity: CartItem,
+        input: Omit<CartItem, "cartLineId" | "merchantAddedAt" | "quantity">,
+        quantity: number
+      ): Promise<{ changed: boolean }>
+    }
+    const item = repository.getCartRepositorySnapshot().items[0]!
+    const {
+      cartLineId: _cartLineId,
+      merchantAddedAt: _merchantAddedAt,
+      quantity: _quantity,
+      ...candidate
+    } = item
+    const result = await repository.refreshAndIncrementCartRepositoryItem(
+      item,
+      {
+        ...candidate,
+        title: "Newer signed snapshot",
+        price: 2_000,
+        priceSats: 2_000,
+        shippingCostSats: 200,
+        shippingOptionId: "newer-shipping",
+        shippingOptionDTag: "newer-shipping",
+        productUpdatedAt: 200,
+        publicZapEnabled: false,
+        zapMessagePolicy: "generic_only",
+        stock: 5,
+      },
+      1
+    )
+    return result.changed
+  })
+  expect(newerResult).toBe(true)
+
+  const delayedResult = await staleTab.evaluate(async (staleItem) => {
+    const modulePath = "/src/lib/cart-repository.ts"
+    const repository = (await import(/* @vite-ignore */ modulePath)) as {
+      refreshAndIncrementCartRepositoryItem(
+        identity: CartItem,
+        input: Omit<CartItem, "cartLineId" | "merchantAddedAt" | "quantity">,
+        quantity: number
+      ): Promise<{ changed: boolean; after: CartItem[] }>
+      addCartRepositoryItem(
+        input: Omit<CartItem, "cartLineId" | "merchantAddedAt" | "quantity">,
+        quantity: number
+      ): Promise<{ changed: boolean; after: CartItem[] }>
+      incrementCartRepositoryItem(
+        identity: CartItem,
+        quantity: number,
+        currentStock?: number
+      ): Promise<{ changed: boolean; after: CartItem[] }>
+    }
+    const {
+      cartLineId: _cartLineId,
+      merchantAddedAt: _merchantAddedAt,
+      quantity: _quantity,
+      ...candidate
+    } = staleItem
+    const refreshed = await repository.refreshAndIncrementCartRepositoryItem(
+      staleItem,
+      candidate,
+      1
+    )
+    const added = await repository.addCartRepositoryItem(candidate, 1)
+    const incremented = await repository.incrementCartRepositoryItem(
+      staleItem,
+      1,
+      99
+    )
+    return {
+      changes: [refreshed.changed, added.changed, incremented.changed],
+      item: incremented.after[0],
+    }
+  }, renderedStaleItem!)
+
+  expect(delayedResult.changes).toEqual([true, true, true])
+  expect(delayedResult.item).toEqual(
+    expect.objectContaining({
+      title: "Newer signed snapshot",
+      price: 2_000,
+      priceSats: 2_000,
+      shippingCostSats: 200,
+      shippingOptionId: "newer-shipping",
+      shippingOptionDTag: "newer-shipping",
+      productUpdatedAt: 200,
+      publicZapEnabled: false,
+      zapMessagePolicy: "generic_only",
+      stock: 5,
+      quantity: 5,
+    })
+  )
+})
+
 test("atomic quantity deltas preserve concurrent changes across signed-out tabs @market", async ({
   context,
 }) => {

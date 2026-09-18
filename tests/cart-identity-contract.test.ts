@@ -49,8 +49,8 @@ describe("Market cart identity contract", () => {
     expect(repository).toContain('db.transaction(\n        "rw"')
     expect(repository).toContain("parseStoredRecord(stored)")
     expect(repository).toContain('publishRecord(record, "memory")')
-    expect(repository).toContain(
-      "if (!identity.cartLineId || input.stock === 0)"
-    )
+    expect(repository).toContain("if (!identity.cartLineId) return false")
+    expect(repository).toContain("const nextItem = selectCartItemSnapshot")
+    expect(repository).toContain("nextItem.stock === 0")
   })
 })
