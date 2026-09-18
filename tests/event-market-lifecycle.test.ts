@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -7,8 +7,11 @@ import {
 import {
   buildEventMarketCalendarDraft,
   buildEventMarketCollectionDraft,
+  __resetEventMarketTestOverrides,
+  __setEventMarketTestOverrides,
   EVENT_KINDS,
   getEventMarketOrderAcceptance,
+  getRetainedEventMarketCollectionEvidence,
   parseEventMarketCollectionEvent,
   resolveEventMarketEvidence,
   selectEventMarketEvidenceForRetention,
@@ -85,6 +88,10 @@ function row(
 }
 
 describe("event market lifecycle", () => {
+  afterEach(() => {
+    __resetEventMarketTestOverrides()
+  })
+
   it("separates advertised end from explicit organizer availability", () => {
     const open = collection("open")
     for (const nowMs of [beforeEnd, end * 1000, afterEnd]) {
@@ -160,6 +167,59 @@ describe("event market lifecycle", () => {
     expect(result.calendar?.end).toBe(end * 1000)
   })
 
+  it("does not let an exact-deleted lifecycle revision poison a surviving legacy revision", () => {
+    const legacy = collection(undefined, 100)
+    const tagged = collection("open", 200)
+    const deletion = sign(
+      { kind: EVENT_KINDS.DELETION, content: "", tags: [["e", tagged.id]] },
+      300
+    )
+    const result = resolve([legacy, tagged, deletion], beforeEnd)
+    expect(result.state).toBe("active")
+    expect(result.collection?.eventId).toBe(legacy.id)
+  })
+
+  it("does not let a same-timestamp losing lifecycle revision poison the canonical legacy revision", () => {
+    const legacyCandidates = Array.from({ length: 16 }, (_, index) =>
+      sign(
+        {
+          ...buildEventMarketCollectionDraft({
+            dTag: "market",
+            title: "Market",
+            eventCoordinate: calendarCoordinate,
+          }),
+          content: `legacy-${index}`,
+        },
+        200
+      )
+    )
+    const taggedCandidates = Array.from({ length: 16 }, (_, index) =>
+      sign(
+        {
+          ...buildEventMarketCollectionDraft({
+            dTag: "market",
+            title: "Market",
+            eventCoordinate: calendarCoordinate,
+            orderAcceptance: "open",
+          }),
+          content: `tagged-${index}`,
+        },
+        200
+      )
+    )
+    const legacy = [...legacyCandidates].sort((a, b) =>
+      a.id.localeCompare(b.id)
+    )[0]!
+    const tagged = [...taggedCandidates].sort((a, b) =>
+      b.id.localeCompare(a.id)
+    )[0]!
+    expect(legacy.id.localeCompare(tagged.id)).toBeLessThan(0)
+
+    const result = resolve([tagged, legacy], beforeEnd)
+    expect(result.state).toBe("active")
+    expect(result.collection?.eventId).toBe(legacy.id)
+  })
+
   it("retains NIP-01 revision tie breaking and signed deletion semantics", () => {
     const revisions = [collection("open", 200), collection("closed", 200)].sort(
       (a, b) => a.id.localeCompare(b.id)
@@ -197,7 +257,7 @@ describe("event market lifecycle", () => {
       row(product, 999),
       row(deletion),
     ]
-    const retained = selectEventMarketEvidenceForRetention(rows, 0)
+    const retained = selectEventMarketEvidenceForRetention(rows, 5)
     expect(retained.map((entry) => entry.id).sort()).toEqual(
       [calendar.id, closed.id, stripped.id, pickup.id, deletion.id].sort()
     )
@@ -227,10 +287,11 @@ describe("event market lifecycle", () => {
         row(reopened),
         row(earlierDifferentGraph),
       ],
-      0
+      3,
+      [legacy.id]
     )
     expect(retained.map((entry) => entry.id).sort()).toEqual(
-      [calendar.id, legacy.id, open.id, closed.id, reopened.id].sort()
+      [calendar.id, legacy.id, reopened.id].sort()
     )
     expect(resolve(retained.map((entry) => entry.signedEvent)).state).toBe(
       "active"
@@ -246,7 +307,7 @@ describe("event market lifecycle", () => {
     )
     const retained = selectEventMarketEvidenceForRetention(
       [row(calendar), row(closed), row(reopened), row(deletion)],
-      0
+      4
     )
     expect(
       resolve(
@@ -260,5 +321,46 @@ describe("event market lifecycle", () => {
         beforeEnd
       ).collection?.eventId
     ).toBe(closed.id)
+  })
+
+  it("enforces the organizer evidence limit across retained frontiers", () => {
+    const rows = Array.from({ length: 20 }, (_, index) =>
+      row(
+        sign(
+          buildEventMarketCollectionDraft({
+            dTag: `market-${index}`,
+            title: `Market ${index}`,
+            eventCoordinate: calendarCoordinate,
+          }),
+          100 + index
+        ),
+        index
+      )
+    )
+    expect(selectEventMarketEvidenceForRetention(rows, 12)).toHaveLength(12)
+  })
+
+  it("bounds retained collection hydration per organizer", async () => {
+    const rows = Array.from({ length: 760 }, (_, index) =>
+      row(
+        sign(
+          buildEventMarketCollectionDraft({
+            dTag: `market-${index}`,
+            title: `Market ${index}`,
+            eventCoordinate: calendarCoordinate,
+          }),
+          100 + index
+        ),
+        index
+      )
+    )
+    __setEventMarketTestOverrides({
+      loadCachedCollectionEvidence: async () => rows,
+    })
+
+    const retained = await getRetainedEventMarketCollectionEvidence({
+      organizerPubkeys: [author],
+    })
+    expect(retained.events).toHaveLength(750)
   })
 })

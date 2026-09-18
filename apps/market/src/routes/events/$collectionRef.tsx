@@ -8,7 +8,14 @@ import {
   RefreshCw,
 } from "lucide-react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import {
   buildMarketEventCatalogUrl,
   normalizePubkey,
@@ -25,6 +32,7 @@ import {
   Badge,
   Button,
   ShareLinkButton,
+  cn,
   eventMarketRequiredRecordsResolved,
   formatEventRelayReadCoverage,
   getEventActionabilityPresentation,
@@ -420,6 +428,61 @@ function StatePanel({
   )
 }
 
+function EventHeaderActions({
+  summary,
+  shareUrl,
+  shareTitle,
+  shareLabel,
+}: {
+  summary?: string
+  shareUrl?: string
+  shareTitle: string
+  shareLabel: string
+}) {
+  const [aboutOpen, setAboutOpen] = useState(false)
+  const summaryId = useId()
+
+  if (!summary && !shareUrl) return null
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {summary ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-expanded={aboutOpen}
+          aria-controls={summaryId}
+          onClick={() => setAboutOpen((open) => !open)}
+        >
+          About this event
+          <ChevronDown
+            aria-hidden="true"
+            className={cn("size-3.5", aboutOpen && "rotate-180")}
+          />
+        </Button>
+      ) : null}
+      {shareUrl ? (
+        <ShareLinkButton
+          url={shareUrl}
+          shareTitle={shareTitle}
+          idleLabel={shareLabel}
+          className="shrink-0"
+        />
+      ) : null}
+      {summary ? (
+        <p
+          id={summaryId}
+          hidden={!aboutOpen}
+          className="basis-full whitespace-pre-wrap break-words text-pretty text-sm leading-6 text-[var(--text-secondary)]"
+        >
+          {summary}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 function EventCatalogPage() {
   const { authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -581,7 +644,7 @@ function EventCatalogPage() {
   const relayCoverage = formatEventRelayReadCoverage(catalog.coverage)
 
   return (
-    <div className="mx-auto max-w-6xl space-y-8">
+    <div className="mx-auto max-w-6xl space-y-5 sm:space-y-8">
       {isChecking ? (
         <div
           role="status"
@@ -628,31 +691,32 @@ function EventCatalogPage() {
             className="aspect-[3/1] w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] object-contain"
           />
         ) : null}
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <h1 className="min-w-0 break-words text-balance text-3xl font-semibold text-[var(--text-primary)] sm:text-4xl">
-            {calendar.title}
-          </h1>
-          {catalog.canonicalNaddr ? (
-            <ShareLinkButton
-              url={buildMarketEventCatalogUrl(
-                window.location.origin,
-                catalog.canonicalNaddr,
-                selectedMerchantPubkey
-                  ? { merchantPubkey: selectedMerchantPubkey }
-                  : undefined
-              )}
-              shareTitle={
-                selectedMerchantName
-                  ? `${selectedMerchantName} at ${calendar.title}`
-                  : calendar.title
-              }
-              idleLabel={
-                selectedMerchantPubkey ? "Share this view" : "Share event"
-              }
-              className="shrink-0"
-            />
-          ) : null}
-        </div>
+        <h1 className="min-w-0 break-words text-balance text-3xl font-semibold text-[var(--text-primary)] sm:text-4xl">
+          {calendar.title}
+        </h1>
+        <EventHeaderActions
+          key={collection.coordinate}
+          summary={calendar.summary ?? collection.summary}
+          shareUrl={
+            catalog.canonicalNaddr
+              ? buildMarketEventCatalogUrl(
+                  window.location.origin,
+                  catalog.canonicalNaddr,
+                  selectedMerchantPubkey
+                    ? { merchantPubkey: selectedMerchantPubkey }
+                    : undefined
+                )
+              : undefined
+          }
+          shareTitle={
+            selectedMerchantName
+              ? `${selectedMerchantName} at ${calendar.title}`
+              : calendar.title
+          }
+          shareLabel={
+            selectedMerchantPubkey ? "Share this view" : "Share event"
+          }
+        />
         {collection.orderAcceptance === "open" &&
         calendar.end <= scheduleNow ? (
           <p className="text-pretty text-sm text-[var(--text-secondary)]">
@@ -706,24 +770,9 @@ function EventCatalogPage() {
             />
           ) : null}
         </div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--text-secondary)]">
-          <p>Pickup details are shown on each product.</p>
-          {calendar.summary || collection.summary ? (
-            <details className="group/about basis-full">
-              <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] [&::-webkit-details-marker]:hidden">
-                About this event{" "}
-                <ChevronDown
-                  aria-hidden="true"
-                  className="size-4 group-open/about:rotate-180"
-                />
-              </summary>
-              <p className="mt-2 whitespace-pre-wrap break-words text-pretty leading-6">
-                {calendar.summary ?? collection.summary}
-              </p>
-            </details>
-          ) : null}
-        </div>
-        {!isChecking && !actionability.prominent ? (
+        {!isChecking &&
+        !actionability.prominent &&
+        actionability.actionability !== "actionable" ? (
           <p
             className="text-pretty text-sm text-[var(--text-secondary)]"
             role={actionability.role}
