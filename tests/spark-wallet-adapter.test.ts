@@ -1949,6 +1949,15 @@ describe("SparkWalletManager", () => {
   })
 
   it("persists an exact Lightning attempt before sending and recovers it after manager restart", async () => {
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc10000n",
+      fields: [
+        {
+          tag: "p",
+          words: bytesToBolt11Words(new Uint8Array(32).fill(19)),
+        },
+      ],
+    })
     const lifecycle: string[] = []
     let savedAttempt: SparkLightningSendAttempt | undefined
     let openCalls = 0
@@ -1978,7 +1987,7 @@ describe("SparkWalletManager", () => {
             reconcileCalls += 1
             expect(request).toEqual({
               transferId: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
-              paymentRequest: "lnbc1checkout",
+              paymentRequest: invoice,
               amountSats: 1_000,
               maxFeeSats: 2,
               completionTimeoutSecs: 3,
@@ -2016,7 +2025,7 @@ describe("SparkWalletManager", () => {
 
     await expect(
       firstManager.payInvoice("wallet-personal", {
-        invoice: "lnbc1checkout",
+        invoice,
         amountMsats: 1_000_000,
         idempotencyKey: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
         completionTimeoutSecs: 3,
@@ -2043,7 +2052,7 @@ describe("SparkWalletManager", () => {
       walletId: "wallet-personal",
       network: "mainnet",
       transferId: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
-      paymentRequest: "lnbc1checkout",
+      paymentRequest: invoice,
       amountSats: 1_000,
       maxFeeSats: 2,
       completionTimeoutSecs: 3,
@@ -2071,6 +2080,15 @@ describe("SparkWalletManager", () => {
   })
 
   it("rejects altered Lightning attempt ownership before provider lookup", async () => {
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc10000n",
+      fields: [
+        {
+          tag: "p",
+          words: bytesToBolt11Words(new Uint8Array(32).fill(20)),
+        },
+      ],
+    })
     let reconcileCalls = 0
     const manager = new SparkWalletManager({
       network: "mainnet",
@@ -2094,7 +2112,7 @@ describe("SparkWalletManager", () => {
       walletId: "wallet-personal",
       network: "mainnet",
       transferId: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
-      paymentRequest: "lnbc1checkout",
+      paymentRequest: invoice,
       amountSats: 1_000,
       maxFeeSats: 2,
       createdAt: 1_700_000_000_000,
@@ -2116,6 +2134,11 @@ describe("SparkWalletManager", () => {
         reason: "The persisted Spark payment attempt is invalid.",
       },
       {
+        attempt: { ...attempt, paymentRequest: "lnbc1not-a-valid-invoice" },
+        reason:
+          "The persisted Spark payment attempt contains an invalid Lightning invoice.",
+      },
+      {
         attempt: { ...attempt, transferId: "not-a-uuid" },
         reason: "The persisted Spark payment attempt is invalid.",
       },
@@ -2132,6 +2155,50 @@ describe("SparkWalletManager", () => {
       })
     }
     expect(reconcileCalls).toBe(0)
+  })
+
+  it("preserves adapter-reported Lightning lookup unavailability", async () => {
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc10000n",
+      fields: [
+        {
+          tag: "p",
+          words: bytesToBolt11Words(new Uint8Array(32).fill(21)),
+        },
+      ],
+    })
+    let reconcileCalls = 0
+    const manager = new SparkWalletManager({
+      network: "mainnet",
+      async open() {
+        return {
+          ...createNoopSdkClient(),
+          async reconcileLightningSend() {
+            reconcileCalls += 1
+            return { status: "lookup_unavailable" as const }
+          },
+        }
+      },
+    })
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: ["synthetic", "noncredential", "input"].join("-"),
+      accountNumber: 0,
+    })
+
+    await expect(
+      manager.reconcileInvoiceAttempt("wallet-personal", {
+        schemaVersion: 1,
+        walletId: "wallet-personal",
+        network: "mainnet",
+        transferId: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
+        paymentRequest: invoice,
+        amountSats: 1_000,
+        maxFeeSats: 2,
+        createdAt: 1_700_000_000_000,
+      })
+    ).resolves.toEqual({ status: "lookup_unavailable" })
+    expect(reconcileCalls).toBe(1)
   })
 
   it("rejects an amountless Lightning invoice before persisting or sending a recoverable attempt", async () => {
@@ -2259,6 +2326,15 @@ describe("SparkWalletManager", () => {
   })
 
   it("does not send when Lightning attempt persistence fails", async () => {
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc10000n",
+      fields: [
+        {
+          tag: "p",
+          words: bytesToBolt11Words(new Uint8Array(32).fill(22)),
+        },
+      ],
+    })
     let authorizeCalls = 0
     let sendCalls = 0
     const manager = new SparkWalletManager({
@@ -2290,7 +2366,7 @@ describe("SparkWalletManager", () => {
 
     await expect(
       manager.payInvoice("wallet-personal", {
-        invoice: "lnbc1checkout",
+        invoice,
         amountMsats: 1_000_000,
         idempotencyKey: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
         approveFee: async () => true,

@@ -219,7 +219,12 @@ const LIGHTNING_RECOVERY_CONFLICT_MESSAGES = new Set([
   "Spark returned a Lightning preimage that does not match the prepared invoice.",
 ])
 
-class SparkLightningLookupUnavailableError extends Error {}
+class SparkLightningLookupUnavailableError extends Error {
+  constructor() {
+    super("Spark payment status could not be checked.")
+    this.name = "SparkLightningLookupUnavailableError"
+  }
+}
 
 function canonicalLightningInvoice(invoice: string): string | null {
   const normalized = normalizeLightningInvoice(invoice)
