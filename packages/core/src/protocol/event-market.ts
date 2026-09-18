@@ -1327,8 +1327,20 @@ function deletionEvidenceForAddressableEvent(
   coordinate: AddressableEventCoordinate,
   deletions: readonly SignedPublicNostrEvent[]
 ): EventMarketDeletionEvidence[] {
+  return deletionEvidenceForVerifiedAddressableEvent(
+    event,
+    coordinate,
+    validDeletionEvents(deletions)
+  )
+}
+
+function deletionEvidenceForVerifiedAddressableEvent(
+  event: Pick<SignedPublicNostrEvent, "created_at" | "id"> | undefined,
+  coordinate: AddressableEventCoordinate,
+  deletions: readonly SignedPublicNostrEvent[]
+): EventMarketDeletionEvidence[] {
   const evidenceById = new Map<string, EventMarketDeletionEvidence>()
-  for (const deletion of validDeletionEvents(deletions)) {
+  for (const deletion of deletions) {
     if (deletion.pubkey.toLowerCase() !== coordinate.authorPubkey) continue
 
     const eventTargets = Array.from(
@@ -4280,7 +4292,7 @@ export function selectEventMarketEvidenceForRetention(
     // Exact-event deletion can leave an older revision as the current record.
     const surviving = revisions.find(
       (row) =>
-        deletionEvidenceForAddressableEvent(
+        deletionEvidenceForVerifiedAddressableEvent(
           row.signedEvent,
           coordinate,
           deletions
@@ -4314,7 +4326,7 @@ export function selectEventMarketEvidenceForRetention(
     if (event.kind === EVENT_KINDS.DELETION) return true
     const coordinate = eventCoordinate(event, EVENT_MARKET_ADDRESSABLE_KINDS)
     if (!coordinate) return true
-    const deletionEvidence = deletionEvidenceForAddressableEvent(
+    const deletionEvidence = deletionEvidenceForVerifiedAddressableEvent(
       event,
       coordinate,
       deletions

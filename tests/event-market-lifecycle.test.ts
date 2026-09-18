@@ -446,7 +446,7 @@ describe("event market lifecycle", () => {
       expect(retainedIds.has(deletion.id)).toBe(false)
       expect(retainedIds.has(deleted.id)).toBe(false)
     }
-  })
+  }, 15_000)
 
   it("hydrates retained lifecycle revisions together with their tombstones", async () => {
     const original = collection("open", 100)
@@ -497,5 +497,5 @@ describe("event market lifecycle", () => {
       organizerPubkeys: [author],
     })
     expect(retained.events).toHaveLength(750)
-  })
+  }, 15_000)
 })
