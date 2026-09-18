@@ -35,6 +35,7 @@ export interface EventQrSignMerchant {
 export interface EventQrSignSheet {
   id: string
   kind: "event" | "merchant"
+  url: string
   qrValue: string
   eventTitle: string
   schedule: string
@@ -191,6 +192,7 @@ export function buildEventQrSignSheet(
   return {
     id: `${market.collectionCoordinate}:event`,
     kind: "event",
+    url: getEventMarketUrl(market.naddr, location),
     qrValue: buildEventSignQrUrl(market.naddr, undefined, location),
     eventTitle: market.title,
     schedule: formatEventSignSchedule(market),
@@ -219,6 +221,7 @@ export function buildMerchantEventQrSignSheet(
   return {
     id: `${market.collectionCoordinate}:merchant:${normalized}`,
     kind: "merchant",
+    url: getEventMarketMerchantFilterUrl(market.naddr, normalized, location),
     qrValue: buildEventSignQrUrl(market.naddr, normalized, location),
     eventTitle: market.title,
     schedule: formatEventSignSchedule(market),

@@ -1828,9 +1828,11 @@ async function acceptMerchantProduct(
     await selectedBoothDetails.locator("summary").click()
   }
   await expect(boothLink).toBeVisible()
-  await expect(
-    selectedBoothDetails.getByRole("img", { name: /event catalog QR code$/ })
-  ).toBeVisible()
+  const boothQr = selectedBoothDetails.getByRole("img", {
+    name: /event catalog QR code$/,
+  })
+  await expect(boothQr).toBeVisible()
+  await expect(boothQr).toHaveAttribute("data-qr-value", boothUrl.toString())
   return acceptedCollection!
 }
 

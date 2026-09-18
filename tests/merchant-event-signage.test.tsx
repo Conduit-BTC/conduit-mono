@@ -149,6 +149,9 @@ describe("merchant event sign eligibility", () => {
 
     expect(sheet?.merchant?.name).toContain("npub1")
     expect(sheet?.merchant?.imageUrl).toBeUndefined()
+    expect(sheet?.url).toBe(
+      `http://127.0.0.1:7000/events/${EVENT_NADDR}?merchant=${pubkeyToNpub(MERCHANT_A)}`
+    )
     expect(sheet?.qrValue).toBe(
       `http://127.0.0.1:7000/events/${EVENT_NADDR}?merchant=${pubkeyToNpub(MERCHANT_A)}`
     )
@@ -191,12 +194,12 @@ describe("event sign composition", () => {
       MERCHANT_LOCATION
     )
 
-    expect(eventSheet.qrValue).toBe(
-      `http://127.0.0.1:7000/events/${EVENT_NADDR}`
-    )
-    expect(merchantSheet?.qrValue).toBe(
+    expect(eventSheet.url).toBe(`http://127.0.0.1:7000/events/${EVENT_NADDR}`)
+    expect(eventSheet.qrValue).toBe(eventSheet.url)
+    expect(merchantSheet?.url).toBe(
       `http://127.0.0.1:7000/events/${EVENT_NADDR}?merchant=${pubkeyToNpub(MERCHANT_A)}`
     )
+    expect(merchantSheet?.qrValue).toBe(merchantSheet?.url)
     expect(merchantSheet?.qrValue).not.toContain("/store/")
     expect(eventSheet.bannerUrl).toBe(
       "https://cdn.conduit.market/autumn-market-banner.png"
@@ -371,15 +374,31 @@ describe("event sign QR rendering", () => {
     ]
 
     for (const sheet of sheets) {
-      const url = new URL(sheet.qrValue)
-      const reference = url.pathname.slice("/events/".length)
-      const decoded = decodeEventMarketReference(reference, [30405])
+      const url = new URL(sheet.url)
+      const qrUrl = new URL(sheet.qrValue)
+      const decoded = decodeEventMarketReference(
+        url.pathname.slice("/events/".length),
+        [30405]
+      )
+      const qrDecoded = decodeEventMarketReference(
+        qrUrl.pathname.slice("/events/".length),
+        [30405]
+      )
 
       expect(isEventSignQrValueWithinBudget(sheet.qrValue)).toBe(true)
       expect(decoded?.coordinate).toBe(COLLECTION)
-      expect(decoded?.relayHints.length).toBeLessThan(relayHints.length)
+      expect(decoded?.relayHints).toHaveLength(relayHints.length)
+      for (const relayHint of relayHints) {
+        expect(decoded?.relayHints).toContain(relayHint)
+      }
+      expect(qrDecoded?.coordinate).toBe(COLLECTION)
+      expect(qrDecoded?.relayHints.length).toBeLessThan(relayHints.length)
     }
+    expect(new URL(sheets[0]!.url).searchParams.has("merchant")).toBe(false)
     expect(new URL(sheets[0]!.qrValue).searchParams.has("merchant")).toBe(false)
+    expect(new URL(sheets[1]!.url).searchParams.get("merchant")).toBe(
+      pubkeyToNpub(MERCHANT_A)
+    )
     expect(new URL(sheets[1]!.qrValue).searchParams.get("merchant")).toBe(
       pubkeyToNpub(MERCHANT_A)
     )

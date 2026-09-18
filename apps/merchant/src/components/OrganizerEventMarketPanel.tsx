@@ -674,7 +674,8 @@ export function OrganizerEventMarketPanel({
     pubkey: sheet.merchant!.pubkey,
     name: sheet.merchant!.name,
     productCount: eligibleMerchantCounts.get(sheet.merchant!.pubkey) ?? 0,
-    url: sheet.qrValue,
+    url: sheet.url,
+    qrValue: sheet.qrValue,
   }))
   let selectedPrintSheets: EventQrSignSheet[] = []
   let printPreviewTitle = "Event sign preview"
@@ -956,9 +957,14 @@ export function OrganizerEventMarketPanel({
                       <div
                         role="img"
                         aria-label={`${merchant.name} event catalog QR code`}
+                        data-qr-value={merchant.qrValue}
                         className="w-fit rounded-xl border border-[var(--border)] bg-white p-3"
                       >
-                        <QRCodeSVG value={merchant.url} size={176} level="M" />
+                        <QRCodeSVG
+                          value={merchant.qrValue}
+                          size={176}
+                          level="M"
+                        />
                       </div>
                       <div className="min-w-0 space-y-3">
                         <div className="break-all font-mono text-xs leading-5 text-[var(--text-muted)]">

@@ -6,6 +6,7 @@ import { EventQrPrintPreview } from "../../apps/merchant/src/components/EventQrP
 const sheet = {
   id: "mobile-event-sign",
   kind: "merchant",
+  url: "https://shop.conduit.market/events/naddr1qqxnzdenx5cr2wfcxycrwwfcqgs9y6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6qpsgqqqw4rsf45khs?merchant=npub1qgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqdt7a9h",
   qrValue:
     "https://shop.conduit.market/events/naddr1qqxnzdenx5cr2wfcxycrwwfcqgs9y6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6qpsgqqqw4rsf45khs?merchant=npub1qgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqdt7a9h",
   eventTitle: "A complete printable event title at the narrowest viewport",
