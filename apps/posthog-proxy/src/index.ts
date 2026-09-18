@@ -20,6 +20,7 @@ const GMV_EVENT_NAME = "commerce_gmv_estimated"
 const GMV_EVENT_ID_DOMAIN = "conduit-commerce-gmv-estimate.order.v1"
 const orderIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const utcOrderDatePattern = /^\d{4}-\d{2}-\d{2}$/
 
 const allowedIngestPaths = new Set([
   "/batch",
@@ -146,6 +147,9 @@ export async function handlePostHogProxyRequest(
   }
 
   if (requestUrl.pathname === GMV_PATH) {
+    if (requestUrl.search) {
+      return jsonResponse({ error: "invalid_request_url" }, 400)
+    }
     return handleCommerceGmvRequest(request, fetcher, env)
   }
 
@@ -611,7 +615,7 @@ async function readBoundedRequestBody(
 
 type CommerceGmvEstimate = {
   orderId: string
-  orderCreatedAt: number
+  orderDate: string
   invoicedAmountSats: number
 }
 
@@ -629,12 +633,14 @@ function parseCommerceGmvEstimate(
   if (
     keys.length !== 3 ||
     keys[0] !== "invoicedAmountSats" ||
-    keys[1] !== "orderCreatedAt" ||
+    keys[1] !== "orderDate" ||
     keys[2] !== "orderId" ||
     typeof value.orderId !== "string" ||
     !orderIdPattern.test(value.orderId) ||
-    !Number.isSafeInteger(value.orderCreatedAt) ||
-    (value.orderCreatedAt as number) <= 0 ||
+    typeof value.orderDate !== "string" ||
+    !utcOrderDatePattern.test(value.orderDate) ||
+    new Date(`${value.orderDate}T00:00:00.000Z`).toISOString().slice(0, 10) !==
+      value.orderDate ||
     !Number.isSafeInteger(value.invoicedAmountSats) ||
     (value.invoicedAmountSats as number) <= 0
   ) {
@@ -642,7 +648,7 @@ function parseCommerceGmvEstimate(
   }
   return {
     orderId: value.orderId.toLowerCase(),
-    orderCreatedAt: value.orderCreatedAt as number,
+    orderDate: value.orderDate,
     invoicedAmountSats: value.invoicedAmountSats as number,
   }
 }
@@ -723,30 +729,29 @@ async function handleCommerceGmvRequest(
     return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
   }
 
-  const uuid = await getOpaqueCommerceOrderUuid(estimate.orderId, hmacSecret)
-  if (!uuid) {
+  const eventUuid = await getOpaqueCommerceOrderUuid(
+    estimate.orderId,
+    hmacSecret
+  )
+  if (!eventUuid) {
     return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
   }
   const [globalLimit, orderLimit] = await Promise.all([
     env.GMV_GLOBAL_RATE_LIMITER.limit({ key: "commerce-gmv" }),
-    env.GMV_ORDER_RATE_LIMITER.limit({ key: uuid }),
+    env.GMV_ORDER_RATE_LIMITER.limit({ key: eventUuid }),
   ])
   if (!globalLimit.success || !orderLimit.success) {
     return corsJsonResponse({ error: "rate_limited" }, 429, origin)
   }
 
-  const orderDate = new Date(estimate.orderCreatedAt)
-  if (!Number.isFinite(orderDate.getTime())) {
-    return corsJsonResponse({ error: "invalid_payload" }, 400, origin)
-  }
-  const timestamp = `${orderDate.toISOString().slice(0, 10)}T00:00:00.000Z`
+  const timestamp = `${estimate.orderDate}T00:00:00.000Z`
   const upstreamBody = JSON.stringify({
+    api_key: projectToken,
     event: GMV_EVENT_NAME,
-    uuid,
+    distinct_id: POSTHOG_GMV_DISTINCT_ID,
+    uuid: eventUuid,
     timestamp,
     properties: {
-      token: projectToken,
-      distinct_id: POSTHOG_GMV_DISTINCT_ID,
       $process_person_profile: false,
       estimated_gmv_sats: estimate.invoicedAmountSats,
     },

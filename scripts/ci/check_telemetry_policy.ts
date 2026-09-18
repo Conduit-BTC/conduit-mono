@@ -227,7 +227,7 @@ export function validateTelemetryEvents(
         event.eventName !== gmvTelemetryEventName
       ) {
         errors.push(
-          `Telemetry event ${event.eventName} cannot use server-only property: ${property}`
+          `Telemetry event ${event.eventName} cannot use Worker-only property: ${property}`
         )
       }
     }

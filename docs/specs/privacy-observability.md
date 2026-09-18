@@ -6,7 +6,9 @@ Provide aggregate proof of product usage and reliability without user surveillan
 
 ## Principles
 
-1. Default-off telemetry in product clients.
+1. Optional browser analytics is default-off in product clients. Any
+   separately approved first-party aggregate measurement requires its own
+   narrow contract and must not inherit broader collection capabilities.
 2. Aggregate metrics over user-level tracking.
 3. No persistent identifiers for active users in product analytics.
 4. Public commerce page identifiers may be used only as sanitized page context for aggregate storefront performance reporting.
@@ -58,7 +60,7 @@ Anonymous reliability, performance, and public commerce page counters:
 - Error counts by category
 - Storefront pageview and browse-action counts by sanitized public store route
 
-### Estimated Commerce GMV (optional, server-only)
+### Estimated Commerce GMV (first-party aggregate measurement)
 
 When a Conduit commerce order moves through any supported paid signal, the
 telemetry Worker may emit one `commerce_gmv_estimated` event for that order.
@@ -67,6 +69,15 @@ merchant wallet verification, manual merchant confirmation, and later paid or
 fulfilled order reconciliation. These signals are OR gates for one logical
 per-order estimate, not separate events. Its only business property is the
 order's exact positive whole-satoshi invoiced amount.
+
+This measurement is distinct from optional browser product analytics. Official
+Shop and Sell clients may report it even when generic browser telemetry is
+disabled or Global Privacy Control is enabled. GPC continues to suppress the
+optional browser analytics covered by the generic telemetry gate. It does not
+suppress this event because Conduit uses it only as a first-party aggregate
+commerce measure and not to sell or share personal information, perform
+cross-context behavioral advertising, build a person profile, or identify a
+buyer or merchant.
 
 This is a narrow exception to the bucket-only amount rule for browser and
 operational telemetry. The event must:
@@ -80,6 +91,8 @@ operational telemetry. The event must:
   identifiers in other datasets;
 - use the raw random order UUID only transiently inside the telemetry Worker
   and prevent it and the HMAC secret from reaching PostHog;
+- send only the UTC order date to the Worker, not a more precise order
+  timestamp;
 - prevent PostHog from recording the requesting browser's IP address; and
 - omit buyer, merchant, signer, wallet, session, order, product, public key,
   route, URL, comment, invoice, payment hash, preimage, receipt, relay,
@@ -93,9 +106,11 @@ undercount it. Exact amounts and the UTC order day can be distinctive through
 outside knowledge, so reporting is privacy-minimized rather than guaranteed
 unlinkable. Aggregate reporting must describe the resulting metric as
 estimated Conduit commerce GMV, not verified settlement, total platform sales,
-merchant revenue, or funds processed by Conduit. Insights must group by the
-opaque event UUID before summing the amount so totals remain structurally
-deduplicated during asynchronous provider ingestion.
+merchant revenue, or funds processed by Conduit. PostHog considers matching
+event UUID, event name, timestamp, and static service identity to be one logical
+event. Insights must still group by the opaque event UUID before summing the
+amount so totals remain structurally deduplicated during asynchronous provider
+ingestion.
 
 Allowed fields:
 
@@ -104,7 +119,7 @@ Allowed fields:
   `mode`, `rail`, `method`, `event_family`, `count_bucket`,
   `result_count_bucket`, `amount_bucket`, `product_type`
 
-The server-only `commerce_gmv_estimated` event additionally allows
+The Worker-emitted `commerce_gmv_estimated` event additionally allows
 `estimated_gmv_sats` under the constraints above. No other event may use that
 field or send an exact payment amount.
 
@@ -153,7 +168,11 @@ telemetry, or support diagnostics.
 - Operational monitoring may collect system counters only, such as app load
   success/failure counts, relay connect/publish success rates, latency buckets,
   and error counts by category.
-- Honor Global Privacy Control as a privacy signal where applicable.
+- Honor Global Privacy Control for processing within the signal's scope. The
+  shared optional browser-analytics gate treats GPC as an instruction to
+  suppress those analytics. The separately contracted first-party aggregate
+  commerce measurement above is not sale, sharing, cross-context behavioral
+  advertising, or person profiling and is not suppressed solely by GPC.
 
 ## Allowed Tooling
 
@@ -175,8 +194,7 @@ Expose only aggregate KPIs:
 - Weekly order-event count
 - Product catalog growth
 - Checkout success rate (aggregate)
-- Observed verified public-Zap-Out settled volume in sats (aggregate,
-  best-effort lower bound)
+- Estimated Conduit commerce GMV in sats (aggregate, recall-biased estimate)
 
 No per-user journey replay, no active-user identity drilldowns, and no joining
 public page performance data to signer, buyer, wallet, or session identity.
@@ -187,6 +205,8 @@ public page performance data to signer, buyer, wallet, or session identity.
 2. CI check to block banned telemetry/cookie SDKs unless explicitly approved.
 3. CI/static checks block cookie APIs and `Set-Cookie` usage in client source.
 4. Production defaults:
-   - telemetry disabled unless `ENABLE_TELEMETRY=true`
+   - optional browser telemetry disabled unless `ENABLE_TELEMETRY=true`
+   - first-party commerce GMV measurement enabled only through its dedicated
+     Worker secret and rate-limit configuration
    - high-verbosity logs disabled
 5. Document retention windows and redaction policy.

@@ -77,9 +77,55 @@ describe("commerce GMV estimate client", () => {
         method: "POST",
         referrerPolicy: "no-referrer",
       })
-      expect(JSON.parse(String(requests[0]?.init.body))).toEqual(ESTIMATE)
+      expect(JSON.parse(String(requests[0]?.init.body))).toEqual({
+        orderId: ORDER_ID,
+        orderDate: "2026-09-17",
+        invoicedAmountSats: 42,
+      })
+      expect(String(requests[0]?.init.body)).not.toContain(
+        String(ESTIMATE.orderCreatedAt)
+      )
     }
   )
+
+  it("keeps first-party GMV measurement independent from optional analytics and GPC", async () => {
+    const previousNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator"
+    )
+    const previousTelemetryFlag = process.env.VITE_ENABLE_TELEMETRY
+    let requests = 0
+
+    try {
+      process.env.VITE_ENABLE_TELEMETRY = "false"
+      Object.defineProperty(globalThis, "navigator", {
+        configurable: true,
+        value: { globalPrivacyControl: true },
+      })
+
+      await expect(
+        reportCommerceGmvEstimate(ESTIMATE, {
+          hostname: "shop.conduit.market",
+          fetchImpl: async () => {
+            requests += 1
+            return new Response(null, { status: 200 })
+          },
+        })
+      ).resolves.toBe(true)
+      expect(requests).toBe(1)
+    } finally {
+      if (previousNavigator) {
+        Object.defineProperty(globalThis, "navigator", previousNavigator)
+      } else {
+        Reflect.deleteProperty(globalThis, "navigator")
+      }
+      if (previousTelemetryFlag === undefined) {
+        delete process.env.VITE_ENABLE_TELEMETRY
+      } else {
+        process.env.VITE_ENABLE_TELEMETRY = previousTelemetryFlag
+      }
+    }
+  })
 
   it("coalesces concurrent signals and suppresses later successful repeats", async () => {
     let requests = 0
@@ -149,6 +195,10 @@ describe("commerce GMV estimate client", () => {
       ["shop.conduit.market", { ...ESTIMATE, orderId: "not-an-order" }],
       ["shop.conduit.market", { ...ESTIMATE, invoicedAmountSats: 0 }],
       ["shop.conduit.market", { ...ESTIMATE, invoicedAmountSats: 1.5 }],
+      [
+        "shop.conduit.market",
+        { ...ESTIMATE, orderCreatedAt: Number.MAX_SAFE_INTEGER },
+      ],
     ] as const) {
       await expect(
         reportCommerceGmvEstimate(estimate, { hostname, fetchImpl })

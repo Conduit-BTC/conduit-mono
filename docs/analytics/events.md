@@ -1,8 +1,10 @@
 # Telemetry Event Allowlist
 
-Conduit telemetry is privacy-constrained operational telemetry only. Product clients
-must remain useful without telemetry, and telemetry must stay disabled unless a
-deployment explicitly enables it.
+Conduit telemetry is privacy-constrained measurement only. Product clients must
+remain useful without optional browser analytics, and those analytics must stay
+disabled unless a deployment explicitly enables them. The separately
+contracted first-party commerce GMV measurement is activated only when its
+Worker secret and rate-limit bindings are configured.
 
 ## Allowed Properties
 
@@ -27,7 +29,7 @@ Runtime telemetry events may only use these fields:
 - `count_bucket`
 - `result_count_bucket`
 - `amount_bucket`
-- `estimated_gmv_sats` (server-only on `commerce_gmv_estimated`)
+- `estimated_gmv_sats` (Worker-emitted on `commerce_gmv_estimated` only)
 - `product_type`
 
 ## Retention and Redaction
@@ -41,13 +43,21 @@ controls in this document. Maintainers must review the provider window at least
 quarterly and select a shorter plan or self-hosted retention policy when
 PostHog makes one available.
 
-The server-only `commerce_gmv_estimated` event is deliberately narrower than
-browser telemetry. It uses one static service identity, disables person-profile
-processing and provider IP capture, rounds its timestamp to the UTC order day,
-and uses an HMAC-derived event UUID for per-order retry deduplication. The raw
-order UUID is used only transiently by the telemetry Worker and never reaches
-PostHog. A dedicated HMAC domain and secret prevent the opaque UUID from being
-joined to identifiers in other datasets.
+The first-party aggregate `commerce_gmv_estimated` measurement is deliberately
+narrower than optional browser telemetry and follows its own policy. Official
+Shop and Sell clients may report it even when generic browser telemetry is
+disabled or Global Privacy Control is enabled. Conduit uses it only for
+aggregate commerce measurement, not sale or sharing of personal information,
+cross-context behavioral advertising, person profiles, or actor
+identification.
+
+The event uses one static service identity, disables person-profile processing
+and provider IP capture, rounds its timestamp to the UTC order day, and uses an
+HMAC-derived event UUID for per-order retry deduplication. The client sends the
+UTC order date rather than the precise order timestamp. The raw order UUID is
+used only transiently by the telemetry Worker and never reaches PostHog. A
+dedicated HMAC domain and secret prevent the opaque UUID from being joined to
+identifiers in other datasets.
 
 Production activation requires the PostHog proxy Worker to provide both
 `POSTHOG_PROJECT_TOKEN` and a random, secret-store-only
@@ -350,12 +360,22 @@ reconciliation. The sole business property is the order's exact positive
 whole-satoshi invoiced amount. These signals are OR gates for one logical
 per-order event, not separate events.
 
+This event is a narrowly scoped first-party aggregate commerce measurement, not
+ordinary optional product analytics. It is not suppressed solely because GPC
+is enabled or the generic browser telemetry flag is disabled. GPC continues to
+suppress the optional browser analytics it governs. The exception does not
+permit sale, sharing, advertising use, person profiling, or additional event
+properties.
+
 The event uses a shared static service identity, disables person-profile
 processing, rounds its timestamp to the UTC order day, and uses a
 server-secret-derived opaque UUID only to deduplicate observations of the same
-order. PostHog ingestion disables IP capture. The raw order UUID and HMAC secret
-never reach PostHog. PostHog insights must also group by event UUID before
-summing `estimated_gmv_sats`, so dashboard totals remain structurally
+order. The client sends only that UTC date rather than its precise local
+timestamp. PostHog ingestion disables IP capture. The raw order UUID and HMAC
+secret never reach PostHog. Duplicate buyer and merchant observations use the
+same event UUID, event name, UTC-day timestamp, and static service identity so
+PostHog treats them as one logical event. Insights must also group by event UUID
+before summing `estimated_gmv_sats`, so dashboard totals remain structurally
 deduplicated even during PostHog's asynchronous ingestion deduplication window.
 
 It must not include app, route, session, buyer, merchant, order, product,

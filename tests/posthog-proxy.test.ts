@@ -255,7 +255,7 @@ describe("PostHog reverse proxy", () => {
     const orderId = "018f4a00-1111-4abc-8def-0123456789ab"
     const estimate = {
       orderId,
-      orderCreatedAt: Date.parse("2026-09-17T18:24:31.000Z"),
+      orderDate: "2026-09-17",
       invoicedAmountSats: 42,
     }
     const upstream: Record<string, unknown>[] = []
@@ -281,14 +281,14 @@ describe("PostHog reverse proxy", () => {
     expect(upstream).toHaveLength(2)
     expect(upstream[0]).toEqual(upstream[1])
     expect(upstream[0]).toEqual({
+      api_key: PROJECT_TOKEN,
       event: "commerce_gmv_estimated",
+      distinct_id: "conduit-commerce-gmv-estimate",
       uuid: expect.stringMatching(
         /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
       ),
       timestamp: "2026-09-17T00:00:00.000Z",
       properties: {
-        token: PROJECT_TOKEN,
-        distinct_id: "conduit-commerce-gmv-estimate",
         $process_person_profile: false,
         estimated_gmv_sats: 42,
       },
@@ -310,7 +310,7 @@ describe("PostHog reverse proxy", () => {
       await handlePostHogProxyRequest(
         gmvRequest({
           orderId,
-          orderCreatedAt: Date.parse("2026-09-17T18:24:31.000Z"),
+          orderDate: "2026-09-17",
           invoicedAmountSats: 42,
         }),
         fetcher,
@@ -324,7 +324,7 @@ describe("PostHog reverse proxy", () => {
   it("fails GMV ingestion closed for malformed, unconfigured, or rate-limited requests", async () => {
     const valid = {
       orderId: "018f4a00-1111-4abc-8def-0123456789ab",
-      orderCreatedAt: Date.parse("2026-09-17T18:24:31.000Z"),
+      orderDate: "2026-09-17",
       invoicedAmountSats: 42,
     }
     let upstreamCalls = 0
@@ -336,7 +336,17 @@ describe("PostHog reverse proxy", () => {
       [gmvRequest(valid, "https://preview.example"), gmvEnv(), 403],
       [gmvRequest({ ...valid, extra: "field" }), gmvEnv(), 400],
       [gmvRequest({ ...valid, orderId: "raw-order-id" }), gmvEnv(), 400],
+      [gmvRequest({ ...valid, orderDate: "2026-02-30" }), gmvEnv(), 400],
       [gmvRequest({ ...valid, invoicedAmountSats: 0 }), gmvEnv(), 400],
+      [
+        new Request("https://e.conduit.market/gmv?order=raw-order-id", {
+          method: "POST",
+          headers: { origin: "https://shop.conduit.market" },
+          body: JSON.stringify(valid),
+        }),
+        gmvEnv(),
+        400,
+      ],
       [gmvRequest(valid), {}, 503],
       [gmvRequest(valid), gmvEnv({ secret: "short" }), 503],
       [gmvRequest(valid), gmvEnv({ globalSuccess: false }), 429],
@@ -347,6 +357,36 @@ describe("PostHog reverse proxy", () => {
       const response = await handlePostHogProxyRequest(request, fetcher, env)
       expect(response.status).toBe(status)
     }
+    expect(upstreamCalls).toBe(0)
+  })
+
+  it("rejects every additional identity-bearing GMV field before PostHog", async () => {
+    const valid = {
+      orderId: "018f4a00-1111-4abc-8def-0123456789ab",
+      orderDate: "2026-09-17",
+      invoicedAmountSats: 42,
+    }
+    let upstreamCalls = 0
+
+    for (const extra of [
+      { buyerPubkey: "buyer" },
+      { merchantPubkey: "merchant" },
+      { invoice: "lnbc..." },
+      { sessionId: "session" },
+      { deviceId: "device" },
+      { orderCreatedAt: Date.parse("2026-09-17T18:24:31.000Z") },
+    ]) {
+      const response = await handlePostHogProxyRequest(
+        gmvRequest({ ...valid, ...extra }),
+        async () => {
+          upstreamCalls += 1
+          return new Response("ok")
+        },
+        gmvEnv()
+      )
+      expect(response.status).toBe(400)
+    }
+
     expect(upstreamCalls).toBe(0)
   })
 

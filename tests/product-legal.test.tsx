@@ -42,6 +42,14 @@ const PRODUCT_LEGAL_V1_2 = Object.freeze({
     "packages/ui/src/legal/versions/product-legal-v1.2-2026-09-17.tsx",
   sha256: "337b019bb4f56f85ca9f2f6d9142497c7dab2c733f1ac4178b06462a0c24c343",
 })
+const PRODUCT_LEGAL_V1_3 = Object.freeze({
+  version: "conduit-product-legal-v1.3-2026-09-17",
+  effectiveDate: "2026-09-17",
+  lastUpdatedDate: "2026-09-17",
+  archivedSource:
+    "packages/ui/src/legal/versions/product-legal-v1.3-2026-09-17.tsx",
+  sha256: "f572e5d3a4a4f14833a2de57c2fb8ff547538531fc1e65dd26f02f82ff83c525",
+})
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ")
@@ -49,7 +57,7 @@ function normalizeWhitespace(value: string): string {
 
 async function readCurrentReleasedLegalSource(): Promise<string> {
   return normalizeWhitespace(
-    await Bun.file(PRODUCT_LEGAL_V1_2.archivedSource).text()
+    await Bun.file(PRODUCT_LEGAL_V1_3.archivedSource).text()
   )
 }
 
@@ -208,7 +216,7 @@ describe("shared Product legal documents", () => {
   })
 
   it("pins dates and every immutable archive to the released history", async () => {
-    expect(PRODUCT_LEGAL_VERSION).toBe(PRODUCT_LEGAL_V1_2.version)
+    expect(PRODUCT_LEGAL_VERSION).toBe(PRODUCT_LEGAL_V1_3.version)
     expect(PRODUCT_LEGAL_EFFECTIVE_DATE).toBe("2026-09-17")
     expect(PRODUCT_LEGAL_LAST_UPDATED_DATE).toBe("2026-09-17")
     expect(PRODUCT_LEGAL_VERSION_HISTORY).toEqual([
@@ -230,12 +238,19 @@ describe("shared Product legal documents", () => {
         lastUpdatedDate: PRODUCT_LEGAL_V1_2.lastUpdatedDate,
         archivedSource: PRODUCT_LEGAL_V1_2.archivedSource,
       },
+      {
+        version: PRODUCT_LEGAL_V1_3.version,
+        effectiveDate: PRODUCT_LEGAL_V1_3.effectiveDate,
+        lastUpdatedDate: PRODUCT_LEGAL_V1_3.lastUpdatedDate,
+        archivedSource: PRODUCT_LEGAL_V1_3.archivedSource,
+      },
     ])
 
     for (const release of [
       PRODUCT_LEGAL_V1_0,
       PRODUCT_LEGAL_V1_1,
       PRODUCT_LEGAL_V1_2,
+      PRODUCT_LEGAL_V1_3,
     ]) {
       const archive = await Bun.file(release.archivedSource).text()
       const digest = createHash("sha256").update(archive).digest("hex")
@@ -250,8 +265,8 @@ describe("shared Product legal documents", () => {
     ])
 
     for (const wrapper of [privacyWrapper, termsWrapper]) {
-      expect(wrapper).toContain("product-legal-v1.2-2026-09-17")
-      expect(wrapper).not.toContain("product-legal-v1.1-2026-08-09")
+      expect(wrapper).toContain("product-legal-v1.3-2026-09-17")
+      expect(wrapper).not.toContain("product-legal-v1.2-2026-09-17")
     }
   })
 
@@ -270,11 +285,31 @@ describe("shared Product legal documents", () => {
       "It does not forward the receipt, request, invoice, or public identifiers to PostHog."
     )
   })
+
+  it("pins the first-party aggregate commerce measurement in the v1.3 release", async () => {
+    const normalizedRelease = await readCurrentReleasedLegalSource()
+
+    expect(normalizedRelease).toContain(
+      "narrowly scoped first-party service metric"
+    )
+    expect(normalizedRelease).toContain(
+      "GPC does not suppress the first-party aggregate commerce measurement"
+    )
+    expect(normalizedRelease).toContain(
+      "The raw order UUID is not sent to PostHog."
+    )
+    expect(normalizedRelease).toContain(
+      "A shopper report is an estimate signal, not settlement proof."
+    )
+    expect(normalizedRelease).not.toContain(
+      "aggregate settled volume for verified public Zap Outs"
+    )
+  })
 })
 
 describe("deployed Product policy accuracy", () => {
   it("documents strict kind-10050 delivery and never kind-14 fallback", async () => {
-    const archive = await Bun.file(PRODUCT_LEGAL_V1_2.archivedSource).text()
+    const archive = await Bun.file(PRODUCT_LEGAL_V1_3.archivedSource).text()
     const profiles = await Bun.file("deploy/pages-profiles.json").json()
 
     expect(
@@ -292,7 +327,7 @@ describe("deployed Product policy accuracy", () => {
   })
 
   it("does not overclaim encryption, relay deletion, or telemetry retention", async () => {
-    const archive = await Bun.file(PRODUCT_LEGAL_V1_2.archivedSource).text()
+    const archive = await Bun.file(PRODUCT_LEGAL_V1_3.archivedSource).text()
 
     expect(archive).toContain("unwrap and decrypt these messages locally")
     expect(archive).toContain("persistent storage")

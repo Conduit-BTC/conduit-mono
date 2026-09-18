@@ -54,10 +54,12 @@ const inFlightReports = new Map<string, Promise<boolean>>()
 export function isCommerceGmvEstimateInput(
   input: CommerceGmvEstimateInput
 ): boolean {
+  const orderDate = new Date(input.orderCreatedAt)
   return (
     ORDER_ID_PATTERN.test(input.orderId) &&
     Number.isSafeInteger(input.orderCreatedAt) &&
     input.orderCreatedAt > 0 &&
+    Number.isFinite(orderDate.getTime()) &&
     Number.isSafeInteger(input.invoicedAmountSats) &&
     input.invoicedAmountSats > 0
   )
@@ -66,7 +68,9 @@ export function isCommerceGmvEstimateInput(
 /**
  * Best-effort, aggregate-only GMV reporting. Every qualifying commerce signal
  * may call this function; the Worker turns the shared order UUID into the one
- * opaque PostHog event UUID that deduplicates those attempts.
+ * opaque PostHog event UUID that deduplicates those attempts. This narrowly
+ * scoped first-party measurement is independent from optional browser
+ * analytics and its generic GPC/configuration gate.
  */
 export async function reportCommerceGmvEstimate(
   input: CommerceGmvEstimateInput,
@@ -79,6 +83,7 @@ export async function reportCommerceGmvEstimate(
   if (!getOfficialProductTelemetryApp(hostname)) return false
 
   const orderId = input.orderId.toLowerCase()
+  const orderDate = new Date(input.orderCreatedAt).toISOString().slice(0, 10)
   if (reportedOrders.has(orderId)) return true
   const existing = inFlightReports.get(orderId)
   if (existing) return existing
@@ -95,7 +100,7 @@ export async function reportCommerceGmvEstimate(
         },
         body: JSON.stringify({
           orderId,
-          orderCreatedAt: input.orderCreatedAt,
+          orderDate,
           invoicedAmountSats: input.invoicedAmountSats,
         }),
         cache: "no-store",

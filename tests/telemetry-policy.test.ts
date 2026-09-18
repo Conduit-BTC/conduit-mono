@@ -41,7 +41,7 @@ describe("telemetry policy", () => {
     )
   })
 
-  it("keeps exact GMV value isolated to its server-only event", () => {
+  it("keeps exact GMV value isolated to its Worker-only event", () => {
     expect(
       validateTelemetryEvents([
         {
@@ -50,7 +50,7 @@ describe("telemetry policy", () => {
         },
       ])
     ).toContain(
-      "Telemetry event checkout_result cannot use server-only property: estimated_gmv_sats"
+      "Telemetry event checkout_result cannot use Worker-only property: estimated_gmv_sats"
     )
     expect(
       validateTelemetryEvents([
