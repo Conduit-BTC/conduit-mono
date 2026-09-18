@@ -11,6 +11,7 @@ import {
   MAX_PRODUCT_TAG_LENGTH,
   MIN_PRODUCT_TAG_COUNT,
   parseProductTags,
+  prepareProductImages,
   RECOMMENDED_MAX_PRODUCT_TAG_COUNT,
   RECOMMENDED_MIN_PRODUCT_TAG_COUNT,
   reconcileProductFormShippingPreset,
@@ -39,7 +40,12 @@ function form(
     shippingCost: "",
     usePresetShippingZone: false,
     customShippingConfig: { countries: [] },
-    imageUrl: "https://cdn.conduit.market/pocket-node.png",
+    images: [
+      {
+        url: "https://cdn.conduit.market/pocket-node.png",
+        alt: "Pocket Node",
+      },
+    ],
     tags: "gear, hardware, demo",
     ...overrides,
   }
@@ -160,7 +166,7 @@ describe("merchant product form validation", () => {
       form({
         title: "",
         price: "0",
-        imageUrl: "",
+        images: [],
         tags: "",
       })
     )
@@ -168,7 +174,7 @@ describe("merchant product form validation", () => {
     expect(validation.canPublish).toBe(false)
     expect(validation.errors.title).toBe("Add a product title.")
     expect(validation.errors.price).toContain("greater than zero")
-    expect(validation.errors.imageUrl).toContain("Image URL is required")
+    expect(validation.errors.images).toContain("Image URL is required")
     expect(validation.errors.tags).toContain(
       `at least ${MIN_PRODUCT_TAG_COUNT} distinct tags`
     )
@@ -180,7 +186,7 @@ describe("merchant product form validation", () => {
         title: "",
         format: "digital",
         price: "0",
-        imageUrl: "",
+        images: [],
         tags: "",
       })
     )
@@ -308,24 +314,69 @@ describe("merchant product form validation", () => {
   it("blocks invalid prices and non-https image URLs", () => {
     const zeroPrice = validate(form({ price: "0" }))
     const httpImage = validate(
-      form({ imageUrl: "http://example.com/item.png" })
+      form({ images: [{ url: "http://example.com/item.png" }] })
     )
 
     expect(zeroPrice.canPublish).toBe(false)
     expect(zeroPrice.errors.price).toContain("greater than zero")
     expect(httpImage.canPublish).toBe(false)
-    expect(httpImage.errors.imageUrl).toBe("Image URL must start with https://")
+    expect(httpImage.errors.images).toBe("Image URL must start with https://")
   })
 
   it("blocks private-network image destinations", () => {
     const privateImage = validate(
-      form({ imageUrl: "https://192.168.1.20/item.png" })
+      form({ images: [{ url: "https://192.168.1.20/item.png" }] })
     )
 
     expect(privateImage.canPublish).toBe(false)
-    expect(privateImage.errors.imageUrl).toBe(
+    expect(privateImage.errors.images).toBe(
       "Image URL must use a public network destination."
     )
+  })
+
+  it("preserves image order and optional alt text for publication", () => {
+    const images = [
+      { url: " https://cdn.conduit.market/cover.jpg ", alt: " Cover " },
+      { url: "https://cdn.conduit.market/detail.jpg" },
+    ]
+
+    expect(validate(form({ images })).canPublish).toBe(true)
+    expect(prepareProductImages(images)).toEqual([
+      { url: "https://cdn.conduit.market/cover.jpg", alt: " Cover " },
+      { url: "https://cdn.conduit.market/detail.jpg" },
+    ])
+  })
+
+  it("validates every image and rejects duplicates or more than twelve", () => {
+    const invalidSecond = validate(
+      form({
+        images: [
+          { url: "https://cdn.conduit.market/cover.jpg" },
+          { url: "http://example.com/detail.jpg" },
+        ],
+      })
+    )
+    const duplicate = validate(
+      form({
+        images: [
+          { url: "https://cdn.conduit.market/cover.jpg" },
+          { url: "https://cdn.conduit.market/cover.jpg" },
+        ],
+      })
+    )
+    const tooMany = validate(
+      form({
+        images: Array.from({ length: 13 }, (_, index) => ({
+          url: `https://cdn.conduit.market/image-${index + 1}.jpg`,
+        })),
+      })
+    )
+
+    expect(invalidSecond.errors.images).toBe(
+      "Image URL must start with https://"
+    )
+    expect(duplicate.errors.images).toBe("Use each image URL only once.")
+    expect(tooMany.errors.images).toBe("Use 12 images or fewer.")
   })
 
   it("requires an explicit verified pickup lane before accepting zero", () => {

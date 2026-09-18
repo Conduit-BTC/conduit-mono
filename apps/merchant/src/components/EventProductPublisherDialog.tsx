@@ -13,6 +13,7 @@ import {
   DialogTitle,
   Input,
   Label,
+  ProductImageUrlCollectionField,
   Select,
   SelectContent,
   SelectItem,
@@ -409,25 +410,13 @@ export function EventProductPublisherDialog({
               </div>
             </div>
 
-            <div className="grid gap-1.5">
-              <Label htmlFor="event-product-image">Image URL</Label>
-              <Input
-                id="event-product-image"
-                type="url"
-                inputMode="url"
-                placeholder="https://"
-                value={form.imageUrl}
-                onChange={(event) => update("imageUrl", event.target.value)}
-                aria-invalid={!!errors.imageUrl}
-                aria-describedby={
-                  errors.imageUrl ? "event-product-image-error" : undefined
-                }
-              />
-              <FieldError
-                id="event-product-image-error"
-                message={errors.imageUrl}
-              />
-            </div>
+            <ProductImageUrlCollectionField
+              id="event-product-image"
+              images={form.images}
+              previewTitle={form.title.trim() || "Event product image"}
+              onChange={(images) => update("images", images)}
+              showRequiredError={submitted}
+            />
 
             <div className="grid gap-1.5">
               <Label htmlFor="event-product-tags">Tags</Label>

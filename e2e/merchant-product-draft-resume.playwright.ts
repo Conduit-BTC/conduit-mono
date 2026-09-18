@@ -21,7 +21,10 @@ const draftFixture = {
   stock: "7",
   currency: "SATS",
   format: "Digital",
-  imageUrl: "https://media.conduit.market/browser-local-relay-kit.png",
+  imageUrls: [
+    "https://media.conduit.market/browser-local-relay-kit.png",
+    "https://media.conduit.market/browser-local-relay-kit-detail.png",
+  ],
   tags: ["relay", "merchant", "local-draft"],
 } as const
 
@@ -50,7 +53,17 @@ async function fillProductDraft(page: Page, title = draftFixture.title) {
   await dialog.locator("#product-fulfillment").click()
   await page.getByRole("option", { name: draftFixture.format }).click()
 
-  await dialog.getByLabel("Image URL").fill(draftFixture.imageUrl)
+  await expect(dialog.getByLabel("Image 2 URL")).toHaveCount(0)
+  await dialog.getByLabel("Primary image URL").fill(draftFixture.imageUrls[0])
+  await dialog
+    .getByRole("button", { name: "Add another image", exact: true })
+    .click()
+  const secondImage = dialog.getByLabel("Image 2 URL")
+  await expect(secondImage).toBeFocused()
+  await secondImage.fill(draftFixture.imageUrls[1])
+  await dialog
+    .getByRole("button", { name: "Move image 2 up", exact: true })
+    .click()
   const publicZaps = dialog.getByRole("checkbox", {
     name: /Enable public zaps for purchases/,
   })
@@ -86,8 +99,11 @@ async function expectProductDraft(
   await expect(dialog.locator("#product-fulfillment")).toContainText(
     draftFixture.format
   )
-  await expect(dialog.getByLabel("Image URL")).toHaveValue(
-    draftFixture.imageUrl
+  await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
+    draftFixture.imageUrls[1]
+  )
+  await expect(dialog.getByLabel("Image 2 URL")).toHaveValue(
+    draftFixture.imageUrls[0]
   )
   await expect(
     dialog.getByRole("checkbox", {
