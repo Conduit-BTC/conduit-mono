@@ -58,36 +58,44 @@ Anonymous reliability, performance, and public commerce page counters:
 - Error counts by category
 - Storefront pageview and browse-action counts by sanitized public store route
 
-### Verified Public-Zap Settlement Volume (optional, server-only)
+### Estimated Commerce GMV (optional, server-only)
 
-After the existing receipt-authority boundary positively verifies a public
-NIP-57 receipt for a Conduit Zap Out, the server may emit one
-`zapout_settled` event. Its only business property is the exact positive
-whole-satoshi amount proven equal across the authorized request, BOLT11
-invoice, and paid receipt.
+When a Conduit commerce order moves through any supported paid signal, the
+telemetry Worker may emit one `commerce_gmv_estimated` event for that order.
+Supported signals are wallet success, a buyer payment report, automatic
+merchant wallet verification, manual merchant confirmation, and later paid or
+fulfilled order reconciliation. These signals are OR gates for one logical
+per-order estimate, not separate events. Its only business property is the
+order's exact positive whole-satoshi invoiced amount.
 
 This is a narrow exception to the bucket-only amount rule for browser and
 operational telemetry. The event must:
 
 - use a shared static service identity with PostHog person-profile processing
   disabled;
-- round its event timestamp to the UTC calendar day;
+- round its event timestamp to the UTC order day;
 - use a secret-key-derived opaque event UUID only to deduplicate the same
-  verified receipt;
-- prevent the raw receipt identifier and HMAC secret from leaving the server;
+  order across buyer and merchant observations;
+- use a dedicated HMAC secret and domain that cannot join the event UUID to
+  identifiers in other datasets;
+- use the raw random order UUID only transiently inside the telemetry Worker
+  and prevent it and the HMAC secret from reaching PostHog;
 - prevent PostHog from recording the requesting browser's IP address; and
 - omit buyer, merchant, signer, wallet, session, order, product, public key,
   route, URL, comment, invoice, payment hash, preimage, receipt, relay,
   connection, fee, and payment-rail data.
 
-Invalid, authority-unavailable, unpaid, private-checkout, and non-Zap-Out
-flows must not emit the event. Capture is best effort and must not control
-payment, proof delivery, order state, or retry behavior. Exact amounts can be
-distinctive and public zap receipts are public protocol data, so reporting is
-privacy-minimized rather than guaranteed unlinkable. Aggregate reporting must
-describe the resulting metric as observed verified public-Zap-Out volume and a
-possible undercount, not total platform sales, merchant revenue, or funds
-processed by Conduit.
+Invalid, unpaid, and zero-satoshi orders must not emit the event. Capture is
+best effort and must not control payment, proof delivery, order state, or retry
+behavior. Buyer reports and client-originated requests are intentionally not
+settlement proof and can inflate the estimate. Delivery failures can still
+undercount it. Exact amounts and the UTC order day can be distinctive through
+outside knowledge, so reporting is privacy-minimized rather than guaranteed
+unlinkable. Aggregate reporting must describe the resulting metric as
+estimated Conduit commerce GMV, not verified settlement, total platform sales,
+merchant revenue, or funds processed by Conduit. Insights must group by the
+opaque event UUID before summing the amount so totals remain structurally
+deduplicated during asynchronous provider ingestion.
 
 Allowed fields:
 
@@ -96,8 +104,8 @@ Allowed fields:
   `mode`, `rail`, `method`, `event_family`, `count_bucket`,
   `result_count_bucket`, `amount_bucket`, `product_type`
 
-The server-only `zapout_settled` event additionally allows
-`settled_amount_sats` under the constraints above. No other event may use that
+The server-only `commerce_gmv_estimated` event additionally allows
+`estimated_gmv_sats` under the constraints above. No other event may use that
 field or send an exact payment amount.
 
 Disallowed fields:
