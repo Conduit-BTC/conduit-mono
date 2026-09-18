@@ -79,7 +79,7 @@ const graph = [
     ],
   }),
 ]
-const cachePressureCollections = Array.from({ length: 750 }, (_, index) =>
+const cachePressureCollections = Array.from({ length: 8 }, (_, index) =>
   signed(
     buildEventMarketCollectionDraft({
       dTag: `cache-pressure-${index}`,
@@ -231,6 +231,7 @@ describe("local event market evidence observer", () => {
     let persistenceCalls = 0
     const liveEvents = [...graph, ...cachePressureCollections]
     __setEventMarketTestOverrides({
+      maxCachedEvidencePerOrganizer: 6,
       loadCachedEvidence: async () => [],
       getActiveOrderCollectionEvidencePins: async () => ({
         status: "unavailable",
@@ -275,7 +276,7 @@ describe("local event market evidence observer", () => {
     ).toBe("active")
     const retained = getLocalEventMarketEvidenceSnapshot(organizer).events
     expect(persistenceCalls).toBe(0)
-    expect(retained.length).toBeGreaterThan(750)
+    expect(retained.length).toBeGreaterThan(6)
     expect(retained.some((event) => event.id === graph[2]!.id)).toBe(true)
   }, 15_000)
 
@@ -284,6 +285,7 @@ describe("local event market evidence observer", () => {
     let originalObservedBeforeWrite = false
     const liveEvents = [...graph, ...cachePressureCollections]
     __setEventMarketTestOverrides({
+      maxCachedEvidencePerOrganizer: 6,
       loadCachedEvidence: async () => [],
       getActiveOrderCollectionEvidencePins: async () => {
         pinReads++

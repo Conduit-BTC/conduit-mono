@@ -2402,6 +2402,7 @@ export class EventMarketDiscoveryBoundError extends Error {
 }
 
 interface EventMarketTestOverrides {
+  maxCachedEvidencePerOrganizer?: number
   observeCachedEvidence?: (
     organizerPubkey: string,
     observer: {
@@ -2439,6 +2440,13 @@ interface EventMarketTestOverrides {
 }
 
 let eventMarketTestOverrides: EventMarketTestOverrides = {}
+
+function eventMarketMaxCachedEvidencePerOrganizer(): number {
+  return (
+    eventMarketTestOverrides.maxCachedEvidencePerOrganizer ??
+    EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER
+  )
+}
 
 export function __setEventMarketTestOverrides(
   overrides: EventMarketTestOverrides
@@ -3854,7 +3862,7 @@ function retainLocalEventMarketEvidence(
       sourceRelayUrls: [],
       cachedAt: event.created_at * 1_000,
     })),
-    EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
+    eventMarketMaxCachedEvidencePerOrganizer(),
     options.pinnedCollectionEventIds
   ).map((row) => row.signedEvent)
   const nextStatus = status ?? state.snapshot.status
@@ -3911,7 +3919,8 @@ export function subscribeLocalEventMarketEvidenceChanges(
             (row) =>
               row.organizerPubkey === organizerPubkey &&
               row.kind === row.signedEvent.kind
-          )
+          ),
+          eventMarketMaxCachedEvidencePerOrganizer()
         )
         retainLocalEventMarketEvidence(
           organizerPubkey,
@@ -4049,7 +4058,7 @@ async function loadCachedEventMarketEvidence(
     pinSnapshot.status === "ready"
       ? selectEventMarketEvidenceForRetention(
           rows,
-          EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
+          eventMarketMaxCachedEvidencePerOrganizer(),
           pinSnapshot.eventIds
         )
       : rows.filter((row) => isValidSignedPublicNostrEvent(row.signedEvent))
@@ -4224,7 +4233,8 @@ export async function getRetainedEventMarketCollectionEvidence(input: {
   }
   for (const organizerPubkey of organizerPubkeys) {
     const retainedRows = selectEventMarketEvidenceForRetention(
-      validRowsByOrganizer.get(organizerPubkey) ?? []
+      validRowsByOrganizer.get(organizerPubkey) ?? [],
+      eventMarketMaxCachedEvidencePerOrganizer()
     )
     for (const row of retainedRows) {
       const event = row.signedEvent
@@ -4507,7 +4517,7 @@ async function persistEventMarketEvidence(input: {
         sourceRelayUrls: [],
         cachedAt: event.created_at * 1_000,
       })),
-      EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
+      eventMarketMaxCachedEvidencePerOrganizer(),
       pinSnapshot.eventIds
     ).map((row) => row.signedEvent)
     volatileEventMarketEvidence.set(
@@ -4595,7 +4605,7 @@ async function persistEventMarketEvidence(input: {
         }
         const retainedRows = selectEventMarketEvidenceForRetention(
           organizerRows,
-          EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
+          eventMarketMaxCachedEvidencePerOrganizer(),
           pinSnapshot.eventIds
         )
         if (retainedRows.length !== organizerRows.length) {
