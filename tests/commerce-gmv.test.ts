@@ -183,6 +183,20 @@ describe("commerce GMV estimate client", () => {
     expect(requests).toBe(2)
   })
 
+  it("retries buyer-visible paid orders after lifecycle query refreshes", async () => {
+    const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
+    const reporter = source.indexOf("void reportCommerceGmvEstimate({")
+    const effectStart = source.lastIndexOf("useEffect(() => {", reporter)
+    const effectEnd = source.indexOf("\n\n  const merchantPubkeys", reporter)
+    const reportingEffect = source.slice(effectStart, effectEnd)
+
+    expect(reporter).toBeGreaterThan(-1)
+    expect(effectStart).toBeGreaterThan(-1)
+    expect(effectEnd).toBeGreaterThan(reporter)
+    expect(reportingEffect).toContain("isBuyerOrderPaid(row.vm)")
+    expect(reportingEffect).toContain("lifecyclesQuery.dataUpdatedAt")
+  })
+
   it("drops previews, malformed UUIDs, zero amounts, and fractional sats", async () => {
     let requests = 0
     const fetchImpl = async () => {

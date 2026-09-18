@@ -353,7 +353,7 @@ function isCompletedMerchantStatus(
  * confirms settlement. The latter keeps relay-only and partial-read views
  * consistent when the buyer's local payment record is unavailable.
  */
-function isBuyerOrderPaid(
+export function isBuyerOrderPaid(
   vm: Pick<OrderViewModel, "paymentStatus" | "merchantStatus">
 ): boolean {
   return (
