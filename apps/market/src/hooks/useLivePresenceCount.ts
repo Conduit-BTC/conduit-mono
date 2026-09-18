@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { conduitBuildInfo } from "@conduit/core"
+import { conduitBuildInfo, normalizePubkey } from "@conduit/core"
 import {
   advanceLivePresenceRequestRevision,
   getLivePresenceCanonicalId,
@@ -17,7 +17,33 @@ type NavigatorWithGlobalPrivacyControl = Navigator & {
 
 export interface UseLivePresenceCountOptions {
   canonicalId: string | null | undefined
+  observeCount?: boolean
   pageType: LivePresencePageType
+}
+
+export interface UseProductLivePresenceCountOptions {
+  merchantPubkey: string | null | undefined
+  productCanonicalId: string | null | undefined
+}
+
+export function getProductLivePresenceRooms({
+  merchantPubkey,
+  productCanonicalId,
+}: UseProductLivePresenceCountOptions): {
+  product: UseLivePresenceCountOptions
+  store: UseLivePresenceCountOptions
+} {
+  return {
+    product: {
+      canonicalId: productCanonicalId,
+      pageType: "product",
+    },
+    store: {
+      canonicalId: normalizePubkey(merchantPubkey),
+      observeCount: false,
+      pageType: "store",
+    },
+  }
 }
 
 function getBrowserRuntime(): LivePresenceRuntime | null {
@@ -63,6 +89,7 @@ function isLivePresenceFeatureEnabled(): boolean {
 
 export function useLivePresenceCount({
   canonicalId,
+  observeCount = true,
   pageType,
 }: UseLivePresenceCountOptions): number | null | undefined {
   const endpoint = resolveLivePresenceWebSocketUrl()
@@ -73,7 +100,7 @@ export function useLivePresenceCount({
   })
   const requestKey =
     permitted && endpoint && exactCanonicalId
-      ? JSON.stringify([endpoint, pageType, exactCanonicalId])
+      ? JSON.stringify([endpoint, pageType, exactCanonicalId, observeCount])
       : null
   const requestRevisionRef = useRef({ requestKey, revision: 0 })
   requestRevisionRef.current = advanceLivePresenceRequestRevision(
@@ -108,13 +135,15 @@ export function useLivePresenceCount({
           scopeHash,
           runtime,
           onCount: (count) => {
-            setSnapshot({ count, requestKey, requestRevision })
+            if (observeCount) {
+              setSnapshot({ count, requestKey, requestRevision })
+            }
           },
         })
       })
       .catch(() => {
         // Browsers without Web Crypto do not participate in live presence.
-        if (!disposed) {
+        if (!disposed && observeCount) {
           setSnapshot({ count: null, requestKey, requestRevision })
         }
       })
@@ -123,12 +152,31 @@ export function useLivePresenceCount({
       disposed = true
       stopSession?.()
     }
-  }, [endpoint, exactCanonicalId, pageType, requestKey, requestRevision])
+  }, [
+    endpoint,
+    exactCanonicalId,
+    observeCount,
+    pageType,
+    requestKey,
+    requestRevision,
+  ])
 
-  if (!requestKey) return undefined
+  if (!requestKey || !observeCount) return undefined
 
   return snapshot.requestKey === requestKey &&
     snapshot.requestRevision === requestRevision
     ? snapshot.count
     : null
+}
+
+export function useProductLivePresenceCount(
+  options: UseProductLivePresenceCountOptions
+): number | null | undefined {
+  const rooms = getProductLivePresenceRooms(options)
+  const productCount = useLivePresenceCount(rooms.product)
+
+  // Storefront presence includes visible product sessions for this merchant.
+  useLivePresenceCount(rooms.store)
+
+  return productCount
 }

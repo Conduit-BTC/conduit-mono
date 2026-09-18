@@ -133,7 +133,10 @@ Historical pageview analytics and live presence are separate systems.
 - Historical dashboards must report pageviews or anonymous sessions. They must
   not describe those metrics as exact concurrent visitors or unique people.
 - Live presence may count active connections for one public product or store
-  page. It must not persist visit history or send presence events to PostHog.
+  scope. A product page may join its item-specific product scope and the public
+  merchant's store scope. The store count may aggregate active storefront and
+  product connections for that merchant. It must not persist visit history or
+  send presence events to PostHog.
 - Live presence must not receive or reuse telemetry session IDs, pageview IDs,
   active user identifiers, cookies, fingerprints, or persistent viewer IDs.
 - The edge may derive a secret-keyed source hash from Cloudflare's connection

@@ -42,7 +42,7 @@ import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCar
 import { ProductVariationSelector } from "../../components/ProductVariationSelector"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
-import { useLivePresenceCount } from "../../hooks/useLivePresenceCount"
+import { useProductLivePresenceCount } from "../../hooks/useLivePresenceCount"
 import { useProductCartFulfillment } from "../../hooks/useProductCartFulfillment"
 import { useEventActorIdentity } from "../../hooks/useEventActorIdentity"
 import {
@@ -277,9 +277,9 @@ function ProductPage() {
         selectedProductSourceRelayUrls
       )
     : null
-  const productPresenceCount = useLivePresenceCount({
-    canonicalId: selectedProduct?.id,
-    pageType: "product",
+  const productPresenceCount = useProductLivePresenceCount({
+    merchantPubkey: selectedProduct?.pubkey,
+    productCanonicalId: selectedProduct?.id,
   })
 
   const visibleTags = useMemo(() => {

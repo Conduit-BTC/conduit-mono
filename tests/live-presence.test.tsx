@@ -25,6 +25,7 @@ import {
   type LivePresenceRuntime,
   type LivePresenceSocket,
 } from "../apps/market/src/lib/live-presence"
+import { getProductLivePresenceRooms } from "../apps/market/src/hooks/useLivePresenceCount"
 
 type SocketEventType = "close" | "error" | "message"
 
@@ -160,6 +161,60 @@ describe("live presence privacy boundary", () => {
     expect(productHash).toMatch(/^[0-9a-f]{64}$/)
     expect(repeatedHash).toBe(productHash)
     expect(storeHash).not.toBe(productHash)
+  })
+
+  it("keeps product rooms separate while rolling product sessions into the merchant store room", async () => {
+    const merchantPubkey = "A".repeat(64)
+    const canonicalMerchantPubkey = merchantPubkey.toLowerCase()
+    const firstProductId = `30402:${canonicalMerchantPubkey}:hat`
+    const secondProductId = `30402:${canonicalMerchantPubkey}:shirt`
+    const firstRooms = getProductLivePresenceRooms({
+      merchantPubkey,
+      productCanonicalId: firstProductId,
+    })
+    const secondRooms = getProductLivePresenceRooms({
+      merchantPubkey,
+      productCanonicalId: secondProductId,
+    })
+
+    expect(firstRooms).toEqual({
+      product: { canonicalId: firstProductId, pageType: "product" },
+      store: {
+        canonicalId: canonicalMerchantPubkey,
+        observeCount: false,
+        pageType: "store",
+      },
+    })
+    expect(secondRooms.store).toEqual(firstRooms.store)
+
+    const [
+      firstProductHash,
+      secondProductHash,
+      productStoreHash,
+      storefrontHash,
+    ] = await Promise.all([
+      hashLivePresenceScope({
+        ...firstRooms.product,
+        hostname: "preview.example.com",
+      }),
+      hashLivePresenceScope({
+        ...secondRooms.product,
+        hostname: "preview.example.com",
+      }),
+      hashLivePresenceScope({
+        ...firstRooms.store,
+        hostname: "preview.example.com",
+      }),
+      hashLivePresenceScope({
+        canonicalId: canonicalMerchantPubkey,
+        hostname: "preview.example.com",
+        pageType: "store",
+      }),
+    ])
+
+    expect(firstProductHash).not.toBe(secondProductHash)
+    expect(productStoreHash).toBe(storefrontHash)
+    expect(productStoreHash).not.toBe(firstProductHash)
   })
 
   it("preserves exact addressable-event identifier bytes in product scopes", async () => {
@@ -499,7 +554,7 @@ describe("LivePresenceIndicator", () => {
     )
   })
 
-  it("wires product variations and normalized storefront keys", async () => {
+  it("wires product variations into their item and merchant store rooms", async () => {
     const productRoute = await readFile(
       "apps/market/src/routes/products/$productId.tsx",
       "utf8"
@@ -509,7 +564,9 @@ describe("LivePresenceIndicator", () => {
       "utf8"
     )
 
-    expect(productRoute).toContain("canonicalId: selectedProduct?.id")
+    expect(productRoute).toContain("useProductLivePresenceCount")
+    expect(productRoute).toContain("merchantPubkey: selectedProduct?.pubkey")
+    expect(productRoute).toContain("productCanonicalId: selectedProduct?.id")
     expect(storeRoute).toContain("canonicalId: normalizedStorePubkey")
   })
 })
