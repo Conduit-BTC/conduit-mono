@@ -189,7 +189,7 @@ describe("browser telemetry", () => {
       identifier: "testing-digital-jxwwl7",
       kind: 30402,
       pubkey: storePubkey,
-      relays: ["wss://relay.example"],
+      relays: ["wss://relay.conduit.market"],
     })
     expect(
       sanitizeTelemetryPageViewPath(`/products/${hintedProductNaddr}`)

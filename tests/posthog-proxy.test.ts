@@ -41,7 +41,7 @@ const RELAY_HINT_PRODUCT_PATH = `/products/${nip19.naddrEncode({
   identifier: "nostr-mug-blue",
   kind: 30402,
   pubkey: "f".repeat(64),
-  relays: ["wss://relay.example"],
+  relays: ["wss://relay.conduit.market"],
 })}`
 
 function makeEvent(
@@ -975,6 +975,22 @@ describe("PostHog reverse proxy", () => {
       RELAY_HINT_PRODUCT_PATH,
     ]) {
       expect(isSanitizedTelemetryRoutePath(noncanonicalProductPath)).toBe(false)
+    }
+
+    const hintedProductEvent = rebuildPostHogIngestPayload(
+      encode(
+        makeEvent(
+          {},
+          {
+            page_path: RELAY_HINT_PRODUCT_PATH,
+            page_url: `https://shop.conduit.market${RELAY_HINT_PRODUCT_PATH}`,
+          }
+        )
+      )
+    )
+    expect(hintedProductEvent.ok).toBe(true)
+    if (hintedProductEvent.ok) {
+      expect(hintedProductEvent.events).toHaveLength(0)
     }
 
     for (const canonicalProductPath of [PRODUCT_PATH, MAX_PRODUCT_PATH]) {

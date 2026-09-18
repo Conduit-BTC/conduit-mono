@@ -7,7 +7,10 @@ import {
   isAllowedBrowserTelemetryLabelValue,
 } from "@conduit/core/telemetry-contract"
 import type { BrowserTelemetryApp } from "@conduit/core/telemetry-contract"
-import { encodeProductNaddr } from "@conduit/core/protocol/product-reference"
+import {
+  decodeProductReference,
+  encodeProductNaddr,
+} from "@conduit/core/protocol/product-reference"
 
 const POSTHOG_INGEST_ORIGIN = "https://us.i.posthog.com"
 const MAX_INGEST_BODY_BYTES = 1024 * 1024
@@ -124,7 +127,8 @@ function isCanonicalProductNaddrPath(value: string): boolean {
 
   const naddr = value.slice("/products/".length)
   try {
-    return encodeProductNaddr(naddr) === naddr
+    const reference = decodeProductReference(naddr)
+    return !!reference && encodeProductNaddr(reference.addressId) === naddr
   } catch {
     return false
   }

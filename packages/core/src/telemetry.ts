@@ -1,4 +1,7 @@
-import { encodeProductNaddr } from "./protocol/product-reference"
+import {
+  decodeProductReference,
+  encodeProductNaddr,
+} from "./protocol/product-reference"
 import { normalizePubkey, pubkeyToNpub } from "./utils"
 
 export type ConduitTelemetryApp = "market" | "merchant"
@@ -378,7 +381,9 @@ function getProductTelemetryPath(productRef: string | undefined): string {
   if (!productRef) return "/products/:productId"
 
   try {
-    return `/products/${encodeProductNaddr(productRef)}`
+    const reference = decodeProductReference(productRef)
+    if (!reference) return "/products/:productId"
+    return `/products/${encodeProductNaddr(reference.addressId)}`
   } catch {
     return "/products/:productId"
   }
