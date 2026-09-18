@@ -1,9 +1,11 @@
 import { describe, expect, it } from "bun:test"
+import { nip19 } from "@nostr-dev-kit/ndk"
 
 import {
   type AllowedOriginContext,
   handlePostHogProxyRequest,
   isSanitizedTelemetryRoutePath,
+  type PostHogProxyEnv,
   rebuildPostHogIngestPayload as rebuildPostHogIngestPayloadWithContext,
 } from "../apps/posthog-proxy/src"
 import {
@@ -11,7 +13,12 @@ import {
   browserTelemetryEventPropertyContracts,
   type BrowserTelemetryEventName,
 } from "../packages/core/src/telemetry-contract"
-import { sanitizeTelemetryPath } from "../packages/core/src/telemetry"
+import { encodeProductNaddr } from "../packages/core/src/protocol/product-reference"
+import {
+  sanitizePostHogCaptureEvent,
+  sanitizeTelemetryPath,
+  type PostHogCaptureEvent,
+} from "../packages/core/src/telemetry"
 import { pubkeyToNpub } from "../packages/core/src/utils"
 
 const PROJECT_TOKEN = "phc_workerTestProjectToken0001"
@@ -23,6 +30,20 @@ const MERCHANT_ORIGIN_CONTEXT = {
   app: "merchant",
   origin: "https://sell.conduit.market",
 } as const satisfies AllowedOriginContext
+const PRODUCT_NADDR = encodeProductNaddr(
+  `30402:${"f".repeat(64)}:nostr-mug-blue`
+)
+const PRODUCT_PATH = `/products/${PRODUCT_NADDR}`
+const MAX_PRODUCT_NADDR = encodeProductNaddr(
+  `30402:${"f".repeat(64)}:${"x".repeat(255)}`
+)
+const MAX_PRODUCT_PATH = `/products/${MAX_PRODUCT_NADDR}`
+const RELAY_HINT_PRODUCT_PATH = `/products/${nip19.naddrEncode({
+  identifier: "nostr-mug-blue",
+  kind: 30402,
+  pubkey: "f".repeat(64),
+  relays: ["wss://relay.conduit.market"],
+})}`
 
 function makeEvent(
   overrides: Record<string, unknown> = {},
@@ -205,6 +226,40 @@ function ingestRequest(
   })
 }
 
+function gmvRequest(
+  payload: unknown,
+  origin = "https://shop.conduit.market"
+): Request {
+  return new Request("https://e.conduit.market/gmv", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin,
+    },
+    body: JSON.stringify(payload),
+  })
+}
+
+function gmvEnv(
+  options: {
+    globalSuccess?: boolean
+    orderSuccess?: boolean
+    secret?: string
+  } = {}
+): PostHogProxyEnv {
+  return {
+    POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN,
+    COMMERCE_GMV_TELEMETRY_HMAC_SECRET:
+      options.secret ?? "commerce-gmv-test-secret-at-least-32-bytes",
+    GMV_GLOBAL_RATE_LIMITER: {
+      limit: async () => ({ success: options.globalSuccess ?? true }),
+    },
+    GMV_ORDER_RATE_LIMITER: {
+      limit: async () => ({ success: options.orderSuccess ?? true }),
+    },
+  }
+}
+
 describe("PostHog reverse proxy", () => {
   it("exposes a content-free health check", async () => {
     const response = await handlePostHogProxyRequest(
@@ -214,6 +269,145 @@ describe("PostHog reverse proxy", () => {
     expect(response.status).toBe(200)
     expect(response.headers.get("cache-control")).toBe("no-store")
     expect(await response.json()).toEqual({ status: "ok" })
+  })
+
+  it("turns every signal for one order into the same opaque GMV event", async () => {
+    const orderId = "018f4a00-1111-4abc-8def-0123456789ab"
+    const estimate = {
+      orderId,
+      orderDate: "2026-09-17",
+      invoicedAmountSats: 42,
+    }
+    const upstream: Record<string, unknown>[] = []
+    const fetcher = async (request: Request) => {
+      upstream.push((await request.json()) as Record<string, unknown>)
+      expect(request.url).toBe("https://us.i.posthog.com/i/v0/e/?ip=0")
+      expect(request.headers.get("cf-connecting-ip")).toBeNull()
+      return new Response("ok")
+    }
+
+    for (const origin of [
+      "https://shop.conduit.market",
+      "https://sell.conduit.market",
+    ]) {
+      const response = await handlePostHogProxyRequest(
+        gmvRequest(estimate, origin),
+        fetcher,
+        gmvEnv()
+      )
+      expect(response.status).toBe(200)
+    }
+
+    expect(upstream).toHaveLength(2)
+    expect(upstream[0]).toEqual(upstream[1])
+    expect(upstream[0]).toEqual({
+      api_key: PROJECT_TOKEN,
+      event: "commerce_gmv_estimated",
+      distinct_id: "conduit-commerce-gmv-estimate",
+      uuid: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      ),
+      timestamp: "2026-09-17T00:00:00.000Z",
+      properties: {
+        $process_person_profile: false,
+        estimated_gmv_sats: 42,
+      },
+    })
+    expect(JSON.stringify(upstream[0])).not.toContain(orderId)
+  })
+
+  it("uses a different opaque event UUID for a different order", async () => {
+    const upstream: Array<{ uuid: string }> = []
+    const fetcher = async (request: Request) => {
+      upstream.push((await request.json()) as { uuid: string })
+      return new Response("ok")
+    }
+
+    for (const orderId of [
+      "018f4a00-1111-4abc-8def-0123456789ab",
+      "018f4a00-2222-4abc-8def-0123456789ab",
+    ]) {
+      await handlePostHogProxyRequest(
+        gmvRequest({
+          orderId,
+          orderDate: "2026-09-17",
+          invoicedAmountSats: 42,
+        }),
+        fetcher,
+        gmvEnv()
+      )
+    }
+
+    expect(new Set(upstream.map((event) => event.uuid)).size).toBe(2)
+  })
+
+  it("fails GMV ingestion closed for malformed, unconfigured, or rate-limited requests", async () => {
+    const valid = {
+      orderId: "018f4a00-1111-4abc-8def-0123456789ab",
+      orderDate: "2026-09-17",
+      invoicedAmountSats: 42,
+    }
+    let upstreamCalls = 0
+    const fetcher = async () => {
+      upstreamCalls += 1
+      return new Response("ok")
+    }
+    const cases: Array<[Request, PostHogProxyEnv, number]> = [
+      [gmvRequest(valid, "https://preview.example"), gmvEnv(), 403],
+      [gmvRequest({ ...valid, extra: "field" }), gmvEnv(), 400],
+      [gmvRequest({ ...valid, orderId: "raw-order-id" }), gmvEnv(), 400],
+      [gmvRequest({ ...valid, orderDate: "2026-02-30" }), gmvEnv(), 400],
+      [gmvRequest({ ...valid, invoicedAmountSats: 0 }), gmvEnv(), 400],
+      [
+        new Request("https://e.conduit.market/gmv?order=raw-order-id", {
+          method: "POST",
+          headers: { origin: "https://shop.conduit.market" },
+          body: JSON.stringify(valid),
+        }),
+        gmvEnv(),
+        400,
+      ],
+      [gmvRequest(valid), {}, 503],
+      [gmvRequest(valid), gmvEnv({ secret: "short" }), 503],
+      [gmvRequest(valid), gmvEnv({ globalSuccess: false }), 429],
+      [gmvRequest(valid), gmvEnv({ orderSuccess: false }), 429],
+    ]
+
+    for (const [request, env, status] of cases) {
+      const response = await handlePostHogProxyRequest(request, fetcher, env)
+      expect(response.status).toBe(status)
+    }
+    expect(upstreamCalls).toBe(0)
+  })
+
+  it("rejects every additional identity-bearing GMV field before PostHog", async () => {
+    const valid = {
+      orderId: "018f4a00-1111-4abc-8def-0123456789ab",
+      orderDate: "2026-09-17",
+      invoicedAmountSats: 42,
+    }
+    let upstreamCalls = 0
+
+    for (const extra of [
+      { buyerPubkey: "buyer" },
+      { merchantPubkey: "merchant" },
+      { invoice: "lnbc..." },
+      { sessionId: "session" },
+      { deviceId: "device" },
+      { orderCreatedAt: Date.parse("2026-09-17T18:24:31.000Z") },
+    ]) {
+      const response = await handlePostHogProxyRequest(
+        gmvRequest({ ...valid, ...extra }),
+        async () => {
+          upstreamCalls += 1
+          return new Response("ok")
+        },
+        gmvEnv()
+      )
+      expect(response.status).toBe(400)
+    }
+
+    expect(upstreamCalls).toBe(0)
   })
 
   it("accepts both exact production origins", async () => {
@@ -457,6 +651,111 @@ describe("PostHog reverse proxy", () => {
       "$pageview",
       "checkout_result",
     ])
+  })
+
+  it("retains product identity only for pageviews across both sanitizers", () => {
+    const productUrl = `${MARKET_ORIGIN_CONTEXT.origin}${PRODUCT_PATH}`
+    const attributedPageview = sanitizePostHogCaptureEvent(
+      makeEvent(
+        {},
+        {
+          $current_url: productUrl,
+          $pathname: PRODUCT_PATH,
+          page_path: PRODUCT_PATH,
+          page_url: productUrl,
+        }
+      ) as PostHogCaptureEvent
+    )
+    expect(attributedPageview?.properties).toMatchObject({
+      page_path: PRODUCT_PATH,
+      page_url: productUrl,
+    })
+    const rebuiltPageview = rebuildPostHogIngestPayload(
+      encode(attributedPageview)
+    )
+    expect(rebuiltPageview.ok).toBe(true)
+    if (rebuiltPageview.ok) {
+      expect(rebuiltPageview.events[0]?.properties).toMatchObject({
+        page_path: PRODUCT_PATH,
+        page_url: productUrl,
+      })
+    }
+
+    for (const eventName of [
+      "client_error_result",
+      "checkout_result",
+      "payment_attempt_result",
+      "product_detail_action",
+    ] as const) {
+      const sanitized = sanitizePostHogCaptureEvent(
+        makeBrowserTelemetryEvent(eventName, {
+          $current_url: productUrl,
+          $pathname: PRODUCT_PATH,
+          page_path: PRODUCT_PATH,
+          page_url: productUrl,
+        }) as PostHogCaptureEvent
+      )
+      expect(sanitized?.properties).toMatchObject({
+        $current_url: "https://shop.conduit.market/products/:productId",
+        $pathname: "/products/:productId",
+        page_path: "/products/:productId",
+        page_url: "https://shop.conduit.market/products/:productId",
+      })
+
+      const rebuilt = rebuildPostHogIngestPayload(encode(sanitized))
+      expect(rebuilt.ok).toBe(true)
+      if (rebuilt.ok) {
+        expect(rebuilt.events).toHaveLength(1)
+        expect(JSON.stringify(rebuilt.events[0])).not.toContain(PRODUCT_NADDR)
+      }
+
+      const bypassAttempt = rebuildPostHogIngestPayload(
+        encode(
+          makeBrowserTelemetryEvent(eventName, {
+            $current_url: productUrl,
+            $pathname: PRODUCT_PATH,
+            page_path: PRODUCT_PATH,
+            page_url: productUrl,
+          })
+        )
+      )
+      expect(bypassAttempt.ok).toBe(true)
+      if (bypassAttempt.ok) expect(bypassAttempt.events).toHaveLength(0)
+    }
+
+    for (const [eventName, eventProperties] of [
+      ["$pageleave", { $prev_pageview_pathname: PRODUCT_PATH }],
+      ["$web_vitals", { $web_vitals_LCP_value: 1_200 }],
+    ] as const) {
+      const rawEvent = makeEvent(
+        { event: eventName },
+        {
+          ...eventProperties,
+          $current_url: productUrl,
+          $pathname: PRODUCT_PATH,
+          page_path: PRODUCT_PATH,
+          page_url: productUrl,
+        }
+      ) as PostHogCaptureEvent
+      const sanitized = sanitizePostHogCaptureEvent(rawEvent)
+      expect(sanitized?.properties).toMatchObject({
+        $current_url: "https://shop.conduit.market/products/:productId",
+        $pathname: "/products/:productId",
+        page_path: "/products/:productId",
+        page_url: "https://shop.conduit.market/products/:productId",
+      })
+
+      const rebuilt = rebuildPostHogIngestPayload(encode(sanitized))
+      expect(rebuilt.ok).toBe(true)
+      if (rebuilt.ok) {
+        expect(rebuilt.events).toHaveLength(1)
+        expect(JSON.stringify(rebuilt.events[0])).not.toContain(PRODUCT_NADDR)
+      }
+
+      const bypassAttempt = rebuildPostHogIngestPayload(encode(rawEvent))
+      expect(bypassAttempt.ok).toBe(true)
+      if (bypassAttempt.ok) expect(bypassAttempt.events).toHaveLength(0)
+    }
   })
 
   it("binds app and page context to the allowed caller origin", async () => {
@@ -834,10 +1133,57 @@ describe("PostHog reverse proxy", () => {
     const storefrontPath = sanitizeTelemetryPath(`/store/${merchantNpub}`)
     expect(storefrontPath).toBe(`/store/${merchantNpub}`)
     expect(isSanitizedTelemetryRoutePath(storefrontPath)).toBe(true)
+    expect(isSanitizedTelemetryRoutePath(PRODUCT_PATH)).toBe(true)
+    expect(isSanitizedTelemetryRoutePath(MAX_PRODUCT_PATH)).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/")).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/:param")).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/wallet/:param")).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/orders/:param")).toBe(false)
+
+    for (const noncanonicalProductPath of [
+      `/products/${PRODUCT_NADDR.toUpperCase()}`,
+      "/products/naddr1qshort",
+      `${PRODUCT_PATH}b`,
+      `${PRODUCT_PATH.slice(0, -1)}${PRODUCT_PATH.endsWith("q") ? "p" : "q"}`,
+      `/products/naddr1q${"q".repeat(74)}`,
+      RELAY_HINT_PRODUCT_PATH,
+    ]) {
+      expect(isSanitizedTelemetryRoutePath(noncanonicalProductPath)).toBe(false)
+    }
+
+    const hintedProductEvent = rebuildPostHogIngestPayload(
+      encode(
+        makeEvent(
+          {},
+          {
+            page_path: RELAY_HINT_PRODUCT_PATH,
+            page_url: `https://shop.conduit.market${RELAY_HINT_PRODUCT_PATH}`,
+          }
+        )
+      )
+    )
+    expect(hintedProductEvent.ok).toBe(true)
+    if (hintedProductEvent.ok) {
+      expect(hintedProductEvent.events).toHaveLength(0)
+    }
+
+    for (const canonicalProductPath of [PRODUCT_PATH, MAX_PRODUCT_PATH]) {
+      const canonicalProductEvent = rebuildPostHogIngestPayload(
+        encode(
+          makeEvent(
+            {},
+            {
+              page_path: canonicalProductPath,
+              page_url: `https://shop.conduit.market${canonicalProductPath}`,
+            }
+          )
+        )
+      )
+      expect(canonicalProductEvent.ok).toBe(true)
+      if (canonicalProductEvent.ok) {
+        expect(canonicalProductEvent.events).toHaveLength(1)
+      }
+    }
 
     for (const noncanonicalUrl of [
       "https://shop.conduit.market/private-order/../products",

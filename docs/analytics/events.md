@@ -1,8 +1,10 @@
 # Telemetry Event Allowlist
 
-Conduit telemetry is privacy-constrained operational telemetry only. Product clients
-must remain useful without telemetry, and telemetry must stay disabled unless a
-deployment explicitly enables it.
+Conduit telemetry is privacy-constrained measurement only. Product clients must
+remain useful without optional browser analytics, and those analytics must stay
+disabled unless a deployment explicitly enables them. The separately
+contracted first-party commerce GMV measurement is activated only when its
+Worker secret and rate-limit bindings are configured.
 
 ## Allowed Properties
 
@@ -27,7 +29,7 @@ Runtime telemetry events may only use these fields:
 - `count_bucket`
 - `result_count_bucket`
 - `amount_bucket`
-- `settled_amount_sats` (server-only on `zapout_settled`)
+- `estimated_gmv_sats` (Worker-emitted on `commerce_gmv_estimated` only)
 - `product_type`
 
 ## Retention and Redaction
@@ -41,18 +43,29 @@ controls in this document. Maintainers must review the provider window at least
 quarterly and select a shorter plan or self-hosted retention policy when
 PostHog makes one available.
 
-The server-only `zapout_settled` event is deliberately narrower than browser
-telemetry. It uses one static service identity, disables person-profile
-processing and provider IP capture, rounds its timestamp to the UTC settlement
-day, and uses an HMAC-derived event UUID for retry deduplication. The HMAC
-secret and public receipt identifier stay outside PostHog.
+The first-party aggregate `commerce_gmv_estimated` measurement is deliberately
+narrower than optional browser telemetry and follows its own policy. Official
+Shop and Sell clients may report it even when generic browser telemetry is
+disabled or Global Privacy Control is enabled. Conduit uses it only for
+aggregate commerce measurement, not sale or sharing of personal information,
+cross-context behavioral advertising, person profiles, or actor
+identification.
 
-Production activation requires the Market Pages runtime to provide both
+The event uses one static service identity, disables person-profile processing
+and provider IP capture, rounds its timestamp to the UTC order day, and uses an
+HMAC-derived event UUID for per-order retry deduplication. The client sends the
+UTC order date rather than the precise order timestamp. The raw order UUID is
+used only transiently by the telemetry Worker and never reaches PostHog. A
+dedicated HMAC domain and secret prevent the opaque UUID from being joined to
+identifiers in other datasets.
+
+Production activation requires the PostHog proxy Worker to provide both
 `POSTHOG_PROJECT_TOKEN` and a random, secret-store-only
-`ZAPOUT_SETTLEMENT_TELEMETRY_HMAC_SECRET` of at least 32 characters. Keep that
-secret stable across deployments so retries retain one deduplication key. An
-approved `POSTHOG_HOST` may select the US or EU PostHog ingest origin. Missing
-or invalid configuration disables this event without affecting checkout.
+`COMMERCE_GMV_TELEMETRY_HMAC_SECRET` of at least 32 characters. Keep that secret
+stable across deployments so all qualifying observations of one order retain
+one deduplication key. The Worker also requires its configured global and
+per-order rate-limit bindings. Missing or invalid configuration disables this
+event without affecting commerce or payment state.
 
 Redaction happens before provider delivery. Events that fail the event-name or
 property allowlist must be dropped rather than repaired downstream. Browser
@@ -97,17 +110,49 @@ invoices, order contents, product titles, addresses, message contents, IPs,
 fingerprints, signer connection strings, NWC URIs, raw URLs, raw paths, query
 strings, cross-session identifiers, or SDK window/device identifiers. Browser
 custom events may include only shared-helper route context through `page_url`
-and `page_path`; store route context may include the public store `npub` as the
-page identifier, while product, profile, order, query string, unknown route,
-and active user identifiers stay redacted. Public store npubs must not be
-copied into custom properties or joined to viewer identity.
+and `page_path`. Store route context may include the public store `npub`.
+Only `$pageview` may include a canonical public kind-30402 product `naddr` with
+no relay hints. The pageview sanitizer derives that `naddr` from a valid raw
+coordinate or existing `naddr`. Every custom event, error event, `$pageleave`,
+and `$web_vitals` event must use `/products/:productId`. The ingestion proxy
+enforces this event-specific boundary. It verifies the naddr checksum and
+requires relay-free canonical re-encoding before accepting a product-attributed
+`$pageview`.
+Profile, order, query string, unknown route, and active user identifiers stay
+redacted. Public store npubs must not be copied into custom properties or
+joined to viewer identity. Product naddrs must not appear outside `$pageview`
+route context.
+
+## Historical Pageviews and Live Presence
+
+PostHog `$pageview` events provide historical pageview counts. A valid product
+page is attributed to `/products/<canonical-naddr>`, and a valid storefront is
+attributed to `/store/<canonical-npub>`. These retained pageviews are anonymous
+session metrics. They are not an exact concurrent count or a count of unique
+people.
+
+Live product and storefront counts use a separate ephemeral presence path.
+Live presence must not send events to PostHog, reuse PostHog session or
+pageview IDs, or retain a page-level visit history. An exact live count means
+active visible-page connections known to that service, including the current
+page. A product page joins its product room and its merchant's store room. The
+product count remains item-specific. The storefront count includes active
+storefront connections and active product connections for that public merchant.
+Separate tabs, browsers, or devices can count separately. The edge may
+use a secret-keyed, connection-lifetime source hash only to enforce the socket
+limit. It must discard the raw network address before the presence gateway and
+must not log, return, retain, or join the hash to analytics. The exact-count
+feature uses a fixed content-free heartbeat and hides a count when the
+connection stops responding. It is preview-only; production and staging keep
+it disabled pending explicit privacy and abuse-control approval.
 
 ## Provider Lifecycle Events
 
 Three PostHog lifecycle events are allowed through the shared sanitizer:
 
 - `$pageview` uses the static browser-service distinct ID, sanitized route
-  class, app, and ephemeral UUIDv7 session/pageview IDs.
+  context, app, and ephemeral UUIDv7 session/pageview IDs. Permitted public
+  product and store route identifiers support aggregate page-level reporting.
 - `$pageleave` adds bounded duration and scroll/content percentages so bounce
   rate and session duration can be calculated. Its route fields and
   `$prev_pageview_pathname` identify the departing sanitized route class.
@@ -321,9 +366,10 @@ identifiers.
 
 Emitted for the bounded `add_to_cart` and `view_cart` actions on a product
 detail page. It records only the action, product-format class, and the shared
-sanitized route class. It must not include product or merchant identifiers,
-event coordinates, titles, descriptions, tags, prices, quantities, stock,
-images, profile data, or cart contents.
+sanitized route context. That route context must use
+`/products/:productId`. It must not include product or merchant identifiers,
+titles, descriptions, tags, prices, quantities, stock, images, profile data,
+or cart contents.
 
 <!-- telemetry-event: anon_zap_signer_request_result properties=event_name,app,surface,action,status,latency_bucket -->
 
@@ -336,28 +382,47 @@ contents, origins, URLs, pubkeys, amounts, invoices, checkout/session keys,
 rate-limit keys, or any other request or user identifier. The Worker uses one
 static service-level distinct ID and disables PostHog person-profile processing.
 
-<!-- telemetry-event: zapout_settled properties=settled_amount_sats -->
+<!-- telemetry-event: commerce_gmv_estimated properties=estimated_gmv_sats -->
 
-### `zapout_settled`
+### `commerce_gmv_estimated`
 
-Emitted only after the server re-verifies the public NIP-57 receipt authority
-for a Conduit Zap Out observed by the payment lifecycle. The sole business
-property is the exact positive whole-satoshi invoice amount that the verified
-receipt marks paid. The event uses a shared static service identity, disables
-person-profile processing, rounds its timestamp to the UTC calendar day, and
-uses a server-secret-derived opaque UUID only to deduplicate the same verified
-receipt. PostHog ingestion disables IP capture. The raw receipt identifier and
-secret never leave the server.
+Emitted as a recall-biased estimate when a Conduit commerce order moves through
+any supported paid signal: wallet success, a buyer report, automatic merchant
+wallet verification, manual merchant confirmation, or later paid-order
+reconciliation. The sole business property is the best available positive
+whole-satoshi amount associated with the paid-order signal. These signals are
+OR gates for one logical per-order event, not separate events.
+
+This event is a narrowly scoped first-party aggregate commerce measurement, not
+ordinary optional product analytics. It is not suppressed solely because GPC
+is enabled or the generic browser telemetry flag is disabled. GPC continues to
+suppress the optional browser analytics it governs. The exception does not
+permit sale, sharing, advertising use, person profiling, or additional event
+properties.
+
+The event uses a shared static service identity, disables person-profile
+processing, rounds its timestamp to the UTC order day, and uses a
+server-secret-derived opaque UUID only to deduplicate observations of the same
+order. The client sends only that UTC date rather than its precise local
+timestamp. PostHog ingestion disables IP capture. The raw order UUID and HMAC
+secret never reach PostHog. Duplicate buyer and merchant observations use the
+same event UUID, event name, UTC-day timestamp, and static service identity so
+PostHog treats them as one logical event. Insights must also group by event UUID
+before summing `estimated_gmv_sats`, so dashboard totals remain structurally
+deduplicated even during PostHog's asynchronous ingestion deduplication window.
+Signals may disagree on the estimate; a later accepted signal may replace the
+amount on that same logical event without adding another order. Slight
+overstatement or understatement from that last-estimate behavior is accepted.
 
 It must not include app, route, session, buyer, merchant, order, product,
 public key, comment, invoice, payment hash, preimage, receipt, relay, wallet,
-connection, fee, or payment-rail data. Authority-unavailable, invalid, unpaid,
-private-checkout, and non-Zap-Out flows do not emit this event. Delivery is best
-effort and may undercount; payment state never depends on telemetry
-availability. Aggregate reporting must call this observed verified public-Zap-
-Out volume rather than total platform sales or merchant revenue. Exact amounts
-can be distinctive, so the event is privacy-minimized rather than guaranteed
-unlinkable from separate public receipt data.
+connection, fee, or payment-rail data. Unpaid orders and zero-sat orders do not
+emit. Delivery is best effort and can still undercount. Buyer reports and
+client-originated requests are intentionally not settlement proof and can
+inflate the estimate. Payment state never depends on telemetry availability.
+Aggregate reporting must call this estimated Conduit commerce GMV, not verified
+settlement or merchant revenue. Exact amounts can be distinctive, so the event
+is privacy-minimized rather than guaranteed unlinkable from outside knowledge.
 
 ## Agent Use
 

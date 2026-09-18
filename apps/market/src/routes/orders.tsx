@@ -42,6 +42,7 @@ import {
   type ShopperPriceDisplay,
   type ShopperPriceDisplayOptions,
 } from "@conduit/core"
+import { reportCommerceGmvEstimate } from "@conduit/core/commerce-gmv"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   AlertDialog,
@@ -663,14 +664,14 @@ function OrderDetail({
   useLayoutEffect(() => {
     currentViewRef.current = vm
   }, [vm])
-  const { authGeneration } = useAuth()
+  const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
   const shouldContinueBuyerSession = guestIdentity
     ? undefined
-    : () => authGenerationRef.current === authGeneration
+    : () => isAuthGenerationCurrent(authGeneration)
   const shouldContinueAccountRead = () =>
     authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
@@ -1091,11 +1092,6 @@ function OrderDetail({
     if (manualInvoiceAccess === "closed") {
       throw new Error("The merchant already confirmed this payment.")
     }
-    if (manualInvoiceAccess === "receipt_only") {
-      throw new Error(
-        "A matching public receipt is required to confirm this payment."
-      )
-    }
     const action = vm.merchantInvoiceAction
     const unboundPaidInvoice =
       action?.status === "blocked" && action.canReport ? action : undefined
@@ -1295,10 +1291,11 @@ function OrderDetail({
         >
           <p className="text-pretty text-sm text-[var(--text-secondary)]">
             {manualInvoiceAccess === "receipt_only"
-              ? "Do not pay this invoice. If your wallet already confirms payment, Conduit can still match its public receipt and notify the merchant."
+              ? "Do not pay this invoice. If your wallet already confirms payment, report it for merchant verification while Conduit continues checking for a public receipt."
               : "Do not pay this invoice. If your wallet already confirms a payment, report it so the merchant can verify what happened."}
           </p>
-          {manualInvoiceAccess === "report_only" && (
+          {(manualInvoiceAccess === "report_only" ||
+            manualInvoiceAccess === "receipt_only") && (
             <Button
               variant="outline"
               className="mt-4 h-10 px-4 text-sm"
@@ -2119,6 +2116,17 @@ function OrdersPage() {
     [lifecyclesQuery.data]
   )
   const refetchLifecycles = lifecyclesQuery.refetch
+
+  useEffect(() => {
+    for (const lifecycle of lifecycles) {
+      if (lifecycle.paymentStatus !== "paid") continue
+      void reportCommerceGmvEstimate({
+        orderId: lifecycle.orderId,
+        orderCreatedAt: lifecycle.createdAt,
+        invoicedAmountSats: lifecycle.totalSats,
+      })
+    }
+  }, [lifecycles])
 
   useEffect(() => {
     const nextLeaseExpiry = getNextOrderPaymentLeaseExpiry(lifecycles)
