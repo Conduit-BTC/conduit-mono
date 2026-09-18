@@ -1369,6 +1369,33 @@ function deletionEvidenceForAddressableEvent(
   return Array.from(evidenceById.values())
 }
 
+/** Apply the same NIP-09 exact-event and addressable deletion rules used by
+ * event-market resolution to one previously parsed revision. */
+export function isEventMarketAddressableRevisionDeleted(
+  revision: {
+    coordinate: string
+    eventId: string
+    createdAt: number
+  },
+  events: readonly SignedPublicNostrEvent[]
+): boolean {
+  const coordinate = parseAddressableCoordinate(
+    revision.coordinate,
+    EVENT_MARKET_ADDRESSABLE_KINDS
+  )
+  if (!coordinate || !HEX_64.test(revision.eventId)) return false
+  return (
+    deletionEvidenceForAddressableEvent(
+      {
+        id: revision.eventId,
+        created_at: revision.createdAt / 1_000,
+      },
+      coordinate,
+      events
+    ).length > 0
+  )
+}
+
 type AddressableRecordResult<T> =
   | { state: "current"; value: T; event: SignedPublicNostrEvent }
   | {
@@ -1421,19 +1448,30 @@ function resolveAddressableRecord<T>(input: {
     // unaware of the extension cannot reopen an event by stripping its tag.
     if (
       input.coordinate.kind === EVENT_KINDS.PRODUCT_COLLECTION &&
-      !candidate.tags.some((tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG) &&
-      candidates.some(
-        (event) =>
-          event.created_at < candidate.created_at &&
+      !candidate.tags.some((tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG)
+    ) {
+      const inspectedTimestamps = new Set<number>()
+      for (const prior of candidates) {
+        if (
+          prior.created_at >= candidate.created_at ||
+          inspectedTimestamps.has(prior.created_at) ||
           deletionEvidenceForAddressableEvent(
-            event,
+            prior,
             input.coordinate,
             input.deletions
-          ).length === 0 &&
-          parseEventMarketCollectionEvent(event)?.orderAcceptance !== undefined
-      )
-    ) {
-      return { state: "malformed" }
+          ).length > 0
+        ) {
+          continue
+        }
+        // Candidates already use NIP-01 order, so the first surviving event
+        // at each timestamp is the only canonical revision at that frontier.
+        inspectedTimestamps.add(prior.created_at)
+        if (
+          parseEventMarketCollectionEvent(prior)?.orderAcceptance !== undefined
+        ) {
+          return { state: "malformed" }
+        }
+      }
     }
     const parsed = input.parse(candidate)
     return parsed
@@ -4017,6 +4055,76 @@ async function loadCachedEventMarketEvidence(
   }
 }
 
+/** Read retained exact collection revisions together with any retained
+ * tombstones that can invalidate them. Cached evidence remains revocation
+ * evidence only; it never establishes current purchase authority. */
+export async function getRetainedEventMarketCollectionLifecycleEvidence(input: {
+  organizerPubkey: string
+  revisions: readonly {
+    coordinate: string
+    eventId: string
+    createdAt: number
+  }[]
+  signal?: AbortSignal
+}): Promise<RetainedEventMarketCollectionEvidence> {
+  const organizerPubkey = normalizePubkey(input.organizerPubkey)
+  const revisions = input.revisions.filter((revision) => {
+    const coordinate = parseAddressableCoordinate(revision.coordinate, [
+      EVENT_KINDS.PRODUCT_COLLECTION,
+    ])
+    return (
+      organizerPubkey !== null &&
+      coordinate?.authorPubkey === organizerPubkey &&
+      HEX_64.test(revision.eventId)
+    )
+  })
+  if (!organizerPubkey || revisions.length === 0) {
+    return { events: [], eventSourceRelayUrls: {} }
+  }
+  if (input.signal?.aborted) {
+    const error = new Error("The operation was aborted.")
+    error.name = "AbortError"
+    throw error
+  }
+
+  const revisionIds = new Set(
+    revisions.map((revision) => revision.eventId.toLowerCase())
+  )
+  const rows = await loadCachedEventMarketEvidence(organizerPubkey)
+  if (input.signal?.aborted) {
+    const error = new Error("The operation was aborted.")
+    error.name = "AbortError"
+    throw error
+  }
+
+  const eventsById = new Map<string, SignedPublicNostrEvent>()
+  const sourceRelayUrlsById = new Map<string, string[]>()
+  for (const row of rows) {
+    const event = row.signedEvent
+    if (!isValidSignedPublicNostrEvent(event)) continue
+    const exactRevision = revisionIds.has(event.id.toLowerCase())
+    const relevantDeletion =
+      event.kind === EVENT_KINDS.DELETION &&
+      revisions.some((revision) =>
+        isEventMarketAddressableRevisionDeleted(revision, [event])
+      )
+    if (!exactRevision && !relevantDeletion) continue
+    const eventId = event.id.toLowerCase()
+    eventsById.set(eventId, event)
+    sourceRelayUrlsById.set(
+      eventId,
+      mergeRelayUrls(
+        sourceRelayUrlsById.get(eventId) ?? [],
+        row.sourceRelayUrls
+      )
+    )
+  }
+  return {
+    events: Array.from(eventsById.values()).sort(compareAddressableEvents),
+    eventSourceRelayUrls: Object.fromEntries(sourceRelayUrlsById),
+  }
+}
+
 /**
  * Read only already-verified collection candidates retained for the current
  * follow perspective. This never opens a relay connection and does not treat
@@ -4108,7 +4216,8 @@ export async function getRetainedEventMarketCollectionEvidence(input: {
 
 /** Preserve the strongest known event graph evidence within one strict local
  * budget. Exact collection revisions referenced by active local orders get a
- * bounded priority lane; retention never grants live purchase authorization. */
+ * bounded priority lane. A known-deleted revision is retained only with one
+ * of its tombstones; retention never grants live purchase authorization. */
 export function selectEventMarketEvidenceForRetention(
   rows: readonly CachedEventMarketEvidence[],
   totalLimit = EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
@@ -4187,7 +4296,7 @@ export function selectEventMarketEvidenceForRetention(
       if (lifecycle) prioritize(lifecycle, 1)
     }
   }
-  return [...validRows]
+  const selected = [...validRows]
     .sort((left, right) => {
       const priority =
         (priorityById.get(left.id) ?? 2) - (priorityById.get(right.id) ?? 2)
@@ -4197,6 +4306,26 @@ export function selectEventMarketEvidenceForRetention(
       return compareAddressableEvents(left.signedEvent, right.signedEvent)
     })
     .slice(0, limit)
+  const selectedIds = new Set(
+    selected.map((row) => row.signedEvent.id.toLowerCase())
+  )
+  return selected.filter((row) => {
+    const event = row.signedEvent
+    if (event.kind === EVENT_KINDS.DELETION) return true
+    const coordinate = eventCoordinate(event, EVENT_MARKET_ADDRESSABLE_KINDS)
+    if (!coordinate) return true
+    const deletionEvidence = deletionEvidenceForAddressableEvent(
+      event,
+      coordinate,
+      deletions
+    )
+    return (
+      deletionEvidence.length === 0 ||
+      deletionEvidence.some((evidence) =>
+        selectedIds.has(evidence.deletionEventId)
+      )
+    )
+  })
 }
 
 async function getActiveOrderCollectionEvidencePins(

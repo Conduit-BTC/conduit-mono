@@ -1,9 +1,11 @@
 import {
   getLocalEventMarketEvidenceSnapshot,
-  getRetainedEventMarketCollectionEvidence,
+  getRetainedEventMarketCollectionLifecycleEvidence,
+  isEventMarketAddressableRevisionDeleted,
   parseEventMarketCollectionEvent,
   type ParsedEventMarketCollection,
 } from "./event-market"
+import { EVENT_KINDS } from "./kinds"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
@@ -40,6 +42,13 @@ export function isEventMarketCollectionLifecycleContinuation(input: {
     )
   )
     return false
+
+  if (
+    isEventMarketAddressableRevisionDeleted(original, input.events) ||
+    isEventMarketAddressableRevisionDeleted(current, input.events)
+  ) {
+    return false
+  }
 
   const previousEvent = input.events.find(
     (event) => event.id.toLowerCase() === original.eventId.toLowerCase()
@@ -80,16 +89,17 @@ export function isEventMarketCollectionLifecycleContinuation(input: {
 }
 
 interface CollectionContinuityDependencies {
-  getRetainedEvidence: typeof getRetainedEventMarketCollectionEvidence
+  getRetainedEvidence: typeof getRetainedEventMarketCollectionLifecycleEvidence
   getLocalEvidence: typeof getLocalEventMarketEvidenceSnapshot
   readSettings: typeof readDurableAccountRelaySettingsPlanningSnapshot
   getRelayLists: typeof getRelayLists
   fetchEvents: typeof fetchSignedEventsFanoutDetailed
 }
 
-/** Read at most two exact signed collection revisions. Retention establishes
- * their immutable contents, never the current collection's freshness. The
- * caller must separately supply a freshly resolved public pickup graph. */
+/** Read two exact signed collection revisions and bounded deletion evidence.
+ * Retention establishes immutable contents or revocation, never the current
+ * collection's freshness. The caller must separately supply a freshly
+ * resolved public pickup graph. */
 export async function getEventMarketCollectionLifecycleEvidence(
   input: {
     original: CollectionRevision
@@ -108,7 +118,7 @@ export async function getEventMarketCollectionLifecycleEvidence(
   )
     return []
   const dependencies = {
-    getRetainedEvidence: getRetainedEventMarketCollectionEvidence,
+    getRetainedEvidence: getRetainedEventMarketCollectionLifecycleEvidence,
     getLocalEvidence: getLocalEventMarketEvidenceSnapshot,
     readSettings: readDurableAccountRelaySettingsPlanningSnapshot,
     getRelayLists,
@@ -121,17 +131,22 @@ export async function getEventMarketCollectionLifecycleEvidence(
       id.toLowerCase()
     )
   )
+  const revisions = [input.original, input.current]
   const retained = await dependencies.getRetainedEvidence({
-    organizerPubkeys: [organizer],
+    organizerPubkey: organizer,
+    revisions,
     signal: input.signal,
   })
   const evidence = new Map<string, SignedPublicNostrEvent>()
   const retain = (events: readonly SignedPublicNostrEvent[]) => {
     for (const event of events) {
-      if (
-        ids.has(event.id.toLowerCase()) &&
-        isValidSignedPublicNostrEvent(event)
-      ) {
+      if (!isValidSignedPublicNostrEvent(event)) continue
+      const relevantDeletion =
+        event.kind === EVENT_KINDS.DELETION &&
+        revisions.some((revision) =>
+          isEventMarketAddressableRevisionDeleted(revision, [event])
+        )
+      if (ids.has(event.id.toLowerCase()) || relevantDeletion) {
         evidence.set(event.id.toLowerCase(), event)
       }
     }
@@ -140,7 +155,17 @@ export async function getEventMarketCollectionLifecycleEvidence(
   retain(retained.events)
   retain(dependencies.getLocalEvidence(organizer).events)
   if (input.signal?.aborted || input.shouldContinue?.() === false) return []
-  if (evidence.size === ids.size) return [...evidence.values()]
+  const hasBothRevisions = () =>
+    [...ids].every((id) => evidence.has(id.toLowerCase()))
+  const hasKnownDeletion = () =>
+    [...evidence.values()].some(
+      (event) =>
+        event.kind === EVENT_KINDS.DELETION &&
+        revisions.some((revision) =>
+          isEventMarketAddressableRevisionDeleted(revision, [event])
+        )
+    )
+  if (hasBothRevisions() || hasKnownDeletion()) return [...evidence.values()]
 
   const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
   let settings: Awaited<
@@ -181,6 +206,12 @@ export async function getEventMarketCollectionLifecycleEvidence(
     signedRelayListAuthoritative: settings?.signedRelayListAuthoritative,
     maxRelays: 8,
   })
+  const fetchOptions = {
+    ...readOptions,
+    relayUrls: plan.relayUrls,
+    ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
+    reuseRelayConnections: true,
+  }
   const result = await dependencies.fetchEvents(
     {
       kinds: [30405],
@@ -188,14 +219,28 @@ export async function getEventMarketCollectionLifecycleEvidence(
       ids: [...ids].filter((id) => !evidence.has(id)),
       limit: 2,
     },
-    {
-      ...readOptions,
-      relayUrls: plan.relayUrls,
-      ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
-      reuseRelayConnections: true,
-    }
+    fetchOptions
   )
   if (input.signal?.aborted || input.shouldContinue?.() === false) return []
   retain(result.events)
+
+  for (const filter of [
+    {
+      kinds: [EVENT_KINDS.DELETION],
+      authors: [organizer],
+      "#e": [...ids],
+      limit: 500,
+    },
+    {
+      kinds: [EVENT_KINDS.DELETION],
+      authors: [organizer],
+      "#a": [input.original.coordinate],
+      limit: 500,
+    },
+  ]) {
+    const deletionResult = await dependencies.fetchEvents(filter, fetchOptions)
+    if (input.signal?.aborted || input.shouldContinue?.() === false) return []
+    retain(deletionResult.events)
+  }
   return [...evidence.values()]
 }

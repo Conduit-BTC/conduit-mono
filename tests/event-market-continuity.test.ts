@@ -6,6 +6,7 @@ import {
 } from "nostr-tools/pure"
 import {
   buildEventMarketCollectionDraft,
+  EVENT_KINDS,
   getEventMarketCollectionLifecycleEvidence,
   isEventMarketCollectionLifecycleContinuation,
   parseEventMarketCollectionEvent,
@@ -48,6 +49,30 @@ function continuation(
   })
 }
 
+function exactDeletion(target: SignedPublicNostrEvent, createdAt = 200) {
+  return finalizeEvent(
+    {
+      kind: EVENT_KINDS.DELETION,
+      content: "",
+      tags: [["e", target.id]],
+      created_at: createdAt,
+    },
+    secret
+  )
+}
+
+function coordinateDeletion(createdAt = 100) {
+  return finalizeEvent(
+    {
+      kind: EVENT_KINDS.DELETION,
+      content: "",
+      tags: [["a", `30405:${organizer}:collection`]],
+      created_at: createdAt,
+    },
+    secret
+  )
+}
+
 describe("exact event collection lifecycle continuity", () => {
   it("preserves only a signed status-only change, including legacy opt-in", () => {
     expect(continuation(collection("open"), collection("closed", 101))).toBe(
@@ -81,6 +106,21 @@ describe("exact event collection lifecycle continuity", () => {
     expect(continuation(original, other)).toBe(false)
   })
 
+  it("rejects exact and coordinate deletion of either lifecycle revision", () => {
+    const original = collection("open")
+    const current = collection("closed", 101)
+    expect(
+      continuation(original, current, [
+        original,
+        current,
+        exactDeletion(original),
+      ])
+    ).toBe(false)
+    expect(
+      continuation(original, current, [original, current, coordinateDeletion()])
+    ).toBe(false)
+  })
+
   it("does not forgive membership, pickup, calendar, content or metadata changes", () => {
     const original = collection("open")
     const closed = collection("closed", 101)
@@ -102,7 +142,7 @@ describe("exact event collection lifecycle continuity", () => {
     }
   })
 
-  it("reads only the missing exact revision with a bounded relay plan", async () => {
+  it("reads the missing exact revision and its bounded deletion evidence", async () => {
     const original = collection("open")
     const current = collection("closed", 101)
     const reads: unknown[] = []
@@ -122,7 +162,9 @@ describe("exact event collection lifecycle continuity", () => {
           reads.push(filter)
           expect(options.relayUrls.length).toBeLessThanOrEqual(8)
           return {
-            events: [original],
+            events: filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)
+              ? [original]
+              : [],
             eventSourceRelayUrls: {},
             relays: [],
             eventsVerified: true,
@@ -132,6 +174,18 @@ describe("exact event collection lifecycle continuity", () => {
     )
     expect(reads).toEqual([
       { kinds: [30405], authors: [organizer], ids: [original.id], limit: 2 },
+      {
+        kinds: [EVENT_KINDS.DELETION],
+        authors: [organizer],
+        "#e": [original.id, current.id],
+        limit: 500,
+      },
+      {
+        kinds: [EVENT_KINDS.DELETION],
+        authors: [organizer],
+        "#a": [`30405:${organizer}:collection`],
+        limit: 500,
+      },
     ])
     expect(continuation(original, current, events)).toBe(true)
   })
@@ -156,5 +210,68 @@ describe("exact event collection lifecycle continuity", () => {
       }
     )
     expect(continuation(original, current, events)).toBe(true)
+  })
+
+  it("preserves retained deletion evidence instead of returning a false continuation", async () => {
+    const original = collection("open")
+    const current = collection("closed", 101)
+    const deletion = exactDeletion(original)
+    const events = await getEventMarketCollectionLifecycleEvidence(
+      {
+        original: parseEventMarketCollectionEvent(original)!,
+        current: parseEventMarketCollectionEvent(current)!,
+      },
+      {
+        getRetainedEvidence: async () => ({
+          events: [original, current, deletion],
+          eventSourceRelayUrls: {},
+        }),
+        getLocalEvidence: () => ({ status: "ready", events: [] }),
+        getRelayLists: async () => {
+          throw new Error("Known deletion should not require a network read")
+        },
+      }
+    )
+    expect(events.map((event) => event.id)).toContain(deletion.id)
+    expect(continuation(original, current, events)).toBe(false)
+  })
+
+  it("checks bounded live deletion evidence before accepting continuity", async () => {
+    const original = collection("open")
+    const current = collection("closed", 101)
+    const deletion = exactDeletion(original)
+    const reads: Record<string, unknown>[] = []
+    const events = await getEventMarketCollectionLifecycleEvidence(
+      {
+        original: parseEventMarketCollectionEvent(original)!,
+        current: parseEventMarketCollectionEvent(current)!,
+      },
+      {
+        getRetainedEvidence: async () => ({
+          events: [current],
+          eventSourceRelayUrls: {},
+        }),
+        getLocalEvidence: () => ({ status: "ready", events: [] }),
+        getRelayLists: async () => new Map(),
+        fetchEvents: async (filter) => {
+          reads.push(filter)
+          const kinds = filter.kinds as number[] | undefined
+          return {
+            events: kinds?.includes(EVENT_KINDS.DELETION)
+              ? filter["#e"]
+                ? [deletion]
+                : []
+              : [original],
+            eventSourceRelayUrls: {},
+            relays: [],
+            eventsVerified: true,
+          }
+        },
+      }
+    )
+    expect(reads.some((filter) => filter["#e"])).toBe(true)
+    expect(reads.some((filter) => filter["#a"])).toBe(true)
+    expect(events.map((event) => event.id)).toContain(deletion.id)
+    expect(continuation(original, current, events)).toBe(false)
   })
 })

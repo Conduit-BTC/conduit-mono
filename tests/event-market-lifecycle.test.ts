@@ -12,6 +12,7 @@ import {
   EVENT_KINDS,
   getEventMarketOrderAcceptance,
   getRetainedEventMarketCollectionEvidence,
+  getRetainedEventMarketCollectionLifecycleEvidence,
   parseEventMarketCollectionEvent,
   resolveEventMarketEvidence,
   selectEventMarketEvidenceForRetention,
@@ -220,6 +221,62 @@ describe("event market lifecycle", () => {
     expect(result.collection?.eventId).toBe(legacy.id)
   })
 
+  it("uses only the canonical older revision when enforcing lifecycle opt-in", () => {
+    const legacyCandidates = Array.from({ length: 16 }, (_, index) =>
+      sign(
+        {
+          ...buildEventMarketCollectionDraft({
+            dTag: "market",
+            title: "Market",
+            eventCoordinate: calendarCoordinate,
+          }),
+          content: `older-legacy-${index}`,
+        },
+        200
+      )
+    )
+    const taggedCandidates = Array.from({ length: 16 }, (_, index) =>
+      sign(
+        {
+          ...buildEventMarketCollectionDraft({
+            dTag: "market",
+            title: "Market",
+            eventCoordinate: calendarCoordinate,
+            orderAcceptance: "open",
+          }),
+          content: `older-tagged-${index}`,
+        },
+        200
+      )
+    )
+    const canonicalLegacy = [...legacyCandidates].sort((a, b) =>
+      a.id.localeCompare(b.id)
+    )[0]!
+    const losingTagged = [...taggedCandidates].sort((a, b) =>
+      b.id.localeCompare(a.id)
+    )[0]!
+    expect(canonicalLegacy.id.localeCompare(losingTagged.id)).toBeLessThan(0)
+
+    const laterLegacy = collection(undefined, 300)
+    const result = resolve(
+      [laterLegacy, canonicalLegacy, losingTagged],
+      beforeEnd
+    )
+    expect(result.state).toBe("active")
+    expect(result.collection?.eventId).toBe(laterLegacy.id)
+
+    const canonicalTagged = [...taggedCandidates].sort((a, b) =>
+      a.id.localeCompare(b.id)
+    )[0]!
+    const losingLegacy = [...legacyCandidates].sort((a, b) =>
+      b.id.localeCompare(a.id)
+    )[0]!
+    expect(canonicalTagged.id.localeCompare(losingLegacy.id)).toBeLessThan(0)
+    expect(
+      resolve([laterLegacy, canonicalTagged, losingLegacy], beforeEnd).state
+    ).toBe("malformed")
+  })
+
   it("retains NIP-01 revision tie breaking and signed deletion semantics", () => {
     const revisions = [collection("open", 200), collection("closed", 200)].sort(
       (a, b) => a.id.localeCompare(b.id)
@@ -338,6 +395,84 @@ describe("event market lifecycle", () => {
       )
     )
     expect(selectEventMarketEvidenceForRetention(rows, 12)).toHaveLength(12)
+  })
+
+  it("never retains a deleted revision without its exact or coordinate tombstone", () => {
+    const deleted = sign(
+      buildEventMarketCollectionDraft({
+        dTag: "deleted-market",
+        title: "Deleted market",
+        eventCoordinate: calendarCoordinate,
+        orderAcceptance: "open",
+      }),
+      500
+    )
+    const exactDeletion = sign(
+      { kind: EVENT_KINDS.DELETION, content: "", tags: [["e", deleted.id]] },
+      600
+    )
+    const coordinateDeletion = sign(
+      {
+        kind: EVENT_KINDS.DELETION,
+        content: "",
+        tags: [["a", `30405:${author}:deleted-market`]],
+      },
+      600
+    )
+    const unrelated = Array.from({ length: 750 }, (_, index) =>
+      row(
+        sign(
+          buildEventMarketCollectionDraft({
+            dTag: `unrelated-${index}`,
+            title: `Unrelated ${index}`,
+            eventCoordinate: calendarCoordinate,
+          }),
+          700 + index
+        ),
+        1_000 + index
+      )
+    )
+    for (const [deletion, competingRows, limit] of [
+      [exactDeletion, unrelated, 750],
+      [coordinateDeletion, unrelated.slice(0, 20), 20],
+    ] as const) {
+      const retainedIds = new Set(
+        selectEventMarketEvidenceForRetention(
+          [row(deleted, 10_000), row(deletion, 1), ...competingRows],
+          limit
+        ).map((entry) => entry.id)
+      )
+
+      expect(retainedIds.has(deletion.id)).toBe(false)
+      expect(retainedIds.has(deleted.id)).toBe(false)
+    }
+  })
+
+  it("hydrates retained lifecycle revisions together with their tombstones", async () => {
+    const original = collection("open", 100)
+    const current = collection("closed", 200)
+    const deletion = sign(
+      { kind: EVENT_KINDS.DELETION, content: "", tags: [["e", original.id]] },
+      300
+    )
+    __setEventMarketTestOverrides({
+      loadCachedEvidence: async () => [
+        row(original),
+        row(current),
+        row(deletion),
+      ],
+    })
+
+    const retained = await getRetainedEventMarketCollectionLifecycleEvidence({
+      organizerPubkey: author,
+      revisions: [
+        parseEventMarketCollectionEvent(original)!,
+        parseEventMarketCollectionEvent(current)!,
+      ],
+    })
+    expect(retained.events.map((event) => event.id).sort()).toEqual(
+      [original.id, current.id, deletion.id].sort()
+    )
   })
 
   it("bounds retained collection hydration per organizer", async () => {

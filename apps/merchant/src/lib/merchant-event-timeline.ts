@@ -434,8 +434,11 @@ export function getMerchantEventTimelineStatus(
     if (item.market.orderAcceptance !== "open") {
       return { label: "Past event", tone: "secondary" }
     }
+    if (item.market.state === "partial") {
+      return { label: "Partial relay view", tone: "warning" }
+    }
     const refreshNeeded =
-      item.market.state === "stale" || item.reconciliationPending
+      item.market.state !== "active" || item.reconciliationPending
     return {
       label: refreshNeeded
         ? "Scheduled time has passed · Refresh needed"

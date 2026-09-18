@@ -603,6 +603,37 @@ describe("event-market private handoff payloads", () => {
     expect(order.items[0]!.fulfillment).toEqual(fulfillment)
     expect(payload.collection.eventId).not.toBe(closed.id)
 
+    const exactDeletion = finalizeEvent(
+      {
+        kind: EVENT_KINDS.DELETION,
+        content: "",
+        tags: [["e", original.id]],
+        created_at: closed.created_at + 1,
+      },
+      ORGANIZER_SECRET
+    )
+    expect(() =>
+      buildEventMarketReadyReceiptPayload({
+        ...input,
+        collectionLifecycleEvidence: [original, closed, exactDeletion],
+      })
+    ).toThrow("graph is not current")
+    const coordinateDeletion = finalizeEvent(
+      {
+        kind: EVENT_KINDS.DELETION,
+        content: "",
+        tags: [["a", COLLECTION]],
+        created_at: original.created_at,
+      },
+      ORGANIZER_SECRET
+    )
+    expect(() =>
+      buildEventMarketReadyReceiptPayload({
+        ...input,
+        collectionLifecycleEvidence: [original, closed, coordinateDeletion],
+      })
+    ).toThrow("graph is not current")
+
     const removedPickup = { ...market, pickups: [] }
     expect(() =>
       buildEventMarketReadyReceiptPayload({

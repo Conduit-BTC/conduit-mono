@@ -323,6 +323,13 @@ describe("event lifecycle timeline", () => {
         NOW
       ).label
     ).toContain("Refresh needed")
+    event.state = "partial"
+    expect(
+      getEventTimelineStatus(
+        filterAndSortEventMarkets([event], {}, NOW)[0]!,
+        NOW
+      )
+    ).toEqual({ label: "Partial relay view", tone: "warning" })
   })
 
   it("keeps early closure in history without pretending its scheduled date is past", () => {

@@ -207,12 +207,15 @@ export function getEventTimelineStatus(
     if (market.collection.orderAcceptance !== "open") {
       return { label: "Past event", tone: "secondary" }
     }
+    if (market.state === "partial") {
+      return { label: "Partial relay view", tone: "warning" }
+    }
+    const refreshNeeded = market.state !== "active"
     return {
-      label:
-        market.state === "stale"
-          ? "Scheduled time has passed · Refresh needed"
-          : "Scheduled time has passed · Open",
-      tone: market.state === "stale" ? "warning" : "secondary",
+      label: refreshNeeded
+        ? "Scheduled time has passed · Refresh needed"
+        : "Scheduled time has passed · Open",
+      tone: refreshNeeded ? "warning" : "secondary",
     }
   }
   if (market.state === "partial" || market.state === "stale") {

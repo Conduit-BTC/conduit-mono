@@ -699,6 +699,11 @@ describe("Merchant event lifecycle history", () => {
     expect(getMerchantEventTimelineStatus(items[0]!, NOW).label).toBe(
       "Scheduled time has passed · Open"
     )
+    open.state = "partial"
+    expect(getMerchantEventTimelineStatus(items[0]!, NOW)).toEqual({
+      label: "Partial relay view",
+      tone: "warning",
+    })
     expect(getMerchantEventTimelineStatus(items[1]!, NOW).label).toBe("Closed")
     expect(
       filterAndSortMerchantEventTimeline(
