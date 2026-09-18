@@ -214,6 +214,7 @@ const LIGHTNING_FAILURE_STATUSES = new Set([
 const LIGHTNING_RECOVERY_CONFLICT_MESSAGES = new Set([
   "Spark returned an invalid Lightning payment fee.",
   "Spark returned a Lightning fee above the approved maximum.",
+  "Spark returned a conflicting Lightning transfer total.",
   "Spark returned an invalid Lightning payment preimage.",
   "Spark returned a Lightning preimage that does not match the prepared invoice.",
 ])
@@ -838,6 +839,12 @@ function adaptFirstPartySparkWallet(input: {
       }
 
       try {
+        validateRecoveredLightningTransferTotal({
+          totalAmount: transfer.totalAmount,
+          amountSats: request.amountSats,
+          fee: recovered.fee,
+          maxFeeSats: request.maxFeeSats,
+        })
         const payment = await reconcileLightningPayment({
           wallet: input.wallet,
           initial: recovered,
@@ -1390,6 +1397,31 @@ function readNativeLightningFeeSats(
     )
   }
   return feeSats
+}
+
+function validateRecoveredLightningTransferTotal(input: {
+  totalAmount?: SparkNativeCurrencyAmount
+  amountSats: number
+  fee: SparkNativeCurrencyAmount
+  maxFeeSats: number
+}): void {
+  const feeSats = readNativeLightningFeeSats(input.fee, input.maxFeeSats)
+  const expectedTotalSats = input.amountSats + feeSats
+  const total = input.totalAmount
+  const totalSats =
+    total?.originalUnit === "SATOSHI"
+      ? total.originalValue
+      : total?.originalUnit === "MILLISATOSHI"
+        ? total.originalValue / 1_000
+        : Number.NaN
+  if (
+    !Number.isSafeInteger(expectedTotalSats) ||
+    !Number.isSafeInteger(totalSats) ||
+    totalSats < 0 ||
+    totalSats !== expectedTotalSats
+  ) {
+    throw new Error("Spark returned a conflicting Lightning transfer total.")
+  }
 }
 
 function isSparkAddress(
