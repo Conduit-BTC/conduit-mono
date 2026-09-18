@@ -193,31 +193,6 @@ function EventsTimelinePage() {
         </div>
       </header>
 
-      <div
-        role="group"
-        aria-label="Event views"
-        className="flex flex-wrap gap-2"
-      >
-        <Button
-          variant={
-            !search.window || search.window === "upcoming"
-              ? "secondary"
-              : "outline"
-          }
-          aria-pressed={!search.window || search.window === "upcoming"}
-          onClick={() => updateSearch({ window: undefined })}
-        >
-          Open & upcoming
-        </Button>
-        <Button
-          variant={search.window === "history" ? "secondary" : "outline"}
-          aria-pressed={search.window === "history"}
-          onClick={() => updateSearch({ window: "history" })}
-        >
-          History
-        </Button>
-      </div>
-
       <section
         aria-label="Event filters"
         className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"

@@ -1,4 +1,5 @@
 import {
+  getEventMarketReadPlan,
   getLocalEventMarketEvidenceSnapshot,
   getRetainedEventMarketCollectionLifecycleEvidence,
   isEventMarketAddressableRevisionDeleted,
@@ -6,14 +7,10 @@ import {
   type ParsedEventMarketCollection,
 } from "./event-market"
 import { EVENT_KINDS } from "./kinds"
-import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
-import { getRelayLists } from "./relay-list"
-import { planRelayReads } from "./relay-planner"
 import {
   fetchSignedEventsFanoutDetailed,
   type RelayReadOptions,
 } from "./relay-reader"
-import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -91,8 +88,7 @@ export function isEventMarketCollectionLifecycleContinuation(input: {
 interface CollectionContinuityDependencies {
   getRetainedEvidence: typeof getRetainedEventMarketCollectionLifecycleEvidence
   getLocalEvidence: typeof getLocalEventMarketEvidenceSnapshot
-  readSettings: typeof readDurableAccountRelaySettingsPlanningSnapshot
-  getRelayLists: typeof getRelayLists
+  getReadPlan: typeof getEventMarketReadPlan
   fetchEvents: typeof fetchSignedEventsFanoutDetailed
 }
 
@@ -120,8 +116,7 @@ export async function getEventMarketCollectionLifecycleEvidence(
   const dependencies = {
     getRetainedEvidence: getRetainedEventMarketCollectionLifecycleEvidence,
     getLocalEvidence: getLocalEventMarketEvidenceSnapshot,
-    readSettings: readDurableAccountRelaySettingsPlanningSnapshot,
-    getRelayLists,
+    getReadPlan: getEventMarketReadPlan,
     fetchEvents: fetchSignedEventsFanoutDetailed,
     ...overrides,
   }
@@ -166,48 +161,24 @@ export async function getEventMarketCollectionLifecycleEvidence(
   if (hasKnownDeletion()) return [...evidence.values()]
 
   const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
-  let settings: Awaited<
-    ReturnType<typeof readDurableAccountRelaySettingsPlanningSnapshot>
-  > | null = null
-  if (authenticatedPubkey && /^[0-9a-f]{64}$/.test(authenticatedPubkey)) {
-    try {
-      settings = await dependencies.readSettings(authenticatedPubkey)
-    } catch {
-      // Unavailable owner settings grant no owner-selected transport authority.
-    }
-  }
-  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
-    settings?.settings.entries.flatMap((entry) =>
-      entry.readEnabled ||
-      (organizer === authenticatedPubkey && entry.writeEnabled)
-        ? [entry.url]
-        : []
-    ) ?? []
-  )
-  const readOptions = {
-    accountPubkey: authenticatedPubkey,
+  const plan = await dependencies.getReadPlan({
+    organizerPubkey: organizer,
     authenticatedPubkey,
-    ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
-  }
-  const relayLists = await dependencies.getRelayLists([organizer], readOptions)
-  const plan = planRelayReads({
-    intent: "author_products",
-    authors: [organizer],
-    relayLists,
-    authenticatedPubkey,
-    ownerSelectedRelayUrls,
-    settings: settings?.settings,
-    signedRelayListAuthoritative: settings?.signedRelayListAuthoritative,
-    maxRelays: 8,
   })
+  if (input.signal?.aborted || input.shouldContinue?.() === false) return []
   const fetchOptions = {
-    ...readOptions,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
     relayUrls: plan.relayUrls,
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
+    signal: input.signal,
     reuseRelayConnections: true,
   }
   const missingRevisionIds = [...ids].filter((id) => !evidence.has(id))

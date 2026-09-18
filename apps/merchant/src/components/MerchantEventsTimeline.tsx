@@ -221,31 +221,6 @@ export function MerchantEventsTimeline({
         </Button>
       </div>
 
-      <div
-        role="group"
-        aria-label="Event views"
-        className="flex flex-wrap gap-2"
-      >
-        <Button
-          variant={
-            !search.window || search.window === "upcoming"
-              ? "secondary"
-              : "outline"
-          }
-          aria-pressed={!search.window || search.window === "upcoming"}
-          onClick={() => onSearchChange({ ...search, window: "upcoming" })}
-        >
-          Open & upcoming
-        </Button>
-        <Button
-          variant={search.window === "history" ? "secondary" : "outline"}
-          aria-pressed={search.window === "history"}
-          onClick={() => onSearchChange({ ...search, window: "history" })}
-        >
-          History
-        </Button>
-      </div>
-
       <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)]">
         <div className="space-y-4">
           <div>

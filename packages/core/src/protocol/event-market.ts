@@ -2502,7 +2502,7 @@ function mergeRelayUrlsWithOwnerAuthority(
   return Array.from(result)
 }
 
-interface EventMarketReadPlan {
+export interface EventMarketReadPlan {
   relayUrls: string[]
   ownerSelectedRelayUrls: string[]
   relayListState: RelayListResolutionState
@@ -2518,7 +2518,7 @@ function relayListStateFromLegacyLookup(
   return list.lookupState ?? "fresh-cache"
 }
 
-async function eventMarketReadPlanDetailed(input: {
+export async function getEventMarketReadPlan(input: {
   organizerPubkey: string
   relayHints?: readonly string[]
   authenticatedPubkey?: string | null
@@ -5035,7 +5035,7 @@ export async function getEventMarket(
     emitBrowseProgress()
     return rows
   })
-  const readPlan = await eventMarketReadPlanDetailed({
+  const readPlan = await getEventMarketReadPlan({
     organizerPubkey: decoded.authorPubkey,
     relayHints: decoded.relayHints,
     authenticatedPubkey: input.authenticatedPubkey,
@@ -5473,7 +5473,7 @@ export async function getOrganizerEventMarketsDetailed(
       relayHintTruncated: false,
     }
   }
-  const readPlan = await eventMarketReadPlanDetailed({
+  const readPlan = await getEventMarketReadPlan({
     organizerPubkey,
     relayHints: input.relayHints,
     authenticatedPubkey: input.authenticatedPubkey,

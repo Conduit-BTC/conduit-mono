@@ -2500,14 +2500,6 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
     .focus()
   await page.keyboard.press("Tab")
   await expect(
-    page.getByRole("button", { name: "Open & upcoming", exact: true })
-  ).toBeFocused()
-  await page.keyboard.press("Tab")
-  await expect(
-    page.getByRole("button", { name: "History", exact: true })
-  ).toBeFocused()
-  await page.keyboard.press("Tab")
-  await expect(
     page.getByRole("button", { name: "Clear filters" })
   ).toBeFocused()
   await page.keyboard.press("Tab")
@@ -6789,10 +6781,8 @@ test("open overtime event closes into history and reopens without changing picku
       shopper.getByRole("button", { name: "Add", exact: true })
     ).toHaveCount(0)
     await gotoAs(shopper, marketUrl, "/events?source=following", "buyer")
-    await shopper
-      .getByRole("group", { name: "Event views", exact: true })
-      .getByRole("button", { name: "History", exact: true })
-      .click()
+    await shopper.getByLabel("Date").click()
+    await shopper.getByRole("option", { name: "History", exact: true }).click()
     await expect(
       shopper.getByRole("heading", { name: title, exact: true })
     ).toBeVisible()

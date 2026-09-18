@@ -10,6 +10,7 @@ import {
   getEventMarketCollectionLifecycleEvidence,
   isEventMarketCollectionLifecycleContinuation,
   parseEventMarketCollectionEvent,
+  type EventMarketReadPlan,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 
@@ -19,6 +20,15 @@ const merchant = "a".repeat(64)
 const calendar = `31923:${organizer}:calendar`
 const pickup = `30406:${organizer}:pickup`
 const product = `30402:${merchant}:product`
+
+async function emptyReadPlan(): Promise<EventMarketReadPlan> {
+  return {
+    relayUrls: [],
+    ownerSelectedRelayUrls: [],
+    relayListState: "missing",
+    relayHintTruncated: false,
+  }
+}
 
 function collection(acceptance?: "open" | "closed", createdAt = 100) {
   return finalizeEvent(
@@ -146,10 +156,17 @@ describe("exact event collection lifecycle continuity", () => {
     const original = collection("open")
     const current = collection("closed", 101)
     const reads: unknown[] = []
+    const relayUrls = [
+      "wss://organizer.example",
+      "ws://127.0.0.1:7777",
+      "wss://fallback.example",
+    ]
+    const ownerSelectedRelayUrls = ["ws://127.0.0.1:7777"]
     const events = await getEventMarketCollectionLifecycleEvidence(
       {
         original: parseEventMarketCollectionEvent(original)!,
         current: parseEventMarketCollectionEvent(current)!,
+        authenticatedPubkey: ` ${organizer.toUpperCase()} `,
       },
       {
         getRetainedEvidence: async () => ({
@@ -157,10 +174,21 @@ describe("exact event collection lifecycle continuity", () => {
           eventSourceRelayUrls: {},
         }),
         getLocalEvidence: () => ({ status: "ready", events: [] }),
-        getRelayLists: async () => new Map(),
+        getReadPlan: async (input) => {
+          expect(input.organizerPubkey).toBe(organizer)
+          expect(input.authenticatedPubkey).toBe(organizer)
+          return {
+            relayUrls,
+            ownerSelectedRelayUrls,
+            relayListState: "network",
+            relayHintTruncated: false,
+          }
+        },
         fetchEvents: async (filter, options) => {
           reads.push(filter)
-          expect(options.relayUrls.length).toBeLessThanOrEqual(8)
+          expect(options.relayUrls).toEqual(relayUrls)
+          expect(options.ownerSelectedRelayUrls).toEqual(ownerSelectedRelayUrls)
+          expect(options.authenticatedPubkey).toBe(organizer)
           return {
             events: filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)
               ? [original]
@@ -205,7 +233,7 @@ describe("exact event collection lifecycle continuity", () => {
           eventSourceRelayUrls: {},
         }),
         getLocalEvidence: () => ({ status: "ready", events: [] }),
-        getRelayLists: async () => new Map(),
+        getReadPlan: emptyReadPlan,
         fetchEvents: async (filter) => {
           reads.push(filter)
           return {
@@ -244,7 +272,7 @@ describe("exact event collection lifecycle continuity", () => {
           eventSourceRelayUrls: {},
         }),
         getLocalEvidence: () => ({ status: "ready", events: [] }),
-        getRelayLists: async () => {
+        getReadPlan: async () => {
           throw new Error("Known deletion should not require a network read")
         },
       }
@@ -269,7 +297,7 @@ describe("exact event collection lifecycle continuity", () => {
           eventSourceRelayUrls: {},
         }),
         getLocalEvidence: () => ({ status: "ready", events: [] }),
-        getRelayLists: async () => new Map(),
+        getReadPlan: emptyReadPlan,
         fetchEvents: async (filter) => {
           reads.push(filter)
           const kinds = filter.kinds as number[] | undefined
@@ -308,7 +336,7 @@ describe("exact event collection lifecycle continuity", () => {
           eventSourceRelayUrls: {},
         }),
         getLocalEvidence: () => ({ status: "ready", events: [] }),
-        getRelayLists: async () => new Map(),
+        getReadPlan: emptyReadPlan,
         fetchEvents: async (filter) => {
           reads.push(filter)
           return {
