@@ -3,30 +3,26 @@ import { useRef, useState } from "react"
 import {
   MAX_PRODUCT_IMAGE_CANDIDATES,
   normalizePublicMediaUrl,
+  type ProductImage,
 } from "@conduit/core"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
 import { Input } from "./Input"
 import { Label } from "./Label"
-import {
-  ProductImageFrame,
-  type ProductImageFrameImage,
-} from "./ProductImageFrame"
+import { ProductImageFrame } from "./ProductImageFrame"
 
 export interface ProductImageUrlCollectionFieldProps {
   id: string
-  images: readonly ProductImageFrameImage[]
-  onChange: (images: ProductImageFrameImage[]) => void
+  images: readonly ProductImage[]
+  onChange: (images: ProductImage[]) => void
   previewTitle: string
-  disabled?: boolean
   showRequiredError?: boolean
-  maxImages?: number
 }
 
 function getImageUrlError(
   value: string,
   index: number,
-  images: readonly ProductImageFrameImage[],
+  images: readonly ProductImage[],
   showRequiredError: boolean
 ): string | null {
   const url = value.trim()
@@ -58,14 +54,12 @@ export function ProductImageUrlCollectionField({
   images,
   onChange,
   previewTitle,
-  disabled = false,
   showRequiredError = false,
-  maxImages = MAX_PRODUCT_IMAGE_CANDIDATES,
 }: ProductImageUrlCollectionFieldProps) {
   const inputRefs = useRef<Array<HTMLInputElement | null>>([])
   const [announcement, setAnnouncement] = useState("")
   const rows = images.length > 0 ? [...images] : [{ url: "" }]
-  const atLimit = rows.length >= maxImages
+  const atLimit = rows.length >= MAX_PRODUCT_IMAGE_CANDIDATES
   const lastRowReady = !!normalizePublicMediaUrl(rows.at(-1)?.url)
 
   function focusInput(index: number): void {
@@ -122,7 +116,7 @@ export function ProductImageUrlCollectionField({
   }
 
   return (
-    <fieldset className="grid gap-3" disabled={disabled}>
+    <fieldset className="grid gap-3">
       <legend className="text-sm font-medium text-[var(--text-primary)]">
         Product images
       </legend>
@@ -232,8 +226,8 @@ export function ProductImageUrlCollectionField({
         Add another image
       </Button>
       <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
-        Add images one at a time, up to {maxImages}. The first image is the
-        cover.
+        Add images one at a time, up to {MAX_PRODUCT_IMAGE_CANDIDATES}. The
+        first image is the cover.
       </p>
 
       <div className="grid gap-2">
@@ -250,9 +244,9 @@ export function ProductImageUrlCollectionField({
         </p>
       </div>
 
-      {rows.length > maxImages ? (
+      {rows.length > MAX_PRODUCT_IMAGE_CANDIDATES ? (
         <p className="text-xs leading-5 text-error" role="alert">
-          Use {maxImages} images or fewer.
+          Use {MAX_PRODUCT_IMAGE_CANDIDATES} images or fewer.
         </p>
       ) : null}
       <p className="sr-only" role="status" aria-live="polite">

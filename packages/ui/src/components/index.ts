@@ -163,11 +163,6 @@ export {
   type ProductCartActionProps,
 } from "./ProductCard"
 export {
-  ProductImageFrame,
-  type ProductImageFrameImage,
-  type ProductImageFrameProps,
-} from "./ProductImageFrame"
-export {
   ProductImageUrlCollectionField,
   type ProductImageUrlCollectionFieldProps,
 } from "./ProductImageUrlCollectionField"

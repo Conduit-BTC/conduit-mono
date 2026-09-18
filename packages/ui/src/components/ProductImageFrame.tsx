@@ -1,15 +1,10 @@
 import { ImageOff } from "lucide-react"
 import { useEffect, useState } from "react"
-import { normalizePublicMediaUrl } from "@conduit/core"
+import { normalizePublicMediaUrl, type ProductImage } from "@conduit/core"
 import { cn } from "../utils"
 
-export type ProductImageFrameImage = {
-  url: string
-  alt?: string
-}
-
-export interface ProductImageFrameProps {
-  image?: ProductImageFrameImage
+interface ProductImageFrameProps {
+  image?: ProductImage
   title: string
   imageLoading?: "eager" | "lazy"
   enableHoverZoom?: boolean

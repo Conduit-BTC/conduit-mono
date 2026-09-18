@@ -7,15 +7,13 @@ import {
   useRef,
   useState,
 } from "react"
+import type { ProductImage } from "@conduit/core"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
-import {
-  ProductImageFrame,
-  type ProductImageFrameImage,
-} from "./ProductImageFrame"
+import { ProductImageFrame } from "./ProductImageFrame"
 import { cn } from "../utils"
 
-export type ProductCardImage = ProductImageFrameImage
+export type ProductCardImage = ProductImage
 
 export interface ProductCardProps {
   title: string
