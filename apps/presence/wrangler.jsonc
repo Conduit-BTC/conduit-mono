@@ -4,12 +4,6 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-03",
   "workers_dev": false,
-  "routes": [
-    {
-      "pattern": "presence.conduit.market",
-      "custom_domain": true,
-    },
-  ],
   "vars": {
     "PRESENCE_DEPLOYMENT": "production",
   },
@@ -35,7 +29,6 @@
       "name": "conduit-presence-preview",
       "workers_dev": true,
       "preview_urls": false,
-      "routes": [],
       "vars": {
         "PRESENCE_DEPLOYMENT": "preview",
       },
