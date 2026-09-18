@@ -84,6 +84,9 @@ async function cardStyle(card: Locator): Promise<{
   borderLeftColor: string
   borderLeftWidth: string
   borderRightColor: string
+  borderTopColor: string
+  borderTopLeftRadius: string
+  borderTopRightRadius: string
   boxShadow: string
   scale: string
   transitionProperty: string
@@ -96,11 +99,46 @@ async function cardStyle(card: Locator): Promise<{
       borderLeftColor: style.borderLeftColor,
       borderLeftWidth: style.borderLeftWidth,
       borderRightColor: style.borderRightColor,
+      borderTopColor: style.borderTopColor,
+      borderTopLeftRadius: style.borderTopLeftRadius,
+      borderTopRightRadius: style.borderTopRightRadius,
       boxShadow: style.boxShadow,
       scale: style.scale,
       transitionProperty: style.transitionProperty,
     }
   })
+}
+
+async function resolvedThemeColor(
+  page: Page,
+  customProperty: string
+): Promise<string> {
+  return page.evaluate((property) => {
+    const probe = document.createElement("span")
+    probe.style.color = `var(${property})`
+    document.body.append(probe)
+    const color = getComputedStyle(probe).color
+    probe.remove()
+    return color
+  }, customProperty)
+}
+
+async function expectPrimaryCardHighlight(
+  page: Page,
+  card: Locator
+): Promise<void> {
+  const [style, primaryColor] = await Promise.all([
+    cardStyle(card),
+    resolvedThemeColor(page, "--primary-500"),
+  ])
+  expect(style).toMatchObject({
+    borderLeftColor: primaryColor,
+    borderRightColor: primaryColor,
+    borderTopColor: primaryColor,
+  })
+  expect(style.boxShadow).toContain(primaryColor)
+  expect(parseFloat(style.borderTopLeftRadius)).toBeGreaterThan(0)
+  expect(parseFloat(style.borderTopRightRadius)).toBeGreaterThan(0)
 }
 
 async function hasJoinedBorderColors(
@@ -281,6 +319,12 @@ test("market product variation panel preserves grid geometry across desktop mous
   const expandedCardGeometry = await geometry(variableCard)
   expect(expandedCardGeometry.width).toBe(initialCardGeometry.width)
   expect(expandedCardGeometry.height).toBe(initialCardGeometry.height)
+  const expandedPanelGeometry = await geometry(panel)
+  expect(expandedPanelGeometry.x).toBeCloseTo(expandedCardGeometry.x - 1, 5)
+  expect(expandedPanelGeometry.width).toBeCloseTo(
+    expandedCardGeometry.width + 2,
+    5
+  )
   const expandedPanelStyle = await panelStyle(panel)
   expect(expandedPanelStyle).toMatchObject({
     borderBottomWidth: "2px",
@@ -299,6 +343,7 @@ test("market product variation panel preserves grid geometry across desktop mous
   expect(expandedCardStyle.backgroundColor).toBe(
     initialCardStyle.backgroundColor
   )
+  await expectPrimaryCardHighlight(page, variableCard)
   expect(
     await media.evaluate((element) =>
       parseFloat(getComputedStyle(element).borderTopLeftRadius)
@@ -683,6 +728,7 @@ test("market product variation panel remains inline on touch tablets @market", a
 
     await expect(chooseSize).toBeVisible()
     await expectInlinePanel(panel, variableCard)
+    await expectPrimaryCardHighlight(page, variableCard)
     expect((await cardStyle(variableCard)).scale).toBe("none")
     await chooseSize.click()
     await expect(page.getByRole("listbox")).toBeVisible()
@@ -695,6 +741,7 @@ test("market product variation panel remains inline on touch tablets @market", a
 test("market product variation panel remains inline on narrow mobile @market", async ({
   page,
 }) => {
+  await page.emulateMedia({ colorScheme: "dark" })
   await page.setViewportSize({ width: 390, height: 844 })
   await mountHarness(page)
 
@@ -708,7 +755,11 @@ test("market product variation panel remains inline on narrow mobile @market", a
 
   await expect(chooseSize).toBeVisible()
   await expectInlinePanel(panel, variableCard)
+  await expectPrimaryCardHighlight(page, variableCard)
   expect((await cardStyle(variableCard)).scale).toBe("none")
+  await page.locator("#product-variation-panel-harness").screenshot({
+    path: test.info().outputPath("variation-mobile.png"),
+  })
 })
 
 test("market variation panel clears an open portal when family availability changes @market", async ({

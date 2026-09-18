@@ -190,7 +190,9 @@ export function ProductGridCard({
 
   const variationPanelClassName = cn(
     "pt-3",
-    "[@media(min-width:768px)_and_(hover:hover)]:absolute [@media(min-width:768px)_and_(hover:hover)]:-inset-x-px [@media(min-width:768px)_and_(hover:hover)]:z-20 [@media(min-width:768px)_and_(hover:hover)]:border-x-2 [@media(min-width:768px)_and_(hover:hover)]:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:p-3",
+    // The extra negative inset aligns the panel's two-pixel border with the
+    // card's one-pixel border plus its one-pixel outer highlight ring.
+    "[@media(min-width:768px)_and_(hover:hover)]:absolute [@media(min-width:768px)_and_(hover:hover)]:-inset-x-0.5 [@media(min-width:768px)_and_(hover:hover)]:z-20 [@media(min-width:768px)_and_(hover:hover)]:border-x-2 [@media(min-width:768px)_and_(hover:hover)]:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:p-3",
     panelOpensAbove
       ? "[@media(min-width:768px)_and_(hover:hover)]:bottom-full [@media(min-width:768px)_and_(hover:hover)]:origin-bottom [@media(min-width:768px)_and_(hover:hover)]:border-t-2 [@media(min-width:768px)_and_(hover:hover)]:rounded-t-xl"
       : "[@media(min-width:768px)_and_(hover:hover)]:top-full [@media(min-width:768px)_and_(hover:hover)]:origin-top [@media(min-width:768px)_and_(hover:hover)]:border-b-2 [@media(min-width:768px)_and_(hover:hover)]:rounded-b-xl",
@@ -208,6 +210,8 @@ export function ProductGridCard({
         className ?? "h-full",
         "relative",
         "[@media(min-width:768px)_and_(hover:hover)]:overflow-visible [@media(min-width:768px)_and_(hover:hover)]:z-10 [@media(min-width:768px)_and_(hover:hover)]:hover:z-20 [@media(min-width:768px)_and_(hover:hover)]:focus-within:z-20 [@media(min-width:768px)_and_(hover:hover)]:hover:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:hover:bg-[var(--surface)] [@media(min-width:768px)_and_(hover:hover)]:hover:shadow-[var(--shadow-md)] [@media(min-width:768px)_and_(hover:hover)]:hover:ring-1 [@media(min-width:768px)_and_(hover:hover)]:hover:ring-primary-500 [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:focus-within:ring-1 [@media(min-width:768px)_and_(hover:hover)]:focus-within:ring-primary-500 motion-reduce:transition-none",
+        hasVariationControls &&
+          "[@media(max-width:767px)]:border-primary-500 [@media(max-width:767px)]:ring-1 [@media(max-width:767px)]:ring-primary-500 [@media(hover:none)]:border-primary-500 [@media(hover:none)]:ring-1 [@media(hover:none)]:ring-primary-500",
         hasVariationControls &&
           (panelOpensAbove
             ? "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-t-0"
