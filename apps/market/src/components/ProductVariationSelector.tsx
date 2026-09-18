@@ -29,12 +29,14 @@ export function ProductVariationSelector({
   className,
 }: ProductVariationSelectorProps) {
   const model = getProductVariationSelectorModel(family, selectedProduct)
+
   if (!model) return null
 
   // Product cards and rows are clickable, so selector interaction must stay
   // inside the control until the shopper makes an explicit variation choice.
   return (
     <div
+      data-slot="product-variation-selector"
       className={cn("space-y-2", className)}
       onClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => event.stopPropagation()}

@@ -72,7 +72,7 @@ export function EventCatalogBrowser({
     onMerchantChange(pubkey)
   }
   const renderGrid = (entries: EventCatalogProduct[]) => (
-    <ul className={PRODUCT_GRID_CLASS_NAME}>
+    <ul className={`${PRODUCT_GRID_CLASS_NAME} items-start`}>
       {entries.map((entry) => (
         <li key={entry.product.id} className="min-w-0 space-y-2">
           {renderProduct(

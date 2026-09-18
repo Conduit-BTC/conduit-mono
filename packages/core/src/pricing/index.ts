@@ -652,8 +652,8 @@ export function formatApproxUsdFromSats(
   if (!btcUsdRate) return "USD unavailable"
 
   const usd = (sats / SATS_PER_BTC) * btcUsdRate
-  if (usd > 0 && usd < 0.01) return "about $0.01 USD"
-  return `about ${formatFiatPrice(usd, "USD")} USD`
+  if (usd > 0 && usd < 0.01) return "~ $0.01 USD"
+  return `~ ${formatFiatPrice(usd, "USD")} USD`
 }
 
 export function formatSourcePrice(source: SourcePriceQuote): string {
@@ -723,13 +723,7 @@ function formatSourceContext(
   preference: ShopperPricePreference,
   locale: string
 ): string {
-  const label =
-    isSatsLikeCurrency(source.normalizedCurrency) ||
-    isMsatsLikeCurrency(source.normalizedCurrency) ||
-    isBtcLikeCurrency(source.normalizedCurrency)
-      ? "Bitcoin amount"
-      : "source quote"
-  return `${formatSourceForPreference(source, preference, locale)} ${label}`
+  return formatSourceForPreference(source, preference, locale)
 }
 
 function unavailableShopperDisplay(
@@ -1083,16 +1077,14 @@ export function getProductPriceDisplay(
   if (!sats) {
     return {
       primary: "Price unavailable",
-      secondary: source
-        ? `${formatSourcePrice(source)} source quote`
-        : "Conversion unavailable",
+      secondary: source ? formatSourcePrice(source) : "Conversion unavailable",
     }
   }
 
-  const primary = `${sats.approximate ? "〜 " : ""}${formatSats(sats.sats)}`
+  const primary = `${sats.approximate ? "~ " : ""}${formatSats(sats.sats)}`
 
   if (sats.approximate && source) {
-    return { primary, secondary: `${formatSourcePrice(source)} source quote` }
+    return { primary, secondary: formatSourcePrice(source) }
   }
 
   if (getBtcUsdRate(rateInput)) {

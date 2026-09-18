@@ -82,8 +82,8 @@ describe("commerce pricing", () => {
     expect(getShopperPriceDisplay(euroProduct, undefined, testRates)).toEqual({
       state: "ready",
       primary: "~ ₿12,000",
-      secondary: "€10.00 EUR source quote",
-      approximateUsd: "about $12.00 USD",
+      secondary: "€10.00 EUR",
+      approximateUsd: "~ $12.00 USD",
       displayCurrency: "BITCOIN",
       sats: 12_000,
       approximate: true,
@@ -112,7 +112,7 @@ describe("commerce pricing", () => {
     ).toMatchObject({
       state: "ready",
       primary: "~ $250.00",
-      secondary: "₿250,000 Bitcoin amount",
+      secondary: "₿250,000",
       approximateUsd: null,
       displayCurrency: "USD",
       sats: 250_000,
@@ -153,7 +153,7 @@ describe("commerce pricing", () => {
     ).toMatchObject({
       primary: "₿40,000",
       secondary: null,
-      approximateUsd: "about $40.00 USD",
+      approximateUsd: "~ $40.00 USD",
     })
 
     expect(
@@ -172,7 +172,7 @@ describe("commerce pricing", () => {
       )
     ).toMatchObject({
       primary: "~ ₿20,000",
-      secondary: "$20.00 USD source quote",
+      secondary: "$20.00 USD",
       approximateUsd: null,
     })
   })
@@ -262,7 +262,7 @@ describe("commerce pricing", () => {
     ).toMatchObject({
       state: "ready",
       primary: "₿8,000",
-      secondary: "€10.00 EUR source quote",
+      secondary: "€10.00 EUR",
       sats: 8_000,
       approximate: false,
     })
@@ -281,7 +281,7 @@ describe("commerce pricing", () => {
     expect(getShopperPriceDisplay(fiatProduct)).toMatchObject({
       state: "rate_required",
       primary: "Price conversion unavailable",
-      secondary: "€10.00 EUR source quote",
+      secondary: "€10.00 EUR",
     })
     expect(
       getShopperPriceDisplay(
@@ -293,7 +293,7 @@ describe("commerce pricing", () => {
     ).toMatchObject({
       state: "rate_stale",
       primary: "Price conversion is stale",
-      secondary: "€10.00 EUR source quote",
+      secondary: "€10.00 EUR",
     })
   })
 
@@ -611,7 +611,7 @@ describe("commerce pricing", () => {
     expect(product.priceSats).toBe(250_000)
     expect(getProductPriceDisplay(product, 100_000)).toEqual({
       primary: "250,000 sats",
-      secondary: "about $250.00 USD",
+      secondary: "~ $250.00 USD",
     })
   })
 
@@ -659,8 +659,8 @@ describe("commerce pricing", () => {
     })
 
     expect(getProductPriceDisplay(product, testRates)).toEqual({
-      primary: "〜 12,000 sats",
-      secondary: "€10.00 EUR source quote",
+      primary: "~ 12,000 sats",
+      secondary: "€10.00 EUR",
     })
   })
 
@@ -679,8 +679,8 @@ describe("commerce pricing", () => {
         testRates
       )
     ).toEqual({
-      primary: "〜 20,000 sats",
-      secondary: "$20.00 USD source quote",
+      primary: "~ 20,000 sats",
+      secondary: "$20.00 USD",
     })
 
     expect(
@@ -697,8 +697,8 @@ describe("commerce pricing", () => {
         testRates
       )
     ).toEqual({
-      primary: "〜 15,000 sats",
-      secondary: "CA$20.00 CAD source quote",
+      primary: "~ 15,000 sats",
+      secondary: "CA$20.00 CAD",
     })
 
     expect(
@@ -710,8 +710,8 @@ describe("commerce pricing", () => {
         testRates
       )
     ).toEqual({
-      primary: "〜 20,000 sats",
-      secondary: "$20.00 USD source quote",
+      primary: "~ 20,000 sats",
+      secondary: "$20.00 USD",
     })
   })
 
@@ -762,7 +762,7 @@ describe("commerce pricing", () => {
       )
     ).toEqual({
       primary: "Price unavailable",
-      secondary: "$0.00 USD source quote",
+      secondary: "$0.00 USD",
     })
 
     expect(
