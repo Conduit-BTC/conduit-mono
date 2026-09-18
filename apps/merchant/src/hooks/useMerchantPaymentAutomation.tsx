@@ -22,6 +22,7 @@ import {
   useProfile,
   type NwcGetInfoResult,
 } from "@conduit/core"
+import { reportCommerceGmvEstimate } from "@conduit/core/commerce-gmv"
 import {
   getMerchantNwcAddressStatus,
   getMerchantPaymentVerificationCandidates,
@@ -202,6 +203,11 @@ export function MerchantPaymentAutomationProvider({
             signerInteraction: "background_external",
             authenticatedPubkey: signerConnected ? pubkey : null,
             shouldContinue: () => authGenerationRef.current === authGeneration,
+          })
+          void reportCommerceGmvEstimate({
+            orderId: candidate.orderId,
+            orderCreatedAt: candidate.orderCreatedAt,
+            invoicedAmountSats: candidate.expectedAmountMsats / 1_000,
           })
         },
       })

@@ -45,6 +45,7 @@ import {
   type SignedPublicNostrEvent,
   type WalletPaymentFeeApproval,
 } from "@conduit/core"
+import { reportCommerceGmvEstimate } from "@conduit/core/commerce-gmv"
 import {
   getCheckoutZapVisibility,
   recoverCheckoutZapTargetAddress,
@@ -374,26 +375,6 @@ export interface OrderReceiptObservationDependencies {
   waitForZapReceipt: typeof waitForZapReceipt
   recordObservedOrderPaymentReceipt: typeof recordObservedOrderPaymentReceipt
   recordOrderPaymentReceiptTimeout: typeof recordOrderPaymentReceiptTimeout
-  reportZapoutSettlement: (receipt: NDKEvent) => Promise<void>
-}
-
-async function reportZapoutSettlement(receipt: NDKEvent): Promise<void> {
-  if (typeof window === "undefined") return
-
-  const response = await fetch("/api/zapout-authority", {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      receipts: [receipt.rawEvent()],
-      recordSettlement: true,
-    }),
-    keepalive: true,
-    signal: AbortSignal.timeout(5_500),
-  })
-  await response.body?.cancel()
 }
 
 const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDependencies =
@@ -402,7 +383,6 @@ const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDepende
     waitForZapReceipt,
     recordObservedOrderPaymentReceipt,
     recordOrderPaymentReceiptTimeout,
-    reportZapoutSettlement,
   }
 
 function requirePreparedAnonZap(
@@ -490,13 +470,8 @@ const receiptRescanTimers = new Map<string, ReturnType<typeof setTimeout>>()
 export function canSubmitExternalPaymentReport(
   lifecycle: OrderLifecycle | null | undefined
 ): lifecycle is OrderLifecycle {
-  const publicZapSigner = lifecycle
-    ? (lifecycle.publicZapSigner ??
-      getOrderPublicZapSigner(lifecycle.checkoutMode))
-    : null
   return (
     !!lifecycle &&
-    !publicZapSigner &&
     !!lifecycle.invoice &&
     lifecycle.phase !== "completed" &&
     lifecycle.paymentStatus === "manual_required" &&
@@ -673,6 +648,13 @@ function emit(orderId: string, partial: Partial<OrderPaymentRuntimeState>) {
     } satisfies OrderPaymentRuntimeState)
   const next: OrderPaymentRuntimeState = { ...prev, ...partial, orderId }
   runtimeStates.set(orderId, next)
+  if (next.lifecycle?.paymentStatus === "paid") {
+    void reportCommerceGmvEstimate({
+      orderId: next.lifecycle.orderId,
+      orderCreatedAt: next.lifecycle.createdAt,
+      invoicedAmountSats: next.lifecycle.totalSats,
+    })
+  }
   const set = listeners.get(orderId)
   if (set) for (const fn of set) fn(next)
 }
@@ -957,7 +939,6 @@ export async function observeOrderPublicZapReceipt(
           proofDeliveryClaimId,
         })
       emit(orderId, { lifecycle: receiptRecord.lifecycle })
-      void dependencies.reportZapoutSettlement(receipt).catch(() => undefined)
       if (receiptRecord.status === "recorded") {
         const updated = receiptRecord.lifecycle
         const shouldDeliverProof = updated.proofDeliveryStatus !== "sent"

@@ -149,10 +149,9 @@ export function ExternalWalletPanel({
     invoiceExpiry === null ||
     invoiceExpired
   const invoiceCanReport =
-    !publicReceiptInvoice &&
-    (merchantInvoice?.status === "blocked"
+    merchantInvoice?.status === "blocked"
       ? merchantInvoice.canReport
-      : invoiceExpired)
+      : invoiceExpired
   const invoiceError =
     merchantInvoice?.status === "blocked"
       ? merchantInvoice.reason
@@ -162,8 +161,8 @@ export function ExternalWalletPanel({
   const receiptNotice = (
     <p className="text-xs leading-5 text-[var(--text-secondary)]">
       {autoDetectReceipt
-        ? "Waiting for the matching receipt. If your wallet confirms payment, do not pay this invoice again while detection completes."
-        : "No matching receipt has been observed yet. If your wallet confirms payment, do not pay again. A matching public receipt is needed to confirm this payment."}
+        ? "Waiting for the matching receipt. If your wallet confirms payment, do not pay this invoice again. You can report it to the merchant while detection continues."
+        : "No matching receipt has been observed yet. If your wallet confirms payment, do not pay again. Report it to the merchant for verification."}
     </p>
   )
   if (invoiceBlocked) {
@@ -212,7 +211,7 @@ export function ExternalWalletPanel({
       </h2>
       <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
         {publicReceiptInvoice
-          ? "Check your wallet first if an automatic payment was already attempted. Otherwise scan or copy this invoice and pay it once. Conduit will match the public Lightning receipt and notify the merchant automatically."
+          ? "Check your wallet first if an automatic payment was already attempted. Otherwise scan or copy this invoice and pay it once. Conduit will keep checking for a public Lightning receipt, and you can report the payment to the merchant directly."
           : isMerchantInvoice
             ? "Scan, copy, or open this merchant invoice. After your wallet confirms payment, report it to the merchant for verification."
             : "Automatic payment did not complete. Check your wallet first, then pay this same invoice once and report it to the merchant for verification. This invoice can only settle once, so paying it again is safe if nothing was sent."}
@@ -220,7 +219,7 @@ export function ExternalWalletPanel({
       {guestSession && (
         <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
           {publicReceiptInvoice
-            ? "Return to this same tab after paying so Conduit can finish receipt detection. Closing it ends local access to this guest order."
+            ? "Return to this same tab after paying and report it once your wallet confirms. Conduit will keep checking for a receipt while this tab remains open. Closing it ends local access to this guest order."
             : "Keep this tab open until the payment is reported. Closing it ends local access to this guest order. The merchant can use the private recovery contact submitted at checkout."}
         </p>
       )}
@@ -234,24 +233,19 @@ export function ExternalWalletPanel({
         onBeforeInvoiceUse={canUseInvoice}
       />
       <div className="mt-4 space-y-3">
-        {publicReceiptInvoice ? (
-          receiptNotice
-        ) : (
-          <>
-            <Button
-              variant="primary"
-              className="h-10 px-4 text-sm"
-              disabled={busy}
-              onClick={onMarkPaid}
-            >
-              Report payment to merchant
-            </Button>
-            <p className="text-xs text-[var(--text-secondary)]">
-              Only report after your wallet confirms payment. This does not
-              verify settlement; the merchant will confirm it.
-            </p>
-          </>
-        )}
+        {publicReceiptInvoice && receiptNotice}
+        <Button
+          variant="primary"
+          className="h-10 px-4 text-sm"
+          disabled={busy}
+          onClick={onMarkPaid}
+        >
+          Report payment to merchant
+        </Button>
+        <p className="text-xs text-[var(--text-secondary)]">
+          Only report after your wallet confirms payment. This does not verify
+          settlement; the merchant will confirm it.
+        </p>
       </div>
     </section>
   )

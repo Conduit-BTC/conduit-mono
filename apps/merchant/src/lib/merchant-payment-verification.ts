@@ -181,7 +181,7 @@ function findCandidate(
     invoice,
     paymentHash: evidence.payload.paymentHash?.trim() || undefined,
     expectedAmountMsats: decoded.msats,
-    orderCreatedAt: order.createdAt,
+    orderCreatedAt: order.payload.createdAt,
     delivery:
       getMerchantConversationCommunication(conversation) === "nostr_replyable"
         ? "buyer_and_self"

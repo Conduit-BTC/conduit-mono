@@ -398,36 +398,28 @@ for (const scenario of scenarios) {
         page.getByRole("heading", { name: "Orders", exact: true })
       ).toBeVisible()
       await expectStoppedInvoice()
-      if (scenario.mode === "private_checkout") {
-        await page
-          .getByRole("button", {
-            name: "Report a payment already made",
-            exact: true,
-          })
-          .click()
-        await expect.poll(paymentState, { timeout: 20_000 }).toMatchObject({
-          paymentStatus: "paid",
-          proofDeliveryStatus: "sent",
-          zapReceiptId: null,
-        })
-        await expect(
-          page
-            .getByText(
-              stopStatus === "cancelled" ? "Cancelled" : "Refund requested",
-              { exact: true }
-            )
-            .first()
-        ).toBeVisible()
-        expect(callbackRequests).toBe(1)
-        expect(walletSendCalls).toBe(0)
-        return
-      }
-      await expect(
-        page.getByRole("button", {
+      await page
+        .getByRole("button", {
           name: "Report a payment already made",
           exact: true,
         })
-      ).toHaveCount(0)
+        .click()
+      await expect.poll(paymentState, { timeout: 20_000 }).toMatchObject({
+        paymentStatus: "paid",
+        proofDeliveryStatus: "sent",
+        zapReceiptId: null,
+      })
+      await expect(
+        page
+          .getByText(
+            stopStatus === "cancelled" ? "Cancelled" : "Refund requested",
+            { exact: true }
+          )
+          .first()
+      ).toBeVisible()
+      expect(callbackRequests).toBe(1)
+      expect(walletSendCalls).toBe(0)
+      return
     }
     const receipt = (invoice: string) =>
       finalizeEvent(
