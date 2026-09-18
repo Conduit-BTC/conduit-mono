@@ -4518,26 +4518,48 @@ async function persistEventMarketEvidence(input: {
     pinSnapshot: ActiveOrderCollectionEvidencePinSnapshot
   ) => {
     if (pinSnapshot.status !== "ready") return
-    const boundedVolatileEvents = selectVerifiedEventMarketEvidenceForRetention(
-      mergedVolatileEvents.map((event) => ({
-        id: event.id.toLowerCase(),
-        organizerPubkey: input.organizerPubkey,
-        kind: event.kind,
-        addressId: cacheableEventMarketAddressId(event),
-        signedEvent: event,
-        sourceRelayUrls: [],
-        cachedAt: event.created_at * 1_000,
-      })),
+    const currentVolatileEvents =
+      volatileEventMarketEvidence.get(input.organizerPubkey) ?? []
+    const currentVolatileEventIds = new Set(
+      currentVolatileEvents.map((event) => event.id.toLowerCase())
+    )
+    const boundedObservedEvents = selectVerifiedEventMarketEvidenceForRetention(
+      mergedVolatileEvents
+        .filter((event) => currentVolatileEventIds.has(event.id.toLowerCase()))
+        .map((event) => ({
+          id: event.id.toLowerCase(),
+          organizerPubkey: input.organizerPubkey,
+          kind: event.kind,
+          addressId: cacheableEventMarketAddressId(event),
+          signedEvent: event,
+          sourceRelayUrls: [],
+          cachedAt: event.created_at * 1_000,
+        })),
       eventMarketMaxCachedEvidencePerOrganizer(),
       pinSnapshot.eventIds
     ).map((row) => row.signedEvent)
+    // A later same-organizer write may have extended the volatile frontier
+    // while this persistence operation was awaiting pins or IndexedDB. Bound
+    // only the snapshot this operation observed; never replace newer evidence
+    // that is still waiting for its own storage result.
+    const observedEventIds = new Set(
+      mergedVolatileEvents.map((event) => event.id.toLowerCase())
+    )
+    const laterConcurrentEvents = currentVolatileEvents.filter(
+      (event) => !observedEventIds.has(event.id.toLowerCase())
+    )
+    const reconciledVolatileEvents = mergeLocalEventMarketEvidence(
+      boundedObservedEvents,
+      laterConcurrentEvents,
+      true
+    )
     volatileEventMarketEvidence.set(
       input.organizerPubkey,
-      boundedVolatileEvents
+      reconciledVolatileEvents
     )
     retainLocalEventMarketEvidence(
       input.organizerPubkey,
-      boundedVolatileEvents,
+      reconciledVolatileEvents,
       undefined,
       { pinnedCollectionEventIds: pinSnapshot.eventIds }
     )
@@ -4631,10 +4653,14 @@ async function persistEventMarketEvidence(input: {
       }
     )
     retainVolatileEvidence(pinSnapshot)
+    clearPersisted()
     if (pinSnapshot.status === "ready") {
       retainLocalEventMarketEvidence(
         input.organizerPubkey,
-        retainedRows.map((row) => row.signedEvent),
+        [
+          ...retainedRows.map((row) => row.signedEvent),
+          ...(volatileEventMarketEvidence.get(input.organizerPubkey) ?? []),
+        ],
         undefined,
         {
           replace: true,
@@ -4642,7 +4668,6 @@ async function persistEventMarketEvidence(input: {
         }
       )
     }
-    clearPersisted()
   } catch {
     // Cache persistence is best-effort; live signed evidence remains usable.
   }
