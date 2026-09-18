@@ -18,7 +18,9 @@ import {
   getProductVariationMatrix,
   getProductVariationRemovalCount,
   groupProductVariationRecords,
+  formatProductVariationImageInput,
   mergeProductVariationAuthoringState,
+  parseProductVariationImageInput,
   parseProductVariationFormState,
   reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
@@ -150,6 +152,38 @@ function toFamily(
 }
 
 describe("merchant product variation planning", () => {
+  it("publishes a custom variation image URL containing a comma unchanged", () => {
+    const imageUrl =
+      "https://images.example.com/resize,w_1200/product.png?fit=crop,center"
+    const parsedImages = parseProductVariationImageInput(imageUrl)
+
+    expect(parsedImages).toEqual([{ url: imageUrl }])
+    expect(formatProductVariationImageInput(parsedImages)).toBe(imageUrl)
+
+    const variations = sizeVariationForm("S")
+    const small = getProductVariationCombinations(variations)[0]!
+    const customized = updateProductVariationOverride(
+      updateProductVariationInheritance(
+        variations,
+        small.identity,
+        "inheritImages",
+        false
+      ),
+      small.identity,
+      "imageUrls",
+      formatProductVariationImageInput(parsedImages)
+    )
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct(),
+      variations: customized,
+      currency: "USD",
+      now: NOW,
+    })
+
+    expect(plan.desired[1]?.product.images).toEqual([{ url: imageUrl }])
+  })
+
   it("starts with a neutral option definition", () => {
     const state = createEmptyProductVariationForm()
 

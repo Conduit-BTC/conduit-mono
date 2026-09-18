@@ -277,7 +277,18 @@ function createVariationRow(
   }
 }
 
-function parseNewVariationRow(value: unknown): ProductVariationRow | null {
+function normalizeLegacyVariationImageInput(value: string): string {
+  return value
+    .split(/[\n,]/)
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .join("\n")
+}
+
+function parseNewVariationRow(
+  value: unknown,
+  migrateLegacyImageInput = false
+): ProductVariationRow | null {
   if (!value || typeof value !== "object") return null
   const row = value as Partial<Record<keyof ProductVariationRow, unknown>>
   if (
@@ -323,7 +334,9 @@ function parseNewVariationRow(value: unknown): ProductVariationRow | null {
     price: row.price,
     stock: row.stock,
     inheritStock: row.inheritStock,
-    imageUrls: row.imageUrls,
+    imageUrls: migrateLegacyImageInput
+      ? normalizeLegacyVariationImageInput(row.imageUrls)
+      : row.imageUrls,
     inheritImages: row.inheritImages,
     format: row.format as ProductVariationRow["format"],
     shippingCost: row.shippingCost,
@@ -400,7 +413,8 @@ function migrateLegacyVariationState(
 }
 
 export function parseProductVariationFormState(
-  value: unknown
+  value: unknown,
+  options: { migrateLegacyImageInput?: boolean } = {}
 ): ProductVariationFormState | null {
   if (!value || typeof value !== "object") return null
   const candidate = value as Record<string, unknown>
@@ -424,7 +438,7 @@ export function parseProductVariationFormState(
   }
   const rows: ProductVariationRow[] = []
   for (const valueRow of candidate.rows) {
-    const row = parseNewVariationRow(valueRow)
+    const row = parseNewVariationRow(valueRow, options.migrateLegacyImageInput)
     if (!row) return null
     rows.push(row)
   }
@@ -748,7 +762,7 @@ export function getProductVariationCombinations(
 }
 
 export function parseProductVariationImageInput(value: string): ProductImage[] {
-  return value.split(/[\n,]/).map((url) => ({ url }))
+  return value.split("\n").map((url) => ({ url }))
 }
 
 export function formatProductVariationImageInput(

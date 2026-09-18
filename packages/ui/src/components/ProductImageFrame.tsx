@@ -37,7 +37,7 @@ export function ProductImageFrame({
   useEffect(() => {
     setImageFailed(false)
     setImageLoaded(false)
-  }, [imageKey, title])
+  }, [imageKey])
 
   return (
     <div

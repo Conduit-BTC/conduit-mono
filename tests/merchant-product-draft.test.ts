@@ -211,6 +211,37 @@ describe("merchant product drafts", () => {
     )
   })
 
+  it("migrates legacy comma-delimited variation image drafts once", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const storageKey = getProductDraftStorageKey(draftTarget)
+    if (!storageKey) throw new Error("Expected a product draft storage key")
+    const variations = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [createProductVariationAxis("size", "S")],
+    })
+    variations.rows[0]!.imageUrls =
+      "https://example.com/front.png, https://example.com/back.png"
+    variations.rows[0]!.inheritImages = false
+    const storedForm = legacyForm({ variations })
+
+    storage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 6,
+        baseEventId: null,
+        savedAt: Date.now(),
+        form: storedForm,
+      })
+    )
+
+    expect(
+      loadProductDraft(draftTarget, storage).draft?.variations.rows[0]
+        ?.imageUrls
+    ).toBe("https://example.com/front.png\nhttps://example.com/back.png")
+  })
+
   it("round-trips an exact local-pickup catalog reference", () => {
     const storage = new MemoryStorage()
     const draftTarget = target()

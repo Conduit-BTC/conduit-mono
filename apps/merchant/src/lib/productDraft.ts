@@ -16,7 +16,7 @@ const PRODUCT_DRAFT_VERSION = 7
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
   "conduit:merchant:product_variation_authoring:v1"
-const PRODUCT_VARIATION_AUTHORING_VERSION = 1
+const PRODUCT_VARIATION_AUTHORING_VERSION = 2
 const LEGACY_SCIENTIFIC_AMOUNT_PATTERN = /^\d+(?:\.\d+)?e[+-]?\d+$/i
 
 export interface ProductDraftTarget {
@@ -268,7 +268,9 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
     if (!/^\d*$/.test(stock)) return null
     const variations =
       candidate.version >= 6 || form.variations !== undefined
-        ? parseProductVariationFormState(form.variations)
+        ? parseProductVariationFormState(form.variations, {
+            migrateLegacyImageInput: candidate.version <= 6,
+          })
         : createEmptyProductVariationForm()
     if (!variations) return null
 
@@ -423,12 +425,15 @@ function parseStoredProductVariationAuthoringState(
       state?: unknown
     }
     if (
-      candidate.version !== PRODUCT_VARIATION_AUTHORING_VERSION ||
+      (candidate.version !== 1 &&
+        candidate.version !== PRODUCT_VARIATION_AUTHORING_VERSION) ||
       typeof candidate.rootEventId !== "string"
     ) {
       return null
     }
-    const state = parseProductVariationFormState(candidate.state)
+    const state = parseProductVariationFormState(candidate.state, {
+      migrateLegacyImageInput: candidate.version === 1,
+    })
     if (!state) return null
 
     return {
