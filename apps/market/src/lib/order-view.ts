@@ -216,8 +216,6 @@ export function canClaimManualInvoiceReport(
   buyerPubkey: string
 ): boolean {
   if (
-    current.publicZapSigner ||
-    (current.checkoutMode && getOrderPublicZapSigner(current.checkoutMode)) ||
     current.phase === "completed" ||
     current.paymentStatus === "paid" ||
     isMerchantOrderPaid({ status: current.merchantStatus }) ||
@@ -252,6 +250,7 @@ export function canClaimManualInvoiceReport(
   return (
     access === "pay" ||
     access === "report_only" ||
+    access === "receipt_only" ||
     (access === "none" && !!unboundReport)
   )
 }

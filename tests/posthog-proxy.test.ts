@@ -5,6 +5,7 @@ import {
   type AllowedOriginContext,
   handlePostHogProxyRequest,
   isSanitizedTelemetryRoutePath,
+  type PostHogProxyEnv,
   rebuildPostHogIngestPayload as rebuildPostHogIngestPayloadWithContext,
 } from "../apps/posthog-proxy/src"
 import {
@@ -225,6 +226,40 @@ function ingestRequest(
   })
 }
 
+function gmvRequest(
+  payload: unknown,
+  origin = "https://shop.conduit.market"
+): Request {
+  return new Request("https://e.conduit.market/gmv", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin,
+    },
+    body: JSON.stringify(payload),
+  })
+}
+
+function gmvEnv(
+  options: {
+    globalSuccess?: boolean
+    orderSuccess?: boolean
+    secret?: string
+  } = {}
+): PostHogProxyEnv {
+  return {
+    POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN,
+    COMMERCE_GMV_TELEMETRY_HMAC_SECRET:
+      options.secret ?? "commerce-gmv-test-secret-at-least-32-bytes",
+    GMV_GLOBAL_RATE_LIMITER: {
+      limit: async () => ({ success: options.globalSuccess ?? true }),
+    },
+    GMV_ORDER_RATE_LIMITER: {
+      limit: async () => ({ success: options.orderSuccess ?? true }),
+    },
+  }
+}
+
 describe("PostHog reverse proxy", () => {
   it("exposes a content-free health check", async () => {
     const response = await handlePostHogProxyRequest(
@@ -234,6 +269,145 @@ describe("PostHog reverse proxy", () => {
     expect(response.status).toBe(200)
     expect(response.headers.get("cache-control")).toBe("no-store")
     expect(await response.json()).toEqual({ status: "ok" })
+  })
+
+  it("turns every signal for one order into the same opaque GMV event", async () => {
+    const orderId = "018f4a00-1111-4abc-8def-0123456789ab"
+    const estimate = {
+      orderId,
+      orderDate: "2026-09-17",
+      invoicedAmountSats: 42,
+    }
+    const upstream: Record<string, unknown>[] = []
+    const fetcher = async (request: Request) => {
+      upstream.push((await request.json()) as Record<string, unknown>)
+      expect(request.url).toBe("https://us.i.posthog.com/i/v0/e/?ip=0")
+      expect(request.headers.get("cf-connecting-ip")).toBeNull()
+      return new Response("ok")
+    }
+
+    for (const origin of [
+      "https://shop.conduit.market",
+      "https://sell.conduit.market",
+    ]) {
+      const response = await handlePostHogProxyRequest(
+        gmvRequest(estimate, origin),
+        fetcher,
+        gmvEnv()
+      )
+      expect(response.status).toBe(200)
+    }
+
+    expect(upstream).toHaveLength(2)
+    expect(upstream[0]).toEqual(upstream[1])
+    expect(upstream[0]).toEqual({
+      api_key: PROJECT_TOKEN,
+      event: "commerce_gmv_estimated",
+      distinct_id: "conduit-commerce-gmv-estimate",
+      uuid: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      ),
+      timestamp: "2026-09-17T00:00:00.000Z",
+      properties: {
+        $process_person_profile: false,
+        estimated_gmv_sats: 42,
+      },
+    })
+    expect(JSON.stringify(upstream[0])).not.toContain(orderId)
+  })
+
+  it("uses a different opaque event UUID for a different order", async () => {
+    const upstream: Array<{ uuid: string }> = []
+    const fetcher = async (request: Request) => {
+      upstream.push((await request.json()) as { uuid: string })
+      return new Response("ok")
+    }
+
+    for (const orderId of [
+      "018f4a00-1111-4abc-8def-0123456789ab",
+      "018f4a00-2222-4abc-8def-0123456789ab",
+    ]) {
+      await handlePostHogProxyRequest(
+        gmvRequest({
+          orderId,
+          orderDate: "2026-09-17",
+          invoicedAmountSats: 42,
+        }),
+        fetcher,
+        gmvEnv()
+      )
+    }
+
+    expect(new Set(upstream.map((event) => event.uuid)).size).toBe(2)
+  })
+
+  it("fails GMV ingestion closed for malformed, unconfigured, or rate-limited requests", async () => {
+    const valid = {
+      orderId: "018f4a00-1111-4abc-8def-0123456789ab",
+      orderDate: "2026-09-17",
+      invoicedAmountSats: 42,
+    }
+    let upstreamCalls = 0
+    const fetcher = async () => {
+      upstreamCalls += 1
+      return new Response("ok")
+    }
+    const cases: Array<[Request, PostHogProxyEnv, number]> = [
+      [gmvRequest(valid, "https://preview.example"), gmvEnv(), 403],
+      [gmvRequest({ ...valid, extra: "field" }), gmvEnv(), 400],
+      [gmvRequest({ ...valid, orderId: "raw-order-id" }), gmvEnv(), 400],
+      [gmvRequest({ ...valid, orderDate: "2026-02-30" }), gmvEnv(), 400],
+      [gmvRequest({ ...valid, invoicedAmountSats: 0 }), gmvEnv(), 400],
+      [
+        new Request("https://e.conduit.market/gmv?order=raw-order-id", {
+          method: "POST",
+          headers: { origin: "https://shop.conduit.market" },
+          body: JSON.stringify(valid),
+        }),
+        gmvEnv(),
+        400,
+      ],
+      [gmvRequest(valid), {}, 503],
+      [gmvRequest(valid), gmvEnv({ secret: "short" }), 503],
+      [gmvRequest(valid), gmvEnv({ globalSuccess: false }), 429],
+      [gmvRequest(valid), gmvEnv({ orderSuccess: false }), 429],
+    ]
+
+    for (const [request, env, status] of cases) {
+      const response = await handlePostHogProxyRequest(request, fetcher, env)
+      expect(response.status).toBe(status)
+    }
+    expect(upstreamCalls).toBe(0)
+  })
+
+  it("rejects every additional identity-bearing GMV field before PostHog", async () => {
+    const valid = {
+      orderId: "018f4a00-1111-4abc-8def-0123456789ab",
+      orderDate: "2026-09-17",
+      invoicedAmountSats: 42,
+    }
+    let upstreamCalls = 0
+
+    for (const extra of [
+      { buyerPubkey: "buyer" },
+      { merchantPubkey: "merchant" },
+      { invoice: "lnbc..." },
+      { sessionId: "session" },
+      { deviceId: "device" },
+      { orderCreatedAt: Date.parse("2026-09-17T18:24:31.000Z") },
+    ]) {
+      const response = await handlePostHogProxyRequest(
+        gmvRequest({ ...valid, ...extra }),
+        async () => {
+          upstreamCalls += 1
+          return new Response("ok")
+        },
+        gmvEnv()
+      )
+      expect(response.status).toBe(400)
+    }
+
+    expect(upstreamCalls).toBe(0)
   })
 
   it("accepts both exact production origins", async () => {

@@ -308,19 +308,15 @@ for (const mode of [
         host.getByRole("button", { name: "Copy invoice" })
       ).toHaveCount(0)
       await expect(host.locator("svg")).toHaveCount(0)
-      if (mode === "private_checkout") {
-        await host
-          .getByRole("button", { name: "Report a payment already made" })
-          .click()
-        expect(await page.evaluate(() => window.__invoiceReportCalls)).toBe(1)
-      } else {
+      if (mode !== "private_checkout") {
         await expect(
           host.getByText(/Waiting for the matching receipt/)
         ).toBeVisible()
-        await expect(host.getByRole("button", { name: /Report/ })).toHaveCount(
-          0
-        )
       }
+      await host
+        .getByRole("button", { name: "Report a payment already made" })
+        .click()
+      expect(await page.evaluate(() => window.__invoiceReportCalls)).toBe(1)
       expect(await page.evaluate(() => window.__invoicePreparationCalls)).toBe(
         0
       )
@@ -329,7 +325,7 @@ for (const mode of [
 }
 
 for (const mode of ["public_zap_as_shopper", "anonymous_public_zap"] as const) {
-  test(`${mode} does not offer a payment report after receipt observation times out @market`, async ({
+  test(`${mode} offers a payment report after receipt observation times out @market`, async ({
     page,
   }) => {
     const now = new Date(Math.floor(Date.now() / 1_000) * 1_000)
@@ -345,12 +341,17 @@ for (const mode of ["public_zap_as_shopper", "anonymous_public_zap"] as const) {
     await expect(
       host.getByText(/No matching receipt has been observed yet/)
     ).toBeVisible()
-    await expect(host.getByRole("button", { name: /Report/ })).toHaveCount(0)
+    await expect(
+      host.getByRole("button", { name: "Report payment to merchant" })
+    ).toBeVisible()
     await page.clock.fastForward(3_601_000)
     await expect(
       host.getByRole("heading", { name: "Invoice unavailable" })
     ).toBeVisible()
-    await expect(host.getByRole("button", { name: /Report/ })).toHaveCount(0)
+    await host
+      .getByRole("button", { name: "Report a payment already made" })
+      .click()
+    expect(await page.evaluate(() => window.__invoiceReportCalls)).toBe(1)
     await expect(
       host.getByText(/No matching receipt has been observed yet/)
     ).toBeVisible()
