@@ -1018,7 +1018,11 @@ export class SparkWalletManager {
           : { completionTimeoutSecs: attempt.completionTimeoutSecs }),
       })
     } catch {
-      return { status: "lookup_unavailable" }
+      return {
+        status: "conflicting_evidence",
+        reason:
+          "Spark payment recovery did not return classified provider evidence.",
+      }
     }
   }
 
@@ -1382,6 +1386,18 @@ function getSparkLightningSendAttemptConflict(
         attempt.completionTimeoutSecs < 0))
   ) {
     return "The persisted Spark payment attempt is invalid."
+  }
+  const approvedAmountMsats = attempt.amountSats * 1_000
+  const invoice = normalizeLightningInvoice(attempt.paymentRequest)
+  const metadata = decodeLightningInvoiceMetadata(invoice)
+  if (
+    !Number.isSafeInteger(approvedAmountMsats) ||
+    metadata.createdAt === null ||
+    !decodeLightningInvoicePaymentHash(invoice) ||
+    getLightningInvoiceNetwork(invoice) !== network ||
+    metadata.msats !== approvedAmountMsats
+  ) {
+    return "The persisted Spark payment attempt contains an invalid Lightning invoice."
   }
   return null
 }

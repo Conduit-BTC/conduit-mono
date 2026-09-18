@@ -1600,6 +1600,60 @@ describe("first-party Spark SDK adapter", () => {
     ])
   })
 
+  it("keeps a live Lightning status lookup failure ambiguous with a useful reason", async () => {
+    let now = 0
+    let payCalls = 0
+    let statusReads = 0
+    const wallet = createNativeWallet({
+      async getLightningSendFeeEstimate() {
+        return 2
+      },
+      async payLightningInvoice() {
+        payCalls += 1
+        return {
+          id: "lightning-pending",
+          status: "LIGHTNING_PAYMENT_INITIATED",
+          fee: { originalValue: 2, originalUnit: "SATOSHI" },
+        }
+      },
+      async getLightningSendRequest() {
+        statusReads += 1
+        throw new Error("provider unavailable")
+      },
+    })
+    const manager = new SparkWalletManager(
+      createFactory(wallet, {}, "mainnet", {
+        now: () => now,
+        wait: async (milliseconds) => {
+          now += milliseconds
+        },
+        pollIntervalMs: 100,
+      }),
+      async () => ({ async release() {} })
+    )
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: MNEMONIC,
+      accountNumber: 1,
+    })
+
+    await expect(
+      manager.payInvoice("wallet-personal", {
+        invoice: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountMsats: 1_000_000,
+        idempotencyKey: PAYMENT_ATTEMPT_ID,
+        completionTimeoutSecs: 1,
+        approveFee: async () => true,
+      })
+    ).resolves.toEqual({
+      status: "ambiguous",
+      reason:
+        "Spark payment status could not be checked. Check the wallet before retrying.",
+    })
+    expect(payCalls).toBe(1)
+    expect(statusReads).toBe(1)
+  })
+
   it("recovers a lost Lightning response by transfer ID without paying again", async () => {
     let payCalls = 0
     const transferReads: string[] = []
