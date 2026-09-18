@@ -196,7 +196,7 @@ function EventCatalogProductCard({
   }
   const increment = (selection: Product) => {
     if (selection.id !== selectedProduct.id || !existing || !candidate) return
-    cart.addItem(candidate, 1)
+    cart.refreshAndIncrementItem(existing, candidate, 1)
   }
 
   const decrement = (selection: Product) => {

@@ -32,6 +32,9 @@ describe("generic Market event fulfillment", () => {
     expect(detail).toContain("productCartCandidate")
     expect(detail).toContain("productCartBlocked")
     expect(detail).toContain("cart.addItem(productCartCandidate, quantity)")
+    expect(detail).toContain(
+      "cart.refreshAndIncrementItem(cartItem, productCartCandidate, quantity)"
+    )
     expect(detail).not.toContain("cart.incrementItem(cartItem")
     expect(detail).toContain("ResolvedProductGridCard")
     expect(detail).toContain("View event catalog")
@@ -44,6 +47,9 @@ describe("generic Market event fulfillment", () => {
     )
     expect(cart).toContain("fulfillmentBlocked")
     expect(cart).toContain("cart.addItem(cartCandidate)")
+    expect(cart).toContain(
+      "cart.refreshAndIncrementItem(existing, cartCandidate)"
+    )
     expect(cart).not.toContain(
       "cart.incrementItem(existing, 1, selectedProduct.stock)"
     )
@@ -80,8 +86,14 @@ describe("generic Market event fulfillment", () => {
       "isSameCartLineFulfillment(item, cartCandidate)"
     )
     expect(resolvedCard).toContain("cart.addItem(cartCandidate, 1)")
+    expect(resolvedCard).toContain(
+      "cart.refreshAndIncrementItem(existing, cartCandidate, 1)"
+    )
     expect(resolvedCard).not.toContain("cart.incrementItem(existing")
     expect(event).toContain("cart.addItem(candidate, 1)")
+    expect(event).toContain(
+      "cart.refreshAndIncrementItem(existing, candidate, 1)"
+    )
     expect(event).not.toContain(
       "cart.incrementItem(existing, 1, selectedProduct.stock)"
     )

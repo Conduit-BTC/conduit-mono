@@ -387,6 +387,10 @@ function ProductPage() {
       return
     }
     recordProductDetailAction("add_to_cart")
+    if (cartItem) {
+      cart.refreshAndIncrementItem(cartItem, productCartCandidate, quantity)
+      return
+    }
     cart.addItem(productCartCandidate, quantity)
   }
 

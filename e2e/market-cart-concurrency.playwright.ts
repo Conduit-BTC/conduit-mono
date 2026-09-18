@@ -29,7 +29,7 @@ const legacyCart = {
 
 async function seedLegacyCart(
   context: BrowserContext,
-  seed: typeof legacyCart
+  seed: unknown
 ): Promise<void> {
   await context.addInitScript((value) => {
     if (localStorage.getItem("conduit:cart") === null) {
@@ -371,6 +371,89 @@ test("delayed stale quantity actions cannot restore a line removed in another ta
       staleTab.getByRole("heading", { name: "Your cart is empty" })
     ).toBeVisible()
   }
+  await currentTab.reload()
+  await expect(
+    currentTab.getByRole("heading", { name: "Your cart is empty" })
+  ).toBeVisible()
+})
+
+test("delayed product quote refreshes cannot restore a line removed in another tab @market", async ({
+  context,
+}) => {
+  const item = pickupItem({
+    merchant: MERCHANT,
+    organizer: "b".repeat(64),
+    product: "quote-refresh",
+    title: "Quote refresh item",
+    event: "a",
+  })
+  item.fulfillment.costSats = 1_000
+  item.fulfillment.sourceCost = {
+    amount: 10,
+    currency: "USD",
+    normalizedCurrency: "USD",
+  }
+  await seedLegacyCart(context, { version: 2, items: [item] })
+
+  const currentTab = await context.newPage()
+  const staleProductTab = await context.newPage()
+  await delayCartNotifications(staleProductTab)
+  await Promise.all([
+    currentTab.goto(`${marketUrl}/cart`),
+    staleProductTab.goto(`${marketUrl}/cart`),
+  ])
+
+  const remove = currentTab.getByRole("button", {
+    name: "Remove Quote refresh item from cart",
+  })
+  await expect(remove).toBeVisible()
+  await expect(
+    staleProductTab.getByRole("link", { name: "Quote refresh item" })
+  ).toBeVisible()
+
+  const staleItem = await staleProductTab.evaluate(async () => {
+    const modulePath = "/src/lib/cart-repository.ts"
+    const repository = (await import(/* @vite-ignore */ modulePath)) as {
+      getCartRepositorySnapshot(): { items: CartItem[] }
+    }
+    return repository.getCartRepositorySnapshot().items[0]
+  })
+  expect(staleItem?.cartLineId).toBeTruthy()
+
+  await remove.click()
+  await expect(
+    currentTab.getByRole("heading", { name: "Your cart is empty" })
+  ).toBeVisible()
+
+  const changed = await staleProductTab.evaluate(async (renderedItem) => {
+    const modulePath = "/src/lib/cart-repository.ts"
+    const repository = (await import(/* @vite-ignore */ modulePath)) as {
+      refreshAndIncrementCartRepositoryItem(
+        identity: CartItem,
+        input: Omit<CartItem, "cartLineId" | "merchantAddedAt" | "quantity">,
+        quantity: number
+      ): Promise<{ changed: boolean }>
+    }
+    const {
+      cartLineId: _cartLineId,
+      merchantAddedAt: _merchantAddedAt,
+      quantity: _quantity,
+      ...candidate
+    } = renderedItem
+    candidate.fulfillment = {
+      ...candidate.fulfillment,
+      costSats: 1_250,
+    } as typeof candidate.fulfillment
+    const result = await repository.refreshAndIncrementCartRepositoryItem(
+      renderedItem,
+      candidate,
+      1
+    )
+    return result.changed
+  }, staleItem!)
+
+  expect(changed).toBe(false)
+  await expect.poll(() => readCanonicalLines(currentTab)).toEqual([])
   await currentTab.reload()
   await expect(
     currentTab.getByRole("heading", { name: "Your cart is empty" })

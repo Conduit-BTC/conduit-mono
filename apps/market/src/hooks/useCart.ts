@@ -20,6 +20,7 @@ import {
   decrementCartRepositoryItem,
   getCartRepositorySnapshot,
   incrementCartRepositoryItem,
+  refreshAndIncrementCartRepositoryItem,
   removeCartRepositoryItem,
   subscribeToCartRepository,
   type CartPurchaseClaim,
@@ -114,6 +115,32 @@ export function useCart() {
     []
   )
 
+  const refreshAndIncrementItem = useCallback(
+    async (identity: CartItemIdentity, item: CartItemInput, quantity = 1) => {
+      const requested = Math.max(1, Math.floor(quantity))
+      const result = await refreshAndIncrementCartRepositoryItem(
+        identity,
+        item,
+        requested
+      )
+      if (!result.changed) return false
+      const refreshed = selectCartItem(result.after, identity)
+      recordBrowserTelemetryEvent({
+        app: "market",
+        eventName: "cart_add",
+        properties: {
+          action: "add",
+          count_bucket: getTelemetryCountBucket(requested),
+          product_type: refreshed?.format ?? "physical",
+          status: "success",
+          surface: "cart",
+        },
+      })
+      return true
+    },
+    []
+  )
+
   const decrementItem = useCallback((identity: CartItemIdentity) => {
     return decrementCartRepositoryItem(identity)
   }, [])
@@ -187,6 +214,7 @@ export function useCart() {
     persistenceMode: snap.persistenceMode,
     addItem,
     incrementItem,
+    refreshAndIncrementItem,
     decrementItem,
     removeItem,
     clear,
