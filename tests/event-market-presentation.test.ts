@@ -240,3 +240,19 @@ describe("event-market discovery presentation", () => {
     ).toMatchObject({ role: "alert", prominent: true })
   })
 })
+
+it("distinguishes organizer closure from a passed schedule without canceling existing orders", () => {
+  expect(
+    getEventActionabilityPresentation({
+      state: "ended",
+      orderAcceptance: "closed",
+      availableProductCount: 1,
+    })
+  ).toMatchObject({
+    actionability: "read_only",
+    label: "Event closed",
+    message:
+      "The organizer has closed this event to new orders. Existing orders and pickup remain available.",
+    prominent: false,
+  })
+})

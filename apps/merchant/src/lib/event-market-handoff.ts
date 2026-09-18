@@ -7,6 +7,7 @@ import {
   authorizeEventMarketHandoffAck,
   createEventMarketPrivateDeliveryProgress,
   getEventMarketReceiptMerchandise,
+  getEventMarketCollectionLifecycleEvidence,
   getEventMarketOrderCorrelationRef,
   parseEventMarketPrivateDeliveryProgress,
   parseEventMarketPrivateDeliveryRecord,
@@ -31,6 +32,7 @@ import {
   type OrderSchema,
   type PublishWithPlannerResult,
   type RetryEventMarketPrivateDeliveryResult,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 
 const STORAGE_PREFIX = "conduit:merchant:event-handoff-delivery:v1"
@@ -742,13 +744,15 @@ export function buildOrganizerReadyReceiptPayload(
   order: OrderSchema,
   market: EventMarketResolution,
   fulfillmentState: "paid" | "zero_cost",
-  issuedAt = Math.floor(Date.now() / 1_000)
+  issuedAt = Math.floor(Date.now() / 1_000),
+  collectionLifecycleEvidence?: readonly SignedPublicNostrEvent[]
 ): EventMarketReadyReceiptSchema {
   return buildEventMarketReadyReceiptPayload({
     order,
     market,
     fulfillmentState,
     issuedAt,
+    collectionLifecycleEvidence,
   })
 }
 
@@ -1044,10 +1048,26 @@ export async function issueOrganizerReadyReceipt(input: {
     input.order,
     input.paymentAuthenticated
   )
+  const pickup = input.order.items.find(
+    (item) => item.fulfillment?.type === "pickup"
+  )?.fulfillment
+  const collectionLifecycleEvidence =
+    pickup?.type === "pickup" && input.market.collection
+      ? await getEventMarketCollectionLifecycleEvidence({
+          original: pickup.collection,
+          current: input.market.collection,
+          authenticatedPubkey: input.transport?.authenticatedPubkey,
+          accountNetworkLocalStateRepository:
+            input.transport?.accountNetworkLocalStateRepository,
+          shouldContinue: input.transport?.shouldContinue,
+        })
+      : []
   const payload = buildOrganizerReadyReceiptPayload(
     input.order,
     input.market,
-    fulfillmentState
+    fulfillmentState,
+    undefined,
+    collectionLifecycleEvidence
   )
   let stored: StoredEventMarketHandoffDelivery | null = null
   let result: EventMarketPrivatePublishResult
@@ -1057,6 +1077,7 @@ export async function issueOrganizerReadyReceipt(input: {
       order: input.order,
       fulfillmentState,
       market: input.market,
+      collectionLifecycleEvidence,
       signer: input.signer,
       persistExactWraps: (record, initialDeliveryProgress) => {
         const pending = pendingDelivery(record, initialDeliveryProgress)
