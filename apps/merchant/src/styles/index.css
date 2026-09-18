@@ -31,11 +31,6 @@ body {
   }
 }
 
-@page {
-  size: 8.5in 11in;
-  margin: 0;
-}
-
 @media print {
   html:has(body.event-sign-print-preview-open),
   body.event-sign-print-preview-open {

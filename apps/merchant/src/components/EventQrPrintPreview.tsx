@@ -347,6 +347,9 @@ export function EventQrPrintPreview({
         data-event-sign-print-root
         showCloseButton={false}
       >
+        <style media="print" data-event-sign-page-style>
+          {"@page { size: 8.5in 11in; margin: 0; }"}
+        </style>
         <div className="event-sign-print-controls space-y-4 border-b border-[var(--border)] bg-[var(--surface-dialog)] p-6">
           <div className="flex items-start justify-between gap-4">
             <DialogHeader>

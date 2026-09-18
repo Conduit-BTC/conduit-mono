@@ -5474,10 +5474,17 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   ).toBeVisible()
 
   const eventsHeading = page.locator("h1").filter({ hasText: /^Events$/ })
+  const eventSignPageStyle = page.locator("style[data-event-sign-page-style]")
+  await expect(eventSignPageStyle).toHaveCount(0)
+  await page.emulateMedia({ media: "print" })
+  await expect(eventsHeading).toBeVisible()
+  await page.emulateMedia({ media: "screen" })
   await page.getByRole("button", { name: "Print event sign" }).click()
   const printPreview = page.getByTestId("event-sign-print-preview")
   const eventSignSheet = printPreview.getByTestId("event-sign-sheet")
   await expect(printPreview).toBeVisible()
+  await expect(eventSignPageStyle).toHaveCount(1)
+  expect(await eventSignPageStyle.textContent()).toContain("size: 8.5in 11in")
   await expect(eventSignSheet).toHaveAttribute("data-event-sign-kind", "event")
   await expect(eventSignSheet).toHaveCount(1)
   await expect(
@@ -5560,6 +5567,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   expect(countPdfPages(eventSignPdf)).toBe(1)
   await page.emulateMedia({ media: "screen" })
   await printPreview.getByRole("button", { name: "Close" }).click()
+  await expect(eventSignPageStyle).toHaveCount(0)
 
   await page.getByRole("button", { name: "Print merchant sign" }).click()
   const merchantSignSheet = printPreview.getByTestId("event-sign-sheet")
