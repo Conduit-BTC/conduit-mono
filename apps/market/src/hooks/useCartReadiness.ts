@@ -58,7 +58,7 @@ export type CartReadiness = {
   byPurchase: ReadonlyMap<string, MerchantCartReadiness>
   hasUnavailableItems: boolean
   hasInsufficientStockItems: boolean
-  /** True while any merchant is still in its initial no-evidence read. */
+  /** True while any purchase is still in its initial no-evidence read. */
   anyChecking: boolean
   refreshAll: () => Promise<MerchantCartRefreshResult[]>
 }
@@ -194,6 +194,7 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
         diagnostics,
         querySucceeded: query.isSuccess,
       })
+      const fresh = isCartAvailabilityReadComplete(readDecision)
       const hasEvidence = query.data !== undefined
       const blockingMessage = hasEvidence
         ? getCartAvailabilityBlockingMessage(
@@ -210,7 +211,7 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
         hasEvidence,
         initialLoading: query.isLoading,
         backgroundRefreshing: query.isFetching && hasEvidence,
-        fresh: isCartAvailabilityReadComplete(readDecision),
+        fresh,
         blocked: hasUnavailableItems,
         evidenceAgeMs: hasEvidence ? Date.now() - query.dataUpdatedAt : null,
       })
