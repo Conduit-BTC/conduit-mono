@@ -38,15 +38,16 @@ interaction primitives belong in `@conduit/ui`. Apps may depend on both.
 
 ## Public Domains
 
-| Domain                   | Purpose                      |
-| ------------------------ | ---------------------------- |
-| `conduit.market`         | Marketing / landing page     |
-| `shop.conduit.market`    | Market app                   |
-| `sell.conduit.market`    | Merchant Portal              |
-| `build.conduit.market`   | Store Builder app shell      |
-| `blossom.conduit.market` | Blossom media hosting        |
-| `relay.conduit.market`   | Conduit-operated Nostr relay |
-| `e.conduit.market`       | Product telemetry proxy      |
+| Domain                    | Purpose                      |
+| ------------------------- | ---------------------------- |
+| `conduit.market`          | Marketing / landing page     |
+| `shop.conduit.market`     | Market app                   |
+| `sell.conduit.market`     | Merchant Portal              |
+| `build.conduit.market`    | Store Builder app shell      |
+| `blossom.conduit.market`  | Blossom media hosting        |
+| `relay.conduit.market`    | Conduit-operated Nostr relay |
+| `e.conduit.market`        | Product telemetry proxy      |
+| `presence.conduit.market` | Live product/store presence  |
 
 The canonical relay reset list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://relay.conduit.market`. Retired Conduit relay hosts should not appear in active docs or examples.
 

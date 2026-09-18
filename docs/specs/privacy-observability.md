@@ -157,9 +157,11 @@ Historical pageview analytics and live presence are separate systems.
   It is not authentication and does not hide a public page from a determined
   observer.
 - Exact low counts expose activity timing and unauthenticated sockets can
-  inflate them. Exact presence stays enabled only on previews. Production and
-  staging remain disabled until a maintainer approves explicit privacy and
-  abuse controls, such as a minimum threshold and bounded count buckets.
+  inflate them. Market production and previews may show exact active-connection
+  counts after explicit maintainer approval of that disclosure. Each deployment
+  must restrict browser origins, enforce per-source and global connection caps,
+  and retain the no-history and Global Privacy Control boundaries above.
+  Staging remains disabled unless separately approved.
 
 ## Public Zap Message Boundary
 

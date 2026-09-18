@@ -4,6 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-03",
   "workers_dev": false,
+  "vars": {
+    "PRESENCE_DEPLOYMENT": "production",
+  },
   "durable_objects": {
     "bindings": [
       {
@@ -26,6 +29,9 @@
       "name": "conduit-presence-preview",
       "workers_dev": true,
       "preview_urls": false,
+      "vars": {
+        "PRESENCE_DEPLOYMENT": "preview",
+      },
       "durable_objects": {
         "bindings": [
           {

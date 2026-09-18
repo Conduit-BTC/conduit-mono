@@ -8,7 +8,7 @@ import {
 } from "../scripts/vite/deployment_profile"
 
 describe("deployment profiles", () => {
-  it("enables preview-only public features", () => {
+  it("enables live presence for Market preview and production", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",
     })
@@ -27,7 +27,7 @@ describe("deployment profiles", () => {
       false
     )
     expect(preview.publicFeatures.livePresenceEnabled).toBe(true)
-    expect(production.publicFeatures.livePresenceEnabled).toBe(false)
+    expect(production.publicFeatures.livePresenceEnabled).toBe(true)
     expect(staging.publicFeatures.livePresenceEnabled).toBe(false)
   })
 

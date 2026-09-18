@@ -503,7 +503,7 @@ function StorefrontPage() {
         <div className="relative px-5 pb-6 sm:px-6 sm:pb-7">
           <div className="relative -mt-10 space-y-5 sm:-mt-14">
             <div className="flex min-w-0 flex-wrap items-start gap-x-6 gap-y-5">
-              <div className="flex min-w-0 flex-1 basis-full items-start gap-3 sm:basis-[28rem] sm:gap-4 lg:basis-[34rem]">
+              <div className="grid min-w-0 flex-1 basis-full grid-cols-[5rem_minmax(0,1fr)] items-start gap-x-3 sm:basis-[28rem] sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-x-4 lg:basis-[34rem]">
                 <Avatar className="h-20 w-20 shrink-0 self-start border-4 border-[var(--surface)] bg-[var(--surface)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
                   <AvatarImage
                     src={profile?.picture}
@@ -515,7 +515,7 @@ function StorefrontPage() {
                   </AvatarFallback>
                 </Avatar>
 
-                <div className="min-w-0 flex-1 pt-11 sm:pt-16">
+                <div className="min-w-0 pt-11 sm:pt-16">
                   <div className="flex min-w-0 items-center gap-2">
                     {merchantIdentityPending ? (
                       <h1 className="min-w-0 max-w-full truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
@@ -544,6 +544,8 @@ function StorefrontPage() {
                       )}
                     </button>
                   </div>
+                </div>
+                <div className="col-span-2 min-w-0 pt-2 sm:col-span-1 sm:col-start-2">
                   <div className="mt-2 flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--text-secondary)]">
                     <span className="inline-flex min-w-0 max-w-[18rem] items-center gap-1 font-medium text-[var(--text-primary)] sm:max-w-[22rem]">
                       <span className="block min-w-0 truncate">
