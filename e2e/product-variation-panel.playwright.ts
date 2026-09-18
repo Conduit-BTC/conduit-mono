@@ -141,6 +141,23 @@ async function expectPrimaryCardHighlight(
   expect(parseFloat(style.borderTopRightRadius)).toBeGreaterThan(0)
 }
 
+async function expectNeutralCardBorder(
+  page: Page,
+  card: Locator
+): Promise<void> {
+  const [style, borderColor, primaryColor] = await Promise.all([
+    cardStyle(card),
+    resolvedThemeColor(page, "--border"),
+    resolvedThemeColor(page, "--primary-500"),
+  ])
+  expect(style).toMatchObject({
+    borderLeftColor: borderColor,
+    borderRightColor: borderColor,
+    borderTopColor: borderColor,
+  })
+  expect(style.boxShadow).not.toContain(primaryColor)
+}
+
 async function hasJoinedBorderColors(
   card: Locator,
   panel: Locator
@@ -728,7 +745,7 @@ test("market product variation panel remains inline on touch tablets @market", a
 
     await expect(chooseSize).toBeVisible()
     await expectInlinePanel(panel, variableCard)
-    await expectPrimaryCardHighlight(page, variableCard)
+    await expectNeutralCardBorder(page, variableCard)
     expect((await cardStyle(variableCard)).scale).toBe("none")
     await chooseSize.click()
     await expect(page.getByRole("listbox")).toBeVisible()
@@ -755,7 +772,7 @@ test("market product variation panel remains inline on narrow mobile @market", a
 
   await expect(chooseSize).toBeVisible()
   await expectInlinePanel(panel, variableCard)
-  await expectPrimaryCardHighlight(page, variableCard)
+  await expectNeutralCardBorder(page, variableCard)
   expect((await cardStyle(variableCard)).scale).toBe("none")
   await page.locator("#product-variation-panel-harness").screenshot({
     path: test.info().outputPath("variation-mobile.png"),
