@@ -130,22 +130,23 @@ async function expectPrintableSignInsideLetterSheet(
         height: bounds.height,
       }
     }
+    const optionalBounds = (selector: string) =>
+      element.querySelector(selector) ? relativeBounds(selector) : null
 
     return {
+      kind: element.getAttribute("data-event-sign-kind"),
       clientHeight: element.clientHeight,
       scrollHeight: element.scrollHeight,
       sheetHeight: sheetBounds.height,
-      banner: relativeBounds(".event-sign-banner"),
+      eventBannerFull: optionalBounds(".event-sign-event-banner-full"),
+      eventBannerMini: optionalBounds(".event-sign-event-banner-mini"),
+      eventContext: relativeBounds(".event-sign-event-context"),
       eventTitle: relativeBounds(".event-sign-event-title"),
-      merchantLockup: element.querySelector(".event-sign-merchant-lockup")
-        ? relativeBounds(".event-sign-merchant-lockup")
-        : null,
-      merchantAvatar: element.querySelector(".event-sign-avatar")
-        ? relativeBounds(".event-sign-avatar")
-        : null,
-      merchantName: element.querySelector(".event-sign-merchant-name")
-        ? relativeBounds(".event-sign-merchant-name")
-        : null,
+      sectionDivider: optionalBounds(".event-sign-section-divider"),
+      merchantLockup: optionalBounds(".event-sign-merchant-lockup"),
+      merchantBanner: optionalBounds(".event-sign-merchant-banner"),
+      merchantAvatar: optionalBounds(".event-sign-avatar"),
+      merchantName: optionalBounds(".event-sign-merchant-name"),
       merchantNameFontSize: element.querySelector(".event-sign-merchant-name")
         ? Number.parseFloat(
             getComputedStyle(
@@ -161,12 +162,15 @@ async function expectPrintableSignInsideLetterSheet(
   })
 
   expect(metrics.scrollHeight).toBeLessThanOrEqual(metrics.clientHeight + 1)
-  expect(metrics.banner.width).toBeCloseTo(816, 1)
-  expect(metrics.banner.height).toBeCloseTo(272, 1)
+  expect(["event", "merchant"]).toContain(metrics.kind)
   for (const bounds of [
-    metrics.banner,
+    metrics.eventBannerFull,
+    metrics.eventBannerMini,
+    metrics.eventContext,
     metrics.eventTitle,
+    metrics.sectionDivider,
     metrics.merchantLockup,
+    metrics.merchantBanner,
     metrics.merchantAvatar,
     metrics.merchantName,
     metrics.location,
@@ -179,19 +183,46 @@ async function expectPrintableSignInsideLetterSheet(
   }
   expect(metrics.qr.width).toBeGreaterThanOrEqual(300)
   expect(metrics.qr.height).toBeGreaterThanOrEqual(300)
-  if (
-    metrics.merchantLockup &&
-    metrics.merchantAvatar &&
-    metrics.merchantNameFontSize
-  ) {
-    expect(metrics.merchantLockup.width).toBeCloseTo(816, 1)
-    expect(metrics.merchantLockup.height).toBeGreaterThanOrEqual(400)
+  if (metrics.kind === "event") {
+    expect(metrics.eventBannerFull).not.toBeNull()
+    expect(metrics.eventBannerFull!.width).toBeCloseTo(816, 1)
+    expect(metrics.eventBannerFull!.height).toBeCloseTo(272, 1)
+    expect(metrics.eventBannerMini).toBeNull()
+    expect(metrics.scanCopy.bottom).toBeGreaterThanOrEqual(1_000)
+    expect(metrics.scanCopy.bottom).toBeLessThanOrEqual(1_025)
+  }
+  if (metrics.kind === "merchant") {
+    if (
+      !metrics.eventBannerMini ||
+      !metrics.sectionDivider ||
+      !metrics.merchantLockup ||
+      !metrics.merchantBanner ||
+      !metrics.merchantAvatar ||
+      !metrics.merchantNameFontSize
+    ) {
+      throw new Error(
+        "Printable merchant sign is missing its visual hierarchy."
+      )
+    }
+    expect(metrics.eventBannerFull).toBeNull()
+    expect(metrics.eventBannerMini.width).toBeCloseTo(144, 1)
+    expect(metrics.eventBannerMini.height).toBeCloseTo(48, 1)
+    expect(metrics.sectionDivider.width).toBeCloseTo(672, 1)
+    expect(metrics.sectionDivider.height).toBeCloseTo(2, 1)
+    expect(
+      metrics.sectionDivider.top - metrics.eventContext.bottom
+    ).toBeCloseTo(24, 1)
+    expect(
+      metrics.merchantLockup.top - metrics.sectionDivider.bottom
+    ).toBeCloseTo(20, 1)
+    expect(metrics.merchantLockup.width).toBeCloseTo(672, 1)
+    expect(metrics.merchantLockup.height).toBeCloseTo(336, 1)
+    expect(metrics.merchantBanner.width).toBeCloseTo(672, 1)
+    expect(metrics.merchantBanner.height).toBeCloseTo(224, 1)
     expect(metrics.merchantAvatar.width).toBeGreaterThanOrEqual(176)
     expect(metrics.merchantAvatar.height).toBeGreaterThanOrEqual(176)
-    expect(metrics.merchantNameFontSize).toBeGreaterThanOrEqual(56)
-    expect(metrics.qr.top - metrics.merchantLockup.bottom).toBeLessThanOrEqual(
-      12
-    )
+    expect(metrics.merchantNameFontSize).toBeGreaterThanOrEqual(52)
+    expect(metrics.qr.top - metrics.merchantLockup.bottom).toBeCloseTo(16, 1)
   }
 }
 

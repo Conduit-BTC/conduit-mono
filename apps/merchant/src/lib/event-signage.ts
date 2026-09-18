@@ -211,6 +211,7 @@ export function buildMerchantEventQrSignSheet(
   }
 
   const name = getProfileName(profile) || formatNpub(normalized)
+  const eventBannerUrl = normalizePublicMediaUrl(market.imageUrl) ?? undefined
   const imageUrl = normalizePublicMediaUrl(profile?.picture) ?? undefined
   const merchantBannerUrl =
     normalizePublicMediaUrl(profile?.banner) ?? undefined
@@ -222,6 +223,7 @@ export function buildMerchantEventQrSignSheet(
     eventTitle: market.title,
     schedule: formatEventSignSchedule(market),
     location: getEventSignLocation(market),
+    ...(eventBannerUrl ? { bannerUrl: eventBannerUrl } : {}),
     merchant: {
       pubkey: normalized,
       name,

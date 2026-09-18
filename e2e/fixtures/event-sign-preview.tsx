@@ -11,6 +11,8 @@ const sheet = {
   eventTitle: "A complete printable event title at the narrowest viewport",
   schedule: "Sep 17, 2026, 9:00 AM - Sep 17, 2026, 5:00 PM",
   location: "A complete public event location",
+  bannerUrl:
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1800' height='600'%3E%3Crect width='1800' height='600' fill='%2315072b'/%3E%3Ccircle cx='330' cy='300' r='180' fill='%23a100ff'/%3E%3Cpath d='M700 170h820v260H700z' fill='%23f4eef8'/%3E%3C/svg%3E",
   merchant: {
     pubkey: "0202020202020202020202020202020202020202020202020202020202020202",
     name: "A complete merchant display name",

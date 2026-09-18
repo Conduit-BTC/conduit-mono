@@ -164,87 +164,116 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
           <DecorativeImage
             src={sheet.bannerUrl}
             alt=""
-            className="event-sign-banner aspect-[3/1] w-full shrink-0 bg-neutral-950 object-cover"
+            className="event-sign-event-banner-full aspect-[3/1] w-full shrink-0 bg-neutral-950 object-cover"
             fallback={getEventSignImageFallback(sheet.eventTitle)}
-            fallbackClassName="event-sign-banner flex aspect-[3/1] w-full shrink-0 items-center justify-center bg-primary-50 font-display text-7xl font-semibold text-primary-700"
+            fallbackClassName="event-sign-event-banner-full flex aspect-[3/1] w-full shrink-0 items-center justify-center bg-primary-50 font-display text-7xl font-semibold text-primary-700"
           />
         ) : null}
 
-        <div className="event-sign-body flex flex-1 flex-col items-center px-12 pt-3 pb-2 text-center">
-          <h1
-            className={`event-sign-event-title max-w-2xl break-words font-display font-semibold leading-tight text-neutral-950 ${merchant ? "line-clamp-1 text-2xl" : "line-clamp-2 text-4xl"}`}
-          >
-            {sheet.eventTitle}
-          </h1>
+        <div
+          className={`event-sign-body flex flex-1 flex-col items-center px-12 text-center ${merchant ? "pt-5 pb-5" : "justify-between pt-5 pb-8"}`}
+        >
+          <section className="event-sign-event-context w-full max-w-2xl">
+            {merchant ? (
+              <div className="flex min-h-12 items-center justify-center gap-4 text-left">
+                <DecorativeImage
+                  src={sheet.bannerUrl}
+                  alt=""
+                  className="event-sign-event-banner-mini aspect-[3/1] w-36 shrink-0 rounded-lg bg-neutral-950 object-cover"
+                  fallback={getEventSignImageFallback(sheet.eventTitle)}
+                  fallbackClassName="event-sign-event-banner-mini flex aspect-[3/1] w-36 shrink-0 items-center justify-center rounded-lg bg-primary-50 font-display text-2xl font-semibold text-primary-700"
+                />
+                <h1 className="event-sign-event-title line-clamp-2 min-w-0 break-words font-display text-2xl font-semibold leading-tight text-neutral-950">
+                  {sheet.eventTitle}
+                </h1>
+              </div>
+            ) : (
+              <h1 className="event-sign-event-title line-clamp-2 break-words font-display text-4xl font-semibold leading-tight text-neutral-950">
+                {sheet.eventTitle}
+              </h1>
+            )}
 
-          <dl className="mt-3 grid w-full max-w-2xl grid-cols-2 gap-3 text-left text-sm">
-            <div className="flex items-start gap-3 rounded-xl bg-neutral-100 px-4 py-2">
-              <CalendarDays
-                className="mt-0.5 size-5 shrink-0 text-primary-700"
-                aria-hidden="true"
-              />
-              <div>
-                <dt className="font-semibold text-neutral-950">When</dt>
-                <dd className="event-sign-schedule line-clamp-2 break-words leading-5 text-neutral-700">
-                  {sheet.schedule}
-                </dd>
+            <dl className="mt-3 grid w-full grid-cols-2 gap-3 text-left text-sm">
+              <div className="flex items-start gap-3 rounded-xl bg-neutral-100 px-4 py-2">
+                <CalendarDays
+                  className="mt-0.5 size-5 shrink-0 text-primary-700"
+                  aria-hidden="true"
+                />
+                <div>
+                  <dt className="font-semibold text-neutral-950">When</dt>
+                  <dd className="event-sign-schedule line-clamp-2 break-words leading-5 text-neutral-700">
+                    {sheet.schedule}
+                  </dd>
+                </div>
               </div>
-            </div>
-            <div className="flex items-start gap-3 rounded-xl bg-neutral-100 px-4 py-2">
-              <MapPin
-                className="mt-0.5 size-5 shrink-0 text-primary-700"
-                aria-hidden="true"
-              />
-              <div>
-                <dt className="font-semibold text-neutral-950">Where</dt>
-                <dd className="event-sign-location line-clamp-2 break-words leading-5 text-neutral-700">
-                  {sheet.location}
-                </dd>
+              <div className="flex items-start gap-3 rounded-xl bg-neutral-100 px-4 py-2">
+                <MapPin
+                  className="mt-0.5 size-5 shrink-0 text-primary-700"
+                  aria-hidden="true"
+                />
+                <div>
+                  <dt className="font-semibold text-neutral-950">Where</dt>
+                  <dd className="event-sign-location line-clamp-2 break-words leading-5 text-neutral-700">
+                    {sheet.location}
+                  </dd>
+                </div>
               </div>
-            </div>
-          </dl>
+            </dl>
+          </section>
 
           {merchant ? (
-            <div className="event-sign-merchant-lockup -mx-12 mt-3 w-[calc(100%+6rem)] overflow-hidden bg-white text-left">
-              <DecorativeImage
-                src={merchant.bannerUrl}
-                alt=""
-                className="event-sign-banner event-sign-merchant-banner aspect-[3/1] w-full bg-neutral-900 object-cover"
-                fallback=""
-                fallbackClassName="event-sign-banner event-sign-merchant-banner aspect-[3/1] w-full bg-gradient-to-r from-neutral-900 via-neutral-700 to-neutral-600"
+            <>
+              <div
+                className="event-sign-section-divider mt-6 mb-5 w-full max-w-2xl border-t-2 border-primary-200"
+                aria-hidden="true"
               />
-              <div className="relative flex h-32 items-center bg-neutral-100 pr-10 pl-64">
+              <div className="event-sign-merchant-lockup w-full max-w-2xl overflow-hidden rounded-2xl bg-white text-left ring-1 ring-neutral-200">
                 <DecorativeImage
-                  src={merchant.imageUrl}
+                  src={merchant.bannerUrl}
                   alt=""
-                  className="event-sign-avatar absolute bottom-4 left-10 size-44 shrink-0 rounded-full border-8 border-neutral-100 bg-white object-cover shadow-lg"
-                  fallback={merchant.fallback}
-                  fallbackClassName="event-sign-avatar absolute bottom-4 left-10 flex size-44 shrink-0 items-center justify-center rounded-full border-8 border-neutral-100 bg-neutral-900 text-5xl font-semibold text-white shadow-lg"
+                  className="event-sign-merchant-banner aspect-[3/1] w-full bg-neutral-900 object-cover"
+                  fallback=""
+                  fallbackClassName="event-sign-merchant-banner aspect-[3/1] w-full bg-gradient-to-r from-neutral-900 via-neutral-700 to-neutral-600"
                 />
-                <h2 className="event-sign-merchant-name line-clamp-2 break-words font-display text-[3.5rem] font-semibold leading-[1.02] text-neutral-950">
-                  {merchant.name}
-                </h2>
+                <div className="relative flex h-28 items-center bg-neutral-100 pr-6 pl-56">
+                  <DecorativeImage
+                    src={merchant.imageUrl}
+                    alt=""
+                    className="event-sign-avatar absolute bottom-4 left-6 size-44 shrink-0 rounded-full border-8 border-neutral-100 bg-white object-cover shadow-lg"
+                    fallback={merchant.fallback}
+                    fallbackClassName="event-sign-avatar absolute bottom-4 left-6 flex size-44 shrink-0 items-center justify-center rounded-full border-8 border-neutral-100 bg-neutral-900 text-5xl font-semibold text-white shadow-lg"
+                  />
+                  <h2 className="event-sign-merchant-name line-clamp-2 break-words font-display text-[3.25rem] font-semibold leading-[0.95] text-neutral-950">
+                    {merchant.name}
+                  </h2>
+                </div>
               </div>
-            </div>
+            </>
           ) : null}
 
-          <div className="event-sign-qr-frame mt-2.5 size-[18.75rem] shrink-0 rounded-2xl border-2 border-neutral-950 bg-white p-5">
-            <PrintableQrCode
-              value={sheet.qrValue}
-              label={
-                merchant
-                  ? `${merchant.name} event catalog QR code`
-                  : "Event catalog QR code"
-              }
-            />
-          </div>
+          <div
+            className={`event-sign-cta flex shrink-0 flex-col items-center ${merchant ? "mt-4" : ""}`}
+          >
+            <div className="event-sign-qr-frame size-[18.75rem] shrink-0 rounded-2xl border-2 border-neutral-950 bg-white p-5">
+              <PrintableQrCode
+                value={sheet.qrValue}
+                label={
+                  merchant
+                    ? `${merchant.name} event catalog QR code`
+                    : "Event catalog QR code"
+                }
+              />
+            </div>
 
-          <p className="event-sign-scan-heading mt-2 max-w-xl text-balance font-display text-2xl font-semibold text-neutral-950">
-            {merchant ? "Scan to shop this merchant" : "Scan to shop the event"}
-          </p>
-          <p className="event-sign-scan-copy max-w-xl text-pretty text-sm leading-5 text-neutral-600">
-            Scan for current availability and event details.
-          </p>
+            <p className="event-sign-scan-heading mt-2 max-w-xl text-balance font-display text-2xl font-semibold text-neutral-950">
+              {merchant
+                ? "Scan to shop this merchant"
+                : "Scan to shop the event"}
+            </p>
+            <p className="event-sign-scan-copy max-w-xl text-pretty text-sm leading-5 text-neutral-600">
+              Scan for current availability and event details.
+            </p>
+          </div>
         </div>
       </article>
     </div>

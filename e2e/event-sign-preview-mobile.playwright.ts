@@ -73,8 +73,12 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
       ".event-sign-sheet-stage"
     )
     const sheetElement = element.querySelector<HTMLElement>(".event-sign-sheet")
-    const bannerElement =
-      element.querySelector<HTMLElement>(".event-sign-banner")
+    const eventBannerElement = element.querySelector<HTMLElement>(
+      ".event-sign-event-banner-mini"
+    )
+    const merchantBannerElement = element.querySelector<HTMLElement>(
+      ".event-sign-merchant-banner"
+    )
     const qrElement = element.querySelector<HTMLElement>(".event-sign-qr-frame")
     const scanCopyElement = element.querySelector<HTMLElement>(
       ".event-sign-scan-copy"
@@ -82,7 +86,8 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
     if (
       !stageElement ||
       !sheetElement ||
-      !bannerElement ||
+      !eventBannerElement ||
+      !merchantBannerElement ||
       !qrElement ||
       !scanCopyElement
     ) {
@@ -91,7 +96,8 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
     const previewBounds = element.getBoundingClientRect()
     const stageBounds = stageElement.getBoundingClientRect()
     const sheetBounds = sheetElement.getBoundingClientRect()
-    const bannerBounds = bannerElement.getBoundingClientRect()
+    const eventBannerBounds = eventBannerElement.getBoundingClientRect()
+    const merchantBannerBounds = merchantBannerElement.getBoundingClientRect()
     const qrBounds = qrElement.getBoundingClientRect()
     const scanCopyBounds = scanCopyElement.getBoundingClientRect()
     return {
@@ -103,9 +109,13 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
       sheetWidth: sheetBounds.width,
       sheetHeight: sheetBounds.height,
       sheetBottom: sheetBounds.bottom,
-      bannerWidth: bannerBounds.width,
-      bannerHeight: bannerBounds.height,
-      bannerObjectFit: getComputedStyle(bannerElement).objectFit,
+      eventBannerWidth: eventBannerBounds.width,
+      eventBannerHeight: eventBannerBounds.height,
+      eventBannerObjectFit: getComputedStyle(eventBannerElement).objectFit,
+      merchantBannerWidth: merchantBannerBounds.width,
+      merchantBannerHeight: merchantBannerBounds.height,
+      merchantBannerObjectFit: getComputedStyle(merchantBannerElement)
+        .objectFit,
       qrWidth: qrBounds.width,
       qrHeight: qrBounds.height,
       scanCopyBottom: scanCopyBounds.bottom,
@@ -117,9 +127,14 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
   expect(screenLayout.stageWidth).toBeLessThanOrEqual(screenLayout.previewWidth)
   expect(screenLayout.sheetWidth).toBeCloseTo(screenLayout.stageWidth, 1)
   expect(screenLayout.sheetHeight).toBeCloseTo(screenLayout.stageHeight, 1)
-  expect(screenLayout.bannerWidth).toBeCloseTo(screenLayout.sheetWidth, 1)
-  expect(screenLayout.bannerWidth / screenLayout.bannerHeight).toBeCloseTo(3, 1)
-  expect(screenLayout.bannerObjectFit).toBe("cover")
+  expect(
+    screenLayout.eventBannerWidth / screenLayout.eventBannerHeight
+  ).toBeCloseTo(3, 1)
+  expect(screenLayout.eventBannerObjectFit).toBe("cover")
+  expect(
+    screenLayout.merchantBannerWidth / screenLayout.merchantBannerHeight
+  ).toBeCloseTo(3, 1)
+  expect(screenLayout.merchantBannerObjectFit).toBe("cover")
   expect(screenLayout.qrWidth).toBeCloseTo(screenLayout.qrHeight, 1)
   expect(screenLayout.scanCopyBottom).toBeLessThanOrEqual(
     screenLayout.sheetBottom + 1
@@ -133,10 +148,20 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
   await expect(closeButton).toBeHidden()
   const printLayout = await preview.evaluate((element) => {
     const sheetElement = element.querySelector<HTMLElement>(".event-sign-sheet")
-    const bannerElement =
-      element.querySelector<HTMLElement>(".event-sign-banner")
+    const eventContextElement = element.querySelector<HTMLElement>(
+      ".event-sign-event-context"
+    )
+    const eventBannerElement = element.querySelector<HTMLElement>(
+      ".event-sign-event-banner-mini"
+    )
+    const dividerElement = element.querySelector<HTMLElement>(
+      ".event-sign-section-divider"
+    )
     const merchantLockupElement = element.querySelector<HTMLElement>(
       ".event-sign-merchant-lockup"
+    )
+    const merchantBannerElement = element.querySelector<HTMLElement>(
+      ".event-sign-merchant-banner"
     )
     const avatarElement =
       element.querySelector<HTMLElement>(".event-sign-avatar")
@@ -144,11 +169,13 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
       ".event-sign-merchant-name"
     )
     const qrElement = element.querySelector<HTMLElement>(".event-sign-qr-frame")
-    if (!sheetElement || !bannerElement) {
+    if (!sheetElement || !eventContextElement || !eventBannerElement) {
       throw new Error("Printable sign sheet is incomplete.")
     }
     if (
+      !dividerElement ||
       !merchantLockupElement ||
+      !merchantBannerElement ||
       !avatarElement ||
       !merchantNameElement ||
       !qrElement
@@ -156,18 +183,27 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
       throw new Error("Printable merchant identity is incomplete.")
     }
     const sheetBounds = sheetElement.getBoundingClientRect()
-    const bannerBounds = bannerElement.getBoundingClientRect()
+    const eventContextBounds = eventContextElement.getBoundingClientRect()
+    const eventBannerBounds = eventBannerElement.getBoundingClientRect()
+    const dividerBounds = dividerElement.getBoundingClientRect()
     const merchantLockupBounds = merchantLockupElement.getBoundingClientRect()
+    const merchantBannerBounds = merchantBannerElement.getBoundingClientRect()
     const avatarBounds = avatarElement.getBoundingClientRect()
     const qrBounds = qrElement.getBoundingClientRect()
     return {
       sheetWidth: sheetBounds.width,
       sheetHeight: sheetBounds.height,
       sheetTransform: getComputedStyle(sheetElement).transform,
-      bannerWidth: bannerBounds.width,
-      bannerHeight: bannerBounds.height,
+      eventBannerWidth: eventBannerBounds.width,
+      eventBannerHeight: eventBannerBounds.height,
+      dividerWidth: dividerBounds.width,
+      dividerHeight: dividerBounds.height,
+      eventContextToDividerGap: dividerBounds.top - eventContextBounds.bottom,
+      dividerToMerchantGap: merchantLockupBounds.top - dividerBounds.bottom,
       merchantLockupWidth: merchantLockupBounds.width,
       merchantLockupHeight: merchantLockupBounds.height,
+      merchantBannerWidth: merchantBannerBounds.width,
+      merchantBannerHeight: merchantBannerBounds.height,
       avatarWidth: avatarBounds.width,
       merchantNameFontSize: Number.parseFloat(
         getComputedStyle(merchantNameElement).fontSize
@@ -179,13 +215,19 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
     sheetWidth: 816,
     sheetHeight: 1_056,
     sheetTransform: "none",
-    bannerWidth: 816,
-    bannerHeight: 272,
-    merchantLockupWidth: 816,
-    merchantLockupHeight: 400,
+    eventBannerWidth: 144,
+    eventBannerHeight: 48,
+    dividerWidth: 672,
+    dividerHeight: 2,
+    eventContextToDividerGap: 24,
+    dividerToMerchantGap: 20,
+    merchantLockupWidth: 672,
+    merchantLockupHeight: 336,
+    merchantBannerWidth: 672,
+    merchantBannerHeight: 224,
     avatarWidth: 176,
-    merchantNameFontSize: 56,
-    merchantToQrGap: 10,
+    merchantNameFontSize: 52,
+    merchantToQrGap: 16,
   })
 
   await page.emulateMedia({ media: "screen" })

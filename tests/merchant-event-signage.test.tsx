@@ -174,7 +174,9 @@ describe("event sign composition", () => {
   })
 
   it("targets the canonical event route and the durable merchant filter", () => {
-    const current = market([participation(MERCHANT_A, "bread")])
+    const current = market([participation(MERCHANT_A, "bread")], {
+      imageUrl: "https://cdn.conduit.market/autumn-market-banner.png",
+    })
     const eventSheet = buildEventQrSignSheet(current, MERCHANT_LOCATION)
     const merchantSheet = buildMerchantEventQrSignSheet(
       current,
@@ -195,6 +197,12 @@ describe("event sign composition", () => {
       `http://127.0.0.1:7000/events/${EVENT_NADDR}?merchant=${pubkeyToNpub(MERCHANT_A)}`
     )
     expect(merchantSheet?.qrValue).not.toContain("/store/")
+    expect(eventSheet.bannerUrl).toBe(
+      "https://cdn.conduit.market/autumn-market-banner.png"
+    )
+    expect(merchantSheet?.bannerUrl).toBe(
+      "https://cdn.conduit.market/autumn-market-banner.png"
+    )
     expect(merchantSheet?.merchant?.name).toBe("Alice Bakery")
     expect(merchantSheet?.merchant?.bannerUrl).toBe(
       "https://cdn.conduit.market/alice-banner.png"
@@ -259,7 +267,7 @@ describe("event sign composition", () => {
     expect(merchantSheet.merchant?.bannerUrl).toBeUndefined()
     expect(
       markup.match(/data-testid="event-sign-image-fallback"/g)
-    ).toHaveLength(3)
+    ).toHaveLength(4)
     expect(markup).toContain("See the event catalog for location details")
     expect(markup).toContain("Scan for current availability")
     expect(markup).not.toContain("Listings and event participation can change")
