@@ -47,6 +47,7 @@ function availableProductsMessage(
 
 export function getEventActionabilityPresentation(input: {
   state: EventMarketResolutionState
+  orderAcceptance?: "open" | "closed"
   availableProductCount: number
   unresolvedProductCount?: number
   requiredEventRecordsResolved?: boolean
@@ -92,8 +93,12 @@ export function getEventActionabilityPresentation(input: {
     case "ended":
       return {
         actionability: "read_only",
-        label: "Event ended",
-        message: `${availableProductsMessage(availableProductCount, unresolvedProductCount)} Checkout is closed.`,
+        label:
+          input.orderAcceptance === "closed" ? "Event closed" : "Event ended",
+        message:
+          input.orderAcceptance === "closed"
+            ? "The organizer has closed this event to new orders. Existing orders and pickup remain available."
+            : `${availableProductsMessage(availableProductCount, unresolvedProductCount)} Checkout is closed.`,
         role: "status",
         tone: "secondary",
         prominent: false,

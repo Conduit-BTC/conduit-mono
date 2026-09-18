@@ -177,6 +177,8 @@ export function OrganizerEventMarketEditor({
                 Everything here is published publicly. Keep private handoff and
                 attendee details out of these fields. Fields marked Required
                 must be completed before publishing.
+                {!initialForm &&
+                  " This event remains open until you close it. Its scheduled hours are for display."}
               </p>
             </div>
 

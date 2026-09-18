@@ -176,7 +176,9 @@ export function getProductLocalPickupEvidenceError(input: {
     return "The resolved organizer collection does not match the imported reference."
   }
   if (input.market.state === "ended") {
-    return "This event has ended and cannot be selected for a new pickup request."
+    return input.market.orderAcceptance === "closed"
+      ? "The organizer has closed this event to new pickup requests."
+      : "This event has ended and cannot be selected for a new pickup request."
   }
   if (input.market.state !== "active" && input.market.state !== "partial") {
     return "Current organizer event and pickup evidence is degraded or unsupported."

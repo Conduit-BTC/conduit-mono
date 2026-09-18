@@ -7,7 +7,8 @@ import type {
 import type { EventMarketCardStatusTone } from "@conduit/ui"
 import type { ProductCatalogSourceMode } from "./productCatalogRead"
 
-export type EventTimelineWindow = "upcoming" | "7d" | "30d" | "past" | "all"
+export type EventTimelineWindow =
+  "upcoming" | "7d" | "30d" | "past" | "history" | "all"
 
 export interface EventTimelineSearch {
   source?: ProductCatalogSourceMode
@@ -39,6 +40,7 @@ export const EVENT_TIMELINE_WINDOWS: EventTimelineWindow[] = [
   "7d",
   "30d",
   "past",
+  "history",
   "all",
 ]
 
@@ -82,7 +84,7 @@ function normalized(value: string | undefined): string {
 }
 
 function isPast(market: TimelineEventMarket, nowMs: number): boolean {
-  return market.state === "ended" || market.calendar.end <= nowMs
+  return market.calendar.end <= nowMs
 }
 
 function matchesWindow(
@@ -93,8 +95,13 @@ function matchesWindow(
   const past = isPast(market, nowMs)
   if (window === "past") return past
   if (window === "all") return true
+  const historical =
+    market.collection.orderAcceptance === "closed" ||
+    (market.collection.orderAcceptance !== "open" &&
+      (market.state === "ended" || past))
+  if (window === "history") return historical
+  if (window === "upcoming") return !historical
   if (past) return false
-  if (window === "upcoming") return true
   const horizon = nowMs + (window === "7d" ? 7 : 30) * 86_400_000
   return market.calendar.start <= horizon
 }
@@ -193,7 +200,24 @@ export function getEventTimelineStatus(
   market: TimelineEventMarket,
   nowMs = Date.now()
 ): EventTimelineStatus {
-  if (isPast(market, nowMs)) return { label: "Past event", tone: "secondary" }
+  if (market.collection.orderAcceptance === "closed") {
+    return { label: "Closed", tone: "secondary" }
+  }
+  if (isPast(market, nowMs)) {
+    if (market.collection.orderAcceptance !== "open") {
+      return { label: "Past event", tone: "secondary" }
+    }
+    if (market.state === "partial") {
+      return { label: "Partial relay view", tone: "warning" }
+    }
+    const refreshNeeded = market.state !== "active"
+    return {
+      label: refreshNeeded
+        ? "Scheduled time has passed · Refresh needed"
+        : "Scheduled time has passed · Open",
+      tone: refreshNeeded ? "warning" : "secondary",
+    }
+  }
   if (market.state === "partial" || market.state === "stale") {
     return { label: "Partial relay view", tone: "warning" }
   }

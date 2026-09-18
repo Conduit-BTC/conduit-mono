@@ -17,6 +17,7 @@ import {
 import { getEventMarketPrivateMessageList } from "./commerce"
 import { EVENT_KINDS } from "./kinds"
 import type { EventMarketResolution } from "./event-market"
+import { isEventMarketCollectionLifecycleContinuation } from "./event-market-continuity"
 import {
   isVerifiedEventMarketReceiptMerchandiseResolution,
   type EventMarketReceiptMerchandiseResolution,
@@ -401,6 +402,8 @@ export interface ValidateEventMarketReadyReceiptInput {
   /** Fresh current public graph; stale/deleted/conflicting evidence is denied. */
   market: EventMarketResolution
   fulfillmentState: "paid" | "zero_cost"
+  /** Exact signed original/current collections for a lifecycle-only update. */
+  collectionLifecycleEvidence?: readonly SignedPublicNostrEvent[]
 }
 
 /** Bind the minimal organizer receipt to one authenticated merchant order. */
@@ -423,7 +426,12 @@ export function validateEventMarketReadyReceipt(
     !market.calendar ||
     !market.collection ||
     !sameEvidenceRevision(payload.calendar, market.calendar) ||
-    !sameEvidenceRevision(payload.collection, market.collection)
+    (!sameEvidenceRevision(payload.collection, market.collection) &&
+      !isEventMarketCollectionLifecycleContinuation({
+        original: payload.collection,
+        current: market.collection,
+        events: input.collectionLifecycleEvidence ?? [],
+      }))
   ) {
     throw new Error("Ready receipt event graph is not current.")
   }
@@ -601,6 +609,7 @@ export function buildEventMarketReadyReceiptPayload(
     order,
     market: input.market,
     fulfillmentState: input.fulfillmentState,
+    collectionLifecycleEvidence: input.collectionLifecycleEvidence,
   })
 }
 

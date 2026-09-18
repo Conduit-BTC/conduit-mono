@@ -6680,3 +6680,150 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   expect(browserErrors.pageErrors).toEqual([])
   expect(browserErrors.consoleErrors).toEqual([])
 })
+
+test("open overtime event closes into history and reopens without changing pickup or schedule @market @merchant", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const title = "Synthetic flexible event hours"
+  const market = await publishOrganizerMarket(page, relay, {
+    title,
+    organizerHandoffEnabled: true,
+  })
+  expect(market.initialCollection.tags).toContainEqual([
+    "conduit_event_market",
+    "1",
+    "open",
+  ])
+  const product = createMerchantProductEvent({
+    dTag: "flexible-event-hours-product",
+    title: "Synthetic flexible hours product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+    priceSats: 0,
+  })
+  const accepted = await acceptMerchantProduct(
+    page,
+    relay,
+    product,
+    market.collectionCoordinate
+  )
+  expect(accepted.tags).toContainEqual(["conduit_event_market", "1", "open"])
+  const pastCalendar = signEvent(ORGANIZER_SECRET, {
+    kind: market.calendarEvent.kind,
+    created_at: market.calendarEvent.created_at + 1,
+    content: market.calendarEvent.content,
+    tags: market.calendarEvent.tags.map((tag) =>
+      tag[0] === "start"
+        ? ["start", "2020-01-01"]
+        : tag[0] === "end"
+          ? ["end", "2020-01-02"]
+          : tag
+    ),
+  })
+  relay.seed(
+    pastCalendar,
+    createFollowList("buyer", [ORGANIZER_PUBKEY], accepted.created_at + 1)
+  )
+  await page
+    .getByRole("button", { name: "Refresh evidence", exact: true })
+    .click()
+  await expect(
+    page.getByRole("button", { name: "Close event", exact: true })
+  ).toBeEnabled()
+
+  const shopperContext = await browser.newContext()
+  const shopper = await shopperContext.newPage()
+  shopper.setDefaultTimeout(25_000)
+  await installSyntheticEnvironment(shopper, relay)
+  try {
+    await gotoAs(
+      shopper,
+      marketUrl,
+      `/events/${market.canonicalNaddr}`,
+      "buyer"
+    )
+    await expect(
+      shopper.getByText(
+        "Scheduled time has passed. This event remains open until the organizer closes it."
+      )
+    ).toBeVisible()
+    await expect(
+      shopper.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+
+    const closeStart = relay.publications.length
+    await page.getByRole("button", { name: "Close event", exact: true }).click()
+    await expect(
+      page.getByRole("button", { name: "Reopen event", exact: true })
+    ).toBeEnabled()
+    const closedPublications = uniquePublishedEvents(
+      relay.publications.slice(closeStart)
+    )
+    expect(closedPublications.map((event) => event.kind)).toEqual([30405])
+    const closed = closedPublications[0]!
+    expect(eventCoordinate(closed)).toBe(market.collectionCoordinate)
+    expect(closed.tags).toContainEqual(["conduit_event_market", "1", "closed"])
+    expect(
+      closed.tags.filter((tag) => tag[0] !== "conduit_event_market")
+    ).toEqual(accepted.tags.filter((tag) => tag[0] !== "conduit_event_market"))
+
+    await shopper.reload()
+    await expect(
+      shopper.getByRole("button", { name: "Event closed", exact: true })
+    ).toBeVisible()
+    await expect(
+      shopper.getByRole("button", { name: "Add", exact: true })
+    ).toHaveCount(0)
+    await gotoAs(shopper, marketUrl, "/events?source=following", "buyer")
+    await shopper.getByLabel("Date").click()
+    await shopper.getByRole("option", { name: "History", exact: true }).click()
+    await expect(
+      shopper.getByRole("heading", { name: title, exact: true })
+    ).toBeVisible()
+    await shopper.reload()
+    await expect(
+      shopper.getByRole("heading", { name: title, exact: true })
+    ).toBeVisible()
+
+    const reopenStart = relay.publications.length
+    await page
+      .getByRole("button", { name: "Reopen event", exact: true })
+      .click()
+    await expect(
+      page.getByRole("button", { name: "Close event", exact: true })
+    ).toBeEnabled()
+    const reopened = uniquePublishedEvents(
+      relay.publications.slice(reopenStart)
+    )
+    expect(reopened.map((event) => event.kind)).toEqual([30405])
+    expect(reopened[0]!.tags).toContainEqual([
+      "conduit_event_market",
+      "1",
+      "open",
+    ])
+    await gotoAs(
+      shopper,
+      marketUrl,
+      `/events/${market.canonicalNaddr}`,
+      "buyer"
+    )
+    await expect(
+      shopper.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await gotoAs(shopper, marketUrl, "/events?source=following", "buyer")
+    await expect(
+      shopper.getByRole("heading", { name: title, exact: true })
+    ).toBeVisible()
+    await expect(
+      shopper.getByText("Scheduled time has passed · Open", { exact: true })
+    ).toBeVisible()
+  } finally {
+    await shopperContext.close()
+  }
+})

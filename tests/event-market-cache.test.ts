@@ -548,6 +548,81 @@ afterEach(() => {
 })
 
 describe("event-market retained evidence", () => {
+  it("preserves a signed closure across restart and older or stripped relay revisions", async () => {
+    const initialGraph = graph()
+    const originalCollection = initialGraph.find(
+      (event) => event.kind === EVENT_KINDS.PRODUCT_COLLECTION
+    )!
+    const open = sign(
+      {
+        ...originalCollection,
+        tags: [
+          ...originalCollection.tags,
+          ["conduit_event_market", "1", "open"],
+        ],
+      },
+      200
+    )
+    const closed = sign(
+      {
+        ...originalCollection,
+        tags: [
+          ...originalCollection.tags,
+          ["conduit_event_market", "1", "closed"],
+        ],
+      },
+      300
+    )
+    const durable = [
+      ...initialGraph.filter(
+        (event) => event.kind !== EVENT_KINDS.PRODUCT_COLLECTION
+      ),
+      closed,
+    ].map((event): CachedEventMarketEvidence => ({
+      id: event.id,
+      organizerPubkey: ORGANIZER,
+      kind: event.kind,
+      signedEvent: event,
+      sourceRelayUrls: ["wss://write.example"],
+      cachedAt: 1_750_000_000_000,
+    }))
+    __resetEventMarketTestOverrides()
+    const harness = cacheHarness(durable)
+    harness.setFetch(
+      [
+        ...initialGraph.filter(
+          (event) => event.kind !== EVENT_KINDS.PRODUCT_COLLECTION
+        ),
+        open,
+      ],
+      "success"
+    )
+    const retained = await getEventMarket({
+      reference: COLLECTION,
+      nowMs: 1_750_000_000_000,
+    })
+    expect(retained.collection?.orderAcceptance).toBe("closed")
+    expect(["ended", "stale"]).toContain(retained.state)
+    const stripped = sign(originalCollection, 400)
+    harness.setFetch(
+      [
+        ...initialGraph.filter(
+          (event) => event.kind !== EVENT_KINDS.PRODUCT_COLLECTION
+        ),
+        stripped,
+      ],
+      "success"
+    )
+    expect(
+      (
+        await getEventMarket({
+          reference: COLLECTION,
+          nowMs: 1_750_000_000_000,
+        })
+      ).state
+    ).toBe("malformed")
+  })
+
   it("requires an advertised organizer pickup only when a selected product uses it", async () => {
     const organizerGraph = graph([PRODUCT])
     const organizerPickup = organizerGraph[1]!

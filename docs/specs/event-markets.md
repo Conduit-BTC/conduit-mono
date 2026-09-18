@@ -41,7 +41,9 @@ not claim that unrelated clients implement the extension.
   granting the organizer general merchant or order authority.
 - Share only a minimal, separately encrypted fulfillment receipt when the
   organizer performs handoff.
-- Keep ended event pages shareable while excluding them from selectable presets.
+- Keep event pages and history shareable after their scheduled end or organizer
+  closure. Explicitly open events remain available past the advertised schedule;
+  closed and legacy ended events are excluded from selectable presets.
 - Represent partial, unavailable, stale, malformed, conflicting, and deleted
   relay evidence honestly.
 
@@ -132,6 +134,13 @@ coordinate, and zero or more organizer-approved product `a` coordinates. An
 empty upcoming collection is valid for this extension. Omitting the organizer
 pickup means the organizer is not offering to perform handoff; it does not
 prevent accepted merchants from using their own pickup records.
+
+Event collections may carry the versioned `conduit_event_market` acceptance
+declaration described in [event lifecycle](../knowledge/event-market-lifecycle.md).
+This is a bounded Conduit event-market extension, not an upstream Open Markets
+field. New event workflows declare `open`; `closed` prevents new event orders
+without deleting the event or canceling existing orders. Absent metadata retains
+legacy schedule-based acceptance. Ordinary collection updates must preserve it.
 
 The coordinate kind distinguishes the NIP-52 event link from product
 membership. Unknown `a` kinds remain preserved as unsupported references but do
@@ -268,8 +277,10 @@ deletion timestamp. Cross-author or malformed deletion requests have no effect.
 
 The shared resolver exposes these states rather than collapsing them:
 
-- `active`: all linked current records resolve and the event has not ended;
-- `ended`: all linked current records resolve and the calendar end has passed;
+- `active`: all linked current records resolve and new orders are open (explicit
+  organizer declaration or a legacy event whose calendar end has not passed);
+- `ended`: the organizer explicitly closed new orders, or a legacy event has
+  reached its calendar end. The parsed collection distinguishes these cases;
 - `missing`: a complete bounded lookup did not observe required positive data;
 - `partial`: some planned sources did not complete;
 - `unavailable`: no planned source completed;
@@ -354,7 +365,8 @@ checkout can snapshot the new mode.
 Participation is `pending` when the product references the collection but the
 organizer collection does not reference the product. It is `accepted` only
 when both sides reference the exact coordinates and organizer authorship
-validates. Ended events are not offered as presets.
+validates. Closed and legacy ended events are not offered as presets. Explicitly
+open events remain selectable beyond their advertised end time.
 
 ## Catalog and discovery
 
@@ -401,6 +413,14 @@ through the existing private order lifecycle without claiming a shipment. For
 organizer handoff, a valid organizer acknowledgement may enable that merchant
 completion action, but only the merchant authors the ordinary completion status
 sent to the buyer.
+
+A lifecycle-only collection revision does not rewrite an existing order or
+receipt snapshot. Continuation must verify the original signed collection and
+current collection differ only in the lifecycle declaration. Current membership,
+pickup, handler, merchandise and revocation checks still apply. Local drafts and
+fresh payment retries remain new-purchase actions; a local order id does not
+grant permission to bypass closure. Existing merchant invoice authority and
+ambiguous-payment reconciliation retain their independent safeguards.
 
 ## Required validation
 
