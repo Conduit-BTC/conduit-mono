@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import {
+  decodeEventMarketReference,
   encodeEventMarketNaddr,
   pubkeyToNpub,
   type Profile,
@@ -11,12 +12,14 @@ import type {
   MerchantOrganizerParticipation,
 } from "../apps/merchant/src/lib/event-market"
 import {
+  EVENT_SIGN_QR_MAX_BYTES,
   buildEventQrSignSheet,
   buildMerchantEventQrSignSheet,
   buildMerchantEventQrSignSheets,
   formatEventSignSchedule,
   getEligibleEventSignMerchants,
   getEventSignEvidenceNotice,
+  isEventSignQrValueWithinBudget,
   isMerchantEligibleForEventSign,
 } from "../apps/merchant/src/lib/event-signage"
 
@@ -180,6 +183,7 @@ describe("event sign composition", () => {
         pubkey: MERCHANT_A,
         displayName: "Alice Bakery",
         picture: "https://cdn.conduit.market/alice.png",
+        banner: "https://cdn.conduit.market/alice-banner.png",
       } as Profile,
       MERCHANT_LOCATION
     )
@@ -192,6 +196,9 @@ describe("event sign composition", () => {
     )
     expect(merchantSheet?.qrValue).not.toContain("/store/")
     expect(merchantSheet?.merchant?.name).toBe("Alice Bakery")
+    expect(merchantSheet?.merchant?.bannerUrl).toBe(
+      "https://cdn.conduit.market/alice-banner.png"
+    )
   })
 
   it("orders one sheet per unique merchant by display name", () => {
@@ -238,6 +245,7 @@ describe("event sign composition", () => {
         pubkey: MERCHANT_A,
         displayName: "Alice Bakery",
         picture: "data:text/html,bad",
+        banner: "javascript:alert(1)",
       } as Profile,
       MERCHANT_LOCATION
     )!
@@ -248,11 +256,16 @@ describe("event sign composition", () => {
     expect(eventSheet.bannerUrl).toBeUndefined()
     expect(merchantSheet.bannerUrl).toBeUndefined()
     expect(merchantSheet.merchant?.imageUrl).toBeUndefined()
+    expect(merchantSheet.merchant?.bannerUrl).toBeUndefined()
     expect(
       markup.match(/data-testid="event-sign-image-fallback"/g)
     ).toHaveLength(3)
     expect(markup).toContain("See the event catalog for location details")
     expect(markup).toContain("Scan for current availability")
+    expect(markup).not.toContain("Listings and event participation can change")
+    expect(markup).not.toContain(">Shop the event<")
+    expect(markup).not.toContain(">At the event<")
+    expect(markup).not.toContain(">Shop this merchant<")
     expect(markup).toContain("https://conduit.market")
     expect(markup).toContain(
       `data-qr-value="${merchantSheet.qrValue.replaceAll("&", "&amp;")}"`
@@ -295,6 +308,67 @@ describe("event sign composition", () => {
 })
 
 describe("event sign QR rendering", () => {
+  it("keeps maximum-bound references QR-safe without changing event identity or merchant targeting", () => {
+    const relayHints = Array.from({ length: 7 }, (_, index) => {
+      const prefix = `wss://relay-${index}.example/`
+      return `${prefix}${String(index).repeat(255 - prefix.length)}`
+    })
+    expect(relayHints.every((relayHint) => relayHint.length === 255)).toBe(true)
+    const hintedReference = encodeEventMarketNaddr(COLLECTION, relayHints)
+    expect(
+      new TextEncoder().encode(
+        `http://127.0.0.1:7000/events/${hintedReference}`
+      ).length
+    ).toBeGreaterThan(EVENT_SIGN_QR_MAX_BYTES)
+
+    const current = market([participation(MERCHANT_A, "bread")], {
+      naddr: hintedReference,
+    })
+    const sheets = [
+      buildEventQrSignSheet(current, MERCHANT_LOCATION),
+      buildMerchantEventQrSignSheet(
+        current,
+        MERCHANT_A,
+        undefined,
+        MERCHANT_LOCATION
+      )!,
+    ]
+
+    for (const sheet of sheets) {
+      const url = new URL(sheet.qrValue)
+      const reference = url.pathname.slice("/events/".length)
+      const decoded = decodeEventMarketReference(reference, [30405])
+
+      expect(isEventSignQrValueWithinBudget(sheet.qrValue)).toBe(true)
+      expect(decoded?.coordinate).toBe(COLLECTION)
+      expect(decoded?.relayHints.length).toBeLessThan(relayHints.length)
+    }
+    expect(new URL(sheets[0]!.qrValue).searchParams.has("merchant")).toBe(false)
+    expect(new URL(sheets[1]!.qrValue).searchParams.get("merchant")).toBe(
+      pubkeyToNpub(MERCHANT_A)
+    )
+    expect(() =>
+      renderToStaticMarkup(<EventQrPrintPages sheets={sheets} />)
+    ).not.toThrow()
+  })
+
+  it("renders a controlled fallback for an over-budget QR value", () => {
+    const sheet = buildEventQrSignSheet(market([]), MERCHANT_LOCATION)
+    const markup = renderToStaticMarkup(
+      <EventQrPrintPages
+        sheets={[
+          {
+            ...sheet,
+            qrValue: `https://shop.conduit.market/events/${"x".repeat(EVENT_SIGN_QR_MAX_BYTES)}`,
+          },
+        ]}
+      />
+    )
+
+    expect(markup).toContain('data-testid="event-sign-qr-fallback"')
+    expect(markup).toContain("QR code unavailable")
+  })
+
   it("keeps an explicit quiet zone around printable QRs", async () => {
     const component = await Bun.file(
       "apps/merchant/src/components/EventQrPrintPreview.tsx"

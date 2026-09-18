@@ -9,13 +9,15 @@ const sheet = {
   qrValue:
     "https://shop.conduit.market/events/naddr1qqxnzdenx5cr2wfcxycrwwfcqgs9y6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6qpsgqqqw4rsf45khs?merchant=npub1qgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqdt7a9h",
   eventTitle: "A complete printable event title at the narrowest viewport",
-  bannerUrl:
-    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1800' height='600'%3E%3Crect width='1800' height='600' fill='%23211e31'/%3E%3Crect x='18' y='18' width='1764' height='564' fill='none' stroke='%23bb00ff' stroke-width='18'/%3E%3C/svg%3E",
   schedule: "Sep 17, 2026, 9:00 AM - Sep 17, 2026, 5:00 PM",
   location: "A complete public event location",
   merchant: {
     pubkey: "0202020202020202020202020202020202020202020202020202020202020202",
     name: "A complete merchant display name",
+    imageUrl:
+      "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600'%3E%3Crect width='600' height='600' fill='%23ffffff'/%3E%3Ccircle cx='300' cy='300' r='230' fill='%23171717'/%3E%3C/svg%3E",
+    bannerUrl:
+      "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1800' height='600'%3E%3Crect width='1800' height='600' fill='%230d3b3e'/%3E%3Ccircle cx='250' cy='120' r='90' fill='%23d6b85a'/%3E%3Ccircle cx='1450' cy='390' r='150' fill='%2379b8b4'/%3E%3C/svg%3E",
     fallback: "AC",
   },
 } as const

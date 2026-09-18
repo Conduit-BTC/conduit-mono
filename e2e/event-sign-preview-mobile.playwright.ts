@@ -45,6 +45,17 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
   await expect(
     printableSheet.getByText("https://conduit.market", { exact: true })
   ).toBeVisible()
+  await expect(
+    printableSheet.getByText("Shop this merchant", { exact: true })
+  ).toHaveCount(0)
+  await expect(
+    printableSheet.getByText("At the event", { exact: true })
+  ).toHaveCount(0)
+  await expect(
+    printableSheet.getByText("Listings and event participation can change.", {
+      exact: true,
+    })
+  ).toHaveCount(0)
 
   await expect
     .poll(async () => {
@@ -124,17 +135,44 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
     const sheetElement = element.querySelector<HTMLElement>(".event-sign-sheet")
     const bannerElement =
       element.querySelector<HTMLElement>(".event-sign-banner")
+    const merchantLockupElement = element.querySelector<HTMLElement>(
+      ".event-sign-merchant-lockup"
+    )
+    const avatarElement =
+      element.querySelector<HTMLElement>(".event-sign-avatar")
+    const merchantNameElement = element.querySelector<HTMLElement>(
+      ".event-sign-merchant-name"
+    )
+    const qrElement = element.querySelector<HTMLElement>(".event-sign-qr-frame")
     if (!sheetElement || !bannerElement) {
       throw new Error("Printable sign sheet is incomplete.")
     }
+    if (
+      !merchantLockupElement ||
+      !avatarElement ||
+      !merchantNameElement ||
+      !qrElement
+    ) {
+      throw new Error("Printable merchant identity is incomplete.")
+    }
     const sheetBounds = sheetElement.getBoundingClientRect()
     const bannerBounds = bannerElement.getBoundingClientRect()
+    const merchantLockupBounds = merchantLockupElement.getBoundingClientRect()
+    const avatarBounds = avatarElement.getBoundingClientRect()
+    const qrBounds = qrElement.getBoundingClientRect()
     return {
       sheetWidth: sheetBounds.width,
       sheetHeight: sheetBounds.height,
       sheetTransform: getComputedStyle(sheetElement).transform,
       bannerWidth: bannerBounds.width,
       bannerHeight: bannerBounds.height,
+      merchantLockupWidth: merchantLockupBounds.width,
+      merchantLockupHeight: merchantLockupBounds.height,
+      avatarWidth: avatarBounds.width,
+      merchantNameFontSize: Number.parseFloat(
+        getComputedStyle(merchantNameElement).fontSize
+      ),
+      merchantToQrGap: qrBounds.top - merchantLockupBounds.bottom,
     }
   })
   expect(printLayout).toEqual({
@@ -143,6 +181,11 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
     sheetTransform: "none",
     bannerWidth: 816,
     bannerHeight: 272,
+    merchantLockupWidth: 816,
+    merchantLockupHeight: 400,
+    avatarWidth: 176,
+    merchantNameFontSize: 56,
+    merchantToQrGap: 10,
   })
 
   await page.emulateMedia({ media: "screen" })

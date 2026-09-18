@@ -1,4 +1,6 @@
 import {
+  decodeEventMarketReference,
+  encodeEventMarketNaddr,
   formatNpub,
   getProfileName,
   normalizePublicMediaUrl,
@@ -26,6 +28,7 @@ export interface EventQrSignMerchant {
   pubkey: string
   name: string
   imageUrl?: string
+  bannerUrl?: string
   fallback: string
 }
 
@@ -43,6 +46,40 @@ export interface EventQrSignSheet {
 export interface EventSignEvidenceNotice {
   title: string
   message: string
+}
+
+// qrcode.react uses QR version 40 at most. Keep printable values below the
+// medium-error-correction byte-mode ceiling, with room for segment overhead.
+export const EVENT_SIGN_QR_MAX_BYTES = 2_200
+
+export function isEventSignQrValueWithinBudget(value: string): boolean {
+  return new TextEncoder().encode(value).length <= EVENT_SIGN_QR_MAX_BYTES
+}
+
+function buildEventSignQrUrl(
+  naddr: string,
+  merchantPubkey: string | undefined,
+  location?: ConduitBrowserLocation
+): string {
+  const buildUrl = (reference: string) =>
+    merchantPubkey
+      ? getEventMarketMerchantFilterUrl(reference, merchantPubkey, location)
+      : getEventMarketUrl(reference, location)
+  const decoded = decodeEventMarketReference(naddr, [30405])
+  if (!decoded) return buildUrl(naddr)
+
+  let selectedRelayHints: string[] = []
+  let selectedUrl = buildUrl(encodeEventMarketNaddr(decoded.coordinate))
+  for (const relayHint of decoded.relayHints) {
+    const candidateRelayHints = [...selectedRelayHints, relayHint]
+    const candidateUrl = buildUrl(
+      encodeEventMarketNaddr(decoded.coordinate, candidateRelayHints)
+    )
+    if (!isEventSignQrValueWithinBudget(candidateUrl)) continue
+    selectedRelayHints = candidateRelayHints
+    selectedUrl = candidateUrl
+  }
+  return selectedUrl
 }
 
 function cleanOptionalText(value: string | undefined): string | undefined {
@@ -154,7 +191,7 @@ export function buildEventQrSignSheet(
   return {
     id: `${market.collectionCoordinate}:event`,
     kind: "event",
-    qrValue: getEventMarketUrl(market.naddr, location),
+    qrValue: buildEventSignQrUrl(market.naddr, undefined, location),
     eventTitle: market.title,
     schedule: formatEventSignSchedule(market),
     location: getEventSignLocation(market),
@@ -175,24 +212,21 @@ export function buildMerchantEventQrSignSheet(
 
   const name = getProfileName(profile) || formatNpub(normalized)
   const imageUrl = normalizePublicMediaUrl(profile?.picture) ?? undefined
-  const bannerUrl = normalizePublicMediaUrl(market.imageUrl) ?? undefined
+  const merchantBannerUrl =
+    normalizePublicMediaUrl(profile?.banner) ?? undefined
 
   return {
     id: `${market.collectionCoordinate}:merchant:${normalized}`,
     kind: "merchant",
-    qrValue: getEventMarketMerchantFilterUrl(
-      market.naddr,
-      normalized,
-      location
-    ),
+    qrValue: buildEventSignQrUrl(market.naddr, normalized, location),
     eventTitle: market.title,
     schedule: formatEventSignSchedule(market),
     location: getEventSignLocation(market),
-    ...(bannerUrl ? { bannerUrl } : {}),
     merchant: {
       pubkey: normalized,
       name,
       ...(imageUrl ? { imageUrl } : {}),
+      ...(merchantBannerUrl ? { bannerUrl: merchantBannerUrl } : {}),
       fallback: getMerchantSignImageFallback(name, normalized),
     },
   }

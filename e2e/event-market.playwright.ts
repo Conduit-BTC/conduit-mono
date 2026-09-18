@@ -184,9 +184,11 @@ async function expectPrintableSignInsideLetterSheet(
     metrics.merchantAvatar &&
     metrics.merchantNameFontSize
   ) {
-    expect(metrics.merchantAvatar.width).toBeGreaterThanOrEqual(96)
-    expect(metrics.merchantAvatar.height).toBeGreaterThanOrEqual(96)
-    expect(metrics.merchantNameFontSize).toBeGreaterThanOrEqual(48)
+    expect(metrics.merchantLockup.width).toBeCloseTo(816, 1)
+    expect(metrics.merchantLockup.height).toBeGreaterThanOrEqual(400)
+    expect(metrics.merchantAvatar.width).toBeGreaterThanOrEqual(176)
+    expect(metrics.merchantAvatar.height).toBeGreaterThanOrEqual(176)
+    expect(metrics.merchantNameFontSize).toBeGreaterThanOrEqual(56)
     expect(metrics.qr.top - metrics.merchantLockup.bottom).toBeLessThanOrEqual(
       12
     )

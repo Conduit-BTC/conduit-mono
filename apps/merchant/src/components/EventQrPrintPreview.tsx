@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { Component, useEffect, useLayoutEffect, useRef, useState } from "react"
 import {
   AlertTriangle,
   CalendarDays,
@@ -20,12 +20,61 @@ import {
 import {
   getEventSignEvidenceNotice,
   getEventSignImageFallback,
+  isEventSignQrValueWithinBudget,
   type EventQrSignSheet,
 } from "../lib/event-signage"
 import type { MerchantOrganizerEventMarketState } from "../lib/event-market"
 
 const LETTER_WIDTH_PX = 816
 const LETTER_HEIGHT_PX = 1_056
+
+class PrintableQrCode extends Component<
+  { value: string; label: string },
+  { failed: boolean }
+> {
+  state = { failed: false }
+
+  static getDerivedStateFromError(): { failed: true } {
+    return { failed: true }
+  }
+
+  componentDidUpdate(
+    previousProps: Readonly<{ value: string; label: string }>
+  ) {
+    if (previousProps.value !== this.props.value && this.state.failed) {
+      this.setState({ failed: false })
+    }
+  }
+
+  render() {
+    if (
+      this.state.failed ||
+      !isEventSignQrValueWithinBudget(this.props.value)
+    ) {
+      return (
+        <div
+          className="flex size-full items-center justify-center p-6 text-center text-base font-semibold text-neutral-700"
+          data-testid="event-sign-qr-fallback"
+          role="alert"
+        >
+          QR code unavailable. Visit conduit.market to find this event.
+        </div>
+      )
+    }
+
+    return (
+      <div className="size-full" role="img" aria-label={this.props.label}>
+        <QRCodeSVG
+          value={this.props.value}
+          size={272}
+          level="M"
+          marginSize={4}
+          className="size-full"
+        />
+      </div>
+    )
+  }
+}
 
 function DecorativeImage({
   src,
@@ -111,34 +160,22 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
           </span>
         </header>
 
-        <DecorativeImage
-          src={sheet.bannerUrl}
-          alt=""
-          className="event-sign-banner aspect-[3/1] w-full shrink-0 bg-neutral-950 object-cover"
-          fallback={getEventSignImageFallback(sheet.eventTitle)}
-          fallbackClassName="event-sign-banner flex aspect-[3/1] w-full shrink-0 items-center justify-center bg-primary-50 font-display text-7xl font-semibold text-primary-700"
-        />
+        {!merchant ? (
+          <DecorativeImage
+            src={sheet.bannerUrl}
+            alt=""
+            className="event-sign-banner aspect-[3/1] w-full shrink-0 bg-neutral-950 object-cover"
+            fallback={getEventSignImageFallback(sheet.eventTitle)}
+            fallbackClassName="event-sign-banner flex aspect-[3/1] w-full shrink-0 items-center justify-center bg-primary-50 font-display text-7xl font-semibold text-primary-700"
+          />
+        ) : null}
 
         <div className="event-sign-body flex flex-1 flex-col items-center px-12 pt-3 pb-2 text-center">
-          {merchant ? (
-            <>
-              <p className="mb-1 text-pretty text-sm font-semibold text-primary-700">
-                At the event
-              </p>
-              <h1 className="event-sign-event-title line-clamp-1 max-w-2xl break-words font-display text-2xl font-semibold leading-tight text-neutral-950">
-                {sheet.eventTitle}
-              </h1>
-            </>
-          ) : (
-            <>
-              <p className="mb-2 text-pretty text-base font-semibold text-primary-700">
-                Shop the event
-              </p>
-              <h1 className="event-sign-event-title line-clamp-2 max-w-2xl break-words font-display text-4xl font-semibold leading-tight text-neutral-950">
-                {sheet.eventTitle}
-              </h1>
-            </>
-          )}
+          <h1
+            className={`event-sign-event-title max-w-2xl break-words font-display font-semibold leading-tight text-neutral-950 ${merchant ? "line-clamp-1 text-2xl" : "line-clamp-2 text-4xl"}`}
+          >
+            {sheet.eventTitle}
+          </h1>
 
           <dl className="mt-3 grid w-full max-w-2xl grid-cols-2 gap-3 text-left text-sm">
             <div className="flex items-start gap-3 rounded-xl bg-neutral-100 px-4 py-2">
@@ -168,40 +205,37 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
           </dl>
 
           {merchant ? (
-            <div className="event-sign-merchant-lockup mt-3 flex w-full max-w-2xl items-center justify-center gap-5 rounded-2xl border-2 border-primary-500 bg-primary-50 px-6 py-2 text-left">
+            <div className="event-sign-merchant-lockup -mx-12 mt-3 w-[calc(100%+6rem)] overflow-hidden bg-white text-left">
               <DecorativeImage
-                src={merchant.imageUrl}
+                src={merchant.bannerUrl}
                 alt=""
-                className="event-sign-avatar size-24 shrink-0 rounded-full border-4 border-primary-500 object-cover"
-                fallback={merchant.fallback}
-                fallbackClassName="event-sign-avatar flex size-24 shrink-0 items-center justify-center rounded-full border-4 border-primary-500 bg-white text-3xl font-semibold text-primary-800"
+                className="event-sign-banner event-sign-merchant-banner aspect-[3/1] w-full bg-neutral-900 object-cover"
+                fallback=""
+                fallbackClassName="event-sign-banner event-sign-merchant-banner aspect-[3/1] w-full bg-gradient-to-r from-neutral-900 via-neutral-700 to-neutral-600"
               />
-              <div className="min-w-0">
-                <p className="text-pretty text-base font-semibold text-primary-700">
-                  Shop this merchant
-                </p>
-                <h2 className="event-sign-merchant-name line-clamp-2 break-words font-display text-5xl font-semibold leading-none text-neutral-950">
+              <div className="relative flex h-32 items-center bg-neutral-100 pr-10 pl-64">
+                <DecorativeImage
+                  src={merchant.imageUrl}
+                  alt=""
+                  className="event-sign-avatar absolute bottom-4 left-10 size-44 shrink-0 rounded-full border-8 border-neutral-100 bg-white object-cover shadow-lg"
+                  fallback={merchant.fallback}
+                  fallbackClassName="event-sign-avatar absolute bottom-4 left-10 flex size-44 shrink-0 items-center justify-center rounded-full border-8 border-neutral-100 bg-neutral-900 text-5xl font-semibold text-white shadow-lg"
+                />
+                <h2 className="event-sign-merchant-name line-clamp-2 break-words font-display text-[3.5rem] font-semibold leading-[1.02] text-neutral-950">
                   {merchant.name}
                 </h2>
               </div>
             </div>
           ) : null}
 
-          <div
-            className="event-sign-qr-frame mt-2.5 size-[18.75rem] shrink-0 rounded-2xl border-2 border-neutral-950 bg-white p-5"
-            role="img"
-            aria-label={
-              merchant
-                ? `${merchant.name} event catalog QR code`
-                : "Event catalog QR code"
-            }
-          >
-            <QRCodeSVG
+          <div className="event-sign-qr-frame mt-2.5 size-[18.75rem] shrink-0 rounded-2xl border-2 border-neutral-950 bg-white p-5">
+            <PrintableQrCode
               value={sheet.qrValue}
-              size={272}
-              level="M"
-              marginSize={4}
-              className="size-full"
+              label={
+                merchant
+                  ? `${merchant.name} event catalog QR code`
+                  : "Event catalog QR code"
+              }
             />
           </div>
 
@@ -209,8 +243,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
             {merchant ? "Scan to shop this merchant" : "Scan to shop the event"}
           </p>
           <p className="event-sign-scan-copy max-w-xl text-pretty text-sm leading-5 text-neutral-600">
-            Scan for current availability and event details. Listings and event
-            participation can change.
+            Scan for current availability and event details.
           </p>
         </div>
       </article>
