@@ -4,18 +4,17 @@ import { getVariationPanelPlacement } from "../apps/market/src/lib/variation-pan
 describe("getVariationPanelPlacement", () => {
   const card = { cardTop: 400, cardHeight: 400, panelHeight: 150 }
 
-  it("keeps the panel below the card when the expanded card fits", () => {
+  it("keeps the panel below the card when the vertical extension fits", () => {
     expect(getVariationPanelPlacement({ ...card, viewportHeight: 1200 })).toBe(
       "below"
     )
   })
 
-  it("accounts for the centered scale growth and the scaled panel", () => {
-    // Center 600, scaled half height 224, scaled panel 168: bottom at 992.
-    expect(getVariationPanelPlacement({ ...card, viewportHeight: 992 })).toBe(
+  it("switches above at the unscaled viewport boundary", () => {
+    expect(getVariationPanelPlacement({ ...card, viewportHeight: 950 })).toBe(
       "below"
     )
-    expect(getVariationPanelPlacement({ ...card, viewportHeight: 991 })).toBe(
+    expect(getVariationPanelPlacement({ ...card, viewportHeight: 949 })).toBe(
       "above"
     )
   })
@@ -24,7 +23,7 @@ describe("getVariationPanelPlacement", () => {
     expect(
       getVariationPanelPlacement({
         ...card,
-        viewportHeight: 1060,
+        viewportHeight: 1040,
         bottomInset: 100,
       })
     ).toBe("above")

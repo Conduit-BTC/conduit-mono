@@ -172,6 +172,23 @@ describe("ProductCard", () => {
     expect(html).toContain(">Sold out<")
   })
 
+  it("contains long clickable merchant names within the card", () => {
+    const merchantName =
+      "Peter No Taxation Without Representation Ruszkie Bitcorners"
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Bookmark"
+        merchantName={merchantName}
+        images={[]}
+        primaryPrice="25 sats"
+        onMerchantActivate={() => undefined}
+      />
+    )
+
+    expect(html).toContain("block w-full min-w-0 max-w-full truncate text-left")
+    expect(html).toContain(merchantName)
+  })
+
   it("renders sats primary pricing with a USD secondary line", () => {
     const price = getProductPriceDisplay(
       { price: 40_000, currency: "SATS", priceSats: 40_000 },
@@ -188,7 +205,7 @@ describe("ProductCard", () => {
     )
 
     expect(html).toContain("40,000 sats")
-    expect(html).toContain("about $32.28 USD")
+    expect(html).toContain("~ $32.28 USD")
   })
 
   it("keeps a sold-out product visible while disabling its cart action", () => {
@@ -235,7 +252,7 @@ describe("ProductCard", () => {
     )
   })
 
-  it("renders converted Bitcoin, source quote, and USD reference separately", () => {
+  it("renders converted Bitcoin, exact source price, and USD reference separately", () => {
     const price = getShopperPriceDisplay(
       {
         price: 10,
@@ -268,7 +285,23 @@ describe("ProductCard", () => {
 
     expect(html).toContain("~ ₿12,000")
     expect(html).not.toContain("~=")
-    expect(html).toContain("€10.00 EUR source quote")
-    expect(html).toContain("about $12.00 USD")
+    expect(html).toContain("€10.00 EUR")
+    expect(html).not.toContain("source quote")
+    expect(html).toContain("~ $12.00 USD")
+  })
+
+  it("reserves the USD reference row when Market pricing has no estimate", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Price pending"
+        merchantName="Alice Store"
+        images={[]}
+        primaryPrice="25 sats"
+        secondaryPrice="€0.25 EUR"
+        approximateUsdPrice={null}
+      />
+    )
+
+    expect(html.match(/min-h-\[1rem\]/g)).toHaveLength(2)
   })
 })

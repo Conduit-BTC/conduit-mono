@@ -46,7 +46,7 @@ function measureVariationPanelPlacement(
   const rect = root.getBoundingClientRect()
   const cardHeight = root.offsetHeight
   return getVariationPanelPlacement({
-    cardTop: rect.top + rect.height / 2 - cardHeight / 2,
+    cardTop: rect.top,
     cardHeight,
     panelHeight: panel.offsetHeight,
     viewportHeight: window.innerHeight,
@@ -190,10 +190,10 @@ export function ProductGridCard({
 
   const variationPanelClassName = cn(
     "pt-3",
-    "[@media(min-width:768px)_and_(hover:hover)]:absolute [@media(min-width:768px)_and_(hover:hover)]:inset-x-0 [@media(min-width:768px)_and_(hover:hover)]:z-20 [@media(min-width:768px)_and_(hover:hover)]:border-x [@media(min-width:768px)_and_(hover:hover)]:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:p-3",
+    "[@media(min-width:768px)_and_(hover:hover)]:absolute [@media(min-width:768px)_and_(hover:hover)]:-inset-x-px [@media(min-width:768px)_and_(hover:hover)]:z-20 [@media(min-width:768px)_and_(hover:hover)]:border-x-2 [@media(min-width:768px)_and_(hover:hover)]:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:p-3",
     panelOpensAbove
-      ? "[@media(min-width:768px)_and_(hover:hover)]:bottom-full [@media(min-width:768px)_and_(hover:hover)]:origin-bottom [@media(min-width:768px)_and_(hover:hover)]:border-t [@media(min-width:768px)_and_(hover:hover)]:rounded-t-xl"
-      : "[@media(min-width:768px)_and_(hover:hover)]:top-full [@media(min-width:768px)_and_(hover:hover)]:origin-top [@media(min-width:768px)_and_(hover:hover)]:border-b [@media(min-width:768px)_and_(hover:hover)]:rounded-b-xl",
+      ? "[@media(min-width:768px)_and_(hover:hover)]:bottom-full [@media(min-width:768px)_and_(hover:hover)]:origin-bottom [@media(min-width:768px)_and_(hover:hover)]:border-t-2 [@media(min-width:768px)_and_(hover:hover)]:rounded-t-xl"
+      : "[@media(min-width:768px)_and_(hover:hover)]:top-full [@media(min-width:768px)_and_(hover:hover)]:origin-top [@media(min-width:768px)_and_(hover:hover)]:border-b-2 [@media(min-width:768px)_and_(hover:hover)]:rounded-b-xl",
     // The collapsed panel scales to zero height so it never adds scrollable
     // space below the last grid row while it is hidden.
     "[@media(min-width:768px)_and_(hover:hover)]:pointer-events-none [@media(min-width:768px)_and_(hover:hover)]:invisible [@media(min-width:768px)_and_(hover:hover)]:opacity-0 [@media(min-width:768px)_and_(hover:hover)]:scale-y-0 [@media(min-width:768px)_and_(hover:hover)]:transition-[opacity,visibility,transform] [@media(min-width:768px)_and_(hover:hover)]:duration-200 motion-reduce:!transition-none",
@@ -206,13 +206,13 @@ export function ProductGridCard({
     <ProductCard
       className={cn(
         className ?? "h-full",
-        "relative origin-center",
-        "[@media(min-width:768px)_and_(hover:hover)]:overflow-visible [@media(min-width:768px)_and_(hover:hover)]:z-10 [@media(min-width:768px)_and_(hover:hover)]:hover:z-20 [@media(min-width:768px)_and_(hover:hover)]:focus-within:z-20 [@media(min-width:768px)_and_(hover:hover)]:hover:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:focus-within:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:hover:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:hover:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:focus-within:bg-[var(--surface-overlay)] motion-reduce:transition-none",
+        "relative",
+        "[@media(min-width:768px)_and_(hover:hover)]:overflow-visible [@media(min-width:768px)_and_(hover:hover)]:z-10 [@media(min-width:768px)_and_(hover:hover)]:hover:z-20 [@media(min-width:768px)_and_(hover:hover)]:focus-within:z-20 [@media(min-width:768px)_and_(hover:hover)]:hover:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:hover:bg-[var(--surface)] [@media(min-width:768px)_and_(hover:hover)]:hover:shadow-[var(--shadow-md)] [@media(min-width:768px)_and_(hover:hover)]:hover:ring-1 [@media(min-width:768px)_and_(hover:hover)]:hover:ring-primary-500 [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:focus-within:ring-1 [@media(min-width:768px)_and_(hover:hover)]:focus-within:ring-primary-500 motion-reduce:transition-none",
         hasVariationControls &&
           (panelOpensAbove
             ? "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-t-0"
             : "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-b-0"),
-        "[@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:z-30 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-[var(--text-secondary)] [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:shadow-[var(--shadow-lg)]"
+        "[@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:z-30 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:ring-1 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:ring-primary-500"
       )}
       onPointerEnter={(event) =>
         updateVariationPanelPlacement(event.currentTarget)

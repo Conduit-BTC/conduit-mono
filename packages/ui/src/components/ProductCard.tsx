@@ -185,7 +185,7 @@ export function ProductCard({
           {onMerchantActivate ? (
             <button
               type="button"
-              className="truncate text-left text-xs leading-5 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              className="block w-full min-w-0 max-w-full truncate text-left text-xs leading-5 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
               aria-label={merchantNamePending ? "Open store" : undefined}
               onClick={(event) => {
                 event.preventDefault()
@@ -196,7 +196,7 @@ export function ProductCard({
               {merchantNameContent}
             </button>
           ) : (
-            <div className="truncate text-left text-xs leading-5 text-[var(--text-muted)]">
+            <div className="w-full min-w-0 max-w-full truncate text-left text-xs leading-5 text-[var(--text-muted)]">
               {merchantNameContent}
             </div>
           )}
@@ -218,16 +218,16 @@ export function ProductCard({
         ) : null}
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-3">
-          <div className="min-w-0">
+          <div className="min-w-0 tabular-nums">
             <div className="min-h-5 truncate text-sm font-bold text-secondary-400">
               {primaryPrice}
             </div>
             <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
               {secondaryPrice ?? "\u00a0"}
             </div>
-            {approximateUsdPrice ? (
+            {approximateUsdPrice !== undefined ? (
               <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
-                {approximateUsdPrice}
+                {approximateUsdPrice ?? "\u00a0"}
               </div>
             ) : null}
           </div>

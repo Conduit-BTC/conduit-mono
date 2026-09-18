@@ -27,6 +27,8 @@ import {
 const MERCHANT_PUBKEY = "a".repeat(64)
 const FAMILY_ID = `30402:${MERCHANT_PUBKEY}:conduit-shirt`
 const ZERO_AXIS_FAMILY_ID = `30402:${MERCHANT_PUBKEY}:conduit-mug`
+const LONG_MERCHANT_NAME =
+  "Peter No Taxation Without Representation Ruszkie Bitcorners"
 
 function requirePreparedFamily(
   item:
@@ -182,7 +184,7 @@ export function mountProductVariationPanelHarness(
           <li data-testid="simple-product-sibling">
             <ProductGridCard
               product={sibling}
-              merchantName="Conduit Merchant"
+              merchantName={LONG_MERCHANT_NAME}
               notice={
                 <>
                   Checking current signed event pickup evidence before this

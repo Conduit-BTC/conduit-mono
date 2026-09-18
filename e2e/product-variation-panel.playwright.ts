@@ -11,8 +11,11 @@ type PanelStyle = {
   borderBottomLeftRadius: string
   borderBottomRightRadius: string
   borderBottomColor: string
+  borderBottomWidth: string
   borderLeftColor: string
+  borderLeftWidth: string
   borderRightColor: string
+  borderRightWidth: string
   borderTopWidth: string
   boxShadow: string
   opacity: string
@@ -59,8 +62,11 @@ async function panelStyle(panel: Locator): Promise<PanelStyle> {
       borderBottomLeftRadius: style.borderBottomLeftRadius,
       borderBottomRightRadius: style.borderBottomRightRadius,
       borderBottomColor: style.borderBottomColor,
+      borderBottomWidth: style.borderBottomWidth,
       borderLeftColor: style.borderLeftColor,
+      borderLeftWidth: style.borderLeftWidth,
       borderRightColor: style.borderRightColor,
+      borderRightWidth: style.borderRightWidth,
       borderTopWidth: style.borderTopWidth,
       boxShadow: style.boxShadow,
       opacity: style.opacity,
@@ -76,6 +82,7 @@ async function cardStyle(card: Locator): Promise<{
   backgroundColor: string
   borderBottomWidth: string
   borderLeftColor: string
+  borderLeftWidth: string
   borderRightColor: string
   boxShadow: string
   scale: string
@@ -87,23 +94,13 @@ async function cardStyle(card: Locator): Promise<{
       backgroundColor: style.backgroundColor,
       borderBottomWidth: style.borderBottomWidth,
       borderLeftColor: style.borderLeftColor,
+      borderLeftWidth: style.borderLeftWidth,
       borderRightColor: style.borderRightColor,
       boxShadow: style.boxShadow,
       scale: style.scale,
       transitionProperty: style.transitionProperty,
     }
   })
-}
-
-function expectMatchingOpaqueBackgrounds(
-  cardBackground: string,
-  panelBackground: string
-): void {
-  expect(panelBackground).toBe(cardBackground)
-  const components = cardBackground.match(/[\d.]+/g)
-  expect(components?.length).toBeGreaterThanOrEqual(3)
-  expect(components?.length).toBeLessThanOrEqual(4)
-  expect(components?.length === 4 ? Number(components[3]) : 1).toBe(1)
 }
 
 async function hasJoinedBorderColors(
@@ -232,6 +229,28 @@ test("market product variation panel preserves grid geometry across desktop mous
   expect(noticeBox.y + noticeBox.height).toBeLessThanOrEqual(
     siblingBox.y + siblingBox.height
   )
+  const merchantName = sibling.getByRole("button", {
+    name: "Peter No Taxation Without Representation Ruszkie Bitcorners",
+  })
+  await expect(merchantName).toBeVisible()
+  await expect
+    .poll(() =>
+      merchantName.evaluate((element) => {
+        const style = getComputedStyle(element)
+        return {
+          contained: element.scrollWidth > element.clientWidth,
+          overflow: style.overflow,
+          textOverflow: style.textOverflow,
+          whiteSpace: style.whiteSpace,
+        }
+      })
+    )
+    .toEqual({
+      contained: true,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+    })
   await expect(chooseSize).toBeAttached()
   await variableCard.scrollIntoViewIfNeeded()
   await expect
@@ -244,6 +263,7 @@ test("market product variation panel preserves grid geometry across desktop mous
     })
 
   const initialCardGeometry = await geometry(variableCard)
+  const initialCardStyle = await cardStyle(variableCard)
   const initialGridGeometry = await Promise.all(
     [variableItem, sibling, grid].map(geometry)
   )
@@ -259,16 +279,13 @@ test("market product variation panel preserves grid geometry across desktop mous
       visibility: "visible",
     })
   const expandedCardGeometry = await geometry(variableCard)
-  expect(expandedCardGeometry.width / initialCardGeometry.width).toBeCloseTo(
-    1.12,
-    2
-  )
-  expect(expandedCardGeometry.height / initialCardGeometry.height).toBeCloseTo(
-    1.12,
-    2
-  )
+  expect(expandedCardGeometry.width).toBe(initialCardGeometry.width)
+  expect(expandedCardGeometry.height).toBe(initialCardGeometry.height)
   const expandedPanelStyle = await panelStyle(panel)
   expect(expandedPanelStyle).toMatchObject({
+    borderBottomWidth: "2px",
+    borderLeftWidth: "2px",
+    borderRightWidth: "2px",
     borderTopWidth: "0px",
     boxShadow: "none",
   })
@@ -276,7 +293,12 @@ test("market product variation panel preserves grid geometry across desktop mous
   const expandedCardStyle = await cardStyle(variableCard)
   expect(expandedCardStyle).toMatchObject({
     borderBottomWidth: "0px",
+    borderLeftWidth: "1px",
+    scale: "none",
   })
+  expect(expandedCardStyle.backgroundColor).toBe(
+    initialCardStyle.backgroundColor
+  )
   expect(
     await media.evaluate((element) =>
       parseFloat(getComputedStyle(element).borderTopLeftRadius)
@@ -287,10 +309,6 @@ test("market product variation panel preserves grid geometry across desktop mous
       parseFloat(getComputedStyle(element).borderTopRightRadius)
     )
   ).toBeGreaterThan(0)
-  expectMatchingOpaqueBackgrounds(
-    expandedCardStyle.backgroundColor,
-    expandedPanelStyle.backgroundColor
-  )
   await expect.poll(() => hasJoinedBorderColors(variableCard, panel)).toBe(true)
   expectUnchangedGeometry(
     initialGridGeometry,
@@ -318,12 +336,10 @@ test("market product variation panel preserves grid geometry across desktop mous
   expect(openCardStyle).toMatchObject({
     borderBottomWidth: "0px",
   })
-  expect(openCardStyle.scale).toBe("1.12")
+  expect(openCardStyle.scale).toBe("none")
   expect(openCardStyle.boxShadow).not.toBe("none")
-  expectMatchingOpaqueBackgrounds(
-    openCardStyle.backgroundColor,
-    openPanelStyle.backgroundColor
-  )
+  expect(openCardStyle.backgroundColor).toBe(initialCardStyle.backgroundColor)
+  expectOpaquePanelCorners(openPanelStyle)
   await expect.poll(() => hasJoinedBorderColors(variableCard, panel)).toBe(true)
   expectUnchangedGeometry(
     initialGridGeometry,
@@ -479,7 +495,7 @@ test("market product variation panel opens above the card when the page ends bel
   await page.keyboard.press("Escape")
 })
 
-test("market product variation panel uses an opaque matching light overlay @market", async ({
+test("market product variation panel uses an opaque light overlay @market", async ({
   page,
 }) => {
   await page.emulateMedia({ colorScheme: "light" })
@@ -489,14 +505,14 @@ test("market product variation panel uses an opaque matching light overlay @mark
   const variableItem = page.getByTestId("variable-product-list-item")
   const variableCard = variableItem.locator(":scope > div")
   const panel = await variationPanel(variableItem)
+  const initialCardStyle = await cardStyle(variableCard)
 
   await variableCard.hover()
   await expect(panel).toBeVisible()
   const expandedCardStyle = await cardStyle(variableCard)
   const expandedPanelStyle = await panelStyle(panel)
-  expectMatchingOpaqueBackgrounds(
-    expandedCardStyle.backgroundColor,
-    expandedPanelStyle.backgroundColor
+  expect(expandedCardStyle.backgroundColor).toBe(
+    initialCardStyle.backgroundColor
   )
   await expect.poll(() => hasJoinedBorderColors(variableCard, panel)).toBe(true)
   expectOpaquePanelCorners(expandedPanelStyle)
@@ -578,7 +594,7 @@ test("market product variation panel reveals instantly with reduced motion @mark
 
   await expect(chooseSize).toBeVisible()
   expect(await cardStyle(variableCard)).toMatchObject({
-    scale: "1.12",
+    scale: "none",
     transitionProperty: "none",
   })
   expect(await panelStyle(panel)).toMatchObject({
@@ -706,7 +722,7 @@ test("market variation panel clears an open portal when family availability chan
   await item.getByRole("combobox", { name: "Choose size" }).click()
   await expect(page.getByRole("listbox")).toBeVisible()
   await page.mouse.move(1430, 880)
-  await expect.poll(() => cardStyle(card)).toMatchObject({ scale: "1.12" })
+  await expect.poll(() => cardStyle(card)).toMatchObject({ scale: "none" })
   await page
     .getByRole("button", {
       name: "Toggle variation availability",
