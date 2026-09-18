@@ -1040,6 +1040,13 @@ export class SparkWalletManager {
         reason: "Spark payment amount must be a positive whole number of sats.",
       }
     }
+    if (input.persistAttempt && isAmountlessLightningInvoice(input.invoice)) {
+      return {
+        status: "pre_publish_failed",
+        reason:
+          "Amountless Lightning invoices cannot use durable Spark payment recovery.",
+      }
+    }
 
     let prepared: SparkPreparedPayment
     let feeSats: number

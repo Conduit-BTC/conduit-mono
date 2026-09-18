@@ -2134,6 +2134,77 @@ describe("SparkWalletManager", () => {
     expect(reconcileCalls).toBe(0)
   })
 
+  it("rejects an amountless Lightning invoice before persisting or sending a recoverable attempt", async () => {
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc",
+      fields: [
+        {
+          tag: "p",
+          words: bytesToBolt11Words(new Uint8Array(32).fill(18)),
+        },
+      ],
+    })
+    let prepareCalls = 0
+    let approveCalls = 0
+    let persistCalls = 0
+    let authorizeCalls = 0
+    let sendCalls = 0
+    const manager = new SparkWalletManager({
+      network: "mainnet",
+      async open() {
+        return {
+          ...createNoopSdkClient(),
+          async prepareSendPayment() {
+            prepareCalls += 1
+            return {
+              paymentMethod: {
+                type: "bolt11Invoice",
+                lightningFeeSats: 2,
+              },
+              amount: 1_000n,
+            }
+          },
+          async sendPayment() {
+            sendCalls += 1
+            throw new Error("must not send")
+          },
+        }
+      },
+    })
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: ["synthetic", "noncredential", "input"].join("-"),
+      accountNumber: 0,
+    })
+
+    await expect(
+      manager.payInvoice("wallet-personal", {
+        invoice,
+        amountMsats: 1_000_000,
+        idempotencyKey: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
+        approveFee: async () => {
+          approveCalls += 1
+          return true
+        },
+        persistAttempt: async () => {
+          persistCalls += 1
+        },
+        beforeSend: async () => {
+          authorizeCalls += 1
+        },
+      })
+    ).resolves.toEqual({
+      status: "pre_publish_failed",
+      reason:
+        "Amountless Lightning invoices cannot use durable Spark payment recovery.",
+    })
+    expect(prepareCalls).toBe(0)
+    expect(approveCalls).toBe(0)
+    expect(persistCalls).toBe(0)
+    expect(authorizeCalls).toBe(0)
+    expect(sendCalls).toBe(0)
+  })
+
   it("does not persist or send a Lightning attempt that cannot be reconciled", async () => {
     let persistCalls = 0
     let authorizeCalls = 0
