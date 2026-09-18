@@ -24,6 +24,10 @@ const ZERO_PREIMAGE = "00".repeat(32)
 const ZERO_PREIMAGE_PAYMENT_HASH =
   "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
 const ZERO_PREIMAGE_INVOICE = makeLightningInvoice(ZERO_PREIMAGE_PAYMENT_HASH)
+const ZERO_PREIMAGE_FIXED_INVOICE = makeLightningInvoice(
+  ZERO_PREIMAGE_PAYMENT_HASH,
+  1_000
+)
 const PAYMENT_ATTEMPT_ID = "c7fb0ad2-c85c-4d93-b542-6dc9d10d8c00"
 
 describe("first-party Spark SDK adapter", () => {
@@ -1613,7 +1617,7 @@ describe("first-party Spark SDK adapter", () => {
             status: "LIGHTNING_PAYMENT_SUCCEEDED",
             fee: { originalValue: 2, originalUnit: "SATOSHI" },
             paymentPreimage: ZERO_PREIMAGE,
-            encodedInvoice: ZERO_PREIMAGE_INVOICE,
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
             idempotencyKey: PAYMENT_ATTEMPT_ID,
             typename: "LightningSendRequest",
           },
@@ -1625,7 +1629,8 @@ describe("first-party Spark SDK adapter", () => {
     await expect(
       client.reconcileLightningSend?.({
         transferId: PAYMENT_ATTEMPT_ID,
-        paymentRequest: ZERO_PREIMAGE_INVOICE,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
         maxFeeSats: 5,
         completionTimeoutSecs: 0,
       })
@@ -1663,6 +1668,46 @@ describe("first-party Spark SDK adapter", () => {
             status: "LIGHTNING_PAYMENT_SUCCEEDED",
             fee: { originalValue: 2, originalUnit: "SATOSHI" },
             paymentPreimage: ZERO_PREIMAGE,
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE.toUpperCase(),
+        amountSats: 1_000,
+        maxFeeSats: 5,
+        completionTimeoutSecs: 0,
+      })
+    ).resolves.toMatchObject({
+      status: "resolved",
+      payment: { status: "completed" },
+    })
+    expect(payCalls).toBe(0)
+  })
+
+  it("rejects amountless recovery when the recovered amount differs", async () => {
+    let payCalls = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 2_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_SUCCEEDED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            paymentPreimage: ZERO_PREIMAGE,
             encodedInvoice: ZERO_PREIMAGE_INVOICE,
             idempotencyKey: PAYMENT_ATTEMPT_ID,
             typename: "LightningSendRequest",
@@ -1675,15 +1720,41 @@ describe("first-party Spark SDK adapter", () => {
     await expect(
       client.reconcileLightningSend?.({
         transferId: PAYMENT_ATTEMPT_ID,
-        paymentRequest: ZERO_PREIMAGE_INVOICE.toUpperCase(),
+        paymentRequest: ZERO_PREIMAGE_INVOICE,
+        amountSats: 1_000,
         maxFeeSats: 5,
         completionTimeoutSecs: 0,
       })
-    ).resolves.toMatchObject({
-      status: "resolved",
-      payment: { status: "completed" },
+    ).resolves.toEqual({
+      status: "conflicting_evidence",
+      reason: "Spark cannot safely reconcile an amountless Lightning invoice.",
     })
     expect(payCalls).toBe(0)
+  })
+
+  it("rejects a fixed invoice that differs from the approved amount", async () => {
+    let transferReads = 0
+    const wallet = createNativeWallet({
+      async getTransferFromSsp() {
+        transferReads += 1
+        return undefined
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 999,
+        maxFeeSats: 5,
+      })
+    ).resolves.toEqual({
+      status: "conflicting_evidence",
+      reason:
+        "The persisted Lightning invoice does not match the approved amount.",
+    })
+    expect(transferReads).toBe(0)
   })
 
   it("keeps a missing transfer unresolved without paying again", async () => {
@@ -1704,7 +1775,8 @@ describe("first-party Spark SDK adapter", () => {
     await expect(
       client.reconcileLightningSend?.({
         transferId: PAYMENT_ATTEMPT_ID,
-        paymentRequest: ZERO_PREIMAGE_INVOICE,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
         maxFeeSats: 5,
       })
     ).resolves.toEqual({ status: "not_found" })
@@ -1728,7 +1800,8 @@ describe("first-party Spark SDK adapter", () => {
     await expect(
       client.reconcileLightningSend?.({
         transferId: PAYMENT_ATTEMPT_ID,
-        paymentRequest: ZERO_PREIMAGE_INVOICE,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
         maxFeeSats: 5,
       })
     ).resolves.toEqual({ status: "lookup_unavailable" })
@@ -1751,7 +1824,7 @@ describe("first-party Spark SDK adapter", () => {
             id: "recovered-lightning-request",
             status: "LIGHTNING_PAYMENT_INITIATED",
             fee: { originalValue: 2, originalUnit: "SATOSHI" },
-            encodedInvoice: ZERO_PREIMAGE_INVOICE,
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
             idempotencyKey: PAYMENT_ATTEMPT_ID,
             typename: "LightningSendRequest",
           },
@@ -1775,7 +1848,8 @@ describe("first-party Spark SDK adapter", () => {
     await expect(
       client.reconcileLightningSend?.({
         transferId: PAYMENT_ATTEMPT_ID,
-        paymentRequest: ZERO_PREIMAGE_INVOICE,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
         maxFeeSats: 5,
         completionTimeoutSecs: 1,
       })
@@ -1814,7 +1888,7 @@ describe("first-party Spark SDK adapter", () => {
         name: "mixed-case invoice",
         transferId: PAYMENT_ATTEMPT_ID,
         request: {
-          encodedInvoice: `L${ZERO_PREIMAGE_INVOICE.slice(1)}`,
+          encodedInvoice: `L${ZERO_PREIMAGE_FIXED_INVOICE.slice(1)}`,
         },
         message: "Spark returned a different Lightning invoice.",
       },
@@ -1843,7 +1917,7 @@ describe("first-party Spark SDK adapter", () => {
               status: "LIGHTNING_PAYMENT_SUCCEEDED",
               fee: { originalValue: 2, originalUnit: "SATOSHI" },
               paymentPreimage: ZERO_PREIMAGE,
-              encodedInvoice: ZERO_PREIMAGE_INVOICE,
+              encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
               idempotencyKey: PAYMENT_ATTEMPT_ID,
               typename: "LightningSendRequest",
               ...testCase.request,
@@ -1856,7 +1930,8 @@ describe("first-party Spark SDK adapter", () => {
       await expect(
         client.reconcileLightningSend?.({
           transferId: PAYMENT_ATTEMPT_ID,
-          paymentRequest: ZERO_PREIMAGE_INVOICE,
+          paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+          amountSats: 1_000,
           maxFeeSats: 5,
           completionTimeoutSecs: 0,
         })
@@ -1883,7 +1958,7 @@ describe("first-party Spark SDK adapter", () => {
               id: "recovered-lightning-request",
               status: testCase.providerStatus,
               fee: { originalValue: 2, originalUnit: "SATOSHI" },
-              encodedInvoice: ZERO_PREIMAGE_INVOICE,
+              encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
               idempotencyKey: PAYMENT_ATTEMPT_ID,
               typename: "LightningSendRequest",
             },
@@ -1895,7 +1970,8 @@ describe("first-party Spark SDK adapter", () => {
       await expect(
         client.reconcileLightningSend?.({
           transferId: PAYMENT_ATTEMPT_ID,
-          paymentRequest: ZERO_PREIMAGE_INVOICE,
+          paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+          amountSats: 1_000,
           maxFeeSats: 5,
           completionTimeoutSecs: 0,
         })
@@ -2088,13 +2164,16 @@ function createNativeWallet(
   }
 }
 
-function makeLightningInvoice(paymentHashHex: string): string {
+function makeLightningInvoice(
+  paymentHashHex: string,
+  amountSats?: number
+): string {
   const paymentHash = Uint8Array.from(
     paymentHashHex.match(/.{2}/g) ?? [],
     (byte) => Number.parseInt(byte, 16)
   )
   return makeBolt11Fixture({
-    hrp: "lnbc",
+    hrp: amountSats === undefined ? "lnbc" : `lnbc${amountSats * 10}n`,
     fields: [
       {
         tag: "p",

@@ -68,6 +68,7 @@ interface SparkNativeTransfer {
 
 interface SparkNativeSspTransfer {
   sparkId?: string
+  totalAmount?: SparkNativeCurrencyAmount
   userRequest?: unknown
 }
 
@@ -758,6 +759,14 @@ function adaptFirstPartySparkWallet(input: {
       }
     },
     async reconcileLightningSend(request) {
+      const approvedAmountMsats = request.amountSats * 1_000
+      if (
+        !Number.isSafeInteger(request.amountSats) ||
+        request.amountSats <= 0 ||
+        !Number.isSafeInteger(approvedAmountMsats)
+      ) {
+        throw new Error("The approved Lightning amount is invalid.")
+      }
       if (!Number.isSafeInteger(request.maxFeeSats) || request.maxFeeSats < 0) {
         throw new Error("The approved Lightning fee limit is invalid.")
       }
@@ -771,6 +780,21 @@ function adaptFirstPartySparkWallet(input: {
         throw new Error(
           "The Lightning invoice does not contain a valid payment hash."
         )
+      }
+      if (isAmountlessLightningInvoice(request.paymentRequest)) {
+        return {
+          status: "conflicting_evidence",
+          reason:
+            "Spark cannot safely reconcile an amountless Lightning invoice.",
+        }
+      }
+      const decodedAmount = decodeLightningInvoiceAmount(request.paymentRequest)
+      if (decodedAmount.msats !== approvedAmountMsats) {
+        return {
+          status: "conflicting_evidence",
+          reason:
+            "The persisted Lightning invoice does not match the approved amount.",
+        }
       }
 
       let transfer: SparkNativeSspTransfer | undefined
