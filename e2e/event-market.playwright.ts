@@ -5039,7 +5039,7 @@ test("event variation choices remain stable while cached pickup authorization re
   await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
   const card = page
     .getByRole("listitem")
-    .filter({ has: page.getByRole("combobox", { name: "Choose size" }) })
+    .filter({ hasText: "Synthetic event shirt" })
   await expect(
     card.getByRole("button", { name: "Add", exact: true })
   ).toBeEnabled()
@@ -5053,6 +5053,7 @@ test("event variation choices remain stable while cached pickup authorization re
   try {
     await page.reload()
     await held.captured
+    await card.hover()
     const selector = card.getByRole("combobox", { name: "Choose size" })
     await expect(selector).toBeVisible()
     await expect(
@@ -5079,6 +5080,7 @@ test("event variation choices remain stable while cached pickup authorization re
     page.getByRole("alert").filter({ hasText: "Event evidence is stale" })
   ).toBeVisible()
   await expect(card).toBeVisible()
+  await card.hover()
   await expect(
     card.getByRole("combobox", { name: "Choose size" })
   ).toBeVisible()
