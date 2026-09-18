@@ -389,9 +389,9 @@ static service-level distinct ID and disables PostHog person-profile processing.
 Emitted as a recall-biased estimate when a Conduit commerce order moves through
 any supported paid signal: wallet success, a buyer report, automatic merchant
 wallet verification, manual merchant confirmation, or later paid-order
-reconciliation. The sole business property is the order's exact positive
-whole-satoshi invoiced amount. These signals are OR gates for one logical
-per-order event, not separate events.
+reconciliation. The sole business property is the best available positive
+whole-satoshi amount associated with the paid-order signal. These signals are
+OR gates for one logical per-order event, not separate events.
 
 This event is a narrowly scoped first-party aggregate commerce measurement, not
 ordinary optional product analytics. It is not suppressed solely because GPC
@@ -410,6 +410,9 @@ same event UUID, event name, UTC-day timestamp, and static service identity so
 PostHog treats them as one logical event. Insights must also group by event UUID
 before summing `estimated_gmv_sats`, so dashboard totals remain structurally
 deduplicated even during PostHog's asynchronous ingestion deduplication window.
+Signals may disagree on the estimate; a later accepted signal may replace the
+amount on that same logical event without adding another order. Slight
+overstatement or understatement from that last-estimate behavior is accepted.
 
 It must not include app, route, session, buyer, merchant, order, product,
 public key, comment, invoice, payment hash, preimage, receipt, relay, wallet,

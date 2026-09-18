@@ -48,7 +48,7 @@ const PRODUCT_LEGAL_V1_3 = Object.freeze({
   lastUpdatedDate: "2026-09-17",
   archivedSource:
     "packages/ui/src/legal/versions/product-legal-v1.3-2026-09-17.tsx",
-  sha256: "f572e5d3a4a4f14833a2de57c2fb8ff547538531fc1e65dd26f02f82ff83c525",
+  sha256: "d2f8f097ad5446dba1e28aae4035332320f1d52177974714eb9603574b280696",
 })
 
 function normalizeWhitespace(value: string): string {
@@ -300,6 +300,9 @@ describe("shared Product legal documents", () => {
     )
     expect(normalizedRelease).toContain(
       "A shopper report is an estimate signal, not settlement proof."
+    )
+    expect(normalizedRelease).toContain(
+      "a later observation may replace the earlier estimate for that same opaque event"
     )
     expect(normalizedRelease).not.toContain(
       "aggregate settled volume for verified public Zap Outs"

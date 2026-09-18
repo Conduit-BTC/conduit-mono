@@ -72,7 +72,8 @@ Supported signals are wallet success, a buyer payment report, automatic
 merchant wallet verification, manual merchant confirmation, and later paid or
 fulfilled order reconciliation. These signals are OR gates for one logical
 per-order estimate, not separate events. Its only business property is the
-order's exact positive whole-satoshi invoiced amount.
+best available positive whole-satoshi amount associated with the paid-order
+signal.
 
 This measurement is distinct from optional browser product analytics. Official
 Shop and Sell clients may report it even when generic browser telemetry is
@@ -112,9 +113,12 @@ unlinkable. Aggregate reporting must describe the resulting metric as
 estimated Conduit commerce GMV, not verified settlement, total platform sales,
 merchant revenue, or funds processed by Conduit. PostHog considers matching
 event UUID, event name, timestamp, and static service identity to be one logical
-event. Insights must still group by the opaque event UUID before summing the
-amount so totals remain structurally deduplicated during asynchronous provider
-ingestion.
+event. Signals may disagree on the estimated amount; a later accepted signal
+may replace the value for that same logical event without adding another order.
+This accepted last-estimate behavior can slightly overstate or understate exact
+invoiced sats. Insights must still group by the opaque event UUID before
+summing the amount so totals remain structurally deduplicated during
+asynchronous provider ingestion.
 
 Allowed fields:
 

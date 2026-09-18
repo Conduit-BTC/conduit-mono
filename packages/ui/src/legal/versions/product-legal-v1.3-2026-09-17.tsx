@@ -349,12 +349,12 @@ export function ProductPrivacyPolicyVersion() {
           decentralized and no Conduit server observes every order outcome,
           either a shopper or merchant Product App may report that an order was
           paid after one of the Product App’s payment or order-confirmation
-          signals occurs. The client sends only the positive whole-satoshi
-          invoiced amount, the order’s UTC calendar date, and the order’s random
-          per-order UUID. It does not send a buyer or merchant public key,
-          invoice, receipt, product, order contents, contact information, device
-          identifier, session identifier, browser identifier, or wallet
-          information.
+          signals occurs. The client sends only the best available positive
+          whole-satoshi amount associated with that paid-order signal, the
+          order’s UTC calendar date, and the order’s random per-order UUID. It
+          does not send a buyer or merchant public key, invoice, receipt,
+          product, order contents, contact information, device identifier,
+          session identifier, browser identifier, or wallet information.
         </p>
         <p>
           The Conduit-operated Worker validates an explicit allowlist of those
@@ -379,11 +379,13 @@ export function ProductPrivacyPolicyVersion() {
           Conduit uses this event only to calculate aggregate estimated Conduit
           commerce gross merchandise volume. A shopper report is an estimate
           signal, not settlement proof. Merchant and shopper reports may be
-          mistaken, incomplete, repeated, or manipulated; duplicate observations
-          of the same order are designed to collapse, but the aggregate can
-          still overcount or undercount actual paid commerce. This metric does
-          not determine payment state or prove sales, merchant acceptance,
-          fulfillment, refunds, or final merchant revenue.
+          mistaken, incomplete, repeated, or manipulated. Duplicate observations
+          of the same order are designed to collapse; when permitted
+          observations disagree on the amount, a later observation may replace
+          the earlier estimate for that same opaque event. The aggregate can
+          therefore still overcount or undercount actual paid commerce. This
+          metric does not determine payment state or prove sales, merchant
+          acceptance, fulfillment, refunds, or final merchant revenue.
         </p>
       </section>
 
