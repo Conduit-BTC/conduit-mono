@@ -174,7 +174,9 @@ describe("checkout completion navigation contracts", () => {
       "const fresh = isCartAvailabilityReadComplete(readDecision)"
     )
     expect(readinessHook).toContain("readDecision,")
-    expect(readinessHook).toContain("decision,")
+    expect(readinessHook).toContain(
+      "decision: getCartAvailabilityReadDecision({"
+    )
     expect(checkoutRoute).toContain("selectedMerchantReadiness?.readDecision")
     expect(checkoutRoute).toContain(
       'checkoutAvailability.readDecision.coverage === "partial"'

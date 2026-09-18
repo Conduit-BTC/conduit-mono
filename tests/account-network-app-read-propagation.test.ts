@@ -88,7 +88,7 @@ describe("app account-network read propagation", () => {
     expect(detailHook).toContain("useConduitSession")
     expect(detailHook).toContain("getProductDetail({")
     expect(detailHook).toContain("authenticatedPubkey,")
-    expect(readinessHook).toContain("getProductsByIds(productIds, {")
+    expect(readinessHook).toContain("getProductsByIds(scope.productIds, {")
     expect(readinessHook).toContain("authenticatedPubkey,")
     expect(readinessHook).toContain("const { authGeneration } = useAuth()")
     expect(readinessHook).toContain(
