@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 
 import {
   SparkWalletManager,
+  type SparkLightningSendAttempt,
   type SparkPreparedPayment,
   type SparkSdkClient,
   type SparkSdkFactory,
@@ -1945,6 +1946,296 @@ describe("SparkWalletManager", () => {
     expect(prepareCalls).toBe(1)
     expect(approvalCalls).toBe(1)
     expect(sendCalls).toBe(1)
+  })
+
+  it("persists an exact Lightning attempt before sending and recovers it after manager restart", async () => {
+    const lifecycle: string[] = []
+    let savedAttempt: SparkLightningSendAttempt | undefined
+    let openCalls = 0
+    let sendCalls = 0
+    let reconcileCalls = 0
+    const factory: SparkSdkFactory = {
+      network: "mainnet",
+      async open() {
+        openCalls += 1
+        return {
+          ...createNoopSdkClient(),
+          async prepareSendPayment() {
+            return {
+              paymentMethod: {
+                type: "bolt11Invoice",
+                lightningFeeSats: 2,
+              },
+              amount: 1_000n,
+            }
+          },
+          async sendPayment() {
+            sendCalls += 1
+            lifecycle.push("send")
+            throw new Error("response lost")
+          },
+          async reconcileLightningSend(request) {
+            reconcileCalls += 1
+            expect(request).toEqual({
+              transferId: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
+              paymentRequest: "lnbc1checkout",
+              amountSats: 1_000,
+              maxFeeSats: 2,
+              completionTimeoutSecs: 3,
+            })
+            return {
+              status: "resolved" as const,
+              payment: {
+                id: "recovered-payment",
+                status: "completed" as const,
+                fees: 2n,
+                details: {
+                  type: "lightning",
+                  htlcDetails: {
+                    paymentHash: "payment-hash",
+                    preimage: "payment-preimage",
+                  },
+                },
+              },
+            }
+          },
+        }
+      },
+    }
+    const firstManager = new SparkWalletManager(
+      factory,
+      undefined,
+      undefined,
+      () => 1_700_000_000_000
+    )
+    await firstManager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: ["synthetic", "noncredential", "input"].join("-"),
+      accountNumber: 0,
+    })
+
+    await expect(
+      firstManager.payInvoice("wallet-personal", {
+        invoice: "lnbc1checkout",
+        amountMsats: 1_000_000,
+        idempotencyKey: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
+        completionTimeoutSecs: 3,
+        approveFee: async () => {
+          lifecycle.push("approve")
+          return true
+        },
+        persistAttempt: async (attempt) => {
+          lifecycle.push("persist")
+          expect(Object.isFrozen(attempt)).toBe(true)
+          savedAttempt = attempt
+        },
+        beforeSend: async () => {
+          lifecycle.push("authorize")
+        },
+      })
+    ).resolves.toEqual({
+      status: "ambiguous",
+      reason: "response lost Check the wallet before retrying.",
+    })
+    expect(lifecycle).toEqual(["approve", "persist", "authorize", "send"])
+    expect(savedAttempt).toEqual({
+      schemaVersion: 1,
+      walletId: "wallet-personal",
+      network: "mainnet",
+      transferId: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
+      paymentRequest: "lnbc1checkout",
+      amountSats: 1_000,
+      maxFeeSats: 2,
+      completionTimeoutSecs: 3,
+      createdAt: 1_700_000_000_000,
+    })
+    await firstManager.close("wallet-personal")
+    if (!savedAttempt) throw new Error("attempt was not persisted")
+
+    const restoredManager = new SparkWalletManager(factory)
+    await restoredManager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: ["synthetic", "noncredential", "input"].join("-"),
+      accountNumber: 0,
+    })
+    await expect(
+      restoredManager.reconcileInvoiceAttempt("wallet-personal", savedAttempt)
+    ).resolves.toMatchObject({
+      status: "resolved",
+      payment: { id: "recovered-payment", status: "completed" },
+    })
+    expect(openCalls).toBe(2)
+    expect(sendCalls).toBe(1)
+    expect(reconcileCalls).toBe(1)
+    await restoredManager.close("wallet-personal")
+  })
+
+  it("rejects altered Lightning attempt ownership before provider lookup", async () => {
+    let reconcileCalls = 0
+    const manager = new SparkWalletManager({
+      network: "mainnet",
+      async open() {
+        return {
+          ...createNoopSdkClient(),
+          async reconcileLightningSend() {
+            reconcileCalls += 1
+            return { status: "not_found" as const }
+          },
+        }
+      },
+    })
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: ["synthetic", "noncredential", "input"].join("-"),
+      accountNumber: 0,
+    })
+    const attempt: SparkLightningSendAttempt = {
+      schemaVersion: 1,
+      walletId: "wallet-personal",
+      network: "mainnet",
+      transferId: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
+      paymentRequest: "lnbc1checkout",
+      amountSats: 1_000,
+      maxFeeSats: 2,
+      createdAt: 1_700_000_000_000,
+    }
+
+    const cases = [
+      {
+        attempt: { ...attempt, walletId: "different-wallet" },
+        reason:
+          "The persisted Spark payment attempt belongs to another wallet.",
+      },
+      {
+        attempt: { ...attempt, network: "regtest" as const },
+        reason:
+          "The persisted Spark payment attempt belongs to another network.",
+      },
+      {
+        attempt: { ...attempt, paymentRequest: "" },
+        reason: "The persisted Spark payment attempt is invalid.",
+      },
+      {
+        attempt: { ...attempt, transferId: "not-a-uuid" },
+        reason: "The persisted Spark payment attempt is invalid.",
+      },
+    ]
+    for (const testCase of cases) {
+      await expect(
+        manager.reconcileInvoiceAttempt(
+          "wallet-personal",
+          testCase.attempt as SparkLightningSendAttempt
+        )
+      ).resolves.toEqual({
+        status: "conflicting_evidence",
+        reason: testCase.reason,
+      })
+    }
+    expect(reconcileCalls).toBe(0)
+  })
+
+  it("does not persist or send a Lightning attempt that cannot be reconciled", async () => {
+    let persistCalls = 0
+    let authorizeCalls = 0
+    let sendCalls = 0
+    const manager = new SparkWalletManager({
+      network: "mainnet",
+      async open() {
+        return {
+          ...createNoopSdkClient(),
+          async prepareSendPayment() {
+            return {
+              paymentMethod: {
+                type: "bolt11Invoice",
+                lightningFeeSats: 2,
+              },
+              amount: 1_000n,
+            }
+          },
+          async sendPayment() {
+            sendCalls += 1
+            throw new Error("must not send")
+          },
+        }
+      },
+    })
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: ["synthetic", "noncredential", "input"].join("-"),
+      accountNumber: 0,
+    })
+
+    await expect(
+      manager.payInvoice("wallet-personal", {
+        invoice: "lnbc1checkout",
+        amountMsats: 1_000_000,
+        idempotencyKey: "not-a-uuid",
+        approveFee: async () => true,
+        persistAttempt: async () => {
+          persistCalls += 1
+        },
+        beforeSend: async () => {
+          authorizeCalls += 1
+        },
+      })
+    ).resolves.toEqual({
+      status: "pre_publish_failed",
+      reason: "Spark payment attempt is not recoverable.",
+    })
+    expect(persistCalls).toBe(0)
+    expect(authorizeCalls).toBe(0)
+    expect(sendCalls).toBe(0)
+  })
+
+  it("does not send when Lightning attempt persistence fails", async () => {
+    let authorizeCalls = 0
+    let sendCalls = 0
+    const manager = new SparkWalletManager({
+      network: "mainnet",
+      async open() {
+        return {
+          ...createNoopSdkClient(),
+          async prepareSendPayment() {
+            return {
+              paymentMethod: {
+                type: "bolt11Invoice",
+                lightningFeeSats: 2,
+              },
+              amount: 1_000n,
+            }
+          },
+          async sendPayment() {
+            sendCalls += 1
+            throw new Error("must not send")
+          },
+        }
+      },
+    })
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: ["synthetic", "noncredential", "input"].join("-"),
+      accountNumber: 0,
+    })
+
+    await expect(
+      manager.payInvoice("wallet-personal", {
+        invoice: "lnbc1checkout",
+        amountMsats: 1_000_000,
+        idempotencyKey: "018f6d8e-8b7c-7ca2-9d5a-000000000001",
+        approveFee: async () => true,
+        persistAttempt: async () => {
+          throw new Error("attempt storage unavailable")
+        },
+        beforeSend: async () => {
+          authorizeCalls += 1
+        },
+      })
+    ).resolves.toEqual({
+      status: "pre_publish_failed",
+      reason: "attempt storage unavailable",
+    })
+    expect(authorizeCalls).toBe(0)
+    expect(sendCalls).toBe(0)
   })
 
   it("purges cached Lightning proofs when the wallet is locked", async () => {
