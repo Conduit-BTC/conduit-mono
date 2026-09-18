@@ -101,7 +101,7 @@ export function ResolvedProductGridCard({
   const increment = (selection = selectedProduct) => {
     if (selection.id !== selectedProduct.id || !existing || !cartCandidate)
       return
-    cart.addItem(cartCandidate, 1)
+    cart.refreshAndIncrementItem(existing, cartCandidate, 1)
   }
   const decrement = (selection = selectedProduct) => {
     if (selection.id !== selectedProduct.id) return

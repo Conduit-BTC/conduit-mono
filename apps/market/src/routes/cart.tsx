@@ -536,6 +536,10 @@ function RelatedProductRow({
             ) {
               return
             }
+            if (existing) {
+              cart.refreshAndIncrementItem(existing, cartCandidate)
+              return
+            }
             cart.addItem(cartCandidate)
           }}
         >

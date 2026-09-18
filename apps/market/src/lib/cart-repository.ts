@@ -632,6 +632,47 @@ export function incrementCartRepositoryItem(
   })
 }
 
+/**
+ * Refresh a rendered line from current product evidence and increment it in one
+ * transaction. The exact line incarnation is mandatory so a delayed product
+ * action cannot recreate a line that another tab removed.
+ */
+export function refreshAndIncrementCartRepositoryItem(
+  identity: CartItemIdentity,
+  input: CartItemInput,
+  quantity = 1
+): Promise<CartMutationResult> {
+  return mutateCart((record) => {
+    if (!identity.cartLineId || input.stock === 0) return false
+    const index = findLineIndex(record, identity)
+    if (index < 0) return false
+
+    const line = record.lines[index]!
+    const requested = Math.max(1, Math.floor(quantity))
+    const current = line.batches.reduce((sum, batch) => sum + batch.quantity, 0)
+    if (typeof input.stock === "number" && current + requested > input.stock) {
+      return false
+    }
+
+    const sanitized = sanitizeCartItemImage({
+      ...input,
+      quantity: current,
+    })
+    if (
+      sanitized.merchantPubkey !== line.item.merchantPubkey ||
+      sanitized.productId !== line.item.productId ||
+      !isSameCartLineFulfillment(line.item, sanitized)
+    ) {
+      return false
+    }
+
+    const merchantAddedAt = line.item.merchantAddedAt
+    line.item = { ...line.item, ...sanitized, merchantAddedAt }
+    appendBatch(record, line, requested)
+    return true
+  })
+}
+
 export function decrementCartRepositoryItem(
   identity: CartItemIdentity
 ): Promise<CartMutationResult> {

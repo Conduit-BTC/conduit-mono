@@ -32,6 +32,9 @@ describe("Market cart identity contract", () => {
     )
     expect(resolvedCard).toContain("cartItemInputFromProductSelection(")
     expect(resolvedCard).toContain("cart.addItem(cartCandidate, 1)")
+    expect(resolvedCard).toContain(
+      "cart.refreshAndIncrementItem(existing, cartCandidate, 1)"
+    )
     expect(resolvedCard).not.toContain("cart.incrementItem(existing")
     expect(resolvedCard).toContain("cart.removeItem(existing)")
     expect(resolvedCard).toContain("cart.decrementItem(existing)")
@@ -46,5 +49,8 @@ describe("Market cart identity contract", () => {
     expect(repository).toContain('db.transaction(\n        "rw"')
     expect(repository).toContain("parseStoredRecord(stored)")
     expect(repository).toContain('publishRecord(record, "memory")')
+    expect(repository).toContain(
+      "if (!identity.cartLineId || input.stock === 0)"
+    )
   })
 })
