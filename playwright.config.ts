@@ -44,6 +44,10 @@ if (CI && !smokeDiscovery && !smokeResultFile) {
 const ciReporters: ReporterDescription[] = smokeResultFile
   ? [["json", { outputFile: smokeResultFile }]]
   : [["null"]]
+const mobileTestFiles = [
+  "**/mobile-safari-baseline.playwright.ts",
+  "**/event-sign-preview-mobile.playwright.ts",
+]
 
 if (!new Set(["all", "market", "merchant"]).has(smokeArea)) {
   throw new Error(`Unknown Playwright smoke area: ${smokeArea}`)
@@ -96,16 +100,16 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-      testIgnore: "**/mobile-safari-baseline.playwright.ts",
+      testIgnore: mobileTestFiles,
     },
     {
       name: "mobile-chromium",
-      testMatch: "**/mobile-safari-baseline.playwright.ts",
+      testMatch: mobileTestFiles,
       use: { ...devices["Pixel 7"] },
     },
     {
       name: "mobile-webkit",
-      testMatch: "**/mobile-safari-baseline.playwright.ts",
+      testMatch: mobileTestFiles,
       use: { ...devices["iPhone 13"] },
     },
   ],
