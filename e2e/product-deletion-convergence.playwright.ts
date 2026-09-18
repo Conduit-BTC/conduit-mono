@@ -690,12 +690,13 @@ test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", asy
           hasOwnerRelayListEvidence: state.stores.includes(
             "ownerRelayListEvidence"
           ),
+          hasShoppingCarts: state.stores.includes("shoppingCarts"),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 180,
+      nativeVersion: 190,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
@@ -706,6 +707,7 @@ test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", asy
       hasShippingOptionFrontiers: true,
       hasMerchantPendingInvoices: true,
       hasOwnerRelayListEvidence: true,
+      hasShoppingCarts: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)

@@ -32,9 +32,7 @@ describe("Market cart identity contract", () => {
     )
     expect(resolvedCard).toContain("cartItemInputFromProductSelection(")
     expect(resolvedCard).toContain("cart.addItem(cartCandidate, 1)")
-    expect(resolvedCard).toContain(
-      "cart.incrementItem(existing, 1, selectedProduct.stock)"
-    )
+    expect(resolvedCard).not.toContain("cart.incrementItem(existing")
     expect(resolvedCard).toContain("cart.removeItem(existing)")
     expect(resolvedCard).toContain("cart.decrementItem(existing)")
   })

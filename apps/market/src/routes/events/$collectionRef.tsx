@@ -197,8 +197,8 @@ function EventCatalogProductCard({
     )
   }
   const increment = (selection: Product) => {
-    if (selection.id !== selectedProduct.id || !existing) return
-    cart.incrementItem(existing, 1, selectedProduct.stock)
+    if (selection.id !== selectedProduct.id || !existing || !candidate) return
+    cart.addItem(candidate, 1)
   }
 
   const decrement = (selection: Product) => {

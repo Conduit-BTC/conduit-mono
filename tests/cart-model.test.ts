@@ -1247,6 +1247,89 @@ describe("cart model", () => {
     ).toBe(false)
   })
 
+  it("keeps one pickup line when only a fiat quote changes", () => {
+    const initialFulfillment: CartPickupFulfillment = {
+      ...pickupFulfillment(),
+      costSats: 1_000,
+      sourceCost: {
+        amount: 1,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    }
+    const refreshedFulfillment: CartPickupFulfillment = {
+      ...initialFulfillment,
+      costSats: 2_000,
+    }
+    const product = refreshedProduct(
+      item({
+        productId: initialFulfillment.product.coordinate,
+        merchantPubkey: initialFulfillment.product.merchantPubkey,
+      })
+    )
+
+    const first = addCartItem(
+      [],
+      createCartItemFromProduct(product, initialFulfillment),
+      1
+    )
+    const combined = addCartItem(
+      first,
+      createCartItemFromProduct(product, refreshedFulfillment),
+      1
+    )
+
+    expect(combined).toHaveLength(1)
+    expect(combined[0]).toMatchObject({
+      quantity: 2,
+      fulfillment: { costSats: 2_000 },
+    })
+    expect(groupCartPurchases(combined)).toHaveLength(1)
+    expect(
+      cartItemsMatchCurrentProducts(
+        combined,
+        [product],
+        new Map([[product.id, refreshedFulfillment]])
+      )
+    ).toBe(true)
+
+    const changedSignedCost = addCartItem(
+      combined,
+      createCartItemFromProduct(product, {
+        ...refreshedFulfillment,
+        sourceCost: { ...refreshedFulfillment.sourceCost, amount: 2 },
+      }),
+      1
+    )
+    expect(changedSignedCost).toHaveLength(2)
+
+    for (const sourceCost of [
+      { amount: 1_000, currency: "SATS", normalizedCurrency: "SATS" },
+      { amount: 1_000_000, currency: "MSATS", normalizedCurrency: "MSATS" },
+      { amount: 0.00001, currency: "BTC", normalizedCurrency: "BTC" },
+      { amount: 0, currency: "USD", normalizedCurrency: "USD" },
+    ]) {
+      const deterministicFulfillment: CartPickupFulfillment = {
+        ...initialFulfillment,
+        costSats: 1_000,
+        sourceCost,
+      }
+      const changedDeterministicCost = addCartItem(
+        addCartItem(
+          [],
+          createCartItemFromProduct(product, deterministicFulfillment),
+          1
+        ),
+        createCartItemFromProduct(product, {
+          ...deterministicFulfillment,
+          costSats: 2_000,
+        }),
+        1
+      )
+      expect(changedDeterministicCost).toHaveLength(2)
+    }
+  })
+
   it("keeps refreshed availability merchant-scoped for legacy identifiers", () => {
     const cartItems = [
       item({ productId: "shared", merchantPubkey: "merchant-a", stock: 1 }),
