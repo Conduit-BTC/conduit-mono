@@ -100,6 +100,19 @@ export interface SparkCheckoutReceiveInput {
   expirySecs: number
 }
 
+export interface SparkLightningSendReconciliationInput {
+  transferId: string
+  paymentRequest: string
+  maxFeeSats: number
+  completionTimeoutSecs?: number
+}
+
+export type SparkLightningSendReconciliation =
+  | { status: "resolved"; payment: SparkSdkPayment }
+  | { status: "not_found" }
+  | { status: "lookup_unavailable" }
+  | { status: "conflicting_evidence"; reason: string }
+
 export interface SparkSdkClient {
   addEventListener?(listener: () => void): Promise<string>
   removeEventListener?(listenerId: string): Promise<boolean>
@@ -129,6 +142,9 @@ export interface SparkSdkClient {
         }
     idempotencyKey?: string
   }): Promise<{ payment: SparkSdkPayment }>
+  reconcileLightningSend?(
+    request: SparkLightningSendReconciliationInput
+  ): Promise<SparkLightningSendReconciliation>
   receivePayment(request: {
     paymentMethod:
       | {
