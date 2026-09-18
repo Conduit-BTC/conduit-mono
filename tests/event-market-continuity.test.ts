@@ -190,9 +190,10 @@ describe("exact event collection lifecycle continuity", () => {
     expect(continuation(original, current, events)).toBe(true)
   })
 
-  it("combines the current signed graph with retained original evidence without extra I/O", async () => {
+  it("combines retained revisions without re-reading their immutable contents", async () => {
     const original = collection("open")
     const current = collection("closed", 101)
+    const reads: Record<string, unknown>[] = []
     const events = await getEventMarketCollectionLifecycleEvidence(
       {
         original: parseEventMarketCollectionEvent(original)!,
@@ -204,11 +205,27 @@ describe("exact event collection lifecycle continuity", () => {
           eventSourceRelayUrls: {},
         }),
         getLocalEvidence: () => ({ status: "ready", events: [] }),
-        getRelayLists: async () => {
-          throw new Error("No network read expected")
+        getRelayLists: async () => new Map(),
+        fetchEvents: async (filter) => {
+          reads.push(filter)
+          return {
+            events: [],
+            eventSourceRelayUrls: {},
+            relays: [],
+            eventsVerified: true,
+          }
         },
       }
     )
+    expect(
+      reads.some((filter) =>
+        (filter.kinds as number[] | undefined)?.includes(
+          EVENT_KINDS.PRODUCT_COLLECTION
+        )
+      )
+    ).toBe(false)
+    expect(reads.some((filter) => filter["#e"])).toBe(true)
+    expect(reads.some((filter) => filter["#a"])).toBe(true)
     expect(continuation(original, current, events)).toBe(true)
   })
 
@@ -269,6 +286,47 @@ describe("exact event collection lifecycle continuity", () => {
         },
       }
     )
+    expect(reads.some((filter) => filter["#e"])).toBe(true)
+    expect(reads.some((filter) => filter["#a"])).toBe(true)
+    expect(events.map((event) => event.id)).toContain(deletion.id)
+    expect(continuation(original, current, events)).toBe(false)
+  })
+
+  it("checks live deletion evidence when both revisions are already retained", async () => {
+    const original = collection("open")
+    const current = collection("closed", 101)
+    const deletion = exactDeletion(original)
+    const reads: Record<string, unknown>[] = []
+    const events = await getEventMarketCollectionLifecycleEvidence(
+      {
+        original: parseEventMarketCollectionEvent(original)!,
+        current: parseEventMarketCollectionEvent(current)!,
+      },
+      {
+        getRetainedEvidence: async () => ({
+          events: [original, current],
+          eventSourceRelayUrls: {},
+        }),
+        getLocalEvidence: () => ({ status: "ready", events: [] }),
+        getRelayLists: async () => new Map(),
+        fetchEvents: async (filter) => {
+          reads.push(filter)
+          return {
+            events: filter["#e"] ? [deletion] : [],
+            eventSourceRelayUrls: {},
+            relays: [],
+            eventsVerified: true,
+          }
+        },
+      }
+    )
+    expect(
+      reads.some((filter) =>
+        (filter.kinds as number[] | undefined)?.includes(
+          EVENT_KINDS.PRODUCT_COLLECTION
+        )
+      )
+    ).toBe(false)
     expect(reads.some((filter) => filter["#e"])).toBe(true)
     expect(reads.some((filter) => filter["#a"])).toBe(true)
     expect(events.map((event) => event.id)).toContain(deletion.id)

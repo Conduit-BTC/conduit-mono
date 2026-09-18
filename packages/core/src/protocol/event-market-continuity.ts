@@ -155,8 +155,6 @@ export async function getEventMarketCollectionLifecycleEvidence(
   retain(retained.events)
   retain(dependencies.getLocalEvidence(organizer).events)
   if (input.signal?.aborted || input.shouldContinue?.() === false) return []
-  const hasBothRevisions = () =>
-    [...ids].every((id) => evidence.has(id.toLowerCase()))
   const hasKnownDeletion = () =>
     [...evidence.values()].some(
       (event) =>
@@ -165,7 +163,7 @@ export async function getEventMarketCollectionLifecycleEvidence(
           isEventMarketAddressableRevisionDeleted(revision, [event])
         )
     )
-  if (hasBothRevisions() || hasKnownDeletion()) return [...evidence.values()]
+  if (hasKnownDeletion()) return [...evidence.values()]
 
   const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
   let settings: Awaited<
@@ -212,17 +210,20 @@ export async function getEventMarketCollectionLifecycleEvidence(
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
     reuseRelayConnections: true,
   }
-  const result = await dependencies.fetchEvents(
-    {
-      kinds: [30405],
-      authors: [organizer],
-      ids: [...ids].filter((id) => !evidence.has(id)),
-      limit: 2,
-    },
-    fetchOptions
-  )
-  if (input.signal?.aborted || input.shouldContinue?.() === false) return []
-  retain(result.events)
+  const missingRevisionIds = [...ids].filter((id) => !evidence.has(id))
+  if (missingRevisionIds.length > 0) {
+    const result = await dependencies.fetchEvents(
+      {
+        kinds: [30405],
+        authors: [organizer],
+        ids: missingRevisionIds,
+        limit: 2,
+      },
+      fetchOptions
+    )
+    if (input.signal?.aborted || input.shouldContinue?.() === false) return []
+    retain(result.events)
+  }
 
   for (const filter of [
     {
