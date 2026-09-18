@@ -656,3 +656,61 @@ describe("Merchant event timeline", () => {
     )
   })
 })
+
+describe("Merchant event lifecycle history", () => {
+  it("keeps open overtime events selectable while history includes legacy and explicitly closed events", () => {
+    const open = market({
+      suffix: "overtime",
+      startMs: NOW - 120_000,
+      endMs: NOW,
+    })
+    open.orderAcceptance = "open"
+    const closed = market({
+      suffix: "closed",
+      startMs: NOW + 60_000,
+      state: "ended",
+    })
+    closed.orderAcceptance = "closed"
+    const legacy = market({
+      suffix: "legacy",
+      startMs: NOW - 86_400_000,
+      state: "ended",
+    })
+    const items = [open, closed, legacy].map((entry) => ({
+      market: entry,
+      relationships: ["organizing" as const],
+      reconciliationPending: false,
+    }))
+    expect(
+      filterAndSortMerchantEventTimeline(items, {}, NOW).map(
+        (entry) => entry.market.title
+      )
+    ).toEqual(["overtime"])
+    expect(
+      filterAndSortMerchantEventTimeline(items, { window: "history" }, NOW).map(
+        (entry) => entry.market.title
+      )
+    ).toEqual(["closed", "legacy"])
+    expect(
+      filterAndSortMerchantEventTimeline(items, { window: "past" }, NOW).map(
+        (entry) => entry.market.title
+      )
+    ).toEqual(["overtime", "legacy"])
+    expect(getMerchantEventTimelineStatus(items[0]!, NOW).label).toBe(
+      "Scheduled time has passed · Open"
+    )
+    open.state = "partial"
+    expect(getMerchantEventTimelineStatus(items[0]!, NOW)).toEqual({
+      label: "Partial relay view",
+      tone: "warning",
+    })
+    expect(getMerchantEventTimelineStatus(items[1]!, NOW).label).toBe("Closed")
+    expect(
+      filterAndSortMerchantEventTimeline(
+        items,
+        { window: "history", relation: "selling" },
+        NOW
+      )
+    ).toHaveLength(0)
+  })
+})

@@ -21,7 +21,7 @@ import {
 export type MerchantEventRelationship = "organizing" | "selling" | "saved"
 export type MerchantEventRelationshipFilter = "all" | MerchantEventRelationship
 export type MerchantEventTimelineWindow =
-  "upcoming" | "7d" | "30d" | "past" | "all"
+  "upcoming" | "7d" | "30d" | "past" | "history" | "all"
 
 export const MERCHANT_EVENT_RELATIONSHIP_FILTERS: MerchantEventRelationshipFilter[] =
   ["all", "organizing", "selling", "saved"]
@@ -31,6 +31,7 @@ export const MERCHANT_EVENT_TIMELINE_WINDOWS: MerchantEventTimelineWindow[] = [
   "7d",
   "30d",
   "past",
+  "history",
   "all",
 ]
 
@@ -343,7 +344,7 @@ export function merchantEventTimelineBounds(
 
 function isPast(item: MerchantEventTimelineItem, nowMs: number): boolean {
   const bounds = merchantEventTimelineBounds(item.market)
-  return item.market.state === "ended" || (!!bounds && bounds.endMs <= nowMs)
+  return !!bounds && bounds.endMs <= nowMs
 }
 
 function matchesWindow(
@@ -356,8 +357,13 @@ function matchesWindow(
   const past = isPast(item, nowMs)
   if (window === "past") return past
   if (window === "all") return true
+  const historical =
+    item.market.orderAcceptance === "closed" ||
+    (item.market.orderAcceptance !== "open" &&
+      (item.market.state === "ended" || past))
+  if (window === "history") return historical
+  if (window === "upcoming") return !historical
   if (past) return false
-  if (window === "upcoming") return true
   const horizon = nowMs + (window === "7d" ? 7 : 30) * 86_400_000
   return bounds.startMs <= horizon
 }
@@ -421,7 +427,25 @@ export function getMerchantEventTimelineStatus(
   item: MerchantEventTimelineItem,
   nowMs = Date.now()
 ): MerchantEventTimelineStatus {
-  if (isPast(item, nowMs)) return { label: "Past event", tone: "secondary" }
+  if (item.market.orderAcceptance === "closed") {
+    return { label: "Closed", tone: "secondary" }
+  }
+  if (isPast(item, nowMs)) {
+    if (item.market.orderAcceptance !== "open") {
+      return { label: "Past event", tone: "secondary" }
+    }
+    if (item.market.state === "partial") {
+      return { label: "Partial relay view", tone: "warning" }
+    }
+    const refreshNeeded =
+      item.market.state !== "active" || item.reconciliationPending
+    return {
+      label: refreshNeeded
+        ? "Scheduled time has passed · Refresh needed"
+        : "Scheduled time has passed · Open",
+      tone: refreshNeeded ? "warning" : "secondary",
+    }
+  }
   if (item.reconciliationPending) {
     return { label: "Refreshing evidence", tone: "warning" }
   }
