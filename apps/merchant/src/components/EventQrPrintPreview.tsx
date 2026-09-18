@@ -19,10 +19,11 @@ import {
   QRCodeSVG,
 } from "@conduit/ui"
 import {
-  getEventSignEvidenceNotice,
   getEventSignImageFallback,
+  getEventSignPreviewEvidenceNotice,
   isEventSignQrValueWithinBudget,
   type EventQrSignSheet,
+  type EventSignPreviewMode,
 } from "../lib/event-signage"
 import type { MerchantOrganizerEventMarketState } from "../lib/event-market"
 
@@ -314,6 +315,7 @@ export function EventQrPrintPreview({
   onOpenChange,
   title,
   sheets,
+  mode,
   eventState,
   refreshing,
   onRefresh,
@@ -322,12 +324,12 @@ export function EventQrPrintPreview({
   onOpenChange: (open: boolean) => void
   title: string
   sheets: readonly EventQrSignSheet[]
+  mode: EventSignPreviewMode
   eventState: MerchantOrganizerEventMarketState
   refreshing: boolean
   onRefresh: () => void | Promise<void>
 }) {
-  const batch = sheets.length > 1
-  const evidenceNotice = getEventSignEvidenceNotice(eventState, batch)
+  const evidenceNotice = getEventSignPreviewEvidenceNotice(eventState, mode)
 
   useEffect(() => {
     if (!open) return

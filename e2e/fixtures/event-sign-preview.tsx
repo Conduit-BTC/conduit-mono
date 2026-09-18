@@ -32,6 +32,7 @@ function EventSignPreviewFixture() {
       onOpenChange={setOpen}
       title="Print merchant sign"
       sheets={[sheet]}
+      mode="merchant"
       eventState="active"
       refreshing={false}
       onRefresh={() => undefined}

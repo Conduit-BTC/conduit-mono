@@ -290,3 +290,12 @@ export function getEventSignEvidenceNotice(
       "This preview uses the event evidence currently available. Refresh before printing and scan the sign to check current availability.",
   }
 }
+
+export type EventSignPreviewMode = "event" | "merchant" | "merchant-batch"
+
+export function getEventSignPreviewEvidenceNotice(
+  state: MerchantOrganizerEventMarketState,
+  mode: EventSignPreviewMode
+): EventSignEvidenceNotice | null {
+  return getEventSignEvidenceNotice(state, mode === "merchant-batch")
+}

@@ -61,6 +61,7 @@ import {
   buildMerchantEventQrSignSheets,
   getEligibleEventSignMerchants,
   type EventQrSignSheet,
+  type EventSignPreviewMode,
 } from "../lib/event-signage"
 import {
   getMerchantProfileState,
@@ -677,6 +678,7 @@ export function OrganizerEventMarketPanel({
   }))
   let selectedPrintSheets: EventQrSignSheet[] = []
   let printPreviewTitle = "Event sign preview"
+  let printPreviewMode: EventSignPreviewMode = "event"
   if (printSelection?.kind === "event") {
     selectedPrintSheets = [eventSignSheet]
   } else if (printSelection?.kind === "merchant") {
@@ -684,9 +686,11 @@ export function OrganizerEventMarketPanel({
       (sheet) => sheet.merchant?.pubkey === printSelection.pubkey
     )
     printPreviewTitle = "Merchant sign preview"
+    printPreviewMode = "merchant"
   } else if (printSelection?.kind === "batch") {
     selectedPrintSheets = merchantSignSheets
     printPreviewTitle = "Merchant sign batch preview"
+    printPreviewMode = "merchant-batch"
   }
 
   return (
@@ -1211,6 +1215,7 @@ export function OrganizerEventMarketPanel({
         }}
         title={printPreviewTitle}
         sheets={selectedPrintSheets}
+        mode={printPreviewMode}
         eventState={market.state}
         refreshing={refreshing}
         onRefresh={onRefresh}

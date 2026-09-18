@@ -145,6 +145,7 @@ function MerchantEventSignageAction({
         onOpenChange={setOpen}
         title="My event sign preview"
         sheets={[sheet]}
+        mode="merchant"
         eventState={market.state}
         refreshing={refreshing}
         onRefresh={onRefresh}

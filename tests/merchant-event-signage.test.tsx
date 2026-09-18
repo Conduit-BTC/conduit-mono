@@ -19,6 +19,7 @@ import {
   formatEventSignSchedule,
   getEligibleEventSignMerchants,
   getEventSignEvidenceNotice,
+  getEventSignPreviewEvidenceNotice,
   isEventSignQrValueWithinBudget,
   isMerchantEligibleForEventSign,
 } from "../apps/merchant/src/lib/event-signage"
@@ -312,6 +313,33 @@ describe("event sign composition", () => {
     expect(getEventSignEvidenceNotice("stale", true)?.message).toContain(
       "may not reflect current accepted merchants"
     )
+  })
+
+  it("preserves merchant-batch evidence mode when the batch has one sheet", () => {
+    const current = market([participation(MERCHANT_A, "bread")])
+    const sheets = buildMerchantEventQrSignSheets(
+      current,
+      () => undefined,
+      MERCHANT_LOCATION
+    )
+
+    expect(sheets).toHaveLength(1)
+    expect(
+      renderToStaticMarkup(<EventQrPrintPages sheets={sheets} />)
+    ).toContain('data-event-sign-page-count="1"')
+    expect(
+      getEventSignPreviewEvidenceNotice("partial", "merchant-batch")
+    ).toEqual({
+      title: "Merchant list may be incomplete",
+      message:
+        "Some planned relay reads did not complete, so this batch may not include every accepted merchant. Refresh event evidence before printing.",
+    })
+    expect(
+      getEventSignPreviewEvidenceNotice("stale", "merchant-batch")?.message
+    ).toContain("may not reflect current accepted merchants")
+    expect(
+      getEventSignPreviewEvidenceNotice("partial", "merchant")?.title
+    ).toBe("Event evidence is incomplete")
   })
 })
 
