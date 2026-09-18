@@ -1920,6 +1920,65 @@ describe("first-party Spark SDK adapter", () => {
     expect(payCalls).toBe(0)
   })
 
+  it("rejects a polled Lightning fee that conflicts with the recovered transfer total", async () => {
+    let now = 0
+    let payCalls = 0
+    let statusReads = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_INITIATED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+      async getLightningSendRequest() {
+        statusReads += 1
+        return {
+          id: "recovered-lightning-request",
+          status: "LIGHTNING_PAYMENT_SUCCEEDED",
+          fee: { originalValue: 3, originalUnit: "SATOSHI" },
+          paymentPreimage: ZERO_PREIMAGE,
+        }
+      },
+    })
+    const client = await openClient(
+      createFactory(wallet, {}, "mainnet", {
+        now: () => now,
+        wait: async (milliseconds) => {
+          now += milliseconds
+        },
+        pollIntervalMs: 100,
+      })
+    )
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+        completionTimeoutSecs: 1,
+      })
+    ).resolves.toEqual({
+      status: "conflicting_evidence",
+      reason: "Spark returned a conflicting Lightning transfer total.",
+    })
+    expect(statusReads).toBe(1)
+    expect(payCalls).toBe(0)
+  })
+
   it("fails closed on conflicting recovered Lightning evidence", async () => {
     const cases = [
       {

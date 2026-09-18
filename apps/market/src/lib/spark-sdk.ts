@@ -839,12 +839,6 @@ function adaptFirstPartySparkWallet(input: {
       }
 
       try {
-        validateRecoveredLightningTransferTotal({
-          totalAmount: transfer.totalAmount,
-          amountSats: request.amountSats,
-          fee: recovered.fee,
-          maxFeeSats: request.maxFeeSats,
-        })
         const payment = await reconcileLightningPayment({
           wallet: input.wallet,
           initial: recovered,
@@ -853,6 +847,14 @@ function adaptFirstPartySparkWallet(input: {
             paymentHash,
             "The Lightning invoice contains an invalid payment hash."
           ).bytes,
+          validateRequest: (nativeRequest) => {
+            validateRecoveredLightningTransferTotal({
+              totalAmount: transfer.totalAmount,
+              amountSats: request.amountSats,
+              fee: nativeRequest.fee,
+              maxFeeSats: request.maxFeeSats,
+            })
+          },
           timeoutSecs: request.completionTimeoutSecs ?? 60,
           pollIntervalMs: input.pollIntervalMs,
           wait: input.wait,
@@ -1193,6 +1195,7 @@ async function reconcileLightningPayment(input: {
   initial: SparkNativeLightningSendRequest
   maxFeeSats: number
   expectedPaymentHash: Uint8Array
+  validateRequest?: (request: SparkNativeLightningSendRequest) => void
   timeoutSecs: number
   pollIntervalMs: number
   wait: (milliseconds: number) => Promise<void>
@@ -1202,6 +1205,7 @@ async function reconcileLightningPayment(input: {
   let request = input.initial
 
   while (true) {
+    input.validateRequest?.(request)
     const feeSats = readNativeLightningFeeSats(request.fee, input.maxFeeSats)
     if (request.paymentPreimage) {
       const preimage = decodePaymentPreimage(request.paymentPreimage)
