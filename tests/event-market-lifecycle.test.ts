@@ -371,6 +371,93 @@ describe("event market lifecycle", () => {
     ).toBe("ended")
   }, 15_000)
 
+  it("does not repair one lifecycle guard by breaking another complete guard", () => {
+    const market = (
+      dTag: string,
+      orderAcceptance: EventMarketOrderAcceptance | undefined,
+      createdAt: number
+    ) =>
+      sign(
+        buildEventMarketCollectionDraft({
+          dTag,
+          title: dTag,
+          eventCoordinate: calendarCoordinate,
+          orderAcceptance,
+        }),
+        createdAt
+      )
+    const closedA = market("market-a", "closed", 100)
+    const currentA = market("market-a", undefined, 200)
+    const closedB = market("market-b", "closed", 100)
+    const currentB = market("market-b", undefined, 200)
+    const retained = selectEventMarketEvidenceForRetention(
+      [
+        row(currentA, 400),
+        row(currentB, 300),
+        row(closedB, 200),
+        row(closedA, 100),
+      ],
+      3
+    )
+    const retainedIds = new Set(retained.map((entry) => entry.id))
+
+    for (const [current, predecessor] of [
+      [currentA, closedA],
+      [currentB, closedB],
+    ] as const) {
+      expect(
+        retainedIds.has(current.id) && !retainedIds.has(predecessor.id)
+      ).toBe(false)
+      expect(
+        resolveEventMarketEvidence({
+          reference: `30405:${author}:${current.tags.find((tag) => tag[0] === "d")![1]}`,
+          events: [calendar, ...retained.map((entry) => entry.signedEvent)],
+          nowMs: beforeEnd,
+        }).state
+      ).not.toBe("active")
+    }
+  })
+
+  it("ranks pinned lifecycle guards atomically and independently of input order", () => {
+    const market = (
+      dTag: string,
+      orderAcceptance: EventMarketOrderAcceptance | undefined,
+      createdAt: number
+    ) =>
+      sign(
+        buildEventMarketCollectionDraft({
+          dTag,
+          title: dTag,
+          eventCoordinate: calendarCoordinate,
+          orderAcceptance,
+        }),
+        createdAt
+      )
+    const pinnedClosed = market("pinned", "closed", 100)
+    const pinnedCurrent = market("pinned", undefined, 200)
+    const otherClosed = market("other", "closed", 100)
+    const otherCurrent = market("other", undefined, 200)
+    const rows = [
+      row(pinnedCurrent, 400),
+      row(otherCurrent, 300),
+      row(otherClosed, 200),
+      row(pinnedClosed, 100),
+    ]
+    const select = (input: CachedEventMarketEvidence[]) =>
+      selectEventMarketEvidenceForRetention(input, 3, [pinnedCurrent.id])
+        .map((entry) => entry.id)
+        .sort()
+
+    const retainedIds = select(rows)
+    expect(retainedIds).toEqual(select([...rows].reverse()))
+    expect(retainedIds).toContain(pinnedCurrent.id)
+    expect(retainedIds).toContain(pinnedClosed.id)
+    expect(
+      retainedIds.includes(otherCurrent.id) &&
+        !retainedIds.includes(otherClosed.id)
+    ).toBe(false)
+  })
+
   it("preserves exact existing-order source revisions through a status-only chain under cache pressure", () => {
     const legacy = collection(undefined, 100)
     const open = collection("open", 200)

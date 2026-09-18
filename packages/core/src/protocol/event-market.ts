@@ -2426,6 +2426,9 @@ interface EventMarketTestOverrides {
   loadCachedCollectionEvidence?: (
     organizerPubkeys: readonly string[]
   ) => Promise<CachedEventMarketEvidence[]>
+  getActiveOrderCollectionEvidencePins?: (
+    organizerPubkey: string
+  ) => Promise<ActiveOrderCollectionEvidencePinSnapshot>
   persistCachedEvidence?: (input: {
     organizerPubkey: string
     events: readonly SignedPublicNostrEvent[]
@@ -4040,13 +4043,19 @@ export function getEventMarketSupersededEvidence(
 async function loadCachedEventMarketEvidence(
   organizerPubkey: string
 ): Promise<CachedEventMarketEvidence[]> {
-  const pinnedCollectionEventIds =
+  const pinSnapshot =
     await getActiveOrderCollectionEvidencePins(organizerPubkey)
+  const selectLoadedRows = (rows: readonly CachedEventMarketEvidence[]) =>
+    pinSnapshot.status === "ready"
+      ? selectEventMarketEvidenceForRetention(
+          rows,
+          EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
+          pinSnapshot.eventIds
+        )
+      : rows.filter((row) => isValidSignedPublicNostrEvent(row.signedEvent))
   if (eventMarketTestOverrides.loadCachedEvidence) {
-    return selectEventMarketEvidenceForRetention(
-      await eventMarketTestOverrides.loadCachedEvidence(organizerPubkey),
-      EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
-      pinnedCollectionEventIds
+    return selectLoadedRows(
+      await eventMarketTestOverrides.loadCachedEvidence(organizerPubkey)
     )
   }
   try {
@@ -4054,7 +4063,7 @@ async function loadCachedEventMarketEvidence(
       .where("organizerPubkey")
       .equals(organizerPubkey)
       .toArray()
-    return selectEventMarketEvidenceForRetention(
+    return selectLoadedRows(
       rows.filter((row) => {
         const event = row.signedEvent
         if (
@@ -4071,9 +4080,7 @@ async function loadCachedEventMarketEvidence(
           : event.kind === EVENT_KINDS.PRODUCT ||
               event.kind === EVENT_KINDS.SHIPPING_OPTION ||
               event.kind === EVENT_KINDS.DELETION
-      }),
-      EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
-      pinnedCollectionEventIds
+      })
     )
   } catch {
     return []
@@ -4262,14 +4269,16 @@ export function selectEventMarketEvidenceForRetention(
       .map((id) => id.toLowerCase())
   )
   const priorityById = new Map<string, number>()
-  const lifecyclePredecessorByCurrentId = new Map<
-    string,
-    CachedEventMarketEvidence
-  >()
+  type LifecycleRetentionGuard = {
+    current: CachedEventMarketEvidence
+    predecessor: CachedEventMarketEvidence
+  }
+  const lifecycleGuardByEventId = new Map<string, LifecycleRetentionGuard>()
   const prioritize = (row: CachedEventMarketEvidence, priority: number) => {
+    const eventId = row.signedEvent.id.toLowerCase()
     priorityById.set(
-      row.id,
-      Math.min(priorityById.get(row.id) ?? Number.POSITIVE_INFINITY, priority)
+      eventId,
+      Math.min(priorityById.get(eventId) ?? Number.POSITIVE_INFINITY, priority)
     )
   }
   const graphByCoordinate = new Map<string, CachedEventMarketEvidence[]>()
@@ -4338,55 +4347,58 @@ export function selectEventMarketEvidenceForRetention(
           (candidate) => candidate.signedEvent.id === predecessor.id
         )!
         prioritize(row, 1)
-        lifecyclePredecessorByCurrentId.set(
+        const guard = { current: surviving, predecessor: row }
+        lifecycleGuardByEventId.set(
           surviving.signedEvent.id.toLowerCase(),
-          row
+          guard
         )
+        lifecycleGuardByEventId.set(row.signedEvent.id.toLowerCase(), guard)
       }
     }
   }
-  const selected = [...validRows]
-    .sort((left, right) => {
-      const priority =
-        (priorityById.get(left.id) ?? 2) - (priorityById.get(right.id) ?? 2)
-      if (priority !== 0) return priority
-      if (left.cachedAt !== right.cachedAt)
-        return right.cachedAt - left.cachedAt
-      return compareAddressableEvents(left.signedEvent, right.signedEvent)
-    })
-    .slice(0, limit)
+  const compareForRetention = (
+    left: CachedEventMarketEvidence,
+    right: CachedEventMarketEvidence
+  ) => {
+    const leftId = left.signedEvent.id.toLowerCase()
+    const rightId = right.signedEvent.id.toLowerCase()
+    const priority =
+      (priorityById.get(leftId) ?? 2) - (priorityById.get(rightId) ?? 2)
+    if (priority !== 0) return priority
+    if (left.cachedAt !== right.cachedAt) return right.cachedAt - left.cachedAt
+    return compareAddressableEvents(left.signedEvent, right.signedEvent)
+  }
+  const selected: CachedEventMarketEvidence[] = []
+  const assignedIds = new Set<string>()
+  for (const row of [...validRows].sort(compareForRetention)) {
+    if (selected.length >= limit) break
+    const eventId = row.signedEvent.id.toLowerCase()
+    if (assignedIds.has(eventId)) continue
+    const lifecycleGuard = lifecycleGuardByEventId.get(eventId)
+    if (!lifecycleGuard) {
+      selected.push(row)
+      assignedIds.add(eventId)
+      continue
+    }
+
+    const guardRows = [lifecycleGuard.current, lifecycleGuard.predecessor].sort(
+      compareForRetention
+    )
+    for (const guardRow of guardRows) {
+      assignedIds.add(guardRow.signedEvent.id.toLowerCase())
+    }
+    const remaining = limit - selected.length
+    if (remaining >= guardRows.length) {
+      selected.push(...guardRows)
+    } else if (remaining > 0) {
+      // A declaration without its stripped successor is conservative; the
+      // inverse could restore legacy-open behavior after hydration.
+      selected.push(lifecycleGuard.predecessor)
+    }
+  }
   const selectedIds = new Set(
     selected.map((row) => row.signedEvent.id.toLowerCase())
   )
-  const missingLifecyclePredecessors = Array.from(
-    lifecyclePredecessorByCurrentId.entries()
-  ).filter(
-    ([currentId, predecessor]) =>
-      selectedIds.has(currentId) &&
-      !selectedIds.has(predecessor.signedEvent.id.toLowerCase())
-  )
-  const protectedLifecycleIds = new Set(
-    missingLifecyclePredecessors.flatMap(([currentId, predecessor]) => [
-      currentId,
-      predecessor.signedEvent.id.toLowerCase(),
-    ])
-  )
-  const evictableIndices = selected
-    .flatMap((row, index) =>
-      protectedLifecycleIds.has(row.signedEvent.id.toLowerCase()) ? [] : [index]
-    )
-    .reverse()
-  for (const [currentId, predecessor] of missingLifecyclePredecessors) {
-    const replacementIndex =
-      evictableIndices.shift() ??
-      selected.findIndex(
-        (row) => row.signedEvent.id.toLowerCase() === currentId
-      )
-    if (replacementIndex < 0) continue
-    selectedIds.delete(selected[replacementIndex]!.signedEvent.id.toLowerCase())
-    selected[replacementIndex] = predecessor
-    selectedIds.add(predecessor.signedEvent.id.toLowerCase())
-  }
   return selected.filter((row) => {
     const event = row.signedEvent
     if (event.kind === EVENT_KINDS.DELETION) return true
@@ -4406,9 +4418,24 @@ export function selectEventMarketEvidenceForRetention(
   })
 }
 
+type ActiveOrderCollectionEvidencePinSnapshot =
+  { status: "ready"; eventIds: string[] } | { status: "unavailable" }
+
 async function getActiveOrderCollectionEvidencePins(
   organizerPubkey: string
-): Promise<string[]> {
+): Promise<ActiveOrderCollectionEvidencePinSnapshot> {
+  if (eventMarketTestOverrides.getActiveOrderCollectionEvidencePins) {
+    return eventMarketTestOverrides.getActiveOrderCollectionEvidencePins(
+      organizerPubkey
+    )
+  }
+  if (
+    typeof indexedDB === "undefined" &&
+    (eventMarketTestOverrides.loadCachedEvidence ||
+      eventMarketTestOverrides.persistCachedEvidence)
+  ) {
+    return { status: "ready", eventIds: [] }
+  }
   try {
     const orders = await db.orders
       .where("status")
@@ -4438,13 +4465,13 @@ async function getActiveOrderCollectionEvidencePins(
         }
         pinned.add(fulfillment.collection.eventId.toLowerCase())
         if (pinned.size >= EVENT_MARKET_MAX_PINNED_ACTIVE_ORDER_COLLECTIONS) {
-          return Array.from(pinned)
+          return { status: "ready", eventIds: Array.from(pinned) }
         }
       }
     }
-    return Array.from(pinned)
+    return { status: "ready", eventIds: Array.from(pinned) }
   } catch {
-    return []
+    return { status: "unavailable" }
   }
 }
 
@@ -4458,34 +4485,42 @@ async function persistEventMarketEvidence(input: {
 }): Promise<void> {
   const scopedEvents = scopedCacheableEventMarketEvents(input)
   if (scopedEvents.length === 0) return
-  const pinnedCollectionEventIds = await getActiveOrderCollectionEvidencePins(
-    input.organizerPubkey
-  )
   const mergedVolatileEvents = mergeLocalEventMarketEvidence(
     volatileEventMarketEvidence.get(input.organizerPubkey) ?? [],
     scopedEvents,
     true
   )
-  const boundedVolatileEvents = selectEventMarketEvidenceForRetention(
-    mergedVolatileEvents.map((event) => ({
-      id: event.id.toLowerCase(),
-      organizerPubkey: input.organizerPubkey,
-      kind: event.kind,
-      addressId: cacheableEventMarketAddressId(event),
-      signedEvent: event,
-      sourceRelayUrls: [],
-      cachedAt: event.created_at * 1_000,
-    })),
-    EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
-    pinnedCollectionEventIds
-  ).map((row) => row.signedEvent)
-  volatileEventMarketEvidence.set(input.organizerPubkey, boundedVolatileEvents)
-  retainLocalEventMarketEvidence(
-    input.organizerPubkey,
-    boundedVolatileEvents,
-    undefined,
-    { pinnedCollectionEventIds }
-  )
+  // Do not destructively bound fresh signed evidence until active-order pins
+  // are known. A temporarily unavailable order store must not look empty.
+  volatileEventMarketEvidence.set(input.organizerPubkey, mergedVolatileEvents)
+  const retainVolatileEvidence = (
+    pinSnapshot: ActiveOrderCollectionEvidencePinSnapshot
+  ) => {
+    if (pinSnapshot.status !== "ready") return
+    const boundedVolatileEvents = selectEventMarketEvidenceForRetention(
+      mergedVolatileEvents.map((event) => ({
+        id: event.id.toLowerCase(),
+        organizerPubkey: input.organizerPubkey,
+        kind: event.kind,
+        addressId: cacheableEventMarketAddressId(event),
+        signedEvent: event,
+        sourceRelayUrls: [],
+        cachedAt: event.created_at * 1_000,
+      })),
+      EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
+      pinSnapshot.eventIds
+    ).map((row) => row.signedEvent)
+    volatileEventMarketEvidence.set(
+      input.organizerPubkey,
+      boundedVolatileEvents
+    )
+    retainLocalEventMarketEvidence(
+      input.organizerPubkey,
+      boundedVolatileEvents,
+      undefined,
+      { pinnedCollectionEventIds: pinSnapshot.eventIds }
+    )
+  }
   const clearPersisted = () => {
     const persistedIds = new Set(scopedEvents.map((event) => event.id))
     const pending = (
@@ -4496,6 +4531,11 @@ async function persistEventMarketEvidence(input: {
     else volatileEventMarketEvidence.delete(input.organizerPubkey)
   }
   if (eventMarketTestOverrides.persistCachedEvidence) {
+    const pinSnapshot = await getActiveOrderCollectionEvidencePins(
+      input.organizerPubkey
+    )
+    if (pinSnapshot.status !== "ready") return
+    retainVolatileEvidence(pinSnapshot)
     await eventMarketTestOverrides.persistCachedEvidence({
       ...input,
       events: scopedEvents,
@@ -4526,40 +4566,61 @@ async function persistEventMarketEvidence(input: {
   })
   if (rows.length === 0) return
   try {
-    await db.transaction("rw", db.eventMarketEvidence, async () => {
-      const existing = await db.eventMarketEvidence.bulkGet(
-        rows.map((row) => row.id)
-      )
-      await db.eventMarketEvidence.bulkPut(
-        rows.map((row, index) => ({
-          ...row,
-          sourceRelayUrls: mergeRelayUrls(
-            row.sourceRelayUrls,
-            existing[index]?.sourceRelayUrls ?? []
-          ),
-        }))
-      )
-      const organizerRows = await db.eventMarketEvidence
-        .where("organizerPubkey")
-        .equals(input.organizerPubkey)
-        .toArray()
-      const retainedRows = selectEventMarketEvidenceForRetention(
-        organizerRows,
-        EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
-        pinnedCollectionEventIds
-      )
+    const { pinSnapshot, retainedRows } = await db.transaction(
+      "rw",
+      db.eventMarketEvidence,
+      db.orders,
+      async () => {
+        const pinSnapshot = await getActiveOrderCollectionEvidencePins(
+          input.organizerPubkey
+        )
+        const existing = await db.eventMarketEvidence.bulkGet(
+          rows.map((row) => row.id)
+        )
+        await db.eventMarketEvidence.bulkPut(
+          rows.map((row, index) => ({
+            ...row,
+            sourceRelayUrls: mergeRelayUrls(
+              row.sourceRelayUrls,
+              existing[index]?.sourceRelayUrls ?? []
+            ),
+          }))
+        )
+        const organizerRows = await db.eventMarketEvidence
+          .where("organizerPubkey")
+          .equals(input.organizerPubkey)
+          .toArray()
+        if (pinSnapshot.status !== "ready") {
+          return { pinSnapshot, retainedRows: organizerRows }
+        }
+        const retainedRows = selectEventMarketEvidenceForRetention(
+          organizerRows,
+          EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
+          pinSnapshot.eventIds
+        )
+        if (retainedRows.length !== organizerRows.length) {
+          const keep = new Set(retainedRows.map((row) => row.id))
+          await db.eventMarketEvidence.bulkDelete(
+            organizerRows
+              .filter((row) => !keep.has(row.id))
+              .map((row) => row.id)
+          )
+        }
+        return { pinSnapshot, retainedRows }
+      }
+    )
+    retainVolatileEvidence(pinSnapshot)
+    if (pinSnapshot.status === "ready") {
       retainLocalEventMarketEvidence(
         input.organizerPubkey,
         retainedRows.map((row) => row.signedEvent),
         undefined,
-        { replace: true, pinnedCollectionEventIds }
+        {
+          replace: true,
+          pinnedCollectionEventIds: pinSnapshot.eventIds,
+        }
       )
-      if (retainedRows.length === organizerRows.length) return
-      const keep = new Set(retainedRows.map((row) => row.id))
-      await db.eventMarketEvidence.bulkDelete(
-        organizerRows.filter((row) => !keep.has(row.id)).map((row) => row.id)
-      )
-    })
+    }
     clearPersisted()
   } catch {
     // Cache persistence is best-effort; live signed evidence remains usable.
