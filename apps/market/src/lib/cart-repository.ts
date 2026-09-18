@@ -1,5 +1,6 @@
 import {
   db,
+  isFiatCurrencyCode,
   normalizePublicMediaUrl,
   subscribeToShoppingCartChanges,
   type StoredShoppingCart,
@@ -99,6 +100,103 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function sanitizeCartItemImage(item: CartItem): CartItem {
   const image = normalizePublicMediaUrl(item.image)
   return { ...item, image: image ?? undefined }
+}
+
+function hasStrictlyNewerProductRevision(
+  current: Pick<CartItem, "productUpdatedAt">,
+  candidate: Pick<CartItem, "productUpdatedAt">
+): boolean {
+  return (
+    candidate.productUpdatedAt !== undefined &&
+    (current.productUpdatedAt === undefined ||
+      candidate.productUpdatedAt > current.productUpdatedAt)
+  )
+}
+
+function hasStrictlyOlderProductRevision(
+  current: Pick<CartItem, "productUpdatedAt">,
+  candidate: Pick<CartItem, "productUpdatedAt">
+): boolean {
+  return (
+    current.productUpdatedAt !== undefined &&
+    (candidate.productUpdatedAt === undefined ||
+      candidate.productUpdatedAt < current.productUpdatedAt)
+  )
+}
+
+type SourceAmount = {
+  amount: number
+  currency: string
+  normalizedCurrency: string
+}
+
+function hasSameQuoteDerivedSource(
+  current: SourceAmount | undefined,
+  candidate: SourceAmount | undefined
+): boolean {
+  return (
+    current !== undefined &&
+    candidate !== undefined &&
+    current.amount > 0 &&
+    isFiatCurrencyCode(current.normalizedCurrency) &&
+    current.amount === candidate.amount &&
+    current.currency === candidate.currency &&
+    current.normalizedCurrency === candidate.normalizedCurrency
+  )
+}
+
+function refreshQuoteDerivedFields(
+  current: CartItem,
+  candidate: CartItem
+): CartItem {
+  let next = current
+  if (
+    candidate.priceSats !== undefined &&
+    hasSameQuoteDerivedSource(current.sourcePrice, candidate.sourcePrice)
+  ) {
+    next = { ...next, priceSats: candidate.priceSats }
+  }
+  if (
+    candidate.shippingCostSats !== undefined &&
+    hasSameQuoteDerivedSource(
+      current.sourceShippingCost,
+      candidate.sourceShippingCost
+    )
+  ) {
+    next = { ...next, shippingCostSats: candidate.shippingCostSats }
+  }
+  if (
+    current.fulfillment?.type === "pickup" &&
+    candidate.fulfillment?.type === "pickup" &&
+    hasSameQuoteDerivedSource(
+      current.fulfillment.sourceCost,
+      candidate.fulfillment.sourceCost
+    )
+  ) {
+    next = {
+      ...next,
+      fulfillment: {
+        ...current.fulfillment,
+        costSats: candidate.fulfillment.costSats,
+      },
+    }
+  }
+  return next
+}
+
+function selectCartItemSnapshot(
+  current: CartItem,
+  candidate: CartItem
+): CartItem {
+  if (hasStrictlyNewerProductRevision(current, candidate)) {
+    return {
+      ...current,
+      ...candidate,
+      merchantAddedAt: current.merchantAddedAt,
+    }
+  }
+  if (hasStrictlyOlderProductRevision(current, candidate)) return current
+  return refreshQuoteDerivedFields(current, candidate)
 }
 
 function materializeLines(lines: readonly CartLine[]): CartItem[] {
@@ -567,7 +665,6 @@ export function addCartRepositoryItem(
   quantity = 1
 ): Promise<CartMutationResult> {
   return mutateCart((record) => {
-    if (input.stock === 0) return false
     const requested = Math.max(1, Math.floor(quantity))
     const sanitized = sanitizeCartItemImage({ ...input, quantity: requested })
     const index = record.lines.findIndex(
@@ -582,19 +679,25 @@ export function addCartRepositoryItem(
         (sum, batch) => sum + batch.quantity,
         0
       )
+      const nextItem = selectCartItemSnapshot(line.item, sanitized)
       if (
-        typeof input.stock === "number" &&
-        current + requested > input.stock
+        nextItem.stock === 0 ||
+        (typeof nextItem.stock === "number" &&
+          current + requested > nextItem.stock)
       ) {
         return false
       }
-      const merchantAddedAt = line.item.merchantAddedAt
-      line.item = { ...line.item, ...sanitized, merchantAddedAt }
+      line.item = nextItem
       appendBatch(record, line, requested)
       return true
     }
 
-    if (typeof input.stock === "number" && requested > input.stock) return false
+    if (
+      sanitized.stock === 0 ||
+      (typeof sanitized.stock === "number" && requested > sanitized.stock)
+    ) {
+      return false
+    }
     const lineId = takeId(record, "line")
     const merchantAddedAt =
       getMerchantAddedAt(record, input.merchantPubkey) ??
@@ -612,7 +715,7 @@ export function addCartRepositoryItem(
 }
 
 export function incrementCartRepositoryItem(
-  identity: CartItemIdentity,
+  identity: CartItemIdentity & Pick<CartItem, "productUpdatedAt">,
   quantity = 1,
   currentStock?: number
 ): Promise<CartMutationResult> {
@@ -622,11 +725,16 @@ export function incrementCartRepositoryItem(
     const line = record.lines[index]!
     const current = line.batches.reduce((sum, batch) => sum + batch.quantity, 0)
     const requested = Math.max(1, Math.floor(quantity))
-    const stock = currentStock ?? line.item.stock
+    const stock =
+      currentStock === undefined
+        ? line.item.stock
+        : line.item.stock === undefined ||
+            hasStrictlyNewerProductRevision(line.item, identity)
+          ? currentStock
+          : Math.min(line.item.stock, currentStock)
     if (typeof stock === "number" && current + requested > stock) {
       return false
     }
-    if (currentStock !== undefined) line.item.stock = currentStock
     appendBatch(record, line, requested)
     return true
   })
@@ -643,17 +751,13 @@ export function refreshAndIncrementCartRepositoryItem(
   quantity = 1
 ): Promise<CartMutationResult> {
   return mutateCart((record) => {
-    if (!identity.cartLineId || input.stock === 0) return false
+    if (!identity.cartLineId) return false
     const index = findLineIndex(record, identity)
     if (index < 0) return false
 
     const line = record.lines[index]!
     const requested = Math.max(1, Math.floor(quantity))
     const current = line.batches.reduce((sum, batch) => sum + batch.quantity, 0)
-    if (typeof input.stock === "number" && current + requested > input.stock) {
-      return false
-    }
-
     const sanitized = sanitizeCartItemImage({
       ...input,
       quantity: current,
@@ -666,8 +770,16 @@ export function refreshAndIncrementCartRepositoryItem(
       return false
     }
 
-    const merchantAddedAt = line.item.merchantAddedAt
-    line.item = { ...line.item, ...sanitized, merchantAddedAt }
+    const nextItem = selectCartItemSnapshot(line.item, sanitized)
+    if (
+      nextItem.stock === 0 ||
+      (typeof nextItem.stock === "number" &&
+        current + requested > nextItem.stock)
+    ) {
+      return false
+    }
+
+    line.item = nextItem
     appendBatch(record, line, requested)
     return true
   })
