@@ -1,7 +1,11 @@
 export type LivePresencePageType = "product" | "store"
 
-export const DEFAULT_LIVE_PRESENCE_WEBSOCKET_URL =
+export const PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL =
   "wss://conduit-presence-preview.eric-furletti.workers.dev"
+export const PRODUCTION_LIVE_PRESENCE_WEBSOCKET_URL =
+  "wss://presence.conduit.market"
+export const DEFAULT_LIVE_PRESENCE_WEBSOCKET_URL =
+  PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL
 
 export const LIVE_PRESENCE_MAX_RECONNECT_ATTEMPTS = 5
 export const LIVE_PRESENCE_MAX_COUNT = 512
@@ -103,9 +107,14 @@ export async function hashLivePresenceScope(input: {
 }
 
 export function resolveLivePresenceWebSocketUrl(
-  override = import.meta.env.VITE_PRESENCE_WS_URL
+  override = import.meta.env.VITE_PRESENCE_WS_URL,
+  deploymentProfile = "preview"
 ): string | null {
-  const candidate = override?.trim() || DEFAULT_LIVE_PRESENCE_WEBSOCKET_URL
+  const defaultUrl =
+    deploymentProfile === "production"
+      ? PRODUCTION_LIVE_PRESENCE_WEBSOCKET_URL
+      : PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL
+  const candidate = override?.trim() || defaultUrl
   if (!candidate) return null
 
   try {
