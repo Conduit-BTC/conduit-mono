@@ -22,10 +22,17 @@ test("loaded product preview stays visible while its title changes @merchant", a
   await page.getByRole("button", { name: "Add product" }).first().click()
   const dialog = page.getByRole("dialog", { name: "Add product" })
   await dialog.getByLabel("Title").fill("Original title")
-  await dialog.getByLabel("Primary image URL").fill(imageUrl)
+  await dialog.getByLabel("Primary image URL").fill(`  ${imageUrl}  `)
 
   const previewImage = dialog.locator(`img[src="${imageUrl}"]`)
   await expect(previewImage).toHaveClass(/opacity-100/)
+  const addImage = dialog.getByRole("button", {
+    name: "Add another image",
+    exact: true,
+  })
+  await expect(addImage).toBeEnabled()
+  await addImage.click()
+  await expect(dialog.getByLabel("Image 2 URL")).toBeFocused()
   await dialog.getByLabel("Title").fill("Updated title")
 
   await expect(previewImage).toHaveAttribute("alt", "Updated title")

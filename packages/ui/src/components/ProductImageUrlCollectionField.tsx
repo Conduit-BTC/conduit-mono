@@ -60,7 +60,10 @@ export function ProductImageUrlCollectionField({
   const [announcement, setAnnouncement] = useState("")
   const rows = images.length > 0 ? [...images] : [{ url: "" }]
   const atLimit = rows.length >= MAX_PRODUCT_IMAGE_CANDIDATES
-  const lastRowReady = !!normalizePublicMediaUrl(rows.at(-1)?.url)
+  const lastRowReady = !!normalizePublicMediaUrl(rows.at(-1)?.url.trim())
+  const previewImage = rows[0]
+    ? { ...rows[0], url: rows[0].url.trim() }
+    : undefined
 
   function focusInput(index: number): void {
     requestAnimationFrame(() => inputRefs.current[index]?.focus())
@@ -235,7 +238,7 @@ export function ProductImageUrlCollectionField({
           Conduit Market card preview
         </div>
         <div className="max-w-sm overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
-          <ProductImageFrame image={rows[0]} title={previewTitle} />
+          <ProductImageFrame image={previewImage} title={previewTitle} />
         </div>
         <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
           Conduit Market cards use a centered 4:3 crop. The complete image
