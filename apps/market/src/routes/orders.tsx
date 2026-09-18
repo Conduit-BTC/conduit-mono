@@ -110,6 +110,7 @@ import {
   getOrderFilterPhase,
   getOrderPaymentFailureDetail,
   getOrderPaymentMethodLabel,
+  isBuyerOrderPaid,
   isZeroCostPickupOrder,
   type OrderHeaderStatus,
   type OrderViewModel,
@@ -2118,17 +2119,6 @@ function OrdersPage() {
   const refetchLifecycles = lifecyclesQuery.refetch
 
   useEffect(() => {
-    for (const lifecycle of lifecycles) {
-      if (lifecycle.paymentStatus !== "paid") continue
-      void reportCommerceGmvEstimate({
-        orderId: lifecycle.orderId,
-        orderCreatedAt: lifecycle.createdAt,
-        invoicedAmountSats: lifecycle.totalSats,
-      })
-    }
-  }, [lifecycles])
-
-  useEffect(() => {
     const nextLeaseExpiry = getNextOrderPaymentLeaseExpiry(lifecycles)
     if (nextLeaseExpiry === null) return
 
@@ -2217,6 +2207,18 @@ function OrdersPage() {
     }
     return rows.sort((a, b) => b.updatedAt - a.updatedAt)
   }, [conversations, lifecycles])
+
+  useEffect(() => {
+    for (const row of orders) {
+      const lifecycle = row.lifecycle
+      if (!lifecycle || !isBuyerOrderPaid(row.vm)) continue
+      void reportCommerceGmvEstimate({
+        orderId: lifecycle.orderId,
+        orderCreatedAt: lifecycle.createdAt,
+        invoicedAmountSats: lifecycle.totalSats,
+      })
+    }
+  }, [lifecyclesQuery.dataUpdatedAt, messagesQuery.dataUpdatedAt, orders])
 
   const merchantPubkeys = useMemo(
     () =>
