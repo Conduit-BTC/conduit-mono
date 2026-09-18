@@ -13,9 +13,6 @@ const allShardSmokeInfrastructure = new Set([
   "tests/playwright-smoke-areas.test.ts",
   "tests/pr-evidence-contract.test.ts",
   "tests/select-smoke-shards.test.ts",
-])
-
-const commerceOnlySmokeInfrastructure = new Set([
   "tests/support/bolt11-fixture.ts",
 ])
 
@@ -96,11 +93,6 @@ export function selectSmokeShards(paths: readonly string[]): SmokeShard[] {
       path.startsWith("packages/ui/")
     ) {
       selectAllShards(selected)
-      continue
-    }
-
-    if (commerceOnlySmokeInfrastructure.has(path)) {
-      selected.add("commerce")
       continue
     }
 

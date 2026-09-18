@@ -67,8 +67,10 @@ describe("path-aware smoke shard selection", () => {
     }
   })
 
-  it("runs deterministic wallet fixtures in the commerce shard", () => {
+  it("runs every shard that imports the deterministic wallet fixture", () => {
     expect(selectSmokeShards(["tests/support/bolt11-fixture.ts"])).toEqual([
+      "market",
+      "merchant",
       "commerce",
     ])
   })
