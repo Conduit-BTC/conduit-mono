@@ -219,6 +219,13 @@ const LIGHTNING_RECOVERY_CONFLICT_MESSAGES = new Set([
 
 class SparkLightningLookupUnavailableError extends Error {}
 
+function canonicalLightningInvoice(invoice: string): string | null {
+  const normalized = normalizeLightningInvoice(invoice)
+  const hasLowercase = /[a-z]/.test(normalized)
+  const hasUppercase = /[A-Z]/.test(normalized)
+  return hasLowercase && hasUppercase ? null : normalized.toLowerCase()
+}
+
 export class FirstPartySparkSdkFactory implements SparkSdkFactory {
   readonly network: SupportedSparkNetwork
   readonly #loadModule: () => Promise<SparkNativeModule>
@@ -795,10 +802,11 @@ function adaptFirstPartySparkWallet(input: {
           reason: "Spark returned a conflicting Lightning payment identity.",
         }
       }
-      if (
-        normalizeLightningInvoice(recovered.encodedInvoice) !==
-        normalizeLightningInvoice(request.paymentRequest)
-      ) {
+      const recoveredInvoice = canonicalLightningInvoice(
+        recovered.encodedInvoice
+      )
+      const expectedInvoice = canonicalLightningInvoice(request.paymentRequest)
+      if (!recoveredInvoice || recoveredInvoice !== expectedInvoice) {
         return {
           status: "conflicting_evidence",
           reason: "Spark returned a different Lightning invoice.",

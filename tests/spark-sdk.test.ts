@@ -1648,6 +1648,44 @@ describe("first-party Spark SDK adapter", () => {
     expect(payCalls).toBe(0)
   })
 
+  it("recovers an uppercase persisted invoice from lowercase Spark evidence", async () => {
+    let payCalls = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        return {
+          sparkId: id,
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_SUCCEEDED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            paymentPreimage: ZERO_PREIMAGE,
+            encodedInvoice: ZERO_PREIMAGE_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_INVOICE.toUpperCase(),
+        maxFeeSats: 5,
+        completionTimeoutSecs: 0,
+      })
+    ).resolves.toMatchObject({
+      status: "resolved",
+      payment: { status: "completed" },
+    })
+    expect(payCalls).toBe(0)
+  })
+
   it("keeps a missing transfer unresolved without paying again", async () => {
     let payCalls = 0
     const transferReads: string[] = []
@@ -1770,6 +1808,14 @@ describe("first-party Spark SDK adapter", () => {
         name: "invoice identity",
         transferId: PAYMENT_ATTEMPT_ID,
         request: { encodedInvoice: "lnbc1different" },
+        message: "Spark returned a different Lightning invoice.",
+      },
+      {
+        name: "mixed-case invoice",
+        transferId: PAYMENT_ATTEMPT_ID,
+        request: {
+          encodedInvoice: `L${ZERO_PREIMAGE_INVOICE.slice(1)}`,
+        },
         message: "Spark returned a different Lightning invoice.",
       },
       {
