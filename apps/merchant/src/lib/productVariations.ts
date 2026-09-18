@@ -892,12 +892,19 @@ export function getProductVariationFormError(
       }
     }
     if (!row.inheritImages) {
-      const imageUrls = parseImageUrls(row.imageUrls)
+      const imageRows = parseProductVariationImageInput(row.imageUrls)
+      const imageUrls = imageRows.map((image) => image.url.trim())
       const normalizedImageUrls = imageUrls
         .map((url) => normalizePublicMediaUrl(url))
         .filter((url): url is string => !!url)
-      if (imageUrls.length > MAX_PRODUCT_IMAGE_CANDIDATES) {
+      if (imageRows.length > MAX_PRODUCT_IMAGE_CANDIDATES) {
         return `${getCombinationLabel(row.specifications)} must use ${MAX_PRODUCT_IMAGE_CANDIDATES} images or fewer.`
+      }
+      const blankImageIndex = imageUrls.findIndex((url) => !url)
+      if (blankImageIndex >= 0) {
+        return blankImageIndex === 0
+          ? `${getCombinationLabel(row.specifications)} image URL is required.`
+          : `${getCombinationLabel(row.specifications)}: Add a URL for image ${blankImageIndex + 1} or remove it.`
       }
       if (
         imageUrls.some((url) => !/^https:\/\//i.test(url)) ||

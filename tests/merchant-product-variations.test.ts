@@ -184,6 +184,60 @@ describe("merchant product variation planning", () => {
     expect(plan.desired[1]?.product.images).toEqual([{ url: imageUrl }])
   })
 
+  it("rejects an opened blank custom image row", () => {
+    const variations = sizeVariationForm("S")
+    const small = getProductVariationCombinations(variations)[0]!
+    const customized = updateProductVariationOverride(
+      updateProductVariationInheritance(
+        variations,
+        small.identity,
+        "inheritImages",
+        false
+      ),
+      small.identity,
+      "imageUrls",
+      "https://cdn.conduit.market/front.png\n"
+    )
+
+    expect(getProductVariationFormError(customized, "USD")).toBe(
+      "S: Add a URL for image 2 or remove it."
+    )
+  })
+
+  it("publishes one through twelve custom variation images in order", () => {
+    for (let count = 1; count <= 12; count += 1) {
+      const imageUrls = Array.from(
+        { length: count },
+        (_, index) => `https://cdn.conduit.market/image-${index + 1}.png`
+      )
+      const variations = sizeVariationForm("S")
+      const small = getProductVariationCombinations(variations)[0]!
+      const customized = updateProductVariationOverride(
+        updateProductVariationInheritance(
+          variations,
+          small.identity,
+          "inheritImages",
+          false
+        ),
+        small.identity,
+        "imageUrls",
+        imageUrls.join("\n")
+      )
+
+      expect(getProductVariationFormError(customized, "USD")).toBeNull()
+      const plan = buildProductFamilyChangePlan({
+        parentDTag: "conduit-tee",
+        baseProduct: baseProduct(),
+        variations: customized,
+        currency: "USD",
+        now: NOW + count,
+      })
+      expect(plan.desired[1]?.product.images.map(({ url }) => url)).toEqual(
+        imageUrls
+      )
+    }
+  })
+
   it("starts with a neutral option definition", () => {
     const state = createEmptyProductVariationForm()
 

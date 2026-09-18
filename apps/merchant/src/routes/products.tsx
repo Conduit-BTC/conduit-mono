@@ -3954,6 +3954,11 @@ function ProductsPage() {
                                         images={parseProductVariationImageInput(
                                           combination.imageUrls
                                         )}
+                                        showRequiredError={parseProductVariationImageInput(
+                                          combination.imageUrls
+                                        ).some(
+                                          (image) => image.url.trim().length > 0
+                                        )}
                                         previewTitle={
                                           combination.title.trim() ||
                                           form.title.trim() ||
