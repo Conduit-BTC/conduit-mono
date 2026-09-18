@@ -329,7 +329,7 @@ describe("event market lifecycle", () => {
   it("retains a stripped current revision atomically with its lifecycle predecessor", async () => {
     const closed = collection("closed", 200)
     const stripped = collection(undefined, 300)
-    const unrelated = Array.from({ length: 749 }, (_, index) =>
+    const unrelated = Array.from({ length: 5 }, (_, index) =>
       row(
         sign(
           buildEventMarketCollectionDraft({
@@ -343,6 +343,7 @@ describe("event market lifecycle", () => {
       )
     )
     __setEventMarketTestOverrides({
+      maxCachedEvidencePerOrganizer: 6,
       loadCachedCollectionEvidence: async () => [
         row(stripped, 10_000),
         row(closed, 1),
@@ -551,7 +552,7 @@ describe("event market lifecycle", () => {
       },
       600
     )
-    const unrelated = Array.from({ length: 750 }, (_, index) =>
+    const unrelated = Array.from({ length: 20 }, (_, index) =>
       row(
         sign(
           buildEventMarketCollectionDraft({
@@ -565,8 +566,8 @@ describe("event market lifecycle", () => {
       )
     )
     for (const [deletion, competingRows, limit] of [
-      [exactDeletion, unrelated, 750],
-      [coordinateDeletion, unrelated.slice(0, 20), 20],
+      [exactDeletion, unrelated, 20],
+      [coordinateDeletion, unrelated, 20],
     ] as const) {
       const retainedIds = new Set(
         selectEventMarketEvidenceForRetention(
