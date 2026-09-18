@@ -1,6 +1,8 @@
 import {
   canonicalizeProductPrice,
   getProductShippingOptionAddress,
+  MAX_PRODUCT_IMAGE_CANDIDATES,
+  normalizePublicMediaUrl,
   type ProductFulfillmentIntent,
   type ProductImage,
   type ProductSchema,
@@ -745,19 +747,20 @@ export function getProductVariationCombinations(
   return combinations
 }
 
-function parseImageUrls(value: string): string[] {
-  return value
-    .split(/[\n,]/)
-    .map((url) => url.trim())
-    .filter(Boolean)
+export function parseProductVariationImageInput(value: string): ProductImage[] {
+  return value.split(/[\n,]/).map((url) => ({ url }))
 }
 
-function isSafeImageUrl(value: string): boolean {
-  try {
-    return new URL(value).protocol === "https:"
-  } catch {
-    return false
-  }
+export function formatProductVariationImageInput(
+  images: readonly ProductImage[]
+): string {
+  return images.map((image) => image.url).join("\n")
+}
+
+function parseImageUrls(value: string): string[] {
+  return parseProductVariationImageInput(value)
+    .map((image) => image.url.trim())
+    .filter(Boolean)
 }
 
 function getUnresolvedVariationShippingError(
@@ -874,11 +877,23 @@ export function getProductVariationFormError(
         return `${getCombinationLabel(row.specifications)}: ${stockError}`
       }
     }
-    if (
-      !row.inheritImages &&
-      parseImageUrls(row.imageUrls).some((url) => !isSafeImageUrl(url))
-    ) {
-      return `${getCombinationLabel(row.specifications)} images must use HTTPS URLs.`
+    if (!row.inheritImages) {
+      const imageUrls = parseImageUrls(row.imageUrls)
+      const normalizedImageUrls = imageUrls
+        .map((url) => normalizePublicMediaUrl(url))
+        .filter((url): url is string => !!url)
+      if (imageUrls.length > MAX_PRODUCT_IMAGE_CANDIDATES) {
+        return `${getCombinationLabel(row.specifications)} must use ${MAX_PRODUCT_IMAGE_CANDIDATES} images or fewer.`
+      }
+      if (
+        imageUrls.some((url) => !/^https:\/\//i.test(url)) ||
+        normalizedImageUrls.length !== imageUrls.length
+      ) {
+        return `${getCombinationLabel(row.specifications)} images must use public HTTPS URLs.`
+      }
+      if (new Set(normalizedImageUrls).size !== normalizedImageUrls.length) {
+        return `${getCombinationLabel(row.specifications)} must use each image URL only once.`
+      }
     }
     if (!row.inheritShipping && row.shippingCost.trim()) {
       try {

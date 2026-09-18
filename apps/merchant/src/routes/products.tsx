@@ -51,6 +51,7 @@ import {
   Input,
   Label,
   ProductCard,
+  ProductImageUrlCollectionField,
   RefreshChip,
   Select,
   SelectContent,
@@ -97,6 +98,7 @@ import {
   isProductUsingPresetShippingZone,
   MAX_PRODUCT_TAG_COUNT,
   MAX_PRODUCT_TAG_LENGTH,
+  prepareProductImages,
   reconcileProductFormShippingPreset,
   validateProductPublishForm,
   type MerchantProductFormValues,
@@ -178,6 +180,7 @@ import {
   addProductVariationAxis,
   buildProductFamilyChangePlan,
   createEmptyProductVariationForm,
+  formatProductVariationImageInput,
   generateProductVariationRows,
   getProductVariationCartesianCount,
   getProductVariationCombinations,
@@ -188,6 +191,7 @@ import {
   MAX_PRODUCT_VARIATION_AXES,
   MAX_PRODUCT_VARIATION_COUNT,
   mergeProductVariationAuthoringState,
+  parseProductVariationImageInput,
   reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
   removeProductVariationAxis,
@@ -283,7 +287,7 @@ function createEmptyProductForm(
     customShippingConfig: { countries: [] },
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
-    imageUrl: "",
+    images: [],
     tags: "",
   }
 }
@@ -403,7 +407,7 @@ function productToForm(
     zapMessagePolicy: product.publicZapPolicyKnown
       ? product.zapMessagePolicy
       : "generic_only",
-    imageUrl: product.images[0]?.url ?? "",
+    images: product.images.map((image) => ({ ...image })),
     tags: product.tags.join(", "),
   }
 }
@@ -953,14 +957,6 @@ async function publishProduct(
     )
   }
   const summary = form.summary.trim()
-  const imageUrl = form.imageUrl.trim()
-  if (!imageUrl) {
-    throw new Error("Image URL is required for Market-visible products")
-  }
-  if (!/^https:\/\//i.test(imageUrl)) {
-    throw new Error("Image URL must start with https://")
-  }
-
   const now = Date.now()
   const tags = formValidation.tags
 
@@ -979,7 +975,7 @@ async function publishProduct(
     ...shippingMetadata,
     visibility: localPickup ? "private" : "public",
     stock: parseProductStockInput(form.stock),
-    images: [{ url: imageUrl }],
+    images: prepareProductImages(form.images),
     tags,
     publicZapEnabled: form.publicZapEnabled,
     zapMessagePolicy: form.zapMessagePolicy,
@@ -3502,25 +3498,18 @@ function ProductsPage() {
                 </div>
               </div>
 
-              <div className="grid gap-1.5">
-                <Label htmlFor="product-image">Image URL</Label>
-                <Input
-                  id="product-image"
-                  type="url"
-                  value={form.imageUrl}
-                  onChange={(event) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      imageUrl: event.target.value,
-                    }))
-                  }
-                  placeholder="https://..."
-                  required
-                />
-                <div className="text-xs leading-5 text-[var(--text-muted)]">
-                  Products without images are not shown in Market.
-                </div>
-              </div>
+              <ProductImageUrlCollectionField
+                id="product-image"
+                images={form.images}
+                previewTitle={form.title.trim() || "Product image"}
+                onChange={(images) =>
+                  setForm((previous) => ({ ...previous, images }))
+                }
+                showRequiredError={
+                  form.images.length > 0 &&
+                  form.images.some((image) => image.url.trim().length > 0)
+                }
+              />
 
               <div className="grid gap-1.5">
                 <Label htmlFor="product-tags">Tags</Label>
@@ -3926,14 +3915,11 @@ function ProductsPage() {
                                 </div>
 
                                 <div className="grid gap-3 sm:grid-cols-3">
-                                  <div className="grid gap-1">
+                                  <div className="grid gap-2 sm:col-span-3">
                                     <div className="flex items-center justify-between gap-2">
-                                      <Label
-                                        htmlFor={`product-variation-images-${index}`}
-                                        className="text-xs"
-                                      >
-                                        Image URLs
-                                      </Label>
+                                      <span className="text-xs font-medium text-[var(--text-primary)]">
+                                        Variation images
+                                      </span>
                                       <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
                                         <input
                                           type="checkbox"
@@ -3954,25 +3940,41 @@ function ProductsPage() {
                                         Base
                                       </label>
                                     </div>
-                                    <Textarea
-                                      id={`product-variation-images-${index}`}
-                                      value={combination.imageUrls}
-                                      disabled={combination.inheritImages}
-                                      placeholder="One HTTPS URL per line"
-                                      rows={2}
-                                      onChange={(event) =>
-                                        setForm((previous) => ({
-                                          ...previous,
-                                          variations:
-                                            updateProductVariationOverride(
-                                              previous.variations,
-                                              combination.identity,
-                                              "imageUrls",
-                                              event.target.value
-                                            ),
-                                        }))
-                                      }
-                                    />
+                                    {combination.inheritImages ? (
+                                      <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-2 text-pretty text-xs leading-5 text-[var(--text-muted)]">
+                                        {form.images.length === 0
+                                          ? "No base product images yet."
+                                          : form.images.length === 1
+                                            ? "Using the base product image."
+                                            : `Using all ${form.images.length} base product images in their current order.`}
+                                      </div>
+                                    ) : (
+                                      <ProductImageUrlCollectionField
+                                        id={`product-variation-images-${index}`}
+                                        images={parseProductVariationImageInput(
+                                          combination.imageUrls
+                                        )}
+                                        previewTitle={
+                                          combination.title.trim() ||
+                                          form.title.trim() ||
+                                          "Variation image"
+                                        }
+                                        onChange={(images) =>
+                                          setForm((previous) => ({
+                                            ...previous,
+                                            variations:
+                                              updateProductVariationOverride(
+                                                previous.variations,
+                                                combination.identity,
+                                                "imageUrls",
+                                                formatProductVariationImageInput(
+                                                  images
+                                                )
+                                              ),
+                                          }))
+                                        }
+                                      />
+                                    )}
                                   </div>
                                   <div className="grid gap-1">
                                     <Label

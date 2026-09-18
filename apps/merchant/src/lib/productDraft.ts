@@ -12,7 +12,7 @@ import {
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 6
+const PRODUCT_DRAFT_VERSION = 7
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
   "conduit:merchant:product_variation_authoring:v1"
@@ -131,6 +131,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         candidate.version !== 3 &&
         candidate.version !== 4 &&
         candidate.version !== 5 &&
+        candidate.version !== 6 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -149,12 +150,36 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       "price",
       "currency",
       "shippingCost",
-      "imageUrl",
       "tags",
     ] as const
     if (stringFields.some((field) => typeof form[field] !== "string")) {
       return null
     }
+    const images =
+      candidate.version <= 6
+        ? typeof form.imageUrl === "string"
+          ? form.imageUrl
+            ? [{ url: form.imageUrl }]
+            : []
+          : null
+        : Array.isArray(form.images) &&
+            form.images.every(
+              (image) =>
+                !!image &&
+                typeof image === "object" &&
+                typeof (image as { url?: unknown }).url === "string" &&
+                ((image as { alt?: unknown }).alt === undefined ||
+                  typeof (image as { alt?: unknown }).alt === "string")
+            )
+          ? form.images.map((image) => {
+              const candidateImage = image as { url: string; alt?: string }
+              return {
+                url: candidateImage.url,
+                ...(candidateImage.alt ? { alt: candidateImage.alt } : {}),
+              }
+            })
+          : null
+    if (!images) return null
     if (
       (form.format !== "physical" && form.format !== "digital") ||
       typeof form.usePresetShippingZone !== "boolean" ||
@@ -182,7 +207,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
     // event-market shape by its explicit fulfillment field, but never trust
     // those fields on older versions.
     const hasEventMarketDraftFields =
-      candidate.version === PRODUCT_DRAFT_VERSION ||
+      candidate.version >= 6 ||
       ((candidate.version === 4 || candidate.version === 5) &&
         typeof form.fulfillment === "string")
     const fulfillment = hasEventMarketDraftFields
@@ -242,8 +267,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       candidate.version >= 3 && typeof form.stock === "string" ? form.stock : ""
     if (!/^\d*$/.test(stock)) return null
     const variations =
-      candidate.version === PRODUCT_DRAFT_VERSION ||
-      form.variations !== undefined
+      candidate.version >= 6 || form.variations !== undefined
         ? parseProductVariationFormState(form.variations)
         : createEmptyProductVariationForm()
     if (!variations) return null
@@ -290,7 +314,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         ),
         publicZapEnabled: form.publicZapEnabled,
         zapMessagePolicy: form.zapMessagePolicy,
-        imageUrl: form.imageUrl as string,
+        images,
         tags: form.tags as string,
       },
     }

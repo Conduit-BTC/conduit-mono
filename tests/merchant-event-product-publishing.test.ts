@@ -79,7 +79,7 @@ describe("merchant event-led product publishing", () => {
       price: "2100",
       currency: "SATS",
       stock: "4",
-      imageUrl: "https://cdn.pixabay.com/photo/coffee.jpg",
+      images: [{ url: "https://cdn.pixabay.com/photo/coffee.jpg" }],
       tags: "coffee, local, roasted",
     })
     expect(PRODUCT).toEqual(sourceSnapshot)
@@ -98,7 +98,7 @@ describe("merchant event-led product publishing", () => {
     ).toBe("coffee-beans-fixed")
   })
 
-  it("does not import a Markdown-wrapped image URL from a template", () => {
+  it("preserves template image evidence but blocks malformed URLs", () => {
     const malformedProduct = {
       ...PRODUCT,
       images: [
@@ -114,9 +114,9 @@ describe("merchant event-led product publishing", () => {
       MARKET
     )
 
-    expect(form.imageUrl).toBe("")
-    expect(validateEventProductPublishForm(form).product.errors.imageUrl).toBe(
-      "Image URL is required for Market-visible products."
+    expect(form.images).toEqual(malformedProduct.images)
+    expect(validateEventProductPublishForm(form).product.errors.images).toBe(
+      "Image URL must start with https://"
     )
     expect(malformedProduct).toEqual(sourceSnapshot)
   })
@@ -130,7 +130,13 @@ describe("merchant event-led product publishing", () => {
       title: "Event coffee",
       price: "2100",
       stock: "4",
-      imageUrl: "https://cdn.pixabay.com/photo/event-coffee.jpg",
+      images: [
+        {
+          url: "https://cdn.pixabay.com/photo/event-coffee.jpg",
+          alt: "Event coffee cover",
+        },
+        { url: "https://cdn.pixabay.com/photo/event-coffee-detail.jpg" },
+      ],
       tags: "coffee, local, meetup",
     }
     expect(validateEventProductPublishForm(valid)).toMatchObject({

@@ -1494,7 +1494,7 @@ async function publishMerchantProductFromEvent(
   await editor.getByLabel("Price").fill("0")
   await editor.getByLabel("Stock (optional)").fill("3")
   await editor
-    .getByLabel("Image URL")
+    .getByLabel("Primary image URL")
     .fill(
       "https://cdn.conduit.market/conduit-test/synthetic-pickup-product.svg"
     )
