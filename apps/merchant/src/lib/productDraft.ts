@@ -188,7 +188,9 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
     const fulfillment = hasEventMarketDraftFields
       ? form.fulfillment === "digital" ||
         form.fulfillment === "ship" ||
-        form.fulfillment === "local_pickup"
+        form.fulfillment === "local_pickup" ||
+        (form.fulfillment === "preserve" &&
+          typeof candidate.baseEventId === "string")
         ? form.fulfillment
         : null
       : form.format === "digital"

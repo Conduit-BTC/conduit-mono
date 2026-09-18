@@ -30,7 +30,8 @@ export const RECOMMENDED_MAX_PRODUCT_TAG_COUNT = 12
 export const MAX_PRODUCT_TAG_COUNT = 24
 export const MAX_PRODUCT_TAG_LENGTH = 40
 
-export type ProductFulfillmentChoice = "digital" | "ship" | "local_pickup"
+export type ProductFulfillmentChoice =
+  "digital" | "ship" | "local_pickup" | "preserve"
 
 export function canUseZeroProductPrice(input: {
   fulfillment: unknown
@@ -275,6 +276,7 @@ export function validateProductPublishForm(
     hasPresetShippingZone: boolean
     presetShippingConfig?: ShippingConfig
     allowZeroPrice?: boolean
+    preserveExistingFulfillment?: boolean
   }
 ): ProductPublishFormValidation {
   const errors: Partial<Record<ProductPublishFormField, string>> = {}
@@ -283,7 +285,10 @@ export function validateProductPublishForm(
   const imageUrl = form.imageUrl.trim()
   const tags = parseProductTags(form.tags)
   const isDigital = form.format === "digital"
-  const hasFixedShipping = !isDigital && form.shippingPricingMode === "fixed"
+  const hasFixedShipping =
+    !options.preserveExistingFulfillment &&
+    !isDigital &&
+    form.shippingPricingMode === "fixed"
   const shippingCostInput = hasFixedShipping ? form.shippingCost.trim() : ""
 
   if (!title) {
@@ -310,7 +315,14 @@ export function validateProductPublishForm(
   if (form.variations) {
     const variationError = getProductVariationFormError(
       form.variations,
-      currency
+      currency,
+      {
+        preserveExistingFulfillment: options.preserveExistingFulfillment,
+        // Each preserved child's baseline is checked at publication. A paid
+        // parent does not imply that every existing child has a positive price.
+        allowZeroPrice:
+          options.allowZeroPrice || options.preserveExistingFulfillment,
+      }
     )
     if (variationError) addError(errors, "variations", variationError)
   }

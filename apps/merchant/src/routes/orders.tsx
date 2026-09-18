@@ -153,11 +153,7 @@ import {
   signAndPublishProductListing,
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
-import {
-  getOrderStockPickupFulfillment,
-  rebaseOrderStockAdjustmentOnProduct,
-  resolveStockUpdateFulfillmentIntent,
-} from "../lib/order-stock-fulfillment"
+import { prepareOrderStockUpdate } from "../lib/order-stock-fulfillment"
 import {
   applyOrderStockTarget,
   buildOrderStockAdjustments,
@@ -1742,84 +1738,49 @@ function OrdersPage() {
           "The merchant listing is not available on this device. Refresh orders and try again."
         )
       }
-      if (
-        record.product.type !== "simple" &&
-        record.product.type !== "variation"
-      ) {
-        throw new Error(
-          "Automatic stock updates require a purchasable product listing."
-        )
-      }
-      if (
-        !Number.isSafeInteger(payload.adjustment.nextStock) ||
-        payload.adjustment.nextStock < 0
-      ) {
-        throw new Error("Stock must be a non-negative safe integer.")
-      }
-
-      const hasPickupClaim = payload.orderItems.some(
-        (item) => item.fulfillment?.type === "pickup"
+      const persistedDecision = stockDecisionStoreRef.current.get(
+        pubkey,
+        payload.orderId,
+        record.addressId
       )
-      const pickupFulfillment = getOrderStockPickupFulfillment({
-        items: payload.orderItems,
-        productAddressId: payload.adjustment.addressId,
-      })
-      let publicationRecord = record
-      let effectiveAdjustment = payload.adjustment
-      if (pickupFulfillment) {
-        const verification = await verifyMerchantPickupOrderAuthorization({
-          items: payload.orderItems,
+      const { adjustment: effectiveAdjustment, fulfillmentIntent } =
+        prepareOrderStockUpdate({
           merchantPubkey: pubkey,
-          authenticatedPubkey: signerConnected ? pubkey : null,
-          shouldContinue: () => authGenerationRef.current === authGeneration,
-          targetProductCoordinate: payload.adjustment.addressId,
-        })
-        const verifiedProduct =
-          verification.status === "verified"
-            ? verification.products.find(
-                (candidate) =>
-                  candidate.addressId === payload.adjustment.addressId
-              )
-            : undefined
-        if (
-          verification.status !== "verified" ||
-          !verifiedProduct ||
-          !verifiedProduct.dTag
-        ) {
-          throw new Error("Current signed pickup evidence is unavailable.")
-        }
-        publicationRecord = verifiedProduct
-        effectiveAdjustment = rebaseOrderStockAdjustmentOnProduct({
+          orderId: payload.orderId,
+          items: payload.orderItems,
           adjustment: payload.adjustment,
-          record: verifiedProduct,
+          record,
+          persistedDecision,
         })
-      }
-      if (!publicationRecord.dTag) {
+      const hasPendingDelivery = pendingStockDeliveryStoreRef.current
+        .getForOrder(pubkey, payload.orderId)
+        .some((pending) => pending.adjustment.key === effectiveAdjustment.key)
+      if (
+        isOrderStockAdjustmentMutationDisabled({
+          adjustment: effectiveAdjustment,
+          persistedDecision,
+          hasPendingDelivery,
+          hasSessionDecision: sessionStockDecisionKeys.has(
+            `${pubkey}:${effectiveAdjustment.key}`
+          ),
+        })
+      ) {
         throw new Error(
-          "The current listing revision cannot be used for this stock update. Refresh the order and try again."
+          "This stock update is already applied or awaiting delivery."
         )
       }
-      const fulfillmentIntent = await resolveStockUpdateFulfillmentIntent({
-        product: publicationRecord.product,
-        productAddressId: payload.adjustment.addressId,
-        accountPubkey: pubkey,
-        authenticatedPubkey: status === "connected" ? pubkey : null,
-        shouldContinue: () => authGenerationRef.current === authGeneration,
-        orderHasPickupClaim: hasPickupClaim,
-        ...(pickupFulfillment ? { verifiedPickup: pickupFulfillment } : {}),
-      })
       let signedEvent: SignedPublicNostrEvent | null = null
       const delivery = await signAndPublishProductListing({
         merchantPubkey: pubkey,
         authenticatedPubkey: signerConnected ? pubkey : null,
         shouldContinue: () => authGenerationRef.current === authGeneration,
         product: {
-          ...publicationRecord.product,
+          ...record.product,
           stock: effectiveAdjustment.nextStock,
           updatedAt: Date.now(),
         },
-        dTag: publicationRecord.dTag,
-        previousEventCreatedAt: publicationRecord.eventCreatedAt,
+        dTag: record.dTag,
+        previousEventCreatedAt: record.eventCreatedAt,
         fulfillmentIntent,
         onSignedLocal: async (event) => {
           const rawEvent = event.rawEvent() as SignedPublicNostrEvent

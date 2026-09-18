@@ -46,6 +46,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 - `docs/knowledge/event-catalog-progressive-loading.md`: progressive browsing,
   scoped query sharing, and the boundary between display and pickup authorization
+- `docs/knowledge/merchant-product-mutation-boundary.md`: owned-product editing
+  without organizer verification, unchanged fulfillment, and regression coverage
 
 - `docs/knowledge/event-market-validation-evidence.md`: stable event-market
   acceptance/evidence IDs, candidate-head test mapping, and live-validation gaps

@@ -1384,8 +1384,15 @@ test("merchant product drafts survive safe dialog dismissal @merchant", async ({
 
   await expect(editProduct).toBeVisible()
   await editProduct.click()
-  await expect(coordinateShipping).toBeChecked()
-  await expect(shipping).toBeDisabled()
+  await expect(
+    editDialog.getByText("Current fulfillment is kept", { exact: true })
+  ).toBeVisible()
+  await expect(
+    editDialog.getByRole("button", {
+      name: "Change fulfillment",
+      exact: true,
+    })
+  ).toBeVisible()
   await expect(price).toHaveValue("0.00000001")
   await title.fill("Unpublished edited title")
   await page.keyboard.press("Escape")

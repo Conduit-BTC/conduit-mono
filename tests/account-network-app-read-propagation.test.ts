@@ -306,9 +306,15 @@ describe("app account-network read propagation", () => {
     expect(merchantDashboard).toMatch(
       /fetchDashboardStats\([\s\S]{0,180}!signal\.aborted && authGenerationRef\.current === authGeneration/
     )
-    expect(merchantProducts).toContain(
-      "{ accountPubkey, authenticatedPubkey, shouldContinue }"
+    const merchantCatalogRead = merchantProducts.slice(
+      merchantProducts.indexOf("async function fetchMerchantProducts("),
+      merchantProducts.indexOf("async function fetchCachedMerchantProducts(")
     )
+    expect(merchantCatalogRead).toMatch(
+      /getMerchantStorefront\(\{\s*merchantPubkey,\s*accountPubkey,\s*authenticatedPubkey,\s*shouldContinue,/
+    )
+    expect(merchantCatalogRead).not.toContain("getShippingOptionsByCoordinates")
+    expect(merchantCatalogRead).not.toContain("resolveProductFulfillment")
     expect(eventTemplates).toContain("accountPubkey: authenticatedPubkey,")
     expect(eventTemplates).toContain("authenticatedPubkey,")
     expect(eventTemplates).not.toContain("authenticatedPubkey: merchantPubkey")
@@ -387,6 +393,7 @@ describe("app account-network read propagation", () => {
       marketOrders,
       orderPublish,
       stockFulfillment,
+      productPublishing,
       merchantOrders,
     ] = await Promise.all([
       source("packages/core/src/protocol/shipping.ts"),
@@ -399,15 +406,22 @@ describe("app account-network read propagation", () => {
       source("apps/market/src/routes/orders.tsx"),
       source("apps/market/src/lib/order-publish.ts"),
       source("apps/merchant/src/lib/order-stock-fulfillment.ts"),
+      source("apps/merchant/src/lib/product-publishing.ts"),
       source("apps/merchant/src/routes/orders.tsx"),
     ])
 
     expect(shipping).toContain("accountNetworkLocalStateRepository")
     expect(checkout).toContain("accountPubkey: signedBuyerPubkey")
     expect(checkout).toContain("authenticatedPubkey: signedBuyerPubkey")
-    expect(merchantProducts).toContain(
-      "{ accountPubkey, authenticatedPubkey, shouldContinue }"
+    const merchantCatalogRead = merchantProducts.slice(
+      merchantProducts.indexOf("async function fetchMerchantProducts("),
+      merchantProducts.indexOf("async function fetchCachedMerchantProducts(")
     )
+    expect(merchantCatalogRead).toMatch(
+      /getMerchantStorefront\(\{\s*merchantPubkey,\s*accountPubkey,\s*authenticatedPubkey,\s*shouldContinue,/
+    )
+    expect(merchantCatalogRead).not.toContain("getShippingOptionsByCoordinates")
+    expect(merchantCatalogRead).not.toContain("resolveProductFulfillment")
     expect(merchantProducts).toContain(
       'authStatus === "connected" ? pubkey : null'
     )
@@ -419,11 +433,32 @@ describe("app account-network read propagation", () => {
     expect(merchantReadiness).toContain(
       'authenticatedPubkey: authStatus === "connected" ? pubkey : null'
     )
-    expect(stockFulfillment).toContain(
+    expect(stockFulfillment).toContain('kind: "preserve_existing"')
+    expect(stockFulfillment).not.toContain("getShippingOptionsByCoordinates")
+    expect(stockFulfillment).not.toContain("getEventMarket")
+    const lazyShippingRead = productPublishing.slice(
+      productPublishing.indexOf(
+        "async function prepareProductPublicationListings("
+      ),
+      productPublishing.indexOf(
+        "export function resolveProductFulfillmentIntentForTarget("
+      )
+    )
+    expect(lazyShippingRead).toContain("dependencies.getShippingOptions(")
+    expect(lazyShippingRead).toContain("accountPubkey: input.merchantPubkey")
+    expect(lazyShippingRead).toContain(
       "authenticatedPubkey: input.authenticatedPubkey"
     )
-    expect(merchantOrders).toContain(
-      'authenticatedPubkey: status === "connected" ? pubkey : null'
+    expect(lazyShippingRead).toContain("shouldContinue: input.shouldContinue")
+    const stockMutation = merchantOrders.slice(
+      merchantOrders.indexOf("const stockUpdateMutation ="),
+      merchantOrders.indexOf("const confirmPaymentMutation =")
+    )
+    expect(stockMutation).toMatch(
+      /signAndPublishProductListing\(\{[\s\S]{0,100}merchantPubkey: pubkey,[\s\S]{0,100}authenticatedPubkey: signerConnected \? pubkey : null,[\s\S]{0,100}shouldContinue: \(\) => authGenerationRef.current === authGeneration/
+    )
+    expect(stockMutation).toMatch(
+      /deliverSignedProductEvent\([\s\S]{0,180}authenticatedPubkey: signerConnected \? pubkey : null,[\s\S]{0,100}shouldContinue: \(\) => authGenerationRef.current === authGeneration/
     )
     expect(lightning).toContain("accountPubkey,")
     expect(lightning).toContain("accountNetworkLocalStateRepository,")
