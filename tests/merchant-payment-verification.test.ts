@@ -220,6 +220,20 @@ describe("merchant NWC payment verification", () => {
     ).toEqual([])
   })
 
+  it("uses the order payload date when publication crosses UTC midnight", () => {
+    const orderCreatedAt = Date.parse("2026-09-17T23:59:59.000Z")
+    const publishedAt = Date.parse("2026-09-18T00:00:01.000Z")
+    const input = conversation()
+    const order = input.messages?.find((message) => message.type === "order")
+    if (order?.type !== "order") throw new Error("Order fixture is missing")
+    order.createdAt = publishedAt
+    order.payload.createdAt = orderCreatedAt
+
+    expect(getMerchantPaymentVerificationCandidates([input])).toEqual([
+      expect.objectContaining({ orderCreatedAt }),
+    ])
+  })
+
   it("only accepts incoming, settled, exact, timely wallet results", () => {
     const candidate = getMerchantPaymentVerificationCandidates([
       conversation(),

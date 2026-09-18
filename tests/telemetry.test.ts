@@ -339,7 +339,7 @@ describe("browser telemetry", () => {
     expect(plausible.q).toBeUndefined()
   })
 
-  it("honors Global Privacy Control before loading analytics providers", () => {
+  it("continues honoring Global Privacy Control for optional browser analytics", () => {
     const previousDocument = Object.getOwnPropertyDescriptor(
       globalThis,
       "document"

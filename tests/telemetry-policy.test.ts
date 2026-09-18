@@ -41,25 +41,25 @@ describe("telemetry policy", () => {
     )
   })
 
-  it("keeps exact settlement value isolated to its server-only event", () => {
+  it("keeps exact GMV value isolated to its Worker-only event", () => {
     expect(
       validateTelemetryEvents([
         {
           eventName: "checkout_result",
-          properties: ["event_name", "settled_amount_sats"],
+          properties: ["event_name", "estimated_gmv_sats"],
         },
       ])
     ).toContain(
-      "Telemetry event checkout_result cannot use server-only property: settled_amount_sats"
+      "Telemetry event checkout_result cannot use Worker-only property: estimated_gmv_sats"
     )
     expect(
       validateTelemetryEvents([
         {
-          eventName: "zapout_settled",
-          properties: ["settled_amount_sats", "app"],
+          eventName: "commerce_gmv_estimated",
+          properties: ["estimated_gmv_sats", "app"],
         },
       ])
-    ).toContain("zapout_settled must use only settled_amount_sats")
+    ).toContain("commerce_gmv_estimated must use only estimated_gmv_sats")
   })
 
   it("validates the repo telemetry allowlist", () => {
