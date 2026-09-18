@@ -972,7 +972,7 @@ test("merchant product authoring warns about missing Lightning setup without blo
   await dialog.locator("#product-fulfillment").click()
   await page.getByRole("option", { name: "Digital", exact: true }).click()
   await dialog
-    .getByLabel("Image URL")
+    .getByLabel("Primary image URL")
     .fill("https://media.conduit.market/manual-payment-product.png")
   const tags = dialog.getByRole("combobox", { name: "Tags" })
   for (const tag of ["manual", "payment", "demo"]) {
