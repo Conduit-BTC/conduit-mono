@@ -6,6 +6,7 @@ import {
   getLightningInvoiceNetwork,
   getWalletNetworkFromLightningConfig,
   isAmountlessLightningInvoice,
+  normalizeLightningInvoice,
   type WalletNetwork,
 } from "@conduit/core"
 
@@ -65,6 +66,11 @@ interface SparkNativeTransfer {
   userRequest?: unknown
 }
 
+interface SparkNativeSspTransfer {
+  sparkId?: string
+  userRequest?: unknown
+}
+
 interface SparkNativeLightningSendRequest {
   id: string
   status: string
@@ -98,6 +104,7 @@ export interface SparkNativeWallet {
     receiverSparkAddress: string
   }): Promise<SparkNativeTransfer>
   getTransfer(id: string): Promise<SparkNativeTransfer | undefined>
+  getTransferFromSsp(id: string): Promise<SparkNativeSspTransfer | undefined>
   createLightningInvoice(input: {
     amountSats: number
     memo?: string
@@ -202,6 +209,15 @@ const LIGHTNING_FAILURE_STATUSES = new Set([
   "USER_SWAP_RETURNED",
   "USER_SWAP_RETURN_FAILED",
 ])
+
+const LIGHTNING_RECOVERY_CONFLICT_MESSAGES = new Set([
+  "Spark returned an invalid Lightning payment fee.",
+  "Spark returned a Lightning fee above the approved maximum.",
+  "Spark returned an invalid Lightning payment preimage.",
+  "Spark returned a Lightning preimage that does not match the prepared invoice.",
+])
+
+class SparkLightningLookupUnavailableError extends Error {}
 
 export class FirstPartySparkSdkFactory implements SparkSdkFactory {
   readonly network: SupportedSparkNetwork
@@ -734,6 +750,88 @@ function adaptFirstPartySparkWallet(input: {
         }),
       }
     },
+    async reconcileLightningSend(request) {
+      if (!Number.isSafeInteger(request.maxFeeSats) || request.maxFeeSats < 0) {
+        throw new Error("The approved Lightning fee limit is invalid.")
+      }
+      const transferId = input.module
+        .parseTransferId(request.transferId)
+        .toString()
+      const paymentHash = decodeLightningInvoicePaymentHash(
+        request.paymentRequest
+      )
+      if (!paymentHash) {
+        throw new Error(
+          "The Lightning invoice does not contain a valid payment hash."
+        )
+      }
+
+      let transfer: SparkNativeSspTransfer | undefined
+      try {
+        transfer = await input.wallet.getTransferFromSsp(transferId)
+      } catch {
+        return { status: "lookup_unavailable" }
+      }
+      if (!transfer) return { status: "not_found" }
+      if (transfer.sparkId !== transferId) {
+        return {
+          status: "conflicting_evidence",
+          reason: "Spark returned a conflicting transfer identity.",
+        }
+      }
+
+      let recovered: ReturnType<typeof readRecoveredLightningSendRequest>
+      try {
+        recovered = readRecoveredLightningSendRequest(transfer.userRequest)
+      } catch {
+        return {
+          status: "conflicting_evidence",
+          reason: "Spark returned invalid Lightning recovery evidence.",
+        }
+      }
+      if (recovered.idempotencyKey !== transferId) {
+        return {
+          status: "conflicting_evidence",
+          reason: "Spark returned a conflicting Lightning payment identity.",
+        }
+      }
+      if (
+        normalizeLightningInvoice(recovered.encodedInvoice) !==
+        normalizeLightningInvoice(request.paymentRequest)
+      ) {
+        return {
+          status: "conflicting_evidence",
+          reason: "Spark returned a different Lightning invoice.",
+        }
+      }
+
+      try {
+        const payment = await reconcileLightningPayment({
+          wallet: input.wallet,
+          initial: recovered,
+          maxFeeSats: request.maxFeeSats,
+          expectedPaymentHash: decodeHex32(
+            paymentHash,
+            "The Lightning invoice contains an invalid payment hash."
+          ).bytes,
+          timeoutSecs: request.completionTimeoutSecs ?? 60,
+          pollIntervalMs: input.pollIntervalMs,
+          wait: input.wait,
+          now: input.now,
+        })
+        return { status: "resolved", payment }
+      } catch (error) {
+        if (error instanceof SparkLightningLookupUnavailableError) {
+          return { status: "lookup_unavailable" }
+        }
+        const reason =
+          error instanceof Error &&
+          LIGHTNING_RECOVERY_CONFLICT_MESSAGES.has(error.message)
+            ? error.message
+            : "Spark returned conflicting Lightning payment evidence."
+        return { status: "conflicting_evidence", reason }
+      }
+    },
     async receivePayment(request) {
       if (request.paymentMethod.type === "sparkAddress") {
         const paymentRequest = validateSparkReceiveAddress({
@@ -1106,7 +1204,12 @@ async function reconcileLightningPayment(input: {
       }
     }
     await input.wait(Math.min(input.pollIntervalMs, remainingMs))
-    const next = await input.wallet.getLightningSendRequest(request.id)
+    let next: SparkNativeLightningSendRequest | null
+    try {
+      next = await input.wallet.getLightningSendRequest(request.id)
+    } catch {
+      throw new SparkLightningLookupUnavailableError()
+    }
     if (next) request = next
   }
 }
@@ -1175,6 +1278,45 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
     : null
+}
+
+function readRecoveredLightningSendRequest(
+  value: unknown
+): SparkNativeLightningSendRequest & {
+  encodedInvoice: string
+  idempotencyKey: string
+  typename: "LightningSendRequest"
+} {
+  const request = asRecord(value)
+  const fee = asRecord(request?.fee)
+  if (
+    request?.typename !== "LightningSendRequest" ||
+    typeof request.id !== "string" ||
+    request.id.length === 0 ||
+    typeof request.status !== "string" ||
+    typeof request.encodedInvoice !== "string" ||
+    typeof request.idempotencyKey !== "string" ||
+    typeof fee?.originalValue !== "number" ||
+    typeof fee.originalUnit !== "string" ||
+    (request.paymentPreimage !== undefined &&
+      typeof request.paymentPreimage !== "string")
+  ) {
+    throw new Error("Spark returned invalid Lightning recovery evidence.")
+  }
+  return {
+    id: request.id,
+    status: request.status,
+    fee: {
+      originalValue: fee.originalValue,
+      originalUnit: fee.originalUnit,
+    },
+    ...(request.paymentPreimage === undefined
+      ? {}
+      : { paymentPreimage: request.paymentPreimage }),
+    encodedInvoice: request.encodedInvoice,
+    idempotencyKey: request.idempotencyKey,
+    typename: "LightningSendRequest",
+  }
 }
 
 function isNativeTransfer(
@@ -1466,6 +1608,7 @@ async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
           getSparkAddress: () => wallet.getSparkAddress(),
           transfer: (request) => wallet.transfer(request),
           getTransfer: (id) => wallet.getTransfer(id),
+          getTransferFromSsp: (id) => wallet.getTransferFromSsp(id),
           createLightningInvoice: (request) =>
             wallet.createLightningInvoice(request),
           getLightningReceiveRequest: (id) =>
