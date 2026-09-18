@@ -387,11 +387,7 @@ function ProductPage() {
       return
     }
     recordProductDetailAction("add_to_cart")
-    if (cartItem) {
-      cart.incrementItem(cartItem, quantity, selectedProduct.stock)
-    } else {
-      cart.addItem(productCartCandidate, quantity)
-    }
+    cart.addItem(productCartCandidate, quantity)
   }
 
   const productRefreshing = productQuery.isHydrating

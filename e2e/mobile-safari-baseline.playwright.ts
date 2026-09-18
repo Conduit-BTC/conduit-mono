@@ -729,6 +729,7 @@ test.describe("CND-162 mobile browser baseline", () => {
   test("market viewport, touch navigation, and cart survive history and refresh @market", async ({
     page,
   }) => {
+    await seedMarketCart(page)
     await page.goto(`${marketUrl}/products`)
     await assertMobileViewport(page)
 
@@ -739,7 +740,6 @@ test.describe("CND-162 mobile browser baseline", () => {
     await search.press("Enter")
     await expect(page).toHaveURL(/\/products\?q=relay/)
 
-    await seedMarketCart(page)
     await page.reload()
     await page.locator('button[title="Cart"]').tap()
     await expect(page).toHaveURL(/\/cart$/)
@@ -838,8 +838,8 @@ test.describe("CND-162 mobile browser baseline", () => {
   test("market checkout keeps form semantics and draft values after refresh @market", async ({
     page,
   }) => {
-    await page.goto(`${marketUrl}/products`)
     await seedMarketCart(page)
+    await page.goto(`${marketUrl}/products`)
     await page.goto(`${marketUrl}/checkout`)
 
     await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()

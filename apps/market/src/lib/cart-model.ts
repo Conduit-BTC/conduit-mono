@@ -4,6 +4,7 @@ import {
   getShippingCostSats,
   hasSamePickupFulfillmentGraph,
   hasExactLiveProductAvailabilityEvidence,
+  isFiatCurrencyCode,
   normalizeProductCoordinate,
   orderItemFulfillmentSchema,
   resolveOrderPickupHandoffAuthority,
@@ -906,11 +907,7 @@ export function cartItemsMatchCurrentProducts(
         if (
           item.fulfillment?.type !== "pickup" ||
           !item.sourceShippingCost ||
-          item.sourceShippingCost.amount <= 0 ||
-          getShippingCostSats(
-            { sourceShippingCost: item.sourceShippingCost },
-            null
-          )
+          !pickupCostSatsAreQuoteDerived(item.sourceShippingCost)
         ) {
           return item
         }
@@ -1165,11 +1162,21 @@ function getPickupLineFulfillmentKey(
     fulfillment.option.title,
     fulfillment.option.location ?? null,
     fulfillment.option.geohash ?? null,
-    fulfillment.costSats,
+    pickupCostSatsAreQuoteDerived(fulfillment.sourceCost)
+      ? null
+      : fulfillment.costSats,
     fulfillment.sourceCost.amount,
     fulfillment.sourceCost.currency,
     fulfillment.sourceCost.normalizedCurrency,
   ])
+}
+
+function pickupCostSatsAreQuoteDerived(
+  sourceCost: CartPickupFulfillment["sourceCost"]
+): boolean {
+  return (
+    sourceCost.amount > 0 && isFiatCurrencyCode(sourceCost.normalizedCurrency)
+  )
 }
 
 /**

@@ -73,6 +73,11 @@ type CartMutationResult = {
 
 type RecordMutation = (record: CanonicalCartRecord) => boolean
 
+type LegacyCartRead =
+  | { status: "readable"; items: CartItem[] }
+  | { status: "cutover"; items: [] }
+  | { status: "unsupported"; items: [] }
+
 const listeners = new Set<() => void>()
 let snapshot: CartRepositorySnapshot = {
   items: [],
@@ -266,16 +271,37 @@ function publishRecord(
   if (changed) notify()
 }
 
-function readLegacyItems(): CartItem[] {
-  if (typeof window === "undefined") return []
+function isLegacyCutoverMarker(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  const keys = Object.keys(value)
+  return (
+    keys.length === 3 &&
+    keys.every((key) =>
+      ["version", "migratedTo", "migratedAt"].includes(key)
+    ) &&
+    value.version === LEGACY_CART_CUTOVER_VERSION &&
+    value.migratedTo === "indexeddb" &&
+    typeof value.migratedAt === "number" &&
+    Number.isSafeInteger(value.migratedAt) &&
+    value.migratedAt >= 0
+  )
+}
+
+function readLegacyCart(): LegacyCartRead {
+  if (typeof window === "undefined") return { status: "readable", items: [] }
   try {
     const raw = window.localStorage.getItem(LEGACY_CART_STORAGE_KEY)
-    if (!raw) return []
-    return parsePersistedCart(JSON.parse(raw)).state.items.map(
-      sanitizeCartItemImage
-    )
+    if (!raw) return { status: "readable", items: [] }
+    const value: unknown = JSON.parse(raw)
+    if (isLegacyCutoverMarker(value)) return { status: "cutover", items: [] }
+    const parsed = parsePersistedCart(value)
+    if (!parsed.writable) return { status: "unsupported", items: [] }
+    return {
+      status: "readable",
+      items: parsed.state.items.map(sanitizeCartItemImage),
+    }
   } catch {
-    return []
+    return { status: "readable", items: [] }
   }
 }
 
@@ -332,9 +358,9 @@ function installResumeListeners(): void {
 }
 
 async function initialize(): Promise<void> {
-  const legacyItems = readLegacyItems()
+  const legacy = readLegacyCart()
   if (typeof window === "undefined") {
-    memoryRecord = createRecordFromLegacy(legacyItems)
+    memoryRecord = createRecordFromLegacy(legacy.items)
     publishRecord(memoryRecord, "memory")
     return
   }
@@ -343,16 +369,24 @@ async function initialize(): Promise<void> {
     const record = await db.transaction(
       "rw",
       db.shoppingCarts,
-      async (): Promise<CanonicalCartRecord> => {
+      async (): Promise<CanonicalCartRecord | null> => {
         const stored = await db.shoppingCarts.get(CART_RECORD_ID)
         if (stored) return parseStoredRecord(stored)
-        const migrated = createRecordFromLegacy(legacyItems)
+        if (legacy.status === "unsupported") return null
+        const migrated = createRecordFromLegacy(legacy.items)
         await db.shoppingCarts.put(migrated)
         return migrated
       }
     )
+    if (!record) {
+      memoryRecord = createRecordFromLegacy([])
+      publishRecord(memoryRecord, "memory")
+      return
+    }
     publishRecord(record, "persistent")
-    markLegacyCutover(record.migratedAt)
+    if (legacy.status !== "unsupported") {
+      markLegacyCutover(record.migratedAt)
+    }
     unsubscribeFromCanonical ??= subscribeToShoppingCartChanges({
       onChange: () => void enqueue(refreshCanonical),
       onError: () => {
@@ -361,7 +395,7 @@ async function initialize(): Promise<void> {
     })
     installResumeListeners()
   } catch {
-    memoryRecord = createRecordFromLegacy(legacyItems)
+    memoryRecord = createRecordFromLegacy(legacy.items)
     publishRecord(memoryRecord, "memory")
   }
 }

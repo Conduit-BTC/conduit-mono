@@ -38,50 +38,100 @@ async function seedLegacyCart(
   }, seed)
 }
 
+async function seedRawLegacyCart(
+  context: BrowserContext,
+  raw: string
+): Promise<void> {
+  await context.addInitScript((value) => {
+    if (localStorage.getItem("conduit:cart") === null) {
+      localStorage.setItem("conduit:cart", value)
+    }
+  }, raw)
+}
+
 async function readCanonicalLines(
   page: Page
-): Promise<Array<{ id: string; title: string; quantity: number }>> {
+): Promise<
+  Array<{ id: string; title: string; quantity: number; costSats?: number }>
+> {
   return page.evaluate(
     () =>
-      new Promise<Array<{ id: string; title: string; quantity: number }>>(
-        (resolve, reject) => {
-          const request = indexedDB.open("conduit")
-          request.onerror = () => reject(request.error)
-          request.onsuccess = () => {
-            const database = request.result
-            const transaction = database.transaction(
-              "shoppingCarts",
-              "readonly"
-            )
-            const get = transaction.objectStore("shoppingCarts").get("market")
-            transaction.oncomplete = () => {
-              const lines = Array.isArray(get.result?.lines)
-                ? get.result.lines
-                : []
-              resolve(
-                lines.map(
-                  (line: {
-                    id: string
-                    item: { title: string }
-                    batches: Array<{ quantity: number }>
-                  }) => ({
-                    id: line.id,
-                    title: line.item.title,
-                    quantity: line.batches.reduce(
-                      (sum, batch) => sum + batch.quantity,
-                      0
-                    ),
-                  })
-                )
+      new Promise<
+        Array<{
+          id: string
+          title: string
+          quantity: number
+          costSats?: number
+        }>
+      >((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction("shoppingCarts", "readonly")
+          const get = transaction.objectStore("shoppingCarts").get("market")
+          transaction.oncomplete = () => {
+            const lines = Array.isArray(get.result?.lines)
+              ? get.result.lines
+              : []
+            resolve(
+              lines.map(
+                (line: {
+                  id: string
+                  item: {
+                    title: string
+                    fulfillment?: { costSats?: number }
+                  }
+                  batches: Array<{ quantity: number }>
+                }) => ({
+                  id: line.id,
+                  title: line.item.title,
+                  costSats: line.item.fulfillment?.costSats,
+                  quantity: line.batches.reduce(
+                    (sum, batch) => sum + batch.quantity,
+                    0
+                  ),
+                })
               )
-              database.close()
-            }
-            transaction.onerror = () => reject(transaction.error)
-            transaction.onabort = () => reject(transaction.error)
+            )
+            database.close()
           }
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
         }
-      )
+      })
   )
+}
+
+async function hasCanonicalCartRecord(page: Page): Promise<boolean> {
+  return page.evaluate(
+    () =>
+      new Promise<boolean>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction("shoppingCarts", "readonly")
+          const get = transaction.objectStore("shoppingCarts").get("market")
+          transaction.oncomplete = () => {
+            resolve(get.result !== undefined)
+            database.close()
+          }
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      })
+  )
+}
+
+async function awaitCartRepositoryInitialization(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const modulePath = "/src/lib/cart-repository.ts"
+    const repository = (await import(/* @vite-ignore */ modulePath)) as {
+      initializeCartRepository(): Promise<void>
+    }
+    await repository.initializeCartRepository()
+  })
 }
 
 async function addCartItemThroughRepository(
@@ -94,6 +144,7 @@ async function addCartItemThroughRepository(
     currency: string
     priceSats: number
     format: "digital" | "physical"
+    stock?: number
     fulfillment?:
       { type: "shipping" } | ReturnType<typeof pickupItem>["fulfillment"]
   }
@@ -548,6 +599,87 @@ test("legacy writes are ignored after the canonical migration boundary @market",
   await expect(resumed.getByText("Race item", { exact: true })).toBeVisible()
   expect(await readCanonicalLines(resumed)).toEqual([
     expect.objectContaining({ title: "Race item", quantity: 2 }),
+  ])
+})
+
+test("an unsupported future cart stays untouched without a canonical record @market", async ({
+  context,
+  page,
+}) => {
+  const raw = JSON.stringify({ version: 3, items: legacyCart.items })
+  await seedRawLegacyCart(context, raw)
+
+  await page.goto(`${marketUrl}/cart`)
+  await awaitCartRepositoryInitialization(page)
+
+  expect(await page.evaluate(() => localStorage.getItem("conduit:cart"))).toBe(
+    raw
+  )
+  expect(await hasCanonicalCartRecord(page)).toBe(false)
+})
+
+test("an unsupported future cart stays untouched beside canonical data @market", async ({
+  context,
+  page,
+}) => {
+  await seedLegacyCart(context, legacyCart)
+  await page.goto(`${marketUrl}/cart`)
+  await expect(page.getByText("Race item", { exact: true })).toBeVisible()
+
+  const raw = JSON.stringify({ version: 3, items: legacyCart.items })
+  await page.evaluate((value) => {
+    localStorage.setItem("conduit:cart", value)
+  }, raw)
+  await page.reload()
+  await expect(page.getByText("Race item", { exact: true })).toBeVisible()
+
+  expect(await page.evaluate(() => localStorage.getItem("conduit:cart"))).toBe(
+    raw
+  )
+  expect(await readCanonicalLines(page)).toEqual([
+    expect.objectContaining({ title: "Race item", quantity: 2 }),
+  ])
+})
+
+test("fiat quote refreshes merge into one stock-bounded pickup line @market", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/products`)
+  const base = pickupItem({
+    merchant: MERCHANT,
+    organizer: "b".repeat(64),
+    product: "fiat-pickup",
+    title: "Fiat pickup",
+    event: "a",
+  })
+  const initial = {
+    ...base,
+    stock: 2,
+    fulfillment: {
+      ...base.fulfillment,
+      costSats: 1_000,
+      sourceCost: {
+        amount: 1,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    },
+  }
+  const refreshed = {
+    ...initial,
+    fulfillment: { ...initial.fulfillment, costSats: 2_000 },
+  }
+
+  await addCartItemThroughRepository(page, initial)
+  await addCartItemThroughRepository(page, refreshed)
+  await addCartItemThroughRepository(page, refreshed)
+
+  expect(await readCanonicalLines(page)).toEqual([
+    expect.objectContaining({
+      title: "Fiat pickup",
+      quantity: 2,
+      costSats: 2_000,
+    }),
   ])
 })
 

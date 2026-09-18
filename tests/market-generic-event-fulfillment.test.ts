@@ -31,6 +31,8 @@ describe("generic Market event fulfillment", () => {
     expect(detail).toContain("useProductCartFulfillment")
     expect(detail).toContain("productCartCandidate")
     expect(detail).toContain("productCartBlocked")
+    expect(detail).toContain("cart.addItem(productCartCandidate, quantity)")
+    expect(detail).not.toContain("cart.incrementItem(cartItem")
     expect(detail).toContain("ResolvedProductGridCard")
     expect(detail).toContain("View event catalog")
     expect(detail).not.toContain(
@@ -41,16 +43,21 @@ describe("generic Market event fulfillment", () => {
       "useProductCartFulfillment(selectedProduct, btcUsdRate)"
     )
     expect(cart).toContain("fulfillmentBlocked")
+    expect(cart).toContain("cart.addItem(cartCandidate)")
+    expect(cart).not.toContain(
+      "cart.incrementItem(existing, 1, selectedProduct.stock)"
+    )
     expect(cart).toContain("View event catalog")
     expect(cart).not.toContain("createCartItemFromProduct(product))")
   })
 
   it("resolves and mutates the selected signed child across product grids", async () => {
-    const [products, store, detail, resolvedCard, variations] =
+    const [products, store, detail, event, resolvedCard, variations] =
       await Promise.all([
         Bun.file("apps/market/src/routes/products/index.tsx").text(),
         Bun.file("apps/market/src/routes/store/$pubkey.tsx").text(),
         Bun.file("apps/market/src/routes/products/$productId.tsx").text(),
+        Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
         Bun.file(
           "apps/market/src/components/ResolvedProductGridCard.tsx"
         ).text(),
@@ -73,7 +80,9 @@ describe("generic Market event fulfillment", () => {
       "isSameCartLineFulfillment(item, cartCandidate)"
     )
     expect(resolvedCard).toContain("cart.addItem(cartCandidate, 1)")
-    expect(resolvedCard).toContain(
+    expect(resolvedCard).not.toContain("cart.incrementItem(existing")
+    expect(event).toContain("cart.addItem(candidate, 1)")
+    expect(event).not.toContain(
       "cart.incrementItem(existing, 1, selectedProduct.stock)"
     )
     expect(resolvedCard).toContain("cart.removeItem(existing)")

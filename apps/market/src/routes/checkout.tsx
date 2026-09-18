@@ -2117,10 +2117,11 @@ function CheckoutPage() {
 
   // Skip checkout details only when no shipping address or guest contact is needed.
   useEffect(() => {
+    if (!cart.hydrated || !selectedPurchase) return
     if (!requiresCheckoutDetailsStep && step === "shipping") {
       setStep("payment")
     }
-  }, [requiresCheckoutDetailsStep, step])
+  }, [cart.hydrated, requiresCheckoutDetailsStep, selectedPurchase, step])
 
   // ─── Build shipping address from form state ──────────────────────────────
 

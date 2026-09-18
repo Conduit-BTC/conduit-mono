@@ -536,11 +536,7 @@ function RelatedProductRow({
             ) {
               return
             }
-            if (existing) {
-              cart.incrementItem(existing, 1, selectedProduct.stock)
-            } else {
-              cart.addItem(cartCandidate)
-            }
+            cart.addItem(cartCandidate)
           }}
         >
           <CartIcon className="h-4 w-4" />

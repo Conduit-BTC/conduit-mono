@@ -3854,7 +3854,7 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   await page.setViewportSize({ width: 390, height: 844 })
   await gotoAs(page, marketUrl, "/cart", "buyer")
   await expect(
-    page.getByText("Synthetic Pickup Host", { exact: true }).first()
+    page.locator(`main a[href="/u/${handlerNpub}"]:visible`).first()
   ).toBeVisible({ timeout: 30_000 })
   await page
     .getByRole("button", { name: "Copy pickup handler npub" })
@@ -3876,7 +3876,7 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
     page.getByText("Pickup from merchant booth", { exact: true }).first()
   ).toBeVisible()
   await expect(
-    page.getByText("Synthetic Pickup Host", { exact: true }).first()
+    page.locator(`main a[href="/u/${handlerNpub}"]:visible`).first()
   ).toBeVisible({ timeout: 30_000 })
   await expect(page.getByRole("button", { name: /^Send order$/i })).toBeEnabled(
     { timeout: 30_000 }
