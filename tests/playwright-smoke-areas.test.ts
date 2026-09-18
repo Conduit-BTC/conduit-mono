@@ -430,6 +430,44 @@ describe("Playwright smoke area validation", () => {
     ).toEqual(expected)
   })
 
+  it("reconciles project-specific discovery and execution rows", () => {
+    const projectSpec = {
+      file: "e2e/mobile.playwright.ts",
+      line: 8,
+      ok: true,
+      tags: ["market"],
+      tests: [
+        {
+          expectedStatus: "passed",
+          status: "expected",
+          results: [{ retry: 0, status: "passed" }],
+        },
+      ],
+      title: "mobile checkout remains usable @market",
+    }
+    const report: PlaywrightJsonReport = {
+      ...reportWithSpecs([projectSpec, projectSpec]),
+      config: { metadata: { smokeEvidence } },
+      errors: [],
+      stats: { flaky: 0, skipped: 0, unexpected: 0 },
+    }
+    const expected = buildPlaywrightSmokeManifest(
+      report,
+      ["market"],
+      smokeEvidence
+    )
+
+    expect(expected.selectedTestCount).toBe(2)
+    expect(
+      validatePlaywrightSmokeExecution(
+        report,
+        expected,
+        ["market"],
+        smokeEvidence
+      )
+    ).toEqual(expected)
+  })
+
   it("rejects skipped, retry-dependent, and mismatched smoke execution", () => {
     const skipped = reportWithSpecs([
       {

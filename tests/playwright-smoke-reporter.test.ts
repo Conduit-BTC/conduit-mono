@@ -182,6 +182,60 @@ describe("privacy-safe Playwright smoke reporter", () => {
     }
   })
 
+  it("keeps project-specific specs aligned with smoke discovery", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-reporter-"))
+    const outputFile = join(directory, "results.json")
+    const sourceDirectory = join(directory, "e2e")
+    const sourceFile = join(sourceDirectory, "mobile.playwright.ts")
+    const title = "mobile checkout remains usable @market"
+
+    try {
+      mkdirSync(sourceDirectory)
+      writeFileSync(
+        sourceFile,
+        `test(${JSON.stringify(title)}, async () => {})\n`
+      )
+      const reporter = new PrivacySafeSmokeReporter({ outputFile })
+      reporter.onBegin?.({ metadata: {} } as FullConfig, {} as Suite)
+
+      for (const id of ["mobile-chromium-test", "mobile-webkit-test"]) {
+        const testCase = {
+          expectedStatus: "passed",
+          id,
+          location: { column: 1, file: sourceFile, line: 1 },
+          ok: () => true,
+          outcome: () => "expected",
+          tags: ["@market"],
+          title,
+        } as TestCase
+        reporter.onTestEnd?.(testCase, {
+          attachments: [],
+          duration: 10,
+          retry: 0,
+          status: "passed",
+          stderr: [],
+          stdout: [],
+          steps: [],
+        } as unknown as TestResult)
+      }
+      reporter.onEnd?.({ status: "passed" } as FullResult)
+
+      const report = JSON.parse(readFileSync(outputFile, "utf8")) as {
+        suites: Array<{
+          specs: Array<{ tests: unknown[] }>
+        }>
+      }
+      // The repository's `--list --reporter=json` discovery emits one manifest
+      // row per selected mobile project, so execution must retain that shape.
+      expect(report.suites[0]?.specs).toHaveLength(2)
+      expect(
+        report.suites[0]?.specs.every((spec) => spec.tests.length === 1)
+      ).toBe(true)
+    } finally {
+      rmSync(directory, { force: true, recursive: true })
+    }
+  })
+
   it("drops malformed or partial smoke evidence", () => {
     const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-reporter-"))
 
