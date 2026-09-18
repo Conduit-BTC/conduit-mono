@@ -92,7 +92,10 @@ export function useLivePresenceCount({
   observeCount = true,
   pageType,
 }: UseLivePresenceCountOptions): number | null | undefined {
-  const endpoint = resolveLivePresenceWebSocketUrl()
+  const endpoint = resolveLivePresenceWebSocketUrl(
+    import.meta.env.VITE_PRESENCE_WS_URL,
+    conduitBuildInfo.deploymentProfile
+  )
   const exactCanonicalId = getLivePresenceCanonicalId(canonicalId)
   const permitted = isLivePresencePermitted({
     featureEnabled: isLivePresenceFeatureEnabled(),

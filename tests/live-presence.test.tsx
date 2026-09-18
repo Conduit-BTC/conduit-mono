@@ -14,6 +14,7 @@ import {
   LIVE_PRESENCE_MAX_RECONNECT_ATTEMPTS,
   LIVE_PRESENCE_MAX_COUNT,
   LIVE_PRESENCE_STALE_AFTER_MS,
+  PRODUCTION_LIVE_PRESENCE_WEBSOCKET_URL,
   advanceLivePresenceRequestRevision,
   buildLivePresenceWebSocketUrl,
   getLivePresenceCanonicalId,
@@ -248,6 +249,9 @@ describe("live presence privacy boundary", () => {
     )
     expect(resolveLivePresenceWebSocketUrl("")).toBe(
       DEFAULT_LIVE_PRESENCE_WEBSOCKET_URL
+    )
+    expect(resolveLivePresenceWebSocketUrl("", "production")).toBe(
+      PRODUCTION_LIVE_PRESENCE_WEBSOCKET_URL
     )
     expect(
       resolveLivePresenceWebSocketUrl("ws://presence.example.com")
@@ -568,5 +572,8 @@ describe("LivePresenceIndicator", () => {
     expect(productRoute).toContain("merchantPubkey: selectedProduct?.pubkey")
     expect(productRoute).toContain("productCanonicalId: selectedProduct?.id")
     expect(storeRoute).toContain("canonicalId: normalizedStorePubkey")
+    expect(storeRoute).toContain(
+      "col-span-2 min-w-0 pt-2 sm:col-span-1 sm:col-start-2"
+    )
   })
 })

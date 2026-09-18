@@ -2,9 +2,9 @@ const PRESENCE_PATH_PATTERN = /^\/v1\/presence\/([0-9a-f]{64})$/
 const PRESENCE_SOURCE_KEY_PATTERN = /^[0-9a-f]{64}$/
 const CLOUDFLARE_CLIENT_IP_PATTERN = /^[0-9a-fA-F:.]{2,64}$/
 const OPEN_READY_STATE = 1
-// Route every page room through one preview gateway. Room hashes tag sockets;
+// Route every page room through one deployment gateway. Room hashes tag sockets;
 // they never select or create additional Durable Object instances.
-const PRESENCE_GATEWAY_OBJECT_NAME = "preview-v1"
+const PRESENCE_GATEWAY_OBJECT_NAME = "gateway-v1"
 const PRESENCE_SOURCE_KEY_HEADER = "x-conduit-presence-source-key"
 const MINIMUM_ABUSE_HMAC_KEY_LENGTH = 32
 export const PRESENCE_HEARTBEAT_REQUEST = '{"type":"ping"}'
@@ -18,6 +18,7 @@ const allowedMarketPreviewSuffixes = [
   ".conduit-market.pages.dev",
   ".conduit-market-coo.pages.dev",
 ] as const
+const MARKET_PRODUCTION_ORIGIN = "https://shop.conduit.market"
 
 interface PresenceRoomNamespace {
   idFromName(name: string): DurableObjectId
@@ -27,6 +28,7 @@ interface PresenceRoomNamespace {
 export interface PresenceEnv {
   PRESENCE_ROOMS: PresenceRoomNamespace
   PRESENCE_ABUSE_HMAC_KEY: string
+  PRESENCE_DEPLOYMENT: string
 }
 
 export interface PresenceRoomState {
@@ -122,7 +124,10 @@ function hasOnePreviewLabel(hostname: string, suffix: string): boolean {
   return label.length > 0 && !label.includes(".")
 }
 
-export function isAllowedPresenceOrigin(rawOrigin: string | null): boolean {
+export function isAllowedPresenceOrigin(
+  rawOrigin: string | null,
+  deployment: string
+): boolean {
   if (!rawOrigin) return false
 
   try {
@@ -141,9 +146,15 @@ export function isAllowedPresenceOrigin(rawOrigin: string | null): boolean {
     }
 
     const hostname = origin.hostname.toLowerCase()
-    return allowedMarketPreviewSuffixes.some((suffix) =>
-      hasOnePreviewLabel(hostname, suffix)
-    )
+    if (deployment === "production") {
+      return origin.origin === MARKET_PRODUCTION_ORIGIN
+    }
+    if (deployment === "preview") {
+      return allowedMarketPreviewSuffixes.some((suffix) =>
+        hasOnePreviewLabel(hostname, suffix)
+      )
+    }
+    return false
   } catch {
     return false
   }
@@ -190,7 +201,12 @@ export async function handlePresenceRequest(
 
   const roomKey = getPresenceRoomKey(request.url)
   if (!roomKey) return jsonResponse({ error: "not_found" }, 404)
-  if (!isAllowedPresenceOrigin(request.headers.get("origin"))) {
+  if (
+    !isAllowedPresenceOrigin(
+      request.headers.get("origin"),
+      env.PRESENCE_DEPLOYMENT
+    )
+  ) {
     return jsonResponse({ error: "origin_not_allowed" }, 403)
   }
   if (!isWebSocketUpgradeRequest(request)) {
@@ -223,7 +239,7 @@ export class PresenceRoom {
 
   constructor(
     private readonly state: PresenceRoomState,
-    _env?: PresenceEnv,
+    private readonly env: PresenceEnv,
     private readonly createWebSocketPair: PresenceWebSocketPairFactory = createPresenceWebSocketPair,
     createHeartbeatPair: PresenceHeartbeatPairFactory = createPresenceHeartbeatPair,
     private readonly scheduleBroadcast: PresenceBroadcastScheduler = schedulePresenceBroadcast
@@ -232,7 +248,12 @@ export class PresenceRoom {
   }
 
   fetch(request: Request): Response {
-    if (!isAllowedPresenceOrigin(request.headers.get("origin"))) {
+    if (
+      !isAllowedPresenceOrigin(
+        request.headers.get("origin"),
+        this.env.PRESENCE_DEPLOYMENT
+      )
+    ) {
       return jsonResponse({ error: "origin_not_allowed" }, 403)
     }
     const roomKey = getPresenceRoomKey(request.url)

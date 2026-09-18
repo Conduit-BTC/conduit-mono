@@ -31,7 +31,7 @@
       "lightningNetwork": "mainnet",
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": false,
-        "livePresenceEnabled": false
+        "livePresenceEnabled": true
       }
     },
     "staging": {

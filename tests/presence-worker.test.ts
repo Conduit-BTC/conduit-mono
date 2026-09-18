@@ -22,6 +22,10 @@ const SECOND_SOURCE_KEY = "d".repeat(64)
 const SOURCE_KEY_HEADER = "x-conduit-presence-source-key"
 const TEST_ABUSE_HMAC_KEY = "test-only-presence-abuse-hmac-key"
 const MARKET_PREVIEW_ORIGIN = "https://test.conduit-market.pages.dev"
+const MARKET_PRODUCTION_ORIGIN = "https://shop.conduit.market"
+const PREVIEW_ENV = {
+  PRESENCE_DEPLOYMENT: "preview",
+} as PresenceEnv
 
 class FakeSocket {
   readyState = 1
@@ -92,7 +96,7 @@ function createTestRoom(
 ): PresenceRoom {
   return new PresenceRoom(
     state as PresenceRoomState,
-    undefined,
+    PREVIEW_ENV,
     createWebSocketPair,
     undefined,
     (callback) => callback()
@@ -123,13 +127,17 @@ function edgeUpgradeHeaders(clientIp = "192.0.2.1"): HeadersInit {
 }
 
 describe("presence Worker request boundary", () => {
-  it("accepts only exact Market preview-project origins", () => {
+  it("accepts only exact Market origins for the active deployment", () => {
     for (const origin of [
       "https://branch.conduit-market.pages.dev",
       "https://a1b2c3.conduit-market-coo.pages.dev",
     ]) {
-      expect(isAllowedPresenceOrigin(origin)).toBe(true)
+      expect(isAllowedPresenceOrigin(origin, "preview")).toBe(true)
     }
+
+    expect(
+      isAllowedPresenceOrigin(MARKET_PRODUCTION_ORIGIN, "production")
+    ).toBe(true)
 
     for (const origin of [
       null,
@@ -143,8 +151,15 @@ describe("presence Worker request boundary", () => {
       "https://branch.conduit-market.pages.dev:444",
       "https://localhost:7000",
     ]) {
-      expect(isAllowedPresenceOrigin(origin)).toBe(false)
+      expect(isAllowedPresenceOrigin(origin, "preview")).toBe(false)
     }
+
+    expect(isAllowedPresenceOrigin(MARKET_PREVIEW_ORIGIN, "production")).toBe(
+      false
+    )
+    expect(isAllowedPresenceOrigin(MARKET_PRODUCTION_ORIGIN, "unknown")).toBe(
+      false
+    )
   })
 
   it("accepts only a query-free lowercase room key", () => {
@@ -181,7 +196,7 @@ describe("presence Worker request boundary", () => {
         headers,
       })
 
-    const env = {} as PresenceEnv
+    const env = PREVIEW_ENV
     expect(
       (
         await handlePresenceRequest(
@@ -221,6 +236,7 @@ describe("presence Worker request boundary", () => {
     const forwardedHeaders: Array<Record<string, string | null>> = []
     const env: PresenceEnv = {
       PRESENCE_ABUSE_HMAC_KEY: TEST_ABUSE_HMAC_KEY,
+      PRESENCE_DEPLOYMENT: "preview",
       PRESENCE_ROOMS: {
         idFromName(name) {
           selectedNames.push(name)
@@ -262,7 +278,7 @@ describe("presence Worker request boundary", () => {
     expect(responses.map((response) => response.status)).toEqual([
       204, 204, 204,
     ])
-    expect(selectedNames).toEqual(["preview-v1", "preview-v1", "preview-v1"])
+    expect(selectedNames).toEqual(["gateway-v1", "gateway-v1", "gateway-v1"])
     expect(forwardedUrls).toEqual([
       `https://presence.example/v1/presence/${ROOM_KEY}`,
       `https://presence.example/v1/presence/${SECOND_ROOM_KEY}`,
@@ -297,6 +313,7 @@ describe("presence Worker request boundary", () => {
       (
         await handlePresenceRequest(makeRequest(edgeUpgradeHeaders()), {
           PRESENCE_ABUSE_HMAC_KEY: "short",
+          PRESENCE_DEPLOYMENT: "preview",
           PRESENCE_ROOMS: unreachableRooms,
         })
       ).status
@@ -310,6 +327,7 @@ describe("presence Worker request boundary", () => {
           }),
           {
             PRESENCE_ABUSE_HMAC_KEY: TEST_ABUSE_HMAC_KEY,
+            PRESENCE_DEPLOYMENT: "preview",
             PRESENCE_ROOMS: unreachableRooms,
           }
         )
@@ -334,7 +352,7 @@ describe("presence room counts", () => {
 
     new PresenceRoom(
       stateWithAutoResponse,
-      undefined,
+      PREVIEW_ENV,
       undefined,
       () => heartbeatPair
     )
@@ -460,7 +478,7 @@ describe("presence room counts", () => {
     state.addSocket(active)
     const room = new PresenceRoom(
       state as PresenceRoomState,
-      undefined,
+      PREVIEW_ENV,
       () => {
         const client = new FakeSocket()
         const server = new FakeSocket()
