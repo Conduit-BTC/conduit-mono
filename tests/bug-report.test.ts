@@ -13,6 +13,7 @@ const buildInfo: ConduitBuildInfo = {
   publicConfigDigest: "digest",
   publicFeatures: {
     dmCompatibilityOrderRoutingEnabled: true,
+    livePresenceEnabled: true,
   },
 }
 
