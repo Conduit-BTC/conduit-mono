@@ -158,6 +158,14 @@ import {
 } from "../lib/event-market-workflow"
 import { ensureMerchantBoothPickup } from "../lib/event-market-pickup"
 import {
+  ensureMerchantEventHandoffPreference,
+  loadMerchantEventHandoffPreference,
+  resolveMerchantEventHandoffArrangement,
+  type MerchantEventHandoffArrangement,
+  type MerchantEventHandoffPreference,
+} from "../lib/merchant-event-handoff-arrangement"
+import { loadMerchantEventHandoffTransition } from "../lib/merchant-event-handoff-transition"
+import {
   getMerchantProductEventContext,
   type MerchantProductEventContext,
 } from "../lib/merchant-product-event-context"
@@ -807,7 +815,7 @@ async function fetchCachedMerchantProducts(
 
 async function publishProduct(
   merchantPubkey: string,
-  form: ProductFormState,
+  submittedForm: ProductFormState,
   dTag: string,
   onSignedLocal: (
     bundle: SignedProductWriteBundle,
@@ -819,8 +827,58 @@ async function publishProduct(
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean
 ): Promise<PublishWithPlannerResult> {
-  const localPickup = form.fulfillment === "local_pickup"
+  const localPickup = submittedForm.fulfillment === "local_pickup"
   const presetShippingConfig = loadShippingConfig(merchantPubkey)
+  let form = submittedForm
+  let verifiedLocalPickupMarket: MerchantOrganizerEventMarket | null = null
+  let handoffPreference: MerchantEventHandoffPreference | null = null
+  if (localPickup) {
+    if (!form.eventMarketReference.trim()) {
+      throw new Error(
+        "Import an organizer event catalog before publishing local pickup."
+      )
+    }
+    const eventMarket = await resolveOrganizerEventMarket(
+      form.eventMarketReference,
+      undefined,
+      authenticatedPubkey,
+      undefined,
+      shouldContinue
+    )
+    const transition = loadMerchantEventHandoffTransition(
+      merchantPubkey,
+      eventMarket.collectionCoordinate
+    )
+    handoffPreference = await ensureMerchantEventHandoffPreference({
+      merchantPubkey,
+      market: eventMarket,
+      requested: {
+        mode: form.eventHandoffMode,
+        merchantPickup: {
+          title: form.merchantPickupTitle,
+          location: form.merchantPickupLocation,
+          geohash: form.merchantPickupGeohash,
+          country: form.merchantPickupCountry,
+        },
+      },
+      transition,
+    })
+    form = {
+      ...form,
+      eventHandoffMode: handoffPreference.mode,
+      merchantPickupTitle:
+        handoffPreference.merchantPickup?.title ?? form.merchantPickupTitle,
+      merchantPickupLocation:
+        handoffPreference.merchantPickup?.location ??
+        form.merchantPickupLocation,
+      merchantPickupGeohash:
+        handoffPreference.merchantPickup?.geohash ?? form.merchantPickupGeohash,
+      merchantPickupCountry:
+        handoffPreference.merchantPickup?.countries[0] ??
+        form.merchantPickupCountry,
+    }
+    verifiedLocalPickupMarket = eventMarket
+  }
   const formValidation = validateProductPublishForm(
     localPickup
       ? { ...form, shippingPricingMode: "coordinate_after_order" }
@@ -877,25 +935,9 @@ async function publishProduct(
     | "shippingCountryRules"
   > = publicationFulfillment.metadata
   let localPickupEvidenceVerified = false
-  let verifiedLocalPickupMarket: MerchantOrganizerEventMarket | null = null
   let merchantBoothPickupInput:
     Parameters<typeof ensureMerchantBoothPickup>[0] | null = null
-  if (localPickup) {
-    if (!form.eventMarketReference.trim()) {
-      throw new Error(
-        "Import an organizer event catalog before publishing local pickup."
-      )
-    }
-    const eventMarket = await resolveOrganizerEventMarket(
-      form.eventMarketReference,
-      undefined,
-      authenticatedPubkey,
-      undefined,
-      shouldContinue
-    )
-    verifiedLocalPickupMarket = eventMarket
-    localPickupEvidenceVerified = true
-  }
+  if (localPickup) localPickupEvidenceVerified = true
   const zeroPriceAuthorized = canUseZeroProductPrice({
     fulfillment: form.fulfillment,
     handoffMode: form.eventHandoffMode,
@@ -914,23 +956,17 @@ async function publishProduct(
         handoffMode: "organizer_handoff",
       })
     } else {
-      const existingProjection = existing
-        ? getProductFulfillmentProjection(existing.product, eventMarket)
-        : null
-      const existingPickupCoordinate =
-        existingProjection?.handoffMode === "merchant_handoff"
-          ? existingProjection.pickupCoordinate
-          : undefined
-      const pickupDTag = existingPickupCoordinate
-        ? existingPickupCoordinate.split(":").slice(2).join(":")
-        : `${dTag}-event-pickup`
+      if (!handoffPreference?.merchantPickup) {
+        throw new Error("The merchant event pickup configuration is missing.")
+      }
+      const pickupDTag = handoffPreference.merchantPickup.dTag
       merchantBoothPickupInput = {
         authorPubkey: signerPubkey,
         dTag: pickupDTag,
-        title: form.merchantPickupTitle.trim(),
-        location: form.merchantPickupLocation.trim() || undefined,
-        geohash: form.merchantPickupGeohash.trim() || undefined,
-        country: form.merchantPickupCountry.trim().toUpperCase(),
+        title: handoffPreference.merchantPickup.title,
+        location: handoffPreference.merchantPickup.location,
+        geohash: handoffPreference.merchantPickup.geohash,
+        countries: handoffPreference.merchantPickup.countries,
       }
       shippingMetadata = buildProductLocalPickupMetadata(eventMarket, {
         handoffMode: "merchant_handoff",
@@ -1173,6 +1209,10 @@ function ProductsPage() {
     useState<EditFulfillmentResolution>("ready")
   const [editFulfillmentMarket, setEditFulfillmentMarket] =
     useState<MerchantOrganizerEventMarket | null>(null)
+  const [eventHandoffArrangement, setEventHandoffArrangement] =
+    useState<MerchantEventHandoffArrangement | null>(null)
+  const [eventHandoffArrangementError, setEventHandoffArrangementError] =
+    useState<string | null>(null)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
   const [activeProductDraftTarget, setActiveProductDraftTarget] =
     useState<ProductDraftTarget | null>(null)
@@ -1296,6 +1336,78 @@ function ProductsPage() {
     retry: false,
     staleTime: 30_000,
   })
+  useEffect(() => {
+    const market = localPickupQuery.data
+    if (
+      !productDialogOpen ||
+      form.fulfillment !== "local_pickup" ||
+      !market ||
+      !pubkey
+    ) {
+      setEventHandoffArrangement(null)
+      setEventHandoffArrangementError(null)
+      return
+    }
+
+    let active = true
+    void (async () => {
+      try {
+        const preference = loadMerchantEventHandoffPreference(
+          pubkey,
+          market.collectionCoordinate
+        )
+        const transition = loadMerchantEventHandoffTransition(
+          pubkey,
+          market.collectionCoordinate
+        )
+        const arrangement = await resolveMerchantEventHandoffArrangement({
+          merchantPubkey: pubkey,
+          market,
+          preference,
+          transition: transition
+            ? { target: transition.target, listings: transition.listings }
+            : null,
+        })
+        if (!active) return
+        setEventHandoffArrangement(arrangement)
+        setEventHandoffArrangementError(null)
+      } catch (error) {
+        if (!active) return
+        setEventHandoffArrangement(null)
+        setEventHandoffArrangementError(
+          error instanceof Error
+            ? error.message
+            : "The event handoff arrangement could not be verified."
+        )
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [form.fulfillment, localPickupQuery.data, productDialogOpen, pubkey])
+
+  useEffect(() => {
+    if (eventHandoffArrangement?.state !== "consistent") return
+    const selection = eventHandoffArrangement.selection
+    setForm((current) => {
+      if (current.fulfillment !== "local_pickup") return current
+      const next = {
+        ...current,
+        eventHandoffMode: selection.mode,
+        merchantPickupTitle:
+          selection.merchantPickup?.title ?? current.merchantPickupTitle,
+        merchantPickupLocation:
+          selection.merchantPickup?.location ?? current.merchantPickupLocation,
+        merchantPickupGeohash:
+          selection.merchantPickup?.geohash ?? current.merchantPickupGeohash,
+        merchantPickupCountry:
+          selection.merchantPickup?.countries[0] ??
+          current.merchantPickupCountry,
+      }
+      return JSON.stringify(next) === JSON.stringify(current) ? current : next
+    })
+  }, [eventHandoffArrangement])
   const cachedProductsQuery = useQuery({
     queryKey: ["merchant-products", pubkey ?? "none"],
     enabled: !!pubkey,
@@ -1923,9 +2035,23 @@ function ProductsPage() {
           ? "Verify current local-pickup evidence, or choose shipping explicitly."
           : null
     : null
+  const eventHandoffInvariantError = eventHandoffArrangementError
+    ? eventHandoffArrangementError
+    : eventHandoffArrangement &&
+        eventHandoffArrangement.state !== "consistent" &&
+        eventHandoffArrangement.state !== "unconfigured"
+      ? eventHandoffArrangement.state === "transitioning"
+        ? "This event handoff change is still in progress. Finish or retry every affected listing before publishing this product."
+        : eventHandoffArrangement.state === "legacy_equivalent"
+          ? "Existing event listings use separate legacy pickup records. Reconcile them to the shared merchant/event arrangement before publishing this product."
+          : eventHandoffArrangement.state === "conflicting"
+            ? "Existing event listings have contradictory handoff arrangements. Reconcile them before publishing this product."
+            : "The existing event handoff arrangement is unresolved. Refresh its signed evidence before publishing this product."
+      : null
   const productFulfillmentError =
     localPickupEvidenceError ??
     merchantBoothPickupError ??
+    eventHandoffInvariantError ??
     unresolvedEditFulfillmentError
   const zeroPriceFormAuthorized = canUseZeroProductPrice({
     fulfillment: form.fulfillment,
@@ -3175,6 +3301,7 @@ function ProductsPage() {
                   resolving={localPickupQuery.isFetching}
                   readFailed={localPickupQuery.isError}
                   participation={localPickupParticipation}
+                  eventHandoffArrangement={eventHandoffArrangement}
                   onIntentChange={(fulfillment) => {
                     if (
                       editFulfillmentResolution === "verifying_pickup" &&

@@ -1,5 +1,10 @@
 import { NDKPrivateKeySigner, type NDKSigner } from "@nostr-dev-kit/ndk"
-import { EVENT_KINDS, GUEST_ORDER_LOCAL_RETENTION_MS } from "@conduit/core"
+import {
+  EVENT_KINDS,
+  GUEST_ORDER_LOCAL_RETENTION_MS,
+  type MerchantPresentSaleDirectDecrypt,
+  type SignedPublicNostrEvent,
+} from "@conduit/core"
 
 const GUEST_ORDER_SIGNER_STORAGE_KEY = "conduit:guest-order-signers:v1"
 export const GUEST_ORDER_SESSION_TTL_MS = GUEST_ORDER_LOCAL_RETENTION_MS
@@ -12,6 +17,15 @@ export interface GuestOrderSigningIdentity {
   expiresAt: number
   pubkey: string
   signer: NDKSigner
+  /**
+   * Create a decrypt capability for one exact directly supplied booth wrap.
+   * This does not permit inbox reads or general inbound-message decryption.
+   */
+  createMerchantPresentSaleDirectDecrypt: (input: {
+    orderId: string
+    merchantPubkey: string
+    wrap: Pick<SignedPublicNostrEvent, "pubkey" | "content">
+  }) => MerchantPresentSaleDirectDecrypt
 }
 
 type StoredGuestOrderSigner = {
@@ -140,13 +154,8 @@ function createEphemeralOrderSigner(
   privateSigner: NDKPrivateKeySigner,
   orderId: string,
   merchantPubkey: string,
-  expiresAt: number
+  assertActive: () => void
 ): NDKSigner {
-  const assertActive = () => {
-    if (Date.now() >= expiresAt) {
-      throw new Error("Guest order session has expired.")
-    }
-  }
   return {
     get pubkey() {
       return privateSigner.pubkey
@@ -197,12 +206,82 @@ function createGuestOrderSigningIdentityFromPrivateSigner(
   createdAt: number
 ): GuestOrderSigningIdentity {
   const expiresAt = createdAt + GUEST_ORDER_SESSION_TTL_MS
+  const assertActive = () => {
+    if (Date.now() >= expiresAt) {
+      throw new Error("Guest order session has expired.")
+    }
+  }
   const signer = createEphemeralOrderSigner(
     privateSigner,
     orderId,
     merchantPubkey,
-    expiresAt
+    assertActive
   )
+
+  const createMerchantPresentSaleDirectDecrypt: GuestOrderSigningIdentity["createMerchantPresentSaleDirectDecrypt"] =
+    (input) => {
+      assertActive()
+      if (
+        input.orderId !== orderId ||
+        input.merchantPubkey.toLowerCase() !== merchantPubkey.toLowerCase()
+      ) {
+        throw new Error(
+          "Guest decrypt capability must match its exact order and merchant."
+        )
+      }
+
+      let phase: "outer" | "seal" | "spent" = "outer"
+      let sealCiphertext: string | null = null
+      const reject = (): never => {
+        phase = "spent"
+        throw new Error(
+          "Guest decrypt capability is limited to one merchant-present authorization wrap."
+        )
+      }
+
+      return async (sender, value, scheme) => {
+        assertActive()
+        if (scheme !== "nip44" || phase === "spent") return reject()
+        if (phase === "outer") {
+          if (
+            sender.pubkey.toLowerCase() !== input.wrap.pubkey.toLowerCase() ||
+            value !== input.wrap.content
+          ) {
+            return reject()
+          }
+          const sealJson = await privateSigner.decrypt(sender, value, scheme)
+          let seal: unknown
+          try {
+            seal = JSON.parse(sealJson)
+          } catch {
+            return reject()
+          }
+          if (
+            !seal ||
+            typeof seal !== "object" ||
+            Array.isArray(seal) ||
+            (seal as { kind?: unknown }).kind !== EVENT_KINDS.SEAL ||
+            typeof (seal as { pubkey?: unknown }).pubkey !== "string" ||
+            (seal as { pubkey: string }).pubkey.toLowerCase() !==
+              merchantPubkey.toLowerCase() ||
+            typeof (seal as { content?: unknown }).content !== "string"
+          ) {
+            return reject()
+          }
+          sealCiphertext = (seal as { content: string }).content
+          phase = "seal"
+          return sealJson
+        }
+        if (
+          sender.pubkey.toLowerCase() !== merchantPubkey.toLowerCase() ||
+          value !== sealCiphertext
+        ) {
+          return reject()
+        }
+        phase = "spent"
+        return privateSigner.decrypt(sender, value, scheme)
+      }
+    }
 
   return {
     kind: "guest_ephemeral",
@@ -212,6 +291,7 @@ function createGuestOrderSigningIdentityFromPrivateSigner(
     expiresAt,
     pubkey: signer.pubkey,
     signer,
+    createMerchantPresentSaleDirectDecrypt,
   }
 }
 

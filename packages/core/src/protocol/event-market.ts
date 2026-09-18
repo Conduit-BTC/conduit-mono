@@ -27,6 +27,7 @@ import {
   projectSignedProductFulfillmentEvidence,
   projectSignedProductPreviewEvidence,
 } from "./product-event-evidence"
+
 import {
   getRelayLists,
   getRelayListsDetailed,
@@ -49,6 +50,13 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+
+/**
+ * Conduit extension on a kind-30402 revision created by a deliberate
+ * merchant/event handoff transition. Values are the event collection
+ * coordinate and the exact superseded product event id.
+ */
+export const EVENT_HANDOFF_CHANGE_TAG = "conduit_event_handoff_change"
 
 const HEX_64 = /^[0-9a-f]{64}$/i
 const CONTROL_CHARACTER = /\p{Cc}/u
@@ -1643,6 +1651,76 @@ function collectionPickupCoordinatesForProducts(input: {
   return [...selected]
 }
 
+function signedProductHandoffProjectionKey(
+  event: SignedPublicNostrEvent
+): string {
+  const projection = projectSignedProductFulfillmentEvidence(event)
+  return JSON.stringify({
+    shippingOptionId: projection.shippingOptionId ?? null,
+    shippingOptionRefs: (projection.shippingOptionRefs ?? [])
+      .map((reference) => reference.coordinate)
+      .sort(),
+  })
+}
+
+/**
+ * Existing coordinate membership survives ordinary product updates, but a
+ * later revision that changes the event handoff projection needs a fresh
+ * collection signature. Historical evidence can be absent in legacy reads;
+ * that remains compatible rather than inventing a negative acceptance claim.
+ */
+function collectionAcceptanceNeedsHandoffRefresh(input: {
+  events: readonly SignedPublicNostrEvent[]
+  collection: ParsedEventMarketCollection
+  collectionCoordinate: string
+  productCoordinate: string
+  current: SignedPublicNostrEvent
+}): boolean {
+  const transitionMarkers = input.current.tags.filter(
+    (tag) => tag[0] === EVENT_HANDOFF_CHANGE_TAG
+  )
+  if (transitionMarkers.length > 0) {
+    const marker = transitionMarkers[0]
+    // A deliberate handoff transition is self-describing so a fresh client
+    // does not need the superseded addressable revision to know that the
+    // organizer must sign a newer collection acceptance.
+    return (
+      transitionMarkers.length !== 1 ||
+      marker?.length !== 3 ||
+      marker[1] !== input.collectionCoordinate ||
+      !HEX_64.test(marker[2] ?? "") ||
+      marker[2]?.toLowerCase() === input.current.id.toLowerCase() ||
+      input.current.created_at * 1_000 >= input.collection.createdAt
+    )
+  }
+  if (input.current.created_at * 1_000 <= input.collection.createdAt) {
+    return false
+  }
+  const coordinate = parseAddressableCoordinate(input.productCoordinate, [
+    EVENT_KINDS.PRODUCT,
+  ])
+  if (!coordinate) return true
+  const historicalEvents = input.events.filter(
+    (event) => event.created_at * 1_000 <= input.collection.createdAt
+  )
+  const accepted = resolveAddressableRecord({
+    coordinate,
+    events: historicalEvents,
+    deletions: validDeletionEvents(historicalEvents),
+    parse: (event) =>
+      event.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === input.collectionCoordinate
+      )
+        ? event
+        : null,
+  })
+  return (
+    accepted.state === "current" &&
+    signedProductHandoffProjectionKey(accepted.value) !==
+      signedProductHandoffProjectionKey(input.current)
+  )
+}
+
 function getCurrentParticipation(
   events: readonly SignedPublicNostrEvent[],
   organizerPubkey: string,
@@ -1739,8 +1817,21 @@ function getCurrentParticipation(
   }
 
   const organizerProductSet = new Set(organizerProducts)
+  const collectionAcceptsCurrentRevision = (coordinate: string): boolean => {
+    const product = currentRequests.get(coordinate)
+    return (
+      !!product &&
+      !collectionAcceptanceNeedsHandoffRefresh({
+        events,
+        collection,
+        collectionCoordinate,
+        productCoordinate: coordinate,
+        current: product,
+      })
+    )
+  }
   const acceptedProductCoordinates = organizerProducts
-    .filter((coordinate) => currentRequests.has(coordinate))
+    .filter(collectionAcceptsCurrentRevision)
     .sort()
   const acceptedProductEvidence = acceptedProductCoordinates.map(
     (productCoordinate) => {
@@ -1760,7 +1851,11 @@ function getCurrentParticipation(
     .filter((coordinate) => !currentRequests.has(coordinate))
     .sort()
   const participationRequests = Array.from(currentRequests.keys())
-    .filter((coordinate) => !organizerProductSet.has(coordinate))
+    .filter(
+      (coordinate) =>
+        !organizerProductSet.has(coordinate) ||
+        !collectionAcceptsCurrentRevision(coordinate)
+    )
     .sort()
     .map((productCoordinate) => {
       const coordinate = parseAddressableCoordinate(productCoordinate, [
@@ -3909,6 +4004,59 @@ async function loadCachedEventMarketEvidence(
     })
   } catch {
     return []
+  }
+}
+
+export interface CachedEventMarketSignedEvidenceResult {
+  events: SignedPublicNostrEvent[]
+  missingEventIds: string[]
+}
+
+/**
+ * Load an exact, previously signature-verified event-market evidence bundle.
+ * This cache read never upgrades evidence to current authority. It exists so a
+ * caller that has just verified the live graph can retain the exact historical
+ * revisions before an addressable listing transition supersedes them.
+ */
+export async function getCachedEventMarketSignedEvidenceByIds(input: {
+  organizerPubkey: string
+  eventIds: readonly string[]
+}): Promise<CachedEventMarketSignedEvidenceResult> {
+  const organizerPubkey = input.organizerPubkey.trim().toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(organizerPubkey)) {
+    throw new Error("Organizer pubkey is invalid.")
+  }
+  const requested = Array.from(
+    new Set(input.eventIds.map((value) => value.trim().toLowerCase()))
+  )
+  if (
+    requested.length === 0 ||
+    requested.length > 128 ||
+    requested.some((value) => !/^[0-9a-f]{64}$/.test(value))
+  ) {
+    throw new Error("Exact event-market evidence ids are invalid.")
+  }
+  const requestedSet = new Set(requested)
+  const rows = await loadCachedEventMarketEvidence(organizerPubkey)
+  const byId = new Map<string, SignedPublicNostrEvent>()
+  for (const row of rows) {
+    const event = row.signedEvent
+    const eventId = event.id.toLowerCase()
+    if (
+      row.organizerPubkey.toLowerCase() !== organizerPubkey ||
+      !requestedSet.has(eventId) ||
+      !isValidSignedPublicNostrEvent(event)
+    ) {
+      continue
+    }
+    byId.set(eventId, structuredClone(event))
+  }
+  return {
+    events: requested.flatMap((eventId) => {
+      const event = byId.get(eventId)
+      return event ? [event] : []
+    }),
+    missingEventIds: requested.filter((eventId) => !byId.has(eventId)),
   }
 }
 

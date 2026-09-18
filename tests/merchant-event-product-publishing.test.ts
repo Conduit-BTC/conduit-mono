@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import type { ProductSchema } from "@conduit/core"
 import type { MerchantOrganizerEventMarket } from "../apps/merchant/src/lib/event-market"
+import type { MerchantEventHandoffPreference } from "../apps/merchant/src/lib/merchant-event-handoff-arrangement"
 import {
   createEmptyEventProductForm,
   createFreshEventProductDTag,
@@ -19,6 +20,16 @@ const MARKET = {
   eventLocation: "Main hall",
   pickupCountry: "US",
 } as MerchantOrganizerEventMarket
+
+const ORGANIZER_HANDOFF_PREFERENCE: MerchantEventHandoffPreference = {
+  version: 1,
+  merchantPubkey: MERCHANT,
+  collectionCoordinate: MARKET.collectionCoordinate,
+  mode: "organizer_handoff",
+  handlerPubkey: ORGANIZER,
+  pickupCoordinate: `30406:${ORGANIZER}:organizer-desk`,
+  savedAt: 1,
+}
 
 const PRODUCT = {
   id: `30402:${MERCHANT}:coffee`,
@@ -83,6 +94,20 @@ describe("merchant event-led product publishing", () => {
       tags: "coffee, local, roasted",
     })
     expect(PRODUCT).toEqual(sourceSnapshot)
+  })
+
+  it("inherits the merchant/event arrangement for blank and copied drafts", () => {
+    expect(
+      createEmptyEventProductForm(MARKET, ORGANIZER_HANDOFF_PREFERENCE)
+        .handoffMode
+    ).toBe("organizer_handoff")
+    expect(
+      eventProductFormFromTemplate(
+        { coordinate: PRODUCT.id, product: PRODUCT },
+        MARKET,
+        ORGANIZER_HANDOFF_PREFERENCE
+      ).handoffMode
+    ).toBe("organizer_handoff")
   })
 
   it("always gives a copied event product a fresh coordinate", () => {

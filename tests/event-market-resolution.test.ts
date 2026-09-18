@@ -9,6 +9,7 @@ import {
   buildEventMarketCalendarDraft,
   buildEventMarketCollectionDraft,
   buildEventMarketPickupDraft,
+  EVENT_HANDOFF_CHANGE_TAG,
   EVENT_KINDS,
   getEventMarketPickupSourceCost,
   resolveEventMarketEvidence,
@@ -169,6 +170,7 @@ function productRequest(
     pickupCoordinate?: string
     priceTag?: string[] | null
     shippingOptionTags?: string[][]
+    extraTags?: string[][]
     content?: string
     createdAt?: number
   } = {}
@@ -195,6 +197,7 @@ function productRequest(
       ...(input.shippingOptionTags ?? [
         ["shipping_option", input.pickupCoordinate ?? PICKUP_COORDINATE],
       ]),
+      ...(input.extraTags ?? []),
     ],
   })
 }
@@ -687,6 +690,135 @@ describe("event-market participation resolution", () => {
       collectionReferencedForFulfillment: false,
       purchaseReady: true,
     })
+  })
+
+  it("requires a fresh collection signature only when a later product revision changes handoff", () => {
+    const merchantPickup = pickupEvent({
+      secret: MERCHANT_SECRET,
+      dTag: "booth",
+      title: "Merchant booth",
+      createdAt: 90,
+    })
+    const merchantHandoff = productRequest({
+      pickupCoordinate: MERCHANT_PICKUP_COORDINATE,
+      createdAt: 100,
+      title: "Coffee before handoff change",
+    })
+    const organizerHandoff = productRequest({
+      pickupCoordinate: PICKUP_COORDINATE,
+      createdAt: 200,
+      title: "Coffee after handoff change",
+    })
+    const beforeReacceptance = resolveEventMarketEvidence({
+      reference: COLLECTION_COORDINATE,
+      events: activeGraph(
+        collectionEvent({
+          productCoordinates: [PRODUCT_COORDINATE],
+          createdAt: 150,
+        }),
+        [merchantPickup]
+      ),
+      productRequestEvents: [merchantHandoff, organizerHandoff],
+      nowMs: ACTIVE_NOW_MS,
+    })
+
+    expect(beforeReacceptance.acceptedProductCoordinates).toEqual([])
+    expect(beforeReacceptance.participationRequests).toEqual([
+      expect.objectContaining({
+        productCoordinate: PRODUCT_COORDINATE,
+        eventId: organizerHandoff.id,
+        handoffMode: "organizer_handoff",
+      }),
+    ])
+
+    const afterReacceptance = resolveEventMarketEvidence({
+      reference: COLLECTION_COORDINATE,
+      events: activeGraph(
+        collectionEvent({
+          productCoordinates: [PRODUCT_COORDINATE],
+          createdAt: 250,
+        }),
+        [merchantPickup]
+      ),
+      productRequestEvents: [merchantHandoff, organizerHandoff],
+      nowMs: ACTIVE_NOW_MS,
+    })
+    expect(afterReacceptance.acceptedProductCoordinates).toEqual([
+      PRODUCT_COORDINATE,
+    ])
+    expect(afterReacceptance.participationRequests).toEqual([])
+
+    const ordinaryUpdate = productRequest({
+      pickupCoordinate: MERCHANT_PICKUP_COORDINATE,
+      createdAt: 200,
+      title: "Renamed coffee",
+    })
+    const unchangedHandoff = resolveEventMarketEvidence({
+      reference: COLLECTION_COORDINATE,
+      events: activeGraph(
+        collectionEvent({
+          productCoordinates: [PRODUCT_COORDINATE],
+          // Equal seconds cannot prove that this collection was authored
+          // after the marked product revision.
+          createdAt: 200,
+        }),
+        [merchantPickup]
+      ),
+      productRequestEvents: [merchantHandoff, ordinaryUpdate],
+      nowMs: ACTIVE_NOW_MS,
+    })
+    expect(unchangedHandoff.acceptedProductCoordinates).toEqual([
+      PRODUCT_COORDINATE,
+    ])
+  })
+
+  it("keeps a marked handoff transition pending without the superseded revision", () => {
+    const merchantPickup = pickupEvent({
+      secret: MERCHANT_SECRET,
+      dTag: "booth",
+      title: "Merchant booth",
+      createdAt: 90,
+    })
+    const changed = productRequest({
+      pickupCoordinate: PICKUP_COORDINATE,
+      createdAt: 200,
+      extraTags: [
+        [EVENT_HANDOFF_CHANGE_TAG, COLLECTION_COORDINATE, "f".repeat(64)],
+      ],
+    })
+    const beforeReacceptance = resolveEventMarketEvidence({
+      reference: COLLECTION_COORDINATE,
+      events: activeGraph(
+        collectionEvent({
+          productCoordinates: [PRODUCT_COORDINATE],
+          createdAt: 150,
+        }),
+        [merchantPickup]
+      ),
+      // A fresh client sees only the current addressable revision.
+      productRequestEvents: [changed],
+      nowMs: ACTIVE_NOW_MS,
+    })
+    expect(beforeReacceptance.acceptedProductCoordinates).toEqual([])
+    expect(beforeReacceptance.participationRequests).toEqual([
+      expect.objectContaining({ eventId: changed.id }),
+    ])
+
+    const afterReacceptance = resolveEventMarketEvidence({
+      reference: COLLECTION_COORDINATE,
+      events: activeGraph(
+        collectionEvent({
+          productCoordinates: [PRODUCT_COORDINATE],
+          createdAt: 250,
+        }),
+        [merchantPickup]
+      ),
+      productRequestEvents: [changed],
+      nowMs: ACTIVE_NOW_MS,
+    })
+    expect(afterReacceptance.acceptedProductCoordinates).toEqual([
+      PRODUCT_COORDINATE,
+    ])
   })
 
   it("binds organizer previews to the exact current signed product revision", () => {

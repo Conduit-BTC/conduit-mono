@@ -10,6 +10,7 @@ import {
 } from "react"
 import {
   appendConduitClientTag,
+  assertMerchantPresentSalePaymentReview,
   clearProtectedReadAuthenticationSuppression,
   config,
   db,
@@ -19,17 +20,23 @@ import {
   formatNpub,
   formatPubkey,
   getNdk,
+  getProfilePaymentAddress,
+  getProfiles,
   getProductImageCandidates,
   getOrderPublicZapSigner,
   getOrderLifecycle,
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
+  hasFreshProfilePaymentAddress,
   hasWebLN,
+  isCommerceReadIncomplete,
   listOrderLifecycles,
   ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
+  parseMerchantPresentSaleReviewedCommerceFingerprint,
   pruneExpiredGuestOrderData,
   prepareProtectedReadRefreshState,
   pubkeyToNpub,
+  receiveMerchantPresentSaleDirectWrap,
   replaceOrderPaymentTarget,
   resolveWalletPaymentInstance,
   selectProtectedReadRows,
@@ -65,6 +72,8 @@ import {
   SheetTrigger,
   StatusPill,
   StatusStepper,
+  Textarea,
+  useTimeBoundaryNow,
 } from "@conduit/ui"
 import {
   ChevronRight,
@@ -122,6 +131,10 @@ import {
 } from "../lib/pickup-handoff"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 import {
+  getMerchantPaymentLud16,
+  getMerchantPaymentProfileState,
+} from "../lib/merchant-payment-readiness"
+import {
   authorizeCheckoutWithAnonSigner,
   signAuthorizedAnonZapCheckout,
 } from "../lib/anon-zap-signer"
@@ -171,6 +184,14 @@ import {
   getCheckoutPaymentTargetOptions,
   getCheckoutPaymentTargetValue,
 } from "../lib/checkout-payment-target"
+import {
+  consumeReadyMerchantPresentAuthorization,
+  deriveMerchantPresentAuthorizationState,
+  getMerchantPresentOrderReview,
+  parseMerchantPresentDirectWrapText,
+  resolveMerchantPresentOrderContext,
+  type MerchantPresentAuthorizationState,
+} from "../lib/merchant-present-order-authorization"
 
 const ORDERS_SEARCH_DEFAULT: { order?: string } = {}
 
@@ -739,6 +760,122 @@ function OrderDetail({
   )
   const sparkFeeApproval = useSparkFeeApproval()
   const queryClient = useQueryClient()
+  const conversationMessages = useMemo(
+    () => row.conversation?.messages ?? [],
+    [row.conversation?.messages]
+  )
+  const boothReview = useMemo(
+    () => getMerchantPresentOrderReview(vm.orderId),
+    [vm.orderId]
+  )
+  const conversationMessageRevision = useMemo(
+    () => conversationMessages.map((message) => message.id).join(":"),
+    [conversationMessages]
+  )
+  const hasConversationBoothOrder = conversationMessages.some(
+    (message) =>
+      message.type === "order" &&
+      message.orderId === vm.orderId &&
+      message.payload.purchaseContext?.type === "merchant_present"
+  )
+  const merchantPresentContextQuery = useQuery({
+    queryKey: [
+      "merchant-present-order-context",
+      vm.orderId,
+      buyerPubkey,
+      row.merchantPubkey,
+      boothReview?.reviewedCommerceFingerprintRef ?? "no-review",
+      conversationMessageRevision,
+    ],
+    queryFn: () =>
+      resolveMerchantPresentOrderContext({
+        orderId: vm.orderId,
+        buyerPubkey,
+        merchantPubkey: row.merchantPubkey,
+        messages: conversationMessages,
+      }),
+  })
+  const [importedBoothAuthorization, setImportedBoothAuthorization] = useState<
+    | Extract<
+        MerchantPresentAuthorizationState,
+        { status: "ready" }
+      >["authorization"]
+    | null
+  >(null)
+  const [directAuthorizationText, setDirectAuthorizationText] = useState("")
+  const [directAuthorizationError, setDirectAuthorizationError] = useState<
+    string | null
+  >(null)
+  const [importingDirectAuthorization, setImportingDirectAuthorization] =
+    useState(false)
+  const [activeBoothPaymentUseRef, setActiveBoothPaymentUseRef] = useState<
+    string | null
+  >(null)
+  const [boothPaymentUnlockOpen, setBoothPaymentUnlockOpen] = useState(false)
+  const [boothPaymentUnlockError, setBoothPaymentUnlockError] = useState<
+    string | null
+  >(null)
+
+  const merchantPresentAuthorizationBoundaries = useMemo(() => {
+    const authorizations = conversationMessages.flatMap((message) =>
+      message.type === "merchant_present_sale_authorization"
+        ? [message.payload]
+        : []
+    )
+    if (importedBoothAuthorization)
+      authorizations.push(importedBoothAuthorization)
+    return authorizations.flatMap((authorization) => [
+      authorization.issuedAt * 1_000,
+      authorization.expiresAt * 1_000,
+    ])
+  }, [conversationMessages, importedBoothAuthorization])
+  const merchantPresentAuthorizationNowMs = useTimeBoundaryNow(
+    merchantPresentAuthorizationBoundaries
+  )
+  const merchantPresentExpected = !!boothReview || hasConversationBoothOrder
+  const merchantPresentContext = useMemo(
+    () =>
+      merchantPresentContextQuery.data ??
+      (merchantPresentContextQuery.isError && merchantPresentExpected
+        ? {
+            status: "unavailable" as const,
+            reason:
+              "The exact booth order could not be verified on this device. Payment remains blocked; retry the order refresh or ask the merchant to restart the sale.",
+          }
+        : { status: "remote" as const }),
+    [
+      merchantPresentContextQuery.data,
+      merchantPresentContextQuery.isError,
+      merchantPresentExpected,
+    ]
+  )
+
+  const merchantPresentAuthorizationState = useMemo(
+    () =>
+      deriveMerchantPresentAuthorizationState({
+        context: merchantPresentContext,
+        messages: conversationMessages,
+        importedAuthorization: importedBoothAuthorization,
+        now: Math.floor(merchantPresentAuthorizationNowMs / 1_000),
+      }),
+    [
+      conversationMessages,
+      importedBoothAuthorization,
+      merchantPresentAuthorizationNowMs,
+      merchantPresentContext,
+    ]
+  )
+  const merchantPresentResolutionPending =
+    merchantPresentContextQuery.isPending &&
+    (!!guestIdentity || !!boothReview || hasConversationBoothOrder)
+  const merchantPresentPaymentActive =
+    merchantPresentAuthorizationState.status === "ready" &&
+    activeBoothPaymentUseRef === merchantPresentAuthorizationState.useRef
+  const merchantPresentCanStartPayment =
+    !merchantPresentResolutionPending &&
+    (merchantPresentAuthorizationState.status === "remote" ||
+      (merchantPresentAuthorizationState.status === "ready" &&
+        !merchantPresentPaymentActive))
 
   useEffect(() => {
     if (
@@ -923,6 +1060,153 @@ function OrderDetail({
     }
   }, [])
 
+  async function reserveMerchantPresentPayment(): Promise<void> {
+    if (
+      !merchantPresentResolutionPending &&
+      merchantPresentAuthorizationState.status === "remote"
+    ) {
+      return
+    }
+    if (merchantPresentResolutionPending) {
+      throw new Error(
+        "Wait while Conduit verifies the exact booth order before payment."
+      )
+    }
+    if (merchantPresentAuthorizationState.status !== "ready") {
+      throw new Error(
+        merchantPresentAuthorizationState.status === "invalid" ||
+          merchantPresentAuthorizationState.status === "unavailable"
+          ? merchantPresentAuthorizationState.reason
+          : "Wait for the merchant to confirm these exact items are physically available before paying."
+      )
+    }
+    if (merchantPresentPaymentActive) {
+      throw new Error(
+        "This one-time booth confirmation is already reserved for the current payment attempt. Ask the merchant to confirm again before retrying."
+      )
+    }
+    const context = merchantPresentContextQuery.data
+    if (context?.status !== "merchant_present") {
+      throw new Error(
+        "The exact booth order could not be verified before payment."
+      )
+    }
+    const reviewedTerms = parseMerchantPresentSaleReviewedCommerceFingerprint(
+      context.reviewedCommerceFingerprint
+    )
+    if (reviewedTerms.totalSats > 0) {
+      const refreshedProfileResult = await getProfiles({
+        pubkeys: [context.order.merchantPubkey],
+        accountPubkey: authenticatedPubkey,
+        authenticatedPubkey,
+        skipCache: true,
+        requireCompleteEvidence: true,
+        evidenceScope: "payment",
+        priority: "visible",
+        shouldContinue: shouldContinueBuyerSession,
+      })
+      const currentProfileContext =
+        refreshedProfileResult.profileContexts[context.order.merchantPubkey]
+      const profileState = getMerchantPaymentProfileState({
+        isLoading: false,
+        isFetching: false,
+        lookupSettled: true,
+        evidenceIncomplete: isCommerceReadIncomplete(
+          refreshedProfileResult.meta
+        ),
+        positiveAddressEvidence: hasFreshProfilePaymentAddress(
+          currentProfileContext
+        ),
+      })
+      const currentPaymentDestination = getMerchantPaymentLud16({
+        profileState,
+        lud16: getProfilePaymentAddress(currentProfileContext),
+      })
+      if (!currentPaymentDestination) {
+        throw new Error(
+          "The merchant's current payment destination could not be confirmed. Do not pay; ask the merchant to restart the booth sale."
+        )
+      }
+      assertMerchantPresentSalePaymentReview({
+        reviewedCommerceFingerprint: context.reviewedCommerceFingerprint,
+        merchantPubkey: context.order.merchantPubkey,
+        totalSats: context.order.subtotal,
+        currentPaymentDestination,
+      })
+    } else {
+      assertMerchantPresentSalePaymentReview({
+        reviewedCommerceFingerprint: context.reviewedCommerceFingerprint,
+        merchantPubkey: context.order.merchantPubkey,
+        totalSats: context.order.subtotal,
+        currentPaymentDestination: null,
+      })
+    }
+    await consumeReadyMerchantPresentAuthorization(
+      merchantPresentAuthorizationState
+    )
+    setActiveBoothPaymentUseRef(merchantPresentAuthorizationState.useRef)
+  }
+
+  async function importDirectMerchantPresentAuthorization(): Promise<void> {
+    const context = merchantPresentContextQuery.data
+    if (!guestIdentity || context?.status !== "merchant_present") {
+      throw new Error(
+        "This guest booth order is not available in the current tab. Return to the merchant and restart the sale."
+      )
+    }
+    const wrap = parseMerchantPresentDirectWrapText(directAuthorizationText)
+    const decrypt = guestIdentity.createMerchantPresentSaleDirectDecrypt({
+      orderId: context.order.id,
+      merchantPubkey: context.order.merchantPubkey,
+      wrap,
+    })
+    const authorization = await receiveMerchantPresentSaleDirectWrap({
+      wrap,
+      order: context.order,
+      reviewedCommerceFingerprint: context.reviewedCommerceFingerprint,
+      decrypt,
+    })
+    setImportedBoothAuthorization(authorization)
+    setDirectAuthorizationText("")
+    setDirectAuthorizationError(null)
+    setActiveBoothPaymentUseRef(null)
+  }
+
+  async function handleDirectMerchantPresentAuthorization(): Promise<void> {
+    setImportingDirectAuthorization(true)
+    setDirectAuthorizationError(null)
+    try {
+      await importDirectMerchantPresentAuthorization()
+    } catch (error) {
+      setDirectAuthorizationError(
+        error instanceof Error
+          ? error.message
+          : "The booth confirmation could not be verified."
+      )
+    } finally {
+      setImportingDirectAuthorization(false)
+    }
+  }
+
+  async function handleReserveMerchantPresentPayment(): Promise<void> {
+    setBusy(true)
+    setRecoveryError(null)
+    setBoothPaymentUnlockError(null)
+    try {
+      await reserveMerchantPresentPayment()
+      setBoothPaymentUnlockOpen(false)
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "The merchant confirmation could not be reserved for payment."
+      setRecoveryError(message)
+      setBoothPaymentUnlockError(message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function verifyRetryFreshness(): Promise<void> {
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
@@ -983,6 +1267,7 @@ function OrderDetail({
         ? runOrderPaymentWithUpdatedAddress(context, update)
         : runOrderPayment(context)
     if (ctx.zapMode !== "anonymous_public_zap") {
+      await reserveMerchantPresentPayment()
       await run(ctx)
       return
     }
@@ -1003,6 +1288,7 @@ function OrderDetail({
       )
     }
     const preparedAnonZap = await signAuthorizedAnonZapCheckout(authorization)
+    await reserveMerchantPresentPayment()
     await run({
       ...ctx,
       zapContent: preparedAnonZap.rawEvent.content,
@@ -1027,10 +1313,25 @@ function OrderDetail({
     await runRetryPayment(pending.ctx, pending.update)
   }
 
+  async function handleRetryPayment(): Promise<void> {
+    setBusy(true)
+    setRecoveryError(null)
+    try {
+      await retryPayment()
+    } catch (error) {
+      setRecoveryError(
+        error instanceof Error ? error.message : "Payment recovery failed."
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function continuePrivateFallback(): Promise<void> {
     await verifyRetryFreshness()
     const ctx = await persistTargetAndBuildServiceCtx()
     setPrivateFallbackOpen(false)
+    await reserveMerchantPresentPayment()
     await runOrderPrivateFallback(ctx)
   }
 
@@ -1049,6 +1350,16 @@ function OrderDetail({
       : undefined
 
   function beginMerchantInvoicePayment(): boolean {
+    if (
+      merchantPresentResolutionPending ||
+      (merchantPresentAuthorizationState.status !== "remote" &&
+        !merchantPresentPaymentActive)
+    ) {
+      setRecoveryError(
+        "The merchant must confirm these exact booth items before the invoice can be used."
+      )
+      return false
+    }
     if (
       manualInvoiceAccess === "report_only" ||
       manualInvoiceAccess === "receipt_only" ||
@@ -1282,6 +1593,212 @@ function OrderDetail({
         </section>
       </>
 
+      {merchantPresentResolutionPending && (
+        <StatusNotice
+          variant="info"
+          title="Checking booth confirmation"
+          detail="Payment is locked"
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            Conduit is matching this order to the exact items, price, payment
+            destination, and merchant-owned pickup reviewed at the booth.
+          </p>
+        </StatusNotice>
+      )}
+
+      {!merchantPresentResolutionPending &&
+        merchantPresentAuthorizationState.status !== "remote" && (
+          <StatusNotice
+            variant={
+              merchantPresentPaymentActive
+                ? "success"
+                : merchantPresentAuthorizationState.status === "ready"
+                  ? "success"
+                  : merchantPresentAuthorizationState.status === "waiting"
+                    ? "info"
+                    : "warning"
+            }
+            title={
+              merchantPresentPaymentActive
+                ? "Payment unlocked"
+                : merchantPresentAuthorizationState.status === "ready"
+                  ? "Ready to pay"
+                  : merchantPresentAuthorizationState.status === "waiting"
+                    ? "Waiting for merchant confirmation"
+                    : merchantPresentAuthorizationState.status === "invalid"
+                      ? "Merchant confirmation needs renewal"
+                      : "Booth sale cannot be verified"
+            }
+            detail={
+              merchantPresentPaymentActive
+                ? "One current payment attempt"
+                : merchantPresentAuthorizationState.status === "ready"
+                  ? "Physical availability confirmed"
+                  : "Payment remains locked"
+            }
+          >
+            <div className="space-y-3">
+              <p className="text-pretty text-sm text-[var(--text-secondary)]">
+                {merchantPresentPaymentActive
+                  ? "The one-time merchant confirmation is reserved for the payment now in progress. The current price, payment destination, settlement, and pickup authority still receive their normal checks."
+                  : merchantPresentAuthorizationState.status === "ready"
+                    ? "The merchant confirmed that these exact items are physically available now. This confirmation does not override the reviewed price, payment destination, settlement, or pickup authority."
+                    : merchantPresentAuthorizationState.status === "waiting"
+                      ? "Ask the merchant to confirm the exact items and quantities in this order. Payment stays unavailable until that signed confirmation arrives."
+                      : merchantPresentAuthorizationState.reason}
+              </p>
+
+              {guestIdentity &&
+                (merchantPresentAuthorizationState.status === "waiting" ||
+                  merchantPresentAuthorizationState.status === "invalid") && (
+                  <div className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                    <label
+                      htmlFor={`booth-confirmation-${vm.orderId}`}
+                      className="text-sm font-medium text-[var(--text-primary)]"
+                    >
+                      Paste merchant booth confirmation
+                    </label>
+                    <p className="text-xs leading-5 text-[var(--text-secondary)]">
+                      Use only the signed confirmation transferred directly by
+                      this merchant. This guest session decrypts that one wrap;
+                      it does not read an inbox or grant general message access.
+                    </p>
+                    <Textarea
+                      id={`booth-confirmation-${vm.orderId}`}
+                      value={directAuthorizationText}
+                      onChange={(event) =>
+                        setDirectAuthorizationText(event.target.value)
+                      }
+                      rows={4}
+                      spellCheck={false}
+                      autoComplete="off"
+                      placeholder="Paste the complete signed confirmation"
+                    />
+                    <Button
+                      type="button"
+                      className="h-10 px-4 text-sm"
+                      disabled={
+                        importingDirectAuthorization ||
+                        directAuthorizationText.trim().length === 0
+                      }
+                      onClick={() =>
+                        void handleDirectMerchantPresentAuthorization()
+                      }
+                    >
+                      {importingDirectAuthorization ? (
+                        <>
+                          <LoaderCircle
+                            className="size-4 animate-spin motion-reduce:animate-none"
+                            aria-hidden="true"
+                          />
+                          Verifying confirmation
+                        </>
+                      ) : (
+                        "Verify confirmation"
+                      )}
+                    </Button>
+                    {directAuthorizationError && (
+                      <p
+                        role="alert"
+                        className="text-sm text-[var(--destructive)]"
+                      >
+                        {directAuthorizationError}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+              {guestIdentity &&
+                (merchantPresentAuthorizationState.status === "ready" ||
+                  merchantPresentPaymentActive) && (
+                  <p className="rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
+                    This tab verifies the merchant&apos;s signed availability
+                    confirmation, but it has no reply inbox for later status
+                    updates. Finish payment and handoff with the merchant
+                    present; if the session closes first, restart the sale.
+                  </p>
+                )}
+
+              {showExternalWallet &&
+                merchantPresentAuthorizationState.status === "ready" &&
+                !merchantPresentPaymentActive && (
+                  <Button
+                    type="button"
+                    className="h-10 px-4 text-sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setBoothPaymentUnlockError(null)
+                      setBoothPaymentUnlockOpen(true)
+                    }}
+                  >
+                    Confirm items and show payment
+                  </Button>
+                )}
+              {recoveryError &&
+                merchantPresentAuthorizationState.status === "ready" &&
+                !merchantPresentPaymentActive && (
+                  <p role="alert" className="text-sm text-[var(--destructive)]">
+                    {recoveryError}
+                  </p>
+                )}
+            </div>
+          </StatusNotice>
+        )}
+
+      <AlertDialog
+        open={boothPaymentUnlockOpen}
+        onOpenChange={(open) => {
+          setBoothPaymentUnlockOpen(open)
+          if (!open) setBoothPaymentUnlockError(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-balance">
+              Show payment details?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="leading-6">
+              This reserves the merchant&apos;s one-time physical-availability
+              confirmation for this payment attempt. Check the items and total
+              first. If you leave or payment cannot start, ask the merchant to
+              confirm again before retrying.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {boothPaymentUnlockError && (
+            <p role="alert" className="text-sm text-[var(--destructive)]">
+              {boothPaymentUnlockError}
+            </p>
+          )}
+          <AlertDialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={() => setBoothPaymentUnlockOpen(false)}
+            >
+              Review order
+            </Button>
+            <Button
+              type="button"
+              disabled={busy}
+              onClick={() => void handleReserveMerchantPresentPayment()}
+            >
+              {busy ? (
+                <>
+                  <LoaderCircle
+                    className="size-4 animate-spin motion-reduce:animate-none"
+                    aria-hidden="true"
+                  />
+                  Reserving confirmation
+                </>
+              ) : (
+                "Show payment"
+              )}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {(manualInvoiceAccess === "report_only" ||
         manualInvoiceAccess === "receipt_only") && (
         <StatusNotice
@@ -1311,68 +1828,74 @@ function OrderDetail({
         </StatusNotice>
       )}
 
-      {showExternalWallet && (
-        <div className="space-y-3">
-          <StatusNotice
-            variant="warning"
-            title={
-              autoDetectPublicReceipt
-                ? "Pay with any Lightning wallet"
-                : vm.merchantInvoiceAction?.status === "blocked"
-                  ? "Invoice needs review"
-                  : vm.merchantInvoiceAction
-                    ? "Merchant invoice ready"
-                    : vm.publicZapFallback
-                      ? "Checkout continued privately"
-                      : "Action needed"
-            }
-            detail={
-              autoDetectPublicReceipt
-                ? "Receipt detection is automatic"
-                : vm.merchantInvoiceAction?.status === "blocked"
-                  ? "Payment unavailable"
-                  : vm.merchantInvoiceAction
-                    ? "Pay from Orders"
-                    : vm.publicZapFallback
-                      ? "Optional public note unavailable"
-                      : "Pay with an external wallet"
-            }
-          >
-            <p className="text-pretty text-sm text-[var(--text-secondary)]">
-              {autoDetectPublicReceipt
-                ? "Pay the invoice below. Conduit is watching for the matching public receipt and will notify the merchant automatically."
-                : vm.merchantInvoiceAction?.status === "blocked"
-                  ? "Orders checked the latest merchant invoice but could not make it payable."
-                  : vm.merchantInvoiceAction
-                    ? "Orders checked the merchant invoice against this saved order. Payment details appear automatically below."
-                    : vm.publicZapFallback
-                      ? "Your order is still ready. The optional public checkout note was unavailable, so this invoice is private. Pay it once, then report the payment so the merchant can verify it."
-                      : "No automatic wallet was available. Pay the invoice below, then report the payment to the merchant for verification."}
-            </p>
-          </StatusNotice>
-          <ExternalWalletPanel
-            vm={vm}
-            pricing={shopperPricing}
-            busy={busy}
-            guestSession={!!guestIdentity}
-            autoDetectReceipt={autoDetectPublicReceipt}
-            onBeforeInvoiceUse={beginMerchantInvoicePayment}
-            onPrepareMerchantInvoice={prepareCurrentMerchantInvoice}
-            preparationScope={`${authGeneration}:${authenticatedPubkey ?? "guest"}:${buyerPubkey}:${vm.orderId}`}
-            merchantInvoicePrepared={merchantInvoicePrepared}
-            boundMerchantInvoiceExpiresAt={boundMerchantInvoiceExpiresAt}
-            onMarkPaid={() => void withBusy(reportExternalPayment)}
-          />
-          {recoveryError && (
-            <p
-              role="alert"
-              className="text-pretty text-sm text-[var(--destructive)]"
+      {showExternalWallet &&
+        !merchantPresentResolutionPending &&
+        (merchantPresentAuthorizationState.status === "remote" ||
+          merchantPresentPaymentActive) && (
+          <div className="space-y-3">
+            <StatusNotice
+              variant="warning"
+              title={
+                autoDetectPublicReceipt
+                  ? "Pay with any Lightning wallet"
+                  : vm.merchantInvoiceAction?.status === "blocked"
+                    ? "Invoice needs review"
+                    : vm.merchantInvoiceAction
+                      ? "Merchant invoice ready"
+                      : vm.publicZapFallback
+                        ? "Checkout continued privately"
+                        : "Action needed"
+              }
+              detail={
+                autoDetectPublicReceipt
+                  ? "Receipt detection is automatic"
+                  : vm.merchantInvoiceAction?.status === "blocked"
+                    ? "Payment unavailable"
+                    : vm.merchantInvoiceAction
+                      ? "Pay from Orders"
+                      : vm.publicZapFallback
+                        ? "Optional public note unavailable"
+                        : "Pay with an external wallet"
+              }
             >
-              {recoveryError}
-            </p>
-          )}
-        </div>
-      )}
+              <p className="text-pretty text-sm text-[var(--text-secondary)]">
+                {autoDetectPublicReceipt
+                  ? "Pay the invoice below. Conduit is watching for the matching public receipt and will notify the merchant automatically."
+                  : vm.merchantInvoiceAction?.status === "blocked"
+                    ? "Orders checked the latest merchant invoice but could not make it payable."
+                    : vm.merchantInvoiceAction
+                      ? "Orders checked the merchant invoice against this saved order. Payment details appear automatically below."
+                      : vm.publicZapFallback
+                        ? "Your order is still ready. The optional public checkout note was unavailable, so this invoice is private. Pay it once, then report the payment so the merchant can verify it."
+                        : "No automatic wallet was available. Pay the invoice below, then report the payment to the merchant for verification."}
+              </p>
+            </StatusNotice>
+            <ExternalWalletPanel
+              vm={vm}
+              pricing={shopperPricing}
+              busy={busy}
+              guestSession={
+                !!guestIdentity &&
+                merchantPresentAuthorizationState.status === "remote"
+              }
+              autoDetectReceipt={autoDetectPublicReceipt}
+              onBeforeInvoiceUse={beginMerchantInvoicePayment}
+              onPrepareMerchantInvoice={prepareCurrentMerchantInvoice}
+              preparationScope={`${authGeneration}:${authenticatedPubkey ?? "guest"}:${buyerPubkey}:${vm.orderId}`}
+              merchantInvoicePrepared={merchantInvoicePrepared}
+              boundMerchantInvoiceExpiresAt={boundMerchantInvoiceExpiresAt}
+              onMarkPaid={() => void withBusy(reportExternalPayment)}
+            />
+            {recoveryError && (
+              <p
+                role="alert"
+                className="text-pretty text-sm text-[var(--destructive)]"
+              >
+                {recoveryError}
+              </p>
+            )}
+          </div>
+        )}
 
       {(showRetryPayment || showAmbiguousPayment || showResendProof) && (
         <StatusNotice
@@ -1436,10 +1959,11 @@ function OrderDetail({
                 disabled={
                   busy ||
                   wallets.loading ||
+                  !merchantPresentCanStartPayment ||
                   !selectedStoredPaymentTarget ||
                   !buildServiceCtx()
                 }
-                onClick={() => void withBusy(retryPayment)}
+                onClick={() => void handleRetryPayment()}
               >
                 <RotateCw className="h-4 w-4" />
                 {recoveredBeforeWallet
@@ -1454,6 +1978,7 @@ function OrderDetail({
                 disabled={
                   busy ||
                   wallets.loading ||
+                  !merchantPresentCanStartPayment ||
                   !selectedStoredPaymentTarget ||
                   !buildServiceCtx()
                 }
@@ -1620,7 +2145,10 @@ function OrderDetail({
             <Button
               type="button"
               disabled={
-                busy || !selectedStoredPaymentTarget || !buildServiceCtx()
+                busy ||
+                !merchantPresentCanStartPayment ||
+                !selectedStoredPaymentTarget ||
+                !buildServiceCtx()
               }
               onClick={() => {
                 void withBusy(continuePrivateFallback)
@@ -1914,9 +2442,12 @@ function OrderDetail({
             </h3>
             <p className="mt-1 text-sm text-[var(--text-secondary)]">
               {guestIdentity
-                ? vm.requiresPickup
-                  ? "The merchant can use the email or phone submitted at checkout only if guest pickup recovery is needed."
-                  : "The merchant will use the phone and email contact details submitted at checkout for questions and fulfillment updates."
+                ? merchantPresentResolutionPending ||
+                  merchantPresentAuthorizationState.status !== "remote"
+                  ? "This tab keeps the exact guest booth order and merchant-signed availability confirmation. It does not read an inbox or receive later merchant status. Finish payment and handoff with the merchant present; if the session is lost first, restart the sale."
+                  : vm.requiresPickup
+                    ? "The merchant can use the email or phone submitted at checkout only if guest pickup recovery is needed."
+                    : "The merchant will use the phone and email contact details submitted at checkout for questions and fulfillment updates."
                 : "Message the merchant for any questions or issues."}
             </p>
             {messageMerchant && <div className="mt-3">{messageMerchant}</div>}

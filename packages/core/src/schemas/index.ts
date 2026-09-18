@@ -597,6 +597,30 @@ export const orderItemSchema = z
 export type OrderItemSchema = z.infer<typeof orderItemSchema>
 
 /**
+ * Buyer-requested context for an order that is being completed in person.
+ * Absence deliberately means an ordinary remote order, including later pickup.
+ */
+export const merchantPresentOrderPurchaseContextSchema = z
+  .object({
+    type: z.literal("merchant_present"),
+    merchantPubkey: hex64Schema,
+    collection: pickupEvidenceCoordinateSchema.strict(),
+    /** Opaque reference to the buyer's canonical live-reviewed terms. */
+    reviewedCommerceFingerprintRef: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict()
+
+export const orderPurchaseContextSchema =
+  merchantPresentOrderPurchaseContextSchema
+
+export type MerchantPresentOrderPurchaseContextSchema = z.infer<
+  typeof merchantPresentOrderPurchaseContextSchema
+>
+export type OrderPurchaseContextSchema = z.infer<
+  typeof orderPurchaseContextSchema
+>
+
+/**
  * Conduit MVP order payload (sent as JSON in a NIP-17 wrapped kind-16 rumor).
  *
  * Note: This is an internal schema for our MVP flow; interop parsing should be best-effort.
@@ -616,19 +640,25 @@ export const orderSchema = z
       .optional(),
     shippingAddress: shippingAddressSchema.optional(),
     guestContact: orderGuestContactSchema.optional(),
+    purchaseContext: orderPurchaseContextSchema.optional(),
     note: z.string().max(2000).optional(),
     createdAt: z.number(),
   })
   .superRefine((order, context) => {
-    const firstPickup = order.items.find(
+    const firstPickupFulfillment = order.items.find(
       (item) => item.fulfillment?.type === "pickup"
     )?.fulfillment
-    const hasPickup = firstPickup?.type === "pickup"
+    const firstPickup =
+      firstPickupFulfillment?.type === "pickup"
+        ? firstPickupFulfillment
+        : undefined
+    const hasPickup = firstPickup !== undefined
     const hasShipping = order.items.some(
       (item) =>
         item.fulfillment?.type === "shipping" ||
         (!item.fulfillment && item.format !== "digital")
     )
+    const purchaseContext = order.purchaseContext
     for (const [index, item] of order.items.entries()) {
       if (
         item.fulfillment?.type === "pickup" &&
@@ -653,6 +683,60 @@ export const orderSchema = z
             "Pickup items from different organizer event graphs require separate orders.",
         })
       }
+      if (purchaseContext) {
+        const fulfillment = item.fulfillment
+        let hasMerchantPresentPickup = false
+        if (
+          item.format === "physical" &&
+          fulfillment?.type === "pickup" &&
+          firstPickup
+        ) {
+          const authority = resolveOrderPickupHandoffAuthority(fulfillment)
+          hasMerchantPresentPickup =
+            fulfillment.handoffMode === "merchant_handoff" &&
+            Boolean(fulfillment.handlerPubkey) &&
+            !authority.legacySafeDefault &&
+            authority.mode === "merchant_handoff" &&
+            authority.handlerPubkey.toLowerCase() ===
+              order.merchantPubkey.toLowerCase() &&
+            hasSamePickupFulfillmentGraph(firstPickup, fulfillment)
+        }
+        if (!hasMerchantPresentPickup) {
+          context.addIssue({
+            code: "custom",
+            path: ["items", index, "fulfillment"],
+            message:
+              "Merchant-present orders require one exact event graph with explicit merchant-owned pickup.",
+          })
+        }
+      }
+    }
+    if (purchaseContext) {
+      if (
+        purchaseContext.merchantPubkey.toLowerCase() !==
+        order.merchantPubkey.toLowerCase()
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["purchaseContext", "merchantPubkey"],
+          message:
+            "Merchant-present purchase context must name the order merchant.",
+        })
+      }
+      if (
+        !firstPickup ||
+        !hasSamePickupEvidenceRevision(
+          purchaseContext.collection,
+          firstPickup.collection
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["purchaseContext", "collection"],
+          message:
+            "Merchant-present purchase context must match the exact event collection revision.",
+        })
+      }
     }
     if (hasPickup && hasShipping) {
       context.addIssue({
@@ -668,7 +752,11 @@ export const orderSchema = z
         message: "Pickup orders must not include a delivery address.",
       })
     }
-    if (order.buyerIdentityKind === "guest_ephemeral" && !order.guestContact) {
+    if (
+      order.buyerIdentityKind === "guest_ephemeral" &&
+      !order.guestContact &&
+      !purchaseContext
+    ) {
       context.addIssue({
         code: "custom",
         path: ["guestContact"],
@@ -844,6 +932,130 @@ export const eventMarketHandoffAckSchema = z
   .strict()
   .superRefine(refineEventMarketPrivateGraph)
 
+export const MAX_MERCHANT_PRESENT_SALE_AUTHORIZATION_TTL_SECONDS = 5 * 60
+
+const merchantPresentSaleEvidenceSchema =
+  pickupEvidenceCoordinateSchema.strict()
+
+export const merchantPresentSaleAuthorizationItemSchema = z
+  .object({
+    product: merchantPresentSaleEvidenceSchema,
+    quantity: z.number().int().min(1).max(10_000),
+  })
+  .strict()
+
+/**
+ * Merchant-signed, buyer-private authority for one in-person order attempt.
+ *
+ * This payload proves only that the merchant confirmed physical availability
+ * for the exact reviewed pickup snapshot. It is not price, payment-target,
+ * payment, or settlement authority.
+ */
+export const merchantPresentSaleAuthorizationSchema = z
+  .object({
+    version: z.literal(1),
+    type: z.literal("merchant_present_sale_authorization"),
+    scope: z.literal("physical_availability_only"),
+    orderId: z
+      .string()
+      .min(1)
+      .max(512)
+      .refine((value) => value === value.trim(), {
+        message: "Merchant-present order id must not contain outer whitespace.",
+      }),
+    merchantPubkey: hex64Schema,
+    buyerPubkey: hex64Schema,
+    organizerPubkey: hex64Schema,
+    calendar: merchantPresentSaleEvidenceSchema,
+    collection: merchantPresentSaleEvidenceSchema,
+    option: merchantPresentSaleEvidenceSchema,
+    items: z.array(merchantPresentSaleAuthorizationItemSchema).min(1).max(64),
+    /** Domain-separated SHA-256 of the buyer's exact reviewed terms. */
+    reviewedCommerceFingerprintRef: z.string().regex(/^[0-9a-f]{64}$/),
+    /** Random 256-bit, single-use capability nonce. */
+    nonce: z.string().regex(/^[0-9a-f]{64}$/),
+    issuedAt: z.number().int().min(0),
+    expiresAt: z.number().int().min(0),
+  })
+  .strict()
+  .superRefine((authorization, context) => {
+    if (
+      authorization.expiresAt <= authorization.issuedAt ||
+      authorization.expiresAt - authorization.issuedAt >
+        MAX_MERCHANT_PRESENT_SALE_AUTHORIZATION_TTL_SECONDS
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["expiresAt"],
+        message:
+          "Merchant-present authorization must expire within five minutes.",
+      })
+    }
+
+    const merchant = authorization.merchantPubkey.toLowerCase()
+    const organizer = authorization.organizerPubkey.toLowerCase()
+    const calendar = eventMarketCoordinateAuthority(
+      authorization.calendar.coordinate
+    )
+    const collection = eventMarketCoordinateAuthority(
+      authorization.collection.coordinate
+    )
+    const option = eventMarketCoordinateAuthority(
+      authorization.option.coordinate
+    )
+    const graphChecks: Array<[boolean, string[], string]> = [
+      [
+        Boolean(
+          calendar &&
+          [31922, 31923].includes(calendar.kind) &&
+          calendar.authorPubkey === organizer
+        ),
+        ["calendar", "coordinate"],
+        "Merchant-present calendar authority is invalid.",
+      ],
+      [
+        Boolean(
+          collection?.kind === 30405 && collection.authorPubkey === organizer
+        ),
+        ["collection", "coordinate"],
+        "Merchant-present collection authority is invalid.",
+      ],
+      [
+        Boolean(option?.kind === 30406 && option.authorPubkey === merchant),
+        ["option", "coordinate"],
+        "Merchant-present pickup must be owned by the merchant.",
+      ],
+    ]
+    for (const [valid, path, message] of graphChecks) {
+      if (!valid) context.addIssue({ code: "custom", path, message })
+    }
+
+    const productCoordinates = new Set<string>()
+    for (let index = 0; index < authorization.items.length; index += 1) {
+      const item = authorization.items[index]!
+      const product = eventMarketCoordinateAuthority(item.product.coordinate)
+      const coordinate = canonicalPickupCoordinateIdentity(
+        item.product.coordinate
+      )
+      if (product?.kind !== 30402 || product.authorPubkey !== merchant) {
+        context.addIssue({
+          code: "custom",
+          path: ["items", index, "product", "coordinate"],
+          message: "Merchant-present product authority is invalid.",
+        })
+      }
+      if (!coordinate || productCoordinates.has(coordinate)) {
+        context.addIssue({
+          code: "custom",
+          path: ["items", index, "product", "coordinate"],
+          message: "Merchant-present products must be unique.",
+        })
+      } else {
+        productCoordinates.add(coordinate)
+      }
+    }
+  })
+
 export type EventMarketReceiptItemSchema = z.infer<
   typeof eventMarketReceiptItemSchema
 >
@@ -855,6 +1067,12 @@ export type EventMarketFulfillmentRevocationSchema = z.infer<
 >
 export type EventMarketHandoffAckSchema = z.infer<
   typeof eventMarketHandoffAckSchema
+>
+export type MerchantPresentSaleAuthorizationItemSchema = z.infer<
+  typeof merchantPresentSaleAuthorizationItemSchema
+>
+export type MerchantPresentSaleAuthorizationSchema = z.infer<
+  typeof merchantPresentSaleAuthorizationSchema
 >
 
 /**
@@ -871,6 +1089,7 @@ export const orderMessageTypeSchema = z.enum([
   "organizer_fulfillment_receipt",
   "organizer_fulfillment_revocation",
   "organizer_handoff_ack",
+  "merchant_present_sale_authorization",
 ])
 
 export type OrderMessageTypeSchema = z.infer<typeof orderMessageTypeSchema>
@@ -885,6 +1104,7 @@ export const KNOWN_ORDER_STATUSES = [
   "paid",
   "accepted",
   "processing",
+  "ready_for_pickup",
   "shipped",
   "complete",
   "delivered",

@@ -416,7 +416,9 @@ describe("merchant product local-pickup workflow", () => {
     const signing = publish.indexOf("return signAndPublishProductWriteBundle")
 
     expect(publish).toContain("allowZeroPrice:")
-    expect(publish).toContain('form.fulfillment === "local_pickup"')
+    expect(publish).toContain(
+      'const localPickup = submittedForm.fulfillment === "local_pickup"'
+    )
     expect(evidence).toBeGreaterThan(-1)
     expect(zeroAuthorization).toBeGreaterThan(evidence)
     expect(normalization).toBeGreaterThan(zeroAuthorization)

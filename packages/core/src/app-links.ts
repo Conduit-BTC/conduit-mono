@@ -228,6 +228,28 @@ export function buildMarketEventCatalogUrl(
   return url.toString()
 }
 
+/**
+ * Build an explicit merchant-booth entry point for one event.
+ *
+ * The query only records the buyer's shopping context. It is not merchant
+ * authority for price, stock, payment, or fulfillment.
+ */
+export function buildMarketEventMerchantBoothUrl(
+  marketOrigin: string,
+  eventNaddr: string,
+  merchantPubkey: string
+): string {
+  const normalizedMerchant = normalizePubkey(merchantPubkey)
+  if (!normalizedMerchant) {
+    throw new Error("Event booth link requires a valid merchant public key.")
+  }
+
+  const url = new URL(buildMarketEventCatalogUrl(marketOrigin, eventNaddr))
+  url.searchParams.set("merchant", pubkeyToNpub(normalizedMerchant))
+  url.searchParams.set("purchase", "booth")
+  return url.toString()
+}
+
 /** Build a Merchant participation URL that imports one exact event catalog. */
 export function buildMerchantEventParticipationUrl(
   merchantOrigin: string,

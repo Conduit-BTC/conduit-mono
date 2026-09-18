@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import type { OrderSchema } from "@conduit/core"
 import {
   confirmMerchantPayment,
+  publishMerchantOrganizerPickupReady,
   type MerchantPaymentConfirmationInput,
 } from "../apps/merchant/src/lib/order-payment-release"
 
@@ -24,6 +25,26 @@ const input: MerchantPaymentConfirmationInput = {
 }
 
 describe("merchant payment and optional organizer release", () => {
+  it("publishes buyer readiness only as a merchant-authored status", async () => {
+    const calls: unknown[] = []
+    await publishMerchantOrganizerPickupReady(input, async (target) => {
+      calls.push(target)
+      return { recipient: {}, selfCopy: {} } as never
+    })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      merchantPubkey: order.merchantPubkey,
+      buyerPubkey: order.buyerPubkey,
+      orderId: order.id,
+      type: "status_update",
+      tags: [["status", "ready_for_pickup"]],
+      payload: { status: "ready_for_pickup" },
+      delivery: "buyer_and_self",
+      signerInteraction: "external",
+    })
+  })
+
   it("confirms payment only when readiness is not explicitly authorized", async () => {
     const calls: string[] = []
     const result = await confirmMerchantPayment(

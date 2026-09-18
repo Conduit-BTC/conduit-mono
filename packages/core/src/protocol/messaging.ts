@@ -417,6 +417,7 @@ const LEGACY_ORDER_MESSAGE_TYPES = new Set([
   "organizer_fulfillment_receipt",
   "organizer_fulfillment_revocation",
   "organizer_handoff_ack",
+  "merchant_present_sale_authorization",
 ])
 const EVENT_MARKET_PRIVATE_MESSAGE_TYPES = new Set([
   "organizer_fulfillment_receipt",

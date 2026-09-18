@@ -6,8 +6,9 @@ import {
   ChevronDown,
   MapPin,
   RefreshCw,
+  Store,
 } from "lucide-react"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import {
   useEffect,
   useId,
@@ -103,6 +104,7 @@ function EventCatalogProductCard({
   pricePreference,
   onCartNotice,
   onMerchantActivate,
+  boothContext,
 }: {
   entry: EventCatalog["products"][number]
   catalog: EventCatalog
@@ -115,6 +117,11 @@ function EventCatalogProductCard({
   pricePreference: ReturnType<typeof useShopperPricing>["preference"]
   onMerchantActivate: () => void
   onCartNotice: (message: string) => void
+  boothContext?: {
+    merchantPubkey: string
+    collectionCoordinate: string
+    available: boolean
+  }
 }) {
   const cart = useCart()
   const { product } = entry
@@ -153,12 +160,31 @@ function EventCatalogProductCard({
         },
       })
     : null
-  const candidate = pickupFulfillment
+  const baseCandidate = pickupFulfillment
     ? cartItemInputFromProductSelection(
         product,
         selectedProduct,
         pickupFulfillment
       )
+    : null
+  const boothIntentEligible =
+    boothContext?.available === true &&
+    boothContext.merchantPubkey === selectedProduct.pubkey &&
+    handoff?.mode === "merchant_handoff" &&
+    handoff.handlerPubkey === selectedProduct.pubkey
+  const candidate = baseCandidate
+    ? {
+        ...baseCandidate,
+        ...(boothIntentEligible
+          ? {
+              purchaseIntent: {
+                kind: "merchant_present_candidate" as const,
+                merchantPubkey: boothContext.merchantPubkey,
+                collectionCoordinate: boothContext.collectionCoordinate,
+              },
+            }
+          : {}),
+      }
     : null
   const existing = candidate
     ? cart.items.find(
@@ -175,7 +201,8 @@ function EventCatalogProductCard({
     hasPickupFulfillment: pickupFulfillment !== null,
     isChecking: isChecking && !pickupFulfillment,
   })
-  const canAdd = cartAction.enabled
+  const boothContextBlocked = Boolean(boothContext && !boothIntentEligible)
+  const canAdd = cartAction.enabled && !boothContextBlocked
 
   useEffect(() => {
     setSelectedProductId((previous) =>
@@ -232,8 +259,12 @@ function EventCatalogProductCard({
         onAddToCart={add}
         onIncrement={canAdd ? increment : undefined}
         onDecrement={canAdd ? decrement : undefined}
-        cartActionDisabled={!cartAction.enabled}
-        cartActionDisabledLabel={cartAction.disabledLabel ?? undefined}
+        cartActionDisabled={!canAdd}
+        cartActionDisabledLabel={
+          boothContextBlocked
+            ? "This listing is not available for a merchant-present sale. Use ordinary event checkout for organizer handoff, or ask the merchant to reconcile their event arrangement."
+            : (cartAction.disabledLabel ?? undefined)
+        }
       />
       {!pickupFulfillment ? (
         <div className="rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
@@ -501,6 +532,10 @@ function EventCatalogPage() {
       replace: true,
     })
   }
+  const boothMerchant =
+    search.purchase === "booth" && selectedMerchantPubkey
+      ? selectedMerchantPubkey
+      : undefined
   const shopperPricing = useShopperPricing()
   const session = useConduitSession()
   const [cartNotice, setCartNotice] = useState<string | null>(null)
@@ -550,6 +585,45 @@ function EventCatalogPage() {
   const selectedMerchantName = selectedMerchantPubkey
     ? merchantIdentities.getIdentity(selectedMerchantPubkey).displayName
     : undefined
+  const boothMerchantProducts = boothMerchant
+    ? (catalog?.products.filter(
+        ({ product }) => product.pubkey === boothMerchant
+      ) ?? [])
+    : []
+  const boothMerchantFulfillmentGroups = boothMerchantProducts.map((entry) =>
+    entry.pickupFulfillment
+      ? [entry.pickupFulfillment]
+      : Object.values(entry.familyPickupFulfillments ?? {}).filter(
+          (fulfillment) => fulfillment !== null
+        )
+  )
+  const boothMerchantHandoffs = boothMerchantFulfillmentGroups
+    .flat()
+    .map(getPickupHandoffSummary)
+  const boothMerchantHasUnresolvedProducts =
+    boothMerchantFulfillmentGroups.some(
+      (fulfillments) => fulfillments.length === 0
+    )
+  const boothMerchantOwnedCount = boothMerchantHandoffs.filter(
+    (handoff) =>
+      handoff?.mode === "merchant_handoff" &&
+      handoff.handlerPubkey === boothMerchant
+  ).length
+  const boothMerchantStatus = !boothMerchant
+    ? null
+    : boothMerchantProducts.length === 0
+      ? "not_in_catalog"
+      : !boothMerchantHasUnresolvedProducts &&
+          boothMerchantHandoffs.length > 0 &&
+          boothMerchantOwnedCount === boothMerchantHandoffs.length
+        ? "available"
+        : boothMerchantOwnedCount > 0
+          ? "conflicting"
+          : "organizer_handoff"
+  const boothMerchantAccepted = boothMerchantStatus === "available"
+  const boothMerchantName = boothMerchant
+    ? merchantIdentities.getIdentity(boothMerchant).displayName
+    : null
 
   const awaitingHeader =
     isChecking &&
@@ -768,12 +842,13 @@ function EventCatalogPage() {
       </header>
 
       <EventCatalogBrowser
-        key={collection.coordinate}
+        key={`${collection.coordinate}:${boothMerchant ?? "event"}`}
         products={catalog.products}
         identities={merchantIdentities.identitiesByPubkey}
         merchant={selectedMerchantPubkey}
         selectedMerchantName={selectedMerchantName}
         onMerchantChange={updateMerchantFilter}
+        merchantLocked={Boolean(boothMerchant)}
         renderProduct={(entry, index, onMerchantActivate) => (
           <EventCatalogProductCard
             entry={entry}
@@ -787,9 +862,65 @@ function EventCatalogPage() {
             pricePreference={shopperPricing.preference}
             onCartNotice={setCartNotice}
             onMerchantActivate={onMerchantActivate}
+            boothContext={
+              boothMerchant
+                ? {
+                    merchantPubkey: boothMerchant,
+                    collectionCoordinate: collection.coordinate,
+                    available: boothMerchantAccepted,
+                  }
+                : undefined
+            }
           />
         )}
       >
+        {boothMerchant ? (
+          <div
+            role={boothMerchantAccepted ? "status" : "alert"}
+            data-testid="merchant-booth-context"
+            className={`flex flex-col gap-3 rounded-xl border p-4 text-sm leading-6 sm:flex-row sm:items-start sm:justify-between ${
+              boothMerchantAccepted
+                ? "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)]"
+                : "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] text-[var(--text-secondary)]"
+            }`}
+          >
+            <div className="flex min-w-0 items-start gap-3">
+              <Store
+                aria-hidden="true"
+                className="mt-0.5 size-5 shrink-0 text-[var(--text-primary)]"
+              />
+              <div>
+                <p className="font-medium text-[var(--text-primary)]">
+                  {boothMerchantAccepted
+                    ? `Shopping in person with ${boothMerchantName}`
+                    : boothMerchantStatus === "conflicting"
+                      ? "This merchant's event listings need handoff reconciliation"
+                      : boothMerchantStatus === "organizer_handoff"
+                        ? "This merchant uses organizer handoff at this event"
+                        : "This booth is not available in the current event catalog"}
+                </p>
+                <p className="mt-1 text-pretty">
+                  {boothMerchantAccepted
+                    ? "Choose the physical goods in front of you. Before payment, the merchant must confirm the exact items and physical availability; this booth link does not override signed price, payment, or pickup checks."
+                    : boothMerchantStatus === "conflicting"
+                      ? "Products cannot be added from this booth entry until the merchant republishes the affected listings under one event-wide arrangement. Use ordinary event browsing for unaffected purchases."
+                      : boothMerchantStatus === "organizer_handoff"
+                        ? "A booth link cannot change signed handoff authority. Use ordinary event checkout so the organizer can prepare pickup, or ask the merchant for help."
+                        : "The merchant is not currently represented by an accepted, resolved listing. Refresh the event or ask the merchant for a current booth link before adding items."}
+                </p>
+              </div>
+            </div>
+            <Button asChild variant="outline" size="sm" className="shrink-0">
+              <Link
+                to="/events/$collectionRef"
+                params={{ collectionRef }}
+                search={{}}
+              >
+                Browse the whole event
+              </Link>
+            </Button>
+          </div>
+        ) : null}
         {!isChecking && catalog.productReadState !== "ready" ? (
           <div
             role="status"

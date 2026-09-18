@@ -19,6 +19,7 @@ import {
   type EventMarketFulfillmentRevocationSchema,
   type EventMarketHandoffAckSchema,
   type EventMarketReadyReceiptSchema,
+  type MerchantPresentSaleAuthorizationSchema,
   type OrderMessageTypeSchema,
   type OrderSchema,
   type PaymentProofMessageSchema,
@@ -30,6 +31,7 @@ import {
   type ShippingUpdateMessageSchema,
   type StatusUpdateMessageSchema,
 } from "../schemas"
+import { parseMerchantPresentSaleAuthorizationRumor } from "./merchant-present-sale"
 
 /**
  * Parse a Conduit MVP order rumor event (kind 16) from its JSON content.
@@ -44,7 +46,7 @@ export function parseOrderRumorEvent(
 type OrderRumorEvent = Pick<
   NDKEvent,
   "id" | "created_at" | "content" | "tags" | "pubkey"
->
+> & { kind?: number }
 
 type ParsedOrderMessageBase = {
   id: string
@@ -93,6 +95,10 @@ export type ParsedOrderMessage =
   | (ParsedOrderMessageBase & {
       type: "organizer_handoff_ack"
       payload: EventMarketHandoffAckSchema
+    })
+  | (ParsedOrderMessageBase & {
+      type: "merchant_present_sale_authorization"
+      payload: MerchantPresentSaleAuthorizationSchema
     })
 
 export type ParsedEventMarketPrivateMessage = Extract<
@@ -403,6 +409,21 @@ export function parseOrderMessageRumorEvent(
   if (type === "organizer_handoff_ack") {
     const payload = eventMarketHandoffAckSchema.parse(json)
     return { ...messageBase(event, type, payload.claimRef), payload }
+  }
+
+  if (type === "merchant_present_sale_authorization") {
+    if (event.kind === undefined) {
+      throw new Error("Merchant-present authorization must use kind 16.")
+    }
+    const payload = parseMerchantPresentSaleAuthorizationRumor({
+      kind: event.kind,
+      id: event.id,
+      pubkey: event.pubkey,
+      created_at: event.created_at,
+      tags: event.tags,
+      content: event.content,
+    })
+    return { ...messageBase(event, type, payload.orderId), payload }
   }
 
   return {

@@ -5,7 +5,9 @@ import {
   getEffectiveMerchantOrderStatus,
   getMerchantOrderActions,
   getOrderStatusDisplay,
+  isMerchantOrderAccepted,
   isMerchantOrderPaid,
+  isMerchantOrderReadyForPickup,
   KNOWN_ORDER_STATUSES,
   normalizeSafeHttpUrl,
   orderStatusEnum,
@@ -46,6 +48,7 @@ describe("canonical order statuses", () => {
       paid: "Paid",
       accepted: "Accepted",
       processing: "Processing",
+      ready_for_pickup: "Ready for pickup",
       shipped: "Shipped",
       complete: "Complete",
       delivered: "Delivered",
@@ -158,6 +161,27 @@ describe("getOrderStatusDisplay", () => {
       tone: "neutral",
       label: "Awaiting Fulfillment",
     })
+  })
+
+  it("recognizes pickup readiness without treating it as payment proof", () => {
+    const state = {
+      status: "ready_for_pickup",
+      fulfillmentMode: "pickup" as const,
+    }
+
+    expect(getOrderStatusDisplay(state.status)).toEqual({
+      tone: "success",
+      label: "Ready for pickup",
+    })
+    expect(isMerchantOrderAccepted(state)).toBe(true)
+    expect(isMerchantOrderReadyForPickup(state)).toBe(true)
+    expect(isMerchantOrderPaid(state)).toBe(false)
+    expect(
+      isMerchantOrderReadyForPickup({
+        ...state,
+        fulfillmentMode: "shipping",
+      })
+    ).toBe(false)
   })
 })
 

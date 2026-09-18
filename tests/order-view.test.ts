@@ -13,6 +13,7 @@ import {
   deriveManualInvoiceAccess,
   deriveOrderHeaderStatus,
   getOrderFilterPhase,
+  getOrganizerHandoffJourneyState,
   getOrderPaymentFailureDetail,
   getOrderPaymentMethodLabel,
   isZeroCostPickupOrder,
@@ -1215,6 +1216,73 @@ describe("buildOrderTimeline", () => {
       "payment",
       "receipt",
     ])
+  })
+
+  it("shows every organizer-handoff readiness state, including guest recovery", () => {
+    const awaiting = zeroPickupVm({
+      buyerIdentityKind: "guest_ephemeral",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "sent",
+    })
+    expect(getOrganizerHandoffJourneyState(awaiting)).toBe(
+      "awaiting_merchant_confirmation"
+    )
+    expect(buildOrderTimeline(awaiting).map((row) => row.key)).toContain(
+      "fulfillment"
+    )
+    expect(
+      buildOrderTimeline(awaiting).find((row) => row.key === "fulfillment")
+        ?.title
+    ).toBe("Awaiting merchant confirmation")
+
+    const buyerPaidButMerchantUnconfirmed = {
+      ...awaiting,
+      totalSats: 100,
+      totalMsats: 100_000,
+      merchantStatus: "accepted" as const,
+      items: awaiting.items.map((item) => ({
+        ...item,
+        priceAtPurchase: 100,
+        sourcePrice: {
+          amount: 100,
+          currency: "SATS",
+          normalizedCurrency: "SATS",
+        },
+      })),
+    }
+    expect(
+      getOrganizerHandoffJourneyState(buyerPaidButMerchantUnconfirmed)
+    ).toBe("awaiting_merchant_confirmation")
+
+    const preparing = {
+      ...awaiting,
+      merchantStatus: "processing" as const,
+    }
+    expect(getOrganizerHandoffJourneyState(preparing)).toBe("preparing_pickup")
+    expect(
+      buildOrderTimeline(preparing).find((row) => row.key === "fulfillment")
+        ?.title
+    ).toBe("Preparing pickup")
+
+    const ready = {
+      ...awaiting,
+      merchantStatus: "ready_for_pickup" as const,
+    }
+    expect(getOrganizerHandoffJourneyState(ready)).toBe("ready_for_pickup")
+    expect(deriveOrderHeaderStatus(ready)).toMatchObject({
+      primaryLabel: "Ready for pickup",
+      detailLabel: "Organizer pickup authorized",
+    })
+
+    const collected = {
+      ...awaiting,
+      merchantStatus: "complete" as const,
+    }
+    expect(getOrganizerHandoffJourneyState(collected)).toBe("collected")
+    expect(deriveOrderHeaderStatus(collected)).toMatchObject({
+      primaryLabel: "Collected",
+      detailLabel: "Organizer recorded collection",
+    })
   })
 
   it("removes invoice, payment, and proof rows from a free pickup order", () => {

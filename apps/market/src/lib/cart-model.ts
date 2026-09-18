@@ -1,4 +1,5 @@
 import {
+  EVENT_KINDS,
   getPriceSats,
   getProductImageCandidates,
   getShippingCostSats,
@@ -7,6 +8,7 @@ import {
   isFiatCurrencyCode,
   normalizeProductCoordinate,
   orderItemFulfillmentSchema,
+  parseAddressableCoordinate,
   resolveOrderPickupHandoffAuthority,
   resolveCartShippingCost,
   type CommerceQueryMeta,
@@ -51,6 +53,11 @@ export type CartItem = {
    * digital delivery.
    */
   fulfillment?: CartItemFulfillment
+  /**
+   * Buyer-selected purchase context. This separates a booth candidate from a
+   * remote pickup line, but never authorizes stock, price, payment, or handoff.
+   */
+  purchaseIntent?: CartPurchaseIntent
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
   shippingCostSats?: number
   sourceShippingCost?: {
@@ -78,6 +85,12 @@ export type CartItem = {
   /** Last known stock value from legacy GammaMarkets-compatible tags. Zero means the item is sold out. */
   stock?: number
   quantity: number
+}
+
+export type CartPurchaseIntent = {
+  kind: "merchant_present_candidate"
+  merchantPubkey: string
+  collectionCoordinate: string
 }
 
 export type PickupEvidenceCoordinate = PickupEvidenceCoordinateSchema
@@ -635,6 +648,33 @@ function parseSpecifications(
   return specifications
 }
 
+function parseCartPurchaseIntent(
+  value: unknown
+): CartPurchaseIntent | null | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) return null
+  const merchantPubkey = nonemptyString(value.merchantPubkey)?.toLowerCase()
+  const parsedCollection =
+    typeof value.collectionCoordinate === "string"
+      ? parseAddressableCoordinate(value.collectionCoordinate, [
+          EVENT_KINDS.PRODUCT_COLLECTION,
+        ])
+      : null
+  if (
+    value.kind !== "merchant_present_candidate" ||
+    !merchantPubkey ||
+    !/^[0-9a-f]{64}$/.test(merchantPubkey) ||
+    !parsedCollection
+  ) {
+    return null
+  }
+  return {
+    kind: "merchant_present_candidate",
+    merchantPubkey,
+    collectionCoordinate: parsedCollection.coordinate,
+  }
+}
+
 function parseCartItem(value: unknown): CartItem | null {
   if (!isRecord(value)) return null
   const storedProductId = nonemptyString(value.productId)
@@ -681,6 +721,8 @@ function parseCartItem(value: unknown): CartItem | null {
       : orderItemFulfillmentSchema.safeParse(value.fulfillment)
   if (fulfillmentResult && !fulfillmentResult.success) return null
   const fulfillment = fulfillmentResult?.data
+  const purchaseIntent = parseCartPurchaseIntent(value.purchaseIntent)
+  if (purchaseIntent === null) return null
   const zapMessagePolicy = normalizeCartZapMessagePolicy(value.zapMessagePolicy)
 
   return {
@@ -701,6 +743,7 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(tags ? { tags } : {}),
     ...(format ? { format } : {}),
     ...(fulfillment ? { fulfillment } : {}),
+    ...(purchaseIntent ? { purchaseIntent } : {}),
     ...(shippingCostSats !== undefined ? { shippingCostSats } : {}),
     ...(stock !== undefined ? { stock } : {}),
     ...(sourceShippingCost ? { sourceShippingCost } : {}),
@@ -779,6 +822,52 @@ function getCartPickupHandoffFingerprint(fulfillment: CartPickupFulfillment): {
   }
 }
 
+function getCartPurchaseIntentKey(
+  purchaseIntent: CartPurchaseIntent | undefined
+): string | null {
+  return purchaseIntent
+    ? JSON.stringify([
+        purchaseIntent.kind,
+        purchaseIntent.merchantPubkey.toLowerCase(),
+        purchaseIntent.collectionCoordinate,
+      ])
+    : null
+}
+
+export function isSameCartPurchaseIntent(
+  left: Pick<CartItem, "purchaseIntent">,
+  right: Pick<CartItem, "purchaseIntent">
+): boolean {
+  return (
+    getCartPurchaseIntentKey(left.purchaseIntent) ===
+    getCartPurchaseIntentKey(right.purchaseIntent)
+  )
+}
+
+/**
+ * A booth intent remains only a candidate until the merchant signs an exact
+ * sale authorization. This helper only proves that the local context still
+ * matches an explicit merchant-owned event pickup graph.
+ */
+export function hasCompatibleMerchantPresentPurchaseIntent(
+  item: Pick<CartItem, "merchantPubkey" | "fulfillment" | "purchaseIntent">
+): item is typeof item & { purchaseIntent: CartPurchaseIntent } {
+  const intent = item.purchaseIntent
+  const fulfillment = item.fulfillment
+  if (!intent || fulfillment?.type !== "pickup") return false
+  const authority = resolveOrderPickupHandoffAuthority(fulfillment)
+  return (
+    intent.kind === "merchant_present_candidate" &&
+    intent.merchantPubkey.toLowerCase() === item.merchantPubkey.toLowerCase() &&
+    intent.collectionCoordinate === fulfillment.collection.coordinate &&
+    fulfillment.handoffMode === "merchant_handoff" &&
+    Boolean(fulfillment.handlerPubkey) &&
+    !authority.legacySafeDefault &&
+    authority.mode === "merchant_handoff" &&
+    authority.handlerPubkey.toLowerCase() === item.merchantPubkey.toLowerCase()
+  )
+}
+
 export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
   return JSON.stringify(
     items
@@ -845,6 +934,7 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
         publicZapEnabled: item.publicZapEnabled ?? null,
         zapMessagePolicy: item.zapMessagePolicy ?? null,
         publicZapPolicyKnown: item.publicZapPolicyKnown ?? null,
+        purchaseIntent: item.purchaseIntent ?? null,
       }))
       .sort((a, b) =>
         `${a.merchantPubkey}:${a.productId}`.localeCompare(
@@ -872,11 +962,17 @@ export function rebuildCurrentCartItems(
   for (const item of items) {
     const product = productsByKey.get(getCartItemKey(item))
     if (!product || product.type === "variable") return null
+    const currentFulfillment = currentFulfillmentByProductId?.get(product.id)
+    const currentPurchaseContext = {
+      merchantPubkey: product.pubkey,
+      fulfillment: currentFulfillment,
+      purchaseIntent: item.purchaseIntent,
+    }
     currentItems.push({
-      ...createCartItemFromProduct(
-        product,
-        currentFulfillmentByProductId?.get(product.id)
-      ),
+      ...createCartItemFromProduct(product, currentFulfillment),
+      ...(hasCompatibleMerchantPresentPurchaseIntent(currentPurchaseContext)
+        ? { purchaseIntent: currentPurchaseContext.purchaseIntent }
+        : {}),
       familyProductId:
         product.type === "variation" ? product.parentProductId : undefined,
       selectedSpecifications:
@@ -1185,28 +1281,39 @@ function pickupCostSatsAreQuoteDerived(
  * were added under a different signed pickup snapshot.
  */
 export function getCartLineFulfillmentId(
-  item: Pick<CartItem, "format" | "fulfillment">
+  item: Pick<CartItem, "format" | "fulfillment" | "purchaseIntent">
 ): string {
-  return item.fulfillment?.type === "pickup"
-    ? getPickupLineFulfillmentKey(item.fulfillment)
-    : getCartItemFulfillmentType(item)
+  const fulfillmentId =
+    item.fulfillment?.type === "pickup"
+      ? getPickupLineFulfillmentKey(item.fulfillment)
+      : getCartItemFulfillmentType(item)
+  const purchaseIntentKey = getCartPurchaseIntentKey(item.purchaseIntent)
+  return purchaseIntentKey
+    ? JSON.stringify([fulfillmentId, purchaseIntentKey])
+    : fulfillmentId
 }
 
 export function isSameCartLineFulfillment(
-  left: Pick<CartItem, "format" | "fulfillment">,
-  right: Pick<CartItem, "format" | "fulfillment">
+  left: Pick<CartItem, "format" | "fulfillment" | "purchaseIntent">,
+  right: Pick<CartItem, "format" | "fulfillment" | "purchaseIntent">
 ): boolean {
   return getCartLineFulfillmentId(left) === getCartLineFulfillmentId(right)
 }
 
 export function getCartPurchaseGroupId(
-  item: Pick<CartItem, "merchantPubkey" | "format" | "fulfillment">
+  item: Pick<
+    CartItem,
+    "merchantPubkey" | "format" | "fulfillment" | "purchaseIntent"
+  >
 ): string {
   const compatibility =
     item.fulfillment?.type === "pickup"
       ? getPickupPurchaseCompatibilityKey(item.fulfillment)
       : "delivery"
-  return JSON.stringify([item.merchantPubkey, compatibility])
+  const purchaseIntentKey = getCartPurchaseIntentKey(item.purchaseIntent)
+  return purchaseIntentKey
+    ? JSON.stringify([item.merchantPubkey, compatibility, purchaseIntentKey])
+    : JSON.stringify([item.merchantPubkey, compatibility])
 }
 
 /** Stable, display-only cue for distinguishing otherwise identical choices. */
@@ -1240,6 +1347,7 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
       (group) =>
         group.merchantPubkey === item.merchantPubkey &&
         group.kind === kind &&
+        isSameCartPurchaseIntent(group.items[0]!, item) &&
         (kind === "delivery" || isSameCartFulfillment(group.items[0]!, item))
     )
     if (existing) {

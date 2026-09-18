@@ -1282,6 +1282,62 @@ export function reconcileAcknowledgedMerchantOrganizerCollectionEvidence(
     .reduce(reconcileMerchantOrganizerCollectionEvidence, market)
 }
 
+/**
+ * Organizer-side defense against accepting contradictory per-product handoff.
+ * This lives at the shared collection publication boundary so every organizer
+ * acceptance path, including the primary event-management screen, enforces the
+ * merchant/event invariant.
+ */
+export function assertOrganizerAcceptanceHandoffInvariant(
+  market: MerchantOrganizerEventMarket,
+  candidate: MerchantOrganizerParticipation
+): void {
+  const merchantPubkey = candidate.merchantPubkey?.toLowerCase()
+  if (
+    !merchantPubkey ||
+    candidate.fulfillmentStatus !== "resolved" ||
+    !candidate.handoffMode ||
+    !candidate.handlerPubkey ||
+    !candidate.pickupCoordinate
+  ) {
+    throw new Error(
+      "Product acceptance requires one resolved merchant/event handoff arrangement."
+    )
+  }
+  const acceptedForMerchant = market.participation.filter(
+    (item) =>
+      item.status === "accepted" &&
+      item.productCoordinate !== candidate.productCoordinate &&
+      item.merchantPubkey?.toLowerCase() === merchantPubkey
+  )
+  if (
+    acceptedForMerchant.some(
+      (item) =>
+        item.fulfillmentStatus !== "resolved" ||
+        !item.handoffMode ||
+        !item.handlerPubkey ||
+        !item.pickupCoordinate
+    )
+  ) {
+    throw new Error(
+      "Existing accepted listings have unresolved handoff evidence. Reconcile them before accepting another product."
+    )
+  }
+  if (
+    acceptedForMerchant.some(
+      (item) =>
+        item.handoffMode !== candidate.handoffMode ||
+        item.handlerPubkey?.toLowerCase() !==
+          candidate.handlerPubkey?.toLowerCase() ||
+        item.pickupCoordinate !== candidate.pickupCoordinate
+    )
+  ) {
+    throw new Error(
+      "This product conflicts with the merchant's event handoff arrangement. Reconcile the merchant's event listings before acceptance."
+    )
+  }
+}
+
 export async function publishMerchantOrganizerMembership(input: {
   organizerPubkey: string
   authenticatedPubkey?: string | null
@@ -1295,6 +1351,9 @@ export async function publishMerchantOrganizerMembership(input: {
     collectionCoordinate: string
   ) => void | Promise<void>
 }): Promise<MerchantOrganizerRecordDelivery> {
+  if (input.action === "accept") {
+    assertOrganizerAcceptanceHandoffInvariant(input.market, input.item)
+  }
   const retainedCollection =
     input.retainedCollection ??
     loadOrganizerEventMarketDeliveryOutbox(input.organizerPubkey)[
@@ -1353,7 +1412,10 @@ export async function publishMerchantOrganizerMembership(input: {
     authenticatedPubkey: input.authenticatedPubkey,
     shouldContinue: input.shouldContinue,
     collection,
-    previousCreatedAt: market.collectionCreatedAt,
+    previousCreatedAt:
+      input.action === "accept"
+        ? Math.max(market.collectionCreatedAt ?? 0, input.item.createdAt ?? 0)
+        : market.collectionCreatedAt,
     onSignedEvent: async (record) => {
       await input.onSignedEvent?.(
         projectDeliveryRecord(record),

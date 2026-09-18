@@ -79,7 +79,8 @@ describe("Market event catalog route", () => {
       "apps/market/src/routes/events/$collectionRef.tsx"
     ).text()
 
-    expect(route).toContain("const candidate = pickupFulfillment")
+    expect(route).toContain("const baseCandidate = pickupFulfillment")
+    expect(route).toContain("const candidate = baseCandidate")
     expect(route).toContain("pickupFulfillment !== null")
     expect(route).toContain("!canAdd || !candidate")
     expect(route).not.toContain("pickupFulfillment ?? undefined")

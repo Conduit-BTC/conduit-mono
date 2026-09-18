@@ -14,6 +14,7 @@ import {
   cn,
 } from "@conduit/ui"
 import type { MerchantOrganizerEventMarket } from "../lib/event-market"
+import type { MerchantEventHandoffArrangement } from "../lib/merchant-event-handoff-arrangement"
 import {
   canonicalizeProductEventMarketReference,
   getProductLocalPickupEvidenceError,
@@ -48,6 +49,7 @@ export function ProductFulfillmentEditor({
   resolving,
   readFailed,
   participation,
+  eventHandoffArrangement,
   onIntentChange,
   onReferenceChange,
   onHandoffModeChange,
@@ -66,6 +68,7 @@ export function ProductFulfillmentEditor({
   resolving: boolean
   readFailed: boolean
   participation: ProductEventParticipationState
+  eventHandoffArrangement?: MerchantEventHandoffArrangement | null
   onIntentChange: (intent: ProductFulfillmentChoice) => void
   onReferenceChange: (reference: string) => void
   onHandoffModeChange: (mode: EventMarketHandoffMode) => void
@@ -106,6 +109,10 @@ export function ProductFulfillmentEditor({
           readFailed,
         })
       : null)
+  const inheritedSelection =
+    eventHandoffArrangement?.state === "consistent"
+      ? eventHandoffArrangement.selection
+      : null
 
   function importReference(): void {
     try {
@@ -230,9 +237,33 @@ export function ProductFulfillmentEditor({
             </Button>
           </div>
 
-          {market && !baseEvidenceError && (
+          {market && !baseEvidenceError && inheritedSelection ? (
+            <div
+              className="rounded-xl border border-success/30 bg-success/10 p-3"
+              data-testid="product-inherited-event-handoff"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-medium text-[var(--text-primary)]">
+                    Event handoff inherited
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+                    {inheritedSelection.mode === "organizer_handoff"
+                      ? `Organizer hands it out · ${market.pickupTitle ?? "Organizer pickup"}`
+                      : `I hand it out · ${inheritedSelection.merchantPickup?.title ?? "Merchant pickup"}`}
+                  </p>
+                </div>
+                <StatusPill variant="success">Shared by this event</StatusPill>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+                Every listing from your account at this event uses this one
+                arrangement. Change it from the event setup so all affected
+                listings can be updated and retried together.
+              </p>
+            </div>
+          ) : market && !baseEvidenceError ? (
             <div className="grid gap-2" aria-label="Event handoff handler">
-              <Label>Who hands out this product?</Label>
+              <Label>Set this event&apos;s handoff arrangement</Label>
               <Button
                 type="button"
                 variant="outline"
@@ -294,10 +325,11 @@ export function ProductFulfillmentEditor({
                   </p>
                 )}
             </div>
-          )}
+          ) : null}
 
           {market &&
             !baseEvidenceError &&
+            !inheritedSelection &&
             handoffMode === "merchant_handoff" && (
               <div className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 sm:grid-cols-2">
                 <div className="sm:col-span-2">

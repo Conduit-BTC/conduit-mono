@@ -18,4 +18,14 @@ describe("event catalog route search", () => {
     expect(parseEventCatalogSearch({ merchant: "not-a-pubkey" })).toEqual({})
     expect(parseEventCatalogSearch({ merchant: [MERCHANT_PUBKEY] })).toEqual({})
   })
+
+  it("preserves only the explicit merchant booth purchase mode", () => {
+    expect(
+      parseEventCatalogSearch({
+        merchant: MERCHANT_PUBKEY,
+        purchase: "booth",
+      })
+    ).toEqual({ merchant: pubkeyToNpub(MERCHANT_PUBKEY), purchase: "booth" })
+    expect(parseEventCatalogSearch({ purchase: "checkout" })).toEqual({})
+  })
 })

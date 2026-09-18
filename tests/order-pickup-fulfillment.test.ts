@@ -82,6 +82,18 @@ function pickupOrder() {
   }
 }
 
+function merchantBoothOrder() {
+  const fulfillment = pickupFulfillment()
+  fulfillment.option.coordinate = `30406:${MERCHANT}:merchant-booth`
+  fulfillment.handoffMode = "merchant_handoff"
+  fulfillment.handlerPubkey = MERCHANT
+  const order = pickupOrder()
+  order.items[0]!.fulfillment = fulfillment
+  order.items[0]!.shippingOptionId = fulfillment.option.coordinate
+  order.items[0]!.shippingOptionDTag = "merchant-booth"
+  return order
+}
+
 function additionalPickupItem(
   fulfillment: OrderPickupFulfillmentSchema = pickupFulfillment()
 ) {
@@ -176,19 +188,83 @@ describe("pickup order fulfillment evidence", () => {
   })
 
   it("accepts a merchant-authored booth pickup only as merchant handoff", () => {
-    const fulfillment = pickupFulfillment()
-    fulfillment.option.coordinate = `30406:${MERCHANT}:merchant-booth`
-    fulfillment.handoffMode = "merchant_handoff"
-    fulfillment.handlerPubkey = MERCHANT
-    const order = pickupOrder()
-    order.items[0]!.fulfillment = fulfillment
-    order.items[0]!.shippingOptionId = fulfillment.option.coordinate
-    order.items[0]!.shippingOptionDTag = "merchant-booth"
+    const order = merchantBoothOrder()
+    const fulfillment = order.items[0]!.fulfillment
 
     expect(orderSchema.safeParse(order).success).toBe(true)
     fulfillment.handoffMode = "organizer_handoff"
     fulfillment.handlerPubkey = ORGANIZER
     expect(orderSchema.safeParse(order).success).toBe(false)
+  })
+
+  it("distinguishes merchant-present guest pickup from remote pickup", () => {
+    const remote = merchantBoothOrder()
+    expect(orderSchema.safeParse(remote).success).toBe(true)
+    expect(
+      orderSchema.safeParse({
+        ...remote,
+        buyerIdentityKind: "guest_ephemeral",
+      }).success
+    ).toBe(false)
+
+    const merchantPresent = {
+      ...remote,
+      buyerIdentityKind: "guest_ephemeral" as const,
+      purchaseContext: {
+        type: "merchant_present" as const,
+        merchantPubkey: MERCHANT,
+        collection: { ...remote.items[0]!.fulfillment.collection },
+        reviewedCommerceFingerprintRef: "f".repeat(64),
+      },
+    }
+    const parsed = orderSchema.parse(merchantPresent)
+    expect(parsed.purchaseContext?.type).toBe("merchant_present")
+    expect(parsed.guestContact).toBeUndefined()
+  })
+
+  it("requires exact merchant-owned event context for merchant-present orders", () => {
+    const order = merchantBoothOrder()
+    const context = {
+      type: "merchant_present" as const,
+      merchantPubkey: MERCHANT,
+      collection: { ...order.items[0]!.fulfillment.collection },
+      reviewedCommerceFingerprintRef: "f".repeat(64),
+    }
+    expect(
+      orderSchema.safeParse({ ...order, purchaseContext: context }).success
+    ).toBe(true)
+    expect(
+      orderSchema.safeParse({
+        ...order,
+        purchaseContext: { ...context, merchantPubkey: OTHER_MERCHANT },
+      }).success
+    ).toBe(false)
+    expect(
+      orderSchema.safeParse({
+        ...order,
+        purchaseContext: {
+          ...context,
+          collection: { ...context.collection, eventId: "e".repeat(64) },
+        },
+      }).success
+    ).toBe(false)
+    expect(
+      orderSchema.safeParse({
+        ...order,
+        purchaseContext: { ...context, rawReviewedTerms: "must stay private" },
+      }).success
+    ).toBe(false)
+
+    const organizerPickup = pickupOrder()
+    expect(
+      orderSchema.safeParse({
+        ...organizerPickup,
+        purchaseContext: {
+          ...context,
+          collection: { ...organizerPickup.items[0]!.fulfillment.collection },
+        },
+      }).success
+    ).toBe(false)
   })
 
   it("preserves the exact signed graph without requiring a delivery address", () => {

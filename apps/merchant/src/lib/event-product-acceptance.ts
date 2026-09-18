@@ -1,5 +1,6 @@
 import { decodeProductReference } from "@conduit/core"
 import {
+  assertOrganizerAcceptanceHandoffInvariant,
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
   loadOrganizerEventMarketDeliveryOutbox,
@@ -94,6 +95,7 @@ export async function acceptOwnEventProduct(
       "Product published. Acceptance needs current signed product and pickup evidence; retry acceptance or open My events."
     )
   }
+  assertOrganizerAcceptanceHandoffInvariant(market, item)
   const savedDeliveries = dependencies.load(organizer)
   const savedCollection = savedDeliveries[reference.coordinate]?.find(
     (record) => record.record === "collection"
@@ -155,6 +157,7 @@ export async function acceptOwnEventProduct(
       record: retryAcceptance,
     })
   } else if (
+    item.status === "accepted" &&
     reconciledMarket.productCoordinates.includes(input.productCoordinate)
   ) {
     return true

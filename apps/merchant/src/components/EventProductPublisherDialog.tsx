@@ -20,7 +20,6 @@ import {
   SelectValue,
   SignedActionStatus,
   Textarea,
-  cn,
   type SignedActionStatusState,
 } from "@conduit/ui"
 import type {
@@ -37,6 +36,7 @@ import {
   validateEventProductPublishForm,
   type EventProductPublishFormValues,
 } from "../lib/event-product-publishing"
+import type { MerchantEventHandoffPreference } from "../lib/merchant-event-handoff-arrangement"
 import {
   getProductSignerRequestMessage,
   type ProductSignerRequestProgress,
@@ -65,6 +65,7 @@ export function EventProductPublisherDialog({
   authenticatedPubkey,
   shouldContinue,
   market,
+  handoffPreference,
   onOpenChange,
   onPublished,
 }: {
@@ -73,12 +74,13 @@ export function EventProductPublisherDialog({
   authenticatedPubkey: string | null
   shouldContinue: () => boolean
   market: MerchantOrganizerEventMarket
+  handoffPreference: MerchantEventHandoffPreference
   onOpenChange: (open: boolean) => void
   onPublished: (accepted: boolean) => void
 }) {
   const titleInputRef = useRef<HTMLInputElement>(null)
   const [form, setForm] = useState<EventProductPublishFormValues>(() =>
-    createEmptyEventProductForm(market)
+    createEmptyEventProductForm(market, handoffPreference)
   )
   const [submitted, setSubmitted] = useState(false)
   const [actionState, setActionState] =
@@ -118,7 +120,6 @@ export function EventProductPublisherDialog({
     [form]
   )
   const errors = submitted ? validation.product.errors : {}
-  const pickupError = submitted ? validation.pickupError : null
 
   async function completeAcceptance(productCoordinate: string) {
     setPublishedCoordinate(productCoordinate)
@@ -219,21 +220,24 @@ export function EventProductPublisherDialog({
   }
 
   function chooseTemplate(value: string): void {
+    if (signedEvent || pending) return
     setSubmitted(false)
     setActionState("dirty")
     setActionError("")
     if (value === BLANK_TEMPLATE) {
-      setForm(createEmptyEventProductForm(market))
+      setForm(createEmptyEventProductForm(market, handoffPreference))
       return
     }
     const template = templates.find(
       (candidate) => candidate.coordinate === value
     )
-    if (template) setForm(eventProductFormFromTemplate(template, market))
+    if (template) {
+      setForm(eventProductFormFromTemplate(template, market, handoffPreference))
+    }
   }
 
   function startAnotherPublication(): void {
-    setForm(createEmptyEventProductForm(market))
+    setForm(createEmptyEventProductForm(market, handoffPreference))
     setSubmitted(false)
     setActionState("dirty")
     setSignedEvent(null)
@@ -453,106 +457,39 @@ export function EventProductPublisherDialog({
               <FieldError id="event-product-tags-error" message={errors.tags} />
             </div>
 
-            <fieldset className="grid gap-2">
-              <legend className="text-sm font-medium text-[var(--text-primary)]">
-                Who hands the product to the buyer?
-              </legend>
-              <Button
-                type="button"
-                variant="outline"
-                aria-pressed={form.handoffMode === "merchant_handoff"}
-                className={cn(
-                  "h-auto justify-start whitespace-normal p-3 text-left",
-                  form.handoffMode === "merchant_handoff" &&
-                    "border-primary-500 bg-primary-500/10"
-                )}
-                onClick={() => update("handoffMode", "merchant_handoff")}
+            <section
+              className="grid gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+              aria-labelledby="event-product-handoff-title"
+            >
+              <h3
+                id="event-product-handoff-title"
+                className="text-sm font-medium text-[var(--text-primary)]"
               >
-                <span>
-                  <span className="block font-medium">I hand it out</span>
-                  <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
-                    The buyer meets you at your pickup point or booth.
-                  </span>
-                </span>
-              </Button>
-              {!ownsMarket && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  aria-pressed={form.handoffMode === "organizer_handoff"}
-                  disabled={!market.pickupCoordinate}
-                  className={cn(
-                    "h-auto justify-start whitespace-normal p-3 text-left",
-                    form.handoffMode === "organizer_handoff" &&
-                      "border-secondary-500 bg-secondary-500/10"
-                  )}
-                  onClick={() => update("handoffMode", "organizer_handoff")}
-                >
-                  <span>
-                    <span className="block font-medium">
-                      Organizer hands it out
-                    </span>
-                    <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
-                      You confirm payment and mark the item ready. Stay
-                      available remotely; the organizer receives your signed
-                      handoff instruction and pickup code, not independent
-                      payment proof.
-                    </span>
-                  </span>
-                </Button>
-              )}
-              {!ownsMarket && !market.pickupCoordinate && (
-                <p className="text-xs leading-5 text-[var(--text-muted)]">
-                  This organizer is not offering organizer handoff.
+                Event handoff arrangement
+              </h3>
+              <p className="font-semibold text-[var(--text-primary)]">
+                {handoffPreference.mode === "organizer_handoff"
+                  ? "Organizer hands it out"
+                  : "I hand it out"}
+              </p>
+              <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
+                This product inherits the merchant/event arrangement. Copying a
+                product does not reset or change it.
+              </p>
+              {handoffPreference.merchantPickup ? (
+                <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
+                  {handoffPreference.merchantPickup.location ||
+                    handoffPreference.merchantPickup.title}{" "}
+                  · {handoffPreference.merchantPickup.countries.join(", ")}
+                </p>
+              ) : (
+                <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
+                  You retain payment confirmation. The organizer receives only
+                  the minimal authorized pickup receipt after payment is
+                  confirmed.
                 </p>
               )}
-            </fieldset>
-
-            {form.handoffMode === "merchant_handoff" && (
-              <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 sm:grid-cols-[1fr_8rem]">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="event-product-pickup-location">
-                    Pickup point or booth
-                  </Label>
-                  <Input
-                    id="event-product-pickup-location"
-                    value={form.merchantPickupLocation}
-                    onChange={(event) =>
-                      update("merchantPickupLocation", event.target.value)
-                    }
-                    aria-invalid={!!pickupError}
-                    aria-describedby={
-                      pickupError ? "event-product-pickup-error" : undefined
-                    }
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="event-product-pickup-country">Country</Label>
-                  <Input
-                    id="event-product-pickup-country"
-                    maxLength={2}
-                    className="uppercase"
-                    value={form.merchantPickupCountry}
-                    onChange={(event) =>
-                      update(
-                        "merchantPickupCountry",
-                        event.target.value.toUpperCase()
-                      )
-                    }
-                    aria-invalid={!!pickupError}
-                    aria-describedby={
-                      pickupError ? "event-product-pickup-error" : undefined
-                    }
-                  />
-                </div>
-                <div className="sm:col-span-2">
-                  <FieldError
-                    id="event-product-pickup-error"
-                    message={pickupError ?? undefined}
-                  />
-                </div>
-              </div>
-            )}
+            </section>
           </fieldset>
           <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
             <SignedActionStatus
