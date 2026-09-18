@@ -211,24 +211,22 @@ test("printable event sign scales and excludes controls at 320px @merchant", asy
       merchantToQrGap: qrBounds.top - merchantLockupBounds.bottom,
     }
   })
-  expect(printLayout).toEqual({
-    sheetWidth: 816,
-    sheetHeight: 1_056,
-    sheetTransform: "none",
-    eventBannerWidth: 144,
-    eventBannerHeight: 48,
-    dividerWidth: 672,
-    dividerHeight: 2,
-    eventContextToDividerGap: 24,
-    dividerToMerchantGap: 20,
-    merchantLockupWidth: 672,
-    merchantLockupHeight: 336,
-    merchantBannerWidth: 672,
-    merchantBannerHeight: 224,
-    avatarWidth: 176,
-    merchantNameFontSize: 52,
-    merchantToQrGap: 16,
-  })
+  expect(printLayout.sheetWidth).toBe(816)
+  expect(printLayout.sheetHeight).toBe(1_056)
+  expect(printLayout.sheetTransform).toBe("none")
+  expect(printLayout.eventBannerWidth).toBe(176)
+  expect(printLayout.eventBannerHeight).toBeCloseTo(176 / 3, 1)
+  expect(printLayout.dividerWidth).toBe(672)
+  expect(printLayout.dividerHeight).toBe(2)
+  expect(printLayout.eventContextToDividerGap).toBe(24)
+  expect(printLayout.dividerToMerchantGap).toBe(20)
+  expect(printLayout.merchantLockupWidth).toBe(672)
+  expect(printLayout.merchantLockupHeight).toBe(336)
+  expect(printLayout.merchantBannerWidth).toBe(672)
+  expect(printLayout.merchantBannerHeight).toBe(224)
+  expect(printLayout.avatarWidth).toBe(176)
+  expect(printLayout.merchantNameFontSize).toBe(52)
+  expect(printLayout.merchantToQrGap).toBe(16)
 
   await page.emulateMedia({ media: "screen" })
   await closeButton.click()

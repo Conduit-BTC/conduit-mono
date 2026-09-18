@@ -188,8 +188,10 @@ async function expectPrintableSignInsideLetterSheet(
     expect(metrics.eventBannerFull!.width).toBeCloseTo(816, 1)
     expect(metrics.eventBannerFull!.height).toBeCloseTo(272, 1)
     expect(metrics.eventBannerMini).toBeNull()
-    expect(metrics.scanCopy.bottom).toBeGreaterThanOrEqual(1_000)
-    expect(metrics.scanCopy.bottom).toBeLessThanOrEqual(1_025)
+    expect(metrics.qr.top - metrics.eventContext.bottom).toBeCloseTo(64, 1)
+    expect(
+      metrics.sheetHeight - metrics.scanCopy.bottom
+    ).toBeGreaterThanOrEqual(64)
   }
   if (metrics.kind === "merchant") {
     if (
@@ -205,8 +207,8 @@ async function expectPrintableSignInsideLetterSheet(
       )
     }
     expect(metrics.eventBannerFull).toBeNull()
-    expect(metrics.eventBannerMini.width).toBeCloseTo(144, 1)
-    expect(metrics.eventBannerMini.height).toBeCloseTo(48, 1)
+    expect(metrics.eventBannerMini.width).toBeCloseTo(176, 1)
+    expect(metrics.eventBannerMini.height).toBeCloseTo(176 / 3, 1)
     expect(metrics.sectionDivider.width).toBeCloseTo(672, 1)
     expect(metrics.sectionDivider.height).toBeCloseTo(2, 1)
     expect(

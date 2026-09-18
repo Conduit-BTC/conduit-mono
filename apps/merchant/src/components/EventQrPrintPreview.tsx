@@ -9,6 +9,7 @@ import {
 } from "lucide-react"
 import {
   Button,
+  cn,
   Dialog,
   DialogClose,
   DialogContent,
@@ -171,7 +172,10 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
         ) : null}
 
         <div
-          className={`event-sign-body flex flex-1 flex-col items-center px-12 text-center ${merchant ? "pt-5 pb-5" : "justify-between pt-5 pb-8"}`}
+          className={cn(
+            "event-sign-body flex flex-1 flex-col items-center px-12 text-center",
+            merchant ? "pt-5 pb-5" : "pt-5 pb-8"
+          )}
         >
           <section className="event-sign-event-context w-full max-w-2xl">
             {merchant ? (
@@ -179,41 +183,46 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
                 <DecorativeImage
                   src={sheet.bannerUrl}
                   alt=""
-                  className="event-sign-event-banner-mini aspect-[3/1] w-36 shrink-0 rounded-lg bg-neutral-950 object-cover"
+                  className="event-sign-event-banner-mini aspect-[3/1] w-44 shrink-0 rounded-lg bg-neutral-950 object-cover"
                   fallback={getEventSignImageFallback(sheet.eventTitle)}
-                  fallbackClassName="event-sign-event-banner-mini flex aspect-[3/1] w-36 shrink-0 items-center justify-center rounded-lg bg-primary-50 font-display text-2xl font-semibold text-primary-700"
+                  fallbackClassName="event-sign-event-banner-mini flex aspect-[3/1] w-44 shrink-0 items-center justify-center rounded-lg bg-primary-50 font-display text-2xl font-semibold text-primary-700"
                 />
-                <h1 className="event-sign-event-title line-clamp-2 min-w-0 break-words font-display text-2xl font-semibold leading-tight text-neutral-950">
+                <h1 className="event-sign-event-title line-clamp-2 min-w-0 text-balance break-words font-display text-2xl font-semibold leading-tight text-neutral-950">
                   {sheet.eventTitle}
                 </h1>
               </div>
             ) : (
-              <h1 className="event-sign-event-title line-clamp-2 break-words font-display text-4xl font-semibold leading-tight text-neutral-950">
+              <h1 className="event-sign-event-title line-clamp-2 text-balance break-words font-display text-4xl font-semibold leading-tight text-neutral-950">
                 {sheet.eventTitle}
               </h1>
             )}
 
-            <dl className="mt-3 grid w-full grid-cols-2 gap-3 text-left text-sm">
-              <div className="flex items-start gap-3 rounded-xl bg-neutral-100 px-4 py-2">
+            <dl
+              className={cn(
+                "mt-4 grid w-full grid-cols-2 border-neutral-200 py-3 text-left text-sm",
+                merchant ? "border-t" : "border-y"
+              )}
+            >
+              <div className="flex items-start gap-3 pr-6">
                 <CalendarDays
                   className="mt-0.5 size-5 shrink-0 text-primary-700"
                   aria-hidden="true"
                 />
-                <div>
+                <div className="min-w-0">
                   <dt className="font-semibold text-neutral-950">When</dt>
-                  <dd className="event-sign-schedule line-clamp-2 break-words leading-5 text-neutral-700">
+                  <dd className="event-sign-schedule line-clamp-2 text-pretty break-words leading-5 text-neutral-700 tabular-nums">
                     {sheet.schedule}
                   </dd>
                 </div>
               </div>
-              <div className="flex items-start gap-3 rounded-xl bg-neutral-100 px-4 py-2">
+              <div className="flex items-start gap-3 border-l border-neutral-200 pl-6">
                 <MapPin
                   className="mt-0.5 size-5 shrink-0 text-primary-700"
                   aria-hidden="true"
                 />
-                <div>
+                <div className="min-w-0">
                   <dt className="font-semibold text-neutral-950">Where</dt>
-                  <dd className="event-sign-location line-clamp-2 break-words leading-5 text-neutral-700">
+                  <dd className="event-sign-location line-clamp-2 text-pretty break-words leading-5 text-neutral-700">
                     {sheet.location}
                   </dd>
                 </div>
@@ -233,7 +242,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
                   alt=""
                   className="event-sign-merchant-banner aspect-[3/1] w-full bg-neutral-900 object-cover"
                   fallback=""
-                  fallbackClassName="event-sign-merchant-banner aspect-[3/1] w-full bg-gradient-to-r from-neutral-900 via-neutral-700 to-neutral-600"
+                  fallbackClassName="event-sign-merchant-banner aspect-[3/1] w-full bg-neutral-900"
                 />
                 <div className="relative flex h-28 items-center bg-neutral-100 pr-6 pl-56">
                   <DecorativeImage
@@ -243,7 +252,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
                     fallback={merchant.fallback}
                     fallbackClassName="event-sign-avatar absolute bottom-4 left-6 flex size-44 shrink-0 items-center justify-center rounded-full border-8 border-neutral-100 bg-neutral-900 text-5xl font-semibold text-white shadow-lg"
                   />
-                  <h2 className="event-sign-merchant-name line-clamp-2 break-words font-display text-[3.25rem] font-semibold leading-[0.95] text-neutral-950">
+                  <h2 className="event-sign-merchant-name line-clamp-2 text-balance break-words font-display text-[3.25rem] font-semibold leading-[0.95] text-neutral-950">
                     {merchant.name}
                   </h2>
                 </div>
@@ -252,7 +261,10 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
           ) : null}
 
           <div
-            className={`event-sign-cta flex shrink-0 flex-col items-center ${merchant ? "mt-4" : ""}`}
+            className={cn(
+              "event-sign-cta flex shrink-0 flex-col items-center",
+              merchant ? "mt-4" : "mt-16"
+            )}
           >
             <div className="event-sign-qr-frame size-[18.75rem] shrink-0 rounded-2xl border-2 border-neutral-950 bg-white p-5">
               <PrintableQrCode
