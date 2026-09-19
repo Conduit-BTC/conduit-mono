@@ -15,6 +15,7 @@ import {
   bolt11PaymentHashField,
   makeBolt11Fixture,
 } from "../tests/support/bolt11-fixture"
+import { delayCartNotifications } from "./helpers/cart-notifications"
 
 const marketUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
@@ -822,6 +823,50 @@ function captureBrowserErrors(page: Page): {
   })
   page.on("pageerror", (error) => pageErrors.push(error.message))
   return { consoleErrors, pageErrors }
+}
+
+async function readCanonicalCartLines(
+  page: Page
+): Promise<Array<{ productId: string; quantity: number }>> {
+  return page.evaluate(
+    () =>
+      new Promise<Array<{ productId: string; quantity: number }>>(
+        (resolve, reject) => {
+          const request = indexedDB.open("conduit")
+          request.onerror = () => reject(request.error)
+          request.onsuccess = () => {
+            const database = request.result
+            const transaction = database.transaction(
+              "shoppingCarts",
+              "readonly"
+            )
+            const get = transaction.objectStore("shoppingCarts").get("market")
+            transaction.oncomplete = () => {
+              const lines = Array.isArray(get.result?.lines)
+                ? get.result.lines
+                : []
+              resolve(
+                lines.map(
+                  (line: {
+                    item: { productId: string }
+                    batches: Array<{ quantity: number }>
+                  }) => ({
+                    productId: line.item.productId,
+                    quantity: line.batches.reduce(
+                      (sum, batch) => sum + batch.quantity,
+                      0
+                    ),
+                  })
+                )
+              )
+              database.close()
+            }
+            transaction.onerror = () => reject(transaction.error)
+            transaction.onabort = () => reject(transaction.error)
+          }
+        }
+      )
+  )
 }
 
 async function installSyntheticEnvironment(
@@ -2012,6 +2057,7 @@ function createMerchantProductEvent(input: {
   pickupCoordinate: string
   createdAt: number
   priceSats?: number
+  stock?: number
 }): SignedEvent {
   return signEvent(MERCHANT_SECRET, {
     kind: 30402,
@@ -2023,7 +2069,7 @@ function createMerchantProductEvent(input: {
       ["summary", "Synthetic accepted product fixture."],
       ["price", String(input.priceSats ?? 0), "SAT"],
       ["type", "simple", "physical"],
-      ["stock", "3"],
+      ["stock", String(input.stock ?? 3)],
       [
         "image",
         "https://cdn.conduit.market/conduit-test/synthetic-pickup-product.svg",
@@ -4135,7 +4181,7 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   await page.setViewportSize({ width: 390, height: 844 })
   await gotoAs(page, marketUrl, "/cart", "buyer")
   await expect(
-    page.getByText("Synthetic Pickup Host", { exact: true }).first()
+    page.locator(`main a[href="/u/${handlerNpub}"]:visible`).first()
   ).toBeVisible({ timeout: 30_000 })
   await page
     .getByRole("button", { name: "Copy pickup handler npub" })
@@ -4157,7 +4203,7 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
     page.getByText("Pickup from merchant booth", { exact: true }).first()
   ).toBeVisible()
   await expect(
-    page.getByText("Synthetic Pickup Host", { exact: true }).first()
+    page.locator(`main a[href="/u/${handlerNpub}"]:visible`).first()
   ).toBeVisible({ timeout: 30_000 })
   await expect(page.getByRole("button", { name: /^Send order$/i })).toBeEnabled(
     { timeout: 30_000 }
@@ -4332,7 +4378,110 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
   )
 })
 
+test("a stale event tab does not announce an add rejected at the stock limit @market", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic stock race",
+    organizerHandoffEnabled: true,
+  })
+  const createdAt = market.initialCollection.created_at + 1
+  const product = createMerchantProductEvent({
+    dTag: "stock-race-product",
+    title: "Synthetic last-stock product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt,
+    priceSats: 1_000,
+    stock: 1,
+  })
+  relay.seed(
+    signEvent(MERCHANT_SECRET, {
+      kind: 0,
+      created_at: createdAt,
+      tags: [],
+      content: JSON.stringify({ name: "Synthetic stock merchant" }),
+    }),
+    product,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: createdAt + 1,
+      content: market.initialCollection.content,
+      tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+    })
+  )
+
+  const staleTab = await context.newPage()
+  await delayCartNotifications(staleTab)
+  await installSyntheticEnvironment(staleTab, relay, "stale-stock-cart")
+  await Promise.all([
+    page.goto(`${marketUrl}/events/${market.canonicalNaddr}`),
+    staleTab.goto(`${marketUrl}/events/${market.canonicalNaddr}`),
+  ])
+  for (const tab of [page, staleTab]) {
+    expect(
+      await tab.evaluate(() => localStorage.getItem("conduit:auth"))
+    ).toBeNull()
+  }
+
+  const currentAdd = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic last-stock product" })
+    .getByRole("button", { name: "Add", exact: true })
+  const staleAdd = staleTab
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic last-stock product" })
+    .getByRole("button", { name: "Add", exact: true })
+  await expect(currentAdd).toBeEnabled({ timeout: 30_000 })
+  await expect(staleAdd).toBeEnabled({ timeout: 30_000 })
+
+  await currentAdd.click()
+  await expect(
+    page.getByText(
+      "Synthetic last-stock product was added for pickup from event organizer.",
+      { exact: true }
+    )
+  ).toBeVisible()
+  await expect
+    .poll(() =>
+      staleTab.evaluate(() =>
+        (
+          window as typeof window & {
+            __cartNotificationDelay: { count(): number }
+          }
+        ).__cartNotificationDelay.count()
+      )
+    )
+    .toBeGreaterThan(0)
+
+  await staleAdd.click()
+  await expect(
+    staleTab.getByText(
+      "Synthetic last-stock product was added for pickup from event organizer.",
+      { exact: true }
+    )
+  ).toHaveCount(0)
+  await expect
+    .poll(async () =>
+      (await readCanonicalCartLines(staleTab)).map((line) => line.quantity)
+    )
+    .toEqual([1])
+
+  await staleTab.evaluate(() =>
+    (
+      window as typeof window & {
+        __cartNotificationDelay: { release(): void }
+      }
+    ).__cartNotificationDelay.release()
+  )
+})
+
 test("guest booth checkout reaches a manual invoice without reading unselected pickup options @market", async ({
+  context,
   page,
 }) => {
   test.setTimeout(90_000)
@@ -4389,6 +4538,28 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
             : tag
     ),
   })
+  const alternatePickupProduct = signEvent(MERCHANT_SECRET, {
+    kind: product.kind,
+    created_at: createdAt,
+    content: "Synthetic alternate booth product.",
+    tags: product.tags.map((tag) =>
+      tag[0] === "d"
+        ? ["d", "alternate-booth-product"]
+        : tag[0] === "title"
+          ? ["title", "Synthetic alternate booth product"]
+          : tag[0] === "shipping_option"
+            ? ["shipping_option", market.pickupCoordinate!, "0"]
+            : tag
+    ),
+  })
+  const concurrentProduct = createMerchantProductEvent({
+    dTag: "concurrent-booth-product",
+    title: "Synthetic concurrent booth product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: eventCoordinate(pickups[0]!),
+    createdAt,
+    priceSats: 1000,
+  })
   const metadata = JSON.stringify([["text/plain", "Synthetic booth merchant"]])
   let callbackRequests = 0
   const invoice = makeBolt11Fixture({
@@ -4435,6 +4606,8 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
     product,
     secondProduct,
     otherProduct,
+    alternatePickupProduct,
+    concurrentProduct,
     signEvent(ORGANIZER_SECRET, {
       kind: 30405,
       created_at: createdAt + 1,
@@ -4444,6 +4617,8 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
         ["a", eventCoordinate(product)],
         ["a", eventCoordinate(secondProduct)],
         ["a", eventCoordinate(otherProduct)],
+        ["a", eventCoordinate(alternatePickupProduct)],
+        ["a", eventCoordinate(concurrentProduct)],
       ],
     })
   )
@@ -4468,6 +4643,66 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
     .filter({ hasText: "Synthetic second booth product" })
     .getByRole("button", { name: "Add", exact: true })
     .click()
+  await page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic alternate booth product" })
+    .getByRole("button", { name: "Add", exact: true })
+    .click()
+  await page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic other booth product" })
+    .getByRole("button", { name: "Add", exact: true })
+    .click()
+  await page.evaluate(async (merchantPubkey) => {
+    const repositoryPath = "/src/lib/cart-repository.ts"
+    const repository = (await import(/* @vite-ignore */ repositoryPath)) as {
+      addCartRepositoryItem(
+        input: {
+          productId: string
+          merchantPubkey: string
+          title: string
+          price: number
+          currency: string
+          priceSats: number
+          format: "physical"
+          fulfillment: { type: "shipping" }
+        },
+        quantity: number
+      ): Promise<unknown>
+    }
+    await repository.addCartRepositoryItem(
+      {
+        productId: `30402:${merchantPubkey}:retained-shipping-product`,
+        merchantPubkey,
+        title: "Synthetic retained shipping product",
+        price: 1000,
+        currency: "SATS",
+        priceSats: 1000,
+        format: "physical",
+        fulfillment: { type: "shipping" },
+      },
+      1
+    )
+  }, MERCHANT_PUBKEY)
+
+  const concurrentTab = await context.newPage()
+  await installSyntheticEnvironment(concurrentTab, relay, "concurrent-cart")
+  await concurrentTab.goto(`${marketUrl}/events/${market.canonicalNaddr}`)
+  expect(
+    await concurrentTab.evaluate(() => localStorage.getItem("conduit:auth"))
+  ).toBeNull()
+  const concurrentAdd = concurrentTab
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic concurrent booth product" })
+    .getByRole("button", { name: "Add", exact: true })
+  await expect(concurrentAdd).toBeEnabled({ timeout: 30_000 })
+  const concurrentLiveProduct = concurrentTab
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic live booth product" })
+  const concurrentIncrement = concurrentLiveProduct.getByRole("button", {
+    name: "Add one more Synthetic live booth product to cart",
+  })
+  await expect(concurrentIncrement).toBeEnabled({ timeout: 30_000 })
 
   // Neither a different booth nor the unused organizer handoff option belongs
   // to this order. Hold both reads until after invoice readiness.
@@ -4484,6 +4719,10 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
   const publicationStart = relay.publications.length
   try {
     await page.goto(`${marketUrl}/cart`)
+    await expect(page.getByLabel(/Clear .* purchase/)).toHaveCount(4)
+    await expect(
+      page.getByText("Conflicting fulfillment was separated", { exact: true })
+    ).toBeVisible()
     // Cart recommendations may still discover the other booth. Checkout must
     // advance while that browsing read is held and start no additional one.
     await held.captured
@@ -4491,7 +4730,12 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
       isUnrelatedPickupRead
     ).length
     const checkoutRequestsStart = relay.requests.length
-    await page.getByRole("button", { name: "Order", exact: true }).click()
+    const selectedPurchase = page
+      .getByRole("button", { name: "Review 2 items", exact: true })
+      .locator("xpath=ancestor::section[1]")
+    await selectedPurchase
+      .getByRole("button", { name: "Order", exact: true })
+      .click()
     await expect(
       page.getByText("Merchant-only recovery", { exact: true })
     ).toBeVisible()
@@ -4509,7 +4753,31 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
     })
     await expect(submit).toBeEnabled({ timeout: 10_000 })
     const submitRequestsStart = relay.requests.length
-    await submit.click()
+    const orderAck = relay.holdNextPublicationAck(
+      (event) => event.kind === 1059
+    )
+    const submission = submit.click()
+    await orderAck.captured
+
+    await concurrentIncrement.press("Enter")
+    await concurrentAdd.press("Enter")
+    await expect
+      .poll(() => readCanonicalCartLines(concurrentTab))
+      .toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            productId: eventCoordinate(product),
+            quantity: 2,
+          }),
+          expect.objectContaining({
+            productId: eventCoordinate(concurrentProduct),
+            quantity: 1,
+          }),
+        ])
+      )
+
+    orderAck.release()
+    await submission
     await expect(page).toHaveURL(/\/orders\?order=/, { timeout: 30_000 })
     await expect(
       page.getByRole("button", { name: "Copy invoice", exact: true })
@@ -4519,11 +4787,14 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
     ).toHaveAttribute("href", `lightning:${invoice}`)
     expect(callbackRequests).toBe(1)
     expect(
-      relay.requests.slice(checkoutRequestsStart).filter(isUnrelatedPickupRead)
-        .length
+      relay.requests
+        .slice(checkoutRequestsStart)
+        .filter((request) => request.clientId !== "concurrent-cart")
+        .filter(isUnrelatedPickupRead).length
     ).toBe(0)
     const collectionReads = relay.requests
       .slice(submitRequestsStart)
+      .filter((request) => request.clientId !== "concurrent-cart")
       .filter((request) =>
         request.filters.some((filter) => filter.kinds?.includes(30405))
       )
@@ -4555,11 +4826,50 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
         .map((tag) => tag[1])
     ).toEqual([MERCHANT_PUBKEY])
     const orderPayload = JSON.parse(privateOrders[0]!.rumor.content) as {
-      items: Array<{ productId: string }>
+      items: Array<{ productId: string; quantity: number }>
     }
     expect(orderPayload.items.map((item) => item.productId).sort()).toEqual(
       [eventCoordinate(product), eventCoordinate(secondProduct)].sort()
     )
+    expect(orderPayload.items.map((item) => item.quantity)).toEqual([1, 1])
+    await expect
+      .poll(async () => {
+        const actual = (await readCanonicalCartLines(concurrentTab)).sort(
+          (left, right) => left.productId.localeCompare(right.productId)
+        )
+        const expected = [
+          {
+            productId: eventCoordinate(alternatePickupProduct),
+            quantity: 1,
+          },
+          {
+            productId: eventCoordinate(concurrentProduct),
+            quantity: 1,
+          },
+          {
+            productId: eventCoordinate(otherProduct),
+            quantity: 1,
+          },
+          {
+            productId: eventCoordinate(product),
+            quantity: 1,
+          },
+          {
+            productId: `30402:${MERCHANT_PUBKEY}:retained-shipping-product`,
+            quantity: 1,
+          },
+        ].sort((left, right) => left.productId.localeCompare(right.productId))
+
+        return (
+          actual.length === expected.length &&
+          actual.every(
+            (line, index) =>
+              line.productId === expected[index]?.productId &&
+              line.quantity === expected[index]?.quantity
+          )
+        )
+      })
+      .toBe(true)
   } finally {
     held.release()
   }
@@ -6276,6 +6586,7 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   const orderPublishStart = relay.publications.length
   await page.getByRole("button", { name: /^Send order$/i }).click()
   await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30_000 })
+  await expect.poll(() => readCanonicalCartLines(page)).toEqual([])
   const buyerPickupPanel = page
     .getByRole("heading", {
       name: "Pickup from event organizer",

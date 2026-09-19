@@ -37,8 +37,10 @@ import {
   getCartCommerceFingerprint,
   getCartCostSummary,
   getCartItemKey,
+  getCartItemStockEvidenceForAvailability,
   getCartItemStockForAvailability,
-  groupCartItems,
+  getCartPurchaseReference,
+  groupCartPurchases,
   isCartProductAvailabilityBlocking,
 } from "../lib/cart-model"
 import { getCartHudRouteMode, reconcileCartHudMerchant } from "../lib/cart-hud"
@@ -61,9 +63,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const authenticatedPubkey = status === "connected" ? pubkey : null
   const cart = useCart()
   const shopperPricing = useShopperPricing()
-  const groups = useMemo(() => groupCartItems(cart.items), [cart.items])
+  const groups = useMemo(() => groupCartPurchases(cart.items), [cart.items])
   const merchantPubkeys = useMemo(
-    () => groups.map((group) => group.merchantPubkey),
+    () => Array.from(new Set(groups.map((group) => group.merchantPubkey))),
     [groups]
   )
   const profiles = useProfiles(merchantPubkeys, {
@@ -88,8 +90,8 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   useCartLnurlPreflights(lud16ByMerchant)
   const routeMode = getCartHudRouteMode(pathname)
   const [expanded, setExpanded] = useState(routeMode === "expanded")
-  const [activeMerchant, setActiveMerchant] = useState<string | null>(
-    merchantPubkeys[0] ?? null
+  const [activePurchase, setActivePurchase] = useState<string | null>(
+    groups[0]?.id ?? null
   )
   const [announcement, setAnnouncement] = useState("")
   const [mounted, setMounted] = useState(false)
@@ -100,36 +102,30 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const disclosureRef = useRef<HTMLButtonElement>(null)
   const detailsPanelId = useId()
   const previousQuantitiesRef = useRef(new Map<string, number>())
-  const cartHydratedRef = useRef(false)
+  const previousMutationSequenceRef = useRef(cart.mutationSequence)
   const previousScrollYRef = useRef(0)
+  const hudResizeInProgressRef = useRef(false)
 
-  const currentMerchant = reconcileCartHudMerchant(
-    activeMerchant,
-    merchantPubkeys
+  const currentPurchase = reconcileCartHudMerchant(
+    activePurchase,
+    groups.map((group) => group.id)
   )
-  const currentGroup = groups.find(
-    (group) => group.merchantPubkey === currentMerchant
-  )
+  const currentGroup = groups.find((group) => group.id === currentPurchase)
   // Retain the last rendered cart so the dock can slide out instead of
   // disappearing when the cart empties or the route suppresses the HUD.
   const lastVisibleRef = useRef<{
-    merchantPubkey: string
     group: NonNullable<typeof currentGroup>
   } | null>(null)
-  if (currentMerchant && currentGroup) {
-    lastVisibleRef.current = {
-      merchantPubkey: currentMerchant,
-      group: currentGroup,
-    }
-  }
+  useLayoutEffect(() => {
+    if (currentGroup) lastVisibleRef.current = { group: currentGroup }
+  }, [currentGroup])
   const shouldShow =
-    routeMode !== "suppressed" && !!currentMerchant && !!currentGroup
-  const selectedMerchant =
-    currentMerchant ?? lastVisibleRef.current?.merchantPubkey ?? null
+    routeMode !== "suppressed" && !!currentPurchase && !!currentGroup
   const activeGroup = currentGroup ?? lastVisibleRef.current?.group
+  const selectedMerchant = activeGroup?.merchantPubkey ?? null
   const cartReadiness = useCartReadiness(cart.items)
-  const activeReadiness = selectedMerchant
-    ? cartReadiness.byMerchant.get(selectedMerchant)
+  const activeReadiness = activeGroup
+    ? cartReadiness.byPurchase.get(activeGroup.id)
     : undefined
   const activeProfile = selectedMerchant
     ? profiles.data[selectedMerchant]
@@ -179,8 +175,8 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   // One activation path for pointer, Enter, and Space: selecting a merchant
   // while collapsed both selects it and expands the panel, including when the
   // activated merchant is already selected.
-  const activateMerchant = useCallback((merchantPubkey: string) => {
-    setActiveMerchant(merchantPubkey)
+  const activatePurchase = useCallback((purchaseId: string) => {
+    setActivePurchase(purchaseId)
     setExpanded(true)
   }, [])
 
@@ -190,8 +186,8 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   }, [pathname, routeMode])
 
   useEffect(() => {
-    if (currentMerchant !== activeMerchant) setActiveMerchant(currentMerchant)
-  }, [activeMerchant, currentMerchant])
+    if (currentPurchase !== activePurchase) setActivePurchase(currentPurchase)
+  }, [activePurchase, currentPurchase])
 
   useEffect(() => {
     if (shouldShow) {
@@ -205,41 +201,58 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   }, [shouldShow])
 
   useEffect(() => {
+    if (!cart.hydrated) return
+    const observedMutation =
+      cart.mutationSequence !== previousMutationSequenceRef.current
+    previousMutationSequenceRef.current = cart.mutationSequence
     const previous = previousQuantitiesRef.current
     const next = new Map<string, number>()
-    let increasedMerchant: string | null = null
+    let increasedPurchase: string | null = null
     let increasedTitle: string | null = null
     let increasedQuantity = 0
     for (const item of cart.items) {
-      const key = getCartItemKey(item)
+      const key = item.cartLineId ?? getCartItemKey(item)
       next.set(key, item.quantity)
       if (item.quantity > (previous.get(key) ?? 0)) {
-        increasedMerchant = item.merchantPubkey
+        increasedPurchase =
+          groups.find((group) =>
+            group.items.some(
+              (candidate) => candidate.cartLineId === item.cartLineId
+            )
+          )?.id ?? null
         increasedTitle = item.title
         increasedQuantity = item.quantity
       }
     }
     previousQuantitiesRef.current = next
-    // The first pass observes whatever the persisted cart restored; announcing
-    // or expanding for it would misreport hydration as a shopper action. Any
-    // later increase is a real mutation, including the session's first item.
-    const isInitialHydration = !cartHydratedRef.current
-    cartHydratedRef.current = true
-    if (isInitialHydration || !increasedMerchant) return
-    setActiveMerchant(increasedMerchant)
+    // Initial hydration does not advance the session-local mutation sequence,
+    // so a restored cart stays quiet. A mutation that races hydration does
+    // advance it and must still announce and expand the shopper's first add.
+    if (!observedMutation || !increasedPurchase) return
+    setActivePurchase(increasedPurchase)
     setExpanded(true)
     setAnnouncement(
       increasedTitle
         ? `Cart updated: ${increasedTitle}, quantity ${increasedQuantity}`
         : `Cart updated: ${cart.totals.count} items`
     )
-  }, [cart.items, cart.totals.count])
+  }, [
+    cart.hydrated,
+    cart.items,
+    cart.mutationSequence,
+    cart.totals.count,
+    groups,
+  ])
 
   useEffect(() => {
     if (routeMode === "suppressed" || groups.length === 0) return
     previousScrollYRef.current = window.scrollY
     const onScroll = () => {
       const nextY = window.scrollY
+      if (hudResizeInProgressRef.current) {
+        previousScrollYRef.current = nextY
+        return
+      }
       if (nextY - previousScrollYRef.current >= 24) collapseHud()
       previousScrollYRef.current = nextY
     }
@@ -282,17 +295,27 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       root.style.removeProperty("--market-hud-height")
       return
     }
+    let settleFrame: number | null = null
     const updateHeight = () => {
+      hudResizeInProgressRef.current = true
       root.style.setProperty(
         "--market-hud-height",
         `${Math.ceil(element.getBoundingClientRect().height)}px`
       )
+      if (settleFrame !== null) cancelAnimationFrame(settleFrame)
+      settleFrame = requestAnimationFrame(() => {
+        previousScrollYRef.current = window.scrollY
+        hudResizeInProgressRef.current = false
+        settleFrame = null
+      })
     }
     updateHeight()
     const observer = new ResizeObserver(updateHeight)
     observer.observe(element)
     return () => {
       observer.disconnect()
+      if (settleFrame !== null) cancelAnimationFrame(settleFrame)
+      hudResizeInProgressRef.current = false
       root.style.removeProperty("--market-hud-height")
     }
   }, [expanded, mounted])
@@ -311,6 +334,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     setZapStarting(true)
     armHudZapIntent({
       merchantPubkey: selectedMerchant,
+      purchaseId: activeGroup.id,
       buyerPubkey: pubkey,
       cartFingerprint: getCartCommerceFingerprint(activeGroup.items),
       totalMsats: pricingIntent.totalMsats,
@@ -320,6 +344,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       to: "/checkout",
       search: {
         merchant: pubkeyToNpub(selectedMerchant),
+        purchase: activeGroup.id,
         intent: "zap",
       },
     })
@@ -353,7 +378,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
           {groups.length > 1 ? (
             <div
               role="group"
-              aria-label="Store carts"
+              aria-label="Cart purchases"
               className="flex h-auto w-fit min-w-0 max-w-full justify-start justify-self-start gap-1 overflow-x-auto rounded-xl border-0 p-1 pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               style={{
                 maskImage:
@@ -371,13 +396,22 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                 const groupTotal = shopperPricing.formatSatsAmount(
                   groupSummary.totalSats
                 )
-                const selected = group.merchantPubkey === selectedMerchant
+                const selected = group.id === activeGroup.id
+                const purchaseReference = getCartPurchaseReference(group.id)
+                const fulfillmentLabel =
+                  group.kind === "pickup"
+                    ? group.items[0]?.fulfillment?.type === "pickup"
+                      ? group.items[0].fulfillment.option.title
+                      : "Event pickup"
+                    : group.items.some((item) => item.format !== "digital")
+                      ? "Shipping"
+                      : "Digital"
                 return (
                   <button
-                    key={group.merchantPubkey}
+                    key={group.id}
                     type="button"
                     aria-pressed={selected}
-                    onClick={() => activateMerchant(group.merchantPubkey)}
+                    onClick={() => activatePurchase(group.id)}
                     className={cn(
                       "market-cart-hud-item flex min-h-11 max-w-60 shrink-0 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none",
                       selected
@@ -405,13 +439,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                           {group.totalItems}
                         </StatusPill>
                       </span>
-                      {selected && expanded ? (
-                        <span className="block max-w-44 truncate text-xs font-normal text-[var(--text-muted)]">
-                          {groupSummary.itemPricesAvailable
-                            ? groupTotal.primary
-                            : "Total unavailable"}
-                        </span>
-                      ) : null}
+                      <span className="block max-w-44 truncate text-xs font-normal text-[var(--text-muted)]">
+                        {fulfillmentLabel} · {group.items[0]?.title ?? "Cart"} ·
+                        Ref {purchaseReference}
+                        {selected && expanded
+                          ? ` · ${groupSummary.itemPricesAvailable ? groupTotal.primary : "Total unavailable"}`
+                          : ""}
+                      </span>
                     </span>
                   </button>
                 )
@@ -513,7 +547,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                 <Button asChild size="sm">
                   <Link
                     to="/checkout"
-                    search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                    search={{
+                      merchant: pubkeyToNpub(selectedMerchant),
+                      purchase: activeGroup.id,
+                    }}
                     title={checkoutFallbackMessage}
                   >
                     Checkout
@@ -572,11 +609,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     item,
                     availability
                   )
+                  const currentStockEvidence =
+                    getCartItemStockEvidenceForAvailability(availability)
                   const itemUnavailable =
                     isCartProductAvailabilityBlocking(availability)
                   return (
                     <article
-                      key={getCartItemKey(item)}
+                      key={item.cartLineId ?? getCartItemKey(item)}
                       className="market-cart-hud-item flex w-[17rem] shrink-0 snap-start items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-2.5 transition-colors motion-reduce:transition-none"
                     >
                       <Link
@@ -628,7 +667,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                               aria-label={`Decrease ${item.title} quantity`}
                               onClick={() => {
                                 if (item.quantity <= 1) cart.removeItem(item)
-                                else cart.setQuantity(item, item.quantity - 1)
+                                else cart.decrementItem(item)
                               }}
                             >
                               <Minus className="h-4 w-4" aria-hidden="true" />
@@ -652,9 +691,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                                   item.quantity >= currentStock)
                               }
                               onClick={() =>
-                                cart.addItem(
-                                  { ...item, stock: currentStock },
-                                  1
+                                cart.incrementItem(
+                                  item,
+                                  1,
+                                  currentStockEvidence
                                 )
                               }
                             >
@@ -684,7 +724,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                   <Button asChild variant="outline" size="sm">
                     <Link
                       to="/cart"
-                      search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                      search={{
+                        merchant: pubkeyToNpub(selectedMerchant),
+                        purchase: activeGroup.id,
+                      }}
                     >
                       View cart
                     </Link>
@@ -718,7 +761,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     <Button asChild size="sm">
                       <Link
                         to="/checkout"
-                        search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                        search={{
+                          merchant: pubkeyToNpub(selectedMerchant),
+                          purchase: activeGroup.id,
+                        }}
                         title={checkoutFallbackMessage}
                       >
                         Continue to checkout

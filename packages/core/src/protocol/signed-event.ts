@@ -12,7 +12,55 @@ export type SignedPublicNostrEvent = {
   sig: string
 }
 
+export interface ReplaceableEventFrontier {
+  createdAt?: number
+  eventId?: string
+}
+
 const HEX_64 = /^[0-9a-f]{64}$/i
+
+function normalizeFrontierCreatedAt(
+  value: number | undefined
+): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined
+}
+
+function normalizeFrontierEventId(
+  value: string | undefined
+): string | undefined {
+  const normalized = value?.trim().toLowerCase()
+  return normalized || undefined
+}
+
+/**
+ * Compare NIP-01 replaceable-event frontiers. The newer timestamp wins and
+ * the lexicographically lowest event id wins a timestamp tie. A positive
+ * result means `candidate` wins. Known signed evidence wins over a legacy
+ * projection that lacks the corresponding frontier field.
+ */
+export function compareReplaceableEventFrontiers(
+  candidate: ReplaceableEventFrontier,
+  current: ReplaceableEventFrontier
+): -1 | 0 | 1 {
+  const candidateCreatedAt = normalizeFrontierCreatedAt(candidate.createdAt)
+  const currentCreatedAt = normalizeFrontierCreatedAt(current.createdAt)
+
+  if (candidateCreatedAt === undefined && currentCreatedAt === undefined)
+    return 0
+  if (candidateCreatedAt === undefined) return -1
+  if (currentCreatedAt === undefined) return 1
+  if (candidateCreatedAt > currentCreatedAt) return 1
+  if (candidateCreatedAt < currentCreatedAt) return -1
+
+  const candidateEventId = normalizeFrontierEventId(candidate.eventId)
+  const currentEventId = normalizeFrontierEventId(current.eventId)
+  if (candidateEventId === currentEventId) return 0
+  if (!candidateEventId) return -1
+  if (!currentEventId) return 1
+  return candidateEventId < currentEventId ? 1 : -1
+}
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(

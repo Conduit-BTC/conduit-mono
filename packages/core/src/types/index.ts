@@ -18,6 +18,8 @@ export interface ProductSpecification {
 
 export interface Product {
   id: string
+  /** Signed kind-30402 event id behind this exact product projection. */
+  sourceEventId?: EventId
   pubkey: Pubkey
   title: string
   summary?: string
