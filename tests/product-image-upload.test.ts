@@ -477,7 +477,7 @@ describe("verified Blossom product image upload", () => {
           { status: 201, headers: { "content-type": "application/json" } }
         )
       }
-      expect(init?.redirect).toBe("follow")
+      expect(init?.redirect).toBe("error")
       return responseWithUrl(
         prepared.blob,
         {
@@ -682,60 +682,54 @@ describe("verified Blossom product image upload", () => {
     })
   })
 
-  it("follows a descriptor resource redirect and verifies the final URL", async () => {
+  it("rejects descriptor resource redirects before fetch can follow", async () => {
     const secretKey = generateSecretKey()
     const pubkey = getPublicKey(secretKey)
     const prepared = await preparedImage()
     const descriptorUrl = `${CONFIGURED_SERVER}/${prepared.sha256}.png`
-    const finalUrl = `https://cdn.conduit.market/${prepared.sha256}.png`
     let calls = 0
 
-    const result = await uploadPreparedProductImage({
-      prepared,
-      target: {
-        kind: "configured",
-        serverUrl: CONFIGURED_SERVER,
-        maxFileUploads: 12,
-      },
-      expectedPubkey: pubkey,
-      signer: {
-        getPublicKey: async () => pubkey,
-        signEvent: async (event) => finalizeEvent(event, secretKey),
-      },
-      dependencies: {
-        now: () => 1_000,
-        fetch: async (_input, init) => {
-          calls += 1
-          if (calls === 1) {
-            expect(init?.redirect).toBe("error")
-            return new Response(
-              JSON.stringify({
-                url: descriptorUrl,
-                sha256: prepared.sha256,
-                size: prepared.size,
-                type: prepared.mimeType,
-                uploaded: 1_000,
-              }),
-              { status: 201 }
-            )
-          }
-          expect(init?.redirect).toBe("follow")
-          return responseWithUrl(
-            prepared.blob,
-            {
-              status: 200,
-              headers: {
-                "content-type": prepared.mimeType,
-                "content-length": String(prepared.size),
-              },
-            },
-            finalUrl
-          )
+    await expect(
+      uploadPreparedProductImage({
+        prepared,
+        target: {
+          kind: "configured",
+          serverUrl: CONFIGURED_SERVER,
+          maxFileUploads: 12,
         },
-      },
+        expectedPubkey: pubkey,
+        signer: {
+          getPublicKey: async () => pubkey,
+          signEvent: async (event) => finalizeEvent(event, secretKey),
+        },
+        dependencies: {
+          now: () => 1_000,
+          fetch: async (input, init) => {
+            calls += 1
+            if (calls === 1) {
+              expect(init?.redirect).toBe("error")
+              return new Response(
+                JSON.stringify({
+                  url: descriptorUrl,
+                  sha256: prepared.sha256,
+                  size: prepared.size,
+                  type: prepared.mimeType,
+                  uploaded: 1_000,
+                }),
+                { status: 201 }
+              )
+            }
+            expect(String(input)).toBe(descriptorUrl)
+            expect(init?.redirect).toBe("error")
+            throw new TypeError("Redirects are rejected before following")
+          },
+        },
+      })
+    ).rejects.toMatchObject({
+      code: "resource_unavailable",
+      uploadOutcome: "accepted_unverified",
     })
 
-    expect(result.url).toBe(descriptorUrl)
     expect(calls).toBe(2)
   })
 
@@ -750,7 +744,7 @@ describe("verified Blossom product image upload", () => {
       (sha256: string) => `http://127.0.0.1/${sha256}.png`,
     ],
   ] as const) {
-    it(`rejects a descriptor resource redirect with ${label}`, async () => {
+    it(`rejects a retrieval response with ${label}`, async () => {
       const secretKey = generateSecretKey()
       const pubkey = getPublicKey(secretKey)
       const prepared = await preparedImage()
@@ -786,7 +780,7 @@ describe("verified Blossom product image upload", () => {
                   { status: 201 }
                 )
               }
-              expect(init?.redirect).toBe("follow")
+              expect(init?.redirect).toBe("error")
               return responseWithUrl(
                 prepared.blob,
                 {

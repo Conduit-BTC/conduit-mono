@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto"
-import { readFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { createServer } from "node:https"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, test, type Page } from "@playwright/test"
 import {
@@ -62,8 +65,132 @@ interface InterceptedBlossomState {
   peakInFlight: number
   originalBodyObserved: boolean
   metadataSentinelObserved: boolean
+  redirectTargetRequests: number
   requestHashes: string[]
   resourceUrls: string[]
+}
+
+interface ObjectUrlAudit {
+  created: Array<{
+    url: string
+    fileName: string | null
+    size: number
+    type: string
+  }>
+  revoked: string[]
+}
+
+interface RedirectServer {
+  url: string
+  readonly requestCount: number
+  close: () => Promise<void>
+}
+
+async function startRedirectServer(location: string): Promise<RedirectServer> {
+  const directory = mkdtempSync(join(tmpdir(), "conduit-image-redirect-"))
+  const keyPath = join(directory, "key.pem")
+  const certificatePath = join(directory, "certificate.pem")
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      keyPath,
+      "-out",
+      certificatePath,
+      "-days",
+      "1",
+      "-subj",
+      "/CN=localhost",
+    ],
+    { stdio: "ignore" }
+  )
+
+  let requestCount = 0
+  const server = createServer(
+    {
+      key: readFileSync(keyPath),
+      cert: readFileSync(certificatePath),
+    },
+    (_request, response) => {
+      requestCount += 1
+      response.writeHead(307, {
+        "access-control-allow-origin": "*",
+        location,
+      })
+      response.end()
+    }
+  )
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (!address || typeof address === "string") {
+    server.close()
+    rmSync(directory, { recursive: true, force: true })
+    throw new Error("Redirect test server did not bind to a TCP port")
+  }
+
+  return {
+    url: `https://127.0.0.1:${address.port}`,
+    get requestCount() {
+      return requestCount
+    },
+    close: async () => {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => {
+            if (error) reject(error)
+            else resolve()
+          })
+        })
+      } finally {
+        rmSync(directory, { recursive: true, force: true })
+      }
+    },
+  }
+}
+
+async function installObjectUrlAudit(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const browserWindow = window as unknown as {
+      __conduitObjectUrlAudit?: ObjectUrlAudit
+    }
+    const audit: ObjectUrlAudit = { created: [], revoked: [] }
+    browserWindow.__conduitObjectUrlAudit = audit
+    const originalCreateObjectUrl = URL.createObjectURL.bind(URL)
+    const originalRevokeObjectUrl = URL.revokeObjectURL.bind(URL)
+    URL.createObjectURL = (object: Blob | MediaSource): string => {
+      const url = originalCreateObjectUrl(object)
+      audit.created.push({
+        url,
+        fileName: object instanceof File ? object.name : null,
+        size: object instanceof Blob ? object.size : 0,
+        type: object instanceof Blob ? object.type : "",
+      })
+      return url
+    }
+    URL.revokeObjectURL = (url: string): void => {
+      audit.revoked.push(url)
+      originalRevokeObjectUrl(url)
+    }
+  })
+}
+
+async function readObjectUrlAudit(page: Page): Promise<ObjectUrlAudit> {
+  return page.evaluate(() => {
+    const browserWindow = window as unknown as {
+      __conduitObjectUrlAudit?: ObjectUrlAudit
+    }
+    return structuredClone(
+      browserWindow.__conduitObjectUrlAudit ?? { created: [], revoked: [] }
+    )
+  })
 }
 
 async function interceptBlossom(
@@ -75,6 +202,8 @@ async function interceptBlossom(
     rejectFirstStatus?: number
     originalHashes?: ReadonlySet<string>
     metadataSentinel?: string
+    resourceRedirectUrl?: string
+    resourceRedirectProxyUrl?: string
   } = {}
 ): Promise<InterceptedBlossomState> {
   const state: InterceptedBlossomState = {
@@ -82,6 +211,7 @@ async function interceptBlossom(
     peakInFlight: 0,
     originalBodyObserved: false,
     metadataSentinelObserved: false,
+    redirectTargetRequests: 0,
     requestHashes: [],
     resourceUrls: [],
   }
@@ -115,6 +245,18 @@ async function interceptBlossom(
       return originalFetch(input, init)
     }
   }, serverUrl)
+
+  if (options.resourceRedirectUrl) {
+    await page.route(options.resourceRedirectUrl, async (route) => {
+      state.redirectTargetRequests += 1
+      await route.fulfill({
+        status: 200,
+        contentType: "image/png",
+        headers: { "access-control-allow-origin": "*" },
+        body: Buffer.from([1, 2, 3, 4]),
+      })
+    })
+  }
 
   await page.route(`${serverUrl}/**`, async (route) => {
     const request = route.request()
@@ -206,6 +348,20 @@ async function interceptBlossom(
     const resource = resources.get(route.request().url())
     if (!resource) {
       await route.fulfill({ status: 404 })
+      return
+    }
+    if (options.resourceRedirectUrl) {
+      if (!options.resourceRedirectProxyUrl) {
+        throw new Error("Redirect interception requires a proxy URL")
+      }
+      const sourceUrl = new URL(route.request().url())
+      const proxyUrl = new URL(
+        `${sourceUrl.pathname}${sourceUrl.search}`,
+        options.resourceRedirectProxyUrl
+      )
+      await route.continue({
+        url: proxyUrl.href,
+      })
       return
     }
     await route.fulfill({
@@ -441,11 +597,50 @@ test("configured Blossom uploads stay sequential and retry only unfinished image
     .toEqual([variationResourceUrl])
 })
 
+test.describe("resource redirect verification", () => {
+  test.use({ ignoreHTTPSErrors: true })
+
+  test("verification redirects never reach private destinations @merchant", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000)
+    const privateUrl = "https://127.0.0.1/private-product-image.png"
+    const redirectServer = await startRedirectServer(privateUrl)
+    try {
+      const state = await interceptBlossom(page, configuredServer, {
+        resourceRedirectUrl: privateUrl,
+        resourceRedirectProxyUrl: redirectServer.url,
+      })
+      const { dialog } = await openProductDialogWithSigner(page, {
+        configuredServerUrl: configuredServer,
+      })
+      await expect(
+        dialog.getByText("your first configured media server", { exact: false })
+      ).toBeVisible()
+
+      await dialog.locator("#product-image-file").setInputFiles(image192)
+
+      await expect(
+        dialog.getByText("The uploaded image could not be retrieved", {
+          exact: false,
+        })
+      ).toBeVisible()
+      expect(state.putCount).toBe(1)
+      expect(redirectServer.requestCount).toBe(1)
+      expect(state.redirectTargetRequests).toBe(0)
+      await expect(dialog.getByLabel("Primary image URL")).toHaveCount(0)
+    } finally {
+      await redirectServer.close()
+    }
+  })
+})
+
 test("fallback upload is disclosed, intercepted, and mobile responsive @merchant", async ({
   page,
 }) => {
   test.setTimeout(90_000)
   await page.setViewportSize({ width: 390, height: 844 })
+  await installObjectUrlAudit(page)
   const state = await interceptBlossom(page, fallbackServer, {
     originalHashes: new Set([
       createHash("sha256").update(readFileSync(image192)).digest("hex"),
@@ -479,6 +674,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
       exact: true,
     })
   ).toBeVisible()
+  expect((await readObjectUrlAudit(page)).created).toHaveLength(0)
   expect(state.putCount).toBe(0)
   await dialog
     .getByRole("button", { name: "Remove unfinished image 1", exact: true })
@@ -491,6 +687,11 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
     /^https:\/\/cdn\.conduit\.market\//
   )
+  const objectUrlAudit = await readObjectUrlAudit(page)
+  expect(objectUrlAudit.created).toHaveLength(1)
+  expect(objectUrlAudit.created[0]?.fileName).toBeNull()
+  expect(objectUrlAudit.created[0]?.size).toBeGreaterThan(0)
+  expect(objectUrlAudit.revoked).toEqual([objectUrlAudit.created[0]?.url])
   expect(state.putCount).toBe(1)
   expect(state.originalBodyObserved).toBe(false)
   await expect(

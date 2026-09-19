@@ -1158,7 +1158,7 @@ export async function uploadPreparedProductImage(
       method: "GET",
       cache: "no-store",
       credentials: "omit",
-      redirect: "follow",
+      redirect: "error",
       signal: verifySignal.signal,
     })
     const finalUrl = normalizePublicHttpsUrl(

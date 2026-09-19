@@ -43,7 +43,7 @@ interface UploadItem {
   file: File
   target: Extract<ProductImageUploadTarget, { kind: "configured" | "fallback" }>
   desiredIndex: number
-  previewUrl: string
+  previewUrl: string | null
   status: UploadItemStatus
   error: string | null
 }
@@ -307,7 +307,8 @@ export function ProductImageUrlCollectionField({
     setUploadItems(Array.from(itemsRef.current.values()))
   }
 
-  function releaseObjectUrl(objectUrl: string): void {
+  function releaseObjectUrl(objectUrl: string | null): void {
+    if (!objectUrl) return
     if (!objectUrlsRef.current.delete(objectUrl)) return
     URL.revokeObjectURL(objectUrl)
   }
@@ -425,14 +426,12 @@ export function ProductImageUrlCollectionField({
     const created = accepted.map((file, index): UploadItem => {
       nextUploadIdRef.current += 1
       const itemId = `${id}-upload-${nextUploadIdRef.current}`
-      const previewUrl = URL.createObjectURL(file)
-      objectUrlsRef.current.add(previewUrl)
       return {
         id: itemId,
         file,
         target: selectedTarget,
         desiredIndex: insertionBase + index,
-        previewUrl,
+        previewUrl: null,
         status: "queued",
         error: null,
       }
@@ -588,11 +587,24 @@ export function ProductImageUrlCollectionField({
               className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 sm:grid-cols-[6rem_1fr_auto] sm:items-center"
               aria-busy={active}
             >
-              <img
-                src={item.previewUrl}
-                alt=""
-                className="aspect-[4/3] w-24 rounded-lg bg-[var(--surface-elevated)] object-cover"
-              />
+              {item.previewUrl ? (
+                <img
+                  src={item.previewUrl}
+                  alt=""
+                  className="aspect-[4/3] w-24 rounded-lg bg-[var(--surface-elevated)] object-cover"
+                />
+              ) : (
+                <div
+                  className="flex aspect-[4/3] w-24 items-center justify-center rounded-lg bg-[var(--surface-elevated)] text-[var(--text-muted)]"
+                  aria-hidden="true"
+                >
+                  {active ? (
+                    <Loader2 className="size-5 motion-safe:animate-spin" />
+                  ) : (
+                    <X className="size-5" />
+                  )}
+                </div>
+              )}
               <div className="min-w-0">
                 <p className="text-sm font-medium text-[var(--text-primary)]">
                   {uploadStatusLabel(item.status)}
