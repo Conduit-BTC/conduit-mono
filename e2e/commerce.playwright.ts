@@ -34,6 +34,56 @@ const productImageUrl = "https://cdn.conduit.market/commerce-smoke-product.svg"
 
 test.use({ screenshot: "off", trace: "off", video: "off" })
 
+type BuyerLifecycleCompletion = {
+  lifecycleFound: boolean
+  paymentPaid: boolean
+  proofSent: boolean
+}
+
+async function readBuyerLifecycleCompletion(
+  page: Page,
+  orderId: string
+): Promise<BuyerLifecycleCompletion> {
+  return page.evaluate(async (expectedOrderId) => {
+    const incomplete: BuyerLifecycleCompletion = {
+      lifecycleFound: false,
+      paymentPaid: false,
+      proofSent: false,
+    }
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("conduit")
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () =>
+        reject(new Error("The buyer lifecycle database could not be opened."))
+    })
+
+    try {
+      if (!database.objectStoreNames.contains("orderLifecycles")) {
+        return incomplete
+      }
+      const lifecycle = await new Promise<
+        { paymentStatus?: unknown; proofDeliveryStatus?: unknown } | undefined
+      >((resolve, reject) => {
+        const request = database
+          .transaction("orderLifecycles", "readonly")
+          .objectStore("orderLifecycles")
+          .get(expectedOrderId)
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () =>
+          reject(new Error("The buyer lifecycle status could not be read."))
+      })
+
+      return {
+        lifecycleFound: lifecycle !== undefined,
+        paymentPaid: lifecycle?.paymentStatus === "paid",
+        proofSent: lifecycle?.proofDeliveryStatus === "sent",
+      }
+    } finally {
+      database.close()
+    }
+  }, orderId)
+}
+
 async function installHermeticRoutes(context: BrowserContext): Promise<void> {
   await context.route("https://cdn.conduit.market/**", (route) => {
     if (route.request().url() === productImageUrl) {
@@ -594,6 +644,15 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await expect(
       buyerPage.getByText("Status: Paid", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
+    await expect
+      .poll(() => readBuyerLifecycleCompletion(buyerPage, orderId), {
+        timeout: 30_000,
+      })
+      .toEqual({
+        lifecycleFound: true,
+        paymentPaid: true,
+        proofSent: true,
+      })
     await expect(
       merchantPage.getByRole("button", {
         name: "Generate & send invoice",

@@ -317,6 +317,31 @@ describe("Playwright smoke content safety", () => {
     expect(findings).toEqual([])
   })
 
+  it("keeps the durable buyer lifecycle oracle content-free", () => {
+    const oracleStart = commerceSmoke.indexOf(
+      "async function readBuyerLifecycleCompletion"
+    )
+    const oracleEnd = commerceSmoke.indexOf(
+      "\nasync function installHermeticRoutes",
+      oracleStart
+    )
+
+    expect(oracleStart).toBeGreaterThanOrEqual(0)
+    expect(oracleEnd).toBeGreaterThan(oracleStart)
+
+    const oracleSource = commerceSmoke.slice(oracleStart, oracleEnd)
+    expect(oracleSource).toContain(
+      'paymentPaid: lifecycle?.paymentStatus === "paid"'
+    )
+    expect(oracleSource).toContain(
+      'proofSent: lifecycle?.proofDeliveryStatus === "sent"'
+    )
+    expect(oracleSource).not.toMatch(
+      /\b(?:buyerPubkey|ciphertext|content|invoice|merchantPubkey|message|paymentHash|plaintext|preimage|secret)\b/
+    )
+    expect(oracleSource).not.toMatch(/return\s+(?:lifecycle|request\.result)\b/)
+  })
+
   it("keeps commerce fixture identities out of assertion failure output", () => {
     const findings = unsafeCommerceFixtureRules
       .flatMap(({ pattern, rule }) =>
