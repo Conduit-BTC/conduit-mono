@@ -41,14 +41,19 @@ export interface ProductImageUploadRequest {
 export interface ProductImageUploadController {
   target: ProductImageUploadTarget
   isBusy: boolean
-  isFallbackClaimed: (scopeId: string) => boolean
+  getFallbackClaimState: (scopeId: string) => ProductImageFallbackClaimState
   releaseFallbackClaim: (scopeId: string, itemId: string) => boolean
   clearFallbackClaim: (scopeId: string) => void
-  moveFallbackClaim: (fromScopeId: string, toScopeId: string) => void
+  prepareFallbackClaimMove: (fromScopeId: string, toScopeId: string) => boolean
+  commitFallbackClaimMove: (fromScopeId: string, toScopeId: string) => void
+  cancelFallbackClaimMove: (fromScopeId: string, toScopeId: string) => void
   uploadFile: (
     request: ProductImageUploadRequest
   ) => Promise<VerifiedProductImageUpload>
 }
+
+export type ProductImageFallbackClaimState =
+  "available" | "retry_same_hash" | "consumed"
 
 const PRODUCT_IMAGE_UPLOAD_AUTHORITY_QUERY_KEY =
   "product-image-upload-authority"
@@ -65,7 +70,58 @@ interface ProductImageUploadAuthoritySnapshot {
 
 interface FallbackUploadClaim {
   itemId: string
-  consumed: boolean
+  state: "reserved" | "retry_same_hash" | "consumed"
+  sha256: string | null
+}
+
+interface PreparedFallbackClaimMove {
+  claim: StoredFallbackUploadClaim
+  destinationCreated: boolean
+}
+
+type StoredFallbackUploadClaim =
+  | {
+      version: 1
+      state: "retry_same_hash"
+      sha256: string
+    }
+  | {
+      version: 1
+      state: "consumed"
+    }
+
+const HEX_SHA256 = /^[0-9a-f]{64}$/
+
+function parseStoredFallbackClaim(
+  raw: string | null
+): StoredFallbackUploadClaim | null {
+  if (raw === "1") return { version: 1, state: "consumed" }
+  if (raw === null) return null
+  try {
+    const value = JSON.parse(raw) as {
+      version?: unknown
+      state?: unknown
+      sha256?: unknown
+    }
+    if (value.version !== 1) return { version: 1, state: "consumed" }
+    if (value.state === "consumed") {
+      return { version: 1, state: "consumed" }
+    }
+    if (
+      value.state === "retry_same_hash" &&
+      typeof value.sha256 === "string" &&
+      HEX_SHA256.test(value.sha256)
+    ) {
+      return {
+        version: 1,
+        state: "retry_same_hash",
+        sha256: value.sha256,
+      }
+    }
+  } catch {
+    return { version: 1, state: "consumed" }
+  }
+  return { version: 1, state: "consumed" }
 }
 
 function fallbackClaimMemoryKey(owner: string, scopeId: string): string {
@@ -76,24 +132,63 @@ function fallbackClaimStorageKey(owner: string, scopeId: string): string {
   return `${PRODUCT_IMAGE_FALLBACK_CLAIM_PREFIX}:${encodeURIComponent(owner)}:${encodeURIComponent(scopeId)}`
 }
 
-function hasStoredFallbackClaim(owner: string, scopeId: string): boolean {
+function fallbackClaimMoveKey(
+  owner: string,
+  fromScopeId: string,
+  toScopeId: string
+): string {
+  return `${owner}:${fromScopeId}:${toScopeId}`
+}
+
+function readStoredFallbackClaim(
+  owner: string,
+  scopeId: string
+): StoredFallbackUploadClaim | null {
   try {
-    return (
-      typeof localStorage !== "undefined" &&
-      localStorage.getItem(fallbackClaimStorageKey(owner, scopeId)) === "1"
+    if (typeof localStorage === "undefined") return null
+    return parseStoredFallbackClaim(
+      localStorage.getItem(fallbackClaimStorageKey(owner, scopeId))
     )
   } catch {
-    return false
+    return null
   }
 }
 
-function storeFallbackClaim(owner: string, scopeId: string): void {
+function sameStoredFallbackClaim(
+  left: StoredFallbackUploadClaim | null,
+  right: StoredFallbackUploadClaim
+): boolean {
+  if (!left || left.state !== right.state) return false
+  if (left.state === "consumed" && right.state === "consumed") return true
+  return (
+    left.state === "retry_same_hash" &&
+    right.state === "retry_same_hash" &&
+    left.sha256 === right.sha256
+  )
+}
+
+function storeFallbackClaim(
+  owner: string,
+  scopeId: string,
+  claim: StoredFallbackUploadClaim
+): boolean {
   try {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(fallbackClaimStorageKey(owner, scopeId), "1")
+    if (typeof localStorage === "undefined") return false
+    if (
+      sameStoredFallbackClaim(readStoredFallbackClaim(owner, scopeId), claim)
+    ) {
+      return true
     }
+    localStorage.setItem(
+      fallbackClaimStorageKey(owner, scopeId),
+      JSON.stringify(claim)
+    )
+    return sameStoredFallbackClaim(
+      readStoredFallbackClaim(owner, scopeId),
+      claim
+    )
   } catch {
-    // The in-memory claim remains authoritative for this editor lifecycle.
+    return false
   }
 }
 
@@ -136,6 +231,9 @@ export function useProductImageUpload(): ProductImageUploadController {
   const authGenerationRef = useRef(auth.authGeneration)
   const resolutionRef = useRef<MediaServerPreferenceResolution | null>(null)
   const fallbackClaimsRef = useRef(new Map<string, FallbackUploadClaim>())
+  const preparedFallbackMovesRef = useRef(
+    new Map<string, PreparedFallbackClaimMove>()
+  )
   const uploadQueueRef = useRef<Promise<void>>(Promise.resolve())
   const [lookupRevision, setLookupRevision] = useState(0)
   const [, setFallbackClaimRevision] = useState(0)
@@ -173,7 +271,9 @@ export function useProductImageUpload(): ProductImageUploadController {
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
   })
-  resolutionRef.current = query.data ?? null
+  useLayoutEffect(() => {
+    resolutionRef.current = query.data ?? null
+  }, [query.data])
 
   const localServerUrls = useMemo(
     () => (owner ? readLocalProductImageServerUrls(owner) : []),
@@ -253,55 +353,110 @@ export function useProductImageUpload(): ProductImageUploadController {
         )
       }
       const fallbackUpload = request.target.kind === "fallback"
+      const fallbackClaimKey = fallbackUpload
+        ? fallbackClaimMemoryKey(activeOwner, request.scopeId)
+        : null
       if (fallbackUpload) {
-        const claimKey = fallbackClaimMemoryKey(activeOwner, request.scopeId)
-        const claim = fallbackClaimsRef.current.get(claimKey)
-        if (
-          (claim && claim.itemId !== request.itemId) ||
-          (!claim && hasStoredFallbackClaim(activeOwner, request.scopeId))
-        ) {
+        const claim = fallbackClaimsRef.current.get(fallbackClaimKey!)
+        const storedClaim = readStoredFallbackClaim(
+          activeOwner,
+          request.scopeId
+        )
+        if (claim && claim.itemId !== request.itemId) {
           throw new ProductImageUploadError(
             "fallback_limit_reached",
             getProductImageUploadErrorMessage("fallback_limit_reached")
           )
         }
-        fallbackClaimsRef.current.set(claimKey, {
+        if (storedClaim?.state === "consumed" || claim?.state === "consumed") {
+          throw new ProductImageUploadError(
+            "fallback_limit_reached",
+            getProductImageUploadErrorMessage("fallback_limit_reached")
+          )
+        }
+        const retrySha256 =
+          storedClaim?.state === "retry_same_hash"
+            ? storedClaim.sha256
+            : claim?.state === "retry_same_hash"
+              ? claim.sha256
+              : null
+        if (retrySha256 && retrySha256 !== prepared.sha256) {
+          throw new ProductImageUploadError(
+            "fallback_retry_mismatch",
+            getProductImageUploadErrorMessage("fallback_retry_mismatch")
+          )
+        }
+        fallbackClaimsRef.current.set(fallbackClaimKey!, {
           itemId: request.itemId,
-          consumed: claim?.consumed ?? false,
+          state: retrySha256 ? "retry_same_hash" : "reserved",
+          sha256: prepared.sha256,
         })
       }
 
-      const result = await uploadPreparedProductImage({
-        prepared,
-        target: request.target,
-        expectedPubkey: activeOwner,
-        signer: createNdkNostrEventSigner(
-          activeSigner,
-          activeOwner,
-          activeMethod
-        ),
-        shouldContinue: () =>
-          authGenerationRef.current === generation &&
-          isGenerationCurrent(generation),
-        signal: request.signal,
-        onPhase: (phase) => {
-          if (fallbackUpload && phase === "uploading") {
-            fallbackClaimsRef.current.set(
-              fallbackClaimMemoryKey(activeOwner, request.scopeId),
-              { itemId: request.itemId, consumed: true }
-            )
-            storeFallbackClaim(activeOwner, request.scopeId)
-            setFallbackClaimRevision((revision) => revision + 1)
-          }
-          request.onPhase?.(phase)
-        },
-      })
+      let result: VerifiedProductImageUpload
+      try {
+        result = await uploadPreparedProductImage({
+          prepared,
+          target: request.target,
+          expectedPubkey: activeOwner,
+          signer: createNdkNostrEventSigner(
+            activeSigner,
+            activeOwner,
+            activeMethod
+          ),
+          shouldContinue: () =>
+            authGenerationRef.current === generation &&
+            isGenerationCurrent(generation),
+          signal: request.signal,
+          onPhase: (phase) => {
+            if (fallbackUpload && phase === "uploading") {
+              const retryClaim: StoredFallbackUploadClaim = {
+                version: 1,
+                state: "retry_same_hash",
+                sha256: prepared.sha256,
+              }
+              if (
+                !storeFallbackClaim(activeOwner, request.scopeId, retryClaim)
+              ) {
+                throw new ProductImageUploadError(
+                  "fallback_guard_unavailable",
+                  getProductImageUploadErrorMessage(
+                    "fallback_guard_unavailable"
+                  )
+                )
+              }
+              fallbackClaimsRef.current.set(fallbackClaimKey!, {
+                itemId: request.itemId,
+                state: "retry_same_hash",
+                sha256: prepared.sha256,
+              })
+              setFallbackClaimRevision((revision) => revision + 1)
+            }
+            request.onPhase?.(phase)
+          },
+        })
+      } catch (error) {
+        if (
+          fallbackUpload &&
+          error instanceof ProductImageUploadError &&
+          error.uploadOutcome === "definitive_rejection"
+        ) {
+          fallbackClaimsRef.current.delete(fallbackClaimKey!)
+          removeStoredFallbackClaim(activeOwner, request.scopeId)
+          setFallbackClaimRevision((revision) => revision + 1)
+        }
+        throw error
+      }
       if (fallbackUpload) {
-        fallbackClaimsRef.current.set(
-          fallbackClaimMemoryKey(activeOwner, request.scopeId),
-          { itemId: request.itemId, consumed: true }
-        )
-        storeFallbackClaim(activeOwner, request.scopeId)
+        fallbackClaimsRef.current.set(fallbackClaimKey!, {
+          itemId: request.itemId,
+          state: "consumed",
+          sha256: prepared.sha256,
+        })
+        storeFallbackClaim(activeOwner, request.scopeId, {
+          version: 1,
+          state: "consumed",
+        })
         setFallbackClaimRevision((revision) => revision + 1)
       }
       return result
@@ -342,11 +497,24 @@ export function useProductImageUpload(): ProductImageUploadController {
     ]
   )
 
-  const isFallbackClaimed = useCallback(
-    (scopeId: string): boolean =>
-      !!owner &&
-      (fallbackClaimsRef.current.has(fallbackClaimMemoryKey(owner, scopeId)) ||
-        hasStoredFallbackClaim(owner, scopeId)),
+  const getFallbackClaimState = useCallback(
+    (scopeId: string): ProductImageFallbackClaimState => {
+      if (!owner) return "available"
+      const claim = fallbackClaimsRef.current.get(
+        fallbackClaimMemoryKey(owner, scopeId)
+      )
+      const storedClaim = readStoredFallbackClaim(owner, scopeId)
+      if (claim?.state === "consumed" || storedClaim?.state === "consumed") {
+        return "consumed"
+      }
+      if (
+        claim?.state === "retry_same_hash" ||
+        storedClaim?.state === "retry_same_hash"
+      ) {
+        return "retry_same_hash"
+      }
+      return "available"
+    },
     [owner]
   )
 
@@ -363,10 +531,14 @@ export function useProductImageUpload(): ProductImageUploadController {
 
   const releaseFallbackClaim = useCallback(
     (scopeId: string, itemId: string): boolean => {
-      if (!owner || hasStoredFallbackClaim(owner, scopeId)) return false
+      if (!owner) return false
       const claimKey = fallbackClaimMemoryKey(owner, scopeId)
       const claim = fallbackClaimsRef.current.get(claimKey)
-      if (claim && (claim.itemId !== itemId || claim.consumed)) return false
+      const storedClaim = readStoredFallbackClaim(owner, scopeId)
+      if (claim && claim.itemId !== itemId) return false
+      if (claim?.state === "consumed" || storedClaim?.state === "consumed") {
+        return false
+      }
       if (claim) fallbackClaimsRef.current.delete(claimKey)
       setFallbackClaimRevision((revision) => revision + 1)
       return true
@@ -374,23 +546,94 @@ export function useProductImageUpload(): ProductImageUploadController {
     [owner]
   )
 
-  const moveFallbackClaim = useCallback(
-    (fromScopeId: string, toScopeId: string): void => {
-      if (!owner || fromScopeId === toScopeId) return
+  const prepareFallbackClaimMove = useCallback(
+    (fromScopeId: string, toScopeId: string): boolean => {
+      if (!owner || fromScopeId === toScopeId) return false
       const fromClaimKey = fallbackClaimMemoryKey(owner, fromScopeId)
       const toClaimKey = fallbackClaimMemoryKey(owner, toScopeId)
+      const moveKey = fallbackClaimMoveKey(owner, fromScopeId, toScopeId)
+      if (preparedFallbackMovesRef.current.has(moveKey)) return true
       const claim = fallbackClaimsRef.current.get(fromClaimKey)
-      const stored = hasStoredFallbackClaim(owner, fromScopeId)
-      if (!stored && !claim?.consumed) return
-      fallbackClaimsRef.current.delete(fromClaimKey)
-      if (claim?.consumed || stored) {
-        fallbackClaimsRef.current.set(
-          toClaimKey,
-          claim?.consumed ? claim : { itemId: "persisted", consumed: true }
+      const storedClaim = readStoredFallbackClaim(owner, fromScopeId)
+      const durableClaim: StoredFallbackUploadClaim | null =
+        claim?.state === "consumed" || storedClaim?.state === "consumed"
+          ? { version: 1, state: "consumed" }
+          : (storedClaim ??
+            (claim?.state === "retry_same_hash" && claim.sha256
+              ? {
+                  version: 1,
+                  state: "retry_same_hash",
+                  sha256: claim.sha256,
+                }
+              : null))
+      if (!durableClaim) return false
+      const existingDestination = readStoredFallbackClaim(owner, toScopeId)
+      if (
+        existingDestination &&
+        !sameStoredFallbackClaim(existingDestination, durableClaim)
+      ) {
+        throw new ProductImageUploadError(
+          "fallback_guard_unavailable",
+          getProductImageUploadErrorMessage("fallback_guard_unavailable")
         )
       }
+      fallbackClaimsRef.current.set(toClaimKey, {
+        itemId: claim?.itemId ?? "persisted",
+        state: durableClaim.state,
+        sha256:
+          durableClaim.state === "retry_same_hash" ? durableClaim.sha256 : null,
+      })
+      const destinationCreated = !existingDestination
+      if (!storeFallbackClaim(owner, toScopeId, durableClaim)) {
+        fallbackClaimsRef.current.delete(toClaimKey)
+        if (destinationCreated) removeStoredFallbackClaim(owner, toScopeId)
+        setFallbackClaimRevision((revision) => revision + 1)
+        throw new ProductImageUploadError(
+          "fallback_guard_unavailable",
+          getProductImageUploadErrorMessage("fallback_guard_unavailable")
+        )
+      }
+      preparedFallbackMovesRef.current.set(moveKey, {
+        claim: durableClaim,
+        destinationCreated,
+      })
+      setFallbackClaimRevision((revision) => revision + 1)
+      return true
+    },
+    [owner]
+  )
+
+  const commitFallbackClaimMove = useCallback(
+    (fromScopeId: string, toScopeId: string): void => {
+      if (!owner) return
+      const moveKey = fallbackClaimMoveKey(owner, fromScopeId, toScopeId)
+      if (!preparedFallbackMovesRef.current.delete(moveKey)) return
+      fallbackClaimsRef.current.delete(
+        fallbackClaimMemoryKey(owner, fromScopeId)
+      )
       removeStoredFallbackClaim(owner, fromScopeId)
-      storeFallbackClaim(owner, toScopeId)
+      setFallbackClaimRevision((revision) => revision + 1)
+    },
+    [owner]
+  )
+
+  const cancelFallbackClaimMove = useCallback(
+    (fromScopeId: string, toScopeId: string): void => {
+      if (!owner) return
+      const moveKey = fallbackClaimMoveKey(owner, fromScopeId, toScopeId)
+      const prepared = preparedFallbackMovesRef.current.get(moveKey)
+      if (!prepared) return
+      preparedFallbackMovesRef.current.delete(moveKey)
+      fallbackClaimsRef.current.delete(fallbackClaimMemoryKey(owner, toScopeId))
+      if (
+        prepared.destinationCreated &&
+        sameStoredFallbackClaim(
+          readStoredFallbackClaim(owner, toScopeId),
+          prepared.claim
+        )
+      ) {
+        removeStoredFallbackClaim(owner, toScopeId)
+      }
       setFallbackClaimRevision((revision) => revision + 1)
     },
     [owner]
@@ -400,17 +643,21 @@ export function useProductImageUpload(): ProductImageUploadController {
     () => ({
       target,
       isBusy: activeUploadCount > 0,
-      isFallbackClaimed,
+      getFallbackClaimState,
       releaseFallbackClaim,
       clearFallbackClaim,
-      moveFallbackClaim,
+      prepareFallbackClaimMove,
+      commitFallbackClaimMove,
+      cancelFallbackClaimMove,
       uploadFile,
     }),
     [
       activeUploadCount,
+      cancelFallbackClaimMove,
       clearFallbackClaim,
-      isFallbackClaimed,
-      moveFallbackClaim,
+      commitFallbackClaimMove,
+      getFallbackClaimState,
+      prepareFallbackClaimMove,
       releaseFallbackClaim,
       target,
       uploadFile,

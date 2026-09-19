@@ -72,6 +72,8 @@ export type ProductImageUploadFailureCode =
   | "target_pending"
   | "target_unavailable"
   | "fallback_limit_reached"
+  | "fallback_retry_mismatch"
+  | "fallback_guard_unavailable"
   | "signer_rejected"
   | "signer_timeout"
   | "signer_unavailable"
@@ -89,10 +91,14 @@ export type ProductImageUploadFailureCode =
   | "integrity_failed"
   | "cancelled"
 
+export type ProductImageUploadOutcome =
+  "not_attempted" | "definitive_rejection" | "ambiguous" | "accepted_unverified"
+
 export class ProductImageUploadError extends Error {
   constructor(
     readonly code: ProductImageUploadFailureCode,
-    message: string
+    message: string,
+    readonly uploadOutcome: ProductImageUploadOutcome = "not_attempted"
   ) {
     super(message)
     this.name = "ProductImageUploadError"
@@ -158,9 +164,10 @@ export interface UploadPreparedProductImageInput {
 
 function uploadError(
   code: ProductImageUploadFailureCode,
-  message: string
+  message: string,
+  outcome: ProductImageUploadOutcome = "not_attempted"
 ): ProductImageUploadError {
-  return new ProductImageUploadError(code, message)
+  return new ProductImageUploadError(code, message, outcome)
 }
 
 function normalizedMimeType(value: string | null | undefined): string {
@@ -191,6 +198,10 @@ export function getProductImageUploadErrorMessage(
       return "Image upload is unavailable. Add an image URL or repair Network settings."
     case "fallback_limit_reached":
       return "The public fallback permits one file upload for this listing. Add more images by URL or configure a media server."
+    case "fallback_retry_mismatch":
+      return "Choose the same image you previously tried to upload. A different file cannot replace an upload with an unknown outcome."
+    case "fallback_guard_unavailable":
+      return "The public fallback could not preserve retry safety on this device. Add by URL or configure a media server."
     case "signer_rejected":
       return "The signer rejected the image upload authorization."
     case "signer_timeout":
@@ -726,12 +737,16 @@ export async function prepareProductImageFile(
   }
 }
 
-function abortError(signal: AbortSignal | undefined): ProductImageUploadError {
+function abortError(
+  signal: AbortSignal | undefined,
+  outcome: ProductImageUploadOutcome = "not_attempted"
+): ProductImageUploadError {
   return uploadError(
     signal?.reason === "timeout" ? "upload_timeout" : "cancelled",
     getProductImageUploadErrorMessage(
       signal?.reason === "timeout" ? "upload_timeout" : "cancelled"
-    )
+    ),
+    outcome
   )
 }
 
@@ -801,6 +816,10 @@ function classifySignerFailure(error: unknown): ProductImageUploadError {
   )
 }
 
+const DEFINITIVE_BUD_UPLOAD_REJECTION_STATUSES = new Set([
+  400, 401, 402, 403, 409, 411, 413, 415, 429,
+])
+
 function classifyUploadResponse(status: number): ProductImageUploadError {
   const code: ProductImageUploadFailureCode =
     status === 401
@@ -818,7 +837,13 @@ function classifyUploadResponse(status: number): ProductImageUploadError {
                 : status === 429
                   ? "rate_limited"
                   : "upload_failed"
-  return uploadError(code, getProductImageUploadErrorMessage(code))
+  return uploadError(
+    code,
+    getProductImageUploadErrorMessage(code),
+    DEFINITIVE_BUD_UPLOAD_REJECTION_STATUSES.has(status)
+      ? "definitive_rejection"
+      : "ambiguous"
+  )
 }
 
 function parseDescriptor(
@@ -868,12 +893,14 @@ function parseDescriptor(
 
 function assertLiveAuthority(
   expectedPubkey: string,
-  shouldContinue: (() => boolean) | undefined
+  shouldContinue: (() => boolean) | undefined,
+  outcome: ProductImageUploadOutcome = "not_attempted"
 ): void {
   if (!HEX_SHA256.test(expectedPubkey) || shouldContinue?.() === false) {
     throw uploadError(
       "authority_changed",
-      getProductImageUploadErrorMessage("authority_changed")
+      getProductImageUploadErrorMessage("authority_changed"),
+      outcome
     )
   }
 }
@@ -1012,6 +1039,7 @@ export async function uploadPreparedProductImage(
     input.dependencies?.uploadTimeoutMs ?? PRODUCT_IMAGE_UPLOAD_TIMEOUT_MS
   )
   let descriptorText: string
+  let uploadAccepted = false
   try {
     const uploadResponse = await fetchImpl(`${serverUrl}/upload`, {
       method: "PUT",
@@ -1029,6 +1057,7 @@ export async function uploadPreparedProductImage(
     if (uploadResponse.status !== 200 && uploadResponse.status !== 201) {
       throw classifyUploadResponse(uploadResponse.status)
     }
+    uploadAccepted = true
     const descriptorBytes = await readResponseBytesBounded(
       uploadResponse,
       MAX_DESCRIPTOR_BYTES,
@@ -1036,11 +1065,21 @@ export async function uploadPreparedProductImage(
     )
     descriptorText = new TextDecoder().decode(descriptorBytes)
   } catch (error) {
-    if (error instanceof ProductImageUploadError) throw error
-    if (uploadSignal.signal.aborted) throw abortError(uploadSignal.signal)
+    if (error instanceof ProductImageUploadError) {
+      throw uploadAccepted
+        ? uploadError(error.code, error.message, "accepted_unverified")
+        : error
+    }
+    if (uploadSignal.signal.aborted) {
+      throw abortError(
+        uploadSignal.signal,
+        uploadAccepted ? "accepted_unverified" : "ambiguous"
+      )
+    }
     throw uploadError(
       "upload_failed",
-      getProductImageUploadErrorMessage("upload_failed")
+      getProductImageUploadErrorMessage("upload_failed"),
+      uploadAccepted ? "accepted_unverified" : "ambiguous"
     )
   } finally {
     uploadSignal.cleanup()
@@ -1051,12 +1090,25 @@ export async function uploadPreparedProductImage(
   } catch {
     throw uploadError(
       "descriptor_invalid",
-      getProductImageUploadErrorMessage("descriptor_invalid")
+      getProductImageUploadErrorMessage("descriptor_invalid"),
+      "accepted_unverified"
     )
   }
-  const descriptor = parseDescriptor(descriptorValue, input.prepared)
+  let descriptor: BlobDescriptor
+  try {
+    descriptor = parseDescriptor(descriptorValue, input.prepared)
+  } catch (error) {
+    if (error instanceof ProductImageUploadError) {
+      throw uploadError(error.code, error.message, "accepted_unverified")
+    }
+    throw error
+  }
 
-  assertLiveAuthority(expectedPubkey, input.shouldContinue)
+  assertLiveAuthority(
+    expectedPubkey,
+    input.shouldContinue,
+    "accepted_unverified"
+  )
   input.onPhase?.("verifying")
   const verifySignal = createBoundedSignal(
     input.signal,
@@ -1068,7 +1120,7 @@ export async function uploadPreparedProductImage(
       method: "GET",
       cache: "no-store",
       credentials: "omit",
-      redirect: "error",
+      redirect: "follow",
       signal: verifySignal.signal,
     })
     const finalUrl = normalizePublicHttpsUrl(
@@ -1108,11 +1160,16 @@ export async function uploadPreparedProductImage(
     new Uint8Array(verifiedBuffer).set(verifiedBytes)
     verifiedBlob = new Blob([verifiedBuffer], { type: input.prepared.mimeType })
   } catch (error) {
-    if (error instanceof ProductImageUploadError) throw error
-    if (verifySignal.signal.aborted) throw abortError(verifySignal.signal)
+    if (error instanceof ProductImageUploadError) {
+      throw uploadError(error.code, error.message, "accepted_unverified")
+    }
+    if (verifySignal.signal.aborted) {
+      throw abortError(verifySignal.signal, "accepted_unverified")
+    }
     throw uploadError(
       "resource_unavailable",
-      getProductImageUploadErrorMessage("resource_unavailable")
+      getProductImageUploadErrorMessage("resource_unavailable"),
+      "accepted_unverified"
     )
   } finally {
     verifySignal.cleanup()
@@ -1122,7 +1179,7 @@ export async function uploadPreparedProductImage(
       ? await awaitWithSignal(
           computeBlobSha256(verifiedBlob),
           input.signal,
-          () => abortError(input.signal)
+          () => abortError(input.signal, "accepted_unverified")
         )
       : await computeBlobSha256(verifiedBlob)
   ).toLowerCase()
@@ -1133,11 +1190,18 @@ export async function uploadPreparedProductImage(
   ) {
     throw uploadError(
       "integrity_failed",
-      getProductImageUploadErrorMessage("integrity_failed")
+      getProductImageUploadErrorMessage("integrity_failed"),
+      "accepted_unverified"
     )
   }
-  if (input.signal?.aborted) throw abortError(input.signal)
-  assertLiveAuthority(expectedPubkey, input.shouldContinue)
+  if (input.signal?.aborted) {
+    throw abortError(input.signal, "accepted_unverified")
+  }
+  assertLiveAuthority(
+    expectedPubkey,
+    input.shouldContinue,
+    "accepted_unverified"
+  )
   input.onPhase?.("succeeded")
   return {
     url: descriptor.url,

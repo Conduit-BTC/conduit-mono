@@ -171,26 +171,50 @@ export function EventProductPublisherDialog({
 
   const publishMutation = useMutation({
     mutationFn: async () => {
-      const result = await publishEventProduct({
-        merchantPubkey,
-        authenticatedPubkey,
-        shouldContinue,
-        marketReference: market.naddr,
-        form,
-        onSignerRequest: setSignerProgress,
-        onSignedLocal: (event) => {
-          const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]
-          if (dTag) {
-            productImageUpload.moveFallbackClaim(
+      let fallbackDestinationScope: string | null = null
+      let fallbackMovePrepared = false
+      let signedLocally = false
+      try {
+        const result = await publishEventProduct({
+          merchantPubkey,
+          authenticatedPubkey,
+          shouldContinue,
+          marketReference: market.naddr,
+          form,
+          onSignerRequest: setSignerProgress,
+          onProductPrepared: (dTag) => {
+            fallbackDestinationScope = `product:30402:${merchantPubkey}:${dTag}`
+            fallbackMovePrepared = productImageUpload.prepareFallbackClaimMove(
               productImageUploadScopeId,
-              `product:30402:${merchantPubkey}:${dTag}`
+              fallbackDestinationScope
             )
-          }
-          setSignedEvent(event)
-          setActionState("publishing")
-        },
-      })
-      return completeAcceptance(result.productCoordinate)
+          },
+          onSignedLocal: (event) => {
+            signedLocally = true
+            if (fallbackMovePrepared && fallbackDestinationScope) {
+              productImageUpload.commitFallbackClaimMove(
+                productImageUploadScopeId,
+                fallbackDestinationScope
+              )
+            }
+            setSignedEvent(event)
+            setActionState("publishing")
+          },
+        })
+        return completeAcceptance(result.productCoordinate)
+      } catch (error) {
+        if (
+          fallbackMovePrepared &&
+          !signedLocally &&
+          fallbackDestinationScope
+        ) {
+          productImageUpload.cancelFallbackClaimMove(
+            productImageUploadScopeId,
+            fallbackDestinationScope
+          )
+        }
+        throw error
+      }
     },
     onMutate: () => {
       setActionError("")

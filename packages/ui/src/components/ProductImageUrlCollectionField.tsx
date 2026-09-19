@@ -168,9 +168,13 @@ export function ProductImageUrlCollectionField({
     ? { ...rows[0], url: rows[0].url.trim() }
     : undefined
   const uploadReady = isUploadTargetReady(upload?.target)
+  const fallbackClaimState =
+    upload?.target.kind === "fallback"
+      ? upload.getFallbackClaimState(uploadScopeId)
+      : "available"
   const fallbackBlocked =
     upload?.target.kind === "fallback" &&
-    (fallbackUploadStarted || upload.isFallbackClaimed(uploadScopeId))
+    (fallbackUploadStarted || fallbackClaimState === "consumed")
   const canAddUrl =
     rows.length === 0 ||
     !!normalizePublicMediaUrl(rows.at(-1)?.url.trim() ?? "")
@@ -677,13 +681,16 @@ export function ProductImageUrlCollectionField({
       >
         {upload?.target.kind === "configured"
           ? `Prepared images upload one at a time through your first configured media server. Add up to ${MAX_PRODUCT_IMAGE_CANDIDATES}; the first image is the cover.`
-          : upload?.target.kind === "fallback"
-            ? "The public fallback permits one file-backed image for this listing. Pasted image URLs do not count toward that guardrail."
-            : upload?.target.kind === "pending"
-              ? "Checking your media server settings. Add by URL remains available."
-              : upload
-                ? "Connect a signer or repair Network settings to upload files. Add by URL remains available."
-                : `Add images one at a time, up to ${MAX_PRODUCT_IMAGE_CANDIDATES}. The first image is the cover.`}
+          : upload?.target.kind === "fallback" &&
+              fallbackClaimState === "retry_same_hash"
+            ? "Choose the same image to retry the earlier fallback request. A different file will not be sent. Pasted image URLs remain available."
+            : upload?.target.kind === "fallback"
+              ? "The public fallback permits one file-backed image for this listing. Pasted image URLs do not count toward that guardrail."
+              : upload?.target.kind === "pending"
+                ? "Checking your media server settings. Add by URL remains available."
+                : upload
+                  ? "Connect a signer or repair Network settings to upload files. Add by URL remains available."
+                  : `Add images one at a time, up to ${MAX_PRODUCT_IMAGE_CANDIDATES}. The first image is the cover.`}
       </p>
 
       {upload?.target.kind === "fallback" ? (

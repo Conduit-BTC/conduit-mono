@@ -1748,12 +1748,13 @@ async function publishMerchantProductFromEvent(
       /^https:\/\/cdn\.conduit\.market\/event-product\//
     )
   } else {
-    await editor.getByRole("button", { name: "Add by URL" }).click()
-    await editor
-      .getByLabel("Primary image URL")
-      .fill(
-        "https://cdn.conduit.market/conduit-test/synthetic-pickup-product.svg"
-      )
+    const primaryImageUrl = editor.getByLabel("Primary image URL")
+    if ((await primaryImageUrl.count()) === 0) {
+      await editor.getByRole("button", { name: "Add by URL" }).click()
+    }
+    await primaryImageUrl.fill(
+      "https://cdn.conduit.market/conduit-test/synthetic-pickup-product.svg"
+    )
   }
   await editor.getByLabel("Tags").fill("synthetic, event, pickup")
 

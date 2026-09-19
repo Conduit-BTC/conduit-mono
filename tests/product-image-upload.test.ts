@@ -330,7 +330,7 @@ describe("verified Blossom product image upload", () => {
           { status: 201, headers: { "content-type": "application/json" } }
         )
       }
-      expect(init?.redirect).toBe("error")
+      expect(init?.redirect).toBe("follow")
       return responseWithUrl(
         prepared.blob,
         {
@@ -380,10 +380,12 @@ describe("verified Blossom product image upload", () => {
   })
 
   for (const [status, code] of [
+    [400, "upload_failed"],
     [401, "auth_invalid"],
     [402, "payment_required"],
     [403, "policy_rejected"],
     [409, "integrity_failed"],
+    [411, "upload_failed"],
     [413, "size_rejected"],
     [415, "type_rejected"],
     [429, "rate_limited"],
@@ -418,8 +420,167 @@ describe("verified Blossom product image upload", () => {
       } catch (error) {
         expect(error).toBeInstanceOf(ProductImageUploadError)
         expect((error as ProductImageUploadError).code).toBe(code)
+        expect((error as ProductImageUploadError).uploadOutcome).toBe(
+          "definitive_rejection"
+        )
       }
       expect(calls).toBe(1)
+    })
+  }
+
+  it("treats an unspecified server failure as an ambiguous PUT outcome", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const prepared = await preparedImage()
+
+    await expect(
+      uploadPreparedProductImage({
+        prepared,
+        target: {
+          kind: "fallback",
+          serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
+          maxFileUploads: 1,
+        },
+        expectedPubkey: pubkey,
+        signer: {
+          getPublicKey: async () => pubkey,
+          signEvent: async (event) => finalizeEvent(event, secretKey),
+        },
+        dependencies: {
+          now: () => 1_000,
+          fetch: async () => new Response("", { status: 500 }),
+        },
+      })
+    ).rejects.toMatchObject({
+      code: "upload_failed",
+      uploadOutcome: "ambiguous",
+    })
+  })
+
+  it("follows a descriptor resource redirect and verifies the final URL", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const prepared = await preparedImage()
+    const descriptorUrl = `${CONFIGURED_SERVER}/${prepared.sha256}.png`
+    const finalUrl = `https://cdn.conduit.market/${prepared.sha256}.png`
+    let calls = 0
+
+    const result = await uploadPreparedProductImage({
+      prepared,
+      target: {
+        kind: "configured",
+        serverUrl: CONFIGURED_SERVER,
+        maxFileUploads: 12,
+      },
+      expectedPubkey: pubkey,
+      signer: {
+        getPublicKey: async () => pubkey,
+        signEvent: async (event) => finalizeEvent(event, secretKey),
+      },
+      dependencies: {
+        now: () => 1_000,
+        fetch: async (_input, init) => {
+          calls += 1
+          if (calls === 1) {
+            expect(init?.redirect).toBe("error")
+            return new Response(
+              JSON.stringify({
+                url: descriptorUrl,
+                sha256: prepared.sha256,
+                size: prepared.size,
+                type: prepared.mimeType,
+                uploaded: 1_000,
+              }),
+              { status: 201 }
+            )
+          }
+          expect(init?.redirect).toBe("follow")
+          return responseWithUrl(
+            prepared.blob,
+            {
+              status: 200,
+              headers: {
+                "content-type": prepared.mimeType,
+                "content-length": String(prepared.size),
+              },
+            },
+            finalUrl
+          )
+        },
+      },
+    })
+
+    expect(result.url).toBe(descriptorUrl)
+    expect(calls).toBe(2)
+  })
+
+  for (const [label, redirectedUrl] of [
+    [
+      "a changed hash",
+      (sha256: string) =>
+        `https://cdn.conduit.market/${sha256 === "f".repeat(64) ? "e".repeat(64) : "f".repeat(64)}.png`,
+    ],
+    [
+      "an unsafe destination",
+      (sha256: string) => `http://127.0.0.1/${sha256}.png`,
+    ],
+  ] as const) {
+    it(`rejects a descriptor resource redirect with ${label}`, async () => {
+      const secretKey = generateSecretKey()
+      const pubkey = getPublicKey(secretKey)
+      const prepared = await preparedImage()
+      const descriptorUrl = `${CONFIGURED_SERVER}/${prepared.sha256}.png`
+      let calls = 0
+
+      await expect(
+        uploadPreparedProductImage({
+          prepared,
+          target: {
+            kind: "configured",
+            serverUrl: CONFIGURED_SERVER,
+            maxFileUploads: 12,
+          },
+          expectedPubkey: pubkey,
+          signer: {
+            getPublicKey: async () => pubkey,
+            signEvent: async (event) => finalizeEvent(event, secretKey),
+          },
+          dependencies: {
+            now: () => 1_000,
+            fetch: async (_input, init) => {
+              calls += 1
+              if (calls === 1) {
+                return new Response(
+                  JSON.stringify({
+                    url: descriptorUrl,
+                    sha256: prepared.sha256,
+                    size: prepared.size,
+                    type: prepared.mimeType,
+                    uploaded: 1_000,
+                  }),
+                  { status: 201 }
+                )
+              }
+              expect(init?.redirect).toBe("follow")
+              return responseWithUrl(
+                prepared.blob,
+                {
+                  status: 200,
+                  headers: {
+                    "content-type": prepared.mimeType,
+                    "content-length": String(prepared.size),
+                  },
+                },
+                redirectedUrl(prepared.sha256)
+              )
+            },
+          },
+        })
+      ).rejects.toMatchObject({
+        code: "resource_unavailable",
+        uploadOutcome: "accepted_unverified",
+      })
+      expect(calls).toBe(2)
     })
   }
 
@@ -475,7 +636,10 @@ describe("verified Blossom product image upload", () => {
           },
         },
       })
-    ).rejects.toMatchObject({ code: "integrity_failed" })
+    ).rejects.toMatchObject({
+      code: "integrity_failed",
+      uploadOutcome: "accepted_unverified",
+    })
   })
 
   it("distinguishes signer rejection, cancellation, signer timeout, and upload timeout", async () => {
@@ -567,7 +731,10 @@ describe("verified Blossom product image upload", () => {
             }),
         },
       })
-    ).rejects.toMatchObject({ code: "upload_timeout" })
+    ).rejects.toMatchObject({
+      code: "upload_timeout",
+      uploadOutcome: "ambiguous",
+    })
   })
 
   it("keeps public error messages free of raw upload evidence", () => {
@@ -579,6 +746,8 @@ describe("verified Blossom product image upload", () => {
     ]
     const codes: ProductImageUploadFailureCode[] = [
       "unsupported_type",
+      "fallback_retry_mismatch",
+      "fallback_guard_unavailable",
       "payment_required",
       "policy_rejected",
       "integrity_failed",

@@ -62,6 +62,7 @@ interface InterceptedBlossomState {
   peakInFlight: number
   originalBodyObserved: boolean
   metadataSentinelObserved: boolean
+  requestHashes: string[]
   resourceUrls: string[]
 }
 
@@ -69,7 +70,9 @@ async function interceptBlossom(
   page: Page,
   serverUrl: string,
   options: {
+    abortFirstOnce?: boolean
     failSecondOnce?: boolean
+    rejectFirstStatus?: number
     originalHashes?: ReadonlySet<string>
     metadataSentinel?: string
   } = {}
@@ -79,6 +82,7 @@ async function interceptBlossom(
     peakInFlight: 0,
     originalBodyObserved: false,
     metadataSentinelObserved: false,
+    requestHashes: [],
     resourceUrls: [],
   }
   const resources = new Map<string, { body: Buffer; type: string }>()
@@ -131,10 +135,23 @@ async function interceptBlossom(
       return
     }
     state.putCount += 1
+    const requestedHash = request.headers()["x-sha-256"]
+    if (requestedHash) state.requestHashes.push(requestedHash)
     inFlight += 1
     state.peakInFlight = Math.max(state.peakInFlight, inFlight)
     try {
       await new Promise((resolve) => setTimeout(resolve, 40))
+      if (options.rejectFirstStatus && state.putCount === 1) {
+        await route.fulfill({
+          status: options.rejectFirstStatus,
+          headers: { "access-control-allow-origin": "*" },
+        })
+        return
+      }
+      if (options.abortFirstOnce && state.putCount === 1) {
+        await route.abort("timedout")
+        return
+      }
       if (options.failSecondOnce && state.putCount === 2) {
         await route.fulfill({
           status: 429,
@@ -434,18 +451,6 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
       createHash("sha256").update(readFileSync(image192)).digest("hex"),
     ]),
   })
-  await page.addInitScript((claimPrefix) => {
-    const originalSetItem = Storage.prototype.setItem
-    Storage.prototype.setItem = function (key, value) {
-      if (key.startsWith(claimPrefix)) {
-        throw new DOMException(
-          "Synthetic storage rejection",
-          "QuotaExceededError"
-        )
-      }
-      return originalSetItem.call(this, key, value)
-    }
-  }, "conduit:merchant:product_image_fallback:v1")
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
     dialog.getByText("No safe media server is configured.", { exact: false })
@@ -543,7 +548,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   await expect(freshDialog.getByLabel("Primary image URL")).toHaveValue(
     /^https:\/\/cdn\.conduit\.market\//
   )
-  await freshDialog.getByLabel("Title").fill("Storage-rejected fallback")
+  await freshDialog.getByLabel("Title").fill("Fallback image listing")
   await freshDialog.getByLabel("Price").fill("7")
   await freshDialog.locator("#product-fulfillment").click()
   await page.getByRole("option", { name: "Digital" }).click()
@@ -557,7 +562,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
     .click()
   await expect(freshDialog).toBeHidden({ timeout: 15_000 })
   await expect(
-    page.getByText("Storage-rejected fallback", { exact: true }).first()
+    page.getByText("Fallback image listing", { exact: true }).first()
   ).toBeVisible({ timeout: 15_000 })
   await page.getByRole("button", { name: "Edit", exact: true }).first().click()
   const editDialog = page.getByRole("dialog", { name: "Edit listing" })
@@ -569,4 +574,259 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
     })
   ).toBeDisabled()
   expect(state.putCount).toBe(2)
+})
+
+test("fallback destination persistence fails before signing and survives draft recovery @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  await page.addInitScript(
+    ({ allowKey, claimPrefix }) => {
+      const originalSetItem = Storage.prototype.setItem
+      Storage.prototype.setItem = function (key, value) {
+        if (
+          key.startsWith(claimPrefix) &&
+          key.includes("product%3A30402%3A") &&
+          this.getItem(allowKey) !== "1"
+        ) {
+          throw new DOMException(
+            "Synthetic destination storage rejection",
+            "QuotaExceededError"
+          )
+        }
+        return originalSetItem.call(this, key, value)
+      }
+    },
+    {
+      allowKey: "conduit:test:allow-fallback-destination",
+      claimPrefix: "conduit:merchant:product_image_fallback:v1",
+    }
+  )
+  const state = await interceptBlossom(page, fallbackServer)
+  const { dialog } = await openProductDialogWithSigner(page)
+  await expect(
+    dialog.getByText("No safe media server is configured.", { exact: false })
+  ).toBeVisible()
+  await dialog.locator("#product-image-file").setInputFiles(image192)
+  await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
+    /^https:\/\/cdn\.conduit\.market\//
+  )
+  await dialog.getByLabel("Title").fill("Destination-guarded fallback")
+  await dialog.getByLabel("Price").fill("7")
+  await dialog.locator("#product-fulfillment").click()
+  await page.getByRole("option", { name: "Digital" }).click()
+  const tags = dialog.getByRole("combobox", { name: "Tags" })
+  for (const tag of ["fallback", "destination", "guardrail"]) {
+    await tags.fill(tag)
+    await tags.press("Enter")
+  }
+
+  await dialog
+    .getByRole("button", { name: "Publish product", exact: true })
+    .click()
+  await expect(
+    dialog.getByText(
+      "The public fallback could not preserve retry safety on this device.",
+      { exact: false }
+    )
+  ).toBeVisible()
+  await expect(dialog).toBeVisible()
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __conduitSignedKinds?: number[] })
+          .__conduitSignedKinds
+    )
+  ).toEqual([24242])
+  expect(state.putCount).toBe(1)
+
+  await page.reload()
+  const resumeButton = page.getByRole("button", {
+    name: "Resume product draft",
+  })
+  await expect(resumeButton).toBeVisible()
+  await resumeButton.click()
+  const resumed = page.getByRole("dialog", { name: "Add product" })
+  await expect(resumed.getByLabel("Primary image URL")).toHaveValue(
+    /^https:\/\/cdn\.conduit\.market\//
+  )
+  await expect(
+    resumed.getByRole("button", { name: "Add another image", exact: true })
+  ).toBeDisabled()
+  await resumed.getByLabel("Title").fill("Recovered destination guard")
+  await page.evaluate(
+    (allowKey) => localStorage.setItem(allowKey, "1"),
+    "conduit:test:allow-fallback-destination"
+  )
+  await resumed
+    .getByRole("button", { name: "Publish product", exact: true })
+    .click()
+  const inboxReady = page.getByRole("heading", {
+    name: "Private inbox ready",
+    exact: true,
+  })
+  const publishedListing = page
+    .getByText("Recovered destination guard", { exact: true })
+    .first()
+  await expect(inboxReady.or(publishedListing)).toBeVisible({
+    timeout: 15_000,
+  })
+  if (await inboxReady.isVisible()) {
+    await page
+      .getByRole("button", { name: "Publish product", exact: true })
+      .last()
+      .click()
+  }
+  await expect(resumed).toBeHidden({ timeout: 15_000 })
+  await expect(publishedListing).toBeVisible({ timeout: 15_000 })
+  await page.getByRole("button", { name: "Edit", exact: true }).first().click()
+  const editDialog = page.getByRole("dialog", { name: "Edit listing" })
+  await expect(editDialog).toBeVisible()
+  await expect(
+    editDialog.getByRole("button", {
+      name: "Add another image",
+      exact: true,
+    })
+  ).toBeDisabled()
+  expect(state.putCount).toBe(1)
+})
+
+test("fallback rejection clears the durable claim across reload @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const state = await interceptBlossom(page, fallbackServer, {
+    rejectFirstStatus: 429,
+  })
+  const { dialog } = await openProductDialogWithSigner(page)
+  await expect(
+    dialog.getByText("No safe media server is configured.", { exact: false })
+  ).toBeVisible()
+  await dialog.getByLabel("Title").fill("Rejected fallback draft")
+  await dialog.locator("#product-image-file").setInputFiles(image192)
+  await expect(
+    dialog.getByText("This media server is rate limiting uploads.", {
+      exact: false,
+    })
+  ).toBeVisible()
+  expect(state.putCount).toBe(1)
+
+  await dialog.locator("form").getByRole("button", { name: "Close" }).click()
+  await expect(dialog).toBeHidden()
+  await page.reload()
+  await page.getByRole("button", { name: "Add product" }).first().click()
+  const resumed = page.getByRole("dialog", { name: "Add product" })
+  await expect(
+    resumed.getByRole("button", { name: "Add another image", exact: true })
+  ).toBeEnabled()
+  await resumed.locator("#product-image-file").setInputFiles(image512)
+  await expect(resumed.getByLabel("Primary image URL")).toHaveValue(
+    /^https:\/\/cdn\.conduit\.market\//
+  )
+  expect(state.putCount).toBe(2)
+})
+
+test("ambiguous fallback retries only the same prepared hash after reload @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const state = await interceptBlossom(page, fallbackServer, {
+    abortFirstOnce: true,
+  })
+  const { dialog } = await openProductDialogWithSigner(page)
+  await expect(
+    dialog.getByText("No safe media server is configured.", { exact: false })
+  ).toBeVisible()
+  await dialog.getByLabel("Title").fill("Ambiguous fallback draft")
+  await dialog.locator("#product-image-file").setInputFiles(image192)
+  await expect(
+    dialog.getByText("The upload did not finish. Retry this image.", {
+      exact: true,
+    })
+  ).toBeVisible()
+  expect(state.putCount).toBe(1)
+
+  await dialog.locator("form").getByRole("button", { name: "Close" }).click()
+  await expect(dialog).toBeHidden()
+  await page.reload()
+  await page.getByRole("button", { name: "Add product" }).first().click()
+  const resumed = page.getByRole("dialog", { name: "Add product" })
+  await expect(
+    resumed.getByText("Choose the same image to retry", { exact: false })
+  ).toBeVisible()
+  await expect(
+    resumed.getByRole("button", { name: "Add another image", exact: true })
+  ).toBeEnabled()
+
+  await resumed.locator("#product-image-file").setInputFiles(image512)
+  await expect(
+    resumed.getByText("Choose the same image you previously tried to upload.", {
+      exact: false,
+    })
+  ).toBeVisible()
+  expect(state.putCount).toBe(1)
+  await resumed
+    .getByRole("button", { name: "Remove unfinished image 1", exact: true })
+    .click()
+  await expect(
+    resumed.getByRole("button", { name: "Add another image", exact: true })
+  ).toBeEnabled()
+
+  await resumed.locator("#product-image-file").setInputFiles(image192)
+  await expect(resumed.getByLabel("Primary image URL")).toHaveValue(
+    /^https:\/\/cdn\.conduit\.market\//
+  )
+  expect(state.putCount).toBe(2)
+  expect(state.requestHashes[1]).toBe(state.requestHashes[0])
+})
+
+test("fallback refuses PUT when its durable guard cannot be confirmed @merchant", async ({
+  page,
+}) => {
+  await page.addInitScript((claimPrefix) => {
+    const originalSetItem = Storage.prototype.setItem
+    Storage.prototype.setItem = function (key, value) {
+      if (key.startsWith(claimPrefix)) {
+        throw new DOMException(
+          "Synthetic storage rejection",
+          "QuotaExceededError"
+        )
+      }
+      return originalSetItem.call(this, key, value)
+    }
+  }, "conduit:merchant:product_image_fallback:v1")
+  const state = await interceptBlossom(page, fallbackServer)
+  const { dialog } = await openProductDialogWithSigner(page)
+  await expect(
+    dialog.getByText("No safe media server is configured.", { exact: false })
+  ).toBeVisible()
+  await dialog.locator("#product-image-file").setInputFiles(image192)
+  await expect(
+    dialog.getByText(
+      "The public fallback could not preserve retry safety on this device.",
+      { exact: false }
+    )
+  ).toBeVisible()
+  expect(state.putCount).toBe(0)
+})
+
+test("a corrupt fallback claim fails closed without sending a file @merchant", async ({
+  page,
+}) => {
+  await page.addInitScript((claimPrefix) => {
+    const originalGetItem = Storage.prototype.getItem
+    Storage.prototype.getItem = function (key) {
+      if (key.startsWith(claimPrefix)) return ""
+      return originalGetItem.call(this, key)
+    }
+  }, "conduit:merchant:product_image_fallback:v1")
+  const state = await interceptBlossom(page, fallbackServer)
+  const { dialog } = await openProductDialogWithSigner(page)
+  await expect(
+    dialog.getByText("No safe media server is configured.", { exact: false })
+  ).toBeVisible()
+  await expect(
+    dialog.getByRole("button", { name: "Add another image", exact: true })
+  ).toBeDisabled()
+  expect(state.putCount).toBe(0)
 })

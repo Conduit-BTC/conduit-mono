@@ -1524,17 +1524,6 @@ function ProductsPage() {
     variables: ProductPublishMutationPayload,
     authoringTarget: ProductVariationAuthoringTarget
   ): void {
-    if (!variables.existing) {
-      productImageUpload.moveFallbackClaim(
-        getProductImageUploadScopeId(
-          getProductDraftTarget(variables.merchantPubkey)
-        ),
-        getProductImageUploadScopeId({
-          merchantPubkey: variables.merchantPubkey,
-          productAddressId: `30402:${variables.merchantPubkey}:${variables.dTag}`,
-        })
-      )
-    }
     const returnIntentCleared = variables.existing
       ? true
       : clearProductDraftReturnIntent(variables.merchantPubkey)
@@ -1580,27 +1569,59 @@ function ProductsPage() {
         )
       }
 
-      return publishProduct(
-        payload.merchantPubkey,
-        payload.form,
-        payload.dTag,
-        async (signedBundle, authoringTarget) => {
-          setProductDeliveryRetry({
-            action: "publish",
-            payload: { ...payload, signedBundle },
-          })
-          completeLocalProductSave(payload, authoringTarget)
-          await showLocalProductProjection("publish", payload.merchantPubkey)
-        },
-        payload.existing,
-        setProductSignerProgress,
-        () => {
-          setProductSignerProgress(null)
-          setProductSignerRequestsComplete(true)
-        },
-        authStatus === "connected" ? pubkey : null,
-        () => authGenerationRef.current === authGeneration
+      const fallbackSourceScope = getProductImageUploadScopeId(
+        getProductDraftTarget(payload.merchantPubkey)
       )
+      const fallbackDestinationScope = getProductImageUploadScopeId({
+        merchantPubkey: payload.merchantPubkey,
+        productAddressId: `30402:${payload.merchantPubkey}:${payload.dTag}`,
+      })
+      let fallbackMovePrepared = false
+      let signedLocally = false
+      try {
+        if (!payload.existing) {
+          fallbackMovePrepared = productImageUpload.prepareFallbackClaimMove(
+            fallbackSourceScope,
+            fallbackDestinationScope
+          )
+        }
+        return await publishProduct(
+          payload.merchantPubkey,
+          payload.form,
+          payload.dTag,
+          async (signedBundle, authoringTarget) => {
+            signedLocally = true
+            if (fallbackMovePrepared) {
+              productImageUpload.commitFallbackClaimMove(
+                fallbackSourceScope,
+                fallbackDestinationScope
+              )
+            }
+            setProductDeliveryRetry({
+              action: "publish",
+              payload: { ...payload, signedBundle },
+            })
+            completeLocalProductSave(payload, authoringTarget)
+            await showLocalProductProjection("publish", payload.merchantPubkey)
+          },
+          payload.existing,
+          setProductSignerProgress,
+          () => {
+            setProductSignerProgress(null)
+            setProductSignerRequestsComplete(true)
+          },
+          authStatus === "connected" ? pubkey : null,
+          () => authGenerationRef.current === authGeneration
+        )
+      } catch (error) {
+        if (fallbackMovePrepared && !signedLocally) {
+          productImageUpload.cancelFallbackClaimMove(
+            fallbackSourceScope,
+            fallbackDestinationScope
+          )
+        }
+        throw error
+      }
     },
     onMutate: (payload) => {
       productPublishStartedAtRef.current = Date.now()

@@ -7,10 +7,12 @@ const uploadFile: ProductImageUploadController["uploadFile"] = async () => {
   throw new Error("render-only upload stub")
 }
 const uploadLifecycle = {
-  isFallbackClaimed: () => false,
+  getFallbackClaimState: () => "available" as const,
   releaseFallbackClaim: () => false,
   clearFallbackClaim: () => {},
-  moveFallbackClaim: () => {},
+  prepareFallbackClaimMove: () => false,
+  commitFallbackClaimMove: () => {},
+  cancelFallbackClaimMove: () => {},
   uploadFile,
 }
 
@@ -135,6 +137,37 @@ describe("ProductImageUrlCollectionField", () => {
     expect(html).toContain('href="/network"')
     expect(html).toContain("limited, unavailable, moderated")
     expect(html).not.toContain("multiple")
+  })
+
+  it("offers the picker only as a same-image retry for an ambiguous fallback", () => {
+    const html = renderToStaticMarkup(
+      <ProductImageUrlCollectionField
+        id="fallback-product-image"
+        images={[]}
+        onChange={() => {}}
+        previewTitle="Fallback retry"
+        upload={{
+          isBusy: false,
+          target: {
+            kind: "fallback",
+            serverUrl: "https://blossom.nostr.build",
+            maxFileUploads: 1,
+          },
+          ...uploadLifecycle,
+          getFallbackClaimState: () => "retry_same_hash",
+        }}
+      />
+    )
+
+    const addImageIndex = html.indexOf("Add another image")
+    const addImageButtonStart = html.lastIndexOf("<button", addImageIndex)
+    const addImageButton = html.slice(
+      addImageButtonStart,
+      html.indexOf(">", addImageButtonStart) + 1
+    )
+    expect(addImageButton).not.toContain('disabled=""')
+    expect(html).toContain("Choose the same image to retry")
+    expect(html).toContain("A different file will not be sent")
   })
 
   it("keeps URL entry available while server authority is unresolved", () => {
