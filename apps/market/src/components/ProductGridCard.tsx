@@ -10,8 +10,9 @@ import {
   ProductCard,
   ProductCardSkeleton,
   ProductCartAction,
+  cn,
 } from "@conduit/ui"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { getProductAddAvailability } from "../lib/cart-model"
 import {
   getDefaultProductSelection,
@@ -19,17 +20,48 @@ import {
   getProductSelectionImages,
   type MarketProductFamily,
 } from "../lib/productVariations"
+import {
+  getVariationPanelPlacement,
+  readRootPixelVariable,
+  type VariationPanelPlacement,
+} from "../lib/variation-panel-placement"
 import { getPendingMerchantDisplayName } from "./MerchantIdentity"
 import { ProductVariationSelector } from "./ProductVariationSelector"
 
 export const PRODUCT_GRID_CLASS_NAME =
-  "grid items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
+  "grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
+
+const DESKTOP_HOVER_MEDIA_QUERY = "(min-width: 768px) and (hover: hover)"
+const VARIATION_CONTROLS_SELECTOR =
+  '[data-slot="product-variation-selector"], [data-slot="product-variation-skeleton"]'
+
+function measureVariationPanelPlacement(
+  root: HTMLElement
+): VariationPanelPlacement | null {
+  if (!window.matchMedia(DESKTOP_HOVER_MEDIA_QUERY).matches) return null
+  const panel = root.querySelector<HTMLElement>(
+    VARIATION_CONTROLS_SELECTOR
+  )?.parentElement
+  if (!panel) return null
+  const rect = root.getBoundingClientRect()
+  const cardHeight = root.offsetHeight
+  return getVariationPanelPlacement({
+    cardTop: rect.top,
+    cardHeight,
+    panelHeight: panel.offsetHeight,
+    viewportHeight: window.innerHeight,
+    bottomInset:
+      readRootPixelVariable("--market-hud-height") +
+      readRootPixelVariable("--market-fixed-footer-height"),
+  })
+}
 
 export type ProductGridCardProps = {
   product: Product
   family?: MarketProductFamily
   familyHydrating?: boolean
   className?: string
+  notice?: ReactNode
   selectedProductId?: string
   onSelectedProductChange?: (product: Product) => void
   merchantName?: string
@@ -58,6 +90,7 @@ export function ProductGridCard({
   family,
   familyHydrating = false,
   className,
+  notice,
   selectedProductId: controlledSelectedProductId,
   onSelectedProductChange,
   merchantName: merchantNameOverride,
@@ -85,6 +118,8 @@ export function ProductGridCard({
   const [internalSelectedProductId, setInternalSelectedProductId] = useState(
     defaultSelection.id
   )
+  const [variationPanelPlacement, setVariationPanelPlacement] =
+    useState<VariationPanelPlacement>("below")
   const selectedProductId =
     controlledSelectedProductId ?? internalSelectedProductId
   const selectedProduct = getProductSelection(
@@ -92,9 +127,15 @@ export function ProductGridCard({
     family,
     selectedProductId
   )
-  const hasVariations = product.type === "variable" && family?.state === "ready"
+  const hasReadyFamily =
+    product.type === "variable" && family?.state === "ready"
+  const hasVariations =
+    product.type === "variable" &&
+    family?.state === "ready" &&
+    family.axes.length > 0
   const showVariationSkeleton =
-    product.type === "variable" && familyHydrating && !hasVariations
+    product.type === "variable" && familyHydrating && !hasReadyFamily
+  const hasVariationControls = hasVariations || showVariationSkeleton
   const images = getProductSelectionImages(product, selectedProduct)
   const selectedCartQuantity =
     getCartQuantity?.(selectedProduct) ?? cartQuantity
@@ -125,22 +166,62 @@ export function ProductGridCard({
         { allowZero: allowZeroPrice }
       )
     : selectedPriceDisplay
+  const displayedPrice = hasReadyFamily
+    ? selectedPriceDisplay
+    : summaryPriceDisplay
   const primary =
-    family?.priceSummary.varies === true
+    !hasReadyFamily && family?.priceSummary.varies === true
       ? `From ${summaryPriceDisplay.primary}`
-      : summaryPriceDisplay.primary
-  const secondary = summaryPriceDisplay.secondary
-  const approximateUsd = summaryPriceDisplay.approximateUsd
+      : displayedPrice.primary
+  const secondary = displayedPrice.secondary
+  const approximateUsd = displayedPrice.approximateUsd
   const soldOut = selectedProduct.stock === 0
   const atStockLimit =
     !soldOut &&
     getProductAddAvailability(selectedProduct.stock, selectedCartQuantity, 1)
       .canAdd === false
 
+  const panelOpensAbove = variationPanelPlacement === "above"
+  const updateVariationPanelPlacement = (root: HTMLElement) => {
+    if (!hasVariationControls) return
+    const placement = measureVariationPanelPlacement(root)
+    if (placement) setVariationPanelPlacement(placement)
+  }
+
+  const variationPanelClassName = cn(
+    "pt-3",
+    // The extra negative inset aligns the panel's two-pixel border with the
+    // card's one-pixel border plus its one-pixel outer highlight ring.
+    "[@media(min-width:768px)_and_(hover:hover)]:absolute [@media(min-width:768px)_and_(hover:hover)]:-inset-x-0.5 [@media(min-width:768px)_and_(hover:hover)]:z-20 [@media(min-width:768px)_and_(hover:hover)]:border-x-2 [@media(min-width:768px)_and_(hover:hover)]:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:p-3",
+    panelOpensAbove
+      ? "[@media(min-width:768px)_and_(hover:hover)]:bottom-full [@media(min-width:768px)_and_(hover:hover)]:origin-bottom [@media(min-width:768px)_and_(hover:hover)]:border-t-2 [@media(min-width:768px)_and_(hover:hover)]:rounded-t-xl"
+      : "[@media(min-width:768px)_and_(hover:hover)]:top-full [@media(min-width:768px)_and_(hover:hover)]:origin-top [@media(min-width:768px)_and_(hover:hover)]:border-b-2 [@media(min-width:768px)_and_(hover:hover)]:rounded-b-xl",
+    // The collapsed panel scales to zero height so it never adds scrollable
+    // space below the last grid row while it is hidden.
+    "[@media(min-width:768px)_and_(hover:hover)]:pointer-events-none [@media(min-width:768px)_and_(hover:hover)]:invisible [@media(min-width:768px)_and_(hover:hover)]:opacity-0 [@media(min-width:768px)_and_(hover:hover)]:scale-y-0 [@media(min-width:768px)_and_(hover:hover)]:transition-[opacity,visibility,transform] [@media(min-width:768px)_and_(hover:hover)]:duration-200 motion-reduce:!transition-none",
+    "[@media(min-width:768px)_and_(hover:hover)]:group-hover:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-hover:visible [@media(min-width:768px)_and_(hover:hover)]:group-hover:opacity-100 [@media(min-width:768px)_and_(hover:hover)]:group-hover:scale-y-100",
+    "[@media(min-width:768px)_and_(hover:hover)]:group-focus-within:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:visible [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:opacity-100 [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:scale-y-100",
+    "[@media(min-width:768px)_and_(hover:hover)]:group-has-[[data-state=open]]:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-has-[[data-state=open]]:visible [@media(min-width:768px)_and_(hover:hover)]:group-has-[[data-state=open]]:opacity-100 [@media(min-width:768px)_and_(hover:hover)]:group-has-[[data-state=open]]:scale-y-100"
+  )
+
   return (
     <ProductCard
-      className={className ?? "h-auto"}
+      className={cn(
+        className ?? "h-full",
+        "relative",
+        "[@media(min-width:768px)_and_(hover:hover)]:overflow-visible [@media(min-width:768px)_and_(hover:hover)]:z-10 [@media(min-width:768px)_and_(hover:hover)]:hover:z-20 [@media(min-width:768px)_and_(hover:hover)]:focus-within:z-20 [@media(min-width:768px)_and_(hover:hover)]:hover:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:hover:bg-[var(--surface)] [@media(min-width:768px)_and_(hover:hover)]:hover:shadow-[var(--shadow-md)] [@media(min-width:768px)_and_(hover:hover)]:hover:ring-1 [@media(min-width:768px)_and_(hover:hover)]:hover:ring-primary-500 [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:focus-within:ring-1 [@media(min-width:768px)_and_(hover:hover)]:focus-within:ring-primary-500 motion-reduce:transition-none",
+        hasVariationControls &&
+          (panelOpensAbove
+            ? "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-t-0"
+            : "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-b-0"),
+        "[@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:z-30 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:ring-1 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:ring-primary-500"
+      )}
+      onPointerEnter={(event) =>
+        updateVariationPanelPlacement(event.currentTarget)
+      }
+      onFocus={(event) => updateVariationPanelPlacement(event.currentTarget)}
       title={product.title}
+      notice={notice}
       merchantName={merchantName}
       merchantNamePending={merchantNamePending}
       images={images}
@@ -148,6 +229,12 @@ export function ProductGridCard({
       secondaryPrice={secondary}
       approximateUsdPrice={approximateUsd}
       imageLoading={imageLoading}
+      disableImageHoverZoom
+      mediaClassName={cn(
+        "[@media(min-width:768px)_and_(hover:hover)]:rounded-t-[calc(0.75rem-1px)]",
+        panelOpensAbove &&
+          "[@media(min-width:768px)_and_(hover:hover)]:group-hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:group-has-[[data-state=open]]:rounded-t-none"
+      )}
       cartQuantity={selectedCartQuantity}
       soldOut={soldOut}
       options={
@@ -164,6 +251,9 @@ export function ProductGridCard({
         ) : showVariationSkeleton ? (
           <ProductVariationLoadingSkeleton />
         ) : undefined
+      }
+      optionsClassName={
+        hasVariationControls ? variationPanelClassName : undefined
       }
       onActivate={
         onProductActivate === null
@@ -212,7 +302,8 @@ function ProductVariationLoadingSkeleton() {
     <div
       role="status"
       aria-label="Loading product options"
-      className="space-y-2 animate-pulse"
+      data-slot="product-variation-skeleton"
+      className="space-y-2 animate-pulse motion-reduce:animate-none"
     >
       {Array.from({ length: 3 }).map((_, index) => (
         <div key={index} className="space-y-1.5">

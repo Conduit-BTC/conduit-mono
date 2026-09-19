@@ -4,11 +4,13 @@ import {
   discoverFollowedOrganizerEventMarkets,
   encodeEventMarketNaddr,
   getEventMarket,
+  getEventMarketOrderAcceptance,
   getOrganizerEventMarketsDetailed,
   isValidSignedPublicNostrEvent,
   normalizeRelayUrl,
   normalizeSecureOrIsolatedE2eRelayUrls,
   publishOrganizerCollectionUpdate,
+  publishOrganizerCollectionOrderAcceptance,
   publishOrganizerEventMarket,
   parseEventMarketCollectionEvent,
   retryOrganizerEventMarketRecord,
@@ -73,6 +75,7 @@ export interface MerchantOrganizerParticipation {
 
 export interface MerchantOrganizerEventMarket {
   state: MerchantOrganizerEventMarketState
+  orderAcceptance?: "open" | "closed"
   organizerPubkey: string
   collectionCoordinate: string
   calendarCoordinate: string
@@ -684,6 +687,7 @@ export function projectEventMarket(
 
   return {
     state: resolution.state,
+    orderAcceptance: collection?.orderAcceptance,
     organizerPubkey,
     collectionCoordinate,
     calendarCoordinate: calendarCoordinate ?? "",
@@ -1068,6 +1072,19 @@ export async function publishMerchantOrganizerEventMarket(input: {
     collectionCoordinate: string
   ) => void | Promise<void>
 }): Promise<MerchantOrganizerPublishResult> {
+  if (input.existing) {
+    const current = await refreshOrganizerCollectionForMutation(input)
+    if (
+      current.collectionEventId !== input.existing.collectionEventId ||
+      current.calendarEventId !== input.existing.calendarEventId ||
+      current.pickupEventId !== input.existing.pickupEventId
+    ) {
+      throw new Error(
+        "The event changed while editing. Refresh and review the current event before publishing."
+      )
+    }
+    input = { ...input, existing: current }
+  }
   const prepared = prepareOrganizerEventMarketForm(input.form, {
     requireFutureStart: !input.existing,
   })
@@ -1145,6 +1162,7 @@ export async function publishMerchantOrganizerEventMarket(input: {
     eventCoordinate: calendarCoordinate,
     pickupCoordinates: pickupCoordinate ? [pickupCoordinate] : [],
     productCoordinates: input.existing?.productCoordinates ?? [],
+    orderAcceptance: input.existing ? input.existing.orderAcceptance : "open",
   }
   const result = await publishOrganizerEventMarket({
     organizerPubkey: input.organizerPubkey,
@@ -1239,8 +1257,30 @@ export function reconcileMerchantOrganizerCollectionEvidence(
     organizerOnly.push({ productCoordinate, status: "organizer_only" })
   }
 
+  const acceptance = getEventMarketOrderAcceptance({
+    collection: retainedCollection,
+    calendar: market.source.calendar,
+  })
+  const retainsResolvedGraph =
+    retainedCollection.eventCoordinates[0] === market.calendarCoordinate &&
+    retainedCollection.pickupCoordinates.length ===
+      market.pickupCoordinates.length &&
+    retainedCollection.pickupCoordinates[0] === market.pickupCoordinates[0]
+  const acknowledgedContinuation =
+    retainedDelivery.acknowledgedCount > 0 &&
+    retainsResolvedGraph &&
+    retainedCollection.orderAcceptance === market.orderAcceptance
+  const state = ["deleted", "malformed", "unsupported"].includes(market.state)
+    ? market.state
+    : acceptance === "closed" || acceptance === "legacy-ended"
+      ? "ended"
+      : acknowledgedContinuation
+        ? market.state
+        : "stale"
   return {
     ...market,
+    state,
+    orderAcceptance: retainedCollection.orderAcceptance,
     title: retainedCollection.title,
     summary: retainedCollection.summary,
     imageUrl: retainedCollection.image,
@@ -1258,6 +1298,7 @@ export function reconcileMerchantOrganizerCollectionEvidence(
     participation: [...pending, ...accepted, ...organizerOnly],
     source: {
       ...market.source,
+      state,
       collection: retainedCollection,
       collectionCoordinate: retainedCollection.coordinate,
       calendarCoordinate: retainedCollection.eventCoordinates[0]!,
@@ -1292,7 +1333,8 @@ export async function publishMerchantOrganizerMembership(input: {
   retainedCollection?: MerchantOrganizerRecordDelivery | null
   onSignedEvent?: (
     record: MerchantOrganizerRecordDelivery,
-    collectionCoordinate: string
+    collectionCoordinate: string,
+    market: MerchantOrganizerEventMarket
   ) => void | Promise<void>
 }): Promise<MerchantOrganizerRecordDelivery> {
   const retainedCollection =
@@ -1301,7 +1343,7 @@ export async function publishMerchantOrganizerMembership(input: {
       input.market.collectionCoordinate
     ]?.find((record) => record.record === "collection") ??
     null
-  const market = reconcileMerchantOrganizerCollectionEvidence(
+  let market = reconcileMerchantOrganizerCollectionEvidence(
     input.market,
     retainedCollection
   )
@@ -1316,11 +1358,6 @@ export async function publishMerchantOrganizerMembership(input: {
       "The latest signed event collection still needs exact delivery retry."
     )
   }
-  const productCoordinates = updateOrganizerCollectionProducts(
-    market.productCoordinates,
-    input.item.productCoordinate,
-    input.action
-  )
   const organizerHandoffStillAdvertised =
     input.item.handoffMode !== "organizer_handoff" ||
     (!!input.item.pickupCoordinate &&
@@ -1335,6 +1372,39 @@ export async function publishMerchantOrganizerMembership(input: {
       "Current signed product preview or handoff evidence is unavailable or unsupported."
     )
   }
+  market = await refreshOrganizerCollectionForMutation({
+    ...input,
+    existing: market,
+  })
+  if (
+    input.action === "accept" &&
+    market.state !== "active" &&
+    market.state !== "partial"
+  ) {
+    throw new Error(
+      "This event is not accepting new products. Refresh or reopen the event first."
+    )
+  }
+  const currentItem = market.participation.find(
+    (item) => item.productCoordinate === input.item.productCoordinate
+  )
+  if (
+    input.action === "accept" &&
+    (!currentItem ||
+      !isParticipationHandoffVerified(currentItem, market.organizerPubkey) ||
+      !isParticipationProductPreviewVerified(currentItem) ||
+      (currentItem.handoffMode === "organizer_handoff" &&
+        !market.pickupCoordinates.includes(currentItem.pickupCoordinate ?? "")))
+  ) {
+    throw new Error(
+      "Current signed product preview or handoff evidence is unavailable or unsupported."
+    )
+  }
+  const productCoordinates = updateOrganizerCollectionProducts(
+    market.productCoordinates,
+    input.item.productCoordinate,
+    input.action
+  )
   const sourceCollection = market.source.collection
   const collection: OrganizerEventMarketCollectionPublishInput = {
     dTag: coordinateDTag(market.collectionCoordinate),
@@ -1347,6 +1417,7 @@ export async function publishMerchantOrganizerMembership(input: {
     eventCoordinate: market.calendarCoordinate,
     pickupCoordinates: market.pickupCoordinates,
     productCoordinates,
+    orderAcceptance: market.orderAcceptance,
   }
   const result = await publishOrganizerCollectionUpdate({
     organizerPubkey: input.organizerPubkey,
@@ -1357,7 +1428,133 @@ export async function publishMerchantOrganizerMembership(input: {
     onSignedEvent: async (record) => {
       await input.onSignedEvent?.(
         projectDeliveryRecord(record),
-        market.collectionCoordinate
+        market.collectionCoordinate,
+        market
+      )
+    },
+  })
+  return projectDeliveryRecord(result)
+}
+
+/** Refresh authority at signing time, preserving the strongest local signed frontier. */
+async function refreshOrganizerCollectionForMutation(input: {
+  organizerPubkey: string
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
+  existing?: MerchantOrganizerEventMarket | null
+  retainedCollection?: MerchantOrganizerRecordDelivery | null
+}): Promise<MerchantOrganizerEventMarket> {
+  const previous = input.existing!
+  if (previous.organizerPubkey !== input.organizerPubkey) {
+    throw new Error("Only the event organizer can update this event.")
+  }
+  const fresh = await resolveOrganizerEventMarket(
+    previous.naddr,
+    input.organizerPubkey,
+    input.authenticatedPubkey,
+    undefined,
+    input.shouldContinue
+  )
+  if (
+    !["active", "ended", "partial"].includes(fresh.state) ||
+    !fresh.source.collection ||
+    !fresh.source.calendar ||
+    (fresh.pickupCoordinate && !fresh.source.pickup)
+  ) {
+    throw new Error(
+      "Current event authority is unavailable. Refresh before changing the event."
+    )
+  }
+  const stored = loadOrganizerEventMarketDeliveryOutbox(input.organizerPubkey)[
+    previous.collectionCoordinate
+  ]?.find((record) => record.record === "collection")
+  const deliveries = [input.retainedCollection, stored].filter(
+    (delivery): delivery is MerchantOrganizerRecordDelivery => !!delivery
+  )
+  // ACK is positive publication evidence. A lagging relay must not erase that
+  // frontier or force it to be signed again, while an unacknowledged newer
+  // signature must finish exact retry before another mutation can supersede it.
+  const strongest = deliveries.reduce(
+    reconcileMerchantOrganizerCollectionEvidence,
+    fresh
+  )
+  const current = reconcileAcknowledgedMerchantOrganizerCollectionEvidence(
+    fresh,
+    deliveries
+  )
+  if (strongest.collectionEventId !== current.collectionEventId) {
+    throw new Error(
+      "The latest signed event collection still needs exact delivery retry."
+    )
+  }
+  if (
+    previous.source.collection &&
+    compareParsedCollectionRevisions(
+      previous.source.collection,
+      current.source.collection!
+    ) > 0
+  ) {
+    throw new Error(
+      "The latest known event collection is not yet available. Refresh or retry its delivery first."
+    )
+  }
+  if (
+    current.calendarCoordinate !== fresh.calendarCoordinate ||
+    current.pickupCoordinates.length !== fresh.pickupCoordinates.length ||
+    current.pickupCoordinates[0] !== fresh.pickupCoordinates[0]
+  ) {
+    throw new Error(
+      "The current calendar or pickup relationship must be verified before changing this event."
+    )
+  }
+  // Only organizer mutation uses this composition: current live child/product
+  // evidence plus the organizer's exact acknowledged collection. Buyer purchase
+  // authorization continues through Core's own live graph resolution.
+  const acceptance = getEventMarketOrderAcceptance(current.source)
+  const state =
+    acceptance === "closed" || acceptance === "legacy-ended"
+      ? "ended"
+      : fresh.source.coverage.failedRelayCount > 0 ||
+          fresh.source.coverage.partialRelayCount > 0
+        ? "partial"
+        : "active"
+  return { ...current, state, source: { ...current.source, state } }
+}
+
+export async function publishMerchantOrganizerOrderAcceptance(input: {
+  organizerPubkey: string
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
+  market: MerchantOrganizerEventMarket
+  orderAcceptance: "open" | "closed"
+  onSignedEvent?: (
+    record: MerchantOrganizerRecordDelivery,
+    collectionCoordinate: string,
+    market: MerchantOrganizerEventMarket
+  ) => void | Promise<void>
+}): Promise<MerchantOrganizerRecordDelivery> {
+  const market = await refreshOrganizerCollectionForMutation({
+    ...input,
+    existing: input.market,
+  })
+  const source = market.source.collection!
+  if (!source.signedEvent) {
+    throw new Error(
+      "The exact signed collection is unavailable. Refresh before changing event availability."
+    )
+  }
+  const result = await publishOrganizerCollectionOrderAcceptance({
+    organizerPubkey: input.organizerPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+    previousCreatedAt: source.createdAt,
+    sourceEvent: source.signedEvent,
+    orderAcceptance: input.orderAcceptance,
+    onSignedEvent: async (record) => {
+      await input.onSignedEvent?.(
+        projectDeliveryRecord(record),
+        market.collectionCoordinate,
+        market
       )
     },
   })

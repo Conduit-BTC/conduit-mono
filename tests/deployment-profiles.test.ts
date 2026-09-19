@@ -110,7 +110,7 @@ describe("deployment profiles", () => {
     ).toBe(false)
   })
 
-  it("enables compatibility order routing in preview and staging only", () => {
+  it("configures compatibility routing and live presence by profile", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",
     })
@@ -126,6 +126,9 @@ describe("deployment profiles", () => {
       false
     )
     expect(staging.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(true)
+    expect(preview.publicFeatures.livePresenceEnabled).toBe(true)
+    expect(production.publicFeatures.livePresenceEnabled).toBe(true)
+    expect(staging.publicFeatures.livePresenceEnabled).toBe(false)
   })
 
   it("selects mainnet Cloudflare preview and production without dashboard feature vars", () => {
@@ -180,7 +183,7 @@ describe("deployment profiles", () => {
     ).toThrow("Cloudflare branch requires staging")
   })
 
-  it("rejects a missing preview feature value but accepts explicit false", () => {
+  it("requires each preview feature value but accepts explicit false", () => {
     const profiles = loadPagesProfiles()
     const missing = structuredClone(profiles) as unknown as {
       profiles: { preview: { publicFeatures: Record<string, unknown> } }
@@ -197,6 +200,24 @@ describe("deployment profiles", () => {
       parsePagesProfiles(explicitFalse).profiles.preview.publicFeatures
         .dmCompatibilityOrderRoutingEnabled
     ).toBe(false)
+
+    const missingPresence = structuredClone(profiles) as unknown as {
+      profiles: { preview: { publicFeatures: Record<string, unknown> } }
+    }
+    delete missingPresence.profiles.preview.publicFeatures.livePresenceEnabled
+    expect(() => parsePagesProfiles(missingPresence)).toThrow(
+      "must explicitly set livePresenceEnabled"
+    )
+  })
+
+  it("keeps local presence disabled unless explicitly enabled", () => {
+    expect(
+      resolveDeploymentProfile({}).publicFeatures.livePresenceEnabled
+    ).toBe(false)
+    expect(
+      resolveDeploymentProfile({ VITE_LIVE_PRESENCE_ENABLED: "true" })
+        .publicFeatures.livePresenceEnabled
+    ).toBe(true)
   })
 
   it("emits only whitelisted public build state and matches effective config", () => {
@@ -216,6 +237,7 @@ describe("deployment profiles", () => {
     expect(manifest.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
       true
     )
+    expect(manifest.publicFeatures.livePresenceEnabled).toBe(true)
     expect(manifest.publicConfigDigest).toBe(profile.configDigest)
     expect(Object.keys(manifest).sort()).toEqual([
       "app",
@@ -246,6 +268,9 @@ describe("deployment profiles", () => {
     )
     expect(workflow).toContain(
       "manifest.publicFeatures?.dmCompatibilityOrderRoutingEnabled !== true"
+    )
+    expect(workflow).toContain(
+      "manifest.publicFeatures?.livePresenceEnabled !== true"
     )
     expect(workflow).toContain("throw new Error(")
   })

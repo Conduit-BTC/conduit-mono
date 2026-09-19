@@ -66,10 +66,11 @@ const RELATIONSHIP_LABELS: Record<MerchantEventRelationshipFilter, string> = {
 }
 
 const WINDOW_LABELS: Record<MerchantEventTimelineWindow, string> = {
-  upcoming: "Upcoming",
+  upcoming: "Open & upcoming",
   "7d": "Next 7 days",
   "30d": "Next 30 days",
   past: "Past events",
+  history: "History",
   all: "All dates",
 }
 

@@ -72,7 +72,7 @@ export function EventCatalogBrowser({
     onMerchantChange(pubkey)
   }
   const renderGrid = (entries: EventCatalogProduct[]) => (
-    <ul className={PRODUCT_GRID_CLASS_NAME}>
+    <ul className={`${PRODUCT_GRID_CLASS_NAME} items-start`}>
       {entries.map((entry) => (
         <li key={entry.product.id} className="min-w-0 space-y-2">
           {renderProduct(
@@ -87,29 +87,17 @@ export function EventCatalogBrowser({
   )
 
   return (
-    <section aria-labelledby="event-products-heading" className="space-y-5">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2
-          id="event-products-heading"
-          className="text-balance text-2xl font-semibold text-[var(--text-primary)]"
-        >
-          Shop the event
-        </h2>
-        <p
-          role="status"
-          aria-live="polite"
-          className="text-sm tabular-nums text-[var(--text-secondary)]"
-        >
-          {hasFilters
-            ? `${browse.products.length} of ${products.length}`
-            : products.length}{" "}
-          {products.length === 1 ? "product" : "products"}
-          {!hasFilters && browse.merchants.length > 0
-            ? ` · ${browse.merchants.length} ${browse.merchants.length === 1 ? "merchant" : "merchants"}`
-            : ""}
-        </p>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_15rem]">
+    <section aria-label="Event products" className="space-y-5">
+      <p role="status" aria-live="polite" className="sr-only">
+        {hasFilters
+          ? `${browse.products.length} of ${products.length}`
+          : products.length}{" "}
+        {products.length === 1 ? "product" : "products"}
+        {!hasFilters && browse.merchants.length > 0
+          ? ` from ${browse.merchants.length} ${browse.merchants.length === 1 ? "merchant" : "merchants"}`
+          : ""}
+      </p>
+      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_15rem]">
         <div className="relative min-w-0">
           <Search
             aria-hidden="true"

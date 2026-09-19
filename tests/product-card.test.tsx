@@ -37,6 +37,23 @@ describe("ProductCard", () => {
     expect(html).toContain('referrerPolicy="no-referrer"')
   })
 
+  it("merges media wrapper classes without changing the default card media", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Rounded Media Product"
+        merchantName="Alice Store"
+        images={[{ url: "https://cdn.conduit.market/product.png" }]}
+        primaryPrice="25 sats"
+        mediaClassName="test-media-wrapper"
+      />
+    )
+
+    expect(html).toContain(
+      'class="relative aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)] test-media-wrapper"'
+    )
+    expect(html).not.toContain("rounded-t-xl")
+  })
+
   it("does not render a non-public image destination passed at the UI boundary", () => {
     for (const url of [
       "http://127.0.0.1/private.png",
@@ -106,6 +123,36 @@ describe("ProductCard", () => {
     expect(html).toContain(">Store npub1abc...xyz<")
   })
 
+  it("merges options wrapper classes without making options behavior app-specific", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Option Product"
+        merchantName="Alice Store"
+        images={[]}
+        primaryPrice="25 sats"
+        options={<span>Size</span>}
+        optionsClassName="test-options-wrapper"
+      />
+    )
+
+    expect(html).toContain('class="pt-3 test-options-wrapper"')
+    expect(html).toContain(">Size<")
+  })
+
+  it("can disable image-only hover zoom for parent-level card motion", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Motion Product"
+        merchantName="Alice Store"
+        images={[{ url: "https://cdn.conduit.market/product.png" }]}
+        primaryPrice="25 sats"
+        disableImageHoverZoom
+      />
+    )
+
+    expect(html).not.toContain("group-hover:scale-105")
+  })
+
   it("truncates product titles to one line without constraining title badges", () => {
     const html = renderToStaticMarkup(
       <ProductCard
@@ -125,6 +172,23 @@ describe("ProductCard", () => {
     expect(html).toContain(">Sold out<")
   })
 
+  it("contains long clickable merchant names within the card", () => {
+    const merchantName =
+      "Peter No Taxation Without Representation Ruszkie Bitcorners"
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Bookmark"
+        merchantName={merchantName}
+        images={[]}
+        primaryPrice="25 sats"
+        onMerchantActivate={() => undefined}
+      />
+    )
+
+    expect(html).toContain("block w-full min-w-0 max-w-full truncate text-left")
+    expect(html).toContain(merchantName)
+  })
+
   it("renders sats primary pricing with a USD secondary line", () => {
     const price = getProductPriceDisplay(
       { price: 40_000, currency: "SATS", priceSats: 40_000 },
@@ -141,7 +205,7 @@ describe("ProductCard", () => {
     )
 
     expect(html).toContain("40,000 sats")
-    expect(html).toContain("about $32.28 USD")
+    expect(html).toContain("~ $32.28 USD")
   })
 
   it("keeps a sold-out product visible while disabling its cart action", () => {
@@ -188,7 +252,7 @@ describe("ProductCard", () => {
     )
   })
 
-  it("renders converted Bitcoin, source quote, and USD reference separately", () => {
+  it("renders converted Bitcoin, exact source price, and USD reference separately", () => {
     const price = getShopperPriceDisplay(
       {
         price: 10,
@@ -221,7 +285,23 @@ describe("ProductCard", () => {
 
     expect(html).toContain("~ ₿12,000")
     expect(html).not.toContain("~=")
-    expect(html).toContain("€10.00 EUR source quote")
-    expect(html).toContain("about $12.00 USD")
+    expect(html).toContain("€10.00 EUR")
+    expect(html).not.toContain("source quote")
+    expect(html).toContain("~ $12.00 USD")
+  })
+
+  it("reserves the USD reference row when Market pricing has no estimate", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Price pending"
+        merchantName="Alice Store"
+        images={[]}
+        primaryPrice="25 sats"
+        secondaryPrice="€0.25 EUR"
+        approximateUsdPrice={null}
+      />
+    )
+
+    expect(html.match(/min-h-\[1rem\]/g)).toHaveLength(2)
   })
 })

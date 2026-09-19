@@ -56,6 +56,7 @@ import {
   parseOrganizerEventMarketReference,
   publishMerchantOrganizerEventMarket,
   publishMerchantOrganizerMembership,
+  publishMerchantOrganizerOrderAcceptance,
   retainMerchantOrganizerEventMarkets,
   reconcileAcknowledgedMerchantOrganizerCollectionEvidence,
   resolveOrganizerEventMarket,
@@ -1310,14 +1311,14 @@ function MyEventsPanel({
         market: input.market,
         item: input.item,
         action: input.action,
-        onSignedEvent: (record, reference) => {
+        onSignedEvent: (record, reference, currentMarket) => {
           const saved = rememberOrganizerEventMarket(organizerPubkey, {
             reference,
             title: input.market.title,
             savedAt: Date.now(),
             ...expectedOrganizerEventMarketFrontiersAfterMembership(
               record,
-              input.market
+              currentMarket
             ),
           })
           setSavedReferences(saved)
@@ -1338,9 +1339,12 @@ function MyEventsPanel({
         reference,
         title: input.market.title,
         savedAt: Date.now(),
-        ...expectedOrganizerEventMarketFrontiersAfterMembership(
+        ...expectedOrganizerEventMarketFrontiersAfterRetry(
           delivery,
-          input.market
+          findSavedOrganizerEventMarketReference(
+            loadSavedOrganizerEventMarkets(organizerPubkey),
+            reference
+          )
         ),
       })
       setSavedReferences(saved)
@@ -1349,6 +1353,65 @@ function MyEventsPanel({
         reference
       updateInitiatingEventSelection(input.reference, nextReference)
       rememberDelivery(reference, delivery)
+      void refreshMarketQueries(nextReference)
+    },
+  })
+
+  const lifecycleMutation = useMutation({
+    scope: organizerAuthorityMutationScope,
+    mutationFn: (input: {
+      market: MerchantOrganizerEventMarket
+      reference: string
+      orderAcceptance: "open" | "closed"
+    }) =>
+      publishMerchantOrganizerOrderAcceptance({
+        organizerPubkey,
+        authenticatedPubkey,
+        shouldContinue,
+        market: input.market,
+        orderAcceptance: input.orderAcceptance,
+        onSignedEvent: (record, reference, currentMarket) => {
+          rememberDelivery(reference, record)
+          const saved = rememberOrganizerEventMarket(organizerPubkey, {
+            reference,
+            title: input.market.title,
+            savedAt: Date.now(),
+            ...expectedOrganizerEventMarketFrontiersAfterMembership(
+              record,
+              currentMarket
+            ),
+          })
+          setSavedReferences(saved)
+          updateInitiatingEventSelection(
+            input.reference,
+            findSavedOrganizerEventMarketReference(saved, reference)
+              ?.reference ?? reference
+          )
+        },
+      }),
+    onSuccess: (delivery, input) => {
+      rememberDelivery(input.reference, delivery)
+      const reference = organizerEventMarketReferenceWithDeliveryRelayHints(
+        input.reference,
+        delivery
+      )
+      const saved = rememberOrganizerEventMarket(organizerPubkey, {
+        reference,
+        title: input.market.title,
+        savedAt: Date.now(),
+        ...expectedOrganizerEventMarketFrontiersAfterRetry(
+          delivery,
+          findSavedOrganizerEventMarketReference(
+            loadSavedOrganizerEventMarkets(organizerPubkey),
+            reference
+          )
+        ),
+      })
+      setSavedReferences(saved)
+      const nextReference =
+        findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
+        reference
+      updateInitiatingEventSelection(input.reference, nextReference)
       void refreshMarketQueries(nextReference)
     },
   })
@@ -1509,11 +1572,13 @@ function MyEventsPanel({
   const organizerAuthorityMutationPending =
     publishMutation.isPending ||
     membershipMutation.isPending ||
+    lifecycleMutation.isPending ||
     retryMutation.isPending ||
     handoffAckMutation.isPending
   const organizerMutationPendingOutsideHandoff =
     publishMutation.isPending ||
     membershipMutation.isPending ||
+    lifecycleMutation.isPending ||
     retryMutation.isPending
 
   const allReferences = useMemo(() => {
@@ -1944,6 +2009,28 @@ function MyEventsPanel({
             }
             onCopy={(url) => void copyShareLink(url)}
             onEdit={openEdit}
+            lifecyclePending={lifecycleMutation.isPending}
+            lifecycleError={
+              lifecycleMutation.isError
+                ? errorMessage(
+                    lifecycleMutation.error,
+                    "Event availability could not be updated."
+                  )
+                : undefined
+            }
+            onOrderAcceptance={(orderAcceptance) => {
+              if (
+                organizerAuthorityMutationPending ||
+                !selectedMembershipActionableMarket ||
+                !selectedReference
+              )
+                return
+              lifecycleMutation.mutate({
+                market: selectedMembershipActionableMarket,
+                reference: selectedReference,
+                orderAcceptance,
+              })
+            }}
             onRefresh={() => {
               void refreshMarketQueries(selectedReference)
             }}

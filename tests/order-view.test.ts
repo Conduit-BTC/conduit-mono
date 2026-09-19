@@ -757,7 +757,7 @@ describe("buildOrderViewModel", () => {
         expect(vm.paymentStatus).toBe("manual_required")
         expect(
           canClaimManualInvoiceReport(vm, vm, lifecycle, lifecycle.buyerPubkey)
-        ).toBe(!publicReceipt)
+        ).toBe(true)
       }
       const active = buildOrderViewModel({
         orderId: lifecycle.orderId,

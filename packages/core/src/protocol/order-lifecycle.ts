@@ -1214,9 +1214,6 @@ export async function claimExternalOrderPaymentProof(
     const lifecycle = await db.orderLifecycles.get(orderId)
     if (!lifecycle) return { status: "missing", lifecycle: null }
     const now = options.nowMs ?? Date.now()
-    const publicZapSigner =
-      lifecycle.publicZapSigner ??
-      getOrderPublicZapSigner(lifecycle.checkoutMode)
     const normalizedClaimId = proofDeliveryClaimId.trim()
     const merchantInvoice = options.merchantInvoice
     const admittedMerchantInvoice = merchantInvoice
@@ -1229,7 +1226,6 @@ export async function claimExternalOrderPaymentProof(
 
     if (
       !normalizedClaimId ||
-      publicZapSigner ||
       lifecycle.phase === "completed" ||
       lifecycle.proofDeliveryStatus !== "not_started" ||
       (!admittedMerchantInvoice && !existingManualInvoiceIsAdmissible)

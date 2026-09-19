@@ -216,8 +216,6 @@ export function canClaimManualInvoiceReport(
   buyerPubkey: string
 ): boolean {
   if (
-    current.publicZapSigner ||
-    (current.checkoutMode && getOrderPublicZapSigner(current.checkoutMode)) ||
     current.phase === "completed" ||
     current.paymentStatus === "paid" ||
     isMerchantOrderPaid({ status: current.merchantStatus }) ||
@@ -252,6 +250,7 @@ export function canClaimManualInvoiceReport(
   return (
     access === "pay" ||
     access === "report_only" ||
+    access === "receipt_only" ||
     (access === "none" && !!unboundReport)
   )
 }
@@ -354,7 +353,7 @@ function isCompletedMerchantStatus(
  * confirms settlement. The latter keeps relay-only and partial-read views
  * consistent when the buyer's local payment record is unavailable.
  */
-function isBuyerOrderPaid(
+export function isBuyerOrderPaid(
   vm: Pick<OrderViewModel, "paymentStatus" | "merchantStatus">
 ): boolean {
   return (

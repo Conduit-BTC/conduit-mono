@@ -57,6 +57,10 @@ import {
   useShopperTrustEvidence,
 } from "@conduit/core"
 import {
+  getCommerceGmvEstimateFromOrder,
+  reportCommerceGmvEstimate,
+} from "@conduit/core/commerce-gmv"
+import {
   AlertDialog,
   AlertDialogContent,
   AlertDialogDescription,
@@ -832,6 +836,28 @@ function OrdersPage() {
       ),
     [cachedOrdersQuery.data, ordersQuery.data]
   )
+
+  useEffect(() => {
+    for (const conversation of conversations) {
+      const state = getMerchantConversationState(conversation)
+      if (!state.paymentObserved && !isMerchantOrderPaid(state)) continue
+      const orderMessage = (conversation.messages ?? []).find(
+        (message) =>
+          message.type === "order" &&
+          message.orderId === conversation.orderId &&
+          message.senderPubkey === conversation.buyerPubkey &&
+          message.recipientPubkey === conversation.merchantPubkey
+      )
+      if (orderMessage?.type !== "order") continue
+      const estimate = getCommerceGmvEstimateFromOrder({
+        orderId: conversation.orderId,
+        buyerPubkey: conversation.buyerPubkey,
+        merchantPubkey: conversation.merchantPubkey,
+        order: orderMessage.payload,
+      })
+      if (estimate) void reportCommerceGmvEstimate(estimate)
+    }
+  }, [conversations])
   const ordersMeta = ordersQuery.data?.meta
   const protectedOrdersReadState = deriveProtectedReadPresentationState({
     visibleCount: conversations.length,
@@ -2104,6 +2130,15 @@ function OrdersPage() {
         })
       ),
     onSuccess: async (result, input) => {
+      const estimate = input.order
+        ? getCommerceGmvEstimateFromOrder({
+            orderId: input.orderId,
+            buyerPubkey: input.buyerPubkey,
+            merchantPubkey: input.merchantPubkey,
+            order: input.order,
+          })
+        : null
+      if (estimate) void reportCommerceGmvEstimate(estimate)
       setHandoffDeliveryRevision((revision) => revision + 1)
       if (selected?.orderId === input.orderId) {
         flash(

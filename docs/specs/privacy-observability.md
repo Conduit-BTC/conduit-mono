@@ -6,10 +6,12 @@ Provide aggregate proof of product usage and reliability without user surveillan
 
 ## Principles
 
-1. Default-off telemetry in product clients.
+1. Optional browser analytics is default-off in product clients. Any
+   separately approved first-party aggregate measurement requires its own
+   narrow contract and must not inherit broader collection capabilities.
 2. Aggregate metrics over user-level tracking.
 3. No persistent identifiers for active users in product analytics.
-4. Public commerce page identifiers may be used only as sanitized page context for aggregate storefront performance reporting.
+4. Public commerce page identifiers may be used only as sanitized page context for aggregate storefront and product performance reporting.
 5. No storage of message/order/payment content in telemetry systems.
 6. Product clients and telemetry stay cookieless.
 
@@ -28,11 +30,14 @@ wallet pubkeys, signer connection strings, NWC URIs, or any stable identifier
 that can reconstruct a viewer journey.
 
 Public page identity means an address already used to render a public commerce
-surface, such as a storefront route identified by a store npub. A public store
+surface. This includes a storefront route identified by a store npub and a
+kind-30402 product route identified by a canonical public naddr. A public store
 npub may appear only in sanitized route context such as `page_path` or
-`page_url`, and only for aggregate storefront/page reporting. It must not be
+`page_url`. A product naddr may appear only in `$pageview` route context. Every
+custom event, error event, `$pageleave`, and `$web_vitals` event must redact the
+product route as `/products/:productId`. Neither public page identifier may be
 copied into custom identity fields, joined to active user identity, used for
-per-viewer drilldowns, or used to infer what that store owner is doing in an
+per-viewer drilldowns, or used to infer what a merchant is doing in an
 authenticated session.
 
 ## Data Classes
@@ -57,37 +62,63 @@ Anonymous reliability, performance, and public commerce page counters:
 - Latency buckets (`<100ms`, `100-500ms`, `>500ms`)
 - Error counts by category
 - Storefront pageview and browse-action counts by sanitized public store route
+- Product pageview counts by sanitized canonical public product route
 
-### Verified Public-Zap Settlement Volume (optional, server-only)
+### Estimated Commerce GMV (first-party aggregate measurement)
 
-After the existing receipt-authority boundary positively verifies a public
-NIP-57 receipt for a Conduit Zap Out, the server may emit one
-`zapout_settled` event. Its only business property is the exact positive
-whole-satoshi amount proven equal across the authorized request, BOLT11
-invoice, and paid receipt.
+When a Conduit commerce order moves through any supported paid signal, the
+telemetry Worker may emit one `commerce_gmv_estimated` event for that order.
+Supported signals are wallet success, a buyer payment report, automatic
+merchant wallet verification, manual merchant confirmation, and later paid or
+fulfilled order reconciliation. These signals are OR gates for one logical
+per-order estimate, not separate events. Its only business property is the
+best available positive whole-satoshi amount associated with the paid-order
+signal.
+
+This measurement is distinct from optional browser product analytics. Official
+Shop and Sell clients may report it even when generic browser telemetry is
+disabled or Global Privacy Control is enabled. GPC continues to suppress the
+optional browser analytics covered by the generic telemetry gate. It does not
+suppress this event because Conduit uses it only as a first-party aggregate
+commerce measure and not to sell or share personal information, perform
+cross-context behavioral advertising, build a person profile, or identify a
+buyer or merchant.
 
 This is a narrow exception to the bucket-only amount rule for browser and
 operational telemetry. The event must:
 
 - use a shared static service identity with PostHog person-profile processing
   disabled;
-- round its event timestamp to the UTC calendar day;
+- round its event timestamp to the UTC order day;
 - use a secret-key-derived opaque event UUID only to deduplicate the same
-  verified receipt;
-- prevent the raw receipt identifier and HMAC secret from leaving the server;
+  order across buyer and merchant observations;
+- use a dedicated HMAC secret and domain that cannot join the event UUID to
+  identifiers in other datasets;
+- use the raw random order UUID only transiently inside the telemetry Worker
+  and prevent it and the HMAC secret from reaching PostHog;
+- send only the UTC order date to the Worker, not a more precise order
+  timestamp;
 - prevent PostHog from recording the requesting browser's IP address; and
 - omit buyer, merchant, signer, wallet, session, order, product, public key,
   route, URL, comment, invoice, payment hash, preimage, receipt, relay,
   connection, fee, and payment-rail data.
 
-Invalid, authority-unavailable, unpaid, private-checkout, and non-Zap-Out
-flows must not emit the event. Capture is best effort and must not control
-payment, proof delivery, order state, or retry behavior. Exact amounts can be
-distinctive and public zap receipts are public protocol data, so reporting is
-privacy-minimized rather than guaranteed unlinkable. Aggregate reporting must
-describe the resulting metric as observed verified public-Zap-Out volume and a
-possible undercount, not total platform sales, merchant revenue, or funds
-processed by Conduit.
+Invalid, unpaid, and zero-satoshi orders must not emit the event. Capture is
+best effort and must not control payment, proof delivery, order state, or retry
+behavior. Buyer reports and client-originated requests are intentionally not
+settlement proof and can inflate the estimate. Delivery failures can still
+undercount it. Exact amounts and the UTC order day can be distinctive through
+outside knowledge, so reporting is privacy-minimized rather than guaranteed
+unlinkable. Aggregate reporting must describe the resulting metric as
+estimated Conduit commerce GMV, not verified settlement, total platform sales,
+merchant revenue, or funds processed by Conduit. PostHog considers matching
+event UUID, event name, timestamp, and static service identity to be one logical
+event. Signals may disagree on the estimated amount; a later accepted signal
+may replace the value for that same logical event without adding another order.
+This accepted last-estimate behavior can slightly overstate or understate exact
+invoiced sats. Insights must still group by the opaque event UUID before
+summing the amount so totals remain structurally deduplicated during
+asynchronous provider ingestion.
 
 Allowed fields:
 
@@ -96,8 +127,8 @@ Allowed fields:
   `mode`, `rail`, `method`, `event_family`, `count_bucket`,
   `result_count_bucket`, `amount_bucket`, `product_type`
 
-The server-only `zapout_settled` event additionally allows
-`settled_amount_sats` under the constraints above. No other event may use that
+The Worker-emitted `commerce_gmv_estimated` event additionally allows
+`estimated_gmv_sats` under the constraints above. No other event may use that
 field or send an exact payment amount.
 
 Disallowed fields:
@@ -113,8 +144,51 @@ Permitted public page context:
 
 - sanitized storefront route context may include the public store npub in
   `page_path` or `page_url`
-- product, profile, order, query string, unknown route, and active user
-  identifiers must remain redacted
+- `$pageview` product route context may include a canonical kind-30402 naddr in
+  `page_path` or `page_url`; canonicalization must remove relay hints
+- every non-pageview event must use `/products/:productId`
+- invalid product references must use `/products/:productId`
+- profile, order, query string, unknown route, and active user identifiers must
+  remain redacted
+
+## Historical Analytics and Live Presence
+
+Historical pageview analytics and live presence are separate systems.
+
+- Historical `$pageview` events may retain the permitted public page route
+  under the configured provider retention policy.
+- Historical dashboards must report pageviews or anonymous sessions. They must
+  not describe those metrics as exact concurrent visitors or unique people.
+- Live presence may count active connections for one public product or store
+  scope. A product page may join its item-specific product scope and the public
+  merchant's store scope. The store count may aggregate active storefront and
+  product connections for that merchant. It must not persist visit history or
+  send presence events to PostHog.
+- Live presence must not receive or reuse telemetry session IDs, pageview IDs,
+  active user identifiers, cookies, fingerprints, or persistent viewer IDs.
+- The edge may derive a secret-keyed source hash from Cloudflare's connection
+  address only to enforce a concurrent socket limit. It must discard the raw
+  address before the gateway request. The hash may exist only in an active
+  socket attachment. It must not enter logs, analytics, responses, durable
+  records, or page-level visit history.
+- An exact live value means the current active connection count known to the
+  service, including the current visible page. Multiple tabs, browsers, or
+  devices can count separately.
+- Clients must disconnect when the page is hidden or offline and must honor
+  Global Privacy Control. A failed or unavailable count stays hidden.
+- Clients may send only a deployment-scoped opaque room hash and a fixed,
+  content-free heartbeat. The service may return only the current integer count
+  or fixed heartbeat response and must not use durable storage. Clients must
+  hide stale counts when the heartbeat response expires.
+- The room hash reduces accidental identifier exposure in infrastructure URLs.
+  It is not authentication and does not hide a public page from a determined
+  observer.
+- Exact low counts expose activity timing and unauthenticated sockets can
+  inflate them. Market production and previews may show exact active-connection
+  counts after explicit maintainer approval of that disclosure. Each deployment
+  must restrict browser origins, enforce per-source and global connection caps,
+  and retain the no-history and Global Privacy Control boundaries above.
+  Staging remains disabled unless separately approved.
 
 ## Public Zap Message Boundary
 
@@ -145,7 +219,11 @@ telemetry, or support diagnostics.
 - Operational monitoring may collect system counters only, such as app load
   success/failure counts, relay connect/publish success rates, latency buckets,
   and error counts by category.
-- Honor Global Privacy Control as a privacy signal where applicable.
+- Honor Global Privacy Control for processing within the signal's scope. The
+  shared optional browser-analytics gate treats GPC as an instruction to
+  suppress those analytics. The separately contracted first-party aggregate
+  commerce measurement above is not sale, sharing, cross-context behavioral
+  advertising, or person profiling and is not suppressed solely by GPC.
 
 ## Allowed Tooling
 
@@ -164,11 +242,11 @@ Expose only aggregate KPIs:
 
 - Weekly active merchants (aggregate)
 - Storefront page performance by public store route (aggregate)
+- Product pageview counts by canonical public product route (aggregate)
 - Weekly order-event count
 - Product catalog growth
 - Checkout success rate (aggregate)
-- Observed verified public-Zap-Out settled volume in sats (aggregate,
-  best-effort lower bound)
+- Estimated Conduit commerce GMV in sats (aggregate, recall-biased estimate)
 
 No per-user journey replay, no active-user identity drilldowns, and no joining
 public page performance data to signer, buyer, wallet, or session identity.
@@ -179,6 +257,8 @@ public page performance data to signer, buyer, wallet, or session identity.
 2. CI check to block banned telemetry/cookie SDKs unless explicitly approved.
 3. CI/static checks block cookie APIs and `Set-Cookie` usage in client source.
 4. Production defaults:
-   - telemetry disabled unless `ENABLE_TELEMETRY=true`
+   - optional browser telemetry disabled unless `ENABLE_TELEMETRY=true`
+   - first-party commerce GMV measurement enabled only through its dedicated
+     Worker secret and rate-limit configuration
    - high-verbosity logs disabled
 5. Document retention windows and redaction policy.
