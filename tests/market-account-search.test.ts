@@ -4,6 +4,8 @@ import type { ProfileSearchMatch } from "../packages/core/src/protocol/profile-s
 import {
   describeAccountSearchDeviceEvidence,
   describeAccountSearchEvidence,
+  describeAccountSearchEligibility,
+  describeScopedAccountSearchEvidence,
   getAccountSuggestionDescription,
   getAccountSuggestionTarget,
   resolveActiveSuggestionIndex,
@@ -188,6 +190,18 @@ describe("account suggestion items", () => {
         },
       })
     ).toBeNull()
+  })
+
+  it("keeps an incomplete eligibility boundary visible beside relay evidence", () => {
+    expect(describeAccountSearchEligibility("ready")).toBeNull()
+    expect(describeAccountSearchEligibility("loading")).toContain("Checking")
+    expect(describeAccountSearchEligibility("partial")).toContain("incomplete")
+    expect(describeAccountSearchEligibility("unavailable")).toContain(
+      "unavailable"
+    )
+    expect(describeScopedAccountSearchEvidence(undefined, "partial")).toContain(
+      "followed accounts may be missing"
+    )
   })
 })
 

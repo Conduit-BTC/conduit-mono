@@ -33,6 +33,7 @@ import {
   useConduitSession,
 } from "@conduit/core"
 import {
+  DEFAULT_MARKET_CATALOG_SOURCE,
   getCatalogAuthorKey,
   getCatalogAuthorPubkeys,
   getProductCatalogQueryKey,
@@ -113,6 +114,8 @@ export interface ProgressiveProductsResult {
   >
   meta: CommerceQueryMeta | null
   profileRelayHintsByPubkey: Record<string, string[]>
+  /** Resolved author boundary for this catalog; undefined while unresolved. */
+  catalogAuthorPubkeys: string[] | undefined
   cachedCount: number
   networkCount: number
   firstDegreeAuthorCount: number
@@ -282,7 +285,7 @@ export function useProgressiveProducts(
   const perspectiveMarketplaceRead = isPerspectiveMarketplaceRead(input)
   const catalogSource: ProductCatalogSourceMode =
     input.scope === "marketplace"
-      ? (input.catalogSource ?? "following")
+      ? (input.catalogSource ?? DEFAULT_MARKET_CATALOG_SOURCE)
       : "following"
   const perspectivePubkey =
     input.scope === "marketplace" && !input.merchantPubkey
@@ -949,6 +952,7 @@ export function useProgressiveProducts(
       cachedQuery.data?.meta ??
       null,
     profileRelayHintsByPubkey,
+    catalogAuthorPubkeys,
     cachedCount,
     networkCount,
     firstDegreeAuthorCount: personalizedAuthorCount,

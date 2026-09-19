@@ -391,6 +391,78 @@ describe("account-scoped search plan", () => {
 })
 
 describe("profile search phase integration", () => {
+  it("applies the eligible-author boundary before ranking and limiting", async () => {
+    const cached = await searchCachedProfiles(
+      { query: "alice", limit: 1, authorPubkeys: [CAROL] },
+      deps({
+        loadCachedProfiles: async () => [
+          { pubkey: ALICE, name: "alice", cachedAt: 1 },
+          { pubkey: ALICIA, name: "alice", cachedAt: 1 },
+          { pubkey: CAROL, displayName: "Alice Allowed", cachedAt: 1 },
+        ],
+      })
+    )
+
+    expect(cached.matches.map((entry) => entry.pubkey)).toEqual([CAROL])
+  })
+
+  it("sends the eligible authors with NIP-50 search and rejects out-of-scope events", async () => {
+    const filters: unknown[] = []
+    const network = await searchNetworkProfiles(
+      { query: "alice", authorPubkeys: [ALICE] },
+      deps({
+        fetchEvents: async (filter) => {
+          filters.push(filter)
+          return {
+            events: [
+              profileEvent(ALICE, { name: "Alice Allowed" }),
+              profileEvent(ALICIA, { name: "Alice Outside" }),
+            ],
+            relays: [
+              {
+                relayUrl: "wss://search.example",
+                status: "success",
+                eventCount: 2,
+              },
+            ],
+            eventsVerified: true,
+          }
+        },
+      })
+    )
+
+    expect(filters).toEqual([
+      { kinds: [0], search: "alice", authors: [ALICE], limit: 24 },
+    ])
+    expect(network.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
+  })
+
+  it("treats an explicit empty author scope as authoritative without I/O", async () => {
+    let reads = 0
+    const dependencies = deps({
+      loadCachedProfiles: async () => {
+        reads += 1
+        return []
+      },
+      fetchEvents: async () => {
+        reads += 1
+        return { events: [], relays: [], eventsVerified: true }
+      },
+    })
+
+    const [cached, network] = await Promise.all([
+      searchCachedProfiles({ query: "alice", authorPubkeys: [] }, dependencies),
+      searchNetworkProfiles(
+        { query: "alice", authorPubkeys: [] },
+        dependencies
+      ),
+    ])
+
+    expect(reads).toBe(0)
+    expect(cached.matches).toEqual([])
+    expect(network.matches).toEqual([])
+  })
+
   it("skips relay traffic for queries below the minimum length", async () => {
     let fetched = 0
     const result = await runProfileSearch(

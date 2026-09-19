@@ -26,7 +26,6 @@ import {
   formatNpub,
   useAuth,
   useProfile,
-  useProfileSearch,
   useUnreadDirectMessageCount,
 } from "@conduit/core"
 import {
@@ -34,6 +33,7 @@ import {
   AvatarFallback,
   AvatarImage,
   Badge,
+  Button,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -50,12 +50,13 @@ import {
 
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
+import { useSellerDirectory } from "../hooks/useSellerDirectory"
+import { DEFAULT_MARKET_CATALOG_SOURCE } from "../lib/productCatalogRead"
 import {
-  ACCOUNT_SEARCH_CANDIDATE_LIMIT,
+  describeScopedAccountSearchEvidence,
+  getAccountSuggestionTarget,
   limitAccountMatches,
   resolveActiveSuggestionIndex,
-  describeAccountSearchEvidence,
-  getAccountSuggestionTarget,
   toAccountSuggestionItems,
 } from "../lib/accountSearch"
 
@@ -381,11 +382,23 @@ export function MarketHeader() {
       isBrowseRoute && searchDirty && normalizedSearchValue !== currentQuery,
     [currentQuery, isBrowseRoute, normalizedSearchValue, searchDirty]
   )
-  const accountSearch = useProfileSearch(searchValue, {
-    enabled: searchFocused && searchDirty && !suggestionsDismissed,
-    limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT,
-    accountPubkey: connected ? pubkey : null,
+  const accountSearchEnabled =
+    searchFocused &&
+    searchDirty &&
+    !suggestionsDismissed &&
+    normalizedSearchValue.length > 0
+  const routeCatalogSource =
+    search.source === "following" ||
+    search.source === "conduit" ||
+    search.source === "combined"
+      ? search.source
+      : DEFAULT_MARKET_CATALOG_SOURCE
+  const sellerDirectory = useSellerDirectory({
+    catalogSource: routeCatalogSource,
+    enabled: accountSearchEnabled,
+    query: searchValue,
   })
+  const accountSearch = sellerDirectory.accountSearch
   const accountMatches = useMemo(
     () =>
       accountSearch.data
@@ -399,7 +412,6 @@ export function MarketHeader() {
         {
           id: `${ACCOUNT_SUGGESTIONS_LISTBOX_ID}-stores`,
           heading: "Stores",
-          // The group heading already says these are storefronts.
           items: toAccountSuggestionItems(
             (accountMatches ?? []).filter((match) => match.isSeller)
           ).map((item) => ({ ...item, badge: undefined })),
@@ -414,36 +426,47 @@ export function MarketHeader() {
       ].filter((group) => group.items.length > 0),
     [accountMatches]
   )
-  const accountItems = useMemo(
+  const suggestionItems = useMemo(
     () => flattenSearchSuggestionGroups(suggestionGroups),
     [suggestionGroups]
   )
   const activeSuggestion = resolveActiveSuggestionIndex(
-    accountItems,
+    suggestionItems,
     activeSuggestionId
   )
   const setActiveSuggestion = useCallback(
     (index: number) => {
       setActiveSuggestionId(
-        index >= 0 ? (accountItems[index]?.id ?? null) : null
+        index >= 0 ? (suggestionItems[index]?.id ?? null) : null
       )
     },
-    [accountItems]
+    [suggestionItems]
   )
-  const accountEvidence = describeAccountSearchEvidence(accountSearch.data)
+  const accountEvidence = describeScopedAccountSearchEvidence(
+    accountSearch.data,
+    sellerDirectory.eligibilityState
+  )
+  const accountSearchLoading =
+    sellerDirectory.eligibilityState === "loading" || accountSearch.isFetching
   const suggestionsOpen =
-    searchFocused &&
-    searchDirty &&
-    !suggestionsDismissed &&
-    accountSearch.activeQuery.length > 0 &&
-    (accountItems.length > 0 || !!accountEvidence || accountSearch.isFetching)
+    accountSearchEnabled &&
+    (suggestionItems.length > 0 || !!accountEvidence || accountSearchLoading)
+  const suggestionFooter = [
+    accountEvidence,
+    isBrowseRoute ? null : "Press Enter to search products.",
+  ]
+    .filter((sentence): sentence is string => !!sentence)
+    .join(" ")
 
   useEffect(() => {
     setActiveSuggestionId(null)
   }, [accountSearch.activeQuery])
 
   function selectAccountSuggestion(index: number): void {
-    const match = accountMatches?.[index]
+    const selectedId = suggestionItems[index]?.id
+    const match = accountMatches?.find(
+      (candidate) => candidate.pubkey === selectedId
+    )
     if (!match) return
     setSuggestionsDismissed(true)
     setSearchDirty(false)
@@ -454,7 +477,7 @@ export function MarketHeader() {
 
   const onSearchKeyDown = useSearchSuggestionKeyboard({
     open: suggestionsOpen,
-    count: accountItems.length,
+    count: suggestionItems.length,
     activeIndex: activeSuggestion,
     onActiveIndexChange: setActiveSuggestion,
     onSelectActive: () => selectAccountSuggestion(activeSuggestion),
@@ -665,15 +688,39 @@ export function MarketHeader() {
                   activeIndex={activeSuggestion}
                   onActiveIndexChange={setActiveSuggestion}
                   onSelect={(_item, index) => selectAccountSuggestion(index)}
-                  loading={accountSearch.isFetching}
+                  loading={accountSearchLoading}
                   emptyMessage={
-                    accountSearch.isFetching
-                      ? "Searching stores and accounts..."
-                      : null
+                    sellerDirectory.eligibilityState === "loading"
+                      ? "Checking eligible accounts..."
+                      : sellerDirectory.eligibilityState === "unavailable"
+                        ? "Eligible accounts could not be loaded."
+                        : accountSearch.isFetching
+                          ? "Searching eligible accounts..."
+                          : sellerDirectory.eligibilityState === "partial"
+                            ? "Eligible account results may be incomplete. No matches yet."
+                            : null
                   }
                   footer={
-                    accountEvidence ??
-                    (isBrowseRoute ? null : "Press Enter to search products")
+                    suggestionFooter ||
+                    sellerDirectory.eligibilityState === "partial" ||
+                    sellerDirectory.eligibilityState === "unavailable" ? (
+                      <span className="flex items-center justify-between gap-2">
+                        <span>{suggestionFooter}</span>
+                        {sellerDirectory.eligibilityState === "partial" ||
+                        sellerDirectory.eligibilityState === "unavailable" ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 shrink-0 px-2 text-[11px]"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={sellerDirectory.retry}
+                          >
+                            Try again
+                          </Button>
+                        ) : null}
+                      </span>
+                    ) : null
                   }
                 />
               </div>

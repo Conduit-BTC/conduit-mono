@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { readFile } from "node:fs/promises"
 import {
   prepareProductCatalog,
   type CommerceProductRecord,
@@ -182,14 +183,35 @@ describe("market browse model helpers", () => {
       pubkey: "viewer",
       catalogSource: "following",
       anonymous: false,
+      authorPubkeys: ["merchant-a"],
     })
     const combinedKey = getGlobalProductSearchQueryKey({
       query: "soap",
       pubkey: "viewer",
       catalogSource: "combined",
       anonymous: false,
+      authorPubkeys: ["merchant-a"],
     })
     expect(followingKey).not.toEqual(combinedKey)
+
+    expect(combinedKey).not.toEqual(
+      getGlobalProductSearchQueryKey({
+        query: "soap",
+        pubkey: "viewer",
+        catalogSource: "combined",
+        anonymous: false,
+        authorPubkeys: ["merchant-b"],
+      })
+    )
+  })
+
+  it("scopes extended product search to the resolved catalog authors", async () => {
+    const hook = await readFile(
+      "apps/market/src/hooks/useMarketBrowseModel.ts",
+      "utf8"
+    )
+    expect(hook).toContain("catalogAuthorPubkeys !== undefined")
+    expect(hook).toContain("authorPubkeys: catalogAuthorPubkeys")
   })
 
   it("merges relay search results into the perspective catalog by product id", () => {

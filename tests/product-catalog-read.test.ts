@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
+  DEFAULT_MARKET_CATALOG_SOURCE,
   getCatalogAuthorKey,
   getCatalogAuthorPubkeys,
   getProductCatalogQueryKey,
@@ -31,7 +32,7 @@ describe("product catalog read planning", () => {
       catalogReady: input.catalogReady ?? true,
       streamsNetwork: input.streamsNetwork ?? true,
       usesPerspectiveGraph: input.usesPerspectiveGraph ?? true,
-      catalogSource: input.catalogSource ?? "following",
+      catalogSource: input.catalogSource ?? DEFAULT_MARKET_CATALOG_SOURCE,
       refreshPerspectiveAuthors: async () => {
         refreshes.push("authors")
         return input.authorSetChanged ?? false
@@ -83,6 +84,28 @@ describe("product catalog read planning", () => {
   it("keeps all-store marketplace reads scoped to the market perspective", () => {
     expect(isPerspectiveMarketplaceRead({ scope: "marketplace" })).toBe(true)
     expect(getCatalogAuthorPubkeys(["merchant-a"])).toEqual(["merchant-a"])
+  })
+
+  it("defaults marketplace catalog keys to the combined perspective", () => {
+    const implicit = getProductCatalogQueryKey(
+      {
+        scope: "marketplace",
+        perspectivePubkey: viewerPubkey,
+      },
+      "network"
+    )
+    const combined = getProductCatalogQueryKey(
+      {
+        scope: "marketplace",
+        perspectivePubkey: viewerPubkey,
+        catalogSource: "combined",
+      },
+      "network"
+    )
+
+    expect(DEFAULT_MARKET_CATALOG_SOURCE).toBe("combined")
+    expect(implicit).toEqual(combined)
+    expect(implicit).toContain("combined")
   })
 
   it("keeps the perspective catalog key stable across local facet and sort changes", () => {

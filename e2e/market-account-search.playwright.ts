@@ -1,13 +1,19 @@
 import { expect, test, type Page } from "@playwright/test"
 import { installTestSigner } from "./helpers/auth"
 
-const SELLER_PUBKEY = "b".repeat(64)
-const BUYER_PUBKEY = "c".repeat(64)
+// A member of the bundled Conduit perspective. Keep this fixture explicit so
+// Playwright does not evaluate browser-only application modules in Node.
+const SELLER_PUBKEY =
+  "c4eabae1be3cf657bc1855ee05e69de9f059cb7a059227168b80b89761cbc4e0"
+const ELIGIBLE_ACCOUNT_PUBKEY =
+  "088436cd039ff89074468fd327facf62784eeb37490e0a118ab9f14c9d2646cc"
+const UNLISTED_ACCOUNT_PUBKEY = "c".repeat(64)
+const MARKET_ORIGIN = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 
 async function seedAccounts(page: Page): Promise<void> {
   await page.waitForLoadState("networkidle")
   await page.evaluate(
-    ({ sellerPubkey, buyerPubkey }) =>
+    ({ sellerPubkey, eligibleAccountPubkey, unlistedAccountPubkey }) =>
       new Promise<void>((resolve, reject) => {
         const request = indexedDB.open("conduit")
         request.onerror = () => reject(request.error)
@@ -26,7 +32,13 @@ async function seedAccounts(page: Page): Promise<void> {
             cachedAt: timestamp,
           })
           profiles.put({
-            pubkey: buyerPubkey,
+            pubkey: eligibleAccountPubkey,
+            name: "alice",
+            displayName: "Wonderland Account",
+            cachedAt: timestamp,
+          })
+          profiles.put({
+            pubkey: unlistedAccountPubkey,
             name: "alicia",
             displayName: "Alicia Reader",
             cachedAt: timestamp,
@@ -59,14 +71,18 @@ async function seedAccounts(page: Page): Promise<void> {
           transaction.onabort = () => reject(transaction.error)
         }
       }),
-    { sellerPubkey: SELLER_PUBKEY, buyerPubkey: BUYER_PUBKEY }
+    {
+      sellerPubkey: SELLER_PUBKEY,
+      eligibleAccountPubkey: ELIGIBLE_ACCOUNT_PUBKEY,
+      unlistedAccountPubkey: UNLISTED_ACCOUNT_PUBKEY,
+    }
   )
 }
 
-test("market header suggests locally known accounts and opens the storefront from the keyboard @market", async ({
+test("market header preserves account search inside the eligible author scope @market", async ({
   page,
 }) => {
-  await page.goto("http://127.0.0.1:7000/products")
+  await page.goto(`${MARKET_ORIGIN}/products`)
   await seedAccounts(page)
   await page.reload()
 
@@ -87,11 +103,9 @@ test("market header suggests locally known accounts and opens the storefront fro
   await expect(
     listbox
       .getByRole("group", { name: "Accounts" })
-      .getByRole("option", { name: /Alicia Reader/ })
+      .getByRole("option", { name: /Wonderland Account/ })
   ).toBeVisible()
-  await expect(
-    listbox.getByRole("option", { name: /Alicia Reader/ })
-  ).toBeVisible()
+  await expect(listbox.getByText("Alicia Reader")).toHaveCount(0)
   await expect(listbox.getByRole("option")).toHaveCount(2)
 
   await page.keyboard.press("ArrowDown")
@@ -107,7 +121,7 @@ test("market header suggests locally known accounts and opens the storefront fro
 test("market header keeps Enter as a product search when no suggestion is active @market", async ({
   page,
 }) => {
-  await page.goto("http://127.0.0.1:7000/about")
+  await page.goto(`${MARKET_ORIGIN}/about`)
   await seedAccounts(page)
   await page.reload()
 
@@ -131,9 +145,9 @@ test("sellers tab lists discovered storefronts and filters by name @market", asy
   page,
 }) => {
   await installTestSigner(page, SELLER_PUBKEY)
-  await page.goto("http://127.0.0.1:7000/products")
+  await page.goto(`${MARKET_ORIGIN}/products`)
   await seedAccounts(page)
-  await page.goto("http://127.0.0.1:7000/sellers?source=combined")
+  await page.goto(`${MARKET_ORIGIN}/sellers`)
 
   await expect(
     page.getByRole("navigation", { name: "Market browse" }).getByRole("link", {
@@ -141,6 +155,11 @@ test("sellers tab lists discovered storefronts and filters by name @market", asy
     })
   ).toHaveAttribute("aria-current", "page")
   await expect(page).toHaveTitle("Sellers | Conduit Market")
+  await expect(
+    page
+      .getByRole("group", { name: "Market perspective" })
+      .getByRole("button", { name: "Following + Conduit" })
+  ).toHaveAttribute("aria-pressed", "true")
   const directory = page.locator(
     'section[aria-labelledby="discovered-sellers-heading"]'
   )
@@ -148,26 +167,28 @@ test("sellers tab lists discovered storefronts and filters by name @market", asy
     directory.getByRole("link", { name: /Alice Storefront/ })
   ).toBeVisible()
 
-  const networkAccounts = page.locator(
-    'section[aria-labelledby="network-accounts-heading"]'
-  )
   await page.getByRole("textbox", { name: "Filter sellers" }).fill("a")
   await expect(page).toHaveURL(/\/sellers\?.*q=a(?:&|$)/)
-  await expect(networkAccounts).toContainText("From this device")
-  await expect(networkAccounts).not.toContainText("From search relays")
+  const accounts = page.locator(
+    'section[aria-labelledby="network-accounts-heading"]'
+  )
+  await expect(accounts.getByText("Other eligible accounts")).toBeVisible()
+  await expect(
+    accounts.getByRole("link", { name: /Wonderland Account/ })
+  ).toBeVisible()
+  await expect(accounts.getByText("Alicia Reader")).toHaveCount(0)
 
   await page
     .getByRole("textbox", { name: "Filter sellers" })
     .fill("zzzz-no-match")
   await expect(page).toHaveURL(/\/sellers\?.*q=zzzz-no-match/)
   await expect(directory).toContainText("No discovered seller name matches")
-  await expect(networkAccounts).toBeVisible()
 })
 
-test("cache-only product search does not open an empty suggestions panel @market", async ({
+test("incomplete eligibility stays visible instead of looking like no matches @market", async ({
   page,
 }) => {
-  await page.goto("http://127.0.0.1:7000/products")
+  await page.goto(`${MARKET_ORIGIN}/products`)
   await seedAccounts(page)
   await page.reload()
 
@@ -175,23 +196,28 @@ test("cache-only product search does not open an empty suggestions panel @market
     name: "Search products and accounts",
   })
   await input.fill("~")
-  await expect(
-    page.getByRole("listbox", { name: "Matching stores and accounts" })
-  ).toBeHidden()
-  await expect(input).toHaveAttribute("aria-expanded", "false")
+  const listbox = page.getByRole("listbox", {
+    name: "Matching stores and accounts",
+  })
+  await expect(listbox).toBeVisible()
+  await expect(listbox).toContainText(
+    "Eligible account results may be incomplete. No matches yet."
+  )
+  await expect(listbox.getByRole("option")).toHaveCount(0)
+  await expect(input).toHaveAttribute("aria-expanded", "true")
 })
 
 test("sellers page filters with its own field while Enter still searches products @market", async ({
   page,
 }) => {
   await installTestSigner(page, SELLER_PUBKEY)
-  await page.goto("http://127.0.0.1:7000/products")
+  await page.goto(`${MARKET_ORIGIN}/products`)
   await seedAccounts(page)
-  await page.goto("http://127.0.0.1:7000/sellers?source=combined")
+  await page.goto(`${MARKET_ORIGIN}/sellers`)
 
   await page.getByRole("textbox", { name: "Filter sellers" }).fill("alice")
   await expect(page).toHaveURL(/\/sellers\?.*q=alice/)
-  await expect(page).toHaveURL(/source=combined/)
+  await expect(page).not.toHaveURL(/source=/)
   await expect(
     page
       .locator('section[aria-labelledby="discovered-sellers-heading"]')
@@ -212,9 +238,9 @@ test("product search lists matching storefronts above the product results @marke
   page,
 }) => {
   await installTestSigner(page, SELLER_PUBKEY)
-  await page.goto("http://127.0.0.1:7000/products")
+  await page.goto(`${MARKET_ORIGIN}/products`)
   await seedAccounts(page)
-  await page.goto("http://127.0.0.1:7000/products?source=combined&q=alice")
+  await page.goto(`${MARKET_ORIGIN}/products?source=combined&q=alice`)
 
   const stores = page.locator(
     'section[aria-labelledby="matching-stores-heading"]'
