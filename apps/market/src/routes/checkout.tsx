@@ -37,6 +37,7 @@ import {
   getProfiles,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
+  getTelemetryLatencyBucket,
   hasWebLN,
   isCommerceReadIncomplete,
   getNdk,
@@ -183,6 +184,7 @@ import {
   initializeCheckoutShippingSession,
   writeCheckoutShippingSession,
 } from "../lib/checkout-session"
+import { awaitOrderDeliveryPresentation } from "../lib/checkout-delivery-timing"
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
@@ -1842,6 +1844,7 @@ function CheckoutPage() {
 
   function recordCheckoutStepResult(input: {
     checkoutMode: CheckoutTelemetryMode
+    latencyMs?: number
     rail?: string
     status: string
     stepName: string
@@ -1859,6 +1862,9 @@ function CheckoutPage() {
         rail: input.rail ?? "none",
         status: input.status,
         step: input.stepName,
+        ...(input.latencyMs === undefined
+          ? {}
+          : { latency_bucket: getTelemetryLatencyBucket(input.latencyMs) }),
       },
     })
   }
@@ -2296,6 +2302,9 @@ function CheckoutPage() {
     let orderTotalSats = total
     let guestOrderIdToClear: string | null = null
     let orderSubmitStarted = false
+    let checkoutRevalidationCompleted = false
+    let orderDeliveryStartedAt: number | null = null
+    const checkoutRevalidationStartedAt = performance.now()
 
     setError(null)
     setPaidNotice(null)
@@ -2319,6 +2328,14 @@ function CheckoutPage() {
           "Connect a signer or use Lightning for an order that requires payment."
         )
       }
+      checkoutRevalidationCompleted = true
+      recordCheckoutStepResult({
+        checkoutMode: "order_first",
+        latencyMs: performance.now() - checkoutRevalidationStartedAt,
+        status: "success",
+        stepName: "checkout_revalidation",
+        amountSats: checkoutPricing.totalSats,
+      })
       orderTotalSats = checkoutPricing.totalSats
       orderSubmitStarted = true
       recordCheckoutStepResult({
@@ -2390,17 +2407,36 @@ function CheckoutPage() {
       rumor.content = JSON.stringify(payload)
 
       setStep("sending")
+      orderDeliveryStartedAt = performance.now()
 
-      const [delivery] = await Promise.all([
-        publishBuyerOrderMessage(rumor, ndk, selectedMerchant, buyerIdentity, {
-          accountPubkey: signedBuyerPubkey,
-          authenticatedPubkey: draftOwnerIdentity,
-          ...(authMethod ? { relayAuthMethod: authMethod } : {}),
-          shouldContinue: shouldContinueBuyerSession,
-        }),
-        new Promise((resolve) => window.setTimeout(resolve, 900)),
-      ])
+      const { delivery, deliveryLatencyMs } =
+        await awaitOrderDeliveryPresentation({
+          now: () => performance.now(),
+          publish: () =>
+            publishBuyerOrderMessage(
+              rumor,
+              ndk,
+              selectedMerchant,
+              buyerIdentity,
+              {
+                accountPubkey: signedBuyerPubkey,
+                authenticatedPubkey: draftOwnerIdentity,
+                ...(authMethod ? { relayAuthMethod: authMethod } : {}),
+                shouldContinue: shouldContinueBuyerSession,
+              }
+            ),
+          startedAt: orderDeliveryStartedAt,
+          waitForPresentation: () =>
+            new Promise((resolve) => window.setTimeout(resolve, 900)),
+        })
       orderDelivered = true
+      recordCheckoutStepResult({
+        checkoutMode: "order_first",
+        latencyMs: deliveryLatencyMs,
+        status: "success",
+        stepName: "order_delivery",
+        amountSats: orderTotalSats,
+      })
       clearCheckoutShippingSession()
       const deliveryNotice = getDeliveryNotice(delivery, "Order")
       if (deliveryNotice) setPaidNotice(deliveryNotice)
@@ -2494,6 +2530,24 @@ function CheckoutPage() {
           replace: true,
         })
         return
+      }
+
+      if (!checkoutRevalidationCompleted) {
+        recordCheckoutStepResult({
+          amountSats: orderTotalSats,
+          checkoutMode: "order_first",
+          latencyMs: performance.now() - checkoutRevalidationStartedAt,
+          status: "failed",
+          stepName: "checkout_revalidation",
+        })
+      } else if (orderDeliveryStartedAt !== null && !orderDelivered) {
+        recordCheckoutStepResult({
+          amountSats: orderTotalSats,
+          checkoutMode: "order_first",
+          latencyMs: performance.now() - orderDeliveryStartedAt,
+          status: "failed",
+          stepName: "order_delivery",
+        })
       }
 
       if (orderSubmitStarted) {
@@ -2631,6 +2685,8 @@ function CheckoutPage() {
     let orderDelivered = false
     let guestOrderIdToClear: string | null = null
     let directPaymentStarted = false
+    let checkoutRevalidationCompleted = false
+    let orderDeliveryStartedAt: number | null = null
 
     const webLnAvailableNow = hasWebLN()
     if (webLnAvailableNow !== weblnAvailable)
@@ -2679,6 +2735,7 @@ function CheckoutPage() {
     setError(null)
     setPaidNotice(null)
     setStep("sending")
+    const checkoutRevalidationStartedAt = performance.now()
 
     try {
       if (hasUnpricedCheckoutItems) {
@@ -2842,6 +2899,16 @@ function CheckoutPage() {
         selectedWalletRuntime?.status === "ready" &&
         !finalWalletPaymentConstraint
 
+      checkoutRevalidationCompleted = true
+      recordCheckoutStepResult({
+        amountSats: checkoutPricing.totalSats,
+        checkoutMode: requestedCheckoutMode,
+        latencyMs: performance.now() - checkoutRevalidationStartedAt,
+        rail: "lightning",
+        status: "success",
+        stepName: "checkout_revalidation",
+      })
+
       const orderId = crypto.randomUUID()
       publishedOrderId = orderId
       publishedTotalSats = checkoutPricing.totalSats
@@ -2911,6 +2978,7 @@ function CheckoutPage() {
         status: "started",
         stepName: "direct_payment",
       })
+      orderDeliveryStartedAt = performance.now()
       const orderDelivery = await publishBuyerOrderMessage(
         orderRumor,
         ndk,
@@ -2924,6 +2992,14 @@ function CheckoutPage() {
         }
       )
       orderDelivered = true
+      recordCheckoutStepResult({
+        amountSats: checkoutPricing.totalSats,
+        checkoutMode: requestedCheckoutMode,
+        latencyMs: performance.now() - orderDeliveryStartedAt,
+        rail: "lightning",
+        status: "success",
+        stepName: "order_delivery",
+      })
       clearCheckoutShippingSession()
       const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
 
@@ -3090,6 +3166,26 @@ function CheckoutPage() {
           replace: true,
         })
         return
+      }
+
+      if (!checkoutRevalidationCompleted) {
+        recordCheckoutStepResult({
+          amountSats: total,
+          checkoutMode: requestedCheckoutMode,
+          latencyMs: performance.now() - checkoutRevalidationStartedAt,
+          rail: "lightning",
+          status: "failed",
+          stepName: "checkout_revalidation",
+        })
+      } else if (orderDeliveryStartedAt !== null && !orderDelivered) {
+        recordCheckoutStepResult({
+          amountSats: publishedTotalSats ?? total,
+          checkoutMode: requestedCheckoutMode,
+          latencyMs: performance.now() - orderDeliveryStartedAt,
+          rail: "lightning",
+          status: "failed",
+          stepName: "order_delivery",
+        })
       }
 
       // Failure before the order reached the merchant. No order was published,
