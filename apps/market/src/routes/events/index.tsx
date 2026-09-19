@@ -23,6 +23,7 @@ import {
   MARKET_SOURCE_OPTIONS,
   MarketBrowseNavigation,
 } from "../../components/MarketBrowseNavigation"
+import { EventTimelineEmptyState } from "../../components/EventTimelineEmptyState"
 import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
 import { useEventTimeline } from "../../hooks/useEventTimeline"
 import { useMerchantIdentities } from "../../hooks/useMerchantIdentities"
@@ -371,9 +372,11 @@ function EventsTimelinePage() {
           </p>
         </section>
       ) : (
-        <p className="py-10 text-center text-sm text-[var(--text-muted)]">
-          No events found.
-        </p>
+        <EventTimelineEmptyState
+          discoveryState={discovery.data?.state}
+          hasError={Boolean(discovery.error)}
+          refreshIncomplete={discovery.isRefreshStale}
+        />
       )}
     </div>
   )

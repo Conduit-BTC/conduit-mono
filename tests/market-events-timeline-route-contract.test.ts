@@ -118,6 +118,7 @@ describe("Market Events timeline route", () => {
     expect(route).not.toContain("getOrganizerDiscoveryPresentation")
     expect(route).not.toContain("discoveryPresentation")
     expect(route).toContain('aria-label="Refresh events"')
+    expect(route).toContain("EventTimelineEmptyState")
     expect(route).toContain("filteredMarkets.map")
     expect(discovery).toContain("readEventMarketCollectionCandidates")
     expect(discovery).toContain("perspectiveOrganizerSet.has(organizerPubkey)")
