@@ -17,7 +17,7 @@ describe("generic Market event fulfillment", () => {
       expect(route).not.toContain("createCartItemFromProduct")
     }
     expect(resolvedCard).toContain("useProductCartFulfillment")
-    expect(resolvedCard).toContain("isSameCartFulfillment")
+    expect(resolvedCard).toContain("selectCartLine")
     expect(resolvedCard).toContain("View event catalog")
     expect(resolvedCard).toContain("cartActionDisabled={blocked}")
   })
@@ -31,6 +31,11 @@ describe("generic Market event fulfillment", () => {
     expect(detail).toContain("useProductCartFulfillment")
     expect(detail).toContain("productCartCandidate")
     expect(detail).toContain("productCartBlocked")
+    expect(detail).toContain("cart.addItem(productCartCandidate, quantity)")
+    expect(detail).toContain(
+      "cart.refreshAndIncrementItem(cartItem, productCartCandidate, quantity)"
+    )
+    expect(detail).not.toContain("cart.incrementItem(cartItem")
     expect(detail).toContain("ResolvedProductGridCard")
     expect(detail).toContain("View event catalog")
     expect(detail).not.toContain(
@@ -41,16 +46,24 @@ describe("generic Market event fulfillment", () => {
       "useProductCartFulfillment(selectedProduct, btcUsdRate)"
     )
     expect(cart).toContain("fulfillmentBlocked")
+    expect(cart).toContain("cart.addItem(cartCandidate)")
+    expect(cart).toContain(
+      "cart.refreshAndIncrementItem(existing, cartCandidate)"
+    )
+    expect(cart).not.toContain(
+      "cart.incrementItem(existing, 1, selectedProduct.stock)"
+    )
     expect(cart).toContain("View event catalog")
     expect(cart).not.toContain("createCartItemFromProduct(product))")
   })
 
   it("resolves and mutates the selected signed child across product grids", async () => {
-    const [products, store, detail, resolvedCard, variations] =
+    const [products, store, detail, event, resolvedCard, variations] =
       await Promise.all([
         Bun.file("apps/market/src/routes/products/index.tsx").text(),
         Bun.file("apps/market/src/routes/store/$pubkey.tsx").text(),
         Bun.file("apps/market/src/routes/products/$productId.tsx").text(),
+        Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
         Bun.file(
           "apps/market/src/components/ResolvedProductGridCard.tsx"
         ).text(),
@@ -65,11 +78,21 @@ describe("generic Market event fulfillment", () => {
       "useProductCartFulfillment(selectedProduct, btcUsdRate)"
     )
     expect(resolvedCard).toContain("cartItemInputFromProductSelection(")
+    expect(resolvedCard).toContain("selectCartLine(cart.items, cartCandidate)")
+    expect(resolvedCard).toContain("cart.addItem(cartCandidate, 1)")
     expect(resolvedCard).toContain(
-      "selectCartItem(cart.items, selectedIdentity)"
+      "cart.refreshAndIncrementItem(existing, cartCandidate, 1)"
     )
-    expect(resolvedCard).toContain("cart.removeItem(selectedIdentity)")
-    expect(resolvedCard).toContain("cart.setQuantity(selectedIdentity")
+    expect(resolvedCard).not.toContain("cart.incrementItem(existing")
+    expect(event).toContain("cart.addItem(candidate, 1)")
+    expect(event).toContain(
+      "cart.refreshAndIncrementItem(existing, candidate, 1)"
+    )
+    expect(event).not.toContain(
+      "cart.incrementItem(existing, 1, selectedProduct.stock)"
+    )
+    expect(resolvedCard).toContain("cart.removeItem(existing)")
+    expect(resolvedCard).toContain("cart.decrementItem(existing)")
     expect(resolvedCard).toContain("selectedProductId={selectedProduct.id}")
     expect(variations).toContain("familyProductId:")
     expect(variations).toContain("selectedSpecifications:")

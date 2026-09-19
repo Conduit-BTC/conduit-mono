@@ -88,7 +88,7 @@ describe("app account-network read propagation", () => {
     expect(detailHook).toContain("useConduitSession")
     expect(detailHook).toContain("getProductDetail({")
     expect(detailHook).toContain("authenticatedPubkey,")
-    expect(readinessHook).toContain("getProductsByIds(productIds, {")
+    expect(readinessHook).toContain("getProductsByIds(scope.productIds, {")
     expect(readinessHook).toContain("authenticatedPubkey,")
     expect(readinessHook).toContain("const { authGeneration } = useAuth()")
     expect(readinessHook).toContain(
@@ -156,8 +156,12 @@ describe("app account-network read propagation", () => {
     expect(controller).toContain(
       'authenticatedPubkey: auth.status === "connected" ? auth.pubkey : null'
     )
-    expect(marketNetwork).toContain("useAccountNetworkSettings()")
-    expect(merchantNetwork).toContain("useAccountNetworkSettings()")
+    expect(marketNetwork).toContain(
+      'useAccountNetworkSettings({ telemetryApp: "market" })'
+    )
+    expect(merchantNetwork).toMatch(
+      /useAccountNetworkSettings\(\{\s*telemetryApp: "merchant",?\s*\}\)/
+    )
   })
 
   it("aborts background account reconciliation when live authority changes", async () => {

@@ -55,18 +55,15 @@ describe("Market cart HUD policy", () => {
       "utf8"
     )
 
-    // Single-selection merchant button group instead of tabs pointing at a
+    // Single-selection purchase button group instead of tabs pointing at a
     // panel that is not a tabpanel.
     expect(source).toContain('role="group"')
     expect(source).toContain("aria-pressed={selected}")
     expect(source).not.toContain("TabsTrigger")
     // One activation path shared by pointer, Enter, and Space; activating a
-    // merchant while collapsed selects and expands it, including the
-    // already-selected merchant.
-    expect(source).toContain("const activateMerchant = useCallback")
-    expect(source).toContain(
-      "onClick={() => activateMerchant(group.merchantPubkey)}"
-    )
+    // purchase while collapsed selects and expands it.
+    expect(source).toContain("const activatePurchase = useCallback")
+    expect(source).toContain("onClick={() => activatePurchase(group.id)}")
     // The disclosure toggle controls the real details panel element.
     expect(source).toContain("aria-controls={detailsPanelId}")
     expect(source).toContain("id={detailsPanelId}")
@@ -80,9 +77,10 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain("grid transition-opacity duration-200")
     // Decorative cart glyph carries no control-like filled surface.
     expect(source).not.toContain("rounded-xl bg-primary-500 text-white")
-    // Initial hydration is tracked separately from a real first-item add.
-    expect(source).toContain("cartHydratedRef")
-    expect(source).toContain("isInitialHydration")
+    // Initial hydration is tracked separately from a real first-item add,
+    // including when React batches hydration and the first mutation.
+    expect(source).toContain("previousMutationSequenceRef")
+    expect(source).toContain("observedMutation")
   })
 
   it("slides the dock in and out of the bottom of the page", () => {
@@ -269,7 +267,8 @@ describe("Market cart HUD policy", () => {
     expect(checkout).toContain(
       'walletConnecting: wallets.loading || wallet.status === "connecting"'
     )
-    expect(checkout).toContain("consumeHudZapIntent(selectedMerchant)")
+    expect(checkout).toContain("consumeHudZapIntent(")
+    expect(checkout).toContain("selectedPurchase?.id")
     expect(checkout).toContain("!autoZapAuthorization")
     expect(checkout).toContain("getHudZapAuthorizationRejection")
     // The automatic attempt claims the authorization exactly once: state

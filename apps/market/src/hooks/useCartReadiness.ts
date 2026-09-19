@@ -21,7 +21,7 @@ import {
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityReadDecision,
   getCartProductAvailability,
-  groupCartItems,
+  groupCartPurchases,
   isCartAvailabilityReadComplete,
   type CartItem,
   type CartAvailabilityReadDecision,
@@ -54,10 +54,10 @@ export type MerchantCartReadiness = {
 }
 
 export type CartReadiness = {
-  byMerchant: ReadonlyMap<string, MerchantCartReadiness>
+  byPurchase: ReadonlyMap<string, MerchantCartReadiness>
   hasUnavailableItems: boolean
   hasInsufficientStockItems: boolean
-  /** True while any merchant is still in its initial no-evidence read. */
+  /** True while any purchase is still in its initial no-evidence read. */
   anyChecking: boolean
   refreshAll: () => Promise<MerchantCartRefreshResult[]>
 }
@@ -96,16 +96,37 @@ export function getCartMerchantHiddenProductIds(
   ).sort()
 }
 
+export type CartAvailabilityReadScope = {
+  purchaseId: string
+  merchantPubkey: string
+  productIds: string[]
+  merchantHiddenProductIds: string[]
+}
+
+export function getCartAvailabilityReadScopes(
+  items: CartItem[]
+): CartAvailabilityReadScope[] {
+  return groupCartPurchases(items).map((group) => ({
+    purchaseId: group.id,
+    merchantPubkey: group.merchantPubkey,
+    productIds: Array.from(
+      new Set(group.items.map((item) => item.productId))
+    ).sort(),
+    merchantHiddenProductIds: getCartMerchantHiddenProductIds(group.items),
+  }))
+}
+
 /**
- * Per-merchant prepared cart readiness.
+ * Per-purchase prepared cart readiness.
  *
  * The network fetch is keyed by merchant pubkey, the sorted full product
  * coordinates, and the exact event-pickup coordinates allowed to use the
  * merchant-hidden exception. Quantities, shipping, totals, wallet state, and
  * authorization fingerprints never invalidate the fetch; they are evaluated
- * locally against the prepared stock in the derived layer. Each merchant
- * resolves independently: a slow merchant/relay stays `checking` or
- * `refreshing` without holding other merchants behind a global barrier.
+ * locally against the prepared stock in the derived layer. The purchase scope
+ * is deliberate: a pickup purchase may admit an exact merchant-hidden listing,
+ * while a delivery purchase for the same coordinate must still observe the
+ * ordinary listing filter. Each purchase resolves independently.
  */
 export function useCartReadiness(items: CartItem[]): CartReadiness {
   const session = useConduitSession()
@@ -116,33 +137,31 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
   }, [authGeneration])
   const authenticatedPubkey =
     session.mode === "signed_in" ? session.pubkey : null
-  const groups = useMemo(() => groupCartItems(items), [items])
+  const purchaseGroups = useMemo(() => groupCartPurchases(items), [items])
+  const readScopes = useMemo(
+    () => getCartAvailabilityReadScopes(items),
+    [items]
+  )
   const queries = useQueries({
-    queries: groups.map((group) => {
-      const productIds = Array.from(
-        new Set(group.items.map((item) => item.productId))
-      ).sort()
-      const merchantHiddenProductIds = getCartMerchantHiddenProductIds(
-        group.items
-      )
+    queries: readScopes.map((scope) => {
       const readAuthGeneration = authGeneration
       return {
         queryKey: merchantCartAvailabilityQueryKey(
-          group.merchantPubkey,
-          productIds,
-          merchantHiddenProductIds,
+          scope.merchantPubkey,
+          scope.productIds,
+          scope.merchantHiddenProductIds,
           session.relayScope
         ),
         queryFn: () =>
           readinessReadLimiter(() =>
-            getProductsByIds(productIds, {
-              includeMerchantHiddenProductIds: merchantHiddenProductIds,
+            getProductsByIds(scope.productIds, {
+              includeMerchantHiddenProductIds: scope.merchantHiddenProductIds,
               authenticatedPubkey,
               shouldContinue: () =>
                 authGenerationRef.current === readAuthGeneration,
             })
           ),
-        enabled: productIds.length > 0,
+        enabled: scope.productIds.length > 0,
         staleTime: CART_READINESS_LEASE_MS,
         gcTime: 5 * 60_000,
       }
@@ -150,21 +169,22 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
   })
 
   return useMemo(() => {
-    const byMerchant = new Map<string, MerchantCartReadiness>()
-    for (const [index, group] of groups.entries()) {
+    const byPurchase = new Map<string, MerchantCartReadiness>()
+    for (const [index, group] of purchaseGroups.entries()) {
       const query = queries[index]
       if (!query) continue
-      const records = query.data?.data
-      const products = records?.map((record) => record.product) ?? []
+      const products = query.data?.data.map((record) => record.product) ?? []
       const availability = getCartProductAvailability(group.items, products)
       const availabilityByProductId = new Map(
         availability.map((entry) => [entry.productId, entry])
       )
-      const diagnostics = query.data?.diagnostics ?? []
-      const hasEvidence = query.data !== undefined
       const productIds = Array.from(
         new Set(group.items.map((item) => item.productId))
       ).sort()
+      const productIdSet = new Set(productIds)
+      const diagnostics = (query.data?.diagnostics ?? []).filter((diagnostic) =>
+        productIdSet.has(diagnostic.productId)
+      )
       const readDecision = getCartAvailabilityReadDecision({
         productIds,
         availability,
@@ -173,6 +193,7 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
         querySucceeded: query.isSuccess,
       })
       const fresh = isCartAvailabilityReadComplete(readDecision)
+      const hasEvidence = query.data !== undefined
       const blockingMessage = hasEvidence
         ? getCartAvailabilityBlockingMessage(
             group.items,
@@ -196,26 +217,29 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
         const result = await query.refetch()
         const commerceResult = result.isSuccess ? result.data : undefined
         const refreshedProducts =
-          commerceResult?.data.map((record) => record.product) ?? []
+          commerceResult?.data
+            .map((record) => record.product)
+            .filter((product) => productIdSet.has(product.id)) ?? []
         const refreshedAvailability = getCartProductAvailability(
           group.items,
           refreshedProducts
         )
-        const refreshedDiagnostics = commerceResult?.diagnostics ?? []
-        const decision = getCartAvailabilityReadDecision({
-          productIds,
-          availability: refreshedAvailability,
-          meta: commerceResult?.meta,
-          diagnostics: refreshedDiagnostics,
-          querySucceeded: result.isSuccess,
-        })
+        const refreshedDiagnostics = (commerceResult?.diagnostics ?? []).filter(
+          (diagnostic) => productIdSet.has(diagnostic.productId)
+        )
         return {
           availability: refreshedAvailability,
           products: refreshedProducts,
-          decision,
+          decision: getCartAvailabilityReadDecision({
+            productIds,
+            availability: refreshedAvailability,
+            meta: commerceResult?.meta,
+            diagnostics: refreshedDiagnostics,
+            querySucceeded: result.isSuccess,
+          }),
         }
       }
-      byMerchant.set(group.merchantPubkey, {
+      byPurchase.set(group.id, {
         merchantPubkey: group.merchantPubkey,
         state,
         availabilityByProductId,
@@ -230,9 +254,9 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
       })
     }
 
-    const entries = Array.from(byMerchant.values())
+    const entries = Array.from(byPurchase.values())
     return {
-      byMerchant,
+      byPurchase,
       hasUnavailableItems: entries.some((entry) => entry.hasUnavailableItems),
       hasInsufficientStockItems: entries.some(
         (entry) => entry.hasInsufficientStockItems
@@ -240,7 +264,7 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
       anyChecking: entries.some((entry) => entry.isChecking),
       refreshAll: () => Promise.all(entries.map((entry) => entry.refresh())),
     }
-  }, [groups, queries])
+  }, [purchaseGroups, queries])
 }
 
 export function merchantLnurlPreflightQueryKey(

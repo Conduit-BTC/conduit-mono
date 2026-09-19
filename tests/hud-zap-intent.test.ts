@@ -26,6 +26,7 @@ const items: CartItem[] = [
 function authorization(createdAt = 1_000) {
   return {
     merchantPubkey: "merchant-a",
+    purchaseId: "purchase-a",
     buyerPubkey: "buyer-a",
     cartFingerprint: getCartCommerceFingerprint(items),
     totalMsats: 1_000_000,
@@ -36,15 +37,19 @@ function authorization(createdAt = 1_000) {
 describe("HUD zap intent", () => {
   it("can be consumed once by the matching merchant", () => {
     armHudZapIntent(authorization())
-    expect(consumeHudZapIntent("merchant-a", 2_000)).toEqual(authorization())
-    expect(consumeHudZapIntent("merchant-a", 2_000)).toBeNull()
+    expect(consumeHudZapIntent("merchant-a", "purchase-a", 2_000)).toEqual(
+      authorization()
+    )
+    expect(consumeHudZapIntent("merchant-a", "purchase-a", 2_000)).toBeNull()
   })
 
   it("rejects mismatched and expired handoffs", () => {
     armHudZapIntent(authorization())
-    expect(consumeHudZapIntent("merchant-b", 2_000)).toBeNull()
+    expect(consumeHudZapIntent("merchant-b", "purchase-a", 2_000)).toBeNull()
     armHudZapIntent(authorization())
-    expect(consumeHudZapIntent("merchant-a", 31_001)).toBeNull()
+    expect(consumeHudZapIntent("merchant-a", "purchase-b", 2_000)).toBeNull()
+    armHudZapIntent(authorization())
+    expect(consumeHudZapIntent("merchant-a", "purchase-a", 31_001)).toBeNull()
   })
 
   it("binds authorization to buyer, cart terms, quantity, and total", () => {
@@ -52,6 +57,7 @@ describe("HUD zap intent", () => {
     expect(
       getHudZapAuthorizationRejection(intent, {
         merchantPubkey: "merchant-a",
+        purchaseId: "purchase-a",
         buyerPubkey: "buyer-a",
         items,
         totalMsats: 1_000_000,
@@ -71,6 +77,7 @@ describe("HUD zap intent", () => {
       expect(
         getHudZapAuthorizationRejection(intent, {
           merchantPubkey: "merchant-a",
+          purchaseId: "purchase-a",
           nowMs: 2_000,
           ...input,
         })
@@ -83,6 +90,7 @@ describe("HUD zap intent", () => {
     expect(
       getHudZapAuthorizationRejection(intent, {
         merchantPubkey: "merchant-a",
+        purchaseId: "purchase-a",
         buyerPubkey: "buyer-a",
         items,
         totalMsats: 1_000_000,
@@ -92,6 +100,7 @@ describe("HUD zap intent", () => {
     expect(
       getHudZapAuthorizationRejection(intent, {
         merchantPubkey: "merchant-a",
+        purchaseId: "purchase-a",
         buyerPubkey: "buyer-a",
         items,
         totalMsats: 2_000_000,
@@ -101,6 +110,7 @@ describe("HUD zap intent", () => {
     expect(
       getHudZapAuthorizationRejection(intent, {
         merchantPubkey: "merchant-a",
+        purchaseId: "purchase-a",
         buyerPubkey: "buyer-a",
         items,
         totalMsats: 1_000_000,
@@ -116,6 +126,7 @@ describe("claimed HUD zap authorization", () => {
     expect(
       getHudZapAuthorizationBindingMismatch(intent, {
         merchantPubkey: "merchant-a",
+        purchaseId: "purchase-a",
         buyerPubkey: "buyer-a",
         items,
         totalMsats: 1_000_000,
@@ -128,6 +139,7 @@ describe("claimed HUD zap authorization", () => {
     expect(
       getHudZapAuthorizationBindingMismatch(intent, {
         merchantPubkey: "merchant-a",
+        purchaseId: "purchase-a",
         buyerPubkey: "buyer-a",
         items,
         totalMsats: 2_000_000,
@@ -136,6 +148,7 @@ describe("claimed HUD zap authorization", () => {
     expect(
       getHudZapAuthorizationBindingMismatch(intent, {
         merchantPubkey: "merchant-a",
+        purchaseId: "purchase-a",
         buyerPubkey: "buyer-b",
         items,
         totalMsats: 1_000_000,

@@ -20,24 +20,41 @@ describe("Market cart identity contract", () => {
       ),
       "utf8"
     )
+    const cartHud = readFileSync(
+      new URL(
+        "../apps/market/src/components/MarketCartHud.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    )
     expect(sources.join("\n")).not.toContain("item.productId === product.id")
     expect(sources[0]).toContain("<ResolvedProductGridCard")
     expect(sources[2]).toContain("<ResolvedProductGridCard")
-    expect(resolvedCard).toContain(
-      "selectCartItem(cart.items, selectedIdentity)"
-    )
+    expect(resolvedCard).toContain("selectCartLine(cart.items, cartCandidate)")
     expect(resolvedCard).toContain("cartItemInputFromProductSelection(")
-    expect(resolvedCard).toContain("cart.removeItem(selectedIdentity)")
-    expect(resolvedCard).toContain("cart.setQuantity(selectedIdentity")
+    expect(resolvedCard).toContain("cart.addItem(cartCandidate, 1)")
+    expect(resolvedCard).toContain(
+      "cart.refreshAndIncrementItem(existing, cartCandidate, 1)"
+    )
+    expect(resolvedCard).not.toContain("cart.incrementItem(existing")
+    expect(resolvedCard).toContain("cart.removeItem(existing)")
+    expect(resolvedCard).toContain("cart.decrementItem(existing)")
+    for (const source of [sources[3]!, cartHud]) {
+      expect(source).toContain("getCartItemStockEvidenceForAvailability(")
+    }
   })
 
-  it("persists a versioned cart and protects unsupported future versions", () => {
-    const hook = readFileSync(
-      new URL("../apps/market/src/hooks/useCart.ts", import.meta.url),
+  it("persists a versioned canonical cart and keeps its fallback explicit", () => {
+    const repository = readFileSync(
+      new URL("../apps/market/src/lib/cart-repository.ts", import.meta.url),
       "utf8"
     )
-    expect(hook).toContain("serializeCartState")
-    expect(hook).toContain("storageWritable = result.writable")
-    expect(hook).toContain("&& storageWritable")
+    expect(repository).toContain("export const CART_RECORD_VERSION = 1")
+    expect(repository).toContain('db.transaction(\n        "rw"')
+    expect(repository).toContain("parseStoredRecord(stored)")
+    expect(repository).toContain('publishRecord(record, "memory")')
+    expect(repository).toContain("if (!identity.cartLineId) return false")
+    expect(repository).toContain("const nextItem = selectCartItemSnapshot")
+    expect(repository).toContain("nextItem.stock === 0")
   })
 })

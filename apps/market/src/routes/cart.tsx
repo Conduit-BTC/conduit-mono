@@ -46,12 +46,12 @@ import {
   cn,
 } from "@conduit/ui"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
 } from "@conduit/ui"
 import {
   useCallback,
@@ -87,15 +87,16 @@ import { getCartShippingDestinationEligibility } from "../lib/cart-shipping-opti
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   getCartCostSummary,
-  getCartItemStockForAvailability,
+  getCartItemStockEvidenceForAvailability,
   getMixedFulfillmentBlockingMessage,
-  isSameCartFulfillment,
   getCartItemKey,
+  getCartPurchaseReference,
   getProductAddAvailability,
-  groupCartItems,
+  groupCartPurchases,
   isCartProductAvailabilityBlocking,
+  selectCartLine,
+  type CartPurchaseGroup,
   type CartProductAvailability,
-  type MerchantCartGroup,
 } from "../lib/cart-model"
 import {
   cartItemInputFromProductSelection,
@@ -116,6 +117,7 @@ type PriceFormatter = (
 
 type CartSearch = {
   merchant?: string
+  purchase?: string
 }
 
 type CartSummaryPrice = {
@@ -134,6 +136,7 @@ export const Route = createFileRoute("/cart")({
       typeof search.merchant === "string"
         ? (normalizePubkey(search.merchant) ?? search.merchant)
         : undefined,
+    purchase: typeof search.purchase === "string" ? search.purchase : undefined,
   }),
   component: CartPage,
 })
@@ -415,20 +418,12 @@ function RelatedProductRow({
           })
         : null
     : null
-  const existing = cart.items.find(
-    (item) => item.productId === selectedProduct.id
-  )
-  const sameFulfillment =
-    !!existing &&
-    !!cartCandidate &&
-    isSameCartFulfillment(existing, cartCandidate)
-  const existingFulfillmentConflict = !!existing && !sameFulfillment
-  const cartQuantity = sameFulfillment ? existing.quantity : 0
+  const existing = cartCandidate
+    ? selectCartLine(cart.items, cartCandidate)
+    : undefined
+  const cartQuantity = existing?.quantity ?? 0
   const fulfillmentBlocked =
-    fulfillment.isChecking ||
-    resolution?.status === "blocked" ||
-    !cartCandidate ||
-    existingFulfillmentConflict
+    fulfillment.isChecking || resolution?.status === "blocked" || !cartCandidate
   const images = getProductSelectionImages(product, selectedProduct)
   const imageUrl = images[0]?.url
   const price = formatPrice(selectedProduct, {
@@ -536,6 +531,10 @@ function RelatedProductRow({
             ) {
               return
             }
+            if (existing) {
+              cart.refreshAndIncrementItem(existing, cartCandidate)
+              return
+            }
             cart.addItem(cartCandidate)
           }}
         >
@@ -552,14 +551,11 @@ function RelatedProductRow({
                     ? `In cart (${cartQuantity})`
                     : "Add"}
         </Button>
-        {existingFulfillmentConflict ||
-        fulfillment.isChecking ||
+        {fulfillment.isChecking ||
         resolution?.status === "blocked" ||
         resolution?.status === "pickup" ? (
           <div className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
-            {existingFulfillmentConflict ? (
-              "This listing is already in your cart with different fulfillment. Remove that line before adding it here."
-            ) : fulfillment.isChecking ? (
+            {fulfillment.isChecking ? (
               "Checking signed event pickup."
             ) : resolution?.status === "blocked" ? (
               resolution.reason
@@ -793,7 +789,7 @@ function MerchantCartCard({
   onDecrement,
   onRemove,
 }: {
-  group: MerchantCartGroup
+  group: CartPurchaseGroup
   accountPubkey: string | null
   authenticatedPubkey: string | null
   shouldContinue?: () => boolean
@@ -860,7 +856,14 @@ function MerchantCartCard({
               ? "Zap out"
               : "Order"
   const reviewItemsLabel = `${expanded ? "Hide" : "Review"} ${group.totalItems} item${group.totalItems === 1 ? "" : "s"}`
-  const detailsId = `cart-group-${group.merchantPubkey}`
+  const detailsId = `cart-group-${encodeURIComponent(group.id)}`
+  const purchaseReference = getCartPurchaseReference(group.id)
+  const purchaseLabel =
+    group.kind === "pickup"
+      ? `Event pickup · ${group.items[0]?.fulfillment?.type === "pickup" ? group.items[0].fulfillment.option.title : "Pickup"}`
+      : group.items.some((item) => item.format !== "digital")
+        ? "Shipping / delivery"
+        : "Digital delivery"
 
   return (
     <section className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
@@ -873,14 +876,21 @@ function MerchantCartCard({
             shouldContinue={shouldContinue}
             className="flex-1"
           />
+          <div className="flex min-w-0 max-w-64 shrink-0 flex-col items-end gap-1 text-right">
+            <Badge variant="outline">{purchaseLabel}</Badge>
+            <span className="max-w-full truncate text-xs text-[var(--text-muted)]">
+              {group.items[0]?.title ?? "Cart purchase"} · Ref{" "}
+              {purchaseReference}
+            </span>
+          </div>
           <Button
             variant="outline"
             className="h-10 shrink-0 px-3 text-sm"
-            aria-label="Clear store cart"
+            aria-label={`Clear ${purchaseLabel} purchase, reference ${purchaseReference}`}
             onClick={onClear}
           >
             <TrashIcon className="h-4 w-4" />
-            <span className="hidden sm:inline">Clear store cart</span>
+            <span className="hidden sm:inline">Clear purchase</span>
             <span className="sm:hidden">Clear</span>
           </Button>
         </div>
@@ -951,7 +961,7 @@ function MerchantCartCard({
             <div className="divide-y divide-[var(--border)]">
               {group.items.map((item) => (
                 <CartLineItem
-                  key={getCartItemKey(item)}
+                  key={item.cartLineId ?? getCartItemKey(item)}
                   item={item}
                   availability={availabilityByProductId.get(item.productId)}
                   formatPrice={formatPrice}
@@ -992,10 +1002,22 @@ function CartPage() {
     "all" | string | null
   >(null)
 
-  const merchantGroups = useMemo(() => groupCartItems(cart.items), [cart.items])
-  const expandedGroup = merchantGroups.find(
-    (group) => group.merchantPubkey === search.merchant
+  const purchaseGroups = useMemo(
+    () => groupCartPurchases(cart.items),
+    [cart.items]
   )
+  const merchantCount = useMemo(
+    () => new Set(purchaseGroups.map((group) => group.merchantPubkey)).size,
+    [purchaseGroups]
+  )
+  const matchingMerchantGroups = search.merchant
+    ? purchaseGroups.filter((group) => group.merchantPubkey === search.merchant)
+    : []
+  const expandedGroup =
+    purchaseGroups.find((group) => group.id === search.purchase) ??
+    (matchingMerchantGroups.length === 1
+      ? matchingMerchantGroups[0]
+      : undefined)
   const expandedMerchant = expandedGroup?.merchantPubkey
   const relatedSourceItems = expandedGroup?.items ?? cart.items
   const relatedExcludedProductIds = useMemo(
@@ -1016,21 +1038,25 @@ function CartPage() {
     [relatedSourceItems]
   )
   const continueToCheckout = useCallback(
-    (merchant: string): void => {
+    (group: CartPurchaseGroup): void => {
       navigate({
         to: "/checkout",
-        search: { merchant: pubkeyToNpub(merchant) },
+        search: {
+          merchant: pubkeyToNpub(group.merchantPubkey),
+          purchase: group.id,
+        },
       })
     },
     [navigate]
   )
 
-  const setExpandedMerchant = useCallback(
-    (merchantPubkey: string | undefined): void => {
+  const setExpandedPurchase = useCallback(
+    (group: CartPurchaseGroup | undefined): void => {
       navigate({
         to: "/cart",
         search: {
-          merchant: merchantPubkey ? pubkeyToNpub(merchantPubkey) : undefined,
+          merchant: group ? pubkeyToNpub(group.merchantPubkey) : undefined,
+          purchase: group?.id,
         },
         replace: true,
       })
@@ -1038,38 +1064,38 @@ function CartPage() {
     [navigate]
   )
 
-  function handleCheckout(merchant: string): void {
-    const group = merchantGroups.find(
-      (entry) => entry.merchantPubkey === merchant
-    )
-    if (cartReadiness.byMerchant.get(merchant)?.hasUnavailableItems) {
+  function handleCheckout(group: CartPurchaseGroup): void {
+    if (cartReadiness.byPurchase.get(group.id)?.hasUnavailableItems) {
       return
     }
-    if (group && getMixedFulfillmentBlockingMessage(group.items)) return
+    if (getMixedFulfillmentBlockingMessage(group.items)) return
     recordBrowserTelemetryEvent({
       app: "market",
       eventName: "checkout_initiated",
       properties: {
-        count_bucket: getCartTelemetryItemCountBucket(group?.items ?? []),
-        product_type: getCartTelemetryProductType(group?.items ?? []),
+        count_bucket: getCartTelemetryItemCountBucket(group.items),
+        product_type: getCartTelemetryProductType(group.items),
         status: "success",
         surface: "cart",
       },
     })
 
-    continueToCheckout(merchant)
+    continueToCheckout(group)
   }
 
   useEffect(() => {
     if (!search.merchant) return
-    if (merchantGroups.length === 0) return
+    if (purchaseGroups.length === 0) return
     if (expandedGroup) return
-    setExpandedMerchant(undefined)
+    if (!search.purchase && matchingMerchantGroups.length > 1) return
+    setExpandedPurchase(undefined)
   }, [
     expandedGroup,
-    merchantGroups.length,
+    matchingMerchantGroups.length,
+    purchaseGroups.length,
     search.merchant,
-    setExpandedMerchant,
+    search.purchase,
+    setExpandedPurchase,
   ])
 
   function handleConfirmClear(): void {
@@ -1078,9 +1104,9 @@ function CartPage() {
     if (confirmClearTarget === "all") {
       cart.clear()
     } else {
-      cart.clearMerchant(confirmClearTarget)
-      if (expandedMerchant === confirmClearTarget) {
-        setExpandedMerchant(undefined)
+      cart.clearPurchase(confirmClearTarget)
+      if (expandedGroup?.id === confirmClearTarget) {
+        setExpandedPurchase(undefined)
       }
     }
 
@@ -1150,32 +1176,45 @@ function CartPage() {
     ? getCartShippingDestinationEligibility(presetDestination, cart.items)
     : null
   const clearCartDialog = (
-    <Dialog
+    <AlertDialog
       open={confirmClearTarget !== null}
       onOpenChange={(open) => !open && setConfirmClearTarget(null)}
     >
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
             {confirmClearTarget === "all"
               ? "Clear all carts?"
-              : "Clear this store cart?"}
-          </DialogTitle>
-          <DialogDescription className="text-[var(--text-secondary)]">
+              : "Clear this purchase?"}
+          </AlertDialogTitle>
+          <AlertDialogDescription className="text-pretty text-[var(--text-secondary)]">
             {confirmClearTarget === "all"
               ? "This will remove every item from all store carts."
-              : "This will remove every item from this store cart."}
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
+              : "This will remove every item from this compatible purchase. Other purchases stay in your cart."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
           <Button variant="outline" onClick={() => setConfirmClearTarget(null)}>
             Cancel
           </Button>
-          <Button onClick={handleConfirmClear}>Clear cart</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <Button variant="destructive" onClick={handleConfirmClear}>
+            Clear cart
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
+
+  if (!cart.hydrated) {
+    return (
+      <div
+        role="status"
+        className="flex min-h-[50vh] items-center justify-center text-sm text-[var(--text-secondary)]"
+      >
+        Loading your cart…
+      </div>
+    )
+  }
 
   if (cart.items.length === 0) {
     return (
@@ -1199,9 +1238,9 @@ function CartPage() {
             <h1 className="text-4xl font-semibold text-[var(--text-primary)]">
               Your cart is empty
             </h1>
-            <p className="text-sm leading-7 text-[var(--text-secondary)]">
-              Add products from the marketplace to start an order. Store carts
-              stay grouped here so order and zap flows remain merchant-aware.
+            <p className="text-pretty text-sm leading-7 text-[var(--text-secondary)]">
+              Add products from the marketplace to start an order. Compatible
+              purchases stay grouped by merchant and fulfillment terms.
             </p>
             <div className="flex flex-wrap gap-3 pt-2">
               <Button asChild className="h-11 px-4 text-sm">
@@ -1237,18 +1276,49 @@ function CartPage() {
               <h1 className="text-4xl font-semibold text-[var(--text-primary)]">
                 Cart
               </h1>
-              <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                Review items by store, then order or zap out with one merchant
-                at a time.
+              <p className="mt-2 text-pretty text-sm text-[var(--text-secondary)]">
+                Review each compatible delivery or pickup purchase, then order
+                or zap out one at a time.
               </p>
             </div>
             <div className="text-sm tabular-nums text-[var(--text-secondary)]">
-              {merchantGroups.length} store
-              {merchantGroups.length === 1 ? "" : "s"}
+              {purchaseGroups.length} purchase
+              {purchaseGroups.length === 1 ? "" : "s"}
+              <span className="mx-2 text-[var(--text-muted)]">/</span>
+              {merchantCount} store{merchantCount === 1 ? "" : "s"}
               <span className="mx-2 text-[var(--text-muted)]">/</span>
               {cart.totals.count} item{cart.totals.count === 1 ? "" : "s"}
             </div>
           </div>
+
+          {merchantCount < purchaseGroups.length ? (
+            <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+              <AlertTriangle
+                className="mt-0.5 h-5 w-5 shrink-0 text-warning"
+                aria-hidden="true"
+              />
+              <div>
+                <div className="font-medium text-[var(--text-primary)]">
+                  Conflicting fulfillment was separated
+                </div>
+                <p className="mt-1 text-pretty leading-6">
+                  Shipping and each exact event pickup appear as separate
+                  purchases. Complete any compatible purchase now, or remove an
+                  affected line without changing its signed fulfillment terms.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {cart.persistenceMode === "memory" ? (
+            <div
+              role="status"
+              className="rounded-2xl border border-warning/40 bg-warning/10 p-4 text-pretty text-sm text-[var(--text-secondary)]"
+            >
+              Cart storage is unavailable. Changes work in this tab only and may
+              not survive a reload or appear in another tab.
+            </div>
+          ) : null}
 
           {cartReadiness.hasUnavailableItems ? (
             <div
@@ -1268,8 +1338,8 @@ function CartPage() {
                   </div>
                   <p className="mt-1 leading-6">
                     {cartReadiness.hasInsufficientStockItems
-                      ? "Reduce affected quantities to the current available stock, and remove any sold-out items before sending this order."
-                      : "Remove sold-out items before sending this order. Other store carts remain available."}
+                      ? "Reduce affected quantities to current stock, or remove sold-out lines before sending those purchases. Other compatible purchases remain available."
+                      : "Remove sold-out lines before sending those purchases. Other compatible purchases remain available."}
                   </p>
                 </div>
               </div>
@@ -1314,70 +1384,47 @@ function CartPage() {
             </div>
           )}
 
-          {search.merchant && !expandedGroup && (
+          {(search.purchase || search.merchant) && !expandedGroup && (
             <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-              That store cart is not in your cart anymore.
+              {matchingMerchantGroups.length > 1 && !search.purchase
+                ? "This store has multiple compatible purchases. Choose the delivery or pickup purchase you want to review."
+                : "That purchase is not in your cart anymore."}
             </div>
           )}
 
-          {merchantGroups.map((group) => {
-            const forceExpanded = merchantGroups.length === 1
-            const expanded =
-              forceExpanded || expandedMerchant === group.merchantPubkey
+          {purchaseGroups.map((group) => {
+            const forceExpanded = purchaseGroups.length === 1
+            const expanded = forceExpanded || expandedGroup?.id === group.id
 
             return (
               <MerchantCartCard
-                key={group.merchantPubkey}
+                key={group.id}
                 group={group}
                 accountPubkey={accountPubkey}
                 authenticatedPubkey={authenticatedPubkey}
                 shouldContinue={shouldContinueAccountRead}
-                readiness={cartReadiness.byMerchant.get(group.merchantPubkey)}
+                readiness={cartReadiness.byPurchase.get(group.id)}
                 wallets={wallets}
                 expanded={expanded}
                 forceExpanded={forceExpanded}
                 btcUsdRate={shopperPricing.quote}
                 formatPrice={shopperPricing.formatPrice}
                 onToggle={() =>
-                  setExpandedMerchant(
-                    expandedMerchant === group.merchantPubkey
-                      ? undefined
-                      : group.merchantPubkey
+                  setExpandedPurchase(
+                    expandedGroup?.id === group.id ? undefined : group
                   )
                 }
-                onCheckout={() => handleCheckout(group.merchantPubkey)}
-                onClear={() => setConfirmClearTarget(group.merchantPubkey)}
+                onCheckout={() => handleCheckout(group)}
+                onClear={() => setConfirmClearTarget(group.id)}
                 onIncrement={(item) =>
-                  cart.addItem(
-                    {
-                      productId: item.productId,
-                      merchantPubkey: item.merchantPubkey,
-                      title: item.title,
-                      price: item.price,
-                      currency: item.currency,
-                      priceSats: item.priceSats,
-                      sourcePrice: item.sourcePrice,
-                      sourceShippingCost: item.sourceShippingCost,
-                      image: item.image,
-                      tags: item.tags,
-                      format: item.format,
-                      fulfillment: item.fulfillment,
-                      shippingCostSats: item.shippingCostSats,
-                      shippingOptionId: item.shippingOptionId,
-                      shippingOptionDTag: item.shippingOptionDTag,
-                      shippingCountries: item.shippingCountries,
-                      shippingCountryRules: item.shippingCountryRules,
-                      publicZapEnabled: item.publicZapEnabled,
-                      zapMessagePolicy: item.zapMessagePolicy,
-                      publicZapPolicyKnown: item.publicZapPolicyKnown,
-                      stock: getCartItemStockForAvailability(
-                        item,
-                        cartReadiness.byMerchant
-                          .get(group.merchantPubkey)
-                          ?.availabilityByProductId.get(item.productId)
-                      ),
-                    },
-                    1
+                  cart.incrementItem(
+                    item,
+                    1,
+                    getCartItemStockEvidenceForAvailability(
+                      cartReadiness.byPurchase
+                        .get(group.id)
+                        ?.availabilityByProductId.get(item.productId)
+                    )
                   )
                 }
                 onDecrement={(item) => {
@@ -1385,7 +1432,7 @@ function CartPage() {
                     cart.removeItem(item)
                     return
                   }
-                  cart.setQuantity(item, item.quantity - 1)
+                  cart.decrementItem(item)
                 }}
                 onRemove={(item) => cart.removeItem(item)}
               />
@@ -1408,8 +1455,9 @@ function CartPage() {
             )}
             <div className="mt-3 text-sm text-[var(--text-secondary)]">
               {cart.totals.count} item{cart.totals.count === 1 ? "" : "s"}{" "}
-              across {merchantGroups.length} store
-              {merchantGroups.length === 1 ? "" : "s"}.
+              across {purchaseGroups.length} purchase
+              {purchaseGroups.length === 1 ? "" : "s"} from {merchantCount}{" "}
+              store{merchantCount === 1 ? "" : "s"}.
             </div>
             <Button
               variant="outline"
