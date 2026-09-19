@@ -1,4 +1,5 @@
 import {
+  compareReplaceableEventFrontiers,
   db,
   isFiatCurrencyCode,
   normalizePublicMediaUrl,
@@ -106,24 +107,38 @@ function sanitizeCartItemImage(item: CartItem): CartItem {
 }
 
 function hasStrictlyNewerProductRevision(
-  current: Pick<CartItem, "productUpdatedAt">,
-  candidate: Pick<CartItem, "productUpdatedAt">
+  current: Pick<CartItem, "productUpdatedAt" | "productEventId">,
+  candidate: Pick<CartItem, "productUpdatedAt" | "productEventId">
 ): boolean {
   return (
-    candidate.productUpdatedAt !== undefined &&
-    (current.productUpdatedAt === undefined ||
-      candidate.productUpdatedAt > current.productUpdatedAt)
+    compareReplaceableEventFrontiers(
+      {
+        createdAt: candidate.productUpdatedAt,
+        eventId: candidate.productEventId,
+      },
+      {
+        createdAt: current.productUpdatedAt,
+        eventId: current.productEventId,
+      }
+    ) > 0
   )
 }
 
 function hasStrictlyOlderProductRevision(
-  current: Pick<CartItem, "productUpdatedAt">,
-  candidate: Pick<CartItem, "productUpdatedAt">
+  current: Pick<CartItem, "productUpdatedAt" | "productEventId">,
+  candidate: Pick<CartItem, "productUpdatedAt" | "productEventId">
 ): boolean {
   return (
-    current.productUpdatedAt !== undefined &&
-    (candidate.productUpdatedAt === undefined ||
-      candidate.productUpdatedAt < current.productUpdatedAt)
+    compareReplaceableEventFrontiers(
+      {
+        createdAt: candidate.productUpdatedAt,
+        eventId: candidate.productEventId,
+      },
+      {
+        createdAt: current.productUpdatedAt,
+        eventId: current.productEventId,
+      }
+    ) < 0
   )
 }
 

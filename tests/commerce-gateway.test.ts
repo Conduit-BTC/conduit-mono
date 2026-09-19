@@ -3147,6 +3147,7 @@ describe("commerce gateway", () => {
 
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.eventId).toBe(winner.id)
+    expect(result.data[0]?.product.sourceEventId).toBe(winner.id)
     expect(result.data[0]?.product.title).toBe(JSON.parse(winner.content).title)
   })
 
@@ -7320,6 +7321,7 @@ describe("getProductsByIds diagnostics", () => {
         status: "available",
         stock: 1,
         productUpdatedAt: 100_000,
+        productEventId: liveEvent.id,
         refreshed: true,
       },
     ])

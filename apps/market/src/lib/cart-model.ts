@@ -70,6 +70,8 @@ export type CartItem = {
   }>
   /** Signed product event timestamp used by the fixed-shipping staleness guard. */
   productUpdatedAt?: number
+  /** Signed kind-30402 event id paired with productUpdatedAt for NIP-01 ordering. */
+  productEventId?: string
   /** True only after exact canonical kind-30406 resolution. */
   canonicalShippingResolved?: boolean
   publicZapEnabled?: boolean
@@ -157,10 +159,14 @@ export type CartProductAvailability = {
   status: "available" | "sold_out" | "insufficient_stock" | "untracked"
   stock?: number
   productUpdatedAt?: number
+  productEventId?: string
   refreshed: boolean
 }
 
-export type CartItemStockEvidence = Pick<CartItem, "stock" | "productUpdatedAt">
+export type CartItemStockEvidence = Pick<
+  CartItem,
+  "stock" | "productUpdatedAt" | "productEventId"
+>
 
 type CartAvailabilityReadMeta = Pick<
   CommerceQueryMeta,
@@ -245,6 +251,7 @@ export function createCartItemFromProduct(
     shippingCountries: pickup ? [] : product.shippingCountries,
     shippingCountryRules: pickup ? [] : product.shippingCountryRules,
     productUpdatedAt: product.updatedAt,
+    productEventId: product.sourceEventId,
     canonicalShippingResolved: pickup ? false : canonicalShippingResolved,
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
@@ -358,7 +365,12 @@ export function getCartProductAvailability(
               : "untracked",
       stock,
       ...(refreshedProduct
-        ? { productUpdatedAt: refreshedProduct.updatedAt }
+        ? {
+            productUpdatedAt: refreshedProduct.updatedAt,
+            ...(refreshedProduct.sourceEventId
+              ? { productEventId: refreshedProduct.sourceEventId }
+              : {}),
+          }
         : {}),
       refreshed: !!refreshedProduct,
     }
@@ -577,13 +589,19 @@ export function getCartItemStockForAvailability(
 
 export function getCartItemStockEvidenceForAvailability(
   availability:
-    | Pick<CartProductAvailability, "stock" | "productUpdatedAt" | "refreshed">
+    | Pick<
+        CartProductAvailability,
+        "stock" | "productUpdatedAt" | "productEventId" | "refreshed"
+      >
     | undefined
 ): CartItemStockEvidence | undefined {
   if (!availability?.refreshed) return undefined
   return {
     stock: availability.stock,
     productUpdatedAt: availability.productUpdatedAt,
+    ...(availability.productEventId
+      ? { productEventId: availability.productEventId }
+      : {}),
   }
 }
 
@@ -598,6 +616,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function nonemptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined
+}
+
+function normalizedEventId(value: unknown): string | undefined {
+  const eventId = nonemptyString(value)?.toLowerCase()
+  return eventId && /^[0-9a-f]{64}$/.test(eventId) ? eventId : undefined
 }
 
 function finiteNonnegativeNumber(value: unknown): number | undefined {
@@ -680,6 +703,7 @@ function parseCartItem(value: unknown): CartItem | null {
   const priceSats = finiteNonnegativeNumber(value.priceSats)
   const shippingCostSats = finiteNonnegativeNumber(value.shippingCostSats)
   const productUpdatedAt = finiteNonnegativeNumber(value.productUpdatedAt)
+  const productEventId = normalizedEventId(value.productEventId)
   const stock = finiteNonnegativeNumber(value.stock)
   const selectedSpecifications = parseSpecifications(
     value.selectedSpecifications
@@ -737,6 +761,7 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(shippingCountries ? { shippingCountries } : {}),
     ...(shippingCountryRules ? { shippingCountryRules } : {}),
     ...(productUpdatedAt !== undefined ? { productUpdatedAt } : {}),
+    ...(productEventId ? { productEventId } : {}),
     ...(typeof value.canonicalShippingResolved === "boolean"
       ? { canonicalShippingResolved: value.canonicalShippingResolved }
       : {}),

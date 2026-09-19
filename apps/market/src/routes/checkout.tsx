@@ -1310,7 +1310,10 @@ function CheckoutPage() {
     [rawCheckoutItems]
   )
   const shippingRevisionKey = rawCheckoutItems
-    .map((item) => `${item.productId}:${item.productUpdatedAt ?? 0}`)
+    .map(
+      (item) =>
+        `${item.productId}:${item.productUpdatedAt ?? 0}:${item.productEventId ?? "legacy"}`
+    )
     .sort()
     .join("|")
   const {

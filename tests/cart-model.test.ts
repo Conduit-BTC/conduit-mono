@@ -414,6 +414,7 @@ describe("cart model", () => {
   it("preserves product stock and shipping-shape safety when creating a cart item snapshot", () => {
     const product: Product = {
       id: "30402:merchant-a:sold-out-tee",
+      sourceEventId: "1".repeat(64),
       pubkey: "merchant-a",
       title: "Sold Out Tee",
       price: 2_500,
@@ -438,6 +439,7 @@ describe("cart model", () => {
       merchantPubkey: product.pubkey,
       title: product.title,
       stock: 0,
+      productEventId: product.sourceEventId,
       shippingOptionLaunchUnsupported: true,
     })
   })
@@ -446,6 +448,7 @@ describe("cart model", () => {
     const cartItems = [item({ stock: 4 })]
     const refreshedProduct: Product = {
       id: cartItems[0]!.productId,
+      sourceEventId: "3".repeat(64),
       pubkey: cartItems[0]!.merchantPubkey,
       title: cartItems[0]!.title,
       price: cartItems[0]!.price,
@@ -470,6 +473,7 @@ describe("cart model", () => {
         status: "sold_out",
         stock: 0,
         productUpdatedAt: 2,
+        productEventId: refreshedProduct.sourceEventId,
         refreshed: true,
       },
     ])
@@ -544,6 +548,7 @@ describe("cart model", () => {
     const cartItems = [item({ stock: 0 })]
     const refreshedProduct: Product = {
       id: cartItems[0]!.productId,
+      sourceEventId: "3".repeat(64),
       pubkey: cartItems[0]!.merchantPubkey,
       title: cartItems[0]!.title,
       price: cartItems[0]!.price,
@@ -571,12 +576,14 @@ describe("cart model", () => {
         status: "untracked",
         stock: undefined,
         productUpdatedAt: 3,
+        productEventId: refreshedProduct.sourceEventId,
         refreshed: true,
       },
     ])
     expect(getCartItemStockEvidenceForAvailability(availability[0])).toEqual({
       stock: undefined,
       productUpdatedAt: 3,
+      productEventId: refreshedProduct.sourceEventId,
     })
 
     const incrementedItems = addCartItem(
@@ -1460,6 +1467,7 @@ describe("cart model", () => {
       merchantPubkey,
       shippingOptionLaunchUnsupported: true,
       productUpdatedAt: 2_000,
+      productEventId: "A".repeat(64),
       canonicalShippingResolved: true,
     })
 
@@ -1469,6 +1477,7 @@ describe("cart model", () => {
     expect(parsed).toMatchObject({
       shippingOptionLaunchUnsupported: true,
       productUpdatedAt: 2_000,
+      productEventId: "a".repeat(64),
       canonicalShippingResolved: true,
     })
 
@@ -1479,6 +1488,7 @@ describe("cart model", () => {
           ...cartItem,
           shippingOptionLaunchUnsupported: "true",
           productUpdatedAt: Number.NaN,
+          productEventId: "not-an-event-id",
           canonicalShippingResolved: 1,
         },
       ],
@@ -1486,6 +1496,7 @@ describe("cart model", () => {
 
     expect(malformed?.shippingOptionLaunchUnsupported).toBeUndefined()
     expect(malformed?.productUpdatedAt).toBeUndefined()
+    expect(malformed?.productEventId).toBeUndefined()
     expect(malformed?.canonicalShippingResolved).toBeUndefined()
   })
 

@@ -576,7 +576,7 @@ test("delayed product quote refreshes cannot restore a line removed in another t
   ).toBeVisible()
 })
 
-test("delayed product mutations preserve a newer signed cart snapshot @market", async ({
+test("same-second product mutations preserve the NIP-01 cart winner @market", async ({
   context,
 }) => {
   const staleSnapshot = {
@@ -595,6 +595,7 @@ test("delayed product mutations preserve a newer signed cart snapshot @market", 
       { code: "US", name: "United States", restrictTo: [], exclude: [] },
     ],
     productUpdatedAt: 100,
+    productEventId: "8".repeat(64),
     canonicalShippingResolved: true,
     publicZapEnabled: true,
     zapMessagePolicy: "custom" as const,
@@ -638,7 +639,7 @@ test("delayed product mutations preserve a newer signed cart snapshot @market", 
     return repository.getCartRepositorySnapshot().items[0]
   })
 
-  const newerResult = await currentTab.evaluate(async () => {
+  const winningResult = await currentTab.evaluate(async () => {
     const modulePath = "/src/lib/cart-repository.ts"
     const repository = (await import(/* @vite-ignore */ modulePath)) as {
       getCartRepositorySnapshot(): { items: CartItem[] }
@@ -665,7 +666,12 @@ test("delayed product mutations preserve a newer signed cart snapshot @market", 
         shippingCostSats: 200,
         shippingOptionId: "newer-shipping",
         shippingOptionDTag: "newer-shipping",
-        productUpdatedAt: 200,
+        shippingCountries: ["CA"],
+        shippingCountryRules: [
+          { code: "CA", name: "Canada", restrictTo: [], exclude: [] },
+        ],
+        productUpdatedAt: 100,
+        productEventId: "7".repeat(64),
         publicZapEnabled: false,
         zapMessagePolicy: "generic_only",
         stock: 5,
@@ -674,7 +680,7 @@ test("delayed product mutations preserve a newer signed cart snapshot @market", 
     )
     return result.changed
   })
-  expect(newerResult).toBe(true)
+  expect(winningResult).toBe(true)
 
   const delayedResult = await staleTab.evaluate(async (staleItem) => {
     const modulePath = "/src/lib/cart-repository.ts"
@@ -691,7 +697,10 @@ test("delayed product mutations preserve a newer signed cart snapshot @market", 
       incrementCartRepositoryItem(
         identity: CartItem,
         quantity: number,
-        currentStockEvidence?: Pick<CartItem, "stock" | "productUpdatedAt">
+        currentStockEvidence?: Pick<
+          CartItem,
+          "stock" | "productUpdatedAt" | "productEventId"
+        >
       ): Promise<{ changed: boolean; after: CartItem[] }>
     }
     const {
@@ -709,7 +718,11 @@ test("delayed product mutations preserve a newer signed cart snapshot @market", 
     const incremented = await repository.incrementCartRepositoryItem(
       staleItem,
       1,
-      { stock: 99, productUpdatedAt: 100 }
+      {
+        stock: 99,
+        productUpdatedAt: 100,
+        productEventId: "8".repeat(64),
+      }
     )
     return {
       changes: [refreshed.changed, added.changed, incremented.changed],
@@ -726,13 +739,41 @@ test("delayed product mutations preserve a newer signed cart snapshot @market", 
       shippingCostSats: 200,
       shippingOptionId: "newer-shipping",
       shippingOptionDTag: "newer-shipping",
-      productUpdatedAt: 200,
+      shippingCountries: ["CA"],
+      shippingCountryRules: [
+        { code: "CA", name: "Canada", restrictTo: [], exclude: [] },
+      ],
+      productUpdatedAt: 100,
+      productEventId: "7".repeat(64),
       publicZapEnabled: false,
       zapMessagePolicy: "generic_only",
       stock: 5,
       quantity: 5,
     })
   )
+
+  const capturedPurchase = await currentTab.evaluate(async () => {
+    const repositoryPath = "/src/lib/cart-repository.ts"
+    const modelPath = "/src/lib/cart-model.ts"
+    const repository = (await import(/* @vite-ignore */ repositoryPath)) as {
+      getCartRepositorySnapshot(): { items: CartItem[] }
+      captureCartPurchase(
+        purchaseId: string,
+        reviewedItems: CartItem[]
+      ): Promise<CartPurchaseClaim>
+    }
+    const model = (await import(/* @vite-ignore */ modelPath)) as {
+      groupCartPurchases(items: CartItem[]): Array<{
+        id: string
+        items: CartItem[]
+      }>
+    }
+    const purchase = model.groupCartPurchases(
+      repository.getCartRepositorySnapshot().items
+    )[0]!
+    return repository.captureCartPurchase(purchase.id, purchase.items)
+  })
+  expect(capturedPurchase.allocations).toHaveLength(1)
 })
 
 test("atomic quantity deltas preserve concurrent changes across signed-out tabs @market", async ({
