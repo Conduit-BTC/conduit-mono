@@ -111,6 +111,7 @@ export function useSellerDirectory(input: {
     connected,
     effectiveSource,
     eligibilityState,
+    catalogProducts: productsQuery.products,
     isFetching,
     isUnavailable,
     retry,

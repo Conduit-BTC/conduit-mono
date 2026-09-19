@@ -286,12 +286,26 @@ describe("merchant matches on the product search", () => {
     )
     expect(header).not.toContain('"/merchants"')
     expect(header).toContain('const isBrowseRoute = pathname === "/products"')
-    expect(header).toContain('heading: "Merchants"')
-    expect(header).toContain('heading: "Accounts"')
-    expect(header).toContain("useSellerDirectory({")
+    expect(header).toContain("useMarketHeaderSuggestions({")
     expect(header).toContain("catalogSource: routeCatalogSource")
-    expect(header).toContain("sellerDirectory.accountSearch")
-    expect(header).toContain("Eligible accounts could not be loaded.")
+
+    const suggestionsHook = await readFile(
+      "apps/market/src/hooks/useMarketHeaderSuggestions.ts",
+      "utf8"
+    )
+    expect(suggestionsHook).toContain("useSellerDirectory({")
+    expect(suggestionsHook).toContain("sellerDirectory.accountSearch")
+
+    const suggestionModel = await readFile(
+      "apps/market/src/lib/marketHeaderSearch.ts",
+      "utf8"
+    )
+    expect(suggestionModel).toContain('heading: "Categories"')
+    expect(suggestionModel).toContain('heading: "Merchants"')
+    expect(suggestionModel).toContain('heading: "Accounts"')
+    expect(suggestionModel).toContain(
+      "Categories, merchants, and accounts could not be fully loaded."
+    )
 
     const merchants = await readFile(
       "apps/market/src/routes/merchants.tsx",

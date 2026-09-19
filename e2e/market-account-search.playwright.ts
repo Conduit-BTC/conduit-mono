@@ -60,10 +60,33 @@ async function seedAccounts(page: Page): Promise<void> {
             images: [
               { url: "https://blossom.conduit.market/account-search.png" },
             ],
-            tags: [],
+            tags: ["art", "artisan goods"],
             eventId: "f".repeat(64),
             eventCreatedAt: 100,
             dTag: "account-search-fixture",
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            cachedAt: timestamp,
+          })
+          transaction.objectStore("products").put({
+            id: `30402:${unlistedAccountPubkey}:hidden-category-fixture`,
+            pubkey: unlistedAccountPubkey,
+            title: "Hidden category fixture",
+            summary: "Seeded outside the active Market author scope",
+            price: 1,
+            currency: "SATS",
+            priceSats: 1,
+            type: "simple",
+            format: "digital",
+            visibility: "public",
+            stock: 1,
+            images: [
+              { url: "https://blossom.conduit.market/hidden-category.png" },
+            ],
+            tags: ["hidden-category"],
+            eventId: "e".repeat(64),
+            eventCreatedAt: 100,
+            dTag: "hidden-category-fixture",
             createdAt: timestamp,
             updatedAt: timestamp,
             cachedAt: timestamp,
@@ -89,13 +112,13 @@ test("market header preserves account search inside the eligible author scope @m
   await page.reload()
 
   const input = page.getByRole("combobox", {
-    name: "Search products and accounts",
+    name: "Search products, categories, merchants, and accounts",
   })
   await input.click()
   await input.pressSequentially("ali", { delay: 40 })
 
   const listbox = page.getByRole("listbox", {
-    name: "Matching merchants and accounts",
+    name: "Matching categories, merchants, and accounts",
   })
   await expect(listbox).toBeVisible()
   await expect(input).toHaveAttribute("aria-expanded", "true")
@@ -113,11 +136,55 @@ test("market header preserves account search inside the eligible author scope @m
   await page.keyboard.press("ArrowDown")
   await expect(input).toHaveAttribute(
     "aria-activedescendant",
-    "market-account-suggestions-option-0"
+    "market-search-suggestions-option-0"
   )
   await page.keyboard.press("Enter")
   await expect(page).toHaveURL(/\/store\/npub1/)
   await expect(listbox).toBeHidden()
+})
+
+test("market header selects cached categories inside the active catalog scope @market", async ({
+  page,
+}) => {
+  await page.goto(
+    `${marketUrl}/products?source=conduit&merchant=${SELLER_PUBKEY}&sort=price_asc&q=old`
+  )
+  await seedAccounts(page)
+  await page.reload()
+
+  const input = page.getByRole("combobox", {
+    name: "Search products, categories, merchants, and accounts",
+  })
+  await input.fill("art")
+
+  const listbox = page.getByRole("listbox", {
+    name: "Matching categories, merchants, and accounts",
+  })
+  const categories = listbox.getByRole("group", { name: "Categories" })
+  await expect(categories).toBeVisible()
+  await expect(
+    categories.getByRole("option", {
+      name: /^# art Browse category$/i,
+    })
+  ).toBeVisible()
+  await expect(categories.getByRole("option")).toHaveCount(2)
+  await expect(listbox.getByText("hidden-category")).toHaveCount(0)
+
+  await page.keyboard.press("ArrowDown")
+  await expect(input).toHaveAttribute(
+    "aria-activedescendant",
+    "market-search-suggestions-option-0"
+  )
+  await page.keyboard.press("Enter")
+
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/products")
+  const selected = new URL(page.url()).searchParams
+  expect(selected.get("source")).toBe("conduit")
+  expect(selected.has("merchant")).toBe(true)
+  expect(selected.get("sort")).toBe("price_asc")
+  expect(JSON.parse(selected.get("tag") ?? "null")).toEqual(["art"])
+  expect(selected.has("q")).toBe(false)
+  expect(selected.has("authRequired")).toBe(false)
 })
 
 test("market header keeps Enter as a product search when no suggestion is active @market", async ({
@@ -128,16 +195,20 @@ test("market header keeps Enter as a product search when no suggestion is active
   await page.reload()
 
   const input = page.getByRole("combobox", {
-    name: "Search products and accounts",
+    name: "Search products, categories, merchants, and accounts",
   })
   await input.click()
   await input.pressSequentially("alice", { delay: 40 })
   await expect(
-    page.getByRole("listbox", { name: "Matching merchants and accounts" })
+    page.getByRole("listbox", {
+      name: "Matching categories, merchants, and accounts",
+    })
   ).toBeVisible()
   await page.keyboard.press("Escape")
   await expect(
-    page.getByRole("listbox", { name: "Matching merchants and accounts" })
+    page.getByRole("listbox", {
+      name: "Matching categories, merchants, and accounts",
+    })
   ).toBeHidden()
   await page.keyboard.press("Enter")
   await expect(page).toHaveURL(/\/products\?q=alice$/)
@@ -193,15 +264,15 @@ test("incomplete eligibility stays visible instead of looking like no matches @m
   await page.reload()
 
   const input = page.getByRole("combobox", {
-    name: "Search products and accounts",
+    name: "Search products, categories, merchants, and accounts",
   })
   await input.fill("~")
   const listbox = page.getByRole("listbox", {
-    name: "Matching merchants and accounts",
+    name: "Matching categories, merchants, and accounts",
   })
   await expect(listbox).toBeVisible()
   await expect(listbox).toContainText(
-    "Eligible account results may be incomplete. No matches yet."
+    "Results may be incomplete. No matches yet."
   )
   await expect(listbox.getByRole("option")).toHaveCount(0)
   await expect(input).toHaveAttribute("aria-expanded", "true")
@@ -225,7 +296,7 @@ test("merchants page filters with its own field while Enter still searches produ
   ).toBeVisible()
 
   const header = page.getByRole("combobox", {
-    name: "Search products and accounts",
+    name: "Search products, categories, merchants, and accounts",
   })
   await header.click()
   await header.pressSequentially("alice", { delay: 40 })
