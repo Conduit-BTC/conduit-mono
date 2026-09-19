@@ -2828,6 +2828,7 @@ function chunkValues<T>(values: readonly T[], size: number): T[][] {
 interface EventMarketFrontierFilterResult extends FetchEventsFanoutResult {
   remainingRelayUrls: string[]
   remainingRelayUrlsByAuthor: Map<string, string[]>
+  saturatedFilterCount: number
 }
 
 async function fetchEventMarketFrontierFilters(input: {
@@ -2866,12 +2867,14 @@ async function fetchEventMarketFrontierFilters(input: {
       eventsVerified: true,
       remainingRelayUrls: [...input.relayUrls],
       remainingRelayUrlsByAuthor,
+      saturatedFilterCount: 0,
     }
   }
   const fetch =
     eventMarketTestOverrides.fetchEventsFanoutDetailed ??
     fetchEventsFanoutDetailed
   const results: FetchEventsFanoutResult[] = []
+  let saturatedFilterCount = 0
   let remainingRelayUrls = [...input.relayUrls]
   for (
     let index = 0;
@@ -2917,6 +2920,16 @@ async function fetchEventMarketFrontierFilters(input: {
       resultIndex++
     ) {
       const result = batchResults[resultIndex]!
+      const filterLimit = batchPlans[resultIndex]?.filter.limit
+      if (
+        typeof filterLimit === "number" &&
+        result.relays.some(
+          (relay) =>
+            relay.status === "success" && relay.eventCount >= filterLimit
+        )
+      ) {
+        saturatedFilterCount += 1
+      }
       for (const relay of result.relays) {
         if (relay.status !== "success") {
           incompleteRelayUrls.add(relay.relayUrl.toLowerCase())
@@ -2948,6 +2961,7 @@ async function fetchEventMarketFrontierFilters(input: {
     eventsVerified: results.every((result) => result.eventsVerified === true),
     remainingRelayUrls,
     remainingRelayUrlsByAuthor,
+    saturatedFilterCount,
   }
 }
 
@@ -3282,6 +3296,7 @@ interface EventMarketProductRequestFrontierResult extends FetchEventsFanoutResul
 
 interface EventMarketPickupFrontierResult extends FetchEventsFanoutResult {
   pickupBudget: EventMarketParticipationBudget
+  saturatedFilterCount: number
 }
 
 function collectionCalendarCoordinatesFromEvidence(input: {
@@ -3441,7 +3456,13 @@ async function fetchEventMarketPickupFrontiers(input: {
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
   if (pickupBudget.state === "exceeded" || input.coordinates.length === 0) {
-    return { events: [], relays: [], eventsVerified: true, pickupBudget }
+    return {
+      events: [],
+      relays: [],
+      eventsVerified: true,
+      pickupBudget,
+      saturatedFilterCount: 0,
+    }
   }
   const participantPlan = await eventMarketParticipantRelayPlans({
     coordinates: input.coordinates,
@@ -3508,6 +3529,8 @@ async function fetchEventMarketPickupFrontiers(input: {
       pickupResult.eventsVerified === true &&
       deletionResult.eventsVerified === true,
     pickupBudget,
+    saturatedFilterCount:
+      pickupResult.saturatedFilterCount + deletionResult.saturatedFilterCount,
   }
 }
 
@@ -3548,6 +3571,7 @@ export async function getEventMarketPickupsByCoordinates(
   })
   if (
     result.pickupBudget.state !== "within_budget" ||
+    result.saturatedFilterCount > 0 ||
     result.eventsVerified !== true ||
     result.relays.length === 0 ||
     result.relays.some((relay) => relay.status !== "success")

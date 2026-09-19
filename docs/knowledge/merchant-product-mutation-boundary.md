@@ -20,8 +20,9 @@ Merchant's product publication boundary distinguishes:
   deletion-aware kind `30406` read before the replacement kind `30402` is
   signed. The latest live revision must satisfy the event-pickup contract,
   including a public location or geohash and no proposal-only destination
-  predicates. This does not require the broader organizer graph to be
-  rediscovered.
+  predicates. A successful pickup or deletion response that reaches its
+  bounded filter limit is incomplete evidence and stops before signing. This
+  does not require the broader organizer graph to be rediscovered.
 - Existing fulfillment authoring intents: establish or change fulfillment using
   their current validation and publication rules. New product and variation
   coordinates cannot use an existing product's preservation authority.

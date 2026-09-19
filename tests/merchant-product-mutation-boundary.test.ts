@@ -189,7 +189,8 @@ function pickupOption(
 }
 
 function installEventPickupReadHarness(
-  events: readonly SignedPublicNostrEvent[]
+  events: readonly SignedPublicNostrEvent[],
+  harnessOptions: { saturatedKinds?: readonly number[] } = {}
 ): void {
   const relayUrl = "wss://pickup.example"
   __setEventMarketTestOverrides({
@@ -210,7 +211,7 @@ function installEventPickupReadHarness(
           },
         ])
       ),
-    fetchEventsFanoutDetailed: async (filter, options) => {
+    fetchEventsFanoutDetailed: async (filter, fetchOptions) => {
       const tagFilter = filter as NDKFilter & {
         "#a"?: string[]
         "#d"?: string[]
@@ -237,12 +238,18 @@ function installEventPickupReadHarness(
         typeof filter.limit === "number"
           ? matching.slice(0, filter.limit)
           : matching
+      const saturated = filter.kinds?.some((kind) =>
+        harnessOptions.saturatedKinds?.includes(kind)
+      )
       return {
         events: matches.map((event) => new NDKEvent(undefined, event)),
-        relays: (options.relayUrls ?? []).map((url) => ({
+        relays: (fetchOptions.relayUrls ?? []).map((url) => ({
           relayUrl: url,
           status: "success" as const,
-          eventCount: matches.length,
+          eventCount:
+            saturated && typeof filter.limit === "number"
+              ? filter.limit
+              : matches.length,
         })),
         eventsVerified: true,
       }
@@ -895,7 +902,7 @@ describe("merchant-owned product mutation boundary", () => {
     }
   })
 
-  it("publishes only after the shared exact reader validates the live event pickup", async () => {
+  it("publishes only after the shared exact reader validates a complete live event pickup frontier", async () => {
     const pickupSecret = generateSecretKey()
     const pickupPubkey = getPublicKey(pickupSecret)
     const dTag = "live-pickup"
@@ -941,6 +948,34 @@ describe("merchant-owned product mutation boundary", () => {
       publishedKinds: [30402],
       signedBundleCount: 1,
     })
+
+    for (const saturation of [
+      { label: "pickup", kind: 30406 },
+      { label: "deletion", kind: 5 },
+    ]) {
+      installEventPickupReadHarness([pickup], {
+        saturatedKinds: [saturation.kind],
+      })
+      const blocked = {
+        signerRequests: [] as ProductSignerRequestProgress[],
+        publishedKinds: [] as number[],
+        signedBundleCount: 0,
+      }
+      await expect(
+        attemptPreservedPublication({
+          baseline,
+          update: { stock: 4 },
+          getEventMarketPickups: getEventMarketPickupsByCoordinates,
+          observed: blocked,
+        }),
+        `${saturation.label} frontier`
+      ).rejects.toThrow("Event pickup could not be verified safely")
+      expect(blocked, `${saturation.label} frontier`).toEqual({
+        signerRequests: [],
+        publishedKinds: [],
+        signedBundleCount: 0,
+      })
+    }
   })
 
   it("stops before signing when raw event-pickup evidence violates the public handoff contract", async () => {
