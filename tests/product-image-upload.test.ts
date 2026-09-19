@@ -566,7 +566,8 @@ describe("verified Blossom product image upload", () => {
       shouldContinue: () => true,
       dependencies: {
         now: () => 1_000,
-        fetch: async (input, init) => {
+        fetch: async function (this: unknown, input, init) {
+          if (this !== undefined) throw new TypeError("Illegal invocation")
           const url = String(input)
           requests.push({ url, init })
           const authorization = new Headers(init?.headers).get("authorization")

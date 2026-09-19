@@ -737,24 +737,52 @@ export function ProductImageUrlCollectionField({
         id={`${id}-upload-help`}
         className="text-pretty text-xs leading-5 text-[var(--text-muted)]"
       >
-        {upload?.target.kind === "configured"
-          ? `Prepared images upload one at a time through your first configured media server. Add up to ${MAX_PRODUCT_IMAGE_CANDIDATES}; the first image is the cover.`
-          : upload?.target.kind === "fallback" &&
-              fallbackClaimState === "retry_same_hash"
-            ? "Choose the same image to retry the earlier fallback request. A different file will not be sent. Pasted image URLs remain available."
-            : upload?.target.kind === "fallback"
-              ? "The public fallback permits one file-backed image for this listing. Pasted image URLs do not count toward that guardrail."
-              : upload?.target.kind === "pending"
-                ? "Checking your media server settings. Add by URL remains available."
-                : upload
-                  ? "Connect a signer or repair Network settings to upload files. Add by URL remains available."
-                  : `Add images one at a time, up to ${MAX_PRODUCT_IMAGE_CANDIDATES}. The first image is the cover.`}
+        {upload?.target.kind === "configured" ? (
+          `Prepared images upload one at a time through your first configured media server. Add up to ${MAX_PRODUCT_IMAGE_CANDIDATES}; the first image is the cover.`
+        ) : upload?.target.kind === "fallback" &&
+          fallbackClaimState === "retry_same_hash" ? (
+          "Choose the same image to retry the earlier fallback request. A different file will not be sent. Pasted image URLs remain available."
+        ) : upload?.target.kind === "fallback" ? (
+          <>
+            The public fallback permits one uploaded image per listing. For more
+            uploads, compare{" "}
+            <a
+              href="https://account.nostr.build/plans"
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-[var(--text-secondary)] underline underline-offset-2"
+            >
+              nostr.build plans
+            </a>
+            . Pasted image URLs do not count toward this limit.
+          </>
+        ) : upload?.target.kind === "pending" ? (
+          "Checking your media server settings. Add by URL remains available."
+        ) : upload ? (
+          "Connect a signer or repair Network settings to upload files. Add by URL remains available."
+        ) : (
+          `Add images one at a time, up to ${MAX_PRODUCT_IMAGE_CANDIDATES}. The first image is the cover.`
+        )}
       </p>
+
+      <div className="grid gap-2">
+        <div className="text-xs font-medium text-[var(--text-primary)]">
+          Conduit Market card preview
+        </div>
+        <div className="max-w-sm overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
+          <ProductImageFrame image={previewImage} title={previewTitle} />
+        </div>
+        <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
+          Conduit Market cards use a centered 4:3 crop. The complete image
+          appears on the product page. Other Nostr clients may display images
+          differently.
+        </p>
+      </div>
 
       {upload?.target.kind === "fallback" ? (
         <div className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-3 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
           <p>
-            No safe media server is configured. File upload will use{" "}
+            No media server is configured, so this file uses{" "}
             <a
               href="https://nostr.build/"
               target="_blank"
@@ -762,8 +790,8 @@ export function ProductImageUrlCollectionField({
               className="font-medium text-[var(--text-primary)] underline underline-offset-2"
             >
               nostr.build
-            </a>{" "}
-            as a third-party public operator through its{" "}
+            </a>
+            &apos;s third-party public{" "}
             <a
               href="https://blossom.nostr.build/"
               target="_blank"
@@ -772,12 +800,7 @@ export function ProductImageUrlCollectionField({
             >
               Blossom service
             </a>
-            . Free public hosting may be limited, unavailable, moderated,
-            removed, or subject to retention changes. Conduit does not guarantee
-            uptime or permanence.
-          </p>
-          <p className="mt-2">
-            Review nostr.build{" "}
+            . Availability and retention are not guaranteed. Review its{" "}
             <a
               href="https://account.nostr.build/tos"
               target="_blank"
@@ -795,16 +818,7 @@ export function ProductImageUrlCollectionField({
             >
               Privacy Policy
             </a>
-            . For additional built-in uploads and dedicated hosting, compare{" "}
-            <a
-              href="https://account.nostr.build/plans"
-              target="_blank"
-              rel="noreferrer"
-              className="underline underline-offset-2"
-            >
-              plans
-            </a>{" "}
-            and add the dedicated server root in{" "}
+            , or configure a media server in{" "}
             <a
               href={networkSettingsHref}
               className="underline underline-offset-2"
@@ -821,20 +835,6 @@ export function ProductImageUrlCollectionField({
           Add at least one product image.
         </p>
       ) : null}
-
-      <div className="grid gap-2">
-        <div className="text-xs font-medium text-[var(--text-primary)]">
-          Conduit Market card preview
-        </div>
-        <div className="max-w-sm overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
-          <ProductImageFrame image={previewImage} title={previewTitle} />
-        </div>
-        <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
-          Conduit Market cards use a centered 4:3 crop. The complete image
-          appears on the product page. Other Nostr clients may display images
-          differently.
-        </p>
-      </div>
 
       {occupiedSlots > MAX_PRODUCT_IMAGE_CANDIDATES ? (
         <p className="text-xs leading-5 text-error" role="alert">

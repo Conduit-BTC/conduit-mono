@@ -19,6 +19,8 @@ const merchantUrl =
   "http://127.0.0.1:" + (process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001")
 const configuredServer = "https://media.conduit.market"
 const fallbackServer = "https://blossom.nostr.build"
+const fallbackDisclosureText =
+  "No media server is configured, so this file uses"
 const image192 = join(
   process.cwd(),
   "apps/merchant/public/merchant-icon-192.png"
@@ -570,21 +572,31 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   })
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
-    dialog.getByText("No safe media server is configured.", { exact: false })
+    dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible({ timeout: 20_000 })
   await expect(
     dialog.getByRole("link", { name: "Blossom service" })
   ).toHaveAttribute("href", "https://blossom.nostr.build/")
-  await expect(dialog.getByRole("link", { name: "plans" })).toHaveAttribute(
-    "href",
-    "https://account.nostr.build/plans"
-  )
+  await expect(
+    dialog
+      .locator("#product-image-upload-help")
+      .getByRole("link", { name: "nostr.build plans" })
+  ).toHaveAttribute("href", "https://account.nostr.build/plans")
   await expect(
     dialog.getByRole("link", { name: "Terms of Service" })
   ).toHaveAttribute("href", "https://account.nostr.build/tos")
   await expect(
     dialog.getByRole("link", { name: "Privacy Policy" })
   ).toHaveAttribute("href", "https://account.nostr.build/privacy")
+  const previewBox = await dialog
+    .getByText("Conduit Market card preview", { exact: true })
+    .boundingBox()
+  const disclosureBox = await dialog
+    .getByText(fallbackDisclosureText, { exact: false })
+    .boundingBox()
+  expect(previewBox?.y ?? Number.POSITIVE_INFINITY).toBeLessThan(
+    disclosureBox?.y ?? Number.NEGATIVE_INFINITY
+  )
 
   await dialog.locator("#product-image-file").setInputFiles({
     name: "invalid.png",
@@ -706,7 +718,7 @@ test("a pristine new-product draft releases its consumed fallback claim @merchan
   const state = await interceptBlossom(page, fallbackServer)
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
-    dialog.getByText("No safe media server is configured.", { exact: false })
+    dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible()
 
   await dialog.locator("#product-image-file").setInputFiles(image192)
@@ -766,7 +778,7 @@ test("fallback destination persistence fails before signing and survives draft r
   const state = await interceptBlossom(page, fallbackServer)
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
-    dialog.getByText("No safe media server is configured.", { exact: false })
+    dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible()
   await dialog.locator("#product-image-file").setInputFiles(image192)
   await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
@@ -861,7 +873,7 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
   })
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
-    dialog.getByText("No safe media server is configured.", { exact: false })
+    dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible()
   await dialog.getByLabel("Title").fill("Rejected fallback draft")
   await dialog.locator("#product-image-file").setInputFiles(image192)
@@ -896,7 +908,7 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
   })
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
-    dialog.getByText("No safe media server is configured.", { exact: false })
+    dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible()
   await dialog.getByLabel("Title").fill("Ambiguous fallback draft")
   await dialog.locator("#product-image-file").setInputFiles(image192)
@@ -959,7 +971,7 @@ test("fallback refuses PUT when its durable guard cannot be confirmed @merchant"
   const state = await interceptBlossom(page, fallbackServer)
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
-    dialog.getByText("No safe media server is configured.", { exact: false })
+    dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible()
   await dialog.locator("#product-image-file").setInputFiles(image192)
   await expect(
@@ -984,7 +996,7 @@ test("a corrupt fallback claim fails closed without sending a file @merchant", a
   const state = await interceptBlossom(page, fallbackServer)
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
-    dialog.getByText("No safe media server is configured.", { exact: false })
+    dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible()
   await expect(
     dialog.getByRole("button", { name: "Add image", exact: true })

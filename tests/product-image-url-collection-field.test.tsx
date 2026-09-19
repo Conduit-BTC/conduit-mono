@@ -155,15 +155,20 @@ describe("ProductImageUrlCollectionField", () => {
       />
     )
 
-    expect(html).toContain("one file-backed image for this listing")
+    expect(html).toContain("one uploaded image per listing")
     expect(html).toContain("Pasted image URLs do not count")
     expect(html).toContain('href="https://nostr.build/"')
     expect(html).toContain('href="https://blossom.nostr.build/"')
     expect(html).toContain('href="https://account.nostr.build/plans"')
+    expect(html).toContain("nostr.build plans")
     expect(html).toContain('href="https://account.nostr.build/tos"')
     expect(html).toContain('href="https://account.nostr.build/privacy"')
     expect(html).toContain('href="/network"')
-    expect(html).toContain("limited, unavailable, moderated")
+    expect(html).toContain("Availability and retention are not guaranteed")
+    expect(html).not.toContain("additional built-in uploads")
+    expect(html.indexOf("Conduit Market card preview")).toBeLessThan(
+      html.indexOf("No media server is configured")
+    )
     expect(html).not.toContain("multiple")
   })
 

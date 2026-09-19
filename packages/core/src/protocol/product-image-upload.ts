@@ -805,9 +805,10 @@ async function detectLegacyAuthorizationHeader(input: {
   timeoutMs: number
 }): Promise<string | undefined> {
   const canonical = encodeBlossomAuthorizationHeader(input.authorization)
+  const fetchImpl = input.fetch
   const capabilitySignal = createBoundedSignal(input.signal, input.timeoutMs)
   const probe = async (authorization: string): Promise<Response> =>
-    input.fetch(`${input.serverUrl}/upload`, {
+    fetchImpl(`${input.serverUrl}/upload`, {
       method: "HEAD",
       headers: {
         Authorization: authorization,
