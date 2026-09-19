@@ -261,13 +261,14 @@ Emitted when a buyer starts checkout from a cart. It may record auth-required
 vs ready status and cart composition buckets, but must not include buyer,
 merchant, product, or cart identifiers.
 
-<!-- telemetry-event: checkout_step_result properties=event_name,app,page_url,page_path,surface,step,mode,rail,status,count_bucket,amount_bucket,product_type,time_bucket -->
+<!-- telemetry-event: checkout_step_result properties=event_name,app,page_url,page_path,surface,step,mode,rail,status,latency_bucket,count_bucket,amount_bucket,product_type,time_bucket -->
 
 ### `checkout_step_result`
 
 Emitted for aggregate checkout step outcomes such as shipping validation,
 order submission, direct payment, manual fallback, or payment failure. It must
-use enum and bucket properties only.
+use enum and bucket properties only. `latency_bucket` measures one named step;
+it never includes an order, buyer, merchant, relay, or product identifier.
 
 <!-- telemetry-event: checkout_success properties=event_name,app,page_url,page_path,surface,mode,rail,status,count_bucket,amount_bucket,product_type,time_bucket -->
 
