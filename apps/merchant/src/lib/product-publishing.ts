@@ -368,17 +368,26 @@ function hasCanonicalProductShippingReference(
   )
 }
 
-function hasExactEventProductFulfillment(product: ProductSchema): boolean {
+function getEventProductPreservationStrategy(
+  product: ProductSchema
+): "product_event" | "event_pickup" | null {
   const reference = product.shippingOptionRefs?.[0]
-  return (
+  const hasExactReference =
     product.visibility !== "public" &&
     product.canonicalShippingResolved !== true &&
     product.shippingOptionRefs?.length === 1 &&
     !!product.shippingOptionId &&
     reference?.coordinate === product.shippingOptionId &&
-    reference.extraCostMalformed !== true &&
-    getProductEventMarketFulfillmentClaims(product).length > 0
+    reference.extraCostMalformed !== true
+  if (!hasExactReference) return null
+
+  const claims = getProductEventMarketFulfillmentClaims(product)
+  if (claims.length === 0) return null
+  return claims.some((claim) =>
+    claim.directPickupCoordinates.includes(product.shippingOptionId!)
   )
+    ? "event_pickup"
+    : "product_event"
 }
 
 function hasLegacyInlineShipping(
@@ -419,7 +428,8 @@ function getPreservedFulfillmentStrategy(
     return "canonical_fixed"
   }
   if (hasLegacyInlineShipping(product)) return "legacy_upgrade"
-  if (hasExactEventProductFulfillment(product)) return "event_pickup"
+  const eventStrategy = getEventProductPreservationStrategy(product)
+  if (eventStrategy) return eventStrategy
   return product.shippingOptionId ? "explicit_change" : "product_event"
 }
 

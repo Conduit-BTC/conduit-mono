@@ -9,6 +9,8 @@ import {
   buildProductListingEventDraft,
   getProductShippingOptionAddress,
   setSigner,
+  type CommerceProductRecord,
+  type OrderSummary,
   type ParsedShippingOption,
   type ProductSchema,
 } from "@conduit/core"
@@ -25,6 +27,8 @@ import {
   type ProductPublicationDependencies,
   type ProductSignerRequestProgress,
 } from "../apps/merchant/src/lib/product-publishing"
+import { prepareOrderStockUpdate } from "../apps/merchant/src/lib/order-stock-fulfillment"
+import { getOrderStockDecisionKey } from "../apps/merchant/src/lib/productStock"
 import {
   MAX_PRODUCT_VARIATION_COUNT,
   buildProductFamilyChangePlan,
@@ -117,6 +121,16 @@ function canonicalProduct(
     canonicalShippingResolved: false,
     shippingOptionLaunchUnsupported: false,
     ...overrides,
+  })
+}
+
+function collectionLevelProduct(dTag = "listing"): ProductSchema {
+  const collection = `30405:${ORGANIZER}:${dTag}`
+  return product(dTag, {
+    collectionRefs: [collection],
+    shippingOptionId: collection,
+    shippingOptionDTag: dTag,
+    shippingOptionRefs: [{ coordinate: collection }],
   })
 }
 
@@ -623,6 +637,95 @@ describe("merchant-owned product mutation boundary", () => {
       productEvent!.tags.filter(([name]) => name === "shipping_option")
     ).toEqual([["shipping_option", baseline.shippingOptionId!]])
     expect(productEvent!.tags).toContainEqual(["visibility", "hidden"])
+  })
+
+  it("publishes collection-level Products and Orders stock edits without requesting pickup evidence", async () => {
+    const baseline = collectionLevelProduct("collection-level")
+    const productChange = plan(baseline, { stock: 4 }).publish[0]!
+    const orderRecord: CommerceProductRecord = {
+      addressId: baseline.id,
+      eventId: "e".repeat(64),
+      dTag: "collection-level",
+      eventCreatedAt: Math.floor(baseline.updatedAt / 1000),
+      product: baseline,
+    }
+    const orderId = "collection-level-order"
+    const orderChange = prepareOrderStockUpdate({
+      merchantPubkey: MERCHANT,
+      orderId,
+      items: [{ productId: baseline.id, quantity: 2 }] as OrderSummary["items"],
+      adjustment: {
+        key: getOrderStockDecisionKey(orderId, baseline.id),
+        addressId: baseline.id,
+        sourceEventId: "f".repeat(64),
+        title: baseline.title,
+        quantity: 2,
+        currentStock: baseline.stock!,
+        nextStock: baseline.stock! - 2,
+        shortfall: 0,
+      },
+      record: orderRecord,
+    })
+    const targets: Array<{
+      label: string
+      listing: ProductListingPublishTarget
+      expectedStock: number
+    }> = [
+      {
+        label: "Products",
+        listing: {
+          ...productChange,
+          previousEventCreatedAt: productChange.existing!.eventCreatedAt,
+        },
+        expectedStock: 4,
+      },
+      {
+        label: "Orders",
+        listing: {
+          product: {
+            ...baseline,
+            stock: orderChange.adjustment.nextStock,
+          },
+          dTag: orderRecord.dTag!,
+          previousEventCreatedAt: orderRecord.eventCreatedAt,
+          fulfillmentIntent: orderChange.fulfillmentIntent,
+        },
+        expectedStock: orderChange.adjustment.nextStock,
+      },
+    ]
+
+    for (const target of targets) {
+      let pickupReads = 0
+      const signedEvents: NDKEvent[] = []
+      const observed = {
+        signerRequests: [] as ProductSignerRequestProgress[],
+        publishedKinds: [] as number[],
+        signedBundleCount: 0,
+        signedEvents,
+      }
+      await attemptProductPublication({
+        listings: [target.listing],
+        getShippingOptions: async () => {
+          pickupReads += 1
+          throw new Error("Collection-level fulfillment is not kind 30406")
+        },
+        observed,
+      })
+
+      expect(pickupReads, target.label).toBe(0)
+      expect(observed.publishedKinds, target.label).toEqual([30402])
+      expect(observed.signerRequests, target.label).toEqual([
+        { kind: "product", current: 1, total: 1 },
+      ])
+      expect(signedEvents[0]!.tags, target.label).toContainEqual([
+        "stock",
+        String(target.expectedStock),
+      ])
+      expect(signedEvents[0]!.tags, target.label).toContainEqual([
+        "shipping_option",
+        baseline.shippingOptionId!,
+      ])
+    }
   })
 
   it("preserves a valid event-pickup extra cost after an exact pickup read", async () => {
