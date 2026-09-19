@@ -1,6 +1,18 @@
 import { describe, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { ProductImageUrlCollectionField } from "@conduit/ui"
+import type { ProductImageUploadController } from "@conduit/core"
+
+const uploadFile: ProductImageUploadController["uploadFile"] = async () => {
+  throw new Error("render-only upload stub")
+}
+const uploadLifecycle = {
+  isFallbackClaimed: () => false,
+  releaseFallbackClaim: () => false,
+  clearFallbackClaim: () => {},
+  moveFallbackClaim: () => {},
+  uploadFile,
+}
 
 describe("ProductImageUrlCollectionField", () => {
   it("starts with one primary field and a progressive add action", () => {
@@ -62,6 +74,124 @@ describe("ProductImageUrlCollectionField", () => {
     )
 
     expect(html).toContain(`src="${imageUrl}"`)
+    expect(addButtonStart).toBeGreaterThanOrEqual(0)
+    expect(addButton).not.toContain('disabled=""')
+  })
+
+  it("makes prepared file upload primary and URL entry secondary in configured mode", () => {
+    const html = renderToStaticMarkup(
+      <ProductImageUrlCollectionField
+        id="product-image"
+        images={[]}
+        onChange={() => {}}
+        previewTitle="Configured product"
+        upload={{
+          isBusy: false,
+          target: {
+            kind: "configured",
+            serverUrl: "https://media.conduit.market",
+            maxFileUploads: 12,
+          },
+          ...uploadLifecycle,
+        }}
+      />
+    )
+
+    expect(html).toContain("Add another image")
+    expect(html).toContain("Add by URL")
+    expect(html).not.toContain("Primary image URL")
+    expect(html).toContain("your first configured media server")
+    expect(html).not.toContain("nostr.build")
+    expect(html).toContain('accept="image/jpeg,image/png,image/webp"')
+    expect(html).toContain("multiple")
+  })
+
+  it("discloses the one-file public fallback and all required links", () => {
+    const html = renderToStaticMarkup(
+      <ProductImageUrlCollectionField
+        id="fallback-product-image"
+        images={[]}
+        onChange={() => {}}
+        previewTitle="Fallback product"
+        upload={{
+          isBusy: false,
+          target: {
+            kind: "fallback",
+            serverUrl: "https://blossom.nostr.build",
+            maxFileUploads: 1,
+          },
+          ...uploadLifecycle,
+        }}
+      />
+    )
+
+    expect(html).toContain("one file-backed image for this listing")
+    expect(html).toContain("Pasted image URLs do not count")
+    expect(html).toContain('href="https://nostr.build/"')
+    expect(html).toContain('href="https://blossom.nostr.build/"')
+    expect(html).toContain('href="https://account.nostr.build/plans"')
+    expect(html).toContain('href="https://account.nostr.build/tos"')
+    expect(html).toContain('href="https://account.nostr.build/privacy"')
+    expect(html).toContain('href="/network"')
+    expect(html).toContain("limited, unavailable, moderated")
+    expect(html).not.toContain("multiple")
+  })
+
+  it("keeps URL entry available while server authority is unresolved", () => {
+    const html = renderToStaticMarkup(
+      <ProductImageUrlCollectionField
+        id="pending-product-image"
+        images={[]}
+        onChange={() => {}}
+        previewTitle="Pending product"
+        upload={{
+          isBusy: false,
+          target: { kind: "pending", reason: "lookup_incomplete" },
+          ...uploadLifecycle,
+        }}
+      />
+    )
+    const addImageIndex = html.indexOf("Add another image")
+    const addImageButtonStart = html.lastIndexOf("<button", addImageIndex)
+    const addImageButton = html.slice(
+      addImageButtonStart,
+      html.indexOf(">", addImageButtonStart) + 1
+    )
+    expect(addImageButton).toContain('disabled=""')
+    expect(html).toContain("Add by URL")
+    expect(html).not.toContain("nostr.build")
+  })
+
+  it("lets a verified upload replace a blank URL row at the collection limit", () => {
+    const html = renderToStaticMarkup(
+      <ProductImageUrlCollectionField
+        id="near-limit-product-image"
+        images={[
+          ...Array.from({ length: 11 }, (_, index) => ({
+            url: `https://cdn.conduit.market/image-${index + 1}.png`,
+          })),
+          { url: "" },
+        ]}
+        onChange={() => {}}
+        previewTitle="Near-limit product"
+        upload={{
+          isBusy: false,
+          target: {
+            kind: "configured",
+            serverUrl: "https://media.conduit.market",
+            maxFileUploads: 12,
+          },
+          ...uploadLifecycle,
+        }}
+      />
+    )
+    const addLabelIndex = html.indexOf("Add another image")
+    const addButtonStart = html.lastIndexOf("<button", addLabelIndex)
+    const addButton = html.slice(
+      addButtonStart,
+      html.indexOf(">", addButtonStart) + 1
+    )
+
     expect(addButtonStart).toBeGreaterThanOrEqual(0)
     expect(addButton).not.toContain('disabled=""')
   })

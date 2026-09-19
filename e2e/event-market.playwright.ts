@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { nip19, nip44 } from "nostr-tools"
@@ -46,6 +48,11 @@ const FIXTURE_RELAY_PORT = process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"
 const FIXTURE_RELAY = `ws://127.0.0.1:${FIXTURE_RELAY_PORT}`
 const SYNTHETIC_IDENTITY_SEARCH_KEY = "__conduit_e2e_identity"
 const SYNTHETIC_IDENTITY_STORAGE_KEY = "conduit:e2e:identity"
+const EVENT_PRODUCT_MEDIA_SERVER = "https://event-product-media.conduit.market"
+const EVENT_PRODUCT_FALLBACK_SERVER = "https://blossom.nostr.build"
+const EVENT_PRODUCT_IMAGE_PATH = fileURLToPath(
+  new URL("../apps/merchant/public/merchant-icon-192.png", import.meta.url)
+)
 
 const syntheticIdentities = {
   organizer: {
@@ -843,6 +850,118 @@ async function installSyntheticEnvironment(
   )
 }
 
+async function interceptEventProductBlossom(
+  page: Page,
+  serverUrl = EVENT_PRODUCT_MEDIA_SERVER
+): Promise<{
+  putCount: number
+  resourceUrl: string | null
+}> {
+  const state = { putCount: 0, resourceUrl: null as string | null }
+  const resources = new Map<string, { body: Buffer; type: string }>()
+
+  await page.addInitScript((serverUrl) => {
+    const browserWindow = window as unknown as {
+      __eventProductUploadBodies?: Record<string, number[]>
+    }
+    const originalFetch = window.fetch.bind(window)
+    window.fetch = async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url
+      if (
+        url.startsWith(`${serverUrl}/`) &&
+        init?.method === "PUT" &&
+        init.body instanceof Blob
+      ) {
+        const hash = new Headers(init.headers).get("x-sha-256")
+        if (hash) {
+          const bytes = new Uint8Array(await init.body.arrayBuffer())
+          browserWindow.__eventProductUploadBodies ??= {}
+          browserWindow.__eventProductUploadBodies[hash] = Array.from(bytes)
+        }
+      }
+      return originalFetch(input, init)
+    }
+  }, serverUrl)
+
+  await page.route(`${serverUrl}/**`, async (route) => {
+    const request = route.request()
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({
+        status: 204,
+        headers: {
+          "access-control-allow-origin": "*",
+          "access-control-allow-methods": "PUT, OPTIONS",
+          "access-control-allow-headers":
+            "authorization, content-type, x-sha-256",
+        },
+      })
+      return
+    }
+    if (request.method() !== "PUT") {
+      await route.fulfill({ status: 405 })
+      return
+    }
+    state.putCount += 1
+    let body = request.postDataBuffer()
+    if (!body) {
+      const expectedHash = request.headers()["x-sha-256"]
+      const captured = expectedHash
+        ? await page.evaluate((hash) => {
+            const browserWindow = window as unknown as {
+              __eventProductUploadBodies?: Record<string, number[]>
+            }
+            return browserWindow.__eventProductUploadBodies?.[hash]
+          }, expectedHash)
+        : undefined
+      if (captured) body = Buffer.from(captured)
+    }
+    if (!body) throw new Error("Expected prepared event-product image bytes")
+    const hash = createHash("sha256").update(body).digest("hex")
+    const type = request.headers()["content-type"] ?? "image/png"
+    const resourceUrl = `https://cdn.conduit.market/event-product/${hash}.png`
+    resources.set(resourceUrl, { body, type })
+    state.resourceUrl = resourceUrl
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      body: JSON.stringify({
+        url: resourceUrl,
+        sha256: hash,
+        size: body.byteLength,
+        type,
+        uploaded: Math.floor(Date.now() / 1_000),
+      }),
+    })
+  })
+
+  await page.route(
+    "https://cdn.conduit.market/event-product/**",
+    async (route) => {
+      const resource = resources.get(route.request().url())
+      if (!resource) {
+        await route.fulfill({ status: 404 })
+        return
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: resource.type,
+        headers: {
+          "access-control-allow-origin": "*",
+          "content-length": String(resource.body.byteLength),
+        },
+        body: resource.body,
+      })
+    }
+  )
+  return state
+}
+
 type PublishedOrganizerMarket = {
   calendarEvent: SignedEvent
   pickupEvent?: SignedEvent
@@ -1559,6 +1678,7 @@ async function publishMerchantProductFromEvent(
     identity?: "merchant" | "organizer"
     rejectAcceptanceOnce?: boolean
     completionAction?: "done" | "leave_open"
+    imageFilePath?: string
   }
 ): Promise<SignedEvent> {
   await gotoAs(
@@ -1620,11 +1740,21 @@ async function publishMerchantProductFromEvent(
     .fill("Synthetic accepted zero-cost product fixture.")
   await editor.getByLabel("Price").fill("0")
   await editor.getByLabel("Stock (optional)").fill("3")
-  await editor
-    .getByLabel("Primary image URL")
-    .fill(
-      "https://cdn.conduit.market/conduit-test/synthetic-pickup-product.svg"
+  if (options.imageFilePath) {
+    await editor
+      .locator("#event-product-image-file")
+      .setInputFiles(options.imageFilePath)
+    await expect(editor.getByLabel("Primary image URL")).toHaveValue(
+      /^https:\/\/cdn\.conduit\.market\/event-product\//
     )
+  } else {
+    await editor.getByRole("button", { name: "Add by URL" }).click()
+    await editor
+      .getByLabel("Primary image URL")
+      .fill(
+        "https://cdn.conduit.market/conduit-test/synthetic-pickup-product.svg"
+      )
+  }
   await editor.getByLabel("Tags").fill("synthetic, event, pickup")
 
   if (options.handoffMode === "organizer") {
@@ -1711,6 +1841,87 @@ async function publishMerchantProductFromEvent(
 
   return productEvent!
 }
+
+test("event product authoring adopts a verified configured-server upload @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const upload = await interceptEventProductBlossom(page)
+  relay.seed(
+    signEvent(MERCHANT_SECRET, {
+      kind: 10063,
+      created_at: Math.floor(Date.now() / 1_000),
+      tags: [["server", EVENT_PRODUCT_MEDIA_SERVER]],
+      content: "",
+    })
+  )
+  const eventTitle = "Synthetic Blossom Product Event"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: eventTitle,
+    organizerHandoffEnabled: false,
+  })
+
+  const product = await publishMerchantProductFromEvent(page, relay, market, {
+    eventTitle,
+    productTitle: "Synthetic uploaded event product",
+    handoffMode: "merchant",
+    imageFilePath: EVENT_PRODUCT_IMAGE_PATH,
+  })
+
+  expect(upload.putCount).toBe(1)
+  expect(upload.resourceUrl).toMatch(
+    /^https:\/\/cdn\.conduit\.market\/event-product\/[0-9a-f]{64}\.png$/
+  )
+  expect(product.tags.filter((tag) => tag[0] === "image")).toEqual([
+    ["image", upload.resourceUrl!],
+  ])
+})
+
+test("event publish-another starts a clean fallback upload lifecycle @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const upload = await interceptEventProductBlossom(
+    page,
+    EVENT_PRODUCT_FALLBACK_SERVER
+  )
+  const eventTitle = "Synthetic Fallback Reset Event"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: eventTitle,
+    organizerHandoffEnabled: false,
+  })
+
+  await publishMerchantProductFromEvent(page, relay, market, {
+    eventTitle,
+    productTitle: "Synthetic fallback event product",
+    handoffMode: "merchant",
+    imageFilePath: EVENT_PRODUCT_IMAGE_PATH,
+    completionAction: "leave_open",
+  })
+  expect(upload.putCount).toBe(1)
+
+  const editor = page.getByRole("dialog", {
+    name: `Publish a product to ${eventTitle}`,
+  })
+  await editor
+    .getByRole("button", { name: "Publish another item", exact: true })
+    .click()
+  await expect(editor.getByLabel("Product title")).toHaveValue("")
+  await expect(
+    editor.getByRole("button", {
+      name: "Add another image",
+      exact: true,
+    })
+  ).toBeEnabled()
+  await expect(editor.locator("#event-product-image-file")).toHaveCount(1)
+  await expect(editor.getByLabel("Primary image URL")).toHaveCount(0)
+})
 
 function createMerchantTemplateProductEvent(createdAt: number): SignedEvent {
   return signEvent(MERCHANT_SECRET, {

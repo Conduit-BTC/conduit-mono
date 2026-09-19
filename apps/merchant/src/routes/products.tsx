@@ -37,6 +37,7 @@ import {
   useAuth,
   useConduitSession,
   useInboxDeclaration,
+  useProductImageUpload,
 } from "@conduit/core"
 import {
   Badge,
@@ -309,6 +310,10 @@ function getProductDraftTarget(
     productAddressId: product?.addressId ?? null,
     baseEventId: familyEventId,
   }
+}
+
+function getProductImageUploadScopeId(target: ProductDraftTarget): string {
+  return `product:${target.productAddressId ?? "create"}`
 }
 
 function getProductVariationAuthoringTarget(
@@ -1144,6 +1149,7 @@ function ProductsPage() {
     connect,
     disconnect,
   } = useAuth()
+  const productImageUpload = useProductImageUpload()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -1197,6 +1203,9 @@ function ProductsPage() {
   )
 
   const draftOwnerPubkey = activeProductDraftTarget?.merchantPubkey ?? null
+  const productImageUploadScopeId = activeProductDraftTarget
+    ? getProductImageUploadScopeId(activeProductDraftTarget)
+    : "product:unbound"
   const signerReady =
     authStatus === "connected" &&
     !!signer &&
@@ -1515,6 +1524,17 @@ function ProductsPage() {
     variables: ProductPublishMutationPayload,
     authoringTarget: ProductVariationAuthoringTarget
   ): void {
+    if (!variables.existing) {
+      productImageUpload.moveFallbackClaim(
+        getProductImageUploadScopeId(
+          getProductDraftTarget(variables.merchantPubkey)
+        ),
+        getProductImageUploadScopeId({
+          merchantPubkey: variables.merchantPubkey,
+          productAddressId: `30402:${variables.merchantPubkey}:${variables.dTag}`,
+        })
+      )
+    }
     const returnIntentCleared = variables.existing
       ? true
       : clearProductDraftReturnIntent(variables.merchantPubkey)
@@ -1705,6 +1725,11 @@ function ProductsPage() {
       const { product } = variables
       setProductSignerProgress(null)
       if (product) {
+        productImageUpload.clearFallbackClaim(
+          getProductImageUploadScopeId(
+            getProductDraftTarget(product.product.pubkey, product)
+          )
+        )
         const draftCleared = productDraftStoreRef.current.clear(
           getProductDraftTarget(product.product.pubkey, product)
         )
@@ -1799,7 +1824,7 @@ function ProductsPage() {
     productDeliveryRetry?.action === productDeliveryNotice.action
 
   function startProductSave(payload: ProductPublishMutationPayload): void {
-    if (productPublishInFlightRef.current) return
+    if (productPublishInFlightRef.current || productImageUpload.isBusy) return
     productPublishInFlightRef.current = true
     saveMutation.mutate(payload)
   }
@@ -2096,6 +2121,7 @@ function ProductsPage() {
   function requestProductPublish(payload: ProductPublishMutationPayload): void {
     if (
       isSaving ||
+      productImageUpload.isBusy ||
       !signerReady ||
       !productPublishPayloadIsAuthorized(payload)
     ) {
@@ -2120,6 +2146,7 @@ function ProductsPage() {
     if (
       !pendingProductPublish ||
       isSaving ||
+      productImageUpload.isBusy ||
       !signerReady ||
       !productPublishPayloadIsAuthorized(pendingProductPublish)
     ) {
@@ -2199,6 +2226,11 @@ function ProductsPage() {
       if (!cleared) {
         setDraftStorageAvailable(false)
         return
+      }
+      if (!activeProductDraftTarget.productAddressId) {
+        productImageUpload.clearFallbackClaim(
+          getProductImageUploadScopeId(activeProductDraftTarget)
+        )
       }
     }
     editFulfillmentRequestRef.current += 1
@@ -2959,7 +2991,7 @@ function ProductsPage() {
       >
         <DialogContent
           className={cn(
-            "max-h-[90dvh] overflow-y-auto",
+            "max-h-[90dvh] overflow-x-hidden overflow-y-auto",
             form.variations.enabled ? "sm:max-w-4xl" : "sm:max-w-2xl"
           )}
           onOpenAutoFocus={(event) => {
@@ -3059,6 +3091,7 @@ function ProductsPage() {
                 event.preventDefault()
                 if (
                   isSaving ||
+                  productImageUpload.isBusy ||
                   !draftOwnerPubkey ||
                   !signerReady ||
                   !productCanSubmit
@@ -3501,6 +3534,8 @@ function ProductsPage() {
               <ProductImageUrlCollectionField
                 id="product-image"
                 images={form.images}
+                upload={productImageUpload}
+                uploadScopeId={productImageUploadScopeId}
                 previewTitle={form.title.trim() || "Product image"}
                 onChange={(images) =>
                   setForm((previous) => ({ ...previous, images }))
@@ -3954,6 +3989,10 @@ function ProductsPage() {
                                         images={parseProductVariationImageInput(
                                           combination.imageUrls
                                         )}
+                                        upload={productImageUpload}
+                                        uploadScopeId={
+                                          productImageUploadScopeId
+                                        }
                                         showRequiredError={parseProductVariationImageInput(
                                           combination.imageUrls
                                         ).some(
@@ -4193,16 +4232,22 @@ function ProductsPage() {
                 <Button
                   type="submit"
                   disabled={
-                    !pubkey || !signerReady || isSaving || !productCanSubmit
+                    !pubkey ||
+                    !signerReady ||
+                    isSaving ||
+                    productImageUpload.isBusy ||
+                    !productCanSubmit
                   }
                 >
                   {remoteSignerRecovery
                     ? "Reconnect signer to continue"
                     : isSaving
                       ? "Waiting for signer..."
-                      : editing
-                        ? "Save changes"
-                        : "Publish product"}
+                      : productImageUpload.isBusy
+                        ? "Uploading images..."
+                        : editing
+                          ? "Save changes"
+                          : "Publish product"}
                 </Button>
               </DialogFooter>
             </form>

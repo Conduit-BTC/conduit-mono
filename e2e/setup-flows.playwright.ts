@@ -971,6 +971,7 @@ test("merchant product authoring warns about missing Lightning setup without blo
   await dialog.getByLabel("Price").fill("1")
   await dialog.locator("#product-fulfillment").click()
   await page.getByRole("option", { name: "Digital", exact: true }).click()
+  await dialog.getByRole("button", { name: "Add by URL" }).click()
   await dialog
     .getByLabel("Primary image URL")
     .fill("https://media.conduit.market/manual-payment-product.png")

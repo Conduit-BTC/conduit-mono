@@ -54,10 +54,9 @@ async function fillProductDraft(page: Page, title = draftFixture.title) {
   await page.getByRole("option", { name: draftFixture.format }).click()
 
   await expect(dialog.getByLabel("Image 2 URL")).toHaveCount(0)
+  await dialog.getByRole("button", { name: "Add by URL" }).click()
   await dialog.getByLabel("Primary image URL").fill(draftFixture.imageUrls[0])
-  await dialog
-    .getByRole("button", { name: "Add another image", exact: true })
-    .click()
+  await dialog.getByRole("button", { name: "Add by URL", exact: true }).click()
   const secondImage = dialog.getByLabel("Image 2 URL")
   await expect(secondImage).toBeFocused()
   await secondImage.fill(draftFixture.imageUrls[1])

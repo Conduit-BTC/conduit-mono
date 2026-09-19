@@ -2,7 +2,10 @@ import { useMemo, useRef, useState } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { Copy, Loader2, PackagePlus } from "lucide-react"
-import { SUPPORTED_PRODUCT_PRICE_CURRENCIES } from "@conduit/core"
+import {
+  SUPPORTED_PRODUCT_PRICE_CURRENCIES,
+  type ProductImageUploadController,
+} from "@conduit/core"
 import {
   Button,
   Dialog,
@@ -46,6 +49,14 @@ import { ProductPaymentSetupNotice } from "./ProductPaymentSetupNotice"
 
 const BLANK_TEMPLATE = "__blank__"
 
+function createEventProductUploadScopeId(): string {
+  try {
+    return `event-product-draft:${crypto.randomUUID()}`
+  } catch {
+    return `event-product-draft:${Date.now()}:${Math.random().toString(36).slice(2)}`
+  }
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim()
     ? error.message
@@ -66,6 +77,7 @@ export function EventProductPublisherDialog({
   authenticatedPubkey,
   shouldContinue,
   market,
+  productImageUpload,
   onOpenChange,
   onPublished,
 }: {
@@ -74,6 +86,7 @@ export function EventProductPublisherDialog({
   authenticatedPubkey: string | null
   shouldContinue: () => boolean
   market: MerchantOrganizerEventMarket
+  productImageUpload: ProductImageUploadController
   onOpenChange: (open: boolean) => void
   onPublished: (accepted: boolean) => void
 }) {
@@ -92,6 +105,9 @@ export function EventProductPublisherDialog({
   const [signedAcceptance, setSignedAcceptance] =
     useState<MerchantOrganizerRecordDelivery | null>(null)
   const [accepting, setAccepting] = useState(false)
+  const [productImageUploadScopeId, setProductImageUploadScopeId] = useState(
+    createEventProductUploadScopeId
+  )
   const ownsMarket = merchantPubkey === market.organizerPubkey
   const [signerProgress, setSignerProgress] =
     useState<ProductSignerRequestProgress | null>(null)
@@ -163,6 +179,13 @@ export function EventProductPublisherDialog({
         form,
         onSignerRequest: setSignerProgress,
         onSignedLocal: (event) => {
+          const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]
+          if (dTag) {
+            productImageUpload.moveFallbackClaim(
+              productImageUploadScopeId,
+              `product:30402:${merchantPubkey}:${dTag}`
+            )
+          }
           setSignedEvent(event)
           setActionState("publishing")
         },
@@ -240,13 +263,23 @@ export function EventProductPublisherDialog({
     setSignedEvent(null)
     setPublishedCoordinate(null)
     setSignedAcceptance(null)
+    setProductImageUploadScopeId(createEventProductUploadScopeId())
     requestAnimationFrame(() => titleInputRef.current?.focus())
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !pending && onOpenChange(next)}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (pending) return
+        if (!next && !signedEvent) {
+          productImageUpload.clearFallbackClaim(productImageUploadScopeId)
+        }
+        onOpenChange(next)
+      }}
+    >
       <DialogContent
-        className="max-h-[92vh] overflow-y-auto sm:max-w-2xl"
+        className="max-h-[92dvh] overflow-x-hidden overflow-y-auto sm:max-w-2xl"
         onPointerDownOutside={(event) => pending && event.preventDefault()}
         onEscapeKeyDown={(event) => pending && event.preventDefault()}
       >
@@ -270,7 +303,13 @@ export function EventProductPublisherDialog({
           onSubmit={(event) => {
             event.preventDefault()
             setSubmitted(true)
-            if (!validation.canPublish || pending || signedEvent) return
+            if (
+              !validation.canPublish ||
+              pending ||
+              productImageUpload.isBusy ||
+              signedEvent
+            )
+              return
             publishMutation.mutate()
           }}
         >
@@ -282,7 +321,7 @@ export function EventProductPublisherDialog({
               <Select
                 value={form.templateCoordinate || BLANK_TEMPLATE}
                 onValueChange={chooseTemplate}
-                disabled={templatesQuery.isPending}
+                disabled={templatesQuery.isPending || productImageUpload.isBusy}
               >
                 <SelectTrigger id="event-product-template">
                   <SelectValue
@@ -411,8 +450,11 @@ export function EventProductPublisherDialog({
             </div>
 
             <ProductImageUrlCollectionField
+              key={productImageUploadScopeId}
               id="event-product-image"
               images={form.images}
+              upload={productImageUpload}
+              uploadScopeId={productImageUploadScopeId}
               previewTitle={form.title.trim() || "Event product image"}
               onChange={(images) => update("images", images)}
               showRequiredError={submitted}
@@ -601,8 +643,16 @@ export function EventProductPublisherDialog({
               </Button>
             )}
             {actionState !== "success" && !signedEvent && (
-              <Button type="submit" disabled={pending}>
-                {pending ? (
+              <Button
+                type="submit"
+                disabled={pending || productImageUpload.isBusy}
+              >
+                {productImageUpload.isBusy ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" /> Uploading
+                    images…
+                  </>
+                ) : pending ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" /> Publishing…
                   </>
