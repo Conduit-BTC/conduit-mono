@@ -49,10 +49,7 @@ import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
-import {
-  getProductAddAvailability,
-  isSameCartLineFulfillment,
-} from "../../lib/cart-model"
+import { getProductAddAvailability, selectCartLine } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 import {
   getPickupHandoffPrivacyCopy,
@@ -210,15 +207,9 @@ function ProductPage() {
           )
         : null
     : null
-  const cartItem =
-    selectedProduct && productCartCandidate
-      ? cart.items.find(
-          (item) =>
-            item.merchantPubkey === selectedProduct.pubkey &&
-            item.productId === selectedProduct.id &&
-            isSameCartLineFulfillment(item, productCartCandidate)
-        )
-      : undefined
+  const cartItem = productCartCandidate
+    ? selectCartLine(cart.items, productCartCandidate)
+    : undefined
   const productCartBlocked =
     productCartFulfillment.isChecking ||
     productCartResolution?.status === "blocked" ||

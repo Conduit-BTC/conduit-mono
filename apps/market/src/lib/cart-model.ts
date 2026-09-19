@@ -109,11 +109,6 @@ export type CartItemInput = Omit<
   "cartLineId" | "merchantAddedAt" | "quantity"
 >
 
-export type PersistedCartState = {
-  version: typeof CART_STORAGE_VERSION
-  items: CartItem[]
-}
-
 export type ParsedPersistedCart = {
   state: CartState
   shouldPersist: boolean
@@ -797,20 +792,6 @@ export function selectCartItem(
   return items.find((item) => isSameCartItem(item, identity))
 }
 
-export function selectCartItemQuantity(
-  items: readonly CartItem[],
-  identity: CartItemIdentity
-): number {
-  return selectCartItem(items, identity)?.quantity ?? 0
-}
-
-export function selectMerchantCartItems(
-  items: readonly CartItem[],
-  merchantPubkey: string
-): CartItem[] {
-  return items.filter((item) => item.merchantPubkey === merchantPubkey)
-}
-
 function getCartPickupHandoffFingerprint(fulfillment: CartPickupFulfillment): {
   handoffMode: string
   handlerPubkey: string
@@ -1034,10 +1015,6 @@ export function parsePersistedCart(value: unknown): ParsedPersistedCart {
   }
 }
 
-export function serializeCartState(state: CartState): PersistedCartState {
-  return { version: CART_STORAGE_VERSION, items: state.items }
-}
-
 function normalizeCartZapMessagePolicy(
   value: unknown
 ): ProductZapMessagePolicy | null {
@@ -1105,25 +1082,6 @@ export function getCartPublicZapPolicy(items: CartItem[]): CartPublicZapPolicy {
     disabledProductIds: Array.from(new Set(disabledProductIds)),
     missingPolicyProductIds: Array.from(new Set(missingPolicyProductIds)),
   }
-}
-
-function getMerchantAddedAt(
-  items: CartItem[],
-  merchantPubkey: string
-): number | undefined {
-  for (let index = 0; index < items.length; index++) {
-    const item = items[index]
-    if (!item || item.merchantPubkey !== merchantPubkey) continue
-    return item.merchantAddedAt ?? index
-  }
-  return undefined
-}
-
-function nextMerchantAddedAt(items: CartItem[]): number {
-  const highestExisting = items.reduce((highest, item, index) => {
-    return Math.max(highest, item.merchantAddedAt ?? index)
-  }, 0)
-  return Math.max(Date.now(), highestExisting + 1)
 }
 
 export function groupCartItems(items: CartItem[]): MerchantCartGroup[] {
@@ -1242,6 +1200,20 @@ export function isSameCartLineFulfillment(
   return getCartLineFulfillmentId(left) === getCartLineFulfillmentId(right)
 }
 
+export function selectCartLine(
+  items: readonly CartItem[],
+  candidate: Pick<
+    CartItem,
+    "merchantPubkey" | "productId" | "format" | "fulfillment"
+  >
+): CartItem | undefined {
+  return items.find(
+    (item) =>
+      isSameCartItem(item, candidate) &&
+      isSameCartLineFulfillment(item, candidate)
+  )
+}
+
 export function getCartPurchaseGroupId(
   item: Pick<CartItem, "merchantPubkey" | "format" | "fulfillment">
 ): string {
@@ -1339,13 +1311,6 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
   })
 }
 
-export function selectCartPurchase(
-  items: CartItem[],
-  purchaseId: string
-): CartPurchaseGroup | undefined {
-  return groupCartPurchases(items).find((group) => group.id === purchaseId)
-}
-
 export function getCartTotals(items: CartItem[]): CartTotals {
   return items.reduce(
     (acc, item) => {
@@ -1417,71 +1382,4 @@ export function getCartCostSummary(
     itemPricesAvailable,
     shippingReadyForZap,
   }
-}
-
-export function addCartItem(
-  items: CartItem[],
-  item: CartItemInput & { merchantAddedAt?: number },
-  quantity = 1
-): CartItem[] {
-  if (item.stock === 0) return items
-
-  const q = Math.max(1, Math.floor(quantity))
-  const existing = items.find(
-    (current) =>
-      isSameCartItem(current, item) && isSameCartLineFulfillment(current, item)
-  )
-  const merchantAddedAt =
-    getMerchantAddedAt(items, item.merchantPubkey) ??
-    item.merchantAddedAt ??
-    nextMerchantAddedAt(items)
-
-  if (existing) {
-    const nextQuantity = currentCartQuantity(existing) + q
-    if (typeof item.stock === "number" && nextQuantity > item.stock) {
-      return items
-    }
-    return items.map((current) =>
-      current === existing
-        ? {
-            ...current,
-            ...item,
-            merchantAddedAt: current.merchantAddedAt ?? merchantAddedAt,
-            quantity: current.quantity + q,
-          }
-        : current
-    )
-  }
-
-  if (typeof item.stock === "number" && q > item.stock) return items
-  return [...items, { ...item, merchantAddedAt, quantity: q }]
-}
-
-function currentCartQuantity(item: CartItem): number {
-  return Math.max(1, Math.floor(item.quantity))
-}
-
-export function setCartItemQuantity(
-  items: CartItem[],
-  identity: CartItemIdentity,
-  quantity: number
-): CartItem[] {
-  const q = Math.max(1, Math.floor(quantity))
-  return items.map((item) =>
-    isSameCartItem(item, identity) ? { ...item, quantity: q } : item
-  )
-}
-
-export function removeCartItem(
-  items: CartItem[],
-  identity: CartItemIdentity
-): CartItem[] {
-  return items.filter((item) => !isSameCartItem(item, identity))
-}
-
-export function clearMerchantCart(
-  items: CartItem[],
-  merchantPubkey: string
-): CartItem[] {
-  return items.filter((item) => item.merchantPubkey !== merchantPubkey)
 }

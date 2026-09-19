@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { useCart } from "../hooks/useCart"
 import { useEventActorIdentity } from "../hooks/useEventActorIdentity"
 import { useProductCartFulfillment } from "../hooks/useProductCartFulfillment"
-import { isSameCartLineFulfillment } from "../lib/cart-model"
+import { selectCartLine } from "../lib/cart-model"
 import {
   cartItemInputFromProductSelection,
   getDefaultProductSelection,
@@ -68,12 +68,7 @@ export function ResolvedProductGridCard({
         : null
     : null
   const existing = cartCandidate
-    ? cart.items.find(
-        (item) =>
-          item.merchantPubkey === selectedProduct.pubkey &&
-          item.productId === selectedProduct.id &&
-          isSameCartLineFulfillment(item, cartCandidate)
-      )
+    ? selectCartLine(cart.items, cartCandidate)
     : undefined
   const pickupHandoff =
     resolution?.status === "pickup"

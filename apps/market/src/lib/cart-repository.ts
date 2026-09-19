@@ -352,14 +352,7 @@ function parseStoredRecord(value: StoredShoppingCart): CanonicalCartRecord {
 }
 
 function cloneRecord(record: CanonicalCartRecord): CanonicalCartRecord {
-  return {
-    ...record,
-    lines: record.lines.map((line) => ({
-      id: line.id,
-      item: { ...line.item },
-      batches: line.batches.map((batch) => ({ ...batch })),
-    })),
-  }
+  return structuredClone(record)
 }
 
 function notify(): void {

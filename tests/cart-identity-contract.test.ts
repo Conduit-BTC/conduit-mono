@@ -30,13 +30,7 @@ describe("Market cart identity contract", () => {
     expect(sources.join("\n")).not.toContain("item.productId === product.id")
     expect(sources[0]).toContain("<ResolvedProductGridCard")
     expect(sources[2]).toContain("<ResolvedProductGridCard")
-    expect(resolvedCard).toContain(
-      "item.merchantPubkey === selectedProduct.pubkey"
-    )
-    expect(resolvedCard).toContain("item.productId === selectedProduct.id")
-    expect(resolvedCard).toContain(
-      "isSameCartLineFulfillment(item, cartCandidate)"
-    )
+    expect(resolvedCard).toContain("selectCartLine(cart.items, cartCandidate)")
     expect(resolvedCard).toContain("cartItemInputFromProductSelection(")
     expect(resolvedCard).toContain("cart.addItem(cartCandidate, 1)")
     expect(resolvedCard).toContain(

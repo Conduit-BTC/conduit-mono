@@ -54,7 +54,6 @@ export type MerchantCartReadiness = {
 }
 
 export type CartReadiness = {
-  byMerchant: ReadonlyMap<string, MerchantCartReadiness>
   byPurchase: ReadonlyMap<string, MerchantCartReadiness>
   hasUnavailableItems: boolean
   hasInsufficientStockItems: boolean
@@ -170,7 +169,6 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
   })
 
   return useMemo(() => {
-    const byMerchant = new Map<string, MerchantCartReadiness>()
     const byPurchase = new Map<string, MerchantCartReadiness>()
     for (const [index, group] of purchaseGroups.entries()) {
       const query = queries[index]
@@ -254,14 +252,10 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
         hasUnavailableItems,
         refresh,
       })
-      if (!byMerchant.has(group.merchantPubkey)) {
-        byMerchant.set(group.merchantPubkey, byPurchase.get(group.id)!)
-      }
     }
 
     const entries = Array.from(byPurchase.values())
     return {
-      byMerchant,
       byPurchase,
       hasUnavailableItems: entries.some((entry) => entry.hasUnavailableItems),
       hasInsufficientStockItems: entries.some(

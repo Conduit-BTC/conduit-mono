@@ -64,7 +64,7 @@ import { useCart } from "../../hooks/useCart"
 import { useEventMarket } from "../../hooks/useEventMarket"
 import { useMerchantIdentities } from "../../hooks/useMerchantIdentities"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
-import { isSameCartLineFulfillment } from "../../lib/cart-model"
+import { selectCartLine } from "../../lib/cart-model"
 import {
   cartItemInputFromProductSelection,
   getDefaultProductSelection,
@@ -161,14 +161,7 @@ function EventCatalogProductCard({
         pickupFulfillment
       )
     : null
-  const existing = candidate
-    ? cart.items.find(
-        (item) =>
-          item.merchantPubkey === selectedProduct.pubkey &&
-          item.productId === selectedProduct.id &&
-          isSameCartLineFulfillment(item, candidate)
-      )
-    : undefined
+  const existing = candidate ? selectCartLine(cart.items, candidate) : undefined
   const cartQuantity = existing?.quantity ?? 0
   const cartAction = getEventCatalogCartAction({
     state: catalog.state,

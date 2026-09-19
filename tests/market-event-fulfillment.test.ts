@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test"
 import {
-  addCartItem,
   getCartCostSummary,
   getCartFulfillmentLane,
   getMixedFulfillmentBlockingMessage,
@@ -261,7 +260,7 @@ describe("Market event pickup fulfillment", () => {
     ).toContain("different pickup handlers")
   })
 
-  it("keeps incompatible fulfillment snapshots as separate purchase lines", () => {
+  it("identifies incompatible fulfillment snapshots as distinct cart lines", () => {
     const existing = item()
     const differentEvent = item({ fulfillment: pickup("market-b") })
     const differentRevision = item({
@@ -297,12 +296,9 @@ describe("Market event pickup fulfillment", () => {
       newerProductRevision,
       shipped,
     ]) {
-      const separated = addCartItem([existing], incompatible)
-      expect(separated).toHaveLength(2)
-      expect(separated[0]).toBe(existing)
-      expect(separated[1]).toMatchObject(incompatible)
+      expect(isSameCartLineFulfillment(existing, incompatible)).toBe(false)
     }
-    expect(addCartItem([existing], item())[0]?.quantity).toBe(2)
+    expect(isSameCartLineFulfillment(existing, item())).toBe(true)
   })
 
   it("treats a signed zero-cost pickup as resolved checkout cost", () => {

@@ -89,12 +89,12 @@ import {
   getCartCostSummary,
   getCartItemStockEvidenceForAvailability,
   getMixedFulfillmentBlockingMessage,
-  isSameCartLineFulfillment,
   getCartItemKey,
   getCartPurchaseReference,
   getProductAddAvailability,
   groupCartPurchases,
   isCartProductAvailabilityBlocking,
+  selectCartLine,
   type CartPurchaseGroup,
   type CartProductAvailability,
 } from "../lib/cart-model"
@@ -419,12 +419,7 @@ function RelatedProductRow({
         : null
     : null
   const existing = cartCandidate
-    ? cart.items.find(
-        (item) =>
-          item.merchantPubkey === selectedProduct.pubkey &&
-          item.productId === selectedProduct.id &&
-          isSameCartLineFulfillment(item, cartCandidate)
-      )
+    ? selectCartLine(cart.items, cartCandidate)
     : undefined
   const cartQuantity = existing?.quantity ?? 0
   const fulfillmentBlocked =
@@ -1296,12 +1291,7 @@ function CartPage() {
             </div>
           </div>
 
-          {purchaseGroups.some(
-            (group, index) =>
-              purchaseGroups.findIndex(
-                (candidate) => candidate.merchantPubkey === group.merchantPubkey
-              ) !== index
-          ) ? (
+          {merchantCount < purchaseGroups.length ? (
             <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
               <AlertTriangle
                 className="mt-0.5 h-5 w-5 shrink-0 text-warning"

@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test"
 import type { ParsedShippingOption, Product } from "@conduit/core"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
 import {
-  addCartItem,
   createCartItemFromProduct,
   type CartItem,
   type CartPickupFulfillment,
@@ -515,13 +514,12 @@ describe("checkout authorization refresh", () => {
       ...initialFulfillment,
       costSats: 2_000,
     })
-    const reviewedItems = addCartItem(
-      addCartItem(
-        [],
-        createCartItemFromProduct(refreshedProduct, initialFulfillment)
-      ),
-      createCartItemFromProduct(refreshedProduct, refreshedFulfillment)
-    )
+    const reviewedItems = [
+      {
+        ...createCartItemFromProduct(refreshedProduct, refreshedFulfillment),
+        quantity: 2,
+      },
+    ]
 
     expect(reviewedItems).toHaveLength(1)
     expect(reviewedItems[0]).toMatchObject({
