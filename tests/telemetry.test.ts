@@ -1114,15 +1114,17 @@ describe("browser telemetry", () => {
           mode: "checkout",
           product_type: "physical",
           rail: "none",
+          latency_bucket: "1s_3s",
           status: "success",
-          step: "availability",
+          step: "checkout_revalidation",
           surface: "checkout",
         },
       })
     ).toMatchObject({
       event_name: "checkout_step_result",
+      latency_bucket: "1s_3s",
       status: "success",
-      step: "availability",
+      step: "checkout_revalidation",
     })
 
     expect(
