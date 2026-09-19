@@ -4,6 +4,7 @@ import {
   getShippingCostSats,
   hasSamePickupFulfillmentGraph,
   hasExactLiveProductAvailabilityEvidence,
+  isFiatCurrencyCode,
   normalizeProductCoordinate,
   orderItemFulfillmentSchema,
   resolveOrderPickupHandoffAuthority,
@@ -22,6 +23,8 @@ import {
 export const CART_STORAGE_VERSION = 2
 
 export type CartItem = {
+  /** Local line incarnation. Present on canonical carts, never sent in orders. */
+  cartLineId?: string
   productId: string
   /** Variable parent coordinate when productId identifies a variation child. */
   familyProductId?: string
@@ -67,6 +70,8 @@ export type CartItem = {
   }>
   /** Signed product event timestamp used by the fixed-shipping staleness guard. */
   productUpdatedAt?: number
+  /** Signed kind-30402 event id paired with productUpdatedAt for NIP-01 ordering. */
+  productEventId?: string
   /** True only after exact canonical kind-30406 resolution. */
   canonicalShippingResolved?: boolean
   publicZapEnabled?: boolean
@@ -92,14 +97,17 @@ export type CartState = {
   items: CartItem[]
 }
 
-export type CartItemIdentity = Pick<CartItem, "merchantPubkey" | "productId">
-
-export type CartItemInput = Omit<CartItem, "merchantAddedAt" | "quantity">
-
-export type PersistedCartState = {
-  version: typeof CART_STORAGE_VERSION
-  items: CartItem[]
+export type CartItemIdentity = Pick<
+  CartItem,
+  "merchantPubkey" | "productId"
+> & {
+  cartLineId?: string
 }
+
+export type CartItemInput = Omit<
+  CartItem,
+  "cartLineId" | "merchantAddedAt" | "quantity"
+>
 
 export type ParsedPersistedCart = {
   state: CartState
@@ -112,6 +120,11 @@ export type MerchantCartGroup = {
   items: CartItem[]
   totalItems: number
   merchantAddedAt: number
+}
+
+export type CartPurchaseGroup = MerchantCartGroup & {
+  id: string
+  kind: "delivery" | "pickup"
 }
 
 export type CartTotals = {
@@ -140,8 +153,15 @@ export type CartProductAvailability = {
   merchantPubkey: string
   status: "available" | "sold_out" | "insufficient_stock" | "untracked"
   stock?: number
+  productUpdatedAt?: number
+  productEventId?: string
   refreshed: boolean
 }
+
+export type CartItemStockEvidence = Pick<
+  CartItem,
+  "stock" | "productUpdatedAt" | "productEventId"
+>
 
 type CartAvailabilityReadMeta = Pick<
   CommerceQueryMeta,
@@ -226,6 +246,7 @@ export function createCartItemFromProduct(
     shippingCountries: pickup ? [] : product.shippingCountries,
     shippingCountryRules: pickup ? [] : product.shippingCountryRules,
     productUpdatedAt: product.updatedAt,
+    productEventId: product.sourceEventId,
     canonicalShippingResolved: pickup ? false : canonicalShippingResolved,
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
@@ -338,6 +359,14 @@ export function getCartProductAvailability(
               ? "available"
               : "untracked",
       stock,
+      ...(refreshedProduct
+        ? {
+            productUpdatedAt: refreshedProduct.updatedAt,
+            ...(refreshedProduct.sourceEventId
+              ? { productEventId: refreshedProduct.sourceEventId }
+              : {}),
+          }
+        : {}),
       refreshed: !!refreshedProduct,
     }
   })
@@ -553,6 +582,24 @@ export function getCartItemStockForAvailability(
   return availability?.refreshed ? availability.stock : item.stock
 }
 
+export function getCartItemStockEvidenceForAvailability(
+  availability:
+    | Pick<
+        CartProductAvailability,
+        "stock" | "productUpdatedAt" | "productEventId" | "refreshed"
+      >
+    | undefined
+): CartItemStockEvidence | undefined {
+  if (!availability?.refreshed) return undefined
+  return {
+    stock: availability.stock,
+    productUpdatedAt: availability.productUpdatedAt,
+    ...(availability.productEventId
+      ? { productEventId: availability.productEventId }
+      : {}),
+  }
+}
+
 const ZAP_MESSAGE_POLICY_RANK: Record<ProductZapMessagePolicy, number> = {
   generic_only: 0,
   custom: 1,
@@ -564,6 +611,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function nonemptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined
+}
+
+function normalizedEventId(value: unknown): string | undefined {
+  const eventId = nonemptyString(value)?.toLowerCase()
+  return eventId && /^[0-9a-f]{64}$/.test(eventId) ? eventId : undefined
 }
 
 function finiteNonnegativeNumber(value: unknown): number | undefined {
@@ -646,6 +698,7 @@ function parseCartItem(value: unknown): CartItem | null {
   const priceSats = finiteNonnegativeNumber(value.priceSats)
   const shippingCostSats = finiteNonnegativeNumber(value.shippingCostSats)
   const productUpdatedAt = finiteNonnegativeNumber(value.productUpdatedAt)
+  const productEventId = normalizedEventId(value.productEventId)
   const stock = finiteNonnegativeNumber(value.stock)
   const selectedSpecifications = parseSpecifications(
     value.selectedSpecifications
@@ -703,6 +756,7 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(shippingCountries ? { shippingCountries } : {}),
     ...(shippingCountryRules ? { shippingCountryRules } : {}),
     ...(productUpdatedAt !== undefined ? { productUpdatedAt } : {}),
+    ...(productEventId ? { productEventId } : {}),
     ...(typeof value.canonicalShippingResolved === "boolean"
       ? { canonicalShippingResolved: value.canonicalShippingResolved }
       : {}),
@@ -726,7 +780,8 @@ export function isSameCartItem(
 ): boolean {
   return (
     item.merchantPubkey === identity.merchantPubkey &&
-    item.productId === identity.productId
+    item.productId === identity.productId &&
+    (!identity.cartLineId || item.cartLineId === identity.cartLineId)
   )
 }
 
@@ -735,20 +790,6 @@ export function selectCartItem(
   identity: CartItemIdentity
 ): CartItem | undefined {
   return items.find((item) => isSameCartItem(item, identity))
-}
-
-export function selectCartItemQuantity(
-  items: readonly CartItem[],
-  identity: CartItemIdentity
-): number {
-  return selectCartItem(items, identity)?.quantity ?? 0
-}
-
-export function selectMerchantCartItems(
-  items: readonly CartItem[],
-  merchantPubkey: string
-): CartItem[] {
-  return items.filter((item) => item.merchantPubkey === merchantPubkey)
 }
 
 function getCartPickupHandoffFingerprint(fulfillment: CartPickupFulfillment): {
@@ -890,11 +931,7 @@ export function cartItemsMatchCurrentProducts(
         if (
           item.fulfillment?.type !== "pickup" ||
           !item.sourceShippingCost ||
-          item.sourceShippingCost.amount <= 0 ||
-          getShippingCostSats(
-            { sourceShippingCost: item.sourceShippingCost },
-            null
-          )
+          !pickupCostSatsAreQuoteDerived(item.sourceShippingCost)
         ) {
           return item
         }
@@ -940,7 +977,10 @@ export function parsePersistedCart(value: unknown): ParsedPersistedCart {
     .filter((item): item is CartItem => item !== null)
   const deduplicated = new Map<string, CartItem>()
   for (const parsedItem of parsedItems) {
-    const key = getCartItemKey(parsedItem)
+    const key = JSON.stringify([
+      getCartItemKey(parsedItem),
+      getCartLineFulfillmentId(parsedItem),
+    ])
     const current = deduplicated.get(key)
     if (!current) {
       deduplicated.set(key, parsedItem)
@@ -973,10 +1013,6 @@ export function parsePersistedCart(value: unknown): ParsedPersistedCart {
       value.version !== CART_STORAGE_VERSION || hasLegacyProductIds,
     writable: true,
   }
-}
-
-export function serializeCartState(state: CartState): PersistedCartState {
-  return { version: CART_STORAGE_VERSION, items: state.items }
 }
 
 function normalizeCartZapMessagePolicy(
@@ -1048,25 +1084,6 @@ export function getCartPublicZapPolicy(items: CartItem[]): CartPublicZapPolicy {
   }
 }
 
-function getMerchantAddedAt(
-  items: CartItem[],
-  merchantPubkey: string
-): number | undefined {
-  for (let index = 0; index < items.length; index++) {
-    const item = items[index]
-    if (!item || item.merchantPubkey !== merchantPubkey) continue
-    return item.merchantAddedAt ?? index
-  }
-  return undefined
-}
-
-function nextMerchantAddedAt(items: CartItem[]): number {
-  const highestExisting = items.reduce((highest, item, index) => {
-    return Math.max(highest, item.merchantAddedAt ?? index)
-  }, 0)
-  return Math.max(Date.now(), highestExisting + 1)
-}
-
 export function groupCartItems(items: CartItem[]): MerchantCartGroup[] {
   const byMerchant = new Map<
     string,
@@ -1108,6 +1125,190 @@ export function groupCartItems(items: CartItem[]): MerchantCartGroup[] {
       }
       return b.firstSeenIndex - a.firstSeenIndex
     })
+}
+
+function getPickupPurchaseCompatibilityKey(
+  fulfillment: CartPickupFulfillment
+): string {
+  const authority = resolveOrderPickupHandoffAuthority(fulfillment)
+  const coordinateIdentity = (coordinate: string) => {
+    const [kind, author, ...identifier] = coordinate.split(":")
+    return `${kind}:${author?.toLowerCase()}:${identifier.join(":")}`
+  }
+  const evidence = (entry: PickupEvidenceCoordinate) => [
+    coordinateIdentity(entry.coordinate),
+    entry.eventId.toLowerCase(),
+    entry.createdAt,
+  ]
+  return JSON.stringify([
+    "pickup",
+    fulfillment.organizerPubkey.toLowerCase(),
+    evidence(fulfillment.calendar),
+    evidence(fulfillment.collection),
+    evidence(fulfillment.option),
+    authority.mode,
+    authority.handlerPubkey,
+  ])
+}
+
+function getPickupLineFulfillmentKey(
+  fulfillment: CartPickupFulfillment
+): string {
+  return JSON.stringify([
+    getPickupPurchaseCompatibilityKey(fulfillment),
+    fulfillment.product.coordinate,
+    fulfillment.product.eventId.toLowerCase(),
+    fulfillment.product.createdAt,
+    fulfillment.product.merchantPubkey.toLowerCase(),
+    fulfillment.option.title,
+    fulfillment.option.location ?? null,
+    fulfillment.option.geohash ?? null,
+    pickupCostSatsAreQuoteDerived(fulfillment.sourceCost)
+      ? null
+      : fulfillment.costSats,
+    fulfillment.sourceCost.amount,
+    fulfillment.sourceCost.currency,
+    fulfillment.sourceCost.normalizedCurrency,
+  ])
+}
+
+function pickupCostSatsAreQuoteDerived(
+  sourceCost: CartPickupFulfillment["sourceCost"]
+): boolean {
+  return (
+    sourceCost.amount > 0 && isFiatCurrencyCode(sourceCost.normalizedCurrency)
+  )
+}
+
+/**
+ * Exact local line identity. This intentionally remains stricter than order
+ * grouping so a future compatibility expansion cannot rebind quantities that
+ * were added under a different signed pickup snapshot.
+ */
+export function getCartLineFulfillmentId(
+  item: Pick<CartItem, "format" | "fulfillment">
+): string {
+  return item.fulfillment?.type === "pickup"
+    ? getPickupLineFulfillmentKey(item.fulfillment)
+    : getCartItemFulfillmentType(item)
+}
+
+export function isSameCartLineFulfillment(
+  left: Pick<CartItem, "format" | "fulfillment">,
+  right: Pick<CartItem, "format" | "fulfillment">
+): boolean {
+  return getCartLineFulfillmentId(left) === getCartLineFulfillmentId(right)
+}
+
+export function selectCartLine(
+  items: readonly CartItem[],
+  candidate: Pick<
+    CartItem,
+    "merchantPubkey" | "productId" | "format" | "fulfillment"
+  >
+): CartItem | undefined {
+  return items.find(
+    (item) =>
+      isSameCartItem(item, candidate) &&
+      isSameCartLineFulfillment(item, candidate)
+  )
+}
+
+export function getCartPurchaseGroupId(
+  item: Pick<CartItem, "merchantPubkey" | "format" | "fulfillment">
+): string {
+  const compatibility =
+    item.fulfillment?.type === "pickup"
+      ? getPickupPurchaseCompatibilityKey(item.fulfillment)
+      : "delivery"
+  return JSON.stringify([item.merchantPubkey, compatibility])
+}
+
+function getCartPickupRevisionPurchaseGroupId(
+  item: Pick<
+    CartItem,
+    "merchantPubkey" | "productId" | "format" | "fulfillment"
+  >
+): string {
+  return JSON.stringify([
+    getCartPurchaseGroupId(item),
+    item.productId,
+    getCartLineFulfillmentId(item),
+  ])
+}
+
+/** Stable, display-only cue for distinguishing otherwise identical choices. */
+export function getCartPurchaseReference(purchaseId: string): string {
+  let hash = 2_166_136_261
+  for (let index = 0; index < purchaseId.length; index += 1) {
+    hash = Math.imul(hash ^ purchaseId.charCodeAt(index), 16_777_619)
+  }
+  return (hash >>> 0).toString(36).toUpperCase().padStart(7, "0")
+}
+
+/**
+ * Purchasable partitions preserve the current exact pickup compatibility
+ * contract. PRs that intentionally change pickup equivalence should deepen
+ * the shared compatibility helper rather than weakening this grouping layer.
+ */
+export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
+  const merchantOrder = new Map(
+    groupCartItems(items).map((group, index) => [
+      group.merchantPubkey,
+      { merchantAddedAt: group.merchantAddedAt, index },
+    ])
+  )
+  const groups: Array<CartPurchaseGroup & { firstSeenIndex: number }> = []
+
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index]
+    if (!item) continue
+    const kind = isPickupCartItem(item) ? "pickup" : "delivery"
+    const compatibleGroups = groups.filter(
+      (group) =>
+        group.merchantPubkey === item.merchantPubkey &&
+        group.kind === kind &&
+        (kind === "delivery" || isSameCartFulfillment(group.items[0]!, item))
+    )
+    // A purchase readiness read is keyed by product coordinate. Preserve
+    // distinct signed pickup revisions as distinct lines and purchases so its
+    // evidence remains one-to-one rather than coalescing either snapshot.
+    const existing = compatibleGroups.find(
+      (group) =>
+        kind === "delivery" ||
+        !group.items.some((entry) => entry.productId === item.productId)
+    )
+    if (existing) {
+      existing.items.push(item)
+      existing.totalItems += item.quantity
+      continue
+    }
+
+    groups.push({
+      id:
+        kind === "pickup"
+          ? getCartPickupRevisionPurchaseGroupId(item)
+          : getCartPurchaseGroupId(item),
+      kind,
+      merchantPubkey: item.merchantPubkey,
+      items: [item],
+      totalItems: item.quantity,
+      merchantAddedAt:
+        merchantOrder.get(item.merchantPubkey)?.merchantAddedAt ??
+        item.merchantAddedAt ??
+        index,
+      firstSeenIndex: index,
+    })
+  }
+
+  return groups.sort((left, right) => {
+    const leftMerchant = merchantOrder.get(left.merchantPubkey)
+    const rightMerchant = merchantOrder.get(right.merchantPubkey)
+    if ((leftMerchant?.index ?? 0) !== (rightMerchant?.index ?? 0)) {
+      return (leftMerchant?.index ?? 0) - (rightMerchant?.index ?? 0)
+    }
+    return left.firstSeenIndex - right.firstSeenIndex
+  })
 }
 
 export function getCartTotals(items: CartItem[]): CartTotals {
@@ -1181,72 +1382,4 @@ export function getCartCostSummary(
     itemPricesAvailable,
     shippingReadyForZap,
   }
-}
-
-export function addCartItem(
-  items: CartItem[],
-  item: CartItemInput & { merchantAddedAt?: number },
-  quantity = 1
-): CartItem[] {
-  if (item.stock === 0) return items
-
-  const q = Math.max(1, Math.floor(quantity))
-  const existing = selectCartItem(items, item)
-  const merchantAddedAt =
-    getMerchantAddedAt(items, item.merchantPubkey) ??
-    item.merchantAddedAt ??
-    nextMerchantAddedAt(items)
-
-  if (existing) {
-    // A product coordinate is one cart line. Never silently replace a stored
-    // event-pickup snapshot with shipment (or another event's pickup) when the
-    // same listing is added from a different catalog surface.
-    if (!isSameCartFulfillment(existing, item)) return items
-    const nextQuantity = currentCartQuantity(existing) + q
-    if (typeof item.stock === "number" && nextQuantity > item.stock) {
-      return items
-    }
-    return items.map((current) =>
-      isSameCartItem(current, item)
-        ? {
-            ...current,
-            ...item,
-            merchantAddedAt: current.merchantAddedAt ?? merchantAddedAt,
-            quantity: current.quantity + q,
-          }
-        : current
-    )
-  }
-
-  if (typeof item.stock === "number" && q > item.stock) return items
-  return [...items, { ...item, merchantAddedAt, quantity: q }]
-}
-
-function currentCartQuantity(item: CartItem): number {
-  return Math.max(1, Math.floor(item.quantity))
-}
-
-export function setCartItemQuantity(
-  items: CartItem[],
-  identity: CartItemIdentity,
-  quantity: number
-): CartItem[] {
-  const q = Math.max(1, Math.floor(quantity))
-  return items.map((item) =>
-    isSameCartItem(item, identity) ? { ...item, quantity: q } : item
-  )
-}
-
-export function removeCartItem(
-  items: CartItem[],
-  identity: CartItemIdentity
-): CartItem[] {
-  return items.filter((item) => !isSameCartItem(item, identity))
-}
-
-export function clearMerchantCart(
-  items: CartItem[],
-  merchantPubkey: string
-): CartItem[] {
-  return items.filter((item) => item.merchantPubkey !== merchantPubkey)
 }

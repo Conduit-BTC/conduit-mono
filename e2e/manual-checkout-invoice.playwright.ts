@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 import { nip44, nip59 } from "nostr-tools"
 import {
   finalizeEvent,
@@ -18,6 +18,25 @@ import {
 } from "../tests/support/bolt11-fixture"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
+
+async function readCanonicalCartLines(
+  page: Page
+): Promise<Array<{ productId: string; quantity: number }>> {
+  return page.evaluate(async () => {
+    const modulePath = "/src/lib/cart-repository.ts"
+    const repository = (await import(/* @vite-ignore */ modulePath)) as {
+      initializeCartRepository(): Promise<void>
+      getCartRepositorySnapshot(): {
+        items: Array<{ productId: string; quantity: number }>
+      }
+    }
+    await repository.initializeCartRepository()
+    return repository
+      .getCartRepositorySnapshot()
+      .items.map(({ productId, quantity }) => ({ productId, quantity }))
+      .sort((left, right) => left.productId.localeCompare(right.productId))
+  })
+}
 
 const scenarios: Array<{
   name: string
@@ -54,6 +73,8 @@ for (const scenario of scenarios) {
     const merchantSecret = generateSecretKey()
     const merchantPubkey = getPublicKey(merchantSecret)
     const productCoordinate = `30402:${merchantPubkey}:manual-zap-invoice`
+    const retainedMerchantPubkey = getPublicKey(generateSecretKey())
+    const retainedProductCoordinate = `30402:${retainedMerchantPubkey}:retained-after-payment-retry`
     const createdAt = Math.floor(Date.now() / 1_000)
     let walletSendCalls = 0
     let callbackRequests = 0
@@ -220,6 +241,49 @@ for (const scenario of scenarios) {
     await page
       .getByRole("button", { name: "Add 1 to cart", exact: true })
       .click()
+    await page.evaluate(
+      async ({ merchantPubkey, productId }) => {
+        const modulePath = "/src/lib/cart-repository.ts"
+        const repository = (await import(/* @vite-ignore */ modulePath)) as {
+          addCartRepositoryItem(
+            input: {
+              productId: string
+              merchantPubkey: string
+              title: string
+              price: number
+              currency: string
+              priceSats: number
+              format: "digital"
+              fulfillment: { type: "digital" }
+            },
+            quantity: number
+          ): Promise<unknown>
+        }
+        await repository.addCartRepositoryItem(
+          {
+            productId,
+            merchantPubkey,
+            title: "Synthetic retained payment-retry item",
+            price: 500,
+            currency: "SATS",
+            priceSats: 500,
+            format: "digital",
+            fulfillment: { type: "digital" },
+          },
+          1
+        )
+      },
+      {
+        merchantPubkey: retainedMerchantPubkey,
+        productId: retainedProductCoordinate,
+      }
+    )
+
+    const expectRetainedCart = async () => {
+      await expect
+        .poll(() => readCanonicalCartLines(page))
+        .toEqual([{ productId: retainedProductCoordinate, quantity: 1 }])
+    }
 
     await page.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
     await expect(
@@ -270,6 +334,7 @@ for (const scenario of scenarios) {
     ).toHaveCount(0)
     expect(callbackRequests).toBe(1)
     expect(walletSendCalls).toBe(0)
+    await expectRetainedCart()
 
     const orderId = new URL(page.url()).searchParams.get("order")!
     if (scenario.legacyPublicZap) {
@@ -307,6 +372,7 @@ for (const scenario of scenarios) {
       await expect(
         page.getByRole("heading", { name: "Orders", exact: true })
       ).toBeVisible()
+      await expectRetainedCart()
     }
     const paymentState = async () => {
       const { checkoutMode, publicZapSigner, ...state } = await page.evaluate(
@@ -419,6 +485,7 @@ for (const scenario of scenarios) {
       ).toBeVisible()
       expect(callbackRequests).toBe(1)
       expect(walletSendCalls).toBe(0)
+      await expectRetainedCart()
       return
     }
     const receipt = (invoice: string) =>
@@ -455,6 +522,7 @@ for (const scenario of scenarios) {
     expect(unpaidState.paymentStatus).toBe("manual_required")
     expect(unpaidState.zapReceiptId).toBeNull()
     expect(unpaidState.proofDeliveryStatus).toBe("not_started")
+    await expectRetainedCart()
     const copyInvoice = page.getByRole("button", {
       name: "Copy invoice",
       exact: true,
@@ -485,5 +553,6 @@ for (const scenario of scenarios) {
     }
     expect(callbackRequests).toBe(1)
     expect(walletSendCalls).toBe(0)
+    await expectRetainedCart()
   })
 }

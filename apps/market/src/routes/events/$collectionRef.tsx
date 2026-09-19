@@ -64,7 +64,7 @@ import { useCart } from "../../hooks/useCart"
 import { useEventMarket } from "../../hooks/useEventMarket"
 import { useMerchantIdentities } from "../../hooks/useMerchantIdentities"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
-import { isSameCartFulfillment } from "../../lib/cart-model"
+import { selectCartLine } from "../../lib/cart-model"
 import {
   cartItemInputFromProductSelection,
   getDefaultProductSelection,
@@ -161,14 +161,8 @@ function EventCatalogProductCard({
         pickupFulfillment
       )
     : null
-  const existing = cart.items.find(
-    (item) => item.productId === selectedProduct.id
-  )
-  const sameFulfillment =
-    !!existing && !!candidate
-      ? isSameCartFulfillment(existing, candidate)
-      : false
-  const cartQuantity = sameFulfillment ? (existing?.quantity ?? 0) : 0
+  const existing = candidate ? selectCartLine(cart.items, candidate) : undefined
+  const cartQuantity = existing?.quantity ?? 0
   const cartAction = getEventCatalogCartAction({
     state: catalog.state,
     orderAcceptance: catalog.collection?.orderAcceptance,
@@ -187,33 +181,28 @@ function EventCatalogProductCard({
     )
   }, [defaultSelection.id, family, product.id])
 
-  const add = (selection: Product) => {
+  const add = async (selection: Product) => {
     if (selection.id !== selectedProduct.id || !canAdd || !candidate) return
-    if (existing && !sameFulfillment) {
-      onCartNotice(
-        "This product is already in your cart with different fulfillment. Remove that line before adding event pickup."
-      )
-      return
-    }
-    cart.addItem(candidate, 1)
+    const added = await cart.addItem(candidate, 1)
+    if (!added) return
     onCartNotice(
       `${product.title} was added for ${handoff?.label.toLowerCase() ?? "event pickup"}.`
     )
   }
+  const increment = (selection: Product) => {
+    if (selection.id !== selectedProduct.id || !existing || !candidate) return
+    cart.refreshAndIncrementItem(existing, candidate, 1)
+  }
 
   const decrement = (selection: Product) => {
-    if (selection.id !== selectedProduct.id || !existing || !sameFulfillment) {
+    if (selection.id !== selectedProduct.id || !existing) {
       return
-    }
-    const identity = {
-      merchantPubkey: selectedProduct.pubkey,
-      productId: selectedProduct.id,
     }
     if (existing.quantity <= 1) {
-      cart.removeItem(identity)
+      cart.removeItem(existing)
       return
     }
-    cart.setQuantity(identity, existing.quantity - 1)
+    cart.decrementItem(existing)
   }
 
   return (
@@ -236,7 +225,7 @@ function EventCatalogProductCard({
         onProductActivate={null}
         onMerchantActivate={onMerchantActivate}
         onAddToCart={add}
-        onIncrement={canAdd ? add : undefined}
+        onIncrement={canAdd ? increment : undefined}
         onDecrement={canAdd ? decrement : undefined}
         cartActionDisabled={!cartAction.enabled}
         cartActionDisabledLabel={cartAction.disabledLabel ?? undefined}
