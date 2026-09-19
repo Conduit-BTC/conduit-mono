@@ -9,6 +9,7 @@ import {
   type CartItem,
   type CartItemIdentity,
   type CartItemInput,
+  type CartItemStockEvidence,
 } from "../lib/cart-model"
 import {
   LEGACY_CART_STORAGE_KEY,
@@ -91,12 +92,16 @@ export function useCart() {
   }, [])
 
   const incrementItem = useCallback(
-    async (identity: CartItemIdentity, quantity = 1, currentStock?: number) => {
+    async (
+      identity: CartItemIdentity,
+      quantity = 1,
+      currentStockEvidence?: CartItemStockEvidence
+    ) => {
       const requested = Math.max(1, Math.floor(quantity))
       const result = await incrementCartRepositoryItem(
         identity,
         requested,
-        currentStock
+        currentStockEvidence
       )
       if (!result.changed) return
       const item = selectCartItem(result.after, identity)

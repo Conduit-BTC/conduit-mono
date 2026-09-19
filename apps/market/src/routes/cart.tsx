@@ -87,7 +87,7 @@ import { getCartShippingDestinationEligibility } from "../lib/cart-shipping-opti
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   getCartCostSummary,
-  getCartItemStockForAvailability,
+  getCartItemStockEvidenceForAvailability,
   getMixedFulfillmentBlockingMessage,
   isSameCartLineFulfillment,
   getCartItemKey,
@@ -1430,8 +1430,7 @@ function CartPage() {
                   cart.incrementItem(
                     item,
                     1,
-                    getCartItemStockForAvailability(
-                      item,
+                    getCartItemStockEvidenceForAvailability(
                       cartReadiness.byPurchase
                         .get(group.id)
                         ?.availabilityByProductId.get(item.productId)

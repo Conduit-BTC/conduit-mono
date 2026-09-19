@@ -1,8 +1,15 @@
 import { fileURLToPath } from "node:url"
 
 import { expect, test, type BrowserContext, type Page } from "@playwright/test"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+  type Event,
+} from "nostr-tools/pure"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
 import type { CartPurchaseClaim } from "../apps/market/src/lib/cart-repository"
+import { publishTestRelayEvents } from "./helpers/auth"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const coreBrowserModulePath = `/@fs${fileURLToPath(
@@ -10,6 +17,8 @@ const coreBrowserModulePath = `/@fs${fileURLToPath(
 )}`
 
 const MERCHANT = "a".repeat(64)
+const STOCK_REFRESH_SECRET = generateSecretKey()
+const STOCK_REFRESH_MERCHANT = getPublicKey(STOCK_REFRESH_SECRET)
 
 const legacyCart = {
   version: 2,
@@ -302,6 +311,113 @@ async function delayCartNotifications(page: Page): Promise<void> {
   })
 }
 
+function currentStockProduct(input: {
+  dTag: string
+  title: string
+  createdAt: number
+  stock?: number
+}): Event {
+  return finalizeEvent(
+    {
+      kind: 30402,
+      created_at: input.createdAt,
+      content: `${input.title} synthetic stock fixture.`,
+      tags: [
+        ["d", input.dTag],
+        ["title", input.title],
+        ["summary", "Synthetic stock refresh fixture."],
+        ["price", "1200", "SATS"],
+        ["type", "simple", "digital"],
+        ["visibility", "on-sale"],
+        ["image", "https://cdn.conduit.market/conduit-test/stock-refresh.svg"],
+        ...(input.stock === undefined ? [] : [["stock", String(input.stock)]]),
+      ],
+    },
+    STOCK_REFRESH_SECRET
+  )
+}
+
+test("Cart and HUD increments honor newer signed stock evidence @market", async ({
+  context,
+}) => {
+  const currentRevision = Math.floor(Date.now() / 1_000) - 10
+  const persistedRevision = currentRevision * 1_000 - 1_000
+  const fixtures = [
+    { dTag: "cart-stock-increase", title: "Cart stock increase", stock: 2 },
+    { dTag: "cart-stock-untracked", title: "Cart stock untracked" },
+    { dTag: "hud-stock-increase", title: "HUD stock increase", stock: 2 },
+    { dTag: "hud-stock-untracked", title: "HUD stock untracked" },
+  ] as const
+  await publishTestRelayEvents(
+    fixtures.map((fixture) =>
+      currentStockProduct({ ...fixture, createdAt: currentRevision })
+    )
+  )
+  await seedLegacyCart(context, {
+    version: 2,
+    items: fixtures.map((fixture) => ({
+      productId: `30402:${STOCK_REFRESH_MERCHANT}:${fixture.dTag}`,
+      merchantPubkey: STOCK_REFRESH_MERCHANT,
+      title: fixture.title,
+      price: 1_200,
+      currency: "SATS",
+      priceSats: 1_200,
+      format: "digital",
+      productUpdatedAt: persistedRevision,
+      stock: 1,
+      quantity: 1,
+    })),
+  })
+
+  const page = await context.newPage()
+  await page.route("https://cdn.conduit.market/conduit-test/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400"/>',
+    })
+  )
+  await page.goto(`${marketUrl}/cart`)
+  for (const title of ["Cart stock increase", "Cart stock untracked"]) {
+    const increment = page.getByRole("button", {
+      name: `Increase quantity for ${title}`,
+    })
+    await expect(increment).toBeEnabled()
+    await increment.click()
+  }
+  await expect
+    .poll(() => readCanonicalLines(page))
+    .toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: "Cart stock increase", quantity: 2 }),
+        expect.objectContaining({ title: "Cart stock untracked", quantity: 2 }),
+      ])
+    )
+
+  await page.goto(`${marketUrl}/products`)
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  await expect(hud).toBeVisible()
+  const toggle = hud.locator("button[aria-expanded]")
+  if ((await toggle.getAttribute("aria-expanded")) === "false") {
+    await toggle.click()
+  }
+  for (const title of ["HUD stock increase", "HUD stock untracked"]) {
+    const increment = hud.getByRole("button", {
+      name: `Increase ${title} quantity`,
+    })
+    await expect(increment).toBeEnabled()
+    await increment.click()
+  }
+  await expect
+    .poll(() => readCanonicalLines(page))
+    .toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: "HUD stock increase", quantity: 2 }),
+        expect.objectContaining({ title: "HUD stock untracked", quantity: 2 }),
+      ])
+    )
+})
+
 test("delayed stale quantity actions cannot restore a line removed in another tab @market", async ({
   context,
 }) => {
@@ -558,7 +674,7 @@ test("delayed product mutations preserve a newer signed cart snapshot @market", 
       incrementCartRepositoryItem(
         identity: CartItem,
         quantity: number,
-        currentStock?: number
+        currentStockEvidence?: Pick<CartItem, "stock" | "productUpdatedAt">
       ): Promise<{ changed: boolean; after: CartItem[] }>
     }
     const {
@@ -576,7 +692,7 @@ test("delayed product mutations preserve a newer signed cart snapshot @market", 
     const incremented = await repository.incrementCartRepositoryItem(
       staleItem,
       1,
-      99
+      { stock: 99, productUpdatedAt: 100 }
     )
     return {
       changes: [refreshed.changed, added.changed, incremented.changed],

@@ -15,6 +15,7 @@ import {
   type CartItem,
   type CartItemIdentity,
   type CartItemInput,
+  type CartItemStockEvidence,
 } from "./cart-model"
 
 export const LEGACY_CART_STORAGE_KEY = "conduit:cart"
@@ -715,9 +716,9 @@ export function addCartRepositoryItem(
 }
 
 export function incrementCartRepositoryItem(
-  identity: CartItemIdentity & Pick<CartItem, "productUpdatedAt">,
+  identity: CartItemIdentity,
   quantity = 1,
-  currentStock?: number
+  currentStockEvidence?: CartItemStockEvidence
 ): Promise<CartMutationResult> {
   return mutateCart((record) => {
     const index = findLineIndex(record, identity)
@@ -726,12 +727,14 @@ export function incrementCartRepositoryItem(
     const current = line.batches.reduce((sum, batch) => sum + batch.quantity, 0)
     const requested = Math.max(1, Math.floor(quantity))
     const stock =
-      currentStock === undefined
+      currentStockEvidence === undefined
         ? line.item.stock
         : line.item.stock === undefined ||
-            hasStrictlyNewerProductRevision(line.item, identity)
-          ? currentStock
-          : Math.min(line.item.stock, currentStock)
+            hasStrictlyNewerProductRevision(line.item, currentStockEvidence)
+          ? currentStockEvidence.stock
+          : currentStockEvidence.stock === undefined
+            ? line.item.stock
+            : Math.min(line.item.stock, currentStockEvidence.stock)
     if (typeof stock === "number" && current + requested > stock) {
       return false
     }

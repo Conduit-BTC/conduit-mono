@@ -20,6 +20,13 @@ describe("Market cart identity contract", () => {
       ),
       "utf8"
     )
+    const cartHud = readFileSync(
+      new URL(
+        "../apps/market/src/components/MarketCartHud.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    )
     expect(sources.join("\n")).not.toContain("item.productId === product.id")
     expect(sources[0]).toContain("<ResolvedProductGridCard")
     expect(sources[2]).toContain("<ResolvedProductGridCard")
@@ -38,6 +45,9 @@ describe("Market cart identity contract", () => {
     expect(resolvedCard).not.toContain("cart.incrementItem(existing")
     expect(resolvedCard).toContain("cart.removeItem(existing)")
     expect(resolvedCard).toContain("cart.decrementItem(existing)")
+    for (const source of [sources[3]!, cartHud]) {
+      expect(source).toContain("getCartItemStockEvidenceForAvailability(")
+    }
   })
 
   it("persists a versioned canonical cart and keeps its fallback explicit", () => {

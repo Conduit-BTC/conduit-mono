@@ -156,8 +156,11 @@ export type CartProductAvailability = {
   merchantPubkey: string
   status: "available" | "sold_out" | "insufficient_stock" | "untracked"
   stock?: number
+  productUpdatedAt?: number
   refreshed: boolean
 }
+
+export type CartItemStockEvidence = Pick<CartItem, "stock" | "productUpdatedAt">
 
 type CartAvailabilityReadMeta = Pick<
   CommerceQueryMeta,
@@ -354,6 +357,9 @@ export function getCartProductAvailability(
               ? "available"
               : "untracked",
       stock,
+      ...(refreshedProduct
+        ? { productUpdatedAt: refreshedProduct.updatedAt }
+        : {}),
       refreshed: !!refreshedProduct,
     }
   })
@@ -567,6 +573,18 @@ export function getCartItemStockForAvailability(
   availability: Pick<CartProductAvailability, "stock" | "refreshed"> | undefined
 ): number | undefined {
   return availability?.refreshed ? availability.stock : item.stock
+}
+
+export function getCartItemStockEvidenceForAvailability(
+  availability:
+    | Pick<CartProductAvailability, "stock" | "productUpdatedAt" | "refreshed">
+    | undefined
+): CartItemStockEvidence | undefined {
+  if (!availability?.refreshed) return undefined
+  return {
+    stock: availability.stock,
+    productUpdatedAt: availability.productUpdatedAt,
+  }
 }
 
 const ZAP_MESSAGE_POLICY_RANK: Record<ProductZapMessagePolicy, number> = {
@@ -1209,6 +1227,19 @@ export function getCartPurchaseGroupId(
   return JSON.stringify([item.merchantPubkey, compatibility])
 }
 
+function getCartPickupRevisionPurchaseGroupId(
+  item: Pick<
+    CartItem,
+    "merchantPubkey" | "productId" | "format" | "fulfillment"
+  >
+): string {
+  return JSON.stringify([
+    getCartPurchaseGroupId(item),
+    item.productId,
+    getCartLineFulfillmentId(item),
+  ])
+}
+
 /** Stable, display-only cue for distinguishing otherwise identical choices. */
 export function getCartPurchaseReference(purchaseId: string): string {
   let hash = 2_166_136_261
@@ -1236,11 +1267,19 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
     const item = items[index]
     if (!item) continue
     const kind = isPickupCartItem(item) ? "pickup" : "delivery"
-    const existing = groups.find(
+    const compatibleGroups = groups.filter(
       (group) =>
         group.merchantPubkey === item.merchantPubkey &&
         group.kind === kind &&
         (kind === "delivery" || isSameCartFulfillment(group.items[0]!, item))
+    )
+    // A purchase readiness read is keyed by product coordinate. Preserve
+    // distinct signed pickup revisions as distinct lines and purchases so its
+    // evidence remains one-to-one rather than coalescing either snapshot.
+    const existing = compatibleGroups.find(
+      (group) =>
+        kind === "delivery" ||
+        !group.items.some((entry) => entry.productId === item.productId)
     )
     if (existing) {
       existing.items.push(item)
@@ -1249,7 +1288,10 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
     }
 
     groups.push({
-      id: getCartPurchaseGroupId(item),
+      id:
+        compatibleGroups.length === 0
+          ? getCartPurchaseGroupId(item)
+          : getCartPickupRevisionPurchaseGroupId(item),
       kind,
       merchantPubkey: item.merchantPubkey,
       items: [item],

@@ -37,6 +37,7 @@ import {
   getCartCommerceFingerprint,
   getCartCostSummary,
   getCartItemKey,
+  getCartItemStockEvidenceForAvailability,
   getCartItemStockForAvailability,
   getCartPurchaseReference,
   groupCartPurchases,
@@ -586,6 +587,8 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     item,
                     availability
                   )
+                  const currentStockEvidence =
+                    getCartItemStockEvidenceForAvailability(availability)
                   const itemUnavailable =
                     isCartProductAvailabilityBlocking(availability)
                   return (
@@ -666,7 +669,11 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                                   item.quantity >= currentStock)
                               }
                               onClick={() =>
-                                cart.incrementItem(item, 1, currentStock)
+                                cart.incrementItem(
+                                  item,
+                                  1,
+                                  currentStockEvidence
+                                )
                               }
                             >
                               <Plus className="h-4 w-4" aria-hidden="true" />

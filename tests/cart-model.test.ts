@@ -11,6 +11,7 @@ import {
   clearMerchantCart,
   createCartItemFromProduct,
   getCartAvailabilityBlockingMessage,
+  getCartItemStockEvidenceForAvailability,
   getCartItemStockForAvailability,
   getCartProductAvailability,
   getCartItemKey,
@@ -307,6 +308,46 @@ describe("cart model", () => {
     ).toBe(4)
   })
 
+  it("separates signed pickup revisions so readiness stays one-to-one", () => {
+    const originalFulfillment = pickupFulfillment()
+    const currentFulfillment: CartPickupFulfillment = {
+      ...originalFulfillment,
+      product: {
+        ...originalFulfillment.product,
+        eventId: "9".repeat(64),
+        createdAt: originalFulfillment.product.createdAt + 1,
+      },
+    }
+    const baseItem = item({
+      merchantPubkey: originalFulfillment.product.merchantPubkey,
+      productId: originalFulfillment.product.coordinate,
+      format: "physical",
+    })
+    const groups = groupCartPurchases([
+      { ...baseItem, fulfillment: originalFulfillment },
+      { ...baseItem, fulfillment: currentFulfillment },
+    ])
+
+    expect(groups).toHaveLength(2)
+    expect(new Set(groups.map((group) => group.id)).size).toBe(2)
+
+    const product = refreshedProduct(baseItem, {
+      updatedAt: currentFulfillment.product.createdAt,
+    })
+    for (const group of groups) {
+      const availability = getCartProductAvailability(group.items, [product])
+      expect(
+        getCartAvailabilityReadDecision({
+          productIds: [product.id],
+          availability,
+          meta: { source: "commerce", stale: false, degraded: false },
+          diagnostics: [exactLiveDiagnostic(product.id)],
+          querySucceeded: true,
+        })
+      ).toEqual({ status: "verified_at_read", coverage: "complete" })
+    }
+  })
+
   it("adds new items and increments existing products", () => {
     const first = addCartItem([], item({ quantity: 0 }), 2)
     expect(first).toMatchObject([
@@ -395,6 +436,7 @@ describe("cart model", () => {
         merchantPubkey: cartItems[0]!.merchantPubkey,
         status: "sold_out",
         stock: 0,
+        productUpdatedAt: 2,
         refreshed: true,
       },
     ])
@@ -432,6 +474,7 @@ describe("cart model", () => {
         merchantPubkey: cartItems[0]!.merchantPubkey,
         status: "insufficient_stock",
         stock: 1,
+        productUpdatedAt: 2,
         refreshed: true,
       },
     ])
@@ -494,9 +537,14 @@ describe("cart model", () => {
         merchantPubkey: cartItems[0]!.merchantPubkey,
         status: "untracked",
         stock: undefined,
+        productUpdatedAt: 3,
         refreshed: true,
       },
     ])
+    expect(getCartItemStockEvidenceForAvailability(availability[0])).toEqual({
+      stock: undefined,
+      productUpdatedAt: 3,
+    })
 
     const incrementedItems = addCartItem(
       cartItems,
