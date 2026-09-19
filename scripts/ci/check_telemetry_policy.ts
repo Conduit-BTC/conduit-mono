@@ -23,6 +23,11 @@ export const allowedTelemetryProperties = new Set([
   "amount_bucket",
   "estimated_gmv_sats",
   "product_type",
+  "declaration_class",
+  "delivery_route",
+  "ack_outcome",
+  "repair_outcome",
+  "block_reason",
 ])
 
 const gmvTelemetryEventName = "commerce_gmv_estimated"
