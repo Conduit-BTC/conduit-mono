@@ -371,12 +371,19 @@ function positiveInteger(raw: string | undefined, fallback: number): number {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback
 }
 
+function nonNegativeInteger(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback
+  const parsed = Number(raw)
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback
+}
+
 export function relayServerOptionsFromEnv(
   env: Record<string, string | undefined> = process.env
 ): RelayServerOptions {
   return {
     hostname: env.RELAY_HOST ?? "127.0.0.1",
-    port: positiveInteger(env.RELAY_PORT, 7777),
+    // Port 0 asks the OS to bind and reserve an available port atomically.
+    port: nonNegativeInteger(env.RELAY_PORT, 7777),
     persistence: env.RELAY_EPHEMERAL !== "true",
     dataDir: env.RELAY_DATA_DIR ?? "context/relay-bun",
     faultMode: parseFaultMode(env.RELAY_FAULT_MODE),

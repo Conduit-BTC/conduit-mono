@@ -118,6 +118,14 @@ async function openRelaySocket(relayUrl: string): Promise<{
 }
 
 describe("local Bun relay", () => {
+  it("preserves explicit ports and admits port zero for OS assignment", () => {
+    expect(relayServerOptionsFromEnv({}).port).toBe(7777)
+    expect(relayServerOptionsFromEnv({ RELAY_PORT: "7788" }).port).toBe(7788)
+    expect(relayServerOptionsFromEnv({ RELAY_PORT: "0" }).port).toBe(0)
+    expect(relayServerOptionsFromEnv({ RELAY_PORT: "" }).port).toBe(7777)
+    expect(relayServerOptionsFromEnv({ RELAY_PORT: "invalid" }).port).toBe(7777)
+  })
+
   it("accepts valid signatures and rejects altered events", () => {
     const event = signedEvent({ createdAt: 10 })
 

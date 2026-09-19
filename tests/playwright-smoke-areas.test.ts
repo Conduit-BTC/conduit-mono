@@ -6,6 +6,7 @@ import {
   validatePlaywrightSmokeAreas,
   validatePlaywrightSmokeExecution,
 } from "../scripts/ci/validate_playwright_smoke_areas"
+import { resolvePlaywrightWebServerTarget } from "../scripts/dev/run_playwright_web_server"
 
 const normalizeLines = (value: string) => value.replaceAll("\r\n", "\n")
 const playwrightConfig = normalizeLines(
@@ -61,16 +62,120 @@ describe("Playwright smoke area validation", () => {
     expect(playwrightWebServer).toContain("VITE_E2E_RELAY_URL: relayUrl")
     expect(playwrightWebServer).toContain('RELAY_EPHEMERAL: "true"')
     expect(playwrightWebServer).toContain('RELAY_FAULT_MODE: "none"')
-    expect(playwrightConfig).toContain("PLAYWRIGHT_RELAY_PORT")
+    expect(playwrightWebServer).toContain(
+      'target === "relay" ? "0" : undefined'
+    )
+    expect(playwrightConfig).toContain("(?<PLAYWRIGHT_RELAY_PORT>\\d+)")
+    expect(playwrightConfig).toContain("wait: {")
     expect(playwrightConfig).toContain("reuseExistingServer: false")
     expect(playwrightConfig).toContain(
       "bun scripts/dev/run_playwright_web_server.ts relay"
     )
   })
 
+  it("preserves an explicit relay port and otherwise requests OS assignment", () => {
+    expect(resolvePlaywrightWebServerTarget("relay", {}).env).toMatchObject({
+      RELAY_EPHEMERAL: "true",
+      RELAY_FAULT_MODE: "none",
+      RELAY_PORT: "0",
+    })
+    expect(
+      resolvePlaywrightWebServerTarget("relay", {
+        PLAYWRIGHT_RELAY_PORT: "7788",
+      }).env.RELAY_PORT
+    ).toBe("7788")
+    expect(() => resolvePlaywrightWebServerTarget("market", {})).toThrow(
+      "PLAYWRIGHT_RELAY_PORT must be captured before starting app servers"
+    )
+  })
+
+  it("starts the wrapper on an OS-assigned port while 7777 is occupied", async () => {
+    let occupiedServer: ReturnType<typeof Bun.serve> | undefined
+    try {
+      occupiedServer = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 7777,
+        fetch: () => new Response("occupied"),
+      })
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !("code" in error) ||
+        error.code !== "EADDRINUSE"
+      ) {
+        throw error
+      }
+    }
+
+    const childEnvironment = { ...process.env }
+    delete childEnvironment.PLAYWRIGHT_RELAY_PORT
+    const child = Bun.spawn(
+      ["bun", "scripts/dev/run_playwright_web_server.ts", "relay"],
+      {
+        cwd: process.cwd(),
+        env: childEnvironment,
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    )
+    const stdout = child.stdout.getReader()
+    const timeout = setTimeout(() => child.kill(), 5_000)
+
+    try {
+      const decoder = new TextDecoder()
+      let bufferedOutput = ""
+      let capturedPort: number | undefined
+      while (capturedPort === undefined) {
+        const { done, value } = await stdout.read()
+        if (done) break
+        bufferedOutput += decoder.decode(value, { stream: true })
+        const match = bufferedOutput.match(
+          /Conduit Bun relay listening on ws:\/\/127\.0\.0\.1:(\d+)/
+        )
+        if (match?.[1]) capturedPort = Number(match[1])
+      }
+
+      if (capturedPort === undefined) {
+        throw new Error(
+          "Playwright relay wrapper did not report its bound port"
+        )
+      }
+      expect(capturedPort).not.toBe(7777)
+      expect((await fetch(`http://127.0.0.1:${capturedPort}/health`)).ok).toBe(
+        true
+      )
+    } finally {
+      clearTimeout(timeout)
+      child.kill()
+      await child.exited
+      stdout.releaseLock()
+      occupiedServer?.stop()
+    }
+  })
+
+  it("propagates the captured relay URL to both app servers", () => {
+    const capturedEnvironment = {
+      PLAYWRIGHT_RELAY_PORT: "54321",
+      PLAYWRIGHT_SMOKE_AREA: "commerce",
+    }
+    const market = resolvePlaywrightWebServerTarget(
+      "market",
+      capturedEnvironment
+    )
+    const merchant = resolvePlaywrightWebServerTarget(
+      "merchant",
+      capturedEnvironment
+    )
+
+    expect(market.env.VITE_E2E_RELAY_URL).toBe("ws://127.0.0.1:54321")
+    expect(merchant.env.VITE_E2E_RELAY_URL).toBe("ws://127.0.0.1:54321")
+    expect(market.env.VITE_LIGHTNING_NETWORK).toBe("testnet")
+    expect(merchant.env.VITE_LIGHTNING_NETWORK).toBe("testnet")
+  })
+
   it("starts both apps with the commerce lane's testnet wallet mode", () => {
     expect(playwrightWebServer).toContain(
-      'const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"'
+      'const smokeArea = environment.PLAYWRIGHT_SMOKE_AREA ?? "all"'
     )
     expect(playwrightWebServer).toContain(
       'const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"'

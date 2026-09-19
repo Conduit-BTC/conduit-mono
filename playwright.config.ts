@@ -10,7 +10,11 @@ const CI = !!process.env.CI
 const smokeDiscovery = process.env.PLAYWRIGHT_SMOKE_DISCOVERY === "true"
 const marketPort = process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 const merchantPort = process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
-const relayPort = process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"
+const requestedRelayPort = process.env.PLAYWRIGHT_RELAY_PORT
+const configuredRelayPort =
+  requestedRelayPort && requestedRelayPort !== "0"
+    ? requestedRelayPort
+    : undefined
 const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"
 const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"
 const smokeResultFile = process.env.PLAYWRIGHT_SMOKE_RESULT_FILE
@@ -50,13 +54,24 @@ if (!new Set(["all", "market", "merchant", "commerce"]).has(smokeArea)) {
   throw new Error(`Unknown Playwright smoke area: ${smokeArea}`)
 }
 
+const relayWebServer = configuredRelayPort
+  ? {
+      command: "bun scripts/dev/run_playwright_web_server.ts relay",
+      reuseExistingServer: false,
+      timeout: 30_000,
+      url: `http://127.0.0.1:${configuredRelayPort}/health`,
+    }
+  : {
+      command: "bun scripts/dev/run_playwright_web_server.ts relay",
+      timeout: 30_000,
+      wait: {
+        stdout:
+          /Conduit Bun relay listening on ws:\/\/127\.0\.0\.1:(?<PLAYWRIGHT_RELAY_PORT>\d+)/,
+      },
+    }
+
 const webServer = [
-  {
-    command: "bun scripts/dev/run_playwright_web_server.ts relay",
-    url: `http://127.0.0.1:${relayPort}/health`,
-    reuseExistingServer: false,
-    timeout: 30_000,
-  },
+  relayWebServer,
   {
     command: "bun scripts/dev/run_playwright_web_server.ts market",
     url: `http://127.0.0.1:${marketPort}/products`,
