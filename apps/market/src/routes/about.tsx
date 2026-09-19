@@ -26,7 +26,7 @@ function AboutPage() {
   return (
     <AboutPagePanel
       appName={app.name}
-      appDescription="Browse independent storefronts, compare public signed listings, and send encrypted orders directly to merchants."
+      appDescription="Browse independent merchants, compare public signed listings, and send encrypted orders directly to them."
       buildInfo={conduitBuildInfo}
       commitUrl={getCommitUrl(conduitBuildInfo)}
       contributors={repositoryContributorSnapshot}

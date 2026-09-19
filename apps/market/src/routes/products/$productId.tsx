@@ -525,7 +525,7 @@ function ProductPage() {
                 to="/store/$pubkey"
                 params={{ pubkey: pubkeyToNpub(product.pubkey) }}
               >
-                View store
+                View merchant
               </Link>
             </Button>
           </div>
@@ -613,7 +613,7 @@ function ProductPage() {
                     to="/store/$pubkey"
                     params={{ pubkey: pubkeyToNpub(product.pubkey) }}
                     className="block shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-elevated)]"
-                    aria-label={`Visit ${merchantName} store`}
+                    aria-label={`Visit ${merchantName} merchant page`}
                   >
                     <Avatar className="h-11 w-11 border border-[var(--border)]">
                       <AvatarImage
@@ -975,7 +975,7 @@ function ProductPage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-semibold text-[var(--text-primary)]">
-                  More from this store
+                  More from this merchant
                 </h2>
               </div>
               <Button asChild variant="outline" className="h-11 px-4 text-sm">
@@ -984,7 +984,7 @@ function ProductPage() {
                   params={{ pubkey: pubkeyToNpub(product.pubkey) }}
                 >
                   <Store className="h-[18px] w-[18px]" />
-                  Browse store
+                  Browse merchant
                 </Link>
               </Button>
             </div>

@@ -302,7 +302,7 @@ describe("market browse model helpers", () => {
       "wss://relay.example",
     ])
 
-    expect(pending.displayName).toBe("Store merchant-a")
+    expect(pending.displayName).toBe("Merchant merchant-a")
     expect(pending.status).toBe("pending")
     expect(pending.relayHints).toEqual(["wss://relay.example"])
   })
@@ -315,7 +315,7 @@ describe("market browse model helpers", () => {
       { lookupSettled: true }
     )
 
-    expect(fallback.displayName).toBe("Store merchant-a")
+    expect(fallback.displayName).toBe("Merchant merchant-a")
     expect(fallback.status).toBe("fallback")
     expect(fallback.relayHints).toEqual(["wss://relay.example"])
   })

@@ -120,14 +120,14 @@ describe("seller directory", () => {
   })
 
   it("offers retry for the unavailable directory without changing empty copy", async () => {
-    const route = await readFile("apps/market/src/routes/sellers.tsx", "utf8")
+    const route = await readFile("apps/market/src/routes/merchants.tsx", "utf8")
     expect(route).toContain("directory.isUnavailable")
     expect(route).toContain(
-      "Sellers could not be loaded from this perspective."
+      "Merchants could not be loaded from this perspective."
     )
     expect(route).toContain("onClick={directory.retry}")
     expect(route).toContain(
-      "No sellers have been discovered from this perspective yet."
+      "No merchants have been discovered from this perspective yet."
     )
   })
 })
@@ -205,7 +205,7 @@ describe("other accounts capping", () => {
   })
 })
 
-describe("storefront matches on the product search", () => {
+describe("merchant matches on the product search", () => {
   it("answers the name query from the discovered catalog, above product results", async () => {
     const model = await readFile(
       "apps/market/src/hooks/useMarketBrowseModel.ts",
@@ -220,27 +220,42 @@ describe("storefront matches on the product search", () => {
       "apps/market/src/routes/products/index.tsx",
       "utf8"
     )
-    expect(route).toContain('aria-labelledby="matching-stores-heading"')
-    expect(route).toContain("MATCHING_STORE_LIMIT")
-    expect(route).toContain('to="/sellers"')
+    expect(route).toContain('aria-labelledby="matching-merchants-heading"')
+    expect(route).toContain("MATCHING_MERCHANT_LIMIT")
+    expect(route).toContain('to="/merchants"')
     // The row sits before the result count, and the grid stays product-only.
-    expect(route.indexOf("matching-stores-heading")).toBeLessThan(
+    expect(route.indexOf("matching-merchants-heading")).toBeLessThan(
       route.indexOf("{filtered.length} {filtered.length === 1")
     )
   })
 
-  it("keeps the header box a product search and gives Sellers its own field", async () => {
+  it("keeps the header box a product search and gives Merchants its own field", async () => {
     const header = await readFile(
       "apps/market/src/components/MarketHeader.tsx",
       "utf8"
     )
-    expect(header).not.toContain('"/sellers"')
+    expect(header).not.toContain('"/merchants"')
     expect(header).toContain('const isBrowseRoute = pathname === "/products"')
-    expect(header).toContain('heading: "Stores"')
+    expect(header).toContain('heading: "Merchants"')
     expect(header).toContain('heading: "Accounts"')
 
-    const sellers = await readFile("apps/market/src/routes/sellers.tsx", "utf8")
-    expect(sellers).toContain('aria-label="Filter sellers"')
-    expect(sellers).toContain("updateSearch({ q: trimmed || undefined })")
+    const merchants = await readFile(
+      "apps/market/src/routes/merchants.tsx",
+      "utf8"
+    )
+    expect(merchants).toContain('aria-label="Filter merchants"')
+    expect(merchants).toContain("updateSearch({ q: trimmed || undefined })")
+  })
+
+  it("moves product categories into the same dropdown pattern as merchants", async () => {
+    const route = await readFile(
+      "apps/market/src/routes/products/index.tsx",
+      "utf8"
+    )
+
+    expect(route).toContain("open={categoryMenuOpen}")
+    expect(route).toContain("All categories")
+    expect(route).toContain("All merchants")
+    expect(route).not.toContain("Expand categories")
   })
 })

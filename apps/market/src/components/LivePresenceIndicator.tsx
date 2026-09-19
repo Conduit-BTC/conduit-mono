@@ -17,7 +17,9 @@ export function getLivePresenceLabel(
   pageType: LivePresenceIndicatorPageType
 ): string {
   const phrase =
-    pageType === "product" ? "looking at this product" : "browsing this store"
+    pageType === "product"
+      ? "looking at this product"
+      : "browsing this merchant"
   return `${count} ${count === 1 ? "visitor is" : "visitors are"} ${phrase}`
 }
 

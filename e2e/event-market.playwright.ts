@@ -2493,10 +2493,11 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   await page.evaluate(() => localStorage.clear())
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto(`${marketUrl}/events`)
-  await expect(page.getByRole("heading", { name: "Events" })).toBeVisible()
+  const marketBrowse = page.getByRole("navigation", { name: "Market browse" })
+  await expect(marketBrowse).toBeVisible()
   await expect(
-    page.getByRole("navigation", { name: "Market browse" })
-  ).toBeVisible()
+    marketBrowse.getByRole("link", { name: "Events", exact: true })
+  ).toHaveAttribute("aria-current", "page")
   await expect(
     page.getByRole("group", { name: "Market perspective" })
   ).toBeVisible()
@@ -4038,6 +4039,10 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
       (filter) => filter.kinds?.length === 1 && filter.kinds[0] === 30406
     )
   )
+  const refreshEvents = page.getByRole("button", {
+    name: "Refresh events",
+    exact: true,
+  })
   const coldStarted = Date.now()
   try {
     await gotoAs(page, marketUrl, "/events", "buyer", {
@@ -4051,21 +4056,11 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
     await expect(
       card.getByRole("link", { name: "View", exact: true })
     ).toBeVisible()
-    await expect(
-      page.getByRole("button", { name: "Retry discovery", exact: true })
-    ).toBeDisabled()
+    await expect(refreshEvents).toBeDisabled()
   } finally {
     held.release()
   }
-  await expect
-    .poll(async () => {
-      const retry = page.getByRole("button", {
-        name: "Retry discovery",
-        exact: true,
-      })
-      return (await retry.count()) === 0 || (await retry.isEnabled())
-    })
-    .toBe(true)
+  await expect(refreshEvents).toBeEnabled()
   await expect(card).toBeVisible()
   const publications = relay.publications.length
   const warmRead = relay.holdRelayRequests((request) =>
@@ -4079,9 +4074,7 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
     await warmRead.captured
     await expect(card).toBeVisible()
     timings.warmListCardMs = Date.now() - warmStarted
-    await expect(
-      page.getByRole("button", { name: "Retry discovery", exact: true })
-    ).toBeDisabled()
+    await expect(refreshEvents).toBeDisabled()
     // A newer collection withdrawing its event link is stronger evidence than
     // the retained card, including when the organizer refresh is incomplete.
     relay.seed(
