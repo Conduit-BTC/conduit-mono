@@ -86,8 +86,6 @@ async function preparedImage(
     sha256: await computeBlobSha256(blob),
     size: blob.size,
     mimeType: blob.type,
-    width: 2,
-    height: 2,
   }
 }
 
@@ -134,7 +132,6 @@ describe("product image upload target resolution", () => {
     ).toEqual({
       kind: "configured",
       serverUrl: CONFIGURED_SERVER,
-      maxFileUploads: 12,
     })
   })
 
@@ -167,7 +164,6 @@ describe("product image upload target resolution", () => {
       ).toEqual({
         kind: "configured",
         serverUrl: CONFIGURED_SERVER,
-        maxFileUploads: 12,
       })
     }
   })
@@ -196,7 +192,6 @@ describe("product image upload target resolution", () => {
     ).toEqual({
       kind: "fallback",
       serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
-      maxFileUploads: 1,
     })
 
     expect(
@@ -296,7 +291,6 @@ describe("product image upload target resolution", () => {
     ).toEqual({
       kind: "fallback",
       serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
-      maxFileUploads: 1,
     })
   })
 
@@ -343,7 +337,6 @@ describe("product image upload target resolution", () => {
     ).toEqual({
       kind: "fallback",
       serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
-      maxFileUploads: 1,
     })
   })
 })
@@ -505,7 +498,6 @@ describe("verified Blossom product image upload", () => {
       target: {
         kind: "configured",
         serverUrl: CONFIGURED_SERVER,
-        maxFileUploads: 12,
       },
       expectedPubkey: pubkey,
       signer: {
@@ -518,11 +510,7 @@ describe("verified Blossom product image upload", () => {
       dependencies: { fetch: fetchMock, now: () => 1_000 },
     })
 
-    expect(result).toMatchObject({
-      url: resourceUrl,
-      sha256: prepared.sha256,
-      targetKind: "configured",
-    })
+    expect(result).toBe(resourceUrl)
     expect(requests.map((request) => request.url)).toEqual([
       `${CONFIGURED_SERVER}/upload`,
       resourceUrl,
@@ -548,7 +536,6 @@ describe("verified Blossom product image upload", () => {
         target: {
           kind: "configured",
           serverUrl: CONFIGURED_SERVER,
-          maxFileUploads: 12,
         },
         expectedPubkey: pubkey,
         signer: {
@@ -674,7 +661,6 @@ describe("verified Blossom product image upload", () => {
           target: {
             kind: "configured",
             serverUrl: CONFIGURED_SERVER,
-            maxFileUploads: 12,
           },
           expectedPubkey: pubkey,
           signer: {
@@ -712,7 +698,6 @@ describe("verified Blossom product image upload", () => {
         target: {
           kind: "fallback",
           serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
-          maxFileUploads: 1,
         },
         expectedPubkey: pubkey,
         signer: {
@@ -743,7 +728,6 @@ describe("verified Blossom product image upload", () => {
         target: {
           kind: "configured",
           serverUrl: CONFIGURED_SERVER,
-          maxFileUploads: 12,
         },
         expectedPubkey: pubkey,
         signer: {
@@ -805,7 +789,6 @@ describe("verified Blossom product image upload", () => {
           target: {
             kind: "configured",
             serverUrl: CONFIGURED_SERVER,
-            maxFileUploads: 12,
           },
           expectedPubkey: pubkey,
           signer: {
@@ -863,7 +846,6 @@ describe("verified Blossom product image upload", () => {
         target: {
           kind: "configured",
           serverUrl: CONFIGURED_SERVER,
-          maxFileUploads: 12,
         },
         expectedPubkey: pubkey,
         signer: {
@@ -916,7 +898,6 @@ describe("verified Blossom product image upload", () => {
     const target = {
       kind: "configured" as const,
       serverUrl: CONFIGURED_SERVER,
-      maxFileUploads: 12 as const,
     }
     await expect(
       uploadPreparedProductImage({

@@ -43,12 +43,10 @@ export type ProductImageUploadTarget =
   | {
       kind: "configured"
       serverUrl: string
-      maxFileUploads: 12
     }
   | {
       kind: "fallback"
       serverUrl: typeof PRODUCT_IMAGE_FALLBACK_SERVER
-      maxFileUploads: 1
     }
   | {
       kind: "pending"
@@ -70,7 +68,6 @@ export type ProductImageUploadFailureCode =
   | "decode_failed"
   | "encode_failed"
   | "output_too_large"
-  | "target_pending"
   | "target_unavailable"
   | "fallback_limit_reached"
   | "fallback_retry_mismatch"
@@ -111,24 +108,12 @@ export interface PreparedProductImage {
   sha256: string
   size: number
   mimeType: string
-  width: number
-  height: number
 }
 
 export interface ProductImageSourceMetadata {
   width: number
   height: number
   animated: boolean
-}
-
-export interface VerifiedProductImageUpload {
-  url: string
-  sha256: string
-  size: number
-  mimeType: string
-  width: number
-  height: number
-  targetKind: "configured" | "fallback"
 }
 
 export interface PrepareProductImageDependencies {
@@ -204,8 +189,6 @@ export function getProductImageUploadErrorMessage(
       return "Conduit could not prepare a private local copy of that image."
     case "output_too_large":
       return "The prepared image is still too large to upload."
-    case "target_pending":
-      return "Wait for media server settings to finish loading."
     case "target_unavailable":
       return "Image upload is unavailable. Add an image URL or repair Network settings."
     case "fallback_limit_reached":
@@ -313,7 +296,6 @@ export function resolveProductImageUploadTarget(input: {
     return {
       kind: "configured",
       serverUrl: configuredServer,
-      maxFileUploads: 12,
     }
   }
 
@@ -331,7 +313,6 @@ export function resolveProductImageUploadTarget(input: {
     return {
       kind: "fallback",
       serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
-      maxFileUploads: 1,
     }
   }
   return { kind: "pending", reason: "lookup_incomplete" }
@@ -770,8 +751,6 @@ export async function prepareProductImageFile(
     sha256,
     size: blob.size,
     mimeType,
-    width,
-    height,
   }
 }
 
@@ -985,7 +964,7 @@ async function readResponseBytesBounded(
 
 export async function uploadPreparedProductImage(
   input: UploadPreparedProductImageInput
-): Promise<VerifiedProductImageUpload> {
+): Promise<string> {
   const fetchImpl = input.dependencies?.fetch ?? fetch
   const now = input.dependencies?.now ?? (() => Math.floor(Date.now() / 1_000))
   const expectedPubkey = input.expectedPubkey.trim().toLowerCase()
@@ -1241,13 +1220,5 @@ export async function uploadPreparedProductImage(
     "accepted_unverified"
   )
   input.onPhase?.("succeeded")
-  return {
-    url: descriptor.url,
-    sha256: input.prepared.sha256,
-    size: input.prepared.size,
-    mimeType: input.prepared.mimeType,
-    width: input.prepared.width,
-    height: input.prepared.height,
-    targetKind: input.target.kind,
-  }
+  return descriptor.url
 }

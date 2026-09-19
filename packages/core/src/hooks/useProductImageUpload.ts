@@ -25,7 +25,6 @@ import {
   type PreparedProductImage,
   type ProductImageUploadPhase,
   type ProductImageUploadTarget,
-  type VerifiedProductImageUpload,
 } from "../protocol/product-image-upload"
 import { subscribeRelaySettingsChanges } from "../protocol/relay-settings"
 
@@ -48,9 +47,7 @@ export interface ProductImageUploadController {
   prepareFallbackClaimMove: (fromScopeId: string, toScopeId: string) => boolean
   commitFallbackClaimMove: (fromScopeId: string, toScopeId: string) => void
   cancelFallbackClaimMove: (fromScopeId: string, toScopeId: string) => void
-  uploadFile: (
-    request: ProductImageUploadRequest
-  ) => Promise<VerifiedProductImageUpload>
+  uploadFile: (request: ProductImageUploadRequest) => Promise<string>
 }
 
 export type ProductImageFallbackClaimState =
@@ -306,7 +303,7 @@ export function useProductImageUpload(): ProductImageUploadController {
     async (
       request: ProductImageUploadRequest,
       authority: ProductImageUploadAuthoritySnapshot
-    ): Promise<VerifiedProductImageUpload> => {
+    ): Promise<string> => {
       const {
         generation,
         owner: activeOwner,
@@ -414,7 +411,7 @@ export function useProductImageUpload(): ProductImageUploadController {
         })
       }
 
-      let result: VerifiedProductImageUpload
+      let result: string
       try {
         const uploadAuthorityIsCurrent = (): boolean => {
           if (
@@ -504,9 +501,7 @@ export function useProductImageUpload(): ProductImageUploadController {
   )
 
   const uploadFile = useCallback(
-    (
-      request: ProductImageUploadRequest
-    ): Promise<VerifiedProductImageUpload> => {
+    (request: ProductImageUploadRequest): Promise<string> => {
       const authority: ProductImageUploadAuthoritySnapshot = {
         generation: auth.authGeneration,
         owner,

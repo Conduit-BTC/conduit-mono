@@ -1,6 +1,7 @@
 import {
   ArrowDown,
   ArrowUp,
+  ChevronDown,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -219,9 +220,13 @@ export function MediaServerPreferencesSection({
       className={className}
     >
       <PreferenceSectionBody className="pt-0 sm:pt-0">
-        <details className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5 sm:px-4">
-          <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
+        <details className="group/published-preference rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5 sm:px-4">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 [&::-webkit-details-marker]:hidden">
             <span className="ml-1">Published preference</span>
+            <ChevronDown
+              className="size-4 shrink-0 group-open/published-preference:rotate-180"
+              aria-hidden="true"
+            />
           </summary>
           <div className="mt-3 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             {publishedAt ? (

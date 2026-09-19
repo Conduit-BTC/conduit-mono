@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { expect, test, type Locator, type Page } from "@playwright/test"
@@ -15,6 +14,7 @@ import {
   bolt11PaymentHashField,
   makeBolt11Fixture,
 } from "../tests/support/bolt11-fixture"
+import { interceptBlossom } from "./helpers/blossom"
 import { delayCartNotifications } from "./helpers/cart-notifications"
 
 const marketUrl = `http://127.0.0.1:${
@@ -893,118 +893,6 @@ async function installSyntheticEnvironment(
       body: '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600"><rect width="1200" height="600" fill="#ddd7ca"/></svg>',
     })
   )
-}
-
-async function interceptEventProductBlossom(
-  page: Page,
-  serverUrl = EVENT_PRODUCT_MEDIA_SERVER
-): Promise<{
-  putCount: number
-  resourceUrl: string | null
-}> {
-  const state = { putCount: 0, resourceUrl: null as string | null }
-  const resources = new Map<string, { body: Buffer; type: string }>()
-
-  await page.addInitScript((serverUrl) => {
-    const browserWindow = window as unknown as {
-      __eventProductUploadBodies?: Record<string, number[]>
-    }
-    const originalFetch = window.fetch.bind(window)
-    window.fetch = async (input, init) => {
-      const url =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.href
-            : input.url
-      if (
-        url.startsWith(`${serverUrl}/`) &&
-        init?.method === "PUT" &&
-        init.body instanceof Blob
-      ) {
-        const hash = new Headers(init.headers).get("x-sha-256")
-        if (hash) {
-          const bytes = new Uint8Array(await init.body.arrayBuffer())
-          browserWindow.__eventProductUploadBodies ??= {}
-          browserWindow.__eventProductUploadBodies[hash] = Array.from(bytes)
-        }
-      }
-      return originalFetch(input, init)
-    }
-  }, serverUrl)
-
-  await page.route(`${serverUrl}/**`, async (route) => {
-    const request = route.request()
-    if (request.method() === "OPTIONS") {
-      await route.fulfill({
-        status: 204,
-        headers: {
-          "access-control-allow-origin": "*",
-          "access-control-allow-methods": "PUT, OPTIONS",
-          "access-control-allow-headers":
-            "authorization, content-type, x-sha-256",
-        },
-      })
-      return
-    }
-    if (request.method() !== "PUT") {
-      await route.fulfill({ status: 405 })
-      return
-    }
-    state.putCount += 1
-    let body = request.postDataBuffer()
-    if (!body) {
-      const expectedHash = request.headers()["x-sha-256"]
-      const captured = expectedHash
-        ? await page.evaluate((hash) => {
-            const browserWindow = window as unknown as {
-              __eventProductUploadBodies?: Record<string, number[]>
-            }
-            return browserWindow.__eventProductUploadBodies?.[hash]
-          }, expectedHash)
-        : undefined
-      if (captured) body = Buffer.from(captured)
-    }
-    if (!body) throw new Error("Expected prepared event-product image bytes")
-    const hash = createHash("sha256").update(body).digest("hex")
-    const type = request.headers()["content-type"] ?? "image/png"
-    const resourceUrl = `https://cdn.conduit.market/event-product/${hash}.png`
-    resources.set(resourceUrl, { body, type })
-    state.resourceUrl = resourceUrl
-    await route.fulfill({
-      status: 201,
-      contentType: "application/json",
-      headers: { "access-control-allow-origin": "*" },
-      body: JSON.stringify({
-        url: resourceUrl,
-        sha256: hash,
-        size: body.byteLength,
-        type,
-        uploaded: Math.floor(Date.now() / 1_000),
-      }),
-    })
-  })
-
-  await page.route(
-    "https://cdn.conduit.market/event-product/**",
-    async (route) => {
-      const resource = resources.get(route.request().url())
-      if (!resource) {
-        await route.fulfill({ status: 404 })
-        return
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: resource.type,
-        headers: {
-          "access-control-allow-origin": "*",
-          "content-length": String(resource.body.byteLength),
-        },
-        body: resource.body,
-      })
-    }
-  )
-  return state
 }
 
 type PublishedOrganizerMarket = {
@@ -1895,7 +1783,9 @@ test("event product authoring adopts a verified configured-server upload @mercha
   page.setDefaultTimeout(25_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
-  const upload = await interceptEventProductBlossom(page)
+  const upload = await interceptBlossom(page, EVENT_PRODUCT_MEDIA_SERVER, {
+    resourcePathPrefix: "event-product",
+  })
   relay.seed(
     signEvent(MERCHANT_SECRET, {
       kind: 10063,
@@ -1918,11 +1808,11 @@ test("event product authoring adopts a verified configured-server upload @mercha
   })
 
   expect(upload.putCount).toBe(1)
-  expect(upload.resourceUrl).toMatch(
+  expect(upload.resourceUrls[0]).toMatch(
     /^https:\/\/cdn\.conduit\.market\/event-product\/[0-9a-f]{64}\.png$/
   )
   expect(product.tags.filter((tag) => tag[0] === "image")).toEqual([
-    ["image", upload.resourceUrl!],
+    ["image", upload.resourceUrls[0]!],
   ])
 })
 
@@ -1994,10 +1884,9 @@ test("event publish-another starts a clean fallback upload lifecycle @merchant",
   page.setDefaultTimeout(25_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
-  const upload = await interceptEventProductBlossom(
-    page,
-    EVENT_PRODUCT_FALLBACK_SERVER
-  )
+  const upload = await interceptBlossom(page, EVENT_PRODUCT_FALLBACK_SERVER, {
+    resourcePathPrefix: "event-product",
+  })
   const eventTitle = "Synthetic Fallback Reset Event"
   const market = await publishOrganizerMarket(page, relay, {
     title: eventTitle,

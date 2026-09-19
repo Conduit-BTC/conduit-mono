@@ -337,7 +337,7 @@ export function ProductImageUrlCollectionField({
       error: null,
     }))
     try {
-      const verified = await upload.uploadFile({
+      const verifiedUrl = await upload.uploadFile({
         scopeId: uploadScopeId,
         itemId,
         file: item.file,
@@ -368,8 +368,8 @@ export function ProductImageUrlCollectionField({
         emptyIndex >= 0
           ? emptyIndex
           : Math.min(active.desiredIndex, next.length)
-      if (emptyIndex >= 0) next[emptyIndex] = { url: verified.url }
-      else next.splice(insertionIndex, 0, { url: verified.url })
+      if (emptyIndex >= 0) next[emptyIndex] = { url: verifiedUrl }
+      else next.splice(insertionIndex, 0, { url: verifiedUrl })
       commitImages(next)
       releaseObjectUrl(active.previewUrl)
       itemsRef.current.delete(itemId)

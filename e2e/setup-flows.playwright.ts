@@ -1374,6 +1374,7 @@ test("merchant product drafts survive safe dialog dismissal @merchant", async ({
   await expect(productDialog).not.toBeVisible()
 
   await addProduct.click()
+  await expect(productDialog).toBeVisible({ timeout: 30_000 })
   await expect(title).toHaveValue("")
 
   await page.keyboard.press("Escape")

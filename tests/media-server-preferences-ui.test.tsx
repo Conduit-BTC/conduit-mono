@@ -118,6 +118,8 @@ describe("shared media server preference UI", () => {
     expect(html).toContain(">Refresh</button>")
     expect(html).not.toContain("Published list observed")
     expect(html).not.toContain("Matches observed list")
+    expect(html).toContain("group-open/published-preference:rotate-180")
+    expect(html).toContain("[&amp;::-webkit-details-marker]:hidden")
     expect(html.indexOf("Published preference")).toBeLessThan(
       html.indexOf('aria-label="Ordered media servers"')
     )

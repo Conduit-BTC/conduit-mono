@@ -92,7 +92,6 @@ describe("ProductImageUrlCollectionField", () => {
           target: {
             kind: "configured",
             serverUrl: "https://media.conduit.market",
-            maxFileUploads: 12,
           },
           ...uploadLifecycle,
         }}
@@ -121,7 +120,6 @@ describe("ProductImageUrlCollectionField", () => {
           target: {
             kind: "configured",
             serverUrl: "https://media.conduit.market",
-            maxFileUploads: 12,
           },
           ...uploadLifecycle,
         }}
@@ -149,7 +147,6 @@ describe("ProductImageUrlCollectionField", () => {
           target: {
             kind: "fallback",
             serverUrl: "https://blossom.nostr.build",
-            maxFileUploads: 1,
           },
           ...uploadLifecycle,
         }}
@@ -180,7 +177,6 @@ describe("ProductImageUrlCollectionField", () => {
           target: {
             kind: "fallback",
             serverUrl: "https://blossom.nostr.build",
-            maxFileUploads: 1,
           },
           ...uploadLifecycle,
           getFallbackClaimState: () => "retry_same_hash",
@@ -241,7 +237,6 @@ describe("ProductImageUrlCollectionField", () => {
           target: {
             kind: "configured",
             serverUrl: "https://media.conduit.market",
-            maxFileUploads: 12,
           },
           ...uploadLifecycle,
         }}
