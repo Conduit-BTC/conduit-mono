@@ -14,9 +14,11 @@ Merchant's product publication boundary distinguishes:
 - `preserve_existing`: bind the baseline and candidate to the same merchant,
   product coordinate, and `d` tag. Keep the existing format, visibility,
   collection references, shipping references and extra costs, shipping metadata,
-  and resolution flags. Publish only changed listings. Event-pickup and
-  coordinate-after-order shapes that round-trip through kind `30402` do not
-  require organizer, catalog, or pickup reads.
+  and resolution flags. Publish only changed listings. Coordinate-after-order
+  shapes that do not directly name a pickup require no organizer, catalog, or
+  pickup read. A direct event-pickup reference requires one exact, positive,
+  deletion-aware kind `30406` read before the replacement kind `30402` is
+  signed; it does not require the broader organizer graph to be rediscovered.
 - Existing fulfillment authoring intents: establish or change fulfillment using
   their current validation and publication rules. New product and variation
   coordinates cannot use an existing product's preservation authority.
@@ -36,9 +38,9 @@ context, but their loading or failure state does not authorize maintenance.
 
 Each existing variation keeps its own fulfillment references. A common broad
 fulfillment category does not establish that a child's references equal its
-parent's. Exact event-product and coordinate-after-order references do not
-require rediscovery when left unchanged; fixed shipping still requires the
-targeted save-time check.
+parent's. Coordinate-after-order references do not require rediscovery when
+left unchanged. Direct event-pickup and fixed-shipping references each retain
+their targeted save-time evidence check.
 
 An existing valid free listing may remain free while stock or other fields are
 edited. Setting a new zero price requires the existing local-pickup authoring
@@ -61,11 +63,14 @@ organizer acceptance, and required pickup evidence independently.
 ## Validation boundary
 
 Regression tests cover the product-family planner through signed publication,
-with organizer reads rejected or left pending; Products editor stock saves
-before, at, during, and after event time boundaries; exact reference and visibility
-preservation; existing free products; separate variation associations; and strict
-validation after explicit fulfillment changes. Orders tests exercise stock
-preparation through signing while retaining order authorization coverage.
+with organizer reads rejected or left pending while exact pickup evidence stays
+available; Products editor stock saves before, at, during, and after event time
+boundaries; exact reference and visibility preservation; existing free products;
+separate variation associations; and strict validation after explicit
+fulfillment changes. Negative cases prove unresolved, deleted, or unavailable
+direct pickup evidence stops the replacement before signing. Orders tests
+exercise stock preparation through signing while retaining order authorization
+coverage.
 Fixed-shipping counterexamples cover a newer unseen option revision, a
 cross-unit currency change, and legacy inline terms, while a positive case
 proves the canonical option is ACKed before the maintained product is published.

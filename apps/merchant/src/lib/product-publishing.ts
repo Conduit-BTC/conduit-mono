@@ -226,6 +226,12 @@ export interface ProductListingPublishTarget {
   fulfillmentIntent: ProductPublicationFulfillmentIntent
 }
 
+const VERIFIED_EVENT_PICKUP = Symbol("verified-event-pickup")
+
+type PreparedProductListingPublishTarget = ProductListingPublishTarget & {
+  [VERIFIED_EVENT_PICKUP]?: true
+}
+
 export interface ProductPublicationDependencies {
   getShippingOptions: (
     coordinates: readonly string[],
@@ -398,7 +404,11 @@ function hasLegacyInlineShipping(
 }
 
 type PreservedFulfillmentStrategy =
-  "product_event" | "canonical_fixed" | "legacy_upgrade" | "explicit_change"
+  | "product_event"
+  | "event_pickup"
+  | "canonical_fixed"
+  | "legacy_upgrade"
+  | "explicit_change"
 
 function getPreservedFulfillmentStrategy(
   product: ProductSchema,
@@ -409,7 +419,7 @@ function getPreservedFulfillmentStrategy(
     return "canonical_fixed"
   }
   if (hasLegacyInlineShipping(product)) return "legacy_upgrade"
-  if (hasExactEventProductFulfillment(product)) return "product_event"
+  if (hasExactEventProductFulfillment(product)) return "event_pickup"
   return product.shippingOptionId ? "explicit_change" : "product_event"
 }
 
@@ -435,6 +445,12 @@ function getCanonicalPreservationError(
   )
 }
 
+function getEventPickupPreservationError(): Error {
+  return new Error(
+    "Event pickup could not be verified safely. Try again or choose Change fulfillment before saving."
+  )
+}
+
 async function prepareProductPublicationListings(
   listings: readonly ProductListingPublishTarget[],
   input: {
@@ -443,7 +459,7 @@ async function prepareProductPublicationListings(
     shouldContinue?: () => boolean
   },
   dependencies: ProductPublicationDependencies
-): Promise<ProductListingPublishTarget[]> {
+): Promise<PreparedProductListingPublishTarget[]> {
   const prepared = listings.map((listing) => {
     if (listing.fulfillmentIntent.kind !== "preserve_existing") {
       return { kind: "ready" as const, listing }
@@ -473,20 +489,30 @@ async function prepareProductPublicationListings(
         "Existing shipping cannot be preserved safely. Choose Change fulfillment before saving."
       )
     }
-    return { kind: "canonical" as const, baseline, listing, product }
+    return {
+      kind:
+        strategy === "event_pickup"
+          ? ("pickup" as const)
+          : ("canonical" as const),
+      baseline,
+      listing,
+      product,
+    }
   })
-  const canonical = prepared.filter(
+  const evidenceRequired = prepared.filter(
     (
       entry
-    ): entry is Extract<(typeof prepared)[number], { kind: "canonical" }> =>
-      entry.kind === "canonical"
+    ): entry is Extract<
+      (typeof prepared)[number],
+      { kind: "pickup" | "canonical" }
+    > => entry.kind === "pickup" || entry.kind === "canonical"
   )
-  if (canonical.length === 0) {
+  if (evidenceRequired.length === 0) {
     return prepared.map((entry) => entry.listing)
   }
 
   const coordinates = Array.from(
-    new Set(canonical.map((entry) => entry.baseline.shippingOptionId!))
+    new Set(evidenceRequired.map((entry) => entry.baseline.shippingOptionId!))
   )
   let shippingOptions: ParsedShippingOption[]
   try {
@@ -496,13 +522,30 @@ async function prepareProductPublicationListings(
       shouldContinue: input.shouldContinue,
     })
   } catch {
+    if (evidenceRequired.every((entry) => entry.kind === "pickup")) {
+      throw getEventPickupPreservationError()
+    }
     throw new Error(
       "Fixed shipping could not be verified safely. Try again or choose Change fulfillment before saving."
     )
   }
 
-  return prepared.map((entry): ProductListingPublishTarget => {
+  return prepared.map((entry): PreparedProductListingPublishTarget => {
     if (entry.kind === "ready") return entry.listing
+
+    if (entry.kind === "pickup") {
+      const pickup = shippingOptions.find(
+        (option) =>
+          option.id === entry.baseline.shippingOptionId &&
+          option.service === "pickup"
+      )
+      if (!pickup) throw getEventPickupPreservationError()
+      return {
+        ...entry.listing,
+        product: entry.product,
+        [VERIFIED_EVENT_PICKUP]: true,
+      }
+    }
 
     const fulfillment = resolveProductFulfillment(
       entry.baseline,
@@ -818,23 +861,26 @@ export function getCanonicalProductWriteFingerprint(
 async function signProductWrite(
   ndk: ReturnType<typeof getNdk>,
   merchantPubkey: string,
-  listing: ProductListingPublishTarget,
+  listing: PreparedProductListingPublishTarget,
   now: number,
   signEvent: (event: NDKEvent, kind: ProductSignerRequestKind) => Promise<void>
 ): Promise<SignedProductWrite> {
   if (listing.product.pubkey !== merchantPubkey) {
     throw new Error("Product pubkey does not match current merchant pubkey")
   }
-  if (
-    listing.fulfillmentIntent.kind === "preserve_existing" &&
-    getPreservedFulfillmentStrategy(
+  if (listing.fulfillmentIntent.kind === "preserve_existing") {
+    const strategy = getPreservedFulfillmentStrategy(
       listing.fulfillmentIntent.baseline,
       listing.dTag
-    ) !== "product_event"
-  ) {
-    throw new Error(
-      "Existing fulfillment must be prepared before requesting a signature"
     )
+    if (
+      strategy !== "product_event" &&
+      (strategy !== "event_pickup" || listing[VERIFIED_EVENT_PICKUP] !== true)
+    ) {
+      throw new Error(
+        "Existing fulfillment must be prepared before requesting a signature"
+      )
+    }
   }
   const createdAt = Math.max(
     Math.floor(now / 1000),

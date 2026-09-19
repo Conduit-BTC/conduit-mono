@@ -141,6 +141,28 @@ function shippingOption(
   }
 }
 
+function pickupOption(
+  baseline: ProductSchema,
+  overrides: Partial<ParsedShippingOption> = {}
+): ParsedShippingOption {
+  const coordinate = baseline.shippingOptionId!
+  return {
+    eventId: "d".repeat(64),
+    id: coordinate,
+    pubkey: coordinate.split(":")[1]!,
+    dTag: coordinate.split(":").slice(2).join(":"),
+    title: "Event pickup",
+    currency: "SATS",
+    price: 0,
+    countries: ["US"],
+    countryRules: [{ code: "US", name: "US", restrictTo: [], exclude: [] }],
+    service: "pickup",
+    createdAt: baseline.updatedAt - 1,
+    launchUnsupportedTags: ["location"],
+    ...overrides,
+  }
+}
+
 interface PublicationObservation {
   signerRequests: ProductSignerRequestProgress[]
   publishedKinds: number[]
@@ -211,6 +233,7 @@ async function attemptPreservedPublication(input: {
   baseline: ProductSchema
   update: Partial<ProductSchema>
   options?: ParsedShippingOption[]
+  getShippingOptions?: ProductPublicationDependencies["getShippingOptions"]
   observed?: PublicationObservation
 }): Promise<void> {
   const change = plan(input.baseline, input.update)
@@ -219,7 +242,8 @@ async function attemptPreservedPublication(input: {
       ...target,
       previousEventCreatedAt: target.existing!.eventCreatedAt,
     })),
-    getShippingOptions: async () => input.options ?? [],
+    getShippingOptions:
+      input.getShippingOptions ?? (async () => input.options ?? []),
     observed: input.observed,
   })
 }
@@ -250,6 +274,7 @@ describe("merchant-owned product mutation boundary", () => {
         })
         const baseline = product()
         const change = plan(baseline, { stock: 4 }, now)
+        let pickupReads = 0
         const signed: NDKEvent[] = []
         const observed = {
           signerRequests: [] as ProductSignerRequestProgress[],
@@ -263,9 +288,15 @@ describe("merchant-owned product mutation boundary", () => {
             previousEventCreatedAt: target.existing!.eventCreatedAt,
           })),
           now,
+          getShippingOptions: async (coordinates) => {
+            pickupReads += 1
+            expect(coordinates).toEqual([baseline.shippingOptionId!])
+            return [pickupOption(baseline)]
+          },
           observed,
         })
         expect(graphReads).toBe(0)
+        expect(pickupReads).toBe(1)
         expect(observed.publishedKinds).toEqual([30402])
         expect(observed.signedBundleCount).toBe(1)
         expect(signed).toHaveLength(1)
@@ -578,6 +609,7 @@ describe("merchant-owned product mutation boundary", () => {
     await attemptPreservedPublication({
       baseline,
       update: { title: "Updated title", stock: 4 },
+      options: [pickupOption(baseline)],
       observed,
     })
 
@@ -593,7 +625,7 @@ describe("merchant-owned product mutation boundary", () => {
     expect(productEvent!.tags).toContainEqual(["visibility", "hidden"])
   })
 
-  it("preserves a valid event-pickup extra cost without a shipping read", async () => {
+  it("preserves a valid event-pickup extra cost after an exact pickup read", async () => {
     const baseline = product("event-extra", {
       shippingOptionRefs: [
         {
@@ -628,11 +660,11 @@ describe("merchant-owned product mutation boundary", () => {
       })),
       getShippingOptions: async () => {
         shippingReads += 1
-        return []
+        return [pickupOption(baseline)]
       },
       observed,
     })
-    expect(shippingReads).toBe(0)
+    expect(shippingReads).toBe(1)
     expect(observed.publishedKinds).toEqual([30402])
     expect(observed.signedBundleCount).toBe(1)
     expect(signed).toHaveLength(1)
@@ -641,6 +673,44 @@ describe("merchant-owned product mutation boundary", () => {
       baseline.shippingOptionId!,
       "0",
     ])
+  })
+
+  it("stops before signing when exact event-pickup evidence is unresolved, deleted, or unavailable", async () => {
+    const baseline = product("pickup-evidence")
+    const failures: Array<{
+      state: string
+      getShippingOptions: ProductPublicationDependencies["getShippingOptions"]
+    }> = [
+      { state: "unresolved", getShippingOptions: async () => [] },
+      { state: "deleted", getShippingOptions: async () => [] },
+      {
+        state: "unavailable",
+        getShippingOptions: async () => {
+          throw new Error("Pickup relays unavailable")
+        },
+      },
+    ]
+
+    for (const failure of failures) {
+      const observed = {
+        signerRequests: [] as ProductSignerRequestProgress[],
+        publishedKinds: [] as number[],
+        signedBundleCount: 0,
+      }
+      await expect(
+        attemptPreservedPublication({
+          baseline,
+          update: { stock: 4 },
+          getShippingOptions: failure.getShippingOptions,
+          observed,
+        })
+      ).rejects.toThrow("Event pickup could not be verified safely")
+      expect(observed, failure.state).toEqual({
+        signerRequests: [],
+        publishedKinds: [],
+        signedBundleCount: 0,
+      })
+    }
   })
 
   it("preserves reference extras and unresolved network projections through the actual draft", () => {
