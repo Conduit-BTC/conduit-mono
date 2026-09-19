@@ -299,6 +299,7 @@ export async function publishBuyerOrderMessage(
       senderPubkey: buyerIdentity.pubkey,
       recipientPubkey: merchantPubkey,
     }),
+    telemetryApp: "market",
   })
 
   const localCacheError =
