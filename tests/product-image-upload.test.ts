@@ -144,6 +144,56 @@ describe("product image upload target resolution", () => {
     }
   })
 
+  it("keeps retained published authority after a complete no-event read", () => {
+    const publishedRevision = {
+      eventId: "b".repeat(64),
+      createdAt: 100,
+    }
+    const retained = resolution({
+      status: "not_observed",
+      coverage: "complete",
+      retained: true,
+      publishedServerUrls: [CONFIGURED_SERVER],
+      publishedRevision,
+      frontier: {
+        ...publishedRevision,
+        state: "valid",
+      },
+    })
+
+    expect(
+      resolveProductImageUploadTarget({
+        owner: "a".repeat(64),
+        signerAvailable: true,
+        localServerUrls: [],
+        resolution: retained,
+      })
+    ).toMatchObject({
+      kind: "configured",
+      serverUrl: CONFIGURED_SERVER,
+    })
+
+    expect(
+      resolveProductImageUploadTarget({
+        owner: "a".repeat(64),
+        signerAvailable: true,
+        localServerUrls: [],
+        resolution: {
+          ...retained,
+          frontier: {
+            eventId: "a".repeat(64),
+            createdAt: 101,
+            state: "empty",
+          },
+        },
+      })
+    ).toEqual({
+      kind: "fallback",
+      serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
+      maxFileUploads: 1,
+    })
+  })
+
   it("does not turn loading, partial, unavailable, or malformed evidence into fallback", () => {
     expect(
       resolveProductImageUploadTarget({

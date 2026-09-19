@@ -267,12 +267,25 @@ export function resolveProductImageUploadTarget(input: {
   const publishedServer = resolution.publishedServerUrls
     .map(normalizeBlossomServerRoot)
     .find((serverUrl): serverUrl is string => !!serverUrl)
+  const retainedPublishedServerIsSupersededByEmpty = (() => {
+    const frontier = resolution.frontier
+    const published = resolution.publishedRevision
+    if (frontier?.state !== "empty") return false
+    if (!published) return true
+    if (frontier.createdAt !== published.createdAt) {
+      return frontier.createdAt > published.createdAt
+    }
+    return frontier.eventId.localeCompare(published.eventId) < 0
+  })()
   if (
     publishedServer &&
     (resolution.status === "published" ||
       resolution.status === "lookup_partial" ||
       resolution.status === "lookup_unavailable" ||
-      resolution.status === "malformed")
+      resolution.status === "malformed" ||
+      (resolution.status === "not_observed" &&
+        resolution.retained &&
+        !retainedPublishedServerIsSupersededByEmpty))
   ) {
     return {
       kind: "configured",
