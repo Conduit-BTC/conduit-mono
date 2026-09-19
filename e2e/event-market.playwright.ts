@@ -1881,6 +1881,67 @@ test("event product authoring adopts a verified configured-server upload @mercha
   ])
 })
 
+test("event product submit exposes the required image without demoting upload @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  relay.seed(
+    signEvent(MERCHANT_SECRET, {
+      kind: 10063,
+      created_at: Math.floor(Date.now() / 1_000),
+      tags: [["server", EVENT_PRODUCT_MEDIA_SERVER]],
+      content: "",
+    })
+  )
+  const eventTitle = "Synthetic Required Image Event"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: eventTitle,
+    organizerHandoffEnabled: false,
+  })
+
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  const openPublisher = page.getByRole("button", {
+    name: "Publish product",
+    exact: true,
+  })
+  await expect(openPublisher).toBeVisible({ timeout: 30_000 })
+  await openPublisher.click()
+  const editor = page.getByRole("dialog", {
+    name: `Publish a product to ${eventTitle}`,
+  })
+  await expect(editor).toBeVisible()
+  await editor.getByLabel("Product title").fill("Image-required product")
+  await editor.getByLabel("Price").fill("0")
+  await editor.getByLabel("Tags").fill("synthetic, image, required")
+  await editor
+    .getByLabel("Pickup point or booth")
+    .fill("Synthetic Fixture Hall, Booth 12")
+  await editor.getByLabel("Country").fill("US")
+
+  await editor
+    .getByRole("button", { name: "Publish product", exact: true })
+    .click()
+
+  const requiredError = editor.locator("#event-product-image-required-error")
+  await expect(requiredError).toHaveText(
+    "Add a product image before publishing."
+  )
+  await expect(requiredError).toHaveAttribute("role", "alert")
+  const addImage = editor.getByRole("button", {
+    name: "Add another image",
+    exact: true,
+  })
+  await expect(addImage).toBeFocused()
+  await expect(addImage).toHaveAttribute(
+    "aria-describedby",
+    /event-product-image-required-error/
+  )
+  await expect(editor.getByLabel("Primary image URL")).toHaveCount(0)
+})
+
 test("event publish-another starts a clean fallback upload lifecycle @merchant", async ({
   page,
 }) => {

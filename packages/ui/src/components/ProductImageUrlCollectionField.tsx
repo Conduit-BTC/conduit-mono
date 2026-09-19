@@ -139,6 +139,7 @@ export function ProductImageUrlCollectionField({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const uploadButtonRef = useRef<HTMLButtonElement | null>(null)
   const addUrlButtonRef = useRef<HTMLButtonElement | null>(null)
+  const requiredErrorRef = useRef<HTMLParagraphElement | null>(null)
   const imagesRef = useRef<ProductImage[]>([...images])
   const itemsRef = useRef(new Map<string, UploadItem>())
   const abortControllersRef = useRef(new Map<string, AbortController>())
@@ -178,6 +179,8 @@ export function ProductImageUrlCollectionField({
   const canAddUrl =
     rows.length === 0 ||
     !!normalizePublicMediaUrl(rows.at(-1)?.url.trim() ?? "")
+  const missingRequiredImage = showRequiredError && rows.length === 0
+  const requiredErrorId = `${id}-required-error`
 
   useEffect(() => {
     imagesRef.current = [...images]
@@ -189,6 +192,24 @@ export function ProductImageUrlCollectionField({
       scopeId: uploadScopeId,
     }
   }, [upload?.releaseFallbackClaim, uploadScopeId])
+
+  useEffect(() => {
+    if (!missingRequiredImage) return
+    const frame = requestAnimationFrame(() => {
+      const uploadButton = uploadButtonRef.current
+      if (uploadButton && !uploadButton.disabled) {
+        uploadButton.focus()
+        return
+      }
+      const addUrlButton = addUrlButtonRef.current
+      if (addUrlButton && !addUrlButton.disabled) {
+        addUrlButton.focus()
+        return
+      }
+      requiredErrorRef.current?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [missingRequiredImage])
 
   useEffect(() => {
     disposedRef.current = false
@@ -452,7 +473,11 @@ export function ProductImageUrlCollectionField({
   }
 
   return (
-    <fieldset className="grid gap-3">
+    <fieldset
+      className="grid gap-3"
+      aria-invalid={missingRequiredImage || undefined}
+      aria-describedby={missingRequiredImage ? requiredErrorId : undefined}
+    >
       <legend className="text-sm font-medium text-[var(--text-primary)]">
         Product images
       </legend>
@@ -633,6 +658,18 @@ export function ProductImageUrlCollectionField({
             </div>
           )
         })}
+
+        {missingRequiredImage ? (
+          <p
+            ref={requiredErrorRef}
+            id={requiredErrorId}
+            className="text-xs leading-5 text-error"
+            role="alert"
+            tabIndex={-1}
+          >
+            Add a product image before publishing.
+          </p>
+        ) : null}
       </div>
 
       <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center">
@@ -654,7 +691,11 @@ export function ProductImageUrlCollectionField({
               disabled={
                 !uploadReady || atLimit || fallbackBlocked || upload.isBusy
               }
-              aria-describedby={`${id}-upload-help`}
+              aria-describedby={
+                missingRequiredImage
+                  ? `${id}-upload-help ${requiredErrorId}`
+                  : `${id}-upload-help`
+              }
               onClick={() => fileInputRef.current?.click()}
             >
               <Plus className="size-4" aria-hidden="true" />
@@ -668,6 +709,7 @@ export function ProductImageUrlCollectionField({
           variant={upload ? "ghost" : "outline"}
           className="min-h-11"
           disabled={atLimit || !canAddUrl}
+          aria-describedby={missingRequiredImage ? requiredErrorId : undefined}
           onClick={addUrl}
         >
           <Plus className="size-4" aria-hidden="true" />

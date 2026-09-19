@@ -108,6 +108,35 @@ describe("ProductImageUrlCollectionField", () => {
     expect(html).toContain("multiple")
   })
 
+  it("keeps file upload primary while exposing an empty required error", () => {
+    const html = renderToStaticMarkup(
+      <ProductImageUrlCollectionField
+        id="required-product-image"
+        images={[]}
+        onChange={() => {}}
+        previewTitle="Required product"
+        showRequiredError
+        upload={{
+          isBusy: false,
+          target: {
+            kind: "configured",
+            serverUrl: "https://media.conduit.market",
+            maxFileUploads: 12,
+          },
+          ...uploadLifecycle,
+        }}
+      />
+    )
+
+    expect(html).toContain('aria-invalid="true"')
+    expect(html).toContain('id="required-product-image-required-error"')
+    expect(html).toContain("Add a product image before publishing.")
+    expect(html).toContain(
+      'aria-describedby="required-product-image-upload-help required-product-image-required-error"'
+    )
+    expect(html).not.toContain("Primary image URL")
+  })
+
   it("discloses the one-file public fallback and all required links", () => {
     const html = renderToStaticMarkup(
       <ProductImageUrlCollectionField
