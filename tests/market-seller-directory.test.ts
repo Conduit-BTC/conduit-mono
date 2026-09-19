@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
 import {
+  ACCOUNT_SEARCH_CANDIDATE_LIMIT,
+  ACCOUNT_SUGGESTION_LIMIT,
+  describeAccountSearchSource,
+  limitAccountMatches,
+} from "../apps/market/src/lib/accountSearch"
+import {
   excludeDiscoveredSellers,
   filterSellersByName,
   getSellerEligibilityState,
@@ -14,15 +20,17 @@ const SELLER = "1".repeat(64)
 const OTHER_SELLER = "2".repeat(64)
 const OTHER_ACCOUNT = "3".repeat(64)
 
-function match(pubkey: string): ProfileSearchMatch {
+function match(
+  overrides: Partial<ProfileSearchMatch> & { pubkey: string }
+): ProfileSearchMatch {
   return {
-    pubkey,
-    profile: { pubkey },
+    profile: { pubkey: overrides.pubkey },
     isSeller: false,
     source: "network",
     score: 1,
     frontier: {},
-  }
+    ...overrides,
+  } as ProfileSearchMatch
 }
 
 describe("seller directory", () => {
@@ -67,15 +75,19 @@ describe("seller directory", () => {
             relayHints: [],
           }
     expect(
-      filterSellersByName(sellers, getIdentity, "ALICE").map((s) => s.pubkey)
+      filterSellersByName(sellers, getIdentity, "ALICE").map(
+        (seller) => seller.pubkey
+      )
     ).toEqual([SELLER, OTHER_SELLER])
     expect(
-      filterSellersByName(sellers, getIdentity, "shop").map((s) => s.pubkey)
+      filterSellersByName(sellers, getIdentity, "shop").map(
+        (seller) => seller.pubkey
+      )
     ).toEqual([SELLER])
     expect(filterSellersByName(sellers, getIdentity, "")).toHaveLength(2)
     expect(
       excludeDiscoveredSellers(
-        [match(SELLER), match(OTHER_ACCOUNT)],
+        [match({ pubkey: SELLER }), match({ pubkey: OTHER_ACCOUNT })],
         sellers
       ).map((entry) => entry.pubkey)
     ).toEqual([OTHER_ACCOUNT])
@@ -158,19 +170,92 @@ describe("seller directory", () => {
   })
 
   it("offers retry for the unavailable directory without changing empty copy", async () => {
-    const route = await readFile("apps/market/src/routes/sellers.tsx", "utf8")
+    const route = await readFile("apps/market/src/routes/merchants.tsx", "utf8")
     expect(route).toContain("directory.isUnavailable")
     expect(route).toContain(
-      "Sellers could not be loaded from this perspective."
+      "Merchants could not be loaded from this perspective."
     )
     expect(route).toContain("onClick={directory.retry}")
     expect(route).toContain(
-      "No sellers have been discovered from this perspective yet."
+      "No merchants have been discovered from this perspective yet."
     )
   })
 })
 
-describe("storefront matches on the product search", () => {
+describe("other accounts capping", () => {
+  it("describes cache-only account matches without claiming relay provenance", () => {
+    expect(
+      describeAccountSearchSource(
+        {
+          query: "a",
+          matches: [match({ pubkey: OTHER_ACCOUNT, source: "local_cache" })],
+          evidence: "not_queried",
+          relaysPlanned: 0,
+          relaysCompleted: 0,
+          relaysDegraded: 0,
+          verified: true,
+          device: {
+            profileCache: "read",
+            sellerFlags: "read",
+            cachedFrontiers: "not_read",
+          },
+          superseded: [],
+        },
+        { device: false, network: false }
+      )
+    ).toBe("From this device")
+  })
+
+  it("does not describe a delayed device read as relay activity", () => {
+    expect(
+      describeAccountSearchSource(undefined, { device: true, network: false })
+    ).toBe("Searching this device...")
+  })
+
+  it("describes an outstanding network phase as relay activity", () => {
+    expect(
+      describeAccountSearchSource(undefined, { device: true, network: true })
+    ).toBe("Searching relays...")
+  })
+
+  it("removes discovered sellers before applying the display cap", async () => {
+    const sellers = Array.from(
+      { length: ACCOUNT_SUGGESTION_LIMIT },
+      (_, index) => ({
+        pubkey: `a${index}`.padEnd(64, "0"),
+        listingCount: 1,
+        latestListingAt: 1,
+      })
+    )
+    const others = Array.from({ length: 3 }, (_, index) => ({
+      pubkey: `b${index}`.padEnd(64, "0"),
+    }))
+    const candidates = [
+      ...sellers.map((seller) => match({ pubkey: seller.pubkey })),
+      ...others.map((other) => match({ pubkey: other.pubkey })),
+    ]
+    expect(candidates.length).toBeLessThanOrEqual(
+      ACCOUNT_SEARCH_CANDIDATE_LIMIT
+    )
+
+    const shown = limitAccountMatches(
+      excludeDiscoveredSellers(candidates, sellers),
+      ACCOUNT_SUGGESTION_LIMIT
+    )
+    expect(shown.map((entry) => entry.pubkey)).toEqual(
+      others.map((other) => other.pubkey)
+    )
+
+    const hook = await readFile(
+      "apps/market/src/hooks/useSellerDirectory.ts",
+      "utf8"
+    )
+    expect(hook).toContain("limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT")
+    expect(hook).toMatch(/limitAccountMatches\(\s*excludeDiscoveredSellers\(/)
+  })
+})
+
+describe("merchant matches on the product search", () => {
   it("answers the name query from the discovered catalog, above product results", async () => {
     const model = await readFile(
       "apps/market/src/hooks/useMarketBrowseModel.ts",
@@ -185,11 +270,11 @@ describe("storefront matches on the product search", () => {
       "apps/market/src/routes/products/index.tsx",
       "utf8"
     )
-    expect(route).toContain('aria-labelledby="matching-stores-heading"')
-    expect(route).toContain("MATCHING_STORE_LIMIT")
-    expect(route).toContain('to="/sellers"')
+    expect(route).toContain('aria-labelledby="matching-merchants-heading"')
+    expect(route).toContain("MATCHING_MERCHANT_LIMIT")
+    expect(route).toContain('to="/merchants"')
     // The row sits before the result count, and the grid stays product-only.
-    expect(route.indexOf("matching-stores-heading")).toBeLessThan(
+    expect(route.indexOf("matching-merchants-heading")).toBeLessThan(
       route.indexOf("{filtered.length} {filtered.length === 1")
     )
   })
@@ -199,19 +284,36 @@ describe("storefront matches on the product search", () => {
       "apps/market/src/components/MarketHeader.tsx",
       "utf8"
     )
-    expect(header).not.toContain('"/sellers"')
+    expect(header).not.toContain('"/merchants"')
     expect(header).toContain('const isBrowseRoute = pathname === "/products"')
-    expect(header).toContain('heading: "Stores"')
+    expect(header).toContain('heading: "Merchants"')
     expect(header).toContain('heading: "Accounts"')
     expect(header).toContain("useSellerDirectory({")
     expect(header).toContain("catalogSource: routeCatalogSource")
     expect(header).toContain("sellerDirectory.accountSearch")
     expect(header).toContain("Eligible accounts could not be loaded.")
 
-    const sellers = await readFile("apps/market/src/routes/sellers.tsx", "utf8")
-    expect(sellers).toContain('aria-label="Filter sellers"')
-    expect(sellers).toContain("updateSearch({ q: trimmed || undefined })")
-    expect(sellers).toContain("Other eligible accounts")
-    expect(sellers).toContain("search relays")
+    const merchants = await readFile(
+      "apps/market/src/routes/merchants.tsx",
+      "utf8"
+    )
+    expect(merchants).toContain('aria-label="Filter merchants"')
+    expect(merchants).toContain("updateSearch({ q: trimmed || undefined })")
+    expect(merchants).toContain("describeScopedAccountSearchEvidence")
+    expect(merchants).toContain("Other eligible accounts")
+    expect(merchants).toContain("directory.eligibilityState")
+    expect(merchants).toContain("onClick={directory.retry}")
+  })
+
+  it("moves product categories into the same dropdown pattern as merchants", async () => {
+    const route = await readFile(
+      "apps/market/src/routes/products/index.tsx",
+      "utf8"
+    )
+
+    expect(route).toContain("open={categoryMenuOpen}")
+    expect(route).toContain("All categories")
+    expect(route).toContain("All merchants")
+    expect(route).not.toContain("Expand categories")
   })
 })

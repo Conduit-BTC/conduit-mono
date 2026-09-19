@@ -251,6 +251,14 @@ export function useMarketBrowseModel({
     relayHintsByPubkey: productsQuery.profileRelayHintsByPubkey,
   })
   const getMerchantIdentity = merchantIdentities.getIdentity
+  const categoryFacetProducts = useMemo(
+    () =>
+      filterProductsByFacets(productData, {
+        q: search.q,
+        merchants: selectedMerchants,
+      }),
+    [productData, search.q, selectedMerchants]
+  )
   const categoryFacetOptions = useMemo(
     () =>
       getCategoryFacetOptions(productData, {
@@ -343,6 +351,7 @@ export function useMarketBrowseModel({
     auth: { pubkey, status },
     catalogSource: effectiveCatalogSource,
     categoryFacetOptions,
+    categoryFacetTotal: categoryFacetProducts.length,
     filtered,
     filteredProducts,
     hasActiveFilters: !!(

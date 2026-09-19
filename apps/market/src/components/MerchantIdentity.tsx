@@ -11,7 +11,7 @@ export function getPendingMerchantDisplayName(
   pubkey: string,
   options: { prefix?: string; chars?: number } = {}
 ): string {
-  return `${options.prefix ?? "Store"} ${formatNpub(pubkey, options.chars ?? 6)}`
+  return `${options.prefix ?? "Merchant"} ${formatNpub(pubkey, options.chars ?? 6)}`
 }
 
 export function getMerchantDisplayName(

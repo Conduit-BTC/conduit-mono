@@ -317,7 +317,7 @@ function MerchantIdentity({
         to="/store/$pubkey"
         params={{ pubkey: pubkeyToNpub(merchantPubkey) }}
         className="block shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
-        aria-label={`Visit ${merchantName} store`}
+        aria-label={`Visit ${merchantName} merchant page`}
       >
         <Avatar className="h-12 w-12 border border-[var(--border)]">
           <AvatarImage src={profile?.picture} alt={merchantName} />
@@ -1189,7 +1189,7 @@ function CartPage() {
           </AlertDialogTitle>
           <AlertDialogDescription className="text-pretty text-[var(--text-secondary)]">
             {confirmClearTarget === "all"
-              ? "This will remove every item from all store carts."
+              ? "This will remove every item from all merchant carts."
               : "This will remove every item from this compatible purchase. Other purchases stay in your cart."}
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -1285,7 +1285,7 @@ function CartPage() {
               {purchaseGroups.length} purchase
               {purchaseGroups.length === 1 ? "" : "s"}
               <span className="mx-2 text-[var(--text-muted)]">/</span>
-              {merchantCount} store{merchantCount === 1 ? "" : "s"}
+              {merchantCount} merchant{merchantCount === 1 ? "" : "s"}
               <span className="mx-2 text-[var(--text-muted)]">/</span>
               {cart.totals.count} item{cart.totals.count === 1 ? "" : "s"}
             </div>
@@ -1387,7 +1387,7 @@ function CartPage() {
           {(search.purchase || search.merchant) && !expandedGroup && (
             <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
               {matchingMerchantGroups.length > 1 && !search.purchase
-                ? "This store has multiple compatible purchases. Choose the delivery or pickup purchase you want to review."
+                ? "This merchant has multiple compatible purchases. Choose the delivery or pickup purchase you want to review."
                 : "That purchase is not in your cart anymore."}
             </div>
           )}
@@ -1457,7 +1457,7 @@ function CartPage() {
               {cart.totals.count} item{cart.totals.count === 1 ? "" : "s"}{" "}
               across {purchaseGroups.length} purchase
               {purchaseGroups.length === 1 ? "" : "s"} from {merchantCount}{" "}
-              store{merchantCount === 1 ? "" : "s"}.
+              merchant{merchantCount === 1 ? "" : "s"}.
             </div>
             <Button
               variant="outline"
@@ -1481,7 +1481,7 @@ function CartPage() {
                       Refreshing suggestions
                     </span>
                   ) : expandedGroup ? (
-                    "Suggestions based on the expanded store cart."
+                    "Suggestions based on the expanded merchant cart."
                   ) : (
                     "Suggestions based on items in your carts."
                   )}

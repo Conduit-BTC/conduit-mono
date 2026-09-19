@@ -250,7 +250,7 @@ function getPageTitle(pathname: string): string {
     pathname === "/products" ||
     pathname === "/products/"
   ) {
-    return "Shop"
+    return "Products"
   }
   if (pathname === "/cart") {
     return "Cart"
@@ -288,14 +288,17 @@ function getPageTitle(pathname: string): string {
   if (pathname.startsWith("/products/")) {
     return "Product"
   }
-  if (pathname === "/events" || pathname.startsWith("/events/")) {
-    return "Event Catalog"
+  if (pathname === "/events" || pathname === "/events/") {
+    return "Events"
   }
-  if (pathname === "/sellers") {
-    return "Sellers"
+  if (pathname.startsWith("/events/")) {
+    return "Event"
+  }
+  if (pathname === "/merchants" || pathname === "/sellers") {
+    return "Merchants"
   }
   if (pathname.startsWith("/store/")) {
-    return "Storefront"
+    return "Merchant"
   }
   return "Not Found"
 }

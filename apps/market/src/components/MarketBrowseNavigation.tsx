@@ -18,17 +18,17 @@ const MARKET_SOURCE_LABELS: Record<ProductCatalogSourceMode, string> = {
   conduit: "Conduit",
 }
 
-type MarketBrowseSection = "catalog" | "events" | "sellers"
+type MarketBrowseSection = "products" | "merchants" | "events"
 
 const MARKET_BROWSE_SECTIONS: {
   id: MarketBrowseSection
-  to: "/products" | "/events" | "/sellers"
+  to: "/products" | "/merchants" | "/events"
   label: string
   icon: LucideIcon
 }[] = [
-  { id: "catalog", to: "/products", label: "Catalog", icon: LayoutGrid },
+  { id: "products", to: "/products", label: "Products", icon: LayoutGrid },
+  { id: "merchants", to: "/merchants", label: "Merchants", icon: Store },
   { id: "events", to: "/events", label: "Events", icon: CalendarDays },
-  { id: "sellers", to: "/sellers", label: "Sellers", icon: Store },
 ]
 
 export function MarketBrowseNavigation({

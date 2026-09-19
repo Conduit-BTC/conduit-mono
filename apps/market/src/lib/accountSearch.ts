@@ -12,8 +12,8 @@ import type { SellerEligibilityState } from "./sellerDirectory"
 export const ACCOUNT_SUGGESTION_LIMIT = 5
 /**
  * Both account surfaces read one shared query, then narrow it themselves: the
- * header shows the first `ACCOUNT_SUGGESTION_LIMIT` rows, and the Sellers page
- * first removes accounts already listed as discovered sellers. Fetching the
+ * header shows the first `ACCOUNT_SUGGESTION_LIMIT` rows, and the Merchants page
+ * first removes accounts already listed as discovered merchants. Fetching the
  * display cap would let those removals empty the "Other accounts" row.
  */
 export const ACCOUNT_SEARCH_CANDIDATE_LIMIT = 20
@@ -64,7 +64,7 @@ export function getAccountSuggestionLabel(match: ProfileSearchMatch): string {
  * Search results describe themselves with the npub, never with a claimed
  * NIP-05 identifier. A kind-0 event can claim any identifier, and these rows
  * are unverified suggestions; showing the claim here would read as a verified
- * handle. Verified NIP-05 is shown on the profile and storefront surfaces,
+ * handle. Verified NIP-05 is shown on the profile and merchant surfaces,
  * where the shared verifier has confirmed the identifier for that pubkey.
  */
 export function getAccountSuggestionDescription(
@@ -82,15 +82,15 @@ export function toAccountSuggestionItems(
       id: match.pubkey,
       label: getAccountSuggestionLabel(match),
       description: getAccountSuggestionDescription(match),
-      badge: match.isSeller ? "Seller" : undefined,
+      badge: match.isSeller ? "Merchant" : undefined,
       imageUrl: profile.picture,
     }
   })
 }
 
 /**
- * Sellers open their storefront directly; other accounts open the public
- * profile view, which links to a storefront once listings are discovered.
+ * Merchants open their listing page directly; other accounts open the public
+ * profile view, which links to a merchant once listings are discovered.
  */
 export function getAccountSuggestionTarget(
   match: ProfileSearchMatch
@@ -117,7 +117,7 @@ export function describeAccountSearchDeviceEvidence(
     return "Relay results could not be checked against saved accounts."
   }
   if (device.sellerFlags === "unavailable") {
-    return "Seller badges could not be checked on this device."
+    return "Merchant badges could not be checked on this device."
   }
   return null
 }

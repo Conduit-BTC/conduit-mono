@@ -533,9 +533,11 @@ function StorefrontPage() {
                       className="inline-flex size-10 shrink-0 items-center justify-center text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
                       onClick={handleShareStore}
                       aria-label={
-                        shareCopied ? "Store link copied" : "Copy store link"
+                        shareCopied
+                          ? "Merchant link copied"
+                          : "Copy merchant link"
                       }
-                      title={shareCopied ? "Copied" : "Copy store link"}
+                      title={shareCopied ? "Copied" : "Copy merchant link"}
                     >
                       {shareCopied ? (
                         <Check className="h-[18px] w-[18px] text-success" />
@@ -725,7 +727,7 @@ function StorefrontPage() {
                   setLocalSearch(event.target.value)
                   setSearchDirty(true)
                 }}
-                placeholder="Search items in this store"
+                placeholder="Search this merchant's items"
                 className="h-11 w-full bg-transparent text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]"
               />
               <div className="text-[var(--text-muted)]">
@@ -776,7 +778,7 @@ function StorefrontPage() {
               refreshing={productsQuery.isHydrating}
               onRefresh={productsQuery.refetch}
               stale={productReadIncomplete}
-              refreshingLabel="Updating store..."
+              refreshingLabel="Updating merchant..."
               className="absolute right-0 top-0"
             />
             {hasUnavailablePriceForSort && (
@@ -798,7 +800,7 @@ function StorefrontPage() {
 
           {!!productsQuery.error && (
             <div className="mt-4 rounded-xl border border-error/20 bg-error/10 p-4 text-sm text-error">
-              Failed to load this storefront.
+              Failed to load this merchant.
             </div>
           )}
 
@@ -807,10 +809,10 @@ function StorefrontPage() {
             filteredProducts.length === 0 && (
               <div className="mt-4 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6">
                 <div className="text-lg font-semibold text-[var(--text-primary)]">
-                  No listings match this store view
+                  No listings match this merchant view
                 </div>
                 <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
-                  Try clearing the store search or category filter to see the
+                  Try clearing the merchant search or category filter to see the
                   merchant’s other listings.
                 </p>
                 <div className="mt-4">
