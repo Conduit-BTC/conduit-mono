@@ -107,10 +107,25 @@ function form(
     },
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
-    imageUrl: "https://example.com/pocket-relay.png",
+    images: [
+      { url: "https://example.com/pocket-relay.png", alt: "Pocket Relay" },
+      { url: "https://example.com/pocket-relay-side.png" },
+    ],
     tags: "relay, hardware, nostr",
     ...overrides,
   }
+}
+
+function legacyForm(
+  overrides: Partial<MerchantProductFormValues> = {}
+): Record<string, unknown> {
+  const current = form(overrides)
+  const stored: Record<string, unknown> = {
+    ...current,
+    imageUrl: current.images[0]?.url ?? "",
+  }
+  delete stored.images
+  return stored
 }
 
 describe("merchant product drafts", () => {
@@ -196,6 +211,37 @@ describe("merchant product drafts", () => {
     )
   })
 
+  it("migrates legacy comma-delimited variation image drafts once", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const storageKey = getProductDraftStorageKey(draftTarget)
+    if (!storageKey) throw new Error("Expected a product draft storage key")
+    const variations = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [createProductVariationAxis("size", "S")],
+    })
+    variations.rows[0]!.imageUrls =
+      "https://example.com/front.png, https://example.com/back.png"
+    variations.rows[0]!.inheritImages = false
+    const storedForm = legacyForm({ variations })
+
+    storage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 6,
+        baseEventId: null,
+        savedAt: Date.now(),
+        form: storedForm,
+      })
+    )
+
+    expect(
+      loadProductDraft(draftTarget, storage).draft?.variations.rows[0]
+        ?.imageUrls
+    ).toBe("https://example.com/front.png\nhttps://example.com/back.png")
+  })
+
   it("round-trips an exact local-pickup catalog reference", () => {
     const storage = new MemoryStorage()
     const draftTarget = target()
@@ -219,12 +265,10 @@ describe("merchant product drafts", () => {
     const draftTarget = target()
     const storageKey = getProductDraftStorageKey(draftTarget)
     if (!storageKey) throw new Error("Expected a product draft storage key")
-    const storedForm: Record<string, unknown> = {
-      ...form({
-        fulfillment: "local_pickup",
-        eventMarketReference: `30405:${"b".repeat(64)}:community-market`,
-      }),
-    }
+    const storedForm = legacyForm({
+      fulfillment: "local_pickup",
+      eventMarketReference: `30405:${"b".repeat(64)}:community-market`,
+    })
     delete storedForm.eventHandoffMode
     delete storedForm.merchantPickupTitle
     delete storedForm.merchantPickupLocation
@@ -254,17 +298,15 @@ describe("merchant product drafts", () => {
     const storageKey = getProductDraftStorageKey(draftTarget)
     if (!storageKey) throw new Error("Expected a product draft storage key")
     const reference = `30405:${"b".repeat(64)}:community-market`
-    const storedForm: Record<string, unknown> = {
-      ...form({
-        fulfillment: "local_pickup",
-        eventMarketReference: reference,
-        eventHandoffMode: "organizer_handoff",
-        merchantPickupTitle: "Saved booth",
-        merchantPickupLocation: "Hall B",
-        merchantPickupGeohash: "dr5ru",
-        merchantPickupCountry: "CA",
-      }),
-    }
+    const storedForm = legacyForm({
+      fulfillment: "local_pickup",
+      eventMarketReference: reference,
+      eventHandoffMode: "organizer_handoff",
+      merchantPickupTitle: "Saved booth",
+      merchantPickupLocation: "Hall B",
+      merchantPickupGeohash: "dr5ru",
+      merchantPickupCountry: "CA",
+    })
     delete storedForm.variations
     storage.setItem(
       storageKey,
@@ -298,9 +340,7 @@ describe("merchant product drafts", () => {
       enabled: true,
       axes: [createProductVariationAxis("size", "S, M")],
     })
-    const storedForm: Record<string, unknown> = {
-      ...form({ format: "digital", variations }),
-    }
+    const storedForm = legacyForm({ format: "digital", variations })
     delete storedForm.fulfillment
     delete storedForm.eventMarketReference
     delete storedForm.eventHandoffMode
@@ -338,9 +378,10 @@ describe("merchant product drafts", () => {
       enabled: true,
       axes: [createProductVariationAxis("size", "S, M")],
     })
-    const storedForm: Record<string, unknown> = {
-      ...form({ format: "digital", variations: generated }),
-    }
+    const storedForm = legacyForm({
+      format: "digital",
+      variations: generated,
+    })
     delete storedForm.fulfillment
     delete storedForm.eventMarketReference
     delete storedForm.eventHandoffMode
@@ -372,7 +413,7 @@ describe("merchant product drafts", () => {
     const draftTarget = target()
     const storageKey = getProductDraftStorageKey(draftTarget)
     if (!storageKey) throw new Error("Expected a product draft storage key")
-    const storedForm = form({
+    const storedForm = legacyForm({
       format: "physical",
       fulfillment: "local_pickup",
       eventMarketReference: `30405:${"b".repeat(64)}:community-market`,
@@ -438,8 +479,7 @@ describe("merchant product drafts", () => {
     const draftTarget = target()
     const storageKey = getProductDraftStorageKey(draftTarget)
     if (!storageKey) throw new Error("Expected a product draft storage key")
-    const legacyForm = form({ shippingCost: "" })
-    const storedForm: Record<string, unknown> = { ...legacyForm }
+    const storedForm = legacyForm({ shippingCost: "" })
     delete storedForm.shippingPricingMode
 
     storage.setItem(
@@ -463,8 +503,7 @@ describe("merchant product drafts", () => {
     const draftTarget = target()
     const storageKey = getProductDraftStorageKey(draftTarget)
     if (!storageKey) throw new Error("Expected a product draft storage key")
-    const legacyForm = form({ price: "1e3", shippingCost: "5e-1" })
-    const storedForm: Record<string, unknown> = { ...legacyForm }
+    const storedForm = legacyForm({ price: "1e3", shippingCost: "5e-1" })
     delete storedForm.shippingPricingMode
 
     storage.setItem(
@@ -490,7 +529,7 @@ describe("merchant product drafts", () => {
     const draftTarget = target()
     const storageKey = getProductDraftStorageKey(draftTarget)
     if (!storageKey) throw new Error("Expected a product draft storage key")
-    const storedForm: Record<string, unknown> = { ...form() }
+    const storedForm = legacyForm()
     delete storedForm.stock
 
     storage.setItem(
@@ -514,7 +553,7 @@ describe("merchant product drafts", () => {
     const draftTarget = target()
     const storageKey = getProductDraftStorageKey(draftTarget)
     if (!storageKey) throw new Error("Expected a product draft storage key")
-    const storedForm: Record<string, unknown> = { ...form() }
+    const storedForm = legacyForm()
     delete storedForm.variations
 
     storage.setItem(
@@ -546,7 +585,7 @@ describe("merchant product drafts", () => {
       (row) => ({ ...row })
     )
     for (const row of legacyRows) delete row.included
-    const storedForm: Record<string, unknown> = { ...form() }
+    const storedForm = legacyForm()
     storedForm.variations = { ...variations, rows: legacyRows }
 
     storage.setItem(

@@ -26,6 +26,7 @@ import {
   createCartItemFromProduct,
   type CartPickupFulfillment,
 } from "../apps/market/src/lib/cart-model"
+import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
 
 const organizer = "a".repeat(64)
 const merchant = "b".repeat(64)
@@ -1983,5 +1984,52 @@ describe("Market event adapter", () => {
         new Map([[listing.id, resolution]])
       )
     ).toBeNull()
+  })
+
+  it("blocks new order and direct-payment authorization when the organizer closes after cart review", async () => {
+    const listing = product()
+    const reviewed = createCartItemFromProduct(listing, pickupSnapshot())
+    const closedMarket = market("ended")
+    closedMarket.collection = {
+      ...closedMarket.collection!,
+      orderAcceptance: "closed",
+    }
+    const closedCatalog = catalog(
+      listing,
+      { purchaseReady: false },
+      closedMarket
+    )
+    let handlerCalls = 0
+    for (const mode of ["order_first", "direct_payment"] as const) {
+      const result = await authorizeCurrentCheckoutItems({
+        mode,
+        rawItems: [reviewed],
+        reviewedItems: [reviewed],
+        refreshedProducts: [listing],
+        readShippingOptions: async () => {
+          throw new Error("Closed event must stop before shipping work")
+        },
+        resolveProductFulfillment: (product) =>
+          resolveProductCartFulfillment(
+            product,
+            null,
+            async () => closedCatalog
+          ),
+        authorizePickupHandlers: async () => {
+          handlerCalls += 1
+        },
+      })
+      expect(result).toEqual({ status: "changed" })
+    }
+    const resolution = await resolveProductCartFulfillment(
+      listing,
+      null,
+      async () => closedCatalog
+    )
+    expect(resolution).toMatchObject({
+      status: "blocked",
+      reason: "The organizer closed this event to new orders.",
+    })
+    expect(handlerCalls).toBe(0)
   })
 })

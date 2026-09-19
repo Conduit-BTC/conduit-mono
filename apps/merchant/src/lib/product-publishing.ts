@@ -12,11 +12,9 @@ import {
   getProductShippingOptionAddress,
   getProductShippingOptionDTag,
   getShippingOptionsByCoordinates,
-  isBtcLikeCurrency,
-  isMsatsLikeCurrency,
-  isSatsLikeCurrency,
   isValidSignedPublicNostrEvent,
   normalizeCurrencyCode,
+  normalizeCurrencyIdentity,
   publishWithPlanner,
   RelayPublishDiagnosticsError,
   resolveProductFulfillment,
@@ -219,13 +217,6 @@ export function getProductPreservedFulfillmentFields(product: ProductSchema) {
     canonicalShippingResolved: product.canonicalShippingResolved,
     shippingOptionCreatedAt: product.shippingOptionCreatedAt,
   }
-}
-
-function productCurrencyUnit(currency: string): string {
-  if (isSatsLikeCurrency(currency)) return "SATS"
-  if (isMsatsLikeCurrency(currency)) return "MSATS"
-  if (isBtcLikeCurrency(currency)) return "BTC"
-  return normalizeCurrencyCode(currency)
 }
 
 export interface ProductListingPublishTarget {
@@ -525,8 +516,8 @@ async function prepareProductPublicationListings(
       throw getCanonicalPreservationError(fulfillment.reason)
     }
     if (
-      productCurrencyUnit(getProductCurrency(entry.product)) !==
-      productCurrencyUnit(fulfillment.option.currency)
+      normalizeCurrencyIdentity(getProductCurrency(entry.product)) !==
+      normalizeCurrencyIdentity(fulfillment.option.currency)
     ) {
       throw new Error(
         "Change fulfillment before changing currency on a fixed-shipping listing."
@@ -708,7 +699,8 @@ export function applyProductFulfillmentIntentForPublication(input: {
       input.product.sourcePrice?.currency ?? input.product.currency
     const previousCurrency = baseline.sourcePrice?.currency ?? baseline.currency
     const sameCurrencyUnit =
-      productCurrencyUnit(currency) === productCurrencyUnit(previousCurrency)
+      normalizeCurrencyIdentity(currency) ===
+      normalizeCurrencyIdentity(previousCurrency)
     if (price === 0 && (previousPrice !== 0 || !sameCurrencyUnit)) {
       throw new Error("Verify local pickup before setting a new zero price")
     }

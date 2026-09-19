@@ -1370,7 +1370,10 @@ function blockedProductResolution(
   let reason: string
 
   if (eventState === "ended") {
-    reason = "This event pickup has ended, so it can no longer be added."
+    reason =
+      catalog.collection?.orderAcceptance === "closed"
+        ? "The organizer closed this event to new orders."
+        : "This event pickup has ended, so it can no longer be added."
   } else if (eventState === "deleted") {
     reason = "The organizer removed this event pickup."
   } else if (eventState === "unavailable" || eventState === "partial") {

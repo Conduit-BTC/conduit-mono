@@ -151,11 +151,12 @@ interface PublicationObservation {
 async function attemptProductPublication(input: {
   listings: readonly ProductListingPublishTarget[]
   getShippingOptions?: ProductPublicationDependencies["getShippingOptions"]
+  now?: number
   observed?: PublicationObservation
 }): Promise<void> {
   setSigner(new NDKPrivateKeySigner(SECRET))
   __setCommerceTestOverrides({
-    now: () => START,
+    now: () => input.now ?? START,
     getCachedProducts: async () => [],
     getCachedProductTombstones: async () => [],
     putCachedProducts: async () => {},
@@ -177,6 +178,10 @@ async function attemptProductPublication(input: {
       return new Set([{ url: "wss://relay.example/" }]) as never
     }
   )
+  const clock =
+    input.now === undefined
+      ? undefined
+      : spyOn(Date, "now").mockReturnValue(input.now)
   try {
     await signAndPublishProductWriteBundle(
       {
@@ -198,6 +203,7 @@ async function attemptProductPublication(input: {
     )
   } finally {
     publish.mockRestore()
+    clock?.mockRestore()
   }
 }
 
@@ -242,63 +248,42 @@ describe("merchant-owned product mutation boundary", () => {
             throw new Error("Organizer relay discovery must not run")
           },
         })
-        __setCommerceTestOverrides({
-          now: () => now,
-          getCachedProducts: async () => [],
-          getCachedProductTombstones: async () => [],
-          putCachedProducts: async () => {},
-        })
-        __setRelayPublishTestOverrides({
-          accountNetworkLocalStateRepository: { get: async () => undefined },
-          planPublishRelays: async () => ({
-            intent: "author_event",
-            primaryRelayUrls: ["wss://relay.example"],
-            broadcastRelayUrls: [],
-            parkedRelayUrls: [],
-          }),
-        })
-        setSigner(new NDKPrivateKeySigner(SECRET))
-        const clock = spyOn(Date, "now").mockReturnValue(now)
-        const publish = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
-          new Set([{ url: "wss://relay.example/" }]) as never
-        )
         const baseline = product()
         const change = plan(baseline, { stock: 4 }, now)
         const signed: NDKEvent[] = []
-        try {
-          await signAndPublishProductWriteBundle({
-            merchantPubkey: MERCHANT,
-            listings: change.publish.map((target) => ({
-              ...target,
-              previousEventCreatedAt: target.existing!.eventCreatedAt,
-            })),
-            waitForSignerVisibility: async () => {},
-            onSignedLocal: async (bundle) => {
-              signed.push(...bundle.events)
-            },
-          })
-          expect(graphReads).toBe(0)
-          expect(signed).toHaveLength(1)
-          expect(signed[0]!.kind).toBe(30402)
-          expect(signed[0]!.pubkey).toBe(MERCHANT)
-          expect(signed[0]!.tags).toContainEqual(["stock", "4"])
-          expect(signed[0]!.tags).toContainEqual([
-            "a",
-            baseline.collectionRefs![0]!,
-          ])
-          expect(signed[0]!.tags).toContainEqual([
-            "shipping_option",
-            baseline.shippingOptionId!,
-          ])
-          expect(signed[0]!.tags).toContainEqual(["visibility", "hidden"])
-          expect(signed[0]!.created_at).toBeGreaterThan(
-            record(baseline).eventCreatedAt
-          )
-          expect(publish).toHaveBeenCalledTimes(1)
-        } finally {
-          publish.mockRestore()
-          clock.mockRestore()
+        const observed = {
+          signerRequests: [] as ProductSignerRequestProgress[],
+          publishedKinds: [] as number[],
+          signedBundleCount: 0,
+          signedEvents: signed,
         }
+        await attemptProductPublication({
+          listings: change.publish.map((target) => ({
+            ...target,
+            previousEventCreatedAt: target.existing!.eventCreatedAt,
+          })),
+          now,
+          observed,
+        })
+        expect(graphReads).toBe(0)
+        expect(observed.publishedKinds).toEqual([30402])
+        expect(observed.signedBundleCount).toBe(1)
+        expect(signed).toHaveLength(1)
+        expect(signed[0]!.kind).toBe(30402)
+        expect(signed[0]!.pubkey).toBe(MERCHANT)
+        expect(signed[0]!.tags).toContainEqual(["stock", "4"])
+        expect(signed[0]!.tags).toContainEqual([
+          "a",
+          baseline.collectionRefs![0]!,
+        ])
+        expect(signed[0]!.tags).toContainEqual([
+          "shipping_option",
+          baseline.shippingOptionId!,
+        ])
+        expect(signed[0]!.tags).toContainEqual(["visibility", "hidden"])
+        expect(signed[0]!.created_at).toBeGreaterThan(
+          record(baseline).eventCreatedAt
+        )
       })
     }
   }
@@ -628,55 +613,34 @@ describe("merchant-owned product mutation boundary", () => {
       },
     })
     let shippingReads = 0
-    setSigner(new NDKPrivateKeySigner(SECRET))
-    __setCommerceTestOverrides({
-      now: () => START,
-      getCachedProducts: async () => [],
-      getCachedProductTombstones: async () => [],
-      putCachedProducts: async () => {},
-    })
-    __setRelayPublishTestOverrides({
-      accountNetworkLocalStateRepository: { get: async () => undefined },
-      planPublishRelays: async () => ({
-        intent: "author_event",
-        primaryRelayUrls: ["wss://relay.example"],
-        broadcastRelayUrls: [],
-        parkedRelayUrls: [],
-      }),
-    })
-    const publish = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
-      new Set([{ url: "wss://relay.example/" }]) as never
-    )
-    try {
-      const change = plan(baseline, { stock: 4 })
-      const signed: NDKEvent[] = []
-      await signAndPublishProductWriteBundle(
-        {
-          merchantPubkey: MERCHANT,
-          listings: change.publish.map((target) => ({
-            ...target,
-            previousEventCreatedAt: target.existing!.eventCreatedAt,
-          })),
-          waitForSignerVisibility: async () => {},
-          onSignedLocal: async ({ events }) => signed.push(...events),
-        },
-        {
-          getShippingOptions: async () => {
-            shippingReads += 1
-            return []
-          },
-        }
-      )
-      expect(shippingReads).toBe(0)
-      expect(signed).toHaveLength(1)
-      expect(signed[0]!.tags).toContainEqual([
-        "shipping_option",
-        baseline.shippingOptionId!,
-        "0",
-      ])
-    } finally {
-      publish.mockRestore()
+    const change = plan(baseline, { stock: 4 })
+    const signed: NDKEvent[] = []
+    const observed = {
+      signerRequests: [] as ProductSignerRequestProgress[],
+      publishedKinds: [] as number[],
+      signedBundleCount: 0,
+      signedEvents: signed,
     }
+    await attemptProductPublication({
+      listings: change.publish.map((target) => ({
+        ...target,
+        previousEventCreatedAt: target.existing!.eventCreatedAt,
+      })),
+      getShippingOptions: async () => {
+        shippingReads += 1
+        return []
+      },
+      observed,
+    })
+    expect(shippingReads).toBe(0)
+    expect(observed.publishedKinds).toEqual([30402])
+    expect(observed.signedBundleCount).toBe(1)
+    expect(signed).toHaveLength(1)
+    expect(signed[0]!.tags).toContainEqual([
+      "shipping_option",
+      baseline.shippingOptionId!,
+      "0",
+    ])
   })
 
   it("preserves reference extras and unresolved network projections through the actual draft", () => {

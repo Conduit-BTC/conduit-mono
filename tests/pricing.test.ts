@@ -16,6 +16,7 @@ import {
   isBtcUsdRateQuoteFresh,
   normalizeCommercePrice,
   normalizeCurrencyAmount,
+  normalizeCurrencyIdentity,
   normalizeShopperPricePreference,
   orderSchema,
   parseProductEvent,
@@ -42,6 +43,16 @@ const testRates: BtcUsdRateQuote = {
 }
 
 describe("commerce pricing", () => {
+  it("normalizes currency aliases without collapsing distinct Bitcoin units", () => {
+    expect(normalizeCurrencyIdentity(" sat ")).toBe("SATS")
+    expect(normalizeCurrencyIdentity("SATS")).toBe("SATS")
+    expect(normalizeCurrencyIdentity("msat")).toBe("MSATS")
+    expect(normalizeCurrencyIdentity("MSATS")).toBe("MSATS")
+    expect(normalizeCurrencyIdentity("xbt")).toBe("BTC")
+    expect(normalizeCurrencyIdentity("btc")).toBe("BTC")
+    expect(normalizeCurrencyIdentity("usd")).toBe("USD")
+  })
+
   it("defaults Bitcoin display to integer base units with a sats opt-out", () => {
     expect(DEFAULT_SHOPPER_PRICE_PREFERENCE).toEqual({
       currency: "BITCOIN",
