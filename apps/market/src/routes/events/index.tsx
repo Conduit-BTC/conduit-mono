@@ -1,11 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import {
-  ArrowRight,
-  CalendarDays,
-  RefreshCw,
-  SlidersHorizontal,
-} from "lucide-react"
+import { ArrowRight, RefreshCw, SlidersHorizontal } from "lucide-react"
 import {
   buildEventMarketShareRelayHints,
   encodeEventMarketNaddr,
@@ -22,7 +17,6 @@ import {
   SelectTrigger,
   SelectValue,
   EventMarketCard,
-  getOrganizerDiscoveryPresentation,
   useTimeBoundaryNow,
 } from "@conduit/ui"
 import {
@@ -35,7 +29,6 @@ import { useMerchantIdentities } from "../../hooks/useMerchantIdentities"
 import {
   EVENT_TIMELINE_WINDOWS,
   filterAndSortEventMarkets,
-  getEventTimelinePresentationPerspective,
   formatEventTimelineSchedule,
   getEventTimelineBoundaries,
   getEventTimelineFacets,
@@ -75,11 +68,7 @@ export const Route = createFileRoute("/events/")({
       typeof raw.location === "string" && raw.location.trim()
         ? raw.location.trim()
         : undefined
-    const topic =
-      typeof raw.topic === "string" && raw.topic.trim()
-        ? raw.topic.trim()
-        : undefined
-    return { source, window, organizer, location, topic }
+    return { source, window, organizer, location }
   },
 })
 
@@ -143,23 +132,9 @@ function EventsTimelinePage() {
     visibleMerchantPubkeys: visibleOrganizerPubkeys,
     relayHintsByPubkey: discovery.profileRelayHintsByPubkey,
   })
-  const discoveryPresentation = discovery.data
-    ? getOrganizerDiscoveryPresentation({
-        state: discovery.data.state,
-        eventCount: discovery.markets.length,
-        perspective: getEventTimelinePresentationPerspective(
-          discovery.data.perspective,
-          discovery.isRefreshStale
-        ),
-        candidateScanCoverage: discovery.data.candidateScanCoverage,
-        searchedOrganizerCount: discovery.data.searchedOrganizerCount,
-        incompleteOrganizerCount: discovery.data.incompleteOrganizerCount,
-      })
-    : null
   const hasLocalFilters = !!(
     search.organizer ||
     search.location ||
-    search.topic ||
     (search.window && search.window !== "upcoming")
   )
 
@@ -175,23 +150,6 @@ function EventsTimelinePage() {
           })
         }
       />
-
-      <header className="space-y-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-secondary-400">
-          <CalendarDays className="h-4 w-4" aria-hidden="true" />
-          Event markets
-        </div>
-        <div>
-          <h1 className="text-balance font-display text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-4xl">
-            Events
-          </h1>
-          <p className="mt-2 max-w-3xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Browse organizer event markets discovered from the same public
-            network perspective as the main catalog. Open a known event link
-            directly if it is not listed here.
-          </p>
-        </div>
-      </header>
 
       <section
         aria-label="Event filters"
@@ -211,7 +169,6 @@ function EventsTimelinePage() {
                   window: undefined,
                   organizer: undefined,
                   location: undefined,
-                  topic: undefined,
                 })
               }
             >
@@ -219,7 +176,7 @@ function EventsTimelinePage() {
             </Button>
           ) : null}
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <div className="grid gap-1.5">
             <Label htmlFor="event-date-filter">Date</Label>
             <Select
@@ -292,68 +249,45 @@ function EventsTimelinePage() {
               </SelectContent>
             </Select>
           </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="event-topic-filter">Topic</Label>
-            <Select
-              value={search.topic ? `value:${search.topic}` : "all"}
-              onValueChange={(value) =>
-                updateSearch({
-                  topic: value === "all" ? undefined : value.slice(6),
-                })
-              }
-            >
-              <SelectTrigger id="event-topic-filter">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All topics</SelectItem>
-                {facets.topics.map((topic) => (
-                  <SelectItem key={topic} value={`value:${topic}`}>
-                    {topic}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
         </div>
       </section>
 
-      {discoveryPresentation ? (
-        <section
-          role={discoveryPresentation.role}
-          aria-live="polite"
-          className={
-            discoveryPresentation.prominent
-              ? "flex flex-col gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm text-[var(--text-primary)] sm:flex-row sm:items-center sm:justify-between"
-              : "flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
-          }
+      <div className="flex items-center justify-between gap-3">
+        <h1
+          id="event-results-heading"
+          className="text-balance font-display text-xl font-semibold text-[var(--text-primary)]"
         >
-          <p className="text-pretty leading-6">
-            {discoveryPresentation.message}
-          </p>
+          {search.window === "history"
+            ? "Event history"
+            : search.window === "past"
+              ? "Past events"
+              : "Event timeline"}
+        </h1>
+        <div className="flex items-center gap-2">
+          <span
+            className="text-sm tabular-nums text-[var(--text-muted)]"
+            aria-live="polite"
+          >
+            {discovery.isInitialLoading
+              ? "Loading events"
+              : `${filteredMarkets.length} ${filteredMarkets.length === 1 ? "event" : "events"}`}
+          </span>
           <Button
             variant="outline"
-            size="sm"
-            className="shrink-0 self-start sm:self-auto"
+            size="icon"
+            className="size-8 shrink-0"
             disabled={discovery.isFetching}
             onClick={discovery.refetch}
+            aria-label="Refresh events"
+            title="Refresh events"
           >
             <RefreshCw
-              className={`h-4 w-4 ${discovery.isFetching ? "animate-spin" : ""}`}
+              className={`size-4 ${discovery.isFetching ? "animate-spin" : ""}`}
               aria-hidden="true"
             />
-            Retry discovery
           </Button>
-        </section>
-      ) : discovery.error ? (
-        <section
-          role="alert"
-          className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm leading-6 text-[var(--text-primary)]"
-        >
-          Event discovery is unavailable right now. Known event links can still
-          be opened directly.
-        </section>
-      ) : null}
+        </div>
+      </div>
 
       {discovery.isInitialLoading ? (
         <div
@@ -368,20 +302,7 @@ function EventsTimelinePage() {
           ))}
         </div>
       ) : filteredMarkets.length > 0 ? (
-        <section aria-label="Event results">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="font-display text-xl font-semibold text-[var(--text-primary)]">
-              {search.window === "history"
-                ? "Event history"
-                : search.window === "past"
-                  ? "Past events"
-                  : "Event timeline"}
-            </h2>
-            <span className="text-sm tabular-nums text-[var(--text-muted)]">
-              {filteredMarkets.length}{" "}
-              {filteredMarkets.length === 1 ? "event" : "events"}
-            </span>
-          </div>
+        <section aria-labelledby="event-results-heading">
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {filteredMarkets.map((market) => {
               const organizer = organizerIdentities.getIdentity(
@@ -449,7 +370,11 @@ function EventsTimelinePage() {
             found in this relay view.
           </p>
         </section>
-      ) : null}
+      ) : (
+        <p className="py-10 text-center text-sm text-[var(--text-muted)]">
+          No events found.
+        </p>
+      )}
     </div>
   )
 }

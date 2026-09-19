@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AboutRouteImport } from './routes/about'
 import { Route as CartRouteImport } from './routes/cart'
 import { Route as CheckoutRouteImport } from './routes/checkout'
+import { Route as MerchantsRouteImport } from './routes/merchants'
 import { Route as MessagesRouteImport } from './routes/messages'
 import { Route as NetworkRouteImport } from './routes/network'
 import { Route as OrdersRouteImport } from './routes/orders'
@@ -48,6 +49,11 @@ const CartRoute = CartRouteImport.update({
 const CheckoutRoute = CheckoutRouteImport.update({
   id: '/checkout',
   path: '/checkout',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MerchantsRoute = MerchantsRouteImport.update({
+  id: '/merchants',
+  path: '/merchants',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MessagesRoute = MessagesRouteImport.update({
@@ -136,6 +142,7 @@ export interface FileRoutesByFullPath {
   '/about': typeof AboutRoute
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
+  '/merchants': typeof MerchantsRoute
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
@@ -158,6 +165,7 @@ export interface FileRoutesByTo {
   '/about': typeof AboutRoute
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
+  '/merchants': typeof MerchantsRoute
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
@@ -181,6 +189,7 @@ export interface FileRoutesById {
   '/about': typeof AboutRoute
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
+  '/merchants': typeof MerchantsRoute
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
@@ -205,6 +214,7 @@ export interface FileRouteTypes {
     | '/about'
     | '/cart'
     | '/checkout'
+    | '/merchants'
     | '/messages'
     | '/network'
     | '/orders'
@@ -227,6 +237,7 @@ export interface FileRouteTypes {
     | '/about'
     | '/cart'
     | '/checkout'
+    | '/merchants'
     | '/messages'
     | '/network'
     | '/orders'
@@ -249,6 +260,7 @@ export interface FileRouteTypes {
     | '/about'
     | '/cart'
     | '/checkout'
+    | '/merchants'
     | '/messages'
     | '/network'
     | '/orders'
@@ -272,6 +284,7 @@ export interface RootRouteChildren {
   AboutRoute: typeof AboutRoute
   CartRoute: typeof CartRoute
   CheckoutRoute: typeof CheckoutRoute
+  MerchantsRoute: typeof MerchantsRoute
   MessagesRoute: typeof MessagesRoute
   NetworkRoute: typeof NetworkRoute
   OrdersRoute: typeof OrdersRoute
@@ -318,6 +331,13 @@ declare module '@tanstack/react-router' {
       path: '/checkout'
       fullPath: '/checkout'
       preLoaderRoute: typeof CheckoutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/merchants': {
+      id: '/merchants'
+      path: '/merchants'
+      fullPath: '/merchants'
+      preLoaderRoute: typeof MerchantsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/messages': {
@@ -440,6 +460,7 @@ const rootRouteChildren: RootRouteChildren = {
   AboutRoute: AboutRoute,
   CartRoute: CartRoute,
   CheckoutRoute: CheckoutRoute,
+  MerchantsRoute: MerchantsRoute,
   MessagesRoute: MessagesRoute,
   NetworkRoute: NetworkRoute,
   OrdersRoute: OrdersRoute,

@@ -149,7 +149,7 @@ function PublicProfilePage() {
               <Button asChild className="h-11 px-4 text-sm lg:mt-16">
                 <Link to="/store/$pubkey" params={{ pubkey: npub }}>
                   <Store className="h-4 w-4" />
-                  View storefront
+                  View merchant
                 </Link>
               </Button>
             )}

@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { ChevronDown, X } from "lucide-react"
 import { EVENT_KINDS, normalizePubkey, pubkeyToNpub } from "@conduit/core"
@@ -43,9 +36,8 @@ import {
 import type { ProductCatalogSourceMode } from "../../lib/productCatalogRead"
 
 const PAGE_SIZE = 12
-/** Storefront matches shown inline; the rest stay one link away on /sellers. */
-const MATCHING_STORE_LIMIT = 6
-const COLLAPSED_TAG_CLOUD_HEIGHT = 76
+/** Merchant matches shown inline; the rest stay one link away on /merchants. */
+const MATCHING_MERCHANT_LIMIT = 6
 const SORT_OPTIONS: Array<{
   value: MarketBrowseSortOption
   label: string
@@ -115,13 +107,9 @@ function ProductsPage() {
   const navigate = useNavigate({ from: Route.fullPath })
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [connectOpen, setConnectOpen] = useState(false)
-  const [showAllTags, setShowAllTags] = useState(false)
-  const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
-  const [tagCloudMeasured, setTagCloudMeasured] = useState(false)
-  const [tagCloudInteracted, setTagCloudInteracted] = useState(false)
-  const [storeMenuOpen, setStoreMenuOpen] = useState(false)
+  const [categoryMenuOpen, setCategoryMenuOpen] = useState(false)
+  const [merchantMenuOpen, setMerchantMenuOpen] = useState(false)
   const hasAutoPromptedConnect = useRef(false)
-  const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const hasMoreRef = useRef(false)
   const loadMoreObserverRef = useRef<IntersectionObserver | null>(null)
   const shopperPricing = useShopperPricing()
@@ -160,13 +148,14 @@ function ProductsPage() {
     btcUsdRate,
     catalogSource: search.source ?? "combined",
     search,
-    storeMenuOpen,
+    storeMenuOpen: merchantMenuOpen,
     visibleCount,
   })
   const {
     auth,
     catalogSource,
     categoryFacetOptions,
+    categoryFacetTotal,
     filtered,
     hasActiveFilters,
     hasMore,
@@ -183,19 +172,23 @@ function ProductsPage() {
     selectedTagSet,
     shouldShowCategories,
     showCategorySkeleton,
-    storeFacetOptions,
-    storeFacetTotal,
-    storeTriggerLabel,
+    storeFacetOptions: merchantFacetOptions,
+    storeFacetTotal: merchantFacetTotal,
+    storeTriggerLabel: merchantTriggerLabel,
     getMerchantIdentity,
   } = browseModel
   const { status } = auth
   const connected = status === "connected"
-  const visibleMatchingSellers = useMemo(
-    () => matchingSellers.slice(0, MATCHING_STORE_LIMIT),
+  const visibleMatchingMerchants = useMemo(
+    () => matchingSellers.slice(0, MATCHING_MERCHANT_LIMIT),
     [matchingSellers]
   )
-  const shouldCollapseTagCloud =
-    !showAllTags && (!tagCloudMeasured || tagCloudOverflows)
+  const categoryTriggerLabel =
+    selectedTags.length === 0
+      ? "All categories"
+      : selectedTags.length === 1
+        ? "1 category"
+        : `${selectedTags.length} categories`
 
   const toggleTag = (tag: string) => {
     if (selectedTagSet.has(tag)) {
@@ -276,30 +269,6 @@ function ProductsPage() {
     [getMerchantIdentity]
   )
 
-  useLayoutEffect(() => {
-    const element = tagCloudRef.current
-    if (!element) return
-
-    const measure = () => {
-      setTagCloudOverflows(
-        element.scrollHeight > COLLAPSED_TAG_CLOUD_HEIGHT + 1
-      )
-      setTagCloudMeasured(true)
-    }
-
-    measure()
-
-    const resizeObserver =
-      typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null
-    resizeObserver?.observe(element)
-    window.addEventListener("resize", measure)
-
-    return () => {
-      resizeObserver?.disconnect()
-      window.removeEventListener("resize", measure)
-    }
-  }, [categoryFacetOptions, showAllTags])
-
   return (
     <div className="space-y-5">
       {search.authRequired && (
@@ -359,7 +328,7 @@ function ProductsPage() {
       )}
 
       <MarketBrowseNavigation
-        active="catalog"
+        active="products"
         source={catalogSource}
         connected={connected}
         onSelectSource={(source) =>
@@ -369,159 +338,140 @@ function ProductsPage() {
         }
       />
 
-      {shouldShowCategories && (
-        <section className="space-y-3">
-          <div className="flex min-h-8 items-center justify-between gap-3">
-            <div className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
-              Categories
-            </div>
-            <div className="flex h-8 shrink-0 items-center justify-end">
-              {tagCloudOverflows && (
-                <button
-                  type="button"
-                  className="inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-secondary-400 transition-colors duration-150 hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                  aria-expanded={showAllTags}
-                  onClick={() => {
-                    setTagCloudInteracted(true)
-                    setShowAllTags((current) => !current)
-                  }}
-                >
-                  {showAllTags ? "Collapse" : "Expand categories"}
-                  <ChevronDown
-                    className={[
-                      "h-3.5 w-3.5 transition-transform duration-150",
-                      showAllTags ? "rotate-180" : "",
-                    ].join(" ")}
-                    aria-hidden="true"
-                  />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {showCategorySkeleton ? (
-            <div className="flex max-h-[4.75rem] flex-wrap items-center gap-1.5 overflow-hidden pt-0.5">
-              {Array.from({ length: 18 }).map((_, index) => (
-                <div
-                  key={index}
-                  className="h-7 animate-pulse rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]"
-                  style={{
-                    width: `${56 + (index % 5) * 18}px`,
-                  }}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="relative">
-              <div
-                ref={tagCloudRef}
-                className={[
-                  "overflow-y-scroll pr-1 [scrollbar-gutter:stable]",
-                  tagCloudInteracted
-                    ? "transition-[max-height] duration-150 ease-out"
-                    : "",
-                  shouldCollapseTagCloud ? "max-h-[4.75rem]" : "max-h-72",
-                ].join(" ")}
-              >
-                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  {categoryFacetOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      onClick={() => toggleTag(option.value)}
-                      aria-pressed={option.selected}
-                      className="rounded-full transition-transform duration-150 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                    >
-                      <Badge
-                        variant={option.selected ? "default" : "outline"}
-                        className="gap-1.5 cursor-pointer transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
-                      >
-                        <span>{option.label}</span>
-                        <span
-                          className={[
-                            "inline-block min-w-[3ch] self-center text-right text-[0.82em] font-medium leading-none tabular-nums transition-colors",
-                            option.selected
-                              ? "text-white/85"
-                              : "text-[var(--text-muted)]",
-                          ].join(" ")}
-                        >
-                          [{option.count}]
-                        </span>
-                      </Badge>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </section>
-      )}
-
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-        <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
-          <span className="min-w-12 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] sm:min-w-0">
-            Store
-          </span>
-          <DropdownMenu open={storeMenuOpen} onOpenChange={setStoreMenuOpen}>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="min-w-0 flex-1 justify-between text-xs sm:w-auto sm:min-w-[150px] sm:flex-none"
+        <div className="flex w-full min-w-0 flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
+          {shouldShowCategories ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="min-w-20 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] sm:min-w-0">
+                Categories
+              </span>
+              <DropdownMenu
+                open={categoryMenuOpen}
+                onOpenChange={setCategoryMenuOpen}
               >
-                {storeTriggerLabel}
-                <ChevronDown className="size-4 opacity-60" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className="max-h-80 w-72 overflow-y-scroll [scrollbar-gutter:stable]">
-              <DropdownMenuCheckboxItem
-                checked={selectedMerchants.length === 0}
-                onSelect={(event) => event.preventDefault()}
-                onCheckedChange={() => updateSearch({ merchant: undefined })}
-                className="justify-between gap-3"
-              >
-                <span className="font-semibold text-primary-500">
-                  All stores
-                </span>
-                <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                  [{storeFacetTotal}]
-                </span>
-              </DropdownMenuCheckboxItem>
-              {storeFacetOptions.map((option) => {
-                const identity = getMerchantIdentity(option.value)
-                return (
-                  <DropdownMenuCheckboxItem
-                    key={option.value}
-                    checked={option.selected}
-                    onSelect={(event) => event.preventDefault()}
-                    onCheckedChange={() => toggleMerchant(option.value)}
-                    className="gap-2.5"
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={showCategorySkeleton}
+                    className="min-w-0 flex-1 justify-between text-xs sm:w-auto sm:min-w-[150px] sm:flex-none"
                   >
-                    <Avatar className="h-5 w-5 shrink-0">
-                      <AvatarImage
-                        src={identity.picture}
-                        alt=""
-                        className="object-cover"
-                      />
-                      <AvatarFallback>
-                        <MerchantAvatarFallback iconClassName="h-2.5 w-2.5" />
-                      </AvatarFallback>
-                    </Avatar>
-                    <span
-                      className={[
-                        "min-w-0 flex-1 truncate",
-                        identity.status === "pending" ? "animate-pulse" : "",
-                      ].join(" ")}
-                    >
-                      {option.label}
+                    {showCategorySkeleton
+                      ? "Loading categories..."
+                      : categoryTriggerLabel}
+                    <ChevronDown
+                      className="size-4 opacity-60"
+                      aria-hidden="true"
+                    />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent className="max-h-80 w-72 overflow-y-scroll [scrollbar-gutter:stable]">
+                  <DropdownMenuCheckboxItem
+                    checked={selectedTags.length === 0}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={() => updateSearch({ tag: undefined })}
+                    className="justify-between gap-3"
+                  >
+                    <span className="font-semibold text-primary-500">
+                      All categories
                     </span>
                     <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                      [{option.count}]
+                      [{categoryFacetTotal}]
                     </span>
                   </DropdownMenuCheckboxItem>
-                )
-              })}
-            </DropdownMenuContent>
-          </DropdownMenu>
+                  {categoryFacetOptions.map((option) => (
+                    <DropdownMenuCheckboxItem
+                      key={option.value}
+                      checked={option.selected}
+                      onSelect={(event) => event.preventDefault()}
+                      onCheckedChange={() => toggleTag(option.value)}
+                      className="justify-between gap-3"
+                    >
+                      <span className="min-w-0 flex-1 truncate">
+                        {option.label}
+                      </span>
+                      <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
+                        [{option.count}]
+                      </span>
+                    </DropdownMenuCheckboxItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          ) : null}
+
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="min-w-20 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] sm:min-w-0">
+              Merchant
+            </span>
+            <DropdownMenu
+              open={merchantMenuOpen}
+              onOpenChange={setMerchantMenuOpen}
+            >
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="min-w-0 flex-1 justify-between text-xs sm:w-auto sm:min-w-[150px] sm:flex-none"
+                >
+                  {merchantTriggerLabel}
+                  <ChevronDown
+                    className="size-4 opacity-60"
+                    aria-hidden="true"
+                  />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="max-h-80 w-72 overflow-y-scroll [scrollbar-gutter:stable]">
+                <DropdownMenuCheckboxItem
+                  checked={selectedMerchants.length === 0}
+                  onSelect={(event) => event.preventDefault()}
+                  onCheckedChange={() => updateSearch({ merchant: undefined })}
+                  className="justify-between gap-3"
+                >
+                  <span className="font-semibold text-primary-500">
+                    All merchants
+                  </span>
+                  <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
+                    [{merchantFacetTotal}]
+                  </span>
+                </DropdownMenuCheckboxItem>
+                {merchantFacetOptions.map((option) => {
+                  const identity = getMerchantIdentity(option.value)
+                  return (
+                    <DropdownMenuCheckboxItem
+                      key={option.value}
+                      checked={option.selected}
+                      onSelect={(event) => event.preventDefault()}
+                      onCheckedChange={() => toggleMerchant(option.value)}
+                      className="gap-2.5"
+                    >
+                      <Avatar className="h-5 w-5 shrink-0">
+                        <AvatarImage
+                          src={identity.picture}
+                          alt=""
+                          className="object-cover"
+                        />
+                        <AvatarFallback>
+                          <MerchantAvatarFallback iconClassName="h-2.5 w-2.5" />
+                        </AvatarFallback>
+                      </Avatar>
+                      <span
+                        className={[
+                          "min-w-0 flex-1 truncate",
+                          identity.status === "pending" ? "animate-pulse" : "",
+                        ].join(" ")}
+                      >
+                        {option.label}
+                      </span>
+                      <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
+                        [{option.count}]
+                      </span>
+                    </DropdownMenuCheckboxItem>
+                  )
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
           {hasActiveFilters && (
             <Button
               variant="ghost"
@@ -602,7 +552,7 @@ function ProductsPage() {
             <Badge key={merchant} variant="secondary" className="gap-1.5">
               {getMerchantName(merchant)}
               <FilterRemoveButton
-                label={`Remove ${getMerchantName(merchant)} store filter`}
+                label={`Remove ${getMerchantName(merchant)} merchant filter`}
                 onClick={() => toggleMerchant(merchant)}
               />
             </Badge>
@@ -624,32 +574,32 @@ function ProductsPage() {
         </div>
       )}
 
-      {visibleMatchingSellers.length > 0 ? (
+      {visibleMatchingMerchants.length > 0 ? (
         <section
-          aria-labelledby="matching-stores-heading"
+          aria-labelledby="matching-merchants-heading"
           className="space-y-3"
         >
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h2
-              id="matching-stores-heading"
+              id="matching-merchants-heading"
               className="text-base font-semibold text-[var(--text-primary)]"
             >
-              Stores matching &quot;{search.q}&quot;
+              Merchants matching &quot;{search.q}&quot;
             </h2>
             <Link
-              to="/sellers"
-              // Keep the browse perspective; the seller directory reads the
-              // same source and would otherwise change the seller set.
+              to="/merchants"
+              // Keep the browse perspective; the merchant directory reads the
+              // same source and would otherwise change the merchant set.
               search={{ q: search.q, source: search.source }}
               className="text-sm text-secondary-400 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             >
-              {matchingSellers.length > visibleMatchingSellers.length
-                ? `See all ${matchingSellers.length} stores`
-                : "See all sellers"}
+              {matchingSellers.length > visibleMatchingMerchants.length
+                ? `See all ${matchingSellers.length} merchants`
+                : "See all merchants"}
             </Link>
           </div>
           <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {visibleMatchingSellers.map((seller) => (
+            {visibleMatchingMerchants.map((seller) => (
               <li key={seller.pubkey}>
                 <SellerCard
                   pubkey={seller.pubkey}

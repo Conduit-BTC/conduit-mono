@@ -133,8 +133,8 @@ export function useMerchantTrustContext({
   const merchantName = merchantPubkey
     ? getProfileDisplayLabel(profile, merchantPubkey, {
         lookupSettled: !profileQuery.isPlaceholderData,
-        pendingLabel: `Store ${formatNpub(merchantPubkey, 8)}`,
-        emptyPrefix: "Store",
+        pendingLabel: `Merchant ${formatNpub(merchantPubkey, 8)}`,
+        emptyPrefix: "Merchant",
         chars: 8,
       })
     : "this merchant"

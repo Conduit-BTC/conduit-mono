@@ -181,7 +181,7 @@ export function isPriceSort(sort: MarketBrowseSortOption | undefined): boolean {
 }
 
 export function getPendingMerchantName(pubkey: string): string {
-  return `Store ${formatNpub(pubkey, 6)}`
+  return `Merchant ${formatNpub(pubkey, 6)}`
 }
 
 export function getMerchantIdentityView(
@@ -311,9 +311,9 @@ export function sortStoreFacetOptionsByRecentPublisher(
 }
 
 export function getStoreTriggerLabel(selectedMerchants: readonly string[]) {
-  if (selectedMerchants.length === 0) return "All stores"
-  if (selectedMerchants.length === 1) return "1 store"
-  return `${selectedMerchants.length} stores`
+  if (selectedMerchants.length === 0) return "All merchants"
+  if (selectedMerchants.length === 1) return "1 merchant"
+  return `${selectedMerchants.length} merchants`
 }
 
 export function getBrowseSearchKey(input: {

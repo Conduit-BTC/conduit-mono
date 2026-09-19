@@ -728,7 +728,7 @@ function CheckoutMerchantIdentityLink({
         "flex min-w-0 items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]",
         className,
       ].join(" ")}
-      aria-label={`Visit ${merchantName} store`}
+      aria-label={`Visit ${merchantName} merchant page`}
     >
       <Avatar className="h-12 w-12 shrink-0 border border-[var(--border)]">
         <AvatarImage src={merchantProfile?.picture} alt={merchantName} />
