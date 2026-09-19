@@ -16,7 +16,7 @@ export const Route = createFileRoute("/network")({
 })
 
 function SettingsPage() {
-  const networkSettings = useAccountNetworkSettings()
+  const networkSettings = useAccountNetworkSettings({ telemetryApp: "market" })
   const [hasUnpublishedRelayChanges, setHasUnpublishedRelayChanges] =
     useState(false)
   const shouldBlockNavigation = useCallback<ShouldBlockFn>(
