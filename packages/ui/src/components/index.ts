@@ -163,6 +163,10 @@ export {
   type ProductCartActionProps,
 } from "./ProductCard"
 export {
+  ProductImageUrlCollectionField,
+  type ProductImageUrlCollectionFieldProps,
+} from "./ProductImageUrlCollectionField"
+export {
   EventMarketCard,
   type EventMarketCardProps,
   type EventMarketCardStatusTone,

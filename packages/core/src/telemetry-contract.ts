@@ -154,7 +154,7 @@ export const browserTelemetryEventPropertyContracts = {
       "amount_bucket",
       "product_type",
     ],
-    optional: timePropertyNames,
+    optional: ["latency_bucket", ...timePropertyNames],
   },
   checkout_success: {
     apps: marketTelemetryApps,
@@ -345,10 +345,12 @@ const browserTelemetryLabelValues = {
   ],
   step: [
     "availability",
+    "checkout_revalidation",
     "profile",
     "payments",
     "shipping",
     "network",
+    "order_delivery",
     "order_submit",
     "direct_payment",
   ],
