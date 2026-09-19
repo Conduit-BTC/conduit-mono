@@ -1289,9 +1289,9 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
 
     groups.push({
       id:
-        compatibleGroups.length === 0
-          ? getCartPurchaseGroupId(item)
-          : getCartPickupRevisionPurchaseGroupId(item),
+        kind === "pickup"
+          ? getCartPickupRevisionPurchaseGroupId(item)
+          : getCartPurchaseGroupId(item),
       kind,
       merchantPubkey: item.merchantPubkey,
       items: [item],

@@ -29,6 +29,7 @@ import {
   isCartProductAvailabilityBlocking,
   parsePersistedCart,
   removeCartItem,
+  selectCartPurchase,
   selectCartItem,
   selectCartItemQuantity,
   serializeCartState,
@@ -37,6 +38,7 @@ import {
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
 import { prepareCartFulfillment } from "../apps/market/src/lib/cart-shipping-options"
+import { getHudZapAuthorizationBindingMismatch } from "../apps/market/src/lib/hud-zap-intent"
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -323,13 +325,44 @@ describe("cart model", () => {
       productId: originalFulfillment.product.coordinate,
       format: "physical",
     })
-    const groups = groupCartPurchases([
-      { ...baseItem, fulfillment: originalFulfillment },
-      { ...baseItem, fulfillment: currentFulfillment },
-    ])
+    const originalItem = { ...baseItem, fulfillment: originalFulfillment }
+    const currentItem = { ...baseItem, fulfillment: currentFulfillment }
+    const groups = groupCartPurchases([originalItem, currentItem])
 
     expect(groups).toHaveLength(2)
     expect(new Set(groups.map((group) => group.id)).size).toBe(2)
+
+    const currentPurchase = groups.find((group) =>
+      group.items.includes(currentItem)
+    )!
+    const currentReference = getCartPurchaseReference(currentPurchase.id)
+    const survivingPurchase = groupCartPurchases([currentItem])[0]!
+    expect(survivingPurchase.id).toBe(currentPurchase.id)
+    expect(getCartPurchaseReference(survivingPurchase.id)).toBe(
+      currentReference
+    )
+    expect(
+      selectCartPurchase([currentItem], currentPurchase.id)?.items
+    ).toEqual([currentItem])
+    expect(
+      getHudZapAuthorizationBindingMismatch(
+        {
+          merchantPubkey: currentPurchase.merchantPubkey,
+          purchaseId: currentPurchase.id,
+          buyerPubkey: "buyer-a",
+          cartFingerprint: getCartCommerceFingerprint(currentPurchase.items),
+          totalMsats: 1_000_000,
+          createdAt: 1_000,
+        },
+        {
+          merchantPubkey: survivingPurchase.merchantPubkey,
+          purchaseId: survivingPurchase.id,
+          buyerPubkey: "buyer-a",
+          items: survivingPurchase.items,
+          totalMsats: 1_000_000,
+        }
+      )
+    ).toBeNull()
 
     const product = refreshedProduct(baseItem, {
       updatedAt: currentFulfillment.product.createdAt,
