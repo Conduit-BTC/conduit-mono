@@ -414,7 +414,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await expect(
       buyerPage.getByRole("heading", { name: merchantName, exact: true })
     ).toBeVisible({ timeout: 30_000 })
-    const search = buyerPage.getByPlaceholder("Search items in this store")
+    const search = buyerPage.getByPlaceholder("Search this merchant's items")
     await search.fill(productTitle)
     await search.press("Enter")
     const product = buyerPage
