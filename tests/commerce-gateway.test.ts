@@ -7319,6 +7319,7 @@ describe("getProductsByIds diagnostics", () => {
         productId: liveAddressId,
         status: "available",
         stock: 1,
+        productUpdatedAt: 100_000,
         refreshed: true,
       },
     ])
