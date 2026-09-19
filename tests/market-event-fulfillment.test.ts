@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import {
-  addCartItem,
   getCartCostSummary,
   getCartFulfillmentLane,
   getMixedFulfillmentBlockingMessage,
   isSameCartFulfillment,
+  isSameCartLineFulfillment,
   type CartItem,
   type CartPickupFulfillment,
 } from "../apps/market/src/lib/cart-model"
@@ -260,7 +260,7 @@ describe("Market event pickup fulfillment", () => {
     ).toContain("different pickup handlers")
   })
 
-  it("never overwrites a product's snapshotted pickup identity", () => {
+  it("identifies incompatible fulfillment snapshots as distinct cart lines", () => {
     const existing = item()
     const differentEvent = item({ fulfillment: pickup("market-b") })
     const differentRevision = item({
@@ -272,14 +272,33 @@ describe("Market event pickup fulfillment", () => {
         },
       },
     })
+    const newerProductRevision = item({
+      fulfillment: {
+        ...pickup(),
+        product: {
+          ...pickup().product,
+          eventId: "8".repeat(64),
+          createdAt: 199,
+        },
+      },
+    })
     const shipped = item({ fulfillment: { type: "shipping" } })
 
     expect(isSameCartFulfillment(existing, differentEvent)).toBe(false)
     expect(isSameCartFulfillment(existing, differentRevision)).toBe(false)
-    expect(addCartItem([existing], differentEvent)).toEqual([existing])
-    expect(addCartItem([existing], differentRevision)).toEqual([existing])
-    expect(addCartItem([existing], shipped)).toEqual([existing])
-    expect(addCartItem([existing], item())[0]?.quantity).toBe(2)
+    expect(isSameCartFulfillment(existing, newerProductRevision)).toBe(true)
+    expect(isSameCartLineFulfillment(existing, newerProductRevision)).toBe(
+      false
+    )
+    for (const incompatible of [
+      differentEvent,
+      differentRevision,
+      newerProductRevision,
+      shipped,
+    ]) {
+      expect(isSameCartLineFulfillment(existing, incompatible)).toBe(false)
+    }
+    expect(isSameCartLineFulfillment(existing, item())).toBe(true)
   })
 
   it("treats a signed zero-cost pickup as resolved checkout cost", () => {

@@ -660,6 +660,23 @@ export interface StoredWalletCredential {
   updatedAt: number
 }
 
+/**
+ * App-owned durable cart payload.
+ *
+ * Core owns only the IndexedDB transaction boundary. Market validates and
+ * interprets the opaque lines so cart persistence cannot make Core depend on
+ * an app package.
+ */
+export interface StoredShoppingCart {
+  id: string
+  version: number
+  revision: number
+  nextSequence: number
+  lines: unknown[]
+  migratedAt: number
+  updatedAt: number
+}
+
 /** How the buyer initiated payment for this order. */
 export type OrderCheckoutMode =
   | "anonymous_public_zap"
@@ -946,6 +963,7 @@ class ConduitDB extends Dexie {
   eventMarketEvidence!: EntityTable<CachedEventMarketEvidence, "id">
   wallets!: EntityTable<WalletDescriptor, "id">
   walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
+  shoppingCarts!: EntityTable<StoredShoppingCart, "id">
 
   constructor() {
     super("conduit")
@@ -1129,6 +1147,12 @@ class ConduitDB extends Dexie {
       // evidence. Signed account authority remains per kind.
       accountNetworkLocalState: "pubkey, updatedAt",
     })
+
+    this.version(19).stores({
+      // Shared, signer-independent shopper state. Market owns the opaque
+      // payload while Core supplies one serialized cross-tab transaction lane.
+      shoppingCarts: "id, updatedAt",
+    })
   }
 }
 
@@ -1144,6 +1168,18 @@ export function subscribeToWalletDescriptorChanges(observer: {
   onError(error: unknown): void
 }): () => void {
   const subscription = liveQuery(() => db.wallets.toArray()).subscribe({
+    next: () => observer.onChange(),
+    error: (error) => observer.onError(error),
+  })
+  return () => subscription.unsubscribe()
+}
+
+/** Observe committed cart mutations in this document and other tabs. */
+export function subscribeToShoppingCartChanges(observer: {
+  onChange(): void
+  onError(error: unknown): void
+}): () => void {
+  const subscription = liveQuery(() => db.shoppingCarts.toArray()).subscribe({
     next: () => observer.onChange(),
     error: (error) => observer.onError(error),
   })

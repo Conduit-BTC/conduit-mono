@@ -162,10 +162,10 @@ relay, or deployed-preview result.
 
 For each critical flow change, add or update the matching Playwright or smoke
 test. If that is not practical, state the uncovered criterion and require the
-named manual QA. New or changed smoke tests must declare an explicit
-`@market` or `@merchant` area. Reserve `@commerce` for the cross-app
-commerce shard defined in the testing specification. Do not use title
-capitalization as test ownership.
+named manual QA. New or changed smoke tests must declare an explicit `@market`,
+`@merchant`, or `@commerce` area. Use `@commerce` only for the hermetic
+cross-app flow that requires both Market and Merchant, as defined in the
+testing specification. Do not use title capitalization as test ownership.
 
 The author proposes one review and QA disposition:
 
@@ -218,13 +218,18 @@ the `bug` and `user-reported` labels. Maintainers should triage these by:
   - `NODE_VERSION=20`
 - Without those vars, Cloudflare can fall back to `npm install`, which breaks Bun workspace installs.
 - Public frontend behavior comes from `deploy/pages-profiles.json`, not Pages
-  dashboard `VITE_*` feature toggles. A Pages Git build derives `preview` from a
-  non-`main` `CF_PAGES_BRANCH` and `production` from `main`; an unknown or
+  dashboard `VITE_*` feature toggles. A Pages Git build whose deployment URL
+  belongs to a repo-owned Signet project derives `staging`; other non-`main`
+  branches derive `preview`, and `main` derives `production`. An unknown or
   incomplete profile fails during Vite config loading.
-- Cloudflare may rebuild the Git commit, but it cannot independently resolve
-  managed public feature state. CI builds the same explicit profile and checks
-  each emitted `/.well-known/conduit-deployment.json` for the expected profile,
-  source commit, feature value, and public-config digest.
+- Pages build metadata and operator configuration remain part of the trusted
+  release boundary. Dashboard `VITE_*` values do not directly resolve managed
+  public feature state. CI builds the same explicit profile and checks each
+  emitted `/.well-known/conduit-deployment.json` for the expected profile,
+  source commit, feature value, and public-config digest. At runtime,
+  compatibility routing fails closed if an official Shop or Sell host is not
+  compiled as `production`, or a Signet Pages host is not compiled as
+  `staging`; ordinary Pages previews keep their compiled preview behavior.
 
 ### Required checks before merge
 
@@ -276,11 +281,13 @@ requires the exact `Lean already. Ship.` line and zero inline comments.
 `FINDINGS` requires one or more actionable inline comments. `DELIVERY BLOCKED`
 fails the workflow.
 
-The required `e2e-smoke` check aggregates path-aware Market and Merchant
-Playwright shards. App-local changes run only that app's shard, shared runtime
-changes run both, docs-only changes skip browser installation, and pushes to
-`main` run both shards. Playwright area tags select the tests. CI rejects an
-untagged smoke test or a selected area that contains zero tests.
+The required `e2e-smoke` check aggregates path-aware Market, Merchant, and
+cross-app commerce Playwright shards. App-local changes keep their owning app
+shard and add commerce when they affect the shared checkout, order, product,
+messaging, relay, signer, or payment flow. Shared runtime changes and pushes to
+`main` run every critical shard; docs-only changes skip browser installation.
+Playwright area tags select the tests. CI rejects an untagged smoke test or a
+selected area that contains zero tests.
 
 ## Code Conventions
 

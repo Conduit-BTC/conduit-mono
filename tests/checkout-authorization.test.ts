@@ -500,6 +500,57 @@ describe("checkout authorization refresh", () => {
     expect(handlerAuthorizationCount).toBe(1)
   })
 
+  it("authorizes a combined pickup line after its fiat quote refreshes", async () => {
+    const refreshedProduct = pickupProduct()
+    const initialFulfillment = pickupFulfillment({
+      costSats: 1_000,
+      sourceCost: {
+        amount: 1,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    })
+    const refreshedFulfillment = pickupFulfillment({
+      ...initialFulfillment,
+      costSats: 2_000,
+    })
+    const reviewedItems = [
+      {
+        ...createCartItemFromProduct(refreshedProduct, refreshedFulfillment),
+        quantity: 2,
+      },
+    ]
+
+    expect(reviewedItems).toHaveLength(1)
+    expect(reviewedItems[0]).toMatchObject({
+      quantity: 2,
+      fulfillment: { costSats: 2_000 },
+    })
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      reviewedItems,
+      rawItems: reviewedItems,
+      refreshedProducts: [refreshedProduct],
+      readShippingOptions: async () => [],
+      resolveProductFulfillment: async () => ({
+        status: "pickup",
+        product: refreshedProduct,
+        fulfillment: refreshedFulfillment,
+      }),
+      authorizePickupHandlers: async () => undefined,
+    })
+
+    expect(result.status).toBe("ok")
+    if (result.status === "ok") {
+      expect(result.items).toHaveLength(1)
+      expect(result.items[0]).toMatchObject({
+        quantity: 2,
+        fulfillment: { costSats: 2_000 },
+      })
+    }
+  })
+
   it("normalizes the bounded historical own-product handoff during checkout", async () => {
     const refreshedProduct = ownPickupProduct()
     const historical = ownPickupFulfillment("organizer_handoff")

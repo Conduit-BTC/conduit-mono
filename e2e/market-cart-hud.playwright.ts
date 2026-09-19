@@ -35,6 +35,78 @@ async function seedCart(page: Page, merchantCount: number): Promise<void> {
   }, cartSeed(merchantCount))
 }
 
+async function replaceCanonicalCart(
+  page: Page,
+  merchantCount: number
+): Promise<void> {
+  await page.evaluate((seed) => {
+    return new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open("conduit")
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => {
+        const database = request.result
+        const transaction = database.transaction("shoppingCarts", "readwrite")
+        const store = transaction.objectStore("shoppingCarts")
+        const get = store.get("market")
+        get.onsuccess = () => {
+          const now = Date.now()
+          const previousRevision =
+            typeof get.result?.revision === "number" ? get.result.revision : 0
+          store.put({
+            id: "market",
+            version: 1,
+            revision: previousRevision + 1,
+            nextSequence: seed.items.length * 2 + 1,
+            lines: seed.items.map((item, index) => ({
+              id: `line:${index * 2 + 1}`,
+              item,
+              batches: [
+                { id: `batch:${index * 2 + 2}`, quantity: item.quantity },
+              ],
+            })),
+            migratedAt: now,
+            updatedAt: now,
+          })
+        }
+        transaction.oncomplete = () => {
+          database.close()
+          resolve()
+        }
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(transaction.error)
+      }
+    })
+  }, cartSeed(merchantCount))
+}
+
+async function readCanonicalCartProductIds(page: Page): Promise<string[]> {
+  return page.evaluate(
+    () =>
+      new Promise<string[]>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction("shoppingCarts", "readonly")
+          const get = transaction.objectStore("shoppingCarts").get("market")
+          transaction.oncomplete = () => {
+            const lines = Array.isArray(get.result?.lines)
+              ? get.result.lines
+              : []
+            resolve(
+              lines.map(
+                (line: { item: { productId: string } }) => line.item.productId
+              )
+            )
+            database.close()
+          }
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      })
+  )
+}
+
 async function seedMerchantProfile(
   page: Page,
   profile: { pubkey: string; name: string; lud16?: string },
@@ -123,10 +195,12 @@ async function expectInsideHud(page: Page): Promise<void> {
 }
 
 test("market cart HUD keeps every fixed control inside the HUD across merchant-count and width variants @market", async ({
-  page,
+  browser,
 }) => {
   test.setTimeout(120_000)
   for (const merchantCount of [1, 2, 6, 10]) {
+    const context = await browser.newContext()
+    const page = await context.newPage()
     await page.addInitScript((seed) => {
       localStorage.setItem("conduit:cart", JSON.stringify(seed))
     }, cartSeed(merchantCount))
@@ -148,7 +222,7 @@ test("market cart HUD keeps every fixed control inside the HUD across merchant-c
       await expectInsideHud(page)
 
       if (merchantCount > 1) {
-        const rail = hud.getByRole("group", { name: "Store carts" })
+        const rail = hud.getByRole("group", { name: "Cart purchases" })
         await expect(rail.getByRole("button")).toHaveCount(merchantCount)
         const railBox = await rail.evaluate((element) => ({
           clientWidth: element.clientWidth,
@@ -179,6 +253,7 @@ test("market cart HUD keeps every fixed control inside the HUD across merchant-c
         hudBox!.x + hudBox!.width + 0.5
       )
     }
+    await context.close()
   }
 })
 
@@ -191,7 +266,7 @@ test("market cart HUD is route-aware and layered above the fixed footer @market"
   const hud = page.getByRole("region", { name: "Cart inventory" })
   await expect(hud).toBeVisible()
 
-  const rail = hud.getByRole("group", { name: "Store carts" })
+  const rail = hud.getByRole("group", { name: "Cart purchases" })
   expect(
     await rail.evaluate((element) =>
       getComputedStyle(element).maskImage.toString()
@@ -249,7 +324,7 @@ test("market cart HUD rail activation expands a collapsed HUD for pointer and ke
   const hud = page.getByRole("region", { name: "Cart inventory" })
   await expect(hud).toBeVisible()
   const toggle = hud.locator("button[aria-expanded]")
-  const rail = hud.getByRole("group", { name: "Store carts" })
+  const rail = hud.getByRole("group", { name: "Cart purchases" })
   const merchantButtons = rail.getByRole("button")
   const panelId = await toggle.getAttribute("aria-controls")
   const panel = hud.locator(`[id="${panelId}"]`)
@@ -319,6 +394,7 @@ test("market cart HUD collapse restores focus from the panel to the disclosure t
 })
 
 test("market cart HUD restore is quiet while a real first increase announces and expands @market", async ({
+  context,
   page,
 }) => {
   await seedCart(page, 1)
@@ -333,19 +409,12 @@ test("market cart HUD restore is quiet while a real first increase announces and
   await toggle.click()
   await expect(toggle).toHaveAttribute("aria-expanded", "false")
 
-  // A cross-tab storage mutation increasing a quantity is a real change.
-  await page.evaluate(() => {
-    const stored = JSON.parse(localStorage.getItem("conduit:cart") ?? "{}")
-    stored.items[0].quantity += 1
-    localStorage.setItem("conduit:cart", JSON.stringify(stored))
-    window.dispatchEvent(
-      new StorageEvent("storage", {
-        key: "conduit:cart",
-        storageArea: localStorage,
-        newValue: JSON.stringify(stored),
-      })
-    )
-  })
+  // A real cart mutation from another same-origin tab is announced.
+  const otherTab = await context.newPage()
+  await otherTab.goto(`${marketUrl}/cart`)
+  await otherTab
+    .getByRole("button", { name: "Increase quantity for Catalog item 1" })
+    .click()
   await expect(toggle).toHaveAttribute("aria-expanded", "true")
   await expect(liveRegion).toContainText("Cart updated")
 })
@@ -386,8 +455,8 @@ test("market cart presence starts one shared merchant-scoped LNURL preflight wit
 
   // Restoring a cart for the merchant starts the preflight once the profile
   // resolves the Lightning address.
-  await seedCart(page, 2)
-  await page.goto(`${marketUrl}/products`)
+  await replaceCanonicalCart(page, 2)
+  await page.reload()
   await expect(
     page.getByRole("region", { name: "Cart inventory" })
   ).toBeVisible()
@@ -508,22 +577,6 @@ test("market cart HUD does not present a partial total @market", async ({
   await expect(hud).toContainText("Total unavailable")
   await expect(hud).not.toContainText("1,200 sats")
   await expect
-    .poll(() =>
-      page.evaluate(
-        (expectedProductIds) => {
-          const stored = JSON.parse(
-            localStorage.getItem("conduit:cart") ?? "{}"
-          )
-          const storedProductIds = stored.items?.map(
-            (item: { productId: string }) => item.productId
-          )
-          return (
-            JSON.stringify(storedProductIds) ===
-            JSON.stringify(expectedProductIds)
-          )
-        },
-        [`30402:${MERCHANT_A}:priced`, `30402:${MERCHANT_A}:unpriced`]
-      )
-    )
-    .toBe(true)
+    .poll(() => readCanonicalCartProductIds(page))
+    .toEqual([`30402:${MERCHANT_A}:priced`, `30402:${MERCHANT_A}:unpriced`])
 })

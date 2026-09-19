@@ -6,34 +6,32 @@ import type {
   ProductAvailabilityIssue,
 } from "@conduit/core"
 import {
-  addCartItem,
   cartItemsMatchCurrentProducts,
-  clearMerchantCart,
   createCartItemFromProduct,
   getCartAvailabilityBlockingMessage,
-  getCartItemStockForAvailability,
+  getCartItemStockEvidenceForAvailability,
   getCartProductAvailability,
   getCartItemKey,
+  getCartPurchaseReference,
   getCartCostSummary,
   getCartCommerceFingerprint,
   getCartPublicZapPolicy,
   getCartTotals,
   getProductAddAvailability,
   groupCartItems,
+  groupCartPurchases,
   getCartAvailabilityReadDecision,
   getCartAvailabilityVerificationMessage,
   isCartAvailabilityReadComplete,
   isCartProductAvailabilityBlocking,
+  isSameCartLineFulfillment,
   parsePersistedCart,
-  removeCartItem,
   selectCartItem,
-  selectCartItemQuantity,
-  serializeCartState,
-  setCartItemQuantity,
   type CartPickupFulfillment,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
 import { prepareCartFulfillment } from "../apps/market/src/lib/cart-shipping-options"
+import { getHudZapAuthorizationBindingMismatch } from "../apps/market/src/lib/hud-zap-intent"
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -161,33 +159,26 @@ describe("cart model", () => {
   })
 
   it("groups items by merchant with newest merchant first, independent of quantity", () => {
-    let items = addCartItem(
-      [],
+    let items = [
       item({
         productId: "30402:merchant-a:product-a",
         merchantPubkey: "merchant-a",
         merchantAddedAt: 100,
+        quantity: 1,
       }),
-      1
-    )
-    items = addCartItem(
-      items,
       item({
         productId: "30402:merchant-b:product-b",
         merchantPubkey: "merchant-b",
         merchantAddedAt: 200,
+        quantity: 1,
       }),
-      1
-    )
-    items = addCartItem(
-      items,
       item({
         productId: "30402:merchant-a:product-c",
         merchantPubkey: "merchant-a",
         merchantAddedAt: 300,
+        quantity: 9,
       }),
-      9
-    )
+    ]
 
     let groups = groupCartItems(items)
 
@@ -202,16 +193,15 @@ describe("cart model", () => {
       "30402:merchant-a:product-c",
     ])
 
-    items = clearMerchantCart(items, "merchant-b")
-    items = addCartItem(
-      items,
+    items = [
+      ...items.filter((cartItem) => cartItem.merchantPubkey !== "merchant-b"),
       item({
         productId: "30402:merchant-b:product-d",
         merchantPubkey: "merchant-b",
         merchantAddedAt: 400,
+        quantity: 1,
       }),
-      1
-    )
+    ]
     groups = groupCartItems(items)
     expect(groups.map((group) => group.merchantPubkey)).toEqual([
       "merchant-b",
@@ -220,39 +210,163 @@ describe("cart model", () => {
     expect(groups.map((group) => group.merchantAddedAt)).toEqual([400, 100])
   })
 
-  it("adds new items and increments existing products", () => {
-    const first = addCartItem([], item({ quantity: 0 }), 2)
-    expect(first).toMatchObject([
-      {
-        productId: "30402:merchant-a:product-a",
-        quantity: 2,
+  it("partitions purchases by merchant, delivery, and exact pickup graph", () => {
+    const eventA = pickupFulfillment()
+    const eventB = {
+      ...pickupFulfillment(),
+      calendar: {
+        ...pickupFulfillment().calendar,
+        coordinate: `31922:${"a".repeat(64)}:event-b`,
+        eventId: "5".repeat(64),
+        createdAt: 201,
       },
+    }
+    const merchantA = eventA.product.merchantPubkey
+    const merchantB = "c".repeat(64)
+    const groups = groupCartPurchases([
+      item({
+        merchantPubkey: merchantA,
+        productId: `30402:${merchantA}:shipping`,
+        title: "Shipped",
+        format: "physical",
+        fulfillment: { type: "shipping" },
+      }),
+      item({
+        merchantPubkey: merchantA,
+        productId: `30402:${merchantA}:pickup-a-1`,
+        title: "Event A first",
+        format: "physical",
+        fulfillment: eventA,
+      }),
+      item({
+        merchantPubkey: merchantA,
+        productId: `30402:${merchantA}:pickup-a-2`,
+        title: "Event A second",
+        format: "physical",
+        fulfillment: {
+          ...eventA,
+          product: {
+            ...eventA.product,
+            coordinate: `30402:${merchantA}:pickup-a-2`,
+            eventId: "6".repeat(64),
+          },
+        },
+      }),
+      item({
+        merchantPubkey: merchantA,
+        productId: `30402:${merchantA}:pickup-b`,
+        title: "Event B",
+        format: "physical",
+        fulfillment: eventB,
+      }),
+      item({
+        merchantPubkey: merchantB,
+        productId: `30402:${merchantB}:digital`,
+        title: "Other merchant",
+        format: "digital",
+        fulfillment: { type: "digital" },
+      }),
     ])
 
-    const second = addCartItem(
-      first,
-      item({ title: "Notebook updated", quantity: 0 }),
-      3
-    )
-
-    expect(second).toMatchObject([
+    expect(groups).toHaveLength(4)
+    expect(
+      groups.map((group) => ({
+        merchant: group.merchantPubkey,
+        kind: group.kind,
+        titles: group.items.map((entry) => entry.title),
+      }))
+    ).toEqual([
       {
-        productId: "30402:merchant-a:product-a",
-        title: "Notebook updated",
-        quantity: 5,
+        merchant: merchantB,
+        kind: "delivery",
+        titles: ["Other merchant"],
       },
+      { merchant: merchantA, kind: "delivery", titles: ["Shipped"] },
+      {
+        merchant: merchantA,
+        kind: "pickup",
+        titles: ["Event A first", "Event A second"],
+      },
+      { merchant: merchantA, kind: "pickup", titles: ["Event B"] },
     ])
+    expect(new Set(groups.map((group) => group.id)).size).toBe(4)
+    expect(
+      new Set(groups.map((group) => getCartPurchaseReference(group.id))).size
+    ).toBe(4)
   })
 
-  it("does not add a product whose stock snapshot is sold out", () => {
-    const items = addCartItem([], item({ stock: 0, quantity: 0 }), 1)
+  it("separates signed pickup revisions so readiness stays one-to-one", () => {
+    const originalFulfillment = pickupFulfillment()
+    const currentFulfillment: CartPickupFulfillment = {
+      ...originalFulfillment,
+      product: {
+        ...originalFulfillment.product,
+        eventId: "9".repeat(64),
+        createdAt: originalFulfillment.product.createdAt + 1,
+      },
+    }
+    const baseItem = item({
+      merchantPubkey: originalFulfillment.product.merchantPubkey,
+      productId: originalFulfillment.product.coordinate,
+      format: "physical",
+    })
+    const originalItem = { ...baseItem, fulfillment: originalFulfillment }
+    const currentItem = { ...baseItem, fulfillment: currentFulfillment }
+    const groups = groupCartPurchases([originalItem, currentItem])
 
-    expect(items).toEqual([])
+    expect(groups).toHaveLength(2)
+    expect(new Set(groups.map((group) => group.id)).size).toBe(2)
+
+    const currentPurchase = groups.find((group) =>
+      group.items.includes(currentItem)
+    )!
+    const currentReference = getCartPurchaseReference(currentPurchase.id)
+    const survivingPurchase = groupCartPurchases([currentItem])[0]!
+    expect(survivingPurchase.id).toBe(currentPurchase.id)
+    expect(getCartPurchaseReference(survivingPurchase.id)).toBe(
+      currentReference
+    )
+    expect(
+      getHudZapAuthorizationBindingMismatch(
+        {
+          merchantPubkey: currentPurchase.merchantPubkey,
+          purchaseId: currentPurchase.id,
+          buyerPubkey: "buyer-a",
+          cartFingerprint: getCartCommerceFingerprint(currentPurchase.items),
+          totalMsats: 1_000_000,
+          createdAt: 1_000,
+        },
+        {
+          merchantPubkey: survivingPurchase.merchantPubkey,
+          purchaseId: survivingPurchase.id,
+          buyerPubkey: "buyer-a",
+          items: survivingPurchase.items,
+          totalMsats: 1_000_000,
+        }
+      )
+    ).toBeNull()
+
+    const product = refreshedProduct(baseItem, {
+      updatedAt: currentFulfillment.product.createdAt,
+    })
+    for (const group of groups) {
+      const availability = getCartProductAvailability(group.items, [product])
+      expect(
+        getCartAvailabilityReadDecision({
+          productIds: [product.id],
+          availability,
+          meta: { source: "commerce", stale: false, degraded: false },
+          diagnostics: [exactLiveDiagnostic(product.id)],
+          querySucceeded: true,
+        })
+      ).toEqual({ status: "verified_at_read", coverage: "complete" })
+    }
   })
 
   it("preserves product stock and shipping-shape safety when creating a cart item snapshot", () => {
     const product: Product = {
       id: "30402:merchant-a:sold-out-tee",
+      sourceEventId: "1".repeat(64),
       pubkey: "merchant-a",
       title: "Sold Out Tee",
       price: 2_500,
@@ -277,6 +391,7 @@ describe("cart model", () => {
       merchantPubkey: product.pubkey,
       title: product.title,
       stock: 0,
+      productEventId: product.sourceEventId,
       shippingOptionLaunchUnsupported: true,
     })
   })
@@ -285,6 +400,7 @@ describe("cart model", () => {
     const cartItems = [item({ stock: 4 })]
     const refreshedProduct: Product = {
       id: cartItems[0]!.productId,
+      sourceEventId: "3".repeat(64),
       pubkey: cartItems[0]!.merchantPubkey,
       title: cartItems[0]!.title,
       price: cartItems[0]!.price,
@@ -308,6 +424,8 @@ describe("cart model", () => {
         merchantPubkey: cartItems[0]!.merchantPubkey,
         status: "sold_out",
         stock: 0,
+        productUpdatedAt: 2,
+        productEventId: refreshedProduct.sourceEventId,
         refreshed: true,
       },
     ])
@@ -345,6 +463,7 @@ describe("cart model", () => {
         merchantPubkey: cartItems[0]!.merchantPubkey,
         status: "insufficient_stock",
         stock: 1,
+        productUpdatedAt: 2,
         refreshed: true,
       },
     ])
@@ -381,6 +500,7 @@ describe("cart model", () => {
     const cartItems = [item({ stock: 0 })]
     const refreshedProduct: Product = {
       id: cartItems[0]!.productId,
+      sourceEventId: "3".repeat(64),
       pubkey: cartItems[0]!.merchantPubkey,
       title: cartItems[0]!.title,
       price: cartItems[0]!.price,
@@ -407,26 +527,15 @@ describe("cart model", () => {
         merchantPubkey: cartItems[0]!.merchantPubkey,
         status: "untracked",
         stock: undefined,
+        productUpdatedAt: 3,
+        productEventId: refreshedProduct.sourceEventId,
         refreshed: true,
       },
     ])
-
-    const incrementedItems = addCartItem(
-      cartItems,
-      {
-        productId: cartItems[0]!.productId,
-        merchantPubkey: cartItems[0]!.merchantPubkey,
-        title: cartItems[0]!.title,
-        price: cartItems[0]!.price,
-        currency: cartItems[0]!.currency,
-        stock: getCartItemStockForAvailability(cartItems[0]!, availability[0]),
-      },
-      1
-    )
-
-    expect(incrementedItems[0]).toMatchObject({
-      quantity: 2,
+    expect(getCartItemStockEvidenceForAvailability(availability[0])).toEqual({
       stock: undefined,
+      productUpdatedAt: 3,
+      productEventId: refreshedProduct.sourceEventId,
     })
   })
 
@@ -751,41 +860,21 @@ describe("cart model", () => {
       title: "Merchant B",
     })
 
-    const items = addCartItem(addCartItem([], merchantA, 1), merchantB, 2)
+    const items = [merchantA, { ...merchantB, quantity: 2 }]
     expect(items).toHaveLength(2)
     expect(
-      selectCartItemQuantity(items, {
+      selectCartItem(items, {
         merchantPubkey: "merchant-a",
         productId: "shared-product",
-      })
-    ).toBe(1)
-    expect(
-      selectCartItemQuantity(items, {
-        merchantPubkey: "merchant-b",
-        productId: "shared-product",
-      })
-    ).toBe(2)
-    expect(getCartItemKey(merchantA)).not.toBe(getCartItemKey(merchantB))
-  })
-
-  it("mutates only the selected merchant-scoped line", () => {
-    const items = [
-      item({ productId: "shared", merchantPubkey: "merchant-a" }),
-      item({ productId: "shared", merchantPubkey: "merchant-b", quantity: 2 }),
-    ]
-    const merchantB = { merchantPubkey: "merchant-b", productId: "shared" }
-    const updated = setCartItemQuantity(items, merchantB, 5)
-
-    expect(selectCartItem(updated, merchantB)?.quantity).toBe(5)
-    expect(
-      selectCartItem(updated, {
-        merchantPubkey: "merchant-a",
-        productId: "shared",
       })?.quantity
     ).toBe(1)
-    expect(removeCartItem(updated, merchantB)).toMatchObject([
-      { merchantPubkey: "merchant-a", productId: "shared" },
-    ])
+    expect(
+      selectCartItem(items, {
+        merchantPubkey: "merchant-b",
+        productId: "shared-product",
+      })?.quantity
+    ).toBe(2)
+    expect(getCartItemKey(merchantA)).not.toBe(getCartItemKey(merchantB))
   })
 
   it("migrates legacy storage and preserves cross-merchant collisions", () => {
@@ -823,10 +912,48 @@ describe("cart model", () => {
     })
   })
 
-  it("round-trips signed pickup fulfillment through persisted cart storage", () => {
+  it("migrates duplicate legacy product rows without merging fulfillment terms", () => {
+    const merchantPubkey = "b".repeat(64)
+    const productId = `30402:${merchantPubkey}:shared-fulfillment`
+    const pickup = {
+      ...pickupFulfillment(),
+      product: {
+        ...pickupFulfillment().product,
+        coordinate: productId,
+        merchantPubkey,
+      },
+    }
+    const shipping = item({
+      merchantPubkey,
+      productId,
+      format: "physical",
+      fulfillment: { type: "shipping" },
+    })
+    const eventPickup = item({
+      merchantPubkey,
+      productId,
+      format: "physical",
+      fulfillment: pickup,
+    })
+
+    for (const items of [
+      [shipping, eventPickup],
+      [eventPickup, shipping],
+    ]) {
+      const parsed = parsePersistedCart({ version: 2, items })
+      expect(parsed.state.items).toHaveLength(2)
+      expect(
+        parsed.state.items.map((entry) => entry.fulfillment?.type).sort()
+      ).toEqual(["pickup", "shipping"])
+      expect(parsed.state.items.map((entry) => entry.quantity)).toEqual([1, 1])
+    }
+  })
+
+  it("parses signed pickup fulfillment from a v2 persisted cart", () => {
     const fulfillment = pickupFulfillment()
     const merchantPubkey = fulfillment.product.merchantPubkey
-    const persisted = serializeCartState({
+    const persisted = {
+      version: 2,
       items: [
         item({
           productId: fulfillment.product.coordinate,
@@ -835,7 +962,7 @@ describe("cart model", () => {
           fulfillment,
         }),
       ],
-    })
+    }
 
     expect(parsePersistedCart(persisted).state.items[0]?.fulfillment).toEqual(
       fulfillment
@@ -1123,6 +1250,82 @@ describe("cart model", () => {
     ).toBe(false)
   })
 
+  it("keeps pickup line identity stable only for fiat quote changes", () => {
+    const initialFulfillment: CartPickupFulfillment = {
+      ...pickupFulfillment(),
+      costSats: 1_000,
+      sourceCost: {
+        amount: 1,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    }
+    const refreshedFulfillment: CartPickupFulfillment = {
+      ...initialFulfillment,
+      costSats: 2_000,
+    }
+    const product = refreshedProduct(
+      item({
+        productId: initialFulfillment.product.coordinate,
+        merchantPubkey: initialFulfillment.product.merchantPubkey,
+      })
+    )
+
+    const initialItem = {
+      ...createCartItemFromProduct(product, initialFulfillment),
+      quantity: 1,
+    }
+    const refreshedItem = {
+      ...createCartItemFromProduct(product, refreshedFulfillment),
+      quantity: 2,
+    }
+    const combined = [refreshedItem]
+
+    expect(isSameCartLineFulfillment(initialItem, refreshedItem)).toBe(true)
+    expect(
+      cartItemsMatchCurrentProducts(
+        combined,
+        [product],
+        new Map([[product.id, refreshedFulfillment]])
+      )
+    ).toBe(true)
+
+    const changedSignedCost = createCartItemFromProduct(product, {
+      ...refreshedFulfillment,
+      sourceCost: { ...refreshedFulfillment.sourceCost, amount: 2 },
+    })
+    expect(isSameCartLineFulfillment(initialItem, changedSignedCost)).toBe(
+      false
+    )
+
+    for (const sourceCost of [
+      { amount: 1_000, currency: "SATS", normalizedCurrency: "SATS" },
+      { amount: 1_000_000, currency: "MSATS", normalizedCurrency: "MSATS" },
+      { amount: 0.00001, currency: "BTC", normalizedCurrency: "BTC" },
+      { amount: 0, currency: "USD", normalizedCurrency: "USD" },
+    ]) {
+      const deterministicFulfillment: CartPickupFulfillment = {
+        ...initialFulfillment,
+        costSats: 1_000,
+        sourceCost,
+      }
+      const initialDeterministicItem = createCartItemFromProduct(
+        product,
+        deterministicFulfillment
+      )
+      const changedDeterministicCost = createCartItemFromProduct(product, {
+        ...deterministicFulfillment,
+        costSats: 2_000,
+      })
+      expect(
+        isSameCartLineFulfillment(
+          initialDeterministicItem,
+          changedDeterministicCost
+        )
+      ).toBe(false)
+    }
+  })
+
   it("keeps refreshed availability merchant-scoped for legacy identifiers", () => {
     const cartItems = [
       item({ productId: "shared", merchantPubkey: "merchant-a", stock: 1 }),
@@ -1172,15 +1375,17 @@ describe("cart model", () => {
       merchantPubkey,
       shippingOptionLaunchUnsupported: true,
       productUpdatedAt: 2_000,
+      productEventId: "A".repeat(64),
       canonicalShippingResolved: true,
     })
 
-    const parsed = parsePersistedCart(serializeCartState({ items: [cartItem] }))
-      .state.items[0]
+    const parsed = parsePersistedCart({ version: 2, items: [cartItem] }).state
+      .items[0]
 
     expect(parsed).toMatchObject({
       shippingOptionLaunchUnsupported: true,
       productUpdatedAt: 2_000,
+      productEventId: "a".repeat(64),
       canonicalShippingResolved: true,
     })
 
@@ -1191,6 +1396,7 @@ describe("cart model", () => {
           ...cartItem,
           shippingOptionLaunchUnsupported: "true",
           productUpdatedAt: Number.NaN,
+          productEventId: "not-an-event-id",
           canonicalShippingResolved: 1,
         },
       ],
@@ -1198,10 +1404,11 @@ describe("cart model", () => {
 
     expect(malformed?.shippingOptionLaunchUnsupported).toBeUndefined()
     expect(malformed?.productUpdatedAt).toBeUndefined()
+    expect(malformed?.productEventId).toBeUndefined()
     expect(malformed?.canonicalShippingResolved).toBeUndefined()
   })
 
-  it("keeps fixed shipping ready after a serialize and parse round trip", () => {
+  it("keeps fixed shipping ready after parsing a v2 persisted cart", () => {
     const merchantPubkey = "a".repeat(64)
     const productDTag = "field-notes"
     const shippingOptionId = `30406:${merchantPubkey}:${productDTag}-shipping-standard`
@@ -1238,9 +1445,10 @@ describe("cart model", () => {
       launchUnsupportedTags: [],
     }
 
-    const restoredItems = parsePersistedCart(
-      serializeCartState({ items: [cartItem] })
-    ).state.items
+    const restoredItems = parsePersistedCart({
+      version: 2,
+      items: [cartItem],
+    }).state.items
     const prepared = prepareCartFulfillment(restoredItems, [shippingOption])
 
     expect(prepared.resolutions.get(cartItem.productId)).toMatchObject({
@@ -1252,36 +1460,6 @@ describe("cart model", () => {
       productUpdatedAt: 2_000,
       canonicalShippingResolved: true,
     })
-  })
-
-  it("does not add beyond finite tracked stock", () => {
-    const current = [item({ stock: 2, quantity: 2 })]
-    expect(addCartItem(current, item({ stock: 2 }), 1)).toBe(current)
-    expect(addCartItem([], item({ stock: 2 }), 3)).toEqual([])
-  })
-
-  it("sets quantities, removes products, and clears one merchant", () => {
-    const items = [
-      item({ productId: "30402:merchant-a:product-a", merchantPubkey: "a" }),
-      item({ productId: "30402:merchant-b:product-b", merchantPubkey: "b" }),
-    ]
-
-    expect(
-      setCartItemQuantity(
-        items,
-        { merchantPubkey: "a", productId: "30402:merchant-a:product-a" },
-        4
-      )[0]?.quantity
-    ).toBe(4)
-    expect(
-      removeCartItem(items, {
-        merchantPubkey: "a",
-        productId: "30402:merchant-a:product-a",
-      })
-    ).toHaveLength(1)
-    expect(clearMerchantCart(items, "a")).toMatchObject([
-      { productId: "30402:merchant-b:product-b" },
-    ])
   })
 
   it("calculates item count and subtotal from cart items", () => {
