@@ -4568,9 +4568,8 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
     const submission = submit.click()
     await orderAck.captured
 
-    await concurrentLiveProduct.hover()
-    await concurrentIncrement.click()
-    await concurrentAdd.click()
+    await concurrentIncrement.press("Enter")
+    await concurrentAdd.press("Enter")
     await expect
       .poll(() => readCanonicalCartLines(concurrentTab))
       .toEqual(

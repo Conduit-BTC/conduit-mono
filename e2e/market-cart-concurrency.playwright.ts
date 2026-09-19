@@ -612,6 +612,24 @@ test("delayed product mutations preserve a newer signed cart snapshot @market", 
     staleTab.goto(`${marketUrl}/cart`),
   ])
 
+  await expect
+    .poll(
+      () =>
+        staleTab.evaluate(async () => {
+          const modulePath = "/src/lib/cart-repository.ts"
+          const repository = (await import(/* @vite-ignore */ modulePath)) as {
+            getCartRepositorySnapshot(): {
+              hydrated: boolean
+              items: CartItem[]
+            }
+          }
+          const snapshot = repository.getCartRepositorySnapshot()
+          return snapshot.hydrated ? snapshot.items[0]?.cartLineId : undefined
+        }),
+      { timeout: 30_000 }
+    )
+    .toBeTruthy()
+
   const renderedStaleItem = await staleTab.evaluate(async () => {
     const modulePath = "/src/lib/cart-repository.ts"
     const repository = (await import(/* @vite-ignore */ modulePath)) as {
@@ -619,7 +637,6 @@ test("delayed product mutations preserve a newer signed cart snapshot @market", 
     }
     return repository.getCartRepositorySnapshot().items[0]
   })
-  expect(renderedStaleItem?.cartLineId).toBeTruthy()
 
   const newerResult = await currentTab.evaluate(async () => {
     const modulePath = "/src/lib/cart-repository.ts"

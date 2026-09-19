@@ -77,9 +77,10 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain("grid transition-opacity duration-200")
     // Decorative cart glyph carries no control-like filled surface.
     expect(source).not.toContain("rounded-xl bg-primary-500 text-white")
-    // Initial hydration is tracked separately from a real first-item add.
-    expect(source).toContain("cartHydratedRef")
-    expect(source).toContain("isInitialHydration")
+    // Initial hydration is tracked separately from a real first-item add,
+    // including when React batches hydration and the first mutation.
+    expect(source).toContain("previousMutationSequenceRef")
+    expect(source).toContain("observedMutation")
   })
 
   it("slides the dock in and out of the bottom of the page", () => {

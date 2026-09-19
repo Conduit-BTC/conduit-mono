@@ -102,8 +102,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const disclosureRef = useRef<HTMLButtonElement>(null)
   const detailsPanelId = useId()
   const previousQuantitiesRef = useRef(new Map<string, number>())
-  const cartHydratedRef = useRef(false)
+  const previousMutationSequenceRef = useRef(cart.mutationSequence)
   const previousScrollYRef = useRef(0)
+  const hudResizeInProgressRef = useRef(false)
 
   const currentPurchase = reconcileCartHudMerchant(
     activePurchase,
@@ -201,6 +202,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
 
   useEffect(() => {
     if (!cart.hydrated) return
+    const observedMutation =
+      cart.mutationSequence !== previousMutationSequenceRef.current
+    previousMutationSequenceRef.current = cart.mutationSequence
     const previous = previousQuantitiesRef.current
     const next = new Map<string, number>()
     let increasedPurchase: string | null = null
@@ -221,12 +225,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       }
     }
     previousQuantitiesRef.current = next
-    // The first pass observes whatever the persisted cart restored; announcing
-    // or expanding for it would misreport hydration as a shopper action. Any
-    // later increase is a real mutation, including the session's first item.
-    const isInitialHydration = !cartHydratedRef.current
-    cartHydratedRef.current = true
-    if (isInitialHydration || !increasedPurchase) return
+    // Initial hydration does not advance the session-local mutation sequence,
+    // so a restored cart stays quiet. A mutation that races hydration does
+    // advance it and must still announce and expand the shopper's first add.
+    if (!observedMutation || !increasedPurchase) return
     setActivePurchase(increasedPurchase)
     setExpanded(true)
     setAnnouncement(
@@ -234,13 +236,23 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
         ? `Cart updated: ${increasedTitle}, quantity ${increasedQuantity}`
         : `Cart updated: ${cart.totals.count} items`
     )
-  }, [cart.hydrated, cart.items, cart.totals.count, groups])
+  }, [
+    cart.hydrated,
+    cart.items,
+    cart.mutationSequence,
+    cart.totals.count,
+    groups,
+  ])
 
   useEffect(() => {
     if (routeMode === "suppressed" || groups.length === 0) return
     previousScrollYRef.current = window.scrollY
     const onScroll = () => {
       const nextY = window.scrollY
+      if (hudResizeInProgressRef.current) {
+        previousScrollYRef.current = nextY
+        return
+      }
       if (nextY - previousScrollYRef.current >= 24) collapseHud()
       previousScrollYRef.current = nextY
     }
@@ -283,17 +295,27 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       root.style.removeProperty("--market-hud-height")
       return
     }
+    let settleFrame: number | null = null
     const updateHeight = () => {
+      hudResizeInProgressRef.current = true
       root.style.setProperty(
         "--market-hud-height",
         `${Math.ceil(element.getBoundingClientRect().height)}px`
       )
+      if (settleFrame !== null) cancelAnimationFrame(settleFrame)
+      settleFrame = requestAnimationFrame(() => {
+        previousScrollYRef.current = window.scrollY
+        hudResizeInProgressRef.current = false
+        settleFrame = null
+      })
     }
     updateHeight()
     const observer = new ResizeObserver(updateHeight)
     observer.observe(element)
     return () => {
       observer.disconnect()
+      if (settleFrame !== null) cancelAnimationFrame(settleFrame)
+      hudResizeInProgressRef.current = false
       root.style.removeProperty("--market-hud-height")
     }
   }, [expanded, mounted])

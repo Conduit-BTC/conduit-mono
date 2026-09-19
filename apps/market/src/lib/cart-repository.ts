@@ -47,6 +47,7 @@ export type CartRepositorySnapshot = {
   hydrated: boolean
   persistenceMode: CartPersistenceMode
   revision: number
+  mutationSequence: number
 }
 
 export type CartPurchaseClaim = {
@@ -86,6 +87,7 @@ let snapshot: CartRepositorySnapshot = {
   hydrated: false,
   persistenceMode: "persistent",
   revision: 0,
+  mutationSequence: 0,
 }
 let initialization: Promise<void> | null = null
 let unsubscribeFromCanonical: (() => void) | null = null
@@ -353,12 +355,21 @@ function publishRecord(
   record: CanonicalCartRecord,
   persistenceMode: CartPersistenceMode
 ): void {
+  const items = materializeLines(record.lines)
+  const mutationSequence =
+    snapshot.hydrated &&
+    (snapshot.revision !== record.revision ||
+      getCartReviewFingerprint(snapshot.items) !==
+        getCartReviewFingerprint(items))
+      ? snapshot.mutationSequence + 1
+      : snapshot.mutationSequence
   publishedRecord = cloneRecord(record)
   const next: CartRepositorySnapshot = {
-    items: materializeLines(record.lines),
+    items,
     hydrated: true,
     persistenceMode,
     revision: record.revision,
+    mutationSequence,
   }
   const changed =
     !snapshot.hydrated ||
