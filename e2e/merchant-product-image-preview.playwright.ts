@@ -383,6 +383,7 @@ async function openProductDialogWithSigner(
 ) {
   const secretKey = generateSecretKey()
   const pubkey = getPublicKey(secretKey)
+  const configuredCreatedAt = Math.floor(Date.now() / 1_000) + 1
   await seedTestRelayIdentity(secretKey)
   await installTestSigner(page, pubkey, { secretKey })
   if (options.configuredServerUrl) {
@@ -390,7 +391,7 @@ async function openProductDialogWithSigner(
       finalizeEvent(
         {
           kind: 10_063,
-          created_at: Math.floor(Date.now() / 1_000) + 1,
+          created_at: configuredCreatedAt,
           tags: [["server", options.configuredServerUrl]],
           content: "",
         },
@@ -418,7 +419,7 @@ async function openProductDialogWithSigner(
       return original(event)
     }
   })
-  return { dialog, pubkey }
+  return { configuredCreatedAt, dialog, pubkey, secretKey }
 }
 
 test("loaded product preview stays visible while its title changes @merchant", async ({
@@ -595,6 +596,105 @@ test("configured Blossom uploads stay sequential and retry only unfinished image
         .map(([, value]) => value)
     })
     .toEqual([variationResourceUrl])
+})
+
+test("a newer signed media-server revision stops a pending upload before PUT @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const replacementServer = "https://media-next.conduit.market"
+  const originalState = await interceptBlossom(page, configuredServer)
+  const replacementState = await interceptBlossom(page, replacementServer)
+  const { configuredCreatedAt, dialog, pubkey, secretKey } =
+    await openProductDialogWithSigner(page, {
+      configuredServerUrl: configuredServer,
+    })
+  await expect(
+    dialog.getByText("your first configured media server", { exact: false })
+  ).toBeVisible()
+
+  let markSignerStarted!: () => void
+  const signerStarted = new Promise<void>((resolve) => {
+    markSignerStarted = resolve
+  })
+  let releaseSigner!: () => void
+  const signerRelease = new Promise<void>((resolve) => {
+    releaseSigner = resolve
+  })
+  await page.exposeFunction(
+    "__conduitHoldProductImageSigner",
+    async (): Promise<void> => {
+      markSignerStarted()
+      await signerRelease
+    }
+  )
+  await page.evaluate(() => {
+    const browserWindow = window as unknown as {
+      nostr: {
+        signEvent: (
+          event: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>
+      }
+      __conduitHoldProductImageSigner: () => Promise<void>
+    }
+    const original = browserWindow.nostr.signEvent.bind(browserWindow.nostr)
+    browserWindow.nostr.signEvent = async (event) => {
+      if (Number(event.kind) === 24_242) {
+        await browserWindow.__conduitHoldProductImageSigner()
+      }
+      return original(event)
+    }
+  })
+
+  await dialog.locator("#product-image-file").setInputFiles(image192)
+  await expect(
+    dialog.getByText("Waiting for upload authorization", { exact: true })
+  ).toBeVisible()
+  await signerStarted
+
+  const replacement = finalizeEvent(
+    {
+      kind: 10_063,
+      created_at: configuredCreatedAt + 1,
+      tags: [["server", replacementServer]],
+      content: "",
+    },
+    secretKey
+  )
+  try {
+    await publishTestRelayEvents([replacement])
+    const mediaServerStorageKey = `conduit:media-server-preferences:v1:${pubkey}`
+    await expect
+      .poll(
+        () =>
+          page.evaluate((storageKey) => {
+            const raw = localStorage.getItem(storageKey)
+            if (!raw) return null
+            try {
+              const record = JSON.parse(raw) as {
+                published?: { signedEvent?: { id?: string } }
+              }
+              return record.published?.signedEvent?.id ?? null
+            } catch {
+              return null
+            }
+          }, mediaServerStorageKey),
+        { timeout: 45_000 }
+      )
+      .toBe(replacement.id)
+    await page.waitForTimeout(100)
+  } finally {
+    releaseSigner()
+  }
+
+  await expect(
+    dialog.getByText("The signer or media server authority changed.", {
+      exact: false,
+    })
+  ).toBeVisible()
+  expect(originalState.putCount).toBe(0)
+  expect(replacementState.putCount).toBe(0)
+  await expect(dialog.getByLabel("Primary image URL")).toHaveCount(0)
 })
 
 test.describe("resource redirect verification", () => {
@@ -774,6 +874,44 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
       exact: true,
     })
   ).toBeDisabled()
+  expect(state.putCount).toBe(2)
+})
+
+test("a pristine new-product draft releases its consumed fallback claim @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const state = await interceptBlossom(page, fallbackServer)
+  const { dialog } = await openProductDialogWithSigner(page)
+  await expect(
+    dialog.getByText("No safe media server is configured.", { exact: false })
+  ).toBeVisible()
+
+  await dialog.locator("#product-image-file").setInputFiles(image192)
+  await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
+    /^https:\/\/cdn\.conduit\.market\//
+  )
+  expect(state.putCount).toBe(1)
+  await dialog
+    .getByRole("button", { name: "Clear primary image", exact: true })
+    .click()
+  await expect(dialog.getByLabel("Primary image URL")).toHaveCount(0)
+  await dialog.locator("form").getByRole("button", { name: "Close" }).click()
+  await expect(dialog).toBeHidden()
+
+  await page.getByRole("button", { name: "Add product" }).first().click()
+  const freshDialog = page.getByRole("dialog", { name: "Add product" })
+  await expect(freshDialog).toBeVisible()
+  await expect(
+    freshDialog.getByRole("button", {
+      name: "Add another image",
+      exact: true,
+    })
+  ).toBeEnabled()
+  await freshDialog.locator("#product-image-file").setInputFiles(image512)
+  await expect(freshDialog.getByLabel("Primary image URL")).toHaveValue(
+    /^https:\/\/cdn\.conduit\.market\//
+  )
   expect(state.putCount).toBe(2)
 })
 

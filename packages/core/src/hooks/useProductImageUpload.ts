@@ -12,6 +12,7 @@ import { useAuth, type AuthMethod } from "../context/AuthContext"
 import { createNdkNostrEventSigner } from "../protocol/ndk-nostr-event-signer"
 import {
   readMediaServerPreferences,
+  toReviewedMediaServerEvidence,
   type MediaServerPreferenceResolution,
 } from "../protocol/media-server-preferences"
 import {
@@ -65,6 +66,7 @@ interface ProductImageUploadAuthoritySnapshot {
   owner: string | null
   signer: NDKSigner | null
   method: AuthMethod | null
+  reviewedMediaServerEvidenceKey: string | null
   isGenerationCurrent: (generation: number) => boolean
 }
 
@@ -220,6 +222,14 @@ function sameTarget(
   return false
 }
 
+function reviewedMediaServerEvidenceKey(
+  resolution: MediaServerPreferenceResolution | null
+): string | null {
+  if (!resolution) return null
+  const reviewed = toReviewedMediaServerEvidence(resolution)
+  return `${reviewed.frontierEventId ?? "none"}:${reviewed.publishedEventId ?? "none"}`
+}
+
 export function useProductImageUpload(): ProductImageUploadController {
   const auth = useAuth()
   const owner =
@@ -258,14 +268,21 @@ export function useProductImageUpload(): ProductImageUploadController {
       lookupRevision,
     ],
     enabled: !!owner,
-    queryFn: () => {
+    queryFn: async () => {
       const generation = auth.authGeneration
-      return readMediaServerPreferences(owner!, {
+      const resolution = await readMediaServerPreferences(owner!, {
         authenticatedPubkey: owner,
         shouldContinue: () =>
           authGenerationRef.current === generation &&
           auth.isAuthGenerationCurrent(generation),
       })
+      if (
+        authGenerationRef.current === generation &&
+        auth.isAuthGenerationCurrent(generation)
+      ) {
+        resolutionRef.current = resolution
+      }
+      return resolution
     },
     staleTime: 30_000,
     refetchInterval: 30_000,
@@ -331,7 +348,11 @@ export function useProductImageUpload(): ProductImageUploadController {
         localDraft: readLocalProductImageServerDraft(activeOwner),
         signerAvailable: true,
       })
-      if (!sameTarget(request.target, latestTarget)) {
+      if (
+        !sameTarget(request.target, latestTarget) ||
+        reviewedMediaServerEvidenceKey(resolutionRef.current) !==
+          authority.reviewedMediaServerEvidenceKey
+      ) {
         throw new ProductImageUploadError(
           "target_unavailable",
           getProductImageUploadErrorMessage("target_unavailable")
@@ -395,6 +416,26 @@ export function useProductImageUpload(): ProductImageUploadController {
 
       let result: VerifiedProductImageUpload
       try {
+        const uploadAuthorityIsCurrent = (): boolean => {
+          if (
+            authGenerationRef.current !== generation ||
+            !isGenerationCurrent(generation)
+          ) {
+            return false
+          }
+          const currentResolution = resolutionRef.current
+          const currentTarget = resolveProductImageUploadTarget({
+            owner: activeOwner,
+            resolution: currentResolution,
+            localDraft: readLocalProductImageServerDraft(activeOwner),
+            signerAvailable: true,
+          })
+          return (
+            sameTarget(request.target, currentTarget) &&
+            reviewedMediaServerEvidenceKey(currentResolution) ===
+              authority.reviewedMediaServerEvidenceKey
+          )
+        }
         result = await uploadPreparedProductImage({
           prepared,
           target: request.target,
@@ -404,9 +445,7 @@ export function useProductImageUpload(): ProductImageUploadController {
             activeOwner,
             activeMethod
           ),
-          shouldContinue: () =>
-            authGenerationRef.current === generation &&
-            isGenerationCurrent(generation),
+          shouldContinue: uploadAuthorityIsCurrent,
           signal: request.signal,
           onPhase: (phase) => {
             if (fallbackUpload && phase === "uploading") {
@@ -473,6 +512,9 @@ export function useProductImageUpload(): ProductImageUploadController {
         owner,
         signer: auth.signer,
         method: auth.method,
+        reviewedMediaServerEvidenceKey: reviewedMediaServerEvidenceKey(
+          resolutionRef.current
+        ),
         isGenerationCurrent: auth.isAuthGenerationCurrent,
       }
       setActiveUploadCount((count) => count + 1)

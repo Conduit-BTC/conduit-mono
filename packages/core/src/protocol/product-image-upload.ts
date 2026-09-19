@@ -221,7 +221,7 @@ export function getProductImageUploadErrorMessage(
     case "signer_unavailable":
       return "Reconnect the external signer, then retry this image."
     case "authority_changed":
-      return "The connected signer changed. Recheck the account, then retry."
+      return "The signer or media server authority changed. Review the account and upload target, then retry."
     case "auth_invalid":
       return "The media server rejected the upload authorization."
     case "payment_required":

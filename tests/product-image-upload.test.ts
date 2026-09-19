@@ -349,7 +349,7 @@ describe("product image upload target resolution", () => {
 })
 
 describe("product image upload queue authority", () => {
-  it("captures each queued item's owner, signer, method, and generation before waiting", () => {
+  it("captures each queued item's signer and reviewed media-server authority before waiting", () => {
     const snapshotIndex = uploadHookSource.indexOf(
       "const authority: ProductImageUploadAuthoritySnapshot"
     )
@@ -363,9 +363,18 @@ describe("product image upload queue authority", () => {
     expect(uploadHookSource).toContain("generation: auth.authGeneration")
     expect(uploadHookSource).toContain("owner,\n        signer: auth.signer")
     expect(uploadHookSource).toContain("method: auth.method")
+    expect(uploadHookSource).toContain(
+      "reviewedMediaServerEvidenceKey: reviewedMediaServerEvidenceKey("
+    )
     expect(uploadHookSource).toContain("performUploadFile(request, authority)")
     expect(uploadHookSource).toContain(
       "authGenerationRef.current !== generation"
+    )
+    expect(uploadHookSource).toContain(
+      "sameTarget(request.target, currentTarget)"
+    )
+    expect(uploadHookSource).toContain(
+      "shouldContinue: uploadAuthorityIsCurrent"
     )
   })
 })
@@ -524,6 +533,45 @@ describe("verified Blossom product image upload", () => {
       "verifying",
       "succeeded",
     ])
+  })
+
+  it("rechecks upload authority after signing and before PUT", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const prepared = await preparedImage()
+    let authorityCurrent = true
+    let fetchCalls = 0
+
+    await expect(
+      uploadPreparedProductImage({
+        prepared,
+        target: {
+          kind: "configured",
+          serverUrl: CONFIGURED_SERVER,
+          maxFileUploads: 12,
+        },
+        expectedPubkey: pubkey,
+        signer: {
+          getPublicKey: async () => pubkey,
+          signEvent: async (event) => {
+            authorityCurrent = false
+            return finalizeEvent(event, secretKey)
+          },
+        },
+        shouldContinue: () => authorityCurrent,
+        dependencies: {
+          now: () => 1_000,
+          fetch: async () => {
+            fetchCalls += 1
+            throw new Error("Authority change must stop before fetch")
+          },
+        },
+      })
+    ).rejects.toMatchObject({
+      code: "authority_changed",
+      uploadOutcome: "not_attempted",
+    })
+    expect(fetchCalls).toBe(0)
   })
 
   it("never sends a PUT to an unsigned draft server", async () => {

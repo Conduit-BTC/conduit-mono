@@ -1167,6 +1167,7 @@ function ProductsPage() {
   const productDraftStoreRef = useRef(new ProductDraftStore())
   const productPublishStartedAtRef = useRef<number | null>(null)
   const productPublishInFlightRef = useRef(false)
+  const dirtyCreateDraftKeyRef = useRef<string | null>(null)
   const editFulfillmentRequestRef = useRef(0)
   const signerRestoredNoticeRef = useRef<HTMLDivElement | null>(null)
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
@@ -1892,11 +1893,25 @@ function ProductsPage() {
     if (!productDialogOpen || !activeProductDraftTarget) return
     if (editing && editFulfillmentChoiceRequired) return
     const isCreateDraft = !activeProductDraftTarget.productAddressId
+    const createDraftKey = isCreateDraft
+      ? `${activeProductDraftTarget.merchantPubkey}:${productImageUploadScopeId}`
+      : null
 
     if (!hasProductChanges) {
       const returnIntentCleared = isCreateDraft
         ? clearProductDraftReturnIntent(activeProductDraftTarget.merchantPubkey)
         : true
+      if (
+        createDraftKey &&
+        dirtyCreateDraftKeyRef.current === createDraftKey &&
+        productImageUpload.getFallbackClaimState(productImageUploadScopeId) ===
+          "consumed"
+      ) {
+        productImageUpload.clearFallbackClaim(productImageUploadScopeId)
+      }
+      if (dirtyCreateDraftKeyRef.current === createDraftKey) {
+        dirtyCreateDraftKeyRef.current = null
+      }
       setDraftStorageAvailable(
         returnIntentCleared &&
           productDraftStoreRef.current.clear(activeProductDraftTarget)
@@ -1909,6 +1924,9 @@ function ProductsPage() {
       activeProductDraftTarget,
       form
     )
+    if (createDraftKey) {
+      dirtyCreateDraftKeyRef.current = createDraftKey
+    }
     setDraftStorageAvailable(saved)
     if (isCreateDraft && saved) setHasResumableCreateDraft(true)
   }, [
@@ -1917,6 +1935,8 @@ function ProductsPage() {
     editing,
     form,
     hasProductChanges,
+    productImageUpload,
+    productImageUploadScopeId,
     productDialogOpen,
   ])
   const localPickupEvidenceError =
