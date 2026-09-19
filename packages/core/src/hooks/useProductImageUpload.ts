@@ -17,7 +17,7 @@ import {
 import {
   getProductImageUploadErrorMessage,
   prepareProductImageFile,
-  readLocalProductImageServerUrls,
+  readLocalProductImageServerDraft,
   resolveProductImageUploadTarget,
   uploadPreparedProductImage,
   ProductImageUploadError,
@@ -275,14 +275,14 @@ export function useProductImageUpload(): ProductImageUploadController {
     resolutionRef.current = query.data ?? null
   }, [query.data])
 
-  const localServerUrls = useMemo(
-    () => (owner ? readLocalProductImageServerUrls(owner) : []),
+  const localDraft = useMemo(
+    () => (owner ? readLocalProductImageServerDraft(owner) : null),
     [lookupRevision, owner]
   )
   const target = resolveProductImageUploadTarget({
     owner,
     resolution: query.data,
-    localServerUrls,
+    localDraft,
     signerAvailable,
   })
   const performUploadFile = useCallback(
@@ -328,7 +328,7 @@ export function useProductImageUpload(): ProductImageUploadController {
       const latestTarget = resolveProductImageUploadTarget({
         owner: activeOwner,
         resolution: resolutionRef.current,
-        localServerUrls: readLocalProductImageServerUrls(activeOwner),
+        localDraft: readLocalProductImageServerDraft(activeOwner),
         signerAvailable: true,
       })
       if (!sameTarget(request.target, latestTarget)) {

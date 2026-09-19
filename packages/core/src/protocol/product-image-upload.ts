@@ -9,6 +9,8 @@ import { normalizePublicHttpsUrl } from "../network-target-safety"
 import {
   loadMediaServerDraft,
   normalizeBlossomServerRoot,
+  sameOrderedMediaServerList,
+  type MediaServerDraftRecord,
   type MediaServerPreferenceResolution,
 } from "./media-server-preferences"
 import {
@@ -250,7 +252,7 @@ export function getProductImageUploadErrorMessage(
 export function resolveProductImageUploadTarget(input: {
   owner: string | null
   resolution?: MediaServerPreferenceResolution | null
-  localServerUrls?: readonly string[]
+  localDraft?: MediaServerDraftRecord | null
   signerAvailable: boolean
 }): ProductImageUploadTarget {
   if (!input.owner) {
@@ -260,24 +262,35 @@ export function resolveProductImageUploadTarget(input: {
     return { kind: "unavailable", reason: "no_signer" }
   }
 
-  const localServer = input.localServerUrls
-    ?.map(normalizeBlossomServerRoot)
-    .find((serverUrl): serverUrl is string => !!serverUrl)
-  if (localServer) {
-    return {
-      kind: "configured",
-      serverUrl: localServer,
-      maxFileUploads: 12,
-    }
-  }
-
   const resolution = input.resolution
   if (!resolution) return { kind: "pending", reason: "loading" }
 
+  const normalizeServerList = (
+    serverUrls: readonly string[]
+  ): string[] | null => {
+    const normalized = serverUrls.map(normalizeBlossomServerRoot)
+    if (normalized.some((serverUrl) => !serverUrl)) return null
+    const safe = normalized as string[]
+    return new Set(safe).size === safe.length ? safe : null
+  }
+  const localServer = (() => {
+    const draft = input.localDraft
+    const publishedRevision = resolution.publishedRevision
+    if (!draft || !publishedRevision) return null
+    if (draft.baseEventId !== publishedRevision.eventId) return null
+
+    const draftServers = normalizeServerList(draft.serverUrls)
+    const baseServers = normalizeServerList(draft.baseServerUrls)
+    const publishedServers = normalizeServerList(resolution.publishedServerUrls)
+    if (!draftServers || !baseServers || !publishedServers) return null
+    if (!sameOrderedMediaServerList(draftServers, baseServers)) return null
+    if (!sameOrderedMediaServerList(baseServers, publishedServers)) return null
+    return draftServers[0] ?? null
+  })()
   const publishedServer = resolution.publishedServerUrls
     .map(normalizeBlossomServerRoot)
     .find((serverUrl): serverUrl is string => !!serverUrl)
-  const retainedPublishedServerIsSupersededByEmpty = (() => {
+  const publishedServerIsSupersededByEmpty = (() => {
     const frontier = resolution.frontier
     const published = resolution.publishedRevision
     if (frontier?.state !== "empty") return false
@@ -287,19 +300,19 @@ export function resolveProductImageUploadTarget(input: {
     }
     return frontier.eventId.localeCompare(published.eventId) < 0
   })()
+  const configuredServer = localServer ?? publishedServer
   if (
-    publishedServer &&
+    configuredServer &&
+    !publishedServerIsSupersededByEmpty &&
     (resolution.status === "published" ||
       resolution.status === "lookup_partial" ||
       resolution.status === "lookup_unavailable" ||
       resolution.status === "malformed" ||
-      (resolution.status === "not_observed" &&
-        resolution.retained &&
-        !retainedPublishedServerIsSupersededByEmpty))
+      (resolution.status === "not_observed" && resolution.retained))
   ) {
     return {
       kind: "configured",
-      serverUrl: publishedServer,
+      serverUrl: configuredServer,
       maxFileUploads: 12,
     }
   }
@@ -324,8 +337,10 @@ export function resolveProductImageUploadTarget(input: {
   return { kind: "pending", reason: "lookup_incomplete" }
 }
 
-export function readLocalProductImageServerUrls(owner: string): string[] {
-  return loadMediaServerDraft(owner)?.serverUrls ?? []
+export function readLocalProductImageServerDraft(
+  owner: string
+): MediaServerDraftRecord | null {
+  return loadMediaServerDraft(owner)
 }
 
 export function getPreparedProductImageDimensions(input: {

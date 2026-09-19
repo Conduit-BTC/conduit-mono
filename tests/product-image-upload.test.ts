@@ -19,12 +19,14 @@ import {
   prepareProductImageFile,
   resolveProductImageUploadTarget,
   uploadPreparedProductImage,
+  type MediaServerDraftRecord,
   type MediaServerPreferenceResolution,
   type PreparedProductImage,
   type ProductImageUploadFailureCode,
 } from "@conduit/core"
 
 const CONFIGURED_SERVER = "https://media.conduit.market"
+const DRAFT_SERVER = "https://draft-media.conduit.market"
 const uploadHookSource = readFileSync(
   new URL(
     "../packages/core/src/hooks/useProductImageUpload.ts",
@@ -59,6 +61,18 @@ function resolution(
       hadEvent: false,
     },
     pending: null,
+    ...overrides,
+  }
+}
+
+function localDraft(
+  overrides: Partial<MediaServerDraftRecord> = {}
+): MediaServerDraftRecord {
+  return {
+    serverUrls: [CONFIGURED_SERVER],
+    baseServerUrls: [CONFIGURED_SERVER],
+    baseEventId: "b".repeat(64),
+    updatedAt: 1,
     ...overrides,
   }
 }
@@ -100,19 +114,113 @@ function decodeAuthorization(value: string): Record<string, unknown> {
 }
 
 describe("product image upload target resolution", () => {
-  it("uses only the first safe local CND-186 server", () => {
+  it("uses a clean local CND-186 mirror only when it matches signed authority", () => {
+    const publishedRevision = {
+      eventId: "b".repeat(64),
+      createdAt: 100,
+    }
     expect(
       resolveProductImageUploadTarget({
         owner: "a".repeat(64),
         signerAvailable: true,
-        localServerUrls: [CONFIGURED_SERVER, "https://second.conduit.market"],
-        resolution: resolution(),
+        localDraft: localDraft(),
+        resolution: resolution({
+          status: "published",
+          publishedServerUrls: [CONFIGURED_SERVER],
+          publishedRevision,
+          frontier: { ...publishedRevision, state: "valid" },
+        }),
       })
     ).toEqual({
       kind: "configured",
       serverUrl: CONFIGURED_SERVER,
       maxFileUploads: 12,
     })
+  })
+
+  it("ignores dirty and stale local drafts in favor of signed authority", () => {
+    const publishedRevision = {
+      eventId: "c".repeat(64),
+      createdAt: 101,
+    }
+    const signedResolution = resolution({
+      status: "published",
+      publishedServerUrls: [CONFIGURED_SERVER],
+      publishedRevision,
+      frontier: { ...publishedRevision, state: "valid" },
+    })
+
+    for (const draft of [
+      localDraft({
+        serverUrls: [DRAFT_SERVER],
+        baseEventId: publishedRevision.eventId,
+      }),
+      localDraft({ baseEventId: "b".repeat(64) }),
+    ]) {
+      expect(
+        resolveProductImageUploadTarget({
+          owner: "a".repeat(64),
+          signerAvailable: true,
+          localDraft: draft,
+          resolution: signedResolution,
+        })
+      ).toEqual({
+        kind: "configured",
+        serverUrl: CONFIGURED_SERVER,
+        maxFileUploads: 12,
+      })
+    }
+  })
+
+  it("does not let a dirty draft override a stronger signed-empty frontier", () => {
+    expect(
+      resolveProductImageUploadTarget({
+        owner: "a".repeat(64),
+        signerAvailable: true,
+        localDraft: localDraft({ serverUrls: [DRAFT_SERVER] }),
+        resolution: resolution({
+          status: "empty",
+          retained: true,
+          publishedServerUrls: [CONFIGURED_SERVER],
+          publishedRevision: {
+            eventId: "b".repeat(64),
+            createdAt: 100,
+          },
+          frontier: {
+            eventId: "a".repeat(64),
+            createdAt: 101,
+            state: "empty",
+          },
+        }),
+      })
+    ).toEqual({
+      kind: "fallback",
+      serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
+      maxFileUploads: 1,
+    })
+
+    expect(
+      resolveProductImageUploadTarget({
+        owner: "a".repeat(64),
+        signerAvailable: true,
+        localDraft: localDraft({ serverUrls: [DRAFT_SERVER] }),
+        resolution: resolution({
+          status: "lookup_partial",
+          coverage: "partial",
+          retained: true,
+          publishedServerUrls: [CONFIGURED_SERVER],
+          publishedRevision: {
+            eventId: "b".repeat(64),
+            createdAt: 100,
+          },
+          frontier: {
+            eventId: "a".repeat(64),
+            createdAt: 101,
+            state: "empty",
+          },
+        }),
+      })
+    ).toEqual({ kind: "pending", reason: "lookup_incomplete" })
   })
 
   it("keeps retained published authority through incomplete reads", () => {
@@ -125,7 +233,6 @@ describe("product image upload target resolution", () => {
         resolveProductImageUploadTarget({
           owner: "a".repeat(64),
           signerAvailable: true,
-          localServerUrls: [],
           resolution: resolution({
             status,
             coverage:
@@ -166,7 +273,6 @@ describe("product image upload target resolution", () => {
       resolveProductImageUploadTarget({
         owner: "a".repeat(64),
         signerAvailable: true,
-        localServerUrls: [],
         resolution: retained,
       })
     ).toMatchObject({
@@ -178,7 +284,6 @@ describe("product image upload target resolution", () => {
       resolveProductImageUploadTarget({
         owner: "a".repeat(64),
         signerAvailable: true,
-        localServerUrls: [],
         resolution: {
           ...retained,
           frontier: {
@@ -200,7 +305,6 @@ describe("product image upload target resolution", () => {
       resolveProductImageUploadTarget({
         owner: "a".repeat(64),
         signerAvailable: true,
-        localServerUrls: [],
       })
     ).toEqual({ kind: "pending", reason: "loading" })
 
@@ -215,7 +319,6 @@ describe("product image upload target resolution", () => {
         resolveProductImageUploadTarget({
           owner: "a".repeat(64),
           signerAvailable: true,
-          localServerUrls: [],
           resolution: candidate,
         }).kind
       ).toBe("pending")
@@ -225,7 +328,6 @@ describe("product image upload target resolution", () => {
       resolveProductImageUploadTarget({
         owner: "a".repeat(64),
         signerAvailable: true,
-        localServerUrls: [],
         resolution: resolution({ status: "malformed" }),
       })
     ).toEqual({ kind: "unavailable", reason: "malformed_preferences" })
@@ -236,7 +338,6 @@ describe("product image upload target resolution", () => {
       resolveProductImageUploadTarget({
         owner: "a".repeat(64),
         signerAvailable: true,
-        localServerUrls: [],
         resolution: resolution(),
       })
     ).toEqual({
@@ -423,6 +524,84 @@ describe("verified Blossom product image upload", () => {
       "verifying",
       "succeeded",
     ])
+  })
+
+  it("never sends a PUT to an unsigned draft server", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const prepared = await preparedImage()
+    const publishedRevision = {
+      eventId: "c".repeat(64),
+      createdAt: 101,
+    }
+    const target = resolveProductImageUploadTarget({
+      owner: "a".repeat(64),
+      signerAvailable: true,
+      localDraft: localDraft({
+        serverUrls: [DRAFT_SERVER],
+        baseEventId: publishedRevision.eventId,
+      }),
+      resolution: resolution({
+        status: "published",
+        publishedServerUrls: [CONFIGURED_SERVER],
+        publishedRevision,
+        frontier: { ...publishedRevision, state: "valid" },
+      }),
+    })
+    expect(target).toMatchObject({
+      kind: "configured",
+      serverUrl: CONFIGURED_SERVER,
+    })
+    if (target.kind !== "configured") throw new Error("Expected signed target")
+
+    const resourceUrl = `https://cdn.conduit.market/${prepared.sha256}.png`
+    const putUrls: string[] = []
+    await uploadPreparedProductImage({
+      prepared,
+      target,
+      expectedPubkey: pubkey,
+      signer: {
+        authMethod: "nip07",
+        getPublicKey: async () => pubkey,
+        signEvent: async (event) => finalizeEvent(event, secretKey),
+      },
+      dependencies: {
+        now: () => 1_000,
+        fetch: async (input, init) => {
+          const url = String(input)
+          if (init?.method === "PUT") {
+            putUrls.push(url)
+            return new Response(
+              JSON.stringify({
+                url: resourceUrl,
+                sha256: prepared.sha256,
+                size: prepared.size,
+                type: prepared.mimeType,
+                uploaded: 1_000,
+              }),
+              {
+                status: 201,
+                headers: { "content-type": "application/json" },
+              }
+            )
+          }
+          return responseWithUrl(
+            prepared.blob,
+            {
+              status: 200,
+              headers: {
+                "content-type": prepared.mimeType,
+                "content-length": String(prepared.size),
+              },
+            },
+            resourceUrl
+          )
+        },
+      },
+    })
+
+    expect(putUrls).toEqual([`${CONFIGURED_SERVER}/upload`])
+    expect(putUrls.some((url) => url.startsWith(DRAFT_SERVER))).toBe(false)
   })
 
   for (const [status, code] of [
