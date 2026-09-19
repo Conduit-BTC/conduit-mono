@@ -1,18 +1,30 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
-import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
-import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
+import {
+  NDKEvent,
+  NDKPrivateKeySigner,
+  type NDKFilter,
+} from "@nostr-dev-kit/ndk"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   __resetCommerceTestOverrides,
   __resetRelayPublishTestOverrides,
   __setCommerceTestOverrides,
   __setRelayPublishTestOverrides,
   buildProductListingEventDraft,
+  getEventMarketPickupsByCoordinates,
   getProductShippingOptionAddress,
+  parseEventMarketPickupEvent,
   setSigner,
   type CommerceProductRecord,
   type OrderSummary,
+  type ParsedEventMarketPickup,
   type ParsedShippingOption,
   type ProductSchema,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 import {
   __resetEventMarketTestOverrides,
@@ -157,24 +169,85 @@ function shippingOption(
 
 function pickupOption(
   baseline: ProductSchema,
-  overrides: Partial<ParsedShippingOption> = {}
-): ParsedShippingOption {
+  overrides: Partial<ParsedEventMarketPickup> = {}
+): ParsedEventMarketPickup {
   const coordinate = baseline.shippingOptionId!
   return {
     eventId: "d".repeat(64),
-    id: coordinate,
-    pubkey: coordinate.split(":")[1]!,
+    coordinate,
+    authorPubkey: coordinate.split(":")[1]!,
     dTag: coordinate.split(":").slice(2).join(":"),
     title: "Event pickup",
+    content: "",
     currency: "SATS",
     price: 0,
     countries: ["US"],
-    countryRules: [{ code: "US", name: "US", restrictTo: [], exclude: [] }],
-    service: "pickup",
+    location: "Public event pickup desk",
     createdAt: baseline.updatedAt - 1,
-    launchUnsupportedTags: ["location"],
     ...overrides,
   }
+}
+
+function installEventPickupReadHarness(
+  events: readonly SignedPublicNostrEvent[]
+): void {
+  const relayUrl = "wss://pickup.example"
+  __setEventMarketTestOverrides({
+    readAccountRelaySettingsPlanningSnapshot: async () => ({
+      settings: { version: 1, updatedAt: 1, entries: [] },
+      signedRelayListAuthoritative: true,
+    }),
+    getRelayLists: async (authors) =>
+      new Map(
+        authors.map((author) => [
+          author,
+          {
+            pubkey: author,
+            readRelayUrls: [relayUrl],
+            writeRelayUrls: [],
+            eventCreatedAt: 1,
+            cachedAt: 1,
+          },
+        ])
+      ),
+    fetchEventsFanoutDetailed: async (filter, options) => {
+      const tagFilter = filter as NDKFilter & {
+        "#a"?: string[]
+        "#d"?: string[]
+        "#e"?: string[]
+      }
+      const matching = events.filter(
+        (event) =>
+          (!filter.kinds || filter.kinds.includes(event.kind as never)) &&
+          (!filter.authors || filter.authors.includes(event.pubkey)) &&
+          (!tagFilter["#a"] ||
+            event.tags.some(
+              (tag) => tag[0] === "a" && tagFilter["#a"]!.includes(tag[1] ?? "")
+            )) &&
+          (!tagFilter["#d"] ||
+            event.tags.some(
+              (tag) => tag[0] === "d" && tagFilter["#d"]!.includes(tag[1] ?? "")
+            )) &&
+          (!tagFilter["#e"] ||
+            event.tags.some(
+              (tag) => tag[0] === "e" && tagFilter["#e"]!.includes(tag[1] ?? "")
+            ))
+      )
+      const matches =
+        typeof filter.limit === "number"
+          ? matching.slice(0, filter.limit)
+          : matching
+      return {
+        events: matches.map((event) => new NDKEvent(undefined, event)),
+        relays: (options.relayUrls ?? []).map((url) => ({
+          relayUrl: url,
+          status: "success" as const,
+          eventCount: matches.length,
+        })),
+        eventsVerified: true,
+      }
+    },
+  })
 }
 
 interface PublicationObservation {
@@ -186,6 +259,7 @@ interface PublicationObservation {
 
 async function attemptProductPublication(input: {
   listings: readonly ProductListingPublishTarget[]
+  getEventMarketPickups?: ProductPublicationDependencies["getEventMarketPickups"]
   getShippingOptions?: ProductPublicationDependencies["getShippingOptions"]
   now?: number
   observed?: PublicationObservation
@@ -234,6 +308,7 @@ async function attemptProductPublication(input: {
         },
       },
       {
+        getEventMarketPickups: input.getEventMarketPickups ?? (async () => []),
         getShippingOptions: input.getShippingOptions ?? (async () => []),
       }
     )
@@ -247,6 +322,8 @@ async function attemptPreservedPublication(input: {
   baseline: ProductSchema
   update: Partial<ProductSchema>
   options?: ParsedShippingOption[]
+  eventPickups?: ParsedEventMarketPickup[]
+  getEventMarketPickups?: ProductPublicationDependencies["getEventMarketPickups"]
   getShippingOptions?: ProductPublicationDependencies["getShippingOptions"]
   observed?: PublicationObservation
 }): Promise<void> {
@@ -256,6 +333,8 @@ async function attemptPreservedPublication(input: {
       ...target,
       previousEventCreatedAt: target.existing!.eventCreatedAt,
     })),
+    getEventMarketPickups:
+      input.getEventMarketPickups ?? (async () => input.eventPickups ?? []),
     getShippingOptions:
       input.getShippingOptions ?? (async () => input.options ?? []),
     observed: input.observed,
@@ -302,7 +381,7 @@ describe("merchant-owned product mutation boundary", () => {
             previousEventCreatedAt: target.existing!.eventCreatedAt,
           })),
           now,
-          getShippingOptions: async (coordinates) => {
+          getEventMarketPickups: async (coordinates) => {
             pickupReads += 1
             expect(coordinates).toEqual([baseline.shippingOptionId!])
             return [pickupOption(baseline)]
@@ -623,7 +702,7 @@ describe("merchant-owned product mutation boundary", () => {
     await attemptPreservedPublication({
       baseline,
       update: { title: "Updated title", stock: 4 },
-      options: [pickupOption(baseline)],
+      eventPickups: [pickupOption(baseline)],
       observed,
     })
 
@@ -705,7 +784,7 @@ describe("merchant-owned product mutation boundary", () => {
       }
       await attemptProductPublication({
         listings: [target.listing],
-        getShippingOptions: async () => {
+        getEventMarketPickups: async () => {
           pickupReads += 1
           throw new Error("Collection-level fulfillment is not kind 30406")
         },
@@ -761,7 +840,7 @@ describe("merchant-owned product mutation boundary", () => {
         ...target,
         previousEventCreatedAt: target.existing!.eventCreatedAt,
       })),
-      getShippingOptions: async () => {
+      getEventMarketPickups: async () => {
         shippingReads += 1
         return [pickupOption(baseline)]
       },
@@ -782,13 +861,13 @@ describe("merchant-owned product mutation boundary", () => {
     const baseline = product("pickup-evidence")
     const failures: Array<{
       state: string
-      getShippingOptions: ProductPublicationDependencies["getShippingOptions"]
+      getEventMarketPickups: ProductPublicationDependencies["getEventMarketPickups"]
     }> = [
-      { state: "unresolved", getShippingOptions: async () => [] },
-      { state: "deleted", getShippingOptions: async () => [] },
+      { state: "unresolved", getEventMarketPickups: async () => [] },
+      { state: "deleted", getEventMarketPickups: async () => [] },
       {
         state: "unavailable",
-        getShippingOptions: async () => {
+        getEventMarketPickups: async () => {
           throw new Error("Pickup relays unavailable")
         },
       },
@@ -804,7 +883,7 @@ describe("merchant-owned product mutation boundary", () => {
         attemptPreservedPublication({
           baseline,
           update: { stock: 4 },
-          getShippingOptions: failure.getShippingOptions,
+          getEventMarketPickups: failure.getEventMarketPickups,
           observed,
         })
       ).rejects.toThrow("Event pickup could not be verified safely")
@@ -814,6 +893,157 @@ describe("merchant-owned product mutation boundary", () => {
         signedBundleCount: 0,
       })
     }
+  })
+
+  it("publishes only after the shared exact reader validates the live event pickup", async () => {
+    const pickupSecret = generateSecretKey()
+    const pickupPubkey = getPublicKey(pickupSecret)
+    const dTag = "live-pickup"
+    const coordinate = `30406:${pickupPubkey}:${dTag}`
+    const baseline = product(dTag, {
+      collectionRefs: [`30405:${pickupPubkey}:market`],
+      shippingOptionId: coordinate,
+      shippingOptionDTag: dTag,
+      shippingOptionRefs: [{ coordinate }],
+    })
+    const pickup = finalizeEvent(
+      {
+        kind: 30406,
+        created_at: Math.floor((baseline.updatedAt - 1) / 1000),
+        content: "",
+        tags: [
+          ["d", dTag],
+          ["title", "Public pickup"],
+          ["price", "0", "SATS"],
+          ["country", "US"],
+          ["service", "pickup"],
+          ["location", "Public pickup desk"],
+        ],
+      },
+      pickupSecret
+    )
+    installEventPickupReadHarness([pickup])
+    const observed = {
+      signerRequests: [] as ProductSignerRequestProgress[],
+      publishedKinds: [] as number[],
+      signedBundleCount: 0,
+    }
+
+    await attemptPreservedPublication({
+      baseline,
+      update: { stock: 4 },
+      getEventMarketPickups: getEventMarketPickupsByCoordinates,
+      observed,
+    })
+
+    expect(observed).toEqual({
+      signerRequests: [{ kind: "product", current: 1, total: 1 }],
+      publishedKinds: [30402],
+      signedBundleCount: 1,
+    })
+  })
+
+  it("stops before signing when raw event-pickup evidence violates the public handoff contract", async () => {
+    const pickupSecret = generateSecretKey()
+    const pickupPubkey = getPublicKey(pickupSecret)
+    const dTag = "pickup-contract"
+    const coordinate = `30406:${pickupPubkey}:${dTag}`
+    const baseline = product(dTag, {
+      collectionRefs: [`30405:${pickupPubkey}:market`],
+      shippingOptionId: coordinate,
+      shippingOptionDTag: dTag,
+      shippingOptionRefs: [{ coordinate }],
+    })
+    const commonTags = [
+      ["d", dTag],
+      ["title", "Public pickup"],
+      ["price", "0", "SATS"],
+      ["country", "US"],
+      ["service", "pickup"],
+    ]
+    const malformedCases = [
+      { label: "missing public location", tags: commonTags },
+      {
+        label: "proposal-only destination predicate",
+        tags: [
+          ...commonTags,
+          ["location", "Public pickup desk"],
+          ["destination_schema", "postal"],
+        ],
+      },
+    ]
+
+    for (const malformed of malformedCases) {
+      const event = finalizeEvent(
+        {
+          kind: 30406,
+          created_at: Math.floor((baseline.updatedAt - 1) / 1000),
+          content: "",
+          tags: malformed.tags,
+        },
+        pickupSecret
+      )
+      const parsed = parseEventMarketPickupEvent(event)
+      expect(parsed, malformed.label).toBeNull()
+      installEventPickupReadHarness([event])
+      const observed = {
+        signerRequests: [] as ProductSignerRequestProgress[],
+        publishedKinds: [] as number[],
+        signedBundleCount: 0,
+      }
+
+      await expect(
+        attemptPreservedPublication({
+          baseline,
+          update: { stock: 4 },
+          getEventMarketPickups: getEventMarketPickupsByCoordinates,
+          observed,
+        })
+      ).rejects.toThrow("Event pickup could not be verified safely")
+      expect(observed, malformed.label).toEqual({
+        signerRequests: [],
+        publishedKinds: [],
+        signedBundleCount: 0,
+      })
+    }
+
+    const validPickup = finalizeEvent(
+      {
+        kind: 30406,
+        created_at: Math.floor((baseline.updatedAt - 1) / 1000),
+        content: "",
+        tags: [...commonTags, ["location", "Public pickup desk"]],
+      },
+      pickupSecret
+    )
+    const deletion = finalizeEvent(
+      {
+        kind: 5,
+        created_at: validPickup.created_at + 1,
+        content: "",
+        tags: [["a", coordinate]],
+      },
+      pickupSecret
+    )
+    installEventPickupReadHarness([validPickup, deletion])
+    const deletedObservation = {
+      signerRequests: [] as ProductSignerRequestProgress[],
+      publishedKinds: [] as number[],
+      signedBundleCount: 0,
+    }
+    await expect(
+      attemptPreservedPublication({
+        baseline,
+        update: { stock: 4 },
+        getEventMarketPickups: getEventMarketPickupsByCoordinates,
+        observed: deletedObservation,
+      })
+    ).rejects.toThrow("Event pickup could not be verified safely")
+    expect(deletedObservation).toEqual({
+      signerRequests: [],
+      publishedKinds: [],
+      signedBundleCount: 0,
+    })
   })
 
   it("preserves reference extras and unresolved network projections through the actual draft", () => {

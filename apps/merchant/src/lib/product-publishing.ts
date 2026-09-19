@@ -7,6 +7,7 @@ import {
   cacheSignedProductListingEvent,
   compileProductFulfillmentIntent,
   EVENT_KINDS,
+  getEventMarketPickupsByCoordinates,
   getNdk,
   getProductEventMarketFulfillmentClaims,
   getProductShippingOptionAddress,
@@ -20,6 +21,7 @@ import {
   resolveProductFulfillment,
   waitForVisibleDocument,
   type ParsedShippingOption,
+  type ParsedEventMarketPickup,
   type ProductDeletionEventTarget,
   type ProductFulfillmentIntent,
   type ProductSchema,
@@ -233,6 +235,13 @@ type PreparedProductListingPublishTarget = ProductListingPublishTarget & {
 }
 
 export interface ProductPublicationDependencies {
+  getEventMarketPickups: (
+    coordinates: readonly string[],
+    options: {
+      authenticatedPubkey?: string | null
+      shouldContinue?: () => boolean
+    }
+  ) => Promise<ParsedEventMarketPickup[]>
   getShippingOptions: (
     coordinates: readonly string[],
     options: {
@@ -521,33 +530,60 @@ async function prepareProductPublicationListings(
     return prepared.map((entry) => entry.listing)
   }
 
-  const coordinates = Array.from(
-    new Set(evidenceRequired.map((entry) => entry.baseline.shippingOptionId!))
+  const pickupCoordinates = Array.from(
+    new Set(
+      evidenceRequired
+        .filter((entry) => entry.kind === "pickup")
+        .map((entry) => entry.baseline.shippingOptionId!)
+    )
   )
-  let shippingOptions: ParsedShippingOption[]
-  try {
-    shippingOptions = await dependencies.getShippingOptions(coordinates, {
-      accountPubkey: input.merchantPubkey,
-      authenticatedPubkey: input.authenticatedPubkey,
-      shouldContinue: input.shouldContinue,
-    })
-  } catch {
-    if (evidenceRequired.every((entry) => entry.kind === "pickup")) {
+  const canonicalCoordinates = Array.from(
+    new Set(
+      evidenceRequired
+        .filter((entry) => entry.kind === "canonical")
+        .map((entry) => entry.baseline.shippingOptionId!)
+    )
+  )
+  let eventPickups: ParsedEventMarketPickup[] = []
+  if (pickupCoordinates.length > 0) {
+    try {
+      eventPickups = await dependencies.getEventMarketPickups(
+        pickupCoordinates,
+        {
+          authenticatedPubkey: input.authenticatedPubkey,
+          shouldContinue: input.shouldContinue,
+        }
+      )
+    } catch {
       throw getEventPickupPreservationError()
     }
-    throw new Error(
-      "Fixed shipping could not be verified safely. Try again or choose Change fulfillment before saving."
-    )
+  }
+  let shippingOptions: ParsedShippingOption[]
+  if (canonicalCoordinates.length > 0) {
+    try {
+      shippingOptions = await dependencies.getShippingOptions(
+        canonicalCoordinates,
+        {
+          accountPubkey: input.merchantPubkey,
+          authenticatedPubkey: input.authenticatedPubkey,
+          shouldContinue: input.shouldContinue,
+        }
+      )
+    } catch {
+      throw new Error(
+        "Fixed shipping could not be verified safely. Try again or choose Change fulfillment before saving."
+      )
+    }
+  } else {
+    shippingOptions = []
   }
 
   return prepared.map((entry): PreparedProductListingPublishTarget => {
     if (entry.kind === "ready") return entry.listing
 
     if (entry.kind === "pickup") {
-      const pickup = shippingOptions.find(
-        (option) =>
-          option.id === entry.baseline.shippingOptionId &&
-          option.service === "pickup"
+      const pickup = eventPickups.find(
+        (option) => option.coordinate === entry.baseline.shippingOptionId
       )
       if (!pickup) throw getEventPickupPreservationError()
       return {
@@ -1046,6 +1082,9 @@ export async function signAndPublishProductWriteBundle(
       shouldContinue: input.shouldContinue,
     },
     {
+      getEventMarketPickups:
+        dependencies.getEventMarketPickups ??
+        getEventMarketPickupsByCoordinates,
       getShippingOptions:
         dependencies.getShippingOptions ?? getShippingOptionsByCoordinates,
     }

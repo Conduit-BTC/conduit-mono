@@ -2340,6 +2340,13 @@ export interface GetEventMarketInput {
   signal?: AbortSignal
 }
 
+export interface EventMarketPickupReadOptions {
+  authenticatedPubkey?: string | null
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  signal?: AbortSignal
+}
+
 export interface GetOrganizerEventMarketsInput {
   organizerPubkey: string
   nowMs?: number
@@ -3502,6 +3509,74 @@ async function fetchEventMarketPickupFrontiers(input: {
       deletionResult.eventsVerified === true,
     pickupBudget,
   }
+}
+
+/**
+ * Resolve current event-pickup records for exact kind-30406 coordinates.
+ *
+ * This deliberately reuses the event-market frontier, deletion, and parser
+ * boundary. A generic shipping-option projection is not sufficient authority
+ * for a replacement product revision to retain an event-pickup reference.
+ */
+export async function getEventMarketPickupsByCoordinates(
+  coordinates: readonly string[],
+  options: EventMarketPickupReadOptions = {}
+): Promise<ParsedEventMarketPickup[]> {
+  const requested = new Map<string, AddressableEventCoordinate>()
+  for (const value of coordinates) {
+    const coordinate = parseAddressableCoordinate(value, [
+      EVENT_KINDS.SHIPPING_OPTION,
+    ])
+    if (!coordinate) {
+      throw new Error("Event pickup coordinate is invalid")
+    }
+    requested.set(coordinate.coordinate, coordinate)
+  }
+  const exactCoordinates = Array.from(requested.values())
+  if (exactCoordinates.length === 0) return []
+
+  const result = await fetchEventMarketPickupFrontiers({
+    coordinates: exactCoordinates,
+    candidateEvents: [],
+    candidateSourceRelayUrlsById: new Map(),
+    relayUrls: [],
+    authenticatedPubkey: options.authenticatedPubkey,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
+    signal: options.signal,
+  })
+  if (
+    result.pickupBudget.state !== "within_budget" ||
+    result.eventsVerified !== true ||
+    result.relays.length === 0 ||
+    result.relays.some((relay) => relay.status !== "success")
+  ) {
+    throw new Error(
+      "Event pickup evidence could not be verified across the planned relays"
+    )
+  }
+
+  const observed = rawSignedEvents(result)
+  const deletions = validDeletionEvents(observed.events)
+  const pickups: ParsedEventMarketPickup[] = []
+  for (const coordinate of exactCoordinates) {
+    const resolution = resolveAddressableRecord({
+      coordinate,
+      events: observed.events,
+      deletions,
+      parse: parseEventMarketPickupEvent,
+    })
+    if (resolution.state !== "current") continue
+    pickups.push({
+      ...resolution.value,
+      sourceRelayUrls:
+        observed.sourceRelayUrlsById.get(resolution.event.id.toLowerCase()) ??
+        [],
+      evidenceState: "live",
+    })
+  }
+  return pickups
 }
 
 async function fetchEventMarketProductRequestFrontiers(input: {

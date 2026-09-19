@@ -1825,6 +1825,7 @@ function seedMerchantMutationMarket(
         ["price", "0", "SAT"],
         ["country", "US"],
         ["service", "pickup"],
+        ["location", "Synthetic public hall pickup desk"],
       ],
     })
   )
@@ -1843,9 +1844,14 @@ const merchantMutationCases = [
 ] as const
 
 for (const scenario of merchantMutationCases) {
-  test(`merchant-owned product edits preserve fulfillment ${scenario.phase} with ${scenario.fault} organizer verification @merchant`, async ({
-    page,
-  }) => {
+  const scenarioTitle =
+    scenario.fault === "unavailable"
+      ? `merchant-owned direct pickup edits fail closed ${scenario.phase} when pickup evidence is unavailable @merchant`
+      : scenario.fault === "pickup delayed"
+        ? `merchant-owned direct pickup edits wait ${scenario.phase} for delayed pickup evidence @merchant`
+        : `merchant-owned product edits preserve fulfillment ${scenario.phase} with ${scenario.fault} organizer verification @merchant`
+
+  test(scenarioTitle, async ({ page }) => {
     test.setTimeout(60_000)
     page.setDefaultTimeout(15_000)
     const now = Math.floor(Date.now() / 1000)
@@ -1912,9 +1918,43 @@ for (const scenario of merchantMutationCases) {
         .getByLabel("Title", { exact: true })
         .fill("Updated merchant inventory product")
       const publicationStart = relay.publications.length
+      const pickupReadsBeforeSave = relay.requests.filter((request) =>
+        request.filters.some((filter) => filter.kinds?.includes(30406))
+      ).length
       await editor
         .getByRole("button", { name: "Save changes", exact: true })
         .click()
+
+      if (scenario.fault === "unavailable") {
+        await expect(
+          editor.getByText(
+            "Event pickup could not be verified safely. Try again or choose Change fulfillment before saving.",
+            { exact: true }
+          )
+        ).toBeVisible()
+        await expect(editor).toBeVisible()
+        expect(
+          uniquePublishedEvents(relay.publications.slice(publicationStart))
+        ).toHaveLength(0)
+        return
+      }
+
+      if (scenario.fault === "pickup delayed") {
+        await expect
+          .poll(
+            () =>
+              relay.requests.filter((request) =>
+                request.filters.some((filter) => filter.kinds?.includes(30406))
+              ).length
+          )
+          .toBeGreaterThan(pickupReadsBeforeSave)
+        await expect(editor).toBeVisible()
+        expect(
+          uniquePublishedEvents(relay.publications.slice(publicationStart))
+        ).toHaveLength(0)
+        held.release()
+      }
+
       await expect(editor).toBeHidden({ timeout: 15_000 })
 
       await expect

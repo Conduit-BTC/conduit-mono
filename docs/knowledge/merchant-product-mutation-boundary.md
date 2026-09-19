@@ -18,7 +18,10 @@ Merchant's product publication boundary distinguishes:
   shapes that do not directly name a pickup require no organizer, catalog, or
   pickup read. A direct event-pickup reference requires one exact, positive,
   deletion-aware kind `30406` read before the replacement kind `30402` is
-  signed; it does not require the broader organizer graph to be rediscovered.
+  signed. The latest live revision must satisfy the event-pickup contract,
+  including a public location or geohash and no proposal-only destination
+  predicates. This does not require the broader organizer graph to be
+  rediscovered.
 - Existing fulfillment authoring intents: establish or change fulfillment using
   their current validation and publication rules. New product and variation
   coordinates cannot use an existing product's preservation authority.

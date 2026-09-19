@@ -3053,8 +3053,9 @@ function ProductsPage() {
                     </p>
                     <p className="text-xs leading-5 text-[var(--text-muted)]">
                       You can edit this product without changing its shipping or
-                      event pickup. Event availability does not prevent saving
-                      your changes.
+                      event pickup. Direct event pickup is rechecked before your
+                      signer opens; organizer calendar and collection
+                      availability stay outside this save.
                     </p>
                     <Button
                       type="button"
