@@ -109,7 +109,7 @@ describe("ShopperTrustCard", () => {
     )
 
     expect(html).toContain("Buyer context")
-    expect(html).toContain("Buyer context observations loaded")
+    expect(html).not.toContain('aria-live="polite"')
     expect(html).toContain("Alice Buyer")
     expect(html).toContain('target="_blank"')
     expect(html).toContain('rel="noopener noreferrer"')
@@ -155,8 +155,8 @@ describe("ShopperTrustCard", () => {
     expect(html).toContain("Profile loading")
     expect(html.match(/<dt/g)).toHaveLength(6)
     expect(html.match(/>Loading</g)).toHaveLength(6)
-    expect(html).toContain('aria-live="polite"')
-    expect(html).toContain("Buyer context is updating")
+    expect(html).not.toContain('aria-live="polite"')
+    expect(html).not.toContain("Buyer context is updating")
     expect(html).toContain("Message buyer")
   })
 
@@ -186,21 +186,25 @@ describe("ShopperTrustCard", () => {
       />
     )
 
-    expect(html).toContain("Buyer context observations unavailable")
+    expect(html).toContain("Buyer context couldn&#x27;t be loaded.")
     expect(html).toContain("Retry observations")
-    expect(html).not.toContain("Buyer context is up to date")
+    expect(html).not.toContain('aria-live="polite"')
   })
 
-  it("qualifies partial and stale observations without overstating missing evidence", () => {
+  it("keeps usable partial evidence quiet without overstating missing evidence", () => {
     const evidence = fullEvidence()
     evidence.oldestEvent = signal({ timestamp: 1_577_836_800 }, "stale")
     evidence.followersObserved = signal({ count: 73 }, "partial")
     evidence.followsInCommon = unavailableSignal()
-    evidence.reportsFromNetwork = signal({
-      count: 0,
-      reporterCount: 0,
-      byType: {},
-    })
+    evidence.zapsSent = signal({ count: 0 }, "stale")
+    evidence.reportsFromNetwork = signal(
+      {
+        count: 0,
+        reporterCount: 0,
+        byType: {},
+      },
+      "partial"
+    )
     evidence.degraded = true
 
     const html = renderToStaticMarkup(
@@ -224,14 +228,15 @@ describe("ShopperTrustCard", () => {
     )
     const visibleText = html.replace(/<[^>]+>/g, " ")
 
-    expect(html).toContain("Cached, may be stale")
+    expect(html).not.toContain("Cached, may be stale")
     expect(html).toContain("Author-provided timestamp")
-    expect(html).toContain("Partial observation")
+    expect(html).not.toContain("Partial observation")
     expect(html).toContain("can be backdated")
     expect(html).toContain("not proof of account creation or account age")
     expect(html).toContain("not proof of payment or wallet-provider authority")
     expect(html).toContain(">Unavailable<")
-    expect(html).toContain("No reports found in this relay scan")
+    expect(html).toContain("Not enough data")
+    expect(html).not.toContain("No reports found in this relay scan")
     expect(html).toContain("NIP-05 does not match")
     expect(visibleText).not.toMatch(/\b(score|verdict|trusted|safe)\b/i)
     expect(visibleText).not.toContain("Account created")

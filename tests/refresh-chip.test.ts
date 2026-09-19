@@ -18,21 +18,26 @@ function visibleLabelMarkup(markup: string, label: string): string {
 }
 
 describe("RefreshChip", () => {
-  it("shows completion only when the refreshed data is current", () => {
+  it("renders completion only from an explicit current refresh phase", () => {
     expect(
       resolveRefreshChipPhase({
-        currentPhase: "refreshing",
-        refreshCompleted: true,
+        phase: "done",
         refreshing: false,
         stale: false,
       })
     ).toBe("done")
     expect(
       resolveRefreshChipPhase({
-        currentPhase: "refreshing",
-        refreshCompleted: true,
+        phase: "done",
         refreshing: false,
         stale: true,
+      })
+    ).toBe("idle")
+    expect(
+      resolveRefreshChipPhase({
+        phase: "idle",
+        refreshing: false,
+        stale: false,
       })
     ).toBe("idle")
   })
@@ -40,16 +45,14 @@ describe("RefreshChip", () => {
   it("leaves completion immediately when data becomes stale", () => {
     expect(
       resolveRefreshChipPhase({
-        currentPhase: "done",
-        refreshCompleted: false,
+        phase: "done",
         refreshing: false,
         stale: true,
       })
     ).toBe("idle")
     expect(
       resolveRefreshChipPhase({
-        currentPhase: "idle",
-        refreshCompleted: false,
+        phase: "idle",
         refreshing: true,
         stale: true,
       })
@@ -64,8 +67,7 @@ describe("RefreshChip", () => {
     })
     expect(
       resolveRefreshChipPhase({
-        currentPhase: "refreshing",
-        refreshCompleted: true,
+        phase: "done",
         ...completed,
       })
     ).toBe("done")
@@ -77,8 +79,7 @@ describe("RefreshChip", () => {
     })
     expect(
       resolveRefreshChipPhase({
-        currentPhase: "refreshing",
-        refreshCompleted: true,
+        phase: "done",
         ...localFailure,
       })
     ).toBe("idle")
@@ -90,8 +91,7 @@ describe("RefreshChip", () => {
     })
     expect(
       resolveRefreshChipPhase({
-        currentPhase: "refreshing",
-        refreshCompleted: true,
+        phase: "done",
         ...paused,
       })
     ).toBe("idle")
@@ -101,7 +101,7 @@ describe("RefreshChip", () => {
     const markup = renderToStaticMarkup(
       createElement(RefreshChip, {
         refreshing: false,
-        onRefresh: () => {},
+        onRefresh: async () => {},
       })
     )
 
@@ -117,7 +117,7 @@ describe("RefreshChip", () => {
     const markup = renderToStaticMarkup(
       createElement(RefreshChip, {
         refreshing: true,
-        onRefresh: () => {},
+        onRefresh: async () => {},
         refreshingLabel: "Updating listings...",
       })
     )
@@ -135,27 +135,27 @@ describe("RefreshChip", () => {
     expect(visibleLabelMarkup(markup, "Refresh")).toContain("opacity-0")
   })
 
-  it("swaps the idle label to a warning-toned stale label", () => {
+  it("keeps stale evidence out of the refresh control", () => {
     const markup = renderToStaticMarkup(
       createElement(RefreshChip, {
         refreshing: false,
-        onRefresh: () => {},
+        onRefresh: async () => {},
         stale: true,
-        staleLabel: "May be out of date",
       })
     )
 
-    const staleSpan = visibleLabelMarkup(markup, "May be out of date")
-    expect(markup).toContain('aria-label="May be out of date"')
-    expect(staleSpan).toContain("opacity-100")
-    expect(staleSpan).toContain("--warning")
+    expect(markup).toContain('aria-label="Refresh"')
+    expect(visibleLabelMarkup(markup, "Refresh")).toContain("opacity-100")
+    expect(markup).not.toContain("May be out of date")
+    expect(markup).not.toContain("--warning")
+    expect(markup).not.toContain('role="status"')
   })
 
   it("stacks every phase label in one grid cell to stay shift-free", () => {
     const markup = renderToStaticMarkup(
       createElement(RefreshChip, {
         refreshing: false,
-        onRefresh: () => {},
+        onRefresh: async () => {},
         refreshingLabel: "Refreshing the whole storefront...",
       })
     )
@@ -186,6 +186,26 @@ describe("RefreshChip", () => {
       expect(source).toContain("RefreshChip")
       expect(source).not.toContain("FreshnessChip")
     }
+  })
+
+  it("requires explicit refreshes to settle after their backing reads", async () => {
+    const [chipSource, progressiveSource] = await Promise.all([
+      readFile("packages/ui/src/components/RefreshChip.tsx", "utf8"),
+      readFile("apps/market/src/hooks/useProgressiveProducts.ts", "utf8"),
+    ])
+
+    expect(chipSource).toContain("onRefresh: () => Promise<unknown>")
+    expect(chipSource).not.toContain("if (!refreshResult)")
+    expect(
+      progressiveSource.match(/refetch: \(\) => Promise<void>/g)
+    ).toHaveLength(2)
+    expect(progressiveSource).toContain("waitForNextProgressiveRead()")
+    expect(progressiveSource).toContain(
+      "settleProgressiveRefreshes(discoveryKey)"
+    )
+    expect(progressiveSource).toContain(
+      "await Promise.all([refetchCachedDetail(), refetchNetworkDetail()])"
+    )
   })
 
   it("keeps empty Market surfaces visibly busy during refresh", async () => {

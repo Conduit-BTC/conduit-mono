@@ -629,9 +629,10 @@ export function useMerchantEventTimeline(input: {
   const unresolvedRelationshipCount = Array.from(
     relationshipCoordinates
   ).filter((coordinate) => !visibleCoordinates.has(coordinate)).length
-  const productReadIncomplete = isCommerceReadIncomplete(
-    productsQuery.data?.meta
-  )
+  const productReadIncomplete =
+    isCommerceReadIncomplete(productsQuery.data?.meta) ||
+    productsQuery.isError ||
+    productsQuery.isPaused
   const network = qualifyMerchantEventTimelineNetwork(
     perspectiveQuery.data,
     perspectiveRefreshStale

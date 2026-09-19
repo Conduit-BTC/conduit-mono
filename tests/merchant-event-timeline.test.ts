@@ -633,7 +633,7 @@ describe("Merchant event timeline", () => {
     )
   })
 
-  it("uses signed schedule evidence and relay-aware status labels", () => {
+  it("uses signed schedule evidence without mirroring relay state", () => {
     const partial = market({
       suffix: "partial",
       startMs: Date.UTC(2027, 5, 1, 14),
@@ -648,9 +648,15 @@ describe("Merchant event timeline", () => {
       sellingCollectionCoordinates: [],
     })
     expect(getMerchantEventTimelineStatus(item!, NOW)).toEqual({
-      label: "Partial relay view",
-      tone: "warning",
+      label: "Active event",
+      tone: "success",
     })
+    expect(
+      getMerchantEventTimelineStatus(
+        { ...item!, reconciliationPending: true },
+        NOW
+      )
+    ).toEqual({ label: "Refresh needed", tone: "warning" })
     expect(formatMerchantEventTimelineSchedule(partial, "en-US")).toContain(
       "9:00 AM"
     )
@@ -701,8 +707,8 @@ describe("Merchant event lifecycle history", () => {
     )
     open.state = "partial"
     expect(getMerchantEventTimelineStatus(items[0]!, NOW)).toEqual({
-      label: "Partial relay view",
-      tone: "warning",
+      label: "Scheduled time has passed · Open",
+      tone: "secondary",
     })
     expect(getMerchantEventTimelineStatus(items[1]!, NOW).label).toBe("Closed")
     expect(

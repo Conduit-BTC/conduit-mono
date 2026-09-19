@@ -62,7 +62,7 @@ function formatSchedule(market: MerchantOrganizerEventMarket): string {
 function actionabilityClassName(
   presentation: ReturnType<typeof getEventActionabilityPresentation>
 ): string {
-  if (!presentation.prominent) {
+  if (presentation.visibility !== "prominent") {
     return "text-pretty text-sm font-medium text-[var(--text-secondary)]"
   }
   return presentation.tone === "destructive"
@@ -234,8 +234,8 @@ export function MerchantEventMarketPanel({
           id="event-publish-disabled"
           className="text-xs leading-5 text-[var(--text-muted)]"
         >
-          Publishing is unavailable until current event evidence is active or
-          safely recoverable from a partial relay view.
+          Publishing is unavailable until the current event details can be
+          confirmed.
         </p>
       )}
     </>
@@ -259,29 +259,23 @@ export function MerchantEventMarketPanel({
           <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <Badge variant={actionability.tone}>
-                  {actionability.label}
-                </Badge>
+                {actionability.visibility !== "silent" ? (
+                  <Badge variant={actionability.tone}>
+                    {actionability.label}
+                  </Badge>
+                ) : null}
                 <Badge variant="outline">Published by organizer</Badge>
               </div>
-              <p
-                className={actionabilityClassName(actionability)}
-                role={actionability.role}
-                data-testid="merchant-event-actionability-status"
-              >
-                {actionability.prominent ? (
-                  <span className="sr-only">{actionability.label}: </span>
-                ) : null}
-                {actionability.message}
-              </p>
-              {relayCoverage ? (
+              {actionability.visibility !== "silent" ? (
                 <p
-                  className="mt-1 text-pretty text-xs tabular-nums text-[var(--text-muted)]"
-                  role="status"
-                  aria-label={`Relay read coverage: ${relayCoverage}`}
-                  data-testid="merchant-event-relay-read-coverage"
+                  className={actionabilityClassName(actionability)}
+                  role={actionability.role}
+                  data-testid="merchant-event-actionability-status"
                 >
-                  {relayCoverage}
+                  {actionability.visibility === "prominent" ? (
+                    <span className="sr-only">{actionability.label}: </span>
+                  ) : null}
+                  {actionability.message}
                 </p>
               ) : null}
               <CardTitle className="text-balance text-2xl">
@@ -292,6 +286,19 @@ export function MerchantEventMarketPanel({
                   {market.summary}
                 </CardDescription>
               )}
+              {relayCoverage ? (
+                <details className="mt-3 text-xs text-[var(--text-muted)]">
+                  <summary className="w-fit cursor-pointer rounded-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
+                    Technical details
+                  </summary>
+                  <p
+                    className="mt-2 text-pretty tabular-nums"
+                    data-testid="merchant-event-relay-read-coverage"
+                  >
+                    {relayCoverage}
+                  </p>
+                </details>
+              ) : null}
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
               <Button

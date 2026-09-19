@@ -104,8 +104,9 @@ describe("Market Events timeline route", () => {
   })
 
   it("uses bounded perspective discovery and preserves partial positives", async () => {
-    const [route, hook, discovery] = await Promise.all([
+    const [route, emptyState, hook, discovery] = await Promise.all([
       Bun.file("apps/market/src/routes/events/index.tsx").text(),
+      Bun.file("apps/market/src/components/EventTimelineEmptyState.tsx").text(),
       Bun.file("apps/market/src/hooks/useEventTimeline.ts").text(),
       Bun.file("packages/core/src/protocol/event-market-discovery.ts").text(),
     ])
@@ -119,6 +120,8 @@ describe("Market Events timeline route", () => {
     expect(route).not.toContain("discoveryPresentation")
     expect(route).toContain('aria-label="Refresh events"')
     expect(route).toContain("EventTimelineEmptyState")
+    expect(emptyState).toContain("getResultPresentation")
+    expect(emptyState).toContain("onRetry")
     expect(route).toContain("filteredMarkets.map")
     expect(discovery).toContain("readEventMarketCollectionCandidates")
     expect(discovery).toContain("perspectiveOrganizerSet.has(organizerPubkey)")

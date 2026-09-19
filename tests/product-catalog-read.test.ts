@@ -80,6 +80,41 @@ describe("product catalog read planning", () => {
     expect(await runRefresh({ queryEnabled: false })).toEqual([])
   })
 
+  it("settles only after every started catalog source completes", async () => {
+    let finishNetwork!: () => void
+    let finishCache!: () => void
+    let settled = false
+    const refresh = refreshProductCatalogSources({
+      queryEnabled: true,
+      catalogReady: true,
+      streamsNetwork: true,
+      usesPerspectiveGraph: false,
+      catalogSource: "following",
+      refreshPerspectiveAuthors: () => false,
+      restartNetworkStream: () =>
+        new Promise<void>((resolve) => {
+          finishNetwork = resolve
+        }),
+      refreshNetwork: () => undefined,
+      refreshCache: () =>
+        new Promise<void>((resolve) => {
+          finishCache = resolve
+        }),
+    })
+    void refresh.then(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    finishNetwork()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    finishCache()
+    await refresh
+    expect(settled).toBe(true)
+  })
+
   it("keeps all-store marketplace reads scoped to the market perspective", () => {
     expect(isPerspectiveMarketplaceRead({ scope: "marketplace" })).toBe(true)
     expect(getCatalogAuthorPubkeys(["merchant-a"])).toEqual(["merchant-a"])

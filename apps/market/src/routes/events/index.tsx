@@ -265,10 +265,7 @@ function EventsTimelinePage() {
               : "Event timeline"}
         </h1>
         <div className="flex items-center gap-2">
-          <span
-            className="text-sm tabular-nums text-[var(--text-muted)]"
-            aria-live="polite"
-          >
+          <span className="text-sm tabular-nums text-[var(--text-muted)]">
             {discovery.isInitialLoading
               ? "Loading events"
               : `${filteredMarkets.length} ${filteredMarkets.length === 1 ? "event" : "events"}`}
@@ -368,7 +365,7 @@ function EventsTimelinePage() {
           </h2>
           <p className="mt-2 text-sm text-[var(--text-secondary)]">
             Clear a filter or widen the date window to see more events already
-            found in this relay view.
+            found.
           </p>
         </section>
       ) : (
@@ -376,6 +373,8 @@ function EventsTimelinePage() {
           discoveryState={discovery.data?.state}
           hasError={Boolean(discovery.error)}
           refreshIncomplete={discovery.isRefreshStale}
+          onRetry={discovery.refetch}
+          retrying={discovery.isFetching}
         />
       )}
     </div>

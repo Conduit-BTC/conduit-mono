@@ -14,9 +14,9 @@ export type EventActionabilityPresentation = {
   actionability: EventActionability
   label: string
   message: string
-  role: "status" | "alert"
+  role?: "alert"
   tone: "success" | "secondary" | "warning" | "destructive"
-  prominent: boolean
+  visibility: "silent" | "inline" | "prominent"
 }
 
 function countLabel(count: number, singular: string, plural = `${singular}s`) {
@@ -64,9 +64,8 @@ export function getEventActionabilityPresentation(input: {
           availableProductCount,
           unresolvedProductCount
         ),
-        role: "status",
         tone: "success",
-        prominent: false,
+        visibility: "silent",
       }
     case "partial":
       if (input.requiredEventRecordsResolved === false) {
@@ -76,7 +75,7 @@ export function getEventActionabilityPresentation(input: {
           message: `A required signed event record is unresolved. ${availableProductsMessage(availableProductCount, unresolvedProductCount)} Exact current product and pickup evidence still determines which product actions are available.`,
           role: "alert",
           tone: "warning",
-          prominent: true,
+          visibility: "prominent",
         }
       }
       return {
@@ -86,9 +85,8 @@ export function getEventActionabilityPresentation(input: {
           availableProductCount,
           unresolvedProductCount
         ),
-        role: "status",
         tone: "success",
-        prominent: false,
+        visibility: "silent",
       }
     case "ended":
       return {
@@ -99,9 +97,8 @@ export function getEventActionabilityPresentation(input: {
           input.orderAcceptance === "closed"
             ? "The organizer has closed this event to new orders. Existing orders and pickup remain available."
             : `${availableProductsMessage(availableProductCount, unresolvedProductCount)} Checkout is closed.`,
-        role: "status",
         tone: "secondary",
-        prominent: false,
+        visibility: "inline",
       }
     case "missing":
       return {
@@ -111,7 +108,7 @@ export function getEventActionabilityPresentation(input: {
           "No current signed event collection was found in the completed read. Try again or ask the organizer for its canonical event link.",
         role: "alert",
         tone: "warning",
-        prominent: true,
+        visibility: "prominent",
       }
     case "unavailable":
       return {
@@ -121,7 +118,7 @@ export function getEventActionabilityPresentation(input: {
           "The organizer's signed event records could not be confirmed. Try again when relay access recovers.",
         role: "alert",
         tone: "warning",
-        prominent: true,
+        visibility: "prominent",
       }
     case "stale":
       return {
@@ -131,7 +128,7 @@ export function getEventActionabilityPresentation(input: {
           "Only earlier signed evidence is available. Refresh before relying on the schedule, pickup terms, or product availability.",
         role: "alert",
         tone: "warning",
-        prominent: true,
+        visibility: "prominent",
       }
     case "deleted":
       return {
@@ -141,7 +138,7 @@ export function getEventActionabilityPresentation(input: {
           "The organizer's signed deletion is authoritative. Products and checkout are no longer available through this event.",
         role: "alert",
         tone: "destructive",
-        prominent: true,
+        visibility: "prominent",
       }
     case "malformed":
       return {
@@ -151,7 +148,7 @@ export function getEventActionabilityPresentation(input: {
           "This event reference or its signed records cannot be interpreted safely. Products and checkout remain unavailable.",
         role: "alert",
         tone: "destructive",
-        prominent: true,
+        visibility: "prominent",
       }
     case "conflicting":
       return {
@@ -161,7 +158,7 @@ export function getEventActionabilityPresentation(input: {
           "The signed records do not agree on this event. Conduit will not choose between them or offer consequential actions.",
         role: "alert",
         tone: "destructive",
-        prominent: true,
+        visibility: "prominent",
       }
     case "unsupported":
     default:
@@ -172,7 +169,7 @@ export function getEventActionabilityPresentation(input: {
           "This event uses signed references that this version of Conduit cannot safely interpret.",
         role: "alert",
         tone: "warning",
-        prominent: true,
+        visibility: "prominent",
       }
   }
 }
@@ -210,6 +207,10 @@ function eventMarketPerspectiveLabel(
   }
 }
 
+/**
+ * Detailed bounded-read copy for Network and explicit technical diagnostics.
+ * Ordinary event result surfaces should use `getResultPresentation` instead.
+ */
 export function getOrganizerDiscoveryPresentation(input: {
   state: FollowedEventMarketDiscoveryState
   eventCount: number

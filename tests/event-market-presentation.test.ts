@@ -16,9 +16,8 @@ describe("event actionability presentation", () => {
       actionability: "actionable",
       label: "Event loaded",
       message: "2 products available.",
-      role: "status",
       tone: "success",
-      prominent: false,
+      visibility: "silent",
     })
   })
 
@@ -46,7 +45,7 @@ describe("event actionability presentation", () => {
       label: "Event records unresolved",
       role: "alert",
       tone: "warning",
-      prominent: true,
+      visibility: "prominent",
     })
     expect(presentation.message).toBe(
       "A required signed event record is unresolved. 1 product available. 1 product remains unresolved and unavailable. Exact current product and pickup evidence still determines which product actions are available."
@@ -62,8 +61,7 @@ describe("event actionability presentation", () => {
     ).toMatchObject({
       actionability: "actionable",
       label: "Event loaded",
-      role: "status",
-      prominent: false,
+      visibility: "silent",
     })
   })
 
@@ -77,8 +75,7 @@ describe("event actionability presentation", () => {
       actionability: "read_only",
       label: "Event ended",
       message: "2 products available. Checkout is closed.",
-      role: "status",
-      prominent: false,
+      visibility: "inline",
     })
   })
 
@@ -101,7 +98,7 @@ describe("event actionability presentation", () => {
         label,
         role: "alert",
         tone,
-        prominent: true,
+        visibility: "prominent",
       })
     }
   )
@@ -131,7 +128,7 @@ describe("relay read coverage presentation", () => {
   })
 })
 
-describe("event-market discovery presentation", () => {
+describe("event-market technical discovery presentation", () => {
   it("leads with found events and bounded relay-read facts", () => {
     expect(
       getOrganizerDiscoveryPresentation({
@@ -253,6 +250,6 @@ it("distinguishes organizer closure from a passed schedule without canceling exi
     label: "Event closed",
     message:
       "The organizer has closed this event to new orders. Existing orders and pickup remain available.",
-    prominent: false,
+    visibility: "inline",
   })
 })

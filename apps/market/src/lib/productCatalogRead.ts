@@ -48,7 +48,7 @@ export async function refreshProductCatalogSources(input: {
   usesPerspectiveGraph: boolean
   catalogSource: ProductCatalogSourceMode
   refreshPerspectiveAuthors: () => boolean | Promise<boolean>
-  restartNetworkStream: () => void
+  restartNetworkStream: () => unknown
   refreshNetwork: () => unknown
   refreshCache: () => unknown
 }): Promise<void> {
@@ -60,9 +60,13 @@ export async function refreshProductCatalogSources(input: {
   }
 
   if (!input.catalogReady) return
-  if (input.streamsNetwork) input.restartNetworkStream()
-  else void input.refreshNetwork()
-  void input.refreshCache()
+  const networkRefresh = input.streamsNetwork
+    ? input.restartNetworkStream()
+    : input.refreshNetwork()
+  await Promise.all([
+    Promise.resolve(networkRefresh),
+    Promise.resolve(input.refreshCache()),
+  ])
 }
 
 export function isProductDiscoveryReadIncomplete(

@@ -34,7 +34,7 @@ describe("Market event timeline empty state", () => {
 
       expect(markup).toContain('role="alert"')
       expect(markup).toContain(
-        "Events couldn&#x27;t be loaded. Refresh to try again."
+        "Events couldn&#x27;t be loaded. Retry to check again."
       )
       expect(markup).not.toContain("No events found.")
     }
@@ -49,5 +49,13 @@ describe("Market event timeline empty state", () => {
       expect(markup).toContain("Events couldn&#x27;t be loaded")
       expect(markup).not.toContain("No events found.")
     }
+  })
+
+  it("offers one recovery action for an unreliable empty result", () => {
+    const markup = renderState("partial", {
+      onRetry: () => undefined,
+    })
+
+    expect(markup.match(/>Retry</g)).toHaveLength(1)
   })
 })

@@ -45,24 +45,34 @@ export function allowsGlobalProductSearch(input: {
 export async function refreshMarketBrowseData(input: {
   globalSearchEnabled: boolean
   refreshDiscovery?: () => Promise<boolean>
-  refreshCatalog: () => void
+  refreshCatalog: () => unknown
   refreshGlobalSearch: () => unknown
 }): Promise<void> {
+  const refreshGlobalSearch = () =>
+    input.globalSearchEnabled
+      ? Promise.resolve(input.refreshGlobalSearch())
+      : Promise.resolve()
+
   if (!input.refreshDiscovery) {
-    input.refreshCatalog()
-    if (input.globalSearchEnabled) void input.refreshGlobalSearch()
+    await Promise.all([
+      Promise.resolve(input.refreshCatalog()),
+      refreshGlobalSearch(),
+    ])
     return
   }
 
   const discoveryRefresh = input.refreshDiscovery()
-  if (input.globalSearchEnabled) void input.refreshGlobalSearch()
+  const globalSearchRefresh = refreshGlobalSearch()
   let authorSetChanged = false
   try {
     authorSetChanged = await discoveryRefresh
   } catch {
     // The catalog still refreshes against the retained safe author set.
   }
-  if (!authorSetChanged) input.refreshCatalog()
+  const catalogRefresh = authorSetChanged
+    ? Promise.resolve()
+    : Promise.resolve(input.refreshCatalog())
+  await Promise.all([catalogRefresh, globalSearchRefresh])
 }
 
 type BrowseFreshnessMeta = CommerceFreshnessMeta

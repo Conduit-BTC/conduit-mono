@@ -81,6 +81,10 @@ export {
   type LegacyDirectMessageNoticeProps,
 } from "./LegacyDirectMessageNotice"
 export { LiveReadNotice, type LiveReadNoticeProps } from "./LiveReadNotice"
+export {
+  ProtectedInboxNotice,
+  type ProtectedInboxNoticeProps,
+} from "./ProtectedInboxNotice"
 export { RefreshChip, type RefreshChipProps } from "./RefreshChip"
 export {
   MessagingReadinessNotice,

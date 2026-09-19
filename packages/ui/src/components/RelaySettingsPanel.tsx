@@ -36,6 +36,7 @@ import {
   type AccountNetworkSettingsOperationPhase,
   type PreparedAccountNetworkSettingsChange,
 } from "@conduit/core"
+import { getResultPresentation } from "../result-presentation"
 import { cn } from "../utils"
 import { Button } from "./Button"
 import {
@@ -1723,7 +1724,21 @@ function AddRelaySection({ review }: { review: RelaySettingsReview }) {
   )
 }
 
-function RelayListSection({ review }: { review: RelaySettingsReview }) {
+function RelayListSection({
+  controller,
+  review,
+}: {
+  controller: AccountNetworkSettingsController
+  review: RelaySettingsReview
+}) {
+  const resultPresentation = getResultPresentation({
+    resultCount: review.rows.length,
+    reliability:
+      controller.view.relayList.coverage === "complete" &&
+      controller.view.inbox.coverage === "complete"
+        ? "complete"
+        : "degraded",
+  })
   return (
     <div>
       <p className="mb-3 text-pretty text-xs leading-5 text-[var(--text-muted)]">
@@ -1771,6 +1786,26 @@ function RelayListSection({ review }: { review: RelaySettingsReview }) {
             )
           })}
         </ul>
+      ) : resultPresentation.kind === "degraded_empty" ? (
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-pretty text-sm leading-6 text-[var(--text-primary)]"
+          role="alert"
+        >
+          <span>
+            Relay preferences couldn&apos;t be confirmed. Refresh before
+            treating this setup as empty.
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={review.busy}
+            onClick={() => void controller.refresh()}
+          >
+            <RefreshCw className="size-4" aria-hidden="true" />
+            Retry
+          </Button>
+        </div>
       ) : (
         <div className="py-4 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
           No relay preferences were found. Add at least one Publish relay.
@@ -2077,7 +2112,7 @@ function RelayPreferencesSection({
       </PreferenceSectionBody>
       <PreferenceSectionDivider />
       <PreferenceSectionBody>
-        <RelayListSection review={review} />
+        <RelayListSection controller={controller} review={review} />
       </PreferenceSectionBody>
       <PreferenceSectionDivider />
       <PreferenceSectionBody>

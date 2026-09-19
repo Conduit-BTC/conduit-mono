@@ -337,32 +337,20 @@ describe("Merchant organizer event discovery evidence", () => {
     ).toBeNull()
   })
 
-  it("does not wire definitive no-events language to incomplete evidence", async () => {
+  it("projects incomplete empty reads into recovery instead of absence", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
-    const definitiveStart = route.indexOf(
-      'catalogView.emptyState === "complete"'
-    )
-    const definitiveCopy = route.indexOf(
-      "No events found in the completed planned reads"
-    )
-    const partialStart = route.indexOf('catalogView.emptyState === "partial"')
-    const partialCopy = route.indexOf("No events found in the checked portion")
-    const unavailableStart = route.indexOf(
-      'catalogView.emptyState === "unavailable"'
-    )
 
-    expect(partialStart).toBeGreaterThan(-1)
-    expect(partialCopy).toBeGreaterThan(partialStart)
-    expect(route).toMatch(/No global\s+absence is/)
-    expect(unavailableStart).toBeGreaterThan(-1)
-    expect(definitiveStart).toBeGreaterThan(unavailableStart)
-    expect(definitiveCopy).toBeGreaterThan(definitiveStart)
-    expect(route.slice(definitiveStart - 80, definitiveStart)).toContain(
-      "!marketsQuery.isError"
+    expect(route).toContain("getResultPresentation")
+    expect(route).toContain(
+      'organizerCatalogPresentation.kind === "degraded_empty"'
     )
-    expect(route.slice(partialStart, definitiveStart)).not.toContain(
+    expect(route).toContain("Events couldn't be loaded")
+    expect(route).toContain("Retry to check for events")
+    expect(route).toContain("No events here yet")
+    expect(route).not.toContain("No events found in the checked portion")
+    expect(route).not.toContain(
       "No events found in the completed planned reads"
     )
-    expect(route).toContain("Retry organizer discovery")
+    expect(route).not.toContain("formatEventRelayReadCoverage")
   })
 })

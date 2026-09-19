@@ -263,7 +263,7 @@ describe("Market event timeline", () => {
     ).toEqual([later.reference])
   })
 
-  it("derives stable facets and honest relay-aware statuses", () => {
+  it("derives stable facets and consequence-driven statuses", () => {
     expect(getEventTimelineFacets([later, past, soon])).toEqual({
       organizers: ["a".repeat(64), "b".repeat(64)],
       locations: ["Chicago", "Detroit"],
@@ -275,8 +275,8 @@ describe("Market event timeline", () => {
       NOW
     )
     expect(getEventTimelineStatus(typedSoon!, NOW)).toEqual({
-      label: "Partial relay view",
-      tone: "warning",
+      label: "Upcoming",
+      tone: "success",
     })
     expect(getEventTimelineStatus(typedPast!, NOW)).toEqual({
       label: "Past event",
@@ -328,7 +328,10 @@ describe("event lifecycle timeline", () => {
         filterAndSortEventMarkets([event], {}, NOW)[0]!,
         NOW
       )
-    ).toEqual({ label: "Partial relay view", tone: "warning" })
+    ).toEqual({
+      label: "Scheduled time has passed · Open",
+      tone: "secondary",
+    })
   })
 
   it("keeps early closure in history without pretending its scheduled date is past", () => {
