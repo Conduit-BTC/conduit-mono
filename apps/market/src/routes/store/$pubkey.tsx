@@ -46,6 +46,7 @@ import { RichProfileText } from "../../components/RichProfileText"
 import { ProductGridCardSkeleton } from "../../components/ProductGridCard"
 import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCard"
 import { CopyButton } from "../../components/CopyButton"
+import { LivePresenceIndicator } from "../../components/LivePresenceIndicator"
 import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
@@ -56,6 +57,7 @@ import { ProfileBanner } from "../../components/ProfileBanner"
 import { StorefrontFollowButton } from "../../components/StorefrontFollowButton"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
+import { useLivePresenceCount } from "../../hooks/useLivePresenceCount"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
 import {
   filterProductsByFacets,
@@ -136,7 +138,8 @@ function CategoryFacetButton({
 
 function StorefrontPage() {
   const { pubkey: pubkeyParam } = Route.useParams()
-  const pubkey = normalizePubkey(pubkeyParam) ?? pubkeyParam
+  const normalizedStorePubkey = normalizePubkey(pubkeyParam)
+  const pubkey = normalizedStorePubkey ?? pubkeyParam
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
@@ -150,6 +153,10 @@ function StorefrontPage() {
   const [searchDirty, setSearchDirty] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
+  const storePresenceCount = useLivePresenceCount({
+    canonicalId: normalizedStorePubkey,
+    pageType: "store",
+  })
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
     merchantPubkey: pubkey,
@@ -496,7 +503,7 @@ function StorefrontPage() {
         <div className="relative px-5 pb-6 sm:px-6 sm:pb-7">
           <div className="relative -mt-10 space-y-5 sm:-mt-14">
             <div className="flex min-w-0 flex-wrap items-start gap-x-6 gap-y-5">
-              <div className="flex min-w-0 flex-1 basis-full items-start gap-3 sm:basis-[28rem] sm:gap-4 lg:basis-[34rem]">
+              <div className="grid min-w-0 flex-1 basis-full grid-cols-[5rem_minmax(0,1fr)] items-start gap-x-3 sm:basis-[28rem] sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-x-4 lg:basis-[34rem]">
                 <Avatar className="h-20 w-20 shrink-0 self-start border-4 border-[var(--surface)] bg-[var(--surface)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
                   <AvatarImage
                     src={profile?.picture}
@@ -508,7 +515,7 @@ function StorefrontPage() {
                   </AvatarFallback>
                 </Avatar>
 
-                <div className="min-w-0 flex-1 pt-11 sm:pt-16">
+                <div className="min-w-0 pt-11 sm:pt-16">
                   <div className="flex min-w-0 items-center gap-2">
                     {merchantIdentityPending ? (
                       <h1 className="min-w-0 max-w-full truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
@@ -537,6 +544,8 @@ function StorefrontPage() {
                       )}
                     </button>
                   </div>
+                </div>
+                <div className="col-span-2 min-w-0 pt-2 sm:col-span-1 sm:col-start-2">
                   <div className="mt-2 flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--text-secondary)]">
                     <span className="inline-flex min-w-0 max-w-[18rem] items-center gap-1 font-medium text-[var(--text-primary)] sm:max-w-[22rem]">
                       <span className="block min-w-0 truncate">
@@ -554,6 +563,11 @@ function StorefrontPage() {
                       </span>
                     </span>
                   </div>
+                  <LivePresenceIndicator
+                    className="mt-3"
+                    count={storePresenceCount}
+                    pageType="store"
+                  />
                 </div>
               </div>
 
@@ -668,7 +682,7 @@ function StorefrontPage() {
           </div>
         </aside>
 
-        <section className="min-w-0 max-w-full self-start overflow-hidden">
+        <section className="min-w-0 max-w-full self-start overflow-hidden [@media(min-width:768px)_and_(hover:hover)]:overflow-visible">
           {categoryFacetOptions.length > 0 && (
             <div className="mb-4 min-w-0 max-w-full overflow-hidden rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface)] p-4 md:hidden">
               <div className="mb-3 flex items-center justify-between gap-3">
@@ -773,9 +787,9 @@ function StorefrontPage() {
           </div>
 
           {productsQuery.isInitialLoading && (
-            <ul className="mt-4 grid min-w-0 max-w-full items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
-                <li key={index}>
+                <li key={index} className="h-full">
                   <ProductGridCardSkeleton />
                 </li>
               ))}
@@ -820,9 +834,9 @@ function StorefrontPage() {
             )}
 
           {filteredProducts.length > 0 && (
-            <ul className="mt-4 grid min-w-0 max-w-full items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {filteredProducts.map((product, index) => (
-                <li key={product.id}>
+                <li key={product.id} className="h-full">
                   <ResolvedProductGridCard
                     product={product}
                     family={productsQuery.familiesByProductId[product.id]}

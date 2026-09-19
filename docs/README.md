@@ -47,6 +47,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/knowledge/event-catalog-progressive-loading.md`: progressive browsing,
   scoped query sharing, and the boundary between display and pickup authorization
 
+- `docs/knowledge/event-market-lifecycle.md`: signed open/closed acceptance,
+  legacy compatibility, retained history, and coordinated release/rollback
 - `docs/knowledge/event-market-validation-evidence.md`: stable event-market
   acceptance/evidence IDs, candidate-head test mapping, and live-validation gaps
 - `docs/knowledge/mobile-safari-qa-baseline.md`: repeatable mobile browser and

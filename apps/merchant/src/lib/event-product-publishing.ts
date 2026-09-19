@@ -2,9 +2,9 @@ import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   canonicalizeProductPrice,
   decodeProductReference,
-  getProductImageCandidates,
   getMerchantStorefront,
   type EventMarketHandoffMode,
+  type ProductImage,
   type ProductSchema,
   type PublishWithPlannerResult,
 } from "@conduit/core"
@@ -19,6 +19,7 @@ import {
 } from "./product-local-pickup"
 import {
   validateProductPublishForm,
+  prepareProductImages,
   type ProductPublishFormValidation,
 } from "./productForm"
 import {
@@ -45,7 +46,7 @@ export interface EventProductPublishFormValues {
   price: string
   currency: string
   stock: string
-  imageUrl: string
+  images: ProductImage[]
   tags: string
   handoffMode: EventMarketHandoffMode
   merchantPickupLocation: string
@@ -102,7 +103,7 @@ export function createEmptyEventProductForm(
     price: "",
     currency: "SATS",
     stock: "",
-    imageUrl: "",
+    images: [],
     tags: "",
     handoffMode: "merchant_handoff",
     merchantPickupLocation: market.eventLocation ?? "",
@@ -126,7 +127,7 @@ export function eventProductFormFromTemplate(
     price: formatProductAmountInput(source?.amount ?? product.price),
     currency: source?.normalizedCurrency ?? product.currency,
     stock: typeof product.stock === "number" ? String(product.stock) : "",
-    imageUrl: getProductImageCandidates(product)[0]?.url ?? "",
+    images: product.images.map((image) => ({ ...image })),
     tags: product.tags.join(", "),
     publicZapEnabled: product.publicZapPolicyKnown
       ? product.publicZapEnabled
@@ -172,7 +173,7 @@ export function validateEventProductPublishForm(
       shippingCost: "",
       usePresetShippingZone: false,
       customShippingConfig: { countries: [] },
-      imageUrl: form.imageUrl,
+      images: form.images,
       tags: form.tags,
     },
     { hasPresetShippingZone: false, allowZeroPrice: true }
@@ -266,7 +267,7 @@ export async function publishEventProduct(input: {
     ...pickupMetadata,
     visibility: "private",
     stock: parseProductStockInput(input.form.stock),
-    images: [{ url: input.form.imageUrl.trim() }],
+    images: prepareProductImages(input.form.images),
     tags: validation.product.tags,
     publicZapEnabled: input.form.publicZapEnabled,
     zapMessagePolicy: input.form.zapMessagePolicy,

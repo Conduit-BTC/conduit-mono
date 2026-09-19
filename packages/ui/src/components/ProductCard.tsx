@@ -1,14 +1,19 @@
-import { Check, ImageOff, ShoppingCart } from "lucide-react"
-import { type ReactNode, useEffect, useRef, useState } from "react"
-import { normalizePublicMediaUrl } from "@conduit/core"
+import { Check, ShoppingCart } from "lucide-react"
+import {
+  type FocusEventHandler,
+  type PointerEventHandler,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
+import type { ProductImage } from "@conduit/core"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
+import { ProductImageFrame } from "./ProductImageFrame"
 import { cn } from "../utils"
 
-export type ProductCardImage = {
-  url: string
-  alt?: string
-}
+export type ProductCardImage = ProductImage
 
 export interface ProductCardProps {
   title: string
@@ -21,14 +26,26 @@ export interface ProductCardProps {
   secondaryPrice?: string | null
   approximateUsdPrice?: string | null
   imageLoading?: "eager" | "lazy"
+  /** Disable the image-only hover zoom when a parent supplies card-level motion. */
+  disableImageHoverZoom?: boolean
   cartQuantity?: number
   soldOut?: boolean
   /** Optional product controls rendered between identity and price. */
   options?: ReactNode
+  /** Optional classes for the product controls wrapper. */
+  optionsClassName?: string
+  /** Optional classes for the media wrapper. */
+  mediaClassName?: string
+  /** Existing fulfillment or availability context kept inside the card. */
+  notice?: ReactNode
   action?: ReactNode
   onActivate?: () => void
   onMerchantActivate?: () => void
   onInvalidImage?: () => void
+  /** Fires when the pointer enters the card root. */
+  onPointerEnter?: PointerEventHandler<HTMLDivElement>
+  /** Fires when the card root or any descendant receives focus. */
+  onFocus?: FocusEventHandler<HTMLDivElement>
   className?: string
 }
 
@@ -42,29 +59,22 @@ export function ProductCard({
   secondaryPrice,
   approximateUsdPrice,
   imageLoading = "lazy",
+  disableImageHoverZoom = false,
   cartQuantity = 0,
   soldOut = false,
   options,
+  optionsClassName,
+  mediaClassName,
+  notice,
   action,
   onActivate,
   onMerchantActivate,
   onInvalidImage,
+  onPointerEnter,
+  onFocus,
   className,
 }: ProductCardProps) {
-  const [imageFailed, setImageFailed] = useState(false)
-  const [imageLoaded, setImageLoaded] = useState(false)
   const firstImage = images[0]
-  const firstImageUrl = normalizePublicMediaUrl(firstImage?.url)
-  const activeImage =
-    firstImage && firstImageUrl
-      ? { ...firstImage, url: firstImageUrl }
-      : undefined
-  const imageKey = activeImage?.url ?? ""
-
-  useEffect(() => {
-    setImageFailed(false)
-    setImageLoaded(false)
-  }, [imageKey, title])
 
   const merchantNameContent = merchantNamePending ? (
     <span className="inline-block max-w-full animate-pulse truncate leading-5">
@@ -85,56 +95,23 @@ export function ProductCard({
         className
       )}
       onClick={onActivate}
+      onPointerEnter={onPointerEnter}
+      onFocus={onFocus}
       onKeyDown={(event) => {
         if (!onActivate || (event.key !== "Enter" && event.key !== " ")) return
         event.preventDefault()
         onActivate()
       }}
     >
-      <div className="relative aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]">
-        {activeImage && !imageFailed ? (
-          <>
-            <div
-              aria-hidden="true"
-              className={cn(
-                "absolute inset-0 bg-[var(--surface-elevated)] transition-opacity duration-300",
-                !imageLoaded && "animate-pulse",
-                imageLoaded ? "opacity-0" : "opacity-100"
-              )}
-            />
-            <img
-              src={activeImage.url}
-              alt={activeImage.alt ?? title}
-              width={640}
-              height={480}
-              className={cn(
-                "h-full w-full object-cover transition-[opacity,transform] duration-300 group-hover:scale-105",
-                imageLoaded ? "opacity-100" : "opacity-0",
-                soldOut && "grayscale group-hover:scale-100",
-                soldOut && imageLoaded && "opacity-55"
-              )}
-              decoding="async"
-              loading={imageLoading}
-              referrerPolicy="no-referrer"
-              onLoad={() => setImageLoaded(true)}
-              onError={() => {
-                setImageFailed(true)
-                onInvalidImage?.()
-              }}
-            />
-          </>
-        ) : (
-          <div
-            className={cn(
-              "flex h-full w-full flex-col items-center justify-center gap-2 bg-[var(--surface-elevated)] text-[var(--text-muted)]",
-              soldOut && "opacity-60"
-            )}
-          >
-            <ImageOff className="h-6 w-6" aria-hidden="true" />
-            <span className="px-4 text-center text-xs">Image unavailable</span>
-          </div>
-        )}
-      </div>
+      <ProductImageFrame
+        image={firstImage}
+        title={title}
+        imageLoading={imageLoading}
+        enableHoverZoom={!disableImageHoverZoom}
+        soldOut={soldOut}
+        onInvalidImage={onInvalidImage}
+        className={mediaClassName}
+      />
 
       <div className="flex flex-1 flex-col p-3">
         <div className="min-h-[3.25rem] space-y-1">
@@ -152,7 +129,7 @@ export function ProductCard({
           {onMerchantActivate ? (
             <button
               type="button"
-              className="truncate text-left text-xs leading-5 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              className="block w-full min-w-0 max-w-full truncate text-left text-xs leading-5 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
               aria-label={merchantNamePending ? "Open store" : undefined}
               onClick={(event) => {
                 event.preventDefault()
@@ -163,25 +140,38 @@ export function ProductCard({
               {merchantNameContent}
             </button>
           ) : (
-            <div className="truncate text-left text-xs leading-5 text-[var(--text-muted)]">
+            <div className="w-full min-w-0 max-w-full truncate text-left text-xs leading-5 text-[var(--text-muted)]">
               {merchantNameContent}
             </div>
           )}
         </div>
 
-        {options ? <div className="pt-3">{options}</div> : null}
+        {options ? (
+          <div className={cn("pt-3", optionsClassName)}>{options}</div>
+        ) : null}
+
+        {notice ? (
+          <div
+            data-slot="product-notice"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+            className="mt-3 border-t border-[var(--border)] pt-3 text-xs leading-5 text-[var(--text-secondary)]"
+          >
+            {notice}
+          </div>
+        ) : null}
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-3">
-          <div className="min-w-0">
+          <div className="min-w-0 tabular-nums">
             <div className="min-h-5 truncate text-sm font-bold text-secondary-400">
               {primaryPrice}
             </div>
             <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
               {secondaryPrice ?? "\u00a0"}
             </div>
-            {approximateUsdPrice ? (
+            {approximateUsdPrice !== undefined ? (
               <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
-                {approximateUsdPrice}
+                {approximateUsdPrice ?? "\u00a0"}
               </div>
             ) : null}
           </div>

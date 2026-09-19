@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
+import {
+  buildEventMarketCalendarDraft,
+  buildEventMarketPickupDraft,
+  resolveEventMarketEvidence,
+} from "@conduit/core"
 import { acceptOwnEventProduct } from "../apps/merchant/src/lib/event-product-acceptance"
 import type {
   MerchantOrganizerEventMarket,
@@ -37,10 +42,47 @@ function signedCollection(
     OWNER_SECRET
   )
 }
+const source = resolveEventMarketEvidence({
+  reference: COLLECTION,
+  events: [
+    signedCollection([], 10),
+    finalizeEvent(
+      {
+        ...buildEventMarketCalendarDraft({
+          kind: 31923,
+          dTag: "calendar",
+          title: "Test event",
+          start: 2_100_000_000,
+          end: 2_100_003_600,
+        }),
+        created_at: 10,
+      },
+      OWNER_SECRET
+    ),
+    finalizeEvent(
+      {
+        ...buildEventMarketPickupDraft({
+          dTag: "booth",
+          title: "Booth",
+          price: 0,
+          currency: "SAT",
+          countries: ["US"],
+          location: "Public Hall",
+        }),
+        created_at: 10,
+      },
+      OWNER_SECRET
+    ),
+  ],
+})
 const market = {
   state: "partial",
   organizerPubkey: OWNER,
   collectionCoordinate: COLLECTION,
+  calendarCoordinate: CALENDAR,
+  pickupCoordinate: PICKUP,
+  pickupCoordinates: [PICKUP],
+  source,
   productCoordinates: [],
   collectionCreatedAt: 10_000,
   participation: [

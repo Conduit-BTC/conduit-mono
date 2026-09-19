@@ -4,6 +4,6 @@
     "composite": false,
     "noEmit": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "../../packages/core/src/vite-env.d.ts"],
   "exclude": ["node_modules", "dist"]
 }

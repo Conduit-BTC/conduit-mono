@@ -29,6 +29,7 @@ export {
   browserTelemetryPropertyNames,
   applyPlausibleInitOptions,
   buildTelemetryEventPageContext,
+  buildTelemetryPageViewUrl,
   buildTelemetryPageUrl,
   constrainOfficialBrowserTelemetryConfig,
   getTelemetryAmountBucket,
@@ -42,6 +43,7 @@ export {
   resolveBrowserTelemetryConfig,
   sanitizePostHogCaptureEvent,
   sanitizeTelemetryEventProperties,
+  sanitizeTelemetryPageViewPath,
   sanitizeTelemetryPath,
   sensitiveTelemetryPropertyNames,
   type BrowserTelemetryEventName,
@@ -273,6 +275,10 @@ export {
   type Nip05TrustStatus,
   type UseNip05VerificationResult,
 } from "./hooks/useNip05Verification"
+export {
+  useUnreadDirectMessageCount,
+  type UnreadDirectMessageCountState,
+} from "./hooks/useUnreadDirectMessageCount"
 export {
   getProfileSearchQueryKey,
   selectProfileSearchPhaseResult,

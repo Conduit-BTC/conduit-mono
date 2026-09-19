@@ -1,10 +1,12 @@
 import {
   canonicalizeProductTags,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
+  MAX_PRODUCT_IMAGE_CANDIDATES,
   normalizePublicMediaUrl,
   getProductShippingOptionAddress,
   getProductShippingOptionDTag,
   type ProductFulfillmentIntent,
+  type ProductImage,
   type ProductSchema,
   type ProductZapMessagePolicy,
   type EventMarketHandoffMode,
@@ -56,7 +58,7 @@ export interface ProductPublishFormValues {
   shippingCost: string
   usePresetShippingZone: boolean
   customShippingConfig: ShippingConfig
-  imageUrl: string
+  images: ProductImage[]
   tags: string
 }
 
@@ -150,7 +152,7 @@ export type ProductPublishFormField =
   | "title"
   | "price"
   | "stock"
-  | "imageUrl"
+  | "images"
   | "tags"
   | "variations"
   | "shippingCost"
@@ -230,6 +232,15 @@ export function removeProductTagAtIndex(
   return tags.filter((_, tagIndex) => tagIndex !== index)
 }
 
+export function prepareProductImages(
+  images: readonly ProductImage[]
+): ProductImage[] {
+  return images.map((image) => ({
+    url: image.url.trim(),
+    ...(typeof image.alt === "string" && image.alt ? { alt: image.alt } : {}),
+  }))
+}
+
 export function getProductTagEditFeedback(
   result: ProductTagEditResult
 ): string | null {
@@ -260,7 +271,7 @@ function firstError(
     errors.title ??
     errors.price ??
     errors.stock ??
-    errors.imageUrl ??
+    errors.images ??
     errors.tags ??
     errors.variations ??
     errors.shippingCost ??
@@ -280,7 +291,6 @@ export function validateProductPublishForm(
   const errors: Partial<Record<ProductPublishFormField, string>> = {}
   const title = form.title.trim()
   const currency = form.currency.trim().toUpperCase() || "USD"
-  const imageUrl = form.imageUrl.trim()
   const tags = parseProductTags(form.tags)
   const isDigital = form.format === "digital"
   const hasFixedShipping = !isDigital && form.shippingPricingMode === "fixed"
@@ -315,20 +325,51 @@ export function validateProductPublishForm(
     if (variationError) addError(errors, "variations", variationError)
   }
 
-  if (!imageUrl) {
+  if (form.images.length === 0) {
     addError(
       errors,
-      "imageUrl",
+      "images",
       "Image URL is required for Market-visible products."
     )
-  } else if (!/^https:\/\//i.test(imageUrl)) {
-    addError(errors, "imageUrl", "Image URL must start with https://")
-  } else if (!normalizePublicMediaUrl(imageUrl)) {
+  } else if (form.images.length > MAX_PRODUCT_IMAGE_CANDIDATES) {
     addError(
       errors,
-      "imageUrl",
-      "Image URL must use a public network destination."
+      "images",
+      `Use ${MAX_PRODUCT_IMAGE_CANDIDATES} images or fewer.`
     )
+  } else {
+    const normalizedUrls = new Set<string>()
+    for (const [index, image] of form.images.entries()) {
+      const imageUrl = image.url.trim()
+      if (!imageUrl) {
+        addError(
+          errors,
+          "images",
+          index === 0
+            ? "Image URL is required for Market-visible products."
+            : `Add a URL for image ${index + 1} or remove it.`
+        )
+        break
+      }
+      if (!/^https:\/\//i.test(imageUrl)) {
+        addError(errors, "images", "Image URL must start with https://")
+        break
+      }
+      const normalizedUrl = normalizePublicMediaUrl(imageUrl)
+      if (!normalizedUrl) {
+        addError(
+          errors,
+          "images",
+          "Image URL must use a public network destination."
+        )
+        break
+      }
+      if (normalizedUrls.has(normalizedUrl)) {
+        addError(errors, "images", "Use each image URL only once.")
+        break
+      }
+      normalizedUrls.add(normalizedUrl)
+    }
   }
 
   if (tags.length < MIN_PRODUCT_TAG_COUNT) {

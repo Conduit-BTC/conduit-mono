@@ -7,6 +7,7 @@ import {
   ExternalLink,
   ImageOff,
   MapPin,
+  Printer,
   RefreshCw,
   Trash2,
   UserRound,
@@ -52,10 +53,16 @@ import {
 } from "../lib/event-market"
 import {
   getEventMarketUrl,
-  getEventMarketMerchantFilterUrl,
   getMerchantEventParticipationUrl,
   getStorefrontUrl,
 } from "../lib/market-links"
+import {
+  buildEventQrSignSheet,
+  buildMerchantEventQrSignSheets,
+  getEligibleEventSignMerchants,
+  type EventQrSignSheet,
+  type EventSignPreviewMode,
+} from "../lib/event-signage"
 import {
   getMerchantProfileState,
   type MerchantProfileState,
@@ -69,6 +76,7 @@ import {
   EventActorProvenance,
   EventPickupHandlerIdentity,
 } from "./EventActorIdentity"
+import { EventQrPrintPreview } from "./EventQrPrintPreview"
 
 function formatSchedule(market: MerchantOrganizerEventMarket): string {
   if (market.calendarKind === 31922) {
@@ -542,6 +550,9 @@ export function OrganizerEventMarketPanel({
   retryingRecord,
   onCopy,
   onEdit,
+  lifecyclePending,
+  lifecycleError,
+  onOrderAcceptance,
   onRefresh,
   onMembership,
   onRetryDelivery,
@@ -559,6 +570,9 @@ export function OrganizerEventMarketPanel({
   retryingRecord: MerchantOrganizerRecordDelivery["record"] | null
   onCopy: (url: string) => void
   onEdit: () => void
+  lifecyclePending: boolean
+  lifecycleError?: string
+  onOrderAcceptance: (value: "open" | "closed") => void
   onRefresh: () => void
   onMembership: (
     item: MerchantOrganizerParticipation,
@@ -566,10 +580,24 @@ export function OrganizerEventMarketPanel({
   ) => void
   onRetryDelivery: (delivery: MerchantOrganizerRecordDelivery) => void
 }) {
+  const [printSelection, setPrintSelection] = useState<
+    | { kind: "event" }
+    | { kind: "merchant"; pubkey: string }
+    | { kind: "batch" }
+    | null
+  >(null)
   const shopperUrl = getEventMarketUrl(market.naddr)
   const merchantUrl = getMerchantEventParticipationUrl(market.naddr)
-  const showEdit = market.state === "active" || market.state === "ended"
-  const canChangeMembership = market.state === "active" && !actionsDisabled
+  const recordsResolved = eventMarketRequiredRecordsResolved(market.source)
+  const showEdit =
+    market.state === "active" ||
+    market.state === "ended" ||
+    (market.state === "partial" && recordsResolved)
+  const canChangeMembership = showEdit && !actionsDisabled
+  const canAcceptProducts =
+    (market.state === "active" ||
+      (market.state === "partial" && recordsResolved)) &&
+    !actionsDisabled
   const pendingRequests = market.participation.filter(
     (item) => item.status === "pending"
   )
@@ -584,6 +612,7 @@ export function OrganizerEventMarketPanel({
   )
   const actionability = getEventActionabilityPresentation({
     state: market.state,
+    orderAcceptance: market.orderAcceptance,
     availableProductCount: availableProducts.length,
     unresolvedProductCount:
       organizerOnlyProducts.length +
@@ -645,34 +674,40 @@ export function OrganizerEventMarketPanel({
     })
   }
 
-  const acceptedMerchantCounts = new Map<string, number>()
-  for (const item of acceptedProducts) {
-    if (!isParticipationProductPreviewVerified(item)) continue
-    const pubkey = item.merchantPubkey.toLowerCase()
-    acceptedMerchantCounts.set(
-      pubkey,
-      (acceptedMerchantCounts.get(pubkey) ?? 0) + 1
-    )
-  }
-  const merchantBoothLinks = Array.from(
-    acceptedMerchantCounts,
-    ([pubkey, productCount]) => {
-      const name =
-        getProfileName(eventActorProfile(pubkey)) || formatNpub(pubkey)
-      return {
-        pubkey,
-        name,
-        productCount,
-        url: getEventMarketMerchantFilterUrl(market.naddr, pubkey),
-      }
-    }
-  ).sort(
-    (a, b) =>
-      a.name.localeCompare(b.name, undefined, {
-        sensitivity: "base",
-        numeric: true,
-      }) || a.pubkey.localeCompare(b.pubkey)
+  const eventSignSheet = buildEventQrSignSheet(market)
+  const eligibleMerchantCounts = new Map(
+    getEligibleEventSignMerchants(market).map((merchant) => [
+      merchant.pubkey,
+      merchant.productCount,
+    ])
   )
+  const merchantSignSheets = buildMerchantEventQrSignSheets(
+    market,
+    eventActorProfile
+  )
+  const merchantBoothLinks = merchantSignSheets.map((sheet) => ({
+    pubkey: sheet.merchant!.pubkey,
+    name: sheet.merchant!.name,
+    productCount: eligibleMerchantCounts.get(sheet.merchant!.pubkey) ?? 0,
+    url: sheet.url,
+    qrValue: sheet.qrValue,
+  }))
+  let selectedPrintSheets: EventQrSignSheet[] = []
+  let printPreviewTitle = "Event sign preview"
+  let printPreviewMode: EventSignPreviewMode = "event"
+  if (printSelection?.kind === "event") {
+    selectedPrintSheets = [eventSignSheet]
+  } else if (printSelection?.kind === "merchant") {
+    selectedPrintSheets = merchantSignSheets.filter(
+      (sheet) => sheet.merchant?.pubkey === printSelection.pubkey
+    )
+    printPreviewTitle = "Merchant sign preview"
+    printPreviewMode = "merchant"
+  } else if (printSelection?.kind === "batch") {
+    selectedPrintSheets = merchantSignSheets
+    printPreviewTitle = "Merchant sign batch preview"
+    printPreviewMode = "merchant-batch"
+  }
 
   return (
     <div className="space-y-5">
@@ -789,6 +824,49 @@ export function OrganizerEventMarketPanel({
             </div>
           </div>
 
+          <section
+            className="space-y-2 rounded-xl border border-[var(--border)] p-3"
+            aria-label="Event availability"
+          >
+            <h3 className="text-balance text-sm font-semibold text-[var(--text-primary)]">
+              {market.orderAcceptance === "closed"
+                ? "Closed to new orders"
+                : market.orderAcceptance === "open"
+                  ? "Open until you close it"
+                  : "Availability follows the scheduled hours"}
+            </h3>
+            <p className="text-pretty text-sm text-[var(--text-muted)]">
+              Closing stops new orders and product acceptance. Existing orders,
+              payments, pickup, and the event record remain available.
+            </p>
+            {showEdit && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={actionsDisabled || lifecyclePending}
+                onClick={() =>
+                  onOrderAcceptance(
+                    market.orderAcceptance === "open" ? "closed" : "open"
+                  )
+                }
+              >
+                {lifecyclePending
+                  ? "Updating availability…"
+                  : market.orderAcceptance === "open"
+                    ? "Close event"
+                    : market.orderAcceptance === "closed" ||
+                        market.state === "ended"
+                      ? "Reopen event"
+                      : "Keep open beyond scheduled hours"}
+              </Button>
+            )}
+            {lifecycleError && (
+              <p role="alert" className="text-pretty text-sm text-error">
+                {lifecycleError}
+              </p>
+            )}
+          </section>
+
           <div className="flex flex-wrap gap-2">
             {showEdit && (
               <Button
@@ -877,6 +955,15 @@ export function OrganizerEventMarketPanel({
                     Open shopper catalog
                   </a>
                 </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setPrintSelection({ kind: "event" })}
+                >
+                  <Printer />
+                  Print event sign
+                </Button>
               </div>
             </div>
           </section>
@@ -886,18 +973,30 @@ export function OrganizerEventMarketPanel({
               aria-labelledby="merchant-booth-links-title"
               className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
             >
-              <div>
-                <h3
-                  id="merchant-booth-links-title"
-                  className="font-semibold text-[var(--text-primary)]"
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h3
+                    id="merchant-booth-links-title"
+                    className="font-semibold text-[var(--text-primary)]"
+                  >
+                    Merchant booth links
+                  </h3>
+                  <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+                    Each QR opens this event with one accepted merchant
+                    selected. Use it on booth signage so shoppers land on that
+                    merchant’s products and can still return to the full event.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => setPrintSelection({ kind: "batch" })}
                 >
-                  Merchant booth links
-                </h3>
-                <p className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-                  Each QR opens this event with one accepted merchant selected.
-                  Use it on booth signage so shoppers land on that merchant’s
-                  products and can still return to the full event.
-                </p>
+                  <Printer />
+                  Print all merchant signs
+                </Button>
               </div>
               <div className="space-y-2">
                 {merchantBoothLinks.map((merchant) => (
@@ -916,9 +1015,14 @@ export function OrganizerEventMarketPanel({
                       <div
                         role="img"
                         aria-label={`${merchant.name} event catalog QR code`}
+                        data-qr-value={merchant.qrValue}
                         className="w-fit rounded-xl border border-[var(--border)] bg-white p-3"
                       >
-                        <QRCodeSVG value={merchant.url} size={176} level="M" />
+                        <QRCodeSVG
+                          value={merchant.qrValue}
+                          size={176}
+                          level="M"
+                        />
                       </div>
                       <div className="min-w-0 space-y-3">
                         <div className="break-all font-mono text-xs leading-5 text-[var(--text-muted)]">
@@ -950,6 +1054,20 @@ export function OrganizerEventMarketPanel({
                               <ExternalLink />
                               Open filtered catalog
                             </a>
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setPrintSelection({
+                                kind: "merchant",
+                                pubkey: merchant.pubkey,
+                              })
+                            }
+                          >
+                            <Printer />
+                            Print merchant sign
                           </Button>
                         </div>
                       </div>
@@ -1060,7 +1178,7 @@ export function OrganizerEventMarketPanel({
                         : undefined
                     }
                     organizerPubkey={market.organizerPubkey}
-                    pending={membershipPending || !canChangeMembership}
+                    pending={membershipPending || !canAcceptProducts}
                     onMembership={onMembership}
                   />
                 ))
@@ -1153,6 +1271,19 @@ export function OrganizerEventMarketPanel({
           )}
         </CardContent>
       </Card>
+
+      <EventQrPrintPreview
+        open={printSelection !== null}
+        onOpenChange={(open) => {
+          if (!open) setPrintSelection(null)
+        }}
+        title={printPreviewTitle}
+        sheets={selectedPrintSheets}
+        mode={printPreviewMode}
+        eventState={market.state}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+      />
     </div>
   )
 }

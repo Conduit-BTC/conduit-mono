@@ -7,12 +7,24 @@ import {
   isAllowedBrowserTelemetryLabelValue,
 } from "@conduit/core/telemetry-contract"
 import type { BrowserTelemetryApp } from "@conduit/core/telemetry-contract"
+import {
+  decodeProductReference,
+  encodeProductNaddr,
+} from "@conduit/core/protocol/product-reference"
 
 const POSTHOG_INGEST_ORIGIN = "https://us.i.posthog.com"
 const MAX_INGEST_BODY_BYTES = 1024 * 1024
+const MAX_GMV_BODY_BYTES = 512
 const POSTHOG_ANONYMOUS_DISTINCT_ID = "conduit-browser-telemetry"
+const POSTHOG_GMV_DISTINCT_ID = "conduit-commerce-gmv-estimate"
 const POSTHOG_PROJECT_TOKEN_PATTERN = /^phc_[A-Za-z0-9]{16,64}$/
 const MAX_EVENTS_PER_REQUEST = 100
+const GMV_PATH = "/gmv"
+const GMV_EVENT_NAME = "commerce_gmv_estimated"
+const GMV_EVENT_ID_DOMAIN = "conduit-commerce-gmv-estimate.order.v1"
+const orderIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const utcOrderDatePattern = /^\d{4}-\d{2}-\d{2}$/
 
 const allowedIngestPaths = new Set([
   "/batch",
@@ -26,6 +38,10 @@ const allowedIngestPaths = new Set([
 export interface AllowedOriginContext {
   app: BrowserTelemetryApp
   origin: string
+}
+
+interface RateLimitBinding {
+  limit(options: { key: string }): Promise<{ success: boolean }>
 }
 
 /**
@@ -113,9 +129,28 @@ const sanitizedStaticRouteSegments = new Set([
 ])
 const storeNpubPathPattern =
   /^\/store\/npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$/
+const productNaddrPathPattern =
+  /^\/products\/naddr1q[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{74,481}$/
+const MAX_SANITIZED_ROUTE_PATH_LENGTH = 512
+const MAX_SANITIZED_PAGE_URL_LENGTH = 640
+
+function isCanonicalProductNaddrPath(value: string): boolean {
+  if (!productNaddrPathPattern.test(value)) return false
+
+  const naddr = value.slice("/products/".length)
+  try {
+    const reference = decodeProductReference(naddr)
+    return !!reference && encodeProductNaddr(reference.addressId) === naddr
+  } catch {
+    return false
+  }
+}
 
 export interface PostHogProxyEnv {
   POSTHOG_PROJECT_TOKEN?: string
+  COMMERCE_GMV_TELEMETRY_HMAC_SECRET?: string
+  GMV_GLOBAL_RATE_LIMITER?: RateLimitBinding
+  GMV_ORDER_RATE_LIMITER?: RateLimitBinding
 }
 
 export type PostHogProxyFetcher = (request: Request) => Promise<Response>
@@ -129,6 +164,13 @@ export async function handlePostHogProxyRequest(
 
   if (request.method === "GET" && requestUrl.pathname === "/health") {
     return jsonResponse({ status: "ok" }, 200)
+  }
+
+  if (requestUrl.pathname === GMV_PATH) {
+    if (requestUrl.search) {
+      return jsonResponse({ error: "invalid_request_url" }, 400)
+    }
+    return handleCommerceGmvRequest(request, fetcher, env)
   }
 
   if (!allowedIngestPaths.has(requestUrl.pathname)) {
@@ -370,12 +412,12 @@ function rebuildIngestEventProperties(
       continue
     }
     if (pagePathPropertyNames.has(key)) {
-      if (!isSanitizedPagePath(propertyValue)) return null
+      if (!isSanitizedPagePath(propertyValue, eventName)) return null
       rebuilt[key] = propertyValue
       continue
     }
     if (pageUrlPropertyNames.has(key)) {
-      if (!isSanitizedPageUrl(propertyValue)) return null
+      if (!isSanitizedPageUrl(propertyValue, eventName)) return null
       rebuilt[key] = propertyValue
       continue
     }
@@ -390,7 +432,7 @@ function rebuildIngestEventProperties(
       continue
     }
     if (eventName === "$pageleave" && key === "$prev_pageview_pathname") {
-      if (!isSanitizedPagePath(propertyValue)) return null
+      if (!isSanitizedPagePath(propertyValue, eventName)) return null
       rebuilt[key] = propertyValue
       continue
     }
@@ -518,7 +560,12 @@ function isCanonicalIsoTimestamp(value: unknown): value is string {
  * must stay redacted and are rejected whole.
  */
 export function isSanitizedTelemetryRoutePath(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > 128) return false
+  if (
+    typeof value !== "string" ||
+    value.length > MAX_SANITIZED_ROUTE_PATH_LENGTH
+  ) {
+    return false
+  }
   if (
     value === "/" ||
     value === "/:param" ||
@@ -530,17 +577,32 @@ export function isSanitizedTelemetryRoutePath(value: unknown): value is string {
   ) {
     return true
   }
+  if (isCanonicalProductNaddrPath(value)) return true
   if (storeNpubPathPattern.test(value)) return true
   const match = /^\/([a-z]+)(\/:param)?$/.exec(value)
   return match !== null && sanitizedStaticRouteSegments.has(match[1] ?? "")
 }
 
-function isSanitizedPagePath(value: unknown): value is string {
-  return isSanitizedTelemetryRoutePath(value)
+function isSanitizedPagePath(
+  value: unknown,
+  eventName: string
+): value is string {
+  return (
+    isSanitizedTelemetryRoutePath(value) &&
+    (eventName === "$pageview" || !isCanonicalProductNaddrPath(value))
+  )
 }
 
-function isSanitizedPageUrl(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > 256) return false
+function isSanitizedPageUrl(
+  value: unknown,
+  eventName: string
+): value is string {
+  if (
+    typeof value !== "string" ||
+    value.length > MAX_SANITIZED_PAGE_URL_LENGTH
+  ) {
+    return false
+  }
 
   let url: URL
   try {
@@ -552,20 +614,18 @@ function isSanitizedPageUrl(value: unknown): value is string {
     return false
   }
   if (url.username || url.password) return false
-  if (!isSanitizedTelemetryRoutePath(url.pathname)) return false
+  if (!isSanitizedPagePath(url.pathname, eventName)) return false
   if (value !== `${url.origin}${url.pathname}`) return false
 
   return getOfficialProductTelemetryApp(url.hostname) !== null
 }
 
 async function readBoundedRequestBody(
-  request: Request
+  request: Request,
+  maxBytes = MAX_INGEST_BODY_BYTES
 ): Promise<ArrayBuffer | null> {
   const declaredLength = Number(request.headers.get("content-length") ?? "0")
-  if (
-    Number.isFinite(declaredLength) &&
-    declaredLength > MAX_INGEST_BODY_BYTES
-  ) {
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     return null
   }
   if (!request.body) return new ArrayBuffer(0)
@@ -577,7 +637,7 @@ async function readBoundedRequestBody(
     const { done, value } = await reader.read()
     if (done) break
     totalBytes += value.byteLength
-    if (totalBytes > MAX_INGEST_BODY_BYTES) {
+    if (totalBytes > maxBytes) {
       await reader.cancel("PostHog ingest body exceeded the byte limit")
       return null
     }
@@ -591,6 +651,175 @@ async function readBoundedRequestBody(
     offset += chunk.byteLength
   }
   return body.buffer
+}
+
+type CommerceGmvEstimate = {
+  orderId: string
+  orderDate: string
+  invoicedAmountSats: number
+}
+
+function parseCommerceGmvEstimate(
+  body: ArrayBuffer
+): CommerceGmvEstimate | null {
+  let value: unknown
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body))
+  } catch {
+    return null
+  }
+  if (!isPlainObject(value)) return null
+  const keys = Object.keys(value).sort()
+  if (
+    keys.length !== 3 ||
+    keys[0] !== "invoicedAmountSats" ||
+    keys[1] !== "orderDate" ||
+    keys[2] !== "orderId" ||
+    typeof value.orderId !== "string" ||
+    !orderIdPattern.test(value.orderId) ||
+    typeof value.orderDate !== "string" ||
+    !utcOrderDatePattern.test(value.orderDate) ||
+    new Date(`${value.orderDate}T00:00:00.000Z`).toISOString().slice(0, 10) !==
+      value.orderDate ||
+    !Number.isSafeInteger(value.invoicedAmountSats) ||
+    (value.invoicedAmountSats as number) <= 0
+  ) {
+    return null
+  }
+  return {
+    orderId: value.orderId.toLowerCase(),
+    orderDate: value.orderDate,
+    invoicedAmountSats: value.invoicedAmountSats as number,
+  }
+}
+
+function bytesToUuid(bytes: Uint8Array): string {
+  const value = bytes.slice(0, 16)
+  value[6] = (value[6]! & 0x0f) | 0x50
+  value[8] = (value[8]! & 0x3f) | 0x80
+  const hex = Array.from(value, (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("")
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+async function getOpaqueCommerceOrderUuid(
+  orderId: string,
+  secret: string
+): Promise<string | null> {
+  if (secret.trim().length < 32) return null
+  const encoder = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  )
+  const digest = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(`${GMV_EVENT_ID_DOMAIN}:${orderId}`)
+  )
+  return bytesToUuid(new Uint8Array(digest))
+}
+
+async function handleCommerceGmvRequest(
+  request: Request,
+  fetcher: PostHogProxyFetcher,
+  env: PostHogProxyEnv
+): Promise<Response> {
+  const originContext = getAllowedOriginContext(request.headers.get("origin"))
+  if (!originContext) return jsonResponse({ error: "origin_not_allowed" }, 403)
+  const { origin } = originContext
+
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: getCorsHeaders(origin) })
+  }
+  if (request.method !== "POST") {
+    return corsJsonResponse({ error: "method_not_allowed" }, 405, origin)
+  }
+  if (request.headers.get("content-encoding")) {
+    return corsJsonResponse({ error: "unsupported_encoding" }, 415, origin)
+  }
+  if (!env.GMV_GLOBAL_RATE_LIMITER || !env.GMV_ORDER_RATE_LIMITER) {
+    return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
+  }
+
+  let body: ArrayBuffer | null
+  try {
+    body = await readBoundedRequestBody(request, MAX_GMV_BODY_BYTES)
+  } catch {
+    return corsJsonResponse({ error: "invalid_request_body" }, 400, origin)
+  }
+  if (!body) {
+    return corsJsonResponse({ error: "payload_too_large" }, 413, origin)
+  }
+  const estimate = parseCommerceGmvEstimate(body)
+  if (!estimate) {
+    return corsJsonResponse({ error: "invalid_payload" }, 400, origin)
+  }
+
+  const projectToken = env.POSTHOG_PROJECT_TOKEN?.trim() ?? ""
+  const hmacSecret = env.COMMERCE_GMV_TELEMETRY_HMAC_SECRET?.trim() ?? ""
+  if (
+    !POSTHOG_PROJECT_TOKEN_PATTERN.test(projectToken) ||
+    hmacSecret.length < 32
+  ) {
+    return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
+  }
+
+  const eventUuid = await getOpaqueCommerceOrderUuid(
+    estimate.orderId,
+    hmacSecret
+  )
+  if (!eventUuid) {
+    return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
+  }
+  const [globalLimit, orderLimit] = await Promise.all([
+    env.GMV_GLOBAL_RATE_LIMITER.limit({ key: "commerce-gmv" }),
+    env.GMV_ORDER_RATE_LIMITER.limit({ key: eventUuid }),
+  ])
+  if (!globalLimit.success || !orderLimit.success) {
+    return corsJsonResponse({ error: "rate_limited" }, 429, origin)
+  }
+
+  const timestamp = `${estimate.orderDate}T00:00:00.000Z`
+  const upstreamBody = JSON.stringify({
+    api_key: projectToken,
+    event: GMV_EVENT_NAME,
+    distinct_id: POSTHOG_GMV_DISTINCT_ID,
+    uuid: eventUuid,
+    timestamp,
+    properties: {
+      $process_person_profile: false,
+      estimated_gmv_sats: estimate.invoicedAmountSats,
+    },
+  })
+
+  try {
+    const upstreamResponse = await fetcher(
+      new Request(`${POSTHOG_INGEST_ORIGIN}/i/v0/e/?ip=0`, {
+        method: "POST",
+        headers: {
+          "cache-control": "no-store",
+          "content-type": "application/json",
+        },
+        body: upstreamBody,
+        redirect: "manual",
+      })
+    )
+    const headers = getCorsHeaders(origin)
+    const contentType = upstreamResponse.headers.get("content-type")
+    if (contentType) headers.set("content-type", contentType)
+    return new Response(upstreamResponse.body, {
+      status: upstreamResponse.status,
+      statusText: upstreamResponse.statusText,
+      headers,
+    })
+  } catch {
+    return corsJsonResponse({ error: "upstream_unavailable" }, 502, origin)
+  }
 }
 
 function getAllowedOriginContext(

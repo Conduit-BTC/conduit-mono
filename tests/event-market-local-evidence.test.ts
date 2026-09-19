@@ -14,6 +14,7 @@ import {
   getEventMarket,
   getEventMarketSupersededEvidence,
   getLocalEventMarketEvidenceSnapshot,
+  getOrganizerEventMarketsDetailed,
   resolveEventMarketEvidence,
   subscribeLocalEventMarketEvidenceChanges,
   type CachedEventMarketEvidence,
@@ -79,6 +80,16 @@ const graph = [
     ],
   }),
 ]
+const cachePressureCollections = Array.from({ length: 8 }, (_, index) =>
+  signed(
+    buildEventMarketCollectionDraft({
+      dTag: `cache-pressure-${index}`,
+      title: `Cache pressure ${index}`,
+      eventCoordinate: calendar,
+    }),
+    200 + index
+  )
+)
 function resolution(events = graph) {
   return resolveEventMarketEvidence({
     reference: collection,
@@ -217,6 +228,113 @@ describe("retained event market dependencies", () => {
 })
 
 describe("local event market evidence observer", () => {
+  it("keeps over-cap evidence when active-order pins are unavailable", async () => {
+    let persistenceCalls = 0
+    const liveEvents = [...graph, ...cachePressureCollections]
+    __setEventMarketTestOverrides({
+      maxCachedEvidencePerOrganizer: 6,
+      loadCachedEvidence: async () => [],
+      getActiveOrderCollectionEvidencePins: async () => ({
+        status: "unavailable",
+      }),
+      getRelayLists: async () =>
+        new Map([
+          [
+            organizer,
+            {
+              pubkey: organizer,
+              readRelayUrls: [],
+              writeRelayUrls: ["wss://event.example"],
+              eventCreatedAt: 1,
+              cachedAt: now,
+            },
+          ],
+        ]),
+      fetchEventsFanoutDetailed: async () => ({
+        events: liveEvents.map((event) => new NDKEvent(undefined, event)),
+        relays: [
+          {
+            relayUrl: "wss://event.example",
+            status: "success",
+            eventCount: liveEvents.length,
+          },
+        ],
+        eventsVerified: true,
+      }),
+      persistCachedEvidence: async () => {
+        persistenceCalls++
+      },
+    })
+
+    expect(
+      (
+        await getEventMarket({
+          reference: collection,
+          selectedProductCoordinates: [],
+          nowMs: now,
+        })
+      ).state
+    ).toBe("active")
+    const retained = getLocalEventMarketEvidenceSnapshot(organizer).events
+    expect(persistenceCalls).toBe(0)
+    expect(retained.length).toBeGreaterThan(6)
+    expect(retained.some((event) => event.id === graph[2]!.id)).toBe(true)
+  }, 15_000)
+
+  it("rechecks active-order pins at the persistence boundary", async () => {
+    let pinReads = 0
+    let originalObservedBeforeWrite = false
+    const liveEvents = [...graph, ...cachePressureCollections]
+    __setEventMarketTestOverrides({
+      maxCachedEvidencePerOrganizer: 6,
+      loadCachedEvidence: async () => [],
+      getActiveOrderCollectionEvidencePins: async () => {
+        pinReads++
+        return {
+          status: "ready",
+          eventIds: pinReads === 1 ? [] : [graph[2]!.id],
+        }
+      },
+      getRelayLists: async () =>
+        new Map([
+          [
+            organizer,
+            {
+              pubkey: organizer,
+              readRelayUrls: [],
+              writeRelayUrls: ["wss://event.example"],
+              eventCreatedAt: 1,
+              cachedAt: now,
+            },
+          ],
+        ]),
+      fetchEventsFanoutDetailed: async () => ({
+        events: liveEvents.map((event) => new NDKEvent(undefined, event)),
+        relays: [
+          {
+            relayUrl: "wss://event.example",
+            status: "success",
+            eventCount: liveEvents.length,
+          },
+        ],
+        eventsVerified: true,
+      }),
+      persistCachedEvidence: async () => {
+        originalObservedBeforeWrite = getLocalEventMarketEvidenceSnapshot(
+          organizer
+        ).events.some((event) => event.id === graph[2]!.id)
+      },
+    })
+
+    await getEventMarket({
+      reference: collection,
+      selectedProductCoordinates: [],
+      nowMs: now,
+    })
+    expect(pinReads).toBeGreaterThanOrEqual(2)
+    expect(originalObservedBeforeWrite).toBe(true)
+  }, 15_000)
+
   it("shares a scoped observer and preserves evidence across late empty delivery", () => {
     let deliver: (rows: CachedEventMarketEvidence[]) => void = () => {}
     let subscriptions = 0
@@ -333,5 +451,95 @@ describe("local event market evidence observer", () => {
       ).graph
     ).toBe(true)
     stopAgain()
+  })
+
+  it("preserves a later failed write across an older concurrent completion", async () => {
+    const original = graph[2]!
+    const closed = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+        orderAcceptance: "closed",
+      }),
+      200
+    )
+    let pinReads = 0
+    let signalFirstPersistencePin!: () => void
+    let releaseFirstPersistencePin!: (snapshot: {
+      status: "ready"
+      eventIds: string[]
+    }) => void
+    const firstPersistencePinStarted = new Promise<void>((resolve) => {
+      signalFirstPersistencePin = resolve
+    })
+    const firstPersistencePin = new Promise<{
+      status: "ready"
+      eventIds: string[]
+    }>((resolve) => {
+      releaseFirstPersistencePin = resolve
+    })
+    __setEventMarketTestOverrides({
+      loadCachedEvidence: async () => [],
+      getActiveOrderCollectionEvidencePins: async () => {
+        pinReads++
+        if (pinReads === 2) {
+          signalFirstPersistencePin()
+          return firstPersistencePin
+        }
+        return { status: "ready", eventIds: [] }
+      },
+      getRelayLists: async () =>
+        new Map([
+          [
+            organizer,
+            {
+              pubkey: organizer,
+              readRelayUrls: [],
+              writeRelayUrls: ["wss://event.example"],
+              eventCreatedAt: 1,
+              cachedAt: now,
+            },
+          ],
+        ]),
+      fetchEventsFanoutDetailed: async (_filter, options) => ({
+        events: [],
+        relays: (options.relayUrls ?? []).map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: 0,
+        })),
+        eventsVerified: true,
+      }),
+      persistCachedEvidence: async ({ events }) => {
+        if (!events.some((event) => event.id === closed.id)) return
+        throw new Error("Later storage unavailable")
+      },
+    })
+    const read = (candidate: SignedPublicNostrEvent) =>
+      getOrganizerEventMarketsDetailed({
+        organizerPubkey: organizer,
+        candidateCollectionEvents: [candidate],
+        candidateCollectionLiveEventIds: new Set([candidate.id]),
+        projection: "discovery",
+        nowMs: now,
+      })
+
+    const firstRead = read(original)
+    await firstPersistencePinStarted
+    try {
+      await expect(read(closed)).rejects.toThrow("Later storage unavailable")
+    } finally {
+      releaseFirstPersistencePin({ status: "ready", eventIds: [] })
+    }
+    await firstRead
+
+    const retained = getLocalEventMarketEvidenceSnapshot(organizer).events
+    expect(retained.some((event) => event.id === closed.id)).toBe(true)
+    expect(getEventMarketSupersededEvidence(resolution(), retained).graph).toBe(
+      true
+    )
   })
 })

@@ -11,8 +11,10 @@ import {
   __setEventMarketTestOverrides,
   EVENT_KINDS,
   parseEventMarketCalendarEvent,
+  parseEventMarketCollectionEvent,
   publishEventMarketPickupOption,
   publishOrganizerCollectionUpdate,
+  publishOrganizerCollectionOrderAcceptance,
   publishOrganizerEventMarket,
   retryEventMarketPickupOption,
   retryOrganizerEventMarketRecord,
@@ -103,6 +105,161 @@ afterEach(() => {
 })
 
 describe("organizer event-market publishing", () => {
+  it("publishes lifecycle changes only on the collection and retries the exact signed closure", async () => {
+    const published: SignedPublicNostrEvent[] = []
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      signDraft,
+      publishWithPlanner: async (event: NDKEvent) => {
+        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        return publishResult(true)
+      },
+    })
+    const original = input()
+    original.collection.orderAcceptance = "open"
+    const created = await publishOrganizerEventMarket(original)
+    expect(
+      parseEventMarketCollectionEvent(created.collection.signedEvent)
+        ?.orderAcceptance
+    ).toBe("open")
+    const closed = await publishOrganizerCollectionUpdate({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      collection: { ...original.collection, orderAcceptance: "closed" },
+      previousCreatedAt: created.collection.signedEvent.created_at,
+      now: original.now,
+    })
+    expect(published.map((event) => event.kind)).toEqual([
+      EVENT_KINDS.CALENDAR_TIME,
+      EVENT_KINDS.SHIPPING_OPTION,
+      EVENT_KINDS.PRODUCT_COLLECTION,
+      EVENT_KINDS.PRODUCT_COLLECTION,
+    ])
+    expect(
+      parseEventMarketCollectionEvent(closed.signedEvent)?.orderAcceptance
+    ).toBe("closed")
+    expect(closed.signedEvent.created_at).toBeGreaterThan(
+      created.collection.signedEvent.created_at
+    )
+    await retryOrganizerEventMarketRecord({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      signedEvent: closed.signedEvent,
+    })
+    expect(published.at(-1)).toEqual(structuredClone(closed.signedEvent))
+  })
+
+  it("changes only the lifecycle tag on an exact external collection revision", async () => {
+    const steps: string[] = []
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      signDraft,
+      publishWithPlanner: async () => {
+        steps.push("publish")
+        return publishResult(true)
+      },
+    })
+    for (const explicit of [false, true]) {
+      const tags = [
+        ["custom_metadata", "preserve", "every", "value"],
+        ["d", "external-market"],
+        ...(explicit ? [["conduit_event_market", "1", "open"]] : []),
+        ["title", "External event"],
+        ["client", "Another client", "31990:external:handler"],
+        ["a", `31923:${ORGANIZER_PUBKEY}:calendar`],
+        ["t", "public-event"],
+      ]
+      const sourceEvent = finalizeEvent(
+        {
+          kind: EVENT_KINDS.PRODUCT_COLLECTION,
+          content: "  External description\nPreserve whitespace.  ",
+          created_at: 200,
+          tags,
+        },
+        ORGANIZER_SECRET
+      )
+      expect(parseEventMarketCollectionEvent(sourceEvent)?.signedEvent).toEqual(
+        sourceEvent
+      )
+      const result = await publishOrganizerCollectionOrderAcceptance({
+        organizerPubkey: ORGANIZER_PUBKEY,
+        sourceEvent,
+        orderAcceptance: "closed",
+        now: () => 100_000,
+        onSignedEvent: () => {
+          steps.push("persist")
+        },
+      })
+      const expected = tags.map((tag) =>
+        tag[0] === "conduit_event_market"
+          ? ["conduit_event_market", "1", "closed"]
+          : tag
+      )
+      if (!explicit) expected.push(["conduit_event_market", "1", "closed"])
+      expect(result.signedEvent.tags).toEqual(expected)
+      expect(result.signedEvent.content).toBe(sourceEvent.content)
+      expect(result.signedEvent.created_at).toBe(201)
+      expect(sourceEvent.tags).toEqual(tags)
+    }
+    expect(steps).toEqual(["persist", "publish", "persist", "publish"])
+  })
+
+  it("rejects malformed or foreign lifecycle sources and signer-mutated metadata before publication", async () => {
+    let published = 0
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      signDraft: async (value) =>
+        signDraft({
+          ...value,
+          draft: { ...value.draft, content: "Changed metadata" },
+        }),
+      publishWithPlanner: async () => {
+        published += 1
+        return publishResult(true)
+      },
+    })
+    const sourceEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT_COLLECTION,
+        created_at: 200,
+        content: "Original metadata",
+        tags: [
+          ["d", "market"],
+          ["title", "Market"],
+          ["a", `31923:${ORGANIZER_PUBKEY}:calendar`],
+        ],
+      },
+      ORGANIZER_SECRET
+    )
+    await expect(
+      publishOrganizerCollectionOrderAcceptance({
+        organizerPubkey: ORGANIZER_PUBKEY,
+        sourceEvent,
+        orderAcceptance: "closed",
+      })
+    ).rejects.toThrow("Signer changed")
+    await expect(
+      publishOrganizerCollectionOrderAcceptance({
+        organizerPubkey: OTHER_PUBKEY,
+        sourceEvent,
+        orderAcceptance: "closed",
+      })
+    ).rejects.toThrow("valid organizer collection")
+    const malformed = finalizeEvent(
+      {
+        ...sourceEvent,
+        tags: [...sourceEvent.tags, ["conduit_event_market", "2", "open"]],
+      },
+      ORGANIZER_SECRET
+    )
+    await expect(
+      publishOrganizerCollectionOrderAcceptance({
+        organizerPubkey: ORGANIZER_PUBKEY,
+        sourceEvent: malformed,
+        orderAcceptance: "closed",
+      })
+    ).rejects.toThrow("valid organizer collection")
+    expect(published).toBe(0)
+  })
+
   for (const kind of [EVENT_KINDS.CALENDAR_DATE, EVENT_KINDS.CALENDAR_TIME]) {
     it(`publishes and updates kind ${kind} descriptions without changing event identity or schedule`, async () => {
       const published: SignedPublicNostrEvent[] = []
