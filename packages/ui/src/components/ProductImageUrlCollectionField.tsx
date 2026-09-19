@@ -165,6 +165,9 @@ export function ProductImageUrlCollectionField({
     rows.filter((image) => image.url.trim().length > 0).length +
     uploadItems.length
   const atLimit = occupiedSlots >= MAX_PRODUCT_IMAGE_CANDIDATES
+  const hasValidAdoptedImage = images.some(
+    (image) => !!normalizePublicMediaUrl(image.url.trim())
+  )
   const previewImage = rows[0]
     ? { ...rows[0], url: rows[0].url.trim() }
     : undefined
@@ -364,10 +367,7 @@ export function ProductImageUrlCollectionField({
       if (!active || disposedRef.current) return
       const next = [...imagesRef.current]
       const emptyIndex = next.findIndex((image) => !image.url.trim())
-      const insertionIndex =
-        emptyIndex >= 0
-          ? emptyIndex
-          : Math.min(active.desiredIndex, next.length)
+      const insertionIndex = emptyIndex >= 0 ? emptyIndex : next.length
       if (emptyIndex >= 0) next[emptyIndex] = { url: verifiedUrl }
       else next.splice(insertionIndex, 0, { url: verifiedUrl })
       commitImages(next)
@@ -711,7 +711,7 @@ export function ProductImageUrlCollectionField({
               onClick={() => fileInputRef.current?.click()}
             >
               <Plus className="size-4" aria-hidden="true" />
-              Add another image
+              {hasValidAdoptedImage ? "Add another image" : "Add image"}
             </Button>
           </>
         ) : null}
@@ -725,7 +725,11 @@ export function ProductImageUrlCollectionField({
           onClick={addUrl}
         >
           <Plus className="size-4" aria-hidden="true" />
-          {upload ? "Add by URL" : "Add another image"}
+          {upload
+            ? "Add by URL"
+            : hasValidAdoptedImage
+              ? "Add another image"
+              : "Add image"}
         </Button>
       </div>
 

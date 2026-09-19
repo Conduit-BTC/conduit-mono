@@ -1866,7 +1866,7 @@ test("event product submit exposes the required image without demoting upload @m
   )
   await expect(requiredError).toHaveAttribute("role", "alert")
   const addImage = editor.getByRole("button", {
-    name: "Add another image",
+    name: "Add image",
     exact: true,
   })
   await expect(addImage).toBeFocused()
@@ -1911,7 +1911,7 @@ test("event publish-another starts a clean fallback upload lifecycle @merchant",
   await expect(editor.getByLabel("Product title")).toHaveValue("")
   await expect(
     editor.getByRole("button", {
-      name: "Add another image",
+      name: "Add image",
       exact: true,
     })
   ).toBeEnabled()

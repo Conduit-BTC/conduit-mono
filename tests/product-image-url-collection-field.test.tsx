@@ -29,7 +29,8 @@ describe("ProductImageUrlCollectionField", () => {
 
     expect(html).toContain("Primary image URL")
     expect(html).not.toContain("Image 2 URL")
-    expect(html).toContain("Add another image")
+    expect(html).toContain("Add image")
+    expect(html).not.toContain("Add another image")
     expect(html).toContain("up to 12")
     expect(html).toContain("Conduit Market card preview")
     expect(html).toContain("centered 4:3 crop")
@@ -98,7 +99,8 @@ describe("ProductImageUrlCollectionField", () => {
       />
     )
 
-    expect(html).toContain("Add another image")
+    expect(html).toContain("Add image")
+    expect(html).not.toContain("Add another image")
     expect(html).toContain("Add by URL")
     expect(html).not.toContain("Primary image URL")
     expect(html).toContain("your first configured media server")
@@ -184,7 +186,7 @@ describe("ProductImageUrlCollectionField", () => {
       />
     )
 
-    const addImageIndex = html.indexOf("Add another image")
+    const addImageIndex = html.indexOf("Add image")
     const addImageButtonStart = html.lastIndexOf("<button", addImageIndex)
     const addImageButton = html.slice(
       addImageButtonStart,
@@ -209,7 +211,7 @@ describe("ProductImageUrlCollectionField", () => {
         }}
       />
     )
-    const addImageIndex = html.indexOf("Add another image")
+    const addImageIndex = html.indexOf("Add image")
     const addImageButtonStart = html.lastIndexOf("<button", addImageIndex)
     const addImageButton = html.slice(
       addImageButtonStart,

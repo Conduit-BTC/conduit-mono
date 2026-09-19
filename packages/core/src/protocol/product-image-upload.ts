@@ -22,6 +22,7 @@ import {
 export const PRODUCT_IMAGE_FALLBACK_SERVER = "https://blossom.nostr.build"
 export const PRODUCT_IMAGE_UPLOAD_AUTH_TTL_SECONDS = 5 * 60
 export const PRODUCT_IMAGE_SIGNER_TIMEOUT_MS = 60_000
+export const PRODUCT_IMAGE_UPLOAD_CAPABILITY_TIMEOUT_MS = 5_000
 export const PRODUCT_IMAGE_UPLOAD_TIMEOUT_MS = 45_000
 export const PRODUCT_IMAGE_VERIFY_TIMEOUT_MS = 30_000
 export const MAX_PRODUCT_IMAGE_INPUT_BYTES = 25 * 1024 * 1024
@@ -133,6 +134,7 @@ export interface UploadPreparedProductImageDependencies {
   fetch?: typeof fetch
   now?: () => number
   signerTimeoutMs?: number
+  capabilityTimeoutMs?: number
   uploadTimeoutMs?: number
   verifyTimeoutMs?: number
 }
@@ -160,14 +162,18 @@ function normalizedMimeType(value: string | null | undefined): string {
   return (value ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? ""
 }
 
-function encodeBlossomAuthorizationHeader(event: SignedNostrEvent): string {
+function encodeBlossomAuthorizationHeader(
+  event: SignedNostrEvent,
+  encoding: "bud11" | "legacy" = "bud11"
+): string {
   const bytes = new TextEncoder().encode(JSON.stringify(event))
   let binary = ""
   for (const byte of bytes) binary += String.fromCharCode(byte)
-  const token = btoa(binary)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/u, "")
+  const base64 = btoa(binary)
+  const token =
+    encoding === "legacy"
+      ? base64
+      : base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "")
   return `Nostr ${token}`
 }
 
@@ -786,6 +792,69 @@ function createBoundedSignal(
   }
 }
 
+async function detectLegacyAuthorizationHeader(input: {
+  authorization: SignedNostrEvent
+  serverUrl: string
+  sha256: string
+  mimeType: string
+  size: number
+  expectedPubkey: string
+  shouldContinue?: () => boolean
+  signal?: AbortSignal
+  fetch: typeof fetch
+  timeoutMs: number
+}): Promise<string | undefined> {
+  const canonical = encodeBlossomAuthorizationHeader(input.authorization)
+  const capabilitySignal = createBoundedSignal(input.signal, input.timeoutMs)
+  const probe = async (authorization: string): Promise<Response> =>
+    input.fetch(`${input.serverUrl}/upload`, {
+      method: "HEAD",
+      headers: {
+        Authorization: authorization,
+        "X-SHA-256": input.sha256,
+        "X-Content-Type": input.mimeType,
+        "X-Content-Length": String(input.size),
+      },
+      cache: "no-store",
+      credentials: "omit",
+      redirect: "error",
+      referrerPolicy: "no-referrer",
+      signal: capabilitySignal.signal,
+    })
+  try {
+    let canonicalRejected = false
+    try {
+      assertLiveAuthority(input.expectedPubkey, input.shouldContinue)
+      const canonicalResponse = await probe(canonical)
+      canonicalRejected =
+        canonicalResponse.status === 400 || canonicalResponse.status === 401
+    } catch (error) {
+      if (error instanceof ProductImageUploadError) throw error
+      if (input.signal?.aborted) throw abortError(input.signal)
+      if (capabilitySignal.signal.aborted) return undefined
+      canonicalRejected = error instanceof TypeError
+    }
+
+    if (!canonicalRejected) return undefined
+
+    try {
+      assertLiveAuthority(input.expectedPubkey, input.shouldContinue)
+      const legacy = encodeBlossomAuthorizationHeader(
+        input.authorization,
+        "legacy"
+      )
+      const legacyResponse = await probe(legacy)
+      return legacyResponse.status === 200 ? legacy : undefined
+    } catch (error) {
+      if (error instanceof ProductImageUploadError) throw error
+      if (input.signal?.aborted) throw abortError(input.signal)
+      return undefined
+    }
+  } finally {
+    capabilitySignal.cleanup()
+  }
+}
+
 function awaitWithSignal<T>(
   promise: Promise<T>,
   signal: AbortSignal,
@@ -1058,19 +1127,57 @@ export async function uploadPreparedProductImage(
   let descriptorText: string
   let uploadAccepted = false
   try {
-    const uploadResponse = await fetchImpl(`${serverUrl}/upload`, {
-      method: "PUT",
-      headers: {
-        Authorization: encodeBlossomAuthorizationHeader(authorization),
-        "Content-Type": input.prepared.mimeType,
-        "X-SHA-256": input.prepared.sha256,
-      },
-      body: input.prepared.blob,
-      cache: "no-store",
-      credentials: "omit",
-      redirect: "error",
-      signal: uploadSignal.signal,
-    })
+    const put = async (authorizationHeader: string): Promise<Response> => {
+      assertLiveAuthority(expectedPubkey, input.shouldContinue)
+      return fetchImpl(`${serverUrl}/upload`, {
+        method: "PUT",
+        headers: {
+          Authorization: authorizationHeader,
+          "Content-Type": input.prepared.mimeType,
+          "X-SHA-256": input.prepared.sha256,
+        },
+        body: input.prepared.blob,
+        cache: "no-store",
+        credentials: "omit",
+        redirect: "error",
+        signal: uploadSignal.signal,
+      })
+    }
+    let uploadResponse: Response | undefined
+    let canonicalFailure: unknown
+    try {
+      uploadResponse = await put(
+        encodeBlossomAuthorizationHeader(authorization)
+      )
+    } catch (error) {
+      canonicalFailure = error
+    }
+    const mayRequireLegacy =
+      input.target.kind === "configured" &&
+      (uploadResponse?.status === 400 ||
+        uploadResponse?.status === 401 ||
+        (canonicalFailure instanceof TypeError && !uploadSignal.signal.aborted))
+    if (mayRequireLegacy) {
+      const legacyAuthorization = await detectLegacyAuthorizationHeader({
+        authorization,
+        serverUrl,
+        sha256: input.prepared.sha256,
+        mimeType: input.prepared.mimeType,
+        size: input.prepared.size,
+        expectedPubkey,
+        shouldContinue: input.shouldContinue,
+        signal: uploadSignal.signal,
+        fetch: fetchImpl,
+        timeoutMs:
+          input.dependencies?.capabilityTimeoutMs ??
+          PRODUCT_IMAGE_UPLOAD_CAPABILITY_TIMEOUT_MS,
+      })
+      if (legacyAuthorization) {
+        uploadResponse = await put(legacyAuthorization)
+        canonicalFailure = undefined
+      }
+    }
+    if (!uploadResponse) throw canonicalFailure
     if (uploadResponse.status !== 200 && uploadResponse.status !== 201) {
       throw classifyUploadResponse(uploadResponse.status)
     }
@@ -1137,7 +1244,8 @@ export async function uploadPreparedProductImage(
       method: "GET",
       cache: "no-store",
       credentials: "omit",
-      redirect: "error",
+      redirect: "follow",
+      referrerPolicy: "no-referrer",
       signal: verifySignal.signal,
     })
     const finalUrl = normalizePublicHttpsUrl(

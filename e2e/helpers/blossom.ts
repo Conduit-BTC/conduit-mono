@@ -1,13 +1,20 @@
 import { createHash } from "node:crypto"
 import { type Page } from "@playwright/test"
+import { verifyEvent, type VerifiedEvent } from "nostr-tools/pure"
+
+type BlossomAuthorizationEncoding = "bud11" | "legacy"
 
 export interface InterceptedBlossomState {
   putCount: number
   peakInFlight: number
   originalBodyObserved: boolean
   metadataSentinelObserved: boolean
+  capabilityProbeCount: number
+  canonicalAuthorizationCount: number
+  legacyAuthorizationCount: number
+  authorizationEventIds: string[]
+  putAuthorizationEncodings: BlossomAuthorizationEncoding[]
   resourceRequestCount: number
-  redirectTargetRequests: number
   requestHashes: string[]
   resourceUrls: string[]
 }
@@ -18,9 +25,29 @@ export interface InterceptBlossomOptions {
   rejectFirstStatus?: number
   originalHashes?: ReadonlySet<string>
   metadataSentinel?: string
+  authorizationMode?: "bud11" | "legacy-required"
   resourcePathPrefix?: string
-  resourceRedirectUrl?: string
-  resourceRedirectProxyUrl?: string
+}
+
+function decodeAuthorization(
+  value: string | undefined
+): { encoding: BlossomAuthorizationEncoding; event: VerifiedEvent } | null {
+  if (!value?.startsWith("Nostr ")) return null
+  const token = value.slice("Nostr ".length)
+  try {
+    const bytes = Buffer.from(token, "base64")
+    const encoding =
+      token === bytes.toString("base64url")
+        ? "bud11"
+        : token === bytes.toString("base64")
+          ? "legacy"
+          : null
+    if (!encoding) return null
+    const event = JSON.parse(bytes.toString("utf8")) as VerifiedEvent
+    return verifyEvent(event) ? { encoding, event } : null
+  } catch {
+    return null
+  }
 }
 
 export async function interceptBlossom(
@@ -33,8 +60,12 @@ export async function interceptBlossom(
     peakInFlight: 0,
     originalBodyObserved: false,
     metadataSentinelObserved: false,
+    capabilityProbeCount: 0,
+    canonicalAuthorizationCount: 0,
+    legacyAuthorizationCount: 0,
+    authorizationEventIds: [],
+    putAuthorizationEncodings: [],
     resourceRequestCount: 0,
-    redirectTargetRequests: 0,
     requestHashes: [],
     resourceUrls: [],
   }
@@ -46,6 +77,27 @@ export async function interceptBlossom(
     ? `https://cdn.conduit.market/${resourcePathPrefix}`
     : "https://cdn.conduit.market"
   let inFlight = 0
+
+  const validateAuthorization = (
+    headers: Record<string, string>
+  ): BlossomAuthorizationEncoding | null => {
+    const decoded = decodeAuthorization(headers.authorization)
+    if (!decoded) return null
+    const tags = new Map(decoded.event.tags.map((tag) => [tag[0], tag[1]]))
+    const requestedHash = headers["x-sha-256"]
+    if (
+      decoded.event.kind !== 24_242 ||
+      tags.get("t") !== "upload" ||
+      tags.get("x") !== requestedHash ||
+      tags.get("server") !== new URL(serverUrl).hostname
+    ) {
+      return null
+    }
+    if (decoded.encoding === "bud11") state.canonicalAuthorizationCount += 1
+    else state.legacyAuthorizationCount += 1
+    state.authorizationEventIds.push(decoded.event.id)
+    return decoded.encoding
+  }
 
   await page.addInitScript((targetServer) => {
     const browserWindow = window as unknown as {
@@ -75,18 +127,6 @@ export async function interceptBlossom(
     }
   }, serverUrl)
 
-  if (options.resourceRedirectUrl) {
-    await page.route(options.resourceRedirectUrl, async (route) => {
-      state.redirectTargetRequests += 1
-      await route.fulfill({
-        status: 200,
-        contentType: "image/png",
-        headers: { "access-control-allow-origin": "*" },
-        body: Buffer.from([1, 2, 3, 4]),
-      })
-    })
-  }
-
   await page.route(`${serverUrl}/**`, async (route) => {
     const request = route.request()
     if (request.method() === "OPTIONS") {
@@ -94,10 +134,24 @@ export async function interceptBlossom(
         status: 204,
         headers: {
           "access-control-allow-origin": "*",
-          "access-control-allow-methods": "PUT, OPTIONS",
+          "access-control-allow-methods": "HEAD, PUT, OPTIONS",
           "access-control-allow-headers":
-            "authorization, content-type, x-sha-256",
+            "authorization, content-type, x-content-length, x-content-type, x-sha-256",
         },
+      })
+      return
+    }
+    const headers = request.headers()
+    if (request.method() === "HEAD") {
+      state.capabilityProbeCount += 1
+      const encoding = validateAuthorization(headers)
+      const accepted =
+        options.authorizationMode === "legacy-required"
+          ? encoding === "legacy"
+          : encoding === "bud11"
+      await route.fulfill({
+        status: accepted ? 200 : 400,
+        headers: accepted ? { "access-control-allow-origin": "*" } : {},
       })
       return
     }
@@ -106,7 +160,25 @@ export async function interceptBlossom(
       return
     }
     state.putCount += 1
-    const requestedHash = request.headers()["x-sha-256"]
+    const authorizationEncoding = validateAuthorization(headers)
+    if (authorizationEncoding) {
+      state.putAuthorizationEncodings.push(authorizationEncoding)
+    }
+    const acceptedAuthorization =
+      options.authorizationMode === "legacy-required"
+        ? authorizationEncoding === "legacy"
+        : authorizationEncoding === "bud11"
+    if (!acceptedAuthorization) {
+      await route.fulfill({
+        status: 400,
+        headers:
+          options.authorizationMode === "legacy-required"
+            ? {}
+            : { "access-control-allow-origin": "*" },
+      })
+      return
+    }
+    const requestedHash = headers["x-sha-256"]
     if (requestedHash) state.requestHashes.push(requestedHash)
     inFlight += 1
     state.peakInFlight = Math.max(state.peakInFlight, inFlight)
@@ -152,7 +224,7 @@ export async function interceptBlossom(
       ) {
         state.metadataSentinelObserved = true
       }
-      const type = request.headers()["content-type"] ?? "image/png"
+      const type = headers["content-type"] ?? "image/png"
       const resourceUrl = `${resourceRoot}/${hash}.png`
       resources.set(resourceUrl, { body, type })
       state.resourceUrls.push(resourceUrl)
@@ -180,20 +252,6 @@ export async function interceptBlossom(
       return
     }
     state.resourceRequestCount += 1
-    if (options.resourceRedirectUrl) {
-      if (!options.resourceRedirectProxyUrl) {
-        throw new Error("Redirect interception requires a proxy URL")
-      }
-      const sourceUrl = new URL(route.request().url())
-      const proxyUrl = new URL(
-        `${sourceUrl.pathname}${sourceUrl.search}`,
-        options.resourceRedirectProxyUrl
-      )
-      await route.continue({
-        url: proxyUrl.href,
-      })
-      return
-    }
     await route.fulfill({
       status: 200,
       contentType: resource.type,

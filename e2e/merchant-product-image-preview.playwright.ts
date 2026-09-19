@@ -1,8 +1,5 @@
 import { createHash } from "node:crypto"
-import { execFileSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
-import { createServer } from "node:https"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test, type Page } from "@playwright/test"
 import {
@@ -69,82 +66,6 @@ interface ObjectUrlAudit {
     type: string
   }>
   revoked: string[]
-}
-
-interface RedirectServer {
-  url: string
-  readonly requestCount: number
-  close: () => Promise<void>
-}
-
-async function startRedirectServer(location: string): Promise<RedirectServer> {
-  const directory = mkdtempSync(join(tmpdir(), "conduit-image-redirect-"))
-  const keyPath = join(directory, "key.pem")
-  const certificatePath = join(directory, "certificate.pem")
-  execFileSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-keyout",
-      keyPath,
-      "-out",
-      certificatePath,
-      "-days",
-      "1",
-      "-subj",
-      "/CN=localhost",
-    ],
-    { stdio: "ignore" }
-  )
-
-  let requestCount = 0
-  const server = createServer(
-    {
-      key: readFileSync(keyPath),
-      cert: readFileSync(certificatePath),
-    },
-    (_request, response) => {
-      requestCount += 1
-      response.writeHead(307, {
-        "access-control-allow-origin": "*",
-        location,
-      })
-      response.end()
-    }
-  )
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject)
-    server.listen(0, "127.0.0.1", resolve)
-  })
-  const address = server.address()
-  if (!address || typeof address === "string") {
-    server.close()
-    rmSync(directory, { recursive: true, force: true })
-    throw new Error("Redirect test server did not bind to a TCP port")
-  }
-
-  return {
-    url: `https://127.0.0.1:${address.port}`,
-    get requestCount() {
-      return requestCount
-    },
-    close: async () => {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          server.close((error) => {
-            if (error) reject(error)
-            else resolve()
-          })
-        })
-      } finally {
-        rmSync(directory, { recursive: true, force: true })
-      }
-    },
-  }
 }
 
 async function installObjectUrlAudit(page: Page): Promise<void> {
@@ -326,8 +247,31 @@ test("configured Blossom uploads stay sequential and retry only unfinished image
   expect(fallbackRequests).toBe(0)
   const pastedImageUrl =
     "https://cdn.jsdelivr.net/conduit-test/pasted-third-image.png"
+  await page.route(pastedImageUrl, (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: readFileSync(image192),
+    })
+  )
   await dialog.getByRole("button", { name: "Add by URL" }).click()
   await dialog.getByLabel("Image 3 URL").fill(pastedImageUrl)
+  const baseResourceUrls = [...state.resourceUrls]
+  await dialog
+    .getByRole("button", { name: "Move image 3 up", exact: true })
+    .click()
+  await dialog
+    .getByRole("button", { name: "Move image 2 up", exact: true })
+    .click()
+  await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
+    pastedImageUrl
+  )
+  await expect(dialog.getByLabel("Image 2 URL")).toHaveValue(
+    baseResourceUrls[0]!
+  )
+  await expect(dialog.getByLabel("Image 3 URL")).toHaveValue(
+    baseResourceUrls[1]!
+  )
+  await expect(dialog.locator(`img[src="${pastedImageUrl}"]`)).toBeVisible()
   await dialog.getByLabel("Title").fill("Verified Blossom pair")
   await dialog.getByLabel("Price").fill("42")
   await dialog.locator("#product-fulfillment").click()
@@ -337,7 +281,6 @@ test("configured Blossom uploads stay sequential and retry only unfinished image
     await tags.fill(tag)
     await tags.press("Enter")
   }
-  const baseResourceUrls = [...state.resourceUrls]
   await dialog
     .getByRole("checkbox", { name: /This product has options/ })
     .check()
@@ -386,7 +329,7 @@ test("configured Blossom uploads stay sequential and retry only unfinished image
         ?.tags.filter(([name]) => name === "image")
         .map(([, value]) => value)
     })
-    .toEqual([...baseResourceUrls, pastedImageUrl])
+    .toEqual([pastedImageUrl, ...baseResourceUrls])
   await expect
     .poll(async () => {
       const events = await readTestRelayEvents({
@@ -403,6 +346,63 @@ test("configured Blossom uploads stay sequential and retry only unfinished image
         .map(([, value]) => value)
     })
     .toEqual([variationResourceUrl])
+})
+
+test("a late successful retry preserves the established cover order @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const state = await interceptBlossom(page, configuredServer, {
+    rejectFirstStatus: 429,
+  })
+  const pastedImageUrl =
+    "https://cdn.jsdelivr.net/conduit-test/established-cover.png"
+  await page.route(pastedImageUrl, (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: readFileSync(image192),
+    })
+  )
+  const { dialog } = await openProductDialogWithSigner(page, {
+    configuredServerUrl: configuredServer,
+  })
+
+  await expect(
+    dialog.getByRole("button", { name: "Add image", exact: true })
+  ).toBeEnabled()
+  await dialog.locator("#product-image-file").setInputFiles(image192)
+  await expect(
+    dialog.getByText("This media server is rate limiting uploads.", {
+      exact: false,
+    })
+  ).toBeVisible()
+  await expect(
+    dialog.getByRole("button", { name: "Add image", exact: true })
+  ).toBeEnabled()
+  await expect(
+    dialog.getByRole("button", { name: "Move unfinished image 1 up" })
+  ).toHaveCount(0)
+
+  await dialog.getByRole("button", { name: "Add by URL" }).click()
+  await dialog.getByLabel("Primary image URL").fill(pastedImageUrl)
+  await expect(
+    dialog.getByRole("button", { name: "Add another image", exact: true })
+  ).toBeEnabled()
+  await dialog
+    .getByRole("button", { name: "Retry image 1 upload", exact: true })
+    .click()
+
+  await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
+    pastedImageUrl
+  )
+  await expect(dialog.getByLabel("Image 2 URL")).toHaveValue(
+    /^https:\/\/cdn\.conduit\.market\//
+  )
+  await expect(dialog.locator(`img[src="${pastedImageUrl}"]`)).toBeVisible()
+  expect(await dialog.getByLabel("Image 2 URL").inputValue()).toBe(
+    state.resourceUrls[0]
+  )
+  expect(state.putCount).toBe(2)
 })
 
 test("a newer signed media-server revision stops a pending upload before PUT @merchant", async ({
@@ -504,43 +504,57 @@ test("a newer signed media-server revision stops a pending upload before PUT @me
   await expect(dialog.getByLabel("Primary image URL")).toHaveCount(0)
 })
 
-test.describe("resource redirect verification", () => {
-  test.use({ ignoreHTTPSErrors: true })
-
-  test("verification redirects never reach private destinations @merchant", async ({
-    page,
-  }) => {
-    test.setTimeout(90_000)
-    const privateUrl = "https://127.0.0.1/private-product-image.png"
-    const redirectServer = await startRedirectServer(privateUrl)
-    try {
-      const state = await interceptBlossom(page, configuredServer, {
-        resourceRedirectUrl: privateUrl,
-        resourceRedirectProxyUrl: redirectServer.url,
-      })
-      const { dialog } = await openProductDialogWithSigner(page, {
-        configuredServerUrl: configuredServer,
-      })
-      await expect(
-        dialog.getByText("your first configured media server", { exact: false })
-      ).toBeVisible()
-
-      await dialog.locator("#product-image-file").setInputFiles(image192)
-
-      await expect(
-        dialog.getByText("The uploaded image could not be retrieved", {
-          exact: false,
-        })
-      ).toBeVisible()
-      expect(state.putCount).toBe(1)
-      expect(state.resourceRequestCount).toBe(1)
-      expect(redirectServer.requestCount).toBe(1)
-      expect(state.redirectTargetRequests).toBe(0)
-      await expect(dialog.getByLabel("Primary image URL")).toHaveCount(0)
-    } finally {
-      await redirectServer.close()
-    }
+test("Primal-compatible auth retries once with the same signed event @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const state = await interceptBlossom(page, configuredServer, {
+    authorizationMode: "legacy-required",
   })
+  let fallbackRequests = 0
+  await page.route(`${fallbackServer}/**`, async (route) => {
+    fallbackRequests += 1
+    await route.abort()
+  })
+  const { dialog } = await openProductDialogWithSigner(page, {
+    configuredServerUrl: configuredServer,
+  })
+  await expect(
+    dialog.getByText("your first configured media server", { exact: false })
+  ).toBeVisible()
+  await expect(
+    dialog.getByRole("button", { name: "Add image", exact: true })
+  ).toBeEnabled()
+
+  await dialog.locator("#product-image-file").setInputFiles(image192)
+
+  await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
+    /^https:\/\/cdn\.conduit\.market\//
+  )
+  expect(await dialog.getByLabel("Primary image URL").inputValue()).toBe(
+    state.resourceUrls[0]
+  )
+  await expect(
+    dialog.getByRole("button", {
+      name: "Add another image",
+      exact: true,
+    })
+  ).toBeEnabled()
+  expect(state.putCount).toBe(2)
+  expect(state.putAuthorizationEncodings).toEqual(["bud11", "legacy"])
+  expect(state.capabilityProbeCount).toBe(2)
+  expect(state.canonicalAuthorizationCount).toBe(2)
+  expect(state.legacyAuthorizationCount).toBe(2)
+  expect(new Set(state.authorizationEventIds).size).toBe(1)
+  expect(state.resourceRequestCount).toBeGreaterThanOrEqual(1)
+  expect(fallbackRequests).toBe(0)
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __conduitSignedKinds?: number[] })
+          .__conduitSignedKinds
+    )
+  ).toEqual([24242])
 })
 
 test("fallback upload is disclosed, intercepted, and mobile responsive @merchant", async ({
@@ -588,7 +602,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
     .getByRole("button", { name: "Remove unfinished image 1", exact: true })
     .click()
   await expect(
-    dialog.getByRole("button", { name: "Add another image", exact: true })
+    dialog.getByRole("button", { name: "Add image", exact: true })
   ).toBeEnabled()
 
   await dialog.locator("#product-image-file").setInputFiles(image192)
@@ -649,7 +663,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   const freshDialog = page.getByRole("dialog", { name: "Add product" })
   await expect(
     freshDialog.getByRole("button", {
-      name: "Add another image",
+      name: "Add image",
       exact: true,
     })
   ).toBeEnabled()
@@ -712,7 +726,7 @@ test("a pristine new-product draft releases its consumed fallback claim @merchan
   await expect(freshDialog).toBeVisible()
   await expect(
     freshDialog.getByRole("button", {
-      name: "Add another image",
+      name: "Add image",
       exact: true,
     })
   ).toBeEnabled()
@@ -864,7 +878,7 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
   await page.getByRole("button", { name: "Add product" }).first().click()
   const resumed = page.getByRole("dialog", { name: "Add product" })
   await expect(
-    resumed.getByRole("button", { name: "Add another image", exact: true })
+    resumed.getByRole("button", { name: "Add image", exact: true })
   ).toBeEnabled()
   await resumed.locator("#product-image-file").setInputFiles(image512)
   await expect(resumed.getByLabel("Primary image URL")).toHaveValue(
@@ -902,7 +916,7 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
     resumed.getByText("Choose the same image to retry", { exact: false })
   ).toBeVisible()
   await expect(
-    resumed.getByRole("button", { name: "Add another image", exact: true })
+    resumed.getByRole("button", { name: "Add image", exact: true })
   ).toBeEnabled()
 
   await resumed.locator("#product-image-file").setInputFiles(image512)
@@ -916,7 +930,7 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
     .getByRole("button", { name: "Remove unfinished image 1", exact: true })
     .click()
   await expect(
-    resumed.getByRole("button", { name: "Add another image", exact: true })
+    resumed.getByRole("button", { name: "Add image", exact: true })
   ).toBeEnabled()
 
   await resumed.locator("#product-image-file").setInputFiles(image192)
@@ -973,7 +987,7 @@ test("a corrupt fallback claim fails closed without sending a file @merchant", a
     dialog.getByText("No safe media server is configured.", { exact: false })
   ).toBeVisible()
   await expect(
-    dialog.getByRole("button", { name: "Add another image", exact: true })
+    dialog.getByRole("button", { name: "Add image", exact: true })
   ).toBeDisabled()
   expect(state.putCount).toBe(0)
 })

@@ -111,6 +111,17 @@ function decodeAuthorization(value: string): Record<string, unknown> {
   ) as Record<string, unknown>
 }
 
+function decodeLegacyAuthorization(value: string): Record<string, unknown> {
+  const encoded = value.replace(/^Nostr /u, "")
+  expect(encoded).toMatch(/^[A-Za-z0-9+/]+={1,2}$/u)
+  expect(encoded.length % 4).toBe(0)
+  return JSON.parse(
+    new TextDecoder().decode(
+      Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0))
+    )
+  ) as Record<string, unknown>
+}
+
 describe("product image upload target resolution", () => {
   it("uses a clean local CND-186 mirror only when it matches signed authority", () => {
     const publishedRevision = {
@@ -438,11 +449,12 @@ describe("product image preparation bounds", () => {
 })
 
 describe("verified Blossom product image upload", () => {
-  it("uses short hash/server/action auth, one PUT, and adopts only verified bytes", async () => {
+  it("uses BUD-11 auth and adopts the original URL after verified redirect bytes", async () => {
     const secretKey = generateSecretKey()
     const pubkey = getPublicKey(secretKey)
     const prepared = await preparedImage()
     const resourceUrl = `https://cdn.conduit.market/${prepared.sha256}.png`
+    const redirectedResourceUrl = `https://r2a.primal.net/${prepared.sha256}.png`
     const requests: Array<{ url: string; init?: RequestInit }> = []
     const phases: string[] = []
     const fetchMock: typeof fetch = async (input, init) => {
@@ -479,7 +491,10 @@ describe("verified Blossom product image upload", () => {
           { status: 201, headers: { "content-type": "application/json" } }
         )
       }
-      expect(init?.redirect).toBe("error")
+      expect(init?.redirect).toBe("follow")
+      expect(init?.credentials).toBe("omit")
+      expect(init?.referrerPolicy).toBe("no-referrer")
+      expect(new Headers(init?.headers).has("authorization")).toBe(false)
       return responseWithUrl(
         prepared.blob,
         {
@@ -489,7 +504,7 @@ describe("verified Blossom product image upload", () => {
             "content-length": String(prepared.size),
           },
         },
-        resourceUrl
+        redirectedResourceUrl
       )
     }
 
@@ -521,6 +536,175 @@ describe("verified Blossom product image upload", () => {
       "verifying",
       "succeeded",
     ])
+  })
+
+  it("uses the same signed event for a demonstrated legacy authorization requirement", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const prepared = await preparedImage()
+    const descriptorUrl = `${CONFIGURED_SERVER}/${prepared.sha256}.png`
+    const redirectedUrl = `https://r2a.primal.net/${prepared.sha256}.png`
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    let canonicalEvent: Record<string, unknown> | undefined
+    let legacyAuthorization = ""
+    let signCount = 0
+
+    const result = await uploadPreparedProductImage({
+      prepared,
+      target: {
+        kind: "configured",
+        serverUrl: CONFIGURED_SERVER,
+      },
+      expectedPubkey: pubkey,
+      signer: {
+        getPublicKey: async () => pubkey,
+        signEvent: async (event) => {
+          signCount += 1
+          return finalizeEvent(event, secretKey)
+        },
+      },
+      shouldContinue: () => true,
+      dependencies: {
+        now: () => 1_000,
+        fetch: async (input, init) => {
+          const url = String(input)
+          requests.push({ url, init })
+          const authorization = new Headers(init?.headers).get("authorization")
+          if (init?.method === "PUT" && requests.length === 1) {
+            expect(init.redirect).toBe("error")
+            canonicalEvent = decodeAuthorization(authorization!)
+            throw new TypeError("Canonical PUT response hidden by CORS")
+          }
+          if (init?.method === "HEAD" && requests.length === 2) {
+            expect(init.redirect).toBe("error")
+            expect(decodeAuthorization(authorization!)).toEqual(canonicalEvent)
+            expect(new Headers(init.headers).get("x-content-type")).toBe(
+              prepared.mimeType
+            )
+            expect(new Headers(init.headers).get("x-content-length")).toBe(
+              String(prepared.size)
+            )
+            throw new TypeError("Canonical HEAD response hidden by CORS")
+          }
+          if (init?.method === "HEAD") {
+            expect(init.redirect).toBe("error")
+            legacyAuthorization = authorization!
+            expect(decodeLegacyAuthorization(legacyAuthorization)).toEqual(
+              canonicalEvent
+            )
+            return new Response(null, { status: 200 })
+          }
+          if (init?.method === "PUT") {
+            expect(init.redirect).toBe("error")
+            expect(authorization).toBe(legacyAuthorization)
+            return new Response(
+              JSON.stringify({
+                url: descriptorUrl,
+                sha256: prepared.sha256,
+                size: prepared.size,
+                type: prepared.mimeType,
+                uploaded: 1_000,
+              }),
+              { status: 201 }
+            )
+          }
+          expect(url).toBe(descriptorUrl)
+          expect(init?.redirect).toBe("follow")
+          expect(init?.credentials).toBe("omit")
+          expect(init?.referrerPolicy).toBe("no-referrer")
+          return responseWithUrl(
+            prepared.blob,
+            {
+              status: 200,
+              headers: {
+                "content-type": prepared.mimeType,
+                "content-length": String(prepared.size),
+              },
+            },
+            redirectedUrl
+          )
+        },
+      },
+    })
+
+    expect(result).toBe(descriptorUrl)
+    expect(signCount).toBe(1)
+    expect(
+      requests.map(({ url, init }) => [init?.method ?? "GET", url])
+    ).toEqual([
+      ["PUT", `${CONFIGURED_SERVER}/upload`],
+      ["HEAD", `${CONFIGURED_SERVER}/upload`],
+      ["HEAD", `${CONFIGURED_SERVER}/upload`],
+      ["PUT", `${CONFIGURED_SERVER}/upload`],
+      ["GET", descriptorUrl],
+    ])
+    expect(
+      requests.some(({ url }) => url.startsWith(PRODUCT_IMAGE_FALLBACK_SERVER))
+    ).toBe(false)
+  })
+
+  it("does not select legacy auth from opaque failures without a positive capability response", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const prepared = await preparedImage()
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    let signCount = 0
+
+    await expect(
+      uploadPreparedProductImage({
+        prepared,
+        target: {
+          kind: "configured",
+          serverUrl: CONFIGURED_SERVER,
+        },
+        expectedPubkey: pubkey,
+        signer: {
+          getPublicKey: async () => pubkey,
+          signEvent: async (event) => {
+            signCount += 1
+            return finalizeEvent(event, secretKey)
+          },
+        },
+        dependencies: {
+          now: () => 1_000,
+          fetch: async (input, init) => {
+            requests.push({ url: String(input), init })
+            const authorization = new Headers(init?.headers).get(
+              "authorization"
+            )
+            if (requests.length === 1) {
+              expect(init?.method).toBe("PUT")
+              decodeAuthorization(authorization!)
+              throw new TypeError("Canonical PUT response hidden by CORS")
+            }
+            if (requests.length === 2) {
+              expect(init?.method).toBe("HEAD")
+              decodeAuthorization(authorization!)
+              throw new TypeError("Canonical HEAD response hidden by CORS")
+            }
+            expect(init?.method).toBe("HEAD")
+            decodeLegacyAuthorization(authorization!)
+            return new Response(null, { status: 401 })
+          },
+        },
+      })
+    ).rejects.toMatchObject({
+      code: "upload_failed",
+      uploadOutcome: "ambiguous",
+    })
+
+    expect(signCount).toBe(1)
+    expect(requests.map(({ init }) => init?.method)).toEqual([
+      "PUT",
+      "HEAD",
+      "HEAD",
+    ])
+    expect(requests.filter(({ init }) => init?.method === "PUT")).toHaveLength(
+      1
+    )
+    expect(
+      requests.some(({ url }) => url.startsWith(PRODUCT_IMAGE_FALLBACK_SERVER))
+    ).toBe(false)
   })
 
   it("rechecks upload authority after signing and before PUT", async () => {
@@ -640,6 +824,7 @@ describe("verified Blossom product image upload", () => {
   })
 
   for (const [status, code] of [
+    [307, "upload_failed"],
     [400, "upload_failed"],
     [401, "auth_invalid"],
     [402, "payment_required"],
@@ -654,7 +839,7 @@ describe("verified Blossom product image upload", () => {
       const secretKey = generateSecretKey()
       const pubkey = getPublicKey(secretKey)
       const prepared = await preparedImage()
-      let calls = 0
+      const requests: Array<{ url: string; method: string }> = []
       try {
         await uploadPreparedProductImage({
           prepared,
@@ -669,8 +854,12 @@ describe("verified Blossom product image upload", () => {
           },
           dependencies: {
             now: () => 1_000,
-            fetch: async () => {
-              calls += 1
+            fetch: async (input, init) => {
+              expect(init?.redirect).toBe("error")
+              requests.push({
+                url: String(input),
+                method: init?.method ?? "GET",
+              })
               return new Response("", { status })
             },
           },
@@ -680,90 +869,62 @@ describe("verified Blossom product image upload", () => {
         expect(error).toBeInstanceOf(ProductImageUploadError)
         expect((error as ProductImageUploadError).code).toBe(code)
         expect((error as ProductImageUploadError).uploadOutcome).toBe(
-          "definitive_rejection"
+          status === 307 ? "ambiguous" : "definitive_rejection"
         )
       }
-      expect(calls).toBe(1)
+      expect(requests).toEqual(
+        status === 400 || status === 401
+          ? [
+              { url: `${CONFIGURED_SERVER}/upload`, method: "PUT" },
+              { url: `${CONFIGURED_SERVER}/upload`, method: "HEAD" },
+              { url: `${CONFIGURED_SERVER}/upload`, method: "HEAD" },
+            ]
+          : [{ url: `${CONFIGURED_SERVER}/upload`, method: "PUT" }]
+      )
+      expect(requests.filter(({ method }) => method === "PUT")).toHaveLength(1)
     })
   }
 
-  it("treats an unspecified server failure as an ambiguous PUT outcome", async () => {
-    const secretKey = generateSecretKey()
-    const pubkey = getPublicKey(secretKey)
-    const prepared = await preparedImage()
+  for (const [status, uploadOutcome] of [
+    [400, "definitive_rejection"],
+    [500, "ambiguous"],
+  ] as const) {
+    it(`does not capability-probe or retry a fallback HTTP ${status}`, async () => {
+      const secretKey = generateSecretKey()
+      const pubkey = getPublicKey(secretKey)
+      const prepared = await preparedImage()
+      const requests: Array<{ url: string; method: string }> = []
 
-    await expect(
-      uploadPreparedProductImage({
-        prepared,
-        target: {
-          kind: "fallback",
-          serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
-        },
-        expectedPubkey: pubkey,
-        signer: {
-          getPublicKey: async () => pubkey,
-          signEvent: async (event) => finalizeEvent(event, secretKey),
-        },
-        dependencies: {
-          now: () => 1_000,
-          fetch: async () => new Response("", { status: 500 }),
-        },
-      })
-    ).rejects.toMatchObject({
-      code: "upload_failed",
-      uploadOutcome: "ambiguous",
-    })
-  })
-
-  it("rejects descriptor resource redirects before fetch can follow", async () => {
-    const secretKey = generateSecretKey()
-    const pubkey = getPublicKey(secretKey)
-    const prepared = await preparedImage()
-    const descriptorUrl = `${CONFIGURED_SERVER}/${prepared.sha256}.png`
-    let calls = 0
-
-    await expect(
-      uploadPreparedProductImage({
-        prepared,
-        target: {
-          kind: "configured",
-          serverUrl: CONFIGURED_SERVER,
-        },
-        expectedPubkey: pubkey,
-        signer: {
-          getPublicKey: async () => pubkey,
-          signEvent: async (event) => finalizeEvent(event, secretKey),
-        },
-        dependencies: {
-          now: () => 1_000,
-          fetch: async (input, init) => {
-            calls += 1
-            if (calls === 1) {
-              expect(init?.redirect).toBe("error")
-              return new Response(
-                JSON.stringify({
-                  url: descriptorUrl,
-                  sha256: prepared.sha256,
-                  size: prepared.size,
-                  type: prepared.mimeType,
-                  uploaded: 1_000,
-                }),
-                { status: 201 }
-              )
-            }
-            expect(String(input)).toBe(descriptorUrl)
-            expect(init?.redirect).toBe("error")
-            throw new TypeError("Redirects are rejected before following")
+      await expect(
+        uploadPreparedProductImage({
+          prepared,
+          target: {
+            kind: "fallback",
+            serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
           },
-        },
-      })
-    ).rejects.toMatchObject({
-      code: "resource_unavailable",
-      uploadOutcome: "accepted_unverified",
-    })
+          expectedPubkey: pubkey,
+          signer: {
+            getPublicKey: async () => pubkey,
+            signEvent: async (event) => finalizeEvent(event, secretKey),
+          },
+          dependencies: {
+            now: () => 1_000,
+            fetch: async (input, init) => {
+              requests.push({
+                url: String(input),
+                method: init?.method ?? "GET",
+              })
+              return new Response("", { status })
+            },
+          },
+        })
+      ).rejects.toMatchObject({ code: "upload_failed", uploadOutcome })
 
-    expect(calls).toBe(2)
-  })
+      expect(requests).toEqual([
+        { url: `${PRODUCT_IMAGE_FALLBACK_SERVER}/upload`, method: "PUT" },
+      ])
+    })
+  }
 
   for (const [label, redirectedUrl] of [
     [
@@ -811,7 +972,9 @@ describe("verified Blossom product image upload", () => {
                   { status: 201 }
                 )
               }
-              expect(init?.redirect).toBe("error")
+              expect(init?.redirect).toBe("follow")
+              expect(init?.credentials).toBe("omit")
+              expect(init?.referrerPolicy).toBe("no-referrer")
               return responseWithUrl(
                 prepared.blob,
                 {
