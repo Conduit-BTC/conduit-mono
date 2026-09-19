@@ -2,7 +2,6 @@ import type { EventTemplate } from "nostr-tools"
 import {
   computeBlobSha256,
   createUploadAuth,
-  encodeAuthorizationHeader,
   getHashFromURL,
   type BlobDescriptor,
 } from "nostr-tools/nipb7"
@@ -172,6 +171,17 @@ function uploadError(
 
 function normalizedMimeType(value: string | null | undefined): string {
   return (value ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? ""
+}
+
+function encodeBlossomAuthorizationHeader(event: SignedNostrEvent): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(event))
+  let binary = ""
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  const token = btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/u, "")
+  return `Nostr ${token}`
 }
 
 export function getProductImageUploadErrorMessage(
@@ -1057,7 +1067,7 @@ export async function uploadPreparedProductImage(
     const uploadResponse = await fetchImpl(`${serverUrl}/upload`, {
       method: "PUT",
       headers: {
-        Authorization: encodeAuthorizationHeader(authorization),
+        Authorization: encodeBlossomAuthorizationHeader(authorization),
         "Content-Type": input.prepared.mimeType,
         "X-SHA-256": input.prepared.sha256,
       },

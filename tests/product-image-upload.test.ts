@@ -5,7 +5,7 @@ import {
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
-import { computeBlobSha256, encodeAuthorizationHeader } from "nostr-tools/nipb7"
+import { computeBlobSha256 } from "nostr-tools/nipb7"
 import {
   MAX_PRODUCT_IMAGE_DECODED_PIXELS,
   MAX_PRODUCT_IMAGE_INPUT_DIMENSION,
@@ -89,6 +89,7 @@ function responseWithUrl(
 
 function decodeAuthorization(value: string): Record<string, unknown> {
   const encoded = value.replace(/^Nostr /u, "")
+  expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/u)
   const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/")
   const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")
   return JSON.parse(
@@ -352,11 +353,6 @@ describe("verified Blossom product image upload", () => {
         const authorization = new Headers(init.headers).get("authorization")
         expect(authorization).toBeTruthy()
         const event = decodeAuthorization(authorization!)
-        expect(authorization).toBe(
-          encodeAuthorizationHeader(
-            event as Parameters<typeof encodeAuthorizationHeader>[0]
-          )
-        )
         expect(event.kind).toBe(24242)
         expect(event.pubkey).toBe(pubkey)
         expect(event.tags).toContainEqual(["t", "upload"])
