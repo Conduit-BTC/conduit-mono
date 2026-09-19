@@ -49,11 +49,7 @@ import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
-import {
-  getProductAddAvailability,
-  isSameCartFulfillment,
-  selectCartItem,
-} from "../../lib/cart-model"
+import { getProductAddAvailability, selectCartLine } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 import {
   getPickupHandoffPrivacyCopy,
@@ -188,12 +184,6 @@ function ProductPage() {
       })
     : ""
   const merchantNip05 = getProfileNip05(merchantProfile.data)
-  const cartItem = selectedProduct
-    ? selectCartItem(cart.items, {
-        merchantPubkey: selectedProduct.pubkey,
-        productId: selectedProduct.id,
-      })
-    : null
   const productCartResolution = productCartFulfillment.resolution
   const productPickupHandoff =
     productCartResolution?.status === "pickup"
@@ -217,16 +207,13 @@ function ProductPage() {
           )
         : null
     : null
-  const cartFulfillmentMatches =
-    !!cartItem &&
-    !!productCartCandidate &&
-    isSameCartFulfillment(cartItem, productCartCandidate)
-  const cartFulfillmentConflict = !!cartItem && !cartFulfillmentMatches
+  const cartItem = productCartCandidate
+    ? selectCartLine(cart.items, productCartCandidate)
+    : undefined
   const productCartBlocked =
     productCartFulfillment.isChecking ||
     productCartResolution?.status === "blocked" ||
-    !productCartCandidate ||
-    cartFulfillmentConflict
+    !productCartCandidate
   const productEventNaddr =
     productCartResolution?.status === "pickup" ||
     productCartResolution?.status === "blocked"
@@ -234,16 +221,14 @@ function ProductPage() {
       : productCartFulfillment.candidateNaddr
   const productFulfillmentNotice = productCartFulfillment.isChecking
     ? "Checking current signed event pickup evidence before this listing can be added."
-    : cartFulfillmentConflict
-      ? "This listing is already in your cart with different fulfillment. Remove that line before adding it here."
-      : productCartResolution?.status === "blocked"
-        ? productCartResolution.reason
-        : null
+    : productCartResolution?.status === "blocked"
+      ? productCartResolution.reason
+      : null
   const showPickupIdentityNotice =
     !!productPickupHandoff &&
     !!pickupHandlerIdentity &&
     !productFulfillmentNotice
-  const cartQuantity = cartFulfillmentMatches ? cartItem.quantity : 0
+  const cartQuantity = cartItem?.quantity ?? 0
   const productAddAvailability = getProductAddAvailability(
     selectedProduct?.stock,
     cartQuantity,
@@ -399,6 +384,10 @@ function ProductPage() {
       return
     }
     recordProductDetailAction("add_to_cart")
+    if (cartItem) {
+      cart.refreshAndIncrementItem(cartItem, productCartCandidate, quantity)
+      return
+    }
     cart.addItem(productCartCandidate, quantity)
   }
 
@@ -805,15 +794,13 @@ function ProductPage() {
                       ? "Sold out"
                       : productCartFulfillment.isChecking
                         ? "Checking event pickup"
-                        : cartFulfillmentConflict
-                          ? "Review cart fulfillment"
-                          : productCartResolution?.status === "blocked"
-                            ? "Review event catalog"
-                            : productAddAvailability.remainingStock === 0
-                              ? "Stock limit reached"
-                              : cartQuantity > 0
-                                ? `Add more (${cartQuantity} in cart)`
-                                : `Add ${quantity} to cart`}
+                        : productCartResolution?.status === "blocked"
+                          ? "Review event catalog"
+                          : productAddAvailability.remainingStock === 0
+                            ? "Stock limit reached"
+                            : cartQuantity > 0
+                              ? `Add more (${cartQuantity} in cart)`
+                              : `Add ${quantity} to cart`}
                   </Button>
                 </div>
 

@@ -356,6 +356,7 @@ const browserTelemetryLabelValues = {
     "remove",
     "clear_all",
     "clear_merchant",
+    "clear_purchase",
     "storefront_search",
     "storefront_search_clear",
     "add_to_cart",

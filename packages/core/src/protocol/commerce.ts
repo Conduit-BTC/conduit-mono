@@ -108,6 +108,7 @@ import {
 } from "./profile-cache"
 import { parseProfileEvent } from "./profiles"
 import {
+  compareReplaceableEventFrontiers,
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
@@ -1957,6 +1958,9 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   })
   const product: Product = {
     id: row.id,
+    ...(row.eventId && row.eventId !== row.id
+      ? { sourceEventId: row.eventId }
+      : {}),
     pubkey: row.pubkey,
     title: row.title,
     summary,
@@ -3844,7 +3848,10 @@ function dedupeProductEvents(
       }
 
       const candidate: CommerceProductRecord = {
-        product: parsed,
+        product: {
+          ...parsed,
+          ...(event.id ? { sourceEventId: event.id } : {}),
+        },
         safety,
         eventId: event.id,
         addressId,
@@ -3884,15 +3891,24 @@ function shouldReplaceProductRecord(
   existing: CommerceProductRecord,
   candidate: CommerceProductRecord
 ): boolean {
-  if (candidate.eventCreatedAt !== existing.eventCreatedAt) {
-    return candidate.eventCreatedAt > existing.eventCreatedAt
-  }
-  const existingHasSourceEventId = existing.eventId !== existing.addressId
-  const candidateHasSourceEventId = candidate.eventId !== candidate.addressId
-  if (candidateHasSourceEventId !== existingHasSourceEventId) {
-    return candidateHasSourceEventId
-  }
-  return candidate.eventId <= existing.eventId
+  return (
+    compareReplaceableEventFrontiers(
+      {
+        createdAt: candidate.eventCreatedAt,
+        eventId:
+          candidate.eventId !== candidate.addressId
+            ? candidate.eventId
+            : undefined,
+      },
+      {
+        createdAt: existing.eventCreatedAt,
+        eventId:
+          existing.eventId !== existing.addressId
+            ? existing.eventId
+            : undefined,
+      }
+    ) >= 0
+  )
 }
 
 function mergeProductRecordSources(
