@@ -1,20 +1,10 @@
 import {
-  isBtcLikeCurrency,
-  isMsatsLikeCurrency,
-  isSatsLikeCurrency,
   normalizeCurrencyCode,
+  normalizeCurrencyIdentity,
   type SourcePriceQuote,
 } from "../pricing"
 import type { ProductSchema } from "../schemas"
 import type { EventMarketResolution } from "./event-market"
-
-function currencyCompatibilityKey(currency: string): string {
-  const normalized = normalizeCurrencyCode(currency)
-  if (isSatsLikeCurrency(normalized)) return "SATS"
-  if (isMsatsLikeCurrency(normalized)) return "MSATS"
-  if (isBtcLikeCurrency(normalized)) return "BTC"
-  return normalized
-}
 
 export type EventMarketProductFulfillmentAmbiguityReason =
   | "missing_pickup_evidence"
@@ -314,7 +304,7 @@ export function resolveEventMarketProductFulfillment(
     )
   }
 
-  const baseCompatibilityKey = currencyCompatibilityKey(baseCurrency)
+  const baseCompatibilityKey = normalizeCurrencyIdentity(baseCurrency)
   const normalizedExtras = eventReferences.map((reference) => {
     const extraCost = reference.extraCost
     if (!extraCost) {
@@ -328,9 +318,9 @@ export function resolveEventMarketProductFulfillment(
     if (
       !extraCurrency ||
       !extraNormalizedCurrency ||
-      currencyCompatibilityKey(extraCurrency) !==
-        currencyCompatibilityKey(extraNormalizedCurrency) ||
-      currencyCompatibilityKey(extraNormalizedCurrency) !==
+      normalizeCurrencyIdentity(extraCurrency) !==
+        normalizeCurrencyIdentity(extraNormalizedCurrency) ||
+      normalizeCurrencyIdentity(extraNormalizedCurrency) !==
         baseCompatibilityKey ||
       !Number.isFinite(extraCost.amount) ||
       extraCost.amount < 0
@@ -340,7 +330,7 @@ export function resolveEventMarketProductFulfillment(
 
     return {
       amount: extraCost.amount,
-      compatibilityKey: currencyCompatibilityKey(extraNormalizedCurrency),
+      compatibilityKey: normalizeCurrencyIdentity(extraNormalizedCurrency),
     }
   })
   if (normalizedExtras.some((extra) => extra === null)) {

@@ -1,184 +1,65 @@
+import type { CommerceProductRecord, OrderSummary } from "@conduit/core"
+import type { ProductPublicationFulfillmentIntent } from "./product-publishing"
 import {
-  compileProductFulfillmentIntent,
-  CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
-  getShippingOptionsByCoordinates,
-  hasSamePickupFulfillmentGraph,
-  resolveProductFulfillment,
-  type CommerceProductRecord,
-  type OrderPickupFulfillmentSchema,
-  type OrderSummary,
-  type ParsedShippingOption,
-  type ProductFulfillmentIntent,
-  type ProductSchema,
-} from "@conduit/core"
-import type { OrderStockAdjustment } from "./productStock"
+  buildOrderStockAdjustments,
+  getOrderStockAdjustmentForDisplay,
+  type OrderStockAdjustment,
+  type ProductStockDecision,
+} from "./productStock"
 
-export function rebaseOrderStockAdjustmentOnProduct(input: {
+/** Prepare a merchant-owned inventory mutation without reauthorizing fulfillment. */
+export function prepareOrderStockUpdate(input: {
+  merchantPubkey: string
+  orderId: string
+  items: OrderSummary["items"]
   adjustment: OrderStockAdjustment
   record: CommerceProductRecord
-}): OrderStockAdjustment {
-  const { adjustment, record } = input
-  const currentStock = record.product.stock
+  persistedDecision?: ProductStockDecision | null
+}): {
+  adjustment: OrderStockAdjustment
+  fulfillmentIntent: ProductPublicationFulfillmentIntent
+} {
+  const { record, adjustment } = input
+  const address = `30402:${input.merchantPubkey}:${record.dTag}`
   if (
-    record.addressId !== adjustment.addressId ||
-    (record.product.type !== "simple" && record.product.type !== "variation") ||
-    typeof currentStock !== "number" ||
-    !Number.isSafeInteger(currentStock) ||
-    currentStock < 0
+    !record.dTag ||
+    record.addressId !== address ||
+    record.product.id !== address ||
+    record.product.pubkey !== input.merchantPubkey ||
+    adjustment.addressId !== address
   ) {
+    throw new Error("The stock target does not match this merchant's listing.")
+  }
+  if (!Number.isSafeInteger(adjustment.nextStock) || adjustment.nextStock < 0) {
+    throw new Error("Stock must be a non-negative safe integer.")
+  }
+
+  const current = buildOrderStockAdjustments({
+    orderId: input.orderId,
+    merchantPubkey: input.merchantPubkey,
+    items: input.items,
+    productRecords: [record],
+  })[0]
+  if (!current || current.key !== adjustment.key) {
+    throw new Error("The stock target does not match this order's listing.")
+  }
+  const actionable = getOrderStockAdjustmentForDisplay({
+    adjustment: current,
+    persistedDecision: input.persistedDecision ?? null,
+  })
+  if (actionable.quantity !== adjustment.quantity) {
     throw new Error(
-      "The current listing revision cannot be used for this stock update. Refresh the order and try again."
+      "The order stock adjustment changed. Refresh the order and try again."
     )
   }
 
   return {
-    ...adjustment,
-    sourceEventId: record.eventId,
-    title: record.product.title,
-    currentStock,
-    nextStock:
-      adjustment.targetMode === "custom"
-        ? adjustment.nextStock
-        : Math.max(0, currentStock - adjustment.quantity),
-    shortfall: Math.max(0, adjustment.quantity - currentStock),
+    adjustment: {
+      ...actionable,
+      ...(adjustment.targetMode === "custom"
+        ? { nextStock: adjustment.nextStock, targetMode: "custom" as const }
+        : {}),
+    },
+    fulfillmentIntent: { kind: "preserve_existing", baseline: record.product },
   }
-}
-
-export function getOrderStockPickupFulfillment(input: {
-  items: OrderSummary["items"]
-  productAddressId: string
-}): OrderPickupFulfillmentSchema | null {
-  const matches = input.items.flatMap((item) => {
-    const fulfillment = item.fulfillment
-    return fulfillment?.type === "pickup" &&
-      fulfillment.product.coordinate === input.productAddressId
-      ? [fulfillment]
-      : []
-  })
-  const first = matches[0]
-  if (!first) return null
-  return matches.every((candidate) =>
-    hasSamePickupFulfillmentGraph(first, candidate)
-  )
-    ? first
-    : null
-}
-
-function matchesVerifiedEventPickup(input: {
-  product: ProductSchema
-  productAddressId: string
-  verifiedPickup: OrderPickupFulfillmentSchema
-}): boolean {
-  const shippingOptionId = input.product.shippingOptionId
-  return (
-    input.verifiedPickup.product.coordinate === input.productAddressId &&
-    input.verifiedPickup.product.merchantPubkey.toLowerCase() ===
-      input.product.pubkey.toLowerCase() &&
-    input.product.collectionRefs?.includes(
-      input.verifiedPickup.collection.coordinate
-    ) === true &&
-    !!shippingOptionId &&
-    (shippingOptionId === input.verifiedPickup.collection.coordinate ||
-      shippingOptionId === input.verifiedPickup.option.coordinate) &&
-    input.product.shippingOptionRefs?.some(
-      (reference) => reference.coordinate === shippingOptionId
-    ) === true
-  )
-}
-
-export async function resolveStockUpdateFulfillmentIntent(
-  input: {
-    product: ProductSchema
-    productAddressId: string
-    accountPubkey?: string | null
-    authenticatedPubkey?: string | null
-    shouldContinue?: () => boolean
-    orderHasPickupClaim?: boolean
-    verifiedPickup?: OrderPickupFulfillmentSchema
-  },
-  dependencies?: {
-    getShippingOptions: (
-      coordinates: string[]
-    ) => Promise<ParsedShippingOption[]>
-  }
-): Promise<ProductFulfillmentIntent> {
-  const { product } = input
-  if (product.format === "digital") return { kind: "digital" }
-
-  if (input.orderHasPickupClaim && !input.verifiedPickup) {
-    throw new Error(
-      "This stock target does not match the order's event pickup evidence. Refresh the order and try again."
-    )
-  }
-
-  if (input.verifiedPickup) {
-    if (
-      !matchesVerifiedEventPickup({
-        ...input,
-        verifiedPickup: input.verifiedPickup,
-      })
-    ) {
-      throw new Error(
-        "The current listing no longer matches this order's verified event pickup. Refresh the order before updating stock."
-      )
-    }
-    return { kind: "coordinate_after_order" }
-  }
-
-  const legacyShippingAmount =
-    product.sourceShippingCost?.amount ?? product.shippingCostSats
-  if (
-    typeof legacyShippingAmount === "number" &&
-    (!product.shippingOptionId ||
-      product.shippingOptionDTag === CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG)
-  ) {
-    const destinations = product.shippingCountryRules?.length
-      ? product.shippingCountryRules
-      : (product.shippingCountries ?? []).map((code) => ({
-          code,
-          name: code,
-          restrictTo: [],
-          exclude: [],
-        }))
-    return compileProductFulfillmentIntent({
-      format: "physical",
-      shippingPricingMode: "fixed",
-      amount: legacyShippingAmount,
-      currency:
-        product.sourceShippingCost?.normalizedCurrency ??
-        product.sourceShippingCost?.currency ??
-        "SATS",
-      destinations,
-    })
-  }
-
-  if (product.shippingOptionId) {
-    const shippingOptions = await (
-      dependencies?.getShippingOptions ??
-      ((coordinates: string[]) =>
-        getShippingOptionsByCoordinates(coordinates, {
-          accountPubkey: input.accountPubkey,
-          authenticatedPubkey: input.authenticatedPubkey,
-          shouldContinue: input.shouldContinue,
-        }))
-    )([product.shippingOptionId])
-    const prepared = resolveProductFulfillment(product, shippingOptions)
-    if (
-      prepared.intent !== "fixed_standard" ||
-      prepared.status !== "ready" ||
-      !prepared.option
-    ) {
-      throw new Error(
-        "Could not verify this listing's fixed shipping option. Review the listing before updating stock."
-      )
-    }
-    return {
-      kind: "fixed_standard",
-      amount: prepared.option.price,
-      currency: prepared.option.currency,
-      countries: [...prepared.option.countries],
-    }
-  }
-
-  return { kind: "coordinate_after_order" }
 }
