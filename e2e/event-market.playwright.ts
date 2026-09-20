@@ -2638,6 +2638,41 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
     .toBe(market.canonicalNaddr)
 })
 
+test("Market hides perspective controls until a signer is connected @market", async ({
+  page,
+}) => {
+  page.setDefaultTimeout(30_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  await page.setViewportSize({ width: 390, height: 844 })
+
+  await page.goto(`${marketUrl}/products`)
+  await expect(
+    page.getByRole("navigation", { name: "Market browse" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("group", { name: "Market perspective" })
+  ).toHaveCount(0)
+
+  await page.goto(`${marketUrl}/events`)
+  await expect(
+    page.getByRole("navigation", { name: "Market browse" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("group", { name: "Market perspective" })
+  ).toHaveCount(0)
+
+  await gotoAs(page, marketUrl, "/events", "buyer", {
+    source: "following",
+  })
+  await expect(
+    page.getByRole("group", { name: "Market perspective" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Following", exact: true })
+  ).toHaveAttribute("aria-pressed", "true")
+})
+
 test("Market Events browses the same perspective on desktop, mobile, and keyboard @market", async ({
   page,
 }) => {
@@ -2662,13 +2697,7 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   ).toHaveAttribute("aria-current", "page")
   await expect(
     page.getByRole("group", { name: "Market perspective" })
-  ).toBeVisible()
-  await expect(
-    page.getByRole("button", { name: "Conduit", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
-  await expect(
-    page.getByRole("button", { name: "Following", exact: true })
-  ).toBeDisabled()
+  ).toHaveCount(0)
   await expect(
     page.getByRole("dialog", { name: "Sign in to Conduit" })
   ).toHaveCount(0)
