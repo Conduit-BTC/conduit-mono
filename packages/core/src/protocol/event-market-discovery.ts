@@ -932,6 +932,8 @@ async function readEventMarketCollectionCandidatesWithinBudget(
   const fetchEvents =
     testOverrides.fetchCollectionCandidateEvents ??
     fetchSignedEventsFanoutDetailed
+  const appRelayUrlSet = new Set(relayPlan?.appRelayUrls ?? [])
+  const personalRelayUrlSet = new Set(relayPlan?.personalRelayUrls ?? [])
   const unitResults = (
     await mapWithConcurrency({
       values: tasks,
@@ -944,12 +946,10 @@ async function readEventMarketCollectionCandidatesWithinBudget(
           authority: {
             authenticatedPubkey,
             ownerSelectedRelayUrls,
-            appRelayUrls: relayPlan?.appRelayUrls?.includes(task.relayUrl)
+            appRelayUrls: appRelayUrlSet.has(task.relayUrl)
               ? [task.relayUrl]
               : [],
-            personalRelayUrls: relayPlan?.personalRelayUrls?.includes(
-              task.relayUrl
-            )
+            personalRelayUrls: personalRelayUrlSet.has(task.relayUrl)
               ? [task.relayUrl]
               : [],
             accountNetworkLocalStateRepository:

@@ -396,6 +396,7 @@ export async function getEventMarketReceiptMerchandise(
     index += RECEIPT_READ_CONCURRENCY
   ) {
     const batch = filters.slice(index, index + RECEIPT_READ_CONCURRENCY)
+    const remainingRelayUrlSet = new Set(remainingRelayUrls)
     const batchResults = await Promise.all(
       batch.map((filter) =>
         fetch(filter, {
@@ -403,13 +404,13 @@ export async function getEventMarketReceiptMerchandise(
           accountPubkey: authenticatedPubkey,
           authenticatedPubkey,
           ownerSelectedRelayUrls: (plan.ownerSelectedRelayUrls ?? []).filter(
-            (relayUrl) => remainingRelayUrls.includes(relayUrl)
+            (relayUrl) => remainingRelayUrlSet.has(relayUrl)
           ),
           appRelayUrls: (plan.appRelayUrls ?? []).filter((relayUrl) =>
-            remainingRelayUrls.includes(relayUrl)
+            remainingRelayUrlSet.has(relayUrl)
           ),
           personalRelayUrls: (plan.personalRelayUrls ?? []).filter((relayUrl) =>
-            remainingRelayUrls.includes(relayUrl)
+            remainingRelayUrlSet.has(relayUrl)
           ),
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,

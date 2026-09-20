@@ -128,6 +128,22 @@ describe("planRelayReads", () => {
     expect(plan.relayUrls).toContain("wss://public.conduit.market")
   })
 
+  it("keeps general app backups in the commerce read plan", () => {
+    const plan = planRelayReads({
+      intent: "commerce_products",
+      maxRelays: 20,
+      skipHealthFilter: true,
+    })
+
+    expect(plan.relayUrls).toEqual(
+      expect.arrayContaining([
+        "wss://relay.dreamith.to",
+        "wss://nos.lol",
+        ...config.commerceDiscoveryRelayUrls,
+      ])
+    )
+  })
+
   it("uses commerce discovery defaults when local settings are empty", () => {
     const plan = planRelayReads({
       intent: "commerce_products",

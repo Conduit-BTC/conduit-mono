@@ -5644,8 +5644,8 @@ describe("commerce gateway", () => {
     }
 
     expect(genericReadRelayPlans).toEqual([
-      [],
-      [writeOnlyRelayUrl, readOnlyRelayUrl],
+      config.appReadRelayUrls,
+      [writeOnlyRelayUrl, readOnlyRelayUrl, ...config.appReadRelayUrls],
     ])
     expect(genericReadRelayPlans.flat()).not.toContain(staleSelfRelayUrl)
     expect(genericReadOwnerSelections).toEqual([
@@ -7408,6 +7408,8 @@ describe("getProductsByIds diagnostics", () => {
     })
     const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-parked-fallback`
     config.defaultRelays = []
+    config.appReadRelayUrls = []
+    config.appCommerceRelayUrls = []
     config.appBackplaneRelayUrls = []
     config.commerceDiscoveryRelayUrls = []
     config.corePublicFallbackRelayUrls = []

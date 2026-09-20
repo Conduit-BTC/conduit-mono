@@ -5,6 +5,7 @@ import {
   getPublicKey,
   kinds,
 } from "nostr-tools"
+import { config } from "../packages/core/src/config"
 import {
   __resetMediaServerPreferencesForTests,
   addMediaServerPreference,
@@ -352,7 +353,7 @@ describe("kind 10063 replacement selection and evidence", () => {
     ])
     expect(finalReadCalls).toEqual([
       {
-        relayUrls: [ownerWsRelay, ownerWssRelay],
+        relayUrls: [ownerWsRelay, ownerWssRelay, ...config.appReadRelayUrls],
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
         ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],

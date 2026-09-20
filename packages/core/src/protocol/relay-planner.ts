@@ -216,6 +216,7 @@ function appReadRelayUrlsForIntent(intent: RelayReadIntent): string[] {
       return dedupeOrdered([
         ...config.appCommerceRelayUrls,
         ...config.commerceDiscoveryRelayUrls,
+        ...config.appReadRelayUrls,
       ])
     case "dm_inbox":
     case "legacy_dm":
@@ -630,6 +631,8 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     ...personalWriteRelays,
     ...appWriteRelays,
   ])
+  const appWriteRelaySet = new Set(appWriteRelays)
+  const personalWriteRelaySet = new Set(personalWriteRelays)
 
   if (input.intent === "author_event") {
     const authorPubkey = input.authorPubkey?.trim().toLowerCase()
@@ -663,6 +666,7 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
       kept,
       input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
     )
+    const authorWriteHintSet = new Set(authorWriteHints)
     return {
       intent: input.intent,
       signedRelayListAuthoritative: hasReconciledOwnerProjection,
@@ -670,12 +674,12 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
       broadcastRelayUrls: [],
       parkedRelayUrls: parked,
       appRelayUrls: primaryRelayUrls.filter((relayUrl) =>
-        appWriteRelays.includes(relayUrl)
+        appWriteRelaySet.has(relayUrl)
       ),
       personalRelayUrls: primaryRelayUrls.filter(
         (relayUrl) =>
-          personalWriteRelays.includes(relayUrl) ||
-          (isAuthenticatedAuthor && authorWriteHints.includes(relayUrl))
+          personalWriteRelaySet.has(relayUrl) ||
+          (isAuthenticatedAuthor && authorWriteHintSet.has(relayUrl))
       ),
     }
   }
@@ -742,8 +746,9 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     input.now
   )
 
+  const primaryKeptSet = new Set(primaryKept)
   const broadcastOrdered = dedupeOrdered(
-    userWriteRelays.filter((url) => !primaryKept.includes(url))
+    userWriteRelays.filter((url) => !primaryKeptSet.has(url))
   )
   const { kept: broadcastKept, parked: broadcastParked } = applyHealthFilter(
     broadcastOrdered,
@@ -763,6 +768,8 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     ...primaryRelayUrls,
     ...broadcastRelayUrls,
   ])
+  const missingRecipientFallbackSet = new Set(missingRecipientFallback)
+  const authenticatedRecipientHintSet = new Set(authenticatedRecipientHints)
   return {
     intent: input.intent,
     primaryRelayUrls,
@@ -770,13 +777,13 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     parkedRelayUrls: dedupeOrdered([...primaryParked, ...broadcastParked]),
     appRelayUrls: executableRelayUrls.filter(
       (relayUrl) =>
-        missingRecipientFallback.includes(relayUrl) ||
-        appWriteRelays.includes(relayUrl)
+        missingRecipientFallbackSet.has(relayUrl) ||
+        appWriteRelaySet.has(relayUrl)
     ),
     personalRelayUrls: executableRelayUrls.filter(
       (relayUrl) =>
-        personalWriteRelays.includes(relayUrl) ||
-        authenticatedRecipientHints.includes(relayUrl)
+        personalWriteRelaySet.has(relayUrl) ||
+        authenticatedRecipientHintSet.has(relayUrl)
     ),
   }
 }

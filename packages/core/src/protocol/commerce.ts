@@ -4134,22 +4134,24 @@ async function fetchPublicProductRecordsProgressive(
   })
 
   const expandedRelayPlan = await expandedRelayPlanPromise
+  const initialRelayUrlSet = new Set(relayPlan.relayUrls)
   const expansionRelayUrls = expandedRelayPlan.relayUrls.filter(
-    (relayUrl) => !relayPlan.relayUrls.includes(relayUrl)
+    (relayUrl) => !initialRelayUrlSet.has(relayUrl)
   )
   if (expansionRelayUrls.length > 0) {
+    const expansionRelayUrlSet = new Set(expansionRelayUrls)
     await streamProductRecordChunks({
       baseFilter: filter,
       authorChunks,
       relayUrls: expansionRelayUrls,
       ownerSelectedRelayUrls: expandedRelayPlan.ownerSelectedRelayUrls.filter(
-        (relayUrl) => expansionRelayUrls.includes(relayUrl)
+        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
       ),
       appRelayUrls: expandedRelayPlan.appRelayUrls.filter((relayUrl) =>
-        expansionRelayUrls.includes(relayUrl)
+        expansionRelayUrlSet.has(relayUrl)
       ),
       personalRelayUrls: expandedRelayPlan.personalRelayUrls.filter(
-        (relayUrl) => expansionRelayUrls.includes(relayUrl)
+        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
       ),
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
