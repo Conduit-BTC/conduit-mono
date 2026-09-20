@@ -1,4 +1,4 @@
-import { LoaderCircle, Store, Users } from "lucide-react"
+import { Store, Users } from "lucide-react"
 import type { ReactNode } from "react"
 import { Badge } from "@conduit/ui"
 import type { MerchantTrustContext } from "../hooks/useMerchantTrustContext"
@@ -29,29 +29,12 @@ function TrustChip({
 }
 
 function SocialChips({ trust }: { trust: MerchantTrustContext }) {
-  if (trust.socialState === "loading") {
-    return (
-      <TrustChip>
-        <LoaderCircle className="h-3 w-3 animate-spin" />
-        Checking follows
-      </TrustChip>
-    )
-  }
-
-  if (trust.socialState === "disconnected") {
-    return <TrustChip>Connect to check follows</TrustChip>
-  }
-
   if (trust.socialState === "own_store") {
     return <TrustChip tone="positive">Your merchant profile</TrustChip>
   }
 
-  if (trust.socialState === "unavailable") {
-    return <TrustChip tone="warning">Follow context unavailable</TrustChip>
-  }
-
-  if (trust.socialState === "limited") {
-    return <TrustChip tone="warning">Follow context limited</TrustChip>
+  if (trust.socialState !== "available") {
+    return null
   }
 
   return (

@@ -32,13 +32,12 @@ import {
   Button,
   ConversationCardScroller,
   ConversationMessageBubble,
-  DecryptFailureNotice,
   getConversationMessageDisplayContent,
   LegacyDirectMessageNotice,
-  LiveReadNotice,
   matchesConversationSearch,
   MessagingReadinessNotice,
   MessageComposer,
+  ProtectedInboxNotice,
   SearchInput,
   Sheet,
   SheetContent,
@@ -151,6 +150,11 @@ function MessagesPage() {
     error: liveQuery.error,
     meta: liveMeta,
   })
+  const messagesRetryUseful =
+    protectedMessagesReadState !== "complete" ||
+    (liveMeta?.decryptFailures?.length ?? 0) > 0 ||
+    (liveMeta?.legacyDecryptFailures?.some((failure) => failure.retryable) ??
+      false)
 
   const counterpartyPubkeys = useMemo(
     () =>
@@ -461,28 +465,14 @@ function MessagesPage() {
           />
         )}
 
-      {signerConnected &&
-        protectedMessagesReadState !== "complete" &&
-        protectedMessagesReadState !== "pending" && (
-          <LiveReadNotice
-            state={protectedMessagesReadState}
-            onRetry={retryMessagesRead}
-            retrying={liveQuery.isRefetching}
-            className="xl:shrink-0"
-          />
-        )}
-
-      {signerConnected && (
-        <DecryptFailureNotice
-          count={liveMeta?.legacyDecryptFailures?.length ?? 0}
-          label="Some legacy messages couldn't be decrypted."
-          onRetry={
-            liveMeta?.legacyDecryptFailures?.some(
-              (failure) => failure.retryable
-            )
-              ? retryMessagesRead
-              : undefined
+      {signerConnected && protectedMessagesReadState !== "pending" && (
+        <ProtectedInboxNotice
+          state={protectedMessagesReadState}
+          decryptFailureCount={
+            (liveMeta?.decryptFailures?.length ?? 0) +
+            (liveMeta?.legacyDecryptFailures?.length ?? 0)
           }
+          onRetry={messagesRetryUseful ? retryMessagesRead : undefined}
           retrying={liveQuery.isRefetching}
           className="xl:shrink-0"
         />
@@ -497,17 +487,9 @@ function MessagesPage() {
         )}
 
       {showEmpty && (
-        <>
-          <DecryptFailureNotice
-            count={liveMeta?.decryptFailures?.length ?? 0}
-            onRetry={retryMessagesRead}
-            retrying={liveQuery.isRefetching}
-            className="xl:shrink-0"
-          />
-          <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-            No buyer messages yet.
-          </div>
-        </>
+        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+          No buyer messages yet.
+        </div>
       )}
 
       {signerConnected && conversations.length > 0 && (
@@ -719,13 +701,6 @@ function MessagesPage() {
                   )}
                 </div>
 
-                <DecryptFailureNotice
-                  count={liveMeta?.decryptFailures?.length ?? 0}
-                  onRetry={retryMessagesRead}
-                  retrying={liveQuery.isRefetching}
-                  className="mb-3 xl:shrink-0"
-                />
-
                 <div className="min-h-0 flex-1 space-y-2 overflow-auto pr-1">
                   {threadMessages.length === 0 &&
                   optimisticThreadMessages.length === 0 ? (
@@ -790,7 +765,7 @@ function MessagesPage() {
                         placeholder="Reply to buyer"
                       />
                       {sendMutation.error && (
-                        <div className="text-xs text-error">
+                        <div role="alert" className="text-xs text-error">
                           Message wasn't published. Retry from the message
                           bubble.
                         </div>

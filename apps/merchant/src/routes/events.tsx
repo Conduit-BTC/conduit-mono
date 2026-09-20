@@ -20,8 +20,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-  formatEventRelayReadCoverage,
-  getOrganizerDiscoveryPresentation,
+  getResultPresentation,
   Input,
   Label,
   Select,
@@ -44,7 +43,6 @@ import {
   OrganizerEventMarketPanel,
 } from "../components/OrganizerEventMarketPanel"
 import {
-  getMerchantOrganizerEventCatalogView,
   listOrganizerEventMarkets,
   discoverFollowedEventMarkets,
   loadOrganizerEventMarketDeliveryOutbox,
@@ -406,16 +404,15 @@ function FindEventsPanel({
     () => discoveryQuery.data?.markets ?? [],
     [discoveryQuery.data?.markets]
   )
-  const discoveryPresentation = discoveryQuery.data
-    ? getOrganizerDiscoveryPresentation({
-        state: discoveryQuery.data.state,
-        eventCount: discoveredMarkets.length,
-        perspective: discoveryQuery.data.perspective,
-        candidateScanCoverage: discoveryQuery.data.candidateScanCoverage,
-        searchedOrganizerCount: discoveryQuery.data.searchedOrganizerCount,
-        incompleteOrganizerCount: discoveryQuery.data.incompleteOrganizerCount,
-      })
-    : null
+  const discoveryResultPresentation = getResultPresentation({
+    resultCount: discoveredMarkets.length + savedReferences.length,
+    reliability:
+      discoveryQuery.data &&
+      ["complete", "complete_empty"].includes(discoveryQuery.data.state) &&
+      !discoveryQuery.isError
+        ? "complete"
+        : "degraded",
+  })
 
   useEffect(() => {
     if (!merchantPubkey || discoveredMarkets.length === 0) return
@@ -640,59 +637,10 @@ function FindEventsPanel({
           {discoveryQuery.isPending && (
             <div
               className="flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] px-4 py-3 text-sm text-[var(--text-muted)]"
-              role="status"
-              aria-live="polite"
+              aria-busy="true"
             >
               <Loader2 className="h-4 w-4 animate-spin" />
-              Checking event collections on bounded commerce relays…
-            </div>
-          )}
-
-          {discoveryPresentation &&
-            !discoveryPresentation.prominent &&
-            (discoveredMarkets.length > 0 || savedReferences.length > 0) && (
-              <div
-                className="flex flex-col gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
-                role={discoveryPresentation.role}
-                aria-live="polite"
-                data-testid="followed-event-discovery-status"
-              >
-                <span className="text-pretty tabular-nums">
-                  {discoveryPresentation.message}
-                </span>
-                {discoveryQuery.data?.state === "partial" ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={discoveryQuery.isFetching}
-                    onClick={() => void discoveryQuery.refetch()}
-                  >
-                    Retry event discovery
-                  </Button>
-                ) : null}
-              </div>
-            )}
-
-          {(discoveryQuery.isError ||
-            discoveryQuery.data?.state === "unavailable") && (
-            <div
-              className="flex flex-col gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm leading-6 text-[var(--text-primary)] sm:flex-row sm:items-center sm:justify-between"
-              role="alert"
-            >
-              <span>
-                {discoveryPresentation?.message ??
-                  "Followed-organizer discovery is unavailable. Saved event links can still be opened directly."}
-              </span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={discoveryQuery.isFetching}
-                onClick={() => void discoveryQuery.refetch()}
-              >
-                Retry event discovery
-              </Button>
+              Loading events…
             </div>
           )}
 
@@ -735,26 +683,42 @@ function FindEventsPanel({
           {!discoveryQuery.isPending &&
             discoveredMarkets.length === 0 &&
             savedReferences.length === 0 && (
-              <Card className="border-dashed">
+              <Card
+                className={
+                  discoveryResultPresentation.kind === "degraded_empty"
+                    ? "border-warning/40 bg-warning/10"
+                    : "border-dashed"
+                }
+                role={
+                  discoveryResultPresentation.kind === "degraded_empty"
+                    ? "alert"
+                    : undefined
+                }
+              >
                 <CardContent className="flex flex-col items-center px-6 py-12 text-center">
                   <Search className="h-8 w-8 text-[var(--text-muted)]" />
                   <h2 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
-                    {discoveryQuery.data?.state === "complete_empty"
-                      ? "No current followed-organizer events found"
-                      : "No followed events found in this relay view"}
+                    {discoveryResultPresentation.kind === "degraded_empty"
+                      ? "Events couldn't be loaded"
+                      : "No current followed-organizer events found"}
                   </h2>
                   <p className="mt-2 max-w-lg text-pretty text-sm leading-6 text-[var(--text-muted)]">
-                    <span
-                      role={discoveryPresentation?.role ?? "status"}
-                      aria-live="polite"
-                      className="tabular-nums"
-                    >
-                      {discoveryPresentation?.message ??
-                        "No events found so far."}
-                    </span>{" "}
-                    Paste a known event link above to open it directly. No
-                    global event absence is inferred.
+                    {discoveryResultPresentation.kind === "degraded_empty"
+                      ? "Retry to check for events, or paste a known event link above."
+                      : "Paste a known event link above to open it directly."}
                   </p>
+                  {discoveryResultPresentation.kind === "degraded_empty" ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="mt-4"
+                      disabled={discoveryQuery.isFetching}
+                      onClick={() => void discoveryQuery.refetch()}
+                    >
+                      Retry
+                    </Button>
+                  ) : null}
                 </CardContent>
               </Card>
             )}
@@ -762,20 +726,22 @@ function FindEventsPanel({
       ) : null}
 
       {!!selectedReference && selectedMarketQuery.isPending && (
-        <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-[var(--text-muted)]">
+        <div
+          className="flex min-h-48 items-center justify-center gap-2 text-sm text-[var(--text-muted)]"
+          aria-busy="true"
+        >
           <Loader2 className="h-4 w-4 animate-spin" />
-          Loading current event evidence…
+          Loading current event details…
         </div>
       )}
 
       {!!selectedReference && selectedMarketQuery.isError && (
         <Card>
           <CardHeader>
-            <CardTitle>Event evidence unavailable</CardTitle>
+            <CardTitle>Event details couldn't be confirmed</CardTitle>
             <CardDescription className="text-pretty">
               The event is not shown because its organizer, schedule, links, or
-              supporting records could not be verified. No placeholder date is
-              inferred.
+              supporting records could not be verified.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -784,7 +750,7 @@ function FindEventsPanel({
               variant="outline"
               onClick={() => selectedMarketQuery.refetch()}
             >
-              Retry relay read
+              Retry event details
             </Button>
           </CardContent>
         </Card>
@@ -901,14 +867,13 @@ function MyEventsPanel({
     () => marketsQuery.data?.markets ?? [],
     [marketsQuery.data?.markets]
   )
-  const catalogView = getMerchantOrganizerEventCatalogView(
-    marketsQuery.data,
-    savedReferences.length,
-    marketsQuery.isError
-  )
-  const organizerCatalogCoverage = formatEventRelayReadCoverage(
-    marketsQuery.data?.coverage
-  )
+  const organizerCatalogPresentation = getResultPresentation({
+    resultCount: markets.length + savedReferences.length,
+    reliability:
+      marketsQuery.data?.state === "complete" && !marketsQuery.isError
+        ? "complete"
+        : "degraded",
+  })
 
   useEffect(() => {
     if (!initialReference) return
@@ -1713,8 +1678,8 @@ function MyEventsPanel({
         <CardHeader>
           <CardTitle>Open an organizer catalog</CardTitle>
           <CardDescription>
-            Relay discovery is bounded. You can also reopen an organizer-owned
-            kind-30405 catalog from its canonical naddr or Market share link.
+            Choose a saved event or open one from its naddr or Market share
+            link.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 lg:grid-cols-2">
@@ -1732,7 +1697,7 @@ function MyEventsPanel({
                 <SelectValue
                   placeholder={
                     marketsQuery.isPending
-                      ? "Checking relays..."
+                      ? "Loading events..."
                       : "No saved event markets"
                   }
                 />
@@ -1785,7 +1750,7 @@ function MyEventsPanel({
         <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
           <SignedActionStatus
             state={publishState}
-            successMessage="Organizer records were signed and delivered. Relay evidence is refreshing."
+            successMessage="Organizer records were signed. Delivery status is updating."
             errorMessage={publishError}
           />
         </div>
@@ -1803,75 +1768,6 @@ function MyEventsPanel({
           onRetryDelivery={retryDelivery}
         />
       )}
-
-      {marketsQuery.isError && (
-        <div className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--text-primary)]">
-          <p>
-            Organizer discovery could not be completed. Saved references can
-            still be opened directly. No missing event is inferred from this
-            relay failure.
-          </p>
-          <Button
-            type="button"
-            className="mt-3"
-            variant="outline"
-            disabled={marketsQuery.isFetching}
-            onClick={() => marketsQuery.refetch()}
-          >
-            Retry organizer discovery
-          </Button>
-        </div>
-      )}
-
-      {!marketsQuery.isError &&
-        catalogView.discoveryState === "partial" &&
-        catalogView.hasKnownReferences && (
-          <div
-            className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-secondary)]"
-            role="status"
-            aria-live="polite"
-          >
-            <p className="text-pretty tabular-nums">
-              {organizerCatalogCoverage ??
-                "The planned event relay read was incomplete."}{" "}
-              Available and saved events remain visible; no missing event is
-              inferred from the incomplete refresh.
-            </p>
-            <Button
-              type="button"
-              className="mt-3"
-              variant="outline"
-              disabled={marketsQuery.isFetching}
-              onClick={() => marketsQuery.refetch()}
-            >
-              Retry organizer discovery
-            </Button>
-          </div>
-        )}
-
-      {!marketsQuery.isError &&
-        catalogView.discoveryState === "unavailable" &&
-        catalogView.hasKnownReferences && (
-          <div
-            className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--text-primary)]"
-            role="status"
-          >
-            <p>
-              Organizer discovery is unavailable. Saved references and direct
-              catalog access remain available; no missing event is inferred from
-              this relay failure.
-            </p>
-            <Button
-              type="button"
-              className="mt-3"
-              variant="outline"
-              disabled={marketsQuery.isFetching}
-              onClick={() => marketsQuery.refetch()}
-            >
-              Retry organizer discovery
-            </Button>
-          </div>
-        )}
 
       {membershipMutation.isError && (
         <div
@@ -1895,9 +1791,12 @@ function MyEventsPanel({
       )}
 
       {selectedReadPending && (
-        <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-[var(--text-muted)]">
+        <div
+          className="flex min-h-48 items-center justify-center gap-2 text-sm text-[var(--text-muted)]"
+          aria-busy="true"
+        >
           <Loader2 className="h-4 w-4 animate-spin" />
-          Resolving organizer evidence from relays...
+          Loading current event details...
         </div>
       )}
 
@@ -1918,9 +1817,9 @@ function MyEventsPanel({
           <CardHeader>
             <CardTitle>Latest event records still need verification</CardTitle>
             <CardDescription>
-              The available relay views disagree on the newest signed event
-              records. Updating the event and changing product acceptance stay
-              disabled until one complete current graph is verified.
+              The newest signed event records disagree. Updating the event and
+              changing product acceptance stay disabled until one current graph
+              is verified.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -1939,10 +1838,10 @@ function MyEventsPanel({
       {!selectedReadPending && selectedReadError && (
         <Card>
           <CardHeader>
-            <CardTitle>Event evidence unavailable</CardTitle>
+            <CardTitle>Event details couldn't be confirmed</CardTitle>
             <CardDescription>
-              The catalog was not shown because its organizer, links, deletion
-              state, or supporting records could not be verified.
+              Updating the event and changing product acceptance remain
+              unavailable until its current signed records can be verified.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -1951,7 +1850,7 @@ function MyEventsPanel({
               variant="outline"
               onClick={() => selectedMarketQuery.refetch()}
             >
-              Retry relay read
+              Retry event details
             </Button>
           </CardContent>
         </Card>
@@ -1960,7 +1859,14 @@ function MyEventsPanel({
       {selectedMarketBehindExpectedFrontier && (
         <div
           className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--text-primary)]"
-          role="status"
+          role={
+            selectedMarketQuery.isPending || selectedMarketQuery.isFetching
+              ? undefined
+              : "alert"
+          }
+          aria-busy={
+            selectedMarketQuery.isPending || selectedMarketQuery.isFetching
+          }
         >
           <div className="font-medium">
             Showing earlier signed event evidence
@@ -1968,7 +1874,7 @@ function MyEventsPanel({
           <p className="mt-1 text-[var(--text-secondary)]">
             {selectedMarketQuery.isPending || selectedMarketQuery.isFetching
               ? "The latest published event records are still being resolved. Updating the event and changing product acceptance stay disabled until they are verified."
-              : "The latest published event records could not be verified in this relay view. Refresh before updating the event or changing product acceptance."}
+              : "The latest published event records could not be verified. Refresh before updating the event or changing product acceptance."}
           </p>
           {!selectedMarketQuery.isPending &&
             !selectedMarketQuery.isFetching && (
@@ -2117,100 +2023,56 @@ function MyEventsPanel({
       )}
 
       {!embedded &&
-        !marketsQuery.isError &&
-        catalogView.emptyState === "partial" &&
-        !selectedMarket && (
-          <Card className="border-dashed" data-testid="my-events-partial-empty">
-            <CardContent className="flex flex-col items-center px-6 py-14 text-center">
-              <CalendarDays className="h-9 w-9 text-[var(--text-muted)]" />
-              <h2 className="mt-4 text-lg font-semibold text-[var(--text-primary)]">
-                No events found in the checked portion
-              </h2>
-              <p className="mt-2 max-w-lg text-sm leading-6 text-[var(--text-muted)]">
-                <span role="status" aria-live="polite" className="tabular-nums">
-                  {organizerCatalogCoverage ??
-                    "The planned event relay read was incomplete."}
-                </span>{" "}
-                No global absence is inferred. Retry the read or open a catalog
-                directly with its naddr or share link.
-              </p>
-              <Button
-                type="button"
-                className="mt-5"
-                variant="outline"
-                disabled={marketsQuery.isFetching}
-                onClick={() => marketsQuery.refetch()}
-              >
-                Retry organizer discovery
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-      {!embedded &&
-        !marketsQuery.isError &&
-        catalogView.emptyState === "unavailable" &&
-        !selectedMarket && (
+        !marketsQuery.isPending &&
+        !selectedMarket &&
+        (organizerCatalogPresentation.kind === "complete_empty" ||
+          organizerCatalogPresentation.kind === "degraded_empty") && (
           <Card
-            className="border-dashed"
-            data-testid="my-events-unavailable-empty"
+            className={
+              organizerCatalogPresentation.kind === "degraded_empty"
+                ? "border-warning/40 bg-warning/10"
+                : "border-dashed"
+            }
+            role={
+              organizerCatalogPresentation.kind === "degraded_empty"
+                ? "alert"
+                : undefined
+            }
+            data-testid="my-events-empty"
           >
             <CardContent className="flex flex-col items-center px-6 py-14 text-center">
               <CalendarDays className="h-9 w-9 text-[var(--text-muted)]" />
               <h2 className="mt-4 text-lg font-semibold text-[var(--text-primary)]">
-                Organizer discovery unavailable
+                {organizerCatalogPresentation.kind === "degraded_empty"
+                  ? "Events couldn't be loaded"
+                  : "No events here yet"}
               </h2>
               <p className="mt-2 max-w-lg text-sm leading-6 text-[var(--text-muted)]">
-                Relays did not complete this organizer read. No event absence is
-                inferred. Saved catalogs can still be reopened, or you can open
-                one directly with its naddr or share link.
+                {organizerCatalogPresentation.kind === "degraded_empty"
+                  ? "Retry to check for events, or open one directly with its naddr or share link."
+                  : "Create your first event, or open one directly with its naddr or share link."}
               </p>
-              <Button
-                type="button"
-                className="mt-5"
-                variant="outline"
-                disabled={marketsQuery.isFetching}
-                onClick={() => marketsQuery.refetch()}
-              >
-                Retry organizer discovery
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-      {!embedded &&
-        !marketsQuery.isError &&
-        catalogView.emptyState === "complete" &&
-        !selectedMarket && (
-          <Card className="border-dashed">
-            <CardContent className="flex flex-col items-center px-6 py-14 text-center">
-              <CalendarDays className="h-9 w-9 text-[var(--text-muted)]" />
-              <h2 className="mt-4 text-lg font-semibold text-[var(--text-primary)]">
-                No events found in the completed planned reads
-              </h2>
-              <p className="mt-2 max-w-lg text-sm leading-6 text-[var(--text-muted)]">
-                {organizerCatalogCoverage ? (
-                  <span
-                    role="status"
-                    aria-live="polite"
-                    className="tabular-nums"
-                  >
-                    {organizerCatalogCoverage}{" "}
-                  </span>
-                ) : null}
-                This bounded read does not establish global event absence. Start
-                with an empty organizer catalog; products are accepted later by
-                publishing a signed collection update.
-              </p>
-              <Button
-                type="button"
-                className="mt-5"
-                disabled={organizerAuthorityMutationPending}
-                onClick={openCreate}
-              >
-                <Plus />
-                Create event
-              </Button>
+              {organizerCatalogPresentation.kind === "degraded_empty" ? (
+                <Button
+                  type="button"
+                  className="mt-5"
+                  variant="outline"
+                  disabled={marketsQuery.isFetching}
+                  onClick={() => marketsQuery.refetch()}
+                >
+                  Retry
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  className="mt-5"
+                  disabled={organizerAuthorityMutationPending}
+                  onClick={openCreate}
+                >
+                  <Plus />
+                  Create event
+                </Button>
+              )}
             </CardContent>
           </Card>
         )}

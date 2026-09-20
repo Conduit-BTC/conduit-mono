@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type ButtonHTMLAttributes } from "react"
+import { useEffect, useState, type ButtonHTMLAttributes } from "react"
 import { CheckCircle2, RotateCw } from "lucide-react"
 import { cn } from "../utils"
 import { Button } from "./Button"
 import {
+  getRefreshChipDoneTimerDelay,
   resolveRefreshChipPhase,
   type RefreshChipPhase,
 } from "./RefreshChipState"
@@ -13,14 +14,12 @@ export interface RefreshChipProps extends Omit<
 > {
   /** Whether the backing query is currently fetching. */
   refreshing: boolean
-  /** Called when the shopper or merchant asks for fresh data. */
-  onRefresh: () => void
-  /** Marks the shown data as possibly out of date; swaps the idle label. */
+  /** Runs the requested refresh and settles after every backing source. */
+  onRefresh: () => Promise<unknown>
+  /** Preserved evidence used to avoid a false completion confirmation. */
   stale?: boolean
   /** Label shown while the control is idle and the data is current. */
   idleLabel?: string
-  /** Label shown while the control is idle and the data may be stale. */
-  staleLabel?: string
   /** Label shown while a refresh runs. */
   refreshingLabel?: string
   /** Label flashed briefly after a refresh completes. */
@@ -33,7 +32,9 @@ export interface RefreshChipProps extends Omit<
  * RefreshChip -- the shared refresh control used across Market and Merchant
  * data surfaces. It matches the Merchant orders page style: an outline
  * button with a rotate icon that spins while a refresh runs, then flashes a
- * green checked confirmation before settling back to idle.
+ * green checked confirmation after an explicit refresh before settling back
+ * to idle. Background refreshes may spin, but never announce completion or
+ * turn the control into a network warning.
  *
  * The label column is shift-free: every phase label occupies the same grid
  * cell, so the cell keeps the intrinsic width of the widest label and phase
@@ -41,10 +42,13 @@ export interface RefreshChipProps extends Omit<
  *
  * The phase machine follows the `refreshing` prop. While `refreshing` is
  * true the chip shows the refreshing label, reports `aria-busy`, and ignores
- * further clicks while staying fully opaque. When a fresh read completes, the
- * chip flashes `doneLabel` for `doneDurationMs` before returning to idle. A
- * completed read that remains stale skips that confirmation and shows
- * `staleLabel` with a warning tone instead.
+ * further clicks while staying fully opaque. When an explicit user refresh
+ * completes, the chip flashes `doneLabel` for `doneDurationMs` before returning
+ * to idle. That interval starts only after the externally reported refresh
+ * also settles, so a re-keyed replacement read cannot consume the confirmation
+ * behind the busy state. Background completion stays silent, and a completed
+ * read that remains stale skips confirmation. The affected result surface owns
+ * any consequential degraded-state copy.
  *
  * @example
  * <RefreshChip
@@ -58,7 +62,6 @@ function RefreshChip({
   onRefresh,
   stale = false,
   idleLabel = "Refresh",
-  staleLabel = "May be out of date",
   refreshingLabel = "Refreshing...",
   doneLabel = "Updated",
   doneDurationMs = 2000,
@@ -66,48 +69,31 @@ function RefreshChip({
   className,
   ...props
 }: RefreshChipProps) {
-  const [phase, setPhase] = useState<RefreshChipPhase>(
-    refreshing ? "refreshing" : "idle"
-  )
-  const prevRefreshing = useRef(refreshing)
+  const [phase, setPhase] = useState<RefreshChipPhase>("idle")
 
   useEffect(() => {
-    const wasRefreshing = prevRefreshing.current
-    prevRefreshing.current = refreshing
-
-    setPhase((currentPhase) =>
-      resolveRefreshChipPhase({
-        currentPhase,
-        refreshCompleted: wasRefreshing && !refreshing,
-        refreshing,
-        stale,
-      })
-    )
-  }, [refreshing, stale])
-
-  useEffect(() => {
-    if (phase !== "done") return
-    const timer = setTimeout(() => setPhase("idle"), doneDurationMs)
+    const delay = getRefreshChipDoneTimerDelay({
+      phase,
+      refreshing,
+      doneDurationMs,
+    })
+    if (delay === null) return
+    const timer = setTimeout(() => setPhase("idle"), delay)
     return () => clearTimeout(timer)
-  }, [phase, doneDurationMs])
+  }, [phase, refreshing, doneDurationMs])
 
   const renderedPhase = resolveRefreshChipPhase({
-    currentPhase: phase,
-    refreshCompleted: false,
+    phase,
     refreshing,
     stale,
   })
 
-  const shownIdleLabel = stale ? staleLabel : idleLabel
-  const idleTextClass = stale
-    ? "text-[var(--warning)]"
-    : "text-[var(--text-primary)]"
   const refreshingPhase = renderedPhase === "refreshing"
   const accessibleLabel = refreshingPhase
     ? refreshingLabel
     : renderedPhase === "done"
       ? doneLabel
-      : shownIdleLabel
+      : idleLabel
 
   return (
     <Button
@@ -119,7 +105,20 @@ function RefreshChip({
       aria-busy={refreshingPhase}
       onClick={() => {
         if (refreshingPhase) return
-        onRefresh()
+        setPhase("refreshing")
+        let refreshResult: Promise<unknown>
+        try {
+          refreshResult = onRefresh()
+        } catch {
+          // The result surface owns refresh errors; the control only clears
+          // its optimistic in-progress state.
+          setPhase("idle")
+          return
+        }
+        void refreshResult.then(
+          () => setPhase("done"),
+          () => setPhase("idle")
+        )
       }}
       className={cn("shrink-0", className)}
       {...props}
@@ -130,12 +129,10 @@ function RefreshChip({
           className={cn(
             "inline-flex h-4 w-4 items-center justify-center transition-colors duration-200",
             refreshingPhase
-              ? "text-[var(--secondary-500)]"
+              ? "text-[var(--text-secondary)]"
               : renderedPhase === "done"
                 ? "text-[var(--success)]"
-                : stale
-                  ? "text-[var(--warning)]"
-                  : "text-[var(--text-secondary)]"
+                : "text-[var(--text-secondary)]"
           )}
         >
           {renderedPhase === "done" ? (
@@ -146,27 +143,24 @@ function RefreshChip({
             />
           )}
         </span>
-        <span
-          role="status"
-          className="inline-grid h-4 items-center justify-items-center"
-        >
+        <span className="inline-grid h-4 items-center justify-items-center">
           <span
             aria-hidden={renderedPhase !== "idle"}
             className={cn(
               "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
               renderedPhase === "idle"
-                ? cn("opacity-100", idleTextClass)
+                ? "opacity-100 text-[var(--text-primary)]"
                 : "opacity-0"
             )}
           >
-            {shownIdleLabel}
+            {idleLabel}
           </span>
           <span
             aria-hidden={!refreshingPhase}
             className={cn(
               "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
               refreshingPhase
-                ? "opacity-100 text-[var(--secondary-500)]"
+                ? "opacity-100 text-[var(--text-secondary)]"
                 : "opacity-0"
             )}
           >

@@ -52,9 +52,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
-  DecryptFailureNotice,
-  LiveReadNotice,
   OrderMessagesWidget,
+  ProtectedInboxNotice,
   SearchInput,
   RefreshChip,
   Select,
@@ -2062,18 +2061,19 @@ function OrdersPage() {
     staleTime: 5_000,
   })
 
-  const refetchAll = useCallback(() => {
+  const refetchAll = useCallback(async () => {
+    const refreshes: Promise<unknown>[] = [lifecyclesQuery.refetch()]
     if (signerConnected && activeBuyerPubkey) {
       clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
-      void messagesQuery.refetch()
+      refreshes.push(messagesQuery.refetch())
     }
-    void lifecyclesQuery.refetch()
+    await Promise.all(refreshes)
   }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
 
   useEffect(() => {
     const refetchAfterResume = () => {
       if (document.visibilityState === "hidden") return
-      refetchAll()
+      void refetchAll()
     }
 
     window.addEventListener("focus", refetchAfterResume)
@@ -2361,19 +2361,11 @@ function OrdersPage() {
         />
       )}
 
-      {signerConnected &&
-        protectedOrdersReadState !== "complete" &&
-        protectedOrdersReadState !== "pending" && (
-          <LiveReadNotice
-            state={protectedOrdersReadState}
-            onRetry={refetchAll}
-            retrying={messagesQuery.isRefetching}
-          />
-        )}
-
-      {signerConnected && (
-        <DecryptFailureNotice
-          count={messagesMeta?.decryptFailures?.length ?? 0}
+      {signerConnected && protectedOrdersReadState !== "pending" && (
+        <ProtectedInboxNotice
+          state={protectedOrdersReadState}
+          subject="orders"
+          decryptFailureCount={messagesMeta?.decryptFailures?.length ?? 0}
           onRetry={refetchAll}
           retrying={messagesQuery.isRefetching}
         />
