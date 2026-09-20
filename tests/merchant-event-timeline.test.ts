@@ -11,6 +11,7 @@ import {
   filterAndSortMerchantEventTimeline,
   formatMerchantEventTimelineSchedule,
   getMerchantEventTimelineStatus,
+  isMerchantEventTimelineInitialLoading,
   mergeMerchantEventTimeline,
 } from "../apps/merchant/src/lib/merchant-event-timeline"
 
@@ -130,6 +131,46 @@ function dateMarket(input: {
 }
 
 describe("Merchant event timeline", () => {
+  it("waits for the initial product relationship read before confirming an empty timeline", () => {
+    const settled = {
+      authorResolutionPending: false,
+      itemCount: 0,
+      perspectiveReadPending: false,
+      ownedReadPending: false,
+      productRelationshipReadPending: false,
+      exactRelationshipReadPending: false,
+    }
+
+    expect(
+      isMerchantEventTimelineInitialLoading({
+        ...settled,
+        productRelationshipReadPending: true,
+      })
+    ).toBe(true)
+    expect(isMerchantEventTimelineInitialLoading(settled)).toBe(false)
+
+    const linked = market({
+      suffix: "product-linked-after-load",
+      startMs: NOW + 3_600_000,
+    })
+    const items = mergeMerchantEventTimeline({
+      merchantPubkey: MERCHANT,
+      perspectiveMarkets: [],
+      ownedMarkets: [],
+      exactRelationshipMarkets: [linked],
+      savedReferences: [],
+      sellingCollectionCoordinates: [linked.collectionCoordinate],
+    })
+    expect(
+      isMerchantEventTimelineInitialLoading({
+        ...settled,
+        itemCount: items.length,
+        productRelationshipReadPending: true,
+      })
+    ).toBe(false)
+    expect(items[0]?.relationships).toContain("selling")
+  })
+
   it("retires known invalid coordinates while incomplete reads retain positive cards", () => {
     const positive = market({ suffix: "known", startMs: NOW + 3_600_000 })
     const unrelated = market({ suffix: "other", startMs: NOW + 7_200_000 })

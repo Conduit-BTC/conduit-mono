@@ -4211,6 +4211,28 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
       card.getByRole("link", { name: "View", exact: true })
     ).toBeVisible()
     await expect(refreshEvents).toBeDisabled()
+
+    await page.getByLabel("Date").click()
+    await page.getByRole("option", { name: "Past events", exact: true }).click()
+    const incompleteFilteredEmpty = page.getByRole("alert").filter({
+      hasText: "No events match these filters",
+    })
+    await expect(
+      incompleteFilteredEmpty.getByText(
+        "Discovery is incomplete, so matching events may still be available. Retry or change the filters.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    await expect(
+      incompleteFilteredEmpty.getByRole("button", {
+        name: "Retry",
+        exact: true,
+      })
+    ).toBeDisabled()
+
+    await page.getByLabel("Date").click()
+    await page.getByRole("option", { name: "All dates", exact: true }).click()
+    await expect(card).toBeVisible()
   } finally {
     held.release()
   }

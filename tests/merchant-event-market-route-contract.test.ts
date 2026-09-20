@@ -255,6 +255,10 @@ describe("merchant organizer event market route", () => {
     expect(timelineHook).toMatch(
       /const productReadIncomplete =\s*\n\s*isCommerceReadIncomplete\(productsQuery\.data\?\.meta\) \|\|\s*\n\s*productsQuery\.isError \|\|\s*\n\s*productsQuery\.isPaused/
     )
+    expect(timelineHook).toContain("isMerchantEventTimelineInitialLoading")
+    expect(timelineHook).toMatch(
+      /productRelationshipReadPending:\s*\n\s*productsQuery\.isPending && !productsQuery\.isPaused/
+    )
     expect(timelineHook).toContain("listOrganizerEventMarkets")
     expect(timelineHook).not.toContain("ORGANIZER_LIMIT")
     expect(core).toContain("candidate-first relay scans")

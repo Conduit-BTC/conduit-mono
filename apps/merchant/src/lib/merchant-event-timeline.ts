@@ -54,6 +54,24 @@ export interface MerchantEventTimelineStatus {
   tone: EventMarketCardStatusTone
 }
 
+export function isMerchantEventTimelineInitialLoading(input: {
+  authorResolutionPending: boolean
+  itemCount: number
+  perspectiveReadPending: boolean
+  ownedReadPending: boolean
+  productRelationshipReadPending: boolean
+  exactRelationshipReadPending: boolean
+}): boolean {
+  return (
+    input.authorResolutionPending ||
+    (input.itemCount === 0 &&
+      (input.perspectiveReadPending ||
+        input.ownedReadPending ||
+        input.productRelationshipReadPending ||
+        input.exactRelationshipReadPending))
+  )
+}
+
 export function qualifyMerchantEventTimelineNetwork(
   network: PerspectiveEventMarketDiscoveryResult | undefined,
   perspectiveRefreshStale: boolean

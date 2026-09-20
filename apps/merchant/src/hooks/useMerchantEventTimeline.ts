@@ -40,6 +40,7 @@ import {
 } from "../lib/event-market-workflow"
 import { getMerchantProductEventContext } from "../lib/merchant-product-event-context"
 import {
+  isMerchantEventTimelineInitialLoading,
   mergeMerchantEventTimeline,
   qualifyMerchantEventTimelineNetwork,
   type MerchantEventTimelineItem,
@@ -620,6 +621,16 @@ export function useMerchantEventTimeline(input: {
     perspectiveQuery.data,
     perspectiveRefreshStale
   )
+  const isInitialLoading = isMerchantEventTimelineInitialLoading({
+    authorResolutionPending: authorPubkeys === undefined,
+    itemCount: items.length,
+    perspectiveReadPending: perspectiveQuery.isPending,
+    ownedReadPending: ownedQuery.isPending,
+    productRelationshipReadPending:
+      productsQuery.isPending && !productsQuery.isPaused,
+    exactRelationshipReadPending:
+      exactReferences.length > 0 && exactQuery.isPending,
+  })
 
   return {
     network,
@@ -628,12 +639,7 @@ export function useMerchantEventTimeline(input: {
     sellingCollectionCoordinates,
     profileRelayHintsByPubkey,
     authorSource: authorResolution.source,
-    isInitialLoading:
-      authorPubkeys === undefined ||
-      (items.length === 0 &&
-        (perspectiveQuery.isPending ||
-          ownedQuery.isPending ||
-          (exactReferences.length > 0 && exactQuery.isPending))),
+    isInitialLoading,
     isFetching:
       followingQuery.isFetching ||
       conduitQuery.isFetching ||
