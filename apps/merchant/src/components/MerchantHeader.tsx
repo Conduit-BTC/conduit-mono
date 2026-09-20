@@ -489,9 +489,9 @@ function MerchantNavigationPanel({
   return (
     <div
       data-merchant-navigation-panel=""
-      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--surface-dialog)] px-6 pb-6"
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--surface-dialog)] pb-6 pl-[max(1.5rem,env(safe-area-inset-left))] pr-[max(1.5rem,env(safe-area-inset-right))]"
     >
-      <div className="flex h-20 shrink-0 items-center gap-1 min-[360px]:gap-2">
+      <div className="flex h-[calc(5rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 pt-[env(safe-area-inset-top)] min-[360px]:gap-2">
         <MerchantLogoLink />
         {headerAction}
       </div>

@@ -91,7 +91,8 @@ describe("Merchant navigation shell", () => {
 
     expect(panel).toContain("data-merchant-navigation-panel")
     expect(panel).toContain("headerAction")
-    expect(panel).toContain("h-20")
+    expect(panel).toContain("h-[calc(5rem+env(safe-area-inset-top))]")
+    expect(panel).toContain("pt-[env(safe-area-inset-top)]")
     expect(panel).toContain("overflow-x-hidden overflow-y-auto")
     expect(panel).toContain("<MerchantNavLinks")
     expect(panel).toContain("<ReportBugLink")
