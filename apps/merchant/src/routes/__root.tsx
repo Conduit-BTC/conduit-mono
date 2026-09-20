@@ -22,6 +22,7 @@ import {
   NotFoundPage,
   SignerAuthUrlNotice,
   SignerConnectPanel,
+  ThemeToggleButton,
   isProductLegalPath,
   isMobileSignerEnvironment,
 } from "@conduit/ui"
@@ -397,6 +398,9 @@ function ConnectGate() {
 
   return (
     <div className="min-h-dvh bg-[var(--background)] pb-24 text-[var(--text-primary)] sm:pb-16">
+      <div className="fixed right-[max(1rem,env(safe-area-inset-right))] top-[max(1rem,env(safe-area-inset-top))] z-40">
+        <ThemeToggleButton />
+      </div>
       <main
         ref={connectGateRef}
         tabIndex={-1}
