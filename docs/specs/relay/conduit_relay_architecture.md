@@ -1,9 +1,5 @@
 # Conduit Relay Architecture
 
-> **App-relay implementation status:** The App Relays and Your Relays additions
-> in this document are an accepted staged contract. They are not current client
-> behavior until the paired implementation lands.
-
 ## Executive Summary
 
 Conduit presents relay configuration as one account-level Network experience.

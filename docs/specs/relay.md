@@ -1,9 +1,5 @@
 # Conduit Relay Specification
 
-> **App-relay implementation status:** The App Relays and Your Relays additions
-> in this document are an accepted staged contract. They are not current client
-> behavior until the paired implementation lands.
-
 ## Overview
 
 Conduit treats relays as Nostr infrastructure with two transparent runtime

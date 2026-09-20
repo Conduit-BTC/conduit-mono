@@ -5,10 +5,6 @@ enabled for deployment, and production disabled. Hosted staging activation and
 the reviewed synthetic smoke remain pending. Owner: Conduit release maintainer.
 Started: 2026-08. Next review: 2026-09-12 and before production activation.
 
-> **App-relay implementation status:** The App Relays and Your Relays additions
-> in this migration note are an accepted staged contract. They are not current
-> client behavior until the paired implementation lands.
-
 ## Why this exists
 
 Strict kind `10050` routing became an availability gate before users had a

@@ -49,9 +49,9 @@ interaction primitives belong in `@conduit/ui`. Apps may depend on both.
 | `e.conduit.market`        | Product telemetry proxy      |
 | `presence.conduit.market` | Live product/store presence  |
 
-The canonical relay reset list is code-owned in `packages/core/src/config.ts`
-and currently starts with `wss://relay.conduit.market`. Retired Conduit relay
-hosts should not appear in active docs or examples.
+The versioned App Relay registry and reset inputs are code-owned in
+`packages/core/src/config.ts` and start with `wss://relay.conduit.market`.
+Retired Conduit relay hosts should not appear in active docs or examples.
 
 ---
 
@@ -247,7 +247,7 @@ Dexie is used for local-first persistence and recovery:
 | `relayLists`               | NIP-65 relay list cache                                     |
 | `ownerRelayListEvidence`   | Validated owner `kind:10002` frontier and delivery evidence |
 | `inboxDeclarationEvidence` | Validated `kind:10050` frontier, delivery, and recovery     |
-| `accountNetworkLocalState` | Unsigned exclusions, ordering, and capability scans         |
+| `accountNetworkLocalState` | Unsigned layer policy, exclusions, ordering, and metadata   |
 | `productSocialSummaries`   | Product trust/social summary cache                          |
 | `paymentAttempts`          | Buyer payment attempt history                               |
 | `wallets`                  | Non-secret local wallet descriptors/defaults                |
@@ -266,14 +266,14 @@ wallet instance.
 ### localStorage
 
 localStorage is used for small local preferences, cart state, and the selected
-public key/signer method. Active account Network membership is not a
-localStorage setting: it is projected from validated signed `kind:10002` and
-`kind:10050` evidence. IndexedDB stores signed Network evidence, unsigned local
-Network policy, local order/message/payment records, caches, wallet descriptors,
-and provider-owned credential records. Unpublished legacy local Network settings
-and their migration or inbox-recovery markers are ignored. Reconnect or reset
-reconstructs account membership from validated published signed evidence, with
-explicit Network setup or repair when valid published state is absent.
+public key/signer method. Signed personal Network membership is projected from
+validated `kind:10002` and `kind:10050` evidence. IndexedDB stores signed
+Network evidence, the versioned account-and-device-scoped App Relays and Your
+Relays policy, exclusions, local order/message/payment records, caches, wallet
+descriptors, and provider-owned credential records. Unpublished legacy local
+Network membership and migration markers are ignored. Reconnect or reset
+reconstructs personal membership from signed evidence and composes it with the
+enabled code-owned App Relay registry.
 
 A legacy single-wallet NWC record may be read only for transactional migration
 into `wallets` and `walletCredentials`; new wallet credentials must not be
@@ -286,10 +286,6 @@ relay, or another user-selected provider processes them.
 ---
 
 ## Relay Architecture
-
-> **Implementation status:** The app/personal relay model in this section is an
-> accepted staged contract. It is not current client behavior until its paired
-> shared-core and shared-UI implementation lands.
 
 Conduit treats relays as Nostr infrastructure with a transparent app baseline.
 Market and Merchant render the same account-level Network experience through a
@@ -325,7 +321,7 @@ The durable authority, recovery, transport, and removal contracts are defined in
 [`docs/specs/relay.md`](./specs/relay.md) and the detailed
 [`Relay Architecture`](./specs/relay/conduit_relay_architecture.md).
 
-The staged code-owned relay registry will live in `packages/core/src/config.ts`.
+The current code-owned relay registry lives in `packages/core/src/config.ts`.
 It assigns bounded operation roles rather than making any one relay network
 authority. Conduit and Ditto supply the qualified general, commerce, and
 private-inbox baseline. Dreamith supplies general read/write routing but does

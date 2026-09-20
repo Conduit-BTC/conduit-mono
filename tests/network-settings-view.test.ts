@@ -441,6 +441,73 @@ describe("network settings view", () => {
     expect(dismissed.setupRecommendation).toBeUndefined()
   })
 
+  it("does not present scoped setup absence from partial or retained inbox evidence", () => {
+    const incompleteOwnerLookup = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        rows: [],
+        owner: {
+          state: "lookup_partial",
+          current: null,
+          lastUsable: null,
+          pendingDistribution: null,
+          lookup: {
+            coverage: "partial",
+            observedAt: 20_000,
+            hadEvent: false,
+          },
+        },
+        inbox: {
+          state: "not_observed",
+          relayUrls: [],
+          eventId: undefined,
+          eventCreatedAt: undefined,
+          observation: {
+            coverage: "complete",
+            attemptedRelayUrls: [],
+            successfulRelayUrls: [],
+            failedRelayUrls: [],
+            eventSourceRelayUrls: [],
+          },
+        },
+      }),
+      localState: localState(),
+    })
+    expect(incompleteOwnerLookup.setupRecommendation).toBeUndefined()
+
+    const retainedInbox = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        rows: [],
+        owner: {
+          state: "not_observed",
+          current: null,
+          lastUsable: null,
+          pendingDistribution: null,
+          lookup: {
+            coverage: "complete",
+            observedAt: 20_000,
+            hadEvent: false,
+          },
+        },
+        inbox: {
+          state: "not_observed",
+          relayUrls: [],
+          retainedReadRelayUrls: ["wss://retained-inbox.example"],
+          eventId: undefined,
+          eventCreatedAt: undefined,
+          observation: {
+            coverage: "complete",
+            attemptedRelayUrls: [],
+            successfulRelayUrls: [],
+            failedRelayUrls: [],
+            eventSourceRelayUrls: [],
+          },
+        },
+      }),
+      localState: localState(),
+    })
+    expect(retainedInbox.setupRecommendation).toBeUndefined()
+  })
+
   it("warns honestly when commerce is unverified and a pending inbox is not current", () => {
     const personalRelayUrl = "wss://personal.example"
     const view = buildAccountNetworkSettingsView({

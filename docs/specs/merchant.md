@@ -348,10 +348,6 @@ Lightning address (`lud16`) and NWC/WebLN readiness can contribute to payment el
 
 ## Relay Settings
 
-> **App-relay implementation status:** The App Relays and Your Relays additions
-> in this section are an accepted staged contract. They are not current client
-> behavior until the paired implementation lands.
-
 Merchant's `/network` route is a navigation shell around the same shared
 account-level Network experience used by Market. The state model, controls,
 ordering, mutation flow, and copy must not diverge between the two apps. The

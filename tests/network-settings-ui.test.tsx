@@ -569,6 +569,45 @@ describe("RelaySettingsPanel account Network review", () => {
     )
   })
 
+  it("keeps a kind-10050-only relay visible and editable while personal routing is off", () => {
+    const nip65 = relayRow("wss://nip65-only.example", {
+      privateInboxEnabled: false,
+      privateInboxState: null,
+    })
+    const inboxOnly = relayRow("wss://inbox-only.example", {
+      readEnabled: false,
+      publishEnabled: false,
+      privateInboxEnabled: true,
+      readState: null,
+      publishState: null,
+      privateInboxState: "published",
+      signedPosition: 1,
+    })
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [nip65, inboxOnly],
+          appRelays: { enabled: true, rows: [] },
+          personalRelaysEnabled: false,
+        })}
+      />
+    )
+
+    expect(markup).toContain("wss://nip65-only.example")
+    expect(markup).toContain("wss://inbox-only.example")
+    expect(markup).toContain('aria-label="Enable Your Relays"')
+    const readButton = markup.match(
+      /<button[^>]*aria-label="Enable Read for wss:\/\/inbox-only\.example"[^>]*>/
+    )?.[0]
+    const inboxButton = markup.match(
+      /<button[^>]*aria-label="Disable Private inbox for wss:\/\/inbox-only\.example"[^>]*>/
+    )?.[0]
+    expect(readButton).toBeDefined()
+    expect(readButton).not.toContain('disabled=""')
+    expect(inboxButton).toBeDefined()
+    expect(inboxButton).not.toContain('disabled=""')
+  })
+
   it("requires a warning review before disabling app relays", async () => {
     const panelSource = await Bun.file(
       "packages/ui/src/components/RelaySettingsPanel.tsx"

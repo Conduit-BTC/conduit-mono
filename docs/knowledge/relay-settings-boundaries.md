@@ -3,9 +3,8 @@
 This note separates signed account configuration, discovery evidence, and
 runtime execution planning. It does not replace the relay architecture spec.
 
-> **App-relay implementation status:** The App Relays and Your Relays contract
-> is staged at this docs-only head. The normative contract lives in the
-> [relay architecture spec](../specs/relay/conduit_relay_architecture.md).
+The normative product contract lives in the
+[relay architecture spec](../specs/relay/conduit_relay_architecture.md).
 
 ## Account Configuration Boundary
 
