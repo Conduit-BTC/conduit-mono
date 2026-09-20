@@ -245,6 +245,7 @@ test("remote signer timeout keeps the product draft recoverable and requires an 
     const title = productDialog.getByLabel("Title")
     await title.fill("Remote signer recovery fixture")
     await productDialog.getByLabel("Price").fill("21")
+    await productDialog.getByRole("button", { name: "Add by URL" }).click()
     await productDialog
       .getByLabel("Primary image URL")
       .fill("https://media.conduit.market/product.png")
@@ -558,6 +559,7 @@ test("a different signer starts a fresh merchant workspace after verified recove
     const title = productDialog.getByLabel("Title")
     await title.fill("Account A retained draft")
     await productDialog.getByLabel("Price").fill("34")
+    await productDialog.getByRole("button", { name: "Add by URL" }).click()
     await productDialog
       .getByLabel("Primary image URL")
       .fill("https://media.conduit.market/account-a-draft.png")

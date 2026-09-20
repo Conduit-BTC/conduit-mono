@@ -201,6 +201,7 @@ export async function publishEventProduct(input: {
   shouldContinue?: () => boolean
   marketReference: string
   form: EventProductPublishFormValues
+  onProductPrepared?: (dTag: string) => void | Promise<void>
   onSignedLocal?: (event: NDKEvent) => void | Promise<void>
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void
 }): Promise<EventProductPublishResult> {
@@ -220,6 +221,7 @@ export async function publishEventProduct(input: {
     input.form.title,
     input.form.templateCoordinate
   )
+  await input.onProductPrepared?.(dTag)
   let signerRequestOffset = 0
   const pickupMetadata =
     input.form.handoffMode === "organizer_handoff"
