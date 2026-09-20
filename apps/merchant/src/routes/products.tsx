@@ -49,6 +49,7 @@ import {
   DialogHeader,
   DialogTitle,
   DoubleSideStatusPill,
+  getResultPresentation,
   Input,
   Label,
   ProductCard,
@@ -2107,6 +2108,12 @@ function ProductsPage() {
   const productStatusLabel = productsQuery.isFetching
     ? "Updating listings"
     : `${visibleProducts.length} of ${merchantProducts.length} listings`
+  const resultPresentation = getResultPresentation({
+    resultCount: merchantProducts.length,
+    visibleResultCount: visibleProducts.length,
+    reliability: merchantProductReadIncomplete ? "degraded" : "complete",
+    degradedResultsAreMaterial: true,
+  })
   const productVariationCombinations = useMemo(
     () => getProductVariationCombinations(form.variations),
     [form.variations]
@@ -2669,7 +2676,7 @@ function ProductsPage() {
           <span>{productStatusLabel}</span>
           <RefreshChip
             refreshing={productsQuery.isFetching}
-            onRefresh={() => void productsQuery.refetch()}
+            onRefresh={() => productsQuery.refetch()}
             stale={merchantProductReadIncomplete}
             refreshingLabel="Updating listings..."
             className="absolute right-0 top-1/2 -translate-y-1/2"
@@ -2722,38 +2729,49 @@ function ProductsPage() {
           </div>
         )}
 
-        {productsQuery.error && (
-          <div className="rounded-[1.4rem] border border-error/30 bg-error/10 p-4 text-sm text-error">
-            Failed to load products:{" "}
-            {productsQuery.error instanceof Error
-              ? productsQuery.error.message
-              : "Unknown error"}
-          </div>
-        )}
-
-        {!productsInitialLoading && merchantProducts.length === 0 && (
-          <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-[var(--text-secondary)]">
-            <div className="text-lg font-semibold text-[var(--text-primary)]">
-              No listings yet
+        {!productsInitialLoading &&
+          resultPresentation.visibility === "compact" && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.4rem] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm text-[var(--text-primary)]">
+              <span>
+                {resultPresentation.kind === "degraded_empty"
+                  ? "Listings couldn't be loaded. Retry before relying on an empty catalog."
+                  : "Some listings may be missing or out of date."}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={productsQuery.isFetching}
+                onClick={() => void productsQuery.refetch()}
+              >
+                Retry
+              </Button>
             </div>
-            <p className="mt-2 max-w-xl leading-6">
-              Add your first product to publish a Market-visible listing from
-              this signer.
-            </p>
-            <Button
-              className="mt-4"
-              onClick={openCreateDialog}
-              disabled={!pubkey}
-            >
-              <Plus className="h-4 w-4" />
-              Add product
-            </Button>
-          </div>
-        )}
+          )}
 
         {!productsInitialLoading &&
-          merchantProducts.length > 0 &&
-          visibleProducts.length === 0 && (
+          resultPresentation.kind === "complete_empty" && (
+            <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-[var(--text-secondary)]">
+              <div className="text-lg font-semibold text-[var(--text-primary)]">
+                No listings yet
+              </div>
+              <p className="mt-2 max-w-xl leading-6">
+                Add your first product to publish a Market-visible listing from
+                this signer.
+              </p>
+              <Button
+                className="mt-4"
+                onClick={openCreateDialog}
+                disabled={!pubkey}
+              >
+                <Plus className="h-4 w-4" />
+                Add product
+              </Button>
+            </div>
+          )}
+
+        {!productsInitialLoading &&
+          resultPresentation.kind === "filter_empty" && (
             <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
               No listings match the current search or category filter.
             </div>

@@ -53,20 +53,24 @@ function controller(
     pendingExactDeliveries?: AccountNetworkSettingsController["view"]["pendingExactDeliveries"]
     validation?: ReturnType<AccountNetworkSettingsController["validate"]>
     exactInboxRedistributionAvailable?: boolean
+    relayList?: AccountNetworkSettingsController["view"]["relayList"]
+    inbox?: AccountNetworkSettingsController["view"]["inbox"]
+    status?: AccountNetworkSettingsController["status"]
+    relayInformationRefreshing?: boolean
   } = {}
 ): AccountNetworkSettingsController {
   return {
     view: {
       rows: input.rows ?? [],
-      relayList: EMPTY_FRONTIER,
-      inbox: EMPTY_FRONTIER,
+      relayList: input.relayList ?? EMPTY_FRONTIER,
+      inbox: input.inbox ?? EMPTY_FRONTIER,
       pendingExactDeliveries: input.pendingExactDeliveries ?? [],
     },
-    status: "ready",
+    status: input.status ?? "ready",
     error: null,
     revision: "test-revision",
     operation: { kind: null, phase: "idle", message: null },
-    relayInformationRefreshing: false,
+    relayInformationRefreshing: input.relayInformationRefreshing ?? false,
     exactInboxRedistributionAvailable:
       input.exactInboxRedistributionAvailable ?? false,
     mediaServers: null,
@@ -93,6 +97,63 @@ function controller(
 }
 
 describe("RelaySettingsPanel account Network review", () => {
+  it("keeps initial empty reconciliation pending before offering settled recovery", () => {
+    const notCheckedFrontier = {
+      ...EMPTY_FRONTIER,
+      coverage: "not_checked" as const,
+    }
+    const unavailableFrontier = {
+      ...EMPTY_FRONTIER,
+      coverage: "unavailable" as const,
+    }
+    const pendingControllers = [
+      controller({
+        status: "reconciling",
+        relayList: notCheckedFrontier,
+        inbox: notCheckedFrontier,
+      }),
+      controller({ status: "reconciling" }),
+      controller({
+        relayList: notCheckedFrontier,
+        inbox: notCheckedFrontier,
+      }),
+      controller({
+        relayList: unavailableFrontier,
+        inbox: unavailableFrontier,
+        relayInformationRefreshing: true,
+      }),
+    ]
+
+    for (const pendingController of pendingControllers) {
+      const markup = renderToStaticMarkup(
+        <RelaySettingsPanel controller={pendingController} />
+      )
+      expect(markup).toContain("Checking relay preferences…")
+      expect(markup).not.toContain(
+        "Relay preferences couldn&#x27;t be confirmed."
+      )
+      expect(markup).not.toContain("Retry</button>")
+    }
+
+    const settledMarkup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          relayList: unavailableFrontier,
+          inbox: unavailableFrontier,
+        })}
+      />
+    )
+    expect(settledMarkup).toContain(
+      "Relay preferences couldn&#x27;t be confirmed."
+    )
+    expect(settledMarkup).toContain("Retry</button>")
+    const retryButton = settledMarkup.match(
+      /<button[^>]*>[\s\S]*?Retry<\/button>/
+    )?.[0]
+    expect(retryButton).toBeDefined()
+    expect(retryButton).not.toContain('disabled=""')
+  })
+
   it("accepts a one-relay setup and describes the actual minimum", () => {
     const emptyMarkup = renderToStaticMarkup(
       <RelaySettingsPanel controller={controller()} />

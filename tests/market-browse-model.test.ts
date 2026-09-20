@@ -98,6 +98,35 @@ describe("market browse model helpers", () => {
     expect(refreshes).not.toContain("obsolete-catalog")
   })
 
+  it("settles only after every directly refreshed browse source", async () => {
+    let finishCatalog!: () => void
+    let finishGlobalSearch!: () => void
+    let settled = false
+    const refresh = refreshMarketBrowseData({
+      globalSearchEnabled: true,
+      refreshCatalog: () =>
+        new Promise<void>((resolve) => {
+          finishCatalog = resolve
+        }),
+      refreshGlobalSearch: () =>
+        new Promise<void>((resolve) => {
+          finishGlobalSearch = resolve
+        }),
+    })
+    void refresh.then(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    finishCatalog()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    finishGlobalSearch()
+    await refresh
+    expect(settled).toBe(true)
+  })
+
   it("treats stale or incomplete active browse sources as not updated", () => {
     expect(
       isMarketBrowseRefreshStale({

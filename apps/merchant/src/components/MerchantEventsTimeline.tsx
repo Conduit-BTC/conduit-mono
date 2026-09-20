@@ -17,7 +17,7 @@ import {
   Badge,
   Button,
   EventMarketCard,
-  getOrganizerDiscoveryPresentation,
+  getResultPresentation,
   Input,
   Label,
   Select,
@@ -146,16 +146,16 @@ export function MerchantEventsTimeline({
     maxUnresolvedRefetches: 1,
     relayHintsByPubkey: discovery.profileRelayHintsByPubkey,
   })
-  const discoveryPresentation = discovery.network
-    ? getOrganizerDiscoveryPresentation({
-        state: discovery.network.state,
-        eventCount: discovery.network.markets.length,
-        perspective: discovery.network.perspective,
-        candidateScanCoverage: discovery.network.candidateScanCoverage,
-        searchedOrganizerCount: discovery.network.searchedOrganizerCount,
-        incompleteOrganizerCount: discovery.network.incompleteOrganizerCount,
-      })
-    : null
+  const resultPresentation = getResultPresentation({
+    resultCount: discovery.items.length,
+    visibleResultCount: visibleItems.length,
+    reliability:
+      discovery.network &&
+      ["complete", "complete_empty"].includes(discovery.network.state) &&
+      !discovery.isRefreshStale
+        ? "complete"
+        : "degraded",
+  })
   const selectedCoordinate = useMemo(() => {
     if (!currentReference) return null
     try {
@@ -340,80 +340,11 @@ export function MerchantEventsTimeline({
             </p>
           ) : (
             <p className="text-xs leading-5 text-[var(--text-muted)]">
-              Exact links remain usable when bounded discovery is incomplete.
+              Paste a known event address or shopper link to open it directly.
             </p>
           )}
         </form>
       </div>
-
-      {discoveryPresentation ? (
-        <div
-          role={discoveryPresentation.role}
-          aria-live="polite"
-          className={
-            discoveryPresentation.prominent
-              ? "flex flex-col gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm leading-6 text-[var(--text-primary)] sm:flex-row sm:items-center sm:justify-between"
-              : "flex flex-col gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
-          }
-          data-testid="merchant-event-timeline-discovery-status"
-        >
-          <span className="text-pretty tabular-nums">
-            {discoveryPresentation.message}
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={discovery.isFetching}
-            onClick={discovery.refetch}
-          >
-            <RefreshCw
-              className={discovery.isFetching ? "animate-spin" : ""}
-              aria-hidden="true"
-            />
-            Retry event discovery
-          </Button>
-        </div>
-      ) : null}
-
-      {discovery.isRefreshStale && !discoveryPresentation?.prominent ? (
-        <div
-          className="flex flex-col gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm leading-6 text-[var(--text-primary)] sm:flex-row sm:items-center sm:justify-between"
-          role="status"
-          aria-live="polite"
-          data-testid="merchant-event-timeline-relationship-status"
-        >
-          <span>
-            Some saved, owned, or product-linked event evidence is incomplete.
-            Verified events remain available while this bounded view refreshes.
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={discovery.isFetching}
-            onClick={discovery.refetch}
-          >
-            <RefreshCw
-              className={discovery.isFetching ? "animate-spin" : ""}
-              aria-hidden="true"
-            />
-            Retry event relationships
-          </Button>
-        </div>
-      ) : null}
-
-      {discovery.unresolvedRelationshipCount > 0 ? (
-        <div
-          className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm leading-6 text-[var(--text-primary)]"
-          role="status"
-        >
-          {discovery.unresolvedRelationshipCount} saved or product-linked event
-          {discovery.unresolvedRelationshipCount === 1 ? "" : "s"} could not be
-          verified in this relay view. Existing verified events remain
-          available; retry before inferring that an event is gone.
-        </div>
-      ) : null}
 
       {discovery.isInitialLoading ? (
         <div
@@ -489,19 +420,52 @@ export function MerchantEventsTimeline({
           })}
         </div>
       ) : (
-        <div className="rounded-xl border border-dashed border-[var(--border)] px-6 py-12 text-center">
+        <div
+          className={
+            resultPresentation.visibility === "compact"
+              ? "rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-6 py-12 text-center"
+              : "rounded-xl border border-dashed border-[var(--border)] px-6 py-12 text-center"
+          }
+          role={
+            resultPresentation.visibility === "compact" ? "alert" : undefined
+          }
+        >
           <Search
             className="mx-auto h-8 w-8 text-[var(--text-muted)]"
             aria-hidden="true"
           />
           <h3 className="mt-4 text-lg font-semibold text-[var(--text-primary)]">
-            No matching verified events in this relay view
+            {resultPresentation.kind === "degraded_empty"
+              ? "Events couldn't be fully loaded"
+              : resultPresentation.kind === "filter_empty"
+                ? "No events match these filters"
+                : "No events yet"}
           </h3>
           <p className="mx-auto mt-2 max-w-xl text-pretty text-sm leading-6 text-[var(--text-muted)]">
-            Change the relationship or date filter, retry discovery, or open a
-            canonical event link. This bounded view does not prove an event is
-            missing from the network.
+            {resultPresentation.kind === "degraded_empty"
+              ? "Retry to check for events, or open a known event directly."
+              : resultPresentation.kind === "filter_empty"
+                ? resultPresentation.visibility === "compact"
+                  ? "Discovery is incomplete, so matching events may still be available. Retry or change the relationship or date filter."
+                  : "Change the relationship or date filter to see other events."
+                : "Open a known event directly or create your first event."}
           </p>
+          {resultPresentation.visibility === "compact" ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              disabled={discovery.isFetching}
+              onClick={discovery.refetch}
+            >
+              <RefreshCw
+                className={discovery.isFetching ? "animate-spin" : ""}
+                aria-hidden="true"
+              />
+              Retry
+            </Button>
+          ) : null}
         </div>
       )}
     </section>

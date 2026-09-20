@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { ChevronDown, X } from "lucide-react"
-import { EVENT_KINDS, normalizePubkey, pubkeyToNpub } from "@conduit/core"
+import { normalizePubkey, pubkeyToNpub } from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
@@ -12,6 +12,7 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuTrigger,
+  getResultPresentation,
   RefreshChip,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
@@ -182,6 +183,14 @@ function ProductsPage() {
   } = browseModel
   const { status } = auth
   const connected = status === "connected"
+  const resultPresentation = getResultPresentation({
+    resultCount: productData.length,
+    visibleResultCount: filtered.length,
+    reliability:
+      productsQuery.isRefreshStale || productsQuery.error
+        ? "degraded"
+        : "complete",
+  })
   const visibleMatchingMerchants = useMemo(
     () => matchingSellers.slice(0, MATCHING_MERCHANT_LIMIT),
     [matchingSellers]
@@ -640,48 +649,78 @@ function ProductsPage() {
         </ul>
       )}
 
-      {/* Error */}
-      {!!productsQuery.error && (
-        <div className="text-sm text-error">
-          Failed to load products:{" "}
-          {productsQuery.error instanceof Error
-            ? productsQuery.error.message
-            : "Unknown error"}
-        </div>
-      )}
-
-      {/* Empty state - no products from relays */}
       {!productsQuery.isInitialLoading &&
         !productsQuery.isHydrating &&
-        productData.length === 0 && (
-          <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-            No product listings found yet. Once merchants publish kind{" "}
-            {EVENT_KINDS.PRODUCT} listings to your relays, they will show up
-            here.
+        resultPresentation.kind === "degraded_empty" && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm text-[var(--text-primary)]">
+            <span>Products couldn&apos;t be loaded. Retry to check again.</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={productsQuery.isHydrating}
+              onClick={() => void productsQuery.refetch()}
+            >
+              Retry
+            </Button>
           </div>
         )}
 
-      {/* Empty state - filters returned nothing */}
       {!productsQuery.isInitialLoading &&
         !productsQuery.isHydrating &&
-        productData.length > 0 &&
-        filtered.length === 0 && (
+        resultPresentation.kind === "complete_empty" && (
           <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-            No products match your filters. Try adjusting your search or{" "}
-            <button
-              className="underline hover:text-[var(--text-primary)]"
-              onClick={() =>
-                updateSearch({
-                  q: undefined,
-                  tag: undefined,
-                  sort: undefined,
-                  merchant: undefined,
-                })
-              }
-            >
-              clear all filters
-            </button>
-            .
+            No product listings found yet.
+          </div>
+        )}
+
+      {!productsQuery.isInitialLoading &&
+        !productsQuery.isHydrating &&
+        resultPresentation.kind === "filter_empty" && (
+          <div
+            className={
+              resultPresentation.visibility === "compact"
+                ? "rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm text-[var(--text-primary)]"
+                : "rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]"
+            }
+            role={
+              resultPresentation.visibility === "compact" ? "alert" : undefined
+            }
+          >
+            <p>
+              No loaded products match your filters.
+              {resultPresentation.visibility === "compact"
+                ? " Discovery is incomplete, so other matching products may still be available."
+                : " Try adjusting your search."}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  updateSearch({
+                    q: undefined,
+                    tag: undefined,
+                    sort: undefined,
+                    merchant: undefined,
+                  })
+                }
+              >
+                Clear all filters
+              </Button>
+              {resultPresentation.visibility === "compact" && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isUpdatingListings}
+                  onClick={() => void productsQuery.refetch()}
+                >
+                  Retry
+                </Button>
+              )}
+            </div>
           </div>
         )}
 

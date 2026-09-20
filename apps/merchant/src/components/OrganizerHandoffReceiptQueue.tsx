@@ -15,6 +15,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  getResultPresentation,
   StatusPill,
 } from "@conduit/ui"
 import {
@@ -74,7 +75,7 @@ function merchandiseBlocker(
     case "missing":
       return "The exact signed product revision is missing. Handoff is blocked."
     case "unavailable":
-      return "The exact signed product revision is unavailable from the current relay read. Handoff is blocked."
+      return "The exact signed product revision couldn't be confirmed. Handoff is blocked."
     case "malformed":
       return "The signed product evidence is malformed or forged. Handoff is blocked."
     case "deleted":
@@ -147,6 +148,11 @@ export function OrganizerHandoffReceiptQueue({
 }) {
   const discoveryDegraded =
     stale || decryptFailureCount > 0 || error || !discoveryEvidenceComplete
+  const resultPresentation = getResultPresentation({
+    resultCount: claims.length,
+    reliability: discoveryDegraded ? "degraded" : "complete",
+    degradedResultsAreMaterial: true,
+  })
   const merchantPubkeys = useMemo(
     () =>
       Array.from(
@@ -210,20 +216,32 @@ export function OrganizerHandoffReceiptQueue({
         {loading && claims.length === 0 && (
           <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Checking private receipt evidence...
+            Loading handoff receipts...
           </div>
         )}
 
-        {discoveryDegraded && (!loading || claims.length > 0) && (
-          <p
-            className="rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-sm leading-6 text-[var(--text-primary)]"
-            role="alert"
-          >
-            Receipt discovery is incomplete. Refreshing may find additional
-            authorizations or revocations, but it does not invalidate a valid
-            merchant authorization already shown here.
-          </p>
-        )}
+        {resultPresentation.visibility === "compact" &&
+          (!loading || claims.length > 0) && (
+            <div
+              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-sm leading-6 text-[var(--text-primary)]"
+              role="alert"
+            >
+              <span>
+                {resultPresentation.kind === "degraded_empty"
+                  ? "Handoff receipts couldn't be fully loaded. Retry before relying on an empty queue."
+                  : "Receipt discovery may be incomplete. Retry before handing out an item to check for a newer or revoked receipt."}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={loading}
+                onClick={onRefresh}
+              >
+                Retry
+              </Button>
+            </div>
+          )}
 
         {actionError && (
           <p
@@ -234,7 +252,7 @@ export function OrganizerHandoffReceiptQueue({
           </p>
         )}
 
-        {!loading && !error && claims.length === 0 && (
+        {!loading && resultPresentation.kind === "complete_empty" && (
           <p className="rounded-xl border border-dashed border-[var(--border)] p-4 text-sm text-[var(--text-muted)]">
             No current organizer-handoff receipts for this event.
           </p>
@@ -341,11 +359,11 @@ export function OrganizerHandoffReceiptQueue({
                   role="status"
                 >
                   {!ackRecipientAcknowledged
-                    ? "No merchant inbox relay acknowledged the encrypted handed-out update. Retry reuses the exact saved wraps."
+                    ? "The encrypted handed-out update hasn't been accepted for delivery. Retry reuses the exact saved update."
                     : ackDelivery.recipient.status === "partial_success"
-                      ? "Some merchant inbox relays accepted the handed-out update, but exact delivery is still partial."
+                      ? "The handed-out update was only partially accepted for delivery. Exact retry remains available."
                       : ackDelivery.selfCopy.status === "failed"
-                        ? "The merchant leg was accepted, but your encrypted recovery copy failed. Exact retry remains available."
+                        ? "The merchant update was accepted, but your encrypted recovery copy needs retry."
                         : "The encrypted handed-out update still needs an exact delivery retry."}
                 </p>
               )}

@@ -17,6 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
   EventMarketCard,
+  getResultPresentation,
   useTimeBoundaryNow,
 } from "@conduit/ui"
 import {
@@ -143,6 +144,20 @@ function EventsTimelinePage() {
     search.location ||
     (search.window && search.window !== "upcoming")
   )
+  const filteredResultPresentation = getResultPresentation({
+    resultCount: discovery.markets.length,
+    visibleResultCount: filteredMarkets.length,
+    reliability:
+      !discovery.error &&
+      !discovery.isRefreshStale &&
+      (discovery.data?.state === "complete" ||
+        discovery.data?.state === "complete_empty")
+        ? "complete"
+        : "degraded",
+  })
+  const filteredDiscoveryIncomplete =
+    filteredResultPresentation.kind === "filter_empty" &&
+    filteredResultPresentation.visibility === "compact"
 
   return (
     <div className="mx-auto max-w-6xl space-y-7">
@@ -271,10 +286,7 @@ function EventsTimelinePage() {
               : "Event timeline"}
         </h1>
         <div className="flex items-center gap-2">
-          <span
-            className="text-sm tabular-nums text-[var(--text-muted)]"
-            aria-live="polite"
-          >
+          <span className="text-sm tabular-nums text-[var(--text-muted)]">
             {discovery.isInitialLoading
               ? "Loading events"
               : `${filteredMarkets.length} ${filteredMarkets.length === 1 ? "event" : "events"}`}
@@ -368,20 +380,46 @@ function EventsTimelinePage() {
           </div>
         </section>
       ) : discovery.markets.length > 0 ? (
-        <section className="rounded-xl border border-dashed border-[var(--border)] bg-[var(--surface)] px-6 py-14 text-center">
+        <section
+          className={
+            filteredDiscoveryIncomplete
+              ? "rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-6 py-14 text-center"
+              : "rounded-xl border border-dashed border-[var(--border)] bg-[var(--surface)] px-6 py-14 text-center"
+          }
+          role={filteredDiscoveryIncomplete ? "alert" : undefined}
+        >
           <h2 className="text-lg font-semibold text-[var(--text-primary)]">
             No events match these filters
           </h2>
           <p className="mt-2 text-sm text-[var(--text-secondary)]">
-            Clear a filter or widen the date window to see more events already
-            found in this relay view.
+            {filteredDiscoveryIncomplete
+              ? "Discovery is incomplete, so matching events may still be available. Retry or change the filters."
+              : "Clear a filter or widen the date window to see more events already found."}
           </p>
+          {filteredDiscoveryIncomplete ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              disabled={discovery.isFetching}
+              onClick={discovery.refetch}
+            >
+              <RefreshCw
+                className={discovery.isFetching ? "animate-spin" : ""}
+                aria-hidden="true"
+              />
+              Retry
+            </Button>
+          ) : null}
         </section>
       ) : (
         <EventTimelineEmptyState
           discoveryState={discovery.data?.state}
           hasError={Boolean(discovery.error)}
           refreshIncomplete={discovery.isRefreshStale}
+          onRetry={discovery.refetch}
+          retrying={discovery.isFetching}
         />
       )}
     </div>

@@ -64,28 +64,28 @@ export function MarketBrowseNavigation({
         </nav>
       </SegmentedControl>
 
-      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
-        <div className="shrink-0 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
-          Perspective
+      {connected && (
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="shrink-0 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
+            Perspective
+          </div>
+          <SegmentedControl role="group" aria-label="Market perspective">
+            {MARKET_SOURCE_OPTIONS.map((option) => {
+              const selected = source === option
+              return (
+                <SegmentedControlItem
+                  key={option}
+                  selected={selected}
+                  aria-pressed={selected}
+                  onClick={() => onSelectSource(option)}
+                >
+                  {MARKET_SOURCE_LABELS[option]}
+                </SegmentedControlItem>
+              )
+            })}
+          </SegmentedControl>
         </div>
-        <SegmentedControl role="group" aria-label="Market perspective">
-          {MARKET_SOURCE_OPTIONS.map((option) => {
-            const selected = source === option
-            const disabled = !connected && option !== "conduit"
-            return (
-              <SegmentedControlItem
-                key={option}
-                selected={selected}
-                disabled={disabled}
-                aria-pressed={selected}
-                onClick={() => onSelectSource(option)}
-              >
-                {MARKET_SOURCE_LABELS[option]}
-              </SegmentedControlItem>
-            )
-          })}
-        </SegmentedControl>
-      </div>
+      )}
     </section>
   )
 }

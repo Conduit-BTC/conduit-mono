@@ -5,6 +5,7 @@ import {
   type Profile,
   type ShopperTrustEvidence,
   type ShopperTrustSignal,
+  type ShopperTrustSignalState,
 } from "@conduit/core"
 import { Button, StatusPill, type StatusPillProps } from "@conduit/ui"
 import { useId } from "react"
@@ -65,7 +66,7 @@ function formatEventAge(timestamp: number): string {
 function signalValue<T>(
   signal: ShopperTrustSignal<T> | undefined,
   isHydrating: boolean,
-  format: (value: T) => string,
+  format: (value: T, state: ShopperTrustSignalState) => string,
   qualifiers: (value: T) => string[] = () => []
 ): SignalValue {
   if (!signal) {
@@ -76,20 +77,8 @@ function signalValue<T>(
     return { primary: "Unavailable" }
   }
 
-  const primary = format(signal.value)
+  const primary = format(signal.value, signal.state)
   const valueQualifiers = qualifiers(signal.value)
-  if (signal.state === "partial") {
-    return {
-      primary,
-      qualifiers: [...valueQualifiers, "Partial observation"],
-    }
-  }
-  if (signal.state === "stale") {
-    return {
-      primary,
-      qualifiers: [...valueQualifiers, "Cached, may be stale"],
-    }
-  }
 
   return {
     primary,
@@ -164,35 +153,55 @@ export function ShopperTrustCard({
   const oldestEvent = signalValue(
     evidence?.oldestEvent,
     isHydrating,
-    ({ timestamp }) =>
-      timestamp === null
-        ? "Not found in this relay scan"
-        : formatEventAge(timestamp),
+    ({ timestamp }, state) => {
+      if (timestamp !== null) return formatEventAge(timestamp)
+      return state === "available"
+        ? "Not found in completed check"
+        : "Not enough data"
+    },
     ({ timestamp }) => (timestamp === null ? [] : ["Author-provided timestamp"])
   )
   const followersObserved = signalValue(
     evidence?.followersObserved,
     isHydrating,
-    ({ count }) => count.toLocaleString()
+    ({ count }, state) =>
+      count === 0 && state !== "available"
+        ? "Not enough data"
+        : count.toLocaleString()
   )
   const followsInCommon = signalValue(
     evidence?.followsInCommon,
     isHydrating,
-    ({ count }) => count.toLocaleString()
+    ({ count }, state) =>
+      count === 0 && state !== "available"
+        ? "Not enough data"
+        : count.toLocaleString()
   )
-  const zapsSent = signalValue(evidence?.zapsSent, isHydrating, ({ count }) =>
-    count.toLocaleString()
+  const zapsSent = signalValue(
+    evidence?.zapsSent,
+    isHydrating,
+    ({ count }, state) =>
+      count === 0 && state !== "available"
+        ? "Not enough data"
+        : count.toLocaleString()
   )
   const zapsReceived = signalValue(
     evidence?.zapsReceived,
     isHydrating,
-    ({ count }) => count.toLocaleString()
+    ({ count }, state) =>
+      count === 0 && state !== "available"
+        ? "Not enough data"
+        : count.toLocaleString()
   )
   const reportsFromNetwork = signalValue(
     evidence?.reportsFromNetwork,
     isHydrating,
-    ({ count, reporterCount }) => {
-      if (count === 0) return "No reports found in this relay scan"
+    ({ count, reporterCount }, state) => {
+      if (count === 0) {
+        return state === "available"
+          ? "Not found in completed check"
+          : "Not enough data"
+      }
       return `${count.toLocaleString()} ${pluralize(count, "report")} from ${reporterCount.toLocaleString()} ${pluralize(reporterCount, "profile")} in your network`
     }
   )
@@ -271,16 +280,6 @@ export function ShopperTrustCard({
         />
       </dl>
 
-      <p className="sr-only" aria-live="polite" aria-atomic="true">
-        {isHydrating
-          ? "Buyer context is updating"
-          : observationsUnavailable
-            ? "Buyer context observations unavailable"
-            : evidence?.degraded
-              ? "Buyer context observations loaded with partial or stale coverage"
-              : "Buyer context observations loaded"}
-      </p>
-
       <details className="mt-3 text-xs text-[var(--text-secondary)]">
         <summary className="cursor-pointer rounded-sm py-1 font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
           About these observations
@@ -297,15 +296,18 @@ export function ShopperTrustCard({
 
       <div className="mt-4 grid gap-2">
         {observationsUnavailable && !isHydrating && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="w-full"
-            onClick={onRefresh}
-          >
-            Retry observations
-          </Button>
+          <div className="rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-3 text-xs text-[var(--text-secondary)]">
+            <p>Buyer context couldn't be loaded.</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-2 w-full"
+              onClick={onRefresh}
+            >
+              Retry observations
+            </Button>
+          </div>
         )}
         <Button
           type="button"

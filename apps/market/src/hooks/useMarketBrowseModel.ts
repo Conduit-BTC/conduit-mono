@@ -143,8 +143,8 @@ export function useMarketBrowseModel({
   const refreshCatalog = productsQuery.refetch
   const refreshGuestDiscovery = guestMarket.refetch
   const refreshGlobalSearch = globalSearchQuery.refetch
-  const refetch = useCallback(() => {
-    void refreshMarketBrowseData({
+  const refetch = useCallback(async () => {
+    await refreshMarketBrowseData({
       globalSearchEnabled,
       refreshDiscovery: usesAnonymousPerspective
         ? refreshGuestDiscovery

@@ -11,6 +11,7 @@ import {
   filterAndSortMerchantEventTimeline,
   formatMerchantEventTimelineSchedule,
   getMerchantEventTimelineStatus,
+  isMerchantEventTimelineInitialLoading,
   mergeMerchantEventTimeline,
 } from "../apps/merchant/src/lib/merchant-event-timeline"
 
@@ -130,6 +131,46 @@ function dateMarket(input: {
 }
 
 describe("Merchant event timeline", () => {
+  it("waits for the initial product relationship read before confirming an empty timeline", () => {
+    const settled = {
+      authorResolutionPending: false,
+      itemCount: 0,
+      perspectiveReadPending: false,
+      ownedReadPending: false,
+      productRelationshipReadPending: false,
+      exactRelationshipReadPending: false,
+    }
+
+    expect(
+      isMerchantEventTimelineInitialLoading({
+        ...settled,
+        productRelationshipReadPending: true,
+      })
+    ).toBe(true)
+    expect(isMerchantEventTimelineInitialLoading(settled)).toBe(false)
+
+    const linked = market({
+      suffix: "product-linked-after-load",
+      startMs: NOW + 3_600_000,
+    })
+    const items = mergeMerchantEventTimeline({
+      merchantPubkey: MERCHANT,
+      perspectiveMarkets: [],
+      ownedMarkets: [],
+      exactRelationshipMarkets: [linked],
+      savedReferences: [],
+      sellingCollectionCoordinates: [linked.collectionCoordinate],
+    })
+    expect(
+      isMerchantEventTimelineInitialLoading({
+        ...settled,
+        itemCount: items.length,
+        productRelationshipReadPending: true,
+      })
+    ).toBe(false)
+    expect(items[0]?.relationships).toContain("selling")
+  })
+
   it("retires known invalid coordinates while incomplete reads retain positive cards", () => {
     const positive = market({ suffix: "known", startMs: NOW + 3_600_000 })
     const unrelated = market({ suffix: "other", startMs: NOW + 7_200_000 })
@@ -633,7 +674,7 @@ describe("Merchant event timeline", () => {
     )
   })
 
-  it("uses signed schedule evidence and relay-aware status labels", () => {
+  it("uses signed schedule evidence without mirroring relay state", () => {
     const partial = market({
       suffix: "partial",
       startMs: Date.UTC(2027, 5, 1, 14),
@@ -648,9 +689,15 @@ describe("Merchant event timeline", () => {
       sellingCollectionCoordinates: [],
     })
     expect(getMerchantEventTimelineStatus(item!, NOW)).toEqual({
-      label: "Partial relay view",
-      tone: "warning",
+      label: "Active event",
+      tone: "success",
     })
+    expect(
+      getMerchantEventTimelineStatus(
+        { ...item!, reconciliationPending: true },
+        NOW
+      )
+    ).toEqual({ label: "Refresh needed", tone: "warning" })
     expect(formatMerchantEventTimelineSchedule(partial, "en-US")).toContain(
       "9:00 AM"
     )
@@ -701,8 +748,8 @@ describe("Merchant event lifecycle history", () => {
     )
     open.state = "partial"
     expect(getMerchantEventTimelineStatus(items[0]!, NOW)).toEqual({
-      label: "Partial relay view",
-      tone: "warning",
+      label: "Scheduled time has passed · Open",
+      tone: "secondary",
     })
     expect(getMerchantEventTimelineStatus(items[1]!, NOW).label).toBe("Closed")
     expect(
