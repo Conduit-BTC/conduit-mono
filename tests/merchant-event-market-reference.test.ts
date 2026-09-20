@@ -96,7 +96,6 @@ describe("merchant organizer event-market references", () => {
       })
     ).toEqual({
       event: imported,
-      source: "following",
       relation: "selling",
       window: "30d",
     })
