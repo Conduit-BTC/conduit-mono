@@ -167,7 +167,7 @@ function StatCard({
       className="block rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)] hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
     >
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
             {label}
           </div>
@@ -175,8 +175,11 @@ function StatCard({
             {value ?? "—"}
           </div>
         </div>
-        <span className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]">
-          <Icon aria-hidden={true} className="h-5 w-5" />
+        <span
+          data-dashboard-stat-icon
+          className="inline-flex size-11 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
+        >
+          <Icon aria-hidden={true} className="size-5" />
         </span>
       </div>
     </Link>
