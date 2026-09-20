@@ -2505,6 +2505,8 @@ function mergeRelayUrlsWithOwnerAuthority(
 export interface EventMarketReadPlan {
   relayUrls: string[]
   ownerSelectedRelayUrls: string[]
+  appRelayUrls: string[]
+  personalRelayUrls: string[]
   relayListState: RelayListResolutionState
   relayHintTruncated: boolean
 }
@@ -2550,11 +2552,22 @@ export async function getEventMarketReadPlan(input: {
         : []
     ) ?? []
   )
+  const relayListLookupPlan = planRelayReads({
+    intent: "relay_lists",
+    authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    settings: ownerSettingsSnapshot?.settings,
+    signedRelayListAuthoritative:
+      ownerSettingsSnapshot?.signedRelayListAuthoritative,
+  })
   const lookupOptions = {
     signal: input.signal,
+    relayUrls: relayListLookupPlan.relayUrls,
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
     ownerSelectedRelayUrls,
+    appRelayUrls: relayListLookupPlan.appRelayUrls,
+    personalRelayUrls: relayListLookupPlan.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -2648,6 +2661,8 @@ export async function getEventMarketReadPlan(input: {
   return {
     relayUrls,
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
+    appRelayUrls: plan.appRelayUrls ?? [],
+    personalRelayUrls: plan.personalRelayUrls ?? [],
     relayListState,
     relayHintTruncated: plan.hintRelayUrls.some(
       (relayUrl) => !selectedRelays.has(relayUrl.toLowerCase())
@@ -2661,6 +2676,8 @@ async function fetchEventMarketRecords(input: {
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
+  appRelayUrls?: readonly string[]
+  personalRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   onProgress?: FetchEventsFanoutOptions["onProgress"]
@@ -2685,6 +2702,8 @@ async function fetchEventMarketRecords(input: {
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+    appRelayUrls: input.appRelayUrls,
+    personalRelayUrls: input.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -2724,6 +2743,8 @@ async function fetchEventMarketCollectionDiscovery(input: {
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
+  appRelayUrls?: readonly string[]
+  personalRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
@@ -2749,6 +2770,8 @@ async function fetchEventMarketCollectionDiscovery(input: {
       accountPubkey: input.accountPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+      appRelayUrls: input.appRelayUrls,
+      personalRelayUrls: input.personalRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
       shouldContinue: input.shouldContinue,
@@ -2782,6 +2805,8 @@ async function fetchEventMarketProductRequests(input: {
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
+  appRelayUrls?: readonly string[]
+  personalRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
@@ -2802,6 +2827,8 @@ async function fetchEventMarketProductRequests(input: {
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+    appRelayUrls: input.appRelayUrls,
+    personalRelayUrls: input.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -2830,6 +2857,8 @@ async function fetchEventMarketFrontierFilters(input: {
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
+  appRelayUrls?: readonly string[]
+  personalRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
@@ -2890,6 +2919,8 @@ async function fetchEventMarketFrontierFilters(input: {
           accountPubkey: input.accountPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+          appRelayUrls: input.appRelayUrls,
+          personalRelayUrls: input.personalRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -2950,6 +2981,8 @@ async function fetchEventMarketOrganizerRecordFrontiers(input: {
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
+  appRelayUrls?: readonly string[]
+  personalRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
@@ -2971,6 +3004,8 @@ async function fetchEventMarketOrganizerRecordFrontiers(input: {
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+    appRelayUrls: input.appRelayUrls,
+    personalRelayUrls: input.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3022,6 +3057,8 @@ async function fetchEventMarketOrganizerRecordFrontiers(input: {
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+    appRelayUrls: input.appRelayUrls,
+    personalRelayUrls: input.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3420,6 +3457,8 @@ async function fetchEventMarketPickupFrontiers(input: {
   relayUrls: string[]
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
+  appRelayUrls?: readonly string[]
+  personalRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
@@ -3457,6 +3496,8 @@ async function fetchEventMarketPickupFrontiers(input: {
       ...(input.ownerSelectedRelayUrls ?? []),
       ...participantPlan.ownerSelectedRelayUrls,
     ]),
+    appRelayUrls: input.appRelayUrls,
+    personalRelayUrls: input.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3485,6 +3526,8 @@ async function fetchEventMarketPickupFrontiers(input: {
       ...(input.ownerSelectedRelayUrls ?? []),
       ...participantPlan.ownerSelectedRelayUrls,
     ]),
+    appRelayUrls: input.appRelayUrls,
+    personalRelayUrls: input.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3511,6 +3554,8 @@ async function fetchEventMarketProductRequestFrontiers(input: {
   relayUrls: string[]
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
+  appRelayUrls?: readonly string[]
+  personalRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
@@ -3561,6 +3606,8 @@ async function fetchEventMarketProductRequestFrontiers(input: {
       ...(input.ownerSelectedRelayUrls ?? []),
       ...participantPlan.ownerSelectedRelayUrls,
     ]),
+    appRelayUrls: input.appRelayUrls,
+    personalRelayUrls: input.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3589,6 +3636,8 @@ async function fetchEventMarketProductRequestFrontiers(input: {
       ...(input.ownerSelectedRelayUrls ?? []),
       ...participantPlan.ownerSelectedRelayUrls,
     ]),
+    appRelayUrls: input.appRelayUrls,
+    personalRelayUrls: input.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -5044,7 +5093,8 @@ export async function getEventMarket(
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
-  const { relayUrls, ownerSelectedRelayUrls } = readPlan
+  const { relayUrls, ownerSelectedRelayUrls, appRelayUrls, personalRelayUrls } =
+    readPlan
   const observedAt = input.nowMs ?? Date.now()
   const [recordResult, cachedRecords] = await Promise.all([
     selectedProductCoordinates
@@ -5054,6 +5104,8 @@ export async function getEventMarket(
           accountPubkey: input.authenticatedPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls,
+          appRelayUrls,
+          personalRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -5065,6 +5117,8 @@ export async function getEventMarket(
           accountPubkey: input.authenticatedPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls,
+          appRelayUrls,
+          personalRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -5092,6 +5146,8 @@ export async function getEventMarket(
         accountPubkey: input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
+        appRelayUrls,
+        personalRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -5119,6 +5175,8 @@ export async function getEventMarket(
           accountPubkey: input.authenticatedPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls,
+          appRelayUrls,
+          personalRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -5174,6 +5232,8 @@ export async function getEventMarket(
                 accountPubkey: input.authenticatedPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
                 ownerSelectedRelayUrls,
+                appRelayUrls,
+                personalRelayUrls,
                 accountNetworkLocalStateRepository:
                   input.accountNetworkLocalStateRepository,
                 shouldContinue: input.shouldContinue,
@@ -5193,6 +5253,8 @@ export async function getEventMarket(
             ),
             authenticatedPubkey: input.authenticatedPubkey,
             ownerSelectedRelayUrls,
+            appRelayUrls,
+            personalRelayUrls,
             accountNetworkLocalStateRepository:
               input.accountNetworkLocalStateRepository,
             shouldContinue: input.shouldContinue,
@@ -5214,6 +5276,8 @@ export async function getEventMarket(
         ),
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
+        appRelayUrls,
+        personalRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -5310,6 +5374,8 @@ export async function getEventMarket(
           ),
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls,
+          appRelayUrls,
+          personalRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -5482,7 +5548,8 @@ export async function getOrganizerEventMarketsDetailed(
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
-  const { relayUrls, ownerSelectedRelayUrls } = readPlan
+  const { relayUrls, ownerSelectedRelayUrls, appRelayUrls, personalRelayUrls } =
+    readPlan
   const observedAt = input.nowMs ?? Date.now()
   const [recordResult, cachedRecords] = await Promise.all([
     fetchEventMarketRecords({
@@ -5491,6 +5558,8 @@ export async function getOrganizerEventMarketsDetailed(
       accountPubkey: input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       ownerSelectedRelayUrls,
+      appRelayUrls,
+      personalRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
       shouldContinue: input.shouldContinue,
@@ -5535,6 +5604,8 @@ export async function getOrganizerEventMarketsDetailed(
         accountPubkey: input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
+        appRelayUrls,
+        personalRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -5606,6 +5677,8 @@ export async function getOrganizerEventMarketsDetailed(
         accountPubkey: input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
+        appRelayUrls,
+        personalRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -5644,6 +5717,8 @@ export async function getOrganizerEventMarketsDetailed(
         accountPubkey: input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
+        appRelayUrls,
+        personalRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -5717,6 +5792,8 @@ export async function getOrganizerEventMarketsDetailed(
           accountPubkey: input.authenticatedPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls,
+          appRelayUrls,
+          personalRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -5732,6 +5809,8 @@ export async function getOrganizerEventMarketsDetailed(
       ),
       authenticatedPubkey: input.authenticatedPubkey,
       ownerSelectedRelayUrls,
+      appRelayUrls,
+      personalRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
       shouldContinue: input.shouldContinue,
@@ -5764,6 +5843,8 @@ export async function getOrganizerEventMarketsDetailed(
         ),
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
+        appRelayUrls,
+        personalRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -5853,6 +5934,8 @@ export async function getOrganizerEventMarketsDetailed(
           ),
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls,
+          appRelayUrls,
+          personalRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,

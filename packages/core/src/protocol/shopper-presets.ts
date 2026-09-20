@@ -611,6 +611,17 @@ export async function fetchShopperPresets(
   const executableOwnerSelectedRelayUrls = ownerSelectedRelayUrls.filter(
     (relayUrl) => executableRelaySet.has(relayUrl)
   )
+  const appRelaySet = new Set([
+    ...config.appWriteRelayUrls,
+    ...(plan.appRelayUrls ?? []),
+  ])
+  const personalRelaySet = new Set([
+    ...ownerSelectedRelayUrls,
+    ...(plan.personalRelayUrls ?? []),
+    ...getCommerceWriteRelayUrls({
+      settings: ownerSettingsSnapshot?.settings,
+    }),
+  ])
   if (relayUrls.length === 0)
     return { state: "unavailable", reason: "relay_read" }
 
@@ -628,6 +639,10 @@ export async function fetchShopperPresets(
       accountPubkey: owner,
       authenticatedPubkey: authenticatedOwnerPubkey,
       ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+      appRelayUrls: relayUrls.filter((relayUrl) => appRelaySet.has(relayUrl)),
+      personalRelayUrls: relayUrls.filter((relayUrl) =>
+        personalRelaySet.has(relayUrl)
+      ),
       accountNetworkLocalStateRepository:
         dependencies.accountNetworkLocalStateRepository,
       shouldContinue: dependencies.shouldContinue,

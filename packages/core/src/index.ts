@@ -162,8 +162,11 @@ export type {
 
 // Config
 export {
+  APP_RELAY_REGISTRY_VERSION,
   applyE2eRelayIsolation,
   CANONICAL_APP_BACKPLANE_RELAYS,
+  CANONICAL_APP_READ_RELAYS,
+  CANONICAL_APP_RELAY_DEFINITIONS,
   CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_COMMERCE_DISCOVERY_RELAYS,
   CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
@@ -183,6 +186,8 @@ export {
   isSignet,
   isTestnet,
   isMainnet,
+  type AppRelayDefinition,
+  type AppRelayNip65Mode,
   type ConduitConfig,
   type RelayBucketConfig,
   type RelayBucketId,

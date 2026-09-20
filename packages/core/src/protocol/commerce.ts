@@ -711,6 +711,10 @@ type CommerceReadRelayPlan = {
   hintRelayUrls: string[]
   /** Exact planned subset backed by this authenticated owner's settings. */
   ownerSelectedRelayUrls: string[]
+  /** Exact executable subset contributed by Conduit's app-owned layer. */
+  appRelayUrls: string[]
+  /** Exact executable subset contributed by the owner's NIP-65 layer. */
+  personalRelayUrls: string[]
   /** Resolved once so per-family plans do not repeat the NIP-65 lookup. */
   relayLists: ReadonlyMap<string, RelayList>
 }
@@ -890,6 +894,10 @@ async function planCommerceReadRelayPlan(input: {
           )
         ).filter((relayUrl) => executableRelayUrlSet.has(relayUrl))
       : []
+  const appRelayUrlSet = new Set([
+    ...(plan.appRelayUrls ?? []),
+    ...fallbackRelayUrls,
+  ])
 
   if (
     config.e2eRelayIsolationEnabled ||
@@ -904,6 +912,10 @@ async function planCommerceReadRelayPlan(input: {
       ),
       hintRelayUrls: plan.hintRelayUrls,
       ownerSelectedRelayUrls,
+      appRelayUrls: executableRelayUrls.filter((relayUrl) =>
+        appRelayUrlSet.has(relayUrl)
+      ),
+      personalRelayUrls: ownerSelectedRelayUrls,
       relayLists,
     }
   }
@@ -921,6 +933,8 @@ async function planCommerceReadRelayPlan(input: {
         ),
         hintRelayUrls: plan.hintRelayUrls,
         ownerSelectedRelayUrls: [],
+        appRelayUrls: relayUrls,
+        personalRelayUrls: [],
         relayLists,
       }
     }
@@ -934,6 +948,8 @@ async function planCommerceReadRelayPlan(input: {
         ),
         hintRelayUrls: plan.hintRelayUrls,
         ownerSelectedRelayUrls: [],
+        appRelayUrls: relayUrls,
+        personalRelayUrls: [],
         relayLists,
       }
     }
@@ -1351,6 +1367,8 @@ async function streamProductRecordChunks(input: {
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
   ownerSelectedRelayUrls: string[]
+  appRelayUrls: string[]
+  personalRelayUrls: string[]
   authenticatedPubkey?: string | null
   accountPubkey?: string | null
   shouldContinue?: () => boolean
@@ -1388,6 +1406,8 @@ async function streamProductRecordChunks(input: {
           {
             relayUrls: input.relayUrls,
             ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+            appRelayUrls: input.appRelayUrls,
+            personalRelayUrls: input.personalRelayUrls,
             accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             accountNetworkLocalStateRepository:
@@ -4001,6 +4021,8 @@ async function fetchPublicProductRecords(query: {
   const result = await runFetchEventsFanoutDetailed(filter, {
     relayUrls: relayPlan.relayUrls,
     ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+    appRelayUrls: relayPlan.appRelayUrls,
+    personalRelayUrls: relayPlan.personalRelayUrls,
     accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
     authenticatedPubkey: query.authenticatedPubkey,
     accountNetworkLocalStateRepository:
@@ -4099,6 +4121,8 @@ async function fetchPublicProductRecordsProgressive(
     authorChunks,
     relayUrls: relayPlan.relayUrls,
     ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+    appRelayUrls: relayPlan.appRelayUrls,
+    personalRelayUrls: relayPlan.personalRelayUrls,
     authenticatedPubkey: query.authenticatedPubkey,
     accountPubkey: query.accountPubkey,
     shouldContinue: query.shouldContinue,
@@ -4119,6 +4143,12 @@ async function fetchPublicProductRecordsProgressive(
       authorChunks,
       relayUrls: expansionRelayUrls,
       ownerSelectedRelayUrls: expandedRelayPlan.ownerSelectedRelayUrls.filter(
+        (relayUrl) => expansionRelayUrls.includes(relayUrl)
+      ),
+      appRelayUrls: expandedRelayPlan.appRelayUrls.filter((relayUrl) =>
+        expansionRelayUrls.includes(relayUrl)
+      ),
+      personalRelayUrls: expandedRelayPlan.personalRelayUrls.filter(
         (relayUrl) => expansionRelayUrls.includes(relayUrl)
       ),
       authenticatedPubkey: query.authenticatedPubkey,
@@ -8177,6 +8207,8 @@ async function runLegacyDmSync(
       {
         relayUrls: relayPlan.relayUrls,
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+        appRelayUrls: relayPlan.appRelayUrls,
+        personalRelayUrls: relayPlan.personalRelayUrls,
         accountPubkey: principalPubkey,
         authenticatedPubkey: principalPubkey,
         accountNetworkLocalStateRepository:
@@ -8194,6 +8226,8 @@ async function runLegacyDmSync(
       {
         relayUrls: relayPlan.relayUrls,
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+        appRelayUrls: relayPlan.appRelayUrls,
+        personalRelayUrls: relayPlan.personalRelayUrls,
         accountPubkey: principalPubkey,
         authenticatedPubkey: principalPubkey,
         accountNetworkLocalStateRepository:

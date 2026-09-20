@@ -77,11 +77,15 @@ async function durableOwnerRelayListRepository(tags: string[][]) {
 
 function accountNetworkState(
   pubkey: string,
-  excludedRelayUrls: readonly string[]
+  excludedRelayUrls: readonly string[],
+  routingPolicy: Partial<
+    ReturnType<typeof emptyAccountNetworkLocalState>["routingPolicy"]
+  > = {}
 ) {
   const state = emptyAccountNetworkLocalState(pubkey)
   return {
     ...state,
+    routingPolicy: { ...state.routingPolicy, ...routingPolicy },
     exclusions: excludedRelayUrls.map((relayUrl, index) => ({
       relayUrl,
       committedAt: NOW + index,
@@ -623,6 +627,11 @@ describe("planPublishRelays", () => {
       intent: "author_event",
       authorPubkey: AUTHOR_PUBKEY,
       authenticatedPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: {
+        get: async (pubkey) =>
+          accountNetworkState(pubkey, [], { appRelaysEnabled: false }),
+      },
     })
 
     expect(plan.primaryRelayUrls).toEqual([currentRelayUrl])
@@ -649,7 +658,8 @@ describe("planPublishRelays", () => {
       },
     })
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
-      get: async (pubkey) => accountNetworkState(pubkey, []),
+      get: async (pubkey) =>
+        accountNetworkState(pubkey, [], { appRelaysEnabled: false }),
     }
 
     const result = await publishWithPlanner(event, {
@@ -665,7 +675,7 @@ describe("planPublishRelays", () => {
     expect(attempts).toEqual([[`${ownerWs}/`]])
   })
 
-  it("does not broaden signed owner authority when no Publish relay is declared", async () => {
+  it("does not broaden signed owner authority when App Relays are disabled and no Publish relay is declared", async () => {
     const cases = [[], [["r", "wss://read-only-owner.example", "read"]]]
 
     for (const tags of cases) {
@@ -686,6 +696,11 @@ describe("planPublishRelays", () => {
           intent: "author_event",
           authorPubkey: AUTHOR_PUBKEY,
           authenticatedPubkey: AUTHOR_PUBKEY,
+          accountPubkey: AUTHOR_PUBKEY,
+          accountNetworkLocalStateRepository: {
+            get: async (pubkey) =>
+              accountNetworkState(pubkey, [], { appRelaysEnabled: false }),
+          },
         })
       ).rejects.toThrow("signed Network settings have no usable Publish relay")
       expect(publishCalls).toBe(0)
@@ -2030,7 +2045,7 @@ describe("planPublishRelays", () => {
     expect(attempts[1]).toEqual([normalizedPrimaryRelay])
     expect(attempts[2]?.length).toBeGreaterThan(0)
     expect(attempts[2]).toContain(APP_WRITE_ATTEMPT_RELAYS[0])
-    expect(result.successfulRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
+    expect(result.successfulRelayUrls).toEqual([CANONICAL_APP_WRITE_RELAYS[0]])
     expect(result.failedRelayUrls).toContain(primaryRelay)
   })
 

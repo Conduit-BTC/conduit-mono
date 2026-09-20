@@ -15,8 +15,107 @@ export interface RelayBucketConfig {
   relayUrls: string[]
 }
 
+export type AppRelayNip65Mode = "read_write" | "write" | null
+export const APP_RELAY_REGISTRY_VERSION = 1
+
+/**
+ * One transparent, code-owned Conduit app relay. These records are product
+ * defaults, not claims about a user's signed NIP-65 or kind-10050 choices.
+ */
+export interface AppRelayDefinition {
+  url: string
+  fallbackName: string
+  fallbackIconUrl?: string
+  read: boolean
+  write: boolean
+  commerce: boolean
+  privateInbox: boolean
+  nip65Preset: AppRelayNip65Mode
+  nip17Preset: boolean
+}
+
+export const CANONICAL_APP_RELAY_DEFINITIONS: readonly AppRelayDefinition[] = [
+  {
+    url: "wss://relay.conduit.market",
+    fallbackName: "Conduit Relay",
+    fallbackIconUrl: "/images/logo/logo-icon.svg",
+    read: true,
+    write: true,
+    commerce: true,
+    privateInbox: true,
+    nip65Preset: "read_write",
+    nip17Preset: true,
+  },
+  {
+    url: "wss://relay.ditto.pub",
+    fallbackName: "Ditto Relay",
+    read: true,
+    write: true,
+    commerce: true,
+    privateInbox: true,
+    nip65Preset: "read_write",
+    nip17Preset: true,
+  },
+  {
+    url: "wss://relay.dreamith.to",
+    fallbackName: "Dreamith Relay",
+    read: true,
+    write: true,
+    commerce: false,
+    privateInbox: false,
+    nip65Preset: "read_write",
+    nip17Preset: false,
+  },
+  {
+    url: "wss://relay.primal.net",
+    fallbackName: "Primal Public Relay",
+    read: false,
+    write: true,
+    commerce: false,
+    privateInbox: false,
+    nip65Preset: "write",
+    nip17Preset: false,
+  },
+  {
+    url: "wss://relay.damus.io",
+    fallbackName: "damus.io",
+    read: false,
+    write: true,
+    commerce: false,
+    privateInbox: false,
+    nip65Preset: null,
+    nip17Preset: false,
+  },
+  {
+    url: "wss://nos.lol",
+    fallbackName: "nos.lol",
+    read: true,
+    write: false,
+    commerce: false,
+    privateInbox: false,
+    nip65Preset: null,
+    nip17Preset: false,
+  },
+  {
+    url: "wss://relay.plebeian.market",
+    fallbackName: "Plebeian Market Relay",
+    read: false,
+    write: false,
+    commerce: true,
+    privateInbox: false,
+    nip65Preset: null,
+    nip17Preset: false,
+  },
+]
+
+export const CANONICAL_APP_READ_RELAYS = CANONICAL_APP_RELAY_DEFINITIONS.filter(
+  (relay) => relay.read
+).map((relay) => relay.url)
 export const CANONICAL_APP_BACKPLANE_RELAYS = ["wss://relay.conduit.market"]
-export const CANONICAL_APP_WRITE_RELAYS = CANONICAL_APP_BACKPLANE_RELAYS
+export const CANONICAL_APP_WRITE_RELAYS =
+  CANONICAL_APP_RELAY_DEFINITIONS.filter((relay) => relay.write).map(
+    (relay) => relay.url
+  )
 export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
   "wss://nos.lol",
   "wss://relay.ditto.pub",
@@ -112,8 +211,12 @@ const CONDUIT_RELAY_DEBUG_BANNER = [
 
 export interface ConduitConfig {
   e2eRelayIsolationEnabled: boolean
+  appRelayRegistryVersion: number
   relayUrl: string
   defaultRelays: string[]
+  appRelayDefinitions: AppRelayDefinition[]
+  appReadRelayUrls: string[]
+  appCommerceRelayUrls: string[]
   appBackplaneRelayUrls: string[]
   appWriteRelayUrls: string[]
   commerceRelayUrls: string[]
@@ -293,8 +396,23 @@ export function applyE2eRelayIsolation(
   return {
     ...input,
     e2eRelayIsolationEnabled: true,
+    appRelayRegistryVersion: APP_RELAY_REGISTRY_VERSION,
     relayUrl,
     defaultRelays: [...isolatedRelayUrls],
+    appRelayDefinitions: [
+      {
+        url: relayUrl,
+        fallbackName: "E2E relay",
+        read: true,
+        write: true,
+        commerce: true,
+        privateInbox: true,
+        nip65Preset: "read_write",
+        nip17Preset: true,
+      },
+    ],
+    appReadRelayUrls: [...isolatedRelayUrls],
+    appCommerceRelayUrls: [...isolatedRelayUrls],
     appBackplaneRelayUrls: [...isolatedRelayUrls],
     appWriteRelayUrls: [...isolatedRelayUrls],
     commerceRelayUrls: [...isolatedRelayUrls],
@@ -382,6 +500,8 @@ function logRelayDebugConfig(input: {
   resolved: {
     relayUrl: string
     defaultRelays: readonly string[]
+    appReadRelayUrls: readonly string[]
+    appCommerceRelayUrls: readonly string[]
     appBackplaneRelayUrls: readonly string[]
     appWriteRelayUrls: readonly string[]
     publicRelayUrls: readonly string[]
@@ -409,6 +529,10 @@ function logRelayDebugConfig(input: {
       "",
       "Resolved relay config:",
       `  relayUrl hint: ${input.resolved.relayUrl}`,
+      "  appReadRelayUrls:",
+      formatRelayDebugList(input.resolved.appReadRelayUrls),
+      "  appCommerceRelayUrls:",
+      formatRelayDebugList(input.resolved.appCommerceRelayUrls),
       "  appBackplaneRelayUrls:",
       formatRelayDebugList(input.resolved.appBackplaneRelayUrls),
       "  appWriteRelayUrls:",
@@ -455,11 +579,30 @@ const envGeneralRelayUrls = uniqueConfiguredRelayUrls([
   ...envDefaultRelays,
 ])
 const defaultRelays = uniqueConfiguredRelayUrls(CANONICAL_DEFAULT_RELAYS)
+const appRelayDefinitions = CANONICAL_APP_RELAY_DEFINITIONS.map((relay) => ({
+  ...relay,
+  url: uniqueConfiguredRelayUrls([relay.url])[0]!,
+}))
+const appReadRelayUrls = uniqueConfiguredRelayUrls([
+  ...CANONICAL_APP_RELAY_DEFINITIONS.filter((relay) => relay.read).map(
+    (relay) => relay.url
+  ),
+])
+const appCommerceRelayUrls = uniqueConfiguredRelayUrls([
+  ...CANONICAL_APP_RELAY_DEFINITIONS.filter((relay) => relay.commerce).map(
+    (relay) => relay.url
+  ),
+])
+const appCommercePublishRelayUrls = uniqueConfiguredRelayUrls([
+  ...CANONICAL_APP_RELAY_DEFINITIONS.filter(
+    (relay) => relay.commerce && relay.write
+  ).map((relay) => relay.url),
+])
 const appBackplaneRelayUrls = uniqueConfiguredRelayUrls([
   ...CANONICAL_APP_BACKPLANE_RELAYS,
 ])
 const appWriteRelayUrls = uniqueConfiguredRelayUrls([
-  ...appBackplaneRelayUrls,
+  ...CANONICAL_APP_WRITE_RELAYS,
   ...envAppWriteRelayUrls,
 ])
 const corePublicFallbackRelayUrls = uniqueConfiguredRelayUrls([
@@ -497,7 +640,7 @@ const dmCompatibilityOrderRoutingEnabled =
   })
 const zapRelayUrls = uniqueConfiguredRelayUrls(CANONICAL_ZAP_PUBLIC_RELAYS)
 const commerceRelayUrls = uniqueConfiguredRelayUrls([
-  ...appWriteRelayUrls,
+  ...appCommercePublishRelayUrls,
   ...envCommerceRelayUrls,
 ])
 const publicRelayUrls = uniqueConfiguredRelayUrls([
@@ -515,8 +658,12 @@ const nip89RelayHint = getConfiguredRelayUrl(
 
 const configuredRelayConfig: ConduitConfig = {
   e2eRelayIsolationEnabled: false,
+  appRelayRegistryVersion: APP_RELAY_REGISTRY_VERSION,
   relayUrl,
   defaultRelays: resolvedDefaultRelays,
+  appRelayDefinitions,
+  appReadRelayUrls,
+  appCommerceRelayUrls,
   appBackplaneRelayUrls,
   appWriteRelayUrls,
   commerceRelayUrls,
@@ -589,6 +736,8 @@ logRelayDebugConfig({
   resolved: {
     relayUrl: config.relayUrl,
     defaultRelays: config.defaultRelays,
+    appReadRelayUrls: config.appReadRelayUrls,
+    appCommerceRelayUrls: config.appCommerceRelayUrls,
     appBackplaneRelayUrls: config.appBackplaneRelayUrls,
     appWriteRelayUrls: config.appWriteRelayUrls,
     publicRelayUrls: config.publicRelayUrls,

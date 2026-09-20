@@ -5,6 +5,7 @@ import type {
   ProductShippingOptionReference,
   ProductZapMessagePolicy,
 } from "../schemas"
+import type { AccountNetworkRoutingPolicy } from "../protocol/account-network-routing-policy"
 import type { RelayScanResult } from "../protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
@@ -508,6 +509,7 @@ export interface AccountNetworkRelayExclusion {
 export interface AccountNetworkLocalState {
   pubkey: string
   version: number
+  routingPolicy: AccountNetworkRoutingPolicy
   exclusions: AccountNetworkRelayExclusion[]
   preferredRelayOrder: string[]
   /** Existing capability vocabulary; observations are never signed authority. */

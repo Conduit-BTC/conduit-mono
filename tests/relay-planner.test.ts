@@ -13,6 +13,10 @@ import {
 } from "@conduit/core"
 
 const originalConfig = structuredClone(config)
+const PERSONAL_ONLY_ROUTING = {
+  appRelaysEnabled: false,
+  personalRelaysEnabled: true,
+} as const
 
 function entry(
   url: string,
@@ -208,6 +212,7 @@ describe("planRelayReads", () => {
     expect(plan.hintRelayUrls).toEqual(["wss://alice-write.conduit.market"])
     expect(plan.relayUrls).not.toContain("ws://artshop:4848")
     expect(plan.ownerSelectedRelayUrls).toEqual([])
+    expect(plan.personalRelayUrls).toContain("wss://alice-write.conduit.market")
   })
 
   it("retains an owner-selected ws relay only with exact owner provenance", () => {
@@ -236,6 +241,7 @@ describe("planRelayReads", () => {
       relayLists: lists,
       settings: state,
       signedRelayListAuthoritative: true,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
 
     expect(plan.relayUrls).toContain(ownerRelay)
@@ -263,6 +269,7 @@ describe("planRelayReads", () => {
       relayLists: lists,
       settings: state,
       signedRelayListAuthoritative: true,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
 
     expect(plan.hintRelayUrls).toEqual([writeRelayUrl])
@@ -287,6 +294,7 @@ describe("planRelayReads", () => {
       recipients: ["bob"],
       relayLists: lists,
       settings: state,
+      maxBroadcastRelays: 1,
     })
     expect(plan.relayUrls[0]).toBe("wss://bob-read.conduit.market")
     expect(plan.relayUrls).toContain("wss://general.conduit.market")
@@ -303,6 +311,7 @@ describe("planRelayReads", () => {
       intent: "general",
       settings: state,
       now: 100,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
     expect(plan.relayUrls).toEqual(["wss://ok.conduit.market"])
     expect(plan.parkedRelayUrls).toEqual(["wss://broken.conduit.market"])
@@ -317,6 +326,7 @@ describe("planRelayReads", () => {
       settings: state,
       skipHealthFilter: true,
       now: 100,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
     expect(plan.relayUrls).toEqual(["wss://broken.conduit.market"])
     expect(plan.parkedRelayUrls).toEqual([])
@@ -346,6 +356,7 @@ describe("planRelayReads", () => {
       authors: ["alice"],
       relayLists: lists,
       settings: state,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
     expect(plan.relayUrls).toEqual(["wss://shared.conduit.market"])
   })
@@ -423,6 +434,8 @@ describe("planRelayWrites", () => {
       parkedRelayUrls: [],
       hintRelayUrls: [],
       ownerSelectedRelayUrls: [],
+      appRelayUrls: [isolatedRelayUrl],
+      personalRelayUrls: [],
     })
     expect(
       planRelayWrites({
@@ -437,6 +450,8 @@ describe("planRelayWrites", () => {
       primaryRelayUrls: [isolatedRelayUrl],
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
+      appRelayUrls: [isolatedRelayUrl],
+      personalRelayUrls: [],
     })
   })
 
@@ -470,6 +485,7 @@ describe("planRelayWrites", () => {
       intent: "author_event",
       authorPubkey: "alice",
       settings: state,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
     expect(plan.primaryRelayUrls).toEqual([
       "wss://commerce.conduit.market",
@@ -502,9 +518,14 @@ describe("planRelayWrites", () => {
       authenticatedPubkey: "alice",
       relayLists: lists,
       settings: state,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
 
     expect(plan.primaryRelayUrls).toEqual([
+      "wss://alice-write.conduit.market",
+      "wss://configured.conduit.market",
+    ])
+    expect(plan.personalRelayUrls).toEqual([
       "wss://alice-write.conduit.market",
       "wss://configured.conduit.market",
     ])
@@ -533,6 +554,7 @@ describe("planRelayWrites", () => {
       relayLists: lists,
       settings: state,
       signedRelayListAuthoritative: true,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
 
     expect(plan.primaryRelayUrls).toEqual([currentRelayUrl])
@@ -573,6 +595,7 @@ describe("planRelayWrites", () => {
       recipientPubkeys: ["bob"],
       relayLists: lists,
       settings: state,
+      maxBroadcastRelays: 1,
     })
     expect(plan.primaryRelayUrls).toEqual(["wss://bob-inbox.conduit.market"])
     expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
@@ -603,6 +626,7 @@ describe("planRelayWrites", () => {
       recipientPubkeys: ["bob"],
       relayLists: lists,
       settings: state,
+      maxBroadcastRelays: 1,
     })
     expect(plan.primaryRelayUrls).toEqual(
       config.dmInboxDefaultRelayUrls.slice(0, 4)
@@ -637,9 +661,37 @@ describe("planRelayWrites", () => {
       recipientPubkeys: ["alice"],
       relayLists: lists,
       settings: state,
+      maxBroadcastRelays: 1,
     })
     expect(plan.primaryRelayUrls).toEqual(["ws://umbrel.local:4848"])
     expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
+    expect(plan.personalRelayUrls).toEqual([
+      "ws://umbrel.local:4848",
+      "wss://outbox.conduit.market",
+    ])
+  })
+
+  it("does not reuse an authenticated recipient NIP-65 hint when personal relays are disabled", () => {
+    const lists = new Map<string, RelayList>([
+      ["alice", relayList("alice", ["wss://personal-inbox.example"], [])],
+    ])
+    const plan = planRelayWrites({
+      intent: "recipient_event",
+      authenticatedPubkey: "alice",
+      recipientPubkeys: ["alice"],
+      relayLists: lists,
+      settings: settings([]),
+      routingPolicy: {
+        appRelaysEnabled: true,
+        personalRelaysEnabled: false,
+      },
+    })
+
+    expect(plan.primaryRelayUrls).toEqual(
+      config.dmInboxDefaultRelayUrls.slice(0, 4)
+    )
+    expect(plan.primaryRelayUrls).not.toContain("wss://personal-inbox.example")
+    expect(plan.personalRelayUrls).toEqual([])
   })
 
   it("uses shared recipient fallback relays when recipient has no cached list", () => {
@@ -664,6 +716,7 @@ describe("planRelayWrites", () => {
       recipientPubkeys: ["unknown"],
       relayLists: new Map(),
       settings: state,
+      maxBroadcastRelays: 1,
     })
     expect(plan.primaryRelayUrls).toEqual(
       config.dmInboxDefaultRelayUrls.slice(0, 4)
@@ -672,7 +725,7 @@ describe("planRelayWrites", () => {
     expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
   })
 
-  it("uses default public relays for recipient delivery when the signer has no write relays", () => {
+  it("uses app relays for recipient delivery and sender backup when personal writes are empty", () => {
     const plan = planRelayWrites({
       intent: "recipient_event",
       recipientPubkeys: ["unknown"],
@@ -683,7 +736,11 @@ describe("planRelayWrites", () => {
     expect(plan.primaryRelayUrls).toEqual(
       config.dmInboxDefaultRelayUrls.slice(0, 4)
     )
-    expect(plan.broadcastRelayUrls).toEqual([])
+    expect(plan.broadcastRelayUrls).toEqual(
+      config.appWriteRelayUrls
+        .filter((relayUrl) => !plan.primaryRelayUrls.includes(relayUrl))
+        .slice(0, 4)
+    )
   })
 
   it("merges multiple recipients' inboxes and dedupes", () => {
@@ -781,6 +838,7 @@ describe("planRelayWrites", () => {
       intent: "author_event",
       settings: state,
       now: 100,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
     expect(plan.primaryRelayUrls).toEqual(["wss://ok.conduit.market"])
     expect(plan.parkedRelayUrls).toEqual(["wss://parked.conduit.market"])

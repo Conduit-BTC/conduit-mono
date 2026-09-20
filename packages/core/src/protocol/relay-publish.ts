@@ -16,6 +16,7 @@ import { getNdk } from "./ndk"
 import { getRelayLists } from "./relay-list"
 import { recordRelayFailure, recordRelaySuccess } from "./relay-health"
 import {
+  planRelayReads,
   planRelayWrites,
   type RelayWriteIntent,
   type RelayWritePlan,
@@ -49,10 +50,12 @@ import {
 import type { NostrEventSigner } from "./nostr-event-signer"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import {
+  dexieAccountNetworkLocalStateRepository,
   filterEligibleAccountRelayUrls,
   orderEquivalentAccountRelayOperations,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
+import { createDefaultAccountNetworkRoutingPolicy } from "./account-network-routing-policy"
 
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
@@ -493,6 +496,10 @@ async function publishToRelayUrls(input: {
   authenticatedPubkey?: string | null
   /** Exact target subset selected by the authenticated account owner. */
   ownerSelectedRelayUrls?: readonly string[]
+  /** Exact candidates contributed by Conduit's app-owned relay layer. */
+  appRelayUrls?: readonly string[]
+  /** Exact candidates contributed by the owner's NIP-65 relay layer. */
+  personalRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
@@ -551,6 +558,8 @@ async function publishToRelayUrls(input: {
             authenticatedPubkey: input.authenticatedPubkey,
             candidateRelayUrls: orderedCandidateRelayUrls,
             ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+            appRelayUrls: input.appRelayUrls,
+            personalRelayUrls: input.personalRelayUrls,
             repository: accountNetworkLocalStateRepository,
           })
 
@@ -602,6 +611,8 @@ async function publishToRelayUrls(input: {
                 authenticatedPubkey: input.authenticatedPubkey,
                 candidateRelayUrls: [candidateRelayUrl],
                 ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+                appRelayUrls: input.appRelayUrls,
+                personalRelayUrls: input.personalRelayUrls,
                 repository: accountNetworkLocalStateRepository,
               })
         assertPublishSessionCurrent(input.shouldContinue)
@@ -890,6 +901,15 @@ export async function planPublishRelays(
   const hasAuthenticatedOwnerContext = Boolean(
     authenticatedOwner && authenticatedOwner === policyAccount
   )
+  const routingPolicy = hasAuthenticatedOwnerContext
+    ? ((
+        await (
+          input.accountNetworkLocalStateRepository ??
+          testOverrides.accountNetworkLocalStateRepository ??
+          dexieAccountNetworkLocalStateRepository
+        ).get(policyAccount!)
+      )?.routingPolicy ?? createDefaultAccountNetworkRoutingPolicy())
+    : undefined
   const ownerSelectedReadRelayUrls = hasAuthenticatedOwnerContext
     ? normalizeOwnerSelectedRelayUrls(
         settingsSnapshot.settings.entries.flatMap((entry) =>
@@ -904,14 +924,25 @@ export async function planPublishRelays(
         )
       )
     : []
+  const relayListReadPlan = planRelayReads({
+    intent: "relay_lists",
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: ownerSelectedReadRelayUrls,
+    settings: settingsSnapshot.settings,
+    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
+    routingPolicy,
+  })
   const relayLists =
     hintPubkeys.length > 0
       ? await getRelayLists(hintPubkeys, {
+          relayUrls: relayListReadPlan.relayUrls,
           cacheOnly: input.refreshRelayLists !== true,
           allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
           accountPubkey: input.accountPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls: ownerSelectedReadRelayUrls,
+          appRelayUrls: relayListReadPlan.appRelayUrls,
+          personalRelayUrls: relayListReadPlan.personalRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -927,6 +958,7 @@ export async function planPublishRelays(
     ownerSelectedRelayUrls: ownerSelectedPlanningRelayUrls,
     settings: settingsSnapshot.settings,
     signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
+    routingPolicy,
     maxPrimaryRelays: input.deliveryMode === "critical" ? 0 : undefined,
     maxBroadcastRelays: input.deliveryMode === "critical" ? 0 : undefined,
     skipHealthFilter:
@@ -1100,6 +1132,8 @@ export async function publishWithPlanner(
         accountPubkey: input.accountPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+        appRelayUrls: fallbackRelayUrls,
+        personalRelayUrls: [],
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -1157,6 +1191,8 @@ export async function publishWithPlanner(
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+    appRelayUrls: plan.appRelayUrls,
+    personalRelayUrls: plan.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -1185,6 +1221,8 @@ export async function publishWithPlanner(
         accountPubkey: input.accountPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+        appRelayUrls: plan.appRelayUrls,
+        personalRelayUrls: plan.personalRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -1264,6 +1302,8 @@ export async function publishWithPlanner(
         accountPubkey: input.accountPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+        appRelayUrls: fallbackAttemptRelayUrls,
+        personalRelayUrls: [],
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -1338,6 +1378,8 @@ export async function publishWithPlanner(
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+    appRelayUrls: plan.appRelayUrls,
+    personalRelayUrls: plan.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,

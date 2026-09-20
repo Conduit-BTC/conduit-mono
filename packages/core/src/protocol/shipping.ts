@@ -1580,6 +1580,8 @@ function shippingOwnerSelectedRelayUrls(
 async function getEligibleShippingReadRelayUrls(
   relayUrls: readonly string[],
   ownerSelectedRelayUrls: readonly string[],
+  appRelayUrls: readonly string[],
+  personalRelayUrls: readonly string[],
   options: ShippingOptionReadOptions
 ): Promise<string[]> {
   const accountPubkey = options.accountPubkey ?? options.authenticatedPubkey
@@ -1591,6 +1593,8 @@ async function getEligibleShippingReadRelayUrls(
     authenticatedPubkey: options.authenticatedPubkey,
     candidateRelayUrls: relayUrls,
     ownerSelectedRelayUrls,
+    appRelayUrls,
+    personalRelayUrls,
     repository: options.accountNetworkLocalStateRepository,
   })
 }
@@ -1645,12 +1649,20 @@ export async function getShippingOptions(
   const relayUrls = await getEligibleShippingReadRelayUrls(
     readPlan.relayUrls,
     readPlan.ownerSelectedRelayUrls ?? [],
+    readPlan.appRelayUrls ?? [],
+    readPlan.personalRelayUrls ?? [],
     options
   )
   const executableRelayUrls = new Set(relayUrls)
   const executableOwnerSelectedRelayUrls = (
     readPlan.ownerSelectedRelayUrls ?? []
   ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
+  const executableAppRelayUrls = (readPlan.appRelayUrls ?? []).filter(
+    (relayUrl) => executableRelayUrls.has(relayUrl)
+  )
+  const executablePersonalRelayUrls = (readPlan.personalRelayUrls ?? []).filter(
+    (relayUrl) => executableRelayUrls.has(relayUrl)
+  )
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
     authors: [merchantPubkey],
@@ -1661,6 +1673,8 @@ export async function getShippingOptions(
     accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
     authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
     ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+    appRelayUrls: executableAppRelayUrls,
+    personalRelayUrls: executablePersonalRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     shouldContinue: options.shouldContinue,
@@ -1866,11 +1880,19 @@ export async function getShippingOptionsByCoordinates(
       const relayUrls = await getEligibleShippingReadRelayUrls(
         readPlan.relayUrls,
         readPlan.ownerSelectedRelayUrls ?? [],
+        readPlan.appRelayUrls ?? [],
+        readPlan.personalRelayUrls ?? [],
         options
       )
       const executableRelayUrls = new Set(relayUrls)
       const executableOwnerSelectedRelayUrls = (
         readPlan.ownerSelectedRelayUrls ?? []
+      ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
+      const executableAppRelayUrls = (readPlan.appRelayUrls ?? []).filter(
+        (relayUrl) => executableRelayUrls.has(relayUrl)
+      )
+      const executablePersonalRelayUrls = (
+        readPlan.personalRelayUrls ?? []
       ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
       const observedShippingEvents = requireCompleteShippingRead(
         await runShippingFetchEventsFanoutDetailed(
@@ -1885,6 +1907,8 @@ export async function getShippingOptionsByCoordinates(
             accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
             ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+            appRelayUrls: executableAppRelayUrls,
+            personalRelayUrls: executablePersonalRelayUrls,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
             shouldContinue: options.shouldContinue,
@@ -1911,6 +1935,8 @@ export async function getShippingOptionsByCoordinates(
           accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
           authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
           ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+          appRelayUrls: executableAppRelayUrls,
+          personalRelayUrls: executablePersonalRelayUrls,
           accountNetworkLocalStateRepository:
             options.accountNetworkLocalStateRepository,
           shouldContinue: options.shouldContinue,
@@ -1946,6 +1972,8 @@ export async function getShippingOptionsByCoordinates(
             accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
             ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+            appRelayUrls: executableAppRelayUrls,
+            personalRelayUrls: executablePersonalRelayUrls,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
             shouldContinue: options.shouldContinue,

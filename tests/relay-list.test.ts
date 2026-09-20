@@ -219,6 +219,40 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     expect(list?.readRelayUrls).toEqual(["wss://relay-alice.conduit.market"])
   })
 
+  it("carries app and personal provenance to relay-list discovery I/O", async () => {
+    const relayUrls = ["wss://app.conduit.market", "wss://personal.example"]
+    let capturedOptions:
+      | {
+          appRelayUrls?: readonly string[]
+          personalRelayUrls?: readonly string[]
+        }
+      | undefined
+    __setRelayListTestOverrides({
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        capturedOptions = options
+        return {
+          events: [],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+
+    await getRelayListsDetailed(["alice"], {
+      relayUrls,
+      appRelayUrls: [relayUrls[0]!],
+      personalRelayUrls: [relayUrls[1]!],
+      skipCache: true,
+    })
+
+    expect(capturedOptions?.appRelayUrls).toEqual([relayUrls[0]])
+    expect(capturedOptions?.personalRelayUrls).toEqual([relayUrls[1]])
+  })
+
   it("does not regress a newer cached replaceable event on a narrower refresh", async () => {
     cache.set("alice", {
       pubkey: "alice",

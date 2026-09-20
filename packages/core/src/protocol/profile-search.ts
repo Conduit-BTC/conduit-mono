@@ -388,15 +388,33 @@ const defaultDependencies: ProfileSearchDependencies = {
   loadCachedProfileRows: defaultLoadCachedProfileRows,
   loadSellerPubkeys: defaultLoadSellerPubkeys,
   planSearchRelayUrls: defaultPlanSearchRelayUrls,
-  fetchEvents: (filter, options) =>
-    fetchEventsFanoutDetailed(filter, {
+  fetchEvents: async (filter, options) => {
+    const snapshot = options.authenticatedPubkey
+      ? await readDurableAccountRelaySettingsPlanningSnapshot(
+          options.authenticatedPubkey
+        )
+      : loadRelaySettingsPlanningSnapshot()
+    const appRelaySet = new Set(config.searchIndexRelayUrls)
+    const personalRelaySet = new Set(
+      snapshot.settings.entries
+        .filter((entry) => entry.readEnabled && entry.capabilities.search)
+        .map((entry) => entry.url)
+    )
+    return await fetchEventsFanoutDetailed(filter, {
       relayUrls: options.relayUrls,
+      appRelayUrls: options.relayUrls.filter((relayUrl) =>
+        appRelaySet.has(relayUrl)
+      ),
+      personalRelayUrls: options.relayUrls.filter((relayUrl) =>
+        personalRelaySet.has(relayUrl)
+      ),
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
       signal: options.signal,
       connectTimeoutMs: 1_500,
       fetchTimeoutMs: 3_000,
-    }),
+    })
+  },
 }
 
 function emptyResult(query: string): ProfileSearchResult {

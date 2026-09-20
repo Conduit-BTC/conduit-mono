@@ -964,7 +964,12 @@ async function resolveRelayUrls(
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"],
   signal?: AbortSignal,
   shouldContinue?: () => boolean
-): Promise<{ relayUrls: string[]; completeRelayHints: boolean }> {
+): Promise<{
+  relayUrls: string[]
+  appRelayUrls: string[]
+  personalRelayUrls: string[]
+  completeRelayHints: boolean
+}> {
   let relayLists = new Map()
   let lookupFailed = false
   try {
@@ -983,17 +988,18 @@ async function resolveRelayUrls(
     // Cached NIP-65 hints improve coverage but are not required to plan.
   }
 
-  const baseRelayUrls =
-    baseRelayUrlsOverride ??
-    planRelayReads({
-      intent: "shopper_trust",
-      authenticatedPubkey: accountPubkey,
-      ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
-      maxRelays: SHOPPER_TRUST_RELAY_CAP,
-      settings: ownerRelayAuthority?.settings,
-      signedRelayListAuthoritative:
-        ownerRelayAuthority?.signedRelayListAuthoritative,
-    }).relayUrls
+  const basePlan = baseRelayUrlsOverride
+    ? null
+    : planRelayReads({
+        intent: "shopper_trust",
+        authenticatedPubkey: accountPubkey,
+        ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
+        maxRelays: SHOPPER_TRUST_RELAY_CAP,
+        settings: ownerRelayAuthority?.settings,
+        signedRelayListAuthoritative:
+          ownerRelayAuthority?.signedRelayListAuthoritative,
+      })
+  const baseRelayUrls = baseRelayUrlsOverride ?? basePlan?.relayUrls ?? []
   const merchantRelays = relayLists.get(merchantPubkey)
   const shopperRelays = relayLists.get(shopperPubkey)
   const shopperWriteRelayUrls = applyShopperTrustRelayAuthority(
@@ -1029,19 +1035,28 @@ async function resolveRelayUrls(
       ? (ownerRelayAuthority?.writeRelayUrls ?? [])
       : []),
   ]
-  return {
-    relayUrls: applyShopperTrustRelayAuthority(
-      interleaveRelayGroups(
-        [
-          shopperWriteRelayUrls,
-          shopperReadRelayUrls,
-          merchantWriteRelayUrls,
-          baseRelayUrls,
-        ],
-        SHOPPER_TRUST_RELAY_CAP
-      ),
-      ownerSelectedRelayUrls
+  const relayUrls = applyShopperTrustRelayAuthority(
+    interleaveRelayGroups(
+      [
+        shopperWriteRelayUrls,
+        shopperReadRelayUrls,
+        merchantWriteRelayUrls,
+        baseRelayUrls,
+      ],
+      SHOPPER_TRUST_RELAY_CAP
     ),
+    ownerSelectedRelayUrls
+  )
+  const relayUrlSet = new Set(relayUrls)
+  return {
+    relayUrls,
+    appRelayUrls:
+      basePlan?.appRelayUrls?.filter((relayUrl) => relayUrlSet.has(relayUrl)) ??
+      [],
+    personalRelayUrls:
+      basePlan?.personalRelayUrls?.filter((relayUrl) =>
+        relayUrlSet.has(relayUrl)
+      ) ?? [],
     completeRelayHints:
       !lookupFailed &&
       hasRequiredRelayHints &&
@@ -1236,6 +1251,8 @@ export async function getShopperTrustEvidence(
           options.relayUrls,
           initialOwnerSelectedRelayUrls
         ),
+        appRelayUrls: [],
+        personalRelayUrls: [],
         completeRelayHints: true,
       }
     : await resolveRelayUrls(
@@ -1250,6 +1267,8 @@ export async function getShopperTrustEvidence(
         shouldContinue
       )
   const { relayUrls } = initialRelayPlan
+  const initialAppRelayUrls = new Set(initialRelayPlan.appRelayUrls)
+  const initialPersonalRelayUrls = new Set(initialRelayPlan.personalRelayUrls)
   throwIfTrustAborted(signal, shouldContinue)
   const baseFetchEvents = options.fetchEvents ?? fetchEventsFanoutDetailed
   const fetchEvents: ShopperTrustFetchEvents = async (
@@ -1279,6 +1298,12 @@ export async function getShopperTrustEvidence(
       ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls(
         ownerSelectedRelayUrls
       ).filter((relayUrl) => executableRelaySet.has(relayUrl)),
+      appRelayUrls: relayUrls.filter((relayUrl) =>
+        initialAppRelayUrls.has(relayUrl)
+      ),
+      personalRelayUrls: relayUrls.filter((relayUrl) =>
+        initialPersonalRelayUrls.has(relayUrl)
+      ),
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
       shouldContinue: readOptions.shouldContinue ?? shouldContinue,

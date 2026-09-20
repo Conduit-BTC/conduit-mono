@@ -38,6 +38,7 @@ import {
 } from "./relay-settings"
 import { filterRelayListForContext, type RelayList } from "./relay-list"
 import { partitionByHealth } from "./relay-health"
+import type { AccountNetworkRoutingPolicy } from "./account-network-routing-policy"
 
 export type RelayReadIntent =
   /** Marketplace listings — commerce + public fallback. */
@@ -96,6 +97,11 @@ export interface RelayReadPlanInput {
   settings?: RelaySettingsState
   /** Preserve an exact signed kind-10002 empty Read set (bound snapshots). */
   signedRelayListAuthoritative?: boolean
+  /** Device-local switches for app-owned and personal NIP-65 relay layers. */
+  routingPolicy?: Pick<
+    AccountNetworkRoutingPolicy,
+    "appRelaysEnabled" | "personalRelaysEnabled"
+  >
   /** Now in ms (test seam). */
   now?: number
 }
@@ -110,6 +116,10 @@ export interface RelayReadPlan {
   hintRelayUrls: string[]
   /** Exact executable subset authorized by the authenticated owner. */
   ownerSelectedRelayUrls?: string[]
+  /** Planned targets contributed by Conduit's transparent app layer. */
+  appRelayUrls?: string[]
+  /** Planned targets contributed by the authenticated owner's NIP-65 layer. */
+  personalRelayUrls?: string[]
 }
 
 export interface RelayWritePlanInput {
@@ -134,6 +144,11 @@ export interface RelayWritePlanInput {
   settings?: RelaySettingsState
   /** A reconciled signed owner projection supersedes the arbitrary-author cache. */
   signedRelayListAuthoritative?: boolean
+  /** Device-local switches for app-owned and personal NIP-65 relay layers. */
+  routingPolicy?: Pick<
+    AccountNetworkRoutingPolicy,
+    "appRelaysEnabled" | "personalRelaysEnabled"
+  >
   /** Now in ms (test seam). */
   now?: number
 }
@@ -160,6 +175,10 @@ export interface RelayWritePlan {
   broadcastRelayUrls: string[]
   /** Relays that were parked by health and excluded. */
   parkedRelayUrls: string[]
+  /** Planned targets contributed by Conduit's transparent app layer. */
+  appRelayUrls?: string[]
+  /** Planned targets contributed by the authenticated owner's NIP-65 layer. */
+  personalRelayUrls?: string[]
 }
 
 export const DEFAULT_READ_FANOUT = 6
@@ -190,29 +209,48 @@ function settingsPlanOptions(input: {
   }
 }
 
-function appAssistedReadFallbackRelayUrls(): string[] {
-  return dedupeOrdered([
-    ...config.appBackplaneRelayUrls,
-    ...config.corePublicFallbackRelayUrls,
-  ])
-}
-
-function commerceReadFallbackRelayUrls(): string[] {
-  return dedupeOrdered([
-    ...config.appBackplaneRelayUrls,
-    ...config.commerceDiscoveryRelayUrls,
-    ...config.corePublicFallbackRelayUrls,
-  ])
-}
-
-function corePublicReadFallbackRelayUrls(): string[] {
-  return dedupeOrdered(config.corePublicFallbackRelayUrls)
+function appReadRelayUrlsForIntent(intent: RelayReadIntent): string[] {
+  switch (intent) {
+    case "commerce_products":
+    case "author_products":
+      return dedupeOrdered([
+        ...config.appCommerceRelayUrls,
+        ...config.commerceDiscoveryRelayUrls,
+      ])
+    case "dm_inbox":
+    case "legacy_dm":
+      return dedupeOrdered(config.commerceDmFallbackRelayUrls)
+    default:
+      return dedupeOrdered(config.appReadRelayUrls)
+  }
 }
 
 function defaultRecipientWriteFallbackRelayUrls(): string[] {
   return config.dmInboxDefaultRelayUrls.length > 0
     ? config.dmInboxDefaultRelayUrls
-    : appAssistedReadFallbackRelayUrls()
+    : config.appReadRelayUrls
+}
+
+function appLayerEnabled(
+  policy:
+    | Pick<
+        AccountNetworkRoutingPolicy,
+        "appRelaysEnabled" | "personalRelaysEnabled"
+      >
+    | undefined
+): boolean {
+  return policy?.appRelaysEnabled ?? true
+}
+
+function personalLayerEnabled(
+  policy:
+    | Pick<
+        AccountNetworkRoutingPolicy,
+        "appRelaysEnabled" | "personalRelaysEnabled"
+      >
+    | undefined
+): boolean {
+  return policy?.personalRelaysEnabled ?? true
 }
 
 function hintReadRelaysForAuthors(
@@ -373,6 +411,8 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
       parkedRelayUrls: [],
       hintRelayUrls: [],
       ownerSelectedRelayUrls: [],
+      appRelayUrls: [isolatedRelayUrl],
+      personalRelayUrls: [],
     }
   }
 
@@ -380,47 +420,52 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     input.ownerSelectedRelayUrls ?? []
   )
 
-  const baseRelays = (() => {
-    switch (input.intent) {
-      case "commerce_products":
-      case "author_products":
-        // NIP-65 membership describes the account's preferred read relays. It
-        // is not a global offline switch for code-owned public commerce
-        // discovery, which remains a separate bounded capability.
-        return getCommerceReadRelayUrls(
-          settingsPlanOptions({
-            settings: input.settings,
-            fallbackRelayUrls: commerceReadFallbackRelayUrls(),
-            signedRelayListAuthoritative: false,
-          })
-        )
-      case "dm_inbox":
-      case "legacy_dm":
-        return getGeneralReadRelayUrls(
-          settingsPlanOptions({
-            settings: input.settings,
-            fallbackRelayUrls: config.commerceDmFallbackRelayUrls,
-            signedRelayListAuthoritative: input.signedRelayListAuthoritative,
-          })
-        )
-      case "product_card_social_summary":
-      case "product_comments_preview":
-      case "product_reviews":
-      case "profile_social_feed":
-      case "contact_lists":
-      case "shopper_trust":
-      case "profiles":
-      case "relay_lists":
-      case "general":
-        return getGeneralReadRelayUrls(
-          settingsPlanOptions({
-            settings: input.settings,
-            fallbackRelayUrls: corePublicReadFallbackRelayUrls(),
-            signedRelayListAuthoritative: input.signedRelayListAuthoritative,
-          })
-        )
-    }
-  })()
+  const personalBaseRelays = personalLayerEnabled(input.routingPolicy)
+    ? (() => {
+        switch (input.intent) {
+          case "commerce_products":
+          case "author_products":
+            return getCommerceReadRelayUrls(
+              settingsPlanOptions({
+                settings: input.settings,
+                fallbackRelayUrls: [],
+                signedRelayListAuthoritative:
+                  input.signedRelayListAuthoritative,
+              })
+            )
+          case "dm_inbox":
+          case "legacy_dm":
+            return getGeneralReadRelayUrls(
+              settingsPlanOptions({
+                settings: input.settings,
+                fallbackRelayUrls: [],
+                signedRelayListAuthoritative:
+                  input.signedRelayListAuthoritative,
+              })
+            )
+          case "product_card_social_summary":
+          case "product_comments_preview":
+          case "product_reviews":
+          case "profile_social_feed":
+          case "contact_lists":
+          case "shopper_trust":
+          case "profiles":
+          case "relay_lists":
+          case "general":
+            return getGeneralReadRelayUrls(
+              settingsPlanOptions({
+                settings: input.settings,
+                fallbackRelayUrls: [],
+                signedRelayListAuthoritative:
+                  input.signedRelayListAuthoritative,
+              })
+            )
+        }
+      })()
+    : []
+  const appBaseRelays = appLayerEnabled(input.routingPolicy)
+    ? appReadRelayUrlsForIntent(input.intent)
+    : []
 
   const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
   const includesAuthenticatedOwner = Boolean(
@@ -430,27 +475,57 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     )
   )
   const authenticatedOwnerAuthorHints =
-    input.signedRelayListAuthoritative && includesAuthenticatedOwner
-      ? getGeneralWriteRelayUrls(
-          settingsPlanOptions({
-            settings: input.settings,
-            fallbackRelayUrls: [],
-          })
-        )
+    personalLayerEnabled(input.routingPolicy) && includesAuthenticatedOwner
+      ? input.signedRelayListAuthoritative
+        ? getGeneralWriteRelayUrls(
+            settingsPlanOptions({
+              settings: input.settings,
+              fallbackRelayUrls: [],
+            })
+          )
+        : hintReadRelaysForAuthors(
+            [authenticatedOwner!],
+            input.relayLists,
+            input.authenticatedPubkey,
+            ownerSelectedRelayUrls
+          )
       : []
-  const authorHintPubkeys = input.signedRelayListAuthoritative
-    ? (input.authors ?? []).filter(
-        (pubkey) => pubkey.trim().toLowerCase() !== authenticatedOwner
-      )
-    : (input.authors ?? [])
+  const authorHintPubkeys = (input.authors ?? []).filter(
+    (pubkey) => pubkey.trim().toLowerCase() !== authenticatedOwner
+  )
   const authorHints = hintReadRelaysForAuthors(
     authorHintPubkeys,
     input.relayLists,
     input.authenticatedPubkey,
     ownerSelectedRelayUrls
   )
+  const includesAuthenticatedRecipient = Boolean(
+    authenticatedOwner &&
+    (input.recipients ?? []).some(
+      (pubkey) => pubkey.trim().toLowerCase() === authenticatedOwner
+    )
+  )
+  const authenticatedOwnerRecipientHints =
+    personalLayerEnabled(input.routingPolicy) && includesAuthenticatedRecipient
+      ? input.signedRelayListAuthoritative
+        ? getGeneralReadRelayUrls(
+            settingsPlanOptions({
+              settings: input.settings,
+              fallbackRelayUrls: [],
+              signedRelayListAuthoritative: input.signedRelayListAuthoritative,
+            })
+          )
+        : hintReadRelaysForRecipients(
+            [authenticatedOwner!],
+            input.relayLists,
+            input.authenticatedPubkey,
+            ownerSelectedRelayUrls
+          )
+      : []
   const recipientHints = hintReadRelaysForRecipients(
-    input.recipients ?? [],
+    (input.recipients ?? []).filter(
+      (pubkey) => pubkey.trim().toLowerCase() !== authenticatedOwner
+    ),
     input.relayLists,
     input.authenticatedPubkey,
     ownerSelectedRelayUrls
@@ -458,6 +533,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
   const hintRelayUrls = applyReadTransportAuthority(
     dedupeOrdered([
       ...authenticatedOwnerAuthorHints,
+      ...authenticatedOwnerRecipientHints,
       ...authorHints,
       ...recipientHints,
     ]),
@@ -465,7 +541,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
   )
 
   const ordered = applyReadTransportAuthority(
-    dedupeOrdered([...hintRelayUrls, ...baseRelays]),
+    dedupeOrdered([...hintRelayUrls, ...personalBaseRelays, ...appBaseRelays]),
     ownerSelectedRelayUrls
   )
   const { kept, parked } = applyHealthFilter(
@@ -476,6 +552,13 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
 
   const relayUrls = clampFanout(kept, input.maxRelays ?? DEFAULT_READ_FANOUT)
   const executableRelayUrls = new Set(relayUrls)
+  const appRelaySet = new Set(appBaseRelays)
+  const personalRelaySet = new Set([
+    ...ownerSelectedRelayUrls,
+    ...personalBaseRelays,
+    ...authenticatedOwnerAuthorHints,
+    ...authenticatedOwnerRecipientHints,
+  ])
   return {
     intent: input.intent,
     relayUrls,
@@ -483,6 +566,10 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     hintRelayUrls,
     ownerSelectedRelayUrls: ownerSelectedRelayUrls.filter((relayUrl) =>
       executableRelayUrls.has(relayUrl)
+    ),
+    appRelayUrls: relayUrls.filter((relayUrl) => appRelaySet.has(relayUrl)),
+    personalRelayUrls: relayUrls.filter((relayUrl) =>
+      personalRelaySet.has(relayUrl)
     ),
   }
 }
@@ -516,11 +603,13 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
       primaryRelayUrls: [isolatedRelayUrl],
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
+      appRelayUrls: [isolatedRelayUrl],
+      personalRelayUrls: [],
     }
   }
 
-  const userWriteRelays =
-    input.intent === "author_event"
+  const personalWriteRelays = personalLayerEnabled(input.routingPolicy)
+    ? input.intent === "author_event"
       ? getCommerceWriteRelayUrls(
           settingsPlanOptions({
             settings: input.settings,
@@ -533,23 +622,33 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
             fallbackRelayUrls: [],
           })
         )
+    : []
+  const appWriteRelays = appLayerEnabled(input.routingPolicy)
+    ? config.appWriteRelayUrls
+    : []
+  const userWriteRelays = dedupeOrdered([
+    ...personalWriteRelays,
+    ...appWriteRelays,
+  ])
 
   if (input.intent === "author_event") {
     const authorPubkey = input.authorPubkey?.trim().toLowerCase()
     const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
-    const hasReconciledOwnerProjection = Boolean(
-      input.signedRelayListAuthoritative &&
-      authorPubkey &&
-      authorPubkey === authenticatedPubkey
+    const isAuthenticatedAuthor = Boolean(
+      authorPubkey && authorPubkey === authenticatedPubkey
     )
-    const authorWriteHints = hasReconciledOwnerProjection
-      ? []
-      : hintReadRelaysForAuthors(
-          input.authorPubkey ? [input.authorPubkey] : [],
-          input.relayLists,
-          input.authenticatedPubkey,
-          input.ownerSelectedRelayUrls
-        )
+    const hasReconciledOwnerProjection = Boolean(
+      input.signedRelayListAuthoritative && isAuthenticatedAuthor
+    )
+    const authorWriteHints =
+      hasReconciledOwnerProjection || !personalLayerEnabled(input.routingPolicy)
+        ? []
+        : hintReadRelaysForAuthors(
+            input.authorPubkey ? [input.authorPubkey] : [],
+            input.relayLists,
+            input.authenticatedPubkey,
+            input.ownerSelectedRelayUrls
+          )
     const ordered = dedupeOrdered(
       hasReconciledOwnerProjection
         ? userWriteRelays
@@ -560,42 +659,78 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
       input.skipHealthFilter,
       input.now
     )
+    const primaryRelayUrls = clampFanout(
+      kept,
+      input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
+    )
     return {
       intent: input.intent,
       signedRelayListAuthoritative: hasReconciledOwnerProjection,
-      primaryRelayUrls: clampFanout(
-        kept,
-        input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
-      ),
+      primaryRelayUrls,
       broadcastRelayUrls: [],
       parkedRelayUrls: parked,
+      appRelayUrls: primaryRelayUrls.filter((relayUrl) =>
+        appWriteRelays.includes(relayUrl)
+      ),
+      personalRelayUrls: primaryRelayUrls.filter(
+        (relayUrl) =>
+          personalWriteRelays.includes(relayUrl) ||
+          (isAuthenticatedAuthor && authorWriteHints.includes(relayUrl))
+      ),
     }
   }
 
   // recipient_event
   const recipients = input.recipientPubkeys ?? []
-  const recipientHints = hintReadRelaysForRecipients(
-    recipients,
+  const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
+  const authenticatedRecipientPubkeys = authenticatedPubkey
+    ? recipients.filter(
+        (pubkey) => pubkey.trim().toLowerCase() === authenticatedPubkey
+      )
+    : []
+  const remoteRecipientPubkeys = recipients.filter(
+    (pubkey) => pubkey.trim().toLowerCase() !== authenticatedPubkey
+  )
+  const authenticatedRecipientHints = personalLayerEnabled(input.routingPolicy)
+    ? hintReadRelaysForRecipients(
+        authenticatedRecipientPubkeys,
+        input.relayLists,
+        input.authenticatedPubkey,
+        input.ownerSelectedRelayUrls
+      )
+    : []
+  const remoteRecipientHints = hintReadRelaysForRecipients(
+    remoteRecipientPubkeys,
     input.relayLists,
     input.authenticatedPubkey,
     input.ownerSelectedRelayUrls
   )
+  const recipientHints = dedupeOrdered([
+    ...authenticatedRecipientHints,
+    ...remoteRecipientHints,
+  ])
 
   // Recipients with no cached list contribute nothing. Use the shared
   // app/public relay fallback as recipient delivery, not the sender's private
   // outbox relays; otherwise a buyer-only write ACK can look deliverable while
   // the recipient inbox has no reason to read that relay.
-  const missingRecipientFallback = recipients.some(
-    (pubkey) =>
-      !hasRecipientReadRelays({
-        pubkey,
-        relayLists: input.relayLists,
-        authenticatedPubkey: input.authenticatedPubkey,
-        ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
-      })
-  )
-    ? defaultRecipientWriteFallbackRelayUrls()
-    : []
+  const missingRecipientFallback =
+    recipients.some((pubkey) => {
+      const isAuthenticatedRecipient =
+        pubkey.trim().toLowerCase() === authenticatedPubkey
+      return (
+        (isAuthenticatedRecipient &&
+          !personalLayerEnabled(input.routingPolicy)) ||
+        !hasRecipientReadRelays({
+          pubkey,
+          relayLists: input.relayLists,
+          authenticatedPubkey: input.authenticatedPubkey,
+          ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+        })
+      )
+    }) && appLayerEnabled(input.routingPolicy)
+      ? defaultRecipientWriteFallbackRelayUrls()
+      : []
 
   const primaryOrdered = dedupeOrdered([
     ...recipientHints,
@@ -616,17 +751,33 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     input.now
   )
 
+  const primaryRelayUrls = clampFanout(
+    primaryKept,
+    input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
+  )
+  const broadcastRelayUrls = clampFanout(
+    broadcastKept,
+    input.maxBroadcastRelays ?? DEFAULT_BROADCAST_FANOUT
+  )
+  const executableRelayUrls = dedupeOrdered([
+    ...primaryRelayUrls,
+    ...broadcastRelayUrls,
+  ])
   return {
     intent: input.intent,
-    primaryRelayUrls: clampFanout(
-      primaryKept,
-      input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
-    ),
-    broadcastRelayUrls: clampFanout(
-      broadcastKept,
-      input.maxBroadcastRelays ?? DEFAULT_BROADCAST_FANOUT
-    ),
+    primaryRelayUrls,
+    broadcastRelayUrls,
     parkedRelayUrls: dedupeOrdered([...primaryParked, ...broadcastParked]),
+    appRelayUrls: executableRelayUrls.filter(
+      (relayUrl) =>
+        missingRecipientFallback.includes(relayUrl) ||
+        appWriteRelays.includes(relayUrl)
+    ),
+    personalRelayUrls: executableRelayUrls.filter(
+      (relayUrl) =>
+        personalWriteRelays.includes(relayUrl) ||
+        authenticatedRecipientHints.includes(relayUrl)
+    ),
   }
 }
 

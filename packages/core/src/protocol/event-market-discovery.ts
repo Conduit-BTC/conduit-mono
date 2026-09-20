@@ -310,6 +310,8 @@ type DiscoveryReadAuthority = Pick<
   | "authenticatedPubkey"
   | "accountNetworkLocalStateRepository"
   | "shouldContinue"
+  | "appRelayUrls"
+  | "personalRelayUrls"
 >
 
 export interface DiscoverPerspectiveEventMarketsInput extends DiscoveryReadAuthority {
@@ -869,21 +871,21 @@ async function readEventMarketCollectionCandidatesWithinBudget(
       .filter((entry) => entry.readEnabled)
       .map((entry) => entry.url) ?? []
   )
+  const relayPlan = testOverrides.collectionCandidateRelayUrls
+    ? null
+    : planRelayReads({
+        intent: "commerce_products",
+        authenticatedPubkey,
+        ownerSelectedRelayUrls,
+        settings: ownerSnapshot?.settings,
+        signedRelayListAuthoritative:
+          ownerSnapshot?.signedRelayListAuthoritative,
+        maxRelays: FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT,
+        now: input.nowMs,
+      })
   const plannedRelayUrls = Array.from(
     new Set(
-      (
-        testOverrides.collectionCandidateRelayUrls ??
-        planRelayReads({
-          intent: "commerce_products",
-          authenticatedPubkey,
-          ownerSelectedRelayUrls,
-          settings: ownerSnapshot?.settings,
-          signedRelayListAuthoritative:
-            ownerSnapshot?.signedRelayListAuthoritative,
-          maxRelays: FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT,
-          now: input.nowMs,
-        }).relayUrls
-      )
+      (testOverrides.collectionCandidateRelayUrls ?? relayPlan?.relayUrls ?? [])
         .map((relayUrl) => relayUrl.trim())
         .filter(Boolean)
     )
@@ -942,6 +944,14 @@ async function readEventMarketCollectionCandidatesWithinBudget(
           authority: {
             authenticatedPubkey,
             ownerSelectedRelayUrls,
+            appRelayUrls: relayPlan?.appRelayUrls?.includes(task.relayUrl)
+              ? [task.relayUrl]
+              : [],
+            personalRelayUrls: relayPlan?.personalRelayUrls?.includes(
+              task.relayUrl
+            )
+              ? [task.relayUrl]
+              : [],
             accountNetworkLocalStateRepository:
               input.accountNetworkLocalStateRepository,
             shouldContinue: input.shouldContinue,

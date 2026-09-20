@@ -405,6 +405,12 @@ export async function getEventMarketReceiptMerchandise(
           ownerSelectedRelayUrls: (plan.ownerSelectedRelayUrls ?? []).filter(
             (relayUrl) => remainingRelayUrls.includes(relayUrl)
           ),
+          appRelayUrls: (plan.appRelayUrls ?? []).filter((relayUrl) =>
+            remainingRelayUrls.includes(relayUrl)
+          ),
+          personalRelayUrls: (plan.personalRelayUrls ?? []).filter((relayUrl) =>
+            remainingRelayUrls.includes(relayUrl)
+          ),
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,

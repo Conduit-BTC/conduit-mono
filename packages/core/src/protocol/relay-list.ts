@@ -65,6 +65,10 @@ export interface RelayListLookupOptions {
   authenticatedPubkey?: string | null
   /** Exact lookup-target subset selected by that authenticated account owner. */
   ownerSelectedRelayUrls?: readonly string[]
+  /** Exact lookup targets contributed by Conduit's app-owned layer. */
+  appRelayUrls?: readonly string[]
+  /** Exact lookup targets contributed by the owner's NIP-65 layer. */
+  personalRelayUrls?: readonly string[]
   /** Injectable durable policy reader for the final per-relay I/O gate. */
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   /** Live caller authority for final account-scoped relay admission. */
@@ -391,17 +395,22 @@ async function runFetch(
     | "accountPubkey"
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
+    | "appRelayUrls"
+    | "personalRelayUrls"
     | "accountNetworkLocalStateRepository"
     | "shouldContinue"
     | "signal"
   >
 ): Promise<NDKEvent[]> {
+  if (relayUrls.length === 0) return []
   const impl = testOverrides.fetchEventsFanout ?? fetchEventsFanout
   return (await impl(filter, {
-    relayUrls: relayUrls.length > 0 ? [...relayUrls] : undefined,
+    relayUrls: [...relayUrls],
     accountPubkey: options.accountPubkey,
     authenticatedPubkey: options.authenticatedPubkey,
     ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+    appRelayUrls: options.appRelayUrls,
+    personalRelayUrls: options.personalRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     shouldContinue: options.shouldContinue,
@@ -419,6 +428,8 @@ async function runFetchDetailed(
     | "accountPubkey"
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
+    | "appRelayUrls"
+    | "personalRelayUrls"
     | "accountNetworkLocalStateRepository"
     | "shouldContinue"
     | "signal"
@@ -433,6 +444,8 @@ async function runFetchDetailed(
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
       ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+      appRelayUrls: options.appRelayUrls,
+      personalRelayUrls: options.personalRelayUrls,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
       shouldContinue: options.shouldContinue,
@@ -448,6 +461,8 @@ async function runFetchDetailed(
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
       ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+      appRelayUrls: options.appRelayUrls,
+      personalRelayUrls: options.personalRelayUrls,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
       shouldContinue: options.shouldContinue,
@@ -471,6 +486,8 @@ async function runFetchDetailed(
     accountPubkey: options.accountPubkey,
     authenticatedPubkey: options.authenticatedPubkey,
     ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+    appRelayUrls: options.appRelayUrls,
+    personalRelayUrls: options.personalRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     shouldContinue: options.shouldContinue,

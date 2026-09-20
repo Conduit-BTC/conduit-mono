@@ -48,6 +48,10 @@ export interface FetchEventsFanoutOptions {
    * Remote/discovered relay hints must never populate this field.
    */
   ownerSelectedRelayUrls?: readonly string[]
+  /** Exact candidates contributed by Conduit's app-owned relay layer. */
+  appRelayUrls?: readonly string[]
+  /** Exact candidates contributed by the owner's NIP-65 relay layer. */
+  personalRelayUrls?: readonly string[]
   /** Injectable durable-state reader for deterministic boundary tests. */
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
@@ -1040,6 +1044,8 @@ async function fetchEventsFromRelay(
     | "accountPubkey"
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
+    | "appRelayUrls"
+    | "personalRelayUrls"
     | "accountNetworkLocalStateRepository"
     | "shouldContinue"
     | "signal"
@@ -1065,6 +1071,8 @@ async function fetchEventsFromRelay(
         authenticatedPubkey: options.authenticatedPubkey,
         candidateRelayUrls: [relayUrl],
         ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+        appRelayUrls: options.appRelayUrls,
+        personalRelayUrls: options.personalRelayUrls,
         repository: options.accountNetworkLocalStateRepository,
       })
       admittedRelayUrl = eligibleRelayUrls[0] ?? null
