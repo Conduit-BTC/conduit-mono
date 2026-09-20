@@ -2649,6 +2649,14 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   // though this synthetic organizer is outside that perspective.
   await page.evaluate(() => localStorage.clear())
   await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto(`${marketUrl}/products`)
+  await expect(
+    page.getByRole("navigation", { name: "Market browse" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("group", { name: "Market perspective" })
+  ).toHaveCount(0)
+
   await page.goto(`${marketUrl}/events`)
   const marketBrowse = page.getByRole("navigation", { name: "Market browse" })
   await expect(marketBrowse).toBeVisible()
@@ -2657,13 +2665,7 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   ).toHaveAttribute("aria-current", "page")
   await expect(
     page.getByRole("group", { name: "Market perspective" })
-  ).toBeVisible()
-  await expect(
-    page.getByRole("button", { name: "Conduit", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
-  await expect(
-    page.getByRole("button", { name: "Following", exact: true })
-  ).toBeDisabled()
+  ).toHaveCount(0)
   await expect(
     page.getByRole("dialog", { name: "Sign in to Conduit" })
   ).toHaveCount(0)
