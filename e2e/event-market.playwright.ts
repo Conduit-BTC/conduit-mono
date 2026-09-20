@@ -6428,9 +6428,31 @@ test("mounted event catalog scopes product and pickup removals to exact dependen
       )
     )
   const catalogReads = () => relay.requests.filter(isCatalogRead).length
-  const before = catalogReads()
-  const held = relay.holdRelayRequests(isCatalogRead)
+  const held = relay.holdRelayRequests(
+    (request) =>
+      request.clientId === "scoped-graph-reader" &&
+      request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(30402) && typeof filter.limit === "number"
+      )
+  )
   try {
+    // Keep the warm organizer products visible from browse evidence while the
+    // exact event graph and participation reads remain unsettled.
+    await page.reload()
+    await held.captured
+    for (const card of [familyCard, organizerCard]) {
+      await expect(card).toBeVisible()
+      await expect(
+        card.getByRole("button", { name: "Add", exact: true })
+      ).toBeEnabled()
+      await expect(
+        card.getByText(
+          /Current pickup terms are being verified.*checkout stays locked/s
+        )
+      ).toBeVisible()
+    }
+    const before = catalogReads()
     const revised = signEvent(ORGANIZER_SECRET, {
       kind: 30405,
       created_at: collection.created_at + 10,

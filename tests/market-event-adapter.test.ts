@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test"
 import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+import {
+  buildEventMarketCollectionDraft,
   evaluateListingSafety,
   resolveEventMarketProductParticipation,
   prepareProductCatalog,
@@ -23,6 +29,7 @@ import {
   type EventCatalog,
   type PickupFreshnessItem,
 } from "../apps/market/src/lib/event-market-adapter"
+import { reconcileEventCatalogGraph } from "../apps/market/src/lib/event-catalog-cache-coherence"
 import {
   createCartItemFromProduct,
   type CartPickupFulfillment,
@@ -664,6 +671,83 @@ describe("Market event adapter", () => {
     expect(projection.products).toHaveLength(1)
     expect(projection.products[0]!.evidenceState).toBe("retained")
     expect(projection.products[0]!.pickupReadiness).toBe("terminal")
+  })
+
+  it("maps a preview-only pickup revocation to terminal readiness", () => {
+    const secret = generateSecretKey()
+    const signedOrganizer = getPublicKey(secret)
+    const signedCollection = `30405:${signedOrganizer}:preview-market`
+    const signedCalendar = `31923:${signedOrganizer}:preview-market`
+    const signedPickup = `30406:${signedOrganizer}:preview-pickup`
+    const base = market()
+    const pickup = {
+      ...base.pickup!,
+      coordinate: signedPickup,
+      authorPubkey: signedOrganizer,
+      dTag: "preview-pickup",
+    }
+    const resolution: EventMarketResolution = {
+      ...base,
+      reference: signedCollection,
+      organizerPubkey: signedOrganizer,
+      collectionCoordinate: signedCollection,
+      calendarCoordinate: signedCalendar,
+      pickupCoordinate: signedPickup,
+      collection: {
+        ...base.collection!,
+        coordinate: signedCollection,
+        authorPubkey: signedOrganizer,
+        dTag: "preview-market",
+        eventCoordinates: [signedCalendar],
+        pickupCoordinates: [signedPickup],
+      },
+      calendar: {
+        ...base.calendar!,
+        coordinate: signedCalendar,
+        authorPubkey: signedOrganizer,
+        dTag: "preview-market",
+      },
+      pickup,
+      pickups: [pickup],
+      acceptedProductCoordinates: [],
+      acceptedProductEvidence: [],
+      organizerOnlyProductCoordinates: [productCoordinate],
+      participationRequests: [],
+    }
+    const previewProduct = product({
+      collectionRefs: [signedCollection],
+      shippingOptionRefs: [{ coordinate: signedPickup }],
+    })
+    const revisedCollection = finalizeEvent(
+      {
+        ...buildEventMarketCollectionDraft({
+          dTag: "preview-market",
+          title: "Preview market",
+          eventCoordinate: signedCalendar,
+          productCoordinates: [productCoordinate],
+        }),
+        created_at: 200,
+      },
+      secret
+    )
+
+    const reconciled = reconcileEventCatalogGraph(
+      {
+        reference: signedCollection,
+        resolution,
+        previewRecords: [commerceRecord(previewProduct)],
+        complete: false,
+      },
+      { status: "ready", events: [revisedCollection] }
+    )
+
+    expect(reconciled.localTerminalProductCoordinates).toEqual([
+      productCoordinate,
+    ])
+    expect(projectRawEventCatalog(reconciled).products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupReadiness: "terminal",
+    })
   })
 
   it("projects every accepted product beyond the transport author chunk size", () => {

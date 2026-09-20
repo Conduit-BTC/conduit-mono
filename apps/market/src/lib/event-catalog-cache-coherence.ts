@@ -3,6 +3,7 @@ import {
   getLocalProductDeletionSnapshot,
   getLocalEventMarketEvidenceSnapshot,
   getEventMarketSupersededEvidence,
+  resolveEventMarketProductFulfillment,
   subscribeLocalEventMarketEvidenceChanges,
   type LocalEventMarketEvidenceSnapshot,
   reconcileProductRecordsWithRevisions,
@@ -13,10 +14,7 @@ import {
   subscribeLocalProductDeletionChanges,
   type LocalProductDeletionSnapshot,
 } from "@conduit/core"
-import {
-  buildPickupFulfillmentTerms,
-  type RawEventCatalog,
-} from "./event-market-adapter"
+import type { RawEventCatalog } from "./event-market-adapter"
 
 /** Local evidence changes do not restart relay reads or renew their freshness. */
 export function reconcileEventCatalog(
@@ -111,30 +109,37 @@ export function reconcileEventCatalogGraph(
   snapshot: LocalEventMarketEvidenceSnapshot
 ): RawEventCatalog {
   if (!raw.resolution) return raw
-  const records = (raw.result?.data ?? []).flatMap((record) => [
+  const exactRecords = (raw.result?.data ?? []).flatMap((record) => [
     record,
     ...(record.family?.children ?? []),
   ])
+  const displayRecords = [
+    ...(raw.result?.data ?? []),
+    ...(raw.previewRecords ?? []),
+  ].flatMap((record) => [record, ...(record.family?.children ?? [])])
   const superseded = getEventMarketSupersededEvidence(
     raw.resolution,
     snapshot.events,
-    records
+    exactRecords
   )
   const affected = new Set([
     ...superseded.productCoordinates,
     ...superseded.removedProductCoordinates,
   ])
   const terminalProducts = new Set(superseded.removedProductCoordinates)
-  for (const record of records) {
-    const pickup = buildPickupFulfillmentTerms(
+  // Preview records are browse evidence, not purchase authority. They still
+  // need known terminal pickup evidence so reversible Add is not exposed for
+  // a dependency that has already been revoked.
+  for (const record of displayRecords) {
+    const fulfillment = resolveEventMarketProductFulfillment(
       record.product,
-      raw.resolution,
-      record
+      raw.resolution
     )
-    if (!pickup) continue
-    if (superseded.pickupCoordinates.includes(pickup.option.coordinate))
+    if (fulfillment.status !== "resolved") continue
+    const pickupCoordinate = fulfillment.selectedPickup.coordinate
+    if (superseded.pickupCoordinates.includes(pickupCoordinate))
       affected.add(record.addressId)
-    if (superseded.terminalPickupCoordinates.includes(pickup.option.coordinate))
+    if (superseded.terminalPickupCoordinates.includes(pickupCoordinate))
       terminalProducts.add(record.addressId)
   }
   const diagnostics = raw.result?.diagnostics.map((diagnostic) =>
