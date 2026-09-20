@@ -8,7 +8,7 @@ import {
   RefreshCw,
   Store,
 } from "lucide-react"
-import { useProfile } from "@conduit/core"
+import { useProductImageUpload, useProfile } from "@conduit/core"
 import {
   Badge,
   Button,
@@ -172,6 +172,7 @@ export function MerchantEventMarketPanel({
   compact?: boolean
 }) {
   const [publisherOpen, setPublisherOpen] = useState(false)
+  const productImageUpload = useProductImageUpload()
   const [publishedAccepted, setPublishedAccepted] = useState<boolean | null>(
     null
   )
@@ -395,6 +396,7 @@ export function MerchantEventMarketPanel({
         authenticatedPubkey={authenticatedPubkey}
         shouldContinue={shouldContinue}
         market={market}
+        productImageUpload={productImageUpload}
         onOpenChange={setPublisherOpen}
         onPublished={(accepted) => {
           setPublishedAccepted(accepted)

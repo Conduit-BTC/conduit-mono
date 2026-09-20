@@ -309,7 +309,8 @@ async function publishProduct(page: Page, title: string): Promise<void> {
   await page.getByRole("option", { name: "SATS", exact: true }).click()
   await dialog.locator("#product-fulfillment").click()
   await page.getByRole("option", { name: "Digital", exact: true }).click()
-  await dialog.getByLabel("Image URL").fill(productImageUrl)
+  await dialog.getByRole("button", { name: "Add by URL" }).click()
+  await dialog.getByLabel("Primary image URL").fill(productImageUrl)
   const publicZaps = dialog.getByRole("checkbox", {
     name: /Enable public zaps for purchases/,
   })
