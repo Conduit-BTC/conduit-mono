@@ -1183,7 +1183,9 @@ export async function loadRawEventCatalog(
     if (
       options.onProgress &&
       ["active", "ended", "partial", "stale"].includes(resolution.state) &&
-      resolution.organizerProductCoordinates.length > 0
+      resolution.organizerProductCoordinates.length > 0 &&
+      resolution.organizerProductCoordinates.length <=
+        resolution.participationBudget.targetLimit
     ) {
       // The organizer list is enough to read safe product cards. Exact
       // participation and pickup checks continue independently in core.

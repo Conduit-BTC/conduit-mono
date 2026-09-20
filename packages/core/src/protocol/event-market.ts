@@ -2811,6 +2811,7 @@ async function fetchEventMarketFrontierFilters(input: {
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
 }): Promise<EventMarketFrontierFilterResult> {
+  assertEventMarketReadCurrent(input)
   const filterAuthor = (filter: NDKFilter): string | null => {
     const authors = filter.authors ?? []
     return authors.length === 1 ? normalizePubkey(authors[0]) : null
@@ -2848,6 +2849,7 @@ async function fetchEventMarketFrontierFilters(input: {
     index < input.filters.length;
     index += EVENT_MARKET_FRONTIER_QUERY_CONCURRENCY
   ) {
+    assertEventMarketReadCurrent(input)
     const batch = input.filters.slice(
       index,
       index + EVENT_MARKET_FRONTIER_QUERY_CONCURRENCY
@@ -3390,20 +3392,18 @@ function pickupDeletionFrontierFilters(input: {
   return filters
 }
 
-async function fetchEventMarketPickupFrontiers(
-  input: {
-    coordinates: readonly AddressableEventCoordinate[]
-    candidateEvents: readonly SignedPublicNostrEvent[]
-    candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
-    relayUrls: string[]
-    authenticatedPubkey?: string | null
-    ownerSelectedRelayUrls?: readonly string[]
-    accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
-    shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
-    signal?: AbortSignal
-  },
-  retiredRelayUrls: ReadonlySet<string> = new Set()
-): Promise<EventMarketPickupFrontierResult> {
+async function fetchEventMarketPickupFrontiers(input: {
+  coordinates: readonly AddressableEventCoordinate[]
+  candidateEvents: readonly SignedPublicNostrEvent[]
+  candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
+  relayUrls: string[]
+  authenticatedPubkey?: string | null
+  ownerSelectedRelayUrls?: readonly string[]
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  signal?: AbortSignal
+}): Promise<EventMarketPickupFrontierResult> {
+  assertEventMarketReadCurrent(input)
   const pickupBudget: EventMarketParticipationBudget = {
     state: "within_budget",
     targetCount: input.coordinates.length,
@@ -3413,21 +3413,17 @@ async function fetchEventMarketPickupFrontiers(
     input.coordinates.length > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
   ) {
     const batchResults: EventMarketPickupFrontierResult[] = []
-    const retired = new Set(retiredRelayUrls)
+    // Scope incomplete relays to one target batch so an earlier deletion read
+    // cannot suppress a later pickup's only positive source.
     for (const coordinates of chunkValues(
       input.coordinates,
       EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
     )) {
-      const result = await fetchEventMarketPickupFrontiers(
-        { ...input, coordinates },
-        retired
-      )
+      const result = await fetchEventMarketPickupFrontiers({
+        ...input,
+        coordinates,
+      })
       batchResults.push(result)
-      for (const relay of result.relays) {
-        if (relay.status !== "success") {
-          retired.add(relay.relayUrl.toLowerCase())
-        }
-      }
     }
     const eventsById = new Map<string, NDKEvent>()
     for (const result of batchResults) {
@@ -3449,34 +3445,25 @@ async function fetchEventMarketPickupFrontiers(
   if (input.coordinates.length === 0) {
     return { events: [], relays: [], eventsVerified: true, pickupBudget }
   }
-  const relayUrls = input.relayUrls.filter(
-    (relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase())
-  )
   const participantPlan = await eventMarketParticipantRelayPlans({
     coordinates: input.coordinates,
     candidateEvents: input.candidateEvents,
     sourceRelayUrlsById: input.candidateSourceRelayUrlsById,
-    fallbackRelayUrls: relayUrls,
+    fallbackRelayUrls: input.relayUrls,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
-  const relayUrlsByAuthor = new Map(
-    Array.from(participantPlan.relayUrlsByAuthor, ([author, urls]) => [
-      author,
-      urls.filter((relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase())),
-    ])
-  )
   const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls([
     ...(input.ownerSelectedRelayUrls ?? []),
     ...participantPlan.ownerSelectedRelayUrls,
-  ]).filter((relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase()))
+  ])
   const pickupResult = await fetchEventMarketFrontierFilters({
     filters: pickupFrontierFilters(input.coordinates),
-    relayUrls,
-    relayUrlsByAuthor,
+    relayUrls: input.relayUrls,
+    relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls,
@@ -3536,9 +3523,9 @@ async function fetchEventMarketProductRequestFrontiers(
     shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
     signal?: AbortSignal
   },
-  targetCoordinates?: readonly AddressableEventCoordinate[],
-  retiredRelayUrls: ReadonlySet<string> = new Set()
+  targetCoordinates?: readonly AddressableEventCoordinate[]
 ): Promise<EventMarketProductRequestFrontierResult> {
+  assertEventMarketReadCurrent(input)
   const coordinates = targetCoordinates ?? candidateProductCoordinates(input)
   const participationBudget: EventMarketParticipationBudget = {
     state: "within_budget",
@@ -3547,22 +3534,17 @@ async function fetchEventMarketProductRequestFrontiers(
   }
   if (coordinates.length > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT) {
     const batchResults: EventMarketProductRequestFrontierResult[] = []
-    const retired = new Set(retiredRelayUrls)
+    // Scope incomplete relays to one target batch so an earlier deletion read
+    // cannot suppress a later product's only positive source.
     for (const batchCoordinates of chunkValues(
       coordinates,
       EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
     )) {
       const result = await fetchEventMarketProductRequestFrontiers(
         input,
-        batchCoordinates,
-        retired
+        batchCoordinates
       )
       batchResults.push(result)
-      for (const relay of result.relays) {
-        if (relay.status !== "success") {
-          retired.add(relay.relayUrl.toLowerCase())
-        }
-      }
     }
     const eventsById = new Map<string, NDKEvent>()
     for (const result of batchResults) {
@@ -3589,34 +3571,25 @@ async function fetchEventMarketProductRequestFrontiers(
       participationBudget,
     }
   }
-  const relayUrls = input.relayUrls.filter(
-    (relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase())
-  )
   const participantPlan = await eventMarketParticipantRelayPlans({
     coordinates,
     candidateEvents: input.candidateEvents,
     sourceRelayUrlsById: input.candidateSourceRelayUrlsById,
-    fallbackRelayUrls: relayUrls,
+    fallbackRelayUrls: input.relayUrls,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
-  const relayUrlsByAuthor = new Map(
-    Array.from(participantPlan.relayUrlsByAuthor, ([author, urls]) => [
-      author,
-      urls.filter((relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase())),
-    ])
-  )
   const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls([
     ...(input.ownerSelectedRelayUrls ?? []),
     ...participantPlan.ownerSelectedRelayUrls,
-  ]).filter((relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase()))
+  ])
   const productResult = await fetchEventMarketFrontierFilters({
     filters: productFrontierFilters(coordinates),
-    relayUrls,
-    relayUrlsByAuthor,
+    relayUrls: input.relayUrls,
+    relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls,
