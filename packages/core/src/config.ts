@@ -16,7 +16,7 @@ export interface RelayBucketConfig {
 }
 
 export type AppRelayNip65Mode = "read_write" | "write" | null
-export const APP_RELAY_REGISTRY_VERSION = 1
+export const APP_RELAY_REGISTRY_VERSION = 2
 
 /**
  * One transparent, code-owned Conduit app relay. These records are product
@@ -74,16 +74,6 @@ export const CANONICAL_APP_RELAY_DEFINITIONS: readonly AppRelayDefinition[] = [
     commerce: false,
     privateInbox: false,
     nip65Preset: "write",
-    nip17Preset: false,
-  },
-  {
-    url: "wss://relay.damus.io",
-    fallbackName: "damus.io",
-    read: false,
-    write: true,
-    commerce: false,
-    privateInbox: false,
-    nip65Preset: null,
     nip17Preset: false,
   },
   {

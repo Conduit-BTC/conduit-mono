@@ -208,8 +208,36 @@ describe("relay settings protocol helpers", () => {
       "wss://relay.ditto.pub",
       "wss://relay.dreamith.to",
       "wss://relay.primal.net",
-      "wss://relay.damus.io",
     ])
+    expect(
+      CANONICAL_APP_RELAY_DEFINITIONS.map(({ fallbackName, url }) => ({
+        fallbackName,
+        url,
+      }))
+    ).toEqual([
+      {
+        fallbackName: "Conduit Relay",
+        url: "wss://relay.conduit.market",
+      },
+      { fallbackName: "Ditto Relay", url: "wss://relay.ditto.pub" },
+      {
+        fallbackName: "Dreamith Relay",
+        url: "wss://relay.dreamith.to",
+      },
+      {
+        fallbackName: "Primal Public Relay",
+        url: "wss://relay.primal.net",
+      },
+      { fallbackName: "nos.lol", url: "wss://nos.lol" },
+      {
+        fallbackName: "Plebeian Market Relay",
+        url: "wss://relay.plebeian.market",
+      },
+    ])
+    expect(CANONICAL_APP_RELAY_DEFINITIONS).toHaveLength(6)
+    expect(CANONICAL_APP_RELAY_DEFINITIONS).not.toContainEqual(
+      expect.objectContaining({ url: "wss://relay.damus.io" })
+    )
     expect(CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS).toEqual([
       "wss://nos.lol",
       "wss://relay.ditto.pub",
