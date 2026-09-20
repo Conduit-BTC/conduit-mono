@@ -3,11 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useAuth, useConduitSession } from "@conduit/core"
 import { useCart } from "./useCart"
 import { useShopperPricing } from "./useShopperPricing"
-import {
-  getCartItemKey,
-  getCartItemFulfillmentType,
-  getPendingEventPickupCartItems,
-} from "../lib/cart-model"
+import { getPendingEventPickupCartItems } from "../lib/cart-model"
 import { resolvePendingEventPickupCartUpgrades } from "../lib/pending-event-pickup-cart"
 
 const PENDING_PICKUP_RETRY_INTERVAL_MS = 5_000
@@ -18,7 +14,7 @@ const PENDING_PICKUP_MAX_READ_CYCLES = 4
  * immutable fulfillment snapshot. Failure leaves the intent non-purchasable.
  */
 export function usePendingEventPickupCartResolution() {
-  const { items, upgradePendingEventPickupItem } = useCart()
+  const { items, mutationSequence, upgradePendingEventPickupItem } = useCart()
   const pricing = useShopperPricing()
   const session = useConduitSession()
   const { authGeneration } = useAuth()
@@ -43,25 +39,6 @@ export function usePendingEventPickupCartResolution() {
       ]),
     [pendingItems]
   )
-  const pendingApplicationKey = useMemo(() => {
-    const pendingProductKeys = new Set(
-      pendingItems.map((item) => getCartItemKey(item))
-    )
-    return JSON.stringify(
-      items
-        .filter((item) => pendingProductKeys.has(getCartItemKey(item)))
-        .map((item) => ({
-          cartLineId: item.cartLineId ?? null,
-          fulfillmentType: getCartItemFulfillmentType(item),
-          merchantPubkey: item.merchantPubkey,
-          productId: item.productId,
-          quantity: item.quantity,
-        }))
-        .sort((left, right) =>
-          JSON.stringify(left).localeCompare(JSON.stringify(right))
-        )
-    )
-  }, [items, pendingItems])
   const readAuthGeneration = authGeneration
   const query = useQuery({
     queryKey: [
@@ -98,7 +75,7 @@ export function usePendingEventPickupCartResolution() {
     for (const upgrade of query.data.upgrades) {
       void upgradePendingEventPickupItem(upgrade.identity, upgrade.item)
     }
-  }, [pendingApplicationKey, query.data, upgradePendingEventPickupItem])
+  }, [mutationSequence, query.data, upgradePendingEventPickupItem])
 
   return {
     pendingItems,

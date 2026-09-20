@@ -127,6 +127,10 @@ export function reconcileEventCatalogGraph(
     ...superseded.removedProductCoordinates,
   ])
   const terminalProducts = new Set(superseded.removedProductCoordinates)
+  const supersededPickupCoordinates = new Set(superseded.pickupCoordinates)
+  const terminalPickupCoordinates = new Set(
+    superseded.terminalPickupCoordinates
+  )
   // Preview records are browse evidence, not purchase authority. They still
   // need known terminal pickup evidence so reversible Add is not exposed for
   // a dependency that has already been revoked.
@@ -137,9 +141,9 @@ export function reconcileEventCatalogGraph(
     )
     if (fulfillment.status !== "resolved") continue
     const pickupCoordinate = fulfillment.selectedPickup.coordinate
-    if (superseded.pickupCoordinates.includes(pickupCoordinate))
+    if (supersededPickupCoordinates.has(pickupCoordinate))
       affected.add(record.addressId)
-    if (superseded.terminalPickupCoordinates.includes(pickupCoordinate))
+    if (terminalPickupCoordinates.has(pickupCoordinate))
       terminalProducts.add(record.addressId)
   }
   const diagnostics = raw.result?.diagnostics.map((diagnostic) =>

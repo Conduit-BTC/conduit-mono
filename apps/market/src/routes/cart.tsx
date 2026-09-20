@@ -1399,13 +1399,7 @@ function CartPage() {
 
           {pendingPickupGroups.map((group) => (
             <PendingEventPickupCartCard
-              key={`pending:${group.merchantPubkey}:${group.items
-                .map((item) =>
-                  item.fulfillment?.type === "event_pickup_pending"
-                    ? item.fulfillment.collectionCoordinate
-                    : item.productId
-                )
-                .join("|")}`}
+              key={group.merchantPubkey}
               group={group}
               accountPubkey={accountPubkey}
               authenticatedPubkey={authenticatedPubkey}
