@@ -21,7 +21,6 @@ import {
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import { resolveOrganizerEventMarket } from "../apps/merchant/src/lib/event-market"
-import { getProductEventParticipationState } from "../apps/merchant/src/lib/product-local-pickup"
 
 const ORGANIZER_SECRET = generateSecretKey()
 const MERCHANT_SECRET = generateSecretKey()
@@ -59,7 +58,8 @@ function sign(
 }
 
 function graph(
-  productCoordinates: readonly string[] = [PRODUCT]
+  productCoordinates: readonly string[] = [PRODUCT],
+  includeOrganizerPickup = true
 ): SignedPublicNostrEvent[] {
   return [
     sign(
@@ -75,25 +75,29 @@ function graph(
       }),
       100
     ),
-    sign(
-      ORGANIZER_SECRET,
-      buildEventMarketPickupDraft({
-        dTag: "pickup",
-        title: "Market pickup",
-        price: 0,
-        currency: "SATS",
-        countries: ["US"],
-        location: "Public market hall",
-      }),
-      101
-    ),
+    ...(includeOrganizerPickup
+      ? [
+          sign(
+            ORGANIZER_SECRET,
+            buildEventMarketPickupDraft({
+              dTag: "pickup",
+              title: "Market pickup",
+              price: 0,
+              currency: "SATS",
+              countries: ["US"],
+              location: "Public market hall",
+            }),
+            101
+          ),
+        ]
+      : []),
     sign(
       ORGANIZER_SECRET,
       buildEventMarketCollectionDraft({
         dTag: "catalog",
         title: "Market catalog",
         eventCoordinate: CALENDAR,
-        pickupCoordinate: PICKUP,
+        ...(includeOrganizerPickup ? { pickupCoordinate: PICKUP } : {}),
         productCoordinates: [...productCoordinates],
       }),
       102
@@ -104,7 +108,8 @@ function graph(
 function productRevision(
   dTag: string,
   createdAt: number,
-  requestsCollection: boolean
+  requestsCollection: boolean,
+  pickupCoordinate = PICKUP
 ): SignedPublicNostrEvent {
   return sign(
     MERCHANT_SECRET,
@@ -115,7 +120,7 @@ function productRevision(
         ["title", `Product ${dTag}`],
         ["price", "25", "USD"],
         ...(requestsCollection ? [["a", COLLECTION]] : []),
-        ["shipping_option", PICKUP],
+        ["shipping_option", pickupCoordinate],
       ],
     },
     createdAt
@@ -391,28 +396,154 @@ describe("event-market exact product request frontiers", () => {
     })
   })
 
-  it("fails participation closed when the client target budget is exceeded", async () => {
-    const request = productRevision("coffee", 100, true)
-    const organizerProducts = [
-      PRODUCT,
-      ...Array.from(
-        { length: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT },
-        (_, index) => `${EVENT_KINDS.PRODUCT}:${MERCHANT}:budget-${index}`
-      ),
-    ]
-    let exactFrontierReadCount = 0
-    installReadHarness((filter) => {
+  it.each([
+    EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
+    EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT + 1,
+    EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT * 3,
+  ])(
+    "resolves a valid %i-product catalog",
+    async (targetCount) => {
+      const dTags = Array.from(
+        { length: targetCount },
+        (_, index) => `catalog-${index.toString().padStart(3, "0")}`
+      )
+      const pickupDTags = dTags.map((dTag) => `booth-${dTag}`)
+      const pickupCoordinates = pickupDTags.map(
+        (dTag) => `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT}:${dTag}`
+      )
+      const requests = dTags.map((dTag, index) =>
+        productRevision(dTag, 100 + index, true, pickupCoordinates[index])
+      )
+      const pickups = pickupDTags.map((dTag, index) =>
+        sign(
+          MERCHANT_SECRET,
+          buildEventMarketPickupDraft({
+            dTag,
+            title: `Booth ${index}`,
+            price: 0,
+            currency: "SATS",
+            countries: ["US"],
+            location: `Table ${index}`,
+          }),
+          1_000 + index
+        )
+      )
+      const organizerProducts = dTags.map(
+        (dTag) => `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${dTag}`
+      )
+      const exactProductTargets: string[][] = []
+      const exactPickupTargets: string[][] = []
+      installReadHarness((filter) => {
+        if (filter.authors?.includes(ORGANIZER)) {
+          return { events: graph(organizerProducts, false) }
+        }
+        if (
+          filter.kinds?.length === 1 &&
+          filter.kinds[0] === EVENT_KINDS.PRODUCT
+        ) {
+          if (filter["#a"]?.includes(COLLECTION)) return { events: requests }
+          if (filter["#d"]) {
+            exactProductTargets.push([...filter["#d"]])
+            return {
+              events: requests.filter((event) =>
+                event.tags.some(
+                  (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1]!)
+                )
+              ),
+            }
+          }
+        }
+        if (
+          filter.kinds?.length === 1 &&
+          filter.kinds[0] === EVENT_KINDS.SHIPPING_OPTION &&
+          filter["#d"]
+        ) {
+          exactPickupTargets.push([...filter["#d"]])
+          return {
+            events: pickups.filter((event) =>
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1]!)
+              )
+            ),
+          }
+        }
+        return { events: [] }
+      })
+
+      const result = await getEventMarket({
+        reference: COLLECTION,
+        nowMs: NOW_MS,
+      })
+
+      expect(result.state).toBe("active")
+      expect(result.participationBudget).toEqual({
+        state: "within_budget",
+        targetCount,
+        targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
+      })
+      expect(result.pickupBudget).toEqual({
+        state: "within_budget",
+        targetCount,
+        targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
+      })
+      expect(result.acceptedProductCoordinates).toEqual(
+        [...organizerProducts].sort()
+      )
+      expect(result.organizerOnlyProductCoordinates).toEqual([])
+      expect(
+        result.acceptedProductEvidence.every(
+          (evidence) => evidence.fulfillmentStatus === "resolved"
+        )
+      ).toBe(true)
+      expect(exactProductTargets.flat().sort()).toEqual([...dTags].sort())
+      expect(exactPickupTargets.flat().sort()).toEqual([...pickupDTags].sort())
+    },
+    15_000
+  )
+
+  it("keeps resolving later products when an earlier participation batch is unresolved", async () => {
+    const targetCount = EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT + 1
+    const dTags = Array.from(
+      { length: targetCount },
+      (_, index) => `catalog-${index.toString().padStart(3, "0")}`
+    )
+    const unresolvedDTag = dTags[0]!
+    const laterDTag = dTags.at(-1)!
+    const requests = dTags.map((dTag, index) =>
+      productRevision(dTag, 100 + index, true)
+    )
+    const organizerProducts = dTags.map(
+      (dTag) => `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${dTag}`
+    )
+    const unresolvedProduct = organizerProducts[0]!
+    const laterRelayPlans: string[][] = []
+    installReadHarness((filter, relayUrls) => {
       if (filter.authors?.includes(ORGANIZER)) {
         return { events: graph(organizerProducts) }
       }
       if (
         filter.kinds?.length === 1 &&
-        filter.kinds[0] === EVENT_KINDS.PRODUCT &&
-        filter["#a"]?.includes(COLLECTION)
+        filter.kinds[0] === EVENT_KINDS.PRODUCT
       ) {
-        return { events: [request], relayBStatus: "failed" }
+        if (filter["#a"]?.includes(COLLECTION)) return { events: requests }
+        if (filter["#d"]) {
+          if (filter["#d"].includes(laterDTag)) {
+            laterRelayPlans.push([...relayUrls])
+          }
+          const unresolved = filter["#d"].includes(unresolvedDTag)
+          return {
+            events: requests.filter((event) =>
+              event.tags.some(
+                (tag) =>
+                  tag[0] === "d" &&
+                  tag[1] !== unresolvedDTag &&
+                  filter["#d"]?.includes(tag[1]!)
+              )
+            ),
+            relayBStatus: unresolved ? "failed" : "success",
+          }
+        }
       }
-      if (filter["#d"] || filter["#e"]) exactFrontierReadCount += 1
       return { events: [] }
     })
 
@@ -421,32 +552,19 @@ describe("event-market exact product request frontiers", () => {
       nowMs: NOW_MS,
     })
 
-    expect(exactFrontierReadCount).toBe(0)
-    expect(result.state).toBe("unsupported")
+    expect(result.state).toBe("partial")
     expect(result.coverage.partialRelayCount).toBe(1)
-    expect(result.participationBudget).toEqual({
-      state: "exceeded",
-      targetCount: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT + 1,
-      targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
-    })
-    expect(result.acceptedProductCoordinates).toEqual([])
-    expect(result.participationRequests).toEqual([])
-
-    const merchantMarket = await resolveOrganizerEventMarket(
-      COLLECTION,
-      ORGANIZER
+    expect(result.acceptedProductCoordinates).toHaveLength(
+      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
     )
-    expect(merchantMarket.state).toBe("unsupported")
-    expect(
-      getProductEventParticipationState(
-        {
-          id: PRODUCT,
-          collectionRefs: [COLLECTION],
-          shippingOptionRefs: [{ coordinate: PICKUP }],
-        },
-        merchantMarket
-      )
-    ).toBe("unavailable")
+    expect(result.acceptedProductCoordinates).toContain(
+      organizerProducts.at(-1)!
+    )
+    expect(result.acceptedProductCoordinates).not.toContain(unresolvedProduct)
+    expect(result.organizerOnlyProductCoordinates).toEqual([unresolvedProduct])
+    expect(laterRelayPlans).toHaveLength(1)
+    expect(laterRelayPlans[0]).toContain(RELAY_A)
+    expect(laterRelayPlans[0]).not.toContain(RELAY_B)
   })
 
   it("finds an exact withdrawal behind 500 unrelated merchant events", async () => {

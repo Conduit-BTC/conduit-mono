@@ -74,8 +74,8 @@ const EVENT_MARKET_COLLECTION_DISCOVERY_READ_LIMIT =
 const DEFAULT_EVENT_MARKET_EVIDENCE_MAX_AGE_MS = 5 * 60_000
 
 /**
- * Client execution-safety budget for one bounded participation read. This is
- * not a Nostr, Gamma Markets, location, or event-specific protocol limit.
+ * Client execution-safety batch size for bounded participation reads. This is
+ * not a Nostr, Open Markets, location, or event-specific protocol limit.
  */
 export const EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT = 64
 /** Per-coordinate revision cap within the same client execution budget. */
@@ -1145,6 +1145,7 @@ export interface EventMarketAcceptedProductEvidence {
 export interface EventMarketParticipationBudget {
   state: "within_budget" | "exceeded"
   targetCount: number
+  /** Maximum number of targets resolved in one internal batch. */
   targetLimit: number
 }
 
@@ -1930,11 +1931,7 @@ function participationBudgetForEvidence(input: {
     : 0
   const targetCount = Math.max(localTargetCount, networkTargetCount)
   return {
-    state:
-      input.networkBudget?.state === "exceeded" ||
-      targetCount > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount,
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
@@ -2064,11 +2061,7 @@ export function resolveEventMarketEvidence(
     ),
   ]).size
   const pickupBudget: EventMarketParticipationBudget = {
-    state:
-      input.pickupBudget?.state === "exceeded" ||
-      pickupTargetCount > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount: Math.max(
       pickupTargetCount,
       input.pickupBudget?.targetCount ?? 0
@@ -2099,9 +2092,6 @@ export function resolveEventMarketEvidence(
   }
   if (collection.pickupCoordinates.length > 1) {
     return { ...base, state: "conflicting", collection }
-  }
-  if (pickupBudget.state === "exceeded") {
-    return { ...base, state: "unsupported", collection }
   }
   const calendarCoordinate = parseAddressableCoordinate(
     collection.eventCoordinates[0],
@@ -2225,19 +2215,6 @@ export function resolveEventMarketEvidence(
       : pickup
   )
 
-  if (participationBudget.state === "exceeded") {
-    return {
-      ...graphBase,
-      state: "unsupported",
-      calendar: calendarResult.value,
-      ...(organizerPickup ? { pickup: organizerPickup } : {}),
-      pickups,
-      organizerOnlyProductCoordinates: [...organizerProductCoordinates].sort(),
-      acceptedProductCoordinates: [],
-      acceptedProductEvidence: [],
-      participationRequests: [],
-    }
-  }
   const participation = includeParticipation
     ? getCurrentParticipation(
         productRequestEvents,
@@ -3413,50 +3390,96 @@ function pickupDeletionFrontierFilters(input: {
   return filters
 }
 
-async function fetchEventMarketPickupFrontiers(input: {
-  coordinates: readonly AddressableEventCoordinate[]
-  candidateEvents: readonly SignedPublicNostrEvent[]
-  candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
-  relayUrls: string[]
-  authenticatedPubkey?: string | null
-  ownerSelectedRelayUrls?: readonly string[]
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
-  signal?: AbortSignal
-}): Promise<EventMarketPickupFrontierResult> {
+async function fetchEventMarketPickupFrontiers(
+  input: {
+    coordinates: readonly AddressableEventCoordinate[]
+    candidateEvents: readonly SignedPublicNostrEvent[]
+    candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
+    relayUrls: string[]
+    authenticatedPubkey?: string | null
+    ownerSelectedRelayUrls?: readonly string[]
+    accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+    shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+    signal?: AbortSignal
+  },
+  retiredRelayUrls: ReadonlySet<string> = new Set()
+): Promise<EventMarketPickupFrontierResult> {
   const pickupBudget: EventMarketParticipationBudget = {
-    state:
-      input.coordinates.length >
-      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount: input.coordinates.length,
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
-  if (pickupBudget.state === "exceeded" || input.coordinates.length === 0) {
+  if (
+    input.coordinates.length > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
+  ) {
+    const batchResults: EventMarketPickupFrontierResult[] = []
+    const retired = new Set(retiredRelayUrls)
+    for (const coordinates of chunkValues(
+      input.coordinates,
+      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
+    )) {
+      const result = await fetchEventMarketPickupFrontiers(
+        { ...input, coordinates },
+        retired
+      )
+      batchResults.push(result)
+      for (const relay of result.relays) {
+        if (relay.status !== "success") {
+          retired.add(relay.relayUrl.toLowerCase())
+        }
+      }
+    }
+    const eventsById = new Map<string, NDKEvent>()
+    for (const result of batchResults) {
+      for (const event of result.events) {
+        eventsById.set(event.id.toLowerCase(), event)
+      }
+    }
+    return {
+      events: Array.from(eventsById.values()),
+      relays: mergeRelayReadStatuses(
+        ...batchResults.map((result) => result.relays)
+      ),
+      eventsVerified: batchResults.every(
+        (result) => result.eventsVerified === true
+      ),
+      pickupBudget,
+    }
+  }
+  if (input.coordinates.length === 0) {
     return { events: [], relays: [], eventsVerified: true, pickupBudget }
   }
+  const relayUrls = input.relayUrls.filter(
+    (relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase())
+  )
   const participantPlan = await eventMarketParticipantRelayPlans({
     coordinates: input.coordinates,
     candidateEvents: input.candidateEvents,
     sourceRelayUrlsById: input.candidateSourceRelayUrlsById,
-    fallbackRelayUrls: input.relayUrls,
+    fallbackRelayUrls: relayUrls,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
+  const relayUrlsByAuthor = new Map(
+    Array.from(participantPlan.relayUrlsByAuthor, ([author, urls]) => [
+      author,
+      urls.filter((relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase())),
+    ])
+  )
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls([
+    ...(input.ownerSelectedRelayUrls ?? []),
+    ...participantPlan.ownerSelectedRelayUrls,
+  ]).filter((relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase()))
   const pickupResult = await fetchEventMarketFrontierFilters({
     filters: pickupFrontierFilters(input.coordinates),
-    relayUrls: input.relayUrls,
-    relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
+    relayUrls,
+    relayUrlsByAuthor,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls([
-      ...(input.ownerSelectedRelayUrls ?? []),
-      ...participantPlan.ownerSelectedRelayUrls,
-    ]),
+    ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3481,10 +3504,7 @@ async function fetchEventMarketPickupFrontiers(input: {
     relayUrlsByAuthor: pickupResult.remainingRelayUrlsByAuthor,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls([
-      ...(input.ownerSelectedRelayUrls ?? []),
-      ...participantPlan.ownerSelectedRelayUrls,
-    ]),
+    ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3504,31 +3524,60 @@ async function fetchEventMarketPickupFrontiers(input: {
   }
 }
 
-async function fetchEventMarketProductRequestFrontiers(input: {
-  candidateEvents: readonly SignedPublicNostrEvent[]
-  candidateCoordinates: readonly string[]
-  candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
-  relayUrls: string[]
-  authenticatedPubkey?: string | null
-  ownerSelectedRelayUrls?: readonly string[]
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
-  signal?: AbortSignal
-}): Promise<EventMarketProductRequestFrontierResult> {
-  const coordinates = candidateProductCoordinates(input)
+async function fetchEventMarketProductRequestFrontiers(
+  input: {
+    candidateEvents: readonly SignedPublicNostrEvent[]
+    candidateCoordinates: readonly string[]
+    candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
+    relayUrls: string[]
+    authenticatedPubkey?: string | null
+    ownerSelectedRelayUrls?: readonly string[]
+    accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+    shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+    signal?: AbortSignal
+  },
+  targetCoordinates?: readonly AddressableEventCoordinate[],
+  retiredRelayUrls: ReadonlySet<string> = new Set()
+): Promise<EventMarketProductRequestFrontierResult> {
+  const coordinates = targetCoordinates ?? candidateProductCoordinates(input)
   const participationBudget: EventMarketParticipationBudget = {
-    state:
-      coordinates.length > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount: coordinates.length,
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
-  if (participationBudget.state === "exceeded") {
+  if (coordinates.length > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT) {
+    const batchResults: EventMarketProductRequestFrontierResult[] = []
+    const retired = new Set(retiredRelayUrls)
+    for (const batchCoordinates of chunkValues(
+      coordinates,
+      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
+    )) {
+      const result = await fetchEventMarketProductRequestFrontiers(
+        input,
+        batchCoordinates,
+        retired
+      )
+      batchResults.push(result)
+      for (const relay of result.relays) {
+        if (relay.status !== "success") {
+          retired.add(relay.relayUrl.toLowerCase())
+        }
+      }
+    }
+    const eventsById = new Map<string, NDKEvent>()
+    for (const result of batchResults) {
+      for (const event of result.events) {
+        eventsById.set(event.id.toLowerCase(), event)
+      }
+    }
     return {
-      events: [],
-      relays: [],
-      eventsVerified: true,
+      events: Array.from(eventsById.values()),
+      relays: mergeRelayReadStatuses(
+        ...batchResults.map((result) => result.relays)
+      ),
+      eventsVerified: batchResults.every(
+        (result) => result.eventsVerified === true
+      ),
       participationBudget,
     }
   }
@@ -3540,27 +3589,37 @@ async function fetchEventMarketProductRequestFrontiers(input: {
       participationBudget,
     }
   }
+  const relayUrls = input.relayUrls.filter(
+    (relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase())
+  )
   const participantPlan = await eventMarketParticipantRelayPlans({
     coordinates,
     candidateEvents: input.candidateEvents,
     sourceRelayUrlsById: input.candidateSourceRelayUrlsById,
-    fallbackRelayUrls: input.relayUrls,
+    fallbackRelayUrls: relayUrls,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
+  const relayUrlsByAuthor = new Map(
+    Array.from(participantPlan.relayUrlsByAuthor, ([author, urls]) => [
+      author,
+      urls.filter((relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase())),
+    ])
+  )
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls([
+    ...(input.ownerSelectedRelayUrls ?? []),
+    ...participantPlan.ownerSelectedRelayUrls,
+  ]).filter((relayUrl) => !retiredRelayUrls.has(relayUrl.toLowerCase()))
   const productResult = await fetchEventMarketFrontierFilters({
     filters: productFrontierFilters(coordinates),
-    relayUrls: input.relayUrls,
-    relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
+    relayUrls,
+    relayUrlsByAuthor,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls([
-      ...(input.ownerSelectedRelayUrls ?? []),
-      ...participantPlan.ownerSelectedRelayUrls,
-    ]),
+    ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3585,10 +3644,7 @@ async function fetchEventMarketProductRequestFrontiers(input: {
     relayUrlsByAuthor: productResult.remainingRelayUrlsByAuthor,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls([
-      ...(input.ownerSelectedRelayUrls ?? []),
-      ...participantPlan.ownerSelectedRelayUrls,
-    ]),
+    ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -5269,11 +5325,7 @@ export async function getEventMarket(
   )
   const pickupCoordinates = Array.from(pickupCoordinatesByIdentity.values())
   const pickupBudget: EventMarketParticipationBudget = {
-    state:
-      pickupCoordinates.length >
-      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount: pickupCoordinates.length,
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
@@ -5281,40 +5333,32 @@ export async function getEventMarket(
     rawRequestCandidates,
     rawRequestFrontiers
   )
-  const directPickupResult =
-    pickupBudget.state === "exceeded"
-      ? {
-          events: [],
-          relays: [],
-          eventsVerified: true,
-          pickupBudget,
-        }
-      : await fetchEventMarketPickupFrontiers({
-          coordinates: selectedProductCoordinates
-            ? pickupCoordinates
-            : directMerchantPickupCoordinates,
-          candidateEvents: selectedProductCoordinates
-            ? [...organizerRecords.events, ...requestEvidence.events]
-            : requestEvidence.events,
-          candidateSourceRelayUrlsById: selectedProductCoordinates
-            ? new Map([
-                ...organizerRecords.sourceRelayUrlsById,
-                ...requestEvidence.sourceRelayUrlsById,
-              ])
-            : requestEvidence.sourceRelayUrlsById,
-          relayUrls: relayUrlsWithoutObservedFailures(
-            relayUrls,
-            organizerRecordRelays,
-            requestResult.relays,
-            requestFrontierResult.relays
-          ),
-          authenticatedPubkey: input.authenticatedPubkey,
-          ownerSelectedRelayUrls,
-          accountNetworkLocalStateRepository:
-            input.accountNetworkLocalStateRepository,
-          shouldContinue: input.shouldContinue,
-          signal: input.signal,
-        })
+  const directPickupResult = await fetchEventMarketPickupFrontiers({
+    coordinates: selectedProductCoordinates
+      ? pickupCoordinates
+      : directMerchantPickupCoordinates,
+    candidateEvents: selectedProductCoordinates
+      ? [...organizerRecords.events, ...requestEvidence.events]
+      : requestEvidence.events,
+    candidateSourceRelayUrlsById: selectedProductCoordinates
+      ? new Map([
+          ...organizerRecords.sourceRelayUrlsById,
+          ...requestEvidence.sourceRelayUrlsById,
+        ])
+      : requestEvidence.sourceRelayUrlsById,
+    relayUrls: relayUrlsWithoutObservedFailures(
+      relayUrls,
+      organizerRecordRelays,
+      requestResult.relays,
+      requestFrontierResult.relays
+    ),
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
+    signal: input.signal,
+  })
   const rawDirectPickupFrontiers = rawSignedEvents(directPickupResult)
   const rawPickupFrontiers = mergeRawSignedEventGroups(
     rawOrganizerPickupFrontiers,
@@ -5821,11 +5865,7 @@ export async function getOrganizerEventMarketsDetailed(
   )
   const pickupCoordinates = Array.from(pickupCoordinatesByIdentity.values())
   const pickupBudget: EventMarketParticipationBudget = {
-    state:
-      pickupCoordinates.length >
-      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount: pickupCoordinates.length,
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
@@ -5833,31 +5873,23 @@ export async function getOrganizerEventMarketsDetailed(
     rawRequestCandidates,
     rawRequestFrontiers
   )
-  const directPickupResult =
-    pickupBudget.state === "exceeded"
-      ? {
-          events: [],
-          relays: [],
-          eventsVerified: true,
-          pickupBudget,
-        }
-      : await fetchEventMarketPickupFrontiers({
-          coordinates: directMerchantPickupCoordinates,
-          candidateEvents: requestEvidence.events,
-          candidateSourceRelayUrlsById: requestEvidence.sourceRelayUrlsById,
-          relayUrls: relayUrlsWithoutObservedFailures(
-            relayUrls,
-            organizerRecordRelays,
-            requestResult.relays,
-            requestFrontierResult.relays
-          ),
-          authenticatedPubkey: input.authenticatedPubkey,
-          ownerSelectedRelayUrls,
-          accountNetworkLocalStateRepository:
-            input.accountNetworkLocalStateRepository,
-          shouldContinue: input.shouldContinue,
-          signal: input.signal,
-        })
+  const directPickupResult = await fetchEventMarketPickupFrontiers({
+    coordinates: directMerchantPickupCoordinates,
+    candidateEvents: requestEvidence.events,
+    candidateSourceRelayUrlsById: requestEvidence.sourceRelayUrlsById,
+    relayUrls: relayUrlsWithoutObservedFailures(
+      relayUrls,
+      organizerRecordRelays,
+      requestResult.relays,
+      requestFrontierResult.relays
+    ),
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
+    signal: input.signal,
+  })
   const rawDirectPickupFrontiers = rawSignedEvents(directPickupResult)
   const rawPickupFrontiers = mergeRawSignedEventGroups(
     rawOrganizerPickupFrontiers,
