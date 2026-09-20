@@ -4,7 +4,10 @@ import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { prepareProtectedReadRefreshState } from "@conduit/core"
 import { RefreshChip } from "../packages/ui/src/components/RefreshChip"
-import { resolveRefreshChipPhase } from "../packages/ui/src/components/RefreshChipState"
+import {
+  getRefreshChipDoneTimerDelay,
+  resolveRefreshChipPhase,
+} from "../packages/ui/src/components/RefreshChipState"
 
 function visibleLabelMarkup(markup: string, label: string): string {
   let index = markup.indexOf(`>${label}<`)
@@ -57,6 +60,39 @@ describe("RefreshChip", () => {
         stale: true,
       })
     ).toBe("refreshing")
+  })
+
+  it("starts the completion interval only after a re-keyed catalog read settles", () => {
+    const doneDurationMs = 2_000
+    const replacementReadDurationMs = doneDurationMs + 1
+    const requestSettledDuringReplacementRead = {
+      phase: "done" as const,
+      refreshing: true,
+      stale: false,
+    }
+
+    expect(replacementReadDurationMs).toBeGreaterThan(doneDurationMs)
+    expect(resolveRefreshChipPhase(requestSettledDuringReplacementRead)).toBe(
+      "refreshing"
+    )
+    expect(
+      getRefreshChipDoneTimerDelay({
+        ...requestSettledDuringReplacementRead,
+        doneDurationMs,
+      })
+    ).toBeNull()
+
+    const replacementReadSettled = {
+      ...requestSettledDuringReplacementRead,
+      refreshing: false,
+    }
+    expect(resolveRefreshChipPhase(replacementReadSettled)).toBe("done")
+    expect(
+      getRefreshChipDoneTimerDelay({
+        ...replacementReadSettled,
+        doneDurationMs,
+      })
+    ).toBe(doneDurationMs)
   })
 
   it("only completes when every protected refresh source is current", () => {

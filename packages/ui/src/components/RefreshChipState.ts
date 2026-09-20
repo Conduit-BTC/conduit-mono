@@ -9,3 +9,13 @@ export function resolveRefreshChipPhase(input: {
   if (input.stale) return "idle"
   return input.phase
 }
+
+export function getRefreshChipDoneTimerDelay(input: {
+  phase: RefreshChipPhase
+  refreshing: boolean
+  doneDurationMs: number
+}): number | null {
+  return input.phase === "done" && !input.refreshing
+    ? input.doneDurationMs
+    : null
+}

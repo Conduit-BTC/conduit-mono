@@ -3,6 +3,7 @@ import { CheckCircle2, RotateCw } from "lucide-react"
 import { cn } from "../utils"
 import { Button } from "./Button"
 import {
+  getRefreshChipDoneTimerDelay,
   resolveRefreshChipPhase,
   type RefreshChipPhase,
 } from "./RefreshChipState"
@@ -43,9 +44,11 @@ export interface RefreshChipProps extends Omit<
  * true the chip shows the refreshing label, reports `aria-busy`, and ignores
  * further clicks while staying fully opaque. When an explicit user refresh
  * completes, the chip flashes `doneLabel` for `doneDurationMs` before returning
- * to idle. Background completion stays silent, and a completed read that
- * remains stale skips confirmation. The affected result surface owns any
- * consequential degraded-state copy.
+ * to idle. That interval starts only after the externally reported refresh
+ * also settles, so a re-keyed replacement read cannot consume the confirmation
+ * behind the busy state. Background completion stays silent, and a completed
+ * read that remains stale skips confirmation. The affected result surface owns
+ * any consequential degraded-state copy.
  *
  * @example
  * <RefreshChip
@@ -69,10 +72,15 @@ function RefreshChip({
   const [phase, setPhase] = useState<RefreshChipPhase>("idle")
 
   useEffect(() => {
-    if (phase !== "done") return
-    const timer = setTimeout(() => setPhase("idle"), doneDurationMs)
+    const delay = getRefreshChipDoneTimerDelay({
+      phase,
+      refreshing,
+      doneDurationMs,
+    })
+    if (delay === null) return
+    const timer = setTimeout(() => setPhase("idle"), delay)
     return () => clearTimeout(timer)
-  }, [phase, doneDurationMs])
+  }, [phase, refreshing, doneDurationMs])
 
   const renderedPhase = resolveRefreshChipPhase({
     phase,
