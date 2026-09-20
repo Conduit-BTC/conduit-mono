@@ -100,7 +100,8 @@ export interface AccountNetworkReviewFrontier {
   state: string
 }
 
-export type AccountNetworkReviewWarning = "single_relay_no_redundancy"
+export type AccountNetworkReviewWarning =
+  "single_relay_no_redundancy" | "scoped_absence_may_hide_signed_state"
 
 export interface ReviewedAccountNetworkMutation {
   pubkey: string
@@ -535,6 +536,37 @@ function reviewFrontier(input: {
   }
 }
 
+function hasCompleteScopedOwnerRelayListAbsence(
+  reconciliation: AccountNetworkPreferencesReconciliation
+): boolean {
+  const resolution = reconciliation.ownerRelayList
+  return (
+    resolution.state === "not_observed" &&
+    resolution.lookup.coverage === "complete" &&
+    !resolution.current &&
+    !resolution.lastUsable &&
+    !resolution.pendingDistribution
+  )
+}
+
+function hasCompleteScopedInboxDeclarationAbsence(
+  reconciliation: AccountNetworkPreferencesReconciliation
+): boolean {
+  const resolution = reconciliation.inboxDeclaration
+  return (
+    resolution.state === "not_observed" &&
+    resolution.observation?.coverage === "complete" &&
+    resolution.eventId === undefined &&
+    resolution.eventCreatedAt === undefined &&
+    resolution.relayUrls.length === 0 &&
+    (resolution.retainedReadRelayUrls?.length ?? 0) === 0 &&
+    (resolution.cutoverRecoveryRelayUrls?.length ?? 0) === 0 &&
+    (resolution.pendingRelayUrls?.length ?? 0) === 0 &&
+    (resolution.pendingPublishRelayUrls?.length ?? 0) === 0 &&
+    (resolution.pendingRelayOutcomes?.length ?? 0) === 0
+  )
+}
+
 export function reviewAccountNetworkMutation(
   reconciliation: AccountNetworkPreferencesReconciliation,
   requestedAction: AccountNetworkMutationAction
@@ -598,6 +630,21 @@ export function reviewAccountNetworkMutation(
   const changedKinds: AccountNetworkSignedKind[] = []
   if (relayListChanged) changedKinds.push(EVENT_KINDS.RELAY_LIST)
   if (inboxChanged) changedKinds.push(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS)
+  const warnings: AccountNetworkReviewWarning[] = []
+  if (
+    desiredRelayPreferences.filter((preference) => preference.writeEnabled)
+      .length === 1
+  ) {
+    warnings.push("single_relay_no_redundancy")
+  }
+  if (
+    (changedKinds.includes(EVENT_KINDS.RELAY_LIST) &&
+      hasCompleteScopedOwnerRelayListAbsence(reconciliation)) ||
+    (changedKinds.includes(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS) &&
+      hasCompleteScopedInboxDeclarationAbsence(reconciliation))
+  ) {
+    warnings.push("scoped_absence_may_hide_signed_state")
+  }
 
   return {
     pubkey,
@@ -620,11 +667,7 @@ export function reviewAccountNetworkMutation(
     ),
     changedKinds,
     signerRequestCount: changedKinds.length,
-    warnings:
-      desiredRelayPreferences.filter((preference) => preference.writeEnabled)
-        .length === 1
-        ? ["single_relay_no_redundancy"]
-        : [],
+    warnings,
     evidenceReady:
       reconciliation.ownerRelayList.lookup.coverage === "complete" &&
       reconciliation.inboxDeclaration.observation?.coverage === "complete",

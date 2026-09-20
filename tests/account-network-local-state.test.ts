@@ -339,7 +339,7 @@ describe("account network local state", () => {
 
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       reconcileAccountNetworkRoutingPolicy(policy, {
-        state: "confirmed_absent",
+        state: "absent_within_scope",
         observedAt: 10,
       })
     )

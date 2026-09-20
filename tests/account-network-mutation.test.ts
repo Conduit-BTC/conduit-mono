@@ -576,6 +576,95 @@ describe("account network mutation", () => {
     ).toThrow("without a Publish relay")
   })
 
+  it("warns before publishing over complete bounded absence", () => {
+    const fixture = createFixture()
+    fixture.reconciliation.ownerRelayList = {
+      ...fixture.reconciliation.ownerRelayList,
+      state: "not_observed",
+      preferences: [],
+      current: undefined,
+      lastUsable: undefined,
+      pendingDistribution: undefined,
+      lookup: {
+        coverage: "complete",
+        hadEvent: false,
+        observedAt: OBSERVED_AT,
+      },
+      observation: {
+        coverage: "complete",
+        attemptedRelayUrls: [PLAN_A],
+        successfulRelayUrls: [PLAN_A],
+        failedRelayUrls: [],
+        cappedRelayUrls: [],
+        eventSourceRelayUrls: [],
+      },
+    }
+    fixture.reconciliation.inboxDeclaration = {
+      ...fixture.reconciliation.inboxDeclaration,
+      state: "not_observed",
+      relayUrls: [],
+      retainedReadRelayUrls: [],
+      cutoverRecoveryRelayUrls: [],
+      pendingRelayUrls: [],
+      pendingPublishRelayUrls: [],
+      pendingRelayOutcomes: [],
+      eventId: undefined,
+      eventCreatedAt: undefined,
+      observation: {
+        coverage: "complete",
+        attemptedRelayUrls: [PLAN_A],
+        successfulRelayUrls: [PLAN_A],
+        failedRelayUrls: [],
+        eventSourceRelayUrls: [],
+      },
+    }
+
+    const reviewed = reviewAccountNetworkMutation(
+      fixture.reconciliation,
+      action(baselineRoles())
+    )
+
+    expect(reviewed.changedKinds).toEqual([
+      EVENT_KINDS.RELAY_LIST,
+      EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+    ])
+    expect(reviewed.warnings).toEqual(["scoped_absence_may_hide_signed_state"])
+  })
+
+  it("does not treat partial lookup coverage as bounded absence", () => {
+    const fixture = createFixture()
+    fixture.reconciliation.ownerRelayList = {
+      ...fixture.reconciliation.ownerRelayList,
+      state: "lookup_partial",
+      preferences: [],
+      current: undefined,
+      lastUsable: undefined,
+      pendingDistribution: undefined,
+      lookup: {
+        coverage: "partial",
+        hadEvent: false,
+        observedAt: OBSERVED_AT,
+      },
+      observation: {
+        coverage: "partial",
+        attemptedRelayUrls: [PLAN_A, PLAN_B],
+        successfulRelayUrls: [PLAN_A],
+        failedRelayUrls: [PLAN_B],
+        cappedRelayUrls: [],
+        eventSourceRelayUrls: [],
+      },
+    }
+
+    const reviewed = reviewAccountNetworkMutation(
+      fixture.reconciliation,
+      action(ownerChangedRoles())
+    )
+
+    expect(reviewed.warnings).not.toContain(
+      "scoped_absence_may_hide_signed_state"
+    )
+  })
+
   it("accepts an authenticated owner's ws relay as the sole Publish relay", async () => {
     const fixture = createFixture()
     const ownerWs = "ws://owner-selected.example"

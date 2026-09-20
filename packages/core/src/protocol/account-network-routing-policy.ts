@@ -29,7 +29,7 @@ export type AccountNetworkPersonalRelayEvidence =
       source: "published" | "pending" | "retained"
       observedAt: number
     }
-  | { state: "confirmed_absent"; observedAt: number }
+  | { state: "absent_within_scope"; observedAt: number }
   | {
       state: "unknown"
       reason: "partial" | "unavailable" | "signed_empty" | "malformed"
@@ -282,9 +282,15 @@ export function classifyAccountNetworkPersonalRelayEvidence(
       observedAt: resolution.lastUsable.observedAt,
     }
   }
-  if (resolution.state === "not_observed") {
+  if (
+    resolution.state === "not_observed" &&
+    resolution.lookup.coverage === "complete" &&
+    !resolution.current &&
+    !resolution.lastUsable &&
+    !resolution.pendingDistribution
+  ) {
     return {
-      state: "confirmed_absent",
+      state: "absent_within_scope",
       observedAt: resolution.lookup.observedAt,
     }
   }

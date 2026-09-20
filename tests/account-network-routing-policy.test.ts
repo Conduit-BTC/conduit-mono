@@ -12,7 +12,7 @@ import {
 } from "@conduit/core/protocol/account-network-routing-policy"
 
 describe("account network routing policy", () => {
-  it("keeps app and personal routing on until NIP-65 absence is confirmed", () => {
+  it("keeps app and personal routing on until scoped NIP-65 absence is complete", () => {
     const policy = createDefaultAccountNetworkRoutingPolicy()
     expect(policy).toEqual({
       policyVersion: ACCOUNT_NETWORK_ROUTING_POLICY_VERSION,
@@ -107,12 +107,12 @@ describe("account network routing policy", () => {
   })
 
   it("enables an untouched personal layer from positive signed evidence", () => {
-    const confirmedAbsent = reconcileAccountNetworkRoutingPolicy(
+    const absentWithinScope = reconcileAccountNetworkRoutingPolicy(
       createDefaultAccountNetworkRoutingPolicy(),
-      { state: "confirmed_absent", observedAt: 10 }
+      { state: "absent_within_scope", observedAt: 10 }
     )
-    expect(confirmedAbsent.personalRelaysEnabled).toBe(false)
-    const reconciled = reconcileAccountNetworkRoutingPolicy(confirmedAbsent, {
+    expect(absentWithinScope.personalRelaysEnabled).toBe(false)
+    const reconciled = reconcileAccountNetworkRoutingPolicy(absentWithinScope, {
       state: "positive",
       source: "published",
       observedAt: 20,
@@ -157,13 +157,13 @@ describe("account network routing policy", () => {
     )
     expect(
       reconcileAccountNetworkRoutingPolicy(explicitlyOn, {
-        state: "confirmed_absent",
+        state: "absent_within_scope",
         observedAt: 40,
       })
     ).toEqual(explicitlyOn)
   })
 
-  it("turns an untouched personal layer off only on confirmed absence", () => {
+  it("turns an untouched personal layer off only on complete scoped absence", () => {
     const legacy = migrateLegacyAccountNetworkRoutingPolicy()
     const unknown = reconcileAccountNetworkRoutingPolicy(legacy, {
       state: "unknown",
@@ -172,21 +172,21 @@ describe("account network routing policy", () => {
     expect(unknown).toEqual(legacy)
     expect(
       reconcileAccountNetworkRoutingPolicy(legacy, {
-        state: "confirmed_absent",
+        state: "absent_within_scope",
         observedAt: 50,
       }).personalRelaysEnabled
     ).toBe(false)
 
-    const confirmedAbsent = reconcileAccountNetworkRoutingPolicy(legacy, {
-      state: "confirmed_absent",
+    const absentWithinScope = reconcileAccountNetworkRoutingPolicy(legacy, {
+      state: "absent_within_scope",
       observedAt: 50,
     })
     expect(
-      reconcileAccountNetworkRoutingPolicy(confirmedAbsent, {
+      reconcileAccountNetworkRoutingPolicy(absentWithinScope, {
         state: "unknown",
         reason: "unavailable",
       })
-    ).toEqual(confirmedAbsent)
+    ).toEqual(absentWithinScope)
   })
 
   it("classifies pending, retained, absent, and incomplete owner evidence", () => {
@@ -253,7 +253,15 @@ describe("account network routing policy", () => {
         stale: false,
         lookup: { coverage: "complete", hadEvent: false, observedAt: 14 },
       })
-    ).toEqual({ state: "confirmed_absent", observedAt: 14 })
+    ).toEqual({ state: "absent_within_scope", observedAt: 14 })
+
+    expect(
+      classifyAccountNetworkPersonalRelayEvidence({
+        state: "not_observed",
+        stale: false,
+        lookup: { coverage: "partial", hadEvent: false, observedAt: 14 },
+      })
+    ).toEqual({ state: "unknown", reason: "partial" })
 
     expect(
       classifyAccountNetworkPersonalRelayEvidence({
