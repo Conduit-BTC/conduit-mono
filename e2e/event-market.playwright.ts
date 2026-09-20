@@ -5356,6 +5356,109 @@ test("pending event pickup retries unresolved terms and reapplies them after qua
   expect(pickupReads()).toBe(readsBeforeQuantityCorrection)
 })
 
+test("pending event pickup reapplies cached terms after an exact sibling frees stock @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic sibling pickup cart",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "sibling-pickup-product",
+    title: "Synthetic sibling pickup product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+    stock: 2,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+  })
+  relay.seed(
+    product,
+    collection,
+    signEvent(MERCHANT_SECRET, {
+      kind: 10002,
+      created_at: product.created_at,
+      content: "",
+      tags: [["r", FIXTURE_RELAY]],
+    })
+  )
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const productCard = page.getByRole("listitem").filter({
+    hasText: "Synthetic sibling pickup product",
+  })
+  const add = productCard.getByRole("button", {
+    name: "Add",
+    exact: true,
+  })
+  await expect(add).toBeEnabled({ timeout: 10_000 })
+  await add.click()
+  await expect
+    .poll(() => readCanonicalCartLines(page))
+    .toEqual([{ productId: eventCoordinate(product), quantity: 1 }])
+
+  const pickupReads = () =>
+    relay.requests.filter((request) =>
+      request.filters.some((filter) =>
+        eventMatchesFilter(market.pickupEvent!, filter)
+      )
+    ).length
+
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  const pendingReadStart = pickupReads()
+  await addPendingEventPickupCartItem(page, {
+    collectionCoordinate: market.collectionCoordinate,
+    productEvent: product,
+    quantity: 2,
+    previewStock: 3,
+  })
+  const pendingCard = page.getByTestId("pending-event-pickup-cart")
+  await expect(pendingCard).toBeVisible()
+  await expect.poll(pickupReads).toBeGreaterThan(pendingReadStart)
+  await expect
+    .poll(async () => {
+      const before = pickupReads()
+      await page.waitForTimeout(500)
+      return pickupReads() === before
+    })
+    .toBe(true)
+
+  // Exact stock is two, so the signed upgrade cannot merge the pending two
+  // with the existing exact one. Removing only that exact purchase must
+  // reapply the already-cached upgrade without another relay read.
+  await expect
+    .poll(async () =>
+      (await readCanonicalCartLines(page))
+        .map((line) => line.quantity)
+        .sort((left, right) => left - right)
+    )
+    .toEqual([1, 2])
+  const readsBeforeSiblingRemoval = pickupReads()
+  await page
+    .getByRole("button", {
+      name: /^Clear Event pickup · .* purchase, reference /,
+    })
+    .click()
+  await page.getByRole("button", { name: "Clear cart", exact: true }).click()
+
+  await expect(pendingCard).toHaveCount(0, { timeout: 10_000 })
+  await expect
+    .poll(() => readCanonicalCartLines(page))
+    .toEqual([{ productId: eventCoordinate(product), quantity: 2 }])
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toBeEnabled({ timeout: 10_000 })
+  expect(pickupReads()).toBe(readsBeforeSiblingRemoval)
+})
+
 test("signed pickup withdrawal leaves pending cart blocked without background retries @market", async ({
   page,
 }) => {

@@ -3,7 +3,11 @@ import { useQuery } from "@tanstack/react-query"
 import { useAuth, useConduitSession } from "@conduit/core"
 import { useCart } from "./useCart"
 import { useShopperPricing } from "./useShopperPricing"
-import { getPendingEventPickupCartItems } from "../lib/cart-model"
+import {
+  getCartItemKey,
+  getCartItemFulfillmentType,
+  getPendingEventPickupCartItems,
+} from "../lib/cart-model"
 import { resolvePendingEventPickupCartUpgrades } from "../lib/pending-event-pickup-cart"
 
 const PENDING_PICKUP_RETRY_INTERVAL_MS = 5_000
@@ -39,13 +43,25 @@ export function usePendingEventPickupCartResolution() {
       ]),
     [pendingItems]
   )
-  const pendingApplicationKey = useMemo(
-    () =>
-      JSON.stringify(
-        pendingItems.map((item) => [item.cartLineId ?? null, item.quantity])
-      ),
-    [pendingItems]
-  )
+  const pendingApplicationKey = useMemo(() => {
+    const pendingProductKeys = new Set(
+      pendingItems.map((item) => getCartItemKey(item))
+    )
+    return JSON.stringify(
+      items
+        .filter((item) => pendingProductKeys.has(getCartItemKey(item)))
+        .map((item) => ({
+          cartLineId: item.cartLineId ?? null,
+          fulfillmentType: getCartItemFulfillmentType(item),
+          merchantPubkey: item.merchantPubkey,
+          productId: item.productId,
+          quantity: item.quantity,
+        }))
+        .sort((left, right) =>
+          JSON.stringify(left).localeCompare(JSON.stringify(right))
+        )
+    )
+  }, [items, pendingItems])
   const readAuthGeneration = authGeneration
   const query = useQuery({
     queryKey: [
