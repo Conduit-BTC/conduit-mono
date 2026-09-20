@@ -22,14 +22,12 @@ import {
   NotFoundPage,
   SignerAuthUrlNotice,
   SignerConnectPanel,
-  ThemeToggleButton,
   isProductLegalPath,
   isMobileSignerEnvironment,
 } from "@conduit/ui"
 import {
-  MerchantAccountMenu,
-  MerchantMobileNav,
   MerchantSidebar,
+  MerchantWorkspaceHeader,
 } from "../components/MerchantHeader"
 import { MerchantPublicAboutShell } from "../components/MerchantPublicAboutShell"
 import { MerchantReadinessProvider } from "../hooks/useMerchantReadinessContext"
@@ -48,35 +46,26 @@ const SHOW_DEVTOOLS =
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-dvh bg-[var(--background)] text-[var(--text-primary)] lg:h-dvh lg:overflow-hidden">
+    <div className="min-h-dvh overflow-x-hidden bg-[var(--background)] text-[var(--text-primary)] lg:h-dvh lg:overflow-hidden">
       <MerchantReadinessProvider>
         <MerchantPaymentAutomationProvider>
-          <div className="lg:grid lg:h-full lg:grid-cols-[260px_minmax(0,1fr)]">
+          <MerchantWorkspaceHeader />
+          <div className="min-w-0 lg:grid lg:h-full lg:grid-cols-[320px_minmax(0,1fr)]">
             <MerchantSidebar />
-            <div className="min-h-dvh lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
-              <div className="fixed left-[max(1rem,env(safe-area-inset-left))] top-[max(1rem,env(safe-area-inset-top))] z-40 lg:hidden">
-                <MerchantMobileNav />
-              </div>
+            <div className="min-h-dvh min-w-0 lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
               <main
                 data-merchant-main-scroll
-                className="px-4 pb-28 pt-20 sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:pb-28 lg:pt-20"
+                className="min-w-0 px-4 pb-28 pt-[calc(4.75rem+env(safe-area-inset-top))] sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:pb-28 lg:pt-20"
               >
-                <div className="mx-auto w-full max-w-[1280px]">{children}</div>
+                <div className="mx-auto w-full min-w-0 max-w-[1280px]">
+                  {children}
+                </div>
               </main>
             </div>
           </div>
         </MerchantPaymentAutomationProvider>
       </MerchantReadinessProvider>
       {SHOW_DEVTOOLS && <TanStackRouterDevtools />}
-    </div>
-  )
-}
-
-function MerchantTopRightControls() {
-  return (
-    <div className="fixed right-[max(1rem,env(safe-area-inset-right))] top-[max(1rem,env(safe-area-inset-top))] z-40 flex items-center gap-2">
-      <ThemeToggleButton />
-      <MerchantAccountMenu />
     </div>
   )
 }
@@ -97,12 +86,7 @@ function RootLayout() {
     )
   }
 
-  return (
-    <>
-      <MerchantTopRightControls />
-      <MerchantProductRoot pathname={pathname} />
-    </>
-  )
+  return <MerchantProductRoot pathname={pathname} />
 }
 
 function MerchantProductRoot({ pathname }: { pathname: string }) {
@@ -349,12 +333,7 @@ function MerchantProductRootError({ error }: { error: Error }) {
 
   if (!signerConnected) return errorPage
 
-  return (
-    <>
-      <MerchantTopRightControls />
-      <RootShell>{errorPage}</RootShell>
-    </>
-  )
+  return <RootShell>{errorPage}</RootShell>
 }
 
 function RootNotFound() {

@@ -48,10 +48,10 @@ import {
   DropdownMenuTrigger,
   Sheet,
   SheetContent,
-  SheetHeader,
   SheetTitle,
   SheetTrigger,
   StatusPill,
+  ThemeToggleButton,
   cn,
 } from "@conduit/ui"
 
@@ -87,7 +87,7 @@ const commerceNavItems: CommerceNavItem[] = [
 ]
 
 const navItemClassName =
-  "group relative flex min-h-10 items-center gap-3 rounded-xl border border-transparent px-3 py-2 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+  "group relative flex min-h-10 w-full min-w-0 items-center gap-3 rounded-xl border border-transparent px-3 py-2 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
 
 function MerchantAvatarFallback() {
   return (
@@ -113,6 +113,7 @@ export function MerchantBrandLockup({ className }: { className?: string }) {
     >
       <span className="inline-flex h-8 shrink-0 items-center">
         <img
+          data-merchant-brand-wordmark=""
           src="/images/logo/logo-full.svg"
           alt="Conduit"
           width={386}
@@ -120,7 +121,10 @@ export function MerchantBrandLockup({ className }: { className?: string }) {
           className="hidden h-8 w-[6.75rem] shrink-0 object-contain min-[400px]:block"
           draggable="false"
         />
-        <span className="h-8 w-6 shrink-0 overflow-hidden min-[400px]:hidden">
+        <span
+          data-merchant-brand-symbol=""
+          className="h-8 w-6 shrink-0 overflow-hidden min-[400px]:hidden"
+        >
           <img
             src="/images/logo/logo-full.svg"
             alt="Conduit"
@@ -138,12 +142,15 @@ export function MerchantBrandLockup({ className }: { className?: string }) {
   )
 }
 
-function MerchantLogoLink() {
+function MerchantLogoLink({ className }: { className?: string }) {
   return (
     <Link
       to="/"
       aria-label="Conduit Merchant home"
-      className="inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      className={cn(
+        "inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
+        className
+      )}
     >
       <MerchantBrandLockup />
     </Link>
@@ -343,7 +350,7 @@ export function MerchantAccountMenu() {
         <button
           type="button"
           aria-label="Open merchant account menu"
-          className="inline-flex h-12 items-center gap-3 rounded-[16px] bg-primary-500 px-3 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:min-w-[12.75rem]"
+          className="inline-flex size-11 shrink-0 items-center justify-center rounded-[16px] bg-primary-500 p-1.5 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:h-12 sm:w-auto sm:min-w-[12.75rem] sm:justify-start sm:gap-3 sm:px-3"
         >
           <Avatar className="size-8 shrink-0 border border-[color-mix(in_srgb,var(--on-primary)_24%,transparent)]">
             <AvatarImage
@@ -365,7 +372,7 @@ export function MerchantAccountMenu() {
           <ChevronDown
             aria-hidden="true"
             className={cn(
-              "size-4 shrink-0 text-white/70 transition-transform duration-150",
+              "hidden size-4 shrink-0 text-white/70 transition-transform duration-150 sm:block",
               open && "rotate-180"
             )}
           />
@@ -429,7 +436,6 @@ function ReportBugLink({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 export function MerchantMobileNav() {
-  const readiness = useMerchantReadinessState()
   const [open, setOpen] = useState(false)
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
@@ -453,49 +459,48 @@ export function MerchantMobileNav() {
       </SheetTrigger>
       <SheetContent
         side="left"
-        className="flex h-dvh w-[min(320px,calc(100vw-1rem))] flex-col border-r border-[var(--border)] bg-[var(--surface-dialog)]"
+        className="h-dvh w-[min(320px,calc(100vw-1rem))] gap-0 overflow-hidden border-y-0 border-l-0 border-r border-[var(--border)] bg-[var(--surface-dialog)] p-0"
       >
-        <SheetHeader className="shrink-0 text-left">
-          <SheetTitle className="text-left">
-            <MerchantLogoLink />
-          </SheetTitle>
-        </SheetHeader>
-
-        <div className="mt-6 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
-          <MerchantNavLinks
-            onInternalNavigate={(to) => {
-              if (to === pathname) setOpen(false)
-            }}
-            onExternalNavigate={() => setOpen(false)}
-            paymentsIncomplete={
-              !readiness.paymentsComplete && !readiness.paymentsCheckPending
-            }
-            shippingIncomplete={
-              !readiness.shippingComplete && !readiness.shippingCheckPending
-            }
-          />
-          <NetworkBadge />
-        </div>
-
-        <div className="mt-4 shrink-0 border-t border-[var(--border)] pb-[max(0px,env(safe-area-inset-bottom))] pt-4">
-          <ReportBugLink onNavigate={() => setOpen(false)} />
-        </div>
+        <SheetTitle className="sr-only">Conduit Merchant navigation</SheetTitle>
+        <MerchantNavigationPanel
+          onInternalNavigate={(to) => {
+            if (to === pathname) setOpen(false)
+          }}
+          onExternalNavigate={() => setOpen(false)}
+          onReportBug={() => setOpen(false)}
+        />
       </SheetContent>
     </Sheet>
   )
 }
 
-export function MerchantSidebar() {
+function MerchantNavigationPanel({
+  onInternalNavigate,
+  onExternalNavigate,
+  onReportBug,
+}: {
+  onInternalNavigate?: (to: MerchantInternalNavRoute) => void
+  onExternalNavigate?: () => void
+  onReportBug?: () => void
+}) {
   const readiness = useMerchantReadinessState()
 
   return (
-    <aside className="hidden h-dvh min-h-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
-      <div className="shrink-0 border-b border-[var(--border)] px-5 py-5">
+    <div
+      data-merchant-navigation-panel=""
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--surface-dialog)] p-6"
+    >
+      <div className="shrink-0 pr-8">
         <MerchantLogoLink />
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5">
+      <div
+        data-merchant-navigation-scroll=""
+        className="mt-6 min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pr-1"
+      >
         <MerchantNavLinks
+          onInternalNavigate={onInternalNavigate}
+          onExternalNavigate={onExternalNavigate}
           paymentsIncomplete={
             !readiness.paymentsComplete && !readiness.paymentsCheckPending
           }
@@ -506,9 +511,38 @@ export function MerchantSidebar() {
         <NetworkBadge />
       </div>
 
-      <div className="shrink-0 border-t border-[var(--border)] px-4 py-4">
-        <ReportBugLink />
+      <div className="mt-4 shrink-0 border-t border-[var(--border)] pb-[max(0px,env(safe-area-inset-bottom))] pt-4">
+        <ReportBugLink onNavigate={onReportBug} />
       </div>
+    </div>
+  )
+}
+
+export function MerchantWorkspaceHeader() {
+  return (
+    <header
+      aria-label="Merchant workspace controls"
+      className="fixed inset-x-0 top-0 z-40 flex min-w-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--background)] pb-2 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] pt-[max(0.5rem,env(safe-area-inset-top))] lg:inset-x-auto lg:right-[max(1rem,env(safe-area-inset-right))] lg:top-[max(1rem,env(safe-area-inset-top))] lg:border-0 lg:bg-transparent lg:p-0"
+    >
+      <div className="flex min-w-0 shrink-0 items-center gap-2 lg:hidden">
+        <MerchantLogoLink />
+        <MerchantMobileNav />
+      </div>
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        <ThemeToggleButton />
+        <MerchantAccountMenu />
+      </div>
+    </header>
+  )
+}
+
+export function MerchantSidebar() {
+  return (
+    <aside
+      aria-label="Merchant navigation"
+      className="hidden h-dvh min-h-0 min-w-0 overflow-hidden border-r border-[var(--border)] bg-[var(--surface-dialog)] lg:block"
+    >
+      <MerchantNavigationPanel />
     </aside>
   )
 }

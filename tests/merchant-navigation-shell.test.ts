@@ -71,34 +71,39 @@ describe("Merchant navigation shell", () => {
     expect(account).not.toContain("Report a Bug")
   })
 
-  it("keeps Report a Bug outside each scrolling navigation region", async () => {
+  it("uses the mobile panel as the shared overflow-free navigation surface", async () => {
     const header = await Bun.file(
       "apps/merchant/src/components/MerchantHeader.tsx"
     ).text()
     const mobile = sliceBetween(
       header,
       "export function MerchantMobileNav",
-      "export function MerchantSidebar"
+      "function MerchantNavigationPanel"
+    )
+    const panel = sliceBetween(
+      header,
+      "function MerchantNavigationPanel",
+      "export function MerchantWorkspaceHeader"
     )
     const sidebar = header.slice(
       header.indexOf("export function MerchantSidebar")
     )
 
-    for (const shell of [mobile, sidebar]) {
-      expect(shell).toContain("min-h-0 flex-1 overflow-y-auto")
-      expect(shell).toContain("<MerchantNavLinks")
-      expect(shell).toContain("<ReportBugLink")
-      expect(shell.indexOf("<ReportBugLink")).toBeGreaterThan(
-        shell.indexOf("<MerchantNavLinks")
-      )
-    }
+    expect(panel).toContain("data-merchant-navigation-panel")
+    expect(panel).toContain("overflow-x-hidden overflow-y-auto")
+    expect(panel).toContain("<MerchantNavLinks")
+    expect(panel).toContain("<ReportBugLink")
+    expect(panel.indexOf("<ReportBugLink")).toBeGreaterThan(
+      panel.indexOf("<MerchantNavLinks")
+    )
+    expect(mobile).toContain("<MerchantNavigationPanel")
+    expect(sidebar).toContain("<MerchantNavigationPanel")
   })
 
   it("preserves the Merchant brand and removes redundant setup and About actions", async () => {
     const header = await Bun.file(
       "apps/merchant/src/components/MerchantHeader.tsx"
     ).text()
-    const root = await Bun.file("apps/merchant/src/routes/__root.tsx").text()
     const dashboard = await Bun.file(
       "apps/merchant/src/routes/index.tsx"
     ).text()
@@ -119,7 +124,7 @@ describe("Merchant navigation shell", () => {
     expect(brand).toContain("min-[400px]:block")
     expect(brand).toContain("min-[400px]:hidden")
     expect(brand).toContain(">\n        merchant\n      </span>")
-    expect(root).toContain("<MerchantAccountMenu />")
+    expect(header).toContain("<MerchantAccountMenu />")
     expect(publicAbout).toContain("<MerchantBrandLockup />")
     expect(publicAbout).not.toContain("Open merchant workspace")
     expectInOrder(readiness, [
@@ -131,17 +136,20 @@ describe("Merchant navigation shell", () => {
     expect(readiness).not.toContain("Private inbox")
   })
 
-  it("keeps account recovery available in authenticated route errors", async () => {
+  it("keeps one aligned responsive header and account recovery in route errors", async () => {
+    const header = await Bun.file(
+      "apps/merchant/src/components/MerchantHeader.tsx"
+    ).text()
     const root = await Bun.file("apps/merchant/src/routes/__root.tsx").text()
-    const accountControls = sliceBetween(
-      root,
-      "function MerchantTopRightControls",
-      "function RootLayout"
+    const workspaceHeader = sliceBetween(
+      header,
+      "export function MerchantWorkspaceHeader",
+      "export function MerchantSidebar"
     )
-    const layout = sliceBetween(
+    const shell = sliceBetween(
       root,
-      "function RootLayout",
-      "function MerchantProductRoot"
+      "function RootShell",
+      "function RootLayout"
     )
     const productError = sliceBetween(
       root,
@@ -149,15 +157,16 @@ describe("Merchant navigation shell", () => {
       "function RootNotFound"
     )
 
-    expect(accountControls).toContain("<ThemeToggleButton />")
-    expect(accountControls).toContain("<MerchantAccountMenu />")
-    expect(layout).toContain("<MerchantTopRightControls />")
+    expectInOrder(workspaceHeader, [
+      "<MerchantLogoLink />",
+      "<MerchantMobileNav />",
+      "<ThemeToggleButton />",
+      "<MerchantAccountMenu />",
+    ])
+    expect(shell).toContain("<MerchantWorkspaceHeader />")
+    expect(shell).toContain("lg:grid-cols-[320px_minmax(0,1fr)]")
+    expect(shell).toContain("overflow-x-hidden")
     expect(productError).toContain("if (!signerConnected) return errorPage")
-    expect(productError).toContain("<MerchantTopRightControls />")
-    expect(
-      productError.indexOf("<MerchantTopRightControls />")
-    ).toBeGreaterThan(
-      productError.indexOf("if (!signerConnected) return errorPage")
-    )
+    expect(productError).toContain("<RootShell>{errorPage}</RootShell>")
   })
 })

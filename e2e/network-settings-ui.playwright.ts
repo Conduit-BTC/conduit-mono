@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test, type Locator, type Page } from "@playwright/test"
+import { THEME_STORAGE_KEY } from "@conduit/ui/theme"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 import {
   TEST_RELAY_URL,
@@ -11,6 +12,8 @@ import {
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 const screenshotDirectory = process.env.PLAYWRIGHT_NETWORK_UI_SCREENSHOT_DIR
+const merchantNavigationScreenshotDirectory =
+  process.env.PLAYWRIGHT_MERCHANT_NAV_SCREENSHOT_DIR
 const accountNetworkLocalStateModuleUrl = `/@fs/${join(
   process.cwd(),
   "packages/core/src/protocol/account-network-local-state.ts"
@@ -62,7 +65,9 @@ test("merchant mobile drawer closes after current and different route selections
   await page.goto(merchantUrl)
 
   const menuTrigger = page.getByRole("button", { name: "Open menu" })
-  const drawer = page.getByRole("dialog", { name: "Conduit" })
+  const drawer = page.getByRole("dialog", {
+    name: "Conduit Merchant navigation",
+  })
   await expect(
     page.getByRole("button", { name: "Open merchant account menu" })
   ).toBeVisible({ timeout: 15_000 })
@@ -75,6 +80,171 @@ test("merchant mobile drawer closes after current and different route selections
   await drawer.getByRole("link", { name: "Products", exact: true }).click()
   await expect(drawer).toBeHidden()
   await expect(page).toHaveURL(`${merchantUrl}/products`)
+})
+
+test("merchant navigation stays aligned and overflow-free across responsive states @merchant", async ({
+  page,
+}) => {
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.addInitScript(
+    ([key, preference]) => localStorage.setItem(key, preference),
+    [THEME_STORAGE_KEY, "night-market"] as const
+  )
+
+  async function expectNoDocumentOverflow(): Promise<void> {
+    const viewport = await page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }))
+    expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth + 1)
+  }
+
+  async function readPanelAlignment(panel: Locator): Promise<{
+    brandInset: number
+    homeInset: number
+    reportInset: number
+    width: number
+  }> {
+    const panelBox = await panel.boundingBox()
+    const brandBox = await panel
+      .getByRole("link", { name: "Conduit Merchant home" })
+      .boundingBox()
+    const homeBox = await panel
+      .getByRole("link", { name: "Home", exact: true })
+      .boundingBox()
+    const reportBox = await panel
+      .getByRole("link", { name: "Report a Bug", exact: true })
+      .boundingBox()
+
+    expect(panelBox).not.toBeNull()
+    expect(brandBox).not.toBeNull()
+    expect(homeBox).not.toBeNull()
+    expect(reportBox).not.toBeNull()
+
+    return {
+      brandInset: brandBox!.x - panelBox!.x,
+      homeInset: homeBox!.x - panelBox!.x,
+      reportInset: reportBox!.x - panelBox!.x,
+      width: panelBox!.width,
+    }
+  }
+
+  async function expectPanelHasNoHorizontalOverflow(
+    panel: Locator
+  ): Promise<void> {
+    const widths = await panel
+      .locator("[data-merchant-navigation-scroll]")
+      .evaluate((element) => ({
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }))
+    expect(widths.scrollWidth).toBeLessThanOrEqual(widths.clientWidth)
+  }
+
+  if (merchantNavigationScreenshotDirectory) {
+    mkdirSync(merchantNavigationScreenshotDirectory, { recursive: true })
+  }
+
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.goto(merchantUrl)
+  await expect(
+    page.getByRole("button", { name: "Open merchant account menu" })
+  ).toBeVisible({ timeout: 15_000 })
+
+  const desktopPanel = page.locator("[data-merchant-navigation-panel]:visible")
+  await expect(desktopPanel).toBeVisible()
+  await expect(page.getByRole("button", { name: "Open menu" })).toBeHidden()
+  await expectPanelHasNoHorizontalOverflow(desktopPanel)
+  await expectNoDocumentOverflow()
+  const desktopAlignment = await readPanelAlignment(desktopPanel)
+  expect(desktopAlignment.width).toBeGreaterThanOrEqual(319)
+  expect(desktopAlignment.width).toBeLessThanOrEqual(320)
+  expect(desktopAlignment.brandInset).toBe(desktopAlignment.homeInset)
+  expect(desktopAlignment.homeInset).toBe(desktopAlignment.reportInset)
+  if (merchantNavigationScreenshotDirectory) {
+    await page.screenshot({
+      path: join(
+        merchantNavigationScreenshotDirectory,
+        "merchant-navigation-desktop.png"
+      ),
+      animations: "disabled",
+    })
+  }
+
+  await page.setViewportSize({ width: 1008, height: 900 })
+  const workspaceHeader = page.getByRole("banner", {
+    name: "Merchant workspace controls",
+  })
+  const headerControls = [
+    workspaceHeader.getByRole("link", { name: "Conduit Merchant home" }),
+    workspaceHeader.getByRole("button", { name: "Open menu" }),
+    workspaceHeader.locator("[data-theme-toggle-preference]"),
+    workspaceHeader.getByRole("button", {
+      name: "Open merchant account menu",
+    }),
+  ]
+  for (const control of headerControls) await expect(control).toBeVisible()
+  const headerBoxes = await Promise.all(
+    headerControls.map((control) => control.boundingBox())
+  )
+  const headerCenters = headerBoxes.map((box) => box!.y + box!.height / 2)
+  expect(Math.max(...headerCenters) - Math.min(...headerCenters)).toBeLessThan(
+    1
+  )
+  await expectNoDocumentOverflow()
+  if (merchantNavigationScreenshotDirectory) {
+    await page.screenshot({
+      path: join(
+        merchantNavigationScreenshotDirectory,
+        "merchant-navigation-collapsed-desktop.png"
+      ),
+      animations: "disabled",
+    })
+  }
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(
+    workspaceHeader.locator("[data-merchant-brand-wordmark]")
+  ).toBeHidden()
+  await expect(
+    workspaceHeader.locator("[data-merchant-brand-symbol]")
+  ).toBeVisible()
+  const compactAccountBox = await workspaceHeader
+    .getByRole("button", { name: "Open merchant account menu" })
+    .boundingBox()
+  expect(compactAccountBox!.width).toBe(44)
+  await expectNoDocumentOverflow()
+  if (merchantNavigationScreenshotDirectory) {
+    await page.screenshot({
+      path: join(
+        merchantNavigationScreenshotDirectory,
+        "merchant-navigation-mobile.png"
+      ),
+      animations: "disabled",
+    })
+  }
+
+  await workspaceHeader.getByRole("button", { name: "Open menu" }).click()
+  const drawer = page.getByRole("dialog", {
+    name: "Conduit Merchant navigation",
+  })
+  const mobilePanel = drawer.locator("[data-merchant-navigation-panel]")
+  await expect(mobilePanel).toBeVisible()
+  await expectPanelHasNoHorizontalOverflow(mobilePanel)
+  const mobileAlignment = await readPanelAlignment(mobilePanel)
+  expect(mobileAlignment).toEqual(desktopAlignment)
+  if (merchantNavigationScreenshotDirectory) {
+    await page.screenshot({
+      path: join(
+        merchantNavigationScreenshotDirectory,
+        "merchant-navigation-mobile-open.png"
+      ),
+      animations: "disabled",
+    })
+  }
 })
 
 test("account-local relay preference reaches another storage-sharing tab without reload @market @merchant", async ({
@@ -351,7 +521,7 @@ for (const app of ["market", "merchant"] as const) {
       await expect(leaveTrigger).toBeFocused()
       if (app === "merchant" && layout.name === "mobile") {
         await page
-          .getByRole("dialog", { name: "Conduit" })
+          .getByRole("dialog", { name: "Conduit Merchant navigation" })
           .getByRole("button", { name: "Close" })
           .click()
       }
