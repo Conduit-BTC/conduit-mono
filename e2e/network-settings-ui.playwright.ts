@@ -51,6 +51,32 @@ async function expectMinimumTouchTarget(locator: Locator): Promise<void> {
   expect(box!.height).toBeGreaterThanOrEqual(44)
 }
 
+test("merchant mobile drawer closes after current and different route selections @merchant", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(merchantUrl)
+
+  const menuTrigger = page.getByRole("button", { name: "Open menu" })
+  const drawer = page.getByRole("dialog", { name: "Conduit" })
+  await expect(
+    page.getByRole("button", { name: "Open merchant account menu" })
+  ).toBeVisible({ timeout: 15_000 })
+  await menuTrigger.click()
+  await drawer.getByRole("link", { name: "Home", exact: true }).click()
+  await expect(drawer).toBeHidden()
+  await expect(page).toHaveURL(`${merchantUrl}/`)
+
+  await menuTrigger.click()
+  await drawer.getByRole("link", { name: "Products", exact: true }).click()
+  await expect(drawer).toBeHidden()
+  await expect(page).toHaveURL(`${merchantUrl}/products`)
+})
+
 test("account-local relay preference reaches another storage-sharing tab without reload @market @merchant", async ({
   page,
   context,

@@ -67,6 +67,8 @@ type CommerceNavRoute =
   | "/shipping"
   | "/messages"
 
+type MerchantInternalNavRoute = CommerceNavRoute | "/about"
+
 type CommerceNavItem = {
   to: CommerceNavRoute
   label: string
@@ -159,15 +161,18 @@ function IncompleteBadge({ className }: { className?: string }) {
 function CommerceNavLink({
   item,
   incomplete,
+  onNavigate,
 }: {
   item: CommerceNavItem
   incomplete: boolean
+  onNavigate?: (to: CommerceNavRoute) => void
 }) {
   const Icon = item.icon
 
   return (
     <Link
       to={item.to}
+      onClick={() => onNavigate?.(item.to)}
       className={navItemClassName}
       activeProps={{
         className:
@@ -182,14 +187,17 @@ function CommerceNavLink({
 }
 
 function InformationNavLinks({
+  onInternalNavigate,
   onExternalNavigate,
 }: {
+  onInternalNavigate?: (to: MerchantInternalNavRoute) => void
   onExternalNavigate?: () => void
 }) {
   return (
     <div className="grid gap-1">
       <Link
         to="/about"
+        onClick={() => onInternalNavigate?.("/about")}
         className={navItemClassName}
         activeProps={{
           className:
@@ -223,10 +231,12 @@ function InformationNavLinks({
 }
 
 function MerchantNavLinks({
+  onInternalNavigate,
   onExternalNavigate,
   paymentsIncomplete,
   shippingIncomplete,
 }: {
+  onInternalNavigate?: (to: MerchantInternalNavRoute) => void
   onExternalNavigate?: () => void
   paymentsIncomplete: boolean
   shippingIncomplete: boolean
@@ -245,11 +255,15 @@ function MerchantNavLinks({
                   ? shippingIncomplete
                   : false
             }
+            onNavigate={onInternalNavigate}
           />
         ))}
       </div>
       <div className="my-1 border-t border-[var(--border)]" />
-      <InformationNavLinks onExternalNavigate={onExternalNavigate} />
+      <InformationNavLinks
+        onInternalNavigate={onInternalNavigate}
+        onExternalNavigate={onExternalNavigate}
+      />
     </nav>
   )
 }
@@ -449,6 +463,9 @@ export function MerchantMobileNav() {
 
         <div className="mt-6 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
           <MerchantNavLinks
+            onInternalNavigate={(to) => {
+              if (to === pathname) setOpen(false)
+            }}
             onExternalNavigate={() => setOpen(false)}
             paymentsIncomplete={
               !readiness.paymentsComplete && !readiness.paymentsCheckPending
