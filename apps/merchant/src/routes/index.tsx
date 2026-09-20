@@ -15,7 +15,6 @@ import {
 } from "@conduit/core"
 import {
   ArrowRight,
-  Inbox,
   Package,
   ShoppingBag,
   Truck,
@@ -55,10 +54,7 @@ import {
   isMerchantGuestOrder,
   type OrderQueueTab,
 } from "../lib/order-phase"
-import {
-  getMerchantPrivateInboxReadinessPresentation,
-  type MerchantSetupReadiness,
-} from "../lib/readiness"
+import { type MerchantSetupReadiness } from "../lib/readiness"
 
 export const Route = createFileRoute("/")({
   validateSearch: parseMerchantAuthHandoffSearch,
@@ -237,8 +233,6 @@ function MerchantReadinessPanel({
 }) {
   const setupPending =
     readiness.setupCheckPending && readiness.missingAreas.length === 0
-  const privateInboxPresentation =
-    getMerchantPrivateInboxReadinessPresentation(readiness)
 
   return (
     <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
@@ -301,20 +295,7 @@ function MerchantReadinessPanel({
           to="/network"
           icon={Wifi}
         />
-        <ReadinessRow
-          label="Private inbox"
-          complete={readiness.privateInboxComplete}
-          pending={readiness.privateInboxCheckPending}
-          statusLabel={privateInboxPresentation.label}
-          statusVariant={privateInboxPresentation.variant}
-          to="/network"
-          icon={Inbox}
-        />
       </div>
-      <p className="mt-4 max-w-3xl text-pretty text-xs leading-5 text-[var(--text-muted)]">
-        A private inbox improves encrypted order and message delivery. It is
-        recommended, but it does not block listing publication.
-      </p>
     </section>
   )
 }

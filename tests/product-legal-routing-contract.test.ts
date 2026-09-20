@@ -166,14 +166,13 @@ describe("Product legal routing contract", () => {
 
     expect(footer).toContain('termsHref = "/terms-of-service"')
     expect(footer).toContain('privacyHref = "/privacy-policy"')
-    expect(merchantHeader).toContain('href: "/terms-of-service"')
-    expect(merchantHeader).toContain('href: "/privacy-policy"')
+    expect(merchantHeader).toContain('href="/terms-of-service"')
+    expect(merchantHeader).toContain('href="/privacy-policy"')
     expect(merchantRoot).toContain('href="/terms-of-service"')
     expect(merchantRoot).toContain('href="/privacy-policy"')
     expect(footer).toContain('referrerPolicy="no-referrer"')
-    expect(merchantHeader).toContain(
-      'referrerPolicy={link.external ? "no-referrer" : undefined}'
-    )
-    expect(merchantHeader).toContain("external: false")
+    expect(merchantHeader).toContain('href="https://conduit.market/"')
+    expect(merchantHeader).toContain('target="_blank"')
+    expect(merchantHeader).toContain('referrerPolicy="no-referrer"')
   })
 })
