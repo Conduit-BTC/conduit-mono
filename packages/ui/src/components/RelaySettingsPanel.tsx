@@ -13,6 +13,7 @@ import {
   ArrowUp,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Info,
   Plus,
   RefreshCw,
@@ -40,6 +41,11 @@ import {
 import { getResultPresentation } from "../result-presentation"
 import { cn } from "../utils"
 import { Button } from "./Button"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "./Collapsible"
 import {
   AlertDialog,
   AlertDialogContent,
@@ -322,7 +328,13 @@ function RelayIndicator({ row }: { row: AccountNetworkRelayRowView }) {
   )
 }
 
-function RelayIdentity({ row }: { row: AccountNetworkRelayRowView }) {
+function RelayIdentity({
+  row,
+  urlAnnotation,
+}: {
+  row: AccountNetworkRelayRowView
+  urlAnnotation?: string
+}) {
   const relayName = row.capability.relayName
   return (
     <div className="min-w-0 pt-1">
@@ -337,10 +349,15 @@ function RelayIdentity({ row }: { row: AccountNetworkRelayRowView }) {
       </span>
       {relayName ? (
         <span
-          className="mt-0.5 block min-w-0 truncate font-mono text-xs text-[var(--text-secondary)]"
+          className="mt-0.5 flex min-w-0 items-baseline gap-2 text-xs text-[var(--text-secondary)]"
           title={row.url}
         >
-          {row.url}
+          <span className="min-w-0 truncate font-mono">{row.url}</span>
+          {urlAnnotation ? (
+            <span className="shrink-0 text-[var(--text-muted)]">
+              ({urlAnnotation})
+            </span>
+          ) : null}
         </span>
       ) : null}
     </div>
@@ -2139,6 +2156,8 @@ function NetworkReviewSection({
   )
 }
 
+const DREAMITH_RELAY_URL = "wss://relay.dreamith.to"
+
 function AppRelayRow({ row }: { row: AccountNetworkRelayRowView }) {
   const uses = [
     row.readEnabled ? "Read" : null,
@@ -2151,14 +2170,19 @@ function AppRelayRow({ row }: { row: AccountNetworkRelayRowView }) {
   ].filter((label): label is string => Boolean(label))
 
   return (
-    <li className="flex items-start justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+    <li className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
       <div className="flex min-w-0 items-start gap-2">
         <RelayIndicator row={row} />
-        <RelayIdentity row={row} />
+        <RelayIdentity
+          row={row}
+          urlAnnotation={
+            row.url === DREAMITH_RELAY_URL ? "Ditto backup" : undefined
+          }
+        />
       </div>
       {uses.length > 0 ? (
         <div
-          className="flex shrink-0 flex-wrap justify-end gap-1.5"
+          className="flex flex-wrap gap-1.5 pl-10 sm:shrink-0 sm:justify-end sm:pl-0"
           aria-label={`Configured use for ${row.url}`}
         >
           {uses.map((label) => (
@@ -2215,87 +2239,108 @@ function AppRelaysSection({
   }
 
   return (
-    <section aria-labelledby="app-relays-heading">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h3
-            id="app-relays-heading"
-            className="text-balance text-base font-semibold text-[var(--text-primary)]"
+    <Collapsible defaultOpen={false}>
+      <section aria-labelledby="app-relays-heading">
+        <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2">
+          <CollapsibleTrigger
+            aria-labelledby="app-relays-heading app-relays-summary"
+            className="group flex size-11 items-center justify-center rounded-md text-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
           >
-            App Relays
-          </h3>
-          <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Conduit defaults for reliable commerce, discovery, and messaging.
-            They are used alongside your enabled personal relays.
-          </p>
+            <ChevronRight
+              className="size-5 group-data-[state=open]:rotate-90"
+              aria-hidden="true"
+            />
+          </CollapsibleTrigger>
+          <div className="min-w-0 pt-1">
+            <h3
+              id="app-relays-heading"
+              className="text-balance text-base font-semibold text-[var(--text-primary)]"
+            >
+              App Relays
+            </h3>
+            <p
+              id="app-relays-summary"
+              className="mt-0.5 text-pretty text-sm leading-5 text-[var(--text-secondary)]"
+            >
+              {appRelays.rows.length} managed{" "}
+              {appRelays.rows.length === 1 ? "route" : "routes"} for reliable
+              commerce, discovery, and messaging.
+            </p>
+          </div>
+          <div className="flex min-h-11 shrink-0 items-center gap-3">
+            <span className="text-sm font-medium text-[var(--text-secondary)]">
+              {appRelays.enabled ? "Enabled" : "Disabled"}
+            </span>
+            <Switch
+              checked={appRelays.enabled}
+              disabled={busy || policyBusy}
+              onCheckedChange={requestEnabledChange}
+              aria-label={`${appRelays.enabled ? "Disable" : "Enable"} App Relays`}
+            />
+          </div>
         </div>
-        <div className="flex min-h-11 shrink-0 items-center gap-3">
-          <span className="text-sm font-medium text-[var(--text-secondary)]">
-            {appRelays.enabled ? "Enabled" : "Disabled"}
-          </span>
-          <Switch
-            checked={appRelays.enabled}
-            disabled={busy || policyBusy}
-            onCheckedChange={requestEnabledChange}
-            aria-label={`${appRelays.enabled ? "Disable" : "Enable"} App Relays`}
-          />
-        </div>
-      </div>
-      {appRelays.rows.length > 0 ? (
-        <ul className="mt-4 space-y-2" aria-label="App Relays">
-          {appRelays.rows.map((row) => (
-            <AppRelayRow key={row.url} row={row} />
-          ))}
-        </ul>
-      ) : (
-        <p className="mt-4 text-pretty text-sm text-[var(--text-secondary)]">
-          No app relays are configured in this build.
-        </p>
-      )}
-      {policyError ? (
-        <p className="mt-3 text-pretty text-sm text-error" role="alert">
-          {policyError}
-        </p>
-      ) : null}
 
-      <AlertDialog
-        open={disableReviewOpen}
-        onOpenChange={(open) => {
-          if (!policyBusy) setDisableReviewOpen(open)
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle className="text-balance">
-              Turn off App Relays?
-            </AlertDialogTitle>
-            <AlertDialogDescription className="text-pretty leading-6">
-              {disableWarning}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={policyBusy}
-              onClick={() => setDisableReviewOpen(false)}
-              className="min-h-11"
+        <CollapsibleContent>
+          {appRelays.rows.length > 0 ? (
+            <ul
+              className="mt-3 divide-y divide-[var(--border)] border-t border-[var(--border)]"
+              aria-label="App Relays"
             >
-              Keep enabled
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={policyBusy}
-              onClick={() => void updateEnabled(false)}
-              className="min-h-11"
-            >
-              {policyBusy ? "Saving" : "Turn off App Relays"}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </section>
+              {appRelays.rows.map((row) => (
+                <AppRelayRow key={row.url} row={row} />
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-3 text-pretty text-sm text-[var(--text-secondary)]">
+              No app relays are configured in this build.
+            </p>
+          )}
+        </CollapsibleContent>
+        {policyError ? (
+          <p className="mt-3 text-pretty text-sm text-error" role="alert">
+            {policyError}
+          </p>
+        ) : null}
+
+        <AlertDialog
+          open={disableReviewOpen}
+          onOpenChange={(open) => {
+            if (!policyBusy) setDisableReviewOpen(open)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-balance">
+                Turn off App Relays?
+              </AlertDialogTitle>
+              <AlertDialogDescription className="text-pretty leading-6">
+                {disableWarning}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={policyBusy}
+                onClick={() => setDisableReviewOpen(false)}
+                className="min-h-11"
+              >
+                Keep enabled
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={policyBusy}
+                onClick={() => void updateEnabled(false)}
+                className="min-h-11"
+              >
+                {policyBusy ? "Saving" : "Turn off App Relays"}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </section>
+    </Collapsible>
   )
 }
 

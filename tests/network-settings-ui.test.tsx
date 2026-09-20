@@ -4,7 +4,12 @@ import type {
   AccountNetworkRelayRowView,
   AccountNetworkSettingsController,
 } from "@conduit/core"
-import { RelaySettingsPanel } from "@conduit/ui"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  RelaySettingsPanel,
+} from "@conduit/ui"
 import {
   getRelayRemovalReviewCopy,
   persistRelayOrderPreference,
@@ -110,6 +115,28 @@ function controller(
 }
 
 describe("RelaySettingsPanel account Network review", () => {
+  it("uses a shared accessible collapsible primitive", () => {
+    const closedMarkup = renderToStaticMarkup(
+      <Collapsible>
+        <CollapsibleTrigger>App Relays</CollapsibleTrigger>
+        <CollapsibleContent>Managed relays</CollapsibleContent>
+      </Collapsible>
+    )
+    const openMarkup = renderToStaticMarkup(
+      <Collapsible defaultOpen>
+        <CollapsibleTrigger>App Relays</CollapsibleTrigger>
+        <CollapsibleContent>Managed relays</CollapsibleContent>
+      </Collapsible>
+    )
+
+    expect(closedMarkup).toContain('type="button"')
+    expect(closedMarkup).toContain('aria-expanded="false"')
+    expect(closedMarkup).toContain("aria-controls=")
+    expect(closedMarkup).toContain('hidden=""')
+    expect(openMarkup).toContain('aria-expanded="true"')
+    expect(openMarkup).not.toContain('hidden=""')
+  })
+
   it("keeps initial empty reconciliation pending before offering settled recovery", () => {
     const notCheckedFrontier = {
       ...EMPTY_FRONTIER,
@@ -477,13 +504,34 @@ describe("RelaySettingsPanel account Network review", () => {
         relayIconFallbackUrl: "/images/logo/logo-icon.svg",
       },
     })
+    const appRows = [
+      app,
+      ...[
+        ["wss://relay.ditto.pub", "Ditto Relay"],
+        ["wss://relay.dreamith.to", "Dreamith Relay"],
+        ["wss://relay.primal.net", "Primal Public Relay"],
+        ["wss://nos.lol", "nos.lol"],
+        ["wss://relay.plebeian.market", "Plebeian Market Relay"],
+      ].map(([url, relayName]) =>
+        relayRow(url, {
+          capability: {
+            configuredUses: [],
+            observedCommerce: false,
+            nip11: "not_checked",
+            searchAdvertised: false,
+            authEvidence: "untested",
+            relayName,
+          },
+        })
+      ),
+    ]
     const markup = renderToStaticMarkup(
       <RelaySettingsPanel
         controller={controller({
           rows: [personal],
           appRelays: {
             enabled: true,
-            rows: [app],
+            rows: appRows,
             warning: "Your personal setup is missing important routes.",
           },
           personalRelaysEnabled: false,
@@ -498,7 +546,17 @@ describe("RelaySettingsPanel account Network review", () => {
 
     expect(markup).toContain("App Relays")
     expect(markup).toContain("Your Relays")
+    expect(markup).toContain(
+      "6 managed routes for reliable commerce, discovery, and messaging."
+    )
+    expect(markup).toContain('aria-expanded="false"')
+    expect(markup).toContain('hidden=""')
     expect(markup).toContain("Match Conduit defaults")
+    expect(markup.match(/\(Ditto backup\)/g)).toHaveLength(1)
+    expect(markup).not.toContain("relay.damus.io")
+    expect(markup).toContain(
+      'class="mt-3 divide-y divide-[var(--border)] border-t border-[var(--border)]"'
+    )
     expect(markup).toContain('src="/images/logo/logo-icon.svg"')
     expect(markup).toContain('src="https://nostr.build/personal-relay.png"')
     expect(markup).toContain('loading="lazy"')
@@ -524,6 +582,12 @@ describe("RelaySettingsPanel account Network review", () => {
       "review.applySetupRecommendation(recommendation.rows)"
     )
     expect(panelSource).toContain("controller.dismissSetupRecommendation()")
+    expect(panelSource).toContain("<Collapsible defaultOpen={false}>")
+    expect(panelSource).toContain("appRelays.rows.length")
+    expect(panelSource).toContain("group-data-[state=open]:rotate-90")
+    expect(panelSource).not.toContain(
+      "gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3"
+    )
     expect(panelSource).toContain(
       'controller.prepareChange({ type: "set_roles", rows: desiredRoles })'
     )

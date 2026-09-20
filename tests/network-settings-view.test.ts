@@ -353,6 +353,16 @@ describe("network settings view", () => {
     expect(view.appRelays?.warning).toContain(
       "Your personal relays are currently disabled"
     )
+    expect(
+      view.appRelays?.rows.map((row) => [row.capability.relayName, row.url])
+    ).toEqual([
+      ["Conduit Relay", "wss://relay.conduit.market"],
+      ["Ditto Relay", "wss://relay.ditto.pub"],
+      ["Dreamith Relay", "wss://relay.dreamith.to"],
+      ["Primal Public Relay", "wss://relay.primal.net"],
+      ["nos.lol", "wss://nos.lol"],
+      ["Plebeian Market Relay", "wss://relay.plebeian.market"],
+    ])
     expect(view.appRelays?.rows[0]).toMatchObject({
       url: "wss://relay.conduit.market",
       readEnabled: true,

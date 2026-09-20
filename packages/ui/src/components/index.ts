@@ -18,6 +18,12 @@ export {
 } from "./ThemeToggleButton"
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
+export {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  type CollapsibleProps,
+} from "./Collapsible"
 export { ShareLinkButton, type ShareLinkButtonProps } from "./ShareLinkButton"
 export {
   HoldToReleaseButton,
