@@ -43,7 +43,7 @@ function SocialChips({ trust }: { trust: MerchantTrustContext }) {
   }
 
   if (trust.socialState === "own_store") {
-    return <TrustChip tone="positive">Your store</TrustChip>
+    return <TrustChip tone="positive">Your merchant profile</TrustChip>
   }
 
   if (trust.socialState === "unavailable") {

@@ -45,7 +45,7 @@ function renderAbout(
   return renderToStaticMarkup(
     <AboutPagePanel
       appName="Conduit Market"
-      appDescription="Browse independent storefronts and send encrypted orders directly to merchants."
+      appDescription="Browse independent merchants and send encrypted orders directly to them."
       buildInfo={{ ...buildInfo, releaseChannel }}
       commitUrl="https://github.com/Conduit-BTC/conduit-mono/commit/0123456789abcdef0123456789abcdef01234567"
       identity={identity}

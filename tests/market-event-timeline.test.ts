@@ -246,11 +246,11 @@ describe("Market event timeline", () => {
     )
   })
 
-  it("filters locally by date, organizer, location, and signed topic", () => {
+  it("filters locally by date, organizer, and location", () => {
     expect(
       filterAndSortEventMarkets(
         [later, past, soon],
-        { window: "7d", location: "chicago", topic: "bitcoin" },
+        { window: "7d", location: "chicago" },
         NOW
       ).map((item) => item.reference)
     ).toEqual([soon.reference])
@@ -267,7 +267,6 @@ describe("Market event timeline", () => {
     expect(getEventTimelineFacets([later, past, soon])).toEqual({
       organizers: ["a".repeat(64), "b".repeat(64)],
       locations: ["Chicago", "Detroit"],
-      topics: ["Bitcoin", "V4V"],
     })
     const [typedSoon] = filterAndSortEventMarkets([soon], {}, NOW)
     const [typedPast] = filterAndSortEventMarkets(

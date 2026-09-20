@@ -1,6 +1,9 @@
 import { expect, test, type Page } from "@playwright/test"
 import { installTestSigner } from "./helpers/auth"
 
+const marketUrl = `http://127.0.0.1:${
+  process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
+}`
 const SELLER_PUBKEY = "b".repeat(64)
 const BUYER_PUBKEY = "c".repeat(64)
 
@@ -66,7 +69,7 @@ async function seedAccounts(page: Page): Promise<void> {
 test("market header suggests locally known accounts and opens the storefront from the keyboard @market", async ({
   page,
 }) => {
-  await page.goto("http://127.0.0.1:7000/products")
+  await page.goto(`${marketUrl}/products`)
   await seedAccounts(page)
   await page.reload()
 
@@ -77,13 +80,13 @@ test("market header suggests locally known accounts and opens the storefront fro
   await input.pressSequentially("ali", { delay: 40 })
 
   const listbox = page.getByRole("listbox", {
-    name: "Matching stores and accounts",
+    name: "Matching merchants and accounts",
   })
   await expect(listbox).toBeVisible()
   await expect(input).toHaveAttribute("aria-expanded", "true")
-  const stores = listbox.getByRole("group", { name: "Stores" })
-  const seller = stores.getByRole("option", { name: /Alice Storefront/ })
-  await expect(seller).toBeVisible()
+  const merchants = listbox.getByRole("group", { name: "Merchants" })
+  const merchant = merchants.getByRole("option", { name: /Alice Storefront/ })
+  await expect(merchant).toBeVisible()
   await expect(
     listbox
       .getByRole("group", { name: "Accounts" })
@@ -107,7 +110,7 @@ test("market header suggests locally known accounts and opens the storefront fro
 test("market header keeps Enter as a product search when no suggestion is active @market", async ({
   page,
 }) => {
-  await page.goto("http://127.0.0.1:7000/about")
+  await page.goto(`${marketUrl}/about`)
   await seedAccounts(page)
   await page.reload()
 
@@ -117,32 +120,32 @@ test("market header keeps Enter as a product search when no suggestion is active
   await input.click()
   await input.pressSequentially("alice", { delay: 40 })
   await expect(
-    page.getByRole("listbox", { name: "Matching stores and accounts" })
+    page.getByRole("listbox", { name: "Matching merchants and accounts" })
   ).toBeVisible()
   await page.keyboard.press("Escape")
   await expect(
-    page.getByRole("listbox", { name: "Matching stores and accounts" })
+    page.getByRole("listbox", { name: "Matching merchants and accounts" })
   ).toBeHidden()
   await page.keyboard.press("Enter")
   await expect(page).toHaveURL(/\/products\?q=alice$/)
 })
 
-test("sellers tab lists discovered storefronts and filters by name @market", async ({
+test("merchants tab lists discovered merchants and filters by name @market", async ({
   page,
 }) => {
   await installTestSigner(page, SELLER_PUBKEY)
-  await page.goto("http://127.0.0.1:7000/products")
+  await page.goto(`${marketUrl}/products`)
   await seedAccounts(page)
-  await page.goto("http://127.0.0.1:7000/sellers?source=combined")
+  await page.goto(`${marketUrl}/merchants?source=combined`)
 
   await expect(
     page.getByRole("navigation", { name: "Market browse" }).getByRole("link", {
-      name: "Sellers",
+      name: "Merchants",
     })
   ).toHaveAttribute("aria-current", "page")
-  await expect(page).toHaveTitle("Sellers | Conduit Market")
+  await expect(page).toHaveTitle("Merchants | Conduit Market")
   const directory = page.locator(
-    'section[aria-labelledby="discovered-sellers-heading"]'
+    'section[aria-labelledby="discovered-merchants-heading"]'
   )
   await expect(
     directory.getByRole("link", { name: /Alice Storefront/ })
@@ -151,23 +154,23 @@ test("sellers tab lists discovered storefronts and filters by name @market", asy
   const networkAccounts = page.locator(
     'section[aria-labelledby="network-accounts-heading"]'
   )
-  await page.getByRole("textbox", { name: "Filter sellers" }).fill("a")
-  await expect(page).toHaveURL(/\/sellers\?.*q=a(?:&|$)/)
+  await page.getByRole("textbox", { name: "Filter merchants" }).fill("a")
+  await expect(page).toHaveURL(/\/merchants\?.*q=a(?:&|$)/)
   await expect(networkAccounts).toContainText("From this device")
   await expect(networkAccounts).not.toContainText("From search relays")
 
   await page
-    .getByRole("textbox", { name: "Filter sellers" })
+    .getByRole("textbox", { name: "Filter merchants" })
     .fill("zzzz-no-match")
-  await expect(page).toHaveURL(/\/sellers\?.*q=zzzz-no-match/)
-  await expect(directory).toContainText("No discovered seller name matches")
+  await expect(page).toHaveURL(/\/merchants\?.*q=zzzz-no-match/)
+  await expect(directory).toContainText("No discovered merchant name matches")
   await expect(networkAccounts).toBeVisible()
 })
 
 test("cache-only product search does not open an empty suggestions panel @market", async ({
   page,
 }) => {
-  await page.goto("http://127.0.0.1:7000/products")
+  await page.goto(`${marketUrl}/products`)
   await seedAccounts(page)
   await page.reload()
 
@@ -176,25 +179,25 @@ test("cache-only product search does not open an empty suggestions panel @market
   })
   await input.fill("~")
   await expect(
-    page.getByRole("listbox", { name: "Matching stores and accounts" })
+    page.getByRole("listbox", { name: "Matching merchants and accounts" })
   ).toBeHidden()
   await expect(input).toHaveAttribute("aria-expanded", "false")
 })
 
-test("sellers page filters with its own field while Enter still searches products @market", async ({
+test("merchants page filters with its own field while Enter still searches products @market", async ({
   page,
 }) => {
   await installTestSigner(page, SELLER_PUBKEY)
-  await page.goto("http://127.0.0.1:7000/products")
+  await page.goto(`${marketUrl}/products`)
   await seedAccounts(page)
-  await page.goto("http://127.0.0.1:7000/sellers?source=combined")
+  await page.goto(`${marketUrl}/merchants?source=combined`)
 
-  await page.getByRole("textbox", { name: "Filter sellers" }).fill("alice")
-  await expect(page).toHaveURL(/\/sellers\?.*q=alice/)
+  await page.getByRole("textbox", { name: "Filter merchants" }).fill("alice")
+  await expect(page).toHaveURL(/\/merchants\?.*q=alice/)
   await expect(page).toHaveURL(/source=combined/)
   await expect(
     page
-      .locator('section[aria-labelledby="discovered-sellers-heading"]')
+      .locator('section[aria-labelledby="discovered-merchants-heading"]')
       .getByRole("link", { name: /Alice Storefront/ })
   ).toBeVisible()
 
@@ -208,28 +211,30 @@ test("sellers page filters with its own field while Enter still searches product
   await expect(page).toHaveURL(/\/products\?q=alice$/)
 })
 
-test("product search lists matching storefronts above the product results @market", async ({
+test("product search lists matching merchants above the product results @market", async ({
   page,
 }) => {
   await installTestSigner(page, SELLER_PUBKEY)
-  await page.goto("http://127.0.0.1:7000/products")
+  await page.goto(`${marketUrl}/products`)
   await seedAccounts(page)
-  await page.goto("http://127.0.0.1:7000/products?source=combined&q=alice")
+  await page.goto(`${marketUrl}/products?source=combined&q=alice`)
 
-  const stores = page.locator(
-    'section[aria-labelledby="matching-stores-heading"]'
+  const merchants = page.locator(
+    'section[aria-labelledby="matching-merchants-heading"]'
   )
-  await expect(stores).toBeVisible()
+  await expect(merchants).toBeVisible()
   await expect(
-    stores.getByRole("link", { name: /Alice Storefront/ })
+    merchants.getByRole("link", { name: /Alice Storefront/ })
   ).toHaveAttribute("href", /\/store\/npub1/)
   // The perspective travels with the link; the directory reads the same
-  // source and would otherwise show a different seller set.
-  await expect(stores.getByRole("link", { name: /See all/ })).toHaveAttribute(
+  // source and would otherwise show a different merchant set.
+  await expect(
+    merchants.getByRole("link", { name: /See all/ })
+  ).toHaveAttribute(
     "href",
-    /\/sellers\?(?=[^"]*q=alice)(?=[^"]*source=combined)/
+    /\/merchants\?(?=[^"]*q=alice)(?=[^"]*source=combined)/
   )
-  // The store row answers the name query; product filtering stays product-only.
+  // The merchant row answers the name query; product filtering stays product-only.
   await expect(
     page.getByRole("link", { name: /Account search fixture/ })
   ).toHaveCount(0)

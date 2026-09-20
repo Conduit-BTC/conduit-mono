@@ -70,9 +70,11 @@ describe("SearchSuggestions", () => {
   it("labels each group and keeps one flat option index across them", () => {
     const groups = [
       {
-        id: "stores",
-        heading: "Stores",
-        items: [{ id: "store-1", label: "Alice Storefront", badge: "Seller" }],
+        id: "merchants",
+        heading: "Merchants",
+        items: [
+          { id: "merchant-1", label: "Alice Storefront", badge: "Merchant" },
+        ],
       },
       {
         id: "accounts",
@@ -83,21 +85,21 @@ describe("SearchSuggestions", () => {
     ]
     expect(
       flattenSearchSuggestionGroups(groups).map((item) => item.id)
-    ).toEqual(["store-1", "account-1"])
+    ).toEqual(["merchant-1", "account-1"])
 
     const html = renderToStaticMarkup(
       <SearchSuggestions
         id="lb"
-        ariaLabel="Matching stores and accounts"
+        ariaLabel="Matching merchants and accounts"
         groups={groups}
         activeIndex={1}
         onActiveIndexChange={() => {}}
         onSelect={() => {}}
       />
     )
-    expect(html).toContain('role="group" aria-labelledby="stores-heading"')
-    expect(html).toContain('id="stores-heading"')
-    expect(html).toContain(">Stores<")
+    expect(html).toContain('role="group" aria-labelledby="merchants-heading"')
+    expect(html).toContain('id="merchants-heading"')
+    expect(html).toContain(">Merchants<")
     expect(html).toContain(">Accounts<")
     expect(html).not.toContain(">Empty<")
     expect(html).toContain('id="lb-option-0"')

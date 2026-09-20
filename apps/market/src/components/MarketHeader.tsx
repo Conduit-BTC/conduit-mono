@@ -365,7 +365,7 @@ export function MarketHeader() {
   )
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const currentQuery = typeof search.q === "string" ? search.q : ""
-  /** The header box is the product search; the Sellers page filters itself. */
+  /** The header box is the product search; the Merchants page filters itself. */
   const isBrowseRoute = pathname === "/products"
   const connected = status === "connected" && !!pubkey
   const unreadMessages = useUnreadDirectMessageCount(
@@ -397,9 +397,9 @@ export function MarketHeader() {
     () =>
       [
         {
-          id: `${ACCOUNT_SUGGESTIONS_LISTBOX_ID}-stores`,
-          heading: "Stores",
-          // The group heading already says these are storefronts.
+          id: `${ACCOUNT_SUGGESTIONS_LISTBOX_ID}-merchants`,
+          heading: "Merchants",
+          // The group heading already says these are merchants.
           items: toAccountSuggestionItems(
             (accountMatches ?? []).filter((match) => match.isSeller)
           ).map((item) => ({ ...item, badge: undefined })),
@@ -468,7 +468,7 @@ export function MarketHeader() {
     // shows up as dropped/reordered characters.
     if (searchInputRef.current === document.activeElement) return
     // Only the catalog query belongs in this box. Another page's `q`, such as
-    // the Sellers filter, must not look like a pending product search.
+    // the Merchants filter, must not look like a pending product search.
     setSearchValue(isBrowseRoute ? currentQuery : "")
     setSearchDirty(false)
   }, [currentQuery, isBrowseRoute, pathname])
@@ -660,7 +660,7 @@ export function MarketHeader() {
               <div className="absolute inset-x-0 top-full z-50 mt-2">
                 <SearchSuggestions
                   id={ACCOUNT_SUGGESTIONS_LISTBOX_ID}
-                  ariaLabel="Matching stores and accounts"
+                  ariaLabel="Matching merchants and accounts"
                   groups={suggestionGroups}
                   activeIndex={activeSuggestion}
                   onActiveIndexChange={setActiveSuggestion}
@@ -668,7 +668,7 @@ export function MarketHeader() {
                   loading={accountSearch.isFetching}
                   emptyMessage={
                     accountSearch.isFetching
-                      ? "Searching stores and accounts..."
+                      ? "Searching merchants and accounts..."
                       : null
                   }
                   footer={

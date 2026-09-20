@@ -42,7 +42,7 @@ describe("account suggestion items", () => {
     expect(items[0]).toMatchObject({
       id: SELLER,
       label: "Alice Store",
-      badge: "Seller",
+      badge: "Merchant",
       imageUrl: "https://cdn.conduit.market/alice.png",
     })
     expect(items[0]?.description).toMatch(/^npub1/)
@@ -66,7 +66,7 @@ describe("account suggestion items", () => {
     )
     expect(JSON.stringify(impostor)).not.toContain("alice.example")
 
-    const route = await readFile("apps/market/src/routes/sellers.tsx", "utf8")
+    const route = await readFile("apps/market/src/routes/merchants.tsx", "utf8")
     expect(route).toContain("getAccountSuggestionDescription(match)")
     expect(route).not.toContain("nip05")
   })
@@ -177,7 +177,7 @@ describe("account suggestion items", () => {
           cachedFrontiers: "read",
         },
       })
-    ).toBe("Seller badges could not be checked on this device.")
+    ).toBe("Merchant badges could not be checked on this device.")
     expect(
       describeAccountSearchDeviceEvidence({
         ...base,
