@@ -5247,7 +5247,7 @@ test("cold merchant QR keeps selected cart intent reversible while another merch
   }
 })
 
-test("pending event pickup retries unresolved terms and reapplies them after quantity correction @market", async ({
+test("pending merchant booth pickup retries unresolved terms and reapplies them after quantity correction @market", async ({
   page,
 }) => {
   test.setTimeout(120_000)
@@ -5257,11 +5257,24 @@ test("pending event pickup retries unresolved terms and reapplies them after qua
     title: "Synthetic pending pickup cart",
     organizerHandoffEnabled: true,
   })
+  const merchantPickup = signEvent(MERCHANT_SECRET, {
+    kind: 30406,
+    created_at: market.initialCollection.created_at + 1,
+    content: "",
+    tags: [
+      ["d", "pending-booth"],
+      ["title", "Synthetic pending booth"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Synthetic pending booth"],
+    ],
+  })
   const product = createMerchantProductEvent({
     dTag: "pending-pickup-product",
     title: "Synthetic pending pickup product",
     collectionCoordinate: market.collectionCoordinate,
-    pickupCoordinate: market.pickupCoordinate!,
+    pickupCoordinate: eventCoordinate(merchantPickup),
     createdAt: market.initialCollection.created_at + 1,
     stock: 1,
   })
@@ -5281,12 +5294,10 @@ test("pending event pickup retries unresolved terms and reapplies them after qua
       tags: [["r", FIXTURE_RELAY]],
     })
   )
-  relay.remove(market.pickupEvent!)
-
   const pickupReads = () =>
     relay.requests.filter((request) =>
       request.filters.some((filter) =>
-        eventMatchesFilter(market.pickupEvent!, filter)
+        eventMatchesFilter(merchantPickup, filter)
       )
     ).length
 
@@ -5330,7 +5341,7 @@ test("pending event pickup retries unresolved terms and reapplies them after qua
     })
     .toBe(true)
   const unresolvedReadCount = pickupReads()
-  relay.seed(market.pickupEvent!)
+  relay.seed(merchantPickup)
   await expect
     .poll(pickupReads, { timeout: 20_000 })
     .toBeGreaterThan(unresolvedReadCount)
@@ -5594,6 +5605,85 @@ test("signed pickup withdrawal leaves pending cart blocked without background re
   await gotoAs(page, marketUrl, "/cart", "buyer")
   const pendingCard = page.getByTestId("pending-event-pickup-cart")
   await expect(pendingCard).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toHaveCount(0)
+})
+
+test("signed merchant booth deletion leaves pending cart blocked without background retries @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic deleted booth pending pickup",
+    organizerHandoffEnabled: true,
+  })
+  const merchantPickup = signEvent(MERCHANT_SECRET, {
+    kind: 30406,
+    created_at: market.initialCollection.created_at + 1,
+    content: "",
+    tags: [
+      ["d", "deleted-pending-booth"],
+      ["title", "Synthetic deleted pending booth"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Synthetic deleted pending booth"],
+    ],
+  })
+  const product = createMerchantProductEvent({
+    dTag: "deleted-booth-pending-product",
+    title: "Synthetic deleted booth pending product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: eventCoordinate(merchantPickup),
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+  })
+  const deletion = signEvent(MERCHANT_SECRET, {
+    kind: 5,
+    created_at: merchantPickup.created_at + 2,
+    content: "",
+    tags: [["a", eventCoordinate(merchantPickup)]],
+  })
+  relay.seed(product, collection, merchantPickup, deletion)
+
+  const pickupReads = () =>
+    relay.requests.filter((request) =>
+      request.filters.some((filter) =>
+        eventMatchesFilter(merchantPickup, filter)
+      )
+    ).length
+
+  await gotoAs(page, marketUrl, "/about", "buyer")
+  const firstReadStart = pickupReads()
+  await addPendingEventPickupCartItem(page, {
+    collectionCoordinate: market.collectionCoordinate,
+    productEvent: product,
+    quantity: 1,
+    previewStock: 3,
+  })
+  await expect.poll(pickupReads).toBeGreaterThan(firstReadStart)
+  await expect
+    .poll(async () => {
+      const before = pickupReads()
+      await page.waitForTimeout(750)
+      return pickupReads() === before
+    })
+    .toBe(true)
+  const terminalReadCount = pickupReads()
+
+  await page.waitForTimeout(6_000)
+  expect(pickupReads()).toBe(terminalReadCount)
+
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  await expect(page.getByTestId("pending-event-pickup-cart")).toBeVisible()
   await expect(
     page.getByRole("button", { name: "Order", exact: true })
   ).toHaveCount(0)
@@ -6234,6 +6324,167 @@ for (const mounted of [true, false]) {
     }
   })
 }
+
+test("mounted event catalog scopes product and pickup removals to exact dependencies @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay, "scoped-graph-reader")
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic scoped graph catalog",
+    organizerHandoffEnabled: true,
+  })
+  const createdAt = market.initialCollection.created_at + 1
+  const merchantPickup = signEvent(MERCHANT_SECRET, {
+    kind: 30406,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "scoped-merchant-booth"],
+      ["title", "Synthetic scoped merchant booth"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Synthetic scoped merchant booth"],
+    ],
+  })
+  const parentCoordinate = `30402:${MERCHANT_PUBKEY}:scoped-family`
+  const family = ["parent", "Small"].map((size, index) =>
+    signEvent(MERCHANT_SECRET, {
+      kind: 30402,
+      created_at: createdAt + index,
+      content: "Synthetic scoped family product",
+      tags: [
+        ["d", index === 0 ? "scoped-family" : "scoped-family-small"],
+        [
+          "title",
+          index === 0
+            ? "Synthetic scoped family"
+            : "Synthetic scoped family Small",
+        ],
+        ["type", index === 0 ? "variable" : "variation", "physical"],
+        ["price", "1000", "SATS"],
+        ["stock", "3"],
+        ["visibility", "hidden"],
+        ["image", "https://cdn.conduit.market/conduit-test/scoped-family.png"],
+        ["a", market.collectionCoordinate],
+        ["shipping_option", eventCoordinate(merchantPickup), "0"],
+        ...(index === 0
+          ? []
+          : [
+              ["a", parentCoordinate],
+              ["spec", "size", size],
+            ]),
+      ],
+    })
+  )
+  const organizerPickupProduct = createMerchantProductEvent({
+    dTag: "scoped-organizer-pickup",
+    title: "Synthetic scoped organizer pickup product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: createdAt + 3,
+    content: market.initialCollection.content,
+    tags: [
+      ...market.initialCollection.tags,
+      ...family.map((record) => ["a", eventCoordinate(record)]),
+      ["a", eventCoordinate(organizerPickupProduct)],
+    ],
+  })
+  relay.seed(merchantPickup, ...family, organizerPickupProduct, collection)
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const familyCard = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic scoped family" })
+  const organizerCard = page.getByRole("listitem").filter({
+    hasText: "Synthetic scoped organizer pickup product",
+  })
+  for (const card of [familyCard, organizerCard]) {
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+  }
+
+  const writer = await page.context().newPage()
+  const writerUrl = `${marketUrl}/__synthetic-scoped-graph-writer.html`
+  await writer.route(writerUrl, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Synthetic scoped graph writer</title>",
+    })
+  )
+  await writer.goto(writerUrl)
+  const isCatalogRead = (request: RelayRequest) =>
+    request.clientId === "scoped-graph-reader" &&
+    request.filters.some((filter) =>
+      filter.kinds?.some((kind) =>
+        [5, 30402, 30405, 30406, 31922, 31923].includes(kind)
+      )
+    )
+  const catalogReads = () => relay.requests.filter(isCatalogRead).length
+  const before = catalogReads()
+  const held = relay.holdRelayRequests(isCatalogRead)
+  try {
+    const revised = signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: collection.created_at + 10,
+      content: collection.content,
+      tags: collection.tags.filter(
+        (tag) =>
+          !(tag[0] === "a" && tag[1] === eventCoordinate(family[0]!)) &&
+          !(tag[0] === "shipping_option" && tag[1] === market.pickupCoordinate)
+      ),
+    })
+    const dbUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url))}`
+    await writer.evaluate(
+      async ({ moduleUrl, event }) => {
+        const { db } = await import(moduleUrl)
+        await db.eventMarketEvidence.put({
+          id: event.id,
+          organizerPubkey: event.pubkey,
+          kind: event.kind,
+          signedEvent: event,
+          sourceRelayUrls: [],
+          cachedAt: Date.now(),
+        })
+      },
+      { moduleUrl: dbUrl, event: revised }
+    )
+
+    await expect(familyCard).toBeVisible()
+    await familyCard.hover()
+    await expect(
+      familyCard.getByRole("combobox", { name: "Choose size" })
+    ).toBeVisible()
+    await expect(
+      familyCard.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(
+      familyCard.getByText(
+        /Current pickup terms are being verified.*checkout stays locked/s
+      )
+    ).toBeVisible()
+    await expect(
+      organizerCard.getByRole("button", {
+        name: "Pickup unavailable",
+        exact: true,
+      })
+    ).toBeDisabled()
+    await expect(
+      organizerCard.getByRole("button", { name: "Add", exact: true })
+    ).toHaveCount(0)
+    expect(catalogReads()).toBe(before)
+  } finally {
+    held.release()
+    await writer.close()
+  }
+})
 
 for (const revocation of [
   "closure",

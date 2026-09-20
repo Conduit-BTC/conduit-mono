@@ -504,9 +504,144 @@ describe("Market event adapter", () => {
     expect(
       projectRawEventCatalog({
         ...raw,
-        localRemovedProductCoordinates: [productCoordinate],
+        localTerminalProductCoordinates: [productCoordinate],
       }).products[0]!.pickupReadiness
     ).toBe("terminal")
+    expect(
+      projectRawEventCatalog({
+        ...raw,
+        localGraphSuperseded: undefined,
+        localTerminalProductCoordinates: [productCoordinate],
+      }).products[0]!.pickupReadiness
+    ).toBe("terminal")
+  })
+
+  it("keeps unaffected completed products authorized after a product-scoped terminal observation", () => {
+    const unaffected = product({
+      id: `30402:${merchant}:tea`,
+      title: "Tea",
+    })
+    const records = [
+      commerceRecord(product()),
+      commerceRecord(unaffected, { eventId: "5".repeat(64) }),
+    ]
+    const read = productRead()
+    read.data = records
+    read.diagnostics = records.map((record) => ({
+      productId: record.addressId,
+      addressId: record.addressId,
+      issue: null,
+      coverage: { listing: "complete" as const, deletion: "complete" as const },
+    }))
+
+    const projection = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution: marketWithAcceptedRecords(records),
+      result: read,
+      complete: true,
+      localTerminalProductCoordinates: [productCoordinate],
+    })
+    const byCoordinate = new Map(
+      projection.products.map((entry) => [entry.product.id, entry])
+    )
+
+    expect(byCoordinate.get(productCoordinate)).toMatchObject({
+      evidenceState: "retained",
+      pickupFulfillment: null,
+      pickupReadiness: "terminal",
+    })
+    expect(byCoordinate.get(unaffected.id)).toMatchObject({
+      evidenceState: "live",
+      pickupReadiness: "resolved",
+    })
+    expect(byCoordinate.get(unaffected.id)?.pickupFulfillment).not.toBeNull()
+  })
+
+  it("keeps a signed direct merchant pickup deletion terminal on a live product read", () => {
+    const boothCoordinate = `30406:${merchant}:deleted-booth`
+    const candidate = product({
+      shippingOptionRefs: [{ coordinate: boothCoordinate }],
+    })
+    const resolution: EventMarketResolution = {
+      ...market(),
+      acceptedProductEvidence: [
+        {
+          productCoordinate,
+          eventId: "4".repeat(64),
+          createdAt: 103_000,
+          shippingOptionCoordinates: [boothCoordinate],
+          merchantPubkey: merchant,
+          fulfillmentStatus: "ambiguous",
+          fulfillmentReason: "deleted_pickup_evidence",
+        },
+      ],
+    }
+
+    const projection = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution,
+      result: productRead({ product: candidate }),
+      complete: true,
+    })
+
+    expect(projection.products).toHaveLength(1)
+    expect(projection.products[0]!.pickupFulfillment).toBeNull()
+    expect(projection.products[0]!.pickupReadiness).toBe("terminal")
+  })
+
+  it("does not terminalize retained variations when only their variable parent is removed", () => {
+    const parent = product({ type: "variable", visibility: "private" })
+    const child = product({
+      id: `30402:${merchant}:coffee-child`,
+      title: "Coffee - Child",
+      type: "variation",
+      visibility: "private",
+      parentProductId: parent.id,
+      specifications: [{ key: "size", value: "Child" }],
+      createdAt: 104_000,
+      updatedAt: 104_000,
+    })
+    const rawRecords = [
+      commerceRecord(parent),
+      commerceRecord(child, { eventId: "5".repeat(64) }),
+    ]
+    const prepared = prepareProductCatalog(rawRecords, {
+      source: "commerce",
+      fetchedAt: 105_000,
+      stale: false,
+      degraded: false,
+      capped: false,
+    }).items[0]
+    if (prepared?.kind !== "family") throw new Error("Expected family")
+    const resolution = marketWithAcceptedRecords(rawRecords)
+    const parentRecord = {
+      ...prepared.family.parent,
+      family: prepared.family,
+    }
+    const childRecord = prepared.family.children[0]!
+    const read = productRead({ product: parent })
+    read.data = [parentRecord, childRecord]
+    read.diagnostics = [parentRecord, childRecord].map((record) => ({
+      productId: record.addressId,
+      addressId: record.addressId,
+      issue: null,
+      coverage: { listing: "complete" as const, deletion: "complete" as const },
+    }))
+
+    const projection = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution,
+      result: read,
+      complete: true,
+      localGraphSuperseded: true,
+      localTerminalProductCoordinates: [parent.id],
+    })
+
+    expect(projection.products).toHaveLength(1)
+    expect(projection.products[0]!.pickupReadiness).toBe("terminal")
+    expect(projection.products[0]!.familyPickupReadiness?.[child.id]).toBe(
+      "recoverable"
+    )
   })
 
   it("keeps collection removal terminal for a progressive preview before participation settles", () => {
@@ -523,7 +658,7 @@ describe("Market event adapter", () => {
       previewRecords: [commerceRecord(product())],
       complete: false,
       localGraphSuperseded: true,
-      localRemovedProductCoordinates: [productCoordinate],
+      localTerminalProductCoordinates: [productCoordinate],
     })
 
     expect(projection.products).toHaveLength(1)

@@ -2108,6 +2108,14 @@ describe("event-market retained evidence", () => {
       status: "ambiguous",
       reason: "missing_pickup_evidence",
     })
+    expect(
+      deleted.acceptedProductEvidence.find(
+        (evidence) => evidence.productCoordinate === PRODUCT
+      )
+    ).toMatchObject({
+      fulfillmentStatus: "ambiguous",
+      fulfillmentReason: "deleted_pickup_evidence",
+    })
 
     harness.setPickupRead({ events: [pickup] })
     const reloaded = await getEventMarket({
@@ -2116,6 +2124,14 @@ describe("event-market retained evidence", () => {
     })
     expect(reloaded.state).toBe("active")
     expect(reloaded.pickups).toEqual([])
+    expect(
+      reloaded.acceptedProductEvidence.find(
+        (evidence) => evidence.productCoordinate === PRODUCT
+      )
+    ).toMatchObject({
+      fulfillmentStatus: "ambiguous",
+      fulfillmentReason: "deleted_pickup_evidence",
+    })
   })
 
   it("does not resurrect a collection when a later relay read omits deletion", async () => {

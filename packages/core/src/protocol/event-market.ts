@@ -1781,6 +1781,7 @@ function getCurrentParticipation(
   organizerPubkey: string,
   collection: ParsedEventMarketCollection,
   pickups: readonly ParsedEventMarketPickup[],
+  deletedPickupCoordinates: ReadonlySet<string>,
   collectionCoordinate: string,
   organizerProducts: readonly string[]
 ): {
@@ -1846,6 +1847,16 @@ function getCurrentParticipation(
         pickups: [...pickups],
       }
     )
+    const fulfillmentReason =
+      fulfillment.status === "ambiguous" &&
+      fulfillment.reason === "missing_pickup_evidence" &&
+      shippingOptionCoordinates.some((coordinate) =>
+        deletedPickupCoordinates.has(coordinate)
+      )
+        ? "deleted_pickup_evidence"
+        : fulfillment.status === "ambiguous"
+          ? fulfillment.reason
+          : undefined
     const titles = tagValues(event.tags, "title")
       .map((value) => value.trim())
       .filter((value) => value && !CONTROL_CHARACTER.test(value))
@@ -1857,9 +1868,7 @@ function getCurrentParticipation(
       ...(titles.length === 1 ? { title: titles[0] } : {}),
       ...(productPreview ? { productPreview } : {}),
       fulfillmentStatus: fulfillment.status,
-      ...(fulfillment.status === "ambiguous"
-        ? { fulfillmentReason: fulfillment.reason }
-        : {}),
+      ...(fulfillmentReason ? { fulfillmentReason } : {}),
       ...(fulfillment.status === "resolved"
         ? {
             pickupCoordinate: fulfillment.selectedPickup.coordinate,
@@ -2154,6 +2163,11 @@ export function resolveEventMarketEvidence(
       }),
     })
   )
+  const deletedDirectMerchantPickupCoordinates = new Set(
+    directMerchantPickupResults.flatMap((entry) =>
+      entry.result.state === "deleted" ? [entry.coordinate.coordinate] : []
+    )
+  )
   const organizerPickupCoordinates = collectionPickupCoordinates.filter(
     (coordinate) => coordinate?.authorPubkey === decoded.authorPubkey
   )
@@ -2244,6 +2258,7 @@ export function resolveEventMarketEvidence(
         decoded.authorPubkey,
         collection,
         pickups,
+        deletedDirectMerchantPickupCoordinates,
         collection.coordinate,
         organizerProductCoordinates
       )
@@ -4012,6 +4027,7 @@ export function getEventMarketSupersededEvidence(
   productCoordinates: string[]
   removedProductCoordinates: string[]
   pickupCoordinates: string[]
+  terminalPickupCoordinates: string[]
 } {
   const valid = events.filter(isVerifiedLocalEventMarketEvent)
   const deletions = validDeletionEvents(valid)
@@ -4086,21 +4102,23 @@ export function getEventMarketSupersededEvidence(
     (collectionReplaced || calendarReplaced) &&
     (supersedingAcceptance === "closed" ||
       supersedingAcceptance === "legacy-ended")
-  const collectionDependencyRemoved =
+  const collectionEventDependencyRemoved =
     !!collectionRevision &&
     !!resolution.collection &&
-    (resolution.collection.eventCoordinates.some(
+    resolution.collection.eventCoordinates.some(
       (coordinate) => !collectionEventCoordinates.has(coordinate)
-    ) ||
-      resolution.collection.pickupCoordinates.some(
+    )
+  const removedPickupCoordinates = collectionRevision
+    ? (resolution.collection?.pickupCoordinates ?? []).filter(
         (coordinate) => !collectionPickupCoordinates.has(coordinate)
-      ))
+      )
+    : []
   const graphRevoked =
     (collectionReplaced &&
       (!collectionEvidence.event ||
         !collectionRevision ||
         collectionRevisionRevokesEventMarketGraph(collectionRevision) ||
-        collectionDependencyRemoved)) ||
+        collectionEventDependencyRemoved)) ||
     (calendarReplaced && (!calendarEvidence.event || !calendarRevision)) ||
     supersedingGraphEndsOrdering
   const removedProductCoordinates = collectionRevision
@@ -4111,6 +4129,10 @@ export function getEventMarketSupersededEvidence(
         ]),
       ].filter((coordinate) => !collectionProductCoordinates.has(coordinate))
     : []
+  const supersededPickupEvidence = resolution.pickups.map((record) => ({
+    coordinate: record.coordinate,
+    evidence: supersedingEvidence(record),
+  }))
   return {
     graph: collectionReplaced || calendarReplaced,
     graphRevoked,
@@ -4140,8 +4162,18 @@ export function getEventMarketSupersededEvidence(
     removedProductCoordinates,
     pickupCoordinates: [
       ...new Set(
-        resolution.pickups.filter(superseded).map((record) => record.coordinate)
+        supersededPickupEvidence.flatMap(({ coordinate, evidence }) =>
+          evidence.deleted || evidence.event ? [coordinate] : []
+        )
       ),
+    ],
+    terminalPickupCoordinates: [
+      ...new Set([
+        ...removedPickupCoordinates,
+        ...supersededPickupEvidence.flatMap(({ coordinate, evidence }) =>
+          evidence.deleted ? [coordinate] : []
+        ),
+      ]),
     ],
   }
 }

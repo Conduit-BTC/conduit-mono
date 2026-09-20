@@ -124,17 +124,18 @@ export function reconcileEventCatalogGraph(
     ...superseded.productCoordinates,
     ...superseded.removedProductCoordinates,
   ])
+  const terminalProducts = new Set(superseded.removedProductCoordinates)
   for (const record of records) {
     const pickup = buildPickupFulfillmentTerms(
       record.product,
       raw.resolution,
       record
     )
-    if (
-      pickup &&
-      superseded.pickupCoordinates.includes(pickup.option.coordinate)
-    )
+    if (!pickup) continue
+    if (superseded.pickupCoordinates.includes(pickup.option.coordinate))
       affected.add(record.addressId)
+    if (superseded.terminalPickupCoordinates.includes(pickup.option.coordinate))
+      terminalProducts.add(record.addressId)
   }
   const diagnostics = raw.result?.diagnostics.map((diagnostic) =>
     affected.has(diagnostic.addressId ?? diagnostic.productId) &&
@@ -150,17 +151,18 @@ export function reconcileEventCatalogGraph(
       : diagnostic
   )
   const pending = !!raw.localEvidencePending || snapshot.status === "loading"
-  const sameRemovedProducts =
-    (raw.localRemovedProductCoordinates?.length ?? 0) ===
-      superseded.removedProductCoordinates.length &&
-    superseded.removedProductCoordinates.every(
+  const terminalProductCoordinates = [...terminalProducts].sort()
+  const sameTerminalProducts =
+    (raw.localTerminalProductCoordinates?.length ?? 0) ===
+      terminalProductCoordinates.length &&
+    terminalProductCoordinates.every(
       (coordinate, index) =>
-        raw.localRemovedProductCoordinates?.[index] === coordinate
+        raw.localTerminalProductCoordinates?.[index] === coordinate
     )
   if (
     !!raw.localGraphSuperseded === superseded.graph &&
     !!raw.localGraphRevoked === superseded.graphRevoked &&
-    sameRemovedProducts &&
+    sameTerminalProducts &&
     !!raw.localEvidencePending === pending &&
     (!diagnostics ||
       diagnostics.every(
@@ -172,9 +174,9 @@ export function reconcileEventCatalogGraph(
     ...raw,
     localGraphSuperseded: superseded.graph || undefined,
     localGraphRevoked: superseded.graphRevoked || undefined,
-    localRemovedProductCoordinates:
-      superseded.removedProductCoordinates.length > 0
-        ? superseded.removedProductCoordinates
+    localTerminalProductCoordinates:
+      terminalProductCoordinates.length > 0
+        ? terminalProductCoordinates
         : undefined,
     localEvidencePending: pending || undefined,
     result:

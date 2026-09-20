@@ -133,6 +133,7 @@ const empty = {
   productCoordinates: [],
   removedProductCoordinates: [],
   pickupCoordinates: [],
+  terminalPickupCoordinates: [],
 }
 afterEach(() => __resetEventMarketTestOverrides())
 
@@ -171,7 +172,9 @@ describe("retained event market dependencies", () => {
         const deletionExpected =
           event.kind === 30405 || event.kind === 31923
             ? { ...expected, graphRevoked: true }
-            : expected
+            : event.kind === 30406
+              ? { ...expected, terminalPickupCoordinates: [pickup] }
+              : expected
         expect(
           getEventMarketSupersededEvidence(resolution(), [
             signed({ kind: 5, tags }, 200),
@@ -315,6 +318,26 @@ describe("retained event market dependencies", () => {
       ...empty,
       graph: true,
       removedProductCoordinates: [product],
+    })
+  })
+
+  it("scopes a removed organizer pickup to products that depend on it", () => {
+    const withoutPickup = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        productCoordinates: [product],
+      }),
+      200
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [withoutPickup])
+    ).toEqual({
+      ...empty,
+      graph: true,
+      terminalPickupCoordinates: [pickup],
     })
   })
 

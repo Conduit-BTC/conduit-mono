@@ -256,6 +256,57 @@ function dependencies(
 }
 
 describe("pending event pickup cart resolution", () => {
+  it("retries a complete merchant-booth read only while exact pickup evidence remains recoverable", async () => {
+    const current = fixture({
+      organizerChar: "a",
+      merchantChar: "b",
+      suffix: "late-booth",
+      eventIdChar: "4",
+    })
+    const boothCoordinate = `30406:${current.product.pubkey}:late-booth`
+    const selectedProduct: Product = {
+      ...current.product,
+      shippingOptionRefs: [{ coordinate: boothCoordinate }],
+    }
+    const unresolvedCatalog: EventCatalog = {
+      ...current.catalog,
+      products: [
+        {
+          ...current.catalog.products[0]!,
+          product: selectedProduct,
+          pickupFulfillment: null,
+          pickupReadiness: "recoverable",
+        },
+      ],
+      productReadState: "ready",
+      purchaseReady: true,
+    }
+
+    const recoverable = await resolvePendingEventPickupCartUpgrades(
+      [current.pendingItem],
+      null,
+      {},
+      dependencies(productResult([selectedProduct]), async () =>
+        Promise.resolve(unresolvedCatalog)
+      )
+    )
+    expect(recoverable).toEqual({ upgrades: [], retryable: true })
+
+    const terminal = await resolvePendingEventPickupCartUpgrades(
+      [current.pendingItem],
+      null,
+      {},
+      dependencies(productResult([selectedProduct]), async () => ({
+        ...unresolvedCatalog,
+        products: unresolvedCatalog.products.map((entry) => ({
+          ...entry,
+          pickupReadiness: "terminal" as const,
+        })),
+      }))
+    )
+    expect(terminal).toEqual({ upgrades: [], retryable: false })
+  })
+
   it("retries stale no-claim evidence, upgrades a later live claim, and stops on a stronger withdrawal", async () => {
     const current = fixture({
       organizerChar: "a",

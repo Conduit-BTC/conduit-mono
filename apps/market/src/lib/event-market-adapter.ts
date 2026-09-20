@@ -269,22 +269,19 @@ export function buildEventCatalogFamilyPickupFulfillments(
 function getEventCatalogPickupReadiness(
   product: Product,
   resolution: EventMarketResolution,
-  live: boolean,
   fulfillment: CartPickupFulfillment | null,
   productEventId: string
 ): EventCatalogPickupReadiness {
   if (fulfillment) return "resolved"
   const decision = resolveEventMarketProductFulfillment(product, resolution)
-  // Retained evidence cannot authorize pickup, but its signed terminal state
-  // remains until a stronger product revision supersedes it.
-  if (!live) {
-    return getRetainedProductPickupReadiness(
-      product,
-      resolution,
-      productEventId,
-      decision
-    )
-  }
+  const accepted = getAcceptedProductPickupReadiness(
+    product,
+    resolution,
+    productEventId
+  )
+  // Accepted evidence cannot authorize missing terms, but it preserves the
+  // distinction between unavailable evidence and a signed pickup deletion.
+  if (accepted) return accepted
   return getPickupDecisionReadiness(product, resolution, decision)
 }
 
@@ -316,12 +313,11 @@ function getPickupDecisionReadiness(
   return "terminal"
 }
 
-function getRetainedProductPickupReadiness(
+function getAcceptedProductPickupReadiness(
   product: Product,
   resolution: EventMarketResolution,
-  productEventId: string,
-  decision = resolveEventMarketProductFulfillment(product, resolution)
-): EventCatalogPickupReadiness {
+  productEventId: string
+): EventCatalogPickupReadiness | null {
   const evidence = resolution.acceptedProductEvidence.find(
     (candidate) =>
       candidate.productCoordinate === product.id &&
@@ -337,7 +333,19 @@ function getRetainedProductPickupReadiness(
     return "terminal"
   }
   if (evidence?.fulfillmentStatus) return "recoverable"
-  return getPickupDecisionReadiness(product, resolution, decision)
+  return null
+}
+
+function getRetainedProductPickupReadiness(
+  product: Product,
+  resolution: EventMarketResolution,
+  productEventId: string,
+  decision = resolveEventMarketProductFulfillment(product, resolution)
+): EventCatalogPickupReadiness {
+  return (
+    getAcceptedProductPickupReadiness(product, resolution, productEventId) ??
+    getPickupDecisionReadiness(product, resolution, decision)
+  )
 }
 
 function productReadIsLive(
@@ -701,7 +709,6 @@ export function projectEventCatalogProducts({
           getEventCatalogPickupReadiness(
             child.product,
             resolution,
-            liveCoordinates.has(child.product.id),
             familyPickupFulfillments[child.product.id] ?? null,
             child.eventId
           ),
@@ -749,7 +756,6 @@ export function projectEventCatalogProducts({
         pickupReadiness: getEventCatalogPickupReadiness(
           product,
           resolution,
-          live,
           pickupFulfillment,
           record.eventId
         ),
@@ -968,8 +974,8 @@ export type RawEventCatalog = {
   localGraphSuperseded?: boolean
   /** Stronger signed local evidence definitively revokes this graph. */
   localGraphRevoked?: boolean
-  /** Products explicitly removed by a stronger signed collection revision. */
-  localRemovedProductCoordinates?: readonly string[]
+  /** Exact products made terminal by stronger signed local evidence. */
+  localTerminalProductCoordinates?: readonly string[]
 }
 
 export function projectRawEventCatalog(
@@ -979,8 +985,8 @@ export function projectRawEventCatalog(
 ): EventCatalog {
   const resolution = raw.resolution
   if (!resolution) return unavailableCatalog(raw.reference, "malformed")
-  const locallyRemovedProducts = new Set(
-    raw.localRemovedProductCoordinates ?? []
+  const locallyTerminalProducts = new Set(
+    raw.localTerminalProductCoordinates ?? []
   )
   const complete =
     (raw.complete || raw.resolutionComplete === true) &&
@@ -1078,15 +1084,16 @@ export function projectRawEventCatalog(
           (coordinate) =>
             !pendingProducts.some((entry) => entry.product.id === coordinate)
         ),
-      products: complete
-        ? products
-        : products.map((entry) =>
-            browseOnlyProduct(
+      products: products.map((entry) =>
+        complete &&
+        !productHasTerminalLocalEvidence(entry, locallyTerminalProducts)
+          ? entry
+          : browseOnlyProduct(
               entry,
               !!raw.localGraphRevoked,
-              locallyRemovedProducts
+              locallyTerminalProducts
             )
-          ),
+      ),
       purchaseReady:
         complete &&
         (resolution.state === "active" || resolution.state === "partial"),
@@ -1178,7 +1185,7 @@ export function projectRawEventCatalog(
   return {
     ...base,
     products: products.map((entry) =>
-      browseOnlyProduct(entry, !!raw.localGraphRevoked, locallyRemovedProducts)
+      browseOnlyProduct(entry, !!raw.localGraphRevoked, locallyTerminalProducts)
     ),
     productReadState: complete ? "unavailable" : "not_requested",
     unresolvedProductCoordinates: [...requested].filter(
@@ -1194,12 +1201,24 @@ export function projectRawEventCatalog(
   }
 }
 
+function productHasTerminalLocalEvidence(
+  entry: EventCatalogProduct,
+  terminalProducts: ReadonlySet<string>
+): boolean {
+  return (
+    terminalProducts.has(entry.product.id) ||
+    !!entry.family?.children.some((child) =>
+      terminalProducts.has(child.product.id)
+    )
+  )
+}
+
 function browseOnlyProduct(
   entry: EventCatalogProduct,
   graphRevoked: boolean,
-  removedProducts: ReadonlySet<string>
+  terminalProducts: ReadonlySet<string>
 ): EventCatalogProduct {
-  const productRevoked = graphRevoked || removedProducts.has(entry.product.id)
+  const productRevoked = graphRevoked || terminalProducts.has(entry.product.id)
   return {
     ...entry,
     evidenceState: "retained",
@@ -1222,8 +1241,8 @@ function browseOnlyProduct(
           Object.entries(entry.familyPickupReadiness).map(
             ([coordinate, readiness]) => [
               coordinate,
-              productRevoked ||
-              removedProducts.has(coordinate) ||
+              graphRevoked ||
+              terminalProducts.has(coordinate) ||
               readiness === "terminal"
                 ? "terminal"
                 : "recoverable",

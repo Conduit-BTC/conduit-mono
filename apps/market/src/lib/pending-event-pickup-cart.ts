@@ -89,6 +89,15 @@ function catalogResolutionMayAdvance(
   ) {
     return false
   }
+  const pickupReadiness = catalog.products.reduce<
+    EventCatalog["products"][number]["pickupReadiness"] | undefined
+  >((readiness, entry) => {
+    if (readiness) return readiness
+    if (entry.product.id === product.id) return entry.pickupReadiness
+    return entry.familyPickupReadiness?.[product.id]
+  }, undefined)
+  if (pickupReadiness === "terminal") return false
+  if (pickupReadiness === "recoverable") return true
   return (
     ["unavailable", "partial", "stale", "missing"].includes(catalog.state) ||
     catalog.productReadState !== "ready" ||
