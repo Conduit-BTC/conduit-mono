@@ -1,22 +1,12 @@
 import { useState } from "react"
-import {
-  CalendarDays,
-  ExternalLink,
-  MapPin,
-  PackagePlus,
-  Printer,
-  RefreshCw,
-  Store,
-} from "lucide-react"
+import { ExternalLink, PackagePlus, Printer, RefreshCw } from "lucide-react"
 import { useProductImageUpload, useProfile } from "@conduit/core"
 import {
   Badge,
   Button,
   Card,
   CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
+  EventPageHeader,
   eventMarketRequiredRecordsResolved,
   formatEventRelayReadCoverage,
   getEventActionabilityPresentation,
@@ -136,7 +126,12 @@ function MerchantEventSignageAction({
 
   return (
     <>
-      <Button type="button" variant="outline" onClick={() => setOpen(true)}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen(true)}
+      >
         <Printer />
         Print my event sign
       </Button>
@@ -159,6 +154,7 @@ export function MerchantEventMarketPanel({
   authenticatedPubkey,
   shouldContinue,
   market,
+  actionReady = true,
   refreshing,
   onRefresh,
   compact = false,
@@ -167,6 +163,7 @@ export function MerchantEventMarketPanel({
   authenticatedPubkey: string | null
   shouldContinue: () => boolean
   market: MerchantOrganizerEventMarket
+  actionReady?: boolean
   refreshing: boolean
   onRefresh: () => void | Promise<void>
   compact?: boolean
@@ -177,7 +174,8 @@ export function MerchantEventMarketPanel({
     null
   )
   const ownsMarket = merchantPubkey === market.organizerPubkey
-  const publishable = market.state === "active" || market.state === "partial"
+  const publishable =
+    actionReady && (market.state === "active" || market.state === "partial")
   const organizerProfileQuery = useProfile(market.organizerPubkey, {
     accountPubkey: merchantPubkey,
     authenticatedPubkey,
@@ -249,151 +247,115 @@ export function MerchantEventMarketPanel({
           {publisherControls}
         </section>
       ) : (
-        <Card className="overflow-hidden">
-          {market.imageUrl && (
-            <img
-              src={market.imageUrl}
-              alt=""
-              className="h-48 w-full border-b border-[var(--border)] bg-[var(--surface-elevated)] object-contain sm:h-60"
-            />
-          )}
-          <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <div className="mb-3 flex flex-wrap items-center gap-2">
-                {actionability.visibility !== "silent" ? (
-                  <Badge variant={actionability.tone}>
-                    {actionability.label}
-                  </Badge>
-                ) : null}
-                <Badge variant="outline">Published by organizer</Badge>
-              </div>
-              {actionability.visibility !== "silent" ? (
-                <p
-                  className={actionabilityClassName(actionability)}
-                  role={actionability.role}
-                  data-testid="merchant-event-actionability-status"
-                >
-                  {actionability.visibility === "prominent" ? (
-                    <span className="sr-only">{actionability.label}: </span>
-                  ) : null}
-                  {actionability.message}
-                </p>
-              ) : null}
-              <CardTitle className="text-balance text-2xl">
-                {market.title}
-              </CardTitle>
-              {market.summary && (
-                <CardDescription className="mt-2 max-w-3xl text-pretty leading-6">
-                  {market.summary}
-                </CardDescription>
-              )}
-              {relayCoverage ? (
-                <details className="mt-3 text-xs text-[var(--text-muted)]">
-                  <summary className="w-fit cursor-pointer rounded-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
-                    Technical details
-                  </summary>
-                  <p
-                    className="mt-2 text-pretty tabular-nums"
-                    data-testid="merchant-event-relay-read-coverage"
-                  >
-                    {relayCoverage}
-                  </p>
-                </details>
-              ) : null}
-            </div>
-            <div className="flex shrink-0 flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={refreshing}
-                onClick={() => void onRefresh()}
-              >
-                <RefreshCw
-                  className={refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"}
+        <div className="space-y-5">
+          <EventPageHeader
+            title={market.title}
+            summary={market.summary}
+            imageUrl={market.imageUrl}
+            schedule={formatSchedule(market)}
+            location={
+              market.eventLocation || market.eventGeohash || "Not provided"
+            }
+            organizer={
+              <div className="min-w-0">
+                <span>Organized by </span>
+                <EventActorName
+                  pubkey={market.organizerPubkey}
+                  profile={organizerProfileQuery.data}
+                  className="inline text-sm"
                 />
-                Refresh
-              </Button>
-              <Button type="button" variant="outline" asChild>
-                <a
-                  href={getEventMarketUrl(market.naddr)}
-                  target="_blank"
-                  rel="noreferrer"
+                <EventActorProvenance
+                  pubkey={market.organizerPubkey}
+                  copyLabel="Copy organizer npub"
+                  className="mt-0.5 max-w-full text-xs"
+                />
+              </div>
+            }
+            actions={
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={refreshing}
+                  onClick={() => void onRefresh()}
                 >
-                  <ExternalLink /> Shopper page
-                </a>
-              </Button>
-              <MerchantEventSignageAction
-                merchantPubkey={merchantPubkey}
-                authenticatedPubkey={authenticatedPubkey}
-                shouldContinue={shouldContinue}
-                market={market}
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-              />
+                  <RefreshCw
+                    className={refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"}
+                  />
+                  Refresh
+                </Button>
+                <Button type="button" variant="outline" size="sm" asChild>
+                  <a
+                    href={getEventMarketUrl(market.naddr)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <ExternalLink /> Shopper page
+                  </a>
+                </Button>
+                <MerchantEventSignageAction
+                  merchantPubkey={merchantPubkey}
+                  authenticatedPubkey={authenticatedPubkey}
+                  shouldContinue={shouldContinue}
+                  market={market}
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                />
+              </>
+            }
+            shareUrl={getEventMarketUrl(market.naddr)}
+            shareTitle={market.title}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              {actionability.visibility !== "silent" ? (
+                <Badge variant={actionability.tone}>
+                  {actionability.label}
+                </Badge>
+              ) : null}
+              <Badge variant="outline">Published by organizer</Badge>
             </div>
-          </CardHeader>
-          <CardContent className="grid gap-5">
-            <dl className="grid gap-3 text-sm sm:grid-cols-2">
-              <div className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-                <CalendarDays className="mt-0.5 h-5 w-5 shrink-0 text-secondary-400" />
-                <div>
-                  <dt className="font-medium text-[var(--text-primary)]">
-                    Date and time
-                  </dt>
-                  <dd className="mt-1 leading-6 text-[var(--text-secondary)]">
-                    {formatSchedule(market)}
-                  </dd>
-                </div>
-              </div>
-              <div className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-                <MapPin className="mt-0.5 h-5 w-5 shrink-0 text-secondary-400" />
-                <div>
-                  <dt className="font-medium text-[var(--text-primary)]">
-                    Location
-                  </dt>
-                  <dd className="mt-1 leading-6 text-[var(--text-secondary)]">
-                    {market.eventLocation ||
-                      market.eventGeohash ||
-                      "Not provided"}
-                  </dd>
-                </div>
-              </div>
-              <div className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-                <Store className="mt-0.5 h-5 w-5 shrink-0 text-secondary-400" />
-                <div>
-                  <dt className="font-medium text-[var(--text-primary)]">
-                    Organizer
-                  </dt>
-                  <dd className="mt-1 min-w-0 leading-6">
-                    <EventActorName
-                      pubkey={market.organizerPubkey}
-                      profile={organizerProfileQuery.data}
-                      className="block text-sm"
-                    />
-                    <EventActorProvenance
-                      pubkey={market.organizerPubkey}
-                      copyLabel="Copy organizer npub"
-                      className="mt-0.5 max-w-full text-xs"
-                    />
-                  </dd>
-                </div>
-              </div>
-              <div className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-                <PackagePlus className="mt-0.5 h-5 w-5 shrink-0 text-secondary-400" />
-                <div>
-                  <dt className="font-medium text-[var(--text-primary)]">
-                    Pickup
-                  </dt>
-                  <dd className="mt-1 leading-6 text-[var(--text-secondary)]">
-                    {getPickupSummary(market)}
-                  </dd>
-                </div>
-              </div>
-            </dl>
+            {actionability.visibility !== "silent" ? (
+              <p
+                className={actionabilityClassName(actionability)}
+                role={actionability.role}
+                data-testid="merchant-event-actionability-status"
+              >
+                {actionability.visibility === "prominent" ? (
+                  <span className="sr-only">{actionability.label}: </span>
+                ) : null}
+                {actionability.message}
+              </p>
+            ) : null}
+            {relayCoverage ? (
+              <details className="text-xs text-[var(--text-muted)]">
+                <summary className="w-fit cursor-pointer rounded-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
+                  Technical details
+                </summary>
+                <p
+                  className="mt-2 text-pretty tabular-nums"
+                  data-testid="merchant-event-relay-read-coverage"
+                >
+                  {relayCoverage}
+                </p>
+              </details>
+            ) : null}
+          </EventPageHeader>
 
-            {publisherControls}
-          </CardContent>
-        </Card>
+          <Card>
+            <CardContent className="grid gap-5 pt-6">
+              <section className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+                <h2 className="text-sm font-medium text-[var(--text-primary)]">
+                  Pickup
+                </h2>
+                <p className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+                  {getPickupSummary(market)}
+                </p>
+              </section>
+              {publisherControls}
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       <EventProductPublisherDialog

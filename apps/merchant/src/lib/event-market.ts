@@ -870,7 +870,8 @@ export async function resolveOrganizerEventMarketResolution(
   organizerPubkey?: string,
   authenticatedPubkey: string | null = null,
   signal?: AbortSignal,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  onProgress?: (resolution: EventMarketResolution) => void
 ): Promise<EventMarketResolution> {
   const parsedReference = parseOrganizerEventMarketReference(reference)
   return getEventMarket({
@@ -879,6 +880,7 @@ export async function resolveOrganizerEventMarketResolution(
     authenticatedPubkey,
     ...(signal ? { signal } : {}),
     ...(shouldContinue ? { shouldContinue } : {}),
+    ...(onProgress ? { onProgress } : {}),
   })
 }
 
@@ -956,16 +958,35 @@ export async function resolveOrganizerEventMarketRead(
   organizerPubkey?: string,
   authenticatedPubkey: string | null = null,
   signal?: AbortSignal,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  onProgress?: (market: MerchantOrganizerEventMarketRead) => void
 ): Promise<MerchantOrganizerEventMarketRead> {
-  const parsedReference = parseOrganizerEventMarketReference(reference)
   const result = await resolveOrganizerEventMarketResolution(
     reference,
     organizerPubkey,
     authenticatedPubkey,
     signal,
-    shouldContinue
+    shouldContinue,
+    onProgress
+      ? (resolution) => {
+          const projected = projectOrganizerEventMarketRead(
+            resolution,
+            reference
+          )
+          if (projected) onProgress(projected)
+        }
+      : undefined
   )
+  const projected = projectOrganizerEventMarketRead(result, reference)
+  if (projected) return projected
+  throw new Error("The organizer event records could not be resolved.")
+}
+
+export function projectOrganizerEventMarketRead(
+  result: EventMarketResolution,
+  reference: string
+): MerchantOrganizerEventMarketRead | null {
+  const parsedReference = parseOrganizerEventMarketReference(reference)
   const deletion = projectOrganizerEventMarketDeletion(result, reference)
   if (deletion) return deletion
   const normalized = projectEventMarket(result)
@@ -973,7 +994,7 @@ export async function resolveOrganizerEventMarketRead(
     !normalized ||
     normalized.collectionCoordinate !== parsedReference.coordinate
   ) {
-    throw new Error("The organizer event records could not be resolved.")
+    return null
   }
   const projectedHints =
     decodeEventMarketReference(normalized.naddr, [30405])?.relayHints ?? []

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { nip19, nip44 } from "nostr-tools"
@@ -920,9 +919,7 @@ async function publishOrganizerMarket(
   await expect(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
-  await expect(
-    page.getByRole("region", { name: "Event discovery", exact: true })
-  ).toBeVisible()
+  await expect(page.getByLabel("Events timeline")).toBeVisible()
   await page.getByRole("button", { name: "Create event" }).first().click()
   const editor = page.getByRole("dialog", { name: "Create event market" })
   await expect(editor).toBeVisible()
@@ -1039,8 +1036,8 @@ async function publishOrganizerMarket(
       .getAttribute("href"))!
   )
   expect(participationUrl.origin).toBe(merchantUrl)
-  expect(participationUrl.pathname).toBe("/events")
-  expect(participationUrl.searchParams.get("event")).toBe(canonicalNaddr)
+  expect(participationUrl.pathname).toBe(`/events/${canonicalNaddr}`)
+  expect(participationUrl.search).toBe("")
 
   return {
     calendarEvent,
@@ -1067,9 +1064,7 @@ test("signed-out merchant participation preserves the exact event through auth @
     identifier: "signed-out-participation",
   })
 
-  await page.goto(
-    `${merchantUrl}/events?event=${encodeURIComponent(eventNaddr)}`
-  )
+  await page.goto(`${merchantUrl}/events/${eventNaddr}`)
   await expect
     .poll(() => {
       const url = new URL(page.url())
@@ -1079,7 +1074,11 @@ test("signed-out merchant participation preserves the exact event through auth @
         event: url.searchParams.get("event"),
       }
     })
-    .toEqual({ pathname: "/", authRequired: "true", event: eventNaddr })
+    .toEqual({
+      pathname: `/events/${eventNaddr}`,
+      authRequired: null,
+      event: null,
+    })
 
   const connectUrl = new URL(page.url())
   connectUrl.searchParams.set(SYNTHETIC_IDENTITY_SEARCH_KEY, "merchant")
@@ -1089,10 +1088,33 @@ test("signed-out merchant participation preserves the exact event through auth @
       const url = new URL(page.url())
       return { pathname: url.pathname, event: url.searchParams.get("event") }
     })
-    .toEqual({ pathname: "/events", event: eventNaddr })
-  await expect(
-    page.getByRole("heading", { name: "Events", exact: true })
-  ).toBeVisible()
+    .toEqual({ pathname: `/events/${eventNaddr}`, event: null })
+  await expect(page.getByRole("link", { name: "All events" })).toBeVisible()
+})
+
+test("Market sends sellers to the canonical Merchant event route @market @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Market seller handoff",
+    organizerHandoffEnabled: false,
+  })
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const sellAtEventLinks = page.getByRole("link", {
+    name: "Sell at this event",
+    exact: true,
+  })
+  const sellAtEvent = sellAtEventLinks.first()
+  await expect(sellAtEvent).toBeVisible({ timeout: 30_000 })
+  await expect(sellAtEventLinks).toHaveCount(1)
+  const merchantHref = new URL((await sellAtEvent.getAttribute("href"))!)
+  expect(merchantHref.origin).toBe(merchantUrl)
+  expect(merchantHref.pathname).toBe(`/events/${market.canonicalNaddr}`)
+  expect(merchantHref.search).toBe("")
 })
 
 test("Merchant event timeline uses combined discovery with relationship, mobile, and keyboard flows @merchant", async ({
@@ -1118,7 +1140,7 @@ test("Merchant event timeline uses combined discovery with relationship, mobile,
   await page.setViewportSize({ width: 390, height: 844 })
   await gotoAs(page, merchantUrl, "/events", "merchant")
 
-  const timeline = page.getByRole("region", { name: "Event discovery" })
+  const timeline = page.getByLabel("Events timeline")
   await expect(timeline).toBeVisible()
   await expect(
     timeline.getByRole("group", { name: "Event network perspective" })
@@ -1126,33 +1148,56 @@ test("Merchant event timeline uses combined discovery with relationship, mobile,
   await expect(
     page.getByText("Merchant workspace", { exact: true })
   ).toHaveCount(0)
-  const relationshipFilter = timeline.getByRole("combobox", {
-    name: "Relationship",
-    exact: true,
+  const relationshipFilter = timeline.getByRole("group", {
+    name: "Event relationship",
   })
   await expect(relationshipFilter).toBeVisible()
   await expect(
     timeline.getByRole("combobox", { name: "Date", exact: true })
+  ).toHaveCount(0)
+  await expect(
+    relationshipFilter.getByRole("button", { name: "Saved", exact: true })
+  ).toHaveCount(0)
+  await relationshipFilter
+    .getByRole("button", { name: "Selling at", exact: true })
+    .click()
+  await expect(
+    timeline.getByRole("heading", {
+      name: "No events match this relationship",
+      exact: true,
+    })
   ).toBeVisible()
+  await relationshipFilter
+    .getByRole("button", { name: "All events", exact: true })
+    .click()
 
-  const sellHere = timeline.getByRole("button", {
-    name: `Sell here ${eventTitle}`,
+  const openEvent = timeline.getByRole("button", {
+    name: new RegExp(`^Open ${eventTitle}\\.`),
+  })
+  await expect(openEvent).toBeVisible({ timeout: 30_000 })
+  const exactRead = relay.holdRelayRequests((request) =>
+    request.filters.some(
+      (filter) =>
+        filter.authors?.includes(ORGANIZER_PUBKEY) &&
+        filter.kinds?.includes(30405)
+    )
+  )
+  await openEvent.focus()
+  await page.keyboard.press("Enter")
+  await exactRead.captured
+  await expect(
+    page.getByRole("heading", { name: eventTitle, exact: true })
+  ).toBeVisible()
+  const publishProduct = page.getByRole("button", {
+    name: "Publish product",
     exact: true,
   })
-  await expect(sellHere).toBeVisible({ timeout: 30_000 })
-  await sellHere.focus()
-  await page.keyboard.press("Enter")
-  await expect(
-    page.getByRole("button", { name: "Publish product", exact: true })
-  ).toBeVisible({ timeout: 30_000 })
+  await expect(publishProduct).toBeVisible()
+  await expect(publishProduct).toBeDisabled()
+  exactRead.release()
+  await expect(publishProduct).toBeEnabled({ timeout: 30_000 })
 
-  await relationshipFilter.click()
-  await page.getByRole("option", { name: "Saved", exact: true }).click()
-  await expect(
-    timeline
-      .getByLabel(`Your relationship to ${eventTitle}`)
-      .getByText("Saved", { exact: true })
-  ).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`/events/${market.canonicalNaddr}$`))
   await expect
     .poll(() =>
       page.evaluate(
@@ -1162,14 +1207,14 @@ test("Merchant event timeline uses combined discovery with relationship, mobile,
     .toBe(true)
 })
 
-test("organizer discovery offers empty-read recovery without losing saved events or claiming absence @merchant", async ({
+test("organizer discovery offers empty-read recovery without losing retained events or claiming absence @merchant", async ({
   page,
 }) => {
   test.setTimeout(150_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
   await gotoAs(page, merchantUrl, "/events", "organizer")
-  const timeline = page.getByRole("region", { name: "Event discovery" })
+  const timeline = page.getByLabel("Events timeline")
   const emptyHeading = timeline.getByRole("heading", { name: "No events yet" })
   await expect(emptyHeading).toBeVisible()
   relay.rejectReads(true)
@@ -1189,17 +1234,21 @@ test("organizer discovery offers empty-read recovery without losing saved events
     title,
     organizerHandoffEnabled: false,
   })
+  await page.getByRole("link", { name: "All events", exact: true }).click()
+  await expect(
+    page.getByRole("button", { name: new RegExp(`^Open ${title}\\.`) })
+  ).toBeVisible({ timeout: 30_000 })
   relay.rejectReads(true)
   await page.reload()
   await expect(page.getByText(title, { exact: true }).first()).toBeVisible()
   await expect(degradedHeading).toHaveCount(0)
   await expect(timeline).not.toContainText(/unavailable|relay/i)
   await expect(
-    page.getByRole("button", { name: `Manage ${title}`, exact: true })
+    page.getByRole("button", { name: new RegExp(`^Open ${title}\\.`) })
   ).toBeVisible()
 })
 
-test("direct and pasted event imports hydrate one saved selector title outside the selected perspective @merchant", async ({
+test("direct event routes hydrate outside the selected perspective without saving the event @merchant", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -1223,77 +1272,24 @@ test("direct and pasted event imports hydrate one saved selector title outside t
   )
 
   await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
-  const timeline = page.getByRole("region", { name: "Event discovery" })
   await expect(
-    timeline.getByRole("heading", { name: eventTitle, exact: true })
+    page.getByRole("heading", { name: eventTitle, exact: true })
   ).toBeVisible({ timeout: 30_000 })
-  await expect(
-    timeline.getByRole("heading", {
-      name: /No events|Events couldn't be fully loaded/,
-    })
-  ).toHaveCount(0)
-  await expect(page.getByText(eventTitle, { exact: true }).first()).toBeVisible(
-    {
-      timeout: 30_000,
-    }
-  )
   const savedStorageKey = `conduit:merchant:discovered-event-markets:v1:${MERCHANT_PUBKEY}`
-  const expectedTitleEvidence = {
-    titleCollectionCoordinate: market.collectionCoordinate,
-    titleCollectionCreatedAt: market.initialCollection.created_at * 1_000,
-    titleCollectionEventId: market.initialCollection.id,
-    titleCalendarCoordinate: market.calendarCoordinate,
-    titleCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
-    titleCalendarEventId: market.calendarEvent.id,
-  }
-  const readSavedTitleEvidence = () =>
-    page.evaluate((key) => {
-      const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
-        reference?: string
-        title?: string
-        titleCollectionCoordinate?: string
-        titleCollectionCreatedAt?: number
-        titleCollectionEventId?: string
-        titleCalendarCoordinate?: string
-        titleCalendarCreatedAt?: number
-        titleCalendarEventId?: string
-      }>
-      return {
-        count: saved.length,
-        reference: saved[0]?.reference,
-        title: saved[0]?.title,
-        titleCollectionCoordinate: saved[0]?.titleCollectionCoordinate,
-        titleCollectionCreatedAt: saved[0]?.titleCollectionCreatedAt,
-        titleCollectionEventId: saved[0]?.titleCollectionEventId,
-        titleCalendarCoordinate: saved[0]?.titleCalendarCoordinate,
-        titleCalendarCreatedAt: saved[0]?.titleCalendarCreatedAt,
-        titleCalendarEventId: saved[0]?.titleCalendarEventId,
-      }
-    }, savedStorageKey)
-  await expect.poll(readSavedTitleEvidence).toEqual({
-    count: 1,
-    reference: market.canonicalNaddr,
-    title: eventTitle,
-    ...expectedTitleEvidence,
-  })
+  const readDiscoveredEventCount = () =>
+    page.evaluate(
+      (key) => JSON.parse(localStorage.getItem(key) ?? "[]").length,
+      savedStorageKey
+    )
+  await expect.poll(readDiscoveredEventCount).toBe(0)
 
   await gotoAs(page, merchantUrl, "/events", "merchant")
-  const shopperLink = `${marketUrl}/events/${market.canonicalNaddr}`
-  await page.getByLabel("Open a known event").fill(shopperLink)
-  await page.getByRole("button", { name: "Open", exact: true }).click()
-  await expect(page.getByText(eventTitle, { exact: true }).first()).toBeVisible(
-    {
-      timeout: 30_000,
-    }
-  )
-  await page.getByLabel("Open a known event").fill(market.canonicalNaddr)
-  await page.getByRole("button", { name: "Open", exact: true }).click()
-  await expect.poll(readSavedTitleEvidence).toEqual({
-    count: 1,
-    reference: market.canonicalNaddr,
-    title: eventTitle,
-    ...expectedTitleEvidence,
-  })
+  await expect(page.getByLabel("Open a known event")).toHaveCount(0)
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  await expect(
+    page.getByRole("heading", { name: eventTitle, exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect.poll(readDiscoveredEventCount).toBe(0)
 })
 
 test("commerce discovery finds an organizer beyond the former author cap @merchant", async ({
@@ -1319,17 +1315,17 @@ test("commerce discovery finds an organizer beyond the former author cap @mercha
   )
   await gotoAs(page, merchantUrl, "/events", "merchant")
   await expect(
-    page.getByRole("button", { name: `Sell here ${title}`, exact: true })
+    page.getByRole("button", { name: new RegExp(`^Open ${title}\\.`) })
   ).toBeVisible({ timeout: 30_000 })
   await page
-    .getByRole("button", { name: `Sell here ${title}`, exact: true })
+    .getByRole("button", { name: new RegExp(`^Open ${title}\\.`) })
     .click()
   await expect(
     page.getByRole("heading", { name: title, exact: true }).first()
   ).toBeVisible()
 })
 
-test("direct event import refreshes an anchored signed title despite missing pickup and retains its pickup frontier @merchant", async ({
+test("direct event routes refresh signed titles without creating a saved event @merchant", async ({
   page,
   browser,
 }) => {
@@ -1363,62 +1359,23 @@ test("direct event import refreshes an anchored signed title despite missing pic
       "merchant"
     )
     const savedStorageKey = `conduit:merchant:discovered-event-markets:v1:${MERCHANT_PUBKEY}`
-    const readSaved = () =>
-      merchantPage.evaluate((key) => {
-        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<
-          Record<string, unknown>
-        >
-        return { count: saved.length, ...saved[0] }
-      }, savedStorageKey)
-    const titleEvidence = {
-      count: 1,
-      reference: market.canonicalNaddr,
-      title: eventTitle,
-      titleCollectionCoordinate: market.collectionCoordinate,
-      titleCollectionCreatedAt: market.initialCollection.created_at * 1_000,
-      titleCollectionEventId: market.initialCollection.id,
-      titleCalendarCoordinate: market.calendarCoordinate,
-      titleCalendarCreatedAt: market.calendarEvent.created_at * 1_000,
-      titleCalendarEventId: market.calendarEvent.id,
-    }
-    await expect
-      .poll(readSaved, { timeout: 30_000 })
-      .toMatchObject(titleEvidence)
     await expect(
       merchantPage.getByText(eventTitle, { exact: true }).first()
-    ).toBeVisible()
+    ).toBeVisible({ timeout: 30_000 })
+    await expect
+      .poll(() =>
+        merchantPage.evaluate(
+          (key) => JSON.parse(localStorage.getItem(key) ?? "[]").length,
+          savedStorageKey
+        )
+      )
+      .toBe(0)
     await expect(
       merchantPage.getByRole("button", { name: "Update event", exact: true })
     ).toHaveCount(0)
 
-    // Retain an exact newer pickup frontier, while the relay can supply only
-    // the older signed pickup. This must not downgrade the saved action evidence.
-    const expectedPickup = signEvent(ORGANIZER_SECRET, {
-      kind: pickup.kind,
-      created_at: pickup.created_at + 10,
-      tags: pickup.tags,
-      content: pickup.content,
-    })
-    const pickupFrontier = {
-      expectedPickupCoordinate: market.pickupCoordinate,
-      expectedPickupCreatedAt: expectedPickup.created_at * 1_000,
-      expectedPickupEventId: expectedPickup.id,
-    }
-    await merchantPage.evaluate(
-      ({ key, frontier }) => {
-        const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<
-          Record<string, unknown>
-        >
-        saved[0] = {
-          ...saved[0],
-          ...frontier,
-        }
-        localStorage.setItem(key, JSON.stringify(saved))
-      },
-      { key: savedStorageKey, frontier: pickupFrontier }
-    )
-    // An existing signed title anchor must advance with newer coherent
-    // collection/calendar evidence even while pickup is genuinely absent.
+    // The exact route still advances with newer coherent collection/calendar
+    // evidence while pickup is genuinely absent.
     const renamedTitle = "Synthetic newer title with unresolved pickup"
     const renamedCalendar = signEvent(ORGANIZER_SECRET, {
       kind: market.calendarEvent.kind,
@@ -1436,36 +1393,35 @@ test("direct event import refreshes an anchored signed title despite missing pic
       ),
       content: market.initialCollection.content,
     })
-    const renamedTitleEvidence = {
-      ...titleEvidence,
-      title: renamedTitle,
-      titleCollectionCreatedAt: renamedCollection.created_at * 1_000,
-      titleCollectionEventId: renamedCollection.id,
-      titleCalendarCreatedAt: renamedCalendar.created_at * 1_000,
-      titleCalendarEventId: renamedCalendar.id,
-    }
     relay.seed(renamedCalendar, renamedCollection)
     await merchantPage.reload()
-    await expect
-      .poll(readSaved, { timeout: 30_000 })
-      .toMatchObject({ ...renamedTitleEvidence, ...pickupFrontier })
     await expect(
       merchantPage.getByText(renamedTitle, { exact: true }).first()
-    ).toBeVisible()
+    ).toBeVisible({ timeout: 30_000 })
+    expect(
+      await merchantPage.evaluate(
+        (key) => JSON.parse(localStorage.getItem(key) ?? "[]").length,
+        savedStorageKey
+      )
+    ).toBe(0)
     await expect(
       merchantPage.getByRole("button", { name: "Update event", exact: true })
     ).toHaveCount(0)
     expect(relay.publications).toHaveLength(publicationCount)
 
-    // Older pickup readback must not lower the retained action frontier either.
+    // Resolving the supporting pickup later must not create a hidden Saved
+    // relationship either.
     relay.seed(pickup)
     await merchantPage.reload()
-    await expect
-      .poll(readSaved, { timeout: 30_000 })
-      .toMatchObject({ ...renamedTitleEvidence, ...pickupFrontier })
     await expect(
       merchantPage.getByText(renamedTitle, { exact: true }).first()
-    ).toBeVisible()
+    ).toBeVisible({ timeout: 30_000 })
+    expect(
+      await merchantPage.evaluate(
+        (key) => JSON.parse(localStorage.getItem(key) ?? "[]").length,
+        savedStorageKey
+      )
+    ).toBe(0)
     await expect(
       merchantPage.getByRole("button", { name: "Update event", exact: true })
     ).toHaveCount(0)
@@ -1475,7 +1431,7 @@ test("direct event import refreshes an anchored signed title despite missing pic
   }
 })
 
-test("current exact resolution refreshes a saved title without replacing its evidence @merchant", async ({
+test("legacy saved rows stay out of the directory and remain unchanged @merchant", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -1516,11 +1472,13 @@ test("current exact resolution refreshes a saved title without replacing its evi
   )
 
   await gotoAs(page, merchantUrl, "/events", "merchant")
-  await expect(page.getByText(eventTitle, { exact: true }).first()).toBeVisible(
-    {
-      timeout: 30_000,
-    }
-  )
+  await expect(page.getByText(eventTitle, { exact: true })).toHaveCount(0)
+  await expect(page.getByText("0 events", { exact: true })).toBeVisible({
+    timeout: 30_000,
+  })
+  await expect(
+    page.getByRole("button", { name: "Saved", exact: true })
+  ).toHaveCount(0)
   await expect
     .poll(() =>
       page.evaluate((key) => {
@@ -1530,7 +1488,20 @@ test("current exact resolution refreshes a saved title without replacing its evi
         return saved[0]
       }, savedStorageKey)
     )
-    .toEqual({ ...expectedSaved, title: eventTitle })
+    .toEqual(expectedSaved)
+
+  await gotoAs(page, merchantUrl, `/events/${hintedReference}`, "merchant")
+  await expect(
+    page.getByRole("heading", { name: eventTitle, exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  expect(
+    await page.evaluate((key) => {
+      const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<
+        Record<string, unknown>
+      >
+      return saved[0]
+    }, savedStorageKey)
+  ).toEqual(expectedSaved)
 })
 
 test("successful event rename keeps the new title cached @merchant", async ({
@@ -1562,7 +1533,7 @@ test("successful event rename keeps the new title cached @merchant", async ({
   expect(updatedCalendar).toBeTruthy()
   expect(eventCoordinate(updatedCalendar!)).toBe(market.calendarCoordinate)
   await expect(
-    page.getByRole("button", { name: `Manage ${renamedTitle}`, exact: true })
+    page.getByRole("heading", { name: renamedTitle, exact: true })
   ).toBeVisible({ timeout: 30_000 })
 
   const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
@@ -1579,7 +1550,7 @@ test("successful event rename keeps the new title cached @merchant", async ({
 
   await page.reload()
   await expect(
-    page.getByRole("button", { name: `Manage ${renamedTitle}`, exact: true })
+    page.getByRole("heading", { name: renamedTitle, exact: true })
   ).toBeVisible({ timeout: 30_000 })
 })
 
@@ -1602,26 +1573,26 @@ async function publishMerchantProductFromEvent(
   await gotoAs(
     page,
     merchantUrl,
-    options.discoveryMode ? "/events" : market.merchantParticipationPath,
+    options.discoveryMode === "followed"
+      ? "/events"
+      : market.merchantParticipationPath,
     options.identity ?? "merchant"
   )
-  await expect(
-    page.getByRole("heading", { name: "Events", exact: true })
-  ).toBeVisible()
-  await expect(
-    page.getByRole("region", { name: "Event discovery", exact: true })
-  ).toBeVisible()
 
   if (options.discoveryMode === "followed") {
+    await expect(
+      page.getByRole("heading", { name: "Events", exact: true })
+    ).toBeVisible()
+    await expect(page.getByLabel("Events timeline")).toBeVisible()
     const openEvent = page.getByRole("button", {
-      name: new RegExp(`^(Sell here|Open|Manage) ${options.eventTitle}$`),
+      name: new RegExp(`^Open ${options.eventTitle}\\.`),
     })
     await expect(openEvent).toBeVisible({ timeout: 30_000 })
     await openEvent.click()
-  } else if (options.discoveryMode === "direct") {
-    await page.getByLabel("Open a known event").fill(market.canonicalNaddr)
-    await page.getByRole("button", { name: "Open", exact: true }).click()
   }
+  await expect(
+    page.getByRole("heading", { name: options.eventTitle, exact: true })
+  ).toBeVisible({ timeout: 30_000 })
   const publishProductButton = page.getByRole("button", {
     name: "Publish product",
     exact: true,
@@ -2030,12 +2001,19 @@ async function acceptMerchantProduct(
 }
 
 async function selectOrganizerMarket(page: Page, title: string): Promise<void> {
-  const manage = page.getByRole("button", {
-    name: `Manage ${title}`,
-    exact: true,
+  const allEvents = page.getByRole("link", { name: "All events", exact: true })
+  if (new URL(page.url()).pathname !== "/events") {
+    await expect(allEvents).toBeVisible({ timeout: 30_000 })
+    await allEvents.click()
+  }
+  await expect(
+    page.getByRole("heading", { name: "Events", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  const open = page.getByRole("button", {
+    name: new RegExp(`^Open ${title}\\.`),
   })
-  await expect(manage).toBeVisible({ timeout: 30_000 })
-  await manage.click()
+  await expect(open).toBeVisible({ timeout: 30_000 })
+  await open.click()
   await expect(
     page.getByRole("heading", { name: title, exact: true }).first()
   ).toBeVisible()
@@ -2319,10 +2297,7 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
   await expect(
     cards.first().getByRole("button", { name: "Alpine Goods", exact: true })
   ).toBeVisible()
-  const about = page.getByRole("button", {
-    name: "About this event",
-    exact: true,
-  })
+  const about = page.getByRole("button", { name: "About", exact: true })
   const share = page.getByRole("button", { name: /^Share event/ })
   const eventSummary = page.getByText(
     "Synthetic browser-only organizer catalog.",
@@ -2727,11 +2702,8 @@ test("late publish completion preserves a newly selected event @merchant", async
     organizerHandoffEnabled: true,
   })
   await expect
-    .poll(
-      () =>
-        new URL(page.url()).searchParams.get("event") === eventA.canonicalNaddr
-    )
-    .toBe(true)
+    .poll(() => new URL(page.url()).pathname, { timeout: 30_000 })
+    .toBe(`/events/${eventA.canonicalNaddr}`)
   let held: HeldRelayRequest
   await publishOrganizerMarket(page, relay, {
     title: "Synthetic Race Event B",
@@ -2749,51 +2721,33 @@ test("late publish completion preserves a newly selected event @merchant", async
     },
     afterEditorClosed: async () => {
       await held.captured
-      await page
-        .getByRole("button", {
-          name: "Manage Synthetic Race Event A",
-          exact: true,
-        })
-        .click()
+      await selectOrganizerMarket(page, "Synthetic Race Event A")
       await expect
-        .poll(
-          () =>
-            new URL(page.url()).searchParams.get("event") ===
-            eventA.canonicalNaddr
-        )
-        .toBe(true)
+        .poll(() => new URL(page.url()).pathname)
+        .toBe(`/events/${eventA.canonicalNaddr}`)
       await expect(
         page.getByRole("heading", {
           name: "Synthetic Race Event A",
           exact: true,
         })
-      ).toHaveCount(2)
+      ).toHaveCount(1)
       held.release()
       // The account mutation stays pending through the final publish callback.
       // Wait for it to settle before proving the newer selection is retained.
       await expect(
-        page.getByRole("button", { name: "Create event", exact: true }).first()
+        page.getByRole("button", { name: "Update event", exact: true })
       ).toBeEnabled()
       await expect
-        .poll(
-          () =>
-            new URL(page.url()).searchParams.get("event") ===
-            eventA.canonicalNaddr
-        )
-        .toBe(true)
+        .poll(() => new URL(page.url()).pathname)
+        .toBe(`/events/${eventA.canonicalNaddr}`)
       await expect(
         page.getByRole("heading", {
           name: "Synthetic Race Event A",
           exact: true,
         })
-      ).toHaveCount(2)
-      // Reopen B so the shared publication helper can verify its saved records.
-      await page
-        .getByRole("button", {
-          name: "Manage Synthetic Race Event B",
-          exact: true,
-        })
-        .click()
+      ).toHaveCount(1)
+      // Reopen B so the shared publication helper can verify its records.
+      await selectOrganizerMarket(page, "Synthetic Race Event B")
     },
   })
 })
@@ -3271,10 +3225,6 @@ test("a late old collection retry ACK preserves a newer same-coordinate update @
   await expect(
     page.getByRole("button", { name: "Update event", exact: true })
   ).toBeDisabled()
-  await expect(
-    page.getByRole("button", { name: "Create event", exact: true }).first()
-  ).toBeDisabled()
-
   const updateStart = relay.publications.length
   await concurrentPage
     .getByRole("button", { name: "Update event", exact: true })
@@ -3541,16 +3491,10 @@ test("terminal event deletion removes the exact-record retry path @merchant", as
   await expect(
     page.getByRole("heading", { name: "Event deleted", exact: true })
   ).toBeVisible({ timeout: 30_000 })
+  await page.getByRole("link", { name: "All events", exact: true }).click()
   await expect(
     page.getByRole("button", {
-      name: "Manage Synthetic Deleted Retry Event",
-      exact: true,
-    })
-  ).toHaveCount(0)
-  await expect(
-    page.getByRole("region", { name: "Event discovery" }).getByRole("heading", {
-      name: "Synthetic Deleted Retry Event",
-      exact: true,
+      name: /^Open Synthetic Deleted Retry Event\./,
     })
   ).toHaveCount(0)
 })
@@ -3591,9 +3535,7 @@ test("organizer actions wait for an initial hinted read and use its newer collec
   })
   const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
   await page.evaluate((key) => localStorage.removeItem(key), savedStorageKey)
-  await gotoAs(page, merchantUrl, "/events", "organizer", {
-    event: unhintedReference,
-  })
+  await gotoAs(page, merchantUrl, `/events/${unhintedReference}`, "organizer")
   const updateEvent = page.getByRole("button", {
     name: "Update event",
     exact: true,
@@ -3623,12 +3565,10 @@ test("organizer actions wait for an initial hinted read and use its newer collec
           filter.kinds?.includes(30405)
       )
   )
-  const catalogReferenceInput = page.getByLabel("Catalog naddr or link")
-  await catalogReferenceInput.fill(hintedReference)
-  await catalogReferenceInput.press("Enter")
+  await gotoAs(page, merchantUrl, `/events/${hintedReference}`, "organizer")
   await expect
-    .poll(() => new URL(page.url()).searchParams.get("event"))
-    .toBe(hintedReference)
+    .poll(() => new URL(page.url()).pathname)
+    .toBe(`/events/${hintedReference}`)
   await hintedRead.captured
 
   await expect
@@ -5895,10 +5835,8 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
     )
   )
 
-  // Keep the explicit naddr fallback covered alongside the new followed feed.
-  await gotoAs(page, merchantUrl, "/events", "merchant")
-  await page.getByLabel("Open a known event").fill(market.canonicalNaddr)
-  await page.getByRole("button", { name: "Open", exact: true }).click()
+  // Keep the canonical direct route covered alongside the followed feed.
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
   await expect(
     page.getByRole("button", { name: "Publish product", exact: true })
   ).toBeVisible({ timeout: 30_000 })
@@ -5951,11 +5889,15 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   ).toBeVisible()
   await organizerTechnicalDetails.click()
 
-  const eventsHeading = page.locator("h1").filter({ hasText: /^Events$/ })
+  const eventHeading = page.getByRole("heading", {
+    name: "Synthetic Merchant Booth Market",
+    exact: true,
+    level: 1,
+  })
   const eventSignPageStyle = page.locator("style[data-event-sign-page-style]")
   await expect(eventSignPageStyle).toHaveCount(0)
   await page.emulateMedia({ media: "print" })
-  await expect(eventsHeading).toBeVisible()
+  await expect(eventHeading).toBeVisible()
   await page.emulateMedia({ media: "screen" })
   await page.getByRole("button", { name: "Print event sign" }).click()
   const printPreview = page.getByTestId("event-sign-print-preview")
@@ -6036,7 +5978,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   )
   expect(nonPreviewDisplays.length).toBeGreaterThan(0)
   expect(nonPreviewDisplays.every((display) => display === "none")).toBe(true)
-  await expect(eventsHeading).toBeHidden()
+  await expect(eventHeading).toBeHidden()
   const eventSignPdf = await page.pdf({
     format: "letter",
     preferCSSPageSize: true,
@@ -6225,9 +6167,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   await expect(printPreview).toBeHidden()
   await page.setViewportSize({ width: 1280, height: 900 })
 
-  await gotoAs(page, merchantUrl, "/events", "merchant", {
-    event: market.canonicalNaddr,
-  })
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
   await expect(
     page.getByRole("button", { name: "Print my event sign" })
   ).toBeVisible({ timeout: 30_000 })

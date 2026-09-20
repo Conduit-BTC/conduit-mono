@@ -228,7 +228,7 @@ export function buildMarketEventCatalogUrl(
   return url.toString()
 }
 
-/** Build a Merchant participation URL that imports one exact event catalog. */
+/** Build a canonical Merchant event-detail URL for one exact event catalog. */
 export function buildMerchantEventParticipationUrl(
   merchantOrigin: string,
   eventNaddr: string
@@ -246,7 +246,6 @@ export function buildMerchantEventParticipationUrl(
   }
 
   const naddr = normalizeExactEventCatalogNaddr(eventNaddr)
-  url.pathname = "/events"
-  url.searchParams.set("event", naddr)
+  url.pathname = `/events/${naddr}`
   return url.toString()
 }

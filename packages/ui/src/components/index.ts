@@ -170,6 +170,7 @@ export {
   type EventMarketCardProps,
   type EventMarketCardStatusTone,
 } from "./EventMarketCard"
+export { EventPageHeader, type EventPageHeaderProps } from "./EventPageHeader"
 export {
   ClaveConnectButton,
   claveConnectUrl,

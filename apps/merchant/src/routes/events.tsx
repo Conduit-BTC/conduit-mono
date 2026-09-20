@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { CalendarDays, Loader2, Plus, Search } from "lucide-react"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, Outlet, useNavigate } from "@tanstack/react-router"
 import {
   useIsMutating,
   useMutation,
@@ -11,6 +11,7 @@ import {
   getNdk,
   readEventMarketReadyReceipts,
   useAuth,
+  useConduitSession,
   type EventMarketOrganizerClaim,
 } from "@conduit/core"
 import {
@@ -29,6 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
   SignedActionStatus,
+  Skeleton,
   type SignedActionStatusState,
 } from "@conduit/ui"
 import { MerchantEventsTimeline } from "../components/MerchantEventsTimeline"
@@ -58,7 +60,6 @@ import {
   retainMerchantOrganizerEventMarkets,
   reconcileAcknowledgedMerchantOrganizerCollectionEvidence,
   resolveOrganizerEventMarket,
-  resolveOrganizerEventMarketRead,
   retryMerchantOrganizerRecord,
   saveOrganizerEventMarketDelivery,
   type MerchantOrganizerEventMarket,
@@ -91,20 +92,50 @@ import {
 } from "../lib/event-market-workflow"
 import { parseMerchantEventsSearch } from "../lib/market-links"
 import {
+  getSettledMerchantEventMarketRead,
+  merchantEventMarketQueryIdentity,
+  merchantEventMarketQueryOptions,
+} from "../lib/merchant-event-query"
+import {
   acknowledgeOrganizerHandoff,
   loadEventMarketHandoffDeliveries,
   resolveOrganizerHandoffAckReadiness,
   resolveOrganizerHandoffMerchandise,
 } from "../lib/event-market-handoff"
-import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/events")({
   validateSearch: parseMerchantEventsSearch,
-  beforeLoad: ({ search }) => {
-    requireAuth({ event: search.event })
-  },
-  component: EventsPage,
+  component: EventsLayout,
 })
+
+function EventsLayout() {
+  const { event } = Route.useSearch()
+  const navigate = useNavigate({ from: Route.fullPath })
+
+  useEffect(() => {
+    if (!event) return
+    void navigate({
+      to: "/events/$collectionRef",
+      params: { collectionRef: event },
+      search: {},
+      replace: true,
+    })
+  }, [event, navigate])
+
+  if (event) {
+    return (
+      <div
+        className="flex min-h-48 items-center justify-center gap-2 text-sm text-[var(--text-muted)]"
+        aria-busy="true"
+      >
+        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+        Opening event…
+      </div>
+    )
+  }
+
+  return <Outlet />
+}
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim()
@@ -174,12 +205,8 @@ function titleEventMarketFrontiers(
   }
 }
 
-function EventsPage() {
-  const { pubkey, status, authGeneration } = useAuth()
-  const authGenerationRef = useRef(authGeneration)
-  useLayoutEffect(() => {
-    authGenerationRef.current = authGeneration
-  }, [authGeneration])
+export function EventsDirectoryPage() {
+  const { pubkey } = useAuth()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
   const merchantPubkey = pubkey ?? ""
@@ -189,40 +216,17 @@ function EventsPage() {
         mutation.options.scope?.id ===
         `merchant-organizer-event-authority:${merchantPubkey}`,
     }) > 0
-  const [createRevision, setCreateRevision] = useState(0)
-  const selectedOrganizerPubkey = useMemo(() => {
-    if (!search.event) return null
-    try {
-      return parseOrganizerEventMarketReference(search.event).coordinate.split(
-        ":"
-      )[1]
-    } catch {
-      return null
-    }
-  }, [search.event])
-  const selectedIsOwned = selectedOrganizerPubkey === merchantPubkey
-
   function openEvent(reference: string): void {
-    setCreateRevision(0)
-    navigate({
-      search: (previous) => ({ ...previous, event: reference }),
-      replace: true,
+    void navigate({
+      to: "/events/$collectionRef",
+      params: { collectionRef: reference },
+      search: {},
     })
   }
 
   function createEvent(): void {
-    setCreateRevision((current) => current + 1)
-    navigate({
-      search: (previous) => {
-        const next = { ...previous }
-        delete next.event
-        return next
-      },
-      replace: true,
-    })
+    void navigate({ to: "/events/new", search: {} })
   }
-  const authenticatedPubkey = status === "connected" ? pubkey : null
-  const shouldContinue = () => authGenerationRef.current === authGeneration
 
   return (
     <div className="mx-auto max-w-[68rem] space-y-6 py-2 sm:py-6">
@@ -248,98 +252,41 @@ function EventsPage() {
 
       <MerchantEventsTimeline
         merchantPubkey={merchantPubkey}
-        currentReference={search.event}
-        search={{ relation: search.relation, window: search.window }}
+        search={{ relation: search.relation }}
         onSearchChange={(next) =>
           navigate({
-            search: (previous) => ({
-              ...previous,
+            to: "/events",
+            search: {
               relation:
                 !next.relation || next.relation === "all"
                   ? undefined
                   : next.relation,
-              window:
-                !next.window || next.window === "upcoming"
-                  ? undefined
-                  : next.window,
-            }),
+            },
             replace: true,
           })
         }
         onOpen={openEvent}
+        onCreate={createEvent}
+        createDisabled={organizerMutationPending}
       />
-
-      {createRevision > 0 ? (
-        <MyEventsPanel
-          key={`${merchantPubkey}:create:${createRevision}`}
-          organizerPubkey={merchantPubkey}
-          authenticatedPubkey={authenticatedPubkey}
-          shouldContinue={shouldContinue}
-          embedded
-          startCreate
-          onPublished={openEvent}
-          onSelected={openEvent}
-        />
-      ) : search.event ? (
-        selectedIsOwned ? (
-          <MyEventsPanel
-            key={`${merchantPubkey}:${search.event}`}
-            organizerPubkey={merchantPubkey}
-            initialReference={search.event}
-            embedded
-            onPublished={openEvent}
-            onSelected={openEvent}
-            authenticatedPubkey={authenticatedPubkey}
-            shouldContinue={shouldContinue}
-          />
-        ) : (
-          <FindEventsPanel
-            key={`${merchantPubkey}:${search.event}`}
-            merchantPubkey={merchantPubkey}
-            authenticatedPubkey={authenticatedPubkey}
-            shouldContinue={shouldContinue}
-            initialReference={search.event}
-            embedded
-          />
-        )
-      ) : (
-        <Card className="border-dashed">
-          <CardContent className="px-6 py-8 text-center text-sm leading-6 text-[var(--text-muted)]">
-            Select an event above to sell, manage products, or coordinate
-            pickup. You can also create a new organizer event.
-          </CardContent>
-        </Card>
-      )}
     </div>
   )
 }
 
 function loadInitialDiscoveredSelection(
-  merchantPubkey: string,
+  _merchantPubkey: string,
   initialReference: string | undefined
 ): {
   references: SavedOrganizerEventMarketReference[]
   selectedReference: string
 } {
-  const references = loadSavedDiscoveredEventMarkets(merchantPubkey)
-  if (!initialReference) return { references, selectedReference: "" }
-  const saved = findSavedOrganizerEventMarketReference(
-    references,
-    initialReference
-  )
-  if (saved) {
-    return { references, selectedReference: saved.reference }
-  }
   return {
-    references: [
-      { reference: initialReference, savedAt: Date.now() },
-      ...references,
-    ],
-    selectedReference: initialReference,
+    references: [],
+    selectedReference: initialReference ?? "",
   }
 }
 
-function FindEventsPanel({
+export function FindEventsPanel({
   merchantPubkey,
   authenticatedPubkey,
   shouldContinue,
@@ -349,9 +296,17 @@ function FindEventsPanel({
   merchantPubkey: string
   authenticatedPubkey: string | null
   shouldContinue: () => boolean
-  initialReference?: string
+  initialReference: string
   embedded?: boolean
 }) {
+  const queryClient = useQueryClient()
+  const session = useConduitSession()
+  const { authGeneration } = useAuth()
+  const queryScopeToken = `${session.relayScope ?? "no-relay-scope"}:${authenticatedPubkey ?? "disconnected"}:${authGeneration}`
+  const queryScopeTokenRef = useRef(queryScopeToken)
+  useLayoutEffect(() => {
+    queryScopeTokenRef.current = queryScopeToken
+  }, [queryScopeToken])
   const [initialSelection] = useState(() =>
     loadInitialDiscoveredSelection(merchantPubkey, initialReference)
   )
@@ -366,17 +321,8 @@ function FindEventsPanel({
 
   useEffect(() => {
     if (!initialReference) return
-    const saved = rememberDiscoveredEventMarket(merchantPubkey, {
-      reference: initialReference,
-      savedAt: Date.now(),
-    })
-    const selected = findSavedOrganizerEventMarketReference(
-      saved,
-      initialReference
-    )
-    if (saved.length > 0) setSavedReferences(saved)
-    setSelectedReference(selected?.reference ?? initialReference)
-  }, [initialReference, merchantPubkey])
+    setSelectedReference(initialReference)
+  }, [initialReference])
 
   const discoveryQuery = useQuery({
     queryKey: [
@@ -444,24 +390,25 @@ function FindEventsPanel({
     : undefined
 
   const selectedMarketQuery = useQuery({
-    queryKey: [
-      "merchant-discovered-event-market",
-      merchantPubkey || "none",
-      authenticatedPubkey ?? "disconnected",
-      selectedReference || "none",
-    ],
-    enabled: !!merchantPubkey && !!selectedReference,
-    queryFn: ({ signal }) =>
-      resolveOrganizerEventMarket(
-        selectedReference,
-        undefined,
+    ...merchantEventMarketQueryOptions(
+      queryClient,
+      selectedReference,
+      {
+        relayScope: session.relayScope,
         authenticatedPubkey,
-        signal,
-        () => !signal.aborted && shouldContinue()
-      ),
-    retry: false,
+        authGeneration,
+      },
+      () => shouldContinue() && queryScopeTokenRef.current === queryScopeToken
+    ),
+    enabled:
+      session.relaySettingsReady && !!merchantPubkey && !!selectedReference,
   })
-  const selectedMarket = selectedMarketQuery.data ?? null
+  const selectedRead = selectedMarketQuery.data?.read ?? null
+  const selectedMarket =
+    selectedRead && !("terminal" in selectedRead) ? selectedRead : null
+  const settledRead = getSettledMerchantEventMarketRead(selectedMarketQuery)
+  const selectedMarketActionReady =
+    !!settledRead && !("terminal" in settledRead)
 
   useEffect(() => {
     if (
@@ -721,34 +668,53 @@ function FindEventsPanel({
 
       {!!selectedReference && selectedMarketQuery.isPending && (
         <div
-          className="flex min-h-48 items-center justify-center gap-2 text-sm text-[var(--text-muted)]"
+          className="space-y-4"
           aria-busy="true"
+          aria-label="Loading event details"
+          role="status"
         >
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Loading current event details…
+          <span className="sr-only">Loading current event details…</span>
+          <Skeleton className="aspect-[3/1] w-full rounded-xl" />
+          <Skeleton className="h-10 w-2/3 max-w-xl" />
+          <Skeleton className="h-5 w-1/2 max-w-md" />
+          <Skeleton className="h-5 w-1/3 max-w-xs" />
         </div>
       )}
 
-      {!!selectedReference && selectedMarketQuery.isError && (
+      {!!selectedReference &&
+        selectedMarketQuery.isError &&
+        !selectedMarket && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Event details couldn't be confirmed</CardTitle>
+              <CardDescription className="text-pretty">
+                The event is not shown because its organizer, schedule, links,
+                or supporting records could not be verified.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => selectedMarketQuery.refetch()}
+              >
+                Retry event details
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+      {selectedRead && "terminal" in selectedRead ? (
         <Card>
           <CardHeader>
-            <CardTitle>Event details couldn't be confirmed</CardTitle>
+            <CardTitle>Event is no longer available</CardTitle>
             <CardDescription className="text-pretty">
-              The event is not shown because its organizer, schedule, links, or
-              supporting records could not be verified.
+              The organizer deleted the signed event record. It remains
+              addressable for history, but selling actions are unavailable.
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => selectedMarketQuery.refetch()}
-            >
-              Retry event details
-            </Button>
-          </CardContent>
         </Card>
-      )}
+      ) : null}
 
       {selectedMarket && (
         <MerchantEventMarketPanel
@@ -756,6 +722,7 @@ function FindEventsPanel({
           authenticatedPubkey={authenticatedPubkey}
           shouldContinue={shouldContinue}
           market={selectedMarket}
+          actionReady={selectedMarketActionReady}
           refreshing={
             discoveryQuery.isFetching || selectedMarketQuery.isFetching
           }
@@ -771,7 +738,7 @@ function FindEventsPanel({
   )
 }
 
-function MyEventsPanel({
+export function MyEventsPanel({
   organizerPubkey,
   authenticatedPubkey,
   shouldContinue,
@@ -780,6 +747,7 @@ function MyEventsPanel({
   startCreate = false,
   onPublished,
   onSelected,
+  onCreateDismiss,
 }: {
   organizerPubkey: string
   authenticatedPubkey: string | null
@@ -789,6 +757,7 @@ function MyEventsPanel({
   startCreate?: boolean
   onPublished?: (reference: string) => void
   onSelected?: (reference: string) => void
+  onCreateDismiss?: () => void
 }) {
   const initiatingPanelMounted = useRef(true)
   useLayoutEffect(() => {
@@ -798,6 +767,13 @@ function MyEventsPanel({
     }
   }, [])
   const queryClient = useQueryClient()
+  const session = useConduitSession()
+  const { authGeneration } = useAuth()
+  const queryScopeToken = `${session.relayScope ?? "no-relay-scope"}:${authenticatedPubkey ?? "disconnected"}:${authGeneration}`
+  const queryScopeTokenRef = useRef(queryScopeToken)
+  useLayoutEffect(() => {
+    queryScopeTokenRef.current = queryScopeToken
+  }, [queryScopeToken])
   const organizerAuthorityMutationScope = useMemo(
     () => ({ id: `merchant-organizer-event-authority:${organizerPubkey}` }),
     [organizerPubkey]
@@ -949,29 +925,29 @@ function MyEventsPanel({
       selectedSavedReference
     )
   const selectedMarketQuery = useQuery({
-    queryKey: [
-      "merchant-organizer-event-market",
-      organizerPubkey || "none",
-      selectedReference || "none",
-    ],
+    ...merchantEventMarketQueryOptions(
+      queryClient,
+      selectedReference || `30405:${organizerPubkey}:new-event`,
+      {
+        relayScope: session.relayScope,
+        authenticatedPubkey,
+        authGeneration,
+      },
+      () => shouldContinue() && queryScopeTokenRef.current === queryScopeToken
+    ),
     enabled:
+      session.relaySettingsReady &&
       !!organizerPubkey &&
       !!selectedReference &&
       shouldResolveSelectedReference,
-    queryFn: ({ signal }) =>
-      resolveOrganizerEventMarketRead(
-        selectedReference,
-        organizerPubkey,
-        authenticatedPubkey,
-        signal,
-        () => !signal.aborted && shouldContinue()
-      ),
-    retry: false,
   })
+  const selectedProgressRead = selectedMarketQuery.data?.read
+  const selectedSettledRead =
+    getSettledMerchantEventMarketRead(selectedMarketQuery)
   const selectedResolution =
     selectOrganizerEventMarketResolution(
       selectedListMarket,
-      selectedMarketQuery.data,
+      selectedProgressRead,
       selectedSavedReference
     ) ?? null
   const selectedDeletion =
@@ -1023,7 +999,7 @@ function MyEventsPanel({
     [deliveriesByReference, selectedIdentity?.coordinate, selectedMarket]
   )
   const selectedReferenceResolutionPending =
-    shouldResolveSelectedReference && selectedMarketQuery.isPending
+    shouldResolveSelectedReference && !selectedSettledRead
   const selectedMembershipActionableMarket =
     !selectedReferenceResolutionPending &&
     selectedPresentedMarket &&
@@ -1135,8 +1111,13 @@ function MyEventsPanel({
   ])
 
   async function refreshMarketQueries(reference: string): Promise<void> {
+    const identity = merchantEventMarketQueryIdentity(reference, {
+      relayScope: session.relayScope,
+      authenticatedPubkey,
+      authGeneration,
+    })
     await queryClient.invalidateQueries({
-      queryKey: ["merchant-organizer-event-market", organizerPubkey, reference],
+      queryKey: identity.queryKey,
     })
     await queryClient.invalidateQueries({
       queryKey: ["merchant-organizer-event-markets", organizerPubkey],
@@ -1648,97 +1629,104 @@ function MyEventsPanel({
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)]">
-            {embedded ? "Organizer tools" : "My events"}
-          </h2>
-          <p className="mt-2 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Create organizer-owned events, review merchant product requests, and
-            coordinate pickup handoffs.
-          </p>
-        </div>
-        <Button
-          type="button"
-          disabled={organizerAuthorityMutationPending}
-          onClick={openCreate}
-        >
-          <Plus />
-          Create event
-        </Button>
-      </header>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Open an organizer catalog</CardTitle>
-          <CardDescription>
-            Choose a saved event or open one from its naddr or Market share
-            link.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 lg:grid-cols-2">
-          <div className="grid gap-1.5">
-            <Label htmlFor="event-market-selector">Your saved events</Label>
-            <Select
-              value={selectedReference || undefined}
-              onValueChange={(reference) => {
-                setSelectedReference(reference)
-                onSelected?.(reference)
-              }}
-              disabled={allReferences.length === 0}
-            >
-              <SelectTrigger id="event-market-selector">
-                <SelectValue
-                  placeholder={
-                    marketsQuery.isPending
-                      ? "Loading events..."
-                      : "No saved event markets"
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {allReferences.map((reference) => (
-                  <SelectItem
-                    key={reference.reference}
-                    value={reference.reference}
-                  >
-                    {referenceLabel(
-                      reference,
-                      selectedMarket ? [selectedMarket, ...markets] : markets
-                    )}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <form className="grid gap-1.5" onSubmit={handleImport}>
-            <Label htmlFor="event-market-import">Catalog naddr or link</Label>
-            <div className="flex gap-2">
-              <Input
-                id="event-market-import"
-                value={importValue}
-                onChange={(event) => setImportValue(event.target.value)}
-                placeholder="naddr1... or https://..."
-                aria-invalid={!!importError}
-              />
-              <Button
-                type="submit"
-                variant="outline"
-                disabled={!importValue.trim()}
-              >
-                <Search />
-                Open
-              </Button>
-            </div>
-            {importError && (
-              <p className="text-xs leading-5 text-error" role="alert">
-                {importError}
+      {!embedded ? (
+        <>
+          <header className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)]">
+                My events
+              </h2>
+              <p className="mt-2 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+                Create organizer-owned events, review merchant product requests,
+                and coordinate pickup handoffs.
               </p>
-            )}
-          </form>
-        </CardContent>
-      </Card>
+            </div>
+            <Button
+              type="button"
+              disabled={organizerAuthorityMutationPending}
+              onClick={openCreate}
+            >
+              <Plus />
+              Create event
+            </Button>
+          </header>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Open an organizer catalog</CardTitle>
+              <CardDescription>
+                Choose an event or open one from its naddr or Market share link.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-4 lg:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="event-market-selector">Your events</Label>
+                <Select
+                  value={selectedReference || undefined}
+                  onValueChange={(reference) => {
+                    setSelectedReference(reference)
+                    onSelected?.(reference)
+                  }}
+                  disabled={allReferences.length === 0}
+                >
+                  <SelectTrigger id="event-market-selector">
+                    <SelectValue
+                      placeholder={
+                        marketsQuery.isPending
+                          ? "Loading events..."
+                          : "No events yet"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {allReferences.map((reference) => (
+                      <SelectItem
+                        key={reference.reference}
+                        value={reference.reference}
+                      >
+                        {referenceLabel(
+                          reference,
+                          selectedMarket
+                            ? [selectedMarket, ...markets]
+                            : markets
+                        )}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <form className="grid gap-1.5" onSubmit={handleImport}>
+                <Label htmlFor="event-market-import">
+                  Catalog naddr or link
+                </Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="event-market-import"
+                    value={importValue}
+                    onChange={(event) => setImportValue(event.target.value)}
+                    placeholder="naddr1... or https://..."
+                    aria-invalid={!!importError}
+                  />
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    disabled={!importValue.trim()}
+                  >
+                    <Search />
+                    Open
+                  </Button>
+                </div>
+                {importError && (
+                  <p className="text-xs leading-5 text-error" role="alert">
+                    {importError}
+                  </p>
+                )}
+              </form>
+            </CardContent>
+          </Card>
+        </>
+      ) : null}
 
       {publishState !== "idle" && !editorOpen && (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
@@ -1951,12 +1939,17 @@ function MyEventsPanel({
             }}
             onRetryDelivery={retryDelivery}
           />
-          {selectedHandoffActionableMarket && (
+          {selectedMarket && (
             <MerchantEventMarketPanel
               merchantPubkey={organizerPubkey}
               authenticatedPubkey={authenticatedPubkey}
               shouldContinue={shouldContinue}
-              market={selectedHandoffActionableMarket}
+              market={
+                selectedHandoffActionableMarket ??
+                selectedPresentedMarket ??
+                selectedMarket
+              }
+              actionReady={!!selectedHandoffActionableMarket}
               refreshing={selectedMarketQuery.isFetching}
               onRefresh={() => refreshMarketQueries(selectedReference)}
               compact
@@ -2082,6 +2075,7 @@ function MyEventsPanel({
         onOpenChange={(open) => {
           setEditorOpen(open)
           if (!open) setEditingMarket(null)
+          if (!open && startCreate && !editingMarket) onCreateDismiss?.()
         }}
         onSubmit={(form) => {
           publishMutation.mutate({ form, existing: editingMarket })

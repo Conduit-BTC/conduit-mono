@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useState } from "react"
 import {
   AlertTriangle,
-  CalendarDays,
   Check,
   Copy,
   ExternalLink,
   ImageOff,
-  MapPin,
   Printer,
   RefreshCw,
   Trash2,
@@ -35,6 +33,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  EventPageHeader,
   eventMarketRequiredRecordsResolved,
   formatEventRelayReadCoverage,
   getEventActionabilityPresentation,
@@ -721,98 +720,99 @@ export function OrganizerEventMarketPanel({
         />
       )}
 
-      <Card className="overflow-hidden">
-        {market.imageUrl && (
-          <img
-            src={market.imageUrl}
-            alt=""
-            className="h-52 w-full bg-[var(--surface-elevated)] object-contain"
-          />
-        )}
-        <CardHeader>
-          <div>
-            {actionability.visibility === "inline" ? (
-              <Badge variant={actionability.tone}>{actionability.label}</Badge>
-            ) : null}
-            <CardTitle className="mt-3 text-balance text-2xl">
-              {market.title}
-            </CardTitle>
-            <CardDescription className="mt-2 max-w-2xl text-pretty leading-6">
-              {market.summary ?? "No public event summary."}
-            </CardDescription>
+      <EventPageHeader
+        title={market.title}
+        summary={market.summary}
+        imageUrl={market.imageUrl}
+        schedule={formatSchedule(market)}
+        location={
+          market.eventLocation || market.eventGeohash || "Location not provided"
+        }
+        organizer={
+          <div className="min-w-0">
+            <span>Organized by </span>
+            <EventActorName
+              pubkey={market.organizerPubkey}
+              profile={eventActorProfile(market.organizerPubkey)}
+              className="inline text-sm"
+            />
+            <EventActorProvenance
+              pubkey={market.organizerPubkey}
+              copyLabel="Copy organizer signer npub"
+              className="mt-0.5 max-w-full text-xs"
+            />
           </div>
-          {actionability.visibility === "inline" ? (
+        }
+        actions={
+          <>
+            {showEdit ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={actionsDisabled}
+                onClick={onEdit}
+              >
+                Update event
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={refreshing}
+              onClick={onRefresh}
+            >
+              <RefreshCw className={refreshing ? "animate-spin" : ""} />
+              Refresh evidence
+            </Button>
+          </>
+        }
+        shareUrl={shopperUrl}
+        shareTitle={market.title}
+      >
+        {actionability.visibility === "inline" ? (
+          <div className="space-y-2">
+            <Badge variant={actionability.tone}>{actionability.label}</Badge>
             <p
               className="text-pretty text-sm font-medium text-[var(--text-secondary)]"
               data-testid="organizer-event-actionability-status"
             >
               {actionability.message}
             </p>
-          ) : null}
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 text-sm sm:grid-cols-2">
-            <div className="flex gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-              <CalendarDays className="mt-0.5 h-4 w-4 shrink-0 text-primary-400" />
-              <div>
-                <div className="font-medium text-[var(--text-primary)]">
-                  {formatSchedule(market)}
-                </div>
-                {market.timezone && (
-                  <div className="mt-1 text-xs text-[var(--text-muted)]">
-                    {market.timezone}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="flex gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-              <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-secondary-400" />
-              <div>
-                <div className="font-medium text-[var(--text-primary)]">
-                  {market.pickupCoordinate
-                    ? market.source.pickup
-                      ? market.pickupTitle
-                      : "Organizer handoff unresolved"
-                    : "Organizer handoff not offered"}
-                </div>
-                <div className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
-                  {market.pickupCoordinate && market.source.pickup ? (
-                    <>
-                      {market.pickupLocation ??
-                        market.pickupGeohash ??
-                        "Missing"}
-                      {" · "}
-                      {Number(market.pickupPrice ?? "0") === 0
-                        ? "No added pickup fee"
-                        : `${market.pickupPrice} ${market.pickupCurrency ?? "SAT"}`}
-                    </>
-                  ) : market.pickupCoordinate ? (
-                    "Current organizer handoff terms could not be resolved."
-                  ) : (
-                    "Merchants can still offer their own pickup point."
-                  )}
-                </div>
-              </div>
-            </div>
           </div>
+        ) : null}
+      </EventPageHeader>
 
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-            <div className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
-              Organizer signer
-            </div>
-            <div className="mt-1 min-w-0">
-              <EventActorName
-                pubkey={market.organizerPubkey}
-                profile={eventActorProfile(market.organizerPubkey)}
-                className="block text-sm"
-              />
-              <EventActorProvenance
-                pubkey={market.organizerPubkey}
-                copyLabel="Copy organizer signer npub"
-                className="mt-0.5 max-w-full text-xs"
-              />
-            </div>
-          </div>
+      <Card>
+        <CardContent className="space-y-4 pt-6">
+          <section className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+            <h2 className="text-balance text-sm font-semibold text-[var(--text-primary)]">
+              Organizer handoff
+            </h2>
+            <p className="text-sm font-medium text-[var(--text-primary)]">
+              {market.pickupCoordinate
+                ? market.source.pickup
+                  ? market.pickupTitle
+                  : "Organizer handoff unresolved"
+                : "Organizer handoff not offered"}
+            </p>
+            <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
+              {market.pickupCoordinate && market.source.pickup ? (
+                <>
+                  {market.pickupLocation ?? market.pickupGeohash ?? "Missing"}
+                  {" · "}
+                  {Number(market.pickupPrice ?? "0") === 0
+                    ? "No added pickup fee"
+                    : `${market.pickupPrice} ${market.pickupCurrency ?? "SAT"}`}
+                </>
+              ) : market.pickupCoordinate ? (
+                "Current organizer handoff terms could not be resolved."
+              ) : (
+                "Merchants can still offer their own pickup point."
+              )}
+            </p>
+          </section>
 
           <section
             className="space-y-2 rounded-xl border border-[var(--border)] p-3"
@@ -856,28 +856,6 @@ export function OrganizerEventMarketPanel({
               </p>
             )}
           </section>
-
-          <div className="flex flex-wrap gap-2">
-            {showEdit && (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={actionsDisabled}
-                onClick={onEdit}
-              >
-                Update event
-              </Button>
-            )}
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={refreshing}
-              onClick={onRefresh}
-            >
-              <RefreshCw className={refreshing ? "animate-spin" : ""} />
-              Refresh evidence
-            </Button>
-          </div>
           {market.state === "partial" && !recordsResolved ? (
             <div className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
               Current event details could not be confirmed. Updating the event
