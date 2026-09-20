@@ -5,6 +5,10 @@ private-message boundary, the separation between general direct messages and
 order-linked conversations, and the visible degraded/retry contract that keeps
 undecryptable messages from silently disappearing.
 
+> **App-relay implementation status:** App Relays and Your Relays references in
+> this document are an accepted staged contract. They are not current client
+> behavior until the paired implementation lands.
+
 References:
 
 - Transport and event kinds: `docs/specs/protocol.md` ("Messaging Transport: NIP-17")

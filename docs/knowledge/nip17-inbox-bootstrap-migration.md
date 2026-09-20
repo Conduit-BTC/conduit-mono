@@ -5,6 +5,10 @@ enabled for deployment, and production disabled. Hosted staging activation and
 the reviewed synthetic smoke remain pending. Owner: Conduit release maintainer.
 Started: 2026-08. Next review: 2026-09-12 and before production activation.
 
+> **App-relay implementation status:** The App Relays and Your Relays additions
+> in this migration note are an accepted staged contract. They are not current
+> client behavior until the paired implementation lands.
+
 ## Why this exists
 
 Strict kind `10050` routing became an availability gate before users had a
@@ -24,10 +28,13 @@ settings change cannot silently erase a previously validated signed event.
 
 The shared Network surface exposes enabled-by-default App Relays separately
 from personal NIP-65 routes. A valid owner's `kind:10050` remains active for
-inbox reads even when the Your Relays NIP-65 layer is disabled. For complete
-first-time absence, an exact reviewed **Match Conduit defaults** action may
-publish both NIP-65 and NIP-17 events through the sole Network mutation owner.
-This setup path does not make App Relays a replacement for NIP-17 authority.
+inbox reads and remains visibly editable in Your Relays even when personal
+NIP-65 routing is disabled. When complete bounded reconciliation observes
+neither setup event and retains no valid frontier, an exact reviewed **Match
+Conduit defaults** action may publish both NIP-65 and NIP-17 events through the
+sole Network mutation owner. The review warns that signed preferences may exist
+outside the queried plan. This setup path does not make App Relays a replacement
+for NIP-17 authority.
 
 The principal's own compatibility/declared inbox read is an explicitly
 protected operation when the client is signed in. It uses the NDK-neutral
@@ -251,8 +258,8 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
 - Reconnect or reset: reconstruct personal membership from validated published
   `kind:10002` and `kind:10050` evidence and compose it with the enabled App
   Relay policy. Unpublished legacy membership and migration records are ignored.
-  Complete first-time absence may offer exact reviewed Match Conduit defaults;
-  partial or unavailable discovery offers Retry instead.
+  Complete scoped absence may offer exact reviewed Match Conduit defaults with
+  an unseen-state warning; partial or unavailable discovery offers Retry instead.
 - Complete-empty or partial rediscovery after a valid declaration: the retained
   frontier becomes stale/degraded but remains the declared route; it is not
   deleted.

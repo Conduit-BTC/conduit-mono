@@ -348,6 +348,10 @@ Lightning address (`lud16`) and NWC/WebLN readiness can contribute to payment el
 
 ## Relay Settings
 
+> **App-relay implementation status:** The App Relays and Your Relays additions
+> in this section are an accepted staged contract. They are not current client
+> behavior until the paired implementation lands.
+
 Merchant's `/network` route is a navigation shell around the same shared
 account-level Network experience used by Market. The state model, controls,
 ordering, mutation flow, and copy must not diverge between the two apps. The
@@ -357,9 +361,10 @@ durable contract lives in
 The screen presents two equal, transparent sections:
 
 - **App Relays** is the versioned Conduit baseline and starts enabled.
-- **Your Relays** projects NIP-65 `kind:10002` Read and Publish membership and
-  is additive when enabled. It starts disabled only when complete bounded
-  discovery confirms that the account has never published a usable list.
+- **Your Relays** displays signed NIP-65 `kind:10002` Read/Publish and owner
+  NIP-17 `kind:10050` Private inbox membership. Its local switch controls only
+  additive NIP-65 routing and starts disabled only after complete scoped absence
+  with no retained NIP-65 frontier.
 
 NIP-17 `kind:10050` remains the separate signed private-inbox authority. A valid
 merchant declaration stays active for order/message reads regardless of the
@@ -401,12 +406,15 @@ const inboxRelayEvent = {
 
 Do not use retired Conduit relay hosts in active Merchant docs or examples.
 
-For confirmed first-time setup, **Match Conduit defaults** reviews the exact
-NIP-65 and NIP-17 changes and publishes only changed kinds through the sole
-shared mutation owner. Every required signature and immutable retry checkpoint
-exists before publication. Existing setups use **Add missing Conduit defaults**
-and preserve personal tags and exclusions. Partial/unavailable discovery and
-current `signed_empty` or `malformed` frontiers never authorize silent repair.
+When neither setup event is observed within a complete bounded plan and no valid
+frontier is retained, **Match Conduit defaults** reviews the exact NIP-65 and
+NIP-17 changes and warns that publishing may supersede preferences stored
+outside that plan. It publishes only changed kinds through the sole shared
+mutation owner. Every required signature and immutable retry checkpoint exists
+before publication. Existing observed setups use **Add missing Conduit
+defaults** and preserve personal tags and exclusions. Partial/unavailable
+discovery and current `signed_empty` or `malformed` frontiers never authorize
+silent repair.
 
 When complete bounded discovery resolves a recipient to `not_observed`, a
 separately flagged compatibility plan may deliver only validated kind-16 order

@@ -1,5 +1,9 @@
 # Conduit Relay Architecture
 
+> **App-relay implementation status:** The App Relays and Your Relays additions
+> in this document are an accepted staged contract. They are not current client
+> behavior until the paired implementation lands.
+
 ## Executive Summary
 
 Conduit presents relay configuration as one account-level Network experience.
@@ -10,9 +14,10 @@ plan has two transparent layers:
 - **App Relays:** a versioned, code-owned Conduit registry that is enabled by
   default and supplies bounded baseline read, publish, and compatibility-inbox
   routes for the operations assigned to each entry.
-- **Your Relays:** the account's signed NIP-65 `kind:10002` read and publish
-  preferences. This layer is enabled alongside App Relays when selected; it
-  does not replace them unless the owner explicitly disables App Relays.
+- **Your Relays:** one visible editor for the account's signed NIP-65
+  `kind:10002` read/publish preferences and owner NIP-17 `kind:10050` private
+  inboxes. Its local toggle controls only NIP-65 participation alongside App
+  Relays; it never suppresses or hides valid owner inbox membership.
 
 The account configuration is projected from two independent signed Nostr
 objects:
@@ -135,15 +140,14 @@ Relays layer.
 
 The initial role matrix is:
 
-| Relay     | App roles                                                                     | Match Defaults preset     |
-| --------- | ----------------------------------------------------------------------------- | ------------------------- |
-| Conduit   | General read/write, commerce, private inbox                                   | NIP-65 read/write; NIP-17 |
-| Ditto     | General read/write, commerce, private inbox                                   | NIP-65 read/write; NIP-17 |
-| Dreamith  | General read/write; no commerce or protected inbox until separately qualified | NIP-65 read/write         |
-| Primal    | Public write                                                                  | NIP-65 write              |
-| Damus     | Public write                                                                  | None                      |
-| `nos.lol` | Scoped general read                                                           | None                      |
-| Plebeian  | Scoped commerce discovery read                                                | None                      |
+| Relay                 | App roles                                                                     | Match Defaults preset     |
+| --------------------- | ----------------------------------------------------------------------------- | ------------------------- |
+| Conduit Relay         | General read/write, commerce, private inbox                                   | NIP-65 read/write; NIP-17 |
+| Ditto Relay           | General read/write, commerce, private inbox                                   | NIP-65 read/write; NIP-17 |
+| Dreamith Relay        | General read/write; no commerce or protected inbox until separately qualified | NIP-65 read/write         |
+| Primal Public Relay   | Public write                                                                  | NIP-65 write              |
+| `nos.lol`             | Scoped general read                                                           | None                      |
+| Plebeian Market Relay | Scoped commerce discovery read                                                | None                      |
 
 The registry stores normalized URLs; display names above are descriptive and
 may be replaced by validated NIP-11 presentation metadata without changing the
@@ -268,12 +272,12 @@ Unpublished legacy local Network settings and their migration markers are
 disposable and ignored. They do not seed a review draft, recovery batch, retry,
 or signed relay membership.
 
-App Relays initialize enabled. Your Relays initialize disabled only after a
-complete bounded reconciliation establishes `kind:10002` scoped absence and no
-retained valid frontier exists. A valid existing NIP-65 frontier initializes or
-migrates Your Relays enabled. Partial or unavailable discovery remains unknown,
-preserves an existing local choice, and must not be treated as first-time
-absence. A valid owner `kind:10050` declaration remains eligible for private
+App Relays initialize enabled. Personal NIP-65 routing initializes disabled only
+after a complete bounded reconciliation establishes `kind:10002` absence within
+the queried plan and no retained valid frontier exists. A valid existing NIP-65
+frontier initializes or migrates personal routing enabled. Partial or unavailable
+discovery remains unknown and preserves an existing local choice. A valid owner
+`kind:10050` declaration remains visible, editable, and eligible for private
 inbox reads independently of both initialization and the Your Relays toggle.
 
 Current-protocol signed evidence, exact pending checkpoints, causal exclusions,
@@ -398,14 +402,32 @@ Nostr.
 
 ### App Relays and Your Relays
 
-The screen contains two equal, transparent sections:
+The screen contains two transparent layers:
 
-- **App Relays** lists the current versioned Conduit defaults, their assigned
-  Read or Publish directions, and any bounded compatibility-inbox role. This
-  section starts enabled.
-- **Your Relays** lists the account's signed NIP-65 Read and Publish members.
-  It starts disabled only for confirmed unconfigured accounts, and enabling it
-  includes those relays alongside App Relays.
+- **App Relays** is an accessible disclosure that starts collapsed. Its title,
+  enabled state, switch, chevron, and a derived summary remain visible while
+  collapsed. The summary uses the current registry length in copy such as
+  **6 managed routes for reliable commerce, discovery, and messaging**; the
+  number is never hardcoded. Disclosure state is UI-only and cannot affect
+  routing, policy, or persistence.
+- **Your Relays** lists the union of the account's signed NIP-65 Read/Publish
+  members and signed owner `kind:10050` Private inbox members. A URL declared
+  only in `kind:10050` still appears here and remains editable. The section's
+  local switch enables or disables only NIP-65 participation alongside App
+  Relays; it does not disable or hide owner inbox reads. This section begins
+  immediately below the collapsed App Relays disclosure.
+
+The App Relays disclosure uses the shared accessible disclosure primitive with
+native keyboard and focus behavior, `aria-expanded`, and an appropriate
+chevron. Expanded App Relays render in registry order as one compact list with
+subtle horizontal separators, not independent rounded cards. Every row retains
+its relay icon, validated NIP-11 or fallback name, normalized URL, health
+indicator, and role pills. Rows wrap or reflow on narrow viewports without
+horizontal overflow.
+
+The Dreamith URL line alone appends the muted inline annotation
+`(Ditto backup)`, with no badge, warning, additional explanation, or added row
+height.
 
 A relay may appear in both sections so the source remains understandable.
 Runtime plans normalize and deduplicate the URL while retaining both provenance
@@ -413,8 +435,8 @@ labels. A row may show:
 
 - Read membership;
 - Publish membership;
-- signed Private inbox membership where the URL is present in the owner's
-  `kind:10050`;
+- signed Private inbox membership, including a `kind:10050`-only URL with no
+  App-registry or NIP-65 membership;
 - configured, advertised, or observed capability badges;
 - a validated NIP-11 name and square icon with URL and generic-icon fallbacks;
 - freshness, partial-result, or availability warnings when supported by
@@ -536,9 +558,9 @@ without resetting any established readback or expiry.
 
 ### Match Conduit defaults
 
-After complete bounded reconciliation confirms that the account has never
-published either required setup object, the Network screen may show a
-dismissible readiness notice:
+After complete bounded reconciliation observes neither required setup object
+within the queried plan, finds no retained valid frontier, and has no pending
+distribution, the Network screen may show a dismissible readiness notice:
 
 > Set up your relays across Nostr
 
@@ -554,11 +576,12 @@ are preserved, inbox guidance remains capped at one to three relays, and no
 relay is evicted automatically. The exact registry version used for the
 proposal is part of the review and immutable target plan.
 
-The notice may claim first-time absence only after complete bounded discovery
-with no retained signed frontier. Partial or unavailable discovery says that
-setup could not be verified and offers Retry, not Match. A current
-`signed_empty` or `malformed` frontier is explicit signed evidence and is never
-silently overwritten by this prompt.
+This state is scoped absence, not proof that the account never published either
+replaceable event. The exact review warns that signing may supersede preferences
+stored outside the queried plan. Partial or unavailable discovery says that
+setup could not be verified and offers Retry, not Match. A current `signed_empty`
+or `malformed` frontier is explicit signed evidence and is never silently
+overwritten by this prompt.
 
 Dismissing the notice changes no signed preference. Successful staging enables
 Your Relays locally while App Relays remain enabled. Publishing both objects
@@ -856,8 +879,9 @@ portable signed Nostr state:
 - Both frontiers reconcile on every fresh signer connection.
 - App Relays are enabled by default from a versioned operation-specific
   registry.
-- Your Relays adds signed NIP-65 routes alongside App Relays and initializes off
-  only for confirmed unconfigured accounts.
+- Your Relays displays signed NIP-65 and owner `kind:10050` membership; its
+  switch adds only NIP-65 routes alongside App Relays and initializes off only
+  after complete scoped absence with no retained NIP-65 frontier.
 - Separate App Relays and Your Relays sections present source and consequence.
 - Valid signed owner inbox reads remain active independent of the personal
   layer toggle; valid recipient inbox declarations remain exclusive for writes.

@@ -1,5 +1,9 @@
 # Conduit Relay Specification
 
+> **App-relay implementation status:** The App Relays and Your Relays additions
+> in this document are an accepted staged contract. They are not current client
+> behavior until the paired implementation lands.
+
 ## Overview
 
 Conduit treats relays as Nostr infrastructure with two transparent runtime
@@ -7,16 +11,19 @@ layers. Market and Merchant expose the same account-level Network experience:
 
 - **App Relays** are a versioned, code-owned, operation-specific registry. They
   are enabled by default and supply a reliable baseline.
-- **Your Relays** are projected from the user's latest validated signed NIP-65
-  `kind:10002`. They are additive when enabled and start disabled only after
-  complete bounded discovery confirms that the account is unconfigured.
+- **Your Relays** displays the union of the user's latest validated signed
+  NIP-65 `kind:10002` and owner NIP-17 `kind:10050` membership. Its local switch
+  controls only additive NIP-65 routing and starts disabled only after complete
+  scoped absence with no retained NIP-65 frontier.
 
 NIP-17 `kind:10050` remains the signed Private inbox declaration. A valid owner
 declaration remains active for Conduit inbox reads regardless of the Your Relays
 toggle, and a valid recipient declaration remains exclusive for delivery. The
 UI presents separate App Relays and Your Relays sections with configured,
 advertised, or observed evidence. Advertised relay-protocol capabilities remain
-weaker supporting evidence.
+weaker supporting evidence. App Relays starts as a collapsed accessible
+disclosure whose visible summary derives its route count from the registry;
+expansion is informational and Your Relays remains immediately available below.
 
 Transport eligibility is authority-scoped. An authenticated owner may
 explicitly select either `ws://` or `wss://` relays in Network for eligible
@@ -291,13 +298,16 @@ Unknown capability is **Not verified**, not broken. The user may explicitly
 proceed. Every executor rechecks current layer policy and durable whole-relay
 exclusions immediately before final I/O.
 
-For a confirmed first-time account, **Match Conduit defaults** reviews and may
-publish both NIP-65 and NIP-17 events through the sole Network mutation owner.
-Only changed kinds are signed, every required exact event and immutable target
-plan is staged before publication, and retries reuse those bytes. Existing
-setups use **Add missing Conduit defaults** and preserve personal tags and
-exclusions. Partial/unavailable discovery, `signed_empty`, and `malformed`
-states never trigger a silent replacement.
+When complete bounded reconciliation observes neither setup event within the
+queried plan and retains no valid frontier, **Match Conduit defaults** reviews
+and may publish both NIP-65 and NIP-17 events through the sole Network mutation
+owner. The review states that signed preferences may exist outside the queried
+plan and that publication may supersede them. Only changed kinds are signed,
+every required exact event and immutable target plan is staged before
+publication, and retries reuse those bytes. Existing observed setups use **Add
+missing Conduit defaults** and preserve personal tags and exclusions.
+Partial/unavailable discovery, `signed_empty`, and `malformed` states never
+trigger a silent replacement.
 
 Shared acceleration, cache, index, and routing systems may derive only from
 relay-visible state and must never expose a hidden API for private messages,
@@ -331,7 +341,8 @@ New source-aware relay outcome work should be documented before replacing curren
 - no reliance on a single relay for baseline Nostr interoperability
 - identical account-level Network behavior in Market and Merchant
 - App Relays enabled by default with source-aware, deduplicated execution
-- personal NIP-65 routes disabled only after confirmed first-time absence
+- personal NIP-65 routes disabled only after complete scoped absence with no
+  retained frontier
 - valid signed owner inbox reads preserved across personal-layer changes
 - recipient delivery never widened beyond a valid `kind:10050`, and
   compatibility admitted only for validated kind-16 `not_observed`
