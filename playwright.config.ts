@@ -49,6 +49,9 @@ const mobileTestFiles = [
   "**/mobile-safari-baseline.playwright.ts",
   "**/event-sign-preview-mobile.playwright.ts",
 ]
+const productImageUploadCoverageFiles = [
+  "**/merchant-product-image-preview.playwright.ts",
+]
 
 if (!new Set(["all", "market", "merchant", "commerce"]).has(smokeArea)) {
   throw new Error(`Unknown Playwright smoke area: ${smokeArea}`)
@@ -114,12 +117,12 @@ export default defineConfig({
     },
     {
       name: "mobile-chromium",
-      testMatch: mobileTestFiles,
+      testMatch: [...mobileTestFiles, ...productImageUploadCoverageFiles],
       use: { ...devices["Pixel 7"] },
     },
     {
       name: "mobile-webkit",
-      testMatch: mobileTestFiles,
+      testMatch: [...mobileTestFiles, ...productImageUploadCoverageFiles],
       use: { ...devices["iPhone 13"] },
     },
   ],

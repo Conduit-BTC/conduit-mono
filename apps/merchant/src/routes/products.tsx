@@ -37,6 +37,7 @@ import {
   useAuth,
   useConduitSession,
   useInboxDeclaration,
+  useProductImageUpload,
 } from "@conduit/core"
 import {
   Badge,
@@ -310,6 +311,10 @@ function getProductDraftTarget(
     productAddressId: product?.addressId ?? null,
     baseEventId: familyEventId,
   }
+}
+
+function getProductImageUploadScopeId(target: ProductDraftTarget): string {
+  return `product:${target.productAddressId ?? "create"}`
 }
 
 function getProductVariationAuthoringTarget(
@@ -1145,6 +1150,7 @@ function ProductsPage() {
     connect,
     disconnect,
   } = useAuth()
+  const productImageUpload = useProductImageUpload()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -1162,6 +1168,7 @@ function ProductsPage() {
   const productDraftStoreRef = useRef(new ProductDraftStore())
   const productPublishStartedAtRef = useRef<number | null>(null)
   const productPublishInFlightRef = useRef(false)
+  const dirtyCreateDraftKeyRef = useRef<string | null>(null)
   const editFulfillmentRequestRef = useRef(0)
   const signerRestoredNoticeRef = useRef<HTMLDivElement | null>(null)
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
@@ -1198,6 +1205,9 @@ function ProductsPage() {
   )
 
   const draftOwnerPubkey = activeProductDraftTarget?.merchantPubkey ?? null
+  const productImageUploadScopeId = activeProductDraftTarget
+    ? getProductImageUploadScopeId(activeProductDraftTarget)
+    : "product:unbound"
   const signerReady =
     authStatus === "connected" &&
     !!signer &&
@@ -1561,27 +1571,59 @@ function ProductsPage() {
         )
       }
 
-      return publishProduct(
-        payload.merchantPubkey,
-        payload.form,
-        payload.dTag,
-        async (signedBundle, authoringTarget) => {
-          setProductDeliveryRetry({
-            action: "publish",
-            payload: { ...payload, signedBundle },
-          })
-          completeLocalProductSave(payload, authoringTarget)
-          await showLocalProductProjection("publish", payload.merchantPubkey)
-        },
-        payload.existing,
-        setProductSignerProgress,
-        () => {
-          setProductSignerProgress(null)
-          setProductSignerRequestsComplete(true)
-        },
-        authStatus === "connected" ? pubkey : null,
-        () => authGenerationRef.current === authGeneration
+      const fallbackSourceScope = getProductImageUploadScopeId(
+        getProductDraftTarget(payload.merchantPubkey)
       )
+      const fallbackDestinationScope = getProductImageUploadScopeId({
+        merchantPubkey: payload.merchantPubkey,
+        productAddressId: `30402:${payload.merchantPubkey}:${payload.dTag}`,
+      })
+      let fallbackMovePrepared = false
+      let signedLocally = false
+      try {
+        if (!payload.existing) {
+          fallbackMovePrepared = productImageUpload.prepareFallbackClaimMove(
+            fallbackSourceScope,
+            fallbackDestinationScope
+          )
+        }
+        return await publishProduct(
+          payload.merchantPubkey,
+          payload.form,
+          payload.dTag,
+          async (signedBundle, authoringTarget) => {
+            signedLocally = true
+            if (fallbackMovePrepared) {
+              productImageUpload.commitFallbackClaimMove(
+                fallbackSourceScope,
+                fallbackDestinationScope
+              )
+            }
+            setProductDeliveryRetry({
+              action: "publish",
+              payload: { ...payload, signedBundle },
+            })
+            completeLocalProductSave(payload, authoringTarget)
+            await showLocalProductProjection("publish", payload.merchantPubkey)
+          },
+          payload.existing,
+          setProductSignerProgress,
+          () => {
+            setProductSignerProgress(null)
+            setProductSignerRequestsComplete(true)
+          },
+          authStatus === "connected" ? pubkey : null,
+          () => authGenerationRef.current === authGeneration
+        )
+      } catch (error) {
+        if (fallbackMovePrepared && !signedLocally) {
+          productImageUpload.cancelFallbackClaimMove(
+            fallbackSourceScope,
+            fallbackDestinationScope
+          )
+        }
+        throw error
+      }
     },
     onMutate: (payload) => {
       productPublishStartedAtRef.current = Date.now()
@@ -1706,6 +1748,11 @@ function ProductsPage() {
       const { product } = variables
       setProductSignerProgress(null)
       if (product) {
+        productImageUpload.clearFallbackClaim(
+          getProductImageUploadScopeId(
+            getProductDraftTarget(product.product.pubkey, product)
+          )
+        )
         const draftCleared = productDraftStoreRef.current.clear(
           getProductDraftTarget(product.product.pubkey, product)
         )
@@ -1800,7 +1847,7 @@ function ProductsPage() {
     productDeliveryRetry?.action === productDeliveryNotice.action
 
   function startProductSave(payload: ProductPublishMutationPayload): void {
-    if (productPublishInFlightRef.current) return
+    if (productPublishInFlightRef.current || productImageUpload.isBusy) return
     productPublishInFlightRef.current = true
     saveMutation.mutate(payload)
   }
@@ -1847,11 +1894,25 @@ function ProductsPage() {
     if (!productDialogOpen || !activeProductDraftTarget) return
     if (editing && editFulfillmentChoiceRequired) return
     const isCreateDraft = !activeProductDraftTarget.productAddressId
+    const createDraftKey = isCreateDraft
+      ? `${activeProductDraftTarget.merchantPubkey}:${productImageUploadScopeId}`
+      : null
 
     if (!hasProductChanges) {
       const returnIntentCleared = isCreateDraft
         ? clearProductDraftReturnIntent(activeProductDraftTarget.merchantPubkey)
         : true
+      if (
+        createDraftKey &&
+        dirtyCreateDraftKeyRef.current === createDraftKey &&
+        productImageUpload.getFallbackClaimState(productImageUploadScopeId) ===
+          "consumed"
+      ) {
+        productImageUpload.clearFallbackClaim(productImageUploadScopeId)
+      }
+      if (dirtyCreateDraftKeyRef.current === createDraftKey) {
+        dirtyCreateDraftKeyRef.current = null
+      }
       setDraftStorageAvailable(
         returnIntentCleared &&
           productDraftStoreRef.current.clear(activeProductDraftTarget)
@@ -1864,6 +1925,9 @@ function ProductsPage() {
       activeProductDraftTarget,
       form
     )
+    if (createDraftKey) {
+      dirtyCreateDraftKeyRef.current = createDraftKey
+    }
     setDraftStorageAvailable(saved)
     if (isCreateDraft && saved) setHasResumableCreateDraft(true)
   }, [
@@ -1872,6 +1936,8 @@ function ProductsPage() {
     editing,
     form,
     hasProductChanges,
+    productImageUpload,
+    productImageUploadScopeId,
     productDialogOpen,
   ])
   const localPickupEvidenceError =
@@ -2103,6 +2169,7 @@ function ProductsPage() {
   function requestProductPublish(payload: ProductPublishMutationPayload): void {
     if (
       isSaving ||
+      productImageUpload.isBusy ||
       !signerReady ||
       !productPublishPayloadIsAuthorized(payload)
     ) {
@@ -2127,6 +2194,7 @@ function ProductsPage() {
     if (
       !pendingProductPublish ||
       isSaving ||
+      productImageUpload.isBusy ||
       !signerReady ||
       !productPublishPayloadIsAuthorized(pendingProductPublish)
     ) {
@@ -2206,6 +2274,11 @@ function ProductsPage() {
       if (!cleared) {
         setDraftStorageAvailable(false)
         return
+      }
+      if (!activeProductDraftTarget.productAddressId) {
+        productImageUpload.clearFallbackClaim(
+          getProductImageUploadScopeId(activeProductDraftTarget)
+        )
       }
     }
     editFulfillmentRequestRef.current += 1
@@ -2977,7 +3050,7 @@ function ProductsPage() {
       >
         <DialogContent
           className={cn(
-            "max-h-[90dvh] overflow-y-auto",
+            "max-h-[90dvh] overflow-x-hidden overflow-y-auto",
             form.variations.enabled ? "sm:max-w-4xl" : "sm:max-w-2xl"
           )}
           onOpenAutoFocus={(event) => {
@@ -3077,6 +3150,7 @@ function ProductsPage() {
                 event.preventDefault()
                 if (
                   isSaving ||
+                  productImageUpload.isBusy ||
                   !draftOwnerPubkey ||
                   !signerReady ||
                   !productCanSubmit
@@ -3519,6 +3593,8 @@ function ProductsPage() {
               <ProductImageUrlCollectionField
                 id="product-image"
                 images={form.images}
+                upload={productImageUpload}
+                uploadScopeId={productImageUploadScopeId}
                 previewTitle={form.title.trim() || "Product image"}
                 onChange={(images) =>
                   setForm((previous) => ({ ...previous, images }))
@@ -3972,6 +4048,10 @@ function ProductsPage() {
                                         images={parseProductVariationImageInput(
                                           combination.imageUrls
                                         )}
+                                        upload={productImageUpload}
+                                        uploadScopeId={
+                                          productImageUploadScopeId
+                                        }
                                         showRequiredError={parseProductVariationImageInput(
                                           combination.imageUrls
                                         ).some(
@@ -4211,16 +4291,22 @@ function ProductsPage() {
                 <Button
                   type="submit"
                   disabled={
-                    !pubkey || !signerReady || isSaving || !productCanSubmit
+                    !pubkey ||
+                    !signerReady ||
+                    isSaving ||
+                    productImageUpload.isBusy ||
+                    !productCanSubmit
                   }
                 >
                   {remoteSignerRecovery
                     ? "Reconnect signer to continue"
                     : isSaving
                       ? "Waiting for signer..."
-                      : editing
-                        ? "Save changes"
-                        : "Publish product"}
+                      : productImageUpload.isBusy
+                        ? "Uploading images..."
+                        : editing
+                          ? "Save changes"
+                          : "Publish product"}
                 </Button>
               </DialogFooter>
             </form>
