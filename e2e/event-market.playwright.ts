@@ -2633,41 +2633,6 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
     .toBe(market.canonicalNaddr)
 })
 
-test("Market hides perspective controls until a signer is connected @market", async ({
-  page,
-}) => {
-  page.setDefaultTimeout(30_000)
-  const relay = createRelayHarness()
-  await installSyntheticEnvironment(page, relay)
-  await page.setViewportSize({ width: 390, height: 844 })
-
-  await page.goto(`${marketUrl}/products`)
-  await expect(
-    page.getByRole("navigation", { name: "Market browse" })
-  ).toBeVisible()
-  await expect(
-    page.getByRole("group", { name: "Market perspective" })
-  ).toHaveCount(0)
-
-  await page.goto(`${marketUrl}/events`)
-  await expect(
-    page.getByRole("navigation", { name: "Market browse" })
-  ).toBeVisible()
-  await expect(
-    page.getByRole("group", { name: "Market perspective" })
-  ).toHaveCount(0)
-
-  await gotoAs(page, marketUrl, "/events", "buyer", {
-    source: "following",
-  })
-  await expect(
-    page.getByRole("group", { name: "Market perspective" })
-  ).toBeVisible()
-  await expect(
-    page.getByRole("button", { name: "Following", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
-})
-
 test("Market Events browses the same perspective on desktop, mobile, and keyboard @market", async ({
   page,
 }) => {
@@ -2684,6 +2649,14 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   // though this synthetic organizer is outside that perspective.
   await page.evaluate(() => localStorage.clear())
   await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto(`${marketUrl}/products`)
+  await expect(
+    page.getByRole("navigation", { name: "Market browse" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("group", { name: "Market perspective" })
+  ).toHaveCount(0)
+
   await page.goto(`${marketUrl}/events`)
   const marketBrowse = page.getByRole("navigation", { name: "Market browse" })
   await expect(marketBrowse).toBeVisible()
