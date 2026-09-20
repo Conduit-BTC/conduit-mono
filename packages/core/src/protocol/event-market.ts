@@ -4004,7 +4004,8 @@ export function getEventMarketSupersededEvidence(
     addressId: string
     eventId: string
     eventCreatedAt: number
-  }[] = []
+  }[] = [],
+  nowMs = Date.now()
 ): {
   graph: boolean
   graphRevoked: boolean
@@ -4074,6 +4075,17 @@ export function getEventMarketSupersededEvidence(
   const collectionReplaced =
     collectionEvidence.deleted || !!collectionEvidence.event
   const calendarReplaced = calendarEvidence.deleted || !!calendarEvidence.event
+  const supersedingAcceptance = getEventMarketOrderAcceptance(
+    {
+      collection: collectionRevision ?? resolution.collection,
+      calendar: calendarRevision ?? resolution.calendar,
+    },
+    nowMs
+  )
+  const supersedingGraphEndsOrdering =
+    (collectionReplaced || calendarReplaced) &&
+    (supersedingAcceptance === "closed" ||
+      supersedingAcceptance === "legacy-ended")
   const collectionDependencyRemoved =
     !!collectionRevision &&
     !!resolution.collection &&
@@ -4087,10 +4099,10 @@ export function getEventMarketSupersededEvidence(
     (collectionReplaced &&
       (!collectionEvidence.event ||
         !collectionRevision ||
-        collectionRevision.orderAcceptance === "closed" ||
         collectionRevisionRevokesEventMarketGraph(collectionRevision) ||
         collectionDependencyRemoved)) ||
-    (calendarReplaced && (!calendarEvidence.event || !calendarRevision))
+    (calendarReplaced && (!calendarEvidence.event || !calendarRevision)) ||
+    supersedingGraphEndsOrdering
   const removedProductCoordinates = collectionRevision
     ? resolution.acceptedProductCoordinates.filter(
         (coordinate) => !collectionProductCoordinates.has(coordinate)

@@ -12,12 +12,13 @@ import {
   buildEventMarketCollectionDraft,
   buildEventMarketPickupDraft,
   getEventMarket,
-  getEventMarketSupersededEvidence,
+  getEventMarketSupersededEvidence as getEventMarketSupersededEvidenceAtTime,
   getLocalEventMarketEvidenceSnapshot,
   getOrganizerEventMarketsDetailed,
   resolveEventMarketEvidence,
   subscribeLocalEventMarketEvidenceChanges,
   type CachedEventMarketEvidence,
+  type EventMarketResolution,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 
@@ -29,6 +30,24 @@ const calendar = `31923:${organizer}:calendar`
 const pickup = `30406:${organizer}:pickup`
 const product = `30402:${organizer}:product`
 const now = 1_800_000_001_000
+
+function getEventMarketSupersededEvidence(
+  market: EventMarketResolution,
+  events: readonly SignedPublicNostrEvent[],
+  records: readonly {
+    addressId: string
+    eventId: string
+    eventCreatedAt: number
+  }[] = [],
+  observedAt = now
+) {
+  return getEventMarketSupersededEvidenceAtTime(
+    market,
+    events,
+    records,
+    observedAt
+  )
+}
 
 function signed(
   draft: { kind: number; tags: string[][]; content?: string },
@@ -210,6 +229,73 @@ describe("retained event market dependencies", () => {
       )
     })
   }
+
+  it("applies legacy calendar end semantics to stronger signed graph evidence", () => {
+    const pastCalendarDraft = buildEventMarketCalendarDraft({
+      kind: 31923,
+      dTag: "calendar",
+      title: "Past market",
+      start: 1_799_999_000,
+      end: 1_800_000_000,
+    })
+    const pastCalendar = signed(pastCalendarDraft, 200)
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [pastCalendar], [], now)
+    ).toEqual({
+      ...empty,
+      graph: true,
+      graphRevoked: true,
+    })
+
+    const futureCalendar = signed(graph[0]!, 200)
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [futureCalendar], [], now)
+    ).toEqual({ ...empty, graph: true })
+
+    const openCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+        orderAcceptance: "open",
+      })
+    )
+    const explicitlyOpen = resolution([
+      signed(pastCalendarDraft),
+      graph[1]!,
+      openCollection,
+      graph[3]!,
+    ])
+    expect(explicitlyOpen.state).toBe("active")
+    expect(
+      getEventMarketSupersededEvidence(explicitlyOpen, [pastCalendar], [], now)
+    ).toEqual({ ...empty, graph: true })
+
+    const legacyCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog metadata revision",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+      }),
+      200
+    )
+    expect(
+      getEventMarketSupersededEvidence(
+        explicitlyOpen,
+        [legacyCollection],
+        [],
+        now
+      )
+    ).toEqual({
+      ...empty,
+      graph: true,
+      graphRevoked: true,
+    })
+  })
 
   it("classifies products omitted by a newer signed collection revision", () => {
     const withoutProduct = signed(

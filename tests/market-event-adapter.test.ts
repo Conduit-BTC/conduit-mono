@@ -485,7 +485,7 @@ describe("Market event adapter", () => {
     })
   })
 
-  it("keeps signed local graph revocations terminal while metadata supersession stays recoverable", () => {
+  it("keeps signed local graph revocations, including legacy-ended evidence, terminal while metadata supersession stays recoverable", () => {
     const raw = {
       reference: collectionCoordinate,
       resolution: market(),

@@ -6181,6 +6181,7 @@ for (const revocation of [
   "calendar-conflict",
   "pickup-conflict",
   "unsupported-reference",
+  "legacy-ended",
 ] as const) {
   test(`event catalog keeps a signed local graph ${revocation} terminal without relay rechecks @market`, async ({
     page,
@@ -6203,9 +6204,44 @@ for (const revocation of [
       kind: 30405,
       created_at: market.initialCollection.created_at + 2,
       content: market.initialCollection.content,
-      tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+      tags: [
+        ...(revocation === "legacy-ended"
+          ? market.initialCollection.tags.filter(
+              (tag) => tag[0] !== "conduit_event_market"
+            )
+          : market.initialCollection.tags),
+        ["a", eventCoordinate(product)],
+        ...(revocation === "legacy-ended"
+          ? [["conduit_event_market", "1", "open"]]
+          : []),
+      ],
     })
-    relay.seed(product, collection)
+    const pastCalendar =
+      revocation === "legacy-ended"
+        ? signEvent(ORGANIZER_SECRET, {
+            kind: market.calendarEvent.kind,
+            created_at: market.calendarEvent.created_at + 1,
+            content: market.calendarEvent.content,
+            tags: market.calendarEvent.tags.map((tag) =>
+              tag[0] === "start"
+                ? [
+                    "start",
+                    market.calendarEvent.kind === 31922
+                      ? "2023-11-14"
+                      : "1700000000",
+                  ]
+                : tag[0] === "end"
+                  ? [
+                      "end",
+                      market.calendarEvent.kind === 31922
+                        ? "2023-11-15"
+                        : "1700003600",
+                    ]
+                  : tag
+            ),
+          })
+        : null
+    relay.seed(product, collection, ...(pastCalendar ? [pastCalendar] : []))
     await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
     const card = page.getByRole("listitem").filter({
       hasText: `Synthetic graph ${revocation} product`,
