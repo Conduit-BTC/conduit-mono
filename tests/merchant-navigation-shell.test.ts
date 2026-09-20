@@ -121,8 +121,10 @@ describe("Merchant navigation shell", () => {
       "function DashboardPage"
     )
 
-    expect(brand).toContain("min-[400px]:block")
-    expect(brand).toContain("min-[400px]:hidden")
+    expect(brand).toContain('data-merchant-brand-logo=""')
+    expect(brand).toContain("w-6")
+    expect(brand).toContain("min-[400px]:w-[6.75rem]")
+    expect(brand.match(/logo-full\.svg/g)).toHaveLength(1)
     expect(brand).toContain(">\n        merchant\n      </span>")
     expect(header).toContain("<MerchantAccountMenu />")
     expect(publicAbout).toContain("<MerchantBrandLockup />")

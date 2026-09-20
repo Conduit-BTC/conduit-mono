@@ -187,6 +187,10 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
     }),
   ]
   for (const control of headerControls) await expect(control).toBeVisible()
+  await expect(workspaceHeader.locator("[data-merchant-brand-logo]")).toHaveCSS(
+    "width",
+    "108px"
+  )
   const headerBoxes = await Promise.all(
     headerControls.map((control) => control.boundingBox())
   )
@@ -206,12 +210,10 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
   }
 
   await page.setViewportSize({ width: 390, height: 844 })
-  await expect(
-    workspaceHeader.locator("[data-merchant-brand-wordmark]")
-  ).toBeHidden()
-  await expect(
-    workspaceHeader.locator("[data-merchant-brand-symbol]")
-  ).toBeVisible()
+  await expect(workspaceHeader.locator("[data-merchant-brand-logo]")).toHaveCSS(
+    "width",
+    "24px"
+  )
   const compactAccountBox = await workspaceHeader
     .getByRole("button", { name: "Open merchant account menu" })
     .boundingBox()

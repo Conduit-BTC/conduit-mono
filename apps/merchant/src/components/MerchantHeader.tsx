@@ -103,37 +103,21 @@ function MerchantAvatarFallback() {
   )
 }
 
-export function MerchantBrandLockup({ className }: { className?: string }) {
+export function MerchantBrandLockup() {
   return (
-    <span
-      className={cn(
-        "inline-flex min-w-0 items-center gap-3 select-none",
-        className
-      )}
-    >
-      <span className="inline-flex h-8 shrink-0 items-center">
+    <span className="inline-flex min-w-0 items-center gap-3 select-none">
+      <span
+        data-merchant-brand-logo=""
+        className="h-8 w-6 shrink-0 overflow-hidden min-[400px]:w-[6.75rem]"
+      >
         <img
-          data-merchant-brand-wordmark=""
           src="/images/logo/logo-full.svg"
           alt="Conduit"
           width={386}
           height={115}
-          className="hidden h-8 w-[6.75rem] shrink-0 object-contain min-[400px]:block"
+          className="h-8 w-[6.75rem] max-w-none object-left"
           draggable="false"
         />
-        <span
-          data-merchant-brand-symbol=""
-          className="h-8 w-6 shrink-0 overflow-hidden min-[400px]:hidden"
-        >
-          <img
-            src="/images/logo/logo-full.svg"
-            alt="Conduit"
-            width={386}
-            height={115}
-            className="h-8 w-[6.75rem] max-w-none object-left"
-            draggable="false"
-          />
-        </span>
       </span>
       <span className="shrink-0 border-l border-[var(--border)] pl-3 pr-1 font-display text-xl font-medium text-[var(--text-primary)]">
         merchant
