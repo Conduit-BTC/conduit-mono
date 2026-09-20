@@ -2,6 +2,8 @@ import { isDeepStrictEqual } from "node:util"
 
 import { expect, test, type Page } from "@playwright/test"
 
+import { TEST_MERCHANT_PUBKEY, installTestSigner } from "./helpers/auth"
+
 type TelemetryProperties = Record<string, string | boolean>
 
 type CapturedTelemetryEvent = {
@@ -9,6 +11,8 @@ type CapturedTelemetryEvent = {
   properties: TelemetryProperties
   url?: string
 }
+
+const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
 function hasSameValue(left: unknown, right: unknown): boolean {
   return isDeepStrictEqual(left, right)
@@ -79,6 +83,51 @@ async function dispatchRuntimeErrors(page: Page): Promise<void> {
     window.dispatchEvent(rejection)
   })
 }
+
+test("merchant authenticated route errors retain account recovery actions @merchant", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_MERCHANT_PUBKEY)
+
+  const openErrorMenu = async () => {
+    await page.goto(
+      `${merchantUrl}/products?__conduit_telemetry_test=react_error_boundary`
+    )
+    await expect(
+      page.getByRole("heading", { name: "Something went wrong" })
+    ).toBeVisible()
+    const menuTrigger = page.getByRole("button", {
+      name: "Open merchant account menu",
+    })
+    await expect(menuTrigger).toBeVisible({ timeout: 15_000 })
+    await menuTrigger.click()
+    return page.getByRole("menu")
+  }
+
+  let menu = await openErrorMenu()
+  await menu.getByRole("menuitem", { name: "Profile" }).click()
+  await expect(page).toHaveURL(`${merchantUrl}/profile`)
+  await expect(
+    page.getByRole("heading", { name: "Store Profile", exact: true })
+  ).toBeVisible()
+
+  menu = await openErrorMenu()
+  await menu.getByRole("menuitem", { name: "Network" }).click()
+  await expect(page).toHaveURL(`${merchantUrl}/network`)
+  await expect(
+    page.getByRole("heading", { name: "Network", exact: true })
+  ).toBeVisible()
+
+  menu = await openErrorMenu()
+  await menu.getByRole("menuitem", { name: "Disconnect" }).click()
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("conduit:auth")))
+    .toBeNull()
+  await page.goto(merchantUrl)
+  await expect(
+    page.getByRole("heading", { name: "Sign in to Conduit" })
+  ).toBeVisible()
+})
 
 for (const { app, url } of appCases) {
   test(`${app} client-error telemetry covers runtime, boundary, and host gates @${app}`, async ({
