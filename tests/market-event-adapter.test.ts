@@ -15,6 +15,7 @@ import {
   type ProductsByIdsResult,
 } from "@conduit/core"
 import {
+  buildEventCatalogProductPreviewRecords,
   buildPickupFulfillmentSnapshot,
   buildPickupFulfillmentTerms,
   buildEventCatalogFamilyPickupFulfillments,
@@ -32,6 +33,7 @@ import {
 import { reconcileEventCatalogGraph } from "../apps/market/src/lib/event-catalog-cache-coherence"
 import {
   createCartItemFromProduct,
+  createPendingEventPickupFulfillment,
   type CartPickupFulfillment,
 } from "../apps/market/src/lib/cart-model"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
@@ -364,6 +366,46 @@ function clonePickupItem(
 }
 
 describe("Market event adapter", () => {
+  it("preserves the signed preview frontier in pending cart intent", () => {
+    const candidate = product()
+    const eventId = "4".repeat(64)
+    const resolution = market()
+    resolution.acceptedProductEvidence = [
+      {
+        ...resolution.acceptedProductEvidence[0]!,
+        productPreview: {
+          coordinate: candidate.id,
+          eventId,
+          createdAt: candidate.createdAt,
+          title: candidate.title,
+          summary: candidate.summary,
+          type: "simple",
+          format: candidate.format,
+          stock: candidate.stock,
+          images: candidate.images,
+          sourceSafety: evaluateListingSafety(candidate),
+          priceStatus: "resolved",
+          price: candidate.price,
+          currency: candidate.currency,
+          priceSats: candidate.priceSats,
+          sourcePrice: candidate.sourcePrice,
+        },
+      },
+    ]
+
+    const records = buildEventCatalogProductPreviewRecords(resolution, [])
+    expect(records).toHaveLength(1)
+    expect(records[0]!.product.sourceEventId).toBe(eventId)
+    const pending = createPendingEventPickupFulfillment(collectionCoordinate)
+    if (!pending) throw new Error("Expected pending event pickup")
+    expect(
+      createCartItemFromProduct(records[0]!.product, pending)
+    ).toMatchObject({
+      productUpdatedAt: candidate.createdAt,
+      productEventId: eventId,
+    })
+  })
+
   it("keeps a retained accepted product visible without making it purchasable", () => {
     const projection = projectEventCatalogHydration({
       resolution: market("stale"),
@@ -564,36 +606,41 @@ describe("Market event adapter", () => {
     expect(byCoordinate.get(unaffected.id)?.pickupFulfillment).not.toBeNull()
   })
 
-  it("keeps a signed direct merchant pickup deletion terminal on a live product read", () => {
+  it("keeps signed terminal direct pickup evidence terminal on a live product read", () => {
     const boothCoordinate = `30406:${merchant}:deleted-booth`
     const candidate = product({
       shippingOptionRefs: [{ coordinate: boothCoordinate }],
     })
-    const resolution: EventMarketResolution = {
-      ...market(),
-      acceptedProductEvidence: [
-        {
-          productCoordinate,
-          eventId: "4".repeat(64),
-          createdAt: 103_000,
-          shippingOptionCoordinates: [boothCoordinate],
-          merchantPubkey: merchant,
-          fulfillmentStatus: "ambiguous",
-          fulfillmentReason: "deleted_pickup_evidence",
-        },
-      ],
+    for (const fulfillmentReason of [
+      "deleted_pickup_evidence",
+      "malformed_pickup_evidence",
+    ] as const) {
+      const resolution: EventMarketResolution = {
+        ...market(),
+        acceptedProductEvidence: [
+          {
+            productCoordinate,
+            eventId: "4".repeat(64),
+            createdAt: 103_000,
+            shippingOptionCoordinates: [boothCoordinate],
+            merchantPubkey: merchant,
+            fulfillmentStatus: "ambiguous",
+            fulfillmentReason,
+          },
+        ],
+      }
+
+      const projection = projectRawEventCatalog({
+        reference: collectionCoordinate,
+        resolution,
+        result: productRead({ product: candidate }),
+        complete: true,
+      })
+
+      expect(projection.products).toHaveLength(1)
+      expect(projection.products[0]!.pickupFulfillment).toBeNull()
+      expect(projection.products[0]!.pickupReadiness).toBe("terminal")
     }
-
-    const projection = projectRawEventCatalog({
-      reference: collectionCoordinate,
-      resolution,
-      result: productRead({ product: candidate }),
-      complete: true,
-    })
-
-    expect(projection.products).toHaveLength(1)
-    expect(projection.products[0]!.pickupFulfillment).toBeNull()
-    expect(projection.products[0]!.pickupReadiness).toBe("terminal")
   })
 
   it("does not terminalize retained variations when only their variable parent is removed", () => {

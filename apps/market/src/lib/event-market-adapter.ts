@@ -935,6 +935,7 @@ export function buildEventCatalogProductPreviewRecords(
           collectionRefs: [resolution.collectionCoordinate],
           createdAt: preview.createdAt,
           updatedAt: preview.createdAt,
+          sourceEventId: preview.eventId,
         }
         const record: CommerceProductRecord = {
           product,

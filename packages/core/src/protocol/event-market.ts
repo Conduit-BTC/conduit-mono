@@ -1415,7 +1415,8 @@ type AddressableRecordResult<T> =
       event?: SignedPublicNostrEvent
       deletionEvidence: EventMarketDeletionEvidence[]
     }
-  | { state: "missing" | "malformed" }
+  | { state: "missing" }
+  | { state: "malformed"; event: SignedPublicNostrEvent }
 
 function findCanonicalEventMarketLifecyclePredecessor(
   current: SignedPublicNostrEvent,
@@ -1496,12 +1497,12 @@ function resolveAddressableRecord<T>(input: {
           ).length > 0
       )
     ) {
-      return { state: "malformed" }
+      return { state: "malformed", event: candidate }
     }
     const parsed = input.parse(candidate)
     return parsed
       ? { state: "current", value: parsed, event: candidate }
-      : { state: "malformed" }
+      : { state: "malformed", event: candidate }
   }
   return latestDeletedRevision
     ? {
@@ -1781,7 +1782,10 @@ function getCurrentParticipation(
   organizerPubkey: string,
   collection: ParsedEventMarketCollection,
   pickups: readonly ParsedEventMarketPickup[],
-  deletedPickupCoordinates: ReadonlySet<string>,
+  terminalPickupReasons: ReadonlyMap<
+    string,
+    EventMarketProductFulfillmentAmbiguityReason
+  >,
   collectionCoordinate: string,
   organizerProducts: readonly string[]
 ): {
@@ -1847,13 +1851,14 @@ function getCurrentParticipation(
         pickups: [...pickups],
       }
     )
+    const terminalPickupReason = shippingOptionCoordinates
+      .map((coordinate) => terminalPickupReasons.get(coordinate))
+      .find((reason) => reason !== undefined)
     const fulfillmentReason =
       fulfillment.status === "ambiguous" &&
       fulfillment.reason === "missing_pickup_evidence" &&
-      shippingOptionCoordinates.some((coordinate) =>
-        deletedPickupCoordinates.has(coordinate)
-      )
-        ? "deleted_pickup_evidence"
+      terminalPickupReason
+        ? terminalPickupReason
         : fulfillment.status === "ambiguous"
           ? fulfillment.reason
           : undefined
@@ -2163,11 +2168,23 @@ export function resolveEventMarketEvidence(
       }),
     })
   )
-  const deletedDirectMerchantPickupCoordinates = new Set(
-    directMerchantPickupResults.flatMap((entry) =>
-      entry.result.state === "deleted" ? [entry.coordinate.coordinate] : []
-    )
-  )
+  const terminalDirectMerchantPickupReasons = new Map<
+    string,
+    EventMarketProductFulfillmentAmbiguityReason
+  >()
+  for (const entry of directMerchantPickupResults) {
+    if (entry.result.state === "deleted") {
+      terminalDirectMerchantPickupReasons.set(
+        entry.coordinate.coordinate,
+        "deleted_pickup_evidence"
+      )
+    } else if (entry.result.state === "malformed") {
+      terminalDirectMerchantPickupReasons.set(
+        entry.coordinate.coordinate,
+        "malformed_pickup_evidence"
+      )
+    }
+  }
   const organizerPickupCoordinates = collectionPickupCoordinates.filter(
     (coordinate) => coordinate?.authorPubkey === decoded.authorPubkey
   )
@@ -2258,7 +2275,7 @@ export function resolveEventMarketEvidence(
         decoded.authorPubkey,
         collection,
         pickups,
-        deletedDirectMerchantPickupCoordinates,
+        terminalDirectMerchantPickupReasons,
         collection.coordinate,
         organizerProductCoordinates
       )
@@ -4171,7 +4188,7 @@ export function getEventMarketSupersededEvidence(
       ...new Set([
         ...removedPickupCoordinates,
         ...supersededPickupEvidence.flatMap(({ coordinate, evidence }) =>
-          evidence.deleted &&
+          (evidence.deleted || !!evidence.event) &&
           (!evidence.event || !parseEventMarketPickupEvent(evidence.event))
             ? [coordinate]
             : []

@@ -240,6 +240,25 @@ describe("retained event market dependencies", () => {
     })
   })
 
+  it("classifies a newer malformed pickup revision as terminal evidence", () => {
+    const currentPickup = graph[1]!
+    const malformedReplacement = signed(
+      {
+        ...currentPickup,
+        tags: currentPickup.tags.filter((tag) => tag[0] !== "service"),
+      },
+      300
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [malformedReplacement])
+    ).toEqual({
+      ...empty,
+      pickupCoordinates: [pickup],
+      terminalPickupCoordinates: [pickup],
+    })
+  })
+
   it("classifies a newer signed collection closure as a terminal graph revocation", () => {
     const closed = signed(
       buildEventMarketCollectionDraft({

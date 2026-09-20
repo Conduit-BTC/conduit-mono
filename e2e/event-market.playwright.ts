@@ -950,6 +950,62 @@ async function readCanonicalCartLines(
   )
 }
 
+async function readCanonicalCartProductFrontier(
+  page: Page,
+  productId: string
+): Promise<{
+  productUpdatedAt?: number
+  productEventId?: string
+  fulfillmentType?: string
+} | null> {
+  return page.evaluate(
+    ({ selectedProductId }) =>
+      new Promise<{
+        productUpdatedAt?: number
+        productEventId?: string
+        fulfillmentType?: string
+      } | null>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction("shoppingCarts", "readonly")
+          const get = transaction.objectStore("shoppingCarts").get("market")
+          transaction.oncomplete = () => {
+            const lines = Array.isArray(get.result?.lines)
+              ? get.result.lines
+              : []
+            const line = lines.find(
+              (candidate: { item?: { productId?: string } }) =>
+                candidate.item?.productId === selectedProductId
+            ) as
+              | {
+                  item: {
+                    productUpdatedAt?: number
+                    productEventId?: string
+                    fulfillment?: { type?: string }
+                  }
+                }
+              | undefined
+            resolve(
+              line
+                ? {
+                    productUpdatedAt: line.item.productUpdatedAt,
+                    productEventId: line.item.productEventId,
+                    fulfillmentType: line.item.fulfillment?.type,
+                  }
+                : null
+            )
+            database.close()
+          }
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      }),
+    { selectedProductId: productId }
+  )
+}
+
 async function addPendingEventPickupCartItem(
   page: Page,
   input: {
@@ -5805,6 +5861,29 @@ test("verified event catalog keeps exact pickup ready while another merchant for
           ) && request.matchedEventIds.includes(slow.id)
       )
     ).toBe(true)
+    await test.step("pending preview cart retains its signed product frontier", async () => {
+      const add = slowCard.getByRole("button", { name: "Add", exact: true })
+      await expect(add).toBeEnabled()
+      await add.click({ timeout: 10_000 })
+      await expect
+        .poll(
+          () => readCanonicalCartProductFrontier(page, eventCoordinate(slow)),
+          { timeout: 10_000 }
+        )
+        .toEqual({
+          productUpdatedAt: slow.created_at * 1_000,
+          productEventId: slow.id,
+          fulfillmentType: "event_pickup_pending",
+        })
+      await slowCard.hover()
+      await slowCard
+        .getByRole("button", {
+          name: "Remove one Synthetic slow merchant product from cart",
+          exact: true,
+        })
+        .click({ timeout: 10_000 })
+      await expect.poll(() => readCanonicalCartLines(page)).toEqual([])
+    })
     console.log(
       "Synthetic independent purchase readiness:",
       JSON.stringify({

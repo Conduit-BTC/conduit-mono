@@ -1919,6 +1919,48 @@ describe("event-market retained evidence", () => {
     })
   })
 
+  it("keeps a malformed direct booth terminal across a mounted cache reload", async () => {
+    const currentPickup = merchantPickupEvent()
+    const malformedPickup = signAs(
+      MERCHANT_SECRET,
+      {
+        kind: currentPickup.kind,
+        content: currentPickup.content,
+        tags: currentPickup.tags.filter((tag) => tag[0] !== "service"),
+      },
+      currentPickup.created_at + 1
+    )
+    const harness = merchantPickupCacheHarness()
+    harness.setPickupRead({ events: [malformedPickup] })
+
+    const fresh = await getEventMarket({
+      reference: COLLECTION,
+      nowMs: 1_750_000_000_000,
+    })
+    expect(
+      fresh.acceptedProductEvidence.find(
+        (evidence) => evidence.productCoordinate === PRODUCT
+      )
+    ).toMatchObject({
+      fulfillmentStatus: "ambiguous",
+      fulfillmentReason: "malformed_pickup_evidence",
+    })
+
+    harness.setPickupRead({ status: "failed" })
+    const reloaded = await getEventMarket({
+      reference: COLLECTION,
+      nowMs: 1_750_000_000_000,
+    })
+    expect(
+      reloaded.acceptedProductEvidence.find(
+        (evidence) => evidence.productCoordinate === PRODUCT
+      )
+    ).toMatchObject({
+      fulfillmentStatus: "ambiguous",
+      fulfillmentReason: "malformed_pickup_evidence",
+    })
+  })
+
   it("retains bounded merchant pickup evidence only as stale across reload", async () => {
     const harness = merchantPickupCacheHarness()
     const unrelated = merchantPickupEvent(101, "unrelated")
