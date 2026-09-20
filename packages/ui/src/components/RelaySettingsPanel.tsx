@@ -1727,10 +1727,16 @@ function AddRelaySection({ review }: { review: RelaySettingsReview }) {
 function RelayListSection({
   controller,
   review,
+  checking,
 }: {
   controller: AccountNetworkSettingsController
   review: RelaySettingsReview
+  checking: boolean
 }) {
+  const resultPending =
+    checking ||
+    controller.view.relayList.coverage === "not_checked" ||
+    controller.view.inbox.coverage === "not_checked"
   const resultPresentation = getResultPresentation({
     resultCount: review.rows.length,
     reliability:
@@ -1786,6 +1792,13 @@ function RelayListSection({
             )
           })}
         </ul>
+      ) : resultPending ? (
+        <div
+          className="py-4 text-pretty text-sm leading-6 text-[var(--text-secondary)]"
+          role="status"
+        >
+          Checking relay preferences…
+        </div>
       ) : resultPresentation.kind === "degraded_empty" ? (
         <div
           className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-pretty text-sm leading-6 text-[var(--text-primary)]"
@@ -2112,7 +2125,11 @@ function RelayPreferencesSection({
       </PreferenceSectionBody>
       <PreferenceSectionDivider />
       <PreferenceSectionBody>
-        <RelayListSection controller={controller} review={review} />
+        <RelayListSection
+          controller={controller}
+          review={review}
+          checking={checking}
+        />
       </PreferenceSectionBody>
       <PreferenceSectionDivider />
       <PreferenceSectionBody>
