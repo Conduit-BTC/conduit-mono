@@ -90,6 +90,8 @@ describe("Merchant navigation shell", () => {
     )
 
     expect(panel).toContain("data-merchant-navigation-panel")
+    expect(panel).toContain("headerAction")
+    expect(panel).toContain("h-20")
     expect(panel).toContain("overflow-x-hidden overflow-y-auto")
     expect(panel).toContain("<MerchantNavLinks")
     expect(panel).toContain("<ReportBugLink")
@@ -97,6 +99,8 @@ describe("Merchant navigation shell", () => {
       panel.indexOf("<MerchantNavLinks")
     )
     expect(mobile).toContain("<MerchantNavigationPanel")
+    expect(mobile).toContain("showCloseButton={false}")
+    expect(mobile).toContain("<SheetClose asChild>")
     expect(sidebar).toContain("<MerchantNavigationPanel")
   })
 
@@ -165,7 +169,9 @@ describe("Merchant navigation shell", () => {
       "<ThemeToggleButton />",
       "<MerchantAccountMenu />",
     ])
+    expect(workspaceHeader).toContain("h-[calc(5rem+env(safe-area-inset-top))]")
     expect(shell).toContain("<MerchantWorkspaceHeader />")
+    expect(shell).toContain("pt-[calc(5rem+env(safe-area-inset-top))]")
     expect(shell).toContain("lg:grid-cols-[320px_minmax(0,1fr)]")
     expect(shell).toContain("overflow-x-hidden")
     expect(productError).toContain("if (!signerConnected) return errorPage")

@@ -17,6 +17,7 @@ import {
   Truck,
   UserRound,
   Wifi,
+  X,
 } from "lucide-react"
 import {
   useEffect,
@@ -47,6 +48,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Sheet,
+  SheetClose,
   SheetContent,
   SheetTitle,
   SheetTrigger,
@@ -443,10 +445,23 @@ export function MerchantMobileNav() {
       </SheetTrigger>
       <SheetContent
         side="left"
+        showCloseButton={false}
         className="h-dvh w-[min(320px,calc(100vw-1rem))] gap-0 overflow-hidden border-y-0 border-l-0 border-r border-[var(--border)] bg-[var(--surface-dialog)] p-0"
       >
         <SheetTitle className="sr-only">Conduit Merchant navigation</SheetTitle>
         <MerchantNavigationPanel
+          headerAction={
+            <SheetClose asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="size-11 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-md"
+                aria-label="Close"
+              >
+                <X className="size-5" />
+              </Button>
+            </SheetClose>
+          }
           onInternalNavigate={(to) => {
             if (to === pathname) setOpen(false)
           }}
@@ -459,10 +474,12 @@ export function MerchantMobileNav() {
 }
 
 function MerchantNavigationPanel({
+  headerAction,
   onInternalNavigate,
   onExternalNavigate,
   onReportBug,
 }: {
+  headerAction?: ReactNode
   onInternalNavigate?: (to: MerchantInternalNavRoute) => void
   onExternalNavigate?: () => void
   onReportBug?: () => void
@@ -472,15 +489,16 @@ function MerchantNavigationPanel({
   return (
     <div
       data-merchant-navigation-panel=""
-      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--surface-dialog)] p-6"
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--surface-dialog)] px-6 pb-6"
     >
-      <div className="shrink-0 pr-8">
+      <div className="flex h-20 shrink-0 items-center gap-1 min-[360px]:gap-2">
         <MerchantLogoLink />
+        {headerAction}
       </div>
 
       <div
         data-merchant-navigation-scroll=""
-        className="mt-6 min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pr-1"
+        className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pr-1"
       >
         <MerchantNavLinks
           onInternalNavigate={onInternalNavigate}
@@ -506,7 +524,7 @@ export function MerchantWorkspaceHeader() {
   return (
     <header
       aria-label="Merchant workspace controls"
-      className="fixed inset-x-0 top-0 z-40 flex min-w-0 items-center gap-1 border-b border-[var(--border)] bg-[var(--surface-dialog)] pb-2 pl-[max(1.5rem,env(safe-area-inset-left))] pr-[max(0.25rem,env(safe-area-inset-right))] pt-[max(0.5rem,env(safe-area-inset-top))] min-[360px]:gap-2 min-[360px]:pr-[max(0.5rem,env(safe-area-inset-right))] lg:inset-x-auto lg:right-[max(1rem,env(safe-area-inset-right))] lg:top-[max(1rem,env(safe-area-inset-top))] lg:border-0 lg:bg-transparent lg:p-0"
+      className="fixed inset-x-0 top-0 z-40 flex h-[calc(5rem+env(safe-area-inset-top))] min-w-0 items-center gap-1 bg-[var(--surface-dialog)] pl-[max(1.5rem,env(safe-area-inset-left))] pr-[max(0.25rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)] after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[var(--border)] min-[360px]:gap-2 min-[360px]:pr-[max(0.5rem,env(safe-area-inset-right))] lg:inset-x-auto lg:right-[max(1rem,env(safe-area-inset-right))] lg:top-[max(1rem,env(safe-area-inset-top))] lg:h-auto lg:bg-transparent lg:p-0 lg:after:hidden"
     >
       <div className="flex min-w-0 shrink-0 items-center gap-1 min-[360px]:gap-2 lg:hidden">
         <MerchantLogoLink />

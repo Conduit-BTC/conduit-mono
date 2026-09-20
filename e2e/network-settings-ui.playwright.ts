@@ -174,6 +174,10 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
   await expectPanelHasNoHorizontalOverflow(desktopPanel)
   await expectNoDocumentOverflow()
   const desktopAlignment = await readPanelAlignment(desktopPanel)
+  const desktopBrandBox = await desktopPanel
+    .getByRole("link", { name: "Conduit Merchant home" })
+    .boundingBox()
+  expect(desktopBrandBox).not.toBeNull()
   expect(desktopAlignment.width).toBeGreaterThanOrEqual(319)
   expect(desktopAlignment.width).toBeLessThanOrEqual(320)
   expect(desktopAlignment.brandInset).toBe(desktopAlignment.homeInset)
@@ -225,6 +229,7 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
   expect(Math.max(...headerCenters) - Math.min(...headerCenters)).toBeLessThan(
     1
   )
+  expect(Math.abs(headerBoxes[0]!.y - desktopBrandBox!.y)).toBeLessThan(1)
   await expectNoDocumentOverflow()
   if (merchantNavigationScreenshotDirectory) {
     await page.screenshot({
@@ -275,6 +280,11 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
     .getByRole("button", { name: "Open merchant account menu" })
     .boundingBox()
   expect(compactAccountBox!.width).toBe(44)
+  const menuTrigger = workspaceHeader.getByRole("button", {
+    name: "Open menu",
+  })
+  const menuTriggerBox = await menuTrigger.boundingBox()
+  const menuIconBox = await menuTrigger.locator("svg").boundingBox()
   const collapsedBrandBox = await workspaceHeader
     .getByRole("link", { name: "Conduit Merchant home" })
     .boundingBox()
@@ -304,12 +314,29 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
   const expandedBrandBox = await mobilePanel
     .getByRole("link", { name: "Conduit Merchant home" })
     .boundingBox()
+  const closeButton = drawer.getByRole("button", { name: "Close", exact: true })
+  const closeButtonBox = await closeButton.boundingBox()
+  const closeIconBox = await closeButton.locator("svg").boundingBox()
   const expandedPanelBackground = await mobilePanel.evaluate(
     (element) => getComputedStyle(element).backgroundColor
   )
   expect(collapsedBrandBox).not.toBeNull()
   expect(expandedBrandBox).not.toBeNull()
+  expect(menuTriggerBox).not.toBeNull()
+  expect(closeButtonBox).not.toBeNull()
+  expect(menuIconBox).not.toBeNull()
+  expect(closeIconBox).not.toBeNull()
   expect(Math.abs(collapsedBrandBox!.x - expandedBrandBox!.x)).toBeLessThan(1)
+  expect(Math.abs(collapsedBrandBox!.y - expandedBrandBox!.y)).toBeLessThan(1)
+  expect(Math.abs(collapsedBrandBox!.y - desktopBrandBox!.y)).toBeLessThan(1)
+  for (const dimension of ["x", "y", "width", "height"] as const) {
+    expect(
+      Math.abs(menuTriggerBox![dimension] - closeButtonBox![dimension])
+    ).toBeLessThan(1)
+    expect(
+      Math.abs(menuIconBox![dimension] - closeIconBox![dimension])
+    ).toBeLessThan(1)
+  }
   expect(collapsedHeaderBackground).toBe(expandedPanelBackground)
   if (merchantNavigationScreenshotDirectory) {
     await page.screenshot({
