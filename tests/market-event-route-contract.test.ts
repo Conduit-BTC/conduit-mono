@@ -114,7 +114,8 @@ describe("Market event catalog route", () => {
       "const requested = resolution.organizerProductCoordinates"
     )
     expect(adapter).toContain('evidenceState: live ? "live" : "retained"')
-    expect(adapter).toContain("pickupFulfillment: live")
+    expect(adapter).toContain("const pickupFulfillment = live")
+    expect(adapter).toContain("pickupReadiness: getEventCatalogPickupReadiness")
     expect(route).toContain("Some accepted products are unresolved")
     expect(route).toContain("details remain visible")
     expect(route).toContain("Accepted product details temporarily unavailable")

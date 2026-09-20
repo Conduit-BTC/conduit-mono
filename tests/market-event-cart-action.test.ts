@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test"
-import { getEventCatalogCartAction } from "../apps/market/src/lib/event-market-cart-action"
+import {
+  getEventCatalogCartAction,
+  getEventCatalogPickupGate,
+} from "../apps/market/src/lib/event-market-cart-action"
 
 describe("Market event catalog cart action", () => {
   it("does not reuse previous pickup authorization during a refresh", () => {
@@ -33,6 +36,25 @@ describe("Market event catalog cart action", () => {
         isChecking: true,
       })
     ).toEqual({ enabled: true, disabledLabel: null })
+  })
+
+  it("does not let unrelated catalog checking relax terminal pickup evidence", () => {
+    const gate = getEventCatalogPickupGate({
+      pickupReadiness: "terminal",
+      hasPickupFulfillment: false,
+      hasPendingCandidate: true,
+      isChecking: true,
+    })
+
+    expect(gate).toEqual({ allowPendingCart: false, isChecking: false })
+    expect(
+      getEventCatalogCartAction({
+        state: "partial",
+        purchaseReady: false,
+        hasPickupFulfillment: false,
+        ...gate,
+      })
+    ).toEqual({ enabled: false, disabledLabel: "Pickup unavailable" })
   })
 
   it("never lets pending cart intent bypass explicit organizer closure", () => {

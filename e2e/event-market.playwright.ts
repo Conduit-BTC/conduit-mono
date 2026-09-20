@@ -5020,6 +5020,104 @@ test("cold event catalog shows a completed merchant product before a slower merc
   }
 })
 
+test("unrelated catalog hydration does not make terminal pickup evidence cartable @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic terminal pickup catalog",
+    organizerHandoffEnabled: true,
+  })
+  const terminalTemplate = createMerchantProductEvent({
+    dTag: "terminal-pickup-product",
+    title: "Synthetic terminal pickup product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const terminalProduct = signEvent(MERCHANT_SECRET, {
+    kind: terminalTemplate.kind,
+    created_at: terminalTemplate.created_at,
+    content: terminalTemplate.content,
+    tags: terminalTemplate.tags.filter((tag) => tag[0] !== "shipping_option"),
+  })
+  const unresolvedSecret = generateSecretKey()
+  const unresolvedProduct = signEvent(unresolvedSecret, {
+    kind: terminalTemplate.kind,
+    created_at: terminalTemplate.created_at,
+    content: "Synthetic unresolved product fixture.",
+    tags: terminalTemplate.tags.map((tag) =>
+      tag[0] === "d"
+        ? ["d", "unresolved-product"]
+        : tag[0] === "title"
+          ? ["title", "Synthetic unresolved product"]
+          : tag
+    ),
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [
+      ...market.initialCollection.tags,
+      ["a", eventCoordinate(terminalProduct)],
+      ["a", eventCoordinate(unresolvedProduct)],
+    ],
+  })
+  relay.seed(
+    terminalProduct,
+    unresolvedProduct,
+    collection,
+    ...[MERCHANT_SECRET, unresolvedSecret].map((secret) =>
+      signEvent(secret, {
+        kind: 10002,
+        created_at: terminalProduct.created_at,
+        content: "",
+        tags: [["r", FIXTURE_RELAY]],
+      })
+    )
+  )
+  let held: HeldRelayRequest | undefined
+  const terminalCard = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic terminal pickup product" })
+  const terminalAction = terminalCard.getByRole("button", {
+    name: "Pickup unavailable",
+    exact: true,
+  })
+
+  try {
+    await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+    await expect(terminalCard).toBeVisible()
+    await expect(terminalAction).toBeDisabled()
+
+    // Start from settled selected-product evidence, then degrade only the
+    // unrelated merchant on refresh. Catalog-wide checking must not turn this
+    // terminal product into reversible cart intent.
+    await page.getByText("Technical details", { exact: true }).click()
+    held = relay.holdRelayRequests((request) =>
+      request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(30402) &&
+          filter.authors?.includes(unresolvedProduct.pubkey)
+      )
+    )
+    await page
+      .getByRole("button", { name: "Refresh evidence", exact: true })
+      .click()
+    await held.captured
+    await expect(terminalAction).toBeDisabled()
+    await expect.poll(() => readCanonicalCartLines(page)).toEqual([])
+  } finally {
+    held?.release()
+  }
+
+  await expect(terminalCard).toBeVisible()
+  await expect(terminalAction).toBeDisabled()
+})
+
 test("cold merchant QR keeps selected cart intent reversible while another merchant frontier is held @market", async ({
   page,
 }) => {

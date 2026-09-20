@@ -5,6 +5,20 @@ export interface EventCatalogCartAction {
   disabledLabel: string | null
 }
 
+export function getEventCatalogPickupGate(input: {
+  pickupReadiness: EventCatalog["products"][number]["pickupReadiness"]
+  hasPickupFulfillment: boolean
+  hasPendingCandidate: boolean
+  isChecking: boolean
+}): { allowPendingCart: boolean; isChecking: boolean } {
+  const awaitingSelectedEvidence =
+    !input.hasPickupFulfillment && input.pickupReadiness === "recoverable"
+  return {
+    allowPendingCart: awaitingSelectedEvidence && input.hasPendingCandidate,
+    isChecking: awaitingSelectedEvidence && input.isChecking,
+  }
+}
+
 export function getEventCatalogCartAction(input: {
   state: EventCatalog["state"]
   orderAcceptance?: "open" | "closed"

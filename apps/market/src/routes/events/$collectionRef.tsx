@@ -74,7 +74,10 @@ import {
   getDefaultProductSelection,
   getProductSelection,
 } from "../../lib/productVariations"
-import { getEventCatalogCartAction } from "../../lib/event-market-cart-action"
+import {
+  getEventCatalogCartAction,
+  getEventCatalogPickupGate,
+} from "../../lib/event-market-cart-action"
 import {
   getEventCatalogProductAvailability,
   type EventCatalog,
@@ -143,6 +146,10 @@ function EventCatalogProductCard({
     selectedProduct.id === product.id && product.type !== "variable"
       ? entry.pickupFulfillment
       : (entry.familyPickupFulfillments?.[selectedProduct.id] ?? null)
+  const pickupReadiness =
+    selectedProduct.id === product.id && product.type !== "variable"
+      ? entry.pickupReadiness
+      : (entry.familyPickupReadiness?.[selectedProduct.id] ?? "terminal")
   const pickupLocation =
     pickupFulfillment?.option.location ?? pickupFulfillment?.option.geohash
   const handoff = pickupFulfillment
@@ -185,20 +192,20 @@ function EventCatalogProductCard({
     : undefined
   const existing = exactExisting ?? pendingExisting
   const cartQuantity = existing?.quantity ?? 0
-  const pendingEvidenceMayRecover =
-    !pickupFulfillment &&
-    !!pendingCandidate &&
-    (isChecking ||
-      catalog.productReadState !== "ready" ||
-      catalog.state === "partial" ||
-      catalog.state === "stale")
+  const pickupGate = getEventCatalogPickupGate({
+    pickupReadiness,
+    hasPickupFulfillment: pickupFulfillment !== null,
+    hasPendingCandidate: pendingCandidate !== null,
+    isChecking,
+  })
+  const pendingEvidenceMayRecover = pickupGate.allowPendingCart
   const cartAction = getEventCatalogCartAction({
     state: catalog.state,
     orderAcceptance: catalog.collection?.orderAcceptance,
     purchaseReady,
     hasPickupFulfillment: pickupFulfillment !== null,
     allowPendingCart: pendingEvidenceMayRecover,
-    isChecking: isChecking && !pickupFulfillment,
+    isChecking: pickupGate.isChecking,
   })
   const canAdd = cartAction.enabled
 

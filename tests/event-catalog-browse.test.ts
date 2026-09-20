@@ -33,6 +33,7 @@ function entry(
       purchaseReady: true,
     },
     pickupFulfillment: null,
+    pickupReadiness: "terminal",
   }
 }
 

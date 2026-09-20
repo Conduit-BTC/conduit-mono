@@ -18,6 +18,7 @@ import {
   pickupItemMatchesCanonicalSnapshot,
   projectEventCatalogHydration,
   projectEventCatalogProducts,
+  projectRawEventCatalog,
   resolveProductCartFulfillment,
   type EventCatalog,
   type PickupFreshnessItem,
@@ -323,6 +324,7 @@ function catalog(
           resolution
         ),
         pickupFulfillment: snapshot,
+        pickupReadiness: snapshot ? "resolved" : "terminal",
       },
     ],
     acceptedProductCount: 1,
@@ -391,6 +393,95 @@ describe("Market event adapter", () => {
     expect(getEventCatalogProductAvailability(projection)).toEqual({
       availableProductCount: 1,
       unresolvedProductCount: 0,
+    })
+  })
+
+  it("keeps terminal exact pickup evidence unavailable when an unrelated product read is partial", () => {
+    const terminalProduct = product({
+      shippingOptionRefs: [],
+      shippingOptionId: undefined,
+    })
+    const unresolvedProduct = product({
+      id: `30402:${"c".repeat(64)}:unresolved-product`,
+      pubkey: "c".repeat(64),
+      title: "Unresolved product",
+    })
+    const terminalRecord = commerceRecord(terminalProduct)
+    const unresolvedRecord = commerceRecord(unresolvedProduct, {
+      eventId: "5".repeat(64),
+    })
+    const resolution = marketWithAcceptedRecords([
+      terminalRecord,
+      unresolvedRecord,
+    ])
+    const projection = projectEventCatalogHydration({
+      resolution,
+      result: {
+        data: [terminalRecord],
+        diagnostics: [
+          {
+            productId: terminalProduct.id,
+            addressId: terminalProduct.id,
+            issue: null,
+            coverage: { listing: "complete", deletion: "complete" },
+          },
+          {
+            productId: unresolvedProduct.id,
+            addressId: unresolvedProduct.id,
+            issue: "lookup_partial",
+            coverage: { listing: "partial", deletion: "partial" },
+          },
+        ],
+        meta: {
+          source: "commerce",
+          stale: false,
+          degraded: true,
+          capped: false,
+          fetchedAt: 1,
+          capabilities: {
+            sortModes: [],
+            textSearch: false,
+            protectedSummaries: false,
+            canonicalFreshness: true,
+            cursorPagination: false,
+          },
+        },
+      },
+    })
+
+    expect(projection.productReadState).toBe("partial")
+    expect(projection.unresolvedProductCoordinates).toEqual([
+      unresolvedProduct.id,
+    ])
+    expect(projection.products).toHaveLength(1)
+    expect(projection.products[0]!.pickupFulfillment).toBeNull()
+    expect(projection.products[0]!.pickupReadiness).toBe("terminal")
+
+    resolution.acceptedProductEvidence = resolution.acceptedProductEvidence.map(
+      (evidence) => ({
+        ...evidence,
+        fulfillmentStatus:
+          evidence.productCoordinate === terminalProduct.id
+            ? ("none" as const)
+            : ("resolved" as const),
+      })
+    )
+    const refreshing = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution,
+      previewRecords: [terminalRecord, unresolvedRecord],
+      complete: false,
+    })
+    expect(
+      Object.fromEntries(
+        refreshing.products.map((entry) => [
+          entry.product.id,
+          entry.pickupReadiness,
+        ])
+      )
+    ).toEqual({
+      [terminalProduct.id]: "terminal",
+      [unresolvedProduct.id]: "recoverable",
     })
   })
 
