@@ -95,6 +95,9 @@ describe("Market Events timeline route", () => {
     )
     expect(navigation).toContain("SegmentedControl")
     expect(navigation).toContain("Following + Conduit")
+    expect(navigation).toMatch(
+      /\{connected && \([\s\S]*?aria-label="Market perspective"/
+    )
     expect(navigation).toContain('aria-label="Market perspective"')
     expect(navigation).toContain("aria-pressed={selected}")
     expect(root).toContain('pathname === "/events"')
