@@ -950,6 +950,63 @@ async function readCanonicalCartLines(
   )
 }
 
+async function addPendingEventPickupCartItem(
+  page: Page,
+  input: {
+    collectionCoordinate: string
+    productEvent: SignedEvent
+    quantity: number
+    previewStock: number
+  }
+): Promise<void> {
+  await page.evaluate(
+    async ({ collectionCoordinate, productEvent, quantity, previewStock }) => {
+      const repositoryPath = "/src/lib/cart-repository.ts"
+      const modelPath = "/src/lib/cart-model.ts"
+      const repository = (await import(/* @vite-ignore */ repositoryPath)) as {
+        addCartRepositoryItem(
+          input: unknown,
+          quantity: number
+        ): Promise<{ changed: boolean }>
+      }
+      const model = (await import(/* @vite-ignore */ modelPath)) as {
+        createPendingEventPickupFulfillment(
+          coordinate: string
+        ):
+          | { type: "event_pickup_pending"; collectionCoordinate: string }
+          | undefined
+      }
+      const dTag = productEvent.tags.find((tag) => tag[0] === "d")?.[1]
+      if (!dTag) throw new Error("Synthetic pending product has no d tag.")
+      const fulfillment =
+        model.createPendingEventPickupFulfillment(collectionCoordinate)
+      if (!fulfillment) throw new Error("Synthetic pending pickup is invalid.")
+      const result = await repository.addCartRepositoryItem(
+        {
+          productId: `${productEvent.kind}:${productEvent.pubkey}:${dTag}`,
+          merchantPubkey: productEvent.pubkey,
+          title:
+            productEvent.tags.find((tag) => tag[0] === "title")?.[1] ??
+            "Synthetic pending pickup product",
+          price: 0,
+          currency: "SAT",
+          priceSats: 0,
+          format: "physical",
+          stock: previewStock,
+          productUpdatedAt: productEvent.created_at,
+          productEventId: productEvent.id,
+          fulfillment,
+        },
+        quantity
+      )
+      if (!result.changed) {
+        throw new Error("Synthetic pending cart fixture was rejected.")
+      }
+    },
+    input
+  )
+}
+
 async function installSyntheticEnvironment(
   page: Page,
   relay: RelayHarness,
@@ -5092,7 +5149,7 @@ test("cold merchant QR keeps selected cart intent reversible while another merch
   }
 })
 
-test("pending event pickup stays non-purchasable in cart until exact terms resolve @market", async ({
+test("pending event pickup retries unresolved terms and reapplies them after quantity correction @market", async ({
   page,
 }) => {
   test.setTimeout(120_000)
@@ -5108,6 +5165,7 @@ test("pending event pickup stays non-purchasable in cart until exact terms resol
     collectionCoordinate: market.collectionCoordinate,
     pickupCoordinate: market.pickupCoordinate!,
     createdAt: market.initialCollection.created_at + 1,
+    stock: 1,
   })
   const collection = signEvent(ORGANIZER_SECRET, {
     kind: 30405,
@@ -5125,56 +5183,153 @@ test("pending event pickup stays non-purchasable in cart until exact terms resol
       tags: [["r", FIXTURE_RELAY]],
     })
   )
+  relay.remove(market.pickupEvent!)
 
-  const held = relay.holdRelayEventResponses(
-    (_request, event) => event.id === market.pickupEvent!.id
-  )
-  try {
-    await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer", {
-      merchant: nip19.npubEncode(product.pubkey),
-    })
-    await held.captured
+  const pickupReads = () =>
+    relay.requests.filter((request) =>
+      request.filters.some((filter) =>
+        eventMatchesFilter(market.pickupEvent!, filter)
+      )
+    ).length
 
-    const productCard = page.getByRole("listitem").filter({
-      hasText: "Synthetic pending pickup product",
-    })
-    await expect(productCard).toBeVisible()
-    const add = productCard.getByRole("button", {
-      name: "Add",
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  const firstReadStart = pickupReads()
+  await addPendingEventPickupCartItem(page, {
+    collectionCoordinate: market.collectionCoordinate,
+    productEvent: product,
+    quantity: 2,
+    // The reversible preview allowed two. The exact signed listing read below
+    // reports one, exercising the transactional stock refusal.
+    previewStock: 3,
+  })
+  const pendingCard = page.getByTestId("pending-event-pickup-cart")
+  await expect(pendingCard).toBeVisible()
+  await expect(
+    pendingCard.getByText("Event pickup · Verification required", {
       exact: true,
     })
-    await expect(add).toBeEnabled()
-    await add.click()
-    await expect
-      .poll(() => readCanonicalCartLines(page))
-      .toEqual([{ productId: eventCoordinate(product), quantity: 1 }])
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Zap out", exact: true })
+  ).toHaveCount(0)
 
-    await page.goto(`${marketUrl}/cart`)
-    const pendingCard = page.getByTestId("pending-event-pickup-cart")
-    await expect(pendingCard).toBeVisible()
-    await expect(
-      pendingCard.getByText("Event pickup · Verification required", {
-        exact: true,
-      })
-    ).toBeVisible()
-    await expect(
-      page.getByRole("button", { name: "Order", exact: true })
-    ).toHaveCount(0)
-    await expect(
-      page.getByRole("button", { name: "Zap out", exact: true })
-    ).toHaveCount(0)
+  await expect
+    .poll(() => readCanonicalCartLines(page))
+    .toEqual([{ productId: eventCoordinate(product), quantity: 2 }])
 
-    held.release()
-    await expect(pendingCard).toHaveCount(0, { timeout: 20_000 })
-    await expect(
-      page.getByRole("button", { name: "Order", exact: true })
-    ).toBeEnabled({ timeout: 20_000 })
-  } finally {
-    held.release()
-  }
+  // The first cart-owned read completes successfully without the exact pickup.
+  // Publishing the missing signed terms must be discovered by a bounded
+  // background retry in this same mounted cart.
+  await expect.poll(pickupReads).toBeGreaterThan(firstReadStart)
+  await expect
+    .poll(async () => {
+      const before = pickupReads()
+      await page.waitForTimeout(750)
+      return pickupReads() === before && before > firstReadStart
+    })
+    .toBe(true)
+  const unresolvedReadCount = pickupReads()
+  relay.seed(market.pickupEvent!)
+  await expect
+    .poll(pickupReads, { timeout: 20_000 })
+    .toBeGreaterThan(unresolvedReadCount)
+  await page.waitForTimeout(250)
+
+  // Exact stock is one, so the transactional upgrade correctly refuses the
+  // two-item line while retaining the verified snapshot in query data.
+  await expect(pendingCard).toBeVisible()
+  const readsBeforeQuantityCorrection = pickupReads()
+  await pendingCard
+    .getByRole("button", {
+      name: "Decrease quantity for Synthetic pending pickup product",
+      exact: true,
+    })
+    .click()
+
+  // The quantity change reapplies the cached exact snapshot. It must not wait
+  // for focus, remounting, or another relay read.
+  await expect(pendingCard).toHaveCount(0, { timeout: 10_000 })
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toBeEnabled({ timeout: 10_000 })
+  expect(pickupReads()).toBe(readsBeforeQuantityCorrection)
 })
 
-test("verified event catalog enables a completed merchant while another exact product read is held @market", async ({
+test("signed pickup withdrawal leaves pending cart blocked without background retries @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic withdrawn pending pickup",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "withdrawn-pending-pickup",
+    title: "Synthetic withdrawn pending product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+  })
+  const withdrawal = signEvent(MERCHANT_SECRET, {
+    kind: product.kind,
+    created_at: product.created_at + 2,
+    content: product.content,
+    tags: product.tags.filter(
+      (tag) => tag[0] !== "a" && tag[0] !== "shipping_option"
+    ),
+  })
+  relay.seed(product, collection, withdrawal)
+
+  const productDTag = product.tags.find((tag) => tag[0] === "d")![1]!
+  const exactProductReads = () =>
+    relay.requests.filter((request) =>
+      request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(30402) &&
+          filter.authors?.includes(product.pubkey) &&
+          Array.isArray(filter["#d"]) &&
+          (filter["#d"] as string[]).includes(productDTag) &&
+          filter.limit === undefined
+      )
+    ).length
+
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  const firstReadStart = exactProductReads()
+  await addPendingEventPickupCartItem(page, {
+    collectionCoordinate: market.collectionCoordinate,
+    productEvent: product,
+    quantity: 1,
+    previewStock: 3,
+  })
+  const pendingCard = page.getByTestId("pending-event-pickup-cart")
+  await expect(pendingCard).toBeVisible()
+  await expect.poll(exactProductReads).toBeGreaterThan(firstReadStart)
+  await page.waitForTimeout(250)
+  const terminalReadCount = exactProductReads()
+
+  // A newer signed product revision removed the event references. Unlike a
+  // partial or unavailable read, that positive terminal evidence must not be
+  // polled as though pickup authority could appear from the same revision.
+  await page.waitForTimeout(6_000)
+  expect(exactProductReads()).toBe(terminalReadCount)
+  await expect(pendingCard).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toHaveCount(0)
+})
+
+test("verified event catalog keeps exact pickup ready while another merchant forms pending intent @market", async ({
   page,
 }) => {
   test.setTimeout(120_000)
@@ -5266,11 +5421,13 @@ test("verified event catalog enables a completed merchant while another exact pr
     ).toBeEnabled()
     await expect(slowCard).toBeVisible()
     await expect(
-      slowCard.getByRole("button", { name: "Checking pickup…", exact: true })
-    ).toBeDisabled()
-    await expect(
       slowCard.getByRole("button", { name: "Add", exact: true })
-    ).toHaveCount(0)
+    ).toBeEnabled()
+    await expect(
+      slowCard.getByText(
+        /Current pickup terms are being verified.*checkout stays locked/s
+      )
+    ).toBeVisible()
     await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
     const slowExactReads = relay.requests.filter(isSlowExactRead)
     expect(slowExactReads.length).toBeGreaterThan(0)
@@ -5311,7 +5468,7 @@ test("verified event catalog enables a completed merchant while another exact pr
   }
 })
 
-test("event catalog paints before held product reads and keeps cached browsing closed to purchase @market", async ({
+test("event catalog paints before held product reads and allows reversible cached cart intent @market", async ({
   page,
 }) => {
   test.setTimeout(120_000)
@@ -5421,11 +5578,13 @@ test("event catalog paints before held product reads and keeps cached browsing c
     await expect(card).toBeVisible()
     timings.warmProductsMs = Date.now() - warmStarted
     await expect(
-      card.getByRole("button", { name: "Checking pickup…", exact: true })
-    ).toBeDisabled()
-    await expect(
       card.getByRole("button", { name: "Add", exact: true })
-    ).toHaveCount(0)
+    ).toBeEnabled()
+    await expect(
+      card.getByText(
+        /Current pickup terms are being verified.*checkout stays locked/s
+      )
+    ).toBeVisible()
     // The next response carries stronger evidence than the cached preview.
     relay.seed(
       signEvent(ORGANIZER_SECRET, {
@@ -5712,10 +5871,12 @@ for (const mounted of [true, false]) {
         await expect(card).toBeVisible()
         await expect(
           card.getByRole("button", { name: "Add", exact: true })
-        ).toHaveCount(0)
+        ).toBeEnabled()
         await expect(
-          card.getByRole("button", { name: "Checking pickup…", exact: true })
-        ).toHaveCount(0)
+          card.getByText(
+            /Current pickup terms are being verified.*checkout stays locked/s
+          )
+        ).toBeVisible()
       }
       await expect(
         page
@@ -5731,7 +5892,8 @@ for (const mounted of [true, false]) {
           observedRevisionKind: revised.kind,
           reconciliationMs: Date.now() - started,
           retainedBrowseProducts: cards.length,
-          remainingAddableProducts: 0,
+          reversibleCartIntentProducts: cards.length,
+          checkoutAuthorizedProducts: 0,
           catalogRechecks: 0,
         })
       )
@@ -5966,8 +6128,13 @@ test("event variation choices remain stable while cached pickup authorization re
     const selector = card.getByRole("combobox", { name: "Choose size" })
     await expect(selector).toBeVisible()
     await expect(
-      card.getByRole("button", { name: "Checking pickup…", exact: true })
-    ).toBeDisabled()
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(
+      card.getByText(
+        /Current pickup terms are being verified.*checkout stays locked/s
+      )
+    ).toBeVisible()
     await selector.click()
     await expect(
       page.getByRole("option", { name: "Small", exact: true })
@@ -5995,10 +6162,12 @@ test("event variation choices remain stable while cached pickup authorization re
   ).toBeVisible()
   await expect(
     card.getByRole("button", { name: "Add", exact: true })
-  ).toHaveCount(0)
+  ).toBeEnabled()
   await expect(
-    card.getByRole("button", { name: "Pickup unavailable", exact: true })
-  ).toBeDisabled()
+    card.getByText(
+      /Current pickup terms are being verified.*checkout stays locked/s
+    )
+  ).toBeVisible()
 })
 
 test("failed event refresh retains cards with stale warning and a working retry @market", async ({
@@ -6074,8 +6243,13 @@ const loadRawEventCatalog = async (...args) => {
   await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
   await expect(card).toBeVisible()
   await expect(
-    card.getByRole("button", { name: "Pickup unavailable", exact: true })
-  ).toBeDisabled()
+    card.getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled()
+  await expect(
+    card.getByText(
+      /Current pickup terms are being verified.*checkout stays locked/s
+    )
+  ).toBeVisible()
   await page
     .getByRole("button", { name: "Refresh evidence", exact: true })
     .click()
@@ -6146,11 +6320,24 @@ const loadRawEventCatalog = async (...args) => {
     "1 product remains unresolved and unavailable."
   )
   await expect(card).toBeVisible()
+  const add = card.getByRole("button", { name: "Add", exact: true })
+  await expect(add).toBeEnabled()
   await expect(
-    card.getByRole("button", { name: "Pickup unavailable", exact: true })
-  ).toBeDisabled()
+    card.getByText(
+      /Current pickup terms are being verified.*checkout stays locked/s
+    )
+  ).toBeVisible()
+  await add.click()
+  await expect
+    .poll(() => readCanonicalCartLines(page))
+    .toEqual([{ productId: eventCoordinate(product), quantity: 1 }])
+  await page.goto(`${marketUrl}/cart`)
+  await expect(page.getByTestId("pending-event-pickup-cart")).toBeVisible()
   await expect(
-    card.getByRole("button", { name: "Add", exact: true })
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Zap out", exact: true })
   ).toHaveCount(0)
   expect(relay.publications).toHaveLength(publicationCount)
 })

@@ -557,6 +557,8 @@ function EventCatalogPage() {
   const { collectionRef } = Route.useParams()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
+  const [catalogSearch, setCatalogSearch] = useState("")
+  useEffect(() => setCatalogSearch(""), [collectionRef])
   const selectedMerchantPubkey = normalizePubkey(search.merchant) ?? ""
   const updateMerchantFilter = (merchantPubkey: string) => {
     const normalized = merchantPubkey ? normalizePubkey(merchantPubkey) : null
@@ -846,8 +848,10 @@ function EventCatalogPage() {
         key={collection.coordinate}
         products={catalog.products}
         identities={merchantIdentities.identitiesByPubkey}
+        search={catalogSearch}
         merchant={selectedMerchantPubkey}
         selectedMerchantName={selectedMerchantName}
+        onSearchChange={setCatalogSearch}
         onMerchantChange={updateMerchantFilter}
         renderProduct={(entry, index, onMerchantActivate) => (
           <EventCatalogProductCard

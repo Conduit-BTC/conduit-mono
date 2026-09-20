@@ -2,6 +2,7 @@ import {
   getProductsByIds,
   type PricingRateInput,
   type Product,
+  type ProductAvailabilityIssue,
 } from "@conduit/core"
 import {
   getPendingEventPickupCartItems,
@@ -11,10 +12,12 @@ import {
   type PendingEventPickupCartItem,
 } from "./cart-model"
 import {
+  eventCatalogNeedsProductRefresh,
   getProductEventMarketCandidates,
   loadRawEventCatalog,
   projectRawEventCatalog,
   resolveProductCartFulfillmentFromCatalogs,
+  type EventCatalog,
   type ProductEventMarketCandidate,
 } from "./event-market-adapter"
 import { cartItemInputFromProductSelection } from "./productVariations"
@@ -22,6 +25,12 @@ import { cartItemInputFromProductSelection } from "./productVariations"
 export type PendingEventPickupCartUpgrade = {
   identity: CartItemIdentity & { cartLineId: string }
   item: CartEventPickupUpgradeInput
+}
+
+export type PendingEventPickupCartResolution = {
+  upgrades: PendingEventPickupCartUpgrade[]
+  /** At least one unresolved line may gain stronger evidence on a later read. */
+  retryable: boolean
 }
 
 type PreparedSelection = {
@@ -32,6 +41,34 @@ type PreparedSelection = {
 type SelectedCatalogRead = {
   candidate: ProductEventMarketCandidate
   productIds: Set<string>
+}
+
+const RETRYABLE_PRODUCT_ISSUES = new Set<ProductAvailabilityIssue>([
+  "lookup_unavailable",
+  "lookup_partial",
+  // Completed configured-relay absence is not a signed withdrawal. Keep the
+  // retry bounded, but allow a late listing to provide positive evidence.
+  "product_missing",
+  "cached_only",
+  "pending",
+])
+
+function catalogResolutionMayAdvance(
+  product: Product,
+  catalog: EventCatalog
+): boolean {
+  if (
+    ["ended", "deleted", "malformed", "conflicting", "unsupported"].includes(
+      catalog.state
+    )
+  ) {
+    return false
+  }
+  return (
+    ["unavailable", "partial", "stale", "missing"].includes(catalog.state) ||
+    catalog.productReadState !== "ready" ||
+    eventCatalogNeedsProductRefresh(product, catalog)
+  )
 }
 
 /**
@@ -46,12 +83,12 @@ export async function resolvePendingEventPickupCartUpgrades(
     shouldContinue?: () => boolean
     signal?: AbortSignal
   } = {}
-): Promise<PendingEventPickupCartUpgrade[]> {
+): Promise<PendingEventPickupCartResolution> {
   const pendingItems = getPendingEventPickupCartItems(items).filter(
     (item): item is PendingEventPickupCartItem & { cartLineId: string } =>
       !!item.cartLineId
   )
-  if (pendingItems.length === 0) return []
+  if (pendingItems.length === 0) return { upgrades: [], retryable: false }
 
   const active = () =>
     !options.signal?.aborted && (options.shouldContinue?.() ?? true)
@@ -61,7 +98,17 @@ export async function resolvePendingEventPickupCartUpgrades(
     authenticatedPubkey: options.authenticatedPubkey,
     shouldContinue: active,
   })
-  if (!active()) return []
+  if (!active()) return { upgrades: [], retryable: false }
+
+  const retryableProductIds = new Set(
+    productResult.diagnostics
+      .filter(
+        (diagnostic) =>
+          diagnostic.issue !== null &&
+          RETRYABLE_PRODUCT_ISSUES.has(diagnostic.issue)
+      )
+      .map((diagnostic) => diagnostic.productId)
+  )
 
   const selections = new Map<string, PreparedSelection>()
   for (const record of productResult.data) {
@@ -79,9 +126,13 @@ export async function resolvePendingEventPickupCartUpgrades(
 
   const reads = new Map<string, SelectedCatalogRead>()
   const candidateByLineId = new Map<string, ProductEventMarketCandidate>()
+  let retryable = false
   for (const item of pendingItems) {
     const selection = selections.get(item.productId)
-    if (!selection) continue
+    if (!selection) {
+      retryable ||= retryableProductIds.has(item.productId)
+      continue
+    }
     const candidates = getProductEventMarketCandidates(
       selection.selected
     ).filter(
@@ -112,9 +163,9 @@ export async function resolvePendingEventPickupCartUpgrades(
       })
     )
   )
-  if (!active()) return []
+  if (!active()) return { upgrades: [], retryable: false }
 
-  return pendingItems.flatMap((pendingItem) => {
+  const upgrades = pendingItems.flatMap((pendingItem) => {
     const selection = selections.get(pendingItem.productId)
     const candidate = candidateByLineId.get(pendingItem.cartLineId)
     const catalog = candidate
@@ -131,6 +182,7 @@ export async function resolvePendingEventPickupCartUpgrades(
       !Number.isSafeInteger(resolution.product.updatedAt) ||
       !resolution.product.sourceEventId
     ) {
+      retryable ||= catalogResolutionMayAdvance(selection.selected, catalog)
       return []
     }
 
@@ -156,4 +208,6 @@ export async function resolvePendingEventPickupCartUpgrades(
       },
     ]
   })
+
+  return { upgrades, retryable }
 }
