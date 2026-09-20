@@ -318,6 +318,34 @@ describe("retained event market dependencies", () => {
     })
   })
 
+  it("classifies an organizer-listed product removed before participation settles", () => {
+    const previewResolution: EventMarketResolution = {
+      ...resolution(),
+      acceptedProductCoordinates: [],
+      acceptedProductEvidence: [],
+      organizerOnlyProductCoordinates: [product],
+      participationRequests: [],
+    }
+    const withoutProduct = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [],
+      }),
+      200
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(previewResolution, [withoutProduct])
+    ).toEqual({
+      ...empty,
+      graph: true,
+      removedProductCoordinates: [product],
+    })
+  })
+
   it("ignores older, forged, unrelated, and already deleted newer evidence", () => {
     const newer = signed(graph[2]!, 200)
     const deleted = signed({ kind: 5, tags: [["e", newer.id]] }, 201)

@@ -5828,13 +5828,23 @@ test("event catalog paints before held product reads and allows reversible cache
     card.getByRole("button", { name: "Add", exact: true })
   ).toBeEnabled()
   const publications = relay.publications.length
-  const warmRead = relay.holdRelayRequests((request) =>
+  const isWarmCatalogRead = (request: RelayRequest) =>
     request.filters.some((filter) =>
       filter.kinds?.some((kind) =>
         [30402, 30405, 30406, 31922, 31923].includes(kind)
       )
     )
+  const warmRead = relay.holdRelayRequests(isWarmCatalogRead)
+  const writer = await page.context().newPage()
+  const writerUrl = `${marketUrl}/__synthetic-progressive-removal-writer.html`
+  await writer.route(writerUrl, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Synthetic progressive removal writer</title>",
+    })
   )
+  await writer.goto(writerUrl)
+  const warmRequestStart = relay.requests.length
   const warmStarted = Date.now()
   try {
     await page.reload()
@@ -5855,11 +5865,61 @@ test("event catalog paints before held product reads and allows reversible cache
         /Current pickup terms are being verified.*checkout stays locked/s
       )
     ).toBeVisible()
-    // The next response carries stronger evidence than the cached preview.
+    await expect
+      .poll(() =>
+        relay.requests
+          .slice(warmRequestStart)
+          .some((request) =>
+            request.filters.some(
+              (filter) =>
+                filter.kinds?.includes(30402) &&
+                filter["#d"]?.includes("progressive-catalog")
+            )
+          )
+      )
+      .toBe(true)
+    const readsBeforeRemoval = relay.requests.filter(isWarmCatalogRead).length
+    const removedCollection = signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: collection.created_at + 10,
+      content: collection.content,
+      tags: collection.tags.filter(
+        (tag) => !(tag[0] === "a" && tag[1] === eventCoordinate(product))
+      ),
+    })
+    const dbUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url))}`
+    await writer.evaluate(
+      async ({ moduleUrl, event }) => {
+        const { db } = await import(moduleUrl)
+        await db.eventMarketEvidence.put({
+          id: event.id,
+          organizerPubkey: event.pubkey,
+          kind: event.kind,
+          signedEvent: event,
+          sourceRelayUrls: [],
+          cachedAt: Date.now(),
+        })
+      },
+      { moduleUrl: dbUrl, event: removedCollection }
+    )
+    await expect(card).toBeVisible()
+    await expect(
+      card.getByRole("button", { name: "Pickup unavailable", exact: true })
+    ).toBeDisabled()
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toHaveCount(0)
+    expect(
+      relay.requests
+        .filter(isWarmCatalogRead)
+        .slice(readsBeforeRemoval)
+        .map((request) => request.filters)
+    ).toEqual([])
+    // The next response carries terminal evidence beyond the cached preview.
     relay.seed(
       signEvent(ORGANIZER_SECRET, {
         kind: 5,
-        created_at: collection.created_at + 1,
+        created_at: removedCollection.created_at + 1,
         content: "",
         tags: [
           ["a", market.collectionCoordinate],
@@ -5869,6 +5929,7 @@ test("event catalog paints before held product reads and allows reversible cache
     )
   } finally {
     warmRead.release()
+    await writer.close()
   }
   await expect(
     page.getByRole("heading", { name: "Event deleted", exact: true })

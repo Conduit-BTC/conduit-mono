@@ -509,6 +509,28 @@ describe("Market event adapter", () => {
     ).toBe("terminal")
   })
 
+  it("keeps collection removal terminal for a progressive preview before participation settles", () => {
+    const previewResolution: EventMarketResolution = {
+      ...market("stale"),
+      acceptedProductCoordinates: [],
+      acceptedProductEvidence: [],
+      organizerOnlyProductCoordinates: [productCoordinate],
+      participationRequests: [],
+    }
+    const projection = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution: previewResolution,
+      previewRecords: [commerceRecord(product())],
+      complete: false,
+      localGraphSuperseded: true,
+      localRemovedProductCoordinates: [productCoordinate],
+    })
+
+    expect(projection.products).toHaveLength(1)
+    expect(projection.products[0]!.evidenceState).toBe("retained")
+    expect(projection.products[0]!.pickupReadiness).toBe("terminal")
+  })
+
   it("projects every accepted product beyond the transport author chunk size", () => {
     const records = Array.from({ length: 65 }, (_, index) => {
       const author = (index + 1).toString(16).padStart(64, "0")

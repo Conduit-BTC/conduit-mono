@@ -4104,9 +4104,12 @@ export function getEventMarketSupersededEvidence(
     (calendarReplaced && (!calendarEvidence.event || !calendarRevision)) ||
     supersedingGraphEndsOrdering
   const removedProductCoordinates = collectionRevision
-    ? resolution.acceptedProductCoordinates.filter(
-        (coordinate) => !collectionProductCoordinates.has(coordinate)
-      )
+    ? [
+        ...new Set([
+          ...resolution.organizerProductCoordinates,
+          ...resolution.acceptedProductCoordinates,
+        ]),
+      ].filter((coordinate) => !collectionProductCoordinates.has(coordinate))
     : []
   return {
     graph: collectionReplaced || calendarReplaced,
