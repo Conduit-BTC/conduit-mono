@@ -26,6 +26,9 @@ export interface AccountNetworkRelayCapabilityView {
   searchAdvertised: boolean
   authEvidence: RelayAuthEvidenceState | "advertised"
   relayName?: string
+  relayIconUrl?: string
+  /** App-owned local asset used only when current NIP-11 identity is absent. */
+  relayIconFallbackUrl?: string
   observedAt?: number
 }
 
@@ -74,6 +77,20 @@ export interface AccountNetworkPendingExactDeliveryView {
 
 export interface AccountNetworkSettingsView {
   rows: AccountNetworkRelayRowView[]
+  /** App-owned fallback routes shown separately from signed personal routes. */
+  appRelays?: {
+    enabled: boolean
+    rows: AccountNetworkRelayRowView[]
+    warning?: string
+  }
+  /** Whether signed personal routes currently participate in app routing. */
+  personalRelaysEnabled?: boolean
+  /** Exact personal relay draft offered through the normal review flow. */
+  setupRecommendation?: {
+    title: string
+    description: string
+    rows: AccountNetworkRelayRowView[]
+  }
   relayList: AccountNetworkFrontierView
   inbox: AccountNetworkFrontierView
   pendingExactDeliveries: AccountNetworkPendingExactDeliveryView[]
@@ -111,7 +128,6 @@ const CONFIGURED_USE_SOURCES: readonly [
   ["public_activity", config.zapRelayUrls],
 ]
 const COMMERCE_USES: readonly AccountNetworkRelayConfiguredUse[] = [
-  "app_publishing",
   "product_discovery",
   "order_messages",
   "private_inbox",
@@ -169,6 +185,10 @@ function capabilityFromEvidence(
   authEvidence: RelayAuthEvidenceState | undefined,
   usesByUrl: ReadonlyMap<string, readonly AccountNetworkRelayConfiguredUse[]>
 ): AccountNetworkRelayCapabilityView {
+  const knownIdentity = config.appRelayDefinitions.find(
+    (definition) => normalizedRelayUrl(definition.url) === url
+  )
+  const currentNip11 = Boolean(scan?.reachable && scan.capabilities.nip11)
   const advertisedAuth =
     scan?.observations.auth.status === "advertised" ||
     scan?.capabilities.auth === true
@@ -189,7 +209,17 @@ function capabilityFromEvidence(
         : advertisedAuth
           ? "advertised"
           : "untested",
-    ...(scan?.relayName ? { relayName: scan.relayName } : {}),
+    ...(currentNip11 && scan?.relayName
+      ? { relayName: scan.relayName }
+      : knownIdentity?.fallbackName
+        ? { relayName: knownIdentity.fallbackName }
+        : scan?.relayName
+          ? { relayName: scan.relayName }
+          : {}),
+    ...(scan?.relayIconUrl ? { relayIconUrl: scan.relayIconUrl } : {}),
+    ...(knownIdentity?.fallbackIconUrl
+      ? { relayIconFallbackUrl: knownIdentity.fallbackIconUrl }
+      : {}),
     ...(scan ? { observedAt: scan.scannedAt } : {}),
   }
 }
@@ -251,6 +281,87 @@ function inboxObservedAt(
     return inbox.fetchedAt
   }
   return null
+}
+
+function relayScanReachability(
+  scan: RelayScanResult | undefined
+): AccountNetworkRelayReachability {
+  if (!scan) return "not_checked"
+  return scan.reachable ? "responded" : "issue"
+}
+
+function appRelayDisableWarning(
+  personalRows: readonly AccountNetworkRelayRowView[],
+  personalRelaysEnabled: boolean,
+  reconciliation: AccountNetworkPreferencesReconciliation
+): string | undefined {
+  if (!personalRelaysEnabled) {
+    return "Your personal relays are currently disabled. Enable them before turning off App Relays to avoid losing Conduit’s active relay routes."
+  }
+  const missing: string[] = []
+  const unverified: string[] = []
+  const publishedRelays = personalRows.filter(
+    (row) => row.publishEnabled && row.publishState === "published"
+  )
+  const currentInboxRelayUrls = new Set(
+    reconciliation.inboxDeclaration.relayUrls
+  )
+  if (
+    !publishedRelays.some((row) =>
+      isAccountNetworkRelayCommerceRelevant(row.capability)
+    )
+  ) {
+    const commerceFindings =
+      publishedRelays.length > 0 ||
+      reconciliation.ownerRelayList.lookup.coverage !== "complete"
+        ? unverified
+        : missing
+    commerceFindings.push("a commerce-qualified Publish relay")
+  }
+  if (
+    !personalRows.some(
+      (row) =>
+        row.privateInboxEnabled &&
+        row.privateInboxState === "published" &&
+        reconciliation.inboxDeclaration.state === "declared" &&
+        currentInboxRelayUrls.has(row.url)
+    )
+  ) {
+    const inboxFindings =
+      reconciliation.inboxDeclaration.observation?.coverage === "complete"
+        ? missing
+        : unverified
+    inboxFindings.push("a current Private inbox")
+  }
+  if (missing.length === 0 && unverified.length === 0) return undefined
+  const findings = [
+    ...(missing.length > 0
+      ? [
+          `Your personal setup does not currently include ${missing.join(", ")}.`,
+        ]
+      : []),
+    ...(unverified.length > 0
+      ? [`Conduit could not verify ${unverified.join(", ")}.`]
+      : []),
+  ].join(" ")
+  return `${findings} Turning off App Relays may reduce commerce, discovery, or messaging reliability.`
+}
+
+function isConfirmedFirstTimeNetworkSetup(
+  reconciliation: AccountNetworkPreferencesReconciliation
+): boolean {
+  const owner = reconciliation.ownerRelayList
+  const inbox = reconciliation.inboxDeclaration
+  return (
+    owner.state === "not_observed" &&
+    owner.lookup.coverage === "complete" &&
+    !owner.current &&
+    !owner.lastUsable &&
+    !owner.pendingDistribution &&
+    inbox.state === "not_observed" &&
+    inbox.observation?.coverage === "complete" &&
+    !inbox.eventId
+  )
 }
 
 function rowEvidenceTier(row: AccountNetworkRelayRowView): number {
@@ -422,6 +533,67 @@ export function buildAccountNetworkSettingsView(input: {
     [...rowsByUrl.values()],
     input.localState?.preferredRelayOrder
   )
+  const routingPolicy = input.localState?.routingPolicy
+  const confirmedFirstTime = isConfirmedFirstTimeNetworkSetup(
+    input.reconciliation
+  )
+  const appRelayRows = config.appRelayDefinitions.flatMap((definition) => {
+    const url = normalizedRelayUrl(definition.url)
+    if (!url) return []
+    const scan = scans.get(url)
+    return [
+      {
+        url,
+        readEnabled: definition.read,
+        publishEnabled: definition.write,
+        privateInboxEnabled: definition.privateInbox,
+        readState: null,
+        publishState: null,
+        privateInboxState: null,
+        signedPosition: null,
+        candidate: false,
+        reachability: relayScanReachability(scan),
+        capability: capabilityFromEvidence(url, scan, auth[url], uses),
+      } satisfies AccountNetworkRelayRowView,
+    ]
+  })
+  const recommendationRows = config.appRelayDefinitions.flatMap(
+    (definition) => {
+      const url = normalizedRelayUrl(definition.url)
+      if (!url || excluded.has(url)) return []
+      const existing = rowsByUrl.get(url)
+      const readEnabled =
+        Boolean(existing?.readEnabled) ||
+        definition.nip65Preset === "read_write"
+      const publishEnabled =
+        Boolean(existing?.publishEnabled) || definition.nip65Preset !== null
+      const privateInboxEnabled =
+        Boolean(existing?.privateInboxEnabled) || definition.nip17Preset
+      if (!readEnabled && !publishEnabled && !privateInboxEnabled) return []
+      const scan = scans.get(url)
+      return [
+        {
+          ...(existing ?? {
+            url,
+            signedPosition: null,
+            candidate: true,
+            recoveryReadOnly: false,
+            reachability: relayScanReachability(scan),
+            capability: capabilityFromEvidence(url, scan, auth[url], uses),
+          }),
+          readEnabled,
+          publishEnabled,
+          privateInboxEnabled,
+          readState: existing?.readState ?? (readEnabled ? "draft" : null),
+          publishState:
+            existing?.publishState ?? (publishEnabled ? "draft" : null),
+          privateInboxState:
+            existing?.privateInboxState ??
+            (privateInboxEnabled ? "draft" : null),
+        } satisfies AccountNetworkRelayRowView,
+      ]
+    }
+  )
   const owner = input.reconciliation.ownerRelayList
   const pendingExactDeliveries: AccountNetworkPendingExactDeliveryView[] = []
   if (owner.pendingDistribution) {
@@ -493,6 +665,32 @@ export function buildAccountNetworkSettingsView(input: {
 
   return {
     rows,
+    ...(routingPolicy
+      ? {
+          appRelays: {
+            enabled: routingPolicy.appRelaysEnabled,
+            rows: appRelayRows,
+            warning: appRelayDisableWarning(
+              rows,
+              routingPolicy.personalRelaysEnabled,
+              input.reconciliation
+            ),
+          },
+          personalRelaysEnabled: routingPolicy.personalRelaysEnabled,
+          ...(confirmedFirstTime &&
+          routingPolicy.setupPromptState === "untouched" &&
+          recommendationRows.length > 0
+            ? {
+                setupRecommendation: {
+                  title: "Match Conduit defaults",
+                  description:
+                    "Prepare Conduit’s recommended relay roles for review. Nothing publishes until you approve the normal signer flow.",
+                  rows: recommendationRows,
+                },
+              }
+            : {}),
+        }
+      : {}),
     relayList: {
       state: owner.state,
       stale: owner.stale,

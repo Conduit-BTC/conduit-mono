@@ -57,11 +57,21 @@ function controller(
     inbox?: AccountNetworkSettingsController["view"]["inbox"]
     status?: AccountNetworkSettingsController["status"]
     relayInformationRefreshing?: boolean
+    appRelays?: AccountNetworkSettingsController["view"]["appRelays"]
+    personalRelaysEnabled?: boolean
+    setupRecommendation?: AccountNetworkSettingsController["view"]["setupRecommendation"]
   } = {}
 ): AccountNetworkSettingsController {
   return {
     view: {
       rows: input.rows ?? [],
+      ...(input.appRelays ? { appRelays: input.appRelays } : {}),
+      ...(input.personalRelaysEnabled === undefined
+        ? {}
+        : { personalRelaysEnabled: input.personalRelaysEnabled }),
+      ...(input.setupRecommendation
+        ? { setupRecommendation: input.setupRecommendation }
+        : {}),
       relayList: input.relayList ?? EMPTY_FRONTIER,
       inbox: input.inbox ?? EMPTY_FRONTIER,
       pendingExactDeliveries: input.pendingExactDeliveries ?? [],
@@ -91,6 +101,9 @@ function controller(
     retryPendingUpdate: async () => undefined,
     redistributeExactInboxDeclaration: async () => undefined,
     reorderRelays: async () => undefined,
+    setAppRelaysEnabled: async () => undefined,
+    setPersonalRelaysEnabled: async () => undefined,
+    dismissSetupRecommendation: async () => undefined,
     refresh: async () => undefined,
     clearOperation: () => undefined,
   }
@@ -435,6 +448,82 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup.match(/lucide-chevron-down/g)).toHaveLength(2)
     expect(markup).toContain("group-open/relay-details:rotate-180")
     expect(markup).toContain("group-open/published-preferences:rotate-180")
+  })
+
+  it("presents app and personal relay groups with safe relay identity imagery", () => {
+    const personal = relayRow("wss://personal.example", {
+      capability: {
+        configuredUses: [],
+        observedCommerce: false,
+        nip11: "available",
+        searchAdvertised: false,
+        authEvidence: "untested",
+        relayName: "Personal Relay",
+        relayIconUrl: "https://nostr.build/personal-relay.png",
+      },
+    })
+    const app = relayRow("wss://relay.conduit.market", {
+      capability: {
+        configuredUses: ["app_publishing"],
+        observedCommerce: false,
+        nip11: "unavailable",
+        searchAdvertised: false,
+        authEvidence: "untested",
+        relayName: "Conduit Relay",
+        relayIconUrl: "https://nostr.build/stale-conduit-relay.png",
+        relayIconFallbackUrl: "/images/logo/logo-icon.svg",
+      },
+    })
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [personal],
+          appRelays: {
+            enabled: true,
+            rows: [app],
+            warning: "Your personal setup is missing important routes.",
+          },
+          personalRelaysEnabled: false,
+          setupRecommendation: {
+            title: "Match Conduit defaults",
+            description: "Prepare recommended roles for review.",
+            rows: [app],
+          },
+        })}
+      />
+    )
+
+    expect(markup).toContain("App Relays")
+    expect(markup).toContain("Your Relays")
+    expect(markup).toContain("Match Conduit defaults")
+    expect(markup).toContain('src="/images/logo/logo-icon.svg"')
+    expect(markup).toContain('src="https://nostr.build/personal-relay.png"')
+    expect(markup).toContain('loading="lazy"')
+    expect(markup).toContain('referrerPolicy="no-referrer"')
+    expect(markup).toContain('aria-label="Disable App Relays"')
+    expect(markup).toContain('aria-label="Enable Your Relays"')
+    expect(markup).toContain('aria-label="Dismiss relay setup recommendation"')
+    expect(markup.indexOf("Personal Relay")).toBeLessThan(
+      markup.indexOf("wss://personal.example")
+    )
+  })
+
+  it("requires a warning review before disabling app relays", async () => {
+    const panelSource = await Bun.file(
+      "packages/ui/src/components/RelaySettingsPanel.tsx"
+    ).text()
+
+    expect(panelSource).toContain("if (!enabled && disableWarning)")
+    expect(panelSource).toContain("Turn off App Relays?")
+    expect(panelSource).toContain("{disableWarning}")
+    expect(panelSource).toContain("controller.setAppRelaysEnabled(enabled)")
+    expect(panelSource).toContain(
+      "review.applySetupRecommendation(recommendation.rows)"
+    )
+    expect(panelSource).toContain("controller.dismissSetupRecommendation()")
+    expect(panelSource).toContain(
+      'controller.prepareChange({ type: "set_roles", rows: desiredRoles })'
+    )
   })
 
   it("never labels an all-excluded exact plan as confirmed", () => {

@@ -8,6 +8,7 @@ import {
 } from "react"
 import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { useQueryClient } from "@tanstack/react-query"
+import { config } from "../config"
 import {
   useAuth,
   type AuthMethod,
@@ -20,6 +21,11 @@ import {
   subscribeAccountNetworkLocalState,
   type AccountNetworkLocalState,
 } from "../protocol/account-network-local-state"
+import {
+  markAccountNetworkSetupPrompt,
+  setAccountNetworkRoutingSourceEnabled,
+  type AccountNetworkRoutingSource,
+} from "../protocol/account-network-routing-policy"
 import {
   publishAccountNetworkMutation,
   recordAccountNetworkRelayScans,
@@ -130,6 +136,9 @@ export interface AccountNetworkSettingsController {
   relayInformationRefreshing: boolean
   exactInboxRedistributionAvailable: boolean
   mediaServers: AccountNetworkMediaServerController | null
+  setAppRelaysEnabled: (enabled: boolean) => Promise<void>
+  setPersonalRelaysEnabled: (enabled: boolean) => Promise<void>
+  dismissSetupRecommendation: () => Promise<void>
   addRelay: (url: string) => Promise<AccountNetworkRelayRowView>
   validate: (
     rows: readonly AccountNetworkDesiredRelayRoles[]
@@ -278,6 +287,7 @@ function relayScanFromEntry(
     url: entry.url,
     reachable: !entry.warnings.unreachable,
     ...(entry.relayName ? { relayName: entry.relayName } : {}),
+    ...(entry.relayIconUrl ? { relayIconUrl: entry.relayIconUrl } : {}),
     capabilities: entry.capabilities,
     warnings: entry.warnings,
     observations: entry.observations ?? fallback.observations,
@@ -400,6 +410,7 @@ function scopedRevision(input: {
       input.localState?.exclusions
         .map((exclusion) => exclusion.relayUrl)
         .sort() ?? [],
+    routingPolicy: input.localState?.routingPolicy ?? null,
   })
 }
 
@@ -485,6 +496,52 @@ export function useAccountNetworkSettings(
 
   const activeLocal = local.pubkey === accountPubkey ? local : null
   const reconciliation = accountPreferences.reconciliation
+
+  useEffect(() => {
+    if (!accountPubkey || !activeLocal?.ready || !activeLocal.state) return
+    const localState = activeLocal.state
+    const known = new Set(localState.relayScans.map((scan) => scan.url))
+    const relayUrls = config.appRelayDefinitions
+      .map((definition) => definition.url)
+      .filter((relayUrl) => !known.has(relayUrl))
+    if (relayUrls.length === 0) return
+
+    const generation = scanGeneration.current
+    let cancelled = false
+    void scanRelayBatch({
+      relayUrls,
+      existing: localState.relayScans,
+    })
+      .then(async (scans) => {
+        if (
+          cancelled ||
+          generation !== scanGeneration.current ||
+          authRef.current.status !== "connected" ||
+          authRef.current.pubkey?.trim().toLowerCase() !== accountPubkey
+        ) {
+          return
+        }
+        const updated = await recordAccountNetworkRelayScans({
+          pubkey: accountPubkey,
+          relayScans: mergeRelayScans(localState.relayScans, scans),
+        })
+        if (!cancelled && generation === scanGeneration.current) {
+          setLocal({
+            pubkey: accountPubkey,
+            state: updated,
+            ready: true,
+            error: null,
+          })
+        }
+      })
+      .catch(() => {
+        // NIP-11 identity is optional display metadata.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [accountPubkey, activeLocal?.ready, activeLocal?.state])
+
   const authEvidenceByUrl = useMemo(() => {
     void authEvidenceRevision
     if (!accountPubkey) return {}
@@ -996,6 +1053,70 @@ export function useAccountNetworkSettings(
     [accountFenceFor, baseView.rows, captureAccount]
   )
 
+  const setRoutingSourceEnabled = useCallback(
+    async (
+      source: AccountNetworkRoutingSource,
+      enabled: boolean
+    ): Promise<void> => {
+      const snapshot = captureAccount()
+      const shouldContinue = accountFenceFor(snapshot)
+      const updated =
+        await dexieAccountNetworkLocalStateRepository.updateRoutingPolicy(
+          snapshot.pubkey,
+          (current) =>
+            setAccountNetworkRoutingSourceEnabled(current, source, enabled)
+        )
+      if (!shouldContinue()) {
+        throw new Error(
+          "The active account changed while saving the relay preference."
+        )
+      }
+      setLocal({
+        pubkey: snapshot.pubkey,
+        state: updated,
+        ready: true,
+        error: null,
+      })
+    },
+    [accountFenceFor, captureAccount]
+  )
+
+  const setAppRelaysEnabled = useCallback(
+    async (enabled: boolean) => {
+      await setRoutingSourceEnabled("app", enabled)
+    },
+    [setRoutingSourceEnabled]
+  )
+
+  const setPersonalRelaysEnabled = useCallback(
+    async (enabled: boolean) => {
+      await setRoutingSourceEnabled("personal", enabled)
+    },
+    [setRoutingSourceEnabled]
+  )
+
+  const dismissSetupRecommendation = useCallback(async (): Promise<void> => {
+    const snapshot = captureAccount()
+    const shouldContinue = accountFenceFor(snapshot)
+    const updated =
+      await dexieAccountNetworkLocalStateRepository.updateRoutingPolicy(
+        snapshot.pubkey,
+        (current) =>
+          markAccountNetworkSetupPrompt(current, "dismissed", Date.now())
+      )
+    if (!shouldContinue()) {
+      throw new Error(
+        "The active account changed while dismissing the relay recommendation."
+      )
+    }
+    setLocal({
+      pubkey: snapshot.pubkey,
+      state: updated,
+      ready: true,
+      error: null,
+    })
+  }, [accountFenceFor, captureAccount])
+
   const reorderRelays = useCallback(
     async (relayUrls: readonly string[]) => {
       const snapshot = captureAccount()
@@ -1052,7 +1173,10 @@ export function useAccountNetworkSettings(
         (await dexieAccountNetworkLocalStateRepository.get(snapshot.pubkey)) ??
         emptyAccountNetworkLocalState(snapshot.pubkey)
       const scans = await scanRelayBatch({
-        relayUrls: baseView.rows.map((row) => row.url),
+        relayUrls: [
+          ...baseView.rows.map((row) => row.url),
+          ...(baseView.appRelays?.rows.map((row) => row.url) ?? []),
+        ],
         existing: stored.relayScans,
       })
       if (!shouldContinue() || generation !== scanGeneration.current) return
@@ -1085,7 +1209,13 @@ export function useAccountNetworkSettings(
         setRelayInformationRefreshing(false)
       }
     }
-  }, [accountFenceFor, accountPreferences, baseView.rows, captureAccount])
+  }, [
+    accountFenceFor,
+    accountPreferences,
+    baseView.appRelays,
+    baseView.rows,
+    captureAccount,
+  ])
 
   return {
     view: baseView,
@@ -1111,6 +1241,9 @@ export function useAccountNetworkSettings(
           onRetryLookup: mediaServerPreferences.refetch,
         }
       : null,
+    setAppRelaysEnabled,
+    setPersonalRelaysEnabled,
+    dismissSetupRecommendation,
     addRelay,
     validate,
     prepareChange,
