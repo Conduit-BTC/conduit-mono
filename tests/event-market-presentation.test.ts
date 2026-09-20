@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test"
 import {
   formatEventRelayReadCoverage,
   getEventActionabilityPresentation,
-  getOrganizerDiscoveryPresentation,
 } from "@conduit/ui"
 
 describe("event actionability presentation", () => {
@@ -125,116 +124,6 @@ describe("relay read coverage presentation", () => {
         failedRelayCount: 0,
       })
     ).toBe("4 of 4 planned relay reads completed.")
-  })
-})
-
-describe("event-market technical discovery presentation", () => {
-  it("leads with found events and bounded relay-read facts", () => {
-    expect(
-      getOrganizerDiscoveryPresentation({
-        state: "partial",
-        eventCount: 2,
-        perspective: {
-          source: "following",
-          authorCount: 5,
-          coverage: "complete",
-        },
-        candidateScanCoverage: {
-          plannedReadCount: 4,
-          completeReadCount: 3,
-        },
-        searchedOrganizerCount: 2,
-        incompleteOrganizerCount: 1,
-      })
-    ).toEqual({
-      message:
-        "Showing 2 events found so far. Completed 3 of 4 planned bounded relay collection reads. 1 discovered organizer check was incomplete.",
-      role: "status",
-      prominent: false,
-    })
-  })
-
-  it("distinguishes partial and complete-empty discovery", () => {
-    expect(
-      getOrganizerDiscoveryPresentation({
-        state: "partial",
-        eventCount: 0,
-        perspective: {
-          source: "following",
-          authorCount: 5,
-          coverage: "complete",
-        },
-        candidateScanCoverage: {
-          plannedReadCount: 4,
-          completeReadCount: 3,
-        },
-        searchedOrganizerCount: 2,
-        incompleteOrganizerCount: 1,
-      }).message
-    ).toBe(
-      "No events found so far in the Following perspective; more may appear. Completed 3 of 4 planned bounded relay collection reads. 1 discovered organizer check was incomplete."
-    )
-    expect(
-      getOrganizerDiscoveryPresentation({
-        state: "complete_empty",
-        eventCount: 0,
-        perspective: {
-          source: "following",
-          authorCount: 5,
-          coverage: "complete",
-        },
-        candidateScanCoverage: {
-          plannedReadCount: 4,
-          completeReadCount: 4,
-        },
-        searchedOrganizerCount: 0,
-        incompleteOrganizerCount: 0,
-      }).message
-    ).toBe(
-      "No events were found in the completed bounded relay reads for the Following perspective. Completed 4 of 4 planned bounded relay collection reads."
-    )
-  })
-
-  it("qualifies an incomplete perspective snapshot", () => {
-    expect(
-      getOrganizerDiscoveryPresentation({
-        state: "partial",
-        eventCount: 2,
-        perspective: {
-          source: "following",
-          authorCount: 5,
-          coverage: "limited",
-        },
-        candidateScanCoverage: {
-          plannedReadCount: 5,
-          completeReadCount: 5,
-        },
-        searchedOrganizerCount: 2,
-        incompleteOrganizerCount: 0,
-      }).message
-    ).toBe(
-      "Showing 2 events found so far. Completed 5 of 5 planned bounded relay collection reads. The available Following perspective snapshot may be incomplete."
-    )
-  })
-
-  it("reserves alert semantics for unavailable discovery", () => {
-    expect(
-      getOrganizerDiscoveryPresentation({
-        state: "unavailable",
-        eventCount: 0,
-        perspective: {
-          source: "following",
-          authorCount: 5,
-          coverage: "unavailable",
-        },
-        candidateScanCoverage: {
-          plannedReadCount: 4,
-          completeReadCount: 0,
-        },
-        searchedOrganizerCount: 2,
-        incompleteOrganizerCount: 4,
-      })
-    ).toMatchObject({ role: "alert", prominent: true })
   })
 })
 

@@ -43,7 +43,6 @@ import {
   OrganizerEventMarketPanel,
 } from "../components/OrganizerEventMarketPanel"
 import {
-  getMerchantOrganizerEventCatalogView,
   listOrganizerEventMarkets,
   discoverFollowedEventMarkets,
   loadOrganizerEventMarketDeliveryOutbox,
@@ -868,15 +867,10 @@ function MyEventsPanel({
     () => marketsQuery.data?.markets ?? [],
     [marketsQuery.data?.markets]
   )
-  const catalogView = getMerchantOrganizerEventCatalogView(
-    marketsQuery.data,
-    savedReferences.length,
-    marketsQuery.isError
-  )
   const organizerCatalogPresentation = getResultPresentation({
     resultCount: markets.length + savedReferences.length,
     reliability:
-      catalogView.discoveryState === "complete" && !marketsQuery.isError
+      marketsQuery.data?.state === "complete" && !marketsQuery.isError
         ? "complete"
         : "degraded",
   })

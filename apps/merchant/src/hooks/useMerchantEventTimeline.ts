@@ -65,7 +65,6 @@ export interface MerchantEventTimelineDiscovery {
   isInitialLoading: boolean
   isFetching: boolean
   isRefreshStale: boolean
-  unresolvedRelationshipCount: number
   error: unknown
   refetch: () => void
 }
@@ -613,22 +612,6 @@ export function useMerchantEventTimeline(input: {
     refreshProducts,
   ])
 
-  const visibleCoordinates = new Set(
-    items.map((item) => item.market.collectionCoordinate)
-  )
-  const relationshipCoordinates = new Set([
-    ...sellingCollectionCoordinates,
-    ...savedReferences.flatMap((reference) => {
-      try {
-        return [projectReference(reference.reference).coordinate]
-      } catch {
-        return []
-      }
-    }),
-  ])
-  const unresolvedRelationshipCount = Array.from(
-    relationshipCoordinates
-  ).filter((coordinate) => !visibleCoordinates.has(coordinate)).length
   const productReadIncomplete =
     isCommerceReadIncomplete(productsQuery.data?.meta) ||
     productsQuery.isError ||
@@ -665,7 +648,6 @@ export function useMerchantEventTimeline(input: {
       perspectiveRefreshStale ||
       productReadIncomplete ||
       (exactQuery.data?.failedCount ?? 0) > 0,
-    unresolvedRelationshipCount,
     error:
       perspectiveQuery.error ??
       ownedQuery.error ??

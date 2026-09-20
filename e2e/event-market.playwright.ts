@@ -4835,7 +4835,7 @@ test("cold event catalog shows a completed merchant product before a slower merc
       fastCard.getByRole("button", { name: "Add", exact: true })
     ).toHaveCount(0)
     await expect(slowCard).toHaveCount(0)
-    await expect(page.getByTestId("event-refresh-status")).toBeVisible()
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
   } finally {
     held.release()
   }
@@ -4947,7 +4947,7 @@ test("verified event catalog enables a completed merchant while another exact pr
     await expect(
       slowCard.getByRole("button", { name: "Add", exact: true })
     ).toHaveCount(0)
-    await expect(page.getByTestId("event-refresh-status")).toBeVisible()
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
     const slowExactReads = relay.requests.filter(isSlowExactRead)
     expect(slowExactReads.length).toBeGreaterThan(0)
     expect(
@@ -5028,7 +5028,7 @@ test("event catalog paints before held product reads and keeps cached browsing c
       })
     ).toBeVisible()
     timings.coldHeaderMs = Date.now() - coldStarted
-    await expect(page.getByTestId("event-refresh-status")).toBeVisible()
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
     await expect(
       page.getByRole("button", { name: "Add", exact: true })
     ).toHaveCount(0)

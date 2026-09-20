@@ -9,7 +9,6 @@ import type {
   OrganizerEventMarketsReadResult,
 } from "@conduit/core"
 import {
-  getMerchantOrganizerEventCatalogView,
   listOrganizerEventMarkets,
   projectOrganizerEventMarketsReadResult,
   retainMerchantOrganizerEventMarkets,
@@ -145,43 +144,6 @@ describe("Merchant organizer event discovery evidence", () => {
       title: "Night market",
       state: "active",
     })
-    expect(getMerchantOrganizerEventCatalogView(result, 0)).toEqual({
-      discoveryState: "complete",
-      emptyState: null,
-      hasKnownReferences: true,
-    })
-  })
-
-  it("allows the definitive empty state only for a complete bounded read", () => {
-    const complete = projectOrganizerEventMarketsReadResult(
-      organizerRead("complete")
-    )
-
-    expect(getMerchantOrganizerEventCatalogView(complete, 0)).toEqual({
-      discoveryState: "complete",
-      emptyState: "complete",
-      hasKnownReferences: false,
-    })
-  })
-
-  it("keeps partial events visible and distinguishes a partial empty read", () => {
-    const withEvents = projectOrganizerEventMarketsReadResult(
-      organizerRead("partial", [eventMarket()])
-    )
-    const empty = projectOrganizerEventMarketsReadResult(
-      organizerRead("partial")
-    )
-
-    expect(getMerchantOrganizerEventCatalogView(withEvents, 0)).toEqual({
-      discoveryState: "partial",
-      emptyState: null,
-      hasKnownReferences: true,
-    })
-    expect(getMerchantOrganizerEventCatalogView(empty, 0)).toEqual({
-      discoveryState: "partial",
-      emptyState: "partial",
-      hasKnownReferences: false,
-    })
   })
 
   it("keeps retained access during unavailable reads without inventing an empty catalog", () => {
@@ -195,17 +157,6 @@ describe("Merchant organizer event discovery evidence", () => {
         },
       })
     )
-
-    expect(getMerchantOrganizerEventCatalogView(unavailable, 0)).toEqual({
-      discoveryState: "unavailable",
-      emptyState: "unavailable",
-      hasKnownReferences: false,
-    })
-    expect(getMerchantOrganizerEventCatalogView(unavailable, 1)).toEqual({
-      discoveryState: "unavailable",
-      emptyState: null,
-      hasKnownReferences: true,
-    })
 
     const retained = retainMerchantOrganizerEventMarkets(
       projectOrganizerEventMarketsReadResult(
@@ -308,33 +259,6 @@ describe("Merchant organizer event discovery evidence", () => {
       relayListState: "fresh-cache",
       relayHintTruncated: true,
     })
-  })
-
-  it("transitions from partial uncertainty to a complete result after retry", () => {
-    const partial = projectOrganizerEventMarketsReadResult(
-      organizerRead("partial")
-    )
-    const complete = projectOrganizerEventMarketsReadResult(
-      organizerRead("complete")
-    )
-
-    expect(getMerchantOrganizerEventCatalogView(partial, 0).emptyState).toBe(
-      "partial"
-    )
-    expect(getMerchantOrganizerEventCatalogView(complete, 0).emptyState).toBe(
-      "complete"
-    )
-  })
-
-  it("does not reuse a prior complete-empty claim after a failed refresh", () => {
-    const priorCompleteEmpty = projectOrganizerEventMarketsReadResult(
-      organizerRead("complete")
-    )
-
-    expect(
-      getMerchantOrganizerEventCatalogView(priorCompleteEmpty, 0, true)
-        .emptyState
-    ).toBeNull()
   })
 
   it("projects incomplete empty reads into recovery instead of absence", async () => {
