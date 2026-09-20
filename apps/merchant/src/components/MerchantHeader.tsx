@@ -108,7 +108,7 @@ export function MerchantBrandLockup() {
     <span className="inline-flex min-w-0 items-center gap-3 select-none">
       <span
         data-merchant-brand-logo=""
-        className="h-8 w-6 shrink-0 overflow-hidden min-[400px]:w-[6.75rem]"
+        className="h-8 w-6 shrink-0 overflow-hidden min-[420px]:w-[6.75rem]"
       >
         <img
           src="/images/logo/logo-full.svg"

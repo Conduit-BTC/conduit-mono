@@ -102,6 +102,20 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
     expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth + 1)
   }
 
+  async function expectControlsWithinViewport(
+    controls: Locator[],
+    viewportWidth: number
+  ): Promise<void> {
+    const boxes = await Promise.all(
+      controls.map((control) => control.boundingBox())
+    )
+    for (const box of boxes) {
+      expect(box).not.toBeNull()
+      expect(box!.x).toBeGreaterThanOrEqual(0)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(viewportWidth)
+    }
+  }
+
   async function readPanelAlignment(panel: Locator): Promise<{
     brandInset: number
     homeInset: number
@@ -228,14 +242,7 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
     "24px"
   )
   for (const control of headerControls) await expect(control).toBeVisible()
-  const narrowHeaderBoxes = await Promise.all(
-    headerControls.map((control) => control.boundingBox())
-  )
-  for (const box of narrowHeaderBoxes) {
-    expect(box).not.toBeNull()
-    expect(box!.x).toBeGreaterThanOrEqual(0)
-    expect(box!.x + box!.width).toBeLessThanOrEqual(320)
-  }
+  await expectControlsWithinViewport(headerControls, 320)
   await expectNoDocumentOverflow()
   if (merchantNavigationScreenshotDirectory) {
     await page.screenshot({
@@ -246,6 +253,22 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
       animations: "disabled",
     })
   }
+
+  await page.setViewportSize({ width: 400, height: 844 })
+  await expect(workspaceHeader.locator("[data-merchant-brand-logo]")).toHaveCSS(
+    "width",
+    "24px"
+  )
+  await expectControlsWithinViewport(headerControls, 400)
+  await expectNoDocumentOverflow()
+
+  await page.setViewportSize({ width: 420, height: 844 })
+  await expect(workspaceHeader.locator("[data-merchant-brand-logo]")).toHaveCSS(
+    "width",
+    "108px"
+  )
+  await expectControlsWithinViewport(headerControls, 420)
+  await expectNoDocumentOverflow()
 
   await page.setViewportSize({ width: 390, height: 844 })
   const compactAccountBox = await workspaceHeader
