@@ -27,6 +27,7 @@ import {
   isMobileSignerEnvironment,
 } from "@conduit/ui"
 import {
+  MerchantAccountMenu,
   MerchantMobileNav,
   MerchantSidebar,
 } from "../components/MerchantHeader"
@@ -47,13 +48,13 @@ const SHOW_DEVTOOLS =
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)] lg:h-screen lg:overflow-hidden">
+    <div className="min-h-dvh bg-[var(--background)] text-[var(--text-primary)] lg:h-dvh lg:overflow-hidden">
       <MerchantReadinessProvider>
         <MerchantPaymentAutomationProvider>
           <div className="lg:grid lg:h-full lg:grid-cols-[260px_minmax(0,1fr)]">
             <MerchantSidebar />
-            <div className="min-h-screen lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
-              <div className="fixed left-4 top-4 z-40 lg:hidden">
+            <div className="min-h-dvh lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
+              <div className="fixed left-[max(1rem,env(safe-area-inset-left))] top-[max(1rem,env(safe-area-inset-top))] z-40 lg:hidden">
                 <MerchantMobileNav />
               </div>
               <main
@@ -89,8 +90,9 @@ function RootLayout() {
 
   return (
     <>
-      <div className="fixed right-[max(1rem,env(safe-area-inset-right))] top-[max(1rem,env(safe-area-inset-top))] z-40">
+      <div className="fixed right-[max(1rem,env(safe-area-inset-right))] top-[max(1rem,env(safe-area-inset-top))] z-40 flex items-center gap-2">
         <ThemeToggleButton />
+        <MerchantAccountMenu />
       </div>
       <MerchantProductRoot pathname={pathname} />
     </>
