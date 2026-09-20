@@ -148,6 +148,9 @@ describe("Merchant navigation shell", () => {
       "apps/merchant/src/components/MerchantHeader.tsx"
     ).text()
     const root = await Bun.file("apps/merchant/src/routes/__root.tsx").text()
+    const messages = await Bun.file(
+      "apps/merchant/src/routes/messages.tsx"
+    ).text()
     const workspaceHeader = sliceBetween(
       header,
       "export function MerchantWorkspaceHeader",
@@ -172,9 +175,13 @@ describe("Merchant navigation shell", () => {
     ])
     expect(workspaceHeader).toContain("h-[calc(5rem+env(safe-area-inset-top))]")
     expect(shell).toContain("<MerchantWorkspaceHeader />")
-    expect(shell).toContain("pt-[calc(5rem+env(safe-area-inset-top))]")
+    expect(shell).toContain("pt-[calc(6.5rem+env(safe-area-inset-top))]")
     expect(shell).toContain("lg:grid-cols-[320px_minmax(0,1fr)]")
     expect(shell).toContain("overflow-x-hidden")
+    expect(messages).toContain("Buyer support inbox")
+    expect(messages).not.toContain(
+      ">\n          Messages\n        </div>\n        <h1"
+    )
     expect(productError).toContain("if (!signerConnected) return errorPage")
     expect(productError).toContain("<RootShell>{errorPage}</RootShell>")
   })

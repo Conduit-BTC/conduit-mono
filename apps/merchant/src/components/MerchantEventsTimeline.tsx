@@ -1,7 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   CalendarDays,
-  Plus,
   RefreshCw,
   Search,
   SlidersHorizontal,
@@ -79,16 +78,12 @@ export function MerchantEventsTimeline({
   search,
   onSearchChange,
   onOpen,
-  onCreate,
-  createDisabled = false,
 }: {
   merchantPubkey: string
   currentReference?: string
   search: MerchantEventTimelineSearch
   onSearchChange: (search: MerchantEventTimelineSearch) => void
   onOpen: (reference: string) => void
-  onCreate: () => void
-  createDisabled?: boolean
 }) {
   const { pubkey, status, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -180,30 +175,7 @@ export function MerchantEventsTimeline({
   }
 
   return (
-    <section
-      className="space-y-5"
-      aria-labelledby="merchant-events-timeline-title"
-    >
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2
-            id="merchant-events-timeline-title"
-            className="text-balance text-xl font-semibold text-[var(--text-primary)]"
-          >
-            Event timeline
-          </h2>
-          <p className="mt-1 max-w-3xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Browse events from your network and Conduit discovery together.
-            Events you organize, sell at, or save stay available by their exact
-            signed coordinates.
-          </p>
-        </div>
-        <Button type="button" onClick={onCreate} disabled={createDisabled}>
-          <Plus aria-hidden="true" />
-          Create event
-        </Button>
-      </div>
-
+    <section className="space-y-5" aria-label="Event discovery">
       <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)]">
         <div>
           <div className="grid gap-3 sm:grid-cols-2">

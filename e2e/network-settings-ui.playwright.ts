@@ -103,16 +103,10 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
   }
 
   async function expectControlsWithinViewport(
-    controls: Locator[],
-    viewportWidth: number
+    controls: Locator[]
   ): Promise<void> {
-    const boxes = await Promise.all(
-      controls.map((control) => control.boundingBox())
-    )
-    for (const box of boxes) {
-      expect(box).not.toBeNull()
-      expect(box!.x).toBeGreaterThanOrEqual(0)
-      expect(box!.x + box!.width).toBeLessThanOrEqual(viewportWidth)
+    for (const control of controls) {
+      await expect(control).toBeInViewport({ ratio: 1 })
     }
   }
 
@@ -231,49 +225,78 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
   )
   expect(Math.abs(headerBoxes[0]!.y - desktopBrandBox!.y)).toBeLessThan(1)
   await expectNoDocumentOverflow()
-  if (merchantNavigationScreenshotDirectory) {
-    await page.screenshot({
-      path: join(
-        merchantNavigationScreenshotDirectory,
-        "merchant-navigation-collapsed-desktop.png"
-      ),
-      animations: "disabled",
+
+  for (const { path, heading, screenshotName } of [
+    {
+      path: "/",
+      heading: "Merchant Portal",
+      screenshotName: "merchant-navigation-collapsed-desktop.png",
+    },
+    {
+      path: "/products",
+      heading: "Products",
+      screenshotName: "merchant-products-header.png",
+    },
+    {
+      path: "/orders",
+      heading: "Orders",
+      screenshotName: "merchant-orders-header.png",
+    },
+    {
+      path: "/messages",
+      heading: "Buyer support inbox",
+      screenshotName: "merchant-messages-header.png",
+    },
+  ]) {
+    await page.goto(`${merchantUrl}${path}`)
+    for (const control of headerControls) await expect(control).toBeVisible()
+    const pageHeading = page.getByRole("heading", {
+      name: heading,
+      exact: true,
     })
+    await expect(pageHeading).toBeVisible()
+    const [workspaceHeaderBox, pageHeadingBox] = await Promise.all([
+      workspaceHeader.boundingBox(),
+      pageHeading.boundingBox(),
+    ])
+    expect(workspaceHeaderBox).not.toBeNull()
+    expect(pageHeadingBox).not.toBeNull()
+    expect(
+      pageHeadingBox!.y - (workspaceHeaderBox!.y + workspaceHeaderBox!.height)
+    ).toBeGreaterThanOrEqual(16)
+    if (merchantNavigationScreenshotDirectory) {
+      await page.screenshot({
+        path: join(merchantNavigationScreenshotDirectory, screenshotName),
+        animations: "disabled",
+      })
+    }
   }
+  await page.goto(merchantUrl)
 
-  await page.setViewportSize({ width: 320, height: 700 })
-  await expect(workspaceHeader.locator("[data-merchant-brand-logo]")).toHaveCSS(
-    "width",
-    "24px"
-  )
-  for (const control of headerControls) await expect(control).toBeVisible()
-  await expectControlsWithinViewport(headerControls, 320)
-  await expectNoDocumentOverflow()
-  if (merchantNavigationScreenshotDirectory) {
-    await page.screenshot({
-      path: join(
-        merchantNavigationScreenshotDirectory,
-        "merchant-navigation-mobile-narrow.png"
-      ),
-      animations: "disabled",
-    })
+  for (const { width, height, logoWidth, screenshotName } of [
+    {
+      width: 320,
+      height: 700,
+      logoWidth: "24px",
+      screenshotName: "merchant-navigation-mobile-narrow.png",
+    },
+    { width: 400, height: 844, logoWidth: "24px", screenshotName: null },
+    { width: 420, height: 844, logoWidth: "108px", screenshotName: null },
+  ] as const) {
+    await page.setViewportSize({ width, height })
+    await expect(
+      workspaceHeader.locator("[data-merchant-brand-logo]")
+    ).toHaveCSS("width", logoWidth)
+    for (const control of headerControls) await expect(control).toBeVisible()
+    await expectControlsWithinViewport(headerControls)
+    await expectNoDocumentOverflow()
+    if (merchantNavigationScreenshotDirectory && screenshotName) {
+      await page.screenshot({
+        path: join(merchantNavigationScreenshotDirectory, screenshotName),
+        animations: "disabled",
+      })
+    }
   }
-
-  await page.setViewportSize({ width: 400, height: 844 })
-  await expect(workspaceHeader.locator("[data-merchant-brand-logo]")).toHaveCSS(
-    "width",
-    "24px"
-  )
-  await expectControlsWithinViewport(headerControls, 400)
-  await expectNoDocumentOverflow()
-
-  await page.setViewportSize({ width: 420, height: 844 })
-  await expect(workspaceHeader.locator("[data-merchant-brand-logo]")).toHaveCSS(
-    "width",
-    "108px"
-  )
-  await expectControlsWithinViewport(headerControls, 420)
-  await expectNoDocumentOverflow()
 
   await page.setViewportSize({ width: 390, height: 844 })
   const compactAccountBox = await workspaceHeader

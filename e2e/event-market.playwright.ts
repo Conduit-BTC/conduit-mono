@@ -23,6 +23,8 @@ const marketUrl = `http://127.0.0.1:${
 const merchantUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
 }`
+const merchantEventsScreenshotPath =
+  process.env.PLAYWRIGHT_MERCHANT_EVENTS_SCREENSHOT_PATH
 
 const ORGANIZER_SECRET = generateSecretKey()
 const ORGANIZER_PUBKEY = getPublicKey(ORGANIZER_SECRET)
@@ -921,7 +923,7 @@ async function publishOrganizerMarket(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByRole("heading", { name: "Event timeline", exact: true })
+    page.getByRole("region", { name: "Event discovery", exact: true })
   ).toBeVisible()
   await page.getByRole("button", { name: "Create event" }).first().click()
   const editor = page.getByRole("dialog", { name: "Create event market" })
@@ -1118,7 +1120,7 @@ test("Merchant event timeline uses combined discovery with relationship, mobile,
   await page.setViewportSize({ width: 390, height: 844 })
   await gotoAs(page, merchantUrl, "/events", "merchant")
 
-  const timeline = page.getByRole("region", { name: "Event timeline" })
+  const timeline = page.getByRole("region", { name: "Event discovery" })
   await expect(timeline).toBeVisible()
   await expect(
     timeline.getByRole("group", { name: "Event network perspective" })
@@ -1140,6 +1142,12 @@ test("Merchant event timeline uses combined discovery with relationship, mobile,
     exact: true,
   })
   await expect(sellHere).toBeVisible({ timeout: 30_000 })
+  if (merchantEventsScreenshotPath) {
+    await page.screenshot({
+      path: merchantEventsScreenshotPath,
+      animations: "disabled",
+    })
+  }
   await sellHere.focus()
   await page.keyboard.press("Enter")
   await expect(
@@ -1169,7 +1177,7 @@ test("organizer discovery offers empty-read recovery without losing saved events
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
   await gotoAs(page, merchantUrl, "/events", "organizer")
-  const timeline = page.getByRole("region", { name: "Event timeline" })
+  const timeline = page.getByRole("region", { name: "Event discovery" })
   const emptyHeading = timeline.getByRole("heading", { name: "No events yet" })
   await expect(emptyHeading).toBeVisible()
   relay.rejectReads(true)
@@ -1223,7 +1231,7 @@ test("direct and pasted event imports hydrate one saved selector title outside t
   )
 
   await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
-  const timeline = page.getByRole("region", { name: "Event timeline" })
+  const timeline = page.getByRole("region", { name: "Event discovery" })
   await expect(
     timeline.getByRole("heading", { name: eventTitle, exact: true })
   ).toBeVisible({ timeout: 30_000 })
@@ -1609,7 +1617,7 @@ async function publishMerchantProductFromEvent(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByRole("heading", { name: "Event timeline", exact: true })
+    page.getByRole("region", { name: "Event discovery", exact: true })
   ).toBeVisible()
 
   if (options.discoveryMode === "followed") {
@@ -3548,7 +3556,7 @@ test("terminal event deletion removes the exact-record retry path @merchant", as
     })
   ).toHaveCount(0)
   await expect(
-    page.getByRole("region", { name: "Event timeline" }).getByRole("heading", {
+    page.getByRole("region", { name: "Event discovery" }).getByRole("heading", {
       name: "Synthetic Deleted Retry Event",
       exact: true,
     })
@@ -4261,7 +4269,7 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
   await expect(card).toHaveCount(0)
   expect(relay.publications).toHaveLength(publications)
   console.log(
-    "Event timeline loading timings (synthetic, ms):",
+    "Event discovery loading timings (synthetic, ms):",
     JSON.stringify(timings)
   )
 })

@@ -429,13 +429,10 @@ function MessagesPage() {
   return (
     <div className="min-w-0 max-w-full space-y-6 xl:flex xl:h-[calc(100vh-8.5rem)] xl:flex-col xl:overflow-hidden">
       <div className="xl:shrink-0">
-        <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">
-          Messages
-        </div>
-        <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+        <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
           Buyer support inbox
         </h1>
-        <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
+        <p className="mt-2 max-w-2xl text-pretty text-sm leading-7 text-[var(--text-secondary)]">
           Answer general buyer questions in encrypted direct messages.
           Order-specific conversations stay on the Orders page.
         </p>
