@@ -814,6 +814,100 @@ describe("event-market retained evidence", () => {
     expect((await readSelected()).acceptedProductCoordinates).toEqual([])
   })
 
+  it("scopes event participation and pickup reads to one selected merchant", async () => {
+    const otherSecret = generateSecretKey()
+    const otherMerchant = getPublicKey(otherSecret)
+    const otherProduct = `${EVENT_KINDS.PRODUCT}:${otherMerchant}:tea`
+    const organizerEvents = graph([PRODUCT, otherProduct])
+    const productEvents = [
+      productRevision(103, true),
+      signAs(
+        otherSecret,
+        {
+          kind: EVENT_KINDS.PRODUCT,
+          tags: [
+            ["d", "tea"],
+            ["title", "Tea"],
+            ["price", "10", "USD"],
+            ["a", COLLECTION],
+            ["shipping_option", PICKUP],
+          ],
+        },
+        104
+      ),
+    ]
+    const filters: TagFilter[] = []
+    cacheHarness()
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        const filter = rawFilter as TagFilter
+        filters.push(filter)
+        const events = [...organizerEvents, ...productEvents].filter(
+          (event) =>
+            (!filter.kinds || filter.kinds.includes(event.kind as never)) &&
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            ["a", "d", "e"].every((tagName) => {
+              const values = filter[`#${tagName}` as "#a" | "#d" | "#e"]
+              return (
+                !values ||
+                event.tags.some(
+                  (tag) => tag[0] === tagName && values.includes(tag[1]!)
+                )
+              )
+            })
+        )
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+
+    const readMerchant = (selectedMerchantPubkey: string) =>
+      getEventMarket({
+        reference: COLLECTION,
+        selectedMerchantPubkey,
+        nowMs: 1_750_000_000_000,
+      })
+
+    const selected = await readMerchant(MERCHANT)
+    expect(selected.state).toBe("active")
+    expect(selected.collection?.coordinate).toBe(COLLECTION)
+    expect(selected.calendar?.coordinate).toBe(CALENDAR)
+    expect(selected.organizerProductCoordinates).toEqual([PRODUCT])
+    expect(selected.acceptedProductCoordinates).toEqual([PRODUCT])
+    expect(selected.participationBudget.targetCount).toBe(1)
+    expect(
+      filters.some((filter) => filter.authors?.includes(otherMerchant))
+    ).toBe(false)
+    expect(
+      filters.flatMap((filter) => filter["#d"] ?? []).includes("tea")
+    ).toBe(false)
+
+    for (const selectedMerchantPubkey of ["f".repeat(64), "not-a-pubkey"]) {
+      filters.length = 0
+      const empty = await readMerchant(selectedMerchantPubkey)
+      expect(empty.state).toBe("active")
+      expect(empty.collection?.coordinate).toBe(COLLECTION)
+      expect(empty.calendar?.coordinate).toBe(CALENDAR)
+      expect(empty.organizerProductCoordinates).toEqual([])
+      expect(empty.acceptedProductCoordinates).toEqual([])
+      expect(empty.participationBudget.targetCount).toBe(0)
+      expect(
+        filters.some(
+          (filter) =>
+            filter.authors?.includes(MERCHANT) ||
+            filter.authors?.includes(otherMerchant)
+        )
+      ).toBe(false)
+    }
+  })
+
   it("never turns a remote naddr loopback hint into signed-in relay I/O", async () => {
     const remoteLoopbackRelay = "ws://127.0.0.1:4789"
     const portableRelay = "wss://portable.relay.conduit.market/events"

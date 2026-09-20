@@ -2,6 +2,7 @@ import { hashKey, queryOptions, type QueryClient } from "@tanstack/react-query"
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
+  normalizePubkey,
 } from "@conduit/core"
 import {
   loadRawEventCatalog,
@@ -14,6 +15,7 @@ export type EventCatalogQueryScope = {
   relayScope: string | null | undefined
   authenticatedPubkey: string | null
   authGeneration: number
+  selectedMerchantPubkey?: string
 }
 
 function hasUnavailableRelayCoverage(catalog: RawEventCatalog | undefined) {
@@ -56,10 +58,16 @@ export function eventCatalogQueryIdentity(
 ) {
   const decoded = decodeEventMarketReference(reference, [30405])
   const hints = [...new Set(decoded?.relayHints ?? [])].sort()
+  const selectedMerchantPubkey =
+    scope.selectedMerchantPubkey === undefined
+      ? undefined
+      : (normalizePubkey(scope.selectedMerchantPubkey) ??
+        scope.selectedMerchantPubkey.trim().toLowerCase())
   return {
     reference: decoded
       ? encodeEventMarketNaddr(decoded.coordinate, hints)
       : reference,
+    selectedMerchantPubkey,
     queryKey: [
       "event-market",
       scope.relayScope ?? "no-relay-scope",
@@ -67,6 +75,9 @@ export function eventCatalogQueryIdentity(
       scope.authGeneration,
       decoded?.coordinate ?? reference,
       hints,
+      selectedMerchantPubkey === undefined
+        ? (["all-merchants"] as const)
+        : (["merchant", selectedMerchantPubkey] as const),
     ] as const,
   }
 }
@@ -97,6 +108,7 @@ export function eventCatalogQueryOptions(
       }
       const result = await loader(identity.reference, {
         authenticatedPubkey: scope.authenticatedPubkey,
+        selectedMerchantPubkey: identity.selectedMerchantPubkey,
         shouldContinue: active,
         signal,
         onProgress: (snapshot: RawEventCatalog) => {

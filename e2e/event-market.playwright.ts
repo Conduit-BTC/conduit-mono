@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { nip19, nip44 } from "nostr-tools"
@@ -246,6 +245,14 @@ type HeldRelayRequest = {
   release: () => void
 }
 
+type HeldRelayEventResponse = {
+  captured: Promise<{
+    request: RelayRequest
+    heldEventIds: string[]
+  }>
+  release: () => void
+}
+
 type RelayRequest = {
   clientId?: string
   relayUrl: string
@@ -353,6 +360,12 @@ function createRelayHarness() {
     released: Promise<void>
     captured: boolean
   } | null = null
+  let heldRelayEventResponse: {
+    predicate: (request: RelayRequest, event: SignedEvent) => boolean
+    capture: (value: { request: RelayRequest; heldEventIds: string[] }) => void
+    released: Promise<void>
+    captured: boolean
+  } | null = null
   const rejectedKinds = new Set<number>()
   let rejectReads = false
 
@@ -382,7 +395,7 @@ function createRelayHarness() {
     holdRelayRequests(
       predicate: (request: RelayRequest) => boolean
     ): HeldRelayRequest {
-      if (heldRelayRequest) {
+      if (heldRelayRequest || heldRelayEventResponse) {
         throw new Error("Synthetic relay requests are already being held.")
       }
       let capture!: (request: RelayRequest) => void
@@ -398,6 +411,38 @@ function createRelayHarness() {
         resolveRelease()
       }
       heldRelayRequest = { predicate, capture, released, captured: false }
+      return { captured, release }
+    },
+    holdRelayEventResponses(
+      predicate: (request: RelayRequest, event: SignedEvent) => boolean
+    ): HeldRelayEventResponse {
+      if (heldRelayRequest || heldRelayEventResponse) {
+        throw new Error("Synthetic relay responses are already being held.")
+      }
+      let capture!: (value: {
+        request: RelayRequest
+        heldEventIds: string[]
+      }) => void
+      let resolveRelease!: () => void
+      const captured = new Promise<{
+        request: RelayRequest
+        heldEventIds: string[]
+      }>((resolve) => {
+        capture = resolve
+      })
+      const released = new Promise<void>((resolve) => {
+        resolveRelease = resolve
+      })
+      const release = () => {
+        heldRelayEventResponse = null
+        resolveRelease()
+      }
+      heldRelayEventResponse = {
+        predicate,
+        capture,
+        released,
+        captured: false,
+      }
       return { captured, release }
     },
     rejectKind(kind: number, reject: boolean) {
@@ -465,9 +510,45 @@ function createRelayHarness() {
                 }
               }
               const limitedMatches = Array.from(limitedMatchesById.values())
-              request.matchedEventIds = limitedMatches.map((event) => event.id)
-              for (const event of limitedMatches) {
+              const heldResponse = heldRelayEventResponse
+              const heldMatches = heldResponse
+                ? limitedMatches.filter((event) =>
+                    heldResponse.predicate(request, event)
+                  )
+                : []
+              const immediateMatches =
+                heldMatches.length > 0
+                  ? limitedMatches.filter(
+                      (event) =>
+                        !heldMatches.some((held) => held.id === event.id)
+                    )
+                  : limitedMatches
+              request.matchedEventIds = immediateMatches.map(
+                (event) => event.id
+              )
+              for (const event of immediateMatches) {
                 socket.send(JSON.stringify(["EVENT", subscriptionId, event]))
+              }
+              if (heldResponse && heldMatches.length > 0) {
+                if (!heldResponse.captured) {
+                  heldResponse.captured = true
+                  heldResponse.capture({
+                    request: structuredClone(request),
+                    heldEventIds: heldMatches.map((event) => event.id),
+                  })
+                }
+                void heldResponse.released.then(() => {
+                  request.matchedEventIds.push(
+                    ...heldMatches.map((event) => event.id)
+                  )
+                  for (const event of heldMatches) {
+                    socket.send(
+                      JSON.stringify(["EVENT", subscriptionId, event])
+                    )
+                  }
+                  socket.send(JSON.stringify(["EOSE", subscriptionId]))
+                })
+                return
               }
               socket.send(JSON.stringify(["EOSE", subscriptionId]))
             }
@@ -4850,14 +4931,22 @@ test("cold event catalog shows a completed merchant product before a slower merc
       )
       .toBe(true)
     await expect(fastCard).toBeVisible()
-    await expect(
-      fastCard.getByRole("button", { name: "Checking pickup…", exact: true })
-    ).toBeDisabled()
-    await expect(
-      fastCard.getByRole("button", { name: "Add", exact: true })
-    ).toHaveCount(0)
+    const add = fastCard.getByRole("button", { name: "Add", exact: true })
+    await expect(add).toBeEnabled()
     await expect(slowCard).toHaveCount(0)
     await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+    await add.click()
+    await expect
+      .poll(() => readCanonicalCartLines(page))
+      .toEqual([{ productId: eventCoordinate(fast), quantity: 1 }])
+    await fastCard.hover()
+    await fastCard
+      .getByRole("button", {
+        name: "Remove one Synthetic fast merchant product from cart",
+        exact: true,
+      })
+      .click()
+    await expect.poll(() => readCanonicalCartLines(page)).toEqual([])
   } finally {
     held.release()
   }
@@ -4869,6 +4958,217 @@ test("cold event catalog shows a completed merchant product before a slower merc
     await expect(
       card.getByRole("button", { name: "Add", exact: true })
     ).toBeEnabled()
+  }
+})
+
+test("cold merchant QR keeps selected cart intent reversible while another merchant frontier is held @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic merchant-first QR catalog",
+    organizerHandoffEnabled: true,
+  })
+  const selectedProduct = createMerchantProductEvent({
+    dTag: "fast-merchant-product",
+    title: "Synthetic fast merchant product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const unrelatedSecret = generateSecretKey()
+  const unrelatedProduct = signEvent(unrelatedSecret, {
+    kind: selectedProduct.kind,
+    created_at: selectedProduct.created_at,
+    content: "Synthetic unrelated QR merchant product fixture.",
+    tags: selectedProduct.tags.map((tag) =>
+      tag[0] === "d"
+        ? ["d", "slow-merchant-product"]
+        : tag[0] === "title"
+          ? ["title", "Synthetic slow merchant product"]
+          : tag
+    ),
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [
+      ...market.initialCollection.tags,
+      ["a", eventCoordinate(selectedProduct)],
+      ["a", eventCoordinate(unrelatedProduct)],
+    ],
+  })
+  relay.seed(
+    selectedProduct,
+    unrelatedProduct,
+    collection,
+    ...[MERCHANT_SECRET, unrelatedSecret].map((secret) =>
+      signEvent(secret, {
+        kind: 10002,
+        created_at: selectedProduct.created_at,
+        content: "",
+        tags: [["r", FIXTURE_RELAY]],
+      })
+    )
+  )
+
+  // Hold only the other booth's product-participation frontier. A merchant QR
+  // visit must not wait for it before accepting the selected booth's
+  // reversible, client-local cart intent.
+  const isUnrelatedMerchantFrontier = (
+    _request: RelayRequest,
+    event: SignedEvent
+  ) => event.pubkey === unrelatedProduct.pubkey && event.kind === 30402
+  const held = relay.holdRelayEventResponses(isUnrelatedMerchantFrontier)
+  const selectedMerchant = nip19.npubEncode(selectedProduct.pubkey)
+  const selectedCard = page.getByRole("listitem").filter({
+    hasText: "Synthetic fast merchant product",
+  })
+  const unrelatedCard = page.getByRole("listitem").filter({
+    hasText: "Synthetic slow merchant product",
+  })
+  const publicationStart = relay.publications.length
+  try {
+    // This is the first Market-origin visit, matching a cold scan of a printed
+    // merchant QR code rather than a warmed event or product route.
+    await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer", {
+      merchant: selectedMerchant,
+    })
+    const heldRequest = await Promise.race([
+      held.captured,
+      page.waitForTimeout(15_000).then(() => null),
+    ])
+    expect(new URL(page.url()).searchParams.get("merchant")).toBe(
+      selectedMerchant
+    )
+
+    await expect(selectedCard).toBeVisible()
+    await expect(unrelatedCard).toHaveCount(0)
+    await expect.poll(() => readCanonicalCartLines(page)).toEqual([])
+    if (heldRequest) {
+      expect(heldRequest.heldEventIds).toContain(unrelatedProduct.id)
+      expect(heldRequest.request.matchedEventIds).not.toContain(
+        unrelatedProduct.id
+      )
+    } else {
+      expect(
+        relay.requests.some((request) =>
+          request.matchedEventIds.includes(unrelatedProduct.id)
+        )
+      ).toBe(false)
+    }
+
+    const add = selectedCard.getByRole("button", {
+      name: "Add",
+      exact: true,
+    })
+    await expect(add).toBeEnabled({ timeout: 10_000 })
+    await add.click()
+    await expect
+      .poll(() => readCanonicalCartLines(page))
+      .toEqual([{ productId: eventCoordinate(selectedProduct), quantity: 1 }])
+
+    await selectedCard.hover()
+    const remove = selectedCard.getByRole("button", {
+      name: "Remove one Synthetic fast merchant product from cart",
+      exact: true,
+    })
+    await expect(remove).toBeEnabled()
+    await remove.click()
+    await expect.poll(() => readCanonicalCartLines(page)).toEqual([])
+
+    // Forming and withdrawing cart intent is local and reversible. This test
+    // does not enter checkout, and it must not publish an order or otherwise
+    // treat partial event hydration as final purchase authority.
+    expect(relay.publications).toHaveLength(publicationStart)
+    expect(page.url()).toContain(`/events/${market.canonicalNaddr}`)
+  } finally {
+    held.release()
+  }
+})
+
+test("pending event pickup stays non-purchasable in cart until exact terms resolve @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic pending pickup cart",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "pending-pickup-product",
+    title: "Synthetic pending pickup product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+  })
+  relay.seed(
+    product,
+    collection,
+    signEvent(MERCHANT_SECRET, {
+      kind: 10002,
+      created_at: product.created_at,
+      content: "",
+      tags: [["r", FIXTURE_RELAY]],
+    })
+  )
+
+  const held = relay.holdRelayEventResponses(
+    (_request, event) => event.id === market.pickupEvent!.id
+  )
+  try {
+    await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer", {
+      merchant: nip19.npubEncode(product.pubkey),
+    })
+    await held.captured
+
+    const productCard = page.getByRole("listitem").filter({
+      hasText: "Synthetic pending pickup product",
+    })
+    await expect(productCard).toBeVisible()
+    const add = productCard.getByRole("button", {
+      name: "Add",
+      exact: true,
+    })
+    await expect(add).toBeEnabled()
+    await add.click()
+    await expect
+      .poll(() => readCanonicalCartLines(page))
+      .toEqual([{ productId: eventCoordinate(product), quantity: 1 }])
+
+    await page.goto(`${marketUrl}/cart`)
+    const pendingCard = page.getByTestId("pending-event-pickup-cart")
+    await expect(pendingCard).toBeVisible()
+    await expect(
+      pendingCard.getByText("Event pickup · Verification required", {
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Order", exact: true })
+    ).toHaveCount(0)
+    await expect(
+      page.getByRole("button", { name: "Zap out", exact: true })
+    ).toHaveCount(0)
+
+    held.release()
+    await expect(pendingCard).toHaveCount(0, { timeout: 20_000 })
+    await expect(
+      page.getByRole("button", { name: "Order", exact: true })
+    ).toBeEnabled({ timeout: 20_000 })
+  } finally {
+    held.release()
   }
 })
 

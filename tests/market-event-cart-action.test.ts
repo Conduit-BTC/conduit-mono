@@ -23,6 +23,31 @@ describe("Market event catalog cart action", () => {
     ).toEqual({ enabled: true, disabledLabel: null })
   })
 
+  it("allows reversible cart intent while pickup evidence is still pending", () => {
+    expect(
+      getEventCatalogCartAction({
+        state: "active",
+        purchaseReady: false,
+        hasPickupFulfillment: false,
+        allowPendingCart: true,
+        isChecking: true,
+      })
+    ).toEqual({ enabled: true, disabledLabel: null })
+  })
+
+  it("never lets pending cart intent bypass explicit organizer closure", () => {
+    expect(
+      getEventCatalogCartAction({
+        state: "ended",
+        orderAcceptance: "closed",
+        purchaseReady: false,
+        hasPickupFulfillment: false,
+        allowPendingCart: true,
+        isChecking: true,
+      })
+    ).toEqual({ enabled: false, disabledLabel: "Event closed" })
+  })
+
   it("keeps a visible recovery action when retained event evidence is stale", () => {
     expect(
       getEventCatalogCartAction({

@@ -10,14 +10,20 @@ export function getEventCatalogCartAction(input: {
   orderAcceptance?: "open" | "closed"
   purchaseReady: boolean
   hasPickupFulfillment: boolean
+  /** Reversible cart intent; never grants checkout or payment authority. */
+  allowPendingCart?: boolean
   isChecking?: boolean
 }): EventCatalogCartAction {
-  if (input.state === "ended") {
+  if (input.state === "ended" || input.orderAcceptance === "closed") {
     return {
       enabled: false,
       disabledLabel:
         input.orderAcceptance === "closed" ? "Event closed" : "Event ended",
     }
+  }
+
+  if (input.allowPendingCart) {
+    return { enabled: true, disabledLabel: null }
   }
 
   if (input.isChecking) {

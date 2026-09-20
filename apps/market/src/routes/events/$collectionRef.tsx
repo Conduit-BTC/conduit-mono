@@ -64,7 +64,11 @@ import { useCart } from "../../hooks/useCart"
 import { useEventMarket } from "../../hooks/useEventMarket"
 import { useMerchantIdentities } from "../../hooks/useMerchantIdentities"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
-import { selectCartLine } from "../../lib/cart-model"
+import {
+  createPendingEventPickupFulfillment,
+  isPendingEventPickupCartItem,
+  selectCartLine,
+} from "../../lib/cart-model"
 import {
   cartItemInputFromProductSelection,
   getDefaultProductSelection,
@@ -118,6 +122,7 @@ function EventCatalogProductCard({
   onCartNotice: (message: string) => void
 }) {
   const cart = useCart()
+  const { upgradePendingEventPickupItem } = cart
   const { product } = entry
   // The adapter has already applied listing and membership safety. Keep the
   // display family intact while exact child pickup authorization is checked.
@@ -154,20 +159,45 @@ function EventCatalogProductCard({
         },
       })
     : null
-  const candidate = pickupFulfillment
+  const exactCandidate = pickupFulfillment
     ? cartItemInputFromProductSelection(
         product,
         selectedProduct,
         pickupFulfillment
       )
     : null
-  const existing = candidate ? selectCartLine(cart.items, candidate) : undefined
+  const pendingFulfillment =
+    catalog.collection && selectedProduct.format !== "digital"
+      ? createPendingEventPickupFulfillment(catalog.collection.coordinate)
+      : null
+  const pendingCandidate = pendingFulfillment
+    ? cartItemInputFromProductSelection(
+        product,
+        selectedProduct,
+        pendingFulfillment
+      )
+    : null
+  const exactExisting = exactCandidate
+    ? selectCartLine(cart.items, exactCandidate)
+    : undefined
+  const pendingExisting = pendingCandidate
+    ? selectCartLine(cart.items, pendingCandidate)
+    : undefined
+  const existing = exactExisting ?? pendingExisting
   const cartQuantity = existing?.quantity ?? 0
+  const pendingEvidenceMayRecover =
+    !pickupFulfillment &&
+    !!pendingCandidate &&
+    (isChecking ||
+      catalog.productReadState !== "ready" ||
+      catalog.state === "partial" ||
+      catalog.state === "stale")
   const cartAction = getEventCatalogCartAction({
     state: catalog.state,
     orderAcceptance: catalog.collection?.orderAcceptance,
     purchaseReady,
     hasPickupFulfillment: pickupFulfillment !== null,
+    allowPendingCart: pendingEvidenceMayRecover,
     isChecking: isChecking && !pickupFulfillment,
   })
   const canAdd = cartAction.enabled
@@ -181,17 +211,61 @@ function EventCatalogProductCard({
     )
   }, [defaultSelection.id, family, product.id])
 
+  useEffect(() => {
+    if (
+      !pendingExisting ||
+      !exactCandidate ||
+      !pickupFulfillment ||
+      !selectedProduct.sourceEventId
+    ) {
+      return
+    }
+    void upgradePendingEventPickupItem(pendingExisting, {
+      ...exactCandidate,
+      fulfillment: pickupFulfillment,
+      productUpdatedAt: selectedProduct.updatedAt,
+      productEventId: selectedProduct.sourceEventId,
+    })
+  }, [
+    exactCandidate,
+    pendingExisting,
+    pickupFulfillment,
+    selectedProduct.sourceEventId,
+    selectedProduct.updatedAt,
+    upgradePendingEventPickupItem,
+  ])
+
   const add = async (selection: Product) => {
+    const candidate = exactCandidate ?? pendingCandidate
     if (selection.id !== selectedProduct.id || !canAdd || !candidate) return
     const added = await cart.addItem(candidate, 1)
     if (!added) return
     onCartNotice(
-      `${product.title} was added for ${handoff?.label.toLowerCase() ?? "event pickup"}.`
+      pickupFulfillment
+        ? `${product.title} was added for ${handoff?.label.toLowerCase() ?? "event pickup"}.`
+        : `${product.title} was added. Pickup terms are being verified in the background.`
     )
   }
-  const increment = (selection: Product) => {
+  const increment = async (selection: Product) => {
+    const candidate = exactCandidate ?? pendingCandidate
     if (selection.id !== selectedProduct.id || !existing || !candidate) return
-    cart.refreshAndIncrementItem(existing, candidate, 1)
+    if (
+      isPendingEventPickupCartItem(existing) &&
+      exactCandidate &&
+      pickupFulfillment &&
+      selectedProduct.sourceEventId
+    ) {
+      const upgraded = await upgradePendingEventPickupItem(existing, {
+        ...exactCandidate,
+        fulfillment: pickupFulfillment,
+        productUpdatedAt: selectedProduct.updatedAt,
+        productEventId: selectedProduct.sourceEventId,
+      })
+      if (!upgraded.changed) return
+      await cart.addItem(exactCandidate, 1)
+      return
+    }
+    await cart.refreshAndIncrementItem(existing, candidate, 1)
   }
 
   const decrement = (selection: Product) => {
@@ -220,7 +294,7 @@ function EventCatalogProductCard({
         imageLoading={imageLoading}
         btcUsdRate={btcUsdRate}
         pricePreference={pricePreference}
-        allowZeroPrice={pickupFulfillment !== null}
+        allowZeroPrice={pickupFulfillment !== null || pendingEvidenceMayRecover}
         cartQuantity={cartQuantity}
         onProductActivate={null}
         onMerchantActivate={onMerchantActivate}
@@ -232,10 +306,10 @@ function EventCatalogProductCard({
       />
       {!pickupFulfillment ? (
         <div className="rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-          {isChecking ? (
+          {pendingEvidenceMayRecover ? (
             <>
-              Checking the current product and pickup terms. You can browse
-              while this finishes.
+              Current pickup terms are being verified. You can add this item
+              now; checkout stays locked until this exact product is confirmed.
             </>
           ) : entry.evidenceState === "retained" ? (
             <>
@@ -499,7 +573,15 @@ function EventCatalogPage() {
   const shopperPricing = useShopperPricing()
   const session = useConduitSession()
   const [cartNotice, setCartNotice] = useState<string | null>(null)
-  const query = useEventMarket(collectionRef, shopperPricing.quote)
+  const query = useEventMarket(collectionRef, shopperPricing.quote, {
+    selectedMerchantPubkey: selectedMerchantPubkey || undefined,
+  })
+  // A booth QR gets exclusive foreground transport until its merchant-scoped
+  // graph settles. The complete event catalog then warms quietly for filter
+  // removal and later navigation without delaying the first cart action.
+  useEventMarket(collectionRef, shopperPricing.quote, {
+    enabled: !!selectedMerchantPubkey && !!query.data && !query.isHydrating,
+  })
   const catalog = query.data
   const scheduleBoundaries = useMemo(
     () =>
@@ -816,7 +898,9 @@ function EventCatalogPage() {
           catalog.acceptedProductCount === 0 &&
           catalog.products.length === 0 ? (
           <p className="rounded-xl border border-dashed border-[var(--border)] p-8 text-center text-sm text-[var(--text-secondary)]">
-            The organizer has not accepted any products for this event.
+            {selectedMerchantPubkey
+              ? "This merchant has no organizer-accepted products for this event."
+              : "The organizer has not accepted any products for this event."}
           </p>
         ) : null}
       </EventCatalogBrowser>

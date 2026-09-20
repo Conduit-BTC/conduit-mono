@@ -1,4 +1,5 @@
 import {
+  EVENT_KINDS,
   getPriceSats,
   getProductImageCandidates,
   getShippingCostSats,
@@ -7,6 +8,7 @@ import {
   isFiatCurrencyCode,
   normalizeProductCoordinate,
   orderItemFulfillmentSchema,
+  parseAddressableCoordinate,
   resolveOrderPickupHandoffAuthority,
   resolveCartShippingCost,
   type CommerceQueryMeta,
@@ -87,11 +89,32 @@ export type PickupEvidenceCoordinate = PickupEvidenceCoordinateSchema
 /** Shared protocol snapshot; Market only persists and displays this shape. */
 export type CartPickupFulfillment = OrderPickupFulfillmentSchema
 
+/**
+ * Reversible shopper intent while the exact signed event pickup graph is being
+ * resolved. This cart-only shape is deliberately excluded from order schemas.
+ */
+export type CartPendingEventPickupFulfillment = {
+  type: "event_pickup_pending"
+  collectionCoordinate: string
+}
+
 export type CartItemFulfillment =
-  { type: "digital" } | { type: "shipping" } | CartPickupFulfillment
+  | { type: "digital" }
+  | { type: "shipping" }
+  | CartPendingEventPickupFulfillment
+  | CartPickupFulfillment
+
+export type PendingEventPickupCartItem = CartItem & {
+  fulfillment: CartPendingEventPickupFulfillment
+}
 
 export type CartFulfillmentLane =
-  "empty" | "digital" | "shipping" | "pickup" | "mixed_shipping_pickup"
+  | "empty"
+  | "digital"
+  | "shipping"
+  | "pickup"
+  | "event_pickup_pending"
+  | "mixed_shipping_pickup"
 
 export type CartState = {
   items: CartItem[]
@@ -109,6 +132,15 @@ export type CartItemInput = Omit<
   "cartLineId" | "merchantAddedAt" | "quantity"
 >
 
+export type CartEventPickupUpgradeInput = Omit<
+  CartItemInput,
+  "fulfillment" | "productUpdatedAt" | "productEventId"
+> & {
+  fulfillment: CartPickupFulfillment
+  productUpdatedAt: number
+  productEventId: string
+}
+
 export type ParsedPersistedCart = {
   state: CartState
   shouldPersist: boolean
@@ -122,9 +154,14 @@ export type MerchantCartGroup = {
   merchantAddedAt: number
 }
 
-export type CartPurchaseGroup = MerchantCartGroup & {
+export type CartPurchaseItem = Omit<CartItem, "fulfillment"> & {
+  fulfillment?: Exclude<CartItemFulfillment, CartPendingEventPickupFulfillment>
+}
+
+export type CartPurchaseGroup = Omit<MerchantCartGroup, "items"> & {
   id: string
   kind: "delivery" | "pickup"
+  items: CartPurchaseItem[]
 }
 
 export type CartTotals = {
@@ -218,6 +255,7 @@ export function createCartItemFromProduct(
       : ({ type: "shipping" } as const))
   const pickup =
     resolvedFulfillment.type === "pickup" ? resolvedFulfillment : null
+  const pickupPending = resolvedFulfillment.type === "event_pickup_pending"
   return {
     productId: product.id,
     selectedSpecifications:
@@ -234,20 +272,30 @@ export function createCartItemFromProduct(
     tags: product.tags,
     format: product.format,
     fulfillment: resolvedFulfillment,
-    shippingCostSats: pickup?.costSats ?? product.shippingCostSats,
-    sourceShippingCost: pickup?.sourceCost ?? product.sourceShippingCost,
-    shippingOptionId: pickup?.option.coordinate ?? product.shippingOptionId,
-    shippingOptionDTag:
-      pickup?.option.coordinate.split(":").slice(2).join(":") ||
-      product.shippingOptionDTag,
-    shippingOptionLaunchUnsupported: pickup
+    shippingCostSats: pickupPending
       ? undefined
-      : product.shippingOptionLaunchUnsupported,
-    shippingCountries: pickup ? [] : product.shippingCountries,
-    shippingCountryRules: pickup ? [] : product.shippingCountryRules,
+      : (pickup?.costSats ?? product.shippingCostSats),
+    sourceShippingCost: pickupPending
+      ? undefined
+      : (pickup?.sourceCost ?? product.sourceShippingCost),
+    shippingOptionId: pickupPending
+      ? undefined
+      : (pickup?.option.coordinate ?? product.shippingOptionId),
+    shippingOptionDTag: pickupPending
+      ? undefined
+      : pickup?.option.coordinate.split(":").slice(2).join(":") ||
+        product.shippingOptionDTag,
+    shippingOptionLaunchUnsupported:
+      pickup || pickupPending
+        ? undefined
+        : product.shippingOptionLaunchUnsupported,
+    shippingCountries: pickup || pickupPending ? [] : product.shippingCountries,
+    shippingCountryRules:
+      pickup || pickupPending ? [] : product.shippingCountryRules,
     productUpdatedAt: product.updatedAt,
     productEventId: product.sourceEventId,
-    canonicalShippingResolved: pickup ? false : canonicalShippingResolved,
+    canonicalShippingResolved:
+      pickup || pickupPending ? false : canonicalShippingResolved,
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
@@ -255,10 +303,27 @@ export function createCartItemFromProduct(
   }
 }
 
+export function createPendingEventPickupFulfillment(
+  collectionCoordinate: string
+): CartPendingEventPickupFulfillment | null {
+  const parsed = parseAddressableCoordinate(collectionCoordinate, [
+    EVENT_KINDS.PRODUCT_COLLECTION,
+  ])
+  return parsed
+    ? {
+        type: "event_pickup_pending",
+        collectionCoordinate: parsed.coordinate,
+      }
+    : null
+}
+
 export function getCartItemFulfillmentType(
   item: Pick<CartItem, "format" | "fulfillment">
 ): CartItemFulfillment["type"] {
   if (item.fulfillment?.type === "pickup") return "pickup"
+  if (item.fulfillment?.type === "event_pickup_pending") {
+    return "event_pickup_pending"
+  }
   if (item.format === "digital" || item.fulfillment?.type === "digital") {
     return "digital"
   }
@@ -273,10 +338,25 @@ export function isPickupCartItem(
   return item.fulfillment?.type === "pickup"
 }
 
+export function isPendingEventPickupCartItem<
+  T extends Pick<CartItem, "fulfillment">,
+>(item: T): item is T & { fulfillment: CartPendingEventPickupFulfillment } {
+  return item.fulfillment?.type === "event_pickup_pending"
+}
+
+export function getPendingEventPickupCartItems(
+  items: readonly CartItem[]
+): PendingEventPickupCartItem[] {
+  return items.filter(isPendingEventPickupCartItem)
+}
+
 export function getCartFulfillmentLane(
   items: Array<Pick<CartItem, "format" | "fulfillment">>
 ): CartFulfillmentLane {
   if (items.length === 0) return "empty"
+  if (items.some(isPendingEventPickupCartItem)) {
+    return "event_pickup_pending"
+  }
 
   let hasShipping = false
   let hasPickup = false
@@ -295,6 +375,9 @@ export function getCartFulfillmentLane(
 export function getMixedFulfillmentBlockingMessage(
   items: Array<Pick<CartItem, "format" | "fulfillment">>
 ): string | null {
+  if (items.some(isPendingEventPickupCartItem)) {
+    return "Event pickup is still being verified. Review it after verification finishes."
+  }
   if (getCartFulfillmentLane(items) === "mixed_shipping_pickup") {
     return "Shipping and event pickup cannot be combined in one merchant order yet. Place them as separate orders."
   }
@@ -320,6 +403,14 @@ export function isSameCartFulfillment(
   const leftType = getCartItemFulfillmentType(left)
   const rightType = getCartItemFulfillmentType(right)
   if (leftType !== rightType) return false
+  if (leftType === "event_pickup_pending") {
+    return (
+      left.fulfillment?.type === "event_pickup_pending" &&
+      right.fulfillment?.type === "event_pickup_pending" &&
+      left.fulfillment.collectionCoordinate ===
+        right.fulfillment.collectionCoordinate
+    )
+  }
   if (leftType !== "pickup" || rightType !== "pickup") return true
 
   return (
@@ -712,12 +803,26 @@ function parseCartItem(value: unknown): CartItem | null {
     value.format === "digital" || value.format === "physical"
       ? value.format
       : undefined
-  const fulfillmentResult =
-    value.fulfillment === undefined
-      ? null
-      : orderItemFulfillmentSchema.safeParse(value.fulfillment)
-  if (fulfillmentResult && !fulfillmentResult.success) return null
-  const fulfillment = fulfillmentResult?.data
+  let fulfillment: CartItemFulfillment | undefined
+  if (value.fulfillment !== undefined) {
+    if (
+      isRecord(value.fulfillment) &&
+      value.fulfillment.type === "event_pickup_pending"
+    ) {
+      const pending = createPendingEventPickupFulfillment(
+        nonemptyString(value.fulfillment.collectionCoordinate) ?? ""
+      )
+      if (!pending || format === "digital") return null
+      fulfillment = pending
+    } else {
+      const fulfillmentResult = orderItemFulfillmentSchema.safeParse(
+        value.fulfillment
+      )
+      if (!fulfillmentResult.success) return null
+      fulfillment = fulfillmentResult.data
+    }
+  }
+  const pickupPending = fulfillment?.type === "event_pickup_pending"
   const zapMessagePolicy = normalizeCartZapMessagePolicy(value.zapMessagePolicy)
 
   return {
@@ -738,28 +843,33 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(tags ? { tags } : {}),
     ...(format ? { format } : {}),
     ...(fulfillment ? { fulfillment } : {}),
-    ...(shippingCostSats !== undefined ? { shippingCostSats } : {}),
+    ...(!pickupPending && shippingCostSats !== undefined
+      ? { shippingCostSats }
+      : {}),
     ...(stock !== undefined ? { stock } : {}),
-    ...(sourceShippingCost ? { sourceShippingCost } : {}),
-    ...(nonemptyString(value.shippingOptionId)
+    ...(!pickupPending && sourceShippingCost ? { sourceShippingCost } : {}),
+    ...(!pickupPending && nonemptyString(value.shippingOptionId)
       ? { shippingOptionId: String(value.shippingOptionId) }
       : {}),
-    ...(nonemptyString(value.shippingOptionDTag)
+    ...(!pickupPending && nonemptyString(value.shippingOptionDTag)
       ? { shippingOptionDTag: String(value.shippingOptionDTag) }
       : {}),
-    ...(typeof value.shippingOptionLaunchUnsupported === "boolean"
+    ...(!pickupPending &&
+    typeof value.shippingOptionLaunchUnsupported === "boolean"
       ? {
           shippingOptionLaunchUnsupported:
             value.shippingOptionLaunchUnsupported,
         }
       : {}),
-    ...(shippingCountries ? { shippingCountries } : {}),
-    ...(shippingCountryRules ? { shippingCountryRules } : {}),
+    ...(!pickupPending && shippingCountries ? { shippingCountries } : {}),
+    ...(!pickupPending && shippingCountryRules ? { shippingCountryRules } : {}),
     ...(productUpdatedAt !== undefined ? { productUpdatedAt } : {}),
     ...(productEventId ? { productEventId } : {}),
-    ...(typeof value.canonicalShippingResolved === "boolean"
-      ? { canonicalShippingResolved: value.canonicalShippingResolved }
-      : {}),
+    ...(pickupPending
+      ? { canonicalShippingResolved: false }
+      : typeof value.canonicalShippingResolved === "boolean"
+        ? { canonicalShippingResolved: value.canonicalShippingResolved }
+        : {}),
     ...(typeof value.publicZapEnabled === "boolean"
       ? { publicZapEnabled: value.publicZapEnabled }
       : {}),
@@ -859,7 +969,12 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
                     item.fulfillment.sourceCost.normalizedCurrency,
                 },
               }
-            : getCartItemFulfillmentType(item),
+            : item.fulfillment?.type === "event_pickup_pending"
+              ? {
+                  type: "event_pickup_pending",
+                  collectionCoordinate: item.fulfillment.collectionCoordinate,
+                }
+              : getCartItemFulfillmentType(item),
         shippingCostSats: item.shippingCostSats ?? null,
         sourceShippingCost: item.sourceShippingCost ?? null,
         shippingOptionId: item.shippingOptionId ?? null,
@@ -1188,9 +1303,16 @@ function pickupCostSatsAreQuoteDerived(
 export function getCartLineFulfillmentId(
   item: Pick<CartItem, "format" | "fulfillment">
 ): string {
-  return item.fulfillment?.type === "pickup"
-    ? getPickupLineFulfillmentKey(item.fulfillment)
-    : getCartItemFulfillmentType(item)
+  if (item.fulfillment?.type === "pickup") {
+    return getPickupLineFulfillmentKey(item.fulfillment)
+  }
+  if (item.fulfillment?.type === "event_pickup_pending") {
+    return JSON.stringify([
+      "event_pickup_pending",
+      item.fulfillment.collectionCoordinate,
+    ])
+  }
+  return getCartItemFulfillmentType(item)
 }
 
 export function isSameCartLineFulfillment(
@@ -1220,7 +1342,9 @@ export function getCartPurchaseGroupId(
   const compatibility =
     item.fulfillment?.type === "pickup"
       ? getPickupPurchaseCompatibilityKey(item.fulfillment)
-      : "delivery"
+      : item.fulfillment?.type === "event_pickup_pending"
+        ? getCartLineFulfillmentId(item)
+        : "delivery"
   return JSON.stringify([item.merchantPubkey, compatibility])
 }
 
@@ -1263,6 +1387,10 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
   for (let index = 0; index < items.length; index++) {
     const item = items[index]
     if (!item) continue
+    // Pending pickup is a reversible cart intent, not a purchase partition.
+    // It becomes purchasable only after an atomic upgrade to exact fulfillment.
+    if (isPendingEventPickupCartItem(item)) continue
+    const purchaseItem = item as CartPurchaseItem
     const kind = isPickupCartItem(item) ? "pickup" : "delivery"
     const compatibleGroups = groups.filter(
       (group) =>
@@ -1279,8 +1407,8 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
         !group.items.some((entry) => entry.productId === item.productId)
     )
     if (existing) {
-      existing.items.push(item)
-      existing.totalItems += item.quantity
+      existing.items.push(purchaseItem)
+      existing.totalItems += purchaseItem.quantity
       continue
     }
 
@@ -1291,8 +1419,8 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
           : getCartPurchaseGroupId(item),
       kind,
       merchantPubkey: item.merchantPubkey,
-      items: [item],
-      totalItems: item.quantity,
+      items: [purchaseItem],
+      totalItems: purchaseItem.quantity,
       merchantAddedAt:
         merchantOrder.get(item.merchantPubkey)?.merchantAddedAt ??
         item.merchantAddedAt ??
@@ -1331,11 +1459,12 @@ export function getCartCostSummary(
   let itemPricesAvailable = true
   const shippingResolvableItems = items.map((item) => {
     const hasShippingZone =
-      item.format === "digital" ||
-      isPickupCartItem(item) ||
-      (item.canonicalShippingResolved === true &&
-        !!item.shippingOptionId &&
-        (item.shippingCountryRules?.length ?? 0) > 0)
+      !isPendingEventPickupCartItem(item) &&
+      (item.format === "digital" ||
+        isPickupCartItem(item) ||
+        (item.canonicalShippingResolved === true &&
+          !!item.shippingOptionId &&
+          (item.shippingCountryRules?.length ?? 0) > 0))
 
     return hasShippingZone
       ? item

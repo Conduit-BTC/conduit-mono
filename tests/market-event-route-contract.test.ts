@@ -74,14 +74,31 @@ describe("Market event catalog route", () => {
     expect(route).toContain("Checkout is disabled")
   })
 
-  it("keeps products without a pickup snapshot out of cart and checkout", async () => {
-    const route = await Bun.file(
-      "apps/market/src/routes/events/$collectionRef.tsx"
-    ).text()
+  it("keeps recoverable pickup intent reversible until exact checkout authority resolves", async () => {
+    const [route, cartModel, checkout] = await Promise.all([
+      Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
+      Bun.file("apps/market/src/lib/cart-model.ts").text(),
+      Bun.file("apps/market/src/routes/checkout.tsx").text(),
+    ])
 
-    expect(route).toContain("const candidate = pickupFulfillment")
-    expect(route).toContain("pickupFulfillment !== null")
-    expect(route).toContain("!canAdd || !candidate")
+    expect(route).toContain("createPendingEventPickupFulfillment")
+    expect(route).toContain(
+      "const candidate = exactCandidate ?? pendingCandidate"
+    )
+    expect(route).toContain("allowPendingCart: pendingEvidenceMayRecover")
+    expect(route).toContain(
+      "checkout stays locked until this exact product is confirmed"
+    )
+    expect(cartModel).toContain('type: "event_pickup_pending"')
+    expect(cartModel).toContain(
+      "if (isPendingEventPickupCartItem(item)) continue"
+    )
+    expect(checkout).toContain(
+      'item.fulfillment?.type === "event_pickup_pending"'
+    )
+    expect(checkout).toContain(
+      "Event pickup must finish verification before an order can be created."
+    )
     expect(route).not.toContain("pickupFulfillment ?? undefined")
   })
 

@@ -1074,6 +1074,8 @@ export async function loadRawEventCatalog(
   options: {
     /** Submission checks hydrate only these exact listings, never the browse catalog. */
     selectedProductCoordinates?: readonly string[]
+    /** Foreground event browsing may hydrate one merchant before the full catalog. */
+    selectedMerchantPubkey?: string
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -1206,6 +1208,7 @@ export async function loadRawEventCatalog(
       selectedProductCoordinates: options.selectedProductCoordinates,
       authenticatedPubkey: options.authenticatedPubkey,
       shouldContinue: active,
+      selectedMerchantPubkey: options.selectedMerchantPubkey,
       signal: options.signal,
       onProgress: options.onProgress
         ? (snapshot) => {

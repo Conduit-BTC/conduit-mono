@@ -88,15 +88,18 @@ import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   getCartCostSummary,
   getCartItemStockEvidenceForAvailability,
+  getPendingEventPickupCartItems,
   getMixedFulfillmentBlockingMessage,
   getCartItemKey,
   getCartPurchaseReference,
   getProductAddAvailability,
+  groupCartItems,
   groupCartPurchases,
   isCartProductAvailabilityBlocking,
   selectCartLine,
   type CartPurchaseGroup,
   type CartProductAvailability,
+  type MerchantCartGroup,
 } from "../lib/cart-model"
 import {
   cartItemInputFromProductSelection,
@@ -771,6 +774,73 @@ function CartLineItem({
   )
 }
 
+function PendingEventPickupCartCard({
+  group,
+  accountPubkey,
+  authenticatedPubkey,
+  shouldContinue,
+  formatPrice,
+  onIncrement,
+  onDecrement,
+  onRemove,
+}: {
+  group: MerchantCartGroup
+  accountPubkey: string | null
+  authenticatedPubkey: string | null
+  shouldContinue?: () => boolean
+  formatPrice: PriceFormatter
+  onIncrement: (item: CartItem) => void
+  onDecrement: (item: CartItem) => void
+  onRemove: (item: CartItem) => void
+}) {
+  return (
+    <section
+      className="overflow-hidden rounded-2xl border border-[var(--warning)] bg-[var(--surface)]"
+      data-testid="pending-event-pickup-cart"
+    >
+      <div className="p-5 sm:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <MerchantIdentity
+            merchantPubkey={group.merchantPubkey}
+            accountPubkey={accountPubkey}
+            authenticatedPubkey={authenticatedPubkey}
+            shouldContinue={shouldContinue}
+            className="min-w-0 flex-1"
+          />
+          <Badge variant="warning">Event pickup · Verification required</Badge>
+        </div>
+        <div
+          role="status"
+          className="mt-5 flex items-start gap-3 rounded-xl bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
+        >
+          <AlertTriangle
+            className="mt-1 size-4 shrink-0 text-warning"
+            aria-hidden="true"
+          />
+          <p className="text-pretty">
+            These items are saved in your cart, but ordering and payment stay
+            locked until their current signed event and pickup terms are
+            confirmed.
+          </p>
+        </div>
+        <div className="mt-5 divide-y divide-[var(--border)] border-t border-[var(--border)]">
+          {group.items.map((item) => (
+            <CartLineItem
+              key={item.cartLineId ?? getCartItemKey(item)}
+              item={item}
+              formatPrice={formatPrice}
+              allowZeroPrice
+              onIncrement={() => onIncrement(item)}
+              onDecrement={() => onDecrement(item)}
+              onRemove={() => onRemove(item)}
+            />
+          ))}
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function MerchantCartCard({
   group,
   accountPubkey,
@@ -1006,9 +1076,13 @@ function CartPage() {
     () => groupCartPurchases(cart.items),
     [cart.items]
   )
+  const pendingPickupGroups = useMemo(
+    () => groupCartItems(getPendingEventPickupCartItems(cart.items)),
+    [cart.items]
+  )
   const merchantCount = useMemo(
-    () => new Set(purchaseGroups.map((group) => group.merchantPubkey)).size,
-    [purchaseGroups]
+    () => new Set(cart.items.map((item) => item.merchantPubkey)).size,
+    [cart.items]
   )
   const matchingMerchantGroups = search.merchant
     ? purchaseGroups.filter((group) => group.merchantPubkey === search.merchant)
@@ -1284,6 +1358,9 @@ function CartPage() {
             <div className="text-sm tabular-nums text-[var(--text-secondary)]">
               {purchaseGroups.length} purchase
               {purchaseGroups.length === 1 ? "" : "s"}
+              {pendingPickupGroups.length > 0
+                ? ` · ${pendingPickupGroups.length} awaiting verification`
+                : ""}
               <span className="mx-2 text-[var(--text-muted)]">/</span>
               {merchantCount} merchant{merchantCount === 1 ? "" : "s"}
               <span className="mx-2 text-[var(--text-muted)]">/</span>
@@ -1319,6 +1396,32 @@ function CartPage() {
               not survive a reload or appear in another tab.
             </div>
           ) : null}
+
+          {pendingPickupGroups.map((group) => (
+            <PendingEventPickupCartCard
+              key={`pending:${group.merchantPubkey}:${group.items
+                .map((item) =>
+                  item.fulfillment?.type === "event_pickup_pending"
+                    ? item.fulfillment.collectionCoordinate
+                    : item.productId
+                )
+                .join("|")}`}
+              group={group}
+              accountPubkey={accountPubkey}
+              authenticatedPubkey={authenticatedPubkey}
+              shouldContinue={shouldContinueAccountRead}
+              formatPrice={shopperPricing.formatPrice}
+              onIncrement={(item) => cart.incrementItem(item)}
+              onDecrement={(item) => {
+                if (item.quantity <= 1) {
+                  cart.removeItem(item)
+                  return
+                }
+                cart.decrementItem(item)
+              }}
+              onRemove={(item) => cart.removeItem(item)}
+            />
+          ))}
 
           {cartReadiness.hasUnavailableItems ? (
             <div
@@ -1455,9 +1558,12 @@ function CartPage() {
             )}
             <div className="mt-3 text-sm text-[var(--text-secondary)]">
               {cart.totals.count} item{cart.totals.count === 1 ? "" : "s"}{" "}
-              across {purchaseGroups.length} purchase
-              {purchaseGroups.length === 1 ? "" : "s"} from {merchantCount}{" "}
-              merchant{merchantCount === 1 ? "" : "s"}.
+              across {purchaseGroups.length} ready purchase
+              {purchaseGroups.length === 1 ? "" : "s"}
+              {pendingPickupGroups.length > 0
+                ? ` and ${pendingPickupGroups.length} awaiting verification`
+                : ""}{" "}
+              from {merchantCount} merchant{merchantCount === 1 ? "" : "s"}.
             </div>
             <Button
               variant="outline"
