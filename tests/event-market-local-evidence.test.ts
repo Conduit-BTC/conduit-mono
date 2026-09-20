@@ -187,6 +187,30 @@ describe("retained event market dependencies", () => {
     })
   })
 
+  for (const [condition, reference] of [
+    ["a second calendar", ["a", `31923:${organizer}:other-calendar`]],
+    ["a second pickup", ["shipping_option", `30406:${organizer}:other-pickup`]],
+    ["an unsupported reference", ["a", `30407:${organizer}:unsupported`]],
+  ] as const) {
+    it(`classifies a newer signed collection with ${condition} as a terminal graph revocation`, () => {
+      const revised = signed(
+        {
+          ...graph[2]!,
+          tags: [...graph[2]!.tags, [...reference]],
+        },
+        200
+      )
+
+      expect(getEventMarketSupersededEvidence(resolution(), [revised])).toEqual(
+        {
+          ...empty,
+          graph: true,
+          graphRevoked: true,
+        }
+      )
+    })
+  }
+
   it("classifies products omitted by a newer signed collection revision", () => {
     const withoutProduct = signed(
       buildEventMarketCollectionDraft({

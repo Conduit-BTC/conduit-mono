@@ -267,8 +267,18 @@ export async function resolvePendingEventPickupCartUpgrades(
       resolution.product,
       resolution.fulfillment
     )
+    const familyProductId =
+      resolution.product.type === "variation"
+        ? resolution.product.parentProductId
+        : undefined
+    const retainedParentImage =
+      familyProductId && familyProductId === pendingItem.familyProductId
+        ? pendingItem.image
+        : undefined
     const item: CartEventPickupUpgradeInput = {
       ...snapshot,
+      familyProductId,
+      image: snapshot.image ?? retainedParentImage,
       fulfillment: resolution.fulfillment,
       productUpdatedAt: resolution.product.updatedAt,
       productEventId: resolution.product.sourceEventId,

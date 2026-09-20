@@ -76,6 +76,7 @@ function fixture(input: {
   merchantChar: string
   suffix: string
   eventIdChar: string
+  productOverrides?: Partial<Product>
 }): Fixture {
   const organizer = input.organizerChar.repeat(64)
   const merchant = input.merchantChar.repeat(64)
@@ -105,6 +106,7 @@ function fixture(input: {
     collectionRefs: [collectionCoordinate],
     shippingOptionRefs: [{ coordinate: pickupCoordinate }],
     stock: 2,
+    ...input.productOverrides,
   }
   const pickup = {
     coordinate: pickupCoordinate,
@@ -427,6 +429,50 @@ describe("pending event pickup cart resolution", () => {
     expect(result.upgrades).toHaveLength(1)
     expect(result.upgrades[0]?.identity.productId).toBe(valid.product.id)
     expect(result.upgrades[0]?.item.fulfillment.type).toBe("pickup")
+  })
+
+  it("preserves a variation's signed parent identity and pending parent image", async () => {
+    const merchant = "b".repeat(64)
+    const parentProductId = `30402:${merchant}:variable-parent`
+    const parentImage = "https://cdn.conduit.market/variable-parent.png"
+    const current = fixture({
+      organizerChar: "a",
+      merchantChar: "b",
+      suffix: "variation",
+      eventIdChar: "4",
+      productOverrides: {
+        type: "variation",
+        parentProductId,
+        specifications: [{ key: "size", value: "M" }],
+        images: [],
+      },
+    })
+    const pendingItem: CartItem = {
+      ...current.pendingItem,
+      familyProductId: parentProductId,
+      image: parentImage,
+    }
+
+    const result = await resolvePendingEventPickupCartUpgrades(
+      [pendingItem],
+      null,
+      {},
+      dependencies(
+        productResult([current.product]),
+        async () => current.catalog
+      )
+    )
+
+    expect(result.retryable).toBe(false)
+    expect(result.upgrades).toHaveLength(1)
+    expect(result.upgrades[0]?.item).toMatchObject({
+      familyProductId: parentProductId,
+      selectedSpecifications: [{ key: "size", value: "M" }],
+      image: parentImage,
+    })
+    expect(result.upgrades[0]?.item.familyProductId).not.toBe(
+      current.product.id
+    )
   })
 
   it("propagates catalog cancellation instead of converting it to retryable evidence", async () => {

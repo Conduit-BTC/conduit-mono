@@ -6174,7 +6174,14 @@ for (const mounted of [true, false]) {
   })
 }
 
-for (const revocation of ["closure", "removal", "deletion"] as const) {
+for (const revocation of [
+  "closure",
+  "removal",
+  "deletion",
+  "calendar-conflict",
+  "pickup-conflict",
+  "unsupported-reference",
+] as const) {
   test(`event catalog keeps a signed local graph ${revocation} terminal without relay rechecks @market`, async ({
     page,
   }) => {
@@ -6247,6 +6254,20 @@ for (const revocation of ["closure", "removal", "deletion"] as const) {
                 ),
                 ...(revocation === "closure"
                   ? [["conduit_event_market", "1", "closed"]]
+                  : []),
+                ...(revocation === "calendar-conflict"
+                  ? [["a", `31923:${collection.pubkey}:conflicting-calendar`]]
+                  : []),
+                ...(revocation === "pickup-conflict"
+                  ? [
+                      [
+                        "shipping_option",
+                        `30406:${collection.pubkey}:conflicting-pickup`,
+                      ],
+                    ]
+                  : []),
+                ...(revocation === "unsupported-reference"
+                  ? [["a", `30407:${collection.pubkey}:unsupported`]]
                   : []),
               ],
       })

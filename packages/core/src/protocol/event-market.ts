@@ -3976,6 +3976,25 @@ export function subscribeLocalEventMarketEvidenceChanges(
   }
 }
 
+function collectionRevisionRevokesEventMarketGraph(
+  collection: ParsedEventMarketCollection
+): boolean {
+  const calendarCoordinate =
+    collection.eventCoordinates.length === 1
+      ? parseAddressableCoordinate(
+          collection.eventCoordinates[0],
+          EVENT_MARKET_CALENDAR_KINDS
+        )
+      : null
+  return (
+    collection.unsupportedReferences.length > 0 ||
+    collection.eventCoordinates.length !== 1 ||
+    collection.pickupCoordinates.length > 1 ||
+    !calendarCoordinate ||
+    calendarCoordinate.authorPubkey !== collection.authorPubkey
+  )
+}
+
 /** Compare only dependencies of an already verified resolution. Stronger local
  * evidence can revoke old authority; a fresh reader must authorize new terms. */
 export function getEventMarketSupersededEvidence(
@@ -4069,6 +4088,7 @@ export function getEventMarketSupersededEvidence(
       (!collectionEvidence.event ||
         !collectionRevision ||
         collectionRevision.orderAcceptance === "closed" ||
+        collectionRevisionRevokesEventMarketGraph(collectionRevision) ||
         collectionDependencyRemoved)) ||
     (calendarReplaced && (!calendarEvidence.event || !calendarRevision))
   const removedProductCoordinates = collectionRevision
