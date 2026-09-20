@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import {
+  applyAccountNetworkRelayExclusion,
+  CANONICAL_APP_RELAY_DEFINITIONS,
   EVENT_KINDS,
   config,
   createInMemoryAccountNetworkLocalStateRepository,
@@ -16,6 +18,7 @@ const OWNER = "a".repeat(64)
 const PERSONAL_RELAY = "wss://personal.example"
 const OVERLAP_RELAY = "wss://relay.ditto.pub"
 const DECLARED_INBOX = "wss://inbox.example"
+const REMOVED_APP_RELAY = "wss://relay.damus.io"
 
 function resolution(
   overrides: Partial<InboxDeclarationResolution>
@@ -127,6 +130,28 @@ describe("app relay routing integration", () => {
     expect(personalOnly).not.toContain("wss://relay.dreamith.to")
 
     await repository.updateRoutingPolicy(OWNER, (policy) =>
+      setAccountNetworkRoutingSourceEnabled(policy, "app", true)
+    )
+    await repository.update(OWNER, (state) =>
+      applyAccountNetworkRelayExclusion(state, {
+        relayUrl: OVERLAP_RELAY,
+        relayListFrontier: { eventId: null, createdAt: null },
+        inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        committedAt: 200,
+      })
+    )
+    const wholeRelayExcluded = await filterEligibleAccountRelayUrls({
+      accountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      candidateRelayUrls: readPlan.relayUrls,
+      appRelayUrls: readPlan.appRelayUrls,
+      personalRelayUrls: readPlan.personalRelayUrls,
+      repository,
+    })
+    expect(wholeRelayExcluded).not.toContain(OVERLAP_RELAY)
+    expect(wholeRelayExcluded).toContain(PERSONAL_RELAY)
+
+    await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "personal", false)
     )
     expect(
@@ -138,6 +163,50 @@ describe("app relay routing integration", () => {
         repository,
       })
     ).toEqual([DECLARED_INBOX])
+  })
+
+  it("keeps the removed Damus relay out of app config, plans, and personal setup presets", () => {
+    const settings = createRelaySettingsFromPreferences([], "published")
+    const routingPolicy = {
+      appRelaysEnabled: true,
+      personalRelaysEnabled: false,
+    }
+    const readPlan = planRelayReads({
+      intent: "general",
+      authenticatedPubkey: OWNER,
+      settings,
+      routingPolicy,
+      maxRelays: 20,
+      skipHealthFilter: true,
+    })
+    const writePlan = planRelayWrites({
+      intent: "author_event",
+      authorPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      settings,
+      signedRelayListAuthoritative: true,
+      routingPolicy,
+      maxPrimaryRelays: 20,
+      skipHealthFilter: true,
+    })
+    const appConfigUrls = [
+      ...CANONICAL_APP_RELAY_DEFINITIONS.map((relay) => relay.url),
+      ...config.appReadRelayUrls,
+      ...config.appCommerceRelayUrls,
+      ...config.appWriteRelayUrls,
+      ...config.commerceDiscoveryRelayUrls,
+      ...config.dmCompatibilityOrderRelayUrls,
+    ]
+    const personalSetupPresetUrls = CANONICAL_APP_RELAY_DEFINITIONS.filter(
+      (relay) => relay.nip65Preset !== null || relay.nip17Preset
+    ).map((relay) => relay.url)
+
+    expect(appConfigUrls).not.toContain(REMOVED_APP_RELAY)
+    expect(personalSetupPresetUrls).not.toContain(REMOVED_APP_RELAY)
+    expect(readPlan.relayUrls).not.toContain(REMOVED_APP_RELAY)
+    expect(readPlan.appRelayUrls).not.toContain(REMOVED_APP_RELAY)
+    expect(writePlan.primaryRelayUrls).not.toContain(REMOVED_APP_RELAY)
+    expect(writePlan.appRelayUrls).not.toContain(REMOVED_APP_RELAY)
   })
 
   it("keeps declared NIP-17 delivery exclusive and bounds fallback to validated orders", () => {

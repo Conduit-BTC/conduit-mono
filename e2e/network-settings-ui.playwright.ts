@@ -132,6 +132,85 @@ test("account-local relay preference reaches another storage-sharing tab without
 
 for (const app of ["market", "merchant"] as const) {
   for (const layout of layouts) {
+    test(`${app} ${layout.name} exposes managed App Relays without hiding personal settings @${app}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize(layout.viewport)
+      await openNetwork(page, app)
+
+      const disclosure = page.getByRole("button", {
+        name: /^App Relays \d+ managed routes? for reliable commerce, discovery, and messaging\.$/,
+      })
+      const summary = page.getByText(
+        /^\d+ managed routes? for reliable commerce, discovery, and messaging\.$/
+      )
+      const appRelayList = page.locator('ul[aria-label="App Relays"]')
+      const personalHeading = page.getByRole("heading", {
+        name: "Your Relays",
+        exact: true,
+      })
+
+      await expect(
+        page.getByRole("button", { name: "Refresh" }).first()
+      ).toBeEnabled({ timeout: 20_000 })
+      await expect(disclosure).toHaveAttribute("aria-expanded", "false")
+      await expect(appRelayList).toHaveCount(1)
+      await expect(appRelayList).toBeHidden()
+      await expect(personalHeading).toBeVisible()
+      await expect(personalHeading).toBeInViewport()
+      if (layout.name === "mobile") {
+        await expectMinimumTouchTarget(disclosure)
+      }
+
+      const summaryText = (await summary.textContent()) ?? ""
+      const summaryCount = Number(summaryText.match(/^\d+/)?.[0])
+      expect(Number.isInteger(summaryCount)).toBe(true)
+
+      if (screenshotDirectory) {
+        mkdirSync(screenshotDirectory, { recursive: true })
+        await page.screenshot({
+          path: join(
+            screenshotDirectory,
+            `${app}-${layout.name}-network-app-relays-collapsed.png`
+          ),
+          fullPage: true,
+          animations: "disabled",
+        })
+      }
+
+      await disclosure.press("Enter")
+      await expect(disclosure).toHaveAttribute("aria-expanded", "true")
+      await expect(appRelayList).toBeVisible()
+      await expect(appRelayList.locator(":scope > li")).toHaveCount(
+        summaryCount
+      )
+      expect(
+        await appRelayList.evaluate(
+          (element) => element.scrollWidth <= element.clientWidth + 1
+        )
+      ).toBe(true)
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth + 1
+        )
+      ).toBe(true)
+
+      if (screenshotDirectory) {
+        await page.screenshot({
+          path: join(
+            screenshotDirectory,
+            `${app}-${layout.name}-network-app-relays-expanded.png`
+          ),
+          fullPage: true,
+          animations: "disabled",
+        })
+      }
+
+      await disclosure.press("Space")
+      await expect(disclosure).toHaveAttribute("aria-expanded", "false")
+      await expect(appRelayList).toBeHidden()
+    })
+
     test(`${app} ${layout.name} reconstructs signed Network preferences despite obsolete local settings @${app}`, async ({
       page,
     }) => {

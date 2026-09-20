@@ -387,6 +387,12 @@ describe("network settings view", () => {
       "wss://relay.dreamith.to",
       "wss://relay.primal.net",
     ])
+    expect(
+      [
+        ...(view.appRelays?.rows ?? []),
+        ...(view.setupRecommendation?.rows ?? []),
+      ].map((row) => row.url)
+    ).not.toContain("wss://relay.damus.io")
 
     const enabledButIncomplete = buildAccountNetworkSettingsView({
       reconciliation: reconciliation({ rows: [] }),
