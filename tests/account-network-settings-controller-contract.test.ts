@@ -86,6 +86,18 @@ describe("account Network settings controller contract", () => {
     expect(controllerSource).not.toContain("  removeRelay: (")
   })
 
+  it("carries bounded-absence risk into the exact publish review", () => {
+    const summary = sourceBetween(
+      "function preparedChangeSummary(",
+      "function desiredRolesFromCommittedRows("
+    )
+
+    expect(summary).toContain('"scoped_absence_may_hide_signed_state"')
+    expect(summary).toContain(
+      "No signed relay setup was observed on the relays checked. Publishing may supersede preferences stored elsewhere."
+    )
+  })
+
   it("accepts an owner-selected ws candidate before relay I/O or storage", () => {
     const localState = emptyAccountNetworkLocalState("a".repeat(64))
     expect(
@@ -195,13 +207,16 @@ describe("account Network settings controller contract", () => {
     )
   })
 
-  it("refreshes only already-validated view rows", () => {
+  it("refreshes only already-validated personal and app view rows", () => {
     const refresh = sourceBetween(
       "const refresh = useCallback(",
       "return {\n    view: baseView"
     )
     expect(refresh).toContain("async (): Promise<void>")
-    expect(refresh).toContain("relayUrls: baseView.rows.map((row) => row.url)")
+    expect(refresh).toContain("...baseView.rows.map((row) => row.url)")
+    expect(refresh).toContain(
+      "...(baseView.appRelays?.rows.map((row) => row.url) ?? [])"
+    )
     expect(refresh).not.toContain("relayUrls?:")
   })
 

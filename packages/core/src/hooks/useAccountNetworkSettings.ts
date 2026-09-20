@@ -248,7 +248,11 @@ function preparedChangeSummary(
         ? [
             "One Publish relay is valid, but adding another improves redundancy.",
           ]
-        : []
+        : warning === "scoped_absence_may_hide_signed_state"
+          ? [
+              "No signed relay setup was observed on the relays checked. Publishing may supersede preferences stored elsewhere.",
+            ]
+          : []
     ),
   }
 }

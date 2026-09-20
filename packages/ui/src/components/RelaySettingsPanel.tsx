@@ -1890,8 +1890,9 @@ function RelayListSection({
         </div>
       ) : (
         <div className="py-4 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-          No relay preferences were found. Add at least one Publish relay.
-          Select a Private inbox if you want to receive private messages.
+          No relay preferences were found on the relays checked. Add at least
+          one Publish relay. Select a Private inbox if you want to receive
+          private messages.
         </div>
       )}
     </div>

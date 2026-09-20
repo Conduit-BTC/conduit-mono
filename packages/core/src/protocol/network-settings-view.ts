@@ -347,7 +347,7 @@ function appRelayDisableWarning(
   return `${findings} Turning off App Relays may reduce commerce, discovery, or messaging reliability.`
 }
 
-function isConfirmedFirstTimeNetworkSetup(
+function hasCompleteScopedNetworkSetupAbsence(
   reconciliation: AccountNetworkPreferencesReconciliation
 ): boolean {
   const owner = reconciliation.ownerRelayList
@@ -360,7 +360,14 @@ function isConfirmedFirstTimeNetworkSetup(
     !owner.pendingDistribution &&
     inbox.state === "not_observed" &&
     inbox.observation?.coverage === "complete" &&
-    !inbox.eventId
+    !inbox.eventId &&
+    inbox.eventCreatedAt === undefined &&
+    inbox.relayUrls.length === 0 &&
+    (inbox.retainedReadRelayUrls?.length ?? 0) === 0 &&
+    (inbox.cutoverRecoveryRelayUrls?.length ?? 0) === 0 &&
+    (inbox.pendingRelayUrls?.length ?? 0) === 0 &&
+    (inbox.pendingPublishRelayUrls?.length ?? 0) === 0 &&
+    (inbox.pendingRelayOutcomes?.length ?? 0) === 0
   )
 }
 
@@ -534,7 +541,7 @@ export function buildAccountNetworkSettingsView(input: {
     input.localState?.preferredRelayOrder
   )
   const routingPolicy = input.localState?.routingPolicy
-  const confirmedFirstTime = isConfirmedFirstTimeNetworkSetup(
+  const completeScopedAbsence = hasCompleteScopedNetworkSetupAbsence(
     input.reconciliation
   )
   const appRelayRows = config.appRelayDefinitions.flatMap((definition) => {
@@ -677,14 +684,14 @@ export function buildAccountNetworkSettingsView(input: {
             ),
           },
           personalRelaysEnabled: routingPolicy.personalRelaysEnabled,
-          ...(confirmedFirstTime &&
+          ...(completeScopedAbsence &&
           routingPolicy.setupPromptState === "untouched" &&
           recommendationRows.length > 0
             ? {
                 setupRecommendation: {
                   title: "Match Conduit defaults",
                   description:
-                    "Prepare Conduit’s recommended relay roles for review. Nothing publishes until you approve the normal signer flow.",
+                    "No signed relay setup was found on the relays checked. Review Conduit’s recommended roles before anything is signed.",
                   rows: recommendationRows,
                 },
               }

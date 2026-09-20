@@ -171,7 +171,10 @@ describe("RelaySettingsPanel account Network review", () => {
     const emptyMarkup = renderToStaticMarkup(
       <RelaySettingsPanel controller={controller()} />
     )
-    expect(emptyMarkup).toContain("at least one Publish relay")
+    expect(emptyMarkup).toContain(
+      "No relay preferences were found on the relays checked."
+    )
+    expect(emptyMarkup).toContain("one Publish relay")
     expect(emptyMarkup).toContain(
       "Select a Private inbox if you want to receive private messages."
     )

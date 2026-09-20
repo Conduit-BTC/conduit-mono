@@ -330,8 +330,9 @@ describe("network settings view", () => {
         },
         inbox: {
           state: "not_observed",
-          eventId: null,
-          eventCreatedAt: null,
+          relayUrls: [],
+          eventId: undefined,
+          eventCreatedAt: undefined,
           observation: {
             coverage: "complete",
             attemptedRelayUrls: [],
@@ -367,6 +368,8 @@ describe("network settings view", () => {
     })
     expect(view.setupRecommendation).toMatchObject({
       title: "Match Conduit defaults",
+      description:
+        "No signed relay setup was found on the relays checked. Review Conduit’s recommended roles before anything is signed.",
     })
     expect(view.setupRecommendation?.rows.map((row) => row.url)).toEqual([
       "wss://relay.conduit.market",
@@ -404,8 +407,9 @@ describe("network settings view", () => {
         },
         inbox: {
           state: "not_observed",
-          eventId: null,
-          eventCreatedAt: null,
+          relayUrls: [],
+          eventId: undefined,
+          eventCreatedAt: undefined,
           observation: {
             coverage: "complete",
             attemptedRelayUrls: [],
