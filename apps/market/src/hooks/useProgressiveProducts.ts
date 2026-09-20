@@ -127,7 +127,7 @@ export interface ProgressiveProductsResult {
   isShowingCache: boolean
   discoveryStale: boolean
   error: unknown
-  refetch: () => void
+  refetch: () => Promise<void>
 }
 
 type ProductAccumulatorState = {
@@ -471,6 +471,9 @@ export function useProgressiveProducts(
   // pass. The settled frontier remains authoritative during that handoff so a
   // stale cache cannot resurrect listings while the replacement read starts.
   const [refreshNonce, setRefreshNonce] = useState(0)
+  const pendingProgressiveRefreshesRef = useRef<
+    Array<{ fromDiscoveryKey: string; resolve: () => void }>
+  >([])
   const catalogDiscoveryKey = useMemo(
     () =>
       JSON.stringify([
@@ -486,6 +489,28 @@ export function useProgressiveProducts(
   const discoveryKey = useMemo(
     () => JSON.stringify([catalogDiscoveryKey, refreshNonce]),
     [catalogDiscoveryKey, refreshNonce]
+  )
+  const waitForNextProgressiveRead = useCallback(
+    () =>
+      new Promise<void>((resolve) => {
+        pendingProgressiveRefreshesRef.current.push({
+          fromDiscoveryKey: discoveryKey,
+          resolve,
+        })
+      }),
+    [discoveryKey]
+  )
+  const settleProgressiveRefreshes = useCallback(
+    (settledDiscoveryKey: string) => {
+      const pending = pendingProgressiveRefreshesRef.current
+      pendingProgressiveRefreshesRef.current = pending.filter(
+        ({ fromDiscoveryKey }) => fromDiscoveryKey === settledDiscoveryKey
+      )
+      for (const refresh of pending) {
+        if (refresh.fromDiscoveryKey !== settledDiscoveryKey) refresh.resolve()
+      }
+    },
+    []
   )
   const catalogTextQuery = perspectiveMarketplaceRead
     ? undefined
@@ -807,24 +832,32 @@ export function useProgressiveProducts(
         applyResult(result, isFetching)
       },
       shouldContinue,
-    }).catch((error) => {
-      if (!shouldContinue()) return
-      const lastPendingResult = pendingResult
-      cancelScheduledFlush()
-      if (lastPendingResult) applyResult(lastPendingResult, true)
-      setProgressiveRead((current) => ({
-        key: discoveryKey,
-        catalogKey: catalogDiscoveryKey,
-        isFetching: false,
-        count: current.catalogKey === catalogDiscoveryKey ? current.count : 0,
-        meta: current.catalogKey === catalogDiscoveryKey ? current.meta : null,
-        error,
-        latestResult:
-          current.catalogKey === catalogDiscoveryKey
-            ? current.latestResult
-            : undefined,
-      }))
-    })
+    }).then(
+      () => {
+        if (!shouldContinue()) return
+        settleProgressiveRefreshes(discoveryKey)
+      },
+      (error) => {
+        if (!shouldContinue()) return
+        const lastPendingResult = pendingResult
+        cancelScheduledFlush()
+        if (lastPendingResult) applyResult(lastPendingResult, true)
+        setProgressiveRead((current) => ({
+          key: discoveryKey,
+          catalogKey: catalogDiscoveryKey,
+          isFetching: false,
+          count: current.catalogKey === catalogDiscoveryKey ? current.count : 0,
+          meta:
+            current.catalogKey === catalogDiscoveryKey ? current.meta : null,
+          error,
+          latestResult:
+            current.catalogKey === catalogDiscoveryKey
+              ? current.latestResult
+              : undefined,
+        }))
+        settleProgressiveRefreshes(discoveryKey)
+      }
+    )
 
     return () => {
       cancelled = true
@@ -845,6 +878,7 @@ export function useProgressiveProducts(
     inputTagsKey,
     marketplaceTags,
     perspectiveMarketplaceRead,
+    settleProgressiveRefreshes,
     authenticatedPubkey,
     authGeneration,
     finalIoAccountPubkey,
@@ -854,33 +888,42 @@ export function useProgressiveProducts(
   const refetchCached = cachedQuery.refetch
   const refetchFirstNetwork = firstNetworkQuery.refetch
   const refetchPerspectiveAuthors = firstDegreeQuery.refetch
-  const refetch = useCallback(() => {
-    void refreshProductCatalogSources({
-      queryEnabled,
-      catalogReady,
-      streamsNetwork,
-      usesPerspectiveGraph,
-      catalogSource,
-      refreshPerspectiveAuthors: async () => {
-        try {
-          const result = await refetchPerspectiveAuthors()
-          if (result.isError || !result.data) return false
-          const nextResolution = resolveFirstDegreeAuthors(result.data, true)
-          const nextCatalogAuthorPubkeys = getCatalogAuthorPubkeys(
-            nextResolution.authorPubkeys
-          )
-          const nextCatalogAuthorKey = getCatalogAuthorKey(
-            nextCatalogAuthorPubkeys
-          )
-          return nextCatalogAuthorKey !== catalogAuthorKey
-        } catch {
-          return false
-        }
-      },
-      restartNetworkStream: () => setRefreshNonce((nonce) => nonce + 1),
-      refreshNetwork: refetchFirstNetwork,
-      refreshCache: refetchCached,
-    })
+  const refetch = useCallback(async () => {
+    const progressiveRefresh = streamsNetwork
+      ? waitForNextProgressiveRead()
+      : Promise.resolve()
+    await Promise.all([
+      refreshProductCatalogSources({
+        queryEnabled,
+        catalogReady,
+        streamsNetwork,
+        usesPerspectiveGraph,
+        catalogSource,
+        refreshPerspectiveAuthors: async () => {
+          try {
+            const result = await refetchPerspectiveAuthors()
+            if (result.isError || !result.data) return false
+            const nextResolution = resolveFirstDegreeAuthors(result.data, true)
+            const nextCatalogAuthorPubkeys = getCatalogAuthorPubkeys(
+              nextResolution.authorPubkeys
+            )
+            const nextCatalogAuthorKey = getCatalogAuthorKey(
+              nextCatalogAuthorPubkeys
+            )
+            return nextCatalogAuthorKey !== catalogAuthorKey
+          } catch {
+            return false
+          }
+        },
+        restartNetworkStream: () => {
+          setRefreshNonce((nonce) => nonce + 1)
+          return progressiveRefresh
+        },
+        refreshNetwork: refetchFirstNetwork,
+        refreshCache: refetchCached,
+      }),
+      progressiveRefresh,
+    ])
   }, [
     catalogAuthorKey,
     catalogReady,
@@ -892,6 +935,7 @@ export function useProgressiveProducts(
     resolveFirstDegreeAuthors,
     streamsNetwork,
     usesPerspectiveGraph,
+    waitForNextProgressiveRead,
   ])
 
   const products = selectProgressiveProductFrontier({
@@ -1008,7 +1052,7 @@ export function useProgressiveProductDetail(productId: string): {
   isRefreshPaused: boolean
   isShowingCache: boolean
   error: unknown
-  refetch: () => void
+  refetch: () => Promise<void>
 } {
   const session = useConduitSession()
   const { authGeneration } = useAuth()
@@ -1064,9 +1108,8 @@ export function useProgressiveProductDetail(productId: string): {
       : {}
   const refetchCachedDetail = cachedQuery.refetch
   const refetchNetworkDetail = networkQuery.refetch
-  const refetch = useCallback(() => {
-    void refetchCachedDetail()
-    void refetchNetworkDetail()
+  const refetch = useCallback(async () => {
+    await Promise.all([refetchCachedDetail(), refetchNetworkDetail()])
   }, [refetchCachedDetail, refetchNetworkDetail])
 
   return {

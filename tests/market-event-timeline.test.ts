@@ -7,7 +7,6 @@ import {
   getEventTimelineStatus,
 } from "../apps/market/src/lib/eventTimeline"
 import type { EventMarketResolution } from "@conduit/core"
-import { getOrganizerDiscoveryPresentation } from "@conduit/ui"
 
 const NOW = Date.UTC(2027, 5, 1, 12)
 
@@ -31,21 +30,6 @@ describe("event timeline perspective presentation", () => {
       ...conduitPerspective,
       coverage: "limited",
     })
-    expect(
-      getOrganizerDiscoveryPresentation({
-        state: "complete",
-        eventCount: 2,
-        perspective,
-        candidateScanCoverage: {
-          plannedReadCount: 4,
-          completeReadCount: 4,
-        },
-        searchedOrganizerCount: 2,
-        incompleteOrganizerCount: 0,
-      }).message
-    ).toBe(
-      "Showing 2 events. Completed 4 of 4 planned bounded relay collection reads. The available Conduit perspective snapshot may be incomplete."
-    )
   })
 
   it("preserves current and already-incomplete perspective coverage", () => {
@@ -263,7 +247,7 @@ describe("Market event timeline", () => {
     ).toEqual([later.reference])
   })
 
-  it("derives stable facets and honest relay-aware statuses", () => {
+  it("derives stable facets and consequence-driven statuses", () => {
     expect(getEventTimelineFacets([later, past, soon])).toEqual({
       organizers: ["a".repeat(64), "b".repeat(64)],
       locations: ["Chicago", "Detroit"],
@@ -275,8 +259,8 @@ describe("Market event timeline", () => {
       NOW
     )
     expect(getEventTimelineStatus(typedSoon!, NOW)).toEqual({
-      label: "Partial relay view",
-      tone: "warning",
+      label: "Upcoming",
+      tone: "success",
     })
     expect(getEventTimelineStatus(typedPast!, NOW)).toEqual({
       label: "Past event",
@@ -328,7 +312,10 @@ describe("event lifecycle timeline", () => {
         filterAndSortEventMarkets([event], {}, NOW)[0]!,
         NOW
       )
-    ).toEqual({ label: "Partial relay view", tone: "warning" })
+    ).toEqual({
+      label: "Scheduled time has passed · Open",
+      tone: "secondary",
+    })
   })
 
   it("keeps early closure in history without pretending its scheduled date is past", () => {

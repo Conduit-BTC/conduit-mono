@@ -150,36 +150,6 @@ export type MerchantOrganizerEventMarketsReadResult = Omit<
   resolutions: EventMarketResolution[]
 }
 
-export type MerchantOrganizerEventCatalogEmptyState =
-  "complete" | "partial" | "unavailable" | null
-
-export interface MerchantOrganizerEventCatalogView {
-  discoveryState: MerchantOrganizerEventMarketsReadResult["state"] | "loading"
-  emptyState: MerchantOrganizerEventCatalogEmptyState
-  hasKnownReferences: boolean
-}
-
-export function getMerchantOrganizerEventCatalogView(
-  result: MerchantOrganizerEventMarketsReadResult | undefined,
-  retainedReferenceCount: number,
-  readFailed = false
-): MerchantOrganizerEventCatalogView {
-  const hasKnownReferences =
-    retainedReferenceCount > 0 || (result?.markets.length ?? 0) > 0
-  if (!result) {
-    return {
-      discoveryState: "loading",
-      emptyState: null,
-      hasKnownReferences,
-    }
-  }
-  return {
-    discoveryState: result.state,
-    emptyState: hasKnownReferences || readFailed ? null : result.state,
-    hasKnownReferences,
-  }
-}
-
 const INVALIDATING_RETAINED_MARKET_STATES = new Set<EventMarketResolutionState>(
   ["deleted", "malformed", "conflicting", "unsupported"]
 )

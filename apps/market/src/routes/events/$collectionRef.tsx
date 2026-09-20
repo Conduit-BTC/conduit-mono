@@ -306,7 +306,7 @@ export function getEventCatalogStateCopy(
     unresolvedProductCount,
     requiredEventRecordsResolved,
   })
-  if (!presentation.prominent) return null
+  if (presentation.visibility !== "prominent") return null
   return {
     title: presentation.label,
     message: presentation.message,
@@ -634,20 +634,6 @@ function EventCatalogPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-5 sm:space-y-8">
-      {isChecking ? (
-        <div
-          role="status"
-          aria-live="polite"
-          data-testid="event-refresh-status"
-          className="flex items-center gap-2 text-sm text-[var(--text-secondary)]"
-        >
-          <RefreshCw
-            className="h-4 w-4 animate-spin motion-reduce:animate-none"
-            aria-hidden="true"
-          />
-          Refreshing event details and checking pickup…
-        </div>
-      ) : null}
       {stateCopy && !isChecking ? (
         <div className="flex flex-col gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 sm:flex-row sm:items-center sm:justify-between">
           <div role={actionability.role}>
@@ -759,20 +745,16 @@ function EventCatalogPage() {
             />
           ) : null}
         </div>
-        {!isChecking &&
-        !actionability.prominent &&
-        actionability.actionability !== "actionable" ? (
+        {!isChecking && actionability.visibility === "inline" ? (
           <p
             className="text-pretty text-sm text-[var(--text-secondary)]"
-            role={actionability.role}
-            aria-live="polite"
             data-testid="event-actionability-status"
           >
             {actionability.message}
           </p>
         ) : null}
         {!isChecking && catalog.pickupCoordinate && !catalog.pickup ? (
-          <p role="status" className="text-sm text-[var(--warning)]">
+          <p className="text-sm text-[var(--warning)]">
             Organizer handoff details are unresolved.
           </p>
         ) : null}
@@ -802,10 +784,7 @@ function EventCatalogPage() {
         )}
       >
         {!isChecking && catalog.productReadState !== "ready" ? (
-          <div
-            role="status"
-            className="rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
-          >
+          <div className="rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]">
             Some accepted products are unresolved. Previously verified product
             details remain visible. Products that cannot be confirmed are
             unavailable for checkout.
@@ -896,8 +875,6 @@ function EventCatalogPage() {
           {relayCoverage ? (
             <p
               className="text-pretty text-xs tabular-nums"
-              role="status"
-              aria-label={`Relay read coverage: ${relayCoverage}`}
               data-testid="event-relay-read-coverage"
             >
               {relayCoverage}

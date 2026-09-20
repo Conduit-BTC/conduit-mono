@@ -29,6 +29,9 @@ describe("legacy direct-message UI contract", () => {
     const source = await Bun.file("apps/market/src/routes/messages.tsx").text()
 
     expect(source).toContain("MessagingReadinessNotice,")
+    expect(source).toContain("ProtectedInboxNotice,")
+    expect(source).not.toContain("DecryptFailureNotice")
+    expect(source).not.toContain("LiveReadNotice")
     // Own-inbox reads are permissive (CND-208); no read query gates on readiness.
     expect(source).not.toContain("enabled: signerConnected && messagingReady")
     // Kind-14 sends still require an own declaration.
@@ -53,6 +56,9 @@ describe("legacy direct-message UI contract", () => {
     ).text()
 
     expect(source).toContain("MessagingReadinessNotice,")
+    expect(source).toContain("ProtectedInboxNotice,")
+    expect(source).not.toContain("DecryptFailureNotice")
+    expect(source).not.toContain("LiveReadNotice")
     // Own-inbox reads are permissive (CND-208); no read query gates on readiness.
     expect(source).not.toContain("enabled: signerConnected && messagingReady")
     // Sends still require an own declaration.

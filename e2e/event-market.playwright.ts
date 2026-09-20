@@ -972,7 +972,7 @@ async function publishOrganizerMarket(
   await editor.getByRole("button", { name: "Publish event" }).click()
   await expect(editor).toBeHidden({ timeout: 30_000 })
   if (options.afterEditorClosed) await options.afterEditorClosed()
-  await expect(page.getByText("Event loaded", { exact: true })).toBeVisible()
+  await expect(page.getByText("Event loaded", { exact: true })).toHaveCount(0)
   await expect(
     page.getByRole("heading", { name: "Share this event" })
   ).toBeVisible()
@@ -1172,32 +1172,28 @@ test("Merchant event timeline supports perspective, relationship, mobile, and ke
     .toBe(true)
 })
 
-test("organizer discovery retries an unavailable refresh without losing saved events or claiming absence @merchant", async ({
+test("organizer discovery offers empty-read recovery without losing saved events or claiming absence @merchant", async ({
   page,
 }) => {
   test.setTimeout(150_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
   await gotoAs(page, merchantUrl, "/events", "organizer")
-  const emptyHeading = page.getByRole("heading", {
-    name: "No matching verified events in this relay view",
-  })
+  const timeline = page.getByRole("region", { name: "Event timeline" })
+  const emptyHeading = timeline.getByRole("heading", { name: "No events yet" })
   await expect(emptyHeading).toBeVisible()
   relay.rejectReads(true)
   await page.reload()
-  const retry = page.getByRole("button", {
-    name: "Retry event discovery",
-    exact: true,
+  const degradedHeading = timeline.getByRole("heading", {
+    name: "Events couldn't be fully loaded",
   })
+  const retry = timeline.getByRole("button", { name: "Retry", exact: true })
   await expect(retry).toBeEnabled({ timeout: 60_000 })
-  await expect(
-    page.getByTestId("merchant-event-timeline-discovery-status")
-  ).toContainText(/unavailable/i)
+  await expect(degradedHeading).toBeVisible()
   relay.rejectReads(false)
   await retry.click()
-  await expect(
-    page.getByTestId("merchant-event-timeline-discovery-status")
-  ).not.toContainText(/unavailable/i)
+  await expect(degradedHeading).toBeHidden()
+  await expect(emptyHeading).toBeVisible()
   const title = "Synthetic retained discovery title"
   await publishOrganizerMarket(page, relay, {
     title,
@@ -1206,15 +1202,8 @@ test("organizer discovery retries an unavailable refresh without losing saved ev
   relay.rejectReads(true)
   await page.reload()
   await expect(page.getByText(title, { exact: true }).first()).toBeVisible()
-  await expect(
-    page.getByTestId("merchant-event-timeline-discovery-status")
-  ).toContainText(/unavailable/i, { timeout: 60_000 })
-  relay.rejectReads(false)
-  await expect(retry).toBeEnabled()
-  await retry.click()
-  await expect(
-    page.getByTestId("merchant-event-timeline-discovery-status")
-  ).not.toContainText(/unavailable/i)
+  await expect(degradedHeading).toHaveCount(0)
+  await expect(timeline).not.toContainText(/unavailable|relay/i)
   await expect(
     page.getByRole("button", { name: `Manage ${title}`, exact: true })
   ).toBeVisible()
@@ -1244,9 +1233,15 @@ test("direct and pasted event imports hydrate one saved selector title outside t
   )
 
   await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  const timeline = page.getByRole("region", { name: "Event timeline" })
   await expect(
-    page.getByText(/No events were found.*perspective\./)
+    timeline.getByRole("heading", { name: eventTitle, exact: true })
   ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    timeline.getByRole("heading", {
+      name: /No events|Events couldn't be fully loaded/,
+    })
+  ).toHaveCount(0)
   await expect(page.getByText(eventTitle, { exact: true }).first()).toBeVisible(
     {
       timeout: 30_000,
@@ -3482,9 +3477,7 @@ test("legacy saved event keeps a newer exact retry beyond an older coordinate de
       { timeout: 30_000 }
     )
     .toContain(newerCollection.id)
-  await expect(page.getByText("Event loaded", { exact: true })).toBeVisible({
-    timeout: 30_000,
-  })
+  await expect(page.getByText("Event loaded", { exact: true })).toHaveCount(0)
   await expect(
     page.getByRole("button", { name: "Update event", exact: true })
   ).toBeEnabled({ timeout: 30_000 })
@@ -3552,9 +3545,10 @@ test("terminal event deletion removes the exact-record retry path @merchant", as
   ).toBeVisible({ timeout: 30_000 })
   await expect(retryDelivery).toHaveCount(0)
   expect(relay.publications).toHaveLength(publicationCount)
-  await page
-    .getByRole("button", { name: "Retry event discovery", exact: true })
-    .click()
+  await page.reload()
+  await expect(
+    page.getByRole("heading", { name: "Event deleted", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
   await expect(
     page.getByRole("button", {
       name: "Manage Synthetic Deleted Retry Event",
@@ -3781,9 +3775,7 @@ test("a newer external collection can replace its calendar without inheriting th
   relay.seed(replacementCalendar, replacementCollection)
   await page.getByRole("button", { name: "Refresh evidence" }).click()
 
-  await expect(page.getByText("Event loaded", { exact: true })).toBeVisible({
-    timeout: 30_000,
-  })
+  await expect(page.getByText("Event loaded", { exact: true })).toHaveCount(0)
   await expect(
     page.getByRole("button", { name: "Update event", exact: true })
   ).toBeEnabled({ timeout: 30_000 })
@@ -4219,6 +4211,28 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
       card.getByRole("link", { name: "View", exact: true })
     ).toBeVisible()
     await expect(refreshEvents).toBeDisabled()
+
+    await page.getByLabel("Date").click()
+    await page.getByRole("option", { name: "Past events", exact: true }).click()
+    const incompleteFilteredEmpty = page.getByRole("alert").filter({
+      hasText: "No events match these filters",
+    })
+    await expect(
+      incompleteFilteredEmpty.getByText(
+        "Discovery is incomplete, so matching events may still be available. Retry or change the filters.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    await expect(
+      incompleteFilteredEmpty.getByRole("button", {
+        name: "Retry",
+        exact: true,
+      })
+    ).toBeDisabled()
+
+    await page.getByLabel("Date").click()
+    await page.getByRole("option", { name: "All dates", exact: true }).click()
+    await expect(card).toBeVisible()
   } finally {
     held.release()
   }
@@ -4843,7 +4857,7 @@ test("cold event catalog shows a completed merchant product before a slower merc
       fastCard.getByRole("button", { name: "Add", exact: true })
     ).toHaveCount(0)
     await expect(slowCard).toHaveCount(0)
-    await expect(page.getByTestId("event-refresh-status")).toBeVisible()
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
   } finally {
     held.release()
   }
@@ -4955,7 +4969,7 @@ test("verified event catalog enables a completed merchant while another exact pr
     await expect(
       slowCard.getByRole("button", { name: "Add", exact: true })
     ).toHaveCount(0)
-    await expect(page.getByTestId("event-refresh-status")).toBeVisible()
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
     const slowExactReads = relay.requests.filter(isSlowExactRead)
     expect(slowExactReads.length).toBeGreaterThan(0)
     expect(
@@ -5036,7 +5050,7 @@ test("event catalog paints before held product reads and keeps cached browsing c
       })
     ).toBeVisible()
     timings.coldHeaderMs = Date.now() - coldStarted
-    await expect(page.getByTestId("event-refresh-status")).toBeVisible()
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
     await expect(
       page.getByRole("button", { name: "Add", exact: true })
     ).toHaveCount(0)
@@ -5932,13 +5946,18 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   ).toEqual([])
   await expect(
     page.getByTestId("organizer-event-actionability-status")
-  ).toContainText("1 product available.")
+  ).toHaveCount(0)
+  const organizerTechnicalDetails = page
+    .locator("summary")
+    .filter({ hasText: /^Technical details\s*$/ })
   await expect(
-    page.getByTestId("organizer-event-actionability-status")
-  ).toHaveAttribute("role", "status")
+    page.getByTestId("organizer-event-relay-read-coverage")
+  ).toBeHidden()
+  await organizerTechnicalDetails.click()
   await expect(
     page.getByTestId("organizer-event-relay-read-coverage")
   ).toBeVisible()
+  await organizerTechnicalDetails.click()
 
   const eventsHeading = page.locator("h1").filter({ hasText: /^Events$/ })
   const eventSignPageStyle = page.locator("style[data-event-sign-page-style]")
@@ -6116,7 +6135,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   )
   await expect(
     page.getByTestId("organizer-event-actionability-status")
-  ).toContainText("2 products available.")
+  ).toHaveCount(0)
 
   await page.setViewportSize({ width: 1100, height: 600 })
   await page.getByRole("button", { name: "Print all merchant signs" }).click()
@@ -6802,9 +6821,9 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   await selectOrganizerMarket(page, "Synthetic Organizer Handoff Market")
   const queue = page.getByTestId("organizer-handoff-receipt-queue")
   await expect(queue).toBeVisible({ timeout: 30_000 })
-  await expect(queue.getByText(/Receipt discovery is incomplete/i)).toBeVisible(
-    { timeout: 30_000 }
-  )
+  await expect(
+    queue.getByText(/Receipt discovery may be incomplete/i)
+  ).toBeVisible({ timeout: 30_000 })
   await expect
     .poll(() =>
       relay.requests.some((request) =>

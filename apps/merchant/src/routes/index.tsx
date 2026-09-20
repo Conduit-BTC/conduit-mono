@@ -32,7 +32,7 @@ import {
   useState,
   type ComponentType,
 } from "react"
-import { Button, LiveReadNotice, StatusPill } from "@conduit/ui"
+import { Button, ProtectedInboxNotice, StatusPill } from "@conduit/ui"
 import {
   DashboardCharts,
   type DashboardChartDataByCard,
@@ -584,10 +584,12 @@ function DashboardPage() {
 
           <div className="mt-4 space-y-2">
             {signerConnected &&
+              latestConversations.length === 0 &&
               protectedConversationsReadState !== "complete" &&
               protectedConversationsReadState !== "pending" && (
-                <LiveReadNotice
+                <ProtectedInboxNotice
                   state={protectedConversationsReadState}
+                  subject="activity"
                   onRetry={retryConversationsRead}
                   retrying={conversationsQuery.isRefetching}
                 />
