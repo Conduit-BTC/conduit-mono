@@ -5459,6 +5459,66 @@ test("pending event pickup reapplies cached terms after an exact sibling frees s
   expect(pickupReads()).toBe(readsBeforeSiblingRemoval)
 })
 
+test("closed event route keeps retained exact pickup pending and purchase actions blocked @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic closed pending pickup",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "closed-pending-pickup",
+    title: "Synthetic closed pending product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const closedCollection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [
+      ...market.initialCollection.tags.filter(
+        (tag) => tag[0] !== "conduit_event_market"
+      ),
+      ["a", eventCoordinate(product)],
+      ["conduit_event_market", "1", "closed"],
+    ],
+  })
+  relay.seed(product, closedCollection)
+
+  await gotoAs(page, marketUrl, "/about", "buyer")
+  await addPendingEventPickupCartItem(page, {
+    collectionCoordinate: market.collectionCoordinate,
+    productEvent: product,
+    quantity: 1,
+    previewStock: 3,
+  })
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  await expect(
+    page.getByRole("button", { name: "Event closed", exact: true })
+  ).toBeVisible()
+  await expect(
+    page
+      .getByRole("listitem")
+      .filter({ hasText: "Synthetic closed pending product" })
+  ).toBeVisible()
+  await page.waitForTimeout(750)
+
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  await expect(page.getByTestId("pending-event-pickup-cart")).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Zap out", exact: true })
+  ).toHaveCount(0)
+})
+
 test("signed pickup withdrawal leaves pending cart blocked without background retries @market", async ({
   page,
 }) => {

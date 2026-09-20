@@ -220,6 +220,7 @@ function EventCatalogProductCard({
 
   useEffect(() => {
     if (
+      !canAdd ||
       !pendingExisting ||
       !exactCandidate ||
       !pickupFulfillment ||
@@ -234,6 +235,7 @@ function EventCatalogProductCard({
       productEventId: selectedProduct.sourceEventId,
     })
   }, [
+    canAdd,
     exactCandidate,
     pendingExisting,
     pickupFulfillment,

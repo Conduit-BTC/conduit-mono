@@ -323,6 +323,78 @@ describe("pending event pickup cart resolution", () => {
     expect(terminal).toEqual({ upgrades: [], retryable: false })
   })
 
+  it("retries older same-claim product revisions until the pending frontier is observed", async () => {
+    const current = fixture({
+      organizerChar: "a",
+      merchantChar: "b",
+      suffix: "older-frontier",
+      eventIdChar: "4",
+    })
+    const olderProducts: Product[] = [
+      {
+        ...current.product,
+        createdAt: current.product.createdAt - 1_000,
+        updatedAt: current.product.updatedAt - 1_000,
+        sourceEventId: "0".repeat(64),
+      },
+      {
+        ...current.product,
+        sourceEventId: "5".repeat(64),
+      },
+    ]
+
+    for (const olderProduct of olderProducts) {
+      const currentEntry = current.catalog.products[0]!
+      const currentFulfillment = currentEntry.pickupFulfillment!
+      const olderCatalog: EventCatalog = {
+        ...current.catalog,
+        products: [
+          {
+            ...currentEntry,
+            product: olderProduct,
+            pickupFulfillment: {
+              ...currentFulfillment,
+              product: {
+                ...currentFulfillment.product,
+                createdAt: olderProduct.updatedAt,
+                eventId: olderProduct.sourceEventId!,
+              },
+            },
+          },
+        ],
+      }
+      let catalogReads = 0
+      const unresolved = await resolvePendingEventPickupCartUpgrades(
+        [current.pendingItem],
+        null,
+        {},
+        dependencies(productResult([olderProduct]), async () => {
+          catalogReads += 1
+          return olderCatalog
+        })
+      )
+
+      expect(unresolved).toEqual({ upgrades: [], retryable: true })
+      expect(catalogReads).toBe(0)
+    }
+
+    const resolved = await resolvePendingEventPickupCartUpgrades(
+      [current.pendingItem],
+      null,
+      {},
+      dependencies(
+        productResult([current.product]),
+        async () => current.catalog
+      )
+    )
+
+    expect(resolved.retryable).toBe(false)
+    expect(resolved.upgrades).toHaveLength(1)
+    expect(resolved.upgrades[0]?.identity.cartLineId).toBe(
+      current.pendingItem.cartLineId
+    )
+  })
+
   it("keeps valid upgrades when another event catalog read fails", async () => {
     const failed = fixture({
       organizerChar: "a",

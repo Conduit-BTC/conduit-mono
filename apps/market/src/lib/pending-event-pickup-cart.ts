@@ -100,25 +100,31 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError"
 }
 
+function compareProductSignedRevision(
+  product: Product,
+  pendingItem: PendingEventPickupCartItem
+): -1 | 0 | 1 | undefined {
+  if (!Number.isSafeInteger(product.updatedAt) || !product.sourceEventId) {
+    return undefined
+  }
+  return compareReplaceableEventFrontiers(
+    {
+      createdAt: product.updatedAt,
+      eventId: product.sourceEventId,
+    },
+    {
+      createdAt: pendingItem.productUpdatedAt,
+      eventId: pendingItem.productEventId,
+    }
+  )
+}
+
 function productProvesCurrentSignedRevision(
   product: Product,
   pendingItem: PendingEventPickupCartItem
 ): boolean {
-  if (!Number.isSafeInteger(product.updatedAt) || !product.sourceEventId) {
-    return false
-  }
-  return (
-    compareReplaceableEventFrontiers(
-      {
-        createdAt: product.updatedAt,
-        eventId: product.sourceEventId,
-      },
-      {
-        createdAt: pendingItem.productUpdatedAt,
-        eventId: pendingItem.productEventId,
-      }
-    ) >= 0
-  )
+  const comparison = compareProductSignedRevision(product, pendingItem)
+  return comparison !== undefined && comparison >= 0
 }
 
 /**
@@ -182,6 +188,10 @@ export async function resolvePendingEventPickupCartUpgrades(
     const selection = selections.get(item.productId)
     if (!selection) {
       retryable ||= retryableProductIds.has(item.productId)
+      continue
+    }
+    if (compareProductSignedRevision(selection.selected, item) === -1) {
+      retryable = true
       continue
     }
     const candidates = getProductEventMarketCandidates(
