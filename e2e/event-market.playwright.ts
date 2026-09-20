@@ -6452,7 +6452,26 @@ test("mounted event catalog scopes product and pickup removals to exact dependen
         )
       ).toBeVisible()
     }
-    const before = catalogReads()
+    // The progressive reader can enqueue another stage after the first held
+    // request and card paint. Establish a quiet baseline so that this assertion
+    // measures reads caused by the local evidence write, not already scheduled
+    // hydration work.
+    let settledCatalogReads = catalogReads()
+    let stableSince = Date.now()
+    await expect
+      .poll(
+        () => {
+          const current = catalogReads()
+          if (current !== settledCatalogReads) {
+            settledCatalogReads = current
+            stableSince = Date.now()
+          }
+          return Date.now() - stableSince
+        },
+        { timeout: 10_000, intervals: [100] }
+      )
+      .toBeGreaterThanOrEqual(1_000)
+    const before = settledCatalogReads
     const revised = signEvent(ORGANIZER_SECRET, {
       kind: 30405,
       created_at: collection.created_at + 10,

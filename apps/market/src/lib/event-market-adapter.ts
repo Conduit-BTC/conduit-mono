@@ -1085,9 +1085,8 @@ export function projectRawEventCatalog(
             !pendingProducts.some((entry) => entry.product.id === coordinate)
         ),
       products: products.map((entry) =>
-        complete &&
-        !productHasTerminalLocalEvidence(entry, locallyTerminalProducts)
-          ? entry
+        complete
+          ? applyTerminalLocalEvidence(entry, locallyTerminalProducts)
           : browseOnlyProduct(
               entry,
               !!raw.localGraphRevoked,
@@ -1201,16 +1200,45 @@ export function projectRawEventCatalog(
   }
 }
 
-function productHasTerminalLocalEvidence(
+function applyTerminalLocalEvidence(
   entry: EventCatalogProduct,
   terminalProducts: ReadonlySet<string>
-): boolean {
-  return (
-    terminalProducts.has(entry.product.id) ||
-    !!entry.family?.children.some((child) =>
-      terminalProducts.has(child.product.id)
-    )
+): EventCatalogProduct {
+  const productRevoked = terminalProducts.has(entry.product.id)
+  const familyRevoked = entry.family?.children.some((child) =>
+    terminalProducts.has(child.product.id)
   )
+  if (!productRevoked && !familyRevoked) return entry
+
+  return {
+    ...entry,
+    evidenceState: productRevoked ? "retained" : entry.evidenceState,
+    participation: productRevoked
+      ? { ...entry.participation, purchaseReady: false }
+      : entry.participation,
+    pickupFulfillment: productRevoked ? null : entry.pickupFulfillment,
+    pickupReadiness: productRevoked ? "terminal" : entry.pickupReadiness,
+    familyPickupFulfillments: entry.familyPickupFulfillments
+      ? Object.fromEntries(
+          Object.entries(entry.familyPickupFulfillments).map(
+            ([coordinate, fulfillment]) => [
+              coordinate,
+              terminalProducts.has(coordinate) ? null : fulfillment,
+            ]
+          )
+        )
+      : undefined,
+    familyPickupReadiness: entry.familyPickupReadiness
+      ? Object.fromEntries(
+          Object.entries(entry.familyPickupReadiness).map(
+            ([coordinate, readiness]) => [
+              coordinate,
+              terminalProducts.has(coordinate) ? "terminal" : readiness,
+            ]
+          )
+        )
+      : undefined,
+  }
 }
 
 function browseOnlyProduct(

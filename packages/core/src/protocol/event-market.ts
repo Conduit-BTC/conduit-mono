@@ -4171,7 +4171,10 @@ export function getEventMarketSupersededEvidence(
       ...new Set([
         ...removedPickupCoordinates,
         ...supersededPickupEvidence.flatMap(({ coordinate, evidence }) =>
-          evidence.deleted ? [coordinate] : []
+          evidence.deleted &&
+          (!evidence.event || !parseEventMarketPickupEvent(evidence.event))
+            ? [coordinate]
+            : []
         ),
       ]),
     ],

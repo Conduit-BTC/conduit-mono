@@ -189,6 +189,57 @@ describe("retained event market dependencies", () => {
     }
   }
 
+  for (const target of ["a", "e"] as const) {
+    it(`keeps a valid pickup replacement recoverable after an older ${target} deletion`, () => {
+      const retainedPickup = graph[1]!
+      const deletionTarget = target === "a" ? pickup : retainedPickup.id
+      const deletion = signed(
+        { kind: 5, tags: [[target, deletionTarget]] },
+        200
+      )
+      const replacement = signed(
+        buildEventMarketPickupDraft({
+          dTag: "pickup",
+          title: "Replacement pickup",
+          price: 0,
+          currency: "SATS",
+          countries: ["US"],
+          location: "Replacement hall",
+        }),
+        300
+      )
+
+      expect(
+        getEventMarketSupersededEvidence(resolution(), [deletion, replacement])
+      ).toEqual({
+        ...empty,
+        pickupCoordinates: [pickup],
+      })
+    })
+  }
+
+  it("does not let a malformed pickup revision erase terminal deletion evidence", () => {
+    const deletedPickup = graph[1]!
+    const malformedReplacement = signed(
+      {
+        ...deletedPickup,
+        tags: deletedPickup.tags.filter((tag) => tag[0] !== "service"),
+      },
+      300
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        signed({ kind: 5, tags: [["e", deletedPickup.id]] }, 200),
+        malformedReplacement,
+      ])
+    ).toEqual({
+      ...empty,
+      pickupCoordinates: [pickup],
+      terminalPickupCoordinates: [pickup],
+    })
+  })
+
   it("classifies a newer signed collection closure as a terminal graph revocation", () => {
     const closed = signed(
       buildEventMarketCollectionDraft({

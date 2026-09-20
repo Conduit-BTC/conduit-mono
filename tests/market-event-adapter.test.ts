@@ -651,6 +651,67 @@ describe("Market event adapter", () => {
     )
   })
 
+  it("keeps unaffected family variations authorized after a child-scoped terminal observation", () => {
+    const parent = product({ type: "variable", visibility: "private" })
+    const children = ["Small", "Large"].map((size, index) =>
+      product({
+        id: `30402:${merchant}:coffee-${size.toLowerCase()}`,
+        title: `Coffee - ${size}`,
+        type: "variation",
+        visibility: "private",
+        parentProductId: parent.id,
+        specifications: [{ key: "size", value: size }],
+        createdAt: 104_000 + index * 1_000,
+        updatedAt: 104_000 + index * 1_000,
+      })
+    )
+    const rawRecords = [
+      commerceRecord(parent),
+      ...children.map((child, index) =>
+        commerceRecord(child, { eventId: `${index + 5}`.repeat(64) })
+      ),
+    ]
+    const prepared = prepareProductCatalog(rawRecords, {
+      source: "commerce",
+      fetchedAt: 106_000,
+      stale: false,
+      degraded: false,
+      capped: false,
+    }).items[0]
+    if (prepared?.kind !== "family") throw new Error("Expected family")
+    const parentRecord = {
+      ...prepared.family.parent,
+      family: prepared.family,
+    }
+    const read = productRead({ product: parent })
+    read.data = [parentRecord, ...prepared.family.children]
+    read.diagnostics = read.data.map((record) => ({
+      productId: record.addressId,
+      addressId: record.addressId,
+      issue: null,
+      coverage: { listing: "complete" as const, deletion: "complete" as const },
+    }))
+
+    const projection = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution: marketWithAcceptedRecords(rawRecords),
+      result: read,
+      complete: true,
+      localTerminalProductCoordinates: [children[0]!.id],
+    })
+    const family = projection.products[0]!
+
+    expect(family).toMatchObject({
+      evidenceState: "live",
+      pickupReadiness: "resolved",
+    })
+    expect(family.pickupFulfillment).not.toBeNull()
+    expect(family.familyPickupFulfillments?.[children[0]!.id]).toBeNull()
+    expect(family.familyPickupReadiness?.[children[0]!.id]).toBe("terminal")
+    expect(family.familyPickupFulfillments?.[children[1]!.id]).not.toBeNull()
+    expect(family.familyPickupReadiness?.[children[1]!.id]).toBe("resolved")
+  })
+
   it("keeps collection removal terminal for a progressive preview before participation settles", () => {
     const previewResolution: EventMarketResolution = {
       ...market("stale"),
