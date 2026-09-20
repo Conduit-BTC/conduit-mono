@@ -108,7 +108,13 @@ function row(event: SignedPublicNostrEvent): CachedEventMarketEvidence {
     cachedAt: now,
   }
 }
-const empty = { graph: false, productCoordinates: [], pickupCoordinates: [] }
+const empty = {
+  graph: false,
+  graphRevoked: false,
+  productCoordinates: [],
+  removedProductCoordinates: [],
+  pickupCoordinates: [],
+}
 afterEach(() => __resetEventMarketTestOverrides())
 
 describe("retained event market dependencies", () => {
@@ -143,11 +149,15 @@ describe("retained event market dependencies", () => {
         const event = graph[index]!
         const coordinate = `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")![1]}`
         const tags = [[target, target === "a" ? coordinate : event.id]]
+        const deletionExpected =
+          event.kind === 30405 || event.kind === 31923
+            ? { ...expected, graphRevoked: true }
+            : expected
         expect(
           getEventMarketSupersededEvidence(resolution(), [
             signed({ kind: 5, tags }, 200),
           ])
-        ).toEqual(expected)
+        ).toEqual(deletionExpected)
         expect(
           getEventMarketSupersededEvidence(resolution(), [
             signed({ kind: 5, tags }, 200, otherSecret),
@@ -156,6 +166,47 @@ describe("retained event market dependencies", () => {
       })
     }
   }
+
+  it("classifies a newer signed collection closure as a terminal graph revocation", () => {
+    const closed = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+        orderAcceptance: "closed",
+      }),
+      200
+    )
+
+    expect(getEventMarketSupersededEvidence(resolution(), [closed])).toEqual({
+      ...empty,
+      graph: true,
+      graphRevoked: true,
+    })
+  })
+
+  it("classifies products omitted by a newer signed collection revision", () => {
+    const withoutProduct = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [],
+      }),
+      200
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [withoutProduct])
+    ).toEqual({
+      ...empty,
+      graph: true,
+      removedProductCoordinates: [product],
+    })
+  })
 
   it("ignores older, forged, unrelated, and already deleted newer evidence", () => {
     const newer = signed(graph[2]!, 200)

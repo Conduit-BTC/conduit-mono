@@ -120,7 +120,10 @@ export function reconcileEventCatalogGraph(
     snapshot.events,
     records
   )
-  const affected = new Set(superseded.productCoordinates)
+  const affected = new Set([
+    ...superseded.productCoordinates,
+    ...superseded.removedProductCoordinates,
+  ])
   for (const record of records) {
     const pickup = buildPickupFulfillmentTerms(
       record.product,
@@ -147,8 +150,17 @@ export function reconcileEventCatalogGraph(
       : diagnostic
   )
   const pending = !!raw.localEvidencePending || snapshot.status === "loading"
+  const sameRemovedProducts =
+    (raw.localRemovedProductCoordinates?.length ?? 0) ===
+      superseded.removedProductCoordinates.length &&
+    superseded.removedProductCoordinates.every(
+      (coordinate, index) =>
+        raw.localRemovedProductCoordinates?.[index] === coordinate
+    )
   if (
     !!raw.localGraphSuperseded === superseded.graph &&
+    !!raw.localGraphRevoked === superseded.graphRevoked &&
+    sameRemovedProducts &&
     !!raw.localEvidencePending === pending &&
     (!diagnostics ||
       diagnostics.every(
@@ -159,6 +171,11 @@ export function reconcileEventCatalogGraph(
   return {
     ...raw,
     localGraphSuperseded: superseded.graph || undefined,
+    localGraphRevoked: superseded.graphRevoked || undefined,
+    localRemovedProductCoordinates:
+      superseded.removedProductCoordinates.length > 0
+        ? superseded.removedProductCoordinates
+        : undefined,
     localEvidencePending: pending || undefined,
     result:
       raw.result && diagnostics ? { ...raw.result, diagnostics } : raw.result,

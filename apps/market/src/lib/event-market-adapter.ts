@@ -966,6 +966,10 @@ export type RawEventCatalog = {
   localEvidencePending?: boolean
   /** Stronger local collection/calendar evidence invalidates this graph. */
   localGraphSuperseded?: boolean
+  /** Stronger signed local evidence definitively revokes this graph. */
+  localGraphRevoked?: boolean
+  /** Products explicitly removed by a stronger signed collection revision. */
+  localRemovedProductCoordinates?: readonly string[]
 }
 
 export function projectRawEventCatalog(
@@ -975,6 +979,9 @@ export function projectRawEventCatalog(
 ): EventCatalog {
   const resolution = raw.resolution
   if (!resolution) return unavailableCatalog(raw.reference, "malformed")
+  const locallyRemovedProducts = new Set(
+    raw.localRemovedProductCoordinates ?? []
+  )
   const complete =
     (raw.complete || raw.resolutionComplete === true) &&
     allowPurchase &&
@@ -1071,7 +1078,15 @@ export function projectRawEventCatalog(
           (coordinate) =>
             !pendingProducts.some((entry) => entry.product.id === coordinate)
         ),
-      products: complete ? products : products.map(browseOnlyProduct),
+      products: complete
+        ? products
+        : products.map((entry) =>
+            browseOnlyProduct(
+              entry,
+              !!raw.localGraphRevoked,
+              locallyRemovedProducts
+            )
+          ),
       purchaseReady:
         complete &&
         (resolution.state === "active" || resolution.state === "partial"),
@@ -1162,7 +1177,9 @@ export function projectRawEventCatalog(
   })
   return {
     ...base,
-    products,
+    products: products.map((entry) =>
+      browseOnlyProduct(entry, !!raw.localGraphRevoked, locallyRemovedProducts)
+    ),
     productReadState: complete ? "unavailable" : "not_requested",
     unresolvedProductCoordinates: [...requested].filter(
       (coordinate) =>
@@ -1177,14 +1194,21 @@ export function projectRawEventCatalog(
   }
 }
 
-function browseOnlyProduct(entry: EventCatalogProduct): EventCatalogProduct {
+function browseOnlyProduct(
+  entry: EventCatalogProduct,
+  graphRevoked: boolean,
+  removedProducts: ReadonlySet<string>
+): EventCatalogProduct {
+  const productRevoked = graphRevoked || removedProducts.has(entry.product.id)
   return {
     ...entry,
     evidenceState: "retained",
     participation: { ...entry.participation, purchaseReady: false },
     pickupFulfillment: null,
     pickupReadiness:
-      entry.pickupReadiness === "terminal" ? "terminal" : "recoverable",
+      productRevoked || entry.pickupReadiness === "terminal"
+        ? "terminal"
+        : "recoverable",
     familyPickupFulfillments: entry.familyPickupFulfillments
       ? Object.fromEntries(
           Object.keys(entry.familyPickupFulfillments).map((coordinate) => [
@@ -1198,7 +1222,11 @@ function browseOnlyProduct(entry: EventCatalogProduct): EventCatalogProduct {
           Object.entries(entry.familyPickupReadiness).map(
             ([coordinate, readiness]) => [
               coordinate,
-              readiness === "terminal" ? "terminal" : "recoverable",
+              productRevoked ||
+              removedProducts.has(coordinate) ||
+              readiness === "terminal"
+                ? "terminal"
+                : "recoverable",
             ]
           )
         )

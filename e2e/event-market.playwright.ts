@@ -6174,6 +6174,113 @@ for (const mounted of [true, false]) {
   })
 }
 
+for (const revocation of ["closure", "removal", "deletion"] as const) {
+  test(`event catalog keeps a signed local graph ${revocation} terminal without relay rechecks @market`, async ({
+    page,
+  }) => {
+    test.setTimeout(120_000)
+    const relay = createRelayHarness()
+    await installSyntheticEnvironment(page, relay, `graph-${revocation}-reader`)
+    const market = await publishOrganizerMarket(page, relay, {
+      title: `Synthetic graph ${revocation}`,
+      organizerHandoffEnabled: true,
+    })
+    const product = createMerchantProductEvent({
+      dTag: `graph-${revocation}-product`,
+      title: `Synthetic graph ${revocation} product`,
+      collectionCoordinate: market.collectionCoordinate,
+      pickupCoordinate: market.pickupCoordinate!,
+      createdAt: market.initialCollection.created_at + 1,
+    })
+    const collection = signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: market.initialCollection.created_at + 2,
+      content: market.initialCollection.content,
+      tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+    })
+    relay.seed(product, collection)
+    await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+    const card = page.getByRole("listitem").filter({
+      hasText: `Synthetic graph ${revocation} product`,
+    })
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+
+    const writer = await page.context().newPage()
+    const writerUrl = `${marketUrl}/__synthetic-graph-revocation-writer.html`
+    await writer.route(writerUrl, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Synthetic graph revocation writer</title>",
+      })
+    )
+    await writer.goto(writerUrl)
+    const isCatalogRead = (request: RelayRequest) =>
+      request.clientId === `graph-${revocation}-reader` &&
+      request.filters.some((filter) =>
+        filter.kinds?.some((kind) =>
+          [5, 30402, 30405, 30406, 31922, 31923].includes(kind)
+        )
+      )
+    const catalogReads = () => relay.requests.filter(isCatalogRead).length
+    const before = catalogReads()
+    const held = relay.holdRelayRequests(isCatalogRead)
+    try {
+      const revised = signEvent(ORGANIZER_SECRET, {
+        kind: revocation === "deletion" ? 5 : 30405,
+        created_at: collection.created_at + 10,
+        content: revocation === "deletion" ? "" : collection.content,
+        tags:
+          revocation === "deletion"
+            ? [["e", collection.id]]
+            : [
+                ...collection.tags.filter(
+                  (tag) =>
+                    tag[0] !== "conduit_event_market" &&
+                    !(
+                      revocation === "removal" &&
+                      tag[0] === "a" &&
+                      tag[1] === eventCoordinate(product)
+                    )
+                ),
+                ...(revocation === "closure"
+                  ? [["conduit_event_market", "1", "closed"]]
+                  : []),
+              ],
+      })
+      const dbUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url))}`
+      await writer.evaluate(
+        async ({ moduleUrl, event }) => {
+          const { db } = await import(moduleUrl)
+          await db.eventMarketEvidence.put({
+            id: event.id,
+            organizerPubkey: event.pubkey,
+            kind: event.kind,
+            signedEvent: event,
+            sourceRelayUrls: [],
+            cachedAt: Date.now(),
+          })
+        },
+        { moduleUrl: dbUrl, event: revised }
+      )
+
+      await expect(card).toBeVisible()
+      await expect(
+        card.getByRole("button", { name: "Pickup unavailable", exact: true })
+      ).toBeDisabled()
+      await expect(
+        card.getByRole("button", { name: "Add", exact: true })
+      ).toHaveCount(0)
+      expect(catalogReads()).toBe(before)
+    } finally {
+      held.release()
+      await writer.close()
+    }
+  })
+}
+
 test("event catalogs honor cross-tab signed deletions while mounted and on a warm return without relay rechecks @market", async ({
   page,
 }) => {

@@ -485,6 +485,30 @@ describe("Market event adapter", () => {
     })
   })
 
+  it("keeps signed local graph revocations terminal while metadata supersession stays recoverable", () => {
+    const raw = {
+      reference: collectionCoordinate,
+      resolution: market(),
+      result: productRead(),
+      complete: true,
+      localGraphSuperseded: true,
+    }
+
+    expect(projectRawEventCatalog(raw).products[0]!.pickupReadiness).toBe(
+      "recoverable"
+    )
+    expect(
+      projectRawEventCatalog({ ...raw, localGraphRevoked: true }).products[0]!
+        .pickupReadiness
+    ).toBe("terminal")
+    expect(
+      projectRawEventCatalog({
+        ...raw,
+        localRemovedProductCoordinates: [productCoordinate],
+      }).products[0]!.pickupReadiness
+    ).toBe("terminal")
+  })
+
   it("projects every accepted product beyond the transport author chunk size", () => {
     const records = Array.from({ length: 65 }, (_, index) => {
       const author = (index + 1).toString(16).padStart(64, "0")

@@ -3988,39 +3988,97 @@ export function getEventMarketSupersededEvidence(
   }[] = []
 ): {
   graph: boolean
+  graphRevoked: boolean
   productCoordinates: string[]
+  removedProductCoordinates: string[]
   pickupCoordinates: string[]
 } {
   const valid = events.filter(isVerifiedLocalEventMarketEvent)
   const deletions = validDeletionEvents(valid)
-  const superseded = (record: {
+  const supersedingEvidence = (record: {
     coordinate: string
     eventId: string
     createdAt: number
   }) => {
     const coordinate = parseAddressableCoordinate(record.coordinate)
-    if (!coordinate) return false
+    if (!coordinate) return { deleted: false }
     const revision = {
       id: record.eventId,
       created_at: record.createdAt / 1_000,
     }
-    if (
+    const deleted =
       deletionEvidenceForAddressableEvent(revision, coordinate, deletions)
         .length > 0
+    const event = valid.reduce<SignedPublicNostrEvent | undefined>(
+      (latest, candidate) =>
+        candidate.kind !== EVENT_KINDS.DELETION &&
+        eventHasCoordinateShape(candidate, coordinate) &&
+        compareAddressableEvents(candidate, revision) < 0 &&
+        deletionEvidenceForAddressableEvent(candidate, coordinate, deletions)
+          .length === 0 &&
+        (!latest || compareAddressableEvents(candidate, latest) < 0)
+          ? candidate
+          : latest,
+      undefined
     )
-      return true
-    return valid.some(
-      (event) =>
-        eventHasCoordinateShape(event, coordinate) &&
-        compareAddressableEvents(event, revision) < 0 &&
-        deletionEvidenceForAddressableEvent(event, coordinate, deletions)
-          .length === 0
-    )
+    return { deleted, event }
   }
+  const superseded = (record: {
+    coordinate: string
+    eventId: string
+    createdAt: number
+  }) => {
+    const evidence = supersedingEvidence(record)
+    return evidence.deleted || !!evidence.event
+  }
+  const collectionEvidence = resolution.collection
+    ? supersedingEvidence(resolution.collection)
+    : { deleted: false }
+  const calendarEvidence = resolution.calendar
+    ? supersedingEvidence(resolution.calendar)
+    : { deleted: false }
+  const collectionRevision = collectionEvidence.event
+    ? parseEventMarketCollectionEvent(collectionEvidence.event)
+    : null
+  const calendarRevision = calendarEvidence.event
+    ? parseEventMarketCalendarEvent(calendarEvidence.event)
+    : null
+  const collectionEventCoordinates = new Set(
+    collectionRevision?.eventCoordinates ?? []
+  )
+  const collectionPickupCoordinates = new Set(
+    collectionRevision?.pickupCoordinates ?? []
+  )
+  const collectionProductCoordinates = new Set(
+    collectionRevision?.productCoordinates ?? []
+  )
+  const collectionReplaced =
+    collectionEvidence.deleted || !!collectionEvidence.event
+  const calendarReplaced = calendarEvidence.deleted || !!calendarEvidence.event
+  const collectionDependencyRemoved =
+    !!collectionRevision &&
+    !!resolution.collection &&
+    (resolution.collection.eventCoordinates.some(
+      (coordinate) => !collectionEventCoordinates.has(coordinate)
+    ) ||
+      resolution.collection.pickupCoordinates.some(
+        (coordinate) => !collectionPickupCoordinates.has(coordinate)
+      ))
+  const graphRevoked =
+    (collectionReplaced &&
+      (!collectionEvidence.event ||
+        !collectionRevision ||
+        collectionRevision.orderAcceptance === "closed" ||
+        collectionDependencyRemoved)) ||
+    (calendarReplaced && (!calendarEvidence.event || !calendarRevision))
+  const removedProductCoordinates = collectionRevision
+    ? resolution.acceptedProductCoordinates.filter(
+        (coordinate) => !collectionProductCoordinates.has(coordinate)
+      )
+    : []
   return {
-    graph: [resolution.collection, resolution.calendar].some(
-      (record) => !!record && superseded(record)
-    ),
+    graph: collectionReplaced || calendarReplaced,
+    graphRevoked,
     productCoordinates: resolution.acceptedProductEvidence
       .filter((record) => {
         const revision = records
@@ -4044,6 +4102,7 @@ export function getEventMarketSupersededEvidence(
         return superseded({ coordinate: record.productCoordinate, ...revision })
       })
       .map((record) => record.productCoordinate),
+    removedProductCoordinates,
     pickupCoordinates: [
       ...new Set(
         resolution.pickups.filter(superseded).map((record) => record.coordinate)
