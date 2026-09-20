@@ -1,4 +1,5 @@
 import {
+  compareReplaceableEventFrontiers,
   getProductsByIds,
   type PricingRateInput,
   type Product,
@@ -43,6 +44,30 @@ type SelectedCatalogRead = {
   productIds: Set<string>
 }
 
+type PendingEventPickupCatalogReadOptions = {
+  selectedProductCoordinates: readonly string[]
+  authenticatedPubkey?: string | null
+  shouldContinue: () => boolean
+  signal?: AbortSignal
+}
+
+export type PendingEventPickupCartDependencies = {
+  getProductsByIds: typeof getProductsByIds
+  loadCatalog: (
+    reference: string,
+    rateInput: PricingRateInput,
+    options: PendingEventPickupCatalogReadOptions
+  ) => Promise<EventCatalog>
+}
+
+const DEFAULT_DEPENDENCIES: PendingEventPickupCartDependencies = {
+  getProductsByIds,
+  async loadCatalog(reference, rateInput, options) {
+    const raw = await loadRawEventCatalog(reference, options)
+    return projectRawEventCatalog(raw, rateInput)
+  },
+}
+
 const RETRYABLE_PRODUCT_ISSUES = new Set<ProductAvailabilityIssue>([
   "lookup_unavailable",
   "lookup_partial",
@@ -71,6 +96,31 @@ function catalogResolutionMayAdvance(
   )
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError"
+}
+
+function productProvesCurrentSignedRevision(
+  product: Product,
+  pendingItem: PendingEventPickupCartItem
+): boolean {
+  if (!Number.isSafeInteger(product.updatedAt) || !product.sourceEventId) {
+    return false
+  }
+  return (
+    compareReplaceableEventFrontiers(
+      {
+        createdAt: product.updatedAt,
+        eventId: product.sourceEventId,
+      },
+      {
+        createdAt: pendingItem.productUpdatedAt,
+        eventId: pendingItem.productEventId,
+      }
+    ) >= 0
+  )
+}
+
 /**
  * Resolve only the exact event coordinates represented by pending cart intent.
  * Unrelated merchants and products never participate in this read.
@@ -82,7 +132,8 @@ export async function resolvePendingEventPickupCartUpgrades(
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
-  } = {}
+  } = {},
+  dependencies: PendingEventPickupCartDependencies = DEFAULT_DEPENDENCIES
 ): Promise<PendingEventPickupCartResolution> {
   const pendingItems = getPendingEventPickupCartItems(items).filter(
     (item): item is PendingEventPickupCartItem & { cartLineId: string } =>
@@ -93,7 +144,7 @@ export async function resolvePendingEventPickupCartUpgrades(
   const active = () =>
     !options.signal?.aborted && (options.shouldContinue?.() ?? true)
   const productIds = [...new Set(pendingItems.map((item) => item.productId))]
-  const productResult = await getProductsByIds(productIds, {
+  const productResult = await dependencies.getProductsByIds(productIds, {
     includeMerchantHiddenProductIds: productIds,
     authenticatedPubkey: options.authenticatedPubkey,
     shouldContinue: active,
@@ -139,7 +190,15 @@ export async function resolvePendingEventPickupCartUpgrades(
       (candidate) =>
         candidate.collectionCoordinate === item.fulfillment.collectionCoordinate
     )
-    if (candidates.length !== 1) continue
+    if (candidates.length !== 1) {
+      if (
+        retryableProductIds.has(item.productId) &&
+        !productProvesCurrentSignedRevision(selection.selected, item)
+      ) {
+        retryable = true
+      }
+      continue
+    }
     const candidate = candidates[0]!
     candidateByLineId.set(item.cartLineId, candidate)
     const read = reads.get(candidate.canonicalNaddr) ?? {
@@ -150,19 +209,26 @@ export async function resolvePendingEventPickupCartUpgrades(
     reads.set(candidate.canonicalNaddr, read)
   }
 
-  const catalogs = new Map(
-    await Promise.all(
-      [...reads.entries()].map(async ([reference, read]) => {
-        const raw = await loadRawEventCatalog(reference, {
-          selectedProductCoordinates: [...read.productIds],
-          authenticatedPubkey: options.authenticatedPubkey,
-          shouldContinue: active,
-          signal: options.signal,
-        })
-        return [reference, projectRawEventCatalog(raw, rateInput)] as const
+  const readEntries = [...reads.entries()]
+  const catalogOutcomes = await Promise.allSettled(
+    readEntries.map(([reference, read]) =>
+      dependencies.loadCatalog(reference, rateInput, {
+        selectedProductCoordinates: [...read.productIds],
+        authenticatedPubkey: options.authenticatedPubkey,
+        shouldContinue: active,
+        signal: options.signal,
       })
     )
   )
+  const catalogs = new Map<string, EventCatalog>()
+  for (const [index, outcome] of catalogOutcomes.entries()) {
+    if (outcome.status === "fulfilled") {
+      catalogs.set(readEntries[index]![0], outcome.value)
+      continue
+    }
+    if (isAbortError(outcome.reason)) throw outcome.reason
+    retryable = true
+  }
   if (!active()) return { upgrades: [], retryable: false }
 
   const upgrades = pendingItems.flatMap((pendingItem) => {
