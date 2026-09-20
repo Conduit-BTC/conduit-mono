@@ -6,9 +6,7 @@ import {
   Button,
   ConversationCardScroller,
   ConversationMessageBubble,
-  DecryptFailureNotice,
   LegacyDirectMessageNotice,
-  LiveReadNotice,
   MessagingReadinessNotice,
   toMessagingReadinessNoticeState,
   MessageComposer,
@@ -20,6 +18,7 @@ import {
   SheetTitle,
   SheetTrigger,
   OrderConversationMessage,
+  ProtectedInboxNotice,
   formatProductReference,
   getConversationPreview,
   getConversationMessageDisplayContent,
@@ -625,6 +624,11 @@ function MessagesPage() {
     directMessagesReadState
   )
   const dmDecryptFailures = dmLiveMeta?.decryptFailures?.length ?? 0
+  const directMessagesRetryUseful =
+    directMessagesReadState !== "complete" ||
+    dmDecryptFailures > 0 ||
+    (dmLiveMeta?.legacyDecryptFailures?.some((failure) => failure.retryable) ??
+      false)
 
   // Scaffold a compose view when arriving via ?merchant=<pubkey>.
   useEffect(() => {
@@ -898,42 +902,21 @@ function MessagesPage() {
           />
         ) : (
           <>
-            {!messagingReady && readinessNoticeState && (
-              <MessagingReadinessNotice
-                state={readinessNoticeState}
-                onAction={onReadinessAction}
-                pending={dmReadiness.isRefetching}
-              />
-            )}
-            {dmDecryptFailures > 0 && (
-              <DecryptFailureNotice
-                count={dmDecryptFailures}
-                onRetry={retryDirectMessagesRead}
-                retrying={dmsLiveQuery.isRefetching}
-              />
-            )}
-            {directMessagesReadState !== "complete" &&
-              directMessagesReadState !== "pending" && (
-                <LiveReadNotice
-                  state={directMessagesReadState}
-                  onRetry={retryDirectMessagesRead}
-                  retrying={dmsLiveQuery.isRefetching}
-                />
-              )}
-            {signerConnected && (
-              <DecryptFailureNotice
-                count={dmLiveMeta?.legacyDecryptFailures?.length ?? 0}
-                label="Some legacy messages couldn't be decrypted."
+            {directMessagesReadState !== "pending" ? (
+              <ProtectedInboxNotice
+                state={directMessagesReadState}
+                decryptFailureCount={
+                  dmDecryptFailures +
+                  (dmLiveMeta?.legacyDecryptFailures?.length ?? 0)
+                }
                 onRetry={
-                  dmLiveMeta?.legacyDecryptFailures?.some(
-                    (failure) => failure.retryable
-                  )
+                  directMessagesRetryUseful
                     ? retryDirectMessagesRead
                     : undefined
                 }
                 retrying={dmsLiveQuery.isRefetching}
               />
-            )}
+            ) : null}
 
             {directMessageListPending && !selectedDmPubkey ? (
               <div className="text-sm text-[var(--text-secondary)]">
@@ -1188,10 +1171,13 @@ function MessagesPage() {
                             Checking encrypted messaging setup...
                           </div>
                         ) : !messagingReady ? (
-                          <div className="text-sm text-[var(--text-secondary)]">
-                            Enable encrypted messaging to reply in this current
-                            conversation.
-                          </div>
+                          readinessNoticeState ? (
+                            <MessagingReadinessNotice
+                              state={readinessNoticeState}
+                              onAction={onReadinessAction}
+                              pending={dmReadiness.isRefetching}
+                            />
+                          ) : null
                         ) : (
                           <>
                             <MessageComposer
@@ -1202,7 +1188,10 @@ function MessagesPage() {
                               placeholder="Send a direct message"
                             />
                             {sendDmMutation.error && (
-                              <div className="mt-2 text-xs text-error">
+                              <div
+                                className="mt-2 text-xs text-error"
+                                role="alert"
+                              >
                                 Message wasn't published. Retry from the message
                                 bubble.
                               </div>
@@ -1255,25 +1244,12 @@ function MessagesPage() {
               />
             )}
 
-          {signerConnected && messagesQuery.isFetching && (
-            <div className="text-sm text-[var(--text-secondary)]">
-              Checking latest merchant conversations...
-            </div>
-          )}
-
-          {signerConnected &&
-            merchantThreadsReadState !== "complete" &&
-            merchantThreadsReadState !== "pending" && (
-              <LiveReadNotice
-                state={merchantThreadsReadState}
-                onRetry={retryMerchantThreadsRead}
-                retrying={messagesQuery.isRefetching}
-              />
-            )}
-
-          {signerConnected && (
-            <DecryptFailureNotice
-              count={messagesQuery.data?.meta.decryptFailures?.length ?? 0}
+          {signerConnected && merchantThreadsReadState !== "pending" && (
+            <ProtectedInboxNotice
+              state={merchantThreadsReadState}
+              decryptFailureCount={
+                messagesQuery.data?.meta.decryptFailures?.length ?? 0
+              }
               onRetry={retryMerchantThreadsRead}
               retrying={messagesQuery.isRefetching}
             />

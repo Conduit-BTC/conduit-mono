@@ -21,6 +21,7 @@ import {
   AvatarImage,
   Badge,
   Button,
+  getResultPresentation,
   RefreshChip,
   ShareLinkButton,
 } from "@conduit/ui"
@@ -396,6 +397,18 @@ function ProductPage() {
     isCommerceReadIncomplete(productQuery.meta) ||
     !!productQuery.error ||
     productQuery.isRefreshPaused
+  const productResultPresentation = getResultPresentation({
+    resultCount: product ? 1 : 0,
+    reliability: productReadIncomplete ? "degraded" : "complete",
+  })
+  const relatedProductReadIncomplete =
+    isCommerceReadIncomplete(relatedProductsQuery.meta) ||
+    !!relatedProductsQuery.error ||
+    relatedProductsQuery.isRefreshPaused
+  const relatedProductsPresentation = getResultPresentation({
+    resultCount: relatedProducts.length,
+    reliability: relatedProductReadIncomplete ? "degraded" : "complete",
+  })
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
@@ -435,7 +448,6 @@ function ProductPage() {
             refreshing={productRefreshing}
             onRefresh={productQuery.refetch}
             stale={productReadIncomplete}
-            staleLabel="May be out of date"
             refreshingLabel="Updating listing..."
             className="absolute right-0 top-0 sm:static"
           />
@@ -466,34 +478,52 @@ function ProductPage() {
         </div>
       )}
 
-      {!!productQuery.error && (
-        <div className="rounded-lg border border-error/30 bg-error/10 p-4 text-sm text-error">
-          Failed to load product:{" "}
-          {productQuery.error instanceof Error
-            ? productQuery.error.message
-            : "Unknown error"}
-        </div>
-      )}
+      {!productQuery.isInitialLoading &&
+        productResultPresentation.kind === "degraded_empty" && (
+          <section className="rounded-3xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-8 text-center sm:p-10">
+            <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--warning)]/40 bg-[var(--surface)] text-[var(--warning)]">
+              <SearchX className="h-6 w-6" />
+            </div>
+            <h2 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+              Product couldn&apos;t be loaded
+            </h2>
+            <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-[var(--text-secondary)]">
+              Retry before relying on this listing being unavailable.
+            </p>
+            <div className="mt-6 flex justify-center">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-11 px-5 text-sm"
+                disabled={productQuery.isHydrating}
+                onClick={() => productQuery.refetch()}
+              >
+                Retry
+              </Button>
+            </div>
+          </section>
+        )}
 
-      {!productQuery.isInitialLoading && !product && (
-        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 text-center sm:p-10">
-          <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-400">
-            <SearchX className="h-6 w-6" />
-          </div>
-          <h2 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Product not found
-          </h2>
-          <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-[var(--text-secondary)]">
-            This listing may have been removed, changed, or is no longer
-            available from the current relay view.
-          </p>
-          <div className="mt-6 flex justify-center">
-            <Button asChild className="h-11 px-5 text-sm">
-              <Link to="/products">Browse products</Link>
-            </Button>
-          </div>
-        </section>
-      )}
+      {!productQuery.isInitialLoading &&
+        productResultPresentation.kind === "complete_empty" && (
+          <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 text-center sm:p-10">
+            <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-400">
+              <SearchX className="h-6 w-6" />
+            </div>
+            <h2 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+              Product not found
+            </h2>
+            <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-[var(--text-secondary)]">
+              This listing may have been removed, changed, or is no longer
+              available.
+            </p>
+            <div className="mt-6 flex justify-center">
+              <Button asChild className="h-11 px-5 text-sm">
+                <Link to="/products">Browse products</Link>
+              </Button>
+            </div>
+          </section>
+        )}
 
       {productUnavailable && product && listingSafetyDisplay && (
         <section className="rounded-3xl border border-warning/30 bg-warning/10 p-8 text-center sm:p-10">
@@ -1001,7 +1031,24 @@ function ProductPage() {
 
             {!relatedProductsQuery.isInitialLoading &&
               !relatedProductsQuery.isHydrating &&
-              relatedProducts.length === 0 && (
+              relatedProductsPresentation.kind === "degraded_empty" && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-6 text-sm text-[var(--text-primary)]">
+                  <span>More products couldn&apos;t be loaded.</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={relatedProductsQuery.isHydrating}
+                    onClick={() => relatedProductsQuery.refetch()}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              )}
+
+            {!relatedProductsQuery.isInitialLoading &&
+              !relatedProductsQuery.isHydrating &&
+              relatedProductsPresentation.kind === "complete_empty" && (
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-[var(--text-secondary)]">
                   This merchant has not published additional products yet.
                 </div>

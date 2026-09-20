@@ -711,7 +711,7 @@ export function OrganizerEventMarketPanel({
 
   return (
     <div className="space-y-5">
-      {actionability.prominent && (
+      {actionability.visibility === "prominent" && (
         <RelayEvidenceNotice
           destructive={actionability.tone === "destructive"}
           label={actionability.label}
@@ -731,7 +731,9 @@ export function OrganizerEventMarketPanel({
         )}
         <CardHeader>
           <div>
-            <Badge variant={actionability.tone}>{actionability.label}</Badge>
+            {actionability.visibility === "inline" ? (
+              <Badge variant={actionability.tone}>{actionability.label}</Badge>
+            ) : null}
             <CardTitle className="mt-3 text-balance text-2xl">
               {market.title}
             </CardTitle>
@@ -739,24 +741,12 @@ export function OrganizerEventMarketPanel({
               {market.summary ?? "No public event summary."}
             </CardDescription>
           </div>
-          {!actionability.prominent ? (
+          {actionability.visibility === "inline" ? (
             <p
               className="text-pretty text-sm font-medium text-[var(--text-secondary)]"
-              role={actionability.role}
-              aria-live="polite"
               data-testid="organizer-event-actionability-status"
             >
               {actionability.message}
-            </p>
-          ) : null}
-          {relayCoverage ? (
-            <p
-              className="text-pretty text-xs tabular-nums text-[var(--text-muted)]"
-              role="status"
-              aria-label={`Relay read coverage: ${relayCoverage}`}
-              data-testid="organizer-event-relay-read-coverage"
-            >
-              {relayCoverage}
             </p>
           ) : null}
         </CardHeader>
@@ -888,14 +878,11 @@ export function OrganizerEventMarketPanel({
               Refresh evidence
             </Button>
           </div>
-          {market.state === "partial" ? (
-            <div
-              className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]"
-              role="status"
-              aria-live="polite"
-            >
-              Event products remain visible. Updating the event or changing
-              product acceptance requires a complete current event read.
+          {market.state === "partial" && !recordsResolved ? (
+            <div className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
+              Current event details could not be confirmed. Updating the event
+              and changing product acceptance remain unavailable until those
+              required records load.
             </div>
           ) : null}
         </CardContent>
@@ -1120,7 +1107,7 @@ export function OrganizerEventMarketPanel({
 
           <details className="rounded-xl border border-[var(--border)] px-4 py-3">
             <summary className="cursor-pointer text-sm font-medium text-[var(--text-secondary)]">
-              Portable event address (naddr)
+              Technical details
             </summary>
             <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
               Technical detail for Nostr clients and manual import. The naddr
@@ -1129,6 +1116,14 @@ export function OrganizerEventMarketPanel({
             <div className="mt-2 break-all font-mono text-xs text-[var(--text-secondary)]">
               {market.naddr}
             </div>
+            {relayCoverage ? (
+              <p
+                className="mt-2 text-pretty text-xs tabular-nums text-[var(--text-muted)]"
+                data-testid="organizer-event-relay-read-coverage"
+              >
+                {relayCoverage}
+              </p>
+            ) : null}
           </details>
         </CardContent>
       </Card>

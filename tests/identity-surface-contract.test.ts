@@ -110,6 +110,11 @@ describe("identity surface contracts", () => {
     expect(trustSummary).not.toContain("hasNip05")
     expect(trustSummary).not.toContain("You follow")
     expect(trustSummary).not.toContain("You don't follow")
+    expect(trustSummary).not.toContain("Checking follows")
+    expect(trustSummary).not.toContain("Connect to check follows")
+    expect(trustSummary).not.toContain("Follow context unavailable")
+    expect(trustSummary).not.toContain("Follow context limited")
+    expect(trustSummary).toContain('trust.socialState !== "available"')
 
     expect(checkout).toContain("Nip05TrustIndicator")
     expect(checkout).toContain("getProfileNip05")

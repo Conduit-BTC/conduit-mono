@@ -115,6 +115,25 @@ these states instead of collapsing them into a boolean or empty array:
 Domain names may differ, but the distinctions must survive through shared
 state and user-facing decisions.
 
+### Presentation is a consequence-driven projection
+
+Preserving and reviewing a typed network state does not imply rendering it.
+Project evidence into a visible product state only when it:
+
+- changes the reliability of the result the user is relying on;
+- affects an imminent action or an existing safety gate; or
+- gives the user a useful recovery step.
+
+Otherwise, keep the evidence available to product logic and stay silent. Do
+not stack per-source warnings when one consequence-level notice can describe
+the affected result and recovery. Raw relay names, fanout counts, coverage,
+timeouts, and protocol-state detail belong in Network settings or an explicit
+technical diagnostics disclosure, not ordinary browsing or workflow chrome.
+
+Presentation code may simplify copy and visibility, but it must not erase or
+reclassify the underlying evidence, weaken an action gate, or turn an uncertain
+empty result into confirmed absence.
+
 ### Absence is scoped
 
 A finite relay fanout cannot prove global Nostr absence. `absent_within_scope`
@@ -243,7 +262,8 @@ Every exception must:
 - define bounded read and write behavior separately;
 - list prohibited sources and explicit fanout limits;
 - use an auditable rollout control and rollback path;
-- surface truthful degraded state;
+- retain truthful degraded state and surface it when it changes a result,
+  action, or recovery path;
 - implement privacy-safe aggregate measurements before production activation;
 - specify an owner, review date, and measurable removal gate;
 - require an explicit maintainer change to widen, renew, or remove the lane.
@@ -330,7 +350,8 @@ For Nostr-sensitive changes:
    the shared protocol boundary.
 4. Add counterexamples for incomplete and divergent network views.
 5. Document any compatibility exception before enabling it.
-6. Keep diagnostics and evidence public-safe and content-free.
+6. Review network-state presentation through the user's consequence; keep raw
+   diagnostics public-safe, content-free, and on technical surfaces.
 
 ## Engineering References
 

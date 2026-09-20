@@ -5,6 +5,8 @@ export * from "./hooks/useTimeBoundaryNow"
 export { useTheme, type ThemeState } from "./hooks/useTheme"
 export { matchesConversationSearch } from "./conversation-search"
 export * from "./event-market-presentation"
+export * from "./protected-inbox-presentation"
+export * from "./result-presentation"
 export * from "./theme"
 
 // Utils
