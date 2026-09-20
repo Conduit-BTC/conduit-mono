@@ -23,8 +23,6 @@ const marketUrl = `http://127.0.0.1:${
 const merchantUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
 }`
-const merchantEventsScreenshotPath =
-  process.env.PLAYWRIGHT_MERCHANT_EVENTS_SCREENSHOT_PATH
 
 const ORGANIZER_SECRET = generateSecretKey()
 const ORGANIZER_PUBKEY = getPublicKey(ORGANIZER_SECRET)
@@ -1142,12 +1140,6 @@ test("Merchant event timeline uses combined discovery with relationship, mobile,
     exact: true,
   })
   await expect(sellHere).toBeVisible({ timeout: 30_000 })
-  if (merchantEventsScreenshotPath) {
-    await page.screenshot({
-      path: merchantEventsScreenshotPath,
-      animations: "disabled",
-    })
-  }
   await sellHere.focus()
   await page.keyboard.press("Enter")
   await expect(
