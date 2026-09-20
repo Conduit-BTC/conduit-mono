@@ -130,4 +130,34 @@ describe("Merchant navigation shell", () => {
     ])
     expect(readiness).not.toContain("Private inbox")
   })
+
+  it("keeps account recovery available in authenticated route errors", async () => {
+    const root = await Bun.file("apps/merchant/src/routes/__root.tsx").text()
+    const accountControls = sliceBetween(
+      root,
+      "function MerchantTopRightControls",
+      "function RootLayout"
+    )
+    const layout = sliceBetween(
+      root,
+      "function RootLayout",
+      "function MerchantProductRoot"
+    )
+    const productError = sliceBetween(
+      root,
+      "function MerchantProductRootError",
+      "function RootNotFound"
+    )
+
+    expect(accountControls).toContain("<ThemeToggleButton />")
+    expect(accountControls).toContain("<MerchantAccountMenu />")
+    expect(layout).toContain("<MerchantTopRightControls />")
+    expect(productError).toContain("if (!signerConnected) return errorPage")
+    expect(productError).toContain("<MerchantTopRightControls />")
+    expect(
+      productError.indexOf("<MerchantTopRightControls />")
+    ).toBeGreaterThan(
+      productError.indexOf("if (!signerConnected) return errorPage")
+    )
+  })
 })

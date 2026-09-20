@@ -72,6 +72,15 @@ function RootShell({ children }: { children: ReactNode }) {
   )
 }
 
+function MerchantTopRightControls() {
+  return (
+    <div className="fixed right-[max(1rem,env(safe-area-inset-right))] top-[max(1rem,env(safe-area-inset-top))] z-40 flex items-center gap-2">
+      <ThemeToggleButton />
+      <MerchantAccountMenu />
+    </div>
+  )
+}
+
 function RootLayout() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
@@ -90,10 +99,7 @@ function RootLayout() {
 
   return (
     <>
-      <div className="fixed right-[max(1rem,env(safe-area-inset-right))] top-[max(1rem,env(safe-area-inset-top))] z-40 flex items-center gap-2">
-        <ThemeToggleButton />
-        <MerchantAccountMenu />
-      </div>
+      <MerchantTopRightControls />
       <MerchantProductRoot pathname={pathname} />
     </>
   )
@@ -343,7 +349,12 @@ function MerchantProductRootError({ error }: { error: Error }) {
 
   if (!signerConnected) return errorPage
 
-  return <RootShell>{errorPage}</RootShell>
+  return (
+    <>
+      <MerchantTopRightControls />
+      <RootShell>{errorPage}</RootShell>
+    </>
+  )
 }
 
 function RootNotFound() {

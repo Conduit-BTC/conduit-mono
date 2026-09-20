@@ -19,6 +19,7 @@ import {
   Wifi,
 } from "lucide-react"
 import {
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -158,18 +159,15 @@ function IncompleteBadge({ className }: { className?: string }) {
 function CommerceNavLink({
   item,
   incomplete,
-  onNavigate,
 }: {
   item: CommerceNavItem
   incomplete: boolean
-  onNavigate?: () => void
 }) {
   const Icon = item.icon
 
   return (
     <Link
       to={item.to}
-      onClick={onNavigate}
       className={navItemClassName}
       activeProps={{
         className:
@@ -183,12 +181,15 @@ function CommerceNavLink({
   )
 }
 
-function InformationNavLinks({ onNavigate }: { onNavigate?: () => void }) {
+function InformationNavLinks({
+  onExternalNavigate,
+}: {
+  onExternalNavigate?: () => void
+}) {
   return (
     <div className="grid gap-1">
       <Link
         to="/about"
-        onClick={onNavigate}
         className={navItemClassName}
         activeProps={{
           className:
@@ -198,19 +199,11 @@ function InformationNavLinks({ onNavigate }: { onNavigate?: () => void }) {
         <Info className="size-4 shrink-0" />
         <span>About</span>
       </Link>
-      <a
-        href="/terms-of-service"
-        onClick={onNavigate}
-        className={navItemClassName}
-      >
+      <a href="/terms-of-service" className={navItemClassName}>
         <FileText className="size-4 shrink-0" />
         <span>Terms</span>
       </a>
-      <a
-        href="/privacy-policy"
-        onClick={onNavigate}
-        className={navItemClassName}
-      >
+      <a href="/privacy-policy" className={navItemClassName}>
         <ShieldCheck className="size-4 shrink-0" />
         <span>Privacy</span>
       </a>
@@ -219,7 +212,7 @@ function InformationNavLinks({ onNavigate }: { onNavigate?: () => void }) {
         target="_blank"
         rel="noopener noreferrer"
         referrerPolicy="no-referrer"
-        onClick={onNavigate}
+        onClick={onExternalNavigate}
         className={navItemClassName}
       >
         <ExternalLink className="size-4 shrink-0" />
@@ -230,11 +223,11 @@ function InformationNavLinks({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 function MerchantNavLinks({
-  onNavigate,
+  onExternalNavigate,
   paymentsIncomplete,
   shippingIncomplete,
 }: {
-  onNavigate?: () => void
+  onExternalNavigate?: () => void
   paymentsIncomplete: boolean
   shippingIncomplete: boolean
 }) {
@@ -252,12 +245,11 @@ function MerchantNavLinks({
                   ? shippingIncomplete
                   : false
             }
-            onNavigate={onNavigate}
           />
         ))}
       </div>
       <div className="my-1 border-t border-[var(--border)]" />
-      <InformationNavLinks onNavigate={onNavigate} />
+      <InformationNavLinks onExternalNavigate={onExternalNavigate} />
     </nav>
   )
 }
@@ -425,6 +417,13 @@ function ReportBugLink({ onNavigate }: { onNavigate?: () => void }) {
 export function MerchantMobileNav() {
   const readiness = useMerchantReadinessState()
   const [open, setOpen] = useState(false)
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+
+  useEffect(() => {
+    setOpen(false)
+  }, [pathname])
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -450,7 +449,7 @@ export function MerchantMobileNav() {
 
         <div className="mt-6 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
           <MerchantNavLinks
-            onNavigate={() => setOpen(false)}
+            onExternalNavigate={() => setOpen(false)}
             paymentsIncomplete={
               !readiness.paymentsComplete && !readiness.paymentsCheckPending
             }

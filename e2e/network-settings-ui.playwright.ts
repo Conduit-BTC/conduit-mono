@@ -34,9 +34,7 @@ async function openNetwork(
   await expect(
     page.getByRole("button", {
       name:
-        app === "market"
-          ? "Open account menu"
-          : /^Open (merchant account )?menu$/,
+        app === "market" ? "Open account menu" : "Open merchant account menu",
     })
   ).toBeVisible({ timeout: 15_000 })
   await page.goto(`${appUrl}/network`)
