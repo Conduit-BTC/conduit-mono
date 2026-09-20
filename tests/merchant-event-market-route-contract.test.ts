@@ -192,7 +192,10 @@ describe("merchant organizer event market route", () => {
 
     expect(route).toContain("<MerchantEventsTimeline")
     expect(route).not.toContain("<TabsTrigger")
-    expect(timeline).toContain("Network perspective")
+    expect(route).not.toContain("Merchant workspace")
+    expect(route).not.toContain("onSourceChange")
+    expect(timeline).not.toContain("Network perspective")
+    expect(timeline).toContain('source: "combined"')
     expect(timeline).toContain('organizing: "Organizing"')
     expect(timeline).toContain('selling: "Selling at"')
     expect(timeline).toContain('saved: "Saved"')

@@ -227,10 +227,6 @@ function EventsPage() {
   return (
     <div className="mx-auto max-w-[68rem] space-y-6 py-2 sm:py-6">
       <header>
-        <div className="mb-2 flex items-center gap-2 text-sm font-medium text-secondary-400">
-          <CalendarDays className="h-4 w-4" />
-          Merchant workspace
-        </div>
         <h1 className="text-balance font-display text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
           Events
         </h1>
@@ -243,17 +239,7 @@ function EventsPage() {
       <MerchantEventsTimeline
         merchantPubkey={merchantPubkey}
         currentReference={search.event}
-        source={search.source ?? "combined"}
         search={{ relation: search.relation, window: search.window }}
-        onSourceChange={(source) =>
-          navigate({
-            search: (previous) => ({
-              ...previous,
-              source: source === "combined" ? undefined : source,
-            }),
-            replace: true,
-          })
-        }
         onSearchChange={(next) =>
           navigate({
             search: (previous) => ({

@@ -1095,7 +1095,7 @@ test("signed-out merchant participation preserves the exact event through auth @
   ).toBeVisible()
 })
 
-test("Merchant event timeline supports perspective, relationship, mobile, and keyboard flows @merchant", async ({
+test("Merchant event timeline uses combined discovery with relationship, mobile, and keyboard flows @merchant", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -1122,10 +1122,10 @@ test("Merchant event timeline supports perspective, relationship, mobile, and ke
   await expect(timeline).toBeVisible()
   await expect(
     timeline.getByRole("group", { name: "Event network perspective" })
-  ).toBeVisible()
+  ).toHaveCount(0)
   await expect(
-    timeline.getByRole("button", { name: "Combined", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
+    page.getByText("Merchant workspace", { exact: true })
+  ).toHaveCount(0)
   const relationshipFilter = timeline.getByRole("combobox", {
     name: "Relationship",
     exact: true,
@@ -1153,16 +1153,6 @@ test("Merchant event timeline supports perspective, relationship, mobile, and ke
       .getByLabel(`Your relationship to ${eventTitle}`)
       .getByText("Saved", { exact: true })
   ).toBeVisible()
-  const following = timeline.getByRole("button", {
-    name: "Following",
-    exact: true,
-  })
-  await following.focus()
-  await page.keyboard.press("Enter")
-  await expect(following).toHaveAttribute("aria-pressed", "true")
-  await expect
-    .poll(() => new URL(page.url()).searchParams.get("source"))
-    .toBe("following")
   await expect
     .poll(() =>
       page.evaluate(

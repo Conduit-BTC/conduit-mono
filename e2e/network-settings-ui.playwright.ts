@@ -164,6 +164,19 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
   expect(desktopAlignment.width).toBeLessThanOrEqual(320)
   expect(desktopAlignment.brandInset).toBe(desktopAlignment.homeInset)
   expect(desktopAlignment.homeInset).toBe(desktopAlignment.reportInset)
+  const dashboardStatIconBoxes = await page
+    .locator("[data-dashboard-stat-icon]")
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const box = element.getBoundingClientRect()
+        return { height: box.height, width: box.width }
+      })
+    )
+  expect(dashboardStatIconBoxes).toHaveLength(4)
+  for (const box of dashboardStatIconBoxes) {
+    expect(box.width).toBe(44)
+    expect(box.height).toBe(44)
+  }
   if (merchantNavigationScreenshotDirectory) {
     await page.screenshot({
       path: join(
@@ -209,15 +222,42 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
     })
   }
 
-  await page.setViewportSize({ width: 390, height: 844 })
+  await page.setViewportSize({ width: 320, height: 700 })
   await expect(workspaceHeader.locator("[data-merchant-brand-logo]")).toHaveCSS(
     "width",
     "24px"
   )
+  for (const control of headerControls) await expect(control).toBeVisible()
+  const narrowHeaderBoxes = await Promise.all(
+    headerControls.map((control) => control.boundingBox())
+  )
+  for (const box of narrowHeaderBoxes) {
+    expect(box).not.toBeNull()
+    expect(box!.x).toBeGreaterThanOrEqual(0)
+    expect(box!.x + box!.width).toBeLessThanOrEqual(320)
+  }
+  await expectNoDocumentOverflow()
+  if (merchantNavigationScreenshotDirectory) {
+    await page.screenshot({
+      path: join(
+        merchantNavigationScreenshotDirectory,
+        "merchant-navigation-mobile-narrow.png"
+      ),
+      animations: "disabled",
+    })
+  }
+
+  await page.setViewportSize({ width: 390, height: 844 })
   const compactAccountBox = await workspaceHeader
     .getByRole("button", { name: "Open merchant account menu" })
     .boundingBox()
   expect(compactAccountBox!.width).toBe(44)
+  const collapsedBrandBox = await workspaceHeader
+    .getByRole("link", { name: "Conduit Merchant home" })
+    .boundingBox()
+  const collapsedHeaderBackground = await workspaceHeader.evaluate(
+    (element) => getComputedStyle(element).backgroundColor
+  )
   await expectNoDocumentOverflow()
   if (merchantNavigationScreenshotDirectory) {
     await page.screenshot({
@@ -238,6 +278,16 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
   await expectPanelHasNoHorizontalOverflow(mobilePanel)
   const mobileAlignment = await readPanelAlignment(mobilePanel)
   expect(mobileAlignment).toEqual(desktopAlignment)
+  const expandedBrandBox = await mobilePanel
+    .getByRole("link", { name: "Conduit Merchant home" })
+    .boundingBox()
+  const expandedPanelBackground = await mobilePanel.evaluate(
+    (element) => getComputedStyle(element).backgroundColor
+  )
+  expect(collapsedBrandBox).not.toBeNull()
+  expect(expandedBrandBox).not.toBeNull()
+  expect(Math.abs(collapsedBrandBox!.x - expandedBrandBox!.x)).toBeLessThan(1)
+  expect(collapsedHeaderBackground).toBe(expandedPanelBackground)
   if (merchantNavigationScreenshotDirectory) {
     await page.screenshot({
       path: join(

@@ -506,13 +506,13 @@ export function MerchantWorkspaceHeader() {
   return (
     <header
       aria-label="Merchant workspace controls"
-      className="fixed inset-x-0 top-0 z-40 flex min-w-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--background)] pb-2 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] pt-[max(0.5rem,env(safe-area-inset-top))] lg:inset-x-auto lg:right-[max(1rem,env(safe-area-inset-right))] lg:top-[max(1rem,env(safe-area-inset-top))] lg:border-0 lg:bg-transparent lg:p-0"
+      className="fixed inset-x-0 top-0 z-40 flex min-w-0 items-center gap-1 border-b border-[var(--border)] bg-[var(--surface-dialog)] pb-2 pl-[max(1.5rem,env(safe-area-inset-left))] pr-[max(0.25rem,env(safe-area-inset-right))] pt-[max(0.5rem,env(safe-area-inset-top))] min-[360px]:gap-2 min-[360px]:pr-[max(0.5rem,env(safe-area-inset-right))] lg:inset-x-auto lg:right-[max(1rem,env(safe-area-inset-right))] lg:top-[max(1rem,env(safe-area-inset-top))] lg:border-0 lg:bg-transparent lg:p-0"
     >
-      <div className="flex min-w-0 shrink-0 items-center gap-2 lg:hidden">
+      <div className="flex min-w-0 shrink-0 items-center gap-1 min-[360px]:gap-2 lg:hidden">
         <MerchantLogoLink />
         <MerchantMobileNav />
       </div>
-      <div className="ml-auto flex shrink-0 items-center gap-2">
+      <div className="ml-auto flex shrink-0 items-center gap-1 min-[360px]:gap-2">
         <ThemeToggleButton />
         <MerchantAccountMenu />
       </div>
