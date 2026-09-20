@@ -5505,7 +5505,9 @@ test("signed pickup withdrawal leaves pending cart blocked without background re
       )
     ).length
 
-  await gotoAs(page, marketUrl, "/cart", "buyer")
+  // Keep the cart page's independent availability checks out of this counter;
+  // the app-level pending resolver is mounted on every route.
+  await gotoAs(page, marketUrl, "/about", "buyer")
   const firstReadStart = exactProductReads()
   await addPendingEventPickupCartItem(page, {
     collectionCoordinate: market.collectionCoordinate,
@@ -5513,10 +5515,14 @@ test("signed pickup withdrawal leaves pending cart blocked without background re
     quantity: 1,
     previewStock: 3,
   })
-  const pendingCard = page.getByTestId("pending-event-pickup-cart")
-  await expect(pendingCard).toBeVisible()
   await expect.poll(exactProductReads).toBeGreaterThan(firstReadStart)
-  await page.waitForTimeout(250)
+  await expect
+    .poll(async () => {
+      const before = exactProductReads()
+      await page.waitForTimeout(750)
+      return exactProductReads() === before
+    })
+    .toBe(true)
   const terminalReadCount = exactProductReads()
 
   // A newer signed product revision removed the event references. Unlike a
@@ -5524,6 +5530,9 @@ test("signed pickup withdrawal leaves pending cart blocked without background re
   // polled as though pickup authority could appear from the same revision.
   await page.waitForTimeout(6_000)
   expect(exactProductReads()).toBe(terminalReadCount)
+
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  const pendingCard = page.getByTestId("pending-event-pickup-cart")
   await expect(pendingCard).toBeVisible()
   await expect(
     page.getByRole("button", { name: "Order", exact: true })
