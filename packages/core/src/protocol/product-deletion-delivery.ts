@@ -127,9 +127,9 @@ function cloneRelayPlan(
   return plan.map((target) => ({
     relayUrl: target.relayUrl,
     roles: [...target.roles],
-    // Legacy jobs did not persist layer flags. Delivery classifies those
-    // targets against the current canonical App writes and otherwise treats
-    // `author_write` as Personal; retain the old shape here for compatibility.
+    // Legacy jobs did not persist layer flags. Delivery retains both plausible
+    // authorities for ambiguous App/personal `author_write` overlap; retain the
+    // old shape here for compatibility.
     ...(target.appRelay === true ? { appRelay: true } : {}),
     ...(target.personalRelay === true ? { personalRelay: true } : {}),
   }))
@@ -171,12 +171,16 @@ function persistedTargetRelaySources(
       }
     )
   )
+  // An unflagged author_write URL in the App registry may also have been the
+  // owner's signed NIP-65 choice. Preserve both possibilities; only the
+  // explicit `conduit` role is unambiguously App-owned in legacy jobs.
   const appRelay =
     target.appRelay === true ||
     target.roles.includes("conduit") ||
     (legacyAuthorWrite && configuredAppWriteRelayUrls.has(relayUrl))
   const personalRelay =
-    target.personalRelay === true || (legacyAuthorWrite && !appRelay)
+    target.personalRelay === true ||
+    (legacyAuthorWrite && !target.roles.includes("conduit"))
 
   return {
     ownerSelectedRelayUrls:

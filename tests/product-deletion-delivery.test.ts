@@ -747,7 +747,7 @@ describe("durable product deletion delivery", () => {
     }
   })
 
-  it("classifies legacy app write targets through the App cutoff", async () => {
+  it("preserves both possible sources for ambiguous legacy App overlaps", async () => {
     const legacyAppRelayUrl = "wss://relay.ditto.pub"
     const cases = [
       {
@@ -758,6 +758,11 @@ describe("durable product deletion delivery", () => {
       {
         appEnabled: false,
         personalEnabled: true,
+        expectedAttempt: true,
+      },
+      {
+        appEnabled: false,
+        personalEnabled: false,
         expectedAttempt: false,
       },
     ]
@@ -814,6 +819,9 @@ describe("durable product deletion delivery", () => {
       expect(attemptedRelayUrls.includes(legacyAppRelayUrl)).toBe(
         testCase.expectedAttempt
       )
+      if (!testCase.appEnabled && testCase.personalEnabled) {
+        expect(attemptedRelayUrls).not.toContain("wss://relay.conduit.market")
+      }
     }
   })
 
