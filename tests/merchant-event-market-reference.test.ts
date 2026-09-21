@@ -97,7 +97,6 @@ describe("merchant organizer event-market references", () => {
     ).toEqual({
       event: imported,
       relation: "selling",
-      window: "30d",
     })
     expect(
       parseMerchantEventsSearch({

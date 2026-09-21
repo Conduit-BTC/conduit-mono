@@ -9,9 +9,7 @@ import {
 } from "@conduit/core"
 import {
   MERCHANT_EVENT_RELATIONSHIP_FILTERS,
-  MERCHANT_EVENT_TIMELINE_WINDOWS,
   type MerchantEventRelationshipFilter,
-  type MerchantEventTimelineWindow,
 } from "./merchant-event-timeline"
 
 // Maps the current merchant host to its paired market origin so links open the
@@ -89,7 +87,6 @@ export function getMerchantEventParticipationUrl(
 export interface MerchantEventsSearch {
   event?: string
   relation?: MerchantEventRelationshipFilter
-  window?: MerchantEventTimelineWindow
 }
 
 export interface MerchantAuthHandoffSearch extends MerchantEventsSearch {
@@ -105,11 +102,6 @@ export function parseMerchantEventsSearch(
   )
     ? (search.relation as MerchantEventRelationshipFilter)
     : undefined
-  const window = MERCHANT_EVENT_TIMELINE_WINDOWS.includes(
-    search.window as MerchantEventTimelineWindow
-  )
-    ? (search.window as MerchantEventTimelineWindow)
-    : undefined
   let event: string | undefined
   if (typeof search.event === "string") {
     try {
@@ -121,7 +113,6 @@ export function parseMerchantEventsSearch(
   return {
     ...(event ? { event } : {}),
     ...(relation ? { relation } : {}),
-    ...(window ? { window } : {}),
   }
 }
 
