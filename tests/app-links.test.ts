@@ -129,7 +129,7 @@ describe("event market links", () => {
         EVENT_NADDR
       )
     ).toBe(
-      `https://fix-265.conduit-merchant-33n.pages.dev/events?event=${EVENT_NADDR}`
+      `https://fix-265.conduit-merchant-33n.pages.dev/events/${EVENT_NADDR}`
     )
   })
 
@@ -139,7 +139,7 @@ describe("event market links", () => {
     ).toBe(`http://127.0.0.1:7000/events/${EVENT_NADDR}`)
     expect(
       buildMerchantEventParticipationUrl("http://127.0.0.1:7001", EVENT_NADDR)
-    ).toBe(`http://127.0.0.1:7001/events?event=${EVENT_NADDR}`)
+    ).toBe(`http://127.0.0.1:7001/events/${EVENT_NADDR}`)
   })
 
   it("builds a canonical merchant-filtered URL on the existing event catalog", () => {

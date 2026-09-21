@@ -1,23 +1,17 @@
 import {
   AlertCircle,
   Archive,
-  CalendarDays,
   Check,
   ChevronDown,
-  MapPin,
+  ExternalLink,
   RefreshCw,
 } from "lucide-react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import {
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   buildMarketEventCatalogUrl,
+  buildMerchantEventParticipationUrl,
+  inferConduitAppOrigin,
   normalizePubkey,
   pubkeyToNpub,
   useAuth,
@@ -31,8 +25,7 @@ import {
   AvatarImage,
   Badge,
   Button,
-  ShareLinkButton,
-  cn,
+  EventPageHeader,
   eventMarketRequiredRecordsResolved,
   formatEventRelayReadCoverage,
   getEventActionabilityPresentation,
@@ -500,61 +493,6 @@ function StatePanel({
   )
 }
 
-function EventHeaderActions({
-  summary,
-  shareUrl,
-  shareTitle,
-  shareLabel,
-}: {
-  summary?: string
-  shareUrl?: string
-  shareTitle: string
-  shareLabel: string
-}) {
-  const [aboutOpen, setAboutOpen] = useState(false)
-  const summaryId = useId()
-
-  if (!summary && !shareUrl) return null
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {summary ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          aria-expanded={aboutOpen}
-          aria-controls={summaryId}
-          onClick={() => setAboutOpen((open) => !open)}
-        >
-          About this event
-          <ChevronDown
-            aria-hidden="true"
-            className={cn("size-3.5", aboutOpen && "rotate-180")}
-          />
-        </Button>
-      ) : null}
-      {shareUrl ? (
-        <ShareLinkButton
-          url={shareUrl}
-          shareTitle={shareTitle}
-          idleLabel={shareLabel}
-          className="shrink-0"
-        />
-      ) : null}
-      {summary ? (
-        <p
-          id={summaryId}
-          hidden={!aboutOpen}
-          className="basis-full whitespace-pre-wrap break-words text-pretty text-sm leading-6 text-[var(--text-secondary)]"
-        >
-          {summary}
-        </p>
-      ) : null}
-    </div>
-  )
-}
-
 function EventCatalogPage() {
   const { authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -751,40 +689,78 @@ function EventCatalogPage() {
         </div>
       ) : null}
 
-      <header className="space-y-3">
-        {calendar.image || collection.image ? (
-          <img
-            src={calendar.image ?? collection.image}
-            alt={`${calendar.title} banner`}
-            className="aspect-[3/1] w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] object-contain"
-          />
-        ) : null}
-        <h1 className="min-w-0 break-words text-balance text-3xl font-semibold text-[var(--text-primary)] sm:text-4xl">
-          {calendar.title}
-        </h1>
-        <EventHeaderActions
-          key={collection.coordinate}
-          summary={calendar.summary ?? collection.summary}
-          shareUrl={
-            catalog.canonicalNaddr
-              ? buildMarketEventCatalogUrl(
-                  window.location.origin,
-                  catalog.canonicalNaddr,
-                  selectedMerchantPubkey
-                    ? { merchantPubkey: selectedMerchantPubkey }
-                    : undefined
-                )
-              : undefined
-          }
-          shareTitle={
-            selectedMerchantName
-              ? `${selectedMerchantName} at ${calendar.title}`
-              : calendar.title
-          }
-          shareLabel={
-            selectedMerchantPubkey ? "Share this view" : "Share event"
-          }
-        />
+      <EventPageHeader
+        key={`event-header:${collection.coordinate}`}
+        title={calendar.title}
+        summary={calendar.summary ?? collection.summary}
+        imageUrl={calendar.image ?? collection.image}
+        schedule={formatCalendarSchedule(calendar)}
+        location={
+          calendarLocation || calendar.geohash || "Location not published"
+        }
+        organizer={
+          <div className="flex min-w-0 items-center gap-2">
+            <Avatar className="size-7 shrink-0 border border-[var(--border)]">
+              <AvatarImage
+                src={organizerProfile?.picture}
+                alt=""
+                referrerPolicy="no-referrer"
+              />
+              <AvatarFallback>
+                <MerchantAvatarFallback iconClassName="size-4" />
+              </AvatarFallback>
+            </Avatar>
+            <span className="min-w-0 break-words">
+              Organized by{" "}
+              <span className="font-medium text-[var(--text-primary)]">
+                {organizerName}
+              </span>
+            </span>
+            {organizerNip05 ? (
+              <Nip05TrustIndicator
+                pubkey={organizerPubkey}
+                nip05={organizerNip05}
+              />
+            ) : null}
+          </div>
+        }
+        actions={
+          catalog.canonicalNaddr ? (
+            <Button asChild variant="outline" size="sm">
+              <a
+                href={buildMerchantEventParticipationUrl(
+                  inferConduitAppOrigin(
+                    "merchant",
+                    window.location,
+                    import.meta.env.VITE_BUILD_BRANCH
+                  ),
+                  catalog.canonicalNaddr
+                )}
+              >
+                Sell at this event
+                <ExternalLink aria-hidden="true" className="size-3.5" />
+              </a>
+            </Button>
+          ) : null
+        }
+        shareUrl={
+          catalog.canonicalNaddr
+            ? buildMarketEventCatalogUrl(
+                window.location.origin,
+                catalog.canonicalNaddr,
+                selectedMerchantPubkey
+                  ? { merchantPubkey: selectedMerchantPubkey }
+                  : undefined
+              )
+            : undefined
+        }
+        shareTitle={
+          selectedMerchantName
+            ? `${selectedMerchantName} at ${calendar.title}`
+            : calendar.title
+        }
+        shareLabel={selectedMerchantPubkey ? "Share this view" : "Share event"}
+      >
         {collection.orderAcceptance === "open" &&
         calendar.end <= scheduleNow ? (
           <p className="text-pretty text-sm text-[var(--text-secondary)]">
@@ -794,50 +770,6 @@ function EventCatalogPage() {
               : "This event remains open until the organizer closes it."}
           </p>
         ) : null}
-        <dl className="flex flex-col gap-x-6 gap-y-2 text-sm text-[var(--text-secondary)] sm:flex-row sm:flex-wrap">
-          <div className="flex min-w-0 items-start gap-2">
-            <CalendarDays
-              aria-hidden="true"
-              className="mt-0.5 size-4 shrink-0 text-secondary-400"
-            />
-            <dt className="sr-only">Date and time</dt>
-            <dd className="text-pretty">{formatCalendarSchedule(calendar)}</dd>
-          </div>
-          <div className="flex min-w-0 items-start gap-2">
-            <MapPin
-              aria-hidden="true"
-              className="mt-0.5 size-4 shrink-0 text-secondary-400"
-            />
-            <dt className="sr-only">Location</dt>
-            <dd className="break-words text-pretty">
-              {calendarLocation || calendar.geohash || "Location not published"}
-            </dd>
-          </div>
-        </dl>
-        <div className="flex min-w-0 items-center gap-2 text-sm text-[var(--text-secondary)]">
-          <Avatar className="size-7 shrink-0 border border-[var(--border)]">
-            <AvatarImage
-              src={organizerProfile?.picture}
-              alt=""
-              referrerPolicy="no-referrer"
-            />
-            <AvatarFallback>
-              <MerchantAvatarFallback iconClassName="size-4" />
-            </AvatarFallback>
-          </Avatar>
-          <span className="min-w-0 break-words">
-            Organized by{" "}
-            <span className="font-medium text-[var(--text-primary)]">
-              {organizerName}
-            </span>
-          </span>
-          {organizerNip05 ? (
-            <Nip05TrustIndicator
-              pubkey={organizerPubkey}
-              nip05={organizerNip05}
-            />
-          ) : null}
-        </div>
         {!isChecking && actionability.visibility === "inline" ? (
           <p
             className="text-pretty text-sm text-[var(--text-secondary)]"
@@ -851,7 +783,7 @@ function EventCatalogPage() {
             Organizer handoff details are unresolved.
           </p>
         ) : null}
-      </header>
+      </EventPageHeader>
 
       <EventCatalogBrowser
         key={collection.coordinate}

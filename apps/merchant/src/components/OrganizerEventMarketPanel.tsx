@@ -1,17 +1,14 @@
 import { useEffect, useMemo, useState } from "react"
 import {
   AlertTriangle,
-  CalendarDays,
   Check,
   Copy,
   ExternalLink,
   ImageOff,
-  MapPin,
   Printer,
   RefreshCw,
   Trash2,
   UserRound,
-  WifiOff,
 } from "lucide-react"
 import {
   formatNpub,
@@ -35,9 +32,8 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  EventPageHeader,
   eventMarketRequiredRecordsResolved,
-  formatEventRelayReadCoverage,
-  getEventActionabilityPresentation,
   QRCodeSVG,
   StatusPill,
 } from "@conduit/ui"
@@ -45,7 +41,6 @@ import { type OrganizerCollectionMembershipAction } from "../lib/event-market-wo
 import {
   getResolvedEventMarketRelayHints,
   isParticipationHandoffVerified,
-  isParticipationProductAvailable,
   isParticipationProductPreviewVerified,
   type MerchantOrganizerEventMarket,
   type MerchantOrganizerParticipation,
@@ -100,50 +95,6 @@ function formatSchedule(market: MerchantOrganizerEventMarket): string {
   } catch {
     return "Unsupported schedule"
   }
-}
-
-function RelayEvidenceNotice({
-  destructive,
-  label,
-  message,
-  refreshing,
-  onRefresh,
-}: {
-  destructive: boolean
-  label: string
-  message: string
-  refreshing: boolean
-  onRefresh: () => void
-}) {
-  const Icon = destructive ? AlertTriangle : WifiOff
-  return (
-    <div
-      role="alert"
-      className={
-        destructive
-          ? "flex items-center justify-between gap-3 rounded-xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error"
-          : "flex items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--text-primary)]"
-      }
-    >
-      <span className="flex items-start gap-2">
-        <Icon className="h-4 w-4 shrink-0" />
-        <span>
-          <span className="block font-semibold">{label}</span>
-          <span className="mt-1 block leading-5">{message}</span>
-        </span>
-      </span>
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        disabled={refreshing}
-        onClick={onRefresh}
-      >
-        <RefreshCw className={refreshing ? "animate-spin" : ""} />
-        Retry
-      </Button>
-    </div>
-  )
 }
 
 function participantLabel(item: MerchantOrganizerParticipation): string {
@@ -202,9 +153,9 @@ function SignedProductPreview({
           ? "The current signed listing has malformed price evidence. It cannot be reviewed or accepted."
           : "The current signed listing has malformed price evidence and cannot be shown as a verified product."
         : item.status === "pending"
-          ? "The exact signed product preview is unavailable or no longer matches this request. Refresh evidence before accepting."
+          ? "The exact signed product preview is unavailable or no longer matches this request. Try again before accepting."
           : item.status === "accepted"
-            ? "The exact signed preview for this accepted product is unavailable. Refresh evidence; removal remains available."
+            ? "The exact signed preview for this accepted product is unavailable. Removal remains available."
             : "No current merchant-signed product preview was verified for this organizer-only entry."
     return (
       <div
@@ -607,21 +558,6 @@ export function OrganizerEventMarketPanel({
   const organizerOnlyProducts = market.participation.filter(
     (item) => item.status === "organizer_only"
   )
-  const availableProducts = acceptedProducts.filter((item) =>
-    isParticipationProductAvailable(item, market.organizerPubkey)
-  )
-  const actionability = getEventActionabilityPresentation({
-    state: market.state,
-    orderAcceptance: market.orderAcceptance,
-    availableProductCount: availableProducts.length,
-    unresolvedProductCount:
-      organizerOnlyProducts.length +
-      (acceptedProducts.length - availableProducts.length),
-    requiredEventRecordsResolved: eventMarketRequiredRecordsResolved(
-      market.source
-    ),
-  })
-  const relayCoverage = formatEventRelayReadCoverage(market.source.coverage)
   const organizerIdentityPubkey = normalizeEventActorPubkey(
     market.organizerPubkey
   )
@@ -651,7 +587,9 @@ export function OrganizerEventMarketPanel({
     priority: "visible",
     maxUnresolvedRefetches: 1,
   })
-
+  const organizerProfile = organizerProfileQuery.getProfile(
+    organizerIdentityPubkey
+  )
   function profileQueryForActor(pubkey: string) {
     return pubkey.trim().toLowerCase() === market.organizerPubkey.toLowerCase()
       ? organizerProfileQuery
@@ -711,108 +649,94 @@ export function OrganizerEventMarketPanel({
 
   return (
     <div className="space-y-5">
-      {actionability.visibility === "prominent" && (
-        <RelayEvidenceNotice
-          destructive={actionability.tone === "destructive"}
-          label={actionability.label}
-          message={actionability.message}
-          refreshing={refreshing}
-          onRefresh={onRefresh}
-        />
-      )}
-
-      <Card className="overflow-hidden">
-        {market.imageUrl && (
-          <img
-            src={market.imageUrl}
-            alt=""
-            className="h-52 w-full bg-[var(--surface-elevated)] object-contain"
-          />
-        )}
-        <CardHeader>
-          <div>
-            {actionability.visibility === "inline" ? (
-              <Badge variant={actionability.tone}>{actionability.label}</Badge>
-            ) : null}
-            <CardTitle className="mt-3 text-balance text-2xl">
-              {market.title}
-            </CardTitle>
-            <CardDescription className="mt-2 max-w-2xl text-pretty leading-6">
-              {market.summary ?? "No public event summary."}
-            </CardDescription>
-          </div>
-          {actionability.visibility === "inline" ? (
-            <p
-              className="text-pretty text-sm font-medium text-[var(--text-secondary)]"
-              data-testid="organizer-event-actionability-status"
-            >
-              {actionability.message}
-            </p>
-          ) : null}
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 text-sm sm:grid-cols-2">
-            <div className="flex gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-              <CalendarDays className="mt-0.5 h-4 w-4 shrink-0 text-primary-400" />
-              <div>
-                <div className="font-medium text-[var(--text-primary)]">
-                  {formatSchedule(market)}
-                </div>
-                {market.timezone && (
-                  <div className="mt-1 text-xs text-[var(--text-muted)]">
-                    {market.timezone}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="flex gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-              <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-secondary-400" />
-              <div>
-                <div className="font-medium text-[var(--text-primary)]">
-                  {market.pickupCoordinate
-                    ? market.source.pickup
-                      ? market.pickupTitle
-                      : "Organizer handoff unresolved"
-                    : "Organizer handoff not offered"}
-                </div>
-                <div className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
-                  {market.pickupCoordinate && market.source.pickup ? (
-                    <>
-                      {market.pickupLocation ??
-                        market.pickupGeohash ??
-                        "Missing"}
-                      {" · "}
-                      {Number(market.pickupPrice ?? "0") === 0
-                        ? "No added pickup fee"
-                        : `${market.pickupPrice} ${market.pickupCurrency ?? "SAT"}`}
-                    </>
-                  ) : market.pickupCoordinate ? (
-                    "Current organizer handoff terms could not be resolved."
-                  ) : (
-                    "Merchants can still offer their own pickup point."
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-            <div className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
-              Organizer signer
-            </div>
-            <div className="mt-1 min-w-0">
-              <EventActorName
-                pubkey={market.organizerPubkey}
-                profile={eventActorProfile(market.organizerPubkey)}
-                className="block text-sm"
+      <EventPageHeader
+        title={market.title}
+        summary={market.summary}
+        imageUrl={market.imageUrl}
+        schedule={formatSchedule(market)}
+        location={
+          market.eventLocation || market.eventGeohash || "Location not provided"
+        }
+        organizer={
+          <div className="flex min-w-0 items-start gap-2">
+            <Avatar className="size-7 shrink-0 border border-[var(--border)]">
+              <AvatarImage
+                src={organizerProfile?.picture}
+                alt=""
+                referrerPolicy="no-referrer"
               />
+              <AvatarFallback>
+                <UserRound
+                  className="size-4 text-[var(--text-muted)]"
+                  aria-hidden="true"
+                />
+              </AvatarFallback>
+            </Avatar>
+            <span className="min-w-0">
+              <span className="block break-words">
+                Organized by{" "}
+                <EventActorName
+                  pubkey={organizerIdentityPubkey}
+                  profile={organizerProfile}
+                  className="inline text-sm"
+                />
+              </span>
               <EventActorProvenance
-                pubkey={market.organizerPubkey}
+                pubkey={organizerIdentityPubkey}
                 copyLabel="Copy organizer signer npub"
-                className="mt-0.5 max-w-full text-xs"
+                className="mt-0.5 max-w-full text-[11px]"
               />
-            </div>
+            </span>
           </div>
+        }
+        actions={
+          <>
+            {showEdit ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={actionsDisabled}
+                onClick={onEdit}
+              >
+                Update event
+              </Button>
+            ) : null}
+          </>
+        }
+        shareUrl={shopperUrl}
+        shareTitle={market.title}
+      />
+
+      <Card>
+        <CardContent className="space-y-4 pt-6">
+          <section className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+            <h2 className="text-balance text-sm font-semibold text-[var(--text-primary)]">
+              Organizer handoff
+            </h2>
+            <p className="text-sm font-medium text-[var(--text-primary)]">
+              {market.pickupCoordinate
+                ? market.source.pickup
+                  ? market.pickupTitle
+                  : "Organizer handoff unresolved"
+                : "Organizer handoff not offered"}
+            </p>
+            <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
+              {market.pickupCoordinate && market.source.pickup ? (
+                <>
+                  {market.pickupLocation ?? market.pickupGeohash ?? "Missing"}
+                  {" · "}
+                  {Number(market.pickupPrice ?? "0") === 0
+                    ? "No added pickup fee"
+                    : `${market.pickupPrice} ${market.pickupCurrency ?? "SAT"}`}
+                </>
+              ) : market.pickupCoordinate ? (
+                "Current organizer handoff terms could not be resolved."
+              ) : (
+                "Merchants can still offer their own pickup point."
+              )}
+            </p>
+          </section>
 
           <section
             className="space-y-2 rounded-xl border border-[var(--border)] p-3"
@@ -856,28 +780,6 @@ export function OrganizerEventMarketPanel({
               </p>
             )}
           </section>
-
-          <div className="flex flex-wrap gap-2">
-            {showEdit && (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={actionsDisabled}
-                onClick={onEdit}
-              >
-                Update event
-              </Button>
-            )}
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={refreshing}
-              onClick={onRefresh}
-            >
-              <RefreshCw className={refreshing ? "animate-spin" : ""} />
-              Refresh evidence
-            </Button>
-          </div>
           {market.state === "partial" && !recordsResolved ? (
             <div className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
               Current event details could not be confirmed. Updating the event
@@ -1104,27 +1006,6 @@ export function OrganizerEventMarketPanel({
               </Button>
             </div>
           </section>
-
-          <details className="rounded-xl border border-[var(--border)] px-4 py-3">
-            <summary className="cursor-pointer text-sm font-medium text-[var(--text-secondary)]">
-              Technical details
-            </summary>
-            <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
-              Technical detail for Nostr clients and manual import. The naddr
-              preserves the organizer-owned collection coordinate.
-            </p>
-            <div className="mt-2 break-all font-mono text-xs text-[var(--text-secondary)]">
-              {market.naddr}
-            </div>
-            {relayCoverage ? (
-              <p
-                className="mt-2 text-pretty text-xs tabular-nums text-[var(--text-muted)]"
-                data-testid="organizer-event-relay-read-coverage"
-              >
-                {relayCoverage}
-              </p>
-            ) : null}
-          </details>
         </CardContent>
       </Card>
 
