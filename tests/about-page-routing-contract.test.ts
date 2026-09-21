@@ -41,7 +41,7 @@ describe("About page routing and contributor contracts", () => {
     expect(publicShell).toContain(
       'installBrowserClientErrorTelemetry("merchant")'
     )
-    expect(publicShell).toContain("Open merchant workspace")
+    expect(publicShell).not.toContain("Open merchant workspace")
   })
 
   it("derives contributor data at build time instead of shipping identities in UI source", async () => {

@@ -1,7 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   CalendarDays,
-  Plus,
   RefreshCw,
   Search,
   SlidersHorizontal,
@@ -11,7 +10,6 @@ import {
   getProfileDisplayLabel,
   useAuth,
   useProfiles,
-  type EventMarketPerspectiveSource,
 } from "@conduit/core"
 import {
   Badge,
@@ -46,18 +44,6 @@ import {
   type MerchantEventTimelineWindow,
 } from "../lib/merchant-event-timeline"
 
-const SOURCE_OPTIONS: EventMarketPerspectiveSource[] = [
-  "combined",
-  "following",
-  "conduit",
-]
-
-const SOURCE_LABELS: Record<EventMarketPerspectiveSource, string> = {
-  combined: "Combined",
-  following: "Following",
-  conduit: "Conduit",
-}
-
 const RELATIONSHIP_LABELS: Record<MerchantEventRelationshipFilter, string> = {
   all: "All events",
   organizing: "Organizing",
@@ -89,23 +75,15 @@ function organizerFallback(market: MerchantOrganizerEventMarket): string {
 export function MerchantEventsTimeline({
   merchantPubkey,
   currentReference,
-  source,
   search,
-  onSourceChange,
   onSearchChange,
   onOpen,
-  onCreate,
-  createDisabled = false,
 }: {
   merchantPubkey: string
   currentReference?: string
-  source: EventMarketPerspectiveSource
   search: MerchantEventTimelineSearch
-  onSourceChange: (source: EventMarketPerspectiveSource) => void
   onSearchChange: (search: MerchantEventTimelineSearch) => void
   onOpen: (reference: string) => void
-  onCreate: () => void
-  createDisabled?: boolean
 }) {
   const { pubkey, status, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -118,7 +96,7 @@ export function MerchantEventsTimeline({
   const [importError, setImportError] = useState("")
   const discovery = useMerchantEventTimeline({
     merchantPubkey,
-    source,
+    source: "combined",
     currentReference,
     storageRevision,
   })
@@ -197,55 +175,9 @@ export function MerchantEventsTimeline({
   }
 
   return (
-    <section
-      className="space-y-5"
-      aria-labelledby="merchant-events-timeline-title"
-    >
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2
-            id="merchant-events-timeline-title"
-            className="text-balance text-xl font-semibold text-[var(--text-primary)]"
-          >
-            Event timeline
-          </h2>
-          <p className="mt-1 max-w-3xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Browse the same public Conduit and follow perspectives as Market.
-            Events you organize, sell at, or save stay available by their exact
-            signed coordinates.
-          </p>
-        </div>
-        <Button type="button" onClick={onCreate} disabled={createDisabled}>
-          <Plus aria-hidden="true" />
-          Create event
-        </Button>
-      </div>
-
+    <section className="space-y-5" aria-label="Event discovery">
       <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)]">
-        <div className="space-y-4">
-          <div>
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-              Network perspective
-            </div>
-            <div
-              className="grid grid-cols-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1"
-              role="group"
-              aria-label="Event network perspective"
-            >
-              {SOURCE_OPTIONS.map((option) => (
-                <Button
-                  key={option}
-                  type="button"
-                  size="sm"
-                  variant={source === option ? "secondary" : "ghost"}
-                  aria-pressed={source === option}
-                  onClick={() => onSourceChange(option)}
-                >
-                  {SOURCE_LABELS[option]}
-                </Button>
-              ))}
-            </div>
-          </div>
+        <div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1.5 text-xs text-[var(--text-secondary)]">
               <Label

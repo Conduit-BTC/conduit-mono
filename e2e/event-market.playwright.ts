@@ -921,7 +921,7 @@ async function publishOrganizerMarket(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByRole("heading", { name: "Event timeline", exact: true })
+    page.getByRole("region", { name: "Event discovery", exact: true })
   ).toBeVisible()
   await page.getByRole("button", { name: "Create event" }).first().click()
   const editor = page.getByRole("dialog", { name: "Create event market" })
@@ -1095,7 +1095,7 @@ test("signed-out merchant participation preserves the exact event through auth @
   ).toBeVisible()
 })
 
-test("Merchant event timeline supports perspective, relationship, mobile, and keyboard flows @merchant", async ({
+test("Merchant event timeline uses combined discovery with relationship, mobile, and keyboard flows @merchant", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -1118,14 +1118,14 @@ test("Merchant event timeline supports perspective, relationship, mobile, and ke
   await page.setViewportSize({ width: 390, height: 844 })
   await gotoAs(page, merchantUrl, "/events", "merchant")
 
-  const timeline = page.getByRole("region", { name: "Event timeline" })
+  const timeline = page.getByRole("region", { name: "Event discovery" })
   await expect(timeline).toBeVisible()
   await expect(
     timeline.getByRole("group", { name: "Event network perspective" })
-  ).toBeVisible()
+  ).toHaveCount(0)
   await expect(
-    timeline.getByRole("button", { name: "Combined", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
+    page.getByText("Merchant workspace", { exact: true })
+  ).toHaveCount(0)
   const relationshipFilter = timeline.getByRole("combobox", {
     name: "Relationship",
     exact: true,
@@ -1153,16 +1153,6 @@ test("Merchant event timeline supports perspective, relationship, mobile, and ke
       .getByLabel(`Your relationship to ${eventTitle}`)
       .getByText("Saved", { exact: true })
   ).toBeVisible()
-  const following = timeline.getByRole("button", {
-    name: "Following",
-    exact: true,
-  })
-  await following.focus()
-  await page.keyboard.press("Enter")
-  await expect(following).toHaveAttribute("aria-pressed", "true")
-  await expect
-    .poll(() => new URL(page.url()).searchParams.get("source"))
-    .toBe("following")
   await expect
     .poll(() =>
       page.evaluate(
@@ -1179,7 +1169,7 @@ test("organizer discovery offers empty-read recovery without losing saved events
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
   await gotoAs(page, merchantUrl, "/events", "organizer")
-  const timeline = page.getByRole("region", { name: "Event timeline" })
+  const timeline = page.getByRole("region", { name: "Event discovery" })
   const emptyHeading = timeline.getByRole("heading", { name: "No events yet" })
   await expect(emptyHeading).toBeVisible()
   relay.rejectReads(true)
@@ -1233,7 +1223,7 @@ test("direct and pasted event imports hydrate one saved selector title outside t
   )
 
   await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
-  const timeline = page.getByRole("region", { name: "Event timeline" })
+  const timeline = page.getByRole("region", { name: "Event discovery" })
   await expect(
     timeline.getByRole("heading", { name: eventTitle, exact: true })
   ).toBeVisible({ timeout: 30_000 })
@@ -1619,7 +1609,7 @@ async function publishMerchantProductFromEvent(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByRole("heading", { name: "Event timeline", exact: true })
+    page.getByRole("region", { name: "Event discovery", exact: true })
   ).toBeVisible()
 
   if (options.discoveryMode === "followed") {
@@ -3558,7 +3548,7 @@ test("terminal event deletion removes the exact-record retry path @merchant", as
     })
   ).toHaveCount(0)
   await expect(
-    page.getByRole("region", { name: "Event timeline" }).getByRole("heading", {
+    page.getByRole("region", { name: "Event discovery" }).getByRole("heading", {
       name: "Synthetic Deleted Retry Event",
       exact: true,
     })
@@ -4271,7 +4261,7 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
   await expect(card).toHaveCount(0)
   expect(relay.publications).toHaveLength(publications)
   console.log(
-    "Event timeline loading timings (synthetic, ms):",
+    "Event discovery loading timings (synthetic, ms):",
     JSON.stringify(timings)
   )
 })
