@@ -3509,13 +3509,16 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   const perspectiveButtons = page.getByRole("group", {
     name: "Market perspective",
   })
+  const refreshEventsButton = page.getByRole("button", {
+    name: "Refresh events",
+    exact: true,
+  })
+  await expect(refreshEventsButton).toBeEnabled()
   await perspectiveButtons
     .getByRole("button", { name: "Conduit", exact: true })
     .focus()
   await page.keyboard.press("Tab")
-  await expect(
-    page.getByRole("button", { name: "Refresh events", exact: true })
-  ).toBeFocused()
+  await expect(refreshEventsButton).toBeFocused()
   await page.keyboard.press("Tab")
   await expect(page.getByLabel("Organizer")).toBeFocused()
   await page.keyboard.press("Tab")
