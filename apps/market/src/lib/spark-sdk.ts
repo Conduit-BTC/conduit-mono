@@ -76,7 +76,7 @@ interface SparkNativeLightningSendRequest {
   id: string
   status: string
   fee: SparkNativeCurrencyAmount
-  paymentPreimage?: string
+  paymentPreimage?: string | null
 }
 
 export interface SparkNativeWallet {
@@ -215,6 +215,7 @@ const LIGHTNING_RECOVERY_CONFLICT_MESSAGES = new Set([
   "Spark returned an invalid Lightning payment fee.",
   "Spark returned a Lightning fee above the approved maximum.",
   "Spark returned a conflicting Lightning transfer total.",
+  "Spark returned a conflicting Lightning request identity.",
   "Spark returned an invalid Lightning payment preimage.",
   "Spark returned a Lightning preimage that does not match the prepared invoice.",
 ])
@@ -844,6 +845,7 @@ function adaptFirstPartySparkWallet(input: {
       }
 
       try {
+        const recoveredRequestId = recovered.id
         const payment = await reconcileLightningPayment({
           wallet: input.wallet,
           initial: recovered,
@@ -853,6 +855,11 @@ function adaptFirstPartySparkWallet(input: {
             "The Lightning invoice contains an invalid payment hash."
           ).bytes,
           validateRequest: (nativeRequest) => {
+            if (nativeRequest.id !== recoveredRequestId) {
+              throw new Error(
+                "Spark returned a conflicting Lightning request identity."
+              )
+            }
             validateRecoveredLightningTransferTotal({
               totalAmount: transfer.totalAmount,
               amountSats: request.amountSats,
@@ -1347,6 +1354,7 @@ function readRecoveredLightningSendRequest(
     typeof fee?.originalValue !== "number" ||
     typeof fee.originalUnit !== "string" ||
     (request.paymentPreimage !== undefined &&
+      request.paymentPreimage !== null &&
       typeof request.paymentPreimage !== "string")
   ) {
     throw new Error("Spark returned invalid Lightning recovery evidence.")
@@ -1358,9 +1366,9 @@ function readRecoveredLightningSendRequest(
       originalValue: fee.originalValue,
       originalUnit: fee.originalUnit,
     },
-    ...(request.paymentPreimage === undefined
-      ? {}
-      : { paymentPreimage: request.paymentPreimage }),
+    ...(typeof request.paymentPreimage === "string"
+      ? { paymentPreimage: request.paymentPreimage }
+      : {}),
     encodedInvoice: request.encodedInvoice,
     idempotencyKey: request.idempotencyKey,
     typename: "LightningSendRequest",

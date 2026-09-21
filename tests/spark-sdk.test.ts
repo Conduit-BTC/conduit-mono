@@ -2033,6 +2033,125 @@ describe("first-party Spark SDK adapter", () => {
     expect(payCalls).toBe(0)
   })
 
+  it("rejects a polled Lightning status for a different recovered request", async () => {
+    let now = 0
+    let payCalls = 0
+    let statusReads = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_INITIATED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+      async getLightningSendRequest() {
+        statusReads += 1
+        return {
+          id: "different-lightning-request",
+          status: "LIGHTNING_PAYMENT_FAILED",
+          fee: { originalValue: 2, originalUnit: "SATOSHI" },
+          paymentPreimage: null,
+        }
+      },
+    })
+    const client = await openClient(
+      createFactory(wallet, {}, "mainnet", {
+        now: () => now,
+        wait: async (milliseconds) => {
+          now += milliseconds
+        },
+        pollIntervalMs: 100,
+      })
+    )
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+        completionTimeoutSecs: 1,
+      })
+    ).resolves.toEqual({
+      status: "conflicting_evidence",
+      reason: "Spark returned a conflicting Lightning request identity.",
+    })
+    expect(statusReads).toBe(1)
+    expect(payCalls).toBe(0)
+  })
+
+  it("resolves an identity-consistent polled Lightning transition", async () => {
+    let now = 0
+    let payCalls = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_INITIATED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            paymentPreimage: null,
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+      async getLightningSendRequest() {
+        return {
+          id: "recovered-lightning-request",
+          status: "LIGHTNING_PAYMENT_SUCCEEDED",
+          fee: { originalValue: 2, originalUnit: "SATOSHI" },
+          paymentPreimage: ZERO_PREIMAGE,
+        }
+      },
+    })
+    const client = await openClient(
+      createFactory(wallet, {}, "mainnet", {
+        now: () => now,
+        wait: async (milliseconds) => {
+          now += milliseconds
+        },
+        pollIntervalMs: 100,
+      })
+    )
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+        completionTimeoutSecs: 1,
+      })
+    ).resolves.toMatchObject({
+      status: "resolved",
+      payment: {
+        id: "recovered-lightning-request",
+        status: "completed",
+      },
+    })
+    expect(payCalls).toBe(0)
+  })
+
   it("fails closed on conflicting recovered Lightning evidence", async () => {
     const cases = [
       {
@@ -2045,6 +2164,12 @@ describe("first-party Spark SDK adapter", () => {
         name: "request kind",
         transferId: PAYMENT_ATTEMPT_ID,
         request: { typename: "LightningReceiveRequest" },
+        message: "Spark returned invalid Lightning recovery evidence.",
+      },
+      {
+        name: "malformed payment preimage",
+        transferId: PAYMENT_ATTEMPT_ID,
+        request: { paymentPreimage: 123 },
         message: "Spark returned invalid Lightning recovery evidence.",
       },
       {
@@ -2125,7 +2250,12 @@ describe("first-party Spark SDK adapter", () => {
     ] as const
 
     for (const testCase of cases) {
+      let payCalls = 0
       const wallet = createNativeWallet({
+        async payLightningInvoice() {
+          payCalls += 1
+          throw new Error("must not pay during reconciliation")
+        },
         async getTransferFromSsp(id) {
           return {
             sparkId: id,
@@ -2134,6 +2264,7 @@ describe("first-party Spark SDK adapter", () => {
               id: "recovered-lightning-request",
               status: testCase.providerStatus,
               fee: { originalValue: 2, originalUnit: "SATOSHI" },
+              paymentPreimage: null,
               encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
               idempotencyKey: PAYMENT_ATTEMPT_ID,
               typename: "LightningSendRequest",
@@ -2155,6 +2286,7 @@ describe("first-party Spark SDK adapter", () => {
         status: "resolved",
         payment: { status: testCase.status },
       })
+      expect(payCalls).toBe(0)
     }
   })
 
