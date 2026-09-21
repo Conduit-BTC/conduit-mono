@@ -1,17 +1,22 @@
 import { describe, expect, it } from "bun:test"
-import type {
-  ParsedShippingOption,
-  Product,
-  ProductAvailabilityDiagnostic,
-  ProductAvailabilityIssue,
+import {
+  orderItemFulfillmentSchema,
+  type ParsedShippingOption,
+  type Product,
+  type ProductAvailabilityDiagnostic,
+  type ProductAvailabilityIssue,
 } from "@conduit/core"
 import {
   cartItemsMatchCurrentProducts,
+  createPendingEventPickupFulfillment,
   createCartItemFromProduct,
   getCartAvailabilityBlockingMessage,
+  getCartFulfillmentLane,
+  getCartItemFulfillmentType,
   getCartItemStockEvidenceForAvailability,
   getCartProductAvailability,
   getCartItemKey,
+  getPendingEventPickupCartItems,
   getCartPurchaseReference,
   getCartCostSummary,
   getCartCommerceFingerprint,
@@ -22,8 +27,10 @@ import {
   groupCartPurchases,
   getCartAvailabilityReadDecision,
   getCartAvailabilityVerificationMessage,
+  getMixedFulfillmentBlockingMessage,
   isCartAvailabilityReadComplete,
   isCartProductAvailabilityBlocking,
+  isPendingEventPickupCartItem,
   isSameCartLineFulfillment,
   parsePersistedCart,
   selectCartItem,
@@ -967,6 +974,81 @@ describe("cart model", () => {
     expect(parsePersistedCart(persisted).state.items[0]?.fulfillment).toEqual(
       fulfillment
     )
+  })
+
+  it("persists pending event pickup without granting shipping or purchase authority", () => {
+    const merchantPubkey = "b".repeat(64)
+    const collectionCoordinate = `30405:${"a".repeat(64)}:market-a`
+    const fulfillment = createPendingEventPickupFulfillment(
+      `30405:${"A".repeat(64)}:market-a`
+    )
+    expect(fulfillment).toEqual({
+      type: "event_pickup_pending",
+      collectionCoordinate,
+    })
+
+    const parsed = parsePersistedCart({
+      version: 2,
+      items: [
+        item({
+          productId: `30402:${merchantPubkey}:product-a`,
+          merchantPubkey,
+          format: "physical",
+          fulfillment: fulfillment!,
+        }),
+      ],
+    })
+    const pendingItem = parsed.state.items[0]!
+
+    expect(isPendingEventPickupCartItem(pendingItem)).toBe(true)
+    expect(getCartItemFulfillmentType(pendingItem)).toBe("event_pickup_pending")
+    expect(getCartFulfillmentLane([pendingItem])).toBe("event_pickup_pending")
+    expect(getMixedFulfillmentBlockingMessage([pendingItem])).toBe(
+      "Event pickup is still being verified. Review it after verification finishes."
+    )
+    expect(getPendingEventPickupCartItems([pendingItem])).toEqual([pendingItem])
+    expect(groupCartPurchases([pendingItem])).toEqual([])
+    expect(getCartTotals([pendingItem])).toEqual({ count: 1, subtotal: 1_000 })
+    expect(orderItemFulfillmentSchema.safeParse(fulfillment).success).toBe(
+      false
+    )
+  })
+
+  it("rejects malformed or digital pending event pickup persistence", () => {
+    const merchantPubkey = "b".repeat(64)
+    const base = item({
+      productId: `30402:${merchantPubkey}:product-a`,
+      merchantPubkey,
+      format: "physical",
+    })
+
+    for (const fulfillment of [
+      {
+        type: "event_pickup_pending",
+        collectionCoordinate: "30405:not-a-pubkey:market-a",
+      },
+      {
+        type: "event_pickup_pending",
+        collectionCoordinate: `30402:${merchantPubkey}:product-a`,
+      },
+    ]) {
+      expect(
+        parsePersistedCart({
+          version: 2,
+          items: [{ ...base, fulfillment }],
+        }).state.items
+      ).toEqual([])
+    }
+
+    const pending = createPendingEventPickupFulfillment(
+      `30405:${"a".repeat(64)}:market-a`
+    )!
+    expect(
+      parsePersistedCart({
+        version: 2,
+        items: [{ ...base, format: "digital", fulfillment: pending }],
+      }).state.items
+    ).toEqual([])
   })
 
   it("drops persisted cart rows with malformed pickup authority", () => {

@@ -1203,7 +1203,7 @@ export interface EventMarketResolution {
   participationBudget: EventMarketParticipationBudget
   pickupBudget: EventMarketParticipationBudget
   coverage: EventMarketRelayCoverage
-  /** Signed NIP-09 evidence behind a terminal deleted resolution. */
+  /** Signed NIP-09 evidence behind a deleted or saturated-degraded resolution. */
   deletion?: EventMarketDeletedRecordEvidence
 }
 
@@ -1220,6 +1220,13 @@ export function getEventMarketOrderAcceptance(
   return nowMs >= market.calendar.end ? "legacy-ended" : "legacy-open"
 }
 
+export interface EventMarketFrontierSaturation {
+  collection: ReadonlySet<string>
+  calendar: ReadonlySet<string>
+  product: ReadonlySet<string>
+  pickup: ReadonlySet<string>
+}
+
 export interface ResolveEventMarketEvidenceInput {
   reference: string
   /** Restrict participation authorization to these exact products. */
@@ -1234,6 +1241,8 @@ export interface ResolveEventMarketEvidenceInput {
   productRequestEvents?: readonly SignedPublicNostrEvent[]
   participationBudget?: EventMarketParticipationBudget
   pickupBudget?: EventMarketParticipationBudget
+  /** Exact frontier reads whose result cap may hide an older live revision. */
+  frontierSaturation?: Partial<EventMarketFrontierSaturation>
   coverage?: EventMarketRelayCoverage
   /** When retained evidence was last observed from relays. */
   evidenceObservedAt?: number
@@ -1421,7 +1430,8 @@ type AddressableRecordResult<T> =
       event?: SignedPublicNostrEvent
       deletionEvidence: EventMarketDeletionEvidence[]
     }
-  | { state: "missing" | "malformed" }
+  | { state: "missing" }
+  | { state: "malformed"; event: SignedPublicNostrEvent }
 
 function findCanonicalEventMarketLifecyclePredecessor(
   current: SignedPublicNostrEvent,
@@ -1502,12 +1512,12 @@ function resolveAddressableRecord<T>(input: {
           ).length > 0
       )
     ) {
-      return { state: "malformed" }
+      return { state: "malformed", event: candidate }
     }
     const parsed = input.parse(candidate)
     return parsed
       ? { state: "current", value: parsed, event: candidate }
-      : { state: "malformed" }
+      : { state: "malformed", event: candidate }
   }
   return latestDeletedRevision
     ? {
@@ -1516,6 +1526,19 @@ function resolveAddressableRecord<T>(input: {
         deletionEvidence: Array.from(deletionEvidenceById.values()),
       }
     : { state: "missing" }
+}
+
+function saturatedAddressableResultMayAdvance(
+  result: AddressableRecordResult<unknown>,
+  coordinate: AddressableEventCoordinate,
+  saturatedCoordinates: ReadonlySet<string> | undefined
+): boolean {
+  if (!saturatedCoordinates?.has(coordinate.coordinate)) return false
+  if (result.state === "missing") return true
+  if (result.state !== "deleted") return false
+  return !result.deletionEvidence.some((evidence) =>
+    evidence.addressableTargets.includes(coordinate.coordinate)
+  )
 }
 
 function deletedRecordEvidence(
@@ -1728,6 +1751,36 @@ function currentEventMarketProductRequests(input: {
   return currentRequests
 }
 
+function saturatedProductFrontierMayAdvance(input: {
+  events: readonly SignedPublicNostrEvent[]
+  organizerProducts: readonly string[]
+  saturatedCoordinates: ReadonlySet<string> | undefined
+}): boolean {
+  if (!input.saturatedCoordinates?.size) return false
+  const deletions = validDeletionEvents(input.events)
+  return input.organizerProducts.some((value) => {
+    const coordinate = parseAddressableCoordinate(value, [EVENT_KINDS.PRODUCT])
+    if (
+      !coordinate ||
+      !input.saturatedCoordinates?.has(coordinate.coordinate)
+    ) {
+      return false
+    }
+    const result = resolveAddressableRecord({
+      coordinate,
+      events: input.events,
+      deletions,
+      parse: (event) =>
+        eventCoordinate(event, [EVENT_KINDS.PRODUCT]) ? event : null,
+    })
+    return saturatedAddressableResultMayAdvance(
+      result,
+      coordinate,
+      input.saturatedCoordinates
+    )
+  })
+}
+
 function directMerchantPickupCoordinatesFromProductEvidence(input: {
   events: readonly SignedPublicNostrEvent[]
   collectionCoordinate: string
@@ -1787,6 +1840,10 @@ function getCurrentParticipation(
   organizerPubkey: string,
   collection: ParsedEventMarketCollection,
   pickups: readonly ParsedEventMarketPickup[],
+  terminalPickupReasons: ReadonlyMap<
+    string,
+    EventMarketProductFulfillmentAmbiguityReason
+  >,
   collectionCoordinate: string,
   organizerProducts: readonly string[]
 ): {
@@ -1852,6 +1909,17 @@ function getCurrentParticipation(
         pickups: [...pickups],
       }
     )
+    const terminalPickupReason = shippingOptionCoordinates
+      .map((coordinate) => terminalPickupReasons.get(coordinate))
+      .find((reason) => reason !== undefined)
+    const fulfillmentReason =
+      fulfillment.status === "ambiguous" &&
+      fulfillment.reason === "missing_pickup_evidence" &&
+      terminalPickupReason
+        ? terminalPickupReason
+        : fulfillment.status === "ambiguous"
+          ? fulfillment.reason
+          : undefined
     const titles = tagValues(event.tags, "title")
       .map((value) => value.trim())
       .filter((value) => value && !CONTROL_CHARACTER.test(value))
@@ -1863,9 +1931,7 @@ function getCurrentParticipation(
       ...(titles.length === 1 ? { title: titles[0] } : {}),
       ...(productPreview ? { productPreview } : {}),
       fulfillmentStatus: fulfillment.status,
-      ...(fulfillment.status === "ambiguous"
-        ? { fulfillmentReason: fulfillment.reason }
-        : {}),
+      ...(fulfillmentReason ? { fulfillmentReason } : {}),
       ...(fulfillment.status === "resolved"
         ? {
             pickupCoordinate: fulfillment.selectedPickup.coordinate,
@@ -2001,8 +2067,14 @@ export function resolveEventMarketEvidence(
   })
   if (collectionResult.state !== "current") {
     const readState = coverageState(coverage)
-    const state =
-      collectionResult.state === "missing" && readState !== "complete"
+    const saturatedMayAdvance = saturatedAddressableResultMayAdvance(
+      collectionResult,
+      decoded,
+      input.frontierSaturation?.collection
+    )
+    const state = saturatedMayAdvance
+      ? "partial"
+      : collectionResult.state === "missing" && readState !== "complete"
         ? readState
         : collectionResult.state
     return {
@@ -2025,6 +2097,11 @@ export function resolveEventMarketEvidence(
   const organizerProductCoordinates = collection.productCoordinates.filter(
     (coordinate) => !selectedProducts || selectedProducts.has(coordinate)
   )
+  const productFrontierMayAdvance = saturatedProductFrontierMayAdvance({
+    events: productRequestEvents,
+    organizerProducts: organizerProductCoordinates,
+    saturatedCoordinates: input.frontierSaturation?.product,
+  })
   const includeParticipation = input.includeParticipation !== false
   const participationBudget = includeParticipation
     ? participationBudgetForEvidence({
@@ -2149,6 +2226,30 @@ export function resolveEventMarketEvidence(
       }),
     })
   )
+  const terminalDirectMerchantPickupReasons = new Map<
+    string,
+    EventMarketProductFulfillmentAmbiguityReason
+  >()
+  let directPickupFrontierMayAdvance = false
+  for (const entry of directMerchantPickupResults) {
+    const saturatedMayAdvance = saturatedAddressableResultMayAdvance(
+      entry.result,
+      entry.coordinate,
+      input.frontierSaturation?.pickup
+    )
+    directPickupFrontierMayAdvance ||= saturatedMayAdvance
+    if (entry.result.state === "deleted" && !saturatedMayAdvance) {
+      terminalDirectMerchantPickupReasons.set(
+        entry.coordinate.coordinate,
+        "deleted_pickup_evidence"
+      )
+    } else if (entry.result.state === "malformed") {
+      terminalDirectMerchantPickupReasons.set(
+        entry.coordinate.coordinate,
+        "malformed_pickup_evidence"
+      )
+    }
+  }
   const organizerPickupCoordinates = collectionPickupCoordinates.filter(
     (coordinate) => coordinate?.authorPubkey === decoded.authorPubkey
   )
@@ -2162,10 +2263,16 @@ export function resolveEventMarketEvidence(
   }
   const readState = coverageState(coverage)
   if (calendarResult.state !== "current") {
+    const saturatedMayAdvance = saturatedAddressableResultMayAdvance(
+      calendarResult,
+      calendarCoordinate,
+      input.frontierSaturation?.calendar
+    )
     return {
       ...graphBase,
-      state:
-        calendarResult.state === "missing" && readState !== "complete"
+      state: saturatedMayAdvance
+        ? "partial"
+        : calendarResult.state === "missing" && readState !== "complete"
           ? readState
           : calendarResult.state,
       ...(calendarResult.state === "deleted"
@@ -2180,10 +2287,16 @@ export function resolveEventMarketEvidence(
     }
   }
   if (organizerPickupResult && organizerPickupResult.state !== "current") {
+    const saturatedMayAdvance = saturatedAddressableResultMayAdvance(
+      organizerPickupResult,
+      organizerPickupCoordinate!,
+      input.frontierSaturation?.pickup
+    )
     return {
       ...graphBase,
-      state:
-        organizerPickupResult.state === "missing" && readState !== "complete"
+      state: saturatedMayAdvance
+        ? "partial"
+        : organizerPickupResult.state === "missing" && readState !== "complete"
           ? readState
           : organizerPickupResult.state,
       calendar: calendarResult.value,
@@ -2226,6 +2339,7 @@ export function resolveEventMarketEvidence(
         decoded.authorPubkey,
         collection,
         pickups,
+        terminalDirectMerchantPickupReasons,
         collection.coordinate,
         organizerProductCoordinates
       )
@@ -2250,7 +2364,13 @@ export function resolveEventMarketEvidence(
   if (readState === "partial" && orderingEnded) {
     return { ...resolved, state: "ended" }
   }
-  if (readState === "partial") return { ...resolved, state: "partial" }
+  if (
+    readState === "partial" ||
+    productFrontierMayAdvance ||
+    directPickupFrontierMayAdvance
+  ) {
+    return { ...resolved, state: orderingEnded ? "ended" : "partial" }
+  }
   if (readState === "unavailable") {
     return {
       ...resolved,
@@ -2310,6 +2430,9 @@ export function resolveEventMarketProductParticipation(
 export interface GetEventMarketInput {
   /** Exact checkout products; skips unrelated catalog participation reads. */
   selectedProductCoordinates?: readonly string[]
+  /** Organizer-listed products authored by this merchant; skips unrelated
+   * participant reads. */
+  selectedMerchantPubkey?: string
   /** Browse-only organizer snapshots. Final purchase evidence is returned by the promise. */
   onProgress?: (resolution: EventMarketResolution) => void
   reference: string
@@ -2827,11 +2950,63 @@ function mergeFanoutResults(
   }
 }
 
-interface EventMarketFrontierFilterResult extends FetchEventsFanoutResult {
-  remainingRelayUrls: string[]
-  remainingRelayUrlsByAuthor: Map<string, string[]>
+interface EventMarketFrontierCounts {
   incompleteFilterCount: number
   saturatedFilterCount: number
+}
+
+interface EventMarketExactFrontierResult
+  extends FetchEventsFanoutResult, EventMarketFrontierCounts {
+  /** Coordinates whose positive revision query reached its result cap. */
+  saturatedRecordCoordinates: ReadonlySet<string>
+}
+
+interface EventMarketFrontierFilterResult
+  extends FetchEventsFanoutResult, EventMarketFrontierCounts {
+  remainingRelayUrls: string[]
+  remainingRelayUrlsByAuthor: Map<string, string[]>
+  saturatedFilterIndexes: number[]
+}
+
+const EMPTY_EVENT_MARKET_SATURATED_COORDINATES: ReadonlySet<string> = new Set()
+
+function eventMarketSaturatedRecordCoordinates(
+  result: FetchEventsFanoutResult
+): ReadonlySet<string> {
+  return (
+    (result as Partial<EventMarketExactFrontierResult>)
+      .saturatedRecordCoordinates ?? EMPTY_EVENT_MARKET_SATURATED_COORDINATES
+  )
+}
+
+function mergeEventMarketSaturatedCoordinates(
+  ...sets: readonly (ReadonlySet<string> | undefined)[]
+): ReadonlySet<string> {
+  return new Set(sets.flatMap((values) => (values ? Array.from(values) : [])))
+}
+
+function saturatedRecordCoordinatesForFilters(input: {
+  filters: readonly NDKFilter[]
+  saturatedFilterIndexes: readonly number[]
+  coordinates: readonly AddressableEventCoordinate[]
+}): ReadonlySet<string> {
+  const saturatedCoordinates = new Set<string>()
+  for (const filterIndex of input.saturatedFilterIndexes) {
+    const filter = input.filters[filterIndex]
+    if (!filter) continue
+    for (const coordinate of input.coordinates) {
+      if (
+        filter.kinds?.includes(coordinate.kind as never) &&
+        filter.authors?.some(
+          (author) => normalizePubkey(author) === coordinate.authorPubkey
+        ) &&
+        filter["#d"]?.includes(coordinate.dTag)
+      ) {
+        saturatedCoordinates.add(coordinate.coordinate)
+      }
+    }
+  }
+  return saturatedCoordinates
 }
 
 async function fetchEventMarketFrontierFilters(input: {
@@ -2881,6 +3056,7 @@ async function fetchEventMarketFrontierFilters(input: {
       remainingRelayUrlsByAuthor,
       incompleteFilterCount: 0,
       saturatedFilterCount: 0,
+      saturatedFilterIndexes: [],
     }
   }
   const fetch =
@@ -2889,6 +3065,7 @@ async function fetchEventMarketFrontierFilters(input: {
   const results: FetchEventsFanoutResult[] = []
   let incompleteFilterCount = 0
   let saturatedFilterCount = 0
+  const saturatedFilterIndexes: number[] = []
   let remainingRelayUrls = [...invocationRelayUrls]
   for (
     let index = 0;
@@ -2896,16 +3073,17 @@ async function fetchEventMarketFrontierFilters(input: {
     index += EVENT_MARKET_FRONTIER_QUERY_CONCURRENCY
   ) {
     assertEventMarketReadCurrent(input)
-    const batch = input.filters.slice(
-      index,
-      index + EVENT_MARKET_FRONTIER_QUERY_CONCURRENCY
-    )
-    const batchPlans = batch.flatMap((filter) => {
+    const batch = input.filters
+      .slice(index, index + EVENT_MARKET_FRONTIER_QUERY_CONCURRENCY)
+      .map((filter, offset) => ({ filter, filterIndex: index + offset }))
+    const batchPlans = batch.flatMap(({ filter, filterIndex }) => {
       const author = filterAuthor(filter)
       const relayUrls = author
         ? (remainingRelayUrlsByAuthor.get(author) ?? [])
         : remainingRelayUrls
-      return relayUrls.length > 0 ? [{ filter, author, relayUrls }] : []
+      return relayUrls.length > 0
+        ? [{ filter, filterIndex, author, relayUrls }]
+        : []
     })
     if (batchPlans.length === 0) continue
     const batchResults = await Promise.all(
@@ -2960,6 +3138,7 @@ async function fetchEventMarketFrontierFilters(input: {
         )
       ) {
         saturatedFilterCount += 1
+        saturatedFilterIndexes.push(plan.filterIndex)
       }
       for (const relay of result.relays) {
         if (relay.status !== "success") {
@@ -2986,6 +3165,7 @@ async function fetchEventMarketFrontierFilters(input: {
     remainingRelayUrlsByAuthor,
     incompleteFilterCount,
     saturatedFilterCount,
+    saturatedFilterIndexes,
   }
 }
 
@@ -2998,20 +3178,28 @@ async function fetchEventMarketOrganizerRecordFrontiers(input: {
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
-}): Promise<FetchEventsFanoutResult> {
+}): Promise<EventMarketExactFrontierResult> {
   if (input.coordinates.length === 0) {
-    return { events: [], relays: [], eventsVerified: true }
+    return {
+      events: [],
+      relays: [],
+      eventsVerified: true,
+      incompleteFilterCount: 0,
+      saturatedFilterCount: 0,
+      saturatedRecordCoordinates: EMPTY_EVENT_MARKET_SATURATED_COORDINATES,
+    }
   }
   const allowedCoordinates = new Set(
     input.coordinates.map((coordinate) => coordinate.coordinate)
   )
+  const recordFilters = input.coordinates.map((coordinate): NDKFilter => ({
+    kinds: [coordinate.kind as never],
+    authors: [coordinate.authorPubkey],
+    "#d": [coordinate.dTag],
+    limit: EVENT_MARKET_PARTICIPATION_REVISIONS_PER_TARGET_LIMIT,
+  }))
   const recordResult = await fetchEventMarketFrontierFilters({
-    filters: input.coordinates.map((coordinate): NDKFilter => ({
-      kinds: [coordinate.kind as never],
-      authors: [coordinate.authorPubkey],
-      "#d": [coordinate.dTag],
-      limit: EVENT_MARKET_PARTICIPATION_REVISIONS_PER_TARGET_LIMIT,
-    })),
+    filters: recordFilters,
     relayUrls: input.relayUrls,
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
@@ -3082,6 +3270,15 @@ async function fetchEventMarketOrganizerRecordFrontiers(input: {
     eventsVerified:
       recordResult.eventsVerified === true &&
       deletionResult.eventsVerified === true,
+    incompleteFilterCount:
+      recordResult.incompleteFilterCount + deletionResult.incompleteFilterCount,
+    saturatedFilterCount:
+      recordResult.saturatedFilterCount + deletionResult.saturatedFilterCount,
+    saturatedRecordCoordinates: saturatedRecordCoordinatesForFilters({
+      filters: recordFilters,
+      saturatedFilterIndexes: recordResult.saturatedFilterIndexes,
+      coordinates: input.coordinates,
+    }),
   }
 }
 
@@ -3319,14 +3516,12 @@ function deletionFrontierFilters(input: {
   return filters
 }
 
-interface EventMarketProductRequestFrontierResult extends FetchEventsFanoutResult {
+interface EventMarketProductRequestFrontierResult extends EventMarketExactFrontierResult {
   participationBudget: EventMarketParticipationBudget
 }
 
-interface EventMarketPickupFrontierResult extends FetchEventsFanoutResult {
+interface EventMarketPickupFrontierResult extends EventMarketExactFrontierResult {
   pickupBudget: EventMarketParticipationBudget
-  incompleteFilterCount: number
-  saturatedFilterCount: number
 }
 
 function collectionCalendarCoordinatesFromEvidence(input: {
@@ -3515,6 +3710,9 @@ async function fetchEventMarketPickupFrontiers(
         (count, result) => count + result.saturatedFilterCount,
         0
       ),
+      saturatedRecordCoordinates: mergeEventMarketSaturatedCoordinates(
+        ...batchResults.map((result) => result.saturatedRecordCoordinates)
+      ),
     }
   }
   if (input.coordinates.length === 0) {
@@ -3525,6 +3723,7 @@ async function fetchEventMarketPickupFrontiers(
       pickupBudget,
       incompleteFilterCount: 0,
       saturatedFilterCount: 0,
+      saturatedRecordCoordinates: EMPTY_EVENT_MARKET_SATURATED_COORDINATES,
     }
   }
   const participantPlan = await eventMarketParticipantRelayPlans({
@@ -3543,8 +3742,9 @@ async function fetchEventMarketPickupFrontiers(
     ...(input.ownerSelectedRelayUrls ?? []),
     ...participantPlan.ownerSelectedRelayUrls,
   ])
+  const pickupFilters = pickupFrontierFilters(input.coordinates)
   const pickupResult = await fetchEventMarketFrontierFilters({
-    filters: pickupFrontierFilters(input.coordinates),
+    filters: pickupFilters,
     relayUrls: input.relayUrls,
     relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
     relayHealthSnapshot,
@@ -3597,6 +3797,11 @@ async function fetchEventMarketPickupFrontiers(
       pickupResult.incompleteFilterCount + deletionResult.incompleteFilterCount,
     saturatedFilterCount:
       pickupResult.saturatedFilterCount + deletionResult.saturatedFilterCount,
+    saturatedRecordCoordinates: saturatedRecordCoordinatesForFilters({
+      filters: pickupFilters,
+      saturatedFilterIndexes: pickupResult.saturatedFilterIndexes,
+      coordinates: input.coordinates,
+    }),
   }
 }
 
@@ -3847,6 +4052,17 @@ async function fetchEventMarketProductRequestFrontiers(
     return {
       ...mergeFanoutResults(batchResults),
       participationBudget,
+      incompleteFilterCount: batchResults.reduce(
+        (count, result) => count + result.incompleteFilterCount,
+        0
+      ),
+      saturatedFilterCount: batchResults.reduce(
+        (count, result) => count + result.saturatedFilterCount,
+        0
+      ),
+      saturatedRecordCoordinates: mergeEventMarketSaturatedCoordinates(
+        ...batchResults.map((result) => result.saturatedRecordCoordinates)
+      ),
     }
   }
   if (coordinates.length === 0) {
@@ -3855,6 +4071,9 @@ async function fetchEventMarketProductRequestFrontiers(
       relays: [],
       eventsVerified: true,
       participationBudget,
+      incompleteFilterCount: 0,
+      saturatedFilterCount: 0,
+      saturatedRecordCoordinates: EMPTY_EVENT_MARKET_SATURATED_COORDINATES,
     }
   }
   const participantPlan = await eventMarketParticipantRelayPlans({
@@ -3873,8 +4092,9 @@ async function fetchEventMarketProductRequestFrontiers(
     ...(input.ownerSelectedRelayUrls ?? []),
     ...participantPlan.ownerSelectedRelayUrls,
   ])
+  const productFilters = productFrontierFilters(coordinates)
   const productResult = await fetchEventMarketFrontierFilters({
-    filters: productFrontierFilters(coordinates),
+    filters: productFilters,
     relayUrls: input.relayUrls,
     relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
     relayHealthSnapshot,
@@ -3923,6 +4143,16 @@ async function fetchEventMarketProductRequestFrontiers(
       productResult.eventsVerified === true &&
       deletionResult.eventsVerified === true,
     participationBudget,
+    incompleteFilterCount:
+      productResult.incompleteFilterCount +
+      deletionResult.incompleteFilterCount,
+    saturatedFilterCount:
+      productResult.saturatedFilterCount + deletionResult.saturatedFilterCount,
+    saturatedRecordCoordinates: saturatedRecordCoordinatesForFilters({
+      filters: productFilters,
+      saturatedFilterIndexes: productResult.saturatedFilterIndexes,
+      coordinates,
+    }),
   }
 }
 
@@ -4291,6 +4521,25 @@ export function subscribeLocalEventMarketEvidenceChanges(
   }
 }
 
+function collectionRevisionRevokesEventMarketGraph(
+  collection: ParsedEventMarketCollection
+): boolean {
+  const calendarCoordinate =
+    collection.eventCoordinates.length === 1
+      ? parseAddressableCoordinate(
+          collection.eventCoordinates[0],
+          EVENT_MARKET_CALENDAR_KINDS
+        )
+      : null
+  return (
+    collection.unsupportedReferences.length > 0 ||
+    collection.eventCoordinates.length !== 1 ||
+    collection.pickupCoordinates.length > 1 ||
+    !calendarCoordinate ||
+    calendarCoordinate.authorPubkey !== collection.authorPubkey
+  )
+}
+
 /** Compare only dependencies of an already verified resolution. Stronger local
  * evidence can revoke old authority; a fresh reader must authorize new terms. */
 export function getEventMarketSupersededEvidence(
@@ -4300,69 +4549,215 @@ export function getEventMarketSupersededEvidence(
     addressId: string
     eventId: string
     eventCreatedAt: number
-  }[] = []
+  }[] = [],
+  nowMs = Date.now()
 ): {
   graph: boolean
+  graphRevoked: boolean
   productCoordinates: string[]
+  removedProductCoordinates: string[]
+  terminalProductCoordinates: string[]
   pickupCoordinates: string[]
+  terminalPickupCoordinates: string[]
 } {
   const valid = events.filter(isVerifiedLocalEventMarketEvent)
   const deletions = validDeletionEvents(valid)
-  const superseded = (record: {
+  const supersedingEvidence = (record: {
     coordinate: string
     eventId: string
     createdAt: number
   }) => {
     const coordinate = parseAddressableCoordinate(record.coordinate)
-    if (!coordinate) return false
+    if (!coordinate) return { deleted: false }
     const revision = {
       id: record.eventId,
       created_at: record.createdAt / 1_000,
     }
-    if (
+    const deleted =
       deletionEvidenceForAddressableEvent(revision, coordinate, deletions)
         .length > 0
+    const event = valid.reduce<SignedPublicNostrEvent | undefined>(
+      (latest, candidate) =>
+        candidate.kind !== EVENT_KINDS.DELETION &&
+        eventHasCoordinateShape(candidate, coordinate) &&
+        compareAddressableEvents(candidate, revision) < 0 &&
+        deletionEvidenceForAddressableEvent(candidate, coordinate, deletions)
+          .length === 0 &&
+        (!latest || compareAddressableEvents(candidate, latest) < 0)
+          ? candidate
+          : latest,
+      undefined
     )
-      return true
-    return valid.some(
-      (event) =>
-        eventHasCoordinateShape(event, coordinate) &&
-        compareAddressableEvents(event, revision) < 0 &&
-        deletionEvidenceForAddressableEvent(event, coordinate, deletions)
-          .length === 0
-    )
+    return { deleted, event }
   }
-  return {
-    graph: [resolution.collection, resolution.calendar].some(
-      (record) => !!record && superseded(record)
-    ),
-    productCoordinates: resolution.acceptedProductEvidence
-      .filter((record) => {
-        const revision = records
-          .filter(
-            (candidate) => candidate.addressId === record.productCoordinate
-          )
-          .map((candidate) => ({
-            eventId: candidate.eventId,
-            createdAt: candidate.eventCreatedAt * 1_000,
-          }))
-          .reduce(
-            (latest, candidate) =>
-              compareAddressableEvents(
-                { id: candidate.eventId, created_at: candidate.createdAt },
-                { id: latest.eventId, created_at: latest.createdAt }
-              ) < 0
-                ? candidate
-                : latest,
-            record
-          )
-        return superseded({ coordinate: record.productCoordinate, ...revision })
+  const collectionEvidence = resolution.collection
+    ? supersedingEvidence(resolution.collection)
+    : { deleted: false }
+  const calendarEvidence = resolution.calendar
+    ? supersedingEvidence(resolution.calendar)
+    : { deleted: false }
+  const collectionRevision = collectionEvidence.event
+    ? parseEventMarketCollectionEvent(collectionEvidence.event)
+    : null
+  const calendarRevision = calendarEvidence.event
+    ? parseEventMarketCalendarEvent(calendarEvidence.event)
+    : null
+  let collectionLifecycleDeclarationRemoved = false
+  if (
+    collectionEvidence.event &&
+    resolution.collection &&
+    !collectionEvidence.event.tags.some(
+      (tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG
+    )
+  ) {
+    const coordinate = parseAddressableCoordinate(
+      resolution.collection.coordinate,
+      [EVENT_KINDS.PRODUCT_COLLECTION]
+    )
+    if (coordinate && resolution.collection.signedEvent) {
+      const candidates = [
+        ...new Map(
+          [resolution.collection.signedEvent, ...valid]
+            .filter((candidate) =>
+              eventHasCoordinateShape(candidate, coordinate)
+            )
+            .map((candidate) => [candidate.id.toLowerCase(), candidate])
+        ).values(),
+      ].sort(compareAddressableEvents)
+      collectionLifecycleDeclarationRemoved = Boolean(
+        findCanonicalEventMarketLifecyclePredecessor(
+          collectionEvidence.event,
+          candidates,
+          (candidate) =>
+            deletionEvidenceForAddressableEvent(
+              candidate,
+              coordinate,
+              deletions
+            ).length > 0
+        )
+      )
+    }
+  }
+  const collectionEventCoordinates = new Set(
+    collectionRevision?.eventCoordinates ?? []
+  )
+  const collectionPickupCoordinates = new Set(
+    collectionRevision?.pickupCoordinates ?? []
+  )
+  const collectionProductCoordinates = new Set(
+    collectionRevision?.productCoordinates ?? []
+  )
+  const collectionReplaced =
+    collectionEvidence.deleted || !!collectionEvidence.event
+  const calendarReplaced = calendarEvidence.deleted || !!calendarEvidence.event
+  const supersedingAcceptance = getEventMarketOrderAcceptance(
+    {
+      collection: collectionRevision ?? resolution.collection,
+      calendar: calendarRevision ?? resolution.calendar,
+    },
+    nowMs
+  )
+  const supersedingGraphEndsOrdering =
+    (collectionReplaced || calendarReplaced) &&
+    (supersedingAcceptance === "closed" ||
+      supersedingAcceptance === "legacy-ended")
+  const collectionEventDependencyRemoved =
+    !!collectionRevision &&
+    !!resolution.collection &&
+    resolution.collection.eventCoordinates.some(
+      (coordinate) => !collectionEventCoordinates.has(coordinate)
+    )
+  const removedPickupCoordinates = collectionRevision
+    ? (resolution.collection?.pickupCoordinates ?? []).filter(
+        (coordinate) => !collectionPickupCoordinates.has(coordinate)
+      )
+    : []
+  const graphRevoked =
+    (collectionReplaced &&
+      (!collectionEvidence.event ||
+        !collectionRevision ||
+        collectionRevisionRevokesEventMarketGraph(collectionRevision) ||
+        collectionLifecycleDeclarationRemoved ||
+        collectionEventDependencyRemoved)) ||
+    (calendarReplaced && (!calendarEvidence.event || !calendarRevision)) ||
+    supersedingGraphEndsOrdering
+  const removedProductCoordinates = collectionRevision
+    ? [
+        ...new Set([
+          ...resolution.organizerProductCoordinates,
+          ...resolution.acceptedProductCoordinates,
+        ]),
+      ].filter((coordinate) => !collectionProductCoordinates.has(coordinate))
+    : []
+  const supersededPickupEvidence = resolution.pickups.map((record) => ({
+    coordinate: record.coordinate,
+    evidence: supersedingEvidence(record),
+  }))
+  const supersededProductEvidence = resolution.acceptedProductEvidence.flatMap(
+    (record) => {
+      const revision = records
+        .filter((candidate) => candidate.addressId === record.productCoordinate)
+        .map((candidate) => ({
+          eventId: candidate.eventId,
+          createdAt: candidate.eventCreatedAt * 1_000,
+        }))
+        .reduce(
+          (latest, candidate) =>
+            compareAddressableEvents(
+              { id: candidate.eventId, created_at: candidate.createdAt },
+              { id: latest.eventId, created_at: latest.createdAt }
+            ) < 0
+              ? candidate
+              : latest,
+          record
+        )
+      const evidence = supersedingEvidence({
+        coordinate: record.productCoordinate,
+        ...revision,
       })
-      .map((record) => record.productCoordinate),
+      return evidence.deleted || evidence.event
+        ? [{ coordinate: record.productCoordinate, evidence }]
+        : []
+    }
+  )
+  return {
+    graph: collectionReplaced || calendarReplaced,
+    graphRevoked,
+    productCoordinates: supersededProductEvidence.map(
+      ({ coordinate }) => coordinate
+    ),
+    removedProductCoordinates,
+    terminalProductCoordinates: [
+      ...new Set(
+        supersededProductEvidence.flatMap(({ coordinate, evidence }) => {
+          if (!evidence.event) return [coordinate]
+          try {
+            return parseProductEvent(evidence.event).id === coordinate
+              ? []
+              : [coordinate]
+          } catch {
+            return [coordinate]
+          }
+        })
+      ),
+    ],
     pickupCoordinates: [
       ...new Set(
-        resolution.pickups.filter(superseded).map((record) => record.coordinate)
+        supersededPickupEvidence.flatMap(({ coordinate, evidence }) =>
+          evidence.deleted || evidence.event ? [coordinate] : []
+        )
       ),
+    ],
+    terminalPickupCoordinates: [
+      ...new Set([
+        ...removedPickupCoordinates,
+        ...supersededPickupEvidence.flatMap(({ coordinate, evidence }) =>
+          (evidence.deleted || !!evidence.event) &&
+          (!evidence.event || !parseEventMarketPickupEvent(evidence.event))
+            ? [coordinate]
+            : []
+        ),
+      ]),
     ],
   }
 }
@@ -5266,6 +5661,23 @@ function downgradeCachedOnlyResolution(
   const allRequiredEvidenceIsLive =
     requiredIds.length === 2 + (resolution.pickup ? 1 : 0) &&
     requiredIds.every((eventId) => liveEventIds.has(eventId.toLowerCase()))
+  const liveDeletionEvidence = resolution.deletion?.deletions.some((deletion) =>
+    liveEventIds.has(deletion.deletionEventId.toLowerCase())
+  )
+  const allObservedGraphEvidenceIsLive = [
+    resolution.collection?.eventId,
+    resolution.calendar?.eventId,
+    resolution.pickup?.eventId,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .every((eventId) => liveEventIds.has(eventId.toLowerCase()))
+  if (
+    resolution.state === "partial" &&
+    liveDeletionEvidence &&
+    allObservedGraphEvidenceIsLive
+  ) {
+    return resolution
+  }
   const pickups = resolution.pickups
   const retainedPickups = pickups.filter(
     (pickup) => pickup.evidenceState === "retained"
@@ -5339,6 +5751,18 @@ function organizerProductCoordinatesFromEvidence(
     }
   }
   return Array.from(products).sort()
+}
+
+function productCoordinatesForMerchant(
+  coordinates: readonly string[],
+  merchantPubkey: string | null | undefined
+): string[] {
+  if (!merchantPubkey) return []
+  return coordinates.filter(
+    (coordinate) =>
+      parseAddressableCoordinate(coordinate, [EVENT_KINDS.PRODUCT])
+        ?.authorPubkey === merchantPubkey
+  )
 }
 
 function assertEventMarketReadCurrent(
@@ -5470,6 +5894,12 @@ export async function getEventMarket(
   )
   if (selectedProductCoordinates === null)
     return emptyResolution(decoded.coordinate, "malformed")
+  const hasSelectedMerchant = input.selectedMerchantPubkey !== undefined
+  const selectedMerchantPubkey = hasSelectedMerchant
+    ? normalizePubkey(input.selectedMerchantPubkey)
+    : undefined
+  const isScopedRead =
+    selectedProductCoordinates !== undefined || hasSelectedMerchant
   const expectedOrganizer = input.expectedOrganizerPubkey
     ? normalizePubkey(input.expectedOrganizerPubkey)
     : null
@@ -5489,6 +5919,18 @@ export async function getEventMarket(
     events: [],
     sourceRelayUrlsById: new Map(),
   }
+  const selectedCoordinatesForEvidence = (
+    events: readonly SignedPublicNostrEvent[]
+  ): string[] | undefined => {
+    if (selectedProductCoordinates !== undefined) {
+      return selectedProductCoordinates
+    }
+    if (!hasSelectedMerchant) return undefined
+    return productCoordinatesForMerchant(
+      organizerProductCoordinatesFromEvidence(events, [decoded.coordinate]),
+      selectedMerchantPubkey
+    )
+  }
   const emitBrowseProgress = () => {
     if (
       !input.onProgress ||
@@ -5496,12 +5938,18 @@ export async function getEventMarket(
       input.shouldContinue?.() === false
     )
       return
+    const records = mergeCachedAndLiveEvidence({
+      cached: retainedRecords,
+      live: observedRecords,
+    })
     const preview = resolveEventMarketBrowseEvidence(
-      input,
-      mergeCachedAndLiveEvidence({
-        cached: retainedRecords,
-        live: observedRecords,
-      })
+      {
+        ...input,
+        selectedProductCoordinates: selectedCoordinatesForEvidence(
+          records.events
+        ),
+      },
+      records
     )
     if (preview.collection || preview.deletion) input.onProgress(preview)
   }
@@ -5524,7 +5972,7 @@ export async function getEventMarket(
   const { relayUrls, ownerSelectedRelayUrls } = readPlan
   const observedAt = input.nowMs ?? Date.now()
   const [recordResult, cachedRecords] = await Promise.all([
-    selectedProductCoordinates
+    isScopedRead
       ? fetchEventMarketOrganizerRecordFrontiers({
           coordinates: [decoded],
           relayUrls,
@@ -5558,7 +6006,7 @@ export async function getEventMarket(
   assertEventMarketReadCurrent(input)
   const broadLiveRecords = rawSignedEvents(recordResult)
   const authorReadReachedCap =
-    !selectedProductCoordinates && eventMarketAuthorReadReachedCap(recordResult)
+    !isScopedRead && eventMarketAuthorReadReachedCap(recordResult)
   const collectionFrontierResult = authorReadReachedCap
     ? await fetchEventMarketOrganizerRecordFrontiers({
         coordinates: [decoded],
@@ -5574,7 +6022,14 @@ export async function getEventMarket(
         shouldContinue: input.shouldContinue,
         signal: input.signal,
       })
-    : { events: [], relays: [], eventsVerified: true }
+    : {
+        events: [],
+        relays: [],
+        eventsVerified: true,
+        incompleteFilterCount: 0,
+        saturatedFilterCount: 0,
+        saturatedRecordCoordinates: EMPTY_EVENT_MARKET_SATURATED_COORDINATES,
+      }
   const rawCollectionFrontiers = rawSignedEvents(collectionFrontierResult)
   const preliminaryOrganizerRecords = mergeCachedAndLiveEvidence({
     cached: cachedRecords,
@@ -5585,7 +6040,7 @@ export async function getEventMarket(
     collectionCoordinates: [decoded.coordinate],
   })
   const calendarFrontierResult =
-    selectedProductCoordinates || authorReadReachedCap
+    isScopedRead || authorReadReachedCap
       ? await fetchEventMarketOrganizerRecordFrontiers({
           coordinates: calendarCoordinates,
           relayUrls: relayUrlsWithoutObservedFailures(
@@ -5601,7 +6056,14 @@ export async function getEventMarket(
           shouldContinue: input.shouldContinue,
           signal: input.signal,
         })
-      : { events: [], relays: [], eventsVerified: true }
+      : {
+          events: [],
+          relays: [],
+          eventsVerified: true,
+          incompleteFilterCount: 0,
+          saturatedFilterCount: 0,
+          saturatedRecordCoordinates: EMPTY_EVENT_MARKET_SATURATED_COORDINATES,
+        }
   const rawCalendarFrontiers = rawSignedEvents(calendarFrontierResult)
   const liveRecords = mergeRawSignedEventGroups(
     broadLiveRecords,
@@ -5634,28 +6096,35 @@ export async function getEventMarket(
     organizerRecords.events,
     [decoded.coordinate]
   )
+  const selectedMerchantProductCoordinates = hasSelectedMerchant
+    ? productCoordinatesForMerchant(
+        organizerProductCoordinates,
+        selectedMerchantPubkey
+      )
+    : undefined
+  const scopedProductCoordinates =
+    selectedProductCoordinates ?? selectedMerchantProductCoordinates
   const requestedProductCoordinates =
-    selectedProductCoordinates ?? organizerProductCoordinates
+    scopedProductCoordinates ?? organizerProductCoordinates
   const [{ requestResult, requestFrontierResult }, organizerPickupResult] =
     await Promise.all([
       (async () => {
-        const requestResult: FetchEventsFanoutResult =
-          selectedProductCoordinates
-            ? { events: [], relays: [], eventsVerified: true }
-            : await fetchEventMarketProductRequests({
-                collectionCoordinates: [decoded.coordinate],
-                relayUrls: relayUrlsWithoutObservedFailures(
-                  relayUrls,
-                  organizerRecordRelays
-                ),
-                accountPubkey: input.authenticatedPubkey,
-                authenticatedPubkey: input.authenticatedPubkey,
-                ownerSelectedRelayUrls,
-                accountNetworkLocalStateRepository:
-                  input.accountNetworkLocalStateRepository,
-                shouldContinue: input.shouldContinue,
-                signal: input.signal,
-              })
+        const requestResult: FetchEventsFanoutResult = isScopedRead
+          ? { events: [], relays: [], eventsVerified: true }
+          : await fetchEventMarketProductRequests({
+              collectionCoordinates: [decoded.coordinate],
+              relayUrls: relayUrlsWithoutObservedFailures(
+                relayUrls,
+                organizerRecordRelays
+              ),
+              accountPubkey: input.authenticatedPubkey,
+              authenticatedPubkey: input.authenticatedPubkey,
+              ownerSelectedRelayUrls,
+              accountNetworkLocalStateRepository:
+                input.accountNetworkLocalStateRepository,
+              shouldContinue: input.shouldContinue,
+              signal: input.signal,
+            })
         const rawRequestCandidates = rawSignedEvents(requestResult)
         const requestFrontierResult =
           await fetchEventMarketProductRequestFrontiers({
@@ -5680,9 +6149,7 @@ export async function getEventMarket(
       fetchEventMarketPickupFrontiers({
         // Selected orders determine organizer pickup use from the live product
         // frontier below; an unused organizer offer is not checkout authority.
-        coordinates: selectedProductCoordinates
-          ? []
-          : organizerPickupCoordinates,
+        coordinates: isScopedRead ? [] : organizerPickupCoordinates,
         candidateEvents: organizerRecords.events,
         candidateSourceRelayUrlsById: organizerRecords.sourceRelayUrlsById,
         relayUrls: relayUrlsWithoutObservedFailures(
@@ -5722,7 +6189,7 @@ export async function getEventMarket(
           organizerProducts: requestedProductCoordinates,
         })
       : []
-  const requiredOrganizerPickupCoordinates = selectedProductCoordinates
+  const requiredOrganizerPickupCoordinates = isScopedRead
     ? new Set(
         collectionPickupCoordinatesForProducts({
           events: productRequestEvents,
@@ -5755,13 +6222,13 @@ export async function getEventMarket(
     rawRequestFrontiers
   )
   const directPickupResult = await fetchEventMarketPickupFrontiers({
-    coordinates: selectedProductCoordinates
+    coordinates: isScopedRead
       ? pickupCoordinates
       : directMerchantPickupCoordinates,
-    candidateEvents: selectedProductCoordinates
+    candidateEvents: isScopedRead
       ? [...organizerRecords.events, ...requestEvidence.events]
       : requestEvidence.events,
-    candidateSourceRelayUrlsById: selectedProductCoordinates
+    candidateSourceRelayUrlsById: isScopedRead
       ? new Map([
           ...organizerRecords.sourceRelayUrlsById,
           ...requestEvidence.sourceRelayUrlsById,
@@ -5807,11 +6274,25 @@ export async function getEventMarket(
   })
   const resolution = resolveEventMarketEvidence({
     reference: decoded.coordinate,
-    selectedProductCoordinates,
+    selectedProductCoordinates: scopedProductCoordinates,
     events: records.events,
     livePickupEventIds: records.liveEventIds,
     productRequestEvents,
     participationBudget: requestFrontierResult.participationBudget,
+    frontierSaturation: {
+      collection: mergeEventMarketSaturatedCoordinates(
+        isScopedRead
+          ? eventMarketSaturatedRecordCoordinates(recordResult)
+          : undefined,
+        collectionFrontierResult.saturatedRecordCoordinates
+      ),
+      calendar: calendarFrontierResult.saturatedRecordCoordinates,
+      product: requestFrontierResult.saturatedRecordCoordinates,
+      pickup: mergeEventMarketSaturatedCoordinates(
+        organizerPickupResult.saturatedRecordCoordinates,
+        directPickupResult.saturatedRecordCoordinates
+      ),
+    },
     coverage: coverageForNetworkRead(
       mergeRelayReadStatuses(
         organizerRecordRelays,
@@ -6076,7 +6557,14 @@ export async function getOrganizerEventMarketsDetailed(
         shouldContinue: input.shouldContinue,
         signal: input.signal,
       })
-    : { events: [], relays: [], eventsVerified: true }
+    : {
+        events: [],
+        relays: [],
+        eventsVerified: true,
+        incompleteFilterCount: 0,
+        saturatedFilterCount: 0,
+        saturatedRecordCoordinates: EMPTY_EVENT_MARKET_SATURATED_COORDINATES,
+      }
   const rawCollectionFrontiers = rawSignedEvents(collectionFrontierResult)
   const recordsWithCollectionFrontiers = mergeCachedAndLiveEvidence({
     cached: cachedRecords,
@@ -6114,7 +6602,14 @@ export async function getOrganizerEventMarketsDetailed(
         shouldContinue: input.shouldContinue,
         signal: input.signal,
       })
-    : { events: [], relays: [], eventsVerified: true }
+    : {
+        events: [],
+        relays: [],
+        eventsVerified: true,
+        incompleteFilterCount: 0,
+        saturatedFilterCount: 0,
+        saturatedRecordCoordinates: EMPTY_EVENT_MARKET_SATURATED_COORDINATES,
+      }
   const rawCalendarFrontiers = rawSignedEvents(calendarFrontierResult)
   const resolutionRecords = mergeRawSignedEventGroups(
     broadResolutionRecords,
@@ -6217,6 +6712,9 @@ export async function getOrganizerEventMarketsDetailed(
         relays: [],
         eventsVerified: true,
         participationBudget: EMPTY_PARTICIPATION_BUDGET,
+        incompleteFilterCount: 0,
+        saturatedFilterCount: 0,
+        saturatedRecordCoordinates: EMPTY_EVENT_MARKET_SATURATED_COORDINATES,
       }
     : await fetchEventMarketProductRequestFrontiers({
         candidateEvents: rawRequestCandidates.events,
@@ -6366,6 +6864,15 @@ export async function getOrganizerEventMarketsDetailed(
           livePickupEventIds: currentResolutionEventIds,
           productRequestEvents,
           participationBudget: requestFrontierResult.participationBudget,
+          frontierSaturation: {
+            collection: collectionFrontierResult.saturatedRecordCoordinates,
+            calendar: calendarFrontierResult.saturatedRecordCoordinates,
+            product: requestFrontierResult.saturatedRecordCoordinates,
+            pickup: mergeEventMarketSaturatedCoordinates(
+              organizerPickupResult.saturatedRecordCoordinates,
+              directPickupResult.saturatedRecordCoordinates
+            ),
+          },
           pickupBudget,
           coverage,
           expectedOrganizerPubkey: organizerPubkey,
