@@ -1,53 +1,73 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
+import * as core from "@conduit/core"
 import {
-  type CommerceProductRecord,
-  type OrderPickupFulfillmentSchema,
-  type OrderSummary,
-  type ParsedShippingOption,
-  type ProductSchema,
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+import type {
+  CommerceProductRecord,
+  OrderSummary,
+  ProductSchema,
 } from "@conduit/core"
+import { applyProductFulfillmentIntentForPublication } from "../apps/merchant/src/lib/product-publishing"
+import { prepareOrderStockUpdate } from "../apps/merchant/src/lib/order-stock-fulfillment"
 import {
-  getOrderStockPickupFulfillment,
-  rebaseOrderStockAdjustmentOnProduct,
-  resolveStockUpdateFulfillmentIntent,
-} from "../apps/merchant/src/lib/order-stock-fulfillment"
-import type { OrderStockAdjustment } from "../apps/merchant/src/lib/productStock"
+  getOrderStockDecisionKey,
+  type OrderStockAdjustment,
+} from "../apps/merchant/src/lib/productStock"
 
-const MERCHANT = "a".repeat(64)
+const SYNTHETIC_SECRET = generateSecretKey()
+const MERCHANT = getPublicKey(SYNTHETIC_SECRET)
 const ORGANIZER = "b".repeat(64)
-const PRODUCT_COORDINATE = `30402:${MERCHANT}:event-item`
-const COLLECTION_COORDINATE = `30405:${ORGANIZER}:event`
-const PICKUP_COORDINATE = `30406:${ORGANIZER}:event-pickup`
+const ADDRESS = `30402:${MERCHANT}:event-item`
+const PICKUP = `30406:${ORGANIZER}:event-pickup`
+const COLLECTION = `30405:${ORGANIZER}:event`
+const CATALOG_COLLECTION = `30405:${ORGANIZER}:independent-catalog`
 
-function product(overrides: Partial<ProductSchema> = {}): ProductSchema {
+function record(overrides: Partial<ProductSchema> = {}): CommerceProductRecord {
   return {
-    id: PRODUCT_COORDINATE,
-    pubkey: MERCHANT,
-    title: "Event item",
-    price: 10,
-    currency: "SATS",
-    type: "simple",
-    format: "physical",
-    visibility: "private",
-    images: [{ url: "https://example.com/event-item.png" }],
-    tags: ["event", "item", "pickup"],
-    publicZapEnabled: true,
-    zapMessagePolicy: "generic_only",
-    publicZapPolicyKnown: true,
-    createdAt: 1_000,
-    updatedAt: 2_000,
-    ...overrides,
+    addressId: ADDRESS,
+    eventId: "9".repeat(64),
+    dTag: "event-item",
+    eventCreatedAt: 3_000,
+    product: {
+      id: ADDRESS,
+      pubkey: MERCHANT,
+      title: "Current item",
+      price: 10,
+      currency: "SATS",
+      type: "simple",
+      format: "physical",
+      visibility: "private",
+      images: [],
+      tags: [],
+      specifications: [],
+      publicZapEnabled: false,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      stock: 5,
+      collectionRefs: [COLLECTION],
+      shippingOptionId: PICKUP,
+      shippingOptionRefs: [
+        { coordinate: PICKUP, relayHints: ["wss://relay.example"] },
+      ],
+      canonicalShippingResolved: false,
+      createdAt: 1_000,
+      updatedAt: 2_000,
+      ...overrides,
+    },
   }
 }
 
-function stockAdjustment(
+function adjustment(
   overrides: Partial<OrderStockAdjustment> = {}
 ): OrderStockAdjustment {
   return {
-    key: "order:item",
-    addressId: PRODUCT_COORDINATE,
+    key: getOrderStockDecisionKey("order", ADDRESS),
+    addressId: ADDRESS,
     sourceEventId: "1".repeat(64),
-    title: "Stale title",
+    title: "Old title",
     quantity: 3,
     currentStock: 10,
     nextStock: 7,
@@ -56,307 +76,230 @@ function stockAdjustment(
   }
 }
 
-function productRecord(
-  productOverrides: Partial<ProductSchema> = {}
-): CommerceProductRecord {
-  return {
-    product: product({ title: "Current title", stock: 5, ...productOverrides }),
-    eventId: "9".repeat(64),
-    addressId: PRODUCT_COORDINATE,
-    dTag: "event-item",
-    eventCreatedAt: 3_000,
-  }
-}
-
-function pickup(
-  overrides: Partial<OrderPickupFulfillmentSchema> = {}
-): OrderPickupFulfillmentSchema {
-  return {
-    type: "pickup",
-    organizerPubkey: ORGANIZER,
-    product: {
-      coordinate: PRODUCT_COORDINATE,
-      eventId: "1".repeat(64),
-      createdAt: 1_000,
-      merchantPubkey: MERCHANT,
-    },
-    calendar: {
-      coordinate: `31923:${ORGANIZER}:calendar`,
-      eventId: "2".repeat(64),
-      createdAt: 1_000,
-    },
-    collection: {
-      coordinate: COLLECTION_COORDINATE,
-      eventId: "3".repeat(64),
-      createdAt: 1_000,
-    },
-    option: {
-      coordinate: PICKUP_COORDINATE,
-      eventId: "4".repeat(64),
-      createdAt: 1_000,
-      title: "Event pickup",
-      location: "Booth 5",
-    },
-    handoffMode: "organizer_handoff",
-    handlerPubkey: ORGANIZER,
-    costSats: 0,
-    sourceCost: {
-      amount: 0,
-      currency: "SATS",
-      normalizedCurrency: "SATS",
-    },
+function prepare(
+  overrides: Partial<Parameters<typeof prepareOrderStockUpdate>[0]> = {}
+) {
+  return prepareOrderStockUpdate({
+    merchantPubkey: MERCHANT,
+    orderId: "order",
+    items: [{ productId: ADDRESS, quantity: 3 }] as OrderSummary["items"],
+    adjustment: adjustment(),
+    record: record(),
     ...overrides,
-  }
+  })
 }
 
-function standardShippingOption(coordinate: string): ParsedShippingOption {
-  return {
-    eventId: "5".repeat(64),
-    id: coordinate,
-    pubkey: MERCHANT,
-    dTag: "standard",
-    title: "Standard shipping",
-    currency: "SATS",
-    price: 5,
-    countries: ["US"],
-    countryRules: [
-      {
-        code: "US",
-        name: "United States",
-        restrictTo: [],
-        exclude: [],
-      },
-    ],
-    service: "standard",
-    createdAt: 1_000,
-    launchUnsupportedTags: [],
-  }
-}
-
-describe("merchant stock update fulfillment", () => {
-  it("rebases a calculated update onto the exact verified product revision", () => {
-    const adjustment = stockAdjustment()
-    const currentRecord = productRecord()
-
-    expect(
-      rebaseOrderStockAdjustmentOnProduct({
-        adjustment,
-        record: currentRecord,
-      })
-    ).toEqual({
-      ...adjustment,
-      sourceEventId: currentRecord.eventId,
-      title: "Current title",
+describe("merchant-owned order stock mutation", () => {
+  it("rebases calculated stock onto the current local listing and preserves its exact fulfillment", () => {
+    const baseline = record()
+    const result = prepare({ record: baseline })
+    expect(result.adjustment).toMatchObject({
+      sourceEventId: baseline.eventId,
+      title: "Current item",
       currentStock: 5,
       nextStock: 2,
       shortfall: 0,
     })
-    expect(currentRecord.product.stock).toBe(5)
+    expect(result.fulfillmentIntent).toEqual({
+      kind: "preserve_existing",
+      baseline: baseline.product,
+    })
+    expect(baseline.product.stock).toBe(5)
+    expect(baseline.product.shippingOptionRefs).toEqual([
+      { coordinate: PICKUP, relayHints: ["wss://relay.example"] },
+    ])
   })
 
-  it("keeps an explicit target while preserving the current product revision", () => {
-    const adjustment = stockAdjustment({
-      nextStock: 12,
-      targetMode: "custom",
-    })
-    const currentRecord = productRecord()
+  it("does not contact unavailable organizer or shipping services for pickup, fixed, or digital stock", () => {
+    const organizer = spyOn(core, "getEventMarket").mockRejectedValue(
+      new Error("Organizer unavailable")
+    )
+    const shipping = spyOn(
+      core,
+      "getShippingOptionsByCoordinates"
+    ).mockRejectedValue(new Error("Shipping unavailable"))
+    try {
+      for (const baseline of [
+        record(),
+        record({
+          shippingOptionId: `30406:${MERCHANT}:standard`,
+          collectionRefs: [],
+        }),
+        record({
+          format: "digital",
+          shippingOptionId: undefined,
+          shippingOptionRefs: undefined,
+          collectionRefs: [],
+        }),
+      ]) {
+        expect(prepare({ record: baseline }).fulfillmentIntent).toEqual({
+          kind: "preserve_existing",
+          baseline: baseline.product,
+        })
+      }
+      expect(organizer).not.toHaveBeenCalled()
+      expect(shipping).not.toHaveBeenCalled()
+    } finally {
+      organizer.mockRestore()
+      shipping.mockRestore()
+    }
+  })
 
+  it("signs the rebased stock with unchanged event and pickup references", () => {
+    const baseline = record()
+    const prepared = prepare({ record: baseline })
+    const product = applyProductFulfillmentIntentForPublication({
+      merchantPubkey: MERCHANT,
+      productDTag: baseline.dTag!,
+      product: { ...baseline.product, stock: prepared.adjustment.nextStock },
+      intent: prepared.fulfillmentIntent,
+    })
+    const before = core.buildProductListingEventDraft({
+      product: baseline.product,
+      dTag: baseline.dTag!,
+    })
+    const after = core.buildProductListingEventDraft({
+      product,
+      dTag: baseline.dTag!,
+    })
+    const signed = finalizeEvent(
+      { ...after, created_at: 4_000 },
+      SYNTHETIC_SECRET
+    )
+    expect(core.isValidSignedPublicNostrEvent(signed)).toBe(true)
+    expect(after.tags.filter((tag) => tag[0] !== "stock")).toEqual(
+      before.tags.filter((tag) => tag[0] !== "stock")
+    )
+    const parsed = core.parseProductEvent(signed)
+    expect(parsed.stock).toBe(2)
+    expect(parsed.collectionRefs).toEqual(baseline.product.collectionRefs)
+    const previous = core.parseProductEvent(
+      finalizeEvent({ ...before, created_at: 3_000 }, SYNTHETIC_SECRET)
+    )
+    expect(parsed.shippingOptionRefs).toEqual(previous.shippingOptionRefs)
+  })
+
+  it("preserves event pickup and independent catalog references during order stock updates", () => {
+    const baseline = record({
+      collectionRefs: [COLLECTION, CATALOG_COLLECTION],
+    })
+    const prepared = prepare({ record: baseline })
+    const product = applyProductFulfillmentIntentForPublication({
+      merchantPubkey: MERCHANT,
+      productDTag: baseline.dTag!,
+      product: { ...baseline.product, stock: prepared.adjustment.nextStock },
+      intent: prepared.fulfillmentIntent,
+    })
+    const before = core.buildProductListingEventDraft({
+      product: baseline.product,
+      dTag: baseline.dTag!,
+    })
+    const after = core.buildProductListingEventDraft({
+      product,
+      dTag: baseline.dTag!,
+    })
+    const signed = finalizeEvent(
+      { ...after, created_at: 4_000 },
+      SYNTHETIC_SECRET
+    )
+    const parsed = core.parseProductEvent(signed)
+
+    expect(core.isValidSignedPublicNostrEvent(signed)).toBe(true)
+    expect(parsed.stock).toBe(2)
+    expect(parsed.collectionRefs).toEqual([COLLECTION, CATALOG_COLLECTION])
+    expect(parsed.shippingOptionId).toBe(PICKUP)
+    expect(after.tags.filter(([name]) => name === "a")).toEqual(
+      before.tags.filter(([name]) => name === "a")
+    )
+    expect(after.tags.filter(([name]) => name === "shipping_option")).toEqual(
+      before.tags.filter(([name]) => name === "shipping_option")
+    )
+    expect(after.tags).toContainEqual(["visibility", "hidden"])
+  })
+
+  it("keeps a custom stock assertion while rebasing its source revision", () => {
     expect(
-      rebaseOrderStockAdjustmentOnProduct({
-        adjustment,
-        record: currentRecord,
-      })
+      prepare({
+        adjustment: adjustment({ targetMode: "custom", nextStock: 12 }),
+      }).adjustment
     ).toMatchObject({
-      sourceEventId: currentRecord.eventId,
-      title: "Current title",
+      sourceEventId: "9".repeat(64),
       currentStock: 5,
       nextStock: 12,
       targetMode: "custom",
     })
   })
 
-  it("rejects a stale simple product whose verified revision is variable", () => {
-    const adjustment = stockAdjustment({
-      title: "Stale simple product",
-      quantity: 1,
-      nextStock: 9,
-    })
-    const variableRecord = productRecord({ type: "variable", stock: 10 })
-
-    expect(() =>
-      rebaseOrderStockAdjustmentOnProduct({
-        adjustment,
-        record: variableRecord,
-      })
-    ).toThrow("cannot be used for this stock update")
-  })
-
-  it("still rebases a verified variation revision", () => {
-    const adjustment = stockAdjustment({
-      title: "Variation",
+  it("applies only residual shortfall after a prior partial deduction and restock", () => {
+    const prior = adjustment({ currentStock: 1, nextStock: 0, shortfall: 2 })
+    expect(
+      prepare({
+        persistedDecision: { kind: "applied", decidedAt: 1, adjustment: prior },
+        adjustment: adjustment({ quantity: 2, currentStock: 5, nextStock: 3 }),
+      }).adjustment
+    ).toMatchObject({
       quantity: 2,
-      currentStock: 8,
-      nextStock: 6,
+      currentStock: 5,
+      nextStock: 3,
+      shortfall: 0,
     })
-    const variationRecord = productRecord({ type: "variation" })
-
-    expect(
-      rebaseOrderStockAdjustmentOnProduct({
-        adjustment,
-        record: variationRecord,
-      }).nextStock
-    ).toBe(3)
   })
 
-  it("preserves exact currently verified event pickup references", async () => {
-    const fulfillment = pickup()
-    const eventProduct = product({
-      collectionRefs: [COLLECTION_COORDINATE],
-      shippingOptionId: PICKUP_COORDINATE,
-      shippingOptionRefs: [
-        { coordinate: PICKUP_COORDINATE, relayHints: ["wss://relay.example"] },
-      ],
-      canonicalShippingResolved: false,
-    })
-
+  it("preserves variation identity and clamps shortages at zero", () => {
     expect(
-      await resolveStockUpdateFulfillmentIntent(
-        {
-          product: eventProduct,
-          productAddressId: PRODUCT_COORDINATE,
-          verifiedPickup: fulfillment,
-        },
-        {
-          getShippingOptions: async () => {
-            throw new Error("event pickup must not be treated as shipping")
-          },
-        }
-      )
-    ).toEqual({ kind: "coordinate_after_order" })
+      prepare({ record: record({ type: "variation", stock: 1 }) }).adjustment
+    ).toMatchObject({ nextStock: 0, shortfall: 2 })
   })
 
-  it("preserves a collection-level event pickup reference", async () => {
-    const fulfillment = pickup()
-    const eventProduct = product({
-      collectionRefs: [COLLECTION_COORDINATE],
-      shippingOptionId: COLLECTION_COORDINATE,
-      shippingOptionRefs: [{ coordinate: COLLECTION_COORDINATE }],
-      canonicalShippingResolved: false,
-    })
-
-    expect(
-      await resolveStockUpdateFulfillmentIntent({
-        product: eventProduct,
-        productAddressId: PRODUCT_COORDINATE,
-        orderHasPickupClaim: true,
-        verifiedPickup: fulfillment,
-      })
-    ).toEqual({ kind: "coordinate_after_order" })
-    expect(eventProduct.shippingOptionId).toBe(COLLECTION_COORDINATE)
-    expect(eventProduct.shippingOptionRefs).toEqual([
-      { coordinate: COLLECTION_COORDINATE },
+  it("rejects missing stock, variable parents, changed ownership, and inconsistent coordinates", () => {
+    for (const baseline of [
+      record({ stock: undefined }),
+      record({ stock: -1 }),
+      record({ type: "variable" }),
+      record({ pubkey: ORGANIZER }),
+      record({ id: `30402:${MERCHANT}:other` }),
+      { ...record(), dTag: "other" },
+      { ...record(), addressId: `30402:${MERCHANT}:other` },
     ])
+      expect(() => prepare({ record: baseline })).toThrow()
   })
 
-  it("keeps an ordinary standard option fixed despite collection membership", async () => {
-    const shippingCoordinate = `30406:${MERCHANT}:standard`
-    const ordinaryProduct = product({
-      visibility: "public",
-      collectionRefs: [COLLECTION_COORDINATE],
-      shippingOptionId: shippingCoordinate,
-      shippingOptionDTag: "standard",
-      shippingOptionRefs: [
-        { coordinate: shippingCoordinate, relayHints: ["wss://relay.example"] },
-      ],
-      canonicalShippingResolved: false,
-      shippingOptionLaunchUnsupported: false,
+  it("rejects order, target, decision-key, and quantity mismatches without trusting the payload", () => {
+    for (const override of [
+      { orderId: "other-order" },
+      {
+        items: [
+          { productId: `30402:${MERCHANT}:other`, quantity: 3 },
+        ] as OrderSummary["items"],
+      },
+      { adjustment: adjustment({ addressId: `30402:${MERCHANT}:other` }) },
+      { adjustment: adjustment({ key: "wrong-key" }) },
+      { adjustment: adjustment({ quantity: 4 }) },
+      { adjustment: adjustment({ nextStock: -1 }) },
+      { adjustment: adjustment({ nextStock: Number.MAX_SAFE_INTEGER + 1 }) },
+    ])
+      expect(() => prepare(override)).toThrow()
+  })
+
+  it("uses the current product fulfillment even when an order carries an obsolete pickup snapshot", () => {
+    const baseline = record({
+      collectionRefs: [],
+      shippingOptionId: `30406:${MERCHANT}:current`,
+      shippingOptionRefs: [{ coordinate: `30406:${MERCHANT}:current` }],
     })
-
-    expect(
-      await resolveStockUpdateFulfillmentIntent(
-        {
-          product: ordinaryProduct,
-          productAddressId: PRODUCT_COORDINATE,
-        },
-        {
-          getShippingOptions: async () => [
-            standardShippingOption(shippingCoordinate),
-          ],
-        }
-      )
-    ).toEqual({
-      kind: "fixed_standard",
-      amount: 5,
-      currency: "SATS",
-      countries: ["US"],
-    })
-  })
-
-  it("rejects a verified pickup that does not match the current listing", async () => {
-    await expect(
-      resolveStockUpdateFulfillmentIntent({
-        product: product({
-          collectionRefs: [COLLECTION_COORDINATE],
-          shippingOptionId: PICKUP_COORDINATE,
-          shippingOptionRefs: [{ coordinate: PICKUP_COORDINATE }],
-          canonicalShippingResolved: false,
-        }),
-        productAddressId: PRODUCT_COORDINATE,
-        verifiedPickup: pickup({
-          collection: {
-            coordinate: `30405:${ORGANIZER}:other-event`,
-            eventId: "6".repeat(64),
-            createdAt: 1_000,
-          },
-        }),
-      })
-    ).rejects.toThrow("no longer matches")
-  })
-
-  it("selects pickup only for the matching product coordinate", () => {
-    const fulfillment = pickup()
     const items = [
       {
-        productId: PRODUCT_COORDINATE,
-        format: "physical" as const,
-        fulfillment,
-        quantity: 1,
-        priceAtPurchase: 10,
-        currency: "SATS",
+        productId: ADDRESS,
+        quantity: 3,
+        fulfillment: {
+          type: "pickup",
+          product: { coordinate: `30402:${ORGANIZER}:wrong` },
+        },
       },
-    ] satisfies OrderSummary["items"]
-
-    expect(
-      getOrderStockPickupFulfillment({
-        items,
-        productAddressId: PRODUCT_COORDINATE,
-      })
-    ).toEqual(fulfillment)
-    expect(
-      getOrderStockPickupFulfillment({
-        items,
-        productAddressId: `30402:${MERCHANT}:other-item`,
-      })
-    ).toBeNull()
-  })
-
-  it("allows digital stock updates in an order that also has pickup", async () => {
-    expect(
-      await resolveStockUpdateFulfillmentIntent({
-        product: product({ format: "digital" }),
-        productAddressId: `30402:${MERCHANT}:digital-item`,
-        orderHasPickupClaim: true,
-      })
-    ).toEqual({ kind: "digital" })
-  })
-
-  it("rejects an unmatched physical target in a pickup order", async () => {
-    await expect(
-      resolveStockUpdateFulfillmentIntent({
-        product: product(),
-        productAddressId: `30402:${MERCHANT}:other-item`,
-        orderHasPickupClaim: true,
-      })
-    ).rejects.toThrow("does not match")
+    ] as OrderSummary["items"]
+    expect(prepare({ record: baseline, items }).fulfillmentIntent).toEqual({
+      kind: "preserve_existing",
+      baseline: baseline.product,
+    })
   })
 })

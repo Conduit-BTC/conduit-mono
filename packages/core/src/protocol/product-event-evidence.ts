@@ -6,6 +6,7 @@ import {
   isSatsLikeCurrency,
   MSATS_PER_SAT,
   normalizeCurrencyCode,
+  normalizeCurrencyIdentity,
   SATS_PER_BTC,
 } from "../pricing"
 import type { ProductSchema, ProductShippingOptionReference } from "../schemas"
@@ -44,14 +45,6 @@ type NormalizedProductPriceSemantics = {
   currency: string
 }
 
-function normalizedPriceCurrencyIdentity(currency: string): string {
-  const normalized = normalizeCurrencyCode(currency)
-  if (isSatsLikeCurrency(normalized)) return "SATS"
-  if (isMsatsLikeCurrency(normalized)) return "MSATS"
-  if (isBtcLikeCurrency(normalized)) return "BTC"
-  return normalized
-}
-
 function normalizeSourcePriceSemantics(
   price: unknown,
   currency: unknown
@@ -64,7 +57,7 @@ function normalizeSourcePriceSemantics(
   ) {
     return null
   }
-  const normalizedCurrency = normalizedPriceCurrencyIdentity(currency)
+  const normalizedCurrency = normalizeCurrencyIdentity(currency)
   return normalizedCurrency
     ? {
         amount: Object.is(price, -0) ? 0 : price,
@@ -171,8 +164,8 @@ function legacyPriceEvidenceConflicts(
       !source ||
       typeof source.currency !== "string" ||
       typeof source.normalizedCurrency !== "string" ||
-      normalizedPriceCurrencyIdentity(source.currency) !==
-        normalizedPriceCurrencyIdentity(source.normalizedCurrency) ||
+      normalizeCurrencyIdentity(source.currency) !==
+        normalizeCurrencyIdentity(source.normalizedCurrency) ||
       !hasSameProductPriceSemantics(
         normalizeSourcePriceSemantics(source.amount, source.currency),
         standardSourceSemantics

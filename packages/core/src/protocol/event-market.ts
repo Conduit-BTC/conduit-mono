@@ -2322,6 +2322,13 @@ export interface GetEventMarketInput {
   signal?: AbortSignal
 }
 
+export interface EventMarketPickupReadOptions {
+  authenticatedPubkey?: string | null
+  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  signal?: AbortSignal
+}
+
 export interface GetOrganizerEventMarketsInput {
   organizerPubkey: string
   nowMs?: number
@@ -2406,6 +2413,9 @@ interface EventMarketTestOverrides {
   loadCachedEvidence?: (
     organizerPubkey: string
   ) => Promise<CachedEventMarketEvidence[]>
+  loadCachedPickupEvidence?: (
+    coordinates: readonly string[]
+  ) => Promise<CachedEventMarketEvidence[]>
   loadCachedCollectionEvidence?: (
     organizerPubkeys: readonly string[]
   ) => Promise<CachedEventMarketEvidence[]>
@@ -2418,6 +2428,7 @@ interface EventMarketTestOverrides {
     sourceRelayUrlsById: ReadonlyMap<string, string[]>
     participantCoordinates?: readonly string[]
     participantPickupCoordinates?: readonly string[]
+    requiredRetainedEventIds?: readonly string[]
   }) => Promise<void>
 }
 
@@ -2819,6 +2830,8 @@ function mergeFanoutResults(
 interface EventMarketFrontierFilterResult extends FetchEventsFanoutResult {
   remainingRelayUrls: string[]
   remainingRelayUrlsByAuthor: Map<string, string[]>
+  incompleteFilterCount: number
+  saturatedFilterCount: number
 }
 
 async function fetchEventMarketFrontierFilters(input: {
@@ -2866,12 +2879,16 @@ async function fetchEventMarketFrontierFilters(input: {
       eventsVerified: true,
       remainingRelayUrls: [...invocationRelayUrls],
       remainingRelayUrlsByAuthor,
+      incompleteFilterCount: 0,
+      saturatedFilterCount: 0,
     }
   }
   const fetch =
     eventMarketTestOverrides.fetchEventsFanoutDetailed ??
     fetchEventsFanoutDetailed
   const results: FetchEventsFanoutResult[] = []
+  let incompleteFilterCount = 0
+  let saturatedFilterCount = 0
   let remainingRelayUrls = [...invocationRelayUrls]
   for (
     let index = 0;
@@ -2919,6 +2936,31 @@ async function fetchEventMarketFrontierFilters(input: {
       resultIndex++
     ) {
       const result = batchResults[resultIndex]!
+      const plan = batchPlans[resultIndex]
+      if (!plan) continue
+      const relayStatuses = new Map(
+        result.relays.map((relay) => [relay.relayUrl.toLowerCase(), relay])
+      )
+      const missingRelayUrls = plan.relayUrls.filter(
+        (relayUrl) => !relayStatuses.has(relayUrl.toLowerCase())
+      )
+      if (missingRelayUrls.length > 0) {
+        incompleteFilterCount += 1
+        for (const relayUrl of missingRelayUrls) {
+          incompleteRelayUrls.add(relayUrl.toLowerCase())
+        }
+      }
+      const filterLimit = plan.filter.limit
+      if (
+        typeof filterLimit === "number" &&
+        result.relays.some(
+          (relay) =>
+            relay.status !== "failed" &&
+            relay.eventCount + (relay.rejectedEventCount ?? 0) >= filterLimit
+        )
+      ) {
+        saturatedFilterCount += 1
+      }
       for (const relay of result.relays) {
         if (relay.status !== "success") {
           incompleteRelayUrls.add(relay.relayUrl.toLowerCase())
@@ -2942,6 +2984,8 @@ async function fetchEventMarketFrontierFilters(input: {
     ...mergeFanoutResults(results),
     remainingRelayUrls,
     remainingRelayUrlsByAuthor,
+    incompleteFilterCount,
+    saturatedFilterCount,
   }
 }
 
@@ -3281,6 +3325,8 @@ interface EventMarketProductRequestFrontierResult extends FetchEventsFanoutResul
 
 interface EventMarketPickupFrontierResult extends FetchEventsFanoutResult {
   pickupBudget: EventMarketParticipationBudget
+  incompleteFilterCount: number
+  saturatedFilterCount: number
 }
 
 function collectionCalendarCoordinatesFromEvidence(input: {
@@ -3461,10 +3507,25 @@ async function fetchEventMarketPickupFrontiers(
     return {
       ...mergeFanoutResults(batchResults),
       pickupBudget,
+      incompleteFilterCount: batchResults.reduce(
+        (count, result) => count + result.incompleteFilterCount,
+        0
+      ),
+      saturatedFilterCount: batchResults.reduce(
+        (count, result) => count + result.saturatedFilterCount,
+        0
+      ),
     }
   }
   if (input.coordinates.length === 0) {
-    return { events: [], relays: [], eventsVerified: true, pickupBudget }
+    return {
+      events: [],
+      relays: [],
+      eventsVerified: true,
+      pickupBudget,
+      incompleteFilterCount: 0,
+      saturatedFilterCount: 0,
+    }
   }
   const participantPlan = await eventMarketParticipantRelayPlans({
     coordinates: input.coordinates,
@@ -3532,7 +3593,218 @@ async function fetchEventMarketPickupFrontiers(
       pickupResult.eventsVerified === true &&
       deletionResult.eventsVerified === true,
     pickupBudget,
+    incompleteFilterCount:
+      pickupResult.incompleteFilterCount + deletionResult.incompleteFilterCount,
+    saturatedFilterCount:
+      pickupResult.saturatedFilterCount + deletionResult.saturatedFilterCount,
   }
+}
+
+/**
+ * Resolve current event-pickup records for exact kind-30406 coordinates.
+ *
+ * This deliberately reuses the event-market frontier, deletion, and parser
+ * boundary. A generic shipping-option projection is not sufficient authority
+ * for a replacement product revision to retain an event-pickup reference.
+ */
+export async function getEventMarketPickupsByCoordinates(
+  coordinates: readonly string[],
+  options: EventMarketPickupReadOptions = {}
+): Promise<ParsedEventMarketPickup[]> {
+  const requested = new Map<string, AddressableEventCoordinate>()
+  for (const value of coordinates) {
+    const coordinate = parseAddressableCoordinate(value, [
+      EVENT_KINDS.SHIPPING_OPTION,
+    ])
+    if (!coordinate) {
+      throw new Error("Event pickup coordinate is invalid")
+    }
+    requested.set(coordinate.coordinate, coordinate)
+  }
+  const exactCoordinates = Array.from(requested.values())
+  if (exactCoordinates.length === 0) return []
+
+  const result = await fetchEventMarketPickupFrontiers({
+    coordinates: exactCoordinates,
+    candidateEvents: [],
+    candidateSourceRelayUrlsById: new Map(),
+    relayUrls: [],
+    authenticatedPubkey: options.authenticatedPubkey,
+    accountNetworkLocalStateRepository:
+      options.accountNetworkLocalStateRepository,
+    shouldContinue: options.shouldContinue,
+    signal: options.signal,
+  })
+  const observed = rawSignedEvents(result)
+  const observedPickupEvents = observed.events.filter(
+    (event) => event.kind === EVENT_KINDS.SHIPPING_OPTION
+  )
+  const requestedAuthors = new Set(
+    exactCoordinates.map((coordinate) => coordinate.authorPubkey)
+  )
+  const previouslyVolatileEvidence = eventMarketPickupLifecycleEvidence({
+    events: Array.from(volatileEventMarketEvidence.values()).flat(),
+    coordinates: exactCoordinates,
+    revisionEvents: observedPickupEvents,
+  })
+  const persistPickupEvidence = async (
+    events: readonly SignedPublicNostrEvent[],
+    requiredDeletionIds: ReadonlySet<string>
+  ) => {
+    await Promise.all(
+      Array.from(requestedAuthors).map(async (authorPubkey) => {
+        const authorEvents = events.filter(
+          (event) => event.pubkey.toLowerCase() === authorPubkey
+        )
+        if (authorEvents.length === 0) return
+        await persistEventMarketEvidence(
+          {
+            organizerPubkey: authorPubkey,
+            events: authorEvents,
+            sourceRelayUrlsById: observed.sourceRelayUrlsById,
+          },
+          {
+            requireDurable: true,
+            retainInMemory: true,
+            requiredRetainedEventIds: authorEvents.flatMap((event) =>
+              requiredDeletionIds.has(event.id.toLowerCase()) ? [event.id] : []
+            ),
+          }
+        )
+      })
+    )
+  }
+  let previouslyRetainedEvidence: SignedPublicNostrEvent[]
+  try {
+    previouslyRetainedEvidence = await loadRetainedEventMarketPickupEvidence(
+      exactCoordinates,
+      observedPickupEvents
+    )
+  } catch {
+    // A failed lifecycle read cannot prove which durable tombstones must be
+    // pinned. Keep new signed evidence non-destructively in memory, but do not
+    // let a bounded cache write prune an unseen withdrawal.
+    for (const authorPubkey of requestedAuthors) {
+      const scopedEvents = scopedCacheableEventMarketEvents({
+        organizerPubkey: authorPubkey,
+        events: observed.events,
+      })
+      if (scopedEvents.length === 0) continue
+      volatileEventMarketEvidence.set(
+        authorPubkey,
+        mergeLocalEventMarketEvidence(
+          volatileEventMarketEvidence.get(authorPubkey) ?? [],
+          scopedEvents,
+          true
+        )
+      )
+    }
+    throw new Error("Event pickup retained evidence is unavailable")
+  }
+  const evidenceToRetainById = new Map<string, SignedPublicNostrEvent>()
+  for (const event of [
+    ...previouslyRetainedEvidence,
+    ...previouslyVolatileEvidence,
+    ...observed.events,
+  ]) {
+    evidenceToRetainById.set(event.id.toLowerCase(), event)
+  }
+  const evidenceToRetain = Array.from(evidenceToRetainById.values())
+  const requiredDeletionIds = new Set(
+    eventMarketPickupLifecycleEvidence({
+      events: evidenceToRetain,
+      coordinates: exactCoordinates,
+      revisionEvents: observedPickupEvents,
+    })
+      .filter((event) => event.kind === EVENT_KINDS.DELETION)
+      .map((event) => event.id.toLowerCase())
+  )
+  try {
+    await persistPickupEvidence(evidenceToRetain, requiredDeletionIds)
+  } catch {
+    throw new Error("Event pickup evidence could not be retained")
+  }
+
+  let retainedEvidence: SignedPublicNostrEvent[]
+  try {
+    retainedEvidence = await loadRetainedEventMarketPickupEvidence(
+      exactCoordinates,
+      observedPickupEvents
+    )
+  } catch {
+    throw new Error("Event pickup retained evidence is unavailable")
+  }
+  const retainedEventIds = new Set(
+    retainedEvidence.map((event) => event.id.toLowerCase())
+  )
+  if (Array.from(requiredDeletionIds).some((id) => !retainedEventIds.has(id))) {
+    throw new Error("Event pickup evidence could not be retained")
+  }
+
+  if (
+    result.pickupBudget.state !== "within_budget" ||
+    result.incompleteFilterCount > 0 ||
+    result.saturatedFilterCount > 0 ||
+    result.eventsVerified !== true ||
+    result.relays.length === 0
+  ) {
+    throw new Error(
+      "Event pickup evidence could not be verified across the planned relays"
+    )
+  }
+
+  const volatileEvidence = eventMarketPickupLifecycleEvidence({
+    events: Array.from(volatileEventMarketEvidence.values()).flat(),
+    coordinates: exactCoordinates,
+    revisionEvents: observedPickupEvents,
+  })
+  const evidenceById = new Map<string, SignedPublicNostrEvent>()
+  for (const event of [
+    ...retainedEvidence,
+    ...volatileEvidence,
+    ...observed.events,
+  ]) {
+    evidenceById.set(event.id.toLowerCase(), event)
+  }
+  const evidence = Array.from(evidenceById.values())
+  const livePickupEventIds = new Set(
+    observed.events.flatMap((event) => {
+      if (
+        event.kind !== EVENT_KINDS.SHIPPING_OPTION ||
+        !isValidSignedPublicNostrEvent(event)
+      ) {
+        return []
+      }
+      const coordinate = eventCoordinate(event, [EVENT_KINDS.SHIPPING_OPTION])
+      return coordinate && requested.has(coordinate.coordinate)
+        ? [event.id.toLowerCase()]
+        : []
+    })
+  )
+  const deletions = validDeletionEvents(evidence)
+  const pickups: ParsedEventMarketPickup[] = []
+  for (const coordinate of exactCoordinates) {
+    const resolution = resolveAddressableRecord({
+      coordinate,
+      events: evidence,
+      deletions,
+      parse: parseEventMarketPickupEvent,
+    })
+    if (
+      resolution.state !== "current" ||
+      !livePickupEventIds.has(resolution.event.id.toLowerCase())
+    ) {
+      continue
+    }
+    pickups.push({
+      ...resolution.value,
+      sourceRelayUrls:
+        observed.sourceRelayUrlsById.get(resolution.event.id.toLowerCase()) ??
+        [],
+      evidenceState: "live",
+    })
+  }
+  return pickups
 }
 
 async function fetchEventMarketProductRequestFrontiers(
@@ -4095,6 +4367,106 @@ export function getEventMarketSupersededEvidence(
   }
 }
 
+function eventMarketPickupLifecycleEvidence(input: {
+  events: readonly SignedPublicNostrEvent[]
+  coordinates: readonly AddressableEventCoordinate[]
+  revisionEvents?: readonly SignedPublicNostrEvent[]
+}): SignedPublicNostrEvent[] {
+  const requested = new Set(
+    input.coordinates.map((coordinate) => coordinate.coordinate)
+  )
+  const requestedAuthors = new Set(
+    input.coordinates.map((coordinate) => coordinate.authorPubkey)
+  )
+  const revisionAuthorById = new Map<string, string>()
+  for (const event of [...input.events, ...(input.revisionEvents ?? [])]) {
+    if (
+      event.kind !== EVENT_KINDS.SHIPPING_OPTION ||
+      !isValidSignedPublicNostrEvent(event)
+    ) {
+      continue
+    }
+    const coordinate = eventCoordinate(event, [EVENT_KINDS.SHIPPING_OPTION])
+    if (!coordinate || !requested.has(coordinate.coordinate)) continue
+    revisionAuthorById.set(event.id.toLowerCase(), coordinate.authorPubkey)
+  }
+
+  const selected = new Map<string, SignedPublicNostrEvent>()
+  for (const event of input.events) {
+    if (!isValidSignedPublicNostrEvent(event)) continue
+    if (event.kind === EVENT_KINDS.SHIPPING_OPTION) {
+      const coordinate = eventCoordinate(event, [EVENT_KINDS.SHIPPING_OPTION])
+      if (coordinate && requested.has(coordinate.coordinate)) {
+        selected.set(event.id.toLowerCase(), event)
+      }
+      continue
+    }
+    if (
+      event.kind !== EVENT_KINDS.DELETION ||
+      !requestedAuthors.has(event.pubkey.toLowerCase())
+    ) {
+      continue
+    }
+    const authorPubkey = event.pubkey.toLowerCase()
+    const relevant = event.tags.some((tag) => {
+      if (tag[0] === "a" && tag[1]) {
+        const target = parseAddressableCoordinate(tag[1], [
+          EVENT_KINDS.SHIPPING_OPTION,
+        ])
+        return (
+          target?.authorPubkey === authorPubkey &&
+          requested.has(target.coordinate)
+        )
+      }
+      return (
+        tag[0] === "e" &&
+        typeof tag[1] === "string" &&
+        revisionAuthorById.get(tag[1].toLowerCase()) === authorPubkey
+      )
+    })
+    if (relevant) selected.set(event.id.toLowerCase(), event)
+  }
+  return Array.from(selected.values())
+}
+
+/** Load retained pickup revisions and tombstones across organizer cache
+ * namespaces. Participant evidence is stored under the event organizer, not
+ * necessarily the pickup author. Cached positives remain revocation context;
+ * callers must still require a current live pickup revision. */
+async function loadRetainedEventMarketPickupEvidence(
+  coordinates: readonly AddressableEventCoordinate[],
+  livePickupEvents: readonly SignedPublicNostrEvent[]
+): Promise<SignedPublicNostrEvent[]> {
+  const coordinateValues = coordinates.map(
+    (coordinate) => coordinate.coordinate
+  )
+  const rows = eventMarketTestOverrides.loadCachedPickupEvidence
+    ? await eventMarketTestOverrides.loadCachedPickupEvidence(coordinateValues)
+    : await db.transaction("r", db.eventMarketEvidence, async () => {
+        const [pickupRows, deletionRows] = await Promise.all([
+          db.eventMarketEvidence
+            .where("addressId")
+            .anyOf(coordinateValues)
+            .toArray(),
+          db.eventMarketEvidence
+            .where("kind")
+            .equals(EVENT_KINDS.DELETION)
+            .toArray(),
+        ])
+        return [...pickupRows, ...deletionRows]
+      })
+  const eventsById = new Map<string, SignedPublicNostrEvent>()
+  for (const row of rows) {
+    if (row.kind !== row.signedEvent.kind) continue
+    eventsById.set(row.signedEvent.id.toLowerCase(), row.signedEvent)
+  }
+  return eventMarketPickupLifecycleEvidence({
+    events: Array.from(eventsById.values()),
+    coordinates,
+    revisionEvents: livePickupEvents,
+  })
+}
+
 async function loadCachedEventMarketEvidence(
   organizerPubkey: string
 ): Promise<CachedEventMarketEvidence[]> {
@@ -4310,12 +4682,14 @@ export async function getRetainedEventMarketCollectionEvidence(input: {
 export function selectEventMarketEvidenceForRetention(
   rows: readonly CachedEventMarketEvidence[],
   totalLimit = EVENT_MARKET_MAX_CACHED_EVIDENCE_PER_ORGANIZER,
-  pinnedCollectionEventIds: readonly string[] = []
+  pinnedCollectionEventIds: readonly string[] = [],
+  requiredRetainedEventIds: readonly string[] = []
 ): CachedEventMarketEvidence[] {
   return selectVerifiedEventMarketEvidenceForRetention(
     rows.filter((row) => isValidSignedPublicNostrEvent(row.signedEvent)),
     totalLimit,
-    pinnedCollectionEventIds
+    pinnedCollectionEventIds,
+    requiredRetainedEventIds
   )
 }
 
@@ -4324,7 +4698,8 @@ export function selectEventMarketEvidenceForRetention(
 function selectVerifiedEventMarketEvidenceForRetention(
   validRows: readonly CachedEventMarketEvidence[],
   totalLimit: number,
-  pinnedCollectionEventIds: readonly string[] = []
+  pinnedCollectionEventIds: readonly string[] = [],
+  requiredRetainedEventIds: readonly string[] = []
 ): CachedEventMarketEvidence[] {
   const limit = Math.max(0, Math.floor(totalLimit))
   if (limit === 0) return []
@@ -4336,6 +4711,11 @@ function selectVerifiedEventMarketEvidenceForRetention(
       .map((id) => id.toLowerCase())
   )
   const priorityById = new Map<string, number>()
+  const requiredIds = new Set(
+    requiredRetainedEventIds
+      .filter((id) => HEX_64.test(id))
+      .map((id) => id.toLowerCase())
+  )
   type LifecycleRetentionGuard = {
     current: CachedEventMarketEvidence
     predecessor: CachedEventMarketEvidence
@@ -4352,6 +4732,9 @@ function selectVerifiedEventMarketEvidenceForRetention(
   const deletions: SignedPublicNostrEvent[] = []
   for (const row of validRows) {
     const event = row.signedEvent
+    if (requiredIds.has(event.id.toLowerCase())) {
+      prioritize(row, -1)
+    }
     if (event.kind === EVENT_KINDS.DELETION) {
       deletions.push(event)
       prioritize(row, 1)
@@ -4542,16 +4925,46 @@ async function getActiveOrderCollectionEvidencePins(
   }
 }
 
-async function persistEventMarketEvidence(input: {
-  organizerPubkey: string
-  events: readonly SignedPublicNostrEvent[]
-  sourceRelayUrlsById: ReadonlyMap<string, string[]>
-  participantCoordinates?: readonly string[]
-  participantPickupCoordinates?: readonly string[]
-  cachedAt?: number
-}): Promise<void> {
+async function persistEventMarketEvidence(
+  input: {
+    organizerPubkey: string
+    events: readonly SignedPublicNostrEvent[]
+    sourceRelayUrlsById: ReadonlyMap<string, string[]>
+    participantCoordinates?: readonly string[]
+    participantPickupCoordinates?: readonly string[]
+    cachedAt?: number
+  },
+  options: {
+    requireDurable?: boolean
+    retainInMemory?: boolean
+    /** Signed tombstones that must survive this bounded persistence write. */
+    requiredRetainedEventIds?: readonly string[]
+  } = {}
+): Promise<void> {
+  const requiredRetainedEventIds = [
+    ...new Set(
+      (options.requiredRetainedEventIds ?? [])
+        .filter((id) => HEX_64.test(id))
+        .map((id) => id.toLowerCase())
+    ),
+  ]
   const scopedEvents = scopedCacheableEventMarketEvents(input)
-  if (scopedEvents.length === 0) return
+  if (scopedEvents.length === 0) {
+    if (requiredRetainedEventIds.length > 0) {
+      throw new Error("Event market evidence could not be retained")
+    }
+    return
+  }
+  const scopedEventIds = new Set(
+    scopedEvents.map((event) => event.id.toLowerCase())
+  )
+  if (
+    requiredRetainedEventIds.length >
+      eventMarketMaxCachedEvidencePerOrganizer() ||
+    requiredRetainedEventIds.some((id) => !scopedEventIds.has(id))
+  ) {
+    throw new Error("Event market evidence could not be retained")
+  }
   const mergedVolatileEvents = mergeLocalEventMarketEvidence(
     volatileEventMarketEvidence.get(input.organizerPubkey) ?? [],
     scopedEvents,
@@ -4582,7 +4995,8 @@ async function persistEventMarketEvidence(input: {
           cachedAt: event.created_at * 1_000,
         })),
       eventMarketMaxCachedEvidencePerOrganizer(),
-      pinSnapshot.eventIds
+      pinSnapshot.eventIds,
+      requiredRetainedEventIds
     ).map((row) => row.signedEvent)
     // A later same-organizer write may have extended the volatile frontier
     // while this persistence operation was awaiting pins or IndexedDB. Bound
@@ -4611,6 +5025,7 @@ async function persistEventMarketEvidence(input: {
     )
   }
   const clearPersisted = () => {
+    if (options.retainInMemory) return
     const persistedIds = new Set(scopedEvents.map((event) => event.id))
     const pending = (
       volatileEventMarketEvidence.get(input.organizerPubkey) ?? []
@@ -4623,11 +5038,17 @@ async function persistEventMarketEvidence(input: {
     const pinSnapshot = await getActiveOrderCollectionEvidencePins(
       input.organizerPubkey
     )
-    if (pinSnapshot.status !== "ready") return
+    if (pinSnapshot.status !== "ready") {
+      if (options.requireDurable) {
+        throw new Error("Event market evidence could not be retained")
+      }
+      return
+    }
     retainVolatileEvidence(pinSnapshot)
     await eventMarketTestOverrides.persistCachedEvidence({
       ...input,
       events: scopedEvents,
+      requiredRetainedEventIds,
     })
     clearPersisted()
     return
@@ -4685,8 +5106,15 @@ async function persistEventMarketEvidence(input: {
         const retainedRows = selectEventMarketEvidenceForRetention(
           organizerRows,
           eventMarketMaxCachedEvidencePerOrganizer(),
-          pinSnapshot.eventIds
+          pinSnapshot.eventIds,
+          requiredRetainedEventIds
         )
+        const retainedIds = new Set(
+          retainedRows.map((row) => row.signedEvent.id.toLowerCase())
+        )
+        if (requiredRetainedEventIds.some((id) => !retainedIds.has(id))) {
+          throw new Error("Event market evidence could not be retained")
+        }
         if (retainedRows.length !== organizerRows.length) {
           const keep = new Set(retainedRows.map((row) => row.id))
           await db.eventMarketEvidence.bulkDelete(
@@ -4715,6 +5143,9 @@ async function persistEventMarketEvidence(input: {
       )
     }
   } catch {
+    if (options.requireDurable) {
+      throw new Error("Event market evidence could not be retained")
+    }
     // Cache persistence is best-effort; live signed evidence remains usable.
   }
 }
