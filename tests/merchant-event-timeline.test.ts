@@ -10,8 +10,13 @@ import {
 import {
   filterAndSortMerchantEventTimeline,
   formatMerchantEventTimelineSchedule,
+  getMerchantEventTimelineDateParts,
+  getMerchantEventTimelinePresentation,
   getMerchantEventTimelineStatus,
+  getNextMerchantEventTimelineLimit,
   isMerchantEventTimelineInitialLoading,
+  MERCHANT_EVENT_RELATIONSHIP_FILTERS,
+  MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
   mergeMerchantEventTimeline,
 } from "../apps/merchant/src/lib/merchant-event-timeline"
 
@@ -498,7 +503,7 @@ describe("Merchant event timeline", () => {
     ).toEqual([30])
   })
 
-  it("unions exact relationships with perspective discovery and deduplicates coordinates", () => {
+  it("unions organizing and selling evidence while saved references stay presentation-neutral", () => {
     const sharedNetwork = market({
       suffix: "shared",
       startMs: NOW + 3_600_000,
@@ -544,7 +549,7 @@ describe("Merchant event timeline", () => {
         (item) =>
           item.market.collectionCoordinate === sharedExact.collectionCoordinate
       )?.relationships
-    ).toEqual(["saved"])
+    ).toEqual([])
     expect(
       result.find(
         (item) =>
@@ -574,7 +579,30 @@ describe("Merchant event timeline", () => {
     )
   })
 
-  it("filters relations and dates while ordering upcoming and past events", () => {
+  it("does not add a saved-only exact event to All events", () => {
+    const savedOnly = market({
+      suffix: "saved-only",
+      startMs: NOW + 3_600_000,
+    })
+
+    expect(
+      mergeMerchantEventTimeline({
+        merchantPubkey: MERCHANT,
+        perspectiveMarkets: [],
+        ownedMarkets: [],
+        exactRelationshipMarkets: [savedOnly],
+        savedReferences: [{ reference: savedOnly.naddr, savedAt: NOW }],
+        sellingCollectionCoordinates: [],
+      })
+    ).toEqual([])
+    expect(MERCHANT_EVENT_RELATIONSHIP_FILTERS).toEqual([
+      "all",
+      "organizing",
+      "selling",
+    ])
+  })
+
+  it("filters relationships while ordering past above current and future events", () => {
     const past = market({
       suffix: "past",
       startMs: NOW - 86_400_000,
@@ -599,23 +627,16 @@ describe("Merchant event timeline", () => {
       filterAndSortMerchantEventTimeline(items, {}, NOW).map(
         (item) => item.market.title
       )
-    ).toEqual(["soon", "later"])
+    ).toEqual(["past", "soon", "later"])
     expect(
       filterAndSortMerchantEventTimeline(
         items,
-        { relation: "selling", window: "all" },
+        { relation: "selling" },
         NOW
       ).map((item) => item.market.title)
     ).toEqual(["later"])
     expect(
-      filterAndSortMerchantEventTimeline(
-        items,
-        { relation: "saved", window: "all" },
-        NOW
-      ).map((item) => item.market.title)
-    ).toEqual(["soon"])
-    expect(
-      filterAndSortMerchantEventTimeline(items, { window: "past" }, NOW).map(
+      getMerchantEventTimelinePresentation(items, {}, NOW).past.map(
         (item) => item.market.title
       )
     ).toEqual(["past"])
@@ -646,12 +667,12 @@ describe("Merchant event timeline", () => {
     })
 
     expect(
-      filterAndSortMerchantEventTimeline(items, {}, NOW).map(
+      getMerchantEventTimelinePresentation(items, {}, NOW).currentAndFuture.map(
         (item) => item.market.title
       )
     ).toContain("single-day")
     expect(
-      filterAndSortMerchantEventTimeline(
+      getMerchantEventTimelinePresentation(
         [
           {
             market: explicitSingleDay,
@@ -659,9 +680,9 @@ describe("Merchant event timeline", () => {
             reconciliationPending: false,
           },
         ],
-        { window: "past" },
+        {},
         Date.UTC(2027, 5, 2)
-      )
+      ).past
     ).toHaveLength(1)
     const explicitSingleDaySchedule = formatMerchantEventTimelineSchedule(
       explicitSingleDay,
@@ -672,6 +693,73 @@ describe("Merchant event timeline", () => {
     expect(formatMerchantEventTimelineSchedule(multiDay, "en-US")).toBe(
       "Jun 1, 2027 – Jun 2, 2027"
     )
+  })
+
+  it("renders a named unavailable date instead of an epoch date", () => {
+    const malformed = {
+      ...market({ suffix: "malformed-schedule", startMs: NOW }),
+      start: Number.NaN,
+    }
+
+    expect(formatMerchantEventTimelineSchedule(malformed, "en-US")).toBe(
+      "Schedule unavailable"
+    )
+    expect(getMerchantEventTimelineDateParts(malformed, "en-US")).toEqual({
+      dateTime: "",
+      day: "—",
+      month: "Date",
+      year: "unavailable",
+    })
+  })
+
+  it("paginates at most twelve events in each direction around now", () => {
+    const items = [
+      ...Array.from({ length: 14 }, (_, index) =>
+        market({
+          suffix: `past-${String(index).padStart(2, "0")}`,
+          startMs: NOW - (14 - index) * 3_600_000,
+          endMs: NOW - (14 - index) * 3_600_000 + 60_000,
+          state: "ended",
+        })
+      ),
+      ...Array.from({ length: 14 }, (_, index) =>
+        market({
+          suffix: `future-${String(index).padStart(2, "0")}`,
+          startMs: NOW + (index + 1) * 3_600_000,
+        })
+      ),
+    ].map((entry) => ({
+      market: entry,
+      relationships: [],
+      reconciliationPending: false,
+    }))
+
+    const firstPage = getMerchantEventTimelinePresentation(items, {}, NOW)
+    expect(firstPage.past).toHaveLength(MERCHANT_EVENT_TIMELINE_PAGE_SIZE)
+    expect(firstPage.currentAndFuture).toHaveLength(
+      MERCHANT_EVENT_TIMELINE_PAGE_SIZE
+    )
+    expect(firstPage.hiddenEarlierCount).toBe(2)
+    expect(firstPage.hiddenLaterCount).toBe(2)
+    expect(firstPage.past[0]?.market.title).toBe("past-02")
+    expect(firstPage.past.at(-1)?.market.title).toBe("past-13")
+    expect(firstPage.currentAndFuture[0]?.market.title).toBe("future-00")
+
+    const expanded = getMerchantEventTimelinePresentation(
+      items,
+      {
+        earlier: getNextMerchantEventTimelineLimit(firstPage.past.length, 14),
+        later: getNextMerchantEventTimelineLimit(
+          firstPage.currentAndFuture.length,
+          14
+        ),
+      },
+      NOW
+    )
+    expect(expanded.past).toHaveLength(14)
+    expect(expanded.currentAndFuture).toHaveLength(14)
+    expect(expanded.hiddenEarlierCount).toBe(0)
+    expect(expanded.hiddenLaterCount).toBe(0)
   })
 
   it("uses signed schedule evidence without mirroring relay state", () => {
@@ -705,7 +793,7 @@ describe("Merchant event timeline", () => {
 })
 
 describe("Merchant event lifecycle history", () => {
-  it("keeps open overtime events selectable while history includes legacy and explicitly closed events", () => {
+  it("keeps signed lifecycle states visible on their chronological side of now", () => {
     const open = market({
       suffix: "overtime",
       startMs: NOW - 120_000,
@@ -732,17 +820,15 @@ describe("Merchant event lifecycle history", () => {
       filterAndSortMerchantEventTimeline(items, {}, NOW).map(
         (entry) => entry.market.title
       )
-    ).toEqual(["overtime"])
+    ).toEqual(["legacy", "overtime", "closed"])
+    const presentation = getMerchantEventTimelinePresentation(items, {}, NOW)
+    expect(presentation.past.map((entry) => entry.market.title)).toEqual([
+      "legacy",
+      "overtime",
+    ])
     expect(
-      filterAndSortMerchantEventTimeline(items, { window: "history" }, NOW).map(
-        (entry) => entry.market.title
-      )
-    ).toEqual(["closed", "legacy"])
-    expect(
-      filterAndSortMerchantEventTimeline(items, { window: "past" }, NOW).map(
-        (entry) => entry.market.title
-      )
-    ).toEqual(["overtime", "legacy"])
+      presentation.currentAndFuture.map((entry) => entry.market.title)
+    ).toEqual(["closed"])
     expect(getMerchantEventTimelineStatus(items[0]!, NOW).label).toBe(
       "Scheduled time has passed · Open"
     )
@@ -753,11 +839,7 @@ describe("Merchant event lifecycle history", () => {
     })
     expect(getMerchantEventTimelineStatus(items[1]!, NOW).label).toBe("Closed")
     expect(
-      filterAndSortMerchantEventTimeline(
-        items,
-        { window: "history", relation: "selling" },
-        NOW
-      )
+      filterAndSortMerchantEventTimeline(items, { relation: "selling" }, NOW)
     ).toHaveLength(0)
   })
 })

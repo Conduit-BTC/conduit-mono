@@ -68,6 +68,40 @@ async function expectMobileTouchTarget(
   expect(box?.height).toBeGreaterThanOrEqual(44)
 }
 
+async function expectVisibleDisjointControls(
+  page: Page,
+  first: Locator,
+  second: Locator
+): Promise<void> {
+  await expect
+    .poll(async () => {
+      const [firstBox, secondBox, viewport] = await Promise.all([
+        first.boundingBox(),
+        second.boundingBox(),
+        page.evaluate(() => ({ width: innerWidth, height: innerHeight })),
+      ])
+      if (!firstBox || !secondBox) return "missing"
+
+      const fullyVisible = [firstBox, secondBox].every(
+        ({ x, y, width, height }) =>
+          x >= 0 &&
+          y >= 0 &&
+          x + width <= viewport.width &&
+          y + height <= viewport.height
+      )
+      if (!fullyVisible) return "clipped"
+
+      const intersects = !(
+        firstBox.x + firstBox.width <= secondBox.x ||
+        secondBox.x + secondBox.width <= firstBox.x ||
+        firstBox.y + firstBox.height <= secondBox.y ||
+        secondBox.y + secondBox.height <= firstBox.y
+      )
+      return intersects ? "intersecting" : "disjoint"
+    })
+    .toBe("disjoint")
+}
+
 async function installInertMobilePairing(page: Page): Promise<void> {
   await page.routeWebSocket(/.*/, () => {})
   await page.addInitScript(() => {
@@ -610,6 +644,87 @@ async function readPaymentAddressRecovery(
 }
 
 test.describe("CND-162 mobile browser baseline", () => {
+  test("market order messages stay clear of the returning mobile footer @market", async ({
+    page,
+  }) => {
+    const orderId = "mobile-order-footer-clearance"
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+
+    await page.setViewportSize({ width: 320, height: 700 })
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
+    await page.goto(`${marketUrl}/orders`)
+    await expect(
+      page.getByRole("heading", { name: "No orders yet" })
+    ).toBeVisible()
+    await seedPaymentLifecycle(page, {
+      orderId,
+      buyerPubkey,
+      paymentClaimId: "mobile-order-footer-claim",
+      storeMarker: false,
+    })
+    await page.goto(`${marketUrl}/orders?order=${orderId}`)
+
+    const messagesTrigger = page.getByRole("button", {
+      name: "Open messages",
+      exact: true,
+    })
+    const footer = page.locator("footer")
+    const reportBug = footer.getByRole("link", {
+      name: "Report a Bug",
+      exact: true,
+    })
+
+    await expectVisibleDisjointControls(page, messagesTrigger, reportBug)
+    await messagesTrigger.tap()
+    const messagesDialog = page.getByRole("dialog", {
+      name: "Messages",
+      exact: true,
+    })
+    await expect(messagesDialog).toBeVisible()
+    await messagesDialog.getByRole("button", { name: "Close" }).tap()
+    await expect(messagesDialog).toHaveCount(0)
+
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+    await expect
+      .poll(() => page.evaluate(() => window.scrollY))
+      .toBeGreaterThan(12)
+    await expect(footer).toHaveAttribute("aria-hidden", "true")
+
+    const transitionOverlapCount = await page.evaluate(async () => {
+      const trigger = document.querySelector<HTMLElement>(
+        'button[aria-label="Open messages"]'
+      )
+      const reportLink = Array.from(
+        document.querySelectorAll<HTMLAnchorElement>("footer a")
+      ).find((link) => link.textContent?.trim() === "Report a Bug")
+      if (!trigger || !reportLink) return -1
+
+      window.scrollBy(0, -64)
+      let overlaps = 0
+      const deadline = performance.now() + 260
+      while (performance.now() < deadline) {
+        await new Promise(requestAnimationFrame)
+        const triggerRect = trigger.getBoundingClientRect()
+        const reportRect = reportLink.getBoundingClientRect()
+        const intersects = !(
+          triggerRect.right <= reportRect.left ||
+          reportRect.right <= triggerRect.left ||
+          triggerRect.bottom <= reportRect.top ||
+          reportRect.bottom <= triggerRect.top
+        )
+        if (intersects) overlaps += 1
+      }
+      return overlaps
+    })
+
+    expect(transitionOverlapCount).toBe(0)
+    await expect(footer).not.toHaveAttribute("aria-hidden", "true")
+    await expectVisibleDisjointControls(page, messagesTrigger, reportBug)
+    await assertMobileViewport(page)
+  })
+
   test("event catalog stays mounted during an unresolved profile refresh @market", async ({
     page,
   }) => {

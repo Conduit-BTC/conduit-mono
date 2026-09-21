@@ -1,170 +1,122 @@
 import { forwardRef, type ReactNode } from "react"
-import { CircleHelp, GitFork, type LucideIcon } from "lucide-react"
+import { Bug } from "lucide-react"
 import { cn } from "../utils"
-
-interface LegalFooterBaseIconLink {
-  href: string
-  label: string
-}
-
-export interface LegalFooterLucideIconLink extends LegalFooterBaseIconLink {
-  icon: LucideIcon
-  imageSrc?: never
-}
-
-export interface LegalFooterImageIconLink extends LegalFooterBaseIconLink {
-  icon?: never
-  imageSrc: string
-}
-
-export type LegalFooterIconLink =
-  LegalFooterLucideIconLink | LegalFooterImageIconLink
 
 export interface LegalFooterProps {
   className?: string
-  logoHref?: string
-  logoSrc?: string
   aboutLink?: ReactNode
   aboutHref?: string
+  activeHref?: string
   privacyHref?: string
   termsHref?: string
-  iconLinks?: LegalFooterIconLink[]
+  reportBugHref: string
+  hidden?: boolean
 }
 
-const DEFAULT_ICON_LINKS: LegalFooterIconLink[] = [
-  {
-    href: "https://github.com/Conduit-BTC/conduit-mono",
-    label: "GitHub",
-    icon: GitFork,
-  },
-  {
-    href: "https://njump.me/npub1nkfqwlz7xkhhdaa3ekz88qqqk7a0ks7jpv9zdsv0u206swxjw9rq0g2svu",
-    label: "Nostr",
-    imageSrc: "/images/logo/nostr-n-logo-white.png",
-  },
-  {
-    href: "https://github.com/Conduit-BTC/conduit-mono/issues",
-    label: "Support",
-    icon: CircleHelp,
-  },
-]
+const footerLinkClassName =
+  "transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+
+function normalizeFooterHref(href: string): string {
+  const path = href.split(/[?#]/, 1)[0] ?? href
+  return path.length > 1 ? path.replace(/\/+$/, "") : path
+}
+
+function CurrentFooterLink({ children }: { children: ReactNode }) {
+  return (
+    <span
+      aria-current="page"
+      className="cursor-default text-[var(--text-muted)]"
+    >
+      {children}
+    </span>
+  )
+}
 
 export const LegalFooter = forwardRef<HTMLElement, LegalFooterProps>(
   function LegalFooter(
     {
       className,
-      logoHref = "https://conduit.market/",
-      logoSrc = "/images/logo/logo-full.svg",
       aboutLink,
       aboutHref = "/about",
+      activeHref,
       privacyHref = "/privacy-policy",
       termsHref = "/terms-of-service",
-      iconLinks = DEFAULT_ICON_LINKS,
+      reportBugHref,
+      hidden = false,
     },
     ref
   ) {
-    const year = new Date().getFullYear()
+    const isActive = (href: string) =>
+      activeHref !== undefined &&
+      normalizeFooterHref(activeHref) === normalizeFooterHref(href)
 
     return (
       <footer
         ref={ref}
+        aria-hidden={hidden || undefined}
+        inert={hidden || undefined}
         className={cn(
-          "border-t border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-[var(--text-secondary)] shadow-[0_-1px_0_color-mix(in_srgb,var(--foreground)_8%,transparent)] sm:fixed sm:bottom-0 sm:left-0 sm:right-0 sm:z-40",
+          "fixed inset-x-0 bottom-0 z-40 border-t border-[var(--border)] bg-[var(--background)] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pt-2 text-[var(--text-secondary)] shadow-[0_-1px_0_color-mix(in_srgb,var(--foreground)_8%,transparent)] transition-transform duration-200 ease-out motion-reduce:transition-none",
+          hidden ? "translate-y-full" : "translate-y-0",
           className
         )}
       >
-        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-center gap-x-4 gap-y-1.5 sm:justify-between">
-          <a
-            href={logoHref}
-            referrerPolicy="no-referrer"
-            rel="noopener noreferrer"
-            className="flex shrink-0 items-center"
-            aria-label="Conduit landing page"
-          >
-            <img
-              src={logoSrc}
-              alt="Conduit"
-              className="h-5 w-auto select-none object-contain"
-              draggable="false"
-            />
-          </a>
-
-          <p className="m-0 text-center text-[11px] leading-5 sm:text-xs">
-            &copy; {year} Conduit
-          </p>
-
+        <div className="mx-auto flex w-full max-w-7xl flex-nowrap items-center justify-between gap-3 whitespace-nowrap text-[11px] font-medium sm:text-xs">
           <nav
-            className="flex items-center gap-3 text-[11px] font-medium sm:text-xs"
+            className="flex shrink-0 items-center gap-2.5 sm:gap-3"
             aria-label="Legal links"
           >
-            {aboutLink ?? (
+            {isActive(aboutHref) ? (
+              <CurrentFooterLink>About</CurrentFooterLink>
+            ) : (
+              (aboutLink ?? (
+                <a
+                  href={aboutHref}
+                  referrerPolicy="no-referrer"
+                  rel="noopener noreferrer"
+                  className={footerLinkClassName}
+                >
+                  About
+                </a>
+              ))
+            )}
+            {isActive(termsHref) ? (
+              <CurrentFooterLink>Terms</CurrentFooterLink>
+            ) : (
               <a
-                href={aboutHref}
+                href={termsHref}
                 referrerPolicy="no-referrer"
                 rel="noopener noreferrer"
-                className="transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                className={footerLinkClassName}
               >
-                About
+                Terms
               </a>
             )}
-            <a
-              href={termsHref}
-              referrerPolicy="no-referrer"
-              rel="noopener noreferrer"
-              className="transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-            >
-              Terms
-            </a>
-            <a
-              href={privacyHref}
-              referrerPolicy="no-referrer"
-              rel="noopener noreferrer"
-              className="transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-            >
-              Privacy
-            </a>
+            {isActive(privacyHref) ? (
+              <CurrentFooterLink>Privacy</CurrentFooterLink>
+            ) : (
+              <a
+                href={privacyHref}
+                referrerPolicy="no-referrer"
+                rel="noopener noreferrer"
+                className={footerLinkClassName}
+              >
+                Privacy
+              </a>
+            )}
           </nav>
-
-          <nav
-            className="flex items-center gap-1.5"
-            aria-label="Resource links"
+          <a
+            href={reportBugHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            referrerPolicy="no-referrer"
+            className="inline-flex shrink-0 items-center gap-1.5 text-[var(--text-primary)] transition-colors hover:text-primary-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
-            {iconLinks.map((link) => {
-              return (
-                <a
-                  key={link.href}
-                  href={link.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  referrerPolicy="no-referrer"
-                  aria-label={link.label}
-                  title={link.label}
-                  className="grid size-8 place-items-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                >
-                  <LegalFooterIcon link={link} />
-                </a>
-              )
-            })}
-          </nav>
+            <Bug className="size-4" aria-hidden="true" />
+            <span>Report a Bug</span>
+          </a>
         </div>
       </footer>
     )
   }
 )
-
-function LegalFooterIcon({ link }: { link: LegalFooterIconLink }) {
-  if ("imageSrc" in link) {
-    return (
-      <img
-        src={link.imageSrc}
-        alt=""
-        aria-hidden="true"
-        className="size-4 select-none object-contain"
-        draggable="false"
-      />
-    )
-  }
-
-  const Icon = link.icon
-  return <Icon className="size-4" />
-}

@@ -262,19 +262,22 @@ describe("Merchant organizer event discovery evidence", () => {
   })
 
   it("projects incomplete empty reads into recovery instead of absence", async () => {
-    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const [route, timeline] = await Promise.all([
+      Bun.file("apps/merchant/src/routes/events.tsx").text(),
+      Bun.file(
+        "apps/merchant/src/components/MerchantEventsTimeline.tsx"
+      ).text(),
+    ])
 
-    expect(route).toContain("getResultPresentation")
-    expect(route).toContain(
-      'organizerCatalogPresentation.kind === "degraded_empty"'
-    )
-    expect(route).toContain("Events couldn't be loaded")
-    expect(route).toContain("Retry to check for events")
-    expect(route).toContain("No events here yet")
-    expect(route).not.toContain("No events found in the checked portion")
-    expect(route).not.toContain(
+    expect(route).not.toContain("getResultPresentation")
+    expect(timeline).toContain("getResultPresentation")
+    expect(timeline).toContain("Events couldn't be fully loaded")
+    expect(timeline).toContain("Retry to check for more events")
+    expect(timeline).toContain("No events yet")
+    expect(timeline).not.toContain("No events found in the checked portion")
+    expect(timeline).not.toContain(
       "No events found in the completed planned reads"
     )
-    expect(route).not.toContain("formatEventRelayReadCoverage")
+    expect(timeline).not.toContain("formatEventRelayReadCoverage")
   })
 })

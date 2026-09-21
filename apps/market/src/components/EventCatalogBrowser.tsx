@@ -1,5 +1,5 @@
 import { Search } from "lucide-react"
-import { useMemo, useState, type ReactNode } from "react"
+import { useMemo, type ReactNode } from "react"
 import {
   Avatar,
   AvatarFallback,
@@ -16,16 +16,20 @@ import { PRODUCT_GRID_CLASS_NAME } from "./ProductGridCard"
 export function EventCatalogBrowser({
   products,
   identities,
+  search,
   merchant,
   selectedMerchantName,
+  onSearchChange,
   onMerchantChange,
   children,
   renderProduct,
 }: {
   products: EventCatalogProduct[]
   identities: Record<string, MerchantIdentityView>
+  search: string
   merchant: string
   selectedMerchantName?: string
+  onSearchChange: (search: string) => void
   onMerchantChange: (merchantPubkey: string) => void
   children?: ReactNode
   renderProduct: (
@@ -34,7 +38,6 @@ export function EventCatalogBrowser({
     onMerchantActivate: () => void
   ) => ReactNode
 }) {
-  const [search, setSearch] = useState("")
   const browse = useMemo(
     () =>
       buildEventCatalogBrowse({
@@ -64,11 +67,11 @@ export function EventCatalogBrowser({
   )
   const hasFilters = search.trim().length > 0 || merchant !== ""
   const clearFilters = () => {
-    setSearch("")
+    onSearchChange("")
     onMerchantChange("")
   }
   const selectMerchant = (pubkey: string) => {
-    setSearch("")
+    onSearchChange("")
     onMerchantChange(pubkey)
   }
   const renderGrid = (entries: EventCatalogProduct[]) => (
@@ -106,7 +109,7 @@ export function EventCatalogBrowser({
           <Input
             type="search"
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => onSearchChange(event.target.value)}
             aria-label="Search products or merchants"
             placeholder="Search products or merchants"
             className="pl-9"
