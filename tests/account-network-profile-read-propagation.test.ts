@@ -65,13 +65,19 @@ describe("authenticated account profile and storefront read propagation", () => 
   })
 
   it("uses only explicit Merchant authentication for storefront and organizer profiles", async () => {
-    const [dashboard, eventTemplates, organizerPanel, eventsRoute] =
-      await Promise.all([
-        source("apps/merchant/src/routes/index.tsx"),
-        source("apps/merchant/src/lib/event-product-publishing.ts"),
-        source("apps/merchant/src/components/OrganizerEventMarketPanel.tsx"),
-        source("apps/merchant/src/routes/events.tsx"),
-      ])
+    const [
+      dashboard,
+      eventTemplates,
+      organizerPanel,
+      eventsRoute,
+      eventDetailRoute,
+    ] = await Promise.all([
+      source("apps/merchant/src/routes/index.tsx"),
+      source("apps/merchant/src/lib/event-product-publishing.ts"),
+      source("apps/merchant/src/components/OrganizerEventMarketPanel.tsx"),
+      source("apps/merchant/src/routes/events.tsx"),
+      source("apps/merchant/src/routes/events/$collectionRef.tsx"),
+    ])
 
     expect(dashboard).toMatch(
       /fetchDashboardStats\([\s\S]{0,180}!signal\.aborted && authGenerationRef\.current === authGeneration/
@@ -84,9 +90,12 @@ describe("authenticated account profile and storefront read propagation", () => 
     expect(eventTemplates).not.toContain("authenticatedPubkey: merchantPubkey")
     expect(organizerPanel).toContain("authenticatedPubkey: string | null")
     expect(organizerPanel).toContain("accountPubkey,\n    authenticatedPubkey,")
-    expect(eventsRoute).toContain(
+    expect(eventDetailRoute).toContain(
       'const authenticatedPubkey = status === "connected" ? pubkey : null'
     )
-    expect(eventsRoute).toContain("authenticatedPubkey={authenticatedPubkey}")
+    expect(eventDetailRoute).toContain(
+      "authenticatedPubkey={authenticatedPubkey}"
+    )
+    expect(eventsRoute).toContain("authenticatedPubkey: string | null")
   })
 })

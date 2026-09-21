@@ -18,6 +18,14 @@ export {
 } from "./ThemeToggleButton"
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
+export {
+  EventTimelineEntry,
+  EventTimelineLoading,
+  EventTimelineViewport,
+  type EventTimelineDateParts,
+  type EventTimelineEntryProps,
+  type EventTimelineViewportProps,
+} from "./EventTimeline"
 export { ShareLinkButton, type ShareLinkButtonProps } from "./ShareLinkButton"
 export {
   HoldToReleaseButton,
@@ -170,6 +178,7 @@ export {
   type EventMarketCardProps,
   type EventMarketCardStatusTone,
 } from "./EventMarketCard"
+export { EventPageHeader, type EventPageHeaderProps } from "./EventPageHeader"
 export {
   ClaveConnectButton,
   claveConnectUrl,
@@ -208,11 +217,7 @@ export {
 } from "./OrderMessagesWidget"
 export { ErrorPage } from "./ErrorPage"
 export { NotFoundPage } from "./NotFoundPage"
-export {
-  LegalFooter,
-  type LegalFooterIconLink,
-  type LegalFooterProps,
-} from "./LegalFooter"
+export { LegalFooter, type LegalFooterProps } from "./LegalFooter"
 export {
   PRODUCT_LEGAL_EFFECTIVE_DATE,
   PRODUCT_LEGAL_EFFECTIVE_DATE_LABEL,

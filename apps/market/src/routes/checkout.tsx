@@ -2254,41 +2254,48 @@ function CheckoutPage() {
       fulfillment?: CartItem["fulfillment"]
     }>
   ): OrderLifecycleItem[] {
-    return items.map((item) => ({
-      productId: item.productId,
-      familyProductId: item.familyProductId,
-      selectedSpecifications: item.selectedSpecifications?.map(
-        (specification) => ({ ...specification })
-      ),
-      title: item.title,
-      format: item.format,
-      quantity: item.quantity,
-      priceAtPurchase: item.priceAtPurchase,
-      currency: item.currency,
-      shippingCostSats: item.shippingCostSats,
-      shippingOptionId: item.shippingOptionId,
-      shippingOptionDTag: item.shippingOptionDTag,
-      shippingCountryRules: item.shippingCountryRules?.map((rule) => ({
-        code: rule.code,
-        restrictTo: [...rule.restrictTo],
-        exclude: [...rule.exclude],
-      })),
-      sourcePrice: item.sourcePrice
-        ? {
-            amount: item.sourcePrice.amount,
-            currency: item.sourcePrice.currency,
-            normalizedCurrency: item.sourcePrice.normalizedCurrency,
-          }
-        : undefined,
-      sourceShippingCost: item.sourceShippingCost
-        ? {
-            amount: item.sourceShippingCost.amount,
-            currency: item.sourceShippingCost.currency,
-            normalizedCurrency: item.sourceShippingCost.normalizedCurrency,
-          }
-        : undefined,
-      fulfillment: item.fulfillment,
-    }))
+    return items.map((item) => {
+      if (item.fulfillment?.type === "event_pickup_pending") {
+        throw new Error(
+          "Event pickup must finish verification before an order can be created."
+        )
+      }
+      return {
+        productId: item.productId,
+        familyProductId: item.familyProductId,
+        selectedSpecifications: item.selectedSpecifications?.map(
+          (specification) => ({ ...specification })
+        ),
+        title: item.title,
+        format: item.format,
+        quantity: item.quantity,
+        priceAtPurchase: item.priceAtPurchase,
+        currency: item.currency,
+        shippingCostSats: item.shippingCostSats,
+        shippingOptionId: item.shippingOptionId,
+        shippingOptionDTag: item.shippingOptionDTag,
+        shippingCountryRules: item.shippingCountryRules?.map((rule) => ({
+          code: rule.code,
+          restrictTo: [...rule.restrictTo],
+          exclude: [...rule.exclude],
+        })),
+        sourcePrice: item.sourcePrice
+          ? {
+              amount: item.sourcePrice.amount,
+              currency: item.sourcePrice.currency,
+              normalizedCurrency: item.sourcePrice.normalizedCurrency,
+            }
+          : undefined,
+        sourceShippingCost: item.sourceShippingCost
+          ? {
+              amount: item.sourceShippingCost.amount,
+              currency: item.sourceShippingCost.currency,
+              normalizedCurrency: item.sourceShippingCost.normalizedCurrency,
+            }
+          : undefined,
+        fulfillment: item.fulfillment,
+      }
+    })
   }
 
   // ─── Order-first path (existing flow) ───────────────────────────────────

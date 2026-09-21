@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  discoverPerspectiveEventMarkets,
   extractFollowPubkeys,
   getFollowPubkeys,
   getMerchantStorefront,
@@ -29,15 +28,6 @@ import {
   retainMerchantOrganizerEventMarkets,
   type MerchantOrganizerEventMarketsReadResult,
 } from "../lib/event-market"
-import {
-  findSavedOrganizerEventMarketReference,
-  loadSavedDiscoveredEventMarkets,
-  loadSavedOrganizerEventMarkets,
-  mergeSavedOrganizerEventMarketReferences,
-  organizerEventMarketCanSupplySavedTitle,
-  rememberDiscoveredEventMarket,
-  type SavedOrganizerEventMarketReference,
-} from "../lib/event-market-workflow"
 import { getMerchantProductEventContext } from "../lib/merchant-product-event-context"
 import {
   isMerchantEventTimelineInitialLoading,
@@ -48,18 +38,19 @@ import {
 import {
   hydrateMerchantEventRelationships,
   prioritizeMerchantEventRelationshipReferences,
-  type MerchantEventRelationshipReference,
 } from "../lib/merchant-event-relationship-hydration"
+import { merchantEventTimelineQueryOptions } from "../lib/merchant-event-query"
 
 // This is the same public perspective used by Market. Merchant reads the
 // signed follow list rather than maintaining a separate organizer registry.
 export const CONDUIT_MARKET_PERSPECTIVE_PUBKEY =
   "9d92077c5e35af76f7b1cd84738000b7bafb43d20b0a26c18fe29fa838d27146"
 
+export const MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS = 60_000
+
 export interface MerchantEventTimelineDiscovery {
   network: PerspectiveEventMarketDiscoveryResult | undefined
   items: MerchantEventTimelineItem[]
-  savedReferences: SavedOrganizerEventMarketReference[]
   sellingCollectionCoordinates: string[]
   profileRelayHintsByPubkey: Record<string, string[]>
   authorSource: EventMarketPerspectiveAuthorSource
@@ -92,8 +83,6 @@ function combinedCoverage(
 export function useMerchantEventTimeline(input: {
   merchantPubkey: string
   source: EventMarketPerspectiveSource
-  currentReference?: string
-  storageRevision?: number
 }): MerchantEventTimelineDiscovery {
   const session = useConduitSession()
   const { pubkey, status, authGeneration } = useAuth()
@@ -134,7 +123,9 @@ export function useMerchantEventTimeline(input: {
     retry: false,
     refetchInterval: (query) => {
       const data = query.state.data as FollowListResult | undefined
-      return data && !data.meta.eventObserved ? 5_000 : false
+      return data && !data.meta.eventObserved
+        ? 5_000
+        : MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS
     },
   })
   const retainedFollowingQuery = useQuery({
@@ -195,6 +186,7 @@ export function useMerchantEventTimeline(input: {
     enabled: conduitEnabled,
     staleTime: 60_000,
     retry: false,
+    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
   const conduitAuthors = conduitQuery.data?.meta.eventObserved
     ? conduitQuery.data.data
@@ -335,34 +327,42 @@ export function useMerchantEventTimeline(input: {
   ])
 
   const authorKey = authorPubkeys?.join(",") ?? "unresolved"
+  const perspectiveQueryKey = [
+    "merchant-event-timeline-perspective",
+    ...queryScope,
+    merchantPubkey || "none",
+    input.source,
+    authorKey,
+    perspective.coverage,
+    perspective.eventObserved,
+    perspective.snapshotState,
+    perspective.truncated,
+  ] as const
+  const perspectiveQueryScope = JSON.stringify(perspectiveQueryKey)
+  const perspectiveQueryScopeRef = useRef(perspectiveQueryScope)
+  useLayoutEffect(() => {
+    perspectiveQueryScopeRef.current = perspectiveQueryScope
+  }, [perspectiveQueryScope])
   const perspectiveQuery = useQuery({
-    queryKey: [
-      "merchant-event-timeline-perspective",
-      ...queryScope,
-      merchantPubkey || "none",
-      input.source,
-      authorKey,
-      perspective.coverage,
-      perspective.eventObserved,
-      perspective.snapshotState,
-      perspective.truncated,
-    ],
-    queryFn: ({ signal }) =>
-      discoverPerspectiveEventMarkets({
-        organizerPubkeys: authorPubkeys!,
+    ...merchantEventTimelineQueryOptions(
+      queryClient,
+      perspectiveQueryKey,
+      {
+        organizerPubkeys: authorPubkeys ?? [],
         perspective,
         includeEnded: true,
         authenticatedPubkey,
-        signal,
-        shouldContinue: () =>
-          !signal.aborted && authGenerationRef.current === authGeneration,
-      }),
+      },
+      (signal) =>
+        !signal.aborted &&
+        authGenerationRef.current === authGeneration &&
+        perspectiveQueryScopeRef.current === perspectiveQueryScope
+    ),
     enabled:
       session.relaySettingsReady &&
       !!merchantPubkey &&
       authorPubkeys !== undefined,
-    retry: false,
-    staleTime: 60_000,
+    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
 
   const ownedQueryKey = [
@@ -391,6 +391,7 @@ export function useMerchantEventTimeline(input: {
     enabled: session.relaySettingsReady && !!merchantPubkey,
     retry: false,
     staleTime: 30_000,
+    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
 
   const productsQuery = useQuery({
@@ -411,6 +412,7 @@ export function useMerchantEventTimeline(input: {
     enabled: session.relaySettingsReady && !!merchantPubkey,
     retry: false,
     staleTime: 60_000,
+    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
   const sellingCollectionCoordinates = useMemo(
     () =>
@@ -425,24 +427,7 @@ export function useMerchantEventTimeline(input: {
     [productsQuery.data?.data]
   )
 
-  const storageRevision = input.storageRevision
-  const savedReferences = useMemo(() => {
-    // The revision is an invalidation token for local-storage-backed reads.
-    void storageRevision
-    return mergeSavedOrganizerEventMarketReferences([
-      ...loadSavedDiscoveredEventMarkets(merchantPubkey),
-      ...loadSavedOrganizerEventMarkets(merchantPubkey),
-    ])
-  }, [merchantPubkey, storageRevision])
   const exactReferences = useMemo(() => {
-    let current: MerchantEventRelationshipReference | undefined
-    if (input.currentReference) {
-      try {
-        current = projectReference(input.currentReference)
-      } catch {
-        // Route validation owns invalid-link feedback.
-      }
-    }
     const products = sellingCollectionCoordinates.flatMap((coordinate) => {
       try {
         return [projectReference(coordinate)]
@@ -450,20 +435,11 @@ export function useMerchantEventTimeline(input: {
         return []
       }
     })
-    const saved = savedReferences.flatMap((reference) => {
-      try {
-        return [projectReference(reference.reference)]
-      } catch {
-        // Invalid local rows are ignored by the storage loader as well.
-        return []
-      }
-    })
     return prioritizeMerchantEventRelationshipReferences({
-      current,
       products,
-      saved,
+      saved: [],
     })
-  }, [input.currentReference, savedReferences, sellingCollectionCoordinates])
+  }, [sellingCollectionCoordinates])
   const exactReferenceKey = exactReferences.join("\u0000")
   const exactQuery = useQuery({
     queryKey: [
@@ -507,27 +483,8 @@ export function useMerchantEventTimeline(input: {
       exactReferences.length > 0,
     retry: false,
     staleTime: 30_000,
+    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
-
-  useEffect(() => {
-    for (const market of exactQuery.data?.markets ?? []) {
-      const saved = findSavedOrganizerEventMarketReference(
-        savedReferences,
-        market.collectionCoordinate
-      )
-      if (
-        !saved ||
-        saved.title === market.title ||
-        !organizerEventMarketCanSupplySavedTitle(market, saved)
-      ) {
-        continue
-      }
-      rememberDiscoveredEventMarket(merchantPubkey, {
-        ...saved,
-        title: market.title,
-      })
-    }
-  }, [exactQuery.data?.markets, merchantPubkey, savedReferences])
 
   const perspectiveMarkets = useMemo(
     () => projectMarketList(perspectiveQuery.data?.markets ?? []),
@@ -540,7 +497,7 @@ export function useMerchantEventTimeline(input: {
         perspectiveMarkets,
         ownedMarkets: ownedQuery.data?.markets ?? [],
         exactRelationshipMarkets: exactQuery.data?.markets ?? [],
-        savedReferences,
+        savedReferences: [],
         sellingCollectionCoordinates,
         resolutionObservations: [
           ...(perspectiveQuery.data?.markets ?? []).map((resolution) => ({
@@ -563,7 +520,6 @@ export function useMerchantEventTimeline(input: {
       ownedQuery.data,
       perspectiveQuery.data,
       perspectiveMarkets,
-      savedReferences,
       sellingCollectionCoordinates,
     ]
   )
@@ -635,7 +591,6 @@ export function useMerchantEventTimeline(input: {
   return {
     network,
     items,
-    savedReferences,
     sellingCollectionCoordinates,
     profileRelayHintsByPubkey,
     authorSource: authorResolution.source,

@@ -6,7 +6,7 @@ import {
   type ErrorComponentProps,
 } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
-import { useEffect, useRef } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import {
   buildBugReportUrl,
   installBrowserClientErrorTelemetry,
@@ -22,9 +22,13 @@ import {
   SignerAuthUrlNotice,
   isProductLegalPath,
 } from "@conduit/ui"
-import { MarketHeader } from "../components/MarketHeader"
+import {
+  MarketHeader,
+  type MarketChromeState,
+} from "../components/MarketHeader"
 import { MarketCartHud } from "../components/MarketCartHud"
 import { EventActorIdentityProvider } from "../hooks/useEventActorIdentity"
+import { usePendingEventPickupCartResolution } from "../hooks/usePendingEventPickupCartResolution"
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -43,17 +47,23 @@ function RootShell({
   cartHud?: React.ReactNode
 }) {
   const footerRef = useRef<HTMLElement>(null)
+  const chromeState = useMarketChromeState()
+  const mobileChromeHidden =
+    useIsMobileMarketViewport() && chromeState === "hidden"
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+  const reportBugHref = useMarketBugReportUrl()
+  const [footerHeight, setFooterHeight] = useState(0)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const footer = footerRef.current
     if (!footer) return
-
     const documentRoot = document.documentElement
-    const desktopFooter = window.matchMedia("(min-width: 640px)")
+
     const updateFooterHeight = () => {
-      const height = desktopFooter.matches
-        ? Math.ceil(footer.getBoundingClientRect().height)
-        : 0
+      const height = Math.ceil(footer.getBoundingClientRect().height)
+      setFooterHeight(height)
       documentRoot.style.setProperty(
         "--market-fixed-footer-height",
         `${height}px`
@@ -61,40 +71,43 @@ function RootShell({
     }
 
     updateFooterHeight()
-    documentRoot.style.scrollPaddingBottom =
-      "calc(var(--market-hud-height, 0px) + var(--market-fixed-footer-height, 0px) + 1.5rem)"
     const observer =
       typeof ResizeObserver === "undefined"
         ? null
         : new ResizeObserver(updateFooterHeight)
     observer?.observe(footer)
-    if (typeof desktopFooter.addEventListener === "function") {
-      desktopFooter.addEventListener("change", updateFooterHeight)
-    } else {
-      desktopFooter.addListener(updateFooterHeight)
-    }
-
     return () => {
       observer?.disconnect()
-      if (typeof desktopFooter.removeEventListener === "function") {
-        desktopFooter.removeEventListener("change", updateFooterHeight)
-      } else {
-        desktopFooter.removeListener(updateFooterHeight)
-      }
       documentRoot.style.removeProperty("--market-fixed-footer-height")
-      documentRoot.style.removeProperty("scroll-padding-bottom")
     }
   }, [])
 
+  useEffect(() => {
+    const documentRoot = document.documentElement
+    documentRoot.style.scrollPaddingBottom = `calc(var(--market-hud-height, 0px) + ${footerHeight}px + 1.5rem)`
+    return () => {
+      documentRoot.style.removeProperty("scroll-padding-bottom")
+    }
+  }, [footerHeight])
+
   return (
     <div
-      className="flex min-h-screen min-w-0 flex-col overflow-x-hidden"
-      style={{
-        paddingBottom:
-          "calc(var(--market-hud-height, 0px) + var(--market-fixed-footer-height, 0px) + max(1.5rem, env(safe-area-inset-bottom)))",
-      }}
+      className="flex min-h-screen min-w-0 flex-col overflow-x-clip"
+      style={
+        {
+          "--market-footer-hidden-shift": mobileChromeHidden
+            ? `${footerHeight}px`
+            : "0px",
+          "--order-messages-bottom-offset":
+            "var(--market-fixed-footer-height, 0px)",
+          "--order-messages-hidden-shift":
+            "var(--market-footer-hidden-shift, 0px)",
+          paddingBottom:
+            "calc(var(--market-hud-height, 0px) + var(--market-fixed-footer-height, 0px) + max(1.5rem, env(safe-area-inset-bottom)))",
+        } as React.CSSProperties
+      }
     >
-      <MarketHeader />
+      <MarketHeader chromeState={chromeState} />
       <main className="mx-auto min-w-0 w-full max-w-7xl flex-1 px-4 pb-12 pt-6">
         {children}
       </main>
@@ -108,11 +121,75 @@ function RootShell({
             About
           </Link>
         }
+        activeHref={pathname}
+        reportBugHref={reportBugHref}
+        hidden={mobileChromeHidden}
       />
       {cartHud}
       {SHOW_DEVTOOLS && <TanStackRouterDevtools />}
     </div>
   )
+}
+
+function useMarketChromeState(): MarketChromeState {
+  const [chromeState, setChromeState] = useState<MarketChromeState>(() =>
+    typeof window !== "undefined" && window.scrollY > 12 ? "scrolled" : "top"
+  )
+
+  useEffect(() => {
+    let lastScrollY = Math.max(0, window.scrollY)
+    let downwardTravel = 0
+    let ticking = false
+
+    const updateChromeState = (): void => {
+      const currentY = Math.max(0, window.scrollY)
+      const delta = currentY - lastScrollY
+
+      if (currentY <= 12) {
+        downwardTravel = 0
+        setChromeState("top")
+      } else if (delta < 0) {
+        downwardTravel = 0
+        setChromeState("scrolled")
+      } else if (delta > 0) {
+        downwardTravel += delta
+        if (downwardTravel >= 8) setChromeState("hidden")
+      }
+
+      lastScrollY = currentY
+      ticking = false
+    }
+
+    const onScroll = (): void => {
+      if (ticking) return
+      ticking = true
+      window.requestAnimationFrame(updateChromeState)
+    }
+
+    window.addEventListener("scroll", onScroll, { passive: true })
+    return () => window.removeEventListener("scroll", onScroll)
+  }, [])
+
+  return chromeState
+}
+
+function useIsMobileMarketViewport(): boolean {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window === "undefined"
+      ? false
+      : window.matchMedia("(max-width: 639px)").matches
+  )
+
+  useEffect(() => {
+    const mobileViewport = window.matchMedia("(max-width: 639px)")
+    const updateMobileViewport = () => setIsMobile(mobileViewport.matches)
+    updateMobileViewport()
+    mobileViewport.addEventListener("change", updateMobileViewport)
+    return () =>
+      mobileViewport.removeEventListener("change", updateMobileViewport)
+  }, [])
+
+  return isMobile
 }
 
 function ReportBugLink({ className }: { className?: string }) {
@@ -154,6 +231,7 @@ function RootLayout() {
 
 function MarketProductRoot({ pathname }: { pathname: string }) {
   const { authUrl, dismissAuthUrl, method, status } = useAuth()
+  usePendingEventPickupCartResolution()
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
   const previousAuthMethodRef = useRef(method)

@@ -27,6 +27,8 @@ import {
 import { getDefaultMarketPerspectiveFollowPubkeys } from "../lib/defaultMarketPerspective"
 import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
 
+export const MARKET_EVENT_TIMELINE_REFRESH_INTERVAL_MS = 60_000
+
 export interface EventTimelineDiscoveryResult {
   data: PerspectiveEventMarketDiscoveryResult | undefined
   markets: PerspectiveEventMarketDiscoveryResult["markets"]
@@ -86,7 +88,9 @@ export function useEventTimeline(
     staleTime: 60_000,
     refetchInterval: (query) => {
       const data = query.state.data as FollowListResult | undefined
-      return data && !data.meta.eventObserved ? 5_000 : false
+      return data && !data.meta.eventObserved
+        ? 5_000
+        : MARKET_EVENT_TIMELINE_REFRESH_INTERVAL_MS
     },
   })
   const retainedFirstDegreeQuery = useQuery({
@@ -269,6 +273,7 @@ export function useEventTimeline(
       discoverPerspectiveEventMarkets
     ),
     enabled: session.relaySettingsReady && organizerPubkeys !== undefined,
+    refetchInterval: MARKET_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
   const queryDisplayState = getEventTimelineQueryDisplayState(discoveryQuery)
   const markets = useMemo(
