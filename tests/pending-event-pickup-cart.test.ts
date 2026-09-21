@@ -307,6 +307,50 @@ describe("pending event pickup cart resolution", () => {
     expect(terminal).toEqual({ upgrades: [], retryable: false })
   })
 
+  it("retries a saturated deleted frontier and upgrades after an older live revision is recovered", async () => {
+    const current = fixture({
+      organizerChar: "a",
+      merchantChar: "b",
+      suffix: "saturated-frontier",
+      eventIdChar: "4",
+    })
+    const degradedCatalog: EventCatalog = {
+      ...current.catalog,
+      state: "partial",
+      products: current.catalog.products.map((entry) => ({
+        ...entry,
+        pickupFulfillment: null,
+        pickupReadiness: "recoverable" as const,
+      })),
+      purchaseReady: false,
+    }
+    let frontierComplete = false
+    const loadCatalog: PendingEventPickupCartDependencies["loadCatalog"] =
+      async () => (frontierComplete ? current.catalog : degradedCatalog)
+
+    const degraded = await resolvePendingEventPickupCartUpgrades(
+      [current.pendingItem],
+      null,
+      {},
+      dependencies(productResult([current.product]), loadCatalog)
+    )
+    expect(degraded).toEqual({ upgrades: [], retryable: true })
+
+    frontierComplete = true
+    const recovered = await resolvePendingEventPickupCartUpgrades(
+      [current.pendingItem],
+      null,
+      {},
+      dependencies(productResult([current.product]), loadCatalog)
+    )
+    expect(recovered.retryable).toBe(false)
+    expect(recovered.upgrades).toHaveLength(1)
+    expect(recovered.upgrades[0]?.identity.cartLineId).toBe(
+      current.pendingItem.cartLineId
+    )
+    expect(recovered.upgrades[0]?.item.fulfillment.type).toBe("pickup")
+  })
+
   it("retries stale no-claim evidence, upgrades a later live claim, and stops on a stronger withdrawal", async () => {
     const current = fixture({
       organizerChar: "a",

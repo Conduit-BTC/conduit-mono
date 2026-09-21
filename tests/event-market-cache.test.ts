@@ -354,6 +354,150 @@ function participationCacheHarness() {
   }
 }
 
+function organizerFrontierCacheHarness() {
+  const [calendar, pickup] = graph()
+  let rows: CachedEventMarketEvidence[] = []
+  let collections: SignedPublicNostrEvent[] = []
+  let deletions: SignedPublicNostrEvent[] = []
+  __setEventMarketTestOverrides({
+    getRelayLists: async (pubkeys) =>
+      new Map(
+        pubkeys.map((pubkey) => [
+          pubkey,
+          {
+            pubkey,
+            readRelayUrls: [],
+            writeRelayUrls:
+              pubkey === MERCHANT ? [MERCHANT_RELAY] : [ORGANIZER_RELAY],
+            eventCreatedAt: 1,
+            cachedAt: Date.now(),
+          },
+        ])
+      ),
+    loadCachedEvidence: async () => rows,
+    persistCachedEvidence: async ({ events }) => {
+      const byId = new Map(
+        rows.map((row) => [row.signedEvent.id.toLowerCase(), row])
+      )
+      for (const event of events) {
+        byId.set(event.id.toLowerCase(), {
+          id: event.id.toLowerCase(),
+          organizerPubkey: ORGANIZER,
+          kind: event.kind,
+          signedEvent: event,
+          sourceRelayUrls: [ORGANIZER_RELAY],
+          cachedAt: Date.now(),
+        })
+      }
+      rows = Array.from(byId.values())
+    },
+    fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      const filter = rawFilter as TagFilter
+      const isBroadOrganizerRead =
+        filter.authors?.includes(ORGANIZER) && (filter.kinds?.length ?? 0) > 1
+      let events: SignedPublicNostrEvent[] = []
+      if (
+        filter.kinds?.length === 1 &&
+        filter.kinds[0] === EVENT_KINDS.PRODUCT_COLLECTION &&
+        (!filter["#d"] || filter["#d"].includes("catalog"))
+      ) {
+        events = collections
+      } else if (
+        filter.kinds?.length === 1 &&
+        filter.kinds[0] === EVENT_KINDS.CALENDAR_TIME &&
+        filter["#d"]?.includes("calendar")
+      ) {
+        events = [calendar!]
+      } else if (
+        filter.kinds?.length === 1 &&
+        filter.kinds[0] === (EVENT_KINDS.SHIPPING_OPTION as never) &&
+        filter["#d"]?.includes("pickup")
+      ) {
+        events = [pickup!]
+      } else if (
+        filter.kinds?.length === 1 &&
+        filter.kinds[0] === EVENT_KINDS.DELETION
+      ) {
+        events = deletions.filter((event) =>
+          event.tags.some(
+            (tag) =>
+              (tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")) ||
+              (tag[0] === "e" && filter["#e"]?.includes(tag[1] ?? ""))
+          )
+        )
+      }
+      return {
+        events: events.map((event) => new NDKEvent(undefined, event)),
+        relays: (options.relayUrls ?? []).map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: isBroadOrganizerRead ? 500 : events.length,
+        })),
+        eventsVerified: true,
+      }
+    },
+  })
+  return {
+    setRead(input: {
+      collections: SignedPublicNostrEvent[]
+      deletions?: SignedPublicNostrEvent[]
+    }) {
+      collections = input.collections
+      deletions = input.deletions ?? []
+    },
+  }
+}
+
+function coordinateScopedSaturationHarness(
+  evidence: readonly SignedPublicNostrEvent[]
+) {
+  __setEventMarketTestOverrides({
+    getRelayLists: async (pubkeys) =>
+      new Map(
+        pubkeys.map((pubkey) => [
+          pubkey,
+          {
+            pubkey,
+            readRelayUrls: [],
+            writeRelayUrls: [
+              `wss://${pubkey.slice(0, 12)}.event-market.example`,
+            ],
+            eventCreatedAt: 1,
+            cachedAt: Date.now(),
+          },
+        ])
+      ),
+    loadCachedEvidence: async () => [],
+    persistCachedEvidence: async () => undefined,
+    fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      const filter = rawFilter as TagFilter
+      const events = evidence.filter(
+        (event) =>
+          (!filter.kinds || filter.kinds.includes(event.kind as never)) &&
+          (!filter.authors || filter.authors.includes(event.pubkey)) &&
+          ["a", "d", "e"].every((tagName) => {
+            const values = filter[`#${tagName}` as "#a" | "#d" | "#e"]
+            return (
+              !values ||
+              event.tags.some(
+                (tag) => tag[0] === tagName && values.includes(tag[1]!)
+              )
+            )
+          })
+      )
+      return {
+        events: events.map((event) => new NDKEvent(undefined, event)),
+        relays: (options.relayUrls ?? []).map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: events.length,
+        })),
+        eventsVerified: true,
+      }
+    },
+  })
+}
+
 function merchantPickupCacheHarness() {
   let rows: CachedEventMarketEvidence[] = []
   let pickupEvents: SignedPublicNostrEvent[] = [merchantPickupEvent()]
@@ -400,7 +544,13 @@ function merchantPickupCacheHarness() {
       let status: "success" | "partial" | "failed" = "success"
       if (
         filter.authors?.includes(ORGANIZER) &&
-        filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION as never)
+        filter.kinds?.some((kind) =>
+          [
+            EVENT_KINDS.PRODUCT_COLLECTION,
+            EVENT_KINDS.CALENDAR_DATE,
+            EVENT_KINDS.CALENDAR_TIME,
+          ].includes(kind)
+        )
       ) {
         events = merchantPickupGraph()
       } else if (
@@ -2174,6 +2324,448 @@ describe("event-market retained evidence", () => {
       fulfillmentStatus: "ambiguous",
       fulfillmentReason: "deleted_pickup_evidence",
     })
+  })
+
+  it("does not relax a complete pickup deletion when another coordinate saturates", async () => {
+    const otherSecret = generateSecretKey()
+    const otherMerchant = getPublicKey(otherSecret)
+    const otherProduct = `${EVENT_KINDS.PRODUCT}:${otherMerchant}:tea`
+    const otherPickup = `${EVENT_KINDS.SHIPPING_OPTION}:${otherMerchant}:stand`
+    const [calendar] = graph()
+    const collection = sign(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Market catalog",
+        eventCoordinate: CALENDAR,
+        productCoordinates: [PRODUCT, otherProduct],
+      }),
+      102
+    )
+    const otherProductRequest = signAs(
+      otherSecret,
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        tags: [
+          ["d", "tea"],
+          ["title", "Tea"],
+          ["price", "10", "USD"],
+          ["a", COLLECTION],
+          ["shipping_option", otherPickup],
+        ],
+      },
+      103
+    )
+    const saturatedPickupRevisions = Array.from({ length: 4 }, (_, index) =>
+      merchantPickupEvent(110 + index)
+    )
+    const deletedPickup = signAs(
+      otherSecret,
+      buildEventMarketPickupDraft({
+        dTag: "stand",
+        title: "Tea stand",
+        price: 0,
+        currency: "SATS",
+        countries: ["US"],
+        location: "Public market hall",
+      }),
+      110
+    )
+    const deletion = signAs(
+      otherSecret,
+      {
+        kind: EVENT_KINDS.DELETION,
+        tags: [["e", deletedPickup.id]],
+      },
+      120
+    )
+    coordinateScopedSaturationHarness([
+      calendar!,
+      collection,
+      merchantPickupProductRevision(103),
+      otherProductRequest,
+      ...saturatedPickupRevisions,
+      deletedPickup,
+      deletion,
+    ])
+
+    const resolution = await getEventMarket({
+      reference: COLLECTION,
+      selectedProductCoordinates: [PRODUCT, otherProduct],
+      nowMs: 1_750_000_000_000,
+    })
+
+    expect(resolution.state).toBe("active")
+    expect(
+      resolution.acceptedProductEvidence.find(
+        (evidence) => evidence.productCoordinate === PRODUCT
+      )
+    ).toMatchObject({
+      fulfillmentStatus: "resolved",
+      pickupCoordinate: MERCHANT_PICKUP,
+    })
+    expect(
+      resolution.acceptedProductEvidence.find(
+        (evidence) => evidence.productCoordinate === otherProduct
+      )
+    ).toMatchObject({
+      fulfillmentStatus: "ambiguous",
+      fulfillmentReason: "deleted_pickup_evidence",
+    })
+  })
+
+  it("does not relax a complete product deletion when another coordinate saturates", async () => {
+    const otherSecret = generateSecretKey()
+    const otherMerchant = getPublicKey(otherSecret)
+    const otherProduct = `${EVENT_KINDS.PRODUCT}:${otherMerchant}:tea`
+    const [calendar, pickup] = graph()
+    const collection = sign(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Market catalog",
+        eventCoordinate: CALENDAR,
+        pickupCoordinate: PICKUP,
+        productCoordinates: [PRODUCT, otherProduct],
+      }),
+      102
+    )
+    const saturatedProductRevisions = Array.from({ length: 4 }, (_, index) =>
+      productRevision(110 + index, true)
+    )
+    const deletedProduct = signAs(
+      otherSecret,
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        tags: [
+          ["d", "tea"],
+          ["title", "Tea"],
+          ["price", "10", "USD"],
+          ["a", COLLECTION],
+          ["shipping_option", PICKUP],
+        ],
+      },
+      110
+    )
+    const deletion = signAs(
+      otherSecret,
+      {
+        kind: EVENT_KINDS.DELETION,
+        tags: [["e", deletedProduct.id]],
+      },
+      120
+    )
+    coordinateScopedSaturationHarness([
+      calendar!,
+      pickup!,
+      collection,
+      ...saturatedProductRevisions,
+      deletedProduct,
+      deletion,
+    ])
+
+    const resolution = await getEventMarket({
+      reference: COLLECTION,
+      selectedProductCoordinates: [PRODUCT, otherProduct],
+      nowMs: 1_750_000_000_000,
+    })
+
+    expect(resolution.state).toBe("active")
+    expect(resolution.acceptedProductCoordinates).toEqual([PRODUCT])
+    expect(resolution.organizerOnlyProductCoordinates).toEqual([otherProduct])
+    expect(resolution.browseExcludedProductCoordinates).toEqual([otherProduct])
+  })
+
+  it("keeps a saturated selected pickup frontier recoverable until an older live revision is observed", async () => {
+    const pickupRevisions = Array.from({ length: 5 }, (_, index) =>
+      merchantPickupEvent(100 + index)
+    )
+    const survivingPickup = pickupRevisions[0]!
+    const saturatedFrontier = pickupRevisions.slice(1)
+    const deletions = saturatedFrontier.map((pickup, index) =>
+      signAs(
+        MERCHANT_SECRET,
+        {
+          kind: EVENT_KINDS.DELETION,
+          tags: [["e", pickup.id]],
+        },
+        200 + index
+      )
+    )
+    const harness = merchantPickupCacheHarness()
+    harness.setPickupRead({ events: saturatedFrontier, deletions })
+
+    const degraded = await getEventMarket({
+      reference: COLLECTION,
+      selectedProductCoordinates: [PRODUCT],
+      nowMs: 1_750_000_000_000,
+    })
+    expect(degraded.state).toBe("partial")
+    expect(
+      degraded.acceptedProductEvidence.find(
+        (evidence) => evidence.productCoordinate === PRODUCT
+      )
+    ).toMatchObject({
+      fulfillmentStatus: "ambiguous",
+      fulfillmentReason: "missing_pickup_evidence",
+    })
+
+    harness.setPickupRead({ events: [survivingPickup] })
+    const recovered = await getEventMarket({
+      reference: COLLECTION,
+      selectedProductCoordinates: [PRODUCT],
+      nowMs: 1_750_000_000_000,
+    })
+    expect(recovered.state).toBe("active")
+    expect(recovered.pickups).toEqual([
+      expect.objectContaining({ eventId: survivingPickup.id }),
+    ])
+    expect(
+      recovered.acceptedProductEvidence.find(
+        (evidence) => evidence.productCoordinate === PRODUCT
+      )
+    ).toMatchObject({
+      fulfillmentStatus: "resolved",
+      pickupCoordinate: MERCHANT_PICKUP,
+    })
+  })
+
+  it("keeps a current malformed pickup terminal when its exact frontier is saturated", async () => {
+    const currentPickup = merchantPickupEvent(200)
+    const malformedPickup = signAs(
+      MERCHANT_SECRET,
+      {
+        kind: currentPickup.kind,
+        content: currentPickup.content,
+        tags: currentPickup.tags.filter((tag) => tag[0] !== "service"),
+      },
+      currentPickup.created_at + 1
+    )
+    const harness = merchantPickupCacheHarness()
+    harness.setPickupRead({
+      events: [
+        malformedPickup,
+        merchantPickupEvent(102),
+        merchantPickupEvent(101),
+        merchantPickupEvent(100),
+      ],
+    })
+
+    const resolution = await getEventMarket({
+      reference: COLLECTION,
+      selectedProductCoordinates: [PRODUCT],
+      nowMs: 1_750_000_000_000,
+    })
+    expect(resolution.state).toBe("active")
+    expect(
+      resolution.acceptedProductEvidence.find(
+        (evidence) => evidence.productCoordinate === PRODUCT
+      )
+    ).toMatchObject({
+      fulfillmentStatus: "ambiguous",
+      fulfillmentReason: "malformed_pickup_evidence",
+    })
+  })
+
+  it("keeps a saturated selected product frontier retryable until an older live request is observed", async () => {
+    const productRevisions = Array.from({ length: 5 }, (_, index) =>
+      productRevision(100 + index, true)
+    )
+    const survivingRequest = productRevisions[0]!
+    const saturatedFrontier = productRevisions.slice(1)
+    const deletions = saturatedFrontier.map((product, index) =>
+      signAs(
+        MERCHANT_SECRET,
+        {
+          kind: EVENT_KINDS.DELETION,
+          tags: [["e", product.id]],
+        },
+        200 + index
+      )
+    )
+    const harness = participationCacheHarness()
+    harness.setRead({
+      discovery: saturatedFrontier,
+      frontier: saturatedFrontier,
+      deletions,
+    })
+
+    const degraded = await getEventMarket({
+      reference: COLLECTION,
+      selectedProductCoordinates: [PRODUCT],
+      nowMs: 1_750_000_000_000,
+    })
+    expect(degraded.state).toBe("partial")
+    expect(degraded.acceptedProductCoordinates).toEqual([])
+
+    harness.setRead({
+      discovery: [survivingRequest],
+      frontier: [survivingRequest],
+    })
+    const recovered = await getEventMarket({
+      reference: COLLECTION,
+      selectedProductCoordinates: [PRODUCT],
+      nowMs: 1_750_000_000_000,
+    })
+    expect(recovered.state).toBe("active")
+    expect(recovered.acceptedProductEvidence).toEqual([
+      expect.objectContaining({
+        productCoordinate: PRODUCT,
+        eventId: survivingRequest.id,
+      }),
+    ])
+  })
+
+  it("keeps a current signed withdrawal terminal when its product frontier is saturated", async () => {
+    const withdrawal = productRevision(200, false)
+    const harness = participationCacheHarness()
+    harness.setRead({
+      discovery: [withdrawal],
+      frontier: [
+        withdrawal,
+        productRevision(102, true),
+        productRevision(101, true),
+        productRevision(100, true),
+      ],
+    })
+
+    const resolution = await getEventMarket({
+      reference: COLLECTION,
+      selectedProductCoordinates: [PRODUCT],
+      nowMs: 1_750_000_000_000,
+    })
+    expect(resolution.state).toBe("active")
+    expect(resolution.acceptedProductCoordinates).toEqual([])
+    expect(resolution.organizerOnlyProductCoordinates).toEqual([PRODUCT])
+  })
+
+  it("keeps a saturated selected organizer frontier degraded until an older live collection is observed", async () => {
+    const collectionRevisions = Array.from({ length: 5 }, (_, index) =>
+      sign(
+        buildEventMarketCollectionDraft({
+          dTag: "catalog",
+          title: `Market catalog ${index}`,
+          eventCoordinate: CALENDAR,
+          pickupCoordinate: PICKUP,
+          productCoordinates: [PRODUCT],
+        }),
+        110 + index
+      )
+    )
+    const survivingCollection = collectionRevisions[0]!
+    const saturatedFrontier = collectionRevisions.slice(1)
+    const deletions = saturatedFrontier.map((collection, index) =>
+      sign(
+        {
+          kind: EVENT_KINDS.DELETION,
+          content: "",
+          tags: [["e", collection.id]],
+        },
+        200 + index
+      )
+    )
+    const harness = organizerFrontierCacheHarness()
+    harness.setRead({ collections: saturatedFrontier, deletions })
+
+    const degraded = await getEventMarket({
+      reference: COLLECTION,
+      selectedProductCoordinates: [PRODUCT],
+      nowMs: 1_750_000_000_000,
+    })
+    expect(degraded.state).toBe("partial")
+    expect(degraded.collection).toBeUndefined()
+
+    harness.setRead({ collections: [survivingCollection] })
+    const recovered = await getEventMarket({
+      reference: COLLECTION,
+      selectedProductCoordinates: [PRODUCT],
+      nowMs: 1_750_000_000_000,
+    })
+    expect(recovered.state).toBe("active")
+    expect(recovered.collection?.eventId).toBe(survivingCollection.id)
+  })
+
+  it("keeps a saturated organizer-list frontier degraded until an older live collection is observed", async () => {
+    const collectionRevisions = Array.from({ length: 5 }, (_, index) =>
+      sign(
+        buildEventMarketCollectionDraft({
+          dTag: "catalog",
+          title: `Market catalog ${index}`,
+          eventCoordinate: CALENDAR,
+          pickupCoordinate: PICKUP,
+          productCoordinates: [PRODUCT],
+        }),
+        110 + index
+      )
+    )
+    const survivingCollection = collectionRevisions[0]!
+    const saturatedFrontier = collectionRevisions.slice(1)
+    const deletions = saturatedFrontier.map((collection, index) =>
+      sign(
+        {
+          kind: EVENT_KINDS.DELETION,
+          content: "",
+          tags: [["e", collection.id]],
+        },
+        200 + index
+      )
+    )
+    const harness = organizerFrontierCacheHarness()
+    harness.setRead({ collections: saturatedFrontier, deletions })
+
+    const degraded = await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      nowMs: 1_750_000_000_000,
+    })
+    expect(degraded.markets).toHaveLength(1)
+    expect(degraded.markets[0]).toMatchObject({
+      state: "partial",
+      deletion: { record: "collection" },
+    })
+
+    harness.setRead({ collections: [survivingCollection] })
+    const recovered = await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      nowMs: 1_750_000_000_000,
+    })
+    expect(recovered.markets).toHaveLength(1)
+    expect(recovered.markets[0]).toMatchObject({
+      state: "active",
+      collection: { eventId: survivingCollection.id },
+    })
+  })
+
+  it("keeps a coordinate deletion terminal when an exact organizer frontier is saturated", async () => {
+    const saturatedFrontier = Array.from({ length: 4 }, (_, index) =>
+      sign(
+        buildEventMarketCollectionDraft({
+          dTag: "catalog",
+          title: `Deleted market catalog ${index}`,
+          eventCoordinate: CALENDAR,
+          pickupCoordinate: PICKUP,
+        }),
+        110 + index
+      )
+    )
+    const coordinateDeletion = sign(
+      {
+        kind: EVENT_KINDS.DELETION,
+        content: "",
+        tags: [["a", COLLECTION]],
+      },
+      200
+    )
+    const harness = organizerFrontierCacheHarness()
+    harness.setRead({
+      collections: saturatedFrontier,
+      deletions: [coordinateDeletion],
+    })
+
+    await expect(
+      getEventMarket({
+        reference: COLLECTION,
+        selectedProductCoordinates: [PRODUCT],
+        nowMs: 1_750_000_000_000,
+      })
+    ).resolves.toMatchObject({ state: "deleted" })
   })
 
   it("does not resurrect a collection when a later relay read omits deletion", async () => {
