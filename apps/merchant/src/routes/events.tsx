@@ -75,6 +75,7 @@ import {
 import { parseMerchantEventsSearch } from "../lib/market-links"
 import {
   getSettledMerchantEventMarketRead,
+  merchantEventMarketEssentialsQueryOptions,
   merchantEventMarketQueryIdentity,
   merchantEventMarketQueryOptions,
 } from "../lib/merchant-event-query"
@@ -259,15 +260,16 @@ export function FindEventsPanel({
   }, [queryScopeToken])
   const selectedReference = initialReference
 
+  const marketQueryScope = {
+    relayScope: session.relayScope,
+    authenticatedPubkey,
+    authGeneration,
+  }
   const selectedMarketQuery = useQuery({
-    ...merchantEventMarketQueryOptions(
+    ...merchantEventMarketEssentialsQueryOptions(
       queryClient,
       selectedReference,
-      {
-        relayScope: session.relayScope,
-        authenticatedPubkey,
-        authGeneration,
-      },
+      marketQueryScope,
       () => shouldContinue() && queryScopeTokenRef.current === queryScopeToken
     ),
     enabled:
@@ -279,6 +281,24 @@ export function FindEventsPanel({
   const settledRead = getSettledMerchantEventMarketRead(selectedMarketQuery)
   const selectedMarketActionReady =
     !!settledRead && !("terminal" in settledRead)
+  const selectedParticipationQuery = useQuery({
+    ...merchantEventMarketQueryOptions(
+      queryClient,
+      selectedReference,
+      marketQueryScope,
+      () => shouldContinue() && queryScopeTokenRef.current === queryScopeToken
+    ),
+    enabled:
+      session.relaySettingsReady &&
+      !!merchantPubkey &&
+      !!selectedReference &&
+      selectedMarketActionReady,
+  })
+  const selectedParticipationRead = selectedParticipationQuery.data?.read
+  const selectedParticipationMarket =
+    selectedParticipationRead && !("terminal" in selectedParticipationRead)
+      ? selectedParticipationRead
+      : null
 
   return (
     <div className="space-y-6">
@@ -338,10 +358,16 @@ export function FindEventsPanel({
           authenticatedPubkey={authenticatedPubkey}
           shouldContinue={shouldContinue}
           market={selectedMarket}
+          participationMarket={selectedParticipationMarket}
           actionReady={selectedMarketActionReady}
           refreshing={selectedMarketQuery.isFetching}
+          sellersLoading={
+            !selectedParticipationQuery.data?.complete &&
+            selectedParticipationQuery.isFetching
+          }
           onRefresh={async () => {
             await selectedMarketQuery.refetch()
+            void selectedParticipationQuery.refetch()
           }}
         />
       )}
@@ -447,15 +473,18 @@ export function MyEventsPanel({
       undefined,
       selectedSavedReference
     )
-  const selectedMarketQuery = useQuery({
-    ...merchantEventMarketQueryOptions(
+  const selectedQueryReference =
+    selectedReference || `30405:${organizerPubkey}:new-event`
+  const selectedQueryScope = {
+    relayScope: session.relayScope,
+    authenticatedPubkey,
+    authGeneration,
+  }
+  const selectedPublishMarketQuery = useQuery({
+    ...merchantEventMarketEssentialsQueryOptions(
       queryClient,
-      selectedReference || `30405:${organizerPubkey}:new-event`,
-      {
-        relayScope: session.relayScope,
-        authenticatedPubkey,
-        authGeneration,
-      },
+      selectedQueryReference,
+      selectedQueryScope,
       () => shouldContinue() && queryScopeTokenRef.current === queryScopeToken
     ),
     enabled:
@@ -463,6 +492,29 @@ export function MyEventsPanel({
       !!organizerPubkey &&
       !!selectedReference &&
       shouldResolveSelectedReference,
+  })
+  const selectedPublishRead = selectedPublishMarketQuery.data?.read
+  const selectedPublishSettledRead = getSettledMerchantEventMarketRead(
+    selectedPublishMarketQuery
+  )
+  const selectedPublishMarket =
+    selectedPublishRead && !("terminal" in selectedPublishRead)
+      ? selectedPublishRead
+      : null
+  const selectedMarketQuery = useQuery({
+    ...merchantEventMarketQueryOptions(
+      queryClient,
+      selectedQueryReference,
+      selectedQueryScope,
+      () => shouldContinue() && queryScopeTokenRef.current === queryScopeToken
+    ),
+    enabled:
+      session.relaySettingsReady &&
+      !!organizerPubkey &&
+      !!selectedReference &&
+      shouldResolveSelectedReference &&
+      !!selectedPublishSettledRead &&
+      !("terminal" in selectedPublishSettledRead),
   })
   const selectedProgressRead = selectedMarketQuery.data?.read
   const selectedSettledRead =
@@ -611,14 +663,25 @@ export function MyEventsPanel({
   ])
 
   async function refreshMarketQueries(reference: string): Promise<void> {
-    const identity = merchantEventMarketQueryIdentity(reference, {
+    const scope = {
       relayScope: session.relayScope,
       authenticatedPubkey,
       authGeneration,
-    })
-    await queryClient.invalidateQueries({
-      queryKey: identity.queryKey,
-    })
+    }
+    const fullIdentity = merchantEventMarketQueryIdentity(
+      reference,
+      scope,
+      "full"
+    )
+    const essentialsIdentity = merchantEventMarketQueryIdentity(
+      reference,
+      scope,
+      "essentials"
+    )
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: essentialsIdentity.queryKey }),
+      queryClient.invalidateQueries({ queryKey: fullIdentity.queryKey }),
+    ])
   }
 
   function rememberDelivery(
@@ -1276,18 +1339,22 @@ export function MyEventsPanel({
             }}
             onRetryDelivery={retryDelivery}
           />
-          {selectedMarket && (
+          {selectedPublishMarket && (
             <MerchantEventMarketPanel
               merchantPubkey={organizerPubkey}
               authenticatedPubkey={authenticatedPubkey}
               shouldContinue={shouldContinue}
-              market={
+              market={selectedPublishMarket}
+              participationMarket={
                 selectedHandoffActionableMarket ??
                 selectedPresentedMarket ??
                 selectedMarket
               }
-              actionReady={!!selectedHandoffActionableMarket}
-              refreshing={selectedMarketQuery.isFetching}
+              actionReady={
+                !!selectedPublishSettledRead &&
+                !("terminal" in selectedPublishSettledRead)
+              }
+              refreshing={selectedPublishMarketQuery.isFetching}
               onRefresh={() => refreshMarketQueries(selectedReference)}
               compact
             />

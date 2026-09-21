@@ -6452,11 +6452,33 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
     )
   )
 
-  // Keep the canonical direct route covered alongside the followed feed.
-  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
-  await expect(
-    page.getByRole("button", { name: "Publish product", exact: true })
-  ).toBeVisible({ timeout: 30_000 })
+  // Participation is a secondary display read. A slow seller frontier must
+  // not hold the organizer-authored publish boundary hostage.
+  const heldSellerDiscovery = relay.holdRelayRequests((request) =>
+    request.filters.some(
+      (filter) =>
+        filter.kinds?.includes(30402) &&
+        !filter.authors?.includes(ORGANIZER_PUBKEY)
+    )
+  )
+  try {
+    // Keep the canonical direct route covered alongside the followed feed.
+    await gotoAs(
+      page,
+      merchantUrl,
+      market.merchantParticipationPath,
+      "merchant"
+    )
+    await heldSellerDiscovery.captured
+    await expect(
+      page.getByRole("button", { name: "Publish product", exact: true })
+    ).toBeEnabled({ timeout: 30_000 })
+    await expect(
+      page.getByText("Loading sellers…", { exact: true })
+    ).toBeVisible()
+  } finally {
+    heldSellerDiscovery.release()
+  }
 
   const merchantProduct = await publishMerchantProductFromEvent(
     page,
@@ -6497,14 +6519,10 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   const organizerTechnicalDetails = page
     .locator("summary")
     .filter({ hasText: /^Technical details\s*$/ })
+  await expect(organizerTechnicalDetails).toHaveCount(0)
   await expect(
     page.getByTestId("organizer-event-relay-read-coverage")
-  ).toBeHidden()
-  await organizerTechnicalDetails.click()
-  await expect(
-    page.getByTestId("organizer-event-relay-read-coverage")
-  ).toBeVisible()
-  await organizerTechnicalDetails.click()
+  ).toHaveCount(0)
 
   const eventHeading = page.getByRole("heading", {
     name: "Synthetic Merchant Booth Market",

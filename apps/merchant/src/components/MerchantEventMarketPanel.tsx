@@ -132,18 +132,22 @@ export function MerchantEventMarketPanel({
   authenticatedPubkey,
   shouldContinue,
   market,
+  participationMarket = null,
   actionReady = true,
   refreshing,
   onRefresh,
+  sellersLoading = false,
   compact = false,
 }: {
   merchantPubkey: string
   authenticatedPubkey: string | null
   shouldContinue: () => boolean
   market: MerchantOrganizerEventMarket
+  participationMarket?: MerchantOrganizerEventMarket | null
   actionReady?: boolean
   refreshing: boolean
   onRefresh: () => void | Promise<void>
+  sellersLoading?: boolean
   compact?: boolean
 }) {
   const [publisherOpen, setPublisherOpen] = useState(false)
@@ -168,19 +172,23 @@ export function MerchantEventMarketPanel({
     priority: "visible",
     maxUnresolvedRefetches: 1,
   })
+  const sellerMarket = participationMarket ?? market
   const sellerPubkeys = useMemo(
     () =>
-      getEligibleEventSignMerchants(market)
+      getEligibleEventSignMerchants(sellerMarket)
         .filter((seller) =>
-          market.participation.some(
+          sellerMarket.participation.some(
             (item) =>
               item.status === "accepted" &&
               item.merchantPubkey === seller.pubkey &&
-              isParticipationProductAvailable(item, market.organizerPubkey)
+              isParticipationProductAvailable(
+                item,
+                sellerMarket.organizerPubkey
+              )
           )
         )
         .map((seller) => seller.pubkey),
-    [market]
+    [sellerMarket]
   )
   const sellerProfiles = useProfiles(sellerPubkeys, {
     accountPubkey: merchantPubkey,
@@ -319,7 +327,7 @@ export function MerchantEventMarketPanel({
                 merchantPubkey={merchantPubkey}
                 authenticatedPubkey={authenticatedPubkey}
                 shouldContinue={shouldContinue}
-                market={market}
+                market={sellerMarket}
                 refreshing={refreshing}
                 onRefresh={onRefresh}
               />
@@ -357,7 +365,14 @@ export function MerchantEventMarketPanel({
               </Button>
             </div>
 
-            {sellerPubkeys.length > 0 ? (
+            {sellersLoading ? (
+              <p
+                className="mt-4 text-pretty text-sm text-[var(--text-muted)]"
+                role="status"
+              >
+                Loading sellers…
+              </p>
+            ) : sellerPubkeys.length > 0 ? (
               <ul className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {sellerPubkeys.map((sellerPubkey) => {
                   const profile = sellerProfiles.getProfile(sellerPubkey)

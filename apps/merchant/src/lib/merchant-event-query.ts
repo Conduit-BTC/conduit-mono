@@ -24,6 +24,8 @@ export type MerchantEventMarketQueryData = {
   complete: boolean
 }
 
+export type MerchantEventMarketQueryProjection = "full" | "essentials"
+
 /**
  * Returns only the current query's settled exact read. This is a freshness
  * precondition, not a replacement for the existing publish/action gates.
@@ -31,8 +33,11 @@ export type MerchantEventMarketQueryData = {
 export function getSettledMerchantEventMarketRead(query: {
   data?: MerchantEventMarketQueryData
   isFetching: boolean
+  isStale: boolean
 }): MerchantOrganizerEventMarketRead | null {
-  return query.data?.complete && !query.isFetching ? query.data.read : null
+  return query.data?.complete && !query.isFetching && !query.isStale
+    ? query.data.read
+    : null
 }
 
 export type MerchantEventMarketQueryLoaderOptions = {
@@ -40,6 +45,7 @@ export type MerchantEventMarketQueryLoaderOptions = {
   authenticatedPubkey: string | null
   signal: AbortSignal
   shouldContinue: () => boolean
+  includeParticipation: boolean
   onProgress: (market: MerchantOrganizerEventMarketRead) => void
 }
 
@@ -58,7 +64,8 @@ async function loadMerchantEventMarket(
     options.authenticatedPubkey,
     options.signal,
     options.shouldContinue,
-    options.onProgress
+    options.onProgress,
+    { includeParticipation: options.includeParticipation }
   )
 }
 
@@ -76,7 +83,8 @@ function hasUnavailableRelayCoverage(
 
 export function merchantEventMarketQueryIdentity(
   reference: string,
-  scope: MerchantEventMarketQueryScope
+  scope: MerchantEventMarketQueryScope,
+  projection: MerchantEventMarketQueryProjection = "full"
 ) {
   const parsed = parseOrganizerEventMarketReference(reference)
   const hints = [...new Set(parsed.relayHints)].sort()
@@ -90,6 +98,7 @@ export function merchantEventMarketQueryIdentity(
       scope.relayScope ?? "no-relay-scope",
       scope.authenticatedPubkey,
       scope.authGeneration,
+      projection,
       parsed.coordinate,
       hints,
     ] as const,
@@ -101,9 +110,14 @@ export function merchantEventMarketQueryOptions(
   reference: string,
   scope: MerchantEventMarketQueryScope,
   shouldContinue: () => boolean,
-  loader: MerchantEventMarketQueryLoader = loadMerchantEventMarket
+  loader: MerchantEventMarketQueryLoader = loadMerchantEventMarket,
+  projection: MerchantEventMarketQueryProjection = "full"
 ) {
-  const identity = merchantEventMarketQueryIdentity(reference, scope)
+  const identity = merchantEventMarketQueryIdentity(
+    reference,
+    scope,
+    projection
+  )
   return queryOptions({
     queryKey: identity.queryKey,
     queryFn: async ({ signal }) => {
@@ -134,6 +148,7 @@ export function merchantEventMarketQueryOptions(
           authenticatedPubkey: scope.authenticatedPubkey,
           signal,
           shouldContinue: active,
+          includeParticipation: projection === "full",
           onProgress: (progress) => {
             if (settled || !active()) return
             client.setQueryData<MerchantEventMarketQueryData>(
@@ -157,13 +172,27 @@ export function merchantEventMarketQueryOptions(
         ? 60_000
         : 0,
     gcTime: 30 * 60_000,
-    refetchOnWindowFocus: (query) =>
-      query.state.status === "error"
-        ? "always"
-        : !query.state.data?.complete ||
-          hasUnavailableRelayCoverage(query.state.data),
+    refetchInterval: projection === "essentials" ? 60_000 : false,
+    refetchOnWindowFocus: "always",
     retry: false,
   })
+}
+
+export function merchantEventMarketEssentialsQueryOptions(
+  client: QueryClient,
+  reference: string,
+  scope: MerchantEventMarketQueryScope,
+  shouldContinue: () => boolean,
+  loader: MerchantEventMarketQueryLoader = loadMerchantEventMarket
+) {
+  return merchantEventMarketQueryOptions(
+    client,
+    reference,
+    scope,
+    shouldContinue,
+    loader,
+    "essentials"
+  )
 }
 
 export function merchantEventTimelineQueryOptions(

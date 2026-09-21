@@ -349,6 +349,48 @@ describe("event market progressive browsing", () => {
     await pending
   })
 
+  it("settles organizer publish essentials without reading participant products", async () => {
+    install()
+    const productCoordinate = `30402:${organizer}:product`
+    const events = graph()
+    events[2] = sign(
+      buildEventMarketCollectionDraft({
+        dTag: "market",
+        title: "Market catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [productCoordinate],
+      })
+    )
+    let participationReads = 0
+    __setEventMarketTestOverrides({
+      fetchEventsFanoutDetailed: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION))
+          return result(events)
+        if (filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION))
+          return result([events[1]!])
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          participationReads += 1
+        }
+        return result([])
+      },
+    })
+
+    const resolved = await getEventMarket({
+      reference: collection,
+      nowMs,
+      includeParticipation: false,
+    })
+
+    expect(resolved.state).toBe("active")
+    expect(resolved.collection?.coordinate).toBe(collection)
+    expect(resolved.calendar?.coordinate).toBe(calendar)
+    expect(resolved.pickup?.coordinate).toBe(pickup)
+    expect(resolved.organizerProductCoordinates).toEqual([])
+    expect(resolved.participationRequests).toEqual([])
+    expect(participationReads).toBe(0)
+  })
+
   it("recognizes a same-collection naddr claim without treating it as a withdrawal", async () => {
     const productCoordinate = `30402:${organizer}:product`
     const records = graph()

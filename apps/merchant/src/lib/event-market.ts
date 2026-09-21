@@ -871,7 +871,8 @@ export async function resolveOrganizerEventMarketResolution(
   authenticatedPubkey: string | null = null,
   signal?: AbortSignal,
   shouldContinue?: () => boolean,
-  onProgress?: (resolution: EventMarketResolution) => void
+  onProgress?: (resolution: EventMarketResolution) => void,
+  options: { includeParticipation?: boolean } = {}
 ): Promise<EventMarketResolution> {
   const parsedReference = parseOrganizerEventMarketReference(reference)
   return getEventMarket({
@@ -881,6 +882,9 @@ export async function resolveOrganizerEventMarketResolution(
     ...(signal ? { signal } : {}),
     ...(shouldContinue ? { shouldContinue } : {}),
     ...(onProgress ? { onProgress } : {}),
+    ...(options.includeParticipation !== undefined
+      ? { includeParticipation: options.includeParticipation }
+      : {}),
   })
 }
 
@@ -959,7 +963,8 @@ export async function resolveOrganizerEventMarketRead(
   authenticatedPubkey: string | null = null,
   signal?: AbortSignal,
   shouldContinue?: () => boolean,
-  onProgress?: (market: MerchantOrganizerEventMarketRead) => void
+  onProgress?: (market: MerchantOrganizerEventMarketRead) => void,
+  options: { includeParticipation?: boolean } = {}
 ): Promise<MerchantOrganizerEventMarketRead> {
   const result = await resolveOrganizerEventMarketResolution(
     reference,
@@ -975,7 +980,8 @@ export async function resolveOrganizerEventMarketRead(
           )
           if (projected) onProgress(projected)
         }
-      : undefined
+      : undefined,
+    options
   )
   const projected = projectOrganizerEventMarketRead(result, reference)
   if (projected) return projected
@@ -1025,14 +1031,17 @@ export async function resolveOrganizerEventMarket(
   organizerPubkey?: string,
   authenticatedPubkey: string | null = null,
   signal?: AbortSignal,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  options: { includeParticipation?: boolean } = {}
 ): Promise<MerchantOrganizerEventMarket> {
   const result = await resolveOrganizerEventMarketRead(
     reference,
     organizerPubkey,
     authenticatedPubkey,
     signal,
-    shouldContinue
+    shouldContinue,
+    undefined,
+    options
   )
   if ("terminal" in result) {
     throw new Error("The organizer event records were deleted.")

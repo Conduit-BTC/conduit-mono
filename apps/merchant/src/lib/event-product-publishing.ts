@@ -84,8 +84,9 @@ export function getMerchantEventPublishPresentation(input: {
 }): MerchantEventPublishPresentation {
   const publishable =
     input.actionReady &&
-    (input.state === "active" ||
-      (input.state === "partial" && input.requiredRecordsResolved))
+    input.orderAcceptance !== "closed" &&
+    input.requiredRecordsResolved &&
+    (input.state === "active" || input.state === "partial")
 
   if (publishable) {
     return {
@@ -125,6 +126,32 @@ export function getMerchantEventPublishPresentation(input: {
     publishable: false,
     retryLabel: "Retry event details",
     state: "recoverable",
+  }
+}
+
+export function assertEventProductMarketPublishable(
+  market: Pick<
+    MerchantOrganizerEventMarket,
+    "orderAcceptance" | "source" | "state"
+  >
+): void {
+  const requiredRecordsResolved = Boolean(
+    market.source.collection &&
+    market.source.calendar &&
+    (!market.source.pickupCoordinate || market.source.pickup)
+  )
+  const presentation = getMerchantEventPublishPresentation({
+    actionReady: true,
+    orderAcceptance: market.orderAcceptance,
+    refreshing: false,
+    requiredRecordsResolved,
+    state: market.state,
+  })
+  if (!presentation.publishable) {
+    throw new Error(
+      presentation.message ??
+        "Current event details do not permit publishing a product."
+    )
   }
 }
 
@@ -276,8 +303,12 @@ export async function publishEventProduct(input: {
     undefined,
     input.authenticatedPubkey,
     undefined,
-    input.shouldContinue
+    input.shouldContinue,
+    { includeParticipation: false }
   )
+  // Re-check the current organizer-authored graph before any signer request or
+  // publication. A newly closed event must not leave an orphan booth pickup.
+  assertEventProductMarketPublishable(market)
   const dTag = createFreshEventProductDTag(
     input.form.title,
     input.form.templateCoordinate

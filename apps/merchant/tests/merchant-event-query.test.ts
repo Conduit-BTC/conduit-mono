@@ -9,6 +9,7 @@ import {
 } from "@conduit/core"
 import {
   getSettledMerchantEventMarketRead,
+  merchantEventMarketEssentialsQueryOptions,
   merchantEventMarketQueryIdentity,
   merchantEventMarketQueryOptions,
   merchantEventTimelineQueryOptions,
@@ -121,6 +122,7 @@ describe("merchant event market query", () => {
     )
     expect(observer.getCurrentResult().isStale).toBe(true)
     expect(loaderOptions.organizerPubkey).toBe(organizer)
+    expect(loaderOptions.includeParticipation).toBe(true)
 
     const settled = deletedRead("3".repeat(64))
     pending.resolve(settled)
@@ -135,10 +137,50 @@ describe("merchant event market query", () => {
     expect(observer.getCurrentResult().isStale).toBe(false)
     expect(options.gcTime).toBe(30 * 60_000)
     expect(options.retry).toBe(false)
+    expect(options.refetchOnWindowFocus).toBe("always")
 
     loaderOptions.onProgress(deletedRead("4".repeat(64)))
     expect(observer.getCurrentResult().data?.read).toEqual(settled)
     stop()
+    client.clear()
+  })
+
+  it("keeps publish essentials independent from participation and expires action readiness", async () => {
+    const client = new QueryClient()
+    let loaderOptions!: MerchantEventMarketQueryLoaderOptions
+    const read = deletedRead()
+    const options = merchantEventMarketEssentialsQueryOptions(
+      client,
+      collectionCoordinate,
+      scope,
+      () => true,
+      async (_reference, received) => {
+        loaderOptions = received
+        return read
+      }
+    )
+
+    const data = await client.fetchQuery(options)
+    expect(loaderOptions.includeParticipation).toBe(false)
+    expect(options.refetchInterval).toBe(60_000)
+    expect(options.refetchOnWindowFocus).toBe("always")
+    expect(
+      merchantEventMarketQueryIdentity(
+        collectionCoordinate,
+        scope,
+        "essentials"
+      ).queryKey
+    ).not.toEqual(
+      merchantEventMarketQueryIdentity(collectionCoordinate, scope, "full")
+        .queryKey
+    )
+    expect(
+      getSettledMerchantEventMarketRead({
+        data,
+        isFetching: false,
+        isStale: true,
+      })
+    ).toBeNull()
     client.clear()
   })
 
