@@ -18,24 +18,14 @@ import {
   type SavedOrganizerEventMarketReference,
 } from "./event-market-workflow"
 
-export type MerchantEventRelationship = "organizing" | "selling" | "saved"
+export type MerchantEventRelationship = "organizing" | "selling"
 export type MerchantEventRelationshipFilter = "all" | MerchantEventRelationship
-export type MerchantEventTimelineWindow =
-  "upcoming" | "7d" | "30d" | "past" | "history" | "all"
 
 export const MERCHANT_EVENT_RELATIONSHIP_FILTERS: MerchantEventRelationshipFilter[] =
-  ["all", "organizing", "selling", "saved"]
-
-export const MERCHANT_EVENT_TIMELINE_WINDOWS: MerchantEventTimelineWindow[] = [
-  "upcoming",
-  "7d",
-  "30d",
-  "past",
-  "history",
-  "all",
-]
+  ["all", "organizing", "selling"]
 
 const DAY_MS = 86_400_000
+export const MERCHANT_EVENT_TIMELINE_PAGE_SIZE = 12
 
 export interface MerchantEventTimelineItem {
   market: MerchantOrganizerEventMarket
@@ -46,12 +36,27 @@ export interface MerchantEventTimelineItem {
 
 export interface MerchantEventTimelineSearch {
   relation?: MerchantEventRelationshipFilter
-  window?: MerchantEventTimelineWindow
+}
+
+export interface MerchantEventTimelinePresentation {
+  /** Past events are chronological, with the event nearest now last. */
+  past: MerchantEventTimelineItem[]
+  /** Ongoing and future events are chronological, with the nearest event first. */
+  currentAndFuture: MerchantEventTimelineItem[]
+  hiddenEarlierCount: number
+  hiddenLaterCount: number
 }
 
 export interface MerchantEventTimelineStatus {
   label: string
   tone: EventMarketCardStatusTone
+}
+
+export interface MerchantEventTimelineDateParts {
+  dateTime: string
+  day: string
+  month: string
+  year: string
 }
 
 export function isMerchantEventTimelineInitialLoading(input: {
@@ -240,6 +245,18 @@ export function mergeMerchantEventTimeline(input: {
         input.savedReferences,
         market.naddr
       )
+    const organizing =
+      candidateKind === "owned" || market.organizerPubkey === normalizedMerchant
+    const selling = sellingCoordinates.has(coordinate)
+    if (
+      candidateKind === "exact" &&
+      !current &&
+      savedReference &&
+      !organizing &&
+      !selling
+    ) {
+      return
+    }
     let invalidationPending = false
     for (const observation of resolutionObservations) {
       const resolution = observation.resolution
@@ -307,14 +324,10 @@ export function mergeMerchantEventTimeline(input: {
     const relationshipSet = new Set<MerchantEventRelationship>(
       current?.relationships ?? []
     )
-    if (
-      candidateKind === "owned" ||
-      selectedMarket.organizerPubkey === normalizedMerchant
-    ) {
+    if (organizing || selectedMarket.organizerPubkey === normalizedMerchant) {
       relationshipSet.add("organizing")
     }
-    if (sellingCoordinates.has(coordinate)) relationshipSet.add("selling")
-    if (savedByCoordinate.has(coordinate)) relationshipSet.add("saved")
+    if (selling) relationshipSet.add("selling")
 
     byCoordinate.set(coordinate, {
       market: selectedMarket,
@@ -365,79 +378,90 @@ function isPast(item: MerchantEventTimelineItem, nowMs: number): boolean {
   return !!bounds && bounds.endMs <= nowMs
 }
 
-function matchesWindow(
-  item: MerchantEventTimelineItem,
-  window: MerchantEventTimelineWindow,
-  nowMs: number
-): boolean {
-  const bounds = merchantEventTimelineBounds(item.market)
-  if (!bounds) return window === "all"
-  const past = isPast(item, nowMs)
-  if (window === "past") return past
-  if (window === "all") return true
-  const historical =
-    item.market.orderAcceptance === "closed" ||
-    (item.market.orderAcceptance !== "open" &&
-      (item.market.state === "ended" || past))
-  if (window === "history") return historical
-  if (window === "upcoming") return !historical
-  if (past) return false
-  const horizon = nowMs + (window === "7d" ? 7 : 30) * 86_400_000
-  return bounds.startMs <= horizon
-}
-
 export function filterAndSortMerchantEventTimeline(
   items: readonly MerchantEventTimelineItem[],
   search: MerchantEventTimelineSearch,
   nowMs = Date.now()
 ): MerchantEventTimelineItem[] {
   const relationship = search.relation ?? "all"
-  const window = search.window ?? "upcoming"
   return items
     .filter(
       (item) =>
         relationship === "all" || item.relationships.includes(relationship)
     )
-    .filter((item) => matchesWindow(item, window, nowMs))
     .sort((left, right) => {
       const leftPast = isPast(left, nowMs)
       const rightPast = isPast(right, nowMs)
-      if (leftPast !== rightPast) return leftPast ? 1 : -1
-      const leftStart = merchantEventTimelineBounds(left.market)?.startMs ?? 0
-      const rightStart = merchantEventTimelineBounds(right.market)?.startMs ?? 0
+      if (leftPast !== rightPast) return leftPast ? -1 : 1
+      const leftStart =
+        merchantEventTimelineBounds(left.market)?.startMs ??
+        Number.POSITIVE_INFINITY
+      const rightStart =
+        merchantEventTimelineBounds(right.market)?.startMs ??
+        Number.POSITIVE_INFINITY
       const delta = leftStart - rightStart
-      if (delta !== 0) return leftPast ? -delta : delta
+      if (delta !== 0) return delta
       return left.market.collectionCoordinate.localeCompare(
         right.market.collectionCoordinate
       )
     })
 }
 
-function merchantEventTimelineWindowDurationMs(
-  window: MerchantEventTimelineWindow | undefined
-): number | null {
-  if (window === "7d") return 7 * DAY_MS
-  if (window === "30d") return 30 * DAY_MS
-  return null
+function boundedPresentationLimit(value: number | undefined): number {
+  return Number.isFinite(value)
+    ? Math.max(0, Math.floor(value ?? 0))
+    : MERCHANT_EVENT_TIMELINE_PAGE_SIZE
+}
+
+/**
+ * Keeps rendering bounded around now. Earlier pages prepend chronologically;
+ * later pages append chronologically.
+ */
+export function getMerchantEventTimelinePresentation(
+  items: readonly MerchantEventTimelineItem[],
+  limits: { earlier?: number; later?: number } = {},
+  nowMs = Date.now()
+): MerchantEventTimelinePresentation {
+  const chronological = filterAndSortMerchantEventTimeline(items, {}, nowMs)
+  const past = chronological.filter((item) => isPast(item, nowMs))
+  const currentAndFuture = chronological.filter((item) => !isPast(item, nowMs))
+  const earlierLimit = boundedPresentationLimit(limits.earlier)
+  const laterLimit = boundedPresentationLimit(limits.later)
+  const visiblePast = past.slice(Math.max(0, past.length - earlierLimit))
+  const visibleCurrentAndFuture = currentAndFuture.slice(0, laterLimit)
+
+  return {
+    past: visiblePast,
+    currentAndFuture: visibleCurrentAndFuture,
+    hiddenEarlierCount: past.length - visiblePast.length,
+    hiddenLaterCount: currentAndFuture.length - visibleCurrentAndFuture.length,
+  }
+}
+
+/** Advances one presentation direction without revealing more than one page. */
+export function getNextMerchantEventTimelineLimit(
+  visibleCount: number,
+  totalCount: number
+): number {
+  const normalizedVisibleCount = Number.isFinite(visibleCount)
+    ? Math.max(0, Math.floor(visibleCount))
+    : 0
+  const normalizedTotalCount = Number.isFinite(totalCount)
+    ? Math.max(0, Math.floor(totalCount))
+    : 0
+  return Math.min(
+    normalizedTotalCount,
+    normalizedVisibleCount + MERCHANT_EVENT_TIMELINE_PAGE_SIZE
+  )
 }
 
 /** Wall-clock boundaries that can change the selected timeline projection. */
 export function getMerchantEventTimelineBoundaries(
-  items: readonly MerchantEventTimelineItem[],
-  window: MerchantEventTimelineWindow | undefined
+  items: readonly MerchantEventTimelineItem[]
 ): number[] {
-  const windowDurationMs = merchantEventTimelineWindowDurationMs(window)
   return items.flatMap((item) => {
     const bounds = merchantEventTimelineBounds(item.market)
-    return bounds
-      ? [
-          ...(windowDurationMs === null
-            ? []
-            : [bounds.startMs - windowDurationMs]),
-          bounds.startMs,
-          bounds.endMs,
-        ]
-      : []
+    return bounds ? [bounds.startMs, bounds.endMs] : []
   })
 }
 
@@ -526,5 +550,49 @@ export function formatMerchantEventTimelineSchedule(
     return bounds.endMs !== bounds.startMs
       ? `${startLabel} – ${formatter.format(bounds.endMs)}`
       : startLabel
+  }
+}
+
+export function getMerchantEventTimelineDateParts(
+  market: MerchantOrganizerEventMarket,
+  locale?: string
+): MerchantEventTimelineDateParts {
+  const bounds = merchantEventTimelineBounds(market)
+  if (!bounds) {
+    return { dateTime: "", day: "—", month: "Date", year: "unavailable" }
+  }
+  const startMs = bounds.startMs
+  const dateTime =
+    market.calendarKind === 31922 && typeof market.start === "string"
+      ? market.start
+      : new Date(startMs).toISOString()
+  const options: Intl.DateTimeFormatOptions = {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    ...(market.calendarKind === 31922
+      ? { timeZone: "UTC" }
+      : market.timezone
+        ? { timeZone: market.timezone }
+        : {}),
+  }
+  let parts: Intl.DateTimeFormatPart[]
+  try {
+    parts = new Intl.DateTimeFormat(locale, options).formatToParts(startMs)
+  } catch {
+    parts = new Intl.DateTimeFormat(locale, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      timeZone: "UTC",
+    }).formatToParts(startMs)
+  }
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((value) => value.type === type)?.value ?? ""
+  return {
+    dateTime,
+    month: part("month"),
+    day: part("day"),
+    year: part("year"),
   }
 }

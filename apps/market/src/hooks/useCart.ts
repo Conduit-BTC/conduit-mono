@@ -6,6 +6,7 @@ import {
 import {
   getCartTotals,
   selectCartItem,
+  type CartEventPickupUpgradeInput,
   type CartItem,
   type CartItemIdentity,
   type CartItemInput,
@@ -24,6 +25,7 @@ import {
   refreshAndIncrementCartRepositoryItem,
   removeCartRepositoryItem,
   subscribeToCartRepository,
+  upgradePendingEventPickupCartRepositoryItem,
   type CartPurchaseClaim,
 } from "../lib/cart-repository"
 
@@ -146,6 +148,12 @@ export function useCart() {
     []
   )
 
+  const upgradePendingEventPickupItem = useCallback(
+    (identity: CartItemIdentity, item: CartEventPickupUpgradeInput) =>
+      upgradePendingEventPickupCartRepositoryItem(identity, item),
+    []
+  )
+
   const decrementItem = useCallback((identity: CartItemIdentity) => {
     return decrementCartRepositoryItem(identity)
   }, [])
@@ -221,6 +229,7 @@ export function useCart() {
     addItem,
     incrementItem,
     refreshAndIncrementItem,
+    upgradePendingEventPickupItem,
     decrementItem,
     removeItem,
     clear,

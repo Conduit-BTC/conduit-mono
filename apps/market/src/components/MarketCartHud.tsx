@@ -356,7 +356,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       className={cn(
         "pointer-events-none fixed inset-x-0 z-30 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] transition-transform duration-200 ease-out motion-reduce:transition-none sm:px-4",
         entered
-          ? "translate-y-0"
+          ? "translate-y-[var(--market-footer-hidden-shift,0px)]"
           : "translate-y-[calc(100%_+_var(--market-fixed-footer-height,0px))]"
       )}
       style={{ bottom: "var(--market-fixed-footer-height, 0px)" }}
