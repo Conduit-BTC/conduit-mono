@@ -253,9 +253,13 @@ describe("kind 10063 replacement selection and evidence", () => {
       accountPubkey: string | null | undefined
       authenticatedPubkey: string | null | undefined
       ownerSelectedRelayUrls: readonly string[] | undefined
+      appRelayUrls: readonly string[] | undefined
+      personalRelayUrls: readonly string[] | undefined
+      maxRelayAttempts: number | undefined
       allowInsecureRelayUrlsForPubkey: string | null | undefined
     }> = []
     const plannerCalls: Array<{
+      intent: string
       authenticatedPubkey: string | null | undefined
       ownerSelectedRelayUrls: readonly string[] | undefined
       signedRelayListAuthoritative: boolean | undefined
@@ -294,6 +298,9 @@ describe("kind 10063 replacement selection and evidence", () => {
           accountPubkey: options.accountPubkey,
           authenticatedPubkey: options.authenticatedPubkey,
           ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+          appRelayUrls: options.appRelayUrls,
+          personalRelayUrls: options.personalRelayUrls,
+          maxRelayAttempts: options.maxRelayAttempts,
           allowInsecureRelayUrlsForPubkey:
             options.allowInsecureRelayUrlsForPubkey,
         })
@@ -312,6 +319,7 @@ describe("kind 10063 replacement selection and evidence", () => {
       },
       planReads: (input) => {
         plannerCalls.push({
+          intent: input.intent,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
           signedRelayListAuthoritative: input.signedRelayListAuthoritative,
@@ -324,6 +332,9 @@ describe("kind 10063 replacement selection and evidence", () => {
           accountPubkey: options.accountPubkey,
           authenticatedPubkey: options.authenticatedPubkey,
           ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+          appRelayUrls: options.appRelayUrls,
+          personalRelayUrls: options.personalRelayUrls,
+          maxRelayAttempts: options.maxRelayAttempts,
         })
         return relayRead(
           [],
@@ -337,15 +348,25 @@ describe("kind 10063 replacement selection and evidence", () => {
 
     expect(lookupCalls).toEqual([
       {
-        relayUrls: [ownerWsRelay, ownerWssRelay],
+        relayUrls: [ownerWsRelay, ownerWssRelay, ...config.appReadRelayUrls],
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
         ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
+        appRelayUrls: config.appReadRelayUrls,
+        personalRelayUrls: [ownerWsRelay, ownerWssRelay],
+        maxRelayAttempts: 6,
         allowInsecureRelayUrlsForPubkey: OWNER,
       },
     ])
     expect(plannerCalls).toEqual([
       {
+        intent: "relay_lists",
+        authenticatedPubkey: OWNER,
+        ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
+        signedRelayListAuthoritative: true,
+      },
+      {
+        intent: "general",
         authenticatedPubkey: OWNER,
         ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
         signedRelayListAuthoritative: true,
@@ -357,6 +378,9 @@ describe("kind 10063 replacement selection and evidence", () => {
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
         ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
+        appRelayUrls: config.appReadRelayUrls,
+        personalRelayUrls: [ownerWsRelay, ownerWssRelay],
+        maxRelayAttempts: 6,
       },
     ])
   })

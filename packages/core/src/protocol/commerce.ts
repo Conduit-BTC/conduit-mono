@@ -783,9 +783,25 @@ async function planCommerceReadRelayPlan(input: {
     settings: settingsSnapshot.settings,
     signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
   })
-  const relayListLookupRelayUrls = relayListLookupPlan.candidateRelayUrls
-  const ownerSelectedRelayListLookupUrls =
+  // A durable signed-empty owner projection is already authoritative. Do not
+  // activate ambient app discovery merely to refresh that owner's NIP-65
+  // hints before the account relay-settings scope is available. App relays
+  // remain independently available to the requested commerce/profile read.
+  const relayListLookupRelayUrls =
+    settingsSnapshot.signedRelayListAuthoritative &&
+    configuredOwnerRelayListLookupUrls.length === 0
+      ? []
+      : relayListLookupPlan.candidateRelayUrls
+  const relayListLookupRelayUrlSet = new Set(relayListLookupRelayUrls)
+  const ownerSelectedRelayListLookupUrls = (
     relayListLookupPlan.ownerSelectedRelayUrls ?? []
+  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
+  const appRelayListLookupUrls = (
+    relayListLookupPlan.appRelayUrls ?? []
+  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
+  const personalRelayListLookupUrls = (
+    relayListLookupPlan.personalRelayUrls ?? []
+  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
   const relayLists =
     input.relayLists ??
     (shouldFetchRelayHints
@@ -798,8 +814,8 @@ async function planCommerceReadRelayPlan(input: {
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
                 ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
-                appRelayUrls: relayListLookupPlan.appRelayUrls,
-                personalRelayUrls: relayListLookupPlan.personalRelayUrls,
+                appRelayUrls: appRelayListLookupUrls,
+                personalRelayUrls: personalRelayListLookupUrls,
                 maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
                 accountNetworkLocalStateRepository:
                   testOverrides.accountNetworkLocalStateRepository,
@@ -812,8 +828,8 @@ async function planCommerceReadRelayPlan(input: {
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
                 ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
-                appRelayUrls: relayListLookupPlan.appRelayUrls,
-                personalRelayUrls: relayListLookupPlan.personalRelayUrls,
+                appRelayUrls: appRelayListLookupUrls,
+                personalRelayUrls: personalRelayListLookupUrls,
                 maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
                 accountNetworkLocalStateRepository:
                   testOverrides.accountNetworkLocalStateRepository,

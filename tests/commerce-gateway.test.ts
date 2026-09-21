@@ -99,6 +99,17 @@ async function durableMerchantRelayListRepository(tags: string[][]) {
   return repository
 }
 
+function boundedTestRelayUrls(options?: {
+  relayUrls?: readonly string[]
+  maxRelayAttempts?: number
+}): string[] {
+  const relayUrls = [...(options?.relayUrls ?? [])]
+  const maxRelayAttempts = options?.maxRelayAttempts
+  return typeof maxRelayAttempts === "number" && maxRelayAttempts > 0
+    ? relayUrls.slice(0, maxRelayAttempts)
+    : relayUrls
+}
+
 function makeFollowListRead(input: {
   pubkey: string
   event?: SignedPublicNostrEvent
@@ -567,7 +578,7 @@ describe("commerce gateway", () => {
         fetchEventsFanout: async (filter, options) => {
           if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
           attempts.push({
-            relays: [...(options?.relayUrls ?? [])],
+            relays: boundedTestRelayUrls(options),
             family: !!filter["#a"],
           })
           return events.filter(
@@ -628,7 +639,7 @@ describe("commerce gateway", () => {
     })
     __setCommerceTestOverrides({
       fetchEventsFanoutWithDiagnostics: async (filter, options) => {
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           attempts.push(relayUrls)
         }
@@ -801,7 +812,7 @@ describe("commerce gateway", () => {
       fetchEventsFanout: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const dTags = filter["#d"] ?? []
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         attempts.push({ dTags: [...dTags], relayUrls })
         return [
           ...(dTags.includes("first-hinted-product") &&
@@ -858,7 +869,7 @@ describe("commerce gateway", () => {
       fetchEventsFanout: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const dTags = filter["#d"] ?? []
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         attempts.push({ dTags: [...dTags], relayUrls })
         return products
           .filter(
@@ -931,7 +942,7 @@ describe("commerce gateway", () => {
 
     __setCommerceTestOverrides({
       fetchEventsFanoutWithDiagnostics: async (filter, options) => {
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         const dTags = [...(filter["#d"] ?? [])]
         const parentAddresses = [...(filter["#a"] ?? [])]
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
@@ -1183,7 +1194,7 @@ describe("commerce gateway", () => {
 
       __setCommerceTestOverrides({
         fetchEventsFanoutWithDiagnostics: async (filter, options) => {
-          const relayUrls = [...(options?.relayUrls ?? [])]
+          const relayUrls = boundedTestRelayUrls(options)
           const dTags = [...(filter["#d"] ?? [])]
           const parentAddresses = [...(filter["#a"] ?? [])]
           const parentRead = families.some(({ parentDTag }) =>
@@ -5841,7 +5852,7 @@ describe("commerce gateway", () => {
     let seenRelayUrls: string[] | undefined
     __setCommerceTestOverrides({
       fetchEventsFanout: async (_filter, options) => {
-        seenRelayUrls = options?.relayUrls
+        seenRelayUrls = boundedTestRelayUrls(options)
         return []
       },
     })
@@ -5862,7 +5873,7 @@ describe("commerce gateway", () => {
 
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter, options) => {
-        seenRelayUrls = options?.relayUrls
+        seenRelayUrls = boundedTestRelayUrls(options)
         if (
           filter.kinds?.includes(EVENT_KINDS.PROFILE) &&
           options?.relayUrls?.[0] === "wss://live-product-source.conduit.market"
@@ -7359,7 +7370,7 @@ describe("getProductsByIds diagnostics", () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async () => [],
       fetchEventsFanoutWithDiagnostics: async (filter, options) => {
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         expect(relayUrls).not.toContain(parkedRelayUrl)
         return {
           events: filter.kinds?.includes(EVENT_KINDS.PRODUCT)
@@ -7448,7 +7459,7 @@ describe("getProductsByIds diagnostics", () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async () => [],
       fetchEventsFanoutWithDiagnostics: async (filter, options) => {
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         expect(relayUrls).not.toContain(parkedRelayUrl)
         expect(relayUrls).toEqual(ambientRelayUrls.slice(0, 6))
         return {

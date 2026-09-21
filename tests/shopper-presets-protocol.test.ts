@@ -248,6 +248,7 @@ describe("NIP-78 shopper presets", () => {
       | {
           cacheOnly?: boolean
           relayUrls?: readonly string[]
+          maxRelayAttempts?: number
           allowInsecureRelayUrlsForPubkey?: string | null
         }
       | undefined
@@ -284,14 +285,8 @@ describe("NIP-78 shopper presets", () => {
       cacheOnly: false,
     })
     expect(relayListOptions?.allowInsecureRelayUrlsForPubkey).toBeUndefined()
-    expect(relayListOptions!.relayUrls).toEqual(
-      Array.from(
-        new Set([
-          ...config.appWriteRelayUrls,
-          ...config.corePublicFallbackRelayUrls,
-        ])
-      )
-    )
+    expect(relayListOptions!.relayUrls).toEqual(config.appReadRelayUrls)
+    expect(relayListOptions!.maxRelayAttempts).toBe(6)
     expect(fetchOptions).toMatchObject({
       connectTimeoutMs: 2_000,
       fetchTimeoutMs: 3_000,
