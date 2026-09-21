@@ -81,7 +81,7 @@ function Logo() {
       aria-label="Conduit Market home"
       className="flex shrink-0 select-none items-center gap-2 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
     >
-      <span className="inline-flex h-8 shrink-0 items-center">
+      <span className="h-8 w-6 shrink-0 overflow-hidden sm:w-[6.75rem]">
         <img
           src="/images/logo/logo-full.svg"
           alt=""
@@ -90,22 +90,9 @@ function Logo() {
           height={115}
           decoding="async"
           fetchPriority="high"
-          className="hidden h-8 w-[6.75rem] shrink-0 object-contain sm:block"
+          className="h-8 w-[6.75rem] max-w-none object-left"
           draggable="false"
         />
-        <span className="h-8 w-6 shrink-0 overflow-hidden sm:hidden">
-          <img
-            src="/images/logo/logo-full.svg"
-            alt=""
-            aria-hidden="true"
-            width={386}
-            height={115}
-            decoding="async"
-            fetchPriority="high"
-            className="h-8 w-[6.75rem] max-w-none object-left"
-            draggable="false"
-          />
-        </span>
       </span>
       <span className="shrink-0 border-l border-[var(--border)] pl-2 font-display text-xl font-medium text-[var(--text-primary)] sm:text-2xl">
         market

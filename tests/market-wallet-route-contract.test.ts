@@ -238,7 +238,10 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("Cart, ${cart.totals.count}")
     expect(content).toContain('aria-label="Conduit Market home"')
     expect(content).toContain(
-      'className="h-8 w-6 shrink-0 overflow-hidden sm:hidden"'
+      'className="h-8 w-6 shrink-0 overflow-hidden sm:w-[6.75rem]"'
+    )
+    expect(content.match(/src="\/images\/logo\/logo-full\.svg"/g)).toHaveLength(
+      1
     )
     expect(content).toContain(
       'className="shrink-0 border-l border-[var(--border)] pl-2 font-display text-xl'
