@@ -2940,13 +2940,12 @@ async function fetchEventMarketFrontierFilters(input: {
       const relayStatuses = new Map(
         result.relays.map((relay) => [relay.relayUrl.toLowerCase(), relay])
       )
-      const missingOrIncompleteRelayUrls = plan.relayUrls.filter(
-        (relayUrl) =>
-          relayStatuses.get(relayUrl.toLowerCase())?.status !== "success"
+      const missingRelayUrls = plan.relayUrls.filter(
+        (relayUrl) => !relayStatuses.has(relayUrl.toLowerCase())
       )
-      if (missingOrIncompleteRelayUrls.length > 0) {
+      if (missingRelayUrls.length > 0) {
         incompleteFilterCount += 1
-        for (const relayUrl of missingOrIncompleteRelayUrls) {
+        for (const relayUrl of missingRelayUrls) {
           incompleteRelayUrls.add(relayUrl.toLowerCase())
         }
       }
@@ -2955,7 +2954,7 @@ async function fetchEventMarketFrontierFilters(input: {
         typeof filterLimit === "number" &&
         result.relays.some(
           (relay) =>
-            relay.status === "success" &&
+            relay.status !== "failed" &&
             relay.eventCount + (relay.rejectedEventCount ?? 0) >= filterLimit
         )
       ) {
@@ -3665,8 +3664,7 @@ export async function getEventMarketPickupsByCoordinates(
     result.incompleteFilterCount > 0 ||
     result.saturatedFilterCount > 0 ||
     result.eventsVerified !== true ||
-    result.relays.length === 0 ||
-    result.relays.some((relay) => relay.status !== "success")
+    result.relays.length === 0
   ) {
     throw new Error(
       "Event pickup evidence could not be verified across the planned relays"

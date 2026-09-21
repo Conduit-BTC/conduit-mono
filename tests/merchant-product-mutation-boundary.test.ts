@@ -222,7 +222,9 @@ function retainEventPickupEvidenceRows(
 function installEventPickupReadHarness(
   events: readonly SignedPublicNostrEvent[],
   harnessOptions: {
+    failedStatusKinds?: readonly number[]
     omittedStatusKinds?: readonly number[]
+    partialSaturatedKinds?: readonly number[]
     rejectedSaturatedKinds?: readonly number[]
     relayUrls?: readonly string[]
     retainedRows?: CachedEventMarketEvidence[]
@@ -292,6 +294,12 @@ function installEventPickupReadHarness(
       const rejectedSaturated = filter.kinds?.some((kind) =>
         harnessOptions.rejectedSaturatedKinds?.includes(kind)
       )
+      const failedStatus = filter.kinds?.some((kind) =>
+        harnessOptions.failedStatusKinds?.includes(kind)
+      )
+      const partialSaturated = filter.kinds?.some((kind) =>
+        harnessOptions.partialSaturatedKinds?.includes(kind)
+      )
       const omitStatus = filter.kinds?.some((kind) =>
         harnessOptions.omittedStatusKinds?.includes(kind)
       )
@@ -301,11 +309,16 @@ function installEventPickupReadHarness(
         relays: (omitStatus
           ? plannedRelayUrls.slice(0, -1)
           : plannedRelayUrls
-        ).map((url) => ({
+        ).map((url, index, statuses) => ({
           relayUrl: url,
-          status: "success" as const,
+          status:
+            index === statuses.length - 1 && failedStatus
+              ? ("failed" as const)
+              : partialSaturated
+                ? ("partial" as const)
+                : ("success" as const),
           eventCount:
-            saturated && typeof filter.limit === "number"
+            (saturated || partialSaturated) && typeof filter.limit === "number"
               ? filter.limit
               : matches.length,
           rejectedEventCount:
@@ -1064,6 +1077,27 @@ describe("merchant-owned product mutation boundary", () => {
       signedBundleCount: 1,
     })
 
+    installEventPickupReadHarness([pickup], {
+      failedStatusKinds: [30406],
+      relayUrls: ["wss://pickup-a.example", "wss://pickup-b.example"],
+    })
+    const partialCoverage = {
+      signerRequests: [] as ProductSignerRequestProgress[],
+      publishedKinds: [] as number[],
+      signedBundleCount: 0,
+    }
+    await attemptPreservedPublication({
+      baseline,
+      update: { stock: 4 },
+      getEventMarketPickups: getEventMarketPickupsByCoordinates,
+      observed: partialCoverage,
+    })
+    expect(partialCoverage).toEqual({
+      signerRequests: [{ kind: "product", current: 1, total: 1 }],
+      publishedKinds: [30402],
+      signedBundleCount: 1,
+    })
+
     for (const saturation of [
       { label: "pickup", kind: 30406 },
       { label: "deletion", kind: 5 },
@@ -1114,6 +1148,10 @@ describe("merchant-owned product mutation boundary", () => {
       {
         label: "deletion rejected-match saturation",
         options: { rejectedSaturatedKinds: [5] },
+      },
+      {
+        label: "partial pickup saturation",
+        options: { partialSaturatedKinds: [30406] },
       },
     ]) {
       installEventPickupReadHarness([pickup], incomplete.options)
@@ -1308,7 +1346,11 @@ describe("merchant-owned product mutation boundary", () => {
       }
 
       __resetEventMarketTestOverrides()
-      installEventPickupReadHarness([pickup], { retainedRows })
+      installEventPickupReadHarness([pickup], {
+        failedStatusKinds: [30406],
+        relayUrls: ["wss://pickup-a.example", "wss://pickup-b.example"],
+        retainedRows,
+      })
       const observed = {
         signerRequests: [] as ProductSignerRequestProgress[],
         publishedKinds: [] as number[],
