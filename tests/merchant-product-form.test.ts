@@ -240,6 +240,26 @@ describe("merchant product form validation", () => {
     expect(validOptions.canPublish).toBe(true)
   })
 
+  it("does not let a paid parent's price block a preserved free variation", () => {
+    const variations = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [createProductVariationAxis("size", "S, M")],
+    })
+    variations.rows[0]!.price = "0"
+    const values = form({ price: "100", currency: "SATS", variations })
+    expect(
+      validateProductPublishForm(values, {
+        hasPresetShippingZone: false,
+        preserveExistingFulfillment: true,
+        allowZeroPrice: false,
+      }).canPublish
+    ).toBe(true)
+    expect(validate(values).errors.variations).toContain(
+      "Price must be greater than zero"
+    )
+  })
+
   it("canonicalizes and dedupes tags case-insensitively", () => {
     expect(parseProductTags("Gear, gear, , HARDWARE, Demo, hardware")).toEqual([
       "gear",
@@ -580,5 +600,49 @@ describe("merchant product form validation", () => {
         hasProductChanges: false,
       })
     ).toBe(true)
+  })
+})
+
+describe("preserved merchant fulfillment form", () => {
+  it("validates stock edits without resolving unchanged fixed shipping", () => {
+    const values = form({
+      stock: "3",
+      shippingPricingMode: "fixed",
+      shippingCost: "",
+    })
+    expect(
+      validateProductPublishForm(values, {
+        hasPresetShippingZone: false,
+        preserveExistingFulfillment: true,
+      }).canPublish
+    ).toBe(true)
+    expect(validate(values).canPublish).toBe(false)
+    expect(
+      validateProductPublishForm(
+        { ...values, stock: "-1" },
+        {
+          hasPresetShippingZone: false,
+          preserveExistingFulfillment: true,
+        }
+      ).errors.stock
+    ).toBeDefined()
+  })
+
+  it("keeps an existing free listing editable without broadly authorizing new zero prices", () => {
+    const values = form({ price: "0", currency: "SATS", stock: "2" })
+    expect(
+      validateProductPublishForm(values, {
+        hasPresetShippingZone: false,
+        preserveExistingFulfillment: true,
+        allowZeroPrice: true,
+      }).canPublish
+    ).toBe(true)
+    expect(
+      validateProductPublishForm(values, {
+        hasPresetShippingZone: false,
+        preserveExistingFulfillment: true,
+      }).errors.price
+    ).toBeDefined()
+    expect(validate(values).errors.price).toBeDefined()
   })
 })

@@ -718,7 +718,7 @@ describe("canonical fixed product shipping", () => {
   })
 
   it("fails closed for unverified or saturated authoritative relay reads", async () => {
-    let mode: "unverified" | "saturated" = "unverified"
+    let mode: "rejected-saturated" | "saturated" | "unverified" = "unverified"
     let relayListFetches = 0
     __setRelayListTestOverrides({
       now: () => 1,
@@ -741,6 +741,7 @@ describe("canonical fixed product shipping", () => {
           relayUrl,
           status: "success" as const,
           eventCount: mode === "saturated" ? 100 : 0,
+          rejectedEventCount: mode === "rejected-saturated" ? 100 : 0,
         })),
         eventsVerified: mode !== "unverified",
       }),
@@ -754,6 +755,13 @@ describe("canonical fixed product shipping", () => {
       )
 
       mode = "saturated"
+      await expect(
+        getShippingOptionsByCoordinates([SHIPPING_COORDINATE])
+      ).rejects.toThrow(
+        "Fixed shipping could not be verified across the planned relays"
+      )
+
+      mode = "rejected-saturated"
       await expect(
         getShippingOptionsByCoordinates([SHIPPING_COORDINATE])
       ).rejects.toThrow(

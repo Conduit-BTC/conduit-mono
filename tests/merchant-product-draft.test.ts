@@ -710,3 +710,25 @@ describe("merchant product drafts", () => {
     expect(storage.length).toBe(0)
   })
 })
+
+describe("preserved fulfillment drafts", () => {
+  it("restores an unchanged association only for its exact existing product revision", () => {
+    const storage = new MemoryStorage()
+    const edit = target({
+      productAddressId: `30402:${"a".repeat(64)}:product`,
+      baseEventId: "revision-one",
+    })
+    const values = form({ fulfillment: "preserve", stock: "3" })
+    expect(saveProductDraft(edit, values, storage)).toBe(true)
+    expect(loadProductDraft(edit, storage).draft).toEqual(values)
+    expect(
+      loadProductDraft({ ...edit, baseEventId: "revision-two" }, storage).draft
+    ).toBeNull()
+  })
+
+  it("does not restore preserve mode into a new-product draft", () => {
+    const storage = new MemoryStorage()
+    saveProductDraft(target(), form({ fulfillment: "preserve" }), storage)
+    expect(loadProductDraft(target(), storage).draft).toBeNull()
+  })
+})

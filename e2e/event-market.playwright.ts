@@ -1954,6 +1954,347 @@ function createMerchantProductEvent(input: {
   })
 }
 
+function seedMerchantMutationMarket(
+  relay: RelayHarness,
+  now: number,
+  startOffset: number,
+  omitEnd = false
+): { product: SignedEvent; collection: SignedEvent; calendar: SignedEvent } {
+  const calendarCoordinate = `31923:${ORGANIZER_PUBKEY}:inventory-event`
+  const collectionCoordinate = `30405:${ORGANIZER_PUBKEY}:inventory-catalog`
+  const pickupCoordinate = `30406:${ORGANIZER_PUBKEY}:inventory-pickup`
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31923,
+    created_at: now - 60,
+    content: "Synthetic organizer-owned event.",
+    tags: [
+      ["d", "inventory-event"],
+      ["title", "Synthetic inventory event"],
+      ["start", String(now + startOffset)],
+      ...(omitEnd ? [] : [["end", String(now + startOffset + 3600)]]),
+      ["location", "Synthetic public hall"],
+    ],
+  })
+  const initialProduct = createMerchantProductEvent({
+    dTag: "inventory-product",
+    title: "Merchant-owned inventory product",
+    collectionCoordinate,
+    pickupCoordinate,
+    createdAt: now - 30,
+  })
+  const product = signEvent(MERCHANT_SECRET, {
+    ...initialProduct,
+    tags: [
+      ...initialProduct.tags,
+      ["t", "synthetic"],
+      ["t", "merchant"],
+      ["t", "inventory"],
+      ["visibility", "hidden"],
+    ],
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: now - 20,
+    content: "Synthetic accepted merchant product.",
+    tags: [
+      ["d", "inventory-catalog"],
+      ["title", "Synthetic inventory event"],
+      ["a", calendarCoordinate],
+      ["a", eventCoordinate(product)],
+      ["shipping_option", pickupCoordinate],
+    ],
+  })
+  relay.seed(
+    calendar,
+    collection,
+    product,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30406,
+      created_at: now - 60,
+      content: "",
+      tags: [
+        ["d", "inventory-pickup"],
+        ["title", "Synthetic organizer pickup"],
+        ["price", "0", "SAT"],
+        ["country", "US"],
+        ["service", "pickup"],
+        ["location", "Synthetic public hall pickup desk"],
+      ],
+    })
+  )
+  return { product, collection, calendar }
+}
+
+const merchantMutationCases = [
+  { phase: "before start", startOffset: 3600, fault: "delayed" },
+  { phase: "at start", startOffset: 0, fault: "delayed" },
+  { phase: "during the event", startOffset: -1800, fault: "delayed" },
+  { phase: "after the event", startOffset: -7200, fault: "delayed" },
+  { phase: "during the event", startOffset: -1800, fault: "unavailable" },
+  { phase: "during the event", startOffset: -1800, fault: "changed" },
+  { phase: "during the event", startOffset: -1800, fault: "pickup delayed" },
+  { phase: "after start without an end", startOffset: -1800, fault: "delayed" },
+] as const
+
+for (const scenario of merchantMutationCases) {
+  const scenarioTitle =
+    scenario.fault === "unavailable"
+      ? `merchant-owned direct pickup edits fail closed ${scenario.phase} when pickup evidence is unavailable @merchant`
+      : scenario.fault === "pickup delayed"
+        ? `merchant-owned direct pickup edits wait ${scenario.phase} for delayed pickup evidence @merchant`
+        : `merchant-owned product edits preserve fulfillment ${scenario.phase} with ${scenario.fault} organizer verification @merchant`
+
+  test(scenarioTitle, async ({ page }) => {
+    test.setTimeout(60_000)
+    page.setDefaultTimeout(15_000)
+    const now = Math.floor(Date.now() / 1000)
+    await page.clock.setFixedTime(new Date(now * 1000))
+    const relay = createRelayHarness()
+    const { product, collection } = seedMerchantMutationMarket(
+      relay,
+      now,
+      scenario.startOffset,
+      scenario.phase === "after start without an end"
+    )
+    await installSyntheticEnvironment(page, relay)
+    const heldKind = scenario.fault === "pickup delayed" ? 30406 : 30405
+    const held = relay.holdRelayRequests((request) =>
+      request.filters.some((filter) => filter.kinds?.includes(heldKind))
+    )
+    try {
+      await gotoAs(page, merchantUrl, "/products", "merchant")
+      await expect(
+        page.getByRole("button", { name: /^(Edit|Fix listing)$/ })
+      ).toBeVisible()
+      // The product list's independent event-context query is already pending.
+      // The edit/save path must not await it or launch its own market proof.
+      await expect
+        .poll(() =>
+          relay.requests.some((request) =>
+            request.filters.some((filter) => filter.kinds?.includes(heldKind))
+          )
+        )
+        .toBe(true)
+      if (scenario.fault === "unavailable") {
+        relay.rejectReads(true)
+        held.release()
+      } else if (scenario.fault === "changed") {
+        relay.remove(collection)
+        const changedCollection = signEvent(ORGANIZER_SECRET, {
+          ...collection,
+          created_at: now - 1,
+          tags: collection.tags.filter(
+            (tag) =>
+              tag[0] !== "shipping_option" &&
+              tag[1] !== eventCoordinate(product)
+          ),
+        })
+        relay.seed(changedCollection)
+        held.release()
+        await expect
+          .poll(() =>
+            relay.requests.some((request) =>
+              request.matchedEventIds.includes(changedCollection.id)
+            )
+          )
+          .toBe(true)
+      }
+
+      await page.getByRole("button", { name: /^(Edit|Fix listing)$/ }).click()
+      const editor = page.getByRole("dialog", { name: "Edit listing" })
+      await expect(
+        editor.getByText("Current fulfillment is kept", { exact: true })
+      ).toBeVisible()
+      await expect(editor.getByLabel("Price", { exact: true })).toHaveValue("0")
+      await editor.getByLabel("Stock quantity", { exact: true }).fill("7")
+      await editor
+        .getByLabel("Title", { exact: true })
+        .fill("Updated merchant inventory product")
+      const publicationStart = relay.publications.length
+      const pickupReadsBeforeSave = relay.requests.filter((request) =>
+        request.filters.some((filter) => filter.kinds?.includes(30406))
+      ).length
+      await editor
+        .getByRole("button", { name: "Save changes", exact: true })
+        .click()
+
+      if (scenario.fault === "unavailable") {
+        await expect(
+          editor.getByText(
+            "Event pickup could not be verified safely. Try again or choose Change fulfillment before saving.",
+            { exact: true }
+          )
+        ).toBeVisible()
+        await expect(editor).toBeVisible()
+        expect(
+          uniquePublishedEvents(relay.publications.slice(publicationStart))
+        ).toHaveLength(0)
+        return
+      }
+
+      if (scenario.fault === "pickup delayed") {
+        await expect
+          .poll(
+            () =>
+              relay.requests.filter((request) =>
+                request.filters.some((filter) => filter.kinds?.includes(30406))
+              ).length
+          )
+          .toBeGreaterThan(pickupReadsBeforeSave)
+        await expect(editor).toBeVisible()
+        expect(
+          uniquePublishedEvents(relay.publications.slice(publicationStart))
+        ).toHaveLength(0)
+        held.release()
+      }
+
+      await expect(editor).toBeHidden({ timeout: 15_000 })
+
+      await expect
+        .poll(
+          () =>
+            uniquePublishedEvents(relay.publications.slice(publicationStart))
+              .length
+        )
+        .toBe(1)
+      const published = uniquePublishedEvents(
+        relay.publications.slice(publicationStart)
+      )
+      expect(published).toHaveLength(1)
+      const updated = published[0]!
+      expect(verifyEvent(updated)).toBe(true)
+      expect(updated.pubkey).toBe(MERCHANT_PUBKEY)
+      expect(eventCoordinate(updated)).toBe(eventCoordinate(product))
+      expect(updated.tags).toContainEqual(["stock", "7"])
+      expect(updated.tags).toContainEqual([
+        "title",
+        "Updated merchant inventory product",
+      ])
+      expect(
+        updated.tags.find((tag) => tag[0] === "price")?.slice(1, 2)
+      ).toEqual(["0"])
+      for (const name of ["a", "shipping_option", "visibility"]) {
+        expect(updated.tags.filter((tag) => tag[0] === name)).toEqual(
+          product.tags.filter((tag) => tag[0] === name)
+        )
+      }
+      // Exactly one merchant-owned product event: no pickup reconstruction or
+      // organizer-owned calendar/catalog publication accompanies a routine edit.
+      expect(published.map((event) => event.kind)).toEqual([30402])
+    } finally {
+      held.release()
+    }
+  })
+}
+
+test("changing an existing product association requires verification and can return to preserving fulfillment @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const relay = createRelayHarness()
+  const { product } = seedMerchantMutationMarket(
+    relay,
+    Math.floor(Date.now() / 1000),
+    3600
+  )
+  await installSyntheticEnvironment(page, relay)
+  const held = relay.holdRelayRequests((request) =>
+    request.filters.some((filter) => filter.kinds?.includes(30405))
+  )
+  try {
+    await gotoAs(page, merchantUrl, "/products", "merchant")
+    await page.getByRole("button", { name: /^(Edit|Fix listing)$/ }).click()
+    const editor = page.getByRole("dialog", { name: "Edit listing" })
+    await editor.getByLabel("Stock quantity", { exact: true }).fill("8")
+    await expect(
+      editor.getByRole("button", { name: "Save changes", exact: true })
+    ).toBeEnabled()
+    await editor
+      .getByRole("button", { name: "Change fulfillment", exact: true })
+      .click()
+    await editor.locator("#product-fulfillment").click()
+    await page
+      .getByRole("option", { name: "Local pickup", exact: true })
+      .click()
+    await expect
+      .poll(() =>
+        relay.requests.some((request) =>
+          request.filters.some((filter) => filter.kinds?.includes(30405))
+        )
+      )
+      .toBe(true)
+    await expect(
+      editor.getByText(
+        "Verifying organizer, event, collection, and pickup evidence..."
+      )
+    ).toBeVisible()
+    await expect(
+      editor.getByRole("button", { name: "Save changes", exact: true })
+    ).toBeDisabled()
+    expect(relay.publications).toHaveLength(0)
+    await editor
+      .getByRole("button", { name: "Keep existing fulfillment", exact: true })
+      .click()
+    await expect(
+      editor.getByRole("button", { name: "Save changes", exact: true })
+    ).toBeEnabled()
+    await editor
+      .getByRole("button", { name: "Save changes", exact: true })
+      .click()
+    await expect(editor).toBeHidden()
+    await expect
+      .poll(() => uniquePublishedEvents(relay.publications).length)
+      .toBe(1)
+    const updated = uniquePublishedEvents(relay.publications)[0]!
+    expect(verifyEvent(updated)).toBe(true)
+    expect(eventCoordinate(updated)).toBe(eventCoordinate(product))
+    expect(updated.tags).toContainEqual(["stock", "8"])
+    for (const name of ["a", "shipping_option", "visibility"]) {
+      expect(updated.tags.filter((tag) => tag[0] === name)).toEqual(
+        product.tags.filter((tag) => tag[0] === name)
+      )
+    }
+  } finally {
+    held.release()
+  }
+})
+
+test("returning to preserved fulfillment discards fulfillment-only edits @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const relay = createRelayHarness()
+  seedMerchantMutationMarket(relay, Math.floor(Date.now() / 1000), 3600)
+  await installSyntheticEnvironment(page, relay)
+
+  await gotoAs(page, merchantUrl, "/products", "merchant")
+  await page.getByRole("button", { name: /^(Edit|Fix listing)$/ }).click()
+  const editor = page.getByRole("dialog", { name: "Edit listing" })
+  const save = editor.getByRole("button", {
+    name: "Save changes",
+    exact: true,
+  })
+  await expect(save).toBeDisabled()
+
+  await editor
+    .getByRole("button", { name: "Change fulfillment", exact: true })
+    .click()
+  const coordinateShipping = editor.getByRole("checkbox", {
+    name: "Coordinate shipping with the buyer after the order",
+  })
+  await coordinateShipping.uncheck()
+  await editor.getByLabel(/^Shipping \(/).fill("123")
+  await editor
+    .getByRole("button", { name: "Keep existing fulfillment", exact: true })
+    .click()
+
+  await expect(
+    editor.getByText("Current fulfillment is kept", { exact: true })
+  ).toBeVisible()
+  await expect(save).toBeDisabled()
+  expect(relay.publications).toHaveLength(0)
+})
+
 async function acceptMerchantProduct(
   page: Page,
   relay: RelayHarness,

@@ -127,6 +127,7 @@ export {
   normalizeCommercePrice,
   normalizeCurrencyAmount,
   normalizeCurrencyCode,
+  normalizeCurrencyIdentity,
   normalizeShopperPricePreference,
   type BitcoinDisplayUnit,
   type CommercePriceNormalizationOptions,
