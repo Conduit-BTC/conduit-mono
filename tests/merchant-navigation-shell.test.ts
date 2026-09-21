@@ -90,6 +90,9 @@ describe("Merchant navigation shell", () => {
     )
 
     expect(panel).toContain("data-merchant-navigation-panel")
+    expect(panel).toContain("headerAction")
+    expect(panel).toContain("h-[calc(5rem+env(safe-area-inset-top))]")
+    expect(panel).toContain("pt-[env(safe-area-inset-top)]")
     expect(panel).toContain("overflow-x-hidden overflow-y-auto")
     expect(panel).toContain("<MerchantNavLinks")
     expect(panel).toContain("<ReportBugLink")
@@ -97,6 +100,8 @@ describe("Merchant navigation shell", () => {
       panel.indexOf("<MerchantNavLinks")
     )
     expect(mobile).toContain("<MerchantNavigationPanel")
+    expect(mobile).toContain("showCloseButton={false}")
+    expect(mobile).toContain("<SheetClose asChild>")
     expect(sidebar).toContain("<MerchantNavigationPanel")
   })
 
@@ -123,7 +128,7 @@ describe("Merchant navigation shell", () => {
 
     expect(brand).toContain('data-merchant-brand-logo=""')
     expect(brand).toContain("w-6")
-    expect(brand).toContain("min-[400px]:w-[6.75rem]")
+    expect(brand).toContain("min-[420px]:w-[6.75rem]")
     expect(brand.match(/logo-full\.svg/g)).toHaveLength(1)
     expect(brand).toContain(">\n        merchant\n      </span>")
     expect(header).toContain("<MerchantAccountMenu />")
@@ -143,6 +148,9 @@ describe("Merchant navigation shell", () => {
       "apps/merchant/src/components/MerchantHeader.tsx"
     ).text()
     const root = await Bun.file("apps/merchant/src/routes/__root.tsx").text()
+    const messages = await Bun.file(
+      "apps/merchant/src/routes/messages.tsx"
+    ).text()
     const workspaceHeader = sliceBetween(
       header,
       "export function MerchantWorkspaceHeader",
@@ -165,9 +173,15 @@ describe("Merchant navigation shell", () => {
       "<ThemeToggleButton />",
       "<MerchantAccountMenu />",
     ])
+    expect(workspaceHeader).toContain("h-[calc(5rem+env(safe-area-inset-top))]")
     expect(shell).toContain("<MerchantWorkspaceHeader />")
+    expect(shell).toContain("pt-[calc(6.5rem+env(safe-area-inset-top))]")
     expect(shell).toContain("lg:grid-cols-[320px_minmax(0,1fr)]")
     expect(shell).toContain("overflow-x-hidden")
+    expect(messages).toContain("Buyer support inbox")
+    expect(messages).not.toContain(
+      ">\n          Messages\n        </div>\n        <h1"
+    )
     expect(productError).toContain("if (!signerConnected) return errorPage")
     expect(productError).toContain("<RootShell>{errorPage}</RootShell>")
   })

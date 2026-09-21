@@ -102,6 +102,14 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
     expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth + 1)
   }
 
+  async function expectControlsWithinViewport(
+    controls: Locator[]
+  ): Promise<void> {
+    for (const control of controls) {
+      await expect(control).toBeInViewport({ ratio: 1 })
+    }
+  }
+
   async function readPanelAlignment(panel: Locator): Promise<{
     brandInset: number
     homeInset: number
@@ -160,10 +168,27 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
   await expectPanelHasNoHorizontalOverflow(desktopPanel)
   await expectNoDocumentOverflow()
   const desktopAlignment = await readPanelAlignment(desktopPanel)
+  const desktopBrandBox = await desktopPanel
+    .getByRole("link", { name: "Conduit Merchant home" })
+    .boundingBox()
+  expect(desktopBrandBox).not.toBeNull()
   expect(desktopAlignment.width).toBeGreaterThanOrEqual(319)
   expect(desktopAlignment.width).toBeLessThanOrEqual(320)
   expect(desktopAlignment.brandInset).toBe(desktopAlignment.homeInset)
   expect(desktopAlignment.homeInset).toBe(desktopAlignment.reportInset)
+  const dashboardStatIconBoxes = await page
+    .locator("[data-dashboard-stat-icon]")
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const box = element.getBoundingClientRect()
+        return { height: box.height, width: box.width }
+      })
+    )
+  expect(dashboardStatIconBoxes).toHaveLength(4)
+  for (const box of dashboardStatIconBoxes) {
+    expect(box.width).toBe(44)
+    expect(box.height).toBe(44)
+  }
   if (merchantNavigationScreenshotDirectory) {
     await page.screenshot({
       path: join(
@@ -198,26 +223,97 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
   expect(Math.max(...headerCenters) - Math.min(...headerCenters)).toBeLessThan(
     1
   )
+  expect(Math.abs(headerBoxes[0]!.y - desktopBrandBox!.y)).toBeLessThan(1)
   await expectNoDocumentOverflow()
-  if (merchantNavigationScreenshotDirectory) {
-    await page.screenshot({
-      path: join(
-        merchantNavigationScreenshotDirectory,
-        "merchant-navigation-collapsed-desktop.png"
-      ),
-      animations: "disabled",
+
+  for (const { path, heading, screenshotName } of [
+    {
+      path: "/",
+      heading: "Merchant Portal",
+      screenshotName: "merchant-navigation-collapsed-desktop.png",
+    },
+    {
+      path: "/products",
+      heading: "Products",
+      screenshotName: "merchant-products-header.png",
+    },
+    {
+      path: "/orders",
+      heading: "Orders",
+      screenshotName: "merchant-orders-header.png",
+    },
+    {
+      path: "/messages",
+      heading: "Buyer support inbox",
+      screenshotName: "merchant-messages-header.png",
+    },
+  ]) {
+    await page.goto(`${merchantUrl}${path}`)
+    for (const control of headerControls) await expect(control).toBeVisible()
+    const pageHeading = page.getByRole("heading", {
+      name: heading,
+      exact: true,
     })
+    await expect(pageHeading).toBeVisible()
+    const [workspaceHeaderBox, pageHeadingBox] = await Promise.all([
+      workspaceHeader.boundingBox(),
+      pageHeading.boundingBox(),
+    ])
+    expect(workspaceHeaderBox).not.toBeNull()
+    expect(pageHeadingBox).not.toBeNull()
+    expect(
+      pageHeadingBox!.y - (workspaceHeaderBox!.y + workspaceHeaderBox!.height)
+    ).toBeGreaterThanOrEqual(16)
+    if (merchantNavigationScreenshotDirectory) {
+      await page.screenshot({
+        path: join(merchantNavigationScreenshotDirectory, screenshotName),
+        animations: "disabled",
+      })
+    }
+  }
+  await page.goto(merchantUrl)
+
+  for (const { width, height, logoWidth, screenshotName } of [
+    {
+      width: 320,
+      height: 700,
+      logoWidth: "24px",
+      screenshotName: "merchant-navigation-mobile-narrow.png",
+    },
+    { width: 400, height: 844, logoWidth: "24px", screenshotName: null },
+    { width: 420, height: 844, logoWidth: "108px", screenshotName: null },
+  ] as const) {
+    await page.setViewportSize({ width, height })
+    await expect(
+      workspaceHeader.locator("[data-merchant-brand-logo]")
+    ).toHaveCSS("width", logoWidth)
+    for (const control of headerControls) await expect(control).toBeVisible()
+    await expectControlsWithinViewport(headerControls)
+    await expectNoDocumentOverflow()
+    if (merchantNavigationScreenshotDirectory && screenshotName) {
+      await page.screenshot({
+        path: join(merchantNavigationScreenshotDirectory, screenshotName),
+        animations: "disabled",
+      })
+    }
   }
 
   await page.setViewportSize({ width: 390, height: 844 })
-  await expect(workspaceHeader.locator("[data-merchant-brand-logo]")).toHaveCSS(
-    "width",
-    "24px"
-  )
   const compactAccountBox = await workspaceHeader
     .getByRole("button", { name: "Open merchant account menu" })
     .boundingBox()
   expect(compactAccountBox!.width).toBe(44)
+  const menuTrigger = workspaceHeader.getByRole("button", {
+    name: "Open menu",
+  })
+  const menuTriggerBox = await menuTrigger.boundingBox()
+  const menuIconBox = await menuTrigger.locator("svg").boundingBox()
+  const collapsedBrandBox = await workspaceHeader
+    .getByRole("link", { name: "Conduit Merchant home" })
+    .boundingBox()
+  const collapsedHeaderBackground = await workspaceHeader.evaluate(
+    (element) => getComputedStyle(element).backgroundColor
+  )
   await expectNoDocumentOverflow()
   if (merchantNavigationScreenshotDirectory) {
     await page.screenshot({
@@ -238,6 +334,33 @@ test("merchant navigation stays aligned and overflow-free across responsive stat
   await expectPanelHasNoHorizontalOverflow(mobilePanel)
   const mobileAlignment = await readPanelAlignment(mobilePanel)
   expect(mobileAlignment).toEqual(desktopAlignment)
+  const expandedBrandBox = await mobilePanel
+    .getByRole("link", { name: "Conduit Merchant home" })
+    .boundingBox()
+  const closeButton = drawer.getByRole("button", { name: "Close", exact: true })
+  const closeButtonBox = await closeButton.boundingBox()
+  const closeIconBox = await closeButton.locator("svg").boundingBox()
+  const expandedPanelBackground = await mobilePanel.evaluate(
+    (element) => getComputedStyle(element).backgroundColor
+  )
+  expect(collapsedBrandBox).not.toBeNull()
+  expect(expandedBrandBox).not.toBeNull()
+  expect(menuTriggerBox).not.toBeNull()
+  expect(closeButtonBox).not.toBeNull()
+  expect(menuIconBox).not.toBeNull()
+  expect(closeIconBox).not.toBeNull()
+  expect(Math.abs(collapsedBrandBox!.x - expandedBrandBox!.x)).toBeLessThan(1)
+  expect(Math.abs(collapsedBrandBox!.y - expandedBrandBox!.y)).toBeLessThan(1)
+  expect(Math.abs(collapsedBrandBox!.y - desktopBrandBox!.y)).toBeLessThan(1)
+  for (const dimension of ["x", "y", "width", "height"] as const) {
+    expect(
+      Math.abs(menuTriggerBox![dimension] - closeButtonBox![dimension])
+    ).toBeLessThan(1)
+    expect(
+      Math.abs(menuIconBox![dimension] - closeIconBox![dimension])
+    ).toBeLessThan(1)
+  }
+  expect(collapsedHeaderBackground).toBe(expandedPanelBackground)
   if (merchantNavigationScreenshotDirectory) {
     await page.screenshot({
       path: join(

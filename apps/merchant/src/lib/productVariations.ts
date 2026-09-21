@@ -3,7 +3,6 @@ import {
   getProductShippingOptionAddress,
   MAX_PRODUCT_IMAGE_CANDIDATES,
   normalizePublicMediaUrl,
-  type ProductFulfillmentIntent,
   type ProductImage,
   type ProductSchema,
 } from "@conduit/core"
@@ -18,9 +17,12 @@ import {
   parseProductStockInput,
 } from "./productStock"
 import {
+  applyProductFulfillmentIntentForPublication,
   getCanonicalProductWriteFingerprint,
+  getProductPreservedFulfillmentFields,
   resolveProductFulfillmentIntentForTarget,
   resolvePublishedProductFulfillmentIntentForTarget,
+  type ProductPublicationFulfillmentIntent,
 } from "./product-publishing"
 
 export const MAX_PRODUCT_VARIATION_AXES = 3
@@ -91,7 +93,7 @@ export interface ProductFamilyPublishTarget<
 > {
   dTag: string
   product: ProductSchema
-  fulfillmentIntent: ProductFulfillmentIntent
+  fulfillmentIntent: ProductPublicationFulfillmentIntent
   existing?: TRecord
 }
 
@@ -786,7 +788,11 @@ function getUnresolvedVariationShippingError(
 
 export function getProductVariationFormError(
   state: ProductVariationFormState,
-  currency: string
+  currency: string,
+  options: {
+    preserveExistingFulfillment?: boolean
+    allowZeroPrice?: boolean
+  } = {}
 ): string | null {
   if (!state.enabled) return null
   if (state.axes.length === 0) return "Add at least one option."
@@ -837,11 +843,12 @@ export function getProductVariationFormError(
   const seenIdentities = new Set<string>()
   for (const row of includedRows) {
     if (
-      row.shippingResolution === "unresolved" ||
-      (row.shippingResolution === "replacement" &&
-        row.format !== "digital" &&
-        !row.inheritShipping &&
-        !row.shippingCost.trim())
+      !options.preserveExistingFulfillment &&
+      (row.shippingResolution === "unresolved" ||
+        (row.shippingResolution === "replacement" &&
+          row.format !== "digital" &&
+          !row.inheritShipping &&
+          !row.shippingCost.trim()))
     ) {
       return getUnresolvedVariationShippingError(row)
     }
@@ -877,7 +884,8 @@ export function getProductVariationFormError(
             row.price,
             `${getCombinationLabel(row.specifications)} price`
           ),
-          currency
+          currency,
+          { allowZero: options.allowZeroPrice }
         )
       } catch (error) {
         return error instanceof Error
@@ -916,7 +924,11 @@ export function getProductVariationFormError(
         return `${getCombinationLabel(row.specifications)} must use each image URL only once.`
       }
     }
-    if (!row.inheritShipping && row.shippingCost.trim()) {
+    if (
+      !options.preserveExistingFulfillment &&
+      !row.inheritShipping &&
+      row.shippingCost.trim()
+    ) {
       try {
         parsePlainDecimalAmount(
           row.shippingCost,
@@ -1363,7 +1375,8 @@ function buildVariationProduct(
   row: ProductVariationCombination,
   currency: string,
   existing: ProductListingRecordLike | undefined,
-  now: number
+  now: number,
+  preserveExistingFulfillment = false
 ): ProductSchema {
   const dTag =
     row.dTag ??
@@ -1401,7 +1414,13 @@ function buildVariationProduct(
   } else {
     const overrideAmount = normalizePublishableProductPrice(
       parsePlainDecimalAmount(row.price, `${row.label} price`),
-      currency
+      currency,
+      {
+        allowZero:
+          preserveExistingFulfillment &&
+          (existing?.product.sourcePrice?.amount ?? existing?.product.price) ===
+            0,
+      }
     )
     product = canonicalizeProductPrice({
       ...product,
@@ -1412,7 +1431,12 @@ function buildVariationProduct(
     })
   }
 
-  if (row.inheritShipping) {
+  if (preserveExistingFulfillment && existing) {
+    product = {
+      ...product,
+      ...getProductPreservedFulfillmentFields(existing.product),
+    }
+  } else if (row.inheritShipping) {
     product = copyShippingProjection(product, getShippingProjection(parent))
   } else if (row.shippingCost.trim()) {
     const amount = parsePlainDecimalAmount(
@@ -1450,6 +1474,124 @@ function buildVariationProduct(
   return product
 }
 
+function buildPreservedProductFamilyChangePlan<
+  TRecord extends ProductListingRecordLike,
+>(
+  input: Parameters<typeof buildProductFamilyChangePlan<TRecord>>[0]
+): ProductFamilyChangePlan<TRecord> {
+  if (!input.existing || input.fulfillmentIntent.kind !== "preserve_existing") {
+    throw new Error("Existing fulfillment requires the original product family")
+  }
+  const { root, variations } = input.existing
+  if (
+    root.dTag !== input.parentDTag ||
+    root.product.id !== input.fulfillmentIntent.baseline.id
+  ) {
+    throw new Error(
+      "Existing fulfillment must belong to the same merchant product"
+    )
+  }
+  const parentProduct = applyProductFulfillmentIntentForPublication({
+    product: input.baseProduct,
+    merchantPubkey: root.product.pubkey,
+    productDTag: input.parentDTag,
+    intent: { kind: "preserve_existing", baseline: root.product },
+  })
+  const existingForm = getProductVariationFormState(root, variations)
+  if (!existingForm.supported) {
+    throw new Error(
+      existingForm.reason ?? "This product family cannot be edited safely"
+    )
+  }
+  const existingByDTag = new Map(
+    variations.map((record) => [record.dTag, record])
+  )
+  const rowsByDTag = new Map(
+    (input.preservationBaselineVariations ?? existingForm.state).rows.map(
+      (row) => [row.dTag, row]
+    )
+  )
+  const desired: ProductFamilyPublishTarget<TRecord>[] = [
+    {
+      dTag: input.parentDTag,
+      product: {
+        ...parentProduct,
+        type: input.variations.enabled ? "variable" : "simple",
+        parentProductId: undefined,
+        specifications: input.variations.enabled
+          ? parentProduct.specifications
+          : [],
+      },
+      fulfillmentIntent: { kind: "preserve_existing", baseline: root.product },
+      existing: root,
+    },
+  ]
+  if (input.variations.enabled) {
+    for (const row of getProductVariationCombinations(input.variations)) {
+      const existing = row.dTag ? existingByDTag.get(row.dTag) : undefined
+      const previousRow = row.dTag ? rowsByDTag.get(row.dTag) : undefined
+      if (!existing?.dTag || !previousRow) {
+        throw new Error("Choose change fulfillment before adding a variation")
+      }
+      if (
+        [
+          "format",
+          "shippingCost",
+          "inheritShipping",
+          "shippingResolution",
+        ].some(
+          (key) =>
+            row[key as keyof ProductVariationRow] !==
+            previousRow[key as keyof ProductVariationRow]
+        )
+      ) {
+        throw new Error(
+          "Choose change fulfillment before changing variation fulfillment"
+        )
+      }
+      const product = buildVariationProduct(
+        parentProduct,
+        input.parentDTag,
+        row,
+        input.currency,
+        existing,
+        input.now ?? Date.now(),
+        true
+      )
+      desired.push({
+        dTag: existing.dTag,
+        product,
+        fulfillmentIntent: {
+          kind: "preserve_existing",
+          baseline: existing.product,
+        },
+        existing,
+      })
+    }
+  }
+  const desiredDTags = new Set(desired.map(({ dTag }) => dTag))
+  const publish = desired.filter((target) => {
+    // Fingerprinting validates preservation before any signer or relay work.
+    const next = getCanonicalProductWriteFingerprint(target)
+    const previous = getCanonicalProductWriteFingerprint({
+      dTag: target.dTag,
+      product: target.existing!.product,
+      fulfillmentIntent: {
+        kind: "preserve_existing",
+        baseline: target.existing!.product,
+      },
+    })
+    return next !== previous
+  })
+  return {
+    desired,
+    publish,
+    remove: variations.filter(
+      (variation) => !!variation.dTag && !desiredDTags.has(variation.dTag)
+    ),
+  }
+}
+
 export function buildProductFamilyChangePlan<
   TRecord extends ProductListingRecordLike,
 >(input: {
@@ -1457,14 +1599,19 @@ export function buildProductFamilyChangePlan<
   baseProduct: ProductSchema
   variations: ProductVariationFormState
   currency: string
-  fulfillmentIntent: ProductFulfillmentIntent
+  fulfillmentIntent: ProductPublicationFulfillmentIntent
   authoringCountries: readonly string[]
+  preservationBaselineVariations?: ProductVariationFormState
   existing?: ProductListingFamily<TRecord>
   now?: number
 }): ProductFamilyChangePlan<TRecord> {
   const now = input.now ?? Date.now()
   const parentDTag = input.parentDTag.trim()
   if (!parentDTag) throw new Error("Product d tag is required")
+  if (input.fulfillmentIntent.kind === "preserve_existing") {
+    return buildPreservedProductFamilyChangePlan({ ...input, parentDTag })
+  }
+  const fulfillmentIntent = input.fulfillmentIntent
   const unresolvedShippingRow = input.variations.enabled
     ? input.variations.rows.find(
         (row) => row.included && row.shippingResolution === "unresolved"
@@ -1486,7 +1633,7 @@ export function buildProductFamilyChangePlan<
     dTag: string,
     product: ProductSchema,
     existing: TRecord | undefined,
-    fallbackIntent: ProductFulfillmentIntent = input.fulfillmentIntent
+    fallbackIntent = fulfillmentIntent
   ): ProductFamilyPublishTarget<TRecord> => ({
     dTag,
     product,

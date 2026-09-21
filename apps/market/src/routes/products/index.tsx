@@ -34,7 +34,10 @@ import {
   type MarketBrowseSearch,
   type MarketBrowseSortOption,
 } from "../../lib/marketBrowseModel"
-import type { ProductCatalogSourceMode } from "../../lib/productCatalogRead"
+import {
+  DEFAULT_MARKET_CATALOG_SOURCE,
+  type ProductCatalogSourceMode,
+} from "../../lib/productCatalogRead"
 
 const PAGE_SIZE = 12
 /** Merchant matches shown inline; the rest stay one link away on /merchants. */
@@ -147,7 +150,7 @@ function ProductsPage() {
 
   const browseModel = useMarketBrowseModel({
     btcUsdRate,
-    catalogSource: search.source ?? "combined",
+    catalogSource: search.source ?? DEFAULT_MARKET_CATALOG_SOURCE,
     search,
     storeMenuOpen: merchantMenuOpen,
     visibleCount,
@@ -342,7 +345,8 @@ function ProductsPage() {
         connected={connected}
         onSelectSource={(source) =>
           updateSearch({
-            source: source === "combined" ? undefined : source,
+            source:
+              source === DEFAULT_MARKET_CATALOG_SOURCE ? undefined : source,
           })
         }
       />

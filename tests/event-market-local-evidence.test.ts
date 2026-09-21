@@ -552,7 +552,6 @@ describe("local event market evidence observer", () => {
       (
         await getEventMarket({
           reference: collection,
-          selectedProductCoordinates: [],
           nowMs: now,
         })
       ).state
@@ -601,7 +600,8 @@ describe("local event market evidence observer", () => {
         ],
         eventsVerified: true,
       }),
-      persistCachedEvidence: async () => {
+      persistCachedEvidence: async ({ events }) => {
+        if (!events.some((event) => event.id === graph[2]!.id)) return
         originalObservedBeforeWrite = getLocalEventMarketEvidenceSnapshot(
           organizer
         ).events.some((event) => event.id === graph[2]!.id)
@@ -610,7 +610,6 @@ describe("local event market evidence observer", () => {
 
     await getEventMarket({
       reference: collection,
-      selectedProductCoordinates: [],
       nowMs: now,
     })
     expect(pinReads).toBeGreaterThanOrEqual(2)

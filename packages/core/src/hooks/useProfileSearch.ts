@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   PROFILE_SEARCH_DEFAULT_LIMIT,
@@ -16,6 +16,8 @@ export const PROFILE_SEARCH_SETTLE_MS = 350
 export interface UseProfileSearchOptions {
   enabled?: boolean
   limit?: number
+  /** Restrict matches to these authors before ranking and limiting. */
+  authorPubkeys?: readonly string[]
   /** Idle time after the last keystroke before the relay query is issued. */
   settleMs?: number
   /**
@@ -41,20 +43,36 @@ export interface UseProfileSearchResult {
   isNetworkFetching: boolean
   /** True while any phase for `activeQuery` is still outstanding. */
   isFetching: boolean
+  /** Re-run the active device and relay phases without changing the query. */
+  refetch: () => void
 }
 
 export function getProfileSearchQueryKey(
   query: string,
   limit: number,
   phase: "cached" | "network" = "network",
-  accountPubkey: string | null = null
+  accountPubkey: string | null = null,
+  authorPubkeys?: readonly string[]
 ) {
+  const authorKey =
+    authorPubkeys === undefined
+      ? "authors:unscoped"
+      : `authors:${Array.from(
+          new Set(
+            authorPubkeys
+              .map((pubkey) => pubkey.trim().toLowerCase())
+              .filter(Boolean)
+          )
+        )
+          .sort()
+          .join(",")}`
   return [
     "profile-search",
     phase,
     normalizeProfileSearchText(query),
     limit,
     accountPubkey ?? "guest",
+    authorKey,
   ] as const
 }
 
@@ -98,6 +116,7 @@ export function useProfileSearch(
   const limit = options.limit ?? PROFILE_SEARCH_DEFAULT_LIMIT
   const settleMs = options.settleMs ?? PROFILE_SEARCH_SETTLE_MS
   const accountPubkey = options.accountPubkey?.trim().toLowerCase() || null
+  const authorPubkeys = options.authorPubkeys
   const trimmed = query.trim()
   const normalized = normalizeProfileSearchText(trimmed)
   const eligible =
@@ -135,7 +154,8 @@ export function useProfileSearch(
     trimmed,
     limit,
     "cached",
-    accountPubkey
+    accountPubkey,
+    authorPubkeys
   )
   const cachedKeyId = getProfileSearchRepairKey(cachedKey)
   const cachedQuery = useQuery({
@@ -149,6 +169,7 @@ export function useProfileSearch(
         query: trimmed,
         limit,
         signal,
+        authorPubkeys,
         sellerLookupBudgetMs: isRepairedProfileSearchQuery(
           repairedQueryRef.current,
           cachedKeyId
@@ -175,7 +196,8 @@ export function useProfileSearch(
       settledQuery,
       limit,
       "network",
-      accountPubkey
+      accountPubkey,
+      authorPubkeys
     ),
     enabled: networkEligible && settledQuery.length > 0,
     staleTime: 60_000,
@@ -186,6 +208,7 @@ export function useProfileSearch(
         query: settledQuery,
         limit,
         signal,
+        authorPubkeys,
         authenticatedPubkey: accountPubkey,
       }),
   })
@@ -208,11 +231,21 @@ export function useProfileSearch(
     !networkEligible || networkData !== undefined || networkQuery.isError
   const isDeviceFetching = eligible && cachedQuery.isFetching
   const isNetworkFetching = networkEligible && (isSettling || !networkDone)
+  const refreshCached = cachedQuery.refetch
+  const refreshNetwork = networkQuery.refetch
+  const refetch = useCallback(() => {
+    if (!eligible) return
+    void refreshCached()
+    if (networkEligible && settledQuery.length > 0) {
+      void refreshNetwork()
+    }
+  }, [eligible, networkEligible, refreshCached, refreshNetwork, settledQuery])
   return {
     activeQuery: eligible ? trimmed : "",
     data,
     isDeviceFetching,
     isNetworkFetching,
     isFetching: isDeviceFetching || isNetworkFetching,
+    refetch,
   }
 }

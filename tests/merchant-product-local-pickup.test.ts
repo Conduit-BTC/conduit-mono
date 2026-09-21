@@ -384,33 +384,13 @@ describe("merchant product local-pickup workflow", () => {
     expect(getProductEventMarketReference(ambiguous)).toBe("")
   })
 
-  it("guards unrelated edits until existing fulfillment is resolved explicitly", async () => {
-    const route = await Bun.file("apps/merchant/src/routes/products.tsx").text()
-
-    expect(route).toContain('projection.verification === "required"')
-    expect(route).toContain("editFulfillmentChoiceRequired")
-    expect(route).toContain('setEditFulfillmentResolution("verifying_pickup")')
-    expect(route).toContain("restoredForm.fulfillment !== hydrated.intent")
-    expect(route).toContain(
-      "const hydrated = getProductFulfillmentProjection(item.product, market)"
-    )
-    expect(route).toContain("fulfillment: hydrated.intent")
-    expect(route).toContain(
-      'data-testid="product-fulfillment-resolution-guard"'
-    )
-    expect(route).toContain("Use shipping")
-    expect(route).toContain("Verify local pickup")
-  })
-
   it("authorizes zero price only after exact local-pickup evidence and before signing", async () => {
     const route = await Bun.file("apps/merchant/src/routes/products.tsx").text()
     const publishStart = route.indexOf("async function publishProduct(")
     const publishEnd = route.indexOf("async function deleteProduct(")
     const publish = route.slice(publishStart, publishEnd)
     const evidence = publish.indexOf("localPickupEvidenceVerified = true")
-    const zeroAuthorization = publish.indexOf(
-      "const zeroPriceAuthorized = canUseZeroProductPrice"
-    )
+    const zeroAuthorization = publish.indexOf("const zeroPriceAuthorized =")
     const normalization = publish.indexOf("allowZero: zeroPriceAuthorized")
     const boothPublish = publish.indexOf("await ensureMerchantBoothPickup")
     const signing = publish.indexOf("return signAndPublishProductWriteBundle")

@@ -1781,7 +1781,10 @@ function requireCompleteShippingRead(
     relayUrls.some(
       (relayUrl) => relayStatuses.get(relayUrl)?.status !== "success"
     ) ||
-    result.relays.some((relay) => relay.eventCount >= queryLimit)
+    result.relays.some(
+      (relay) =>
+        relay.eventCount + (relay.rejectedEventCount ?? 0) >= queryLimit
+    )
   ) {
     throw new Error(
       "Fixed shipping could not be verified across the planned relays"

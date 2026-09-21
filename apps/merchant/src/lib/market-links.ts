@@ -6,7 +6,6 @@ import {
   normalizeExactEventCatalogNaddr,
   pubkeyToNpub,
   type ConduitBrowserLocation,
-  type EventMarketPerspectiveSource,
 } from "@conduit/core"
 import {
   MERCHANT_EVENT_RELATIONSHIP_FILTERS,
@@ -89,7 +88,6 @@ export function getMerchantEventParticipationUrl(
 
 export interface MerchantEventsSearch {
   event?: string
-  source?: EventMarketPerspectiveSource
   relation?: MerchantEventRelationshipFilter
   window?: MerchantEventTimelineWindow
 }
@@ -102,11 +100,6 @@ export interface MerchantAuthHandoffSearch extends MerchantEventsSearch {
 export function parseMerchantEventsSearch(
   search: Record<string, unknown>
 ): MerchantEventsSearch {
-  const source = ["following", "conduit", "combined"].includes(
-    search.source as string
-  )
-    ? (search.source as EventMarketPerspectiveSource)
-    : undefined
   const relation = MERCHANT_EVENT_RELATIONSHIP_FILTERS.includes(
     search.relation as MerchantEventRelationshipFilter
   )
@@ -127,7 +120,6 @@ export function parseMerchantEventsSearch(
   }
   return {
     ...(event ? { event } : {}),
-    ...(source ? { source } : {}),
     ...(relation ? { relation } : {}),
     ...(window ? { window } : {}),
   }
