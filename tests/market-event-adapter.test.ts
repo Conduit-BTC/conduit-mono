@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test"
 import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+import {
+  buildEventMarketCollectionDraft,
   evaluateListingSafety,
   resolveEventMarketProductParticipation,
   prepareProductCatalog,
@@ -9,6 +15,7 @@ import {
   type ProductsByIdsResult,
 } from "@conduit/core"
 import {
+  buildEventCatalogProductPreviewRecords,
   buildPickupFulfillmentSnapshot,
   buildPickupFulfillmentTerms,
   buildEventCatalogFamilyPickupFulfillments,
@@ -18,12 +25,15 @@ import {
   pickupItemMatchesCanonicalSnapshot,
   projectEventCatalogHydration,
   projectEventCatalogProducts,
+  projectRawEventCatalog,
   resolveProductCartFulfillment,
   type EventCatalog,
   type PickupFreshnessItem,
 } from "../apps/market/src/lib/event-market-adapter"
+import { reconcileEventCatalogGraph } from "../apps/market/src/lib/event-catalog-cache-coherence"
 import {
   createCartItemFromProduct,
+  createPendingEventPickupFulfillment,
   type CartPickupFulfillment,
 } from "../apps/market/src/lib/cart-model"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
@@ -323,6 +333,7 @@ function catalog(
           resolution
         ),
         pickupFulfillment: snapshot,
+        pickupReadiness: snapshot ? "resolved" : "terminal",
       },
     ],
     acceptedProductCount: 1,
@@ -355,6 +366,46 @@ function clonePickupItem(
 }
 
 describe("Market event adapter", () => {
+  it("preserves the signed preview frontier in pending cart intent", () => {
+    const candidate = product()
+    const eventId = "4".repeat(64)
+    const resolution = market()
+    resolution.acceptedProductEvidence = [
+      {
+        ...resolution.acceptedProductEvidence[0]!,
+        productPreview: {
+          coordinate: candidate.id,
+          eventId,
+          createdAt: candidate.createdAt,
+          title: candidate.title,
+          summary: candidate.summary,
+          type: "simple",
+          format: candidate.format,
+          stock: candidate.stock,
+          images: candidate.images,
+          sourceSafety: evaluateListingSafety(candidate),
+          priceStatus: "resolved",
+          price: candidate.price,
+          currency: candidate.currency,
+          priceSats: candidate.priceSats,
+          sourcePrice: candidate.sourcePrice,
+        },
+      },
+    ]
+
+    const records = buildEventCatalogProductPreviewRecords(resolution, [])
+    expect(records).toHaveLength(1)
+    expect(records[0]!.product.sourceEventId).toBe(eventId)
+    const pending = createPendingEventPickupFulfillment(collectionCoordinate)
+    if (!pending) throw new Error("Expected pending event pickup")
+    expect(
+      createCartItemFromProduct(records[0]!.product, pending)
+    ).toMatchObject({
+      productUpdatedAt: candidate.createdAt,
+      productEventId: eventId,
+    })
+  })
+
   it("keeps a retained accepted product visible without making it purchasable", () => {
     const projection = projectEventCatalogHydration({
       resolution: market("stale"),
@@ -391,6 +442,606 @@ describe("Market event adapter", () => {
     expect(getEventCatalogProductAvailability(projection)).toEqual({
       availableProductCount: 1,
       unresolvedProductCount: 0,
+    })
+  })
+
+  it("keeps terminal exact pickup evidence unavailable when an unrelated product read is partial", () => {
+    const terminalProduct = product({
+      shippingOptionRefs: [],
+      shippingOptionId: undefined,
+    })
+    const unresolvedProduct = product({
+      id: `30402:${"c".repeat(64)}:unresolved-product`,
+      pubkey: "c".repeat(64),
+      title: "Unresolved product",
+    })
+    const terminalRecord = commerceRecord(terminalProduct)
+    const unresolvedRecord = commerceRecord(unresolvedProduct, {
+      eventId: "5".repeat(64),
+    })
+    const resolution = marketWithAcceptedRecords([
+      terminalRecord,
+      unresolvedRecord,
+    ])
+    const projection = projectEventCatalogHydration({
+      resolution,
+      result: {
+        data: [terminalRecord],
+        diagnostics: [
+          {
+            productId: terminalProduct.id,
+            addressId: terminalProduct.id,
+            issue: null,
+            coverage: { listing: "complete", deletion: "complete" },
+          },
+          {
+            productId: unresolvedProduct.id,
+            addressId: unresolvedProduct.id,
+            issue: "lookup_partial",
+            coverage: { listing: "partial", deletion: "partial" },
+          },
+        ],
+        meta: {
+          source: "commerce",
+          stale: false,
+          degraded: true,
+          capped: false,
+          fetchedAt: 1,
+          capabilities: {
+            sortModes: [],
+            textSearch: false,
+            protectedSummaries: false,
+            canonicalFreshness: true,
+            cursorPagination: false,
+          },
+        },
+      },
+    })
+
+    expect(projection.productReadState).toBe("partial")
+    expect(projection.unresolvedProductCoordinates).toEqual([
+      unresolvedProduct.id,
+    ])
+    expect(projection.products).toHaveLength(1)
+    expect(projection.products[0]!.pickupFulfillment).toBeNull()
+    expect(projection.products[0]!.pickupReadiness).toBe("terminal")
+
+    resolution.acceptedProductEvidence = resolution.acceptedProductEvidence.map(
+      (evidence) => ({
+        ...evidence,
+        fulfillmentStatus:
+          evidence.productCoordinate === terminalProduct.id
+            ? ("none" as const)
+            : ("resolved" as const),
+      })
+    )
+    const refreshing = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution,
+      previewRecords: [terminalRecord, unresolvedRecord],
+      complete: false,
+    })
+    expect(
+      Object.fromEntries(
+        refreshing.products.map((entry) => [
+          entry.product.id,
+          entry.pickupReadiness,
+        ])
+      )
+    ).toEqual({
+      [terminalProduct.id]: "terminal",
+      [unresolvedProduct.id]: "recoverable",
+    })
+  })
+
+  it("keeps signed local graph revocations, including legacy-ended evidence, terminal while metadata supersession stays recoverable", () => {
+    const raw = {
+      reference: collectionCoordinate,
+      resolution: market(),
+      result: productRead(),
+      complete: true,
+      localGraphSuperseded: true,
+    }
+
+    expect(projectRawEventCatalog(raw).products[0]!.pickupReadiness).toBe(
+      "recoverable"
+    )
+    expect(
+      projectRawEventCatalog({ ...raw, localGraphRevoked: true }).products[0]!
+        .pickupReadiness
+    ).toBe("terminal")
+    expect(
+      projectRawEventCatalog({
+        ...raw,
+        localTerminalProductCoordinates: [productCoordinate],
+      }).products[0]!.pickupReadiness
+    ).toBe("terminal")
+    expect(
+      projectRawEventCatalog({
+        ...raw,
+        localGraphSuperseded: undefined,
+        localTerminalProductCoordinates: [productCoordinate],
+      }).products[0]!.pickupReadiness
+    ).toBe("terminal")
+  })
+
+  it("keeps a lifecycle-stripped future collection terminal during local reconciliation", () => {
+    const secret = generateSecretKey()
+    const signedOrganizer = getPublicKey(secret)
+    const signedCollection = `30405:${signedOrganizer}:future-market`
+    const signedCalendar = `31923:${signedOrganizer}:future-market`
+    const signedPickup = `30406:${signedOrganizer}:future-pickup`
+    const current = finalizeEvent(
+      {
+        ...buildEventMarketCollectionDraft({
+          dTag: "future-market",
+          title: "Future market",
+          eventCoordinate: signedCalendar,
+          pickupCoordinate: signedPickup,
+          productCoordinates: [productCoordinate],
+          orderAcceptance: "open",
+        }),
+        created_at: 100,
+      },
+      secret
+    )
+    const stripped = finalizeEvent(
+      {
+        ...current,
+        created_at: 200,
+        tags: current.tags.filter((tag) => tag[0] !== "conduit_event_market"),
+      },
+      secret
+    )
+    const base = market()
+    const pickup = {
+      ...base.pickup!,
+      coordinate: signedPickup,
+      authorPubkey: signedOrganizer,
+      dTag: "future-pickup",
+    }
+    const candidate = product({
+      collectionRefs: [signedCollection],
+      shippingOptionRefs: [{ coordinate: signedPickup }],
+    })
+    const resolution: EventMarketResolution = {
+      ...base,
+      reference: signedCollection,
+      organizerPubkey: signedOrganizer,
+      collectionCoordinate: signedCollection,
+      calendarCoordinate: signedCalendar,
+      pickupCoordinate: signedPickup,
+      collection: {
+        ...base.collection!,
+        signedEvent: current,
+        orderAcceptance: "open",
+        coordinate: signedCollection,
+        eventId: current.id,
+        authorPubkey: signedOrganizer,
+        dTag: "future-market",
+        eventCoordinates: [signedCalendar],
+        pickupCoordinates: [signedPickup],
+        createdAt: current.created_at * 1_000,
+      },
+      calendar: {
+        ...base.calendar!,
+        coordinate: signedCalendar,
+        authorPubkey: signedOrganizer,
+        dTag: "future-market",
+      },
+      pickup,
+      pickups: [pickup],
+      acceptedProductEvidence: base.acceptedProductEvidence.map((evidence) => ({
+        ...evidence,
+        shippingOptionCoordinates: [signedPickup],
+      })),
+    }
+    const reconciled = reconcileEventCatalogGraph(
+      {
+        reference: signedCollection,
+        resolution,
+        result: productRead({ product: candidate }),
+        complete: true,
+      },
+      { status: "ready", events: [stripped] }
+    )
+
+    expect(reconciled).toMatchObject({
+      localGraphSuperseded: true,
+      localGraphRevoked: true,
+    })
+    expect(projectRawEventCatalog(reconciled).products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupReadiness: "terminal",
+    })
+
+    const reopened = finalizeEvent(
+      {
+        ...current,
+        created_at: 300,
+      },
+      secret
+    )
+    const recovered = reconcileEventCatalogGraph(
+      {
+        reference: signedCollection,
+        resolution,
+        result: productRead({ product: candidate }),
+        complete: true,
+      },
+      { status: "ready", events: [stripped, reopened] }
+    )
+    expect(recovered.localGraphRevoked).toBeUndefined()
+    expect(projectRawEventCatalog(recovered).products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupReadiness: "recoverable",
+    })
+  })
+
+  it("keeps a retained card terminal for a newer malformed product while a valid revision stays recoverable", () => {
+    const secret = generateSecretKey()
+    const signedMerchant = getPublicKey(secret)
+    const signedProduct = `30402:${signedMerchant}:malformed-replacement`
+    const current = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: 103,
+        content: "",
+        tags: [
+          ["d", "malformed-replacement"],
+          ["title", "Current product"],
+          ["price", "2000", "SATS"],
+          ["type", "simple", "physical"],
+          ["a", collectionCoordinate],
+          ["shipping_option", pickupCoordinate],
+        ],
+      },
+      secret
+    )
+    const candidate = product({
+      id: signedProduct,
+      pubkey: signedMerchant,
+      title: "Current product",
+      createdAt: 103_000,
+      updatedAt: 103_000,
+    })
+    const record = commerceRecord(candidate, {
+      eventId: current.id,
+      eventCreatedAt: current.created_at,
+    })
+    const raw = {
+      reference: collectionCoordinate,
+      resolution: marketWithAcceptedRecords([record], [signedProduct]),
+      result: productRead({
+        product: candidate,
+        eventId: current.id,
+        eventCreatedAt: current.created_at,
+      }),
+      complete: true,
+    }
+    const replacement = (title: string) =>
+      finalizeEvent(
+        {
+          ...current,
+          created_at: 104,
+          tags: current.tags.map((tag) =>
+            tag[0] === "title" ? ["title", title] : tag
+          ),
+        },
+        secret
+      )
+
+    const malformed = reconcileEventCatalogGraph(raw, {
+      status: "ready",
+      events: [replacement("x".repeat(201))],
+    })
+    expect(malformed.localTerminalProductCoordinates).toEqual([signedProduct])
+    expect(projectRawEventCatalog(malformed).products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupReadiness: "terminal",
+    })
+
+    const valid = reconcileEventCatalogGraph(raw, {
+      status: "ready",
+      events: [replacement("Updated product")],
+    })
+    expect(valid.localTerminalProductCoordinates).toBeUndefined()
+    expect(projectRawEventCatalog(valid).products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupReadiness: "recoverable",
+    })
+  })
+
+  it("keeps unaffected completed products authorized after a product-scoped terminal observation", () => {
+    const unaffected = product({
+      id: `30402:${merchant}:tea`,
+      title: "Tea",
+    })
+    const records = [
+      commerceRecord(product()),
+      commerceRecord(unaffected, { eventId: "5".repeat(64) }),
+    ]
+    const read = productRead()
+    read.data = records
+    read.diagnostics = records.map((record) => ({
+      productId: record.addressId,
+      addressId: record.addressId,
+      issue: null,
+      coverage: { listing: "complete" as const, deletion: "complete" as const },
+    }))
+
+    const projection = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution: marketWithAcceptedRecords(records),
+      result: read,
+      complete: true,
+      localTerminalProductCoordinates: [productCoordinate],
+    })
+    const byCoordinate = new Map(
+      projection.products.map((entry) => [entry.product.id, entry])
+    )
+
+    expect(byCoordinate.get(productCoordinate)).toMatchObject({
+      evidenceState: "retained",
+      pickupFulfillment: null,
+      pickupReadiness: "terminal",
+    })
+    expect(byCoordinate.get(unaffected.id)).toMatchObject({
+      evidenceState: "live",
+      pickupReadiness: "resolved",
+    })
+    expect(byCoordinate.get(unaffected.id)?.pickupFulfillment).not.toBeNull()
+  })
+
+  it("keeps signed terminal direct pickup evidence terminal on a live product read", () => {
+    const boothCoordinate = `30406:${merchant}:deleted-booth`
+    const candidate = product({
+      shippingOptionRefs: [{ coordinate: boothCoordinate }],
+    })
+    for (const fulfillmentReason of [
+      "deleted_pickup_evidence",
+      "malformed_pickup_evidence",
+    ] as const) {
+      const resolution: EventMarketResolution = {
+        ...market(),
+        acceptedProductEvidence: [
+          {
+            productCoordinate,
+            eventId: "4".repeat(64),
+            createdAt: 103_000,
+            shippingOptionCoordinates: [boothCoordinate],
+            merchantPubkey: merchant,
+            fulfillmentStatus: "ambiguous",
+            fulfillmentReason,
+          },
+        ],
+      }
+
+      const projection = projectRawEventCatalog({
+        reference: collectionCoordinate,
+        resolution,
+        result: productRead({ product: candidate }),
+        complete: true,
+      })
+
+      expect(projection.products).toHaveLength(1)
+      expect(projection.products[0]!.pickupFulfillment).toBeNull()
+      expect(projection.products[0]!.pickupReadiness).toBe("terminal")
+    }
+  })
+
+  it("does not terminalize retained variations when only their variable parent is removed", () => {
+    const parent = product({ type: "variable", visibility: "private" })
+    const child = product({
+      id: `30402:${merchant}:coffee-child`,
+      title: "Coffee - Child",
+      type: "variation",
+      visibility: "private",
+      parentProductId: parent.id,
+      specifications: [{ key: "size", value: "Child" }],
+      createdAt: 104_000,
+      updatedAt: 104_000,
+    })
+    const rawRecords = [
+      commerceRecord(parent),
+      commerceRecord(child, { eventId: "5".repeat(64) }),
+    ]
+    const prepared = prepareProductCatalog(rawRecords, {
+      source: "commerce",
+      fetchedAt: 105_000,
+      stale: false,
+      degraded: false,
+      capped: false,
+    }).items[0]
+    if (prepared?.kind !== "family") throw new Error("Expected family")
+    const resolution = marketWithAcceptedRecords(rawRecords)
+    const parentRecord = {
+      ...prepared.family.parent,
+      family: prepared.family,
+    }
+    const childRecord = prepared.family.children[0]!
+    const read = productRead({ product: parent })
+    read.data = [parentRecord, childRecord]
+    read.diagnostics = [parentRecord, childRecord].map((record) => ({
+      productId: record.addressId,
+      addressId: record.addressId,
+      issue: null,
+      coverage: { listing: "complete" as const, deletion: "complete" as const },
+    }))
+
+    const projection = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution,
+      result: read,
+      complete: true,
+      localGraphSuperseded: true,
+      localTerminalProductCoordinates: [parent.id],
+    })
+
+    expect(projection.products).toHaveLength(1)
+    expect(projection.products[0]!.pickupReadiness).toBe("terminal")
+    expect(projection.products[0]!.familyPickupReadiness?.[child.id]).toBe(
+      "recoverable"
+    )
+  })
+
+  it("keeps unaffected family variations authorized after a child-scoped terminal observation", () => {
+    const parent = product({ type: "variable", visibility: "private" })
+    const children = ["Small", "Large"].map((size, index) =>
+      product({
+        id: `30402:${merchant}:coffee-${size.toLowerCase()}`,
+        title: `Coffee - ${size}`,
+        type: "variation",
+        visibility: "private",
+        parentProductId: parent.id,
+        specifications: [{ key: "size", value: size }],
+        createdAt: 104_000 + index * 1_000,
+        updatedAt: 104_000 + index * 1_000,
+      })
+    )
+    const rawRecords = [
+      commerceRecord(parent),
+      ...children.map((child, index) =>
+        commerceRecord(child, { eventId: `${index + 5}`.repeat(64) })
+      ),
+    ]
+    const prepared = prepareProductCatalog(rawRecords, {
+      source: "commerce",
+      fetchedAt: 106_000,
+      stale: false,
+      degraded: false,
+      capped: false,
+    }).items[0]
+    if (prepared?.kind !== "family") throw new Error("Expected family")
+    const parentRecord = {
+      ...prepared.family.parent,
+      family: prepared.family,
+    }
+    const read = productRead({ product: parent })
+    read.data = [parentRecord, ...prepared.family.children]
+    read.diagnostics = read.data.map((record) => ({
+      productId: record.addressId,
+      addressId: record.addressId,
+      issue: null,
+      coverage: { listing: "complete" as const, deletion: "complete" as const },
+    }))
+
+    const projection = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution: marketWithAcceptedRecords(rawRecords),
+      result: read,
+      complete: true,
+      localTerminalProductCoordinates: [children[0]!.id],
+    })
+    const family = projection.products[0]!
+
+    expect(family).toMatchObject({
+      evidenceState: "live",
+      pickupReadiness: "resolved",
+    })
+    expect(family.pickupFulfillment).not.toBeNull()
+    expect(family.familyPickupFulfillments?.[children[0]!.id]).toBeNull()
+    expect(family.familyPickupReadiness?.[children[0]!.id]).toBe("terminal")
+    expect(family.familyPickupFulfillments?.[children[1]!.id]).not.toBeNull()
+    expect(family.familyPickupReadiness?.[children[1]!.id]).toBe("resolved")
+  })
+
+  it("keeps collection removal terminal for a progressive preview before participation settles", () => {
+    const previewResolution: EventMarketResolution = {
+      ...market("stale"),
+      acceptedProductCoordinates: [],
+      acceptedProductEvidence: [],
+      organizerOnlyProductCoordinates: [productCoordinate],
+      participationRequests: [],
+    }
+    const projection = projectRawEventCatalog({
+      reference: collectionCoordinate,
+      resolution: previewResolution,
+      previewRecords: [commerceRecord(product())],
+      complete: false,
+      localGraphSuperseded: true,
+      localTerminalProductCoordinates: [productCoordinate],
+    })
+
+    expect(projection.products).toHaveLength(1)
+    expect(projection.products[0]!.evidenceState).toBe("retained")
+    expect(projection.products[0]!.pickupReadiness).toBe("terminal")
+  })
+
+  it("maps a preview-only pickup revocation to terminal readiness", () => {
+    const secret = generateSecretKey()
+    const signedOrganizer = getPublicKey(secret)
+    const signedCollection = `30405:${signedOrganizer}:preview-market`
+    const signedCalendar = `31923:${signedOrganizer}:preview-market`
+    const signedPickup = `30406:${signedOrganizer}:preview-pickup`
+    const base = market()
+    const pickup = {
+      ...base.pickup!,
+      coordinate: signedPickup,
+      authorPubkey: signedOrganizer,
+      dTag: "preview-pickup",
+    }
+    const resolution: EventMarketResolution = {
+      ...base,
+      reference: signedCollection,
+      organizerPubkey: signedOrganizer,
+      collectionCoordinate: signedCollection,
+      calendarCoordinate: signedCalendar,
+      pickupCoordinate: signedPickup,
+      collection: {
+        ...base.collection!,
+        coordinate: signedCollection,
+        authorPubkey: signedOrganizer,
+        dTag: "preview-market",
+        eventCoordinates: [signedCalendar],
+        pickupCoordinates: [signedPickup],
+      },
+      calendar: {
+        ...base.calendar!,
+        coordinate: signedCalendar,
+        authorPubkey: signedOrganizer,
+        dTag: "preview-market",
+      },
+      pickup,
+      pickups: [pickup],
+      acceptedProductCoordinates: [],
+      acceptedProductEvidence: [],
+      organizerOnlyProductCoordinates: [productCoordinate],
+      participationRequests: [],
+    }
+    const previewProduct = product({
+      collectionRefs: [signedCollection],
+      shippingOptionRefs: [{ coordinate: signedPickup }],
+    })
+    const revisedCollection = finalizeEvent(
+      {
+        ...buildEventMarketCollectionDraft({
+          dTag: "preview-market",
+          title: "Preview market",
+          eventCoordinate: signedCalendar,
+          productCoordinates: [productCoordinate],
+        }),
+        created_at: 200,
+      },
+      secret
+    )
+
+    const reconciled = reconcileEventCatalogGraph(
+      {
+        reference: signedCollection,
+        resolution,
+        previewRecords: [commerceRecord(previewProduct)],
+        complete: false,
+      },
+      { status: "ready", events: [revisedCollection] }
+    )
+
+    expect(reconciled.localTerminalProductCoordinates).toEqual([
+      productCoordinate,
+    ])
+    expect(projectRawEventCatalog(reconciled).products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupReadiness: "terminal",
     })
   })
 
