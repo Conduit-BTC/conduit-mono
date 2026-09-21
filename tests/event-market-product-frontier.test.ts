@@ -865,6 +865,60 @@ describe("event-market exact product request frontiers", () => {
     expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
   })
 
+  it("resolves an accepted product through its collection relay hint", async () => {
+    const request = productRevision("coffee", 100, true)
+    const hintedGraph = graph().map((event) =>
+      event.kind === EVENT_KINDS.PRODUCT_COLLECTION
+        ? sign(
+            ORGANIZER_SECRET,
+            {
+              kind: event.kind,
+              content: event.content,
+              tags: [
+                ...event.tags.map((tag) =>
+                  tag[0] === "a" && tag[1] === PRODUCT
+                    ? [tag[0], tag[1], MERCHANT_RELAY]
+                    : [...tag]
+                ),
+                ["a", PRODUCT, "ws://192.168.1.2:7777"],
+              ],
+            },
+            event.created_at
+          )
+        : event
+    )
+    const exactRelayPlans: string[][] = []
+    installReadHarness((filter, relayUrls) => {
+      if (filter.authors?.includes(ORGANIZER)) {
+        return { events: hintedGraph }
+      }
+      if (filter["#d"]?.includes("coffee")) {
+        exactRelayPlans.push([...relayUrls])
+        return {
+          events: relayUrls.includes(MERCHANT_RELAY) ? [request] : [],
+        }
+      }
+      return { events: [] }
+    })
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+    })
+
+    const result = await getEventMarket({
+      reference: COLLECTION,
+      nowMs: NOW_MS,
+    })
+
+    expect(exactRelayPlans).not.toHaveLength(0)
+    expect(exactRelayPlans[0]).toContain(MERCHANT_RELAY)
+    expect(exactRelayPlans[0]).toContain(RELAY_A)
+    expect(exactRelayPlans[0]!.length).toBeLessThanOrEqual(8)
+    expect(result.collection?.productRelayHintsByCoordinate).toEqual({
+      [PRODUCT]: [MERCHANT_RELAY],
+    })
+    expect(result.acceptedProductCoordinates).toEqual([PRODUCT])
+  })
+
   it("keeps event catalog deletion checks isolated by product and author", async () => {
     const merchants = [
       MERCHANT_SECRET,

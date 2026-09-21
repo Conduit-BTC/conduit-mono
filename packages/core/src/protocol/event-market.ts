@@ -243,6 +243,8 @@ export interface ParsedEventMarketCollection {
   eventCoordinates: string[]
   pickupCoordinates: string[]
   productCoordinates: string[]
+  /** Valid bounded relay hints from product `a` tags, keyed by coordinate. */
+  productRelayHintsByCoordinate?: Record<string, string[]>
   unsupportedReferences: string[]
   createdAt: number
   sourceRelayUrls?: string[]
@@ -1017,6 +1019,7 @@ export function parseEventMarketCollectionEvent(
 
   const eventCoordinates: string[] = []
   const productCoordinates: string[] = []
+  const productRelayHintsByCoordinate = new Map<string, string[]>()
   const pickupCoordinates: string[] = []
   const unsupportedReferences: string[] = []
   for (const tag of event.tags) {
@@ -1027,6 +1030,16 @@ export function parseEventMarketCollectionEvent(
         eventCoordinates.push(parsed.coordinate)
       } else if (parsed.kind === EVENT_KINDS.PRODUCT) {
         productCoordinates.push(parsed.coordinate)
+        const relayHints = normalizePortableRelayHints(tag[2] ? [tag[2]] : [])
+        if (relayHints.length > 0) {
+          productRelayHintsByCoordinate.set(
+            parsed.coordinate,
+            mergeRelayUrls(
+              productRelayHintsByCoordinate.get(parsed.coordinate) ?? [],
+              relayHints
+            )
+          )
+        }
       } else {
         unsupportedReferences.push(parsed.coordinate)
       }
@@ -1060,6 +1073,13 @@ export function parseEventMarketCollectionEvent(
     eventCoordinates: Array.from(new Set(eventCoordinates)),
     pickupCoordinates: Array.from(new Set(pickupCoordinates)),
     productCoordinates: Array.from(new Set(productCoordinates)),
+    ...(productRelayHintsByCoordinate.size > 0
+      ? {
+          productRelayHintsByCoordinate: Object.fromEntries(
+            productRelayHintsByCoordinate
+          ),
+        }
+      : {}),
     unsupportedReferences: Array.from(new Set(unsupportedReferences)),
     createdAt: event.created_at * 1_000,
   }
@@ -3314,6 +3334,7 @@ function candidateProductCoordinates(input: {
 
 async function eventMarketParticipantRelayPlans(input: {
   coordinates: readonly AddressableEventCoordinate[]
+  relayHintsByCoordinate?: ReadonlyMap<string, readonly string[]>
   candidateEvents: readonly SignedPublicNostrEvent[]
   sourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
   fallbackRelayUrls: readonly string[]
@@ -3381,6 +3402,13 @@ async function eventMarketParticipantRelayPlans(input: {
   const ownerSelectedRelayUrls = new Set<string>()
   const relayUrlsByAuthor = new Map(
     authors.map((author) => {
+      const collectionRelayHints = buildEventMarketShareRelayHints(
+        input.coordinates.flatMap((coordinate) =>
+          coordinate.authorPubkey === author
+            ? [input.relayHintsByCoordinate?.get(coordinate.coordinate)]
+            : []
+        )
+      )
       const selectedForAuthor = [
         ...ownerReadRelayUrls,
         ...(author === authenticatedPubkey ? ownerWriteRelayUrls : []),
@@ -3405,6 +3433,7 @@ async function eventMarketParticipantRelayPlans(input: {
         partitionByHealthSnapshot(
           mergeRelayUrlsWithOwnerAuthority(
             plan.ownerSelectedRelayUrls ?? [],
+            collectionRelayHints,
             plan.hintRelayUrls,
             observedRelaysByAuthor.get(author) ?? [],
             input.fallbackRelayUrls,
@@ -4022,6 +4051,7 @@ async function fetchEventMarketProductRequestFrontiers(
   input: {
     candidateEvents: readonly SignedPublicNostrEvent[]
     candidateCoordinates: readonly string[]
+    relayHintsByCoordinate?: ReadonlyMap<string, readonly string[]>
     candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
     relayUrls: string[]
     authenticatedPubkey?: string | null
@@ -4084,6 +4114,7 @@ async function fetchEventMarketProductRequestFrontiers(
   }
   const participantPlan = await eventMarketParticipantRelayPlans({
     coordinates,
+    relayHintsByCoordinate: input.relayHintsByCoordinate,
     candidateEvents: input.candidateEvents,
     sourceRelayUrlsById: input.candidateSourceRelayUrlsById,
     fallbackRelayUrls: input.relayUrls,
@@ -5734,12 +5765,16 @@ function addResolutionSources(
   }
 }
 
-function organizerProductCoordinatesFromEvidence(
+function organizerProductReferencesFromEvidence(
   events: readonly SignedPublicNostrEvent[],
   collectionCoordinates: readonly string[]
-): string[] {
+): {
+  coordinates: string[]
+  relayHintsByCoordinate: Map<string, string[]>
+} {
   const deletions = validDeletionEvents(events)
   const products = new Set<string>()
+  const relayHintsByCoordinate = new Map<string, string[]>()
   for (const reference of collectionCoordinates) {
     const coordinate = decodeEventMarketReference(reference, [
       EVENT_KINDS.PRODUCT_COLLECTION,
@@ -5754,9 +5789,32 @@ function organizerProductCoordinatesFromEvidence(
     if (collection.state !== "current") continue
     for (const productCoordinate of collection.value.productCoordinates) {
       products.add(productCoordinate)
+      const relayHints =
+        collection.value.productRelayHintsByCoordinate?.[productCoordinate] ??
+        []
+      if (relayHints.length > 0) {
+        relayHintsByCoordinate.set(
+          productCoordinate,
+          mergeRelayUrls(
+            relayHintsByCoordinate.get(productCoordinate) ?? [],
+            relayHints
+          )
+        )
+      }
     }
   }
-  return Array.from(products).sort()
+  return {
+    coordinates: Array.from(products).sort(),
+    relayHintsByCoordinate,
+  }
+}
+
+function organizerProductCoordinatesFromEvidence(
+  events: readonly SignedPublicNostrEvent[],
+  collectionCoordinates: readonly string[]
+): string[] {
+  return organizerProductReferencesFromEvidence(events, collectionCoordinates)
+    .coordinates
 }
 
 function productCoordinatesForMerchant(
@@ -6104,10 +6162,11 @@ export async function getEventMarket(
     events: organizerRecords.events,
     collectionCoordinates: [decoded.coordinate],
   })
-  const organizerProductCoordinates = organizerProductCoordinatesFromEvidence(
+  const organizerProductReferences = organizerProductReferencesFromEvidence(
     organizerRecords.events,
     [decoded.coordinate]
   )
+  const organizerProductCoordinates = organizerProductReferences.coordinates
   const selectedMerchantProductCoordinates = hasSelectedMerchant
     ? productCoordinatesForMerchant(
         organizerProductCoordinates,
@@ -6161,6 +6220,8 @@ export async function getEventMarket(
           await fetchEventMarketProductRequestFrontiers({
             candidateEvents: rawRequestCandidates.events,
             candidateCoordinates: requestedProductCoordinates,
+            relayHintsByCoordinate:
+              organizerProductReferences.relayHintsByCoordinate,
             candidateSourceRelayUrlsById:
               rawRequestCandidates.sourceRelayUrlsById,
             relayUrls: relayUrlsWithoutObservedFailures(
@@ -6746,12 +6807,13 @@ export async function getOrganizerEventMarketsDetailed(
   ])
   const rawOrganizerPickupFrontiers = rawSignedEvents(organizerPickupResult)
   const rawRequestCandidates = rawSignedEvents(requestResult)
-  const organizerProductCoordinates = discoveryProjection
-    ? []
-    : organizerProductCoordinatesFromEvidence(
+  const organizerProductReferences = discoveryProjection
+    ? { coordinates: [], relayHintsByCoordinate: new Map<string, string[]>() }
+    : organizerProductReferencesFromEvidence(
         organizerRecords.events,
         collectionCoordinates
       )
+  const organizerProductCoordinates = organizerProductReferences.coordinates
   const requestFrontierResult = discoveryProjection
     ? {
         events: [],
@@ -6765,6 +6827,8 @@ export async function getOrganizerEventMarketsDetailed(
     : await fetchEventMarketProductRequestFrontiers({
         candidateEvents: rawRequestCandidates.events,
         candidateCoordinates: organizerProductCoordinates,
+        relayHintsByCoordinate:
+          organizerProductReferences.relayHintsByCoordinate,
         candidateSourceRelayUrlsById: rawRequestCandidates.sourceRelayUrlsById,
         relayUrls: relayUrlsWithoutObservedFailures(
           relayUrls,

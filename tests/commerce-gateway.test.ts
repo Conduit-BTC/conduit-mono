@@ -7146,6 +7146,45 @@ describe("getProductsByIds diagnostics", () => {
     expect(result.meta.degraded).toBe(false)
   })
 
+  it("routes an exact product read through a coordinate-scoped relay hint", async () => {
+    const relayHint = "wss://relay.nostr.band"
+    const liveEvent = makeSignedProductEvent({
+      dTag: "hinted-event-product",
+      createdAt: 100,
+      title: "Hinted event product",
+    })
+    const hintedAddressId = `30402:${liveEvent.pubkey}:hinted-event-product`
+    const productRelayPlans: string[][] = []
+    __setCommerceTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          productRelayPlans.push(relayUrls)
+        }
+        return {
+          events:
+            filter.kinds?.includes(EVENT_KINDS.PRODUCT) &&
+            relayUrls.includes(relayHint)
+              ? [liveEvent]
+              : [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProductsByIds([hintedAddressId], {
+      relayHintsByAddressId: { [hintedAddressId]: [relayHint] },
+    })
+
+    expect(productRelayPlans).not.toHaveLength(0)
+    expect(productRelayPlans[0]).toContain(relayHint)
+    expect(result.data[0]?.eventId).toBe(liveEvent.id)
+    expect(result.diagnostics[0]?.issue).toBeNull()
+  })
+
   it("types malformed references without dropping valid coordinates", async () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter) =>
