@@ -22,7 +22,9 @@ import {
   mergeProductVariationAuthoringState,
   parseProductVariationImageInput,
   parseProductVariationFormState,
+  productFamilySnapshotsMatch,
   productFamilyReadSupportsAllocationChange,
+  productFamilySupplierAllocationChangeRequested,
   reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
   removeProductVariationAxis,
@@ -1248,6 +1250,8 @@ describe("merchant product variation planning", () => {
     expect(route).toContain("productFamilyReadSupportsAllocationChange")
     expect(route).toContain("editing.familyEvidenceComplete &&")
     expect(route).toContain("merchantProductFamilyEvidenceComplete")
+    expect(route).toContain("merchantProductsRef.current.find")
+    expect(route).toContain("productFamilySnapshotsMatch")
 
     const divergentChild = family.variations[0]!
     const childDivergedFamily = {
@@ -1290,6 +1294,79 @@ describe("merchant product variation planning", () => {
     expect(repaired.publish.map(({ dTag }) => dTag)).toContain(
       divergentChild.dTag
     )
+  })
+
+  it("rejects allocation signing when the complete family changed after edit opened", () => {
+    const originalAllocation = {
+      state: "valid" as const,
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 3,
+          role: "merchant" as const,
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier" as const,
+        },
+      ],
+      issues: [],
+    }
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({ supplierAllocation: originalAllocation }),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const baseline = toFamily(initialPlan)
+    const rotatedAllocation = {
+      ...originalAllocation,
+      recipients: [
+        originalAllocation.recipients[0]!,
+        {
+          pubkey: "d".repeat(64),
+          relayHint: "wss://relay.ditto.pub/",
+          weight: 2,
+          role: "supplier" as const,
+        },
+      ],
+    }
+
+    expect(
+      productFamilySupplierAllocationChangeRequested(
+        baseline,
+        originalAllocation
+      )
+    ).toBe(false)
+    expect(
+      productFamilySupplierAllocationChangeRequested(
+        baseline,
+        rotatedAllocation
+      )
+    ).toBe(true)
+    expect(
+      productFamilySnapshotsMatch(baseline, structuredClone(baseline))
+    ).toBe(true)
+
+    const added = structuredClone(baseline)
+    added.variations.push({
+      ...structuredClone(added.variations[0]!),
+      addressId: `${added.variations[0]!.addressId}-new`,
+      eventId: "e".repeat(64),
+    })
+    expect(productFamilySnapshotsMatch(baseline, added)).toBe(false)
+
+    const updated = structuredClone(baseline)
+    updated.variations[0]!.eventId = "f".repeat(64)
+    expect(productFamilySnapshotsMatch(baseline, updated)).toBe(false)
+
+    const removed = structuredClone(baseline)
+    removed.variations.pop()
+    expect(productFamilySnapshotsMatch(baseline, removed)).toBe(false)
   })
 
   it("propagates supplier allocation rotation and removal across a variation family", () => {

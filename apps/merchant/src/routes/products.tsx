@@ -197,7 +197,9 @@ import {
   MAX_PRODUCT_VARIATION_COUNT,
   mergeProductVariationAuthoringState,
   parseProductVariationImageInput,
+  productFamilySnapshotsMatch,
   productFamilyReadSupportsAllocationChange,
+  productFamilySupplierAllocationChangeRequested,
   reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
   removeProductVariationAxis,
@@ -1417,6 +1419,13 @@ function ProductsPage() {
       merchantProductRecords,
     ]
   )
+  const merchantProductsRef = useRef(merchantProducts)
+  merchantProductsRef.current = merchantProducts
+  const merchantProductFamilyEvidenceCompleteRef = useRef(
+    merchantProductFamilyEvidenceComplete
+  )
+  merchantProductFamilyEvidenceCompleteRef.current =
+    merchantProductFamilyEvidenceComplete
   const eventProductContexts = useMemo(() => {
     const contexts = new Map<string, MerchantProductEventContext>()
     for (const item of merchantProducts) {
@@ -1596,6 +1605,60 @@ function ProductsPage() {
     )
   }
 
+  function bindAllocationEditToCurrentProductFamily(
+    payload: ProductPublishMutationPayload
+  ): ProductPublishMutationPayload {
+    if (!payload.existing || payload.signedBundle) return payload
+
+    const allocationValidation = validateMerchantProductSupplierAllocationForm(
+      payload.form,
+      payload.merchantPubkey
+    )
+    if (!allocationValidation.canPublish) return payload
+
+    const baselineFamily = {
+      root: payload.existing,
+      variations: payload.existing.variations,
+      orphanVariation: payload.existing.orphanVariation,
+    }
+    if (
+      !productFamilySupplierAllocationChangeRequested(
+        baselineFamily,
+        allocationValidation.allocation
+      )
+    ) {
+      return payload
+    }
+
+    if (!merchantProductFamilyEvidenceCompleteRef.current) {
+      throw new Error(
+        "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+      )
+    }
+
+    const currentFamily = merchantProductsRef.current.find(
+      (candidate) => candidate.addressId === payload.existing?.addressId
+    )
+    if (
+      !currentFamily ||
+      !productFamilySnapshotsMatch(baselineFamily, {
+        root: currentFamily,
+        variations: currentFamily.variations,
+        orphanVariation: currentFamily.orphanVariation,
+      })
+    ) {
+      throw new Error(
+        "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+      )
+    }
+
+    return {
+      ...payload,
+      existing: currentFamily,
+      familyEvidenceComplete: true,
+    }
+  }
+
   const saveMutation = useMutation({
     mutationFn: async (payload: ProductPublishMutationPayload) => {
       if (payload.signedBundle) {
@@ -1615,26 +1678,28 @@ function ProductsPage() {
         )
       }
 
+      const currentPayload = bindAllocationEditToCurrentProductFamily(payload)
+
       const fallbackSourceScope = getProductImageUploadScopeId(
-        getProductDraftTarget(payload.merchantPubkey)
+        getProductDraftTarget(currentPayload.merchantPubkey)
       )
       const fallbackDestinationScope = getProductImageUploadScopeId({
-        merchantPubkey: payload.merchantPubkey,
-        productAddressId: `30402:${payload.merchantPubkey}:${payload.dTag}`,
+        merchantPubkey: currentPayload.merchantPubkey,
+        productAddressId: `30402:${currentPayload.merchantPubkey}:${currentPayload.dTag}`,
       })
       let fallbackMovePrepared = false
       let signedLocally = false
       try {
-        if (!payload.existing) {
+        if (!currentPayload.existing) {
           fallbackMovePrepared = productImageUpload.prepareFallbackClaimMove(
             fallbackSourceScope,
             fallbackDestinationScope
           )
         }
         return await publishProduct(
-          payload.merchantPubkey,
-          payload.form,
-          payload.dTag,
+          currentPayload.merchantPubkey,
+          currentPayload.form,
+          currentPayload.dTag,
           async (signedBundle, authoringTarget) => {
             signedLocally = true
             if (fallbackMovePrepared) {
@@ -1645,12 +1710,15 @@ function ProductsPage() {
             }
             setProductDeliveryRetry({
               action: "publish",
-              payload: { ...payload, signedBundle },
+              payload: { ...currentPayload, signedBundle },
             })
-            completeLocalProductSave(payload, authoringTarget)
-            await showLocalProductProjection("publish", payload.merchantPubkey)
+            completeLocalProductSave(currentPayload, authoringTarget)
+            await showLocalProductProjection(
+              "publish",
+              currentPayload.merchantPubkey
+            )
           },
-          payload.existing,
+          currentPayload.existing,
           setProductSignerProgress,
           () => {
             setProductSignerProgress(null)
@@ -1658,7 +1726,7 @@ function ProductsPage() {
           },
           authStatus === "connected" ? pubkey : null,
           () => authGenerationRef.current === authGeneration,
-          payload.familyEvidenceComplete
+          currentPayload.familyEvidenceComplete
         )
       } catch (error) {
         if (fallbackMovePrepared && !signedLocally) {

@@ -120,8 +120,9 @@ export function productFamilyReadSupportsAllocationChange(input: {
   )
 }
 
-function getSupplierAllocationTerms(product: ProductSchema): string {
-  const allocation = product.supplierAllocation
+function getSupplierAllocationTerms(
+  allocation: ProductSchema["supplierAllocation"]
+): string {
   if (!allocation || allocation.state === "absent") return "absent"
 
   return JSON.stringify({
@@ -136,20 +137,64 @@ function getSupplierAllocationTerms(product: ProductSchema): string {
   })
 }
 
-function supplierAllocationTermsChanged(
-  previous: ProductSchema,
-  next: ProductSchema
+export function productFamilySupplierAllocationChangeRequested<
+  TRecord extends ProductListingRecordLike,
+>(
+  existing: ProductListingFamily<TRecord>,
+  nextAllocation: ProductSchema["supplierAllocation"]
 ): boolean {
-  return (
-    getSupplierAllocationTerms(previous) !== getSupplierAllocationTerms(next)
+  const nextTerms = getSupplierAllocationTerms(nextAllocation)
+  return [existing.root, ...existing.variations].some(
+    ({ product }) =>
+      getSupplierAllocationTerms(product.supplierAllocation) !== nextTerms
   )
 }
 
 function productFamilySupplierAllocationTermsChanged<
   TRecord extends ProductListingRecordLike,
 >(existing: ProductListingFamily<TRecord>, next: ProductSchema): boolean {
-  return [existing.root, ...existing.variations].some(({ product }) =>
-    supplierAllocationTermsChanged(product, next)
+  return productFamilySupplierAllocationChangeRequested(
+    existing,
+    next.supplierAllocation
+  )
+}
+
+function getProductListingRevisionKey(
+  record: ProductListingRecordLike
+): string {
+  return JSON.stringify([
+    record.addressId,
+    record.dTag,
+    record.eventId.toLowerCase(),
+    record.eventCreatedAt,
+  ])
+}
+
+export function productFamilySnapshotsMatch<
+  TRecord extends ProductListingRecordLike,
+>(
+  baseline: ProductListingFamily<TRecord>,
+  current: ProductListingFamily<TRecord>
+): boolean {
+  if (
+    getProductListingRevisionKey(baseline.root) !==
+    getProductListingRevisionKey(current.root)
+  ) {
+    return false
+  }
+
+  const baselineVariations = baseline.variations
+    .map(getProductListingRevisionKey)
+    .sort()
+  const currentVariations = current.variations
+    .map(getProductListingRevisionKey)
+    .sort()
+
+  return (
+    baselineVariations.length === currentVariations.length &&
+    baselineVariations.every(
+      (revision, index) => revision === currentVariations[index]
+    )
   )
 }
 
