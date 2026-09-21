@@ -95,7 +95,9 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain(
       "transition-transform duration-200 ease-out motion-reduce:transition-none"
     )
-    expect(source).toContain('entered\n          ? "translate-y-0"')
+    expect(source).toContain(
+      'entered\n          ? "translate-y-[var(--market-footer-hidden-shift,0px)]"'
+    )
     expect(source).toContain(
       "translate-y-[calc(100%_+_var(--market-fixed-footer-height,0px))]"
     )

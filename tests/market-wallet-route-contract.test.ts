@@ -228,17 +228,23 @@ describe("Market wallet route contracts", () => {
   })
 
   it("keeps header destinations named and current without crowding narrow screens", async () => {
-    const content = await readFile(
-      "apps/market/src/components/MarketHeader.tsx",
-      "utf8"
-    )
+    const [content, styles] = await Promise.all([
+      readFile("apps/market/src/components/MarketHeader.tsx", "utf8"),
+      readFile("apps/market/src/styles/index.css", "utf8"),
+    ])
 
     expect(content).toContain('aria-current={active ? "page" : undefined}')
     expect(content).toContain("aria-label={ariaLabel ?? label}")
     expect(content).toContain("Cart, ${cart.totals.count}")
-    expect(content.match(/min-\[400px\]:(?:inline|inline-flex)/g)).toHaveLength(
-      2
+    expect(content).toContain('aria-label="Conduit Market home"')
+    expect(content).toContain(
+      'className="h-8 w-6 shrink-0 overflow-hidden sm:hidden"'
     )
+    expect(content).toContain(
+      'className="shrink-0 border-l border-[var(--border)] pl-2 font-display text-xl'
+    )
+    expect(styles).toContain('"brand account"\n    "lower lower"')
+    expect(styles).toContain('grid-template-areas: "brand lower account"')
   })
 
   it("lets checkout explicitly select any eligible payment target", async () => {

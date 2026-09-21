@@ -208,11 +208,7 @@ export {
 } from "./OrderMessagesWidget"
 export { ErrorPage } from "./ErrorPage"
 export { NotFoundPage } from "./NotFoundPage"
-export {
-  LegalFooter,
-  type LegalFooterIconLink,
-  type LegalFooterProps,
-} from "./LegalFooter"
+export { LegalFooter, type LegalFooterProps } from "./LegalFooter"
 export {
   PRODUCT_LEGAL_EFFECTIVE_DATE,
   PRODUCT_LEGAL_EFFECTIVE_DATE_LABEL,

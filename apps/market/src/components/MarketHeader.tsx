@@ -55,10 +55,10 @@ import { resolveActiveSuggestionIndex } from "../lib/accountSearch"
 
 const SEARCH_SUGGESTIONS_LISTBOX_ID = "market-search-suggestions"
 
-type NavState = "top" | "scrolled" | "hidden"
+export type MarketChromeState = "top" | "scrolled" | "hidden"
 
 const headerActionClassName =
-  "inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-2xl px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 sm:px-3"
+  "inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-2xl px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 sm:px-3"
 
 const accountControlClassName =
   "inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-2xl bg-primary-500 px-3 text-sm font-semibold text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
@@ -76,17 +76,38 @@ function accountMenuItemClassName(
 
 function Logo() {
   return (
-    <Link to="/" className="flex shrink-0 select-none items-center gap-2">
-      <img
-        src="/images/logo/logo-full.svg"
-        alt="Conduit"
-        width={386}
-        height={115}
-        decoding="async"
-        fetchPriority="high"
-        className="h-8 w-[6.75rem] shrink-0 object-contain"
-      />
-      <span className="hidden border-l border-[var(--border)] pl-2 font-display text-2xl font-medium text-[var(--text-primary)] min-[400px]:inline">
+    <Link
+      to="/"
+      aria-label="Conduit Market home"
+      className="flex shrink-0 select-none items-center gap-2 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+    >
+      <span className="inline-flex h-8 shrink-0 items-center">
+        <img
+          src="/images/logo/logo-full.svg"
+          alt=""
+          aria-hidden="true"
+          width={386}
+          height={115}
+          decoding="async"
+          fetchPriority="high"
+          className="hidden h-8 w-[6.75rem] shrink-0 object-contain sm:block"
+          draggable="false"
+        />
+        <span className="h-8 w-6 shrink-0 overflow-hidden sm:hidden">
+          <img
+            src="/images/logo/logo-full.svg"
+            alt=""
+            aria-hidden="true"
+            width={386}
+            height={115}
+            decoding="async"
+            fetchPriority="high"
+            className="h-8 w-[6.75rem] max-w-none object-left"
+            draggable="false"
+          />
+        </span>
+      </span>
+      <span className="shrink-0 border-l border-[var(--border)] pl-2 font-display text-xl font-medium text-[var(--text-primary)] sm:text-2xl">
         market
       </span>
     </Link>
@@ -241,11 +262,23 @@ function AccountControl({
     return (
       <button
         type="button"
-        className={cn(accountControlClassName, "min-w-[5.25rem]")}
+        className={cn(
+          accountControlClassName,
+          "size-11 px-0 sm:w-auto sm:min-w-[5.25rem] sm:px-3"
+        )}
+        aria-label="Connect"
         aria-busy={authPending}
         onClick={onConnect}
       >
-        Connect
+        {authPending ? (
+          <LoaderCircle
+            className="size-5 animate-spin sm:hidden"
+            aria-hidden="true"
+          />
+        ) : (
+          <CircleUser className="size-5 sm:hidden" aria-hidden="true" />
+        )}
+        <span className="hidden sm:inline">Connect</span>
       </button>
     )
   }
@@ -255,7 +288,7 @@ function AccountControl({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="inline-flex h-12 items-center gap-3 rounded-[16px] bg-primary-500 px-3 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:min-w-[12.75rem]"
+          className="inline-flex size-11 items-center justify-center rounded-[16px] bg-primary-500 p-1.5 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:h-12 sm:w-auto sm:min-w-[12.75rem] sm:justify-start sm:gap-3 sm:px-3"
           aria-label="Open account menu"
         >
           <Avatar className="size-8 shrink-0 border border-[color-mix(in_srgb,var(--on-primary)_24%,transparent)]">
@@ -276,7 +309,7 @@ function AccountControl({
           </span>
           <ChevronDown
             className={cn(
-              "size-4 shrink-0 text-white/70 transition-transform duration-150",
+              "hidden size-4 shrink-0 text-white/70 transition-transform duration-150 sm:block",
               open && "rotate-180"
             )}
             aria-hidden="true"
@@ -328,7 +361,11 @@ function AccountControl({
   )
 }
 
-export function MarketHeader() {
+export function MarketHeader({
+  chromeState,
+}: {
+  chromeState: MarketChromeState
+}) {
   const { pubkey, status, disconnect, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
@@ -351,7 +388,6 @@ export function MarketHeader() {
   const [searchValue, setSearchValue] = useState("")
   const [searchDirty, setSearchDirty] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
-  const [navState, setNavState] = useState<NavState>("top")
   const [searchFocused, setSearchFocused] = useState(false)
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false)
   const [activeSuggestionId, setActiveSuggestionId] = useState<string | null>(
@@ -456,45 +492,6 @@ export function MarketHeader() {
   }, [currentQuery, isBrowseRoute, pathname])
 
   useEffect(() => {
-    let lastScrollY = window.scrollY
-    let ticking = false
-    let currentState: NavState = window.scrollY <= 12 ? "top" : "scrolled"
-
-    const updateNavState = (): void => {
-      const currentY = window.scrollY
-      let nextState = currentState
-
-      if (currentY <= 12) {
-        nextState = "top"
-      } else if (currentY > lastScrollY + 5) {
-        nextState = "hidden"
-      } else if (currentY < lastScrollY - 5) {
-        nextState = "scrolled"
-      }
-
-      lastScrollY = currentY
-      ticking = false
-
-      if (nextState !== currentState) {
-        currentState = nextState
-        setNavState(nextState)
-      }
-    }
-
-    setNavState(currentState)
-
-    const onScroll = (): void => {
-      if (!ticking) {
-        window.requestAnimationFrame(updateNavState)
-        ticking = true
-      }
-    }
-
-    window.addEventListener("scroll", onScroll, { passive: true })
-    return () => window.removeEventListener("scroll", onScroll)
-  }, [])
-
-  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== "/") return
       if (event.metaKey || event.ctrlKey || event.altKey) return
@@ -575,9 +572,9 @@ export function MarketHeader() {
   return (
     <header
       className={cn(
-        "sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur transition-transform duration-300 ease-out",
-        navState === "hidden" ? "-translate-y-full" : "translate-y-0",
-        navState === "scrolled" ? "shadow-md" : ""
+        "sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface-overlay)] transition-transform duration-200 ease-out motion-reduce:transition-none",
+        chromeState === "hidden" ? "-translate-y-full" : "translate-y-0",
+        chromeState === "scrolled" ? "shadow-md" : ""
       )}
     >
       <div className="market-header-layout mx-auto min-h-16 max-w-7xl px-4 py-3">
@@ -587,7 +584,7 @@ export function MarketHeader() {
             <Badge
               variant="secondary"
               className={cn(
-                "hidden border text-[10px] uppercase tracking-wider min-[400px]:inline-flex",
+                "hidden border text-[10px] uppercase tracking-wider sm:inline-flex",
                 config.lightningNetwork === "mock"
                   ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
                   : "border-blue-500/30 bg-blue-500/10 text-blue-400"
@@ -598,131 +595,134 @@ export function MarketHeader() {
           )}
         </div>
 
-        <div className="market-header-search w-full min-w-0">
-          <form
-            className="relative"
-            onSubmit={(event) => {
-              event.preventDefault()
-              submitSearch()
-            }}
-          >
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--text-muted)]" />
-            <Input
-              ref={searchInputRef}
-              value={searchValue}
-              onChange={(event) => {
-                setSearchValue(event.target.value)
-                setSearchDirty(true)
-                setSuggestionsDismissed(false)
+        <div className="market-header-lower-row flex min-w-0 items-center gap-3">
+          <div className="market-header-search min-w-0 flex-1">
+            <form
+              className="relative"
+              onSubmit={(event) => {
+                event.preventDefault()
+                submitSearch()
               }}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setSearchFocused(false)}
-              onKeyDown={onSearchKeyDown}
-              placeholder="Search"
-              aria-label="Search products, categories, merchants, and accounts"
-              autoComplete="off"
-              className="h-11 bg-[var(--surface-elevated)] pl-9 pr-9 focus-visible:ring-offset-0"
-              {...getSearchSuggestionInputProps({
-                listboxId: SEARCH_SUGGESTIONS_LISTBOX_ID,
-                open: suggestionsOpen,
-                activeIndex: activeSuggestion,
-              })}
-            />
-            <div className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 text-[var(--text-muted)]">
-              {pendingSearch ? (
-                <LoaderCircle className="size-4 animate-spin" />
+            >
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--text-muted)]" />
+              <Input
+                ref={searchInputRef}
+                value={searchValue}
+                onChange={(event) => {
+                  setSearchValue(event.target.value)
+                  setSearchDirty(true)
+                  setSuggestionsDismissed(false)
+                }}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setSearchFocused(false)}
+                onKeyDown={onSearchKeyDown}
+                placeholder="Search"
+                aria-label="Search products, categories, merchants, and accounts"
+                autoComplete="off"
+                className="h-11 bg-[var(--surface-elevated)] pl-9 pr-3 focus-visible:ring-offset-0 sm:pr-9"
+                {...getSearchSuggestionInputProps({
+                  listboxId: SEARCH_SUGGESTIONS_LISTBOX_ID,
+                  open: suggestionsOpen,
+                  activeIndex: activeSuggestion,
+                })}
+              />
+              <div className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 text-[var(--text-muted)]">
+                {pendingSearch ? (
+                  <LoaderCircle className="size-4 animate-spin" />
+                ) : null}
+                {!pendingSearch && (
+                  <span className="hidden h-5 min-w-5 items-center justify-center rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 text-[10px] font-medium text-[var(--text-muted)] sm:inline-flex">
+                    /
+                  </span>
+                )}
+              </div>
+              {suggestionsOpen ? (
+                <div className="absolute inset-x-0 top-full z-50 mt-2">
+                  <SearchSuggestions
+                    id={SEARCH_SUGGESTIONS_LISTBOX_ID}
+                    ariaLabel="Matching categories, merchants, and accounts"
+                    groups={suggestionGroups}
+                    activeIndex={activeSuggestion}
+                    onActiveIndexChange={setActiveSuggestion}
+                    onSelect={(item) => selectSuggestion(item.id)}
+                    loading={suggestionLoading}
+                    emptyMessage={suggestionEmptyMessage}
+                    footer={
+                      suggestionFooter ||
+                      sellerDirectory.eligibilityState === "partial" ||
+                      sellerDirectory.eligibilityState === "unavailable" ||
+                      sellerDirectory.catalogEvidenceIncomplete ? (
+                        <span className="flex items-center justify-between gap-2">
+                          <span>{suggestionFooter}</span>
+                          {sellerDirectory.eligibilityState === "partial" ||
+                          sellerDirectory.eligibilityState === "unavailable" ||
+                          sellerDirectory.catalogEvidenceIncomplete ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 shrink-0 px-2 text-[11px]"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={sellerDirectory.retry}
+                            >
+                              Try again
+                            </Button>
+                          ) : null}
+                        </span>
+                      ) : null
+                    }
+                  />
+                </div>
+              ) : !isBrowseRoute &&
+                searchDirty &&
+                normalizedSearchValue.length > 0 ? (
+                <div className="pointer-events-none absolute left-1 top-full mt-1 text-[11px] text-[var(--text-muted)]">
+                  Press Enter to search
+                </div>
               ) : null}
-              {!pendingSearch && (
-                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 text-[10px] font-medium text-[var(--text-muted)]">
-                  /
-                </span>
-              )}
-            </div>
-            {suggestionsOpen ? (
-              <div className="absolute inset-x-0 top-full z-50 mt-2">
-                <SearchSuggestions
-                  id={SEARCH_SUGGESTIONS_LISTBOX_ID}
-                  ariaLabel="Matching categories, merchants, and accounts"
-                  groups={suggestionGroups}
-                  activeIndex={activeSuggestion}
-                  onActiveIndexChange={setActiveSuggestion}
-                  onSelect={(item) => selectSuggestion(item.id)}
-                  loading={suggestionLoading}
-                  emptyMessage={suggestionEmptyMessage}
-                  footer={
-                    suggestionFooter ||
-                    sellerDirectory.eligibilityState === "partial" ||
-                    sellerDirectory.eligibilityState === "unavailable" ||
-                    sellerDirectory.catalogEvidenceIncomplete ? (
-                      <span className="flex items-center justify-between gap-2">
-                        <span>{suggestionFooter}</span>
-                        {sellerDirectory.eligibilityState === "partial" ||
-                        sellerDirectory.eligibilityState === "unavailable" ||
-                        sellerDirectory.catalogEvidenceIncomplete ? (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 shrink-0 px-2 text-[11px]"
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={sellerDirectory.retry}
-                          >
-                            Try again
-                          </Button>
-                        ) : null}
-                      </span>
-                    ) : null
-                  }
-                />
-              </div>
-            ) : !isBrowseRoute &&
-              searchDirty &&
-              normalizedSearchValue.length > 0 ? (
-              <div className="pointer-events-none absolute left-1 top-full mt-1 text-[11px] text-[var(--text-muted)]">
-                Press Enter to search
-              </div>
-            ) : null}
-          </form>
+            </form>
+          </div>
+
+          {connected ? (
+            <nav
+              aria-label="Buyer navigation"
+              className="market-header-utility-nav flex shrink-0 items-center gap-1.5"
+            >
+              <HeaderAction
+                label="Messages"
+                ariaLabel={`Messages, ${unreadMessages} unread`}
+                icon={<MessagesSquare className="size-6" aria-hidden="true" />}
+                active={pathname === "/messages"}
+                labelClassName="sr-only"
+                badge={unreadMessages}
+                onClick={() => handleProtectedRoute("/messages")}
+              />
+              <HeaderAction
+                label="Orders"
+                icon={<ReceiptText className="size-6" aria-hidden="true" />}
+                active={pathname === "/orders"}
+                labelClassName="hidden lg:inline"
+                onClick={() => handleProtectedRoute("/orders")}
+              />
+            </nav>
+          ) : null}
         </div>
 
-        <nav
-          aria-label="Market navigation"
-          className="market-header-utility-nav flex min-w-0 items-center gap-1.5"
-        >
-          <HeaderAction
-            label="Orders"
-            icon={<ReceiptText className="size-6" aria-hidden="true" />}
-            enabled={connected}
-            active={pathname === "/orders"}
-            labelClassName="hidden lg:inline"
-            onClick={() => handleProtectedRoute("/orders")}
-          />
-          <HeaderAction
-            label="Cart"
-            ariaLabel={`Cart, ${cart.totals.count} ${
-              cart.totals.count === 1 ? "item" : "items"
-            }`}
-            icon={<ShoppingCart className="size-6" aria-hidden="true" />}
-            active={pathname === "/cart"}
-            labelClassName="sr-only"
-            badge={cart.totals.count}
-            onClick={() => void navigate({ to: "/cart" })}
-          />
-          <HeaderAction
-            label="Messages"
-            ariaLabel={
-              connected ? `Messages, ${unreadMessages} unread` : "Messages"
-            }
-            icon={<MessagesSquare className="size-6" aria-hidden="true" />}
-            enabled={connected}
-            active={pathname === "/messages"}
-            labelClassName="sr-only"
-            badge={unreadMessages}
-            onClick={() => handleProtectedRoute("/messages")}
-          />
-        </nav>
-
-        <div className="market-header-account-slot flex items-center gap-1.5">
+        <div className="market-header-account-slot flex min-w-0 items-center gap-1.5">
+          <nav aria-label="Market navigation" className="flex min-w-0">
+            <HeaderAction
+              label="Cart"
+              ariaLabel={`Cart, ${cart.totals.count} ${
+                cart.totals.count === 1 ? "item" : "items"
+              }`}
+              icon={<ShoppingCart className="size-6" aria-hidden="true" />}
+              active={pathname === "/cart"}
+              labelClassName="sr-only"
+              badge={cart.totals.count}
+              className="px-1.5 sm:px-3"
+              onClick={() => void navigate({ to: "/cart" })}
+            />
+          </nav>
           <ThemeToggleButton />
           <AccountControl
             connected={connected}
