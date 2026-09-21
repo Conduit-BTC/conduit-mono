@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import {
   buildBugReportUrl,
+  getClientErrorMessage,
   installBrowserClientErrorTelemetry,
   recordBrowserClientError,
   recordBrowserTelemetryEvent,
@@ -228,15 +229,37 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
 }
 
 function throwSyntheticClientErrorForTelemetryTest(): void {
-  if (
+  const enabled =
     import.meta.env.MODE === "mock" &&
     import.meta.env.VITE_ENABLE_TELEMETRY_TEST_HOOKS === "true" &&
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get(
-      "__conduit_telemetry_test"
-    ) === "react_error_boundary"
-  ) {
+    typeof window !== "undefined"
+  if (!enabled) return
+
+  const testCase = new URLSearchParams(window.location.search).get(
+    "__conduit_telemetry_test"
+  )
+  if (testCase === "react_error_boundary") {
     throw new TypeError("Synthetic client error telemetry test")
+  }
+  if (testCase === "react_error_boundary_proxy_prototype") {
+    throw new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error("Private proxy prototype detail")
+        },
+      }
+    )
+  }
+  if (testCase === "react_error_boundary_proxy_message") {
+    throw new Proxy(new Error("Private proxy message detail"), {
+      get(target, property, receiver) {
+        if (property === "name" || property === "message") {
+          throw new Error("Private proxy property detail")
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    })
   }
 }
 
@@ -325,11 +348,7 @@ function MerchantProductRootError({ error }: { error: unknown }) {
   const errorPage = (
     <ErrorPage
       title="Something went wrong"
-      message={
-        error instanceof Error && error.message
-          ? error.message
-          : "An unexpected error occurred."
-      }
+      message={getClientErrorMessage(error, "An unexpected error occurred.")}
       showReload
     >
       <ReportBugAction />
