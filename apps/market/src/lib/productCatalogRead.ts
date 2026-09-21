@@ -10,6 +10,8 @@ import {
 
 export type ProductCatalogScope = "marketplace" | "storefront"
 export type ProductCatalogSourceMode = "following" | "conduit" | "combined"
+export const DEFAULT_MARKET_CATALOG_SOURCE: ProductCatalogSourceMode =
+  "combined"
 
 export interface ProductCatalogReadInput {
   scope: ProductCatalogScope
@@ -206,7 +208,7 @@ export function getProductCatalogQueryKey(
   source: "cache" | "network"
 ) {
   const perspectiveMarketplace = isPerspectiveMarketplaceRead(input)
-  const catalogSource = input.catalogSource ?? "following"
+  const catalogSource = input.catalogSource ?? DEFAULT_MARKET_CATALOG_SOURCE
 
   return [
     "progressive-products",

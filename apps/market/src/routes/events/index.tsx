@@ -38,7 +38,10 @@ import {
   type EventTimelineSearch,
   type EventTimelineWindow,
 } from "../../lib/eventTimeline"
-import type { ProductCatalogSourceMode } from "../../lib/productCatalogRead"
+import {
+  DEFAULT_MARKET_CATALOG_SOURCE,
+  type ProductCatalogSourceMode,
+} from "../../lib/productCatalogRead"
 
 const WINDOW_LABELS: Record<EventTimelineWindow, string> = {
   upcoming: "Open & upcoming",
@@ -83,7 +86,9 @@ function EventsTimelinePage() {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
   const connected = status === "connected"
-  const discovery = useEventTimeline(search.source ?? "combined")
+  const discovery = useEventTimeline(
+    search.source ?? DEFAULT_MARKET_CATALOG_SOURCE
+  )
   const updateSearch = useCallback(
     (updates: Partial<EventTimelineSearch>) => {
       navigate({
@@ -162,7 +167,8 @@ function EventsTimelinePage() {
         connected={connected}
         onSelectSource={(source) =>
           updateSearch({
-            source: source === "combined" ? undefined : source,
+            source:
+              source === DEFAULT_MARKET_CATALOG_SOURCE ? undefined : source,
           })
         }
       />

@@ -4,6 +4,8 @@ import type { ProfileSearchMatch } from "../packages/core/src/protocol/profile-s
 import {
   describeAccountSearchDeviceEvidence,
   describeAccountSearchEvidence,
+  describeAccountSearchEligibility,
+  describeScopedAccountSearchEvidence,
   getAccountSuggestionDescription,
   getAccountSuggestionTarget,
   resolveActiveSuggestionIndex,
@@ -189,6 +191,18 @@ describe("account suggestion items", () => {
       })
     ).toBeNull()
   })
+
+  it("keeps an incomplete eligibility boundary visible beside relay evidence", () => {
+    expect(describeAccountSearchEligibility("ready")).toBeNull()
+    expect(describeAccountSearchEligibility("loading")).toContain("Checking")
+    expect(describeAccountSearchEligibility("partial")).toContain("incomplete")
+    expect(describeAccountSearchEligibility("unavailable")).toContain(
+      "unavailable"
+    )
+    expect(describeScopedAccountSearchEvidence(undefined, "partial")).toContain(
+      "followed accounts may be missing"
+    )
+  })
 })
 
 describe("highlighted suggestion", () => {
@@ -216,16 +230,12 @@ describe("highlighted suggestion", () => {
   })
 
   it("does not open an empty cache-only suggestion panel", async () => {
-    const header = await readFile(
-      "apps/market/src/components/MarketHeader.tsx",
+    const suggestionsHook = await readFile(
+      "apps/market/src/hooks/useMarketHeaderSuggestions.ts",
       "utf8"
     )
-    const openExpression = header.slice(
-      header.indexOf("const suggestionsOpen ="),
-      header.indexOf("useEffect", header.indexOf("const suggestionsOpen ="))
-    )
 
-    expect(openExpression).toContain("!!accountEvidence")
-    expect(openExpression).not.toContain("!!accountSearch.data")
+    expect(suggestionsHook).toContain("!!evidence || loading")
+    expect(suggestionsHook).not.toContain("!!accountSearch.data")
   })
 })

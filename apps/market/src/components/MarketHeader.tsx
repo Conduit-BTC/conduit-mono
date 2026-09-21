@@ -26,7 +26,6 @@ import {
   formatNpub,
   useAuth,
   useProfile,
-  useProfileSearch,
   useUnreadDirectMessageCount,
 } from "@conduit/core"
 import {
@@ -34,6 +33,7 @@ import {
   AvatarFallback,
   AvatarImage,
   Badge,
+  Button,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -41,7 +41,6 @@ import {
   DropdownMenuTrigger,
   Input,
   SearchSuggestions,
-  flattenSearchSuggestionGroups,
   ThemeToggleButton,
   cn,
   getSearchSuggestionInputProps,
@@ -50,16 +49,11 @@ import {
 
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
-import {
-  ACCOUNT_SEARCH_CANDIDATE_LIMIT,
-  limitAccountMatches,
-  resolveActiveSuggestionIndex,
-  describeAccountSearchEvidence,
-  getAccountSuggestionTarget,
-  toAccountSuggestionItems,
-} from "../lib/accountSearch"
+import { useMarketHeaderSuggestions } from "../hooks/useMarketHeaderSuggestions"
+import { DEFAULT_MARKET_CATALOG_SOURCE } from "../lib/productCatalogRead"
+import { resolveActiveSuggestionIndex } from "../lib/accountSearch"
 
-const ACCOUNT_SUGGESTIONS_LISTBOX_ID = "market-account-suggestions"
+const SEARCH_SUGGESTIONS_LISTBOX_ID = "market-search-suggestions"
 
 type NavState = "top" | "scrolled" | "hidden"
 
@@ -381,83 +375,71 @@ export function MarketHeader() {
       isBrowseRoute && searchDirty && normalizedSearchValue !== currentQuery,
     [currentQuery, isBrowseRoute, normalizedSearchValue, searchDirty]
   )
-  const accountSearch = useProfileSearch(searchValue, {
-    enabled: searchFocused && searchDirty && !suggestionsDismissed,
-    limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT,
-    accountPubkey: connected ? pubkey : null,
+  const searchSuggestionsEnabled =
+    searchFocused &&
+    searchDirty &&
+    !suggestionsDismissed &&
+    normalizedSearchValue.length > 0
+  const routeCatalogSource =
+    search.source === "following" ||
+    search.source === "conduit" ||
+    search.source === "combined"
+      ? search.source
+      : DEFAULT_MARKET_CATALOG_SOURCE
+  const handleSuggestionSelected = useCallback(() => {
+    setSuggestionsDismissed(true)
+    setSearchDirty(false)
+    setSearchValue("")
+    searchInputRef.current?.blur()
+  }, [])
+  const {
+    sellerDirectory,
+    suggestionModel,
+    evidence: suggestionEvidence,
+    loading: suggestionLoading,
+    open: suggestionsOpen,
+    emptyMessage: suggestionEmptyMessage,
+    selectSuggestion,
+  } = useMarketHeaderSuggestions({
+    catalogSource: routeCatalogSource,
+    enabled: searchSuggestionsEnabled,
+    isBrowseRoute,
+    listboxId: SEARCH_SUGGESTIONS_LISTBOX_ID,
+    merchantFilter: search.merchant,
+    onSelect: handleSuggestionSelected,
+    query: searchValue,
   })
-  const accountMatches = useMemo(
-    () =>
-      accountSearch.data
-        ? limitAccountMatches(accountSearch.data.matches)
-        : undefined,
-    [accountSearch.data]
-  )
-  const suggestionGroups = useMemo(
-    () =>
-      [
-        {
-          id: `${ACCOUNT_SUGGESTIONS_LISTBOX_ID}-merchants`,
-          heading: "Merchants",
-          // The group heading already says these are merchants.
-          items: toAccountSuggestionItems(
-            (accountMatches ?? []).filter((match) => match.isSeller)
-          ).map((item) => ({ ...item, badge: undefined })),
-        },
-        {
-          id: `${ACCOUNT_SUGGESTIONS_LISTBOX_ID}-accounts`,
-          heading: "Accounts",
-          items: toAccountSuggestionItems(
-            (accountMatches ?? []).filter((match) => !match.isSeller)
-          ),
-        },
-      ].filter((group) => group.items.length > 0),
-    [accountMatches]
-  )
-  const accountItems = useMemo(
-    () => flattenSearchSuggestionGroups(suggestionGroups),
-    [suggestionGroups]
-  )
+  const suggestionGroups = suggestionModel.groups
+  const suggestionItems = suggestionModel.items
   const activeSuggestion = resolveActiveSuggestionIndex(
-    accountItems,
+    suggestionItems,
     activeSuggestionId
   )
   const setActiveSuggestion = useCallback(
     (index: number) => {
       setActiveSuggestionId(
-        index >= 0 ? (accountItems[index]?.id ?? null) : null
+        index >= 0 ? (suggestionItems[index]?.id ?? null) : null
       )
     },
-    [accountItems]
+    [suggestionItems]
   )
-  const accountEvidence = describeAccountSearchEvidence(accountSearch.data)
-  const suggestionsOpen =
-    searchFocused &&
-    searchDirty &&
-    !suggestionsDismissed &&
-    accountSearch.activeQuery.length > 0 &&
-    (accountItems.length > 0 || !!accountEvidence || accountSearch.isFetching)
-
+  const suggestionFooter = [
+    suggestionEvidence,
+    isBrowseRoute ? null : "Press Enter to search products.",
+  ]
+    .filter((sentence): sentence is string => !!sentence)
+    .join(" ")
   useEffect(() => {
     setActiveSuggestionId(null)
-  }, [accountSearch.activeQuery])
-
-  function selectAccountSuggestion(index: number): void {
-    const match = accountMatches?.[index]
-    if (!match) return
-    setSuggestionsDismissed(true)
-    setSearchDirty(false)
-    setSearchValue("")
-    searchInputRef.current?.blur()
-    void navigate(getAccountSuggestionTarget(match))
-  }
+  }, [normalizedSearchValue])
 
   const onSearchKeyDown = useSearchSuggestionKeyboard({
     open: suggestionsOpen,
-    count: accountItems.length,
+    count: suggestionItems.length,
     activeIndex: activeSuggestion,
     onActiveIndexChange: setActiveSuggestion,
-    onSelectActive: () => selectAccountSuggestion(activeSuggestion),
+    onSelectActive: () =>
+      selectSuggestion(suggestionItems[activeSuggestion]?.id),
     onDismiss: () => setSuggestionsDismissed(true),
   })
 
@@ -637,11 +619,11 @@ export function MarketHeader() {
               onBlur={() => setSearchFocused(false)}
               onKeyDown={onSearchKeyDown}
               placeholder="Search"
-              aria-label="Search products and accounts"
+              aria-label="Search products, categories, merchants, and accounts"
               autoComplete="off"
               className="h-11 bg-[var(--surface-elevated)] pl-9 pr-9 focus-visible:ring-offset-0"
               {...getSearchSuggestionInputProps({
-                listboxId: ACCOUNT_SUGGESTIONS_LISTBOX_ID,
+                listboxId: SEARCH_SUGGESTIONS_LISTBOX_ID,
                 open: suggestionsOpen,
                 activeIndex: activeSuggestion,
               })}
@@ -659,21 +641,37 @@ export function MarketHeader() {
             {suggestionsOpen ? (
               <div className="absolute inset-x-0 top-full z-50 mt-2">
                 <SearchSuggestions
-                  id={ACCOUNT_SUGGESTIONS_LISTBOX_ID}
-                  ariaLabel="Matching merchants and accounts"
+                  id={SEARCH_SUGGESTIONS_LISTBOX_ID}
+                  ariaLabel="Matching categories, merchants, and accounts"
                   groups={suggestionGroups}
                   activeIndex={activeSuggestion}
                   onActiveIndexChange={setActiveSuggestion}
-                  onSelect={(_item, index) => selectAccountSuggestion(index)}
-                  loading={accountSearch.isFetching}
-                  emptyMessage={
-                    accountSearch.isFetching
-                      ? "Searching merchants and accounts..."
-                      : null
-                  }
+                  onSelect={(item) => selectSuggestion(item.id)}
+                  loading={suggestionLoading}
+                  emptyMessage={suggestionEmptyMessage}
                   footer={
-                    accountEvidence ??
-                    (isBrowseRoute ? null : "Press Enter to search products")
+                    suggestionFooter ||
+                    sellerDirectory.eligibilityState === "partial" ||
+                    sellerDirectory.eligibilityState === "unavailable" ||
+                    sellerDirectory.catalogEvidenceIncomplete ? (
+                      <span className="flex items-center justify-between gap-2">
+                        <span>{suggestionFooter}</span>
+                        {sellerDirectory.eligibilityState === "partial" ||
+                        sellerDirectory.eligibilityState === "unavailable" ||
+                        sellerDirectory.catalogEvidenceIncomplete ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 shrink-0 px-2 text-[11px]"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={sellerDirectory.retry}
+                          >
+                            Try again
+                          </Button>
+                        ) : null}
+                      </span>
+                    ) : null
                   }
                 />
               </div>

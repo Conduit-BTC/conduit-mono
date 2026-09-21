@@ -14,7 +14,10 @@ import {
 import type { FacetOption } from "./facets"
 import { compareCommercePrices, getComparablePriceValue } from "./pricing"
 import { diversifyMerchantProductOrder } from "./productFeedDiversity"
-import type { ProductCatalogSourceMode } from "./productCatalogRead"
+import {
+  getCatalogAuthorKey,
+  type ProductCatalogSourceMode,
+} from "./productCatalogRead"
 
 export type MarketBrowseSortOption = "newest" | "price_asc" | "price_desc"
 
@@ -30,6 +33,8 @@ export interface MarketBrowseSearch {
 export interface MerchantIdentityView {
   pubkey: string
   displayName: string
+  /** Raw public name fields used only for local matching and ranking. */
+  searchProfile?: Pick<Profile, "pubkey" | "name" | "displayName" | "nip05">
   picture?: string
   status: "resolved" | "pending" | "fallback"
   relayHints: string[]
@@ -104,6 +109,7 @@ export function getGlobalProductSearchQueryKey(input: {
   pubkey: string | null
   catalogSource: ProductCatalogSourceMode
   anonymous: boolean
+  authorPubkeys: readonly string[] | undefined
 }) {
   return [
     "market-global-product-search",
@@ -111,6 +117,7 @@ export function getGlobalProductSearchQueryKey(input: {
     input.pubkey,
     input.catalogSource,
     input.anonymous ? "anonymous" : "connected",
+    getCatalogAuthorKey(input.authorPubkeys),
   ] as const
 }
 
@@ -207,6 +214,14 @@ export function getMerchantIdentityView(
   return {
     pubkey,
     displayName: profileName ?? fallbackName,
+    searchProfile: profile
+      ? {
+          pubkey: profile.pubkey,
+          name: profile.name,
+          displayName: profile.displayName,
+          nip05: profile.nip05,
+        }
+      : undefined,
     picture: picture || undefined,
     status: profileName
       ? "resolved"

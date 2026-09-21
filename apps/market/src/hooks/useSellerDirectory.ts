@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef } from "react"
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
 import { useAuth, useProfileSearch } from "@conduit/core"
 import {
   ACCOUNT_SEARCH_CANDIDATE_LIMIT,
@@ -9,7 +9,9 @@ import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
 import {
   excludeDiscoveredSellers,
   filterSellersByName,
+  getSellerEligibilityState,
   groupDiscoveredSellers,
+  isSellerCatalogEvidenceIncomplete,
   isSellerDirectoryUnavailable,
 } from "../lib/sellerDirectory"
 import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
@@ -18,7 +20,9 @@ import { useProgressiveProducts } from "./useProgressiveProducts"
 
 export function useSellerDirectory(input: {
   catalogSource: ProductCatalogSourceMode
+  enabled?: boolean
   query: string
+  accountSearchSettleMs?: number
 }) {
   const { pubkey, status, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -26,13 +30,17 @@ export function useSellerDirectory(input: {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
   const connected = status === "connected" && !!pubkey
+  const enabled = input.enabled ?? true
   const effectiveSource: ProductCatalogSourceMode = connected
     ? input.catalogSource
     : "conduit"
-  const guestMarket = useGuestMarketDiscovery({ enabled: !connected })
+  const guestMarket = useGuestMarketDiscovery({
+    enabled: enabled && !connected,
+  })
   const productsQuery = useProgressiveProducts({
     scope: "marketplace",
     catalogSource: effectiveSource,
+    enabled,
     perspectivePubkey: connected ? pubkey : guestMarket.perspectivePubkey,
     authenticatedPubkey: connected ? pubkey : null,
     seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
@@ -59,10 +67,20 @@ export function useSellerDirectory(input: {
     () => filterSellersByName(sellers, identities.getIdentity, query),
     [identities.getIdentity, query, sellers]
   )
+  const eligibleAuthorPubkeys = productsQuery.catalogAuthorPubkeys
+  const eligibilityState = getSellerEligibilityState({
+    authorPubkeys: eligibleAuthorPubkeys,
+    source: effectiveSource,
+    followLookupStatus: productsQuery.followLookupStatus,
+    discoveryStale:
+      productsQuery.discoveryStale || (!connected && guestMarket.stale),
+  })
   const accountSearch = useProfileSearch(query, {
+    enabled: enabled && eligibleAuthorPubkeys !== undefined,
     limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT,
-    settleMs: 0,
+    settleMs: input.accountSearchSettleMs,
     accountPubkey: connected ? pubkey : null,
+    authorPubkeys: eligibleAuthorPubkeys,
   })
   const networkAccounts = useMemo(
     () =>
@@ -81,13 +99,30 @@ export function useSellerDirectory(input: {
     isRefreshPaused: productsQuery.isRefreshPaused,
     discoveryStale: productsQuery.discoveryStale,
   })
+  const catalogEvidenceIncomplete = isSellerCatalogEvidenceIncomplete({
+    error: productsQuery.error,
+    meta: productsQuery.meta,
+    isRefreshPaused: productsQuery.isRefreshPaused,
+    discoveryStale: productsQuery.discoveryStale,
+  })
+  const refreshCatalog = productsQuery.refetch
+  const refreshGuestDiscovery = guestMarket.refetch
+  const refreshAccountSearch = accountSearch.refetch
+  const retry = useCallback(() => {
+    if (!connected) void refreshGuestDiscovery()
+    refreshCatalog()
+    refreshAccountSearch()
+  }, [connected, refreshAccountSearch, refreshCatalog, refreshGuestDiscovery])
 
   return {
     connected,
     effectiveSource,
+    eligibilityState,
+    catalogProducts: productsQuery.products,
+    catalogEvidenceIncomplete,
     isFetching,
     isUnavailable,
-    retry: productsQuery.refetch,
+    retry,
     sellers,
     filteredSellers,
     getIdentity: identities.getIdentity,
