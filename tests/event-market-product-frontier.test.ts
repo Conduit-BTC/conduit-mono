@@ -5,6 +5,7 @@ import {
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
+import { matchFilter, type Filter } from "nostr-tools"
 
 import {
   __resetEventMarketTestOverrides,
@@ -127,6 +128,45 @@ function productRevision(
     },
     createdAt
   )
+}
+
+function buildCatalogFixture(targetCount: number) {
+  const dTags = Array.from(
+    { length: targetCount },
+    (_, index) => `catalog-${index.toString().padStart(3, "0")}`
+  )
+  const pickupDTags = dTags.map((dTag) => `booth-${dTag}`)
+  const pickupCoordinates = pickupDTags.map(
+    (dTag) => `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT}:${dTag}`
+  )
+  const requests = dTags.map((dTag, index) =>
+    productRevision(dTag, 100 + index, true, pickupCoordinates[index])
+  )
+  const pickups = pickupDTags.map((dTag, index) =>
+    sign(
+      MERCHANT_SECRET,
+      buildEventMarketPickupDraft({
+        dTag,
+        title: `Booth ${index}`,
+        price: 0,
+        currency: "SATS",
+        countries: ["US"],
+        location: `Table ${index}`,
+      }),
+      1_000 + index
+    )
+  )
+  const organizerProducts = dTags.map(
+    (dTag) => `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${dTag}`
+  )
+  return {
+    dTags,
+    pickupDTags,
+    pickupCoordinates,
+    requests,
+    pickups,
+    organizerProducts,
+  }
 }
 
 function wrapped(events: readonly SignedPublicNostrEvent[]): NDKEvent[] {
@@ -504,34 +544,8 @@ describe("event-market exact product request frontiers", () => {
   ])(
     "resolves a valid %i-product catalog",
     async (targetCount) => {
-      const dTags = Array.from(
-        { length: targetCount },
-        (_, index) => `catalog-${index.toString().padStart(3, "0")}`
-      )
-      const pickupDTags = dTags.map((dTag) => `booth-${dTag}`)
-      const pickupCoordinates = pickupDTags.map(
-        (dTag) => `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT}:${dTag}`
-      )
-      const requests = dTags.map((dTag, index) =>
-        productRevision(dTag, 100 + index, true, pickupCoordinates[index])
-      )
-      const pickups = pickupDTags.map((dTag, index) =>
-        sign(
-          MERCHANT_SECRET,
-          buildEventMarketPickupDraft({
-            dTag,
-            title: `Booth ${index}`,
-            price: 0,
-            currency: "SATS",
-            countries: ["US"],
-            location: `Table ${index}`,
-          }),
-          1_000 + index
-        )
-      )
-      const organizerProducts = dTags.map(
-        (dTag) => `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${dTag}`
-      )
+      const { dTags, pickupDTags, requests, pickups, organizerProducts } =
+        buildCatalogFixture(targetCount)
       const exactProductTargets: string[][] = []
       const exactPickupTargets: string[][] = []
       installReadHarness((filter) => {
@@ -604,34 +618,14 @@ describe("event-market exact product request frontiers", () => {
 
   it("keeps later product and pickup evidence across production relay-health batches", async () => {
     const targetCount = EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT + 1
-    const dTags = Array.from(
-      { length: targetCount },
-      (_, index) => `catalog-${index.toString().padStart(3, "0")}`
-    )
-    const pickupDTags = dTags.map((dTag) => `booth-${dTag}`)
-    const pickupCoordinates = pickupDTags.map(
-      (dTag) => `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT}:${dTag}`
-    )
-    const requests = dTags.map((dTag, index) =>
-      productRevision(dTag, 100 + index, true, pickupCoordinates[index])
-    )
-    const pickups = pickupDTags.map((dTag, index) =>
-      sign(
-        MERCHANT_SECRET,
-        buildEventMarketPickupDraft({
-          dTag,
-          title: `Booth ${index}`,
-          price: 0,
-          currency: "SATS",
-          countries: ["US"],
-          location: `Table ${index}`,
-        }),
-        1_000 + index
-      )
-    )
-    const organizerProducts = dTags.map(
-      (dTag) => `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${dTag}`
-    )
+    const {
+      dTags,
+      pickupDTags,
+      pickupCoordinates,
+      requests,
+      pickups,
+      organizerProducts,
+    } = buildCatalogFixture(targetCount)
     const graphEvents = graph(organizerProducts, false)
     const laterProductDTag = dTags.at(-1)!
     const laterPickupDTag = pickupDTags.at(-1)!
@@ -643,20 +637,7 @@ describe("event-market exact product request frontiers", () => {
       events: readonly SignedPublicNostrEvent[],
       filter: TagFilter
     ): SignedPublicNostrEvent[] =>
-      events.filter(
-        (event) =>
-          (!filter.kinds || filter.kinds.includes(event.kind)) &&
-          (!filter.authors || filter.authors.includes(event.pubkey)) &&
-          (["a", "d", "e"] as const).every((tagName) => {
-            const values = filter[`#${tagName}`]
-            return (
-              !values ||
-              event.tags.some(
-                (tag) => tag[0] === tagName && values.includes(tag[1]!)
-              )
-            )
-          })
-      )
+      events.filter((event) => matchFilter(filter as Filter, event))
     const socket = installProductionReadHarness((relayUrl, filter) => {
       const relayB = relayUrl.startsWith(RELAY_B)
       if (filter.authors?.includes(ORGANIZER)) {
