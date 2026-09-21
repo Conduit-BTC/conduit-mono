@@ -44,7 +44,7 @@ describe("Merchant live account authority", () => {
       events.match(
         /shouldContinue\(\) && queryScopeTokenRef\.current === queryScopeToken/g
       )
-    ).toHaveLength(2)
+    ).toHaveLength(4)
     expect(eventTimeline.match(generationGuard)).toHaveLength(5)
     expect(shipping.match(generationGuard)).toHaveLength(1)
     expect(readiness.match(generationGuard)).toHaveLength(1)

@@ -8,6 +8,7 @@ import {
   type PerspectiveEventMarketDiscoveryResult,
 } from "@conduit/core"
 import {
+  getMerchantEventSellerDiscoveryState,
   getSettledMerchantEventMarketRead,
   merchantEventMarketEssentialsQueryOptions,
   merchantEventMarketQueryIdentity,
@@ -68,6 +69,81 @@ function deferred<T>() {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe("merchant event market query", () => {
+  it("keeps bounded seller observations distinct from degraded discovery", () => {
+    expect(
+      getMerchantEventSellerDiscoveryState({
+        isError: false,
+        isFetching: true,
+      })
+    ).toBe("loading")
+    expect(
+      getMerchantEventSellerDiscoveryState({
+        isError: true,
+        isFetching: false,
+      })
+    ).toBe("unavailable")
+    expect(
+      getMerchantEventSellerDiscoveryState({
+        data: {
+          complete: true,
+          read: {
+            source: {
+              state: "unavailable",
+              coverage: {
+                attemptedRelayCount: 1,
+                completeRelayCount: 0,
+                partialRelayCount: 0,
+                failedRelayCount: 1,
+              },
+            },
+          },
+        },
+        isError: false,
+        isFetching: false,
+      })
+    ).toBe("unavailable")
+    expect(
+      getMerchantEventSellerDiscoveryState({
+        data: {
+          complete: true,
+          read: {
+            source: {
+              state: "partial",
+              coverage: {
+                attemptedRelayCount: 2,
+                completeRelayCount: 1,
+                partialRelayCount: 1,
+                failedRelayCount: 0,
+              },
+            },
+          },
+        },
+        isError: false,
+        isFetching: false,
+      })
+    ).toBe("partial")
+    expect(
+      getMerchantEventSellerDiscoveryState({
+        data: {
+          complete: true,
+          read: {
+            source: {
+              state: "active",
+              coverage: {
+                attemptedRelayCount: 1,
+                completeRelayCount: 1,
+                partialRelayCount: 0,
+                failedRelayCount: 0,
+              },
+            },
+          },
+        },
+        isError: false,
+        isFetching: false,
+      })
+    ).toBe("observed")
+  })
+
   it("canonicalizes coordinate hints within the account and relay scope", () => {
     const first = encodeEventMarketNaddr(collectionCoordinate, [
       "wss://relay-b.example",

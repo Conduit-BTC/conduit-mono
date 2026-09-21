@@ -261,6 +261,16 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain("merchantEventMarketQueryOptions")
     expect(panel).toContain("Sell at this event")
     expect(panel).toContain("Sellers at this event")
+    expect(panel).toContain(
+      "No participating sellers were discovered in this refresh."
+    )
+    expect(panel).toContain("Seller discovery is incomplete")
+    expect(panel).toContain("Seller discovery is temporarily unavailable")
+    expect(panel).not.toContain("No participating sellers are listed yet.")
+    expect(route).toContain("getMerchantEventSellerDiscoveryState")
+    expect(route).toContain(
+      "selectedPublishDeletion ?? selectedMarketQuery.data?.read"
+    )
     expect(panel).not.toContain("Published by organizer")
     expect(panel).not.toContain("Technical details")
     expect(panel).not.toContain("formatEventRelayReadCoverage")

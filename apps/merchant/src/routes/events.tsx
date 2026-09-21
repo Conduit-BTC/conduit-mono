@@ -74,6 +74,7 @@ import {
 } from "../lib/event-market-workflow"
 import { parseMerchantEventsSearch } from "../lib/market-links"
 import {
+  getMerchantEventSellerDiscoveryState,
   getSettledMerchantEventMarketRead,
   merchantEventMarketEssentialsQueryOptions,
   merchantEventMarketQueryIdentity,
@@ -361,10 +362,16 @@ export function FindEventsPanel({
           participationMarket={selectedParticipationMarket}
           actionReady={selectedMarketActionReady}
           refreshing={selectedMarketQuery.isFetching}
-          sellersLoading={
-            !selectedParticipationQuery.data?.complete &&
-            selectedParticipationQuery.isFetching
-          }
+          sellerDiscoveryState={getMerchantEventSellerDiscoveryState({
+            data: selectedParticipationQuery.data,
+            isError: selectedParticipationQuery.isError,
+            isFetching:
+              !selectedMarketActionReady ||
+              selectedParticipationQuery.isFetching,
+          })}
+          onRefreshSellers={() => {
+            void selectedParticipationQuery.refetch()
+          }}
           onRefresh={async () => {
             await selectedMarketQuery.refetch()
             void selectedParticipationQuery.refetch()
@@ -516,7 +523,12 @@ export function MyEventsPanel({
       !!selectedPublishSettledRead &&
       !("terminal" in selectedPublishSettledRead),
   })
-  const selectedProgressRead = selectedMarketQuery.data?.read
+  const selectedPublishDeletion =
+    selectedPublishRead && "terminal" in selectedPublishRead
+      ? selectedPublishRead
+      : undefined
+  const selectedProgressRead =
+    selectedPublishDeletion ?? selectedMarketQuery.data?.read
   const selectedSettledRead =
     getSettledMerchantEventMarketRead(selectedMarketQuery)
   const selectedResolution =
@@ -1082,7 +1094,11 @@ export function MyEventsPanel({
     retryMutation.isPending
 
   const selectedReadPending =
-    !!selectedReference && !selectedMarket && selectedMarketQuery.isPending
+    !!selectedReference &&
+    !selectedMarket &&
+    !selectedReadDeleted &&
+    !selectedReadReconciliationPending &&
+    selectedMarketQuery.isPending
   const selectedReadError =
     selectedMarket || selectedReadDeleted || selectedReadReconciliationPending
       ? null

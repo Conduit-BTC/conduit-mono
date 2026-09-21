@@ -363,10 +363,19 @@ describe("event market progressive browsing", () => {
       })
     )
     let participationReads = 0
+    let broadOrganizerReads = 0
     __setEventMarketTestOverrides({
       fetchEventsFanoutDetailed: async (filter) => {
-        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION))
-          return result(events)
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)) {
+          if (!filter["#d"]) broadOrganizerReads += 1
+          return result([events[2]!])
+        }
+        if (
+          filter.kinds?.includes(EVENT_KINDS.CALENDAR_DATE) ||
+          filter.kinds?.includes(EVENT_KINDS.CALENDAR_TIME)
+        ) {
+          return result([events[0]!])
+        }
         if (filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION))
           return result([events[1]!])
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
@@ -389,6 +398,7 @@ describe("event market progressive browsing", () => {
     expect(resolved.organizerProductCoordinates).toEqual([])
     expect(resolved.participationRequests).toEqual([])
     expect(participationReads).toBe(0)
+    expect(broadOrganizerReads).toBe(0)
   })
 
   it("recognizes a same-collection naddr claim without treating it as a withdrawal", async () => {

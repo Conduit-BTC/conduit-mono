@@ -3,6 +3,7 @@ import {
   discoverPerspectiveEventMarkets,
   encodeEventMarketNaddr,
   type DiscoverPerspectiveEventMarketsInput,
+  type EventMarketResolution,
   type PerspectiveEventMarketDiscoveryResult,
 } from "@conduit/core"
 import {
@@ -25,6 +26,53 @@ export type MerchantEventMarketQueryData = {
 }
 
 export type MerchantEventMarketQueryProjection = "full" | "essentials"
+
+export type MerchantEventSellerDiscoveryState =
+  "loading" | "unavailable" | "partial" | "observed"
+
+type MerchantEventSellerDiscoveryRead =
+  | { terminal: true }
+  | {
+      source: Pick<EventMarketResolution, "coverage" | "state">
+    }
+
+/**
+ * Describes the quality of the current bounded participation read for UI
+ * recovery. "Observed" means only that this read settled without reported
+ * degradation; it never establishes global completeness or absence on Nostr.
+ */
+export function getMerchantEventSellerDiscoveryState(query: {
+  data?: {
+    complete: boolean
+    read: MerchantEventSellerDiscoveryRead
+  }
+  isError: boolean
+  isFetching: boolean
+}): MerchantEventSellerDiscoveryState {
+  if (query.isError) return "unavailable"
+  if (!query.data?.complete) {
+    return query.isFetching ? "loading" : "partial"
+  }
+  if ("terminal" in query.data.read) return "unavailable"
+
+  const { coverage, state } = query.data.read.source
+  if (
+    state === "unavailable" ||
+    (coverage.attemptedRelayCount > 0 &&
+      coverage.completeRelayCount === 0 &&
+      coverage.partialRelayCount === 0)
+  ) {
+    return "unavailable"
+  }
+  if (
+    (state !== "active" && state !== "ended") ||
+    coverage.partialRelayCount > 0 ||
+    coverage.failedRelayCount > 0
+  ) {
+    return "partial"
+  }
+  return "observed"
+}
 
 /**
  * Returns only the current query's settled exact read. This is a freshness

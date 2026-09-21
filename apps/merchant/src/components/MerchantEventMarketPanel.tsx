@@ -32,6 +32,7 @@ import {
 } from "../lib/event-market"
 import { getMerchantEventPublishPresentation } from "../lib/event-product-publishing"
 import { getEventMarketUrl } from "../lib/market-links"
+import type { MerchantEventSellerDiscoveryState } from "../lib/merchant-event-query"
 import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { EventProductPublisherDialog } from "./EventProductPublisherDialog"
 import { EventQrPrintPreview } from "./EventQrPrintPreview"
@@ -136,7 +137,8 @@ export function MerchantEventMarketPanel({
   actionReady = true,
   refreshing,
   onRefresh,
-  sellersLoading = false,
+  sellerDiscoveryState = "observed",
+  onRefreshSellers,
   compact = false,
 }: {
   merchantPubkey: string
@@ -147,7 +149,8 @@ export function MerchantEventMarketPanel({
   actionReady?: boolean
   refreshing: boolean
   onRefresh: () => void | Promise<void>
-  sellersLoading?: boolean
+  sellerDiscoveryState?: MerchantEventSellerDiscoveryState
+  onRefreshSellers?: () => void | Promise<void>
   compact?: boolean
 }) {
   const [publisherOpen, setPublisherOpen] = useState(false)
@@ -203,6 +206,22 @@ export function MerchantEventMarketPanel({
       ? organizerProfileQuery.data
       : undefined
   const shopperUrl = getEventMarketUrl(market.naddr)
+  const sellerDiscoveryMessage =
+    sellerDiscoveryState === "loading"
+      ? sellerPubkeys.length > 0
+        ? "Refreshing sellers…"
+        : "Loading sellers…"
+      : sellerDiscoveryState === "unavailable"
+        ? "Seller discovery is temporarily unavailable. More sellers may be available."
+        : sellerDiscoveryState === "partial"
+          ? "Seller discovery is incomplete. More sellers may be available."
+          : sellerPubkeys.length === 0
+            ? "No participating sellers were discovered in this refresh."
+            : null
+  const sellerDiscoveryRecoverable =
+    !!onRefreshSellers &&
+    sellerDiscoveryState !== "loading" &&
+    (sellerDiscoveryState !== "observed" || sellerPubkeys.length === 0)
   const publisherControls = (
     <section className="rounded-2xl border border-primary-500/30 bg-primary-500/10 p-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -365,14 +384,7 @@ export function MerchantEventMarketPanel({
               </Button>
             </div>
 
-            {sellersLoading ? (
-              <p
-                className="mt-4 text-pretty text-sm text-[var(--text-muted)]"
-                role="status"
-              >
-                Loading sellers…
-              </p>
-            ) : sellerPubkeys.length > 0 ? (
+            {sellerPubkeys.length > 0 ? (
               <ul className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {sellerPubkeys.map((sellerPubkey) => {
                   const profile = sellerProfiles.getProfile(sellerPubkey)
@@ -407,11 +419,29 @@ export function MerchantEventMarketPanel({
                   )
                 })}
               </ul>
-            ) : (
-              <p className="mt-4 text-pretty text-sm text-[var(--text-muted)]">
-                No participating sellers are listed yet.
-              </p>
-            )}
+            ) : null}
+
+            {sellerDiscoveryMessage ? (
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <p
+                  className="min-w-0 flex-1 text-pretty text-sm text-[var(--text-muted)]"
+                  role="status"
+                >
+                  {sellerDiscoveryMessage}
+                </p>
+                {sellerDiscoveryRecoverable ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void onRefreshSellers?.()}
+                  >
+                    <RefreshCw className="size-4 shrink-0" aria-hidden="true" />
+                    Refresh sellers
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
           </section>
         </div>
       )}
