@@ -12,6 +12,16 @@ import {
   encodeProductNaddr,
 } from "@conduit/core/protocol/product-reference"
 
+import {
+  GMV_DEDUPE_RETENTION_DAYS,
+  MAX_ESTIMATED_GMV_SATS,
+  type CommerceGmvCutoverResolution,
+  type CommerceGmvDailyObservationResult,
+} from "./commerce-gmv-contract"
+import type { PostHogProxyEnv } from "./env"
+
+export type { PostHogProxyEnv } from "./env"
+
 const POSTHOG_INGEST_ORIGIN = "https://us.i.posthog.com"
 const MAX_INGEST_BODY_BYTES = 1024 * 1024
 const MAX_GMV_BODY_BYTES = 512
@@ -22,9 +32,21 @@ const MAX_EVENTS_PER_REQUEST = 100
 const GMV_PATH = "/gmv"
 const GMV_EVENT_NAME = "commerce_gmv_estimated"
 const GMV_EVENT_ID_DOMAIN = "conduit-commerce-gmv-estimate.order.v1"
+const GMV_DAILY_ORDER_ID_DOMAIN = "conduit-commerce-gmv-estimate.daily-order.v1"
+const GMV_DAILY_EVENT_ID_DOMAIN = "conduit-commerce-gmv-estimate.daily-event.v1"
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000
 const orderIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const utcOrderDatePattern = /^\d{4}-\d{2}-\d{2}$/
+
+function isCanonicalUtcOrderDate(value: string): boolean {
+  if (!utcOrderDatePattern.test(value)) return false
+  const epochMilliseconds = Date.parse(`${value}T00:00:00.000Z`)
+  return (
+    Number.isFinite(epochMilliseconds) &&
+    new Date(epochMilliseconds).toISOString().slice(0, 10) === value
+  )
+}
 
 const allowedIngestPaths = new Set([
   "/batch",
@@ -38,10 +60,6 @@ const allowedIngestPaths = new Set([
 export interface AllowedOriginContext {
   app: BrowserTelemetryApp
   origin: string
-}
-
-interface RateLimitBinding {
-  limit(options: { key: string }): Promise<{ success: boolean }>
 }
 
 /**
@@ -146,13 +164,6 @@ function isCanonicalProductNaddrPath(value: string): boolean {
   }
 }
 
-export interface PostHogProxyEnv {
-  POSTHOG_PROJECT_TOKEN?: string
-  COMMERCE_GMV_TELEMETRY_HMAC_SECRET?: string
-  GMV_GLOBAL_RATE_LIMITER?: RateLimitBinding
-  GMV_ORDER_RATE_LIMITER?: RateLimitBinding
-}
-
 export type PostHogProxyFetcher = (request: Request) => Promise<Response>
 
 export async function handlePostHogProxyRequest(
@@ -163,6 +174,10 @@ export async function handlePostHogProxyRequest(
   const requestUrl = new URL(request.url)
 
   if (request.method === "GET" && requestUrl.pathname === "/health") {
+    const cutover = await resolveCommerceGmvCutover(env)
+    if (!cutover.ok) {
+      return jsonResponse({ error: "telemetry_unavailable" }, 503)
+    }
     return jsonResponse({ status: "ok" }, 200)
   }
 
@@ -678,11 +693,10 @@ function parseCommerceGmvEstimate(
     typeof value.orderId !== "string" ||
     !orderIdPattern.test(value.orderId) ||
     typeof value.orderDate !== "string" ||
-    !utcOrderDatePattern.test(value.orderDate) ||
-    new Date(`${value.orderDate}T00:00:00.000Z`).toISOString().slice(0, 10) !==
-      value.orderDate ||
+    !isCanonicalUtcOrderDate(value.orderDate) ||
     !Number.isSafeInteger(value.invoicedAmountSats) ||
-    (value.invoicedAmountSats as number) <= 0
+    (value.invoicedAmountSats as number) <= 0 ||
+    (value.invoicedAmountSats as number) > MAX_ESTIMATED_GMV_SATS
   ) {
     return null
   }
@@ -703,9 +717,10 @@ function bytesToUuid(bytes: Uint8Array): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-async function getOpaqueCommerceOrderUuid(
-  orderId: string,
-  secret: string
+async function getOpaqueCommerceUuid(
+  value: string,
+  secret: string,
+  domain: string
 ): Promise<string | null> {
   if (secret.trim().length < 32) return null
   const encoder = new TextEncoder()
@@ -719,9 +734,74 @@ async function getOpaqueCommerceOrderUuid(
   const digest = await crypto.subtle.sign(
     "HMAC",
     key,
-    encoder.encode(`${GMV_EVENT_ID_DOMAIN}:${orderId}`)
+    encoder.encode(`${domain}:${value}`)
   )
   return bytesToUuid(new Uint8Array(digest))
+}
+
+export type CommerceGmvDeliveryMode =
+  "daily" | "expired" | "invalid" | "legacy" | "unavailable"
+
+export function getCommerceGmvDeliveryMode(
+  orderDate: string,
+  cutoverDate: string | undefined,
+  now = Date.now()
+): CommerceGmvDeliveryMode {
+  const orderDayStart = Date.parse(`${orderDate}T00:00:00.000Z`)
+  const today = new Date(now).toISOString().slice(0, 10)
+  const todayStart = Date.parse(`${today}T00:00:00.000Z`)
+  if (!Number.isFinite(orderDayStart) || orderDayStart > todayStart) {
+    return "invalid"
+  }
+
+  const normalizedCutoverDate = cutoverDate?.trim() ?? ""
+  if (!normalizedCutoverDate) return "legacy"
+  if (!isCanonicalUtcOrderDate(normalizedCutoverDate)) {
+    return "unavailable"
+  }
+
+  const ageDays = Math.floor(
+    (todayStart - orderDayStart) / MILLISECONDS_PER_DAY
+  )
+  if (ageDays > GMV_DEDUPE_RETENTION_DAYS) return "expired"
+  return orderDate >= normalizedCutoverDate ? "daily" : "legacy"
+}
+
+type ResolvedCommerceGmvCutover =
+  { ok: true; cutoverDate: string | undefined } | { ok: false }
+
+async function resolveCommerceGmvCutover(
+  env: PostHogProxyEnv
+): Promise<ResolvedCommerceGmvCutover> {
+  const configuredCutoverDate =
+    env.COMMERCE_GMV_DAILY_CUTOVER_DATE?.trim() ?? ""
+  if (
+    configuredCutoverDate &&
+    !isCanonicalUtcOrderDate(configuredCutoverDate)
+  ) {
+    return { ok: false }
+  }
+
+  const fence = env.GMV_CUTOVER_FENCE
+  if (!fence) return { ok: false }
+
+  let resolution: CommerceGmvCutoverResolution
+  try {
+    resolution = await fence
+      .getByName("commerce-gmv-cutover")
+      .resolve(configuredCutoverDate || null)
+  } catch {
+    return { ok: false }
+  }
+
+  if (resolution.status === "invalid" || resolution.status === "mismatch") {
+    return { ok: false }
+  }
+  return {
+    ok: true,
+    cutoverDate:
+      resolution.status === "active" ? resolution.cutoverDate : undefined,
+  }
 }
 
 async function handleCommerceGmvRequest(
@@ -760,6 +840,25 @@ async function handleCommerceGmvRequest(
     return corsJsonResponse({ error: "invalid_payload" }, 400, origin)
   }
 
+  const cutover = await resolveCommerceGmvCutover(env)
+  if (!cutover.ok) {
+    return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
+  }
+
+  const deliveryMode = getCommerceGmvDeliveryMode(
+    estimate.orderDate,
+    cutover.cutoverDate
+  )
+  if (deliveryMode === "invalid") {
+    return corsJsonResponse({ error: "invalid_payload" }, 400, origin)
+  }
+  if (deliveryMode === "unavailable") {
+    return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
+  }
+  if (deliveryMode === "expired") {
+    return corsJsonResponse({ status: "expired" }, 200, origin)
+  }
+
   const projectToken = env.POSTHOG_PROJECT_TOKEN?.trim() ?? ""
   const hmacSecret = env.COMMERCE_GMV_TELEMETRY_HMAC_SECRET?.trim() ?? ""
   if (
@@ -769,19 +868,52 @@ async function handleCommerceGmvRequest(
     return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
   }
 
-  const eventUuid = await getOpaqueCommerceOrderUuid(
-    estimate.orderId,
-    hmacSecret
+  const opaqueOrderUuid = await getOpaqueCommerceUuid(
+    deliveryMode === "daily"
+      ? `${estimate.orderDate}:${estimate.orderId}`
+      : estimate.orderId,
+    hmacSecret,
+    deliveryMode === "daily" ? GMV_DAILY_ORDER_ID_DOMAIN : GMV_EVENT_ID_DOMAIN
   )
-  if (!eventUuid) {
+  if (!opaqueOrderUuid) {
     return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
   }
   const [globalLimit, orderLimit] = await Promise.all([
     env.GMV_GLOBAL_RATE_LIMITER.limit({ key: "commerce-gmv" }),
-    env.GMV_ORDER_RATE_LIMITER.limit({ key: eventUuid }),
+    env.GMV_ORDER_RATE_LIMITER.limit({ key: opaqueOrderUuid }),
   ])
   if (!globalLimit.success || !orderLimit.success) {
     return corsJsonResponse({ error: "rate_limited" }, 429, origin)
+  }
+
+  if (deliveryMode === "daily") {
+    const dailyAggregate = env.GMV_DAILY_AGGREGATE
+    if (!dailyAggregate) {
+      return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
+    }
+    const dailyEventUuid = await getOpaqueCommerceUuid(
+      estimate.orderDate,
+      hmacSecret,
+      GMV_DAILY_EVENT_ID_DOMAIN
+    )
+    if (!dailyEventUuid) {
+      return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
+    }
+
+    let result: CommerceGmvDailyObservationResult
+    try {
+      result = await dailyAggregate
+        .getByName(`commerce-gmv:${estimate.orderDate}`)
+        .observe({
+          orderDay: estimate.orderDate,
+          opaqueOrderKey: opaqueOrderUuid,
+          dailyEventUuid,
+          estimatedGmvSats: estimate.invoicedAmountSats,
+        })
+    } catch {
+      return corsJsonResponse({ error: "telemetry_unavailable" }, 503, origin)
+    }
+    return corsJsonResponse({ status: result.status }, 202, origin)
   }
 
   const timestamp = `${estimate.orderDate}T00:00:00.000Z`
@@ -789,7 +921,7 @@ async function handleCommerceGmvRequest(
     api_key: projectToken,
     event: GMV_EVENT_NAME,
     distinct_id: POSTHOG_GMV_DISTINCT_ID,
-    uuid: eventUuid,
+    uuid: opaqueOrderUuid,
     timestamp,
     properties: {
       $process_person_profile: false,
@@ -883,4 +1015,4 @@ export default {
   fetch(request: Request, env: PostHogProxyEnv = {}): Promise<Response> {
     return handlePostHogProxyRequest(request, undefined, env)
   },
-}
+} satisfies ExportedHandler<PostHogProxyEnv>

@@ -30,7 +30,10 @@ export const allowedTelemetryProperties = new Set([
   "block_reason",
 ])
 
-const gmvTelemetryEventName = "commerce_gmv_estimated"
+const gmvTelemetryEventNames = new Set([
+  "commerce_gmv_estimated",
+  "commerce_gmv_estimated_daily",
+])
 const gmvTelemetryProperty = "estimated_gmv_sats"
 
 export const allowedProviderTelemetryEventNames = new Set([
@@ -229,7 +232,7 @@ export function validateTelemetryEvents(
       }
       if (
         property === gmvTelemetryProperty &&
-        event.eventName !== gmvTelemetryEventName
+        !gmvTelemetryEventNames.has(event.eventName)
       ) {
         errors.push(
           `Telemetry event ${event.eventName} cannot use Worker-only property: ${property}`
@@ -238,13 +241,11 @@ export function validateTelemetryEvents(
     }
 
     if (
-      event.eventName === gmvTelemetryEventName &&
+      gmvTelemetryEventNames.has(event.eventName) &&
       (event.properties.length !== 1 ||
         event.properties[0] !== gmvTelemetryProperty)
     ) {
-      errors.push(
-        `${gmvTelemetryEventName} must use only ${gmvTelemetryProperty}`
-      )
+      errors.push(`${event.eventName} must use only ${gmvTelemetryProperty}`)
     }
   }
 

@@ -50,6 +50,14 @@ const PRODUCT_LEGAL_V1_3 = Object.freeze({
     "packages/ui/src/legal/versions/product-legal-v1.3-2026-09-17.tsx",
   sha256: "d2f8f097ad5446dba1e28aae4035332320f1d52177974714eb9603574b280696",
 })
+const PRODUCT_LEGAL_V1_4 = Object.freeze({
+  version: "conduit-product-legal-v1.4-2026-09-20",
+  effectiveDate: "2026-09-20",
+  lastUpdatedDate: "2026-09-20",
+  archivedSource:
+    "packages/ui/src/legal/versions/product-legal-v1.4-2026-09-20.tsx",
+  sha256: "99739eb470b0fbe0e5340283167cb68caf92af2c220722822f7499b879114c16",
+})
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ")
@@ -57,7 +65,7 @@ function normalizeWhitespace(value: string): string {
 
 async function readCurrentReleasedLegalSource(): Promise<string> {
   return normalizeWhitespace(
-    await Bun.file(PRODUCT_LEGAL_V1_3.archivedSource).text()
+    await Bun.file(PRODUCT_LEGAL_V1_4.archivedSource).text()
   )
 }
 
@@ -216,9 +224,9 @@ describe("shared Product legal documents", () => {
   })
 
   it("pins dates and every immutable archive to the released history", async () => {
-    expect(PRODUCT_LEGAL_VERSION).toBe(PRODUCT_LEGAL_V1_3.version)
-    expect(PRODUCT_LEGAL_EFFECTIVE_DATE).toBe("2026-09-17")
-    expect(PRODUCT_LEGAL_LAST_UPDATED_DATE).toBe("2026-09-17")
+    expect(PRODUCT_LEGAL_VERSION).toBe(PRODUCT_LEGAL_V1_4.version)
+    expect(PRODUCT_LEGAL_EFFECTIVE_DATE).toBe("2026-09-20")
+    expect(PRODUCT_LEGAL_LAST_UPDATED_DATE).toBe("2026-09-20")
     expect(PRODUCT_LEGAL_VERSION_HISTORY).toEqual([
       {
         version: PRODUCT_LEGAL_V1_0.version,
@@ -244,6 +252,12 @@ describe("shared Product legal documents", () => {
         lastUpdatedDate: PRODUCT_LEGAL_V1_3.lastUpdatedDate,
         archivedSource: PRODUCT_LEGAL_V1_3.archivedSource,
       },
+      {
+        version: PRODUCT_LEGAL_V1_4.version,
+        effectiveDate: PRODUCT_LEGAL_V1_4.effectiveDate,
+        lastUpdatedDate: PRODUCT_LEGAL_V1_4.lastUpdatedDate,
+        archivedSource: PRODUCT_LEGAL_V1_4.archivedSource,
+      },
     ])
 
     for (const release of [
@@ -251,6 +265,7 @@ describe("shared Product legal documents", () => {
       PRODUCT_LEGAL_V1_1,
       PRODUCT_LEGAL_V1_2,
       PRODUCT_LEGAL_V1_3,
+      PRODUCT_LEGAL_V1_4,
     ]) {
       const archive = await Bun.file(release.archivedSource).text()
       const digest = createHash("sha256").update(archive).digest("hex")
@@ -265,8 +280,8 @@ describe("shared Product legal documents", () => {
     ])
 
     for (const wrapper of [privacyWrapper, termsWrapper]) {
-      expect(wrapper).toContain("product-legal-v1.3-2026-09-17")
-      expect(wrapper).not.toContain("product-legal-v1.2-2026-09-17")
+      expect(wrapper).toContain("product-legal-v1.4-2026-09-20")
+      expect(wrapper).not.toContain("product-legal-v1.3-2026-09-17")
     }
   })
 
@@ -287,7 +302,9 @@ describe("shared Product legal documents", () => {
   })
 
   it("pins the first-party aggregate commerce measurement in the v1.3 release", async () => {
-    const normalizedRelease = await readCurrentReleasedLegalSource()
+    const normalizedRelease = normalizeWhitespace(
+      await Bun.file(PRODUCT_LEGAL_V1_3.archivedSource).text()
+    )
 
     expect(normalizedRelease).toContain(
       "narrowly scoped first-party service metric"
@@ -308,11 +325,53 @@ describe("shared Product legal documents", () => {
       "aggregate settled volume for verified public Zap Outs"
     )
   })
+
+  it("pins daily aggregation and bounded dedupe retention in the v1.4 release", async () => {
+    const normalizedRelease = await readCurrentReleasedLegalSource()
+
+    expect(normalizedRelease).toContain("It does not keep a per-order amount.")
+    expect(normalizedRelease).toContain(
+      "It does not receive an order UUID, opaque per-order fingerprint, or per-order amount."
+    )
+    expect(normalizedRelease).toContain(
+      "the first accepted positive estimate is retained"
+    )
+    expect(normalizedRelease).toContain(
+      "retained through 30 days after the UTC order date"
+    )
+    expect(normalizedRelease).toContain(
+      "provider-managed point-in-time recovery window"
+    )
+    expect(normalizedRelease).toContain(
+      "later reconciliation is batched into fixed 12-hour windows"
+    )
+    expect(normalizedRelease).toContain(
+      "the Worker retries the same frozen snapshot"
+    )
+    expect(normalizedRelease).toContain(
+      "Until daily aggregation is activated for a future UTC cutover"
+    )
+    expect(normalizedRelease).toContain(
+      "the bounded prior path sends PostHog an opaque per-order UUID"
+    )
+    expect(normalizedRelease).toContain(
+      "PostHog receives immutable aggregate revision snapshots"
+    )
+    expect(normalizedRelease).toContain(
+      "immediately transforms the random order UUID with a dedicated secret-keyed HMAC"
+    )
+    expect(normalizedRelease).toContain(
+      "For daily aggregation, the HMAC input and domain are scoped to the order’s UTC calendar date."
+    )
+    expect(normalizedRelease).toContain(
+      "Reporting selects the greatest total for each UTC order date and must not sum those snapshots."
+    )
+  })
 })
 
 describe("deployed Product policy accuracy", () => {
   it("documents strict kind-10050 delivery and never kind-14 fallback", async () => {
-    const archive = await Bun.file(PRODUCT_LEGAL_V1_3.archivedSource).text()
+    const archive = await Bun.file(PRODUCT_LEGAL_V1_4.archivedSource).text()
     const profiles = await Bun.file("deploy/pages-profiles.json").json()
 
     expect(
@@ -330,7 +389,7 @@ describe("deployed Product policy accuracy", () => {
   })
 
   it("does not overclaim encryption, relay deletion, or telemetry retention", async () => {
-    const archive = await Bun.file(PRODUCT_LEGAL_V1_3.archivedSource).text()
+    const archive = await Bun.file(PRODUCT_LEGAL_V1_4.archivedSource).text()
 
     expect(archive).toContain("unwrap and decrypt these messages locally")
     expect(archive).toContain("persistent storage")

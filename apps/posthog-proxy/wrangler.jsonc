@@ -1,8 +1,29 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "conduit-posthog-proxy",
-  "main": "src/index.ts",
+  "main": "src/worker.ts",
   "compatibility_date": "2026-07-29",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GMV_DAILY_AGGREGATE",
+        "class_name": "CommerceGmvDailyAggregate",
+      },
+      {
+        "name": "GMV_CUTOVER_FENCE",
+        "class_name": "CommerceGmvCutoverFence",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "CommerceGmvDailyAggregate",
+        "CommerceGmvCutoverFence",
+      ],
+    },
+  ],
   "routes": [
     {
       "pattern": "e.conduit.market",

@@ -3,11 +3,18 @@ import { nip19 } from "@nostr-dev-kit/ndk"
 
 import {
   type AllowedOriginContext,
+  getCommerceGmvDeliveryMode,
   handlePostHogProxyRequest,
   isSanitizedTelemetryRoutePath,
   type PostHogProxyEnv,
   rebuildPostHogIngestPayload as rebuildPostHogIngestPayloadWithContext,
 } from "../apps/posthog-proxy/src"
+import type {
+  CommerceGmvCutoverResolution,
+  CommerceGmvDailyObservation,
+  CommerceGmvDailyObservationResult,
+} from "../apps/posthog-proxy/src/commerce-gmv-contract"
+import { SYNTHETIC_POSTHOG_PROJECT_TOKEN } from "../apps/posthog-proxy/test/fixtures"
 import {
   browserTelemetryEventNames,
   browserTelemetryEventPropertyContracts,
@@ -21,7 +28,8 @@ import {
 } from "../packages/core/src/telemetry"
 import { pubkeyToNpub } from "../packages/core/src/utils"
 
-const PROJECT_TOKEN = "phc_workerTestProjectToken0001"
+const PROJECT_TOKEN = SYNTHETIC_POSTHOG_PROJECT_TOKEN
+const OTHER_PROJECT_TOKEN = ["phc", "anotherProjectToken000042"].join("_")
 const MARKET_ORIGIN_CONTEXT = {
   app: "market",
   origin: "https://shop.conduit.market",
@@ -253,12 +261,49 @@ function gmvEnv(
     globalSuccess?: boolean
     orderSuccess?: boolean
     secret?: string
+    cutoverDate?: string
+    lockedCutoverDate?: string
+    dailyObserver?: (
+      observation: CommerceGmvDailyObservation
+    ) => Promise<CommerceGmvDailyObservationResult>
   } = {}
 ): PostHogProxyEnv {
-  return {
+  let lockedCutoverDate = options.lockedCutoverDate ?? null
+  const env: PostHogProxyEnv = {
     POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN,
     COMMERCE_GMV_TELEMETRY_HMAC_SECRET:
       options.secret ?? "commerce-gmv-test-secret-at-least-32-bytes",
+    COMMERCE_GMV_DAILY_CUTOVER_DATE: options.cutoverDate,
+    GMV_CUTOVER_FENCE: {
+      getByName: () => ({
+        resolve: async (
+          configuredCutoverDate
+        ): Promise<CommerceGmvCutoverResolution> => {
+          if (lockedCutoverDate !== null) {
+            if (
+              configuredCutoverDate !== null &&
+              configuredCutoverDate !== lockedCutoverDate
+            ) {
+              return { status: "mismatch" }
+            }
+            return {
+              status: "active",
+              cutoverDate: lockedCutoverDate,
+            }
+          }
+          if (configuredCutoverDate === null) return { status: "inactive" }
+          const today = new Date().toISOString().slice(0, 10)
+          if (configuredCutoverDate <= today) {
+            return { status: "invalid" }
+          }
+          lockedCutoverDate = configuredCutoverDate
+          return {
+            status: "active",
+            cutoverDate: configuredCutoverDate,
+          }
+        },
+      }),
+    },
     GMV_GLOBAL_RATE_LIMITER: {
       limit: async () => ({ success: options.globalSuccess ?? true }),
     },
@@ -266,17 +311,56 @@ function gmvEnv(
       limit: async () => ({ success: options.orderSuccess ?? true }),
     },
   }
+  if (options.dailyObserver) {
+    env.GMV_DAILY_AGGREGATE = {
+      getByName: () => ({ observe: options.dailyObserver! }),
+    }
+  }
+  return env
 }
 
 describe("PostHog reverse proxy", () => {
   it("exposes a content-free health check", async () => {
     const response = await handlePostHogProxyRequest(
-      new Request("https://e.conduit.market/health")
+      new Request("https://e.conduit.market/health"),
+      undefined,
+      gmvEnv()
     )
 
     expect(response.status).toBe(200)
     expect(response.headers.get("cache-control")).toBe("no-store")
     expect(await response.json()).toEqual({ status: "ok" })
+  })
+
+  it("latches a future cutover during the content-free health check", async () => {
+    const futureCutover = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10)
+    const conflictingCutover = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10)
+    const env = gmvEnv({ cutoverDate: futureCutover })
+    const request = () => new Request("https://e.conduit.market/health")
+
+    const activated = await handlePostHogProxyRequest(request(), undefined, env)
+    expect(activated.status).toBe(200)
+    expect(await activated.json()).toEqual({ status: "ok" })
+
+    env.COMMERCE_GMV_DAILY_CUTOVER_DATE = undefined
+    const persisted = await handlePostHogProxyRequest(request(), undefined, env)
+    expect(persisted.status).toBe(200)
+    expect(await persisted.json()).toEqual({ status: "ok" })
+
+    env.COMMERCE_GMV_DAILY_CUTOVER_DATE = conflictingCutover
+    const mismatched = await handlePostHogProxyRequest(
+      request(),
+      undefined,
+      env
+    )
+    expect(mismatched.status).toBe(503)
+    expect(await mismatched.json()).toEqual({
+      error: "telemetry_unavailable",
+    })
   })
 
   it("turns every signal for one order into the same opaque GMV event", async () => {
@@ -349,6 +433,151 @@ describe("PostHog reverse proxy", () => {
     expect(new Set(upstream.map((event) => event.uuid)).size).toBe(2)
   })
 
+  it("hands daily aggregation only opaque allowlisted observations", async () => {
+    const orderDate = new Date().toISOString().slice(0, 10)
+    const orderId = "018f4a00-1111-4abc-8def-0123456789ab"
+    const observations: CommerceGmvDailyObservation[] = []
+    let upstreamCalls = 0
+    const env = gmvEnv({
+      cutoverDate: orderDate,
+      lockedCutoverDate: orderDate,
+      dailyObserver: async (observation) => {
+        observations.push(observation)
+        return {
+          status: observations.length === 1 ? "accepted" : "duplicate",
+        }
+      },
+    })
+
+    for (const origin of [
+      "https://shop.conduit.market",
+      "https://sell.conduit.market",
+    ]) {
+      const response = await handlePostHogProxyRequest(
+        gmvRequest({ orderId, orderDate, invoicedAmountSats: 42 }, origin),
+        async () => {
+          upstreamCalls += 1
+          return new Response("unexpected")
+        },
+        env
+      )
+      expect(response.status).toBe(202)
+    }
+
+    expect(upstreamCalls).toBe(0)
+    expect(observations).toHaveLength(2)
+    expect(observations[0]).toEqual(observations[1])
+    expect(observations[0]).toEqual({
+      orderDay: orderDate,
+      opaqueOrderKey: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      ),
+      dailyEventUuid: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      ),
+      estimatedGmvSats: 42,
+    })
+    expect(JSON.stringify(observations)).not.toContain(orderId)
+  })
+
+  it("uses an explicit cutover and bounded reconciliation window", () => {
+    const now = Date.parse("2026-09-20T18:00:00.000Z")
+
+    expect(getCommerceGmvDeliveryMode("2026-09-20", undefined, now)).toBe(
+      "legacy"
+    )
+    expect(getCommerceGmvDeliveryMode("2026-09-20", "2026-09-20", now)).toBe(
+      "daily"
+    )
+    expect(getCommerceGmvDeliveryMode("2026-09-19", "2026-09-20", now)).toBe(
+      "legacy"
+    )
+    expect(getCommerceGmvDeliveryMode("2026-08-20", "2026-09-20", now)).toBe(
+      "expired"
+    )
+    expect(getCommerceGmvDeliveryMode("2026-09-21", "2026-09-20", now)).toBe(
+      "invalid"
+    )
+    expect(getCommerceGmvDeliveryMode("2026-09-20", "9999-99-99", now)).toBe(
+      "unavailable"
+    )
+  })
+
+  it("keeps a latched cutover active and rejects later configuration changes", async () => {
+    const orderDate = new Date().toISOString().slice(0, 10)
+    const observations: CommerceGmvDailyObservation[] = []
+    let upstreamCalls = 0
+    const env = gmvEnv({
+      cutoverDate: orderDate,
+      lockedCutoverDate: orderDate,
+      dailyObserver: async (observation) => {
+        observations.push(observation)
+        return { status: observations.length === 1 ? "accepted" : "duplicate" }
+      },
+    })
+    const request = () =>
+      gmvRequest({
+        orderId: "018f4a00-1111-4abc-8def-0123456789ab",
+        orderDate,
+        invoicedAmountSats: 42,
+      })
+    const fetcher = async () => {
+      upstreamCalls += 1
+      return new Response("unexpected")
+    }
+
+    expect(
+      (await handlePostHogProxyRequest(request(), fetcher, env)).status
+    ).toBe(202)
+
+    env.COMMERCE_GMV_DAILY_CUTOVER_DATE = undefined
+    expect(
+      (await handlePostHogProxyRequest(request(), fetcher, env)).status
+    ).toBe(202)
+
+    env.COMMERCE_GMV_DAILY_CUTOVER_DATE = "2026-01-01"
+    expect(
+      (await handlePostHogProxyRequest(request(), fetcher, env)).status
+    ).toBe(503)
+
+    expect(observations).toHaveLength(2)
+    expect(upstreamCalls).toBe(0)
+  })
+
+  it("rejects a current or past first cutover after legacy traffic", async () => {
+    const orderDate = new Date().toISOString().slice(0, 10)
+    const priorDate = new Date(Date.now() - 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10)
+    const env = gmvEnv()
+    const request = () =>
+      gmvRequest({
+        orderId: "018f4a00-1111-4abc-8def-0123456789ab",
+        orderDate,
+        invoicedAmountSats: 42,
+      })
+    let upstreamCalls = 0
+    const fetcher = async () => {
+      upstreamCalls += 1
+      return new Response("ok")
+    }
+
+    expect(
+      (await handlePostHogProxyRequest(request(), fetcher, env)).status
+    ).toBe(200)
+
+    env.COMMERCE_GMV_DAILY_CUTOVER_DATE = orderDate
+    expect(
+      (await handlePostHogProxyRequest(request(), fetcher, env)).status
+    ).toBe(503)
+
+    env.COMMERCE_GMV_DAILY_CUTOVER_DATE = priorDate
+    expect(
+      (await handlePostHogProxyRequest(request(), fetcher, env)).status
+    ).toBe(503)
+    expect(upstreamCalls).toBe(1)
+  })
+
   it("fails GMV ingestion closed for malformed, unconfigured, or rate-limited requests", async () => {
     const valid = {
       orderId: "018f4a00-1111-4abc-8def-0123456789ab",
@@ -365,7 +594,13 @@ describe("PostHog reverse proxy", () => {
       [gmvRequest({ ...valid, extra: "field" }), gmvEnv(), 400],
       [gmvRequest({ ...valid, orderId: "raw-order-id" }), gmvEnv(), 400],
       [gmvRequest({ ...valid, orderDate: "2026-02-30" }), gmvEnv(), 400],
+      [gmvRequest({ ...valid, orderDate: "9999-99-99" }), gmvEnv(), 400],
       [gmvRequest({ ...valid, invoicedAmountSats: 0 }), gmvEnv(), 400],
+      [
+        gmvRequest({ ...valid, invoicedAmountSats: 2_100_000_000_000_001 }),
+        gmvEnv(),
+        400,
+      ],
       [
         new Request("https://e.conduit.market/gmv?order=raw-order-id", {
           method: "POST",
@@ -983,7 +1218,7 @@ describe("PostHog reverse proxy", () => {
     const mismatch = await handlePostHogProxyRequest(
       ingestRequest(makeEvent()),
       fetcher,
-      { POSTHOG_PROJECT_TOKEN: "phc_anotherProjectToken000042" }
+      { POSTHOG_PROJECT_TOKEN: OTHER_PROJECT_TOKEN }
     )
 
     expect(mismatch.status).toBe(200)
