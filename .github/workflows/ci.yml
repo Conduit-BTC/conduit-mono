@@ -90,6 +90,7 @@ jobs:
         with:
           bun-version: "1.3.5"
       - run: bun install --frozen-lockfile
+      - run: bun run --filter @conduit/posthog-proxy test
       - run: bun test
         env:
           SMOKE_CREDENTIAL_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}

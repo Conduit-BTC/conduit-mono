@@ -29,7 +29,7 @@ Runtime telemetry events may only use these fields:
 - `count_bucket`
 - `result_count_bucket`
 - `amount_bucket`
-- `estimated_gmv_sats` (Worker-emitted on `commerce_gmv_estimated` only)
+- `estimated_gmv_sats` (Worker-emitted on the two GMV events only)
 - `product_type`
 - `declaration_class`
 - `delivery_route`
@@ -48,29 +48,55 @@ controls in this document. Maintainers must review the provider window at least
 quarterly and select a shorter plan or self-hosted retention policy when
 PostHog makes one available.
 
-The first-party aggregate `commerce_gmv_estimated` measurement is deliberately
-narrower than optional browser telemetry and follows its own policy. Official
-Shop and Sell clients may report it even when generic browser telemetry is
-disabled or Global Privacy Control is enabled. Conduit uses it only for
-aggregate commerce measurement, not sale or sharing of personal information,
-cross-context behavioral advertising, person profiles, or actor
-identification.
+The first-party aggregate GMV measurement is deliberately narrower than
+optional browser telemetry and follows its own policy. Official Shop and Sell
+clients may report it even when generic browser telemetry is disabled or Global
+Privacy Control is enabled. Conduit uses it only for aggregate commerce
+measurement, not sale or sharing of personal information, cross-context
+behavioral advertising, person profiles, or actor identification.
 
-The event uses one static service identity, disables person-profile processing
-and provider IP capture, rounds its timestamp to the UTC order day, and uses an
-HMAC-derived event UUID for per-order retry deduplication. The client sends the
-UTC order date rather than the precise order timestamp. The raw order UUID is
-used only transiently by the telemetry Worker and never reaches PostHog. A
-dedicated HMAC domain and secret prevent the opaque UUID from being joined to
-identifiers in other datasets.
+The Worker immediately transforms the raw random order UUID with a dedicated
+HMAC secret. In daily mode, the HMAC input and domain are also scoped to the UTC
+order date. One SQLite-backed Durable Object per UTC order day stores only the
+opaque per-order fingerprint needed for deduplication, plus the day's aggregate
+total and delivery revision. It never stores a per-order amount. Active
+deduplication state is deleted 30 days after the end of the UTC order day even
+if a final best-effort provider delivery fails; Cloudflare's SQLite
+point-in-time recovery may retain restorable database state for its separate
+provider recovery window.
+
+Before daily aggregation is activated, the bounded legacy path sends PostHog
+one opaque per-order UUID, the estimated amount, the UTC order date, and the
+same static service identity. It does not send the raw order UUID or an actor
+identifier.
+
+After activation, PostHog receives `commerce_gmv_estimated_daily` as immutable
+aggregate revision snapshots. Each snapshot contains a deterministic opaque
+revision UUID, the positive whole-satoshi daily total, the UTC day as its
+rounded timestamp, and one static service identity. Person profiles and
+provider IP capture are disabled. The first snapshot is scheduled 12 hours
+after the UTC day closes; later reconciliation is batched into fixed 12-hour
+windows. A failed or ambiguous delivery retries the exact frozen snapshot with
+the same UUID; a later revision uses a different UUID. It receives no per-order
+fingerprint or amount. The raw order UUID is transient inside the request
+handler and never reaches Durable Object storage or PostHog. Consumers must
+select the greatest `estimated_gmv_sats` snapshot for each UTC day and must
+never sum the revision snapshots.
 
 Production activation requires the PostHog proxy Worker to provide both
 `POSTHOG_PROJECT_TOKEN` and a random, secret-store-only
 `COMMERCE_GMV_TELEMETRY_HMAC_SECRET` of at least 32 characters. Keep that secret
 stable across deployments so all qualifying observations of one order retain
 one deduplication key. The Worker also requires its configured global and
-per-order rate-limit bindings. Missing or invalid configuration disables this
-event without affecting commerce or payment state.
+per-order rate-limit bindings, Durable Object binding and migration, and an
+explicit UTC cutover date. Before activation, no cutover preserves the legacy
+path. Initial activation requires a strictly future UTC day so traffic already
+accepted on the legacy grain cannot overlap. The first valid cutover is durably
+latched; later removal keeps the latch active, and a conflicting or invalid
+value fails closed. Missing Durable Object bindings also fail closed without
+affecting commerce or payment state. After configuring the future date, an
+operator must call the content-free Worker health route before that date begins;
+the successful check latches the cutover without creating a GMV observation.
 
 Redaction happens before provider delivery. Events that fail the event-name or
 property allowlist must be dropped rather than repaired downstream. Browser
@@ -419,12 +445,23 @@ static service-level distinct ID and disables PostHog person-profile processing.
 
 ### `commerce_gmv_estimated`
 
-Emitted as a recall-biased estimate when a Conduit commerce order moves through
-any supported paid signal: wallet success, a buyer report, automatic merchant
-wallet verification, manual merchant confirmation, or later paid-order
-reconciliation. The sole business property is the best available positive
-whole-satoshi amount associated with the paid-order signal. These signals are
-OR gates for one logical per-order event, not separate events.
+Legacy per-order event retained only for observations whose UTC order date is
+before the daily-aggregation cutover. This bounded transition remains available
+for up to 30 days so later merchant reconciliation does not disappear at
+cutover. It preserves the prior opaque per-order PostHog upsert contract and is
+excluded for order dates on or after cutover.
+
+<!-- telemetry-event: commerce_gmv_estimated_daily properties=estimated_gmv_sats -->
+
+### `commerce_gmv_estimated_daily`
+
+Emitted as a recall-biased daily aggregate when Conduit commerce orders move
+through any supported paid signal: wallet success, a buyer report, automatic
+merchant wallet verification, manual merchant confirmation, or later
+paid-order reconciliation. The sole business property is the sum of the first
+accepted positive whole-satoshi estimate for each structurally deduplicated
+order on the UTC day. These signals are OR gates for one logical per-order
+contribution, not separate contributions.
 
 This event is a narrowly scoped first-party aggregate commerce measurement, not
 ordinary optional product analytics. It is not suppressed solely because GPC
@@ -433,26 +470,40 @@ suppress the optional browser analytics it governs. The exception does not
 permit sale, sharing, advertising use, person profiling, or additional event
 properties.
 
-The event uses a shared static service identity, disables person-profile
-processing, rounds its timestamp to the UTC order day, and uses a
-server-secret-derived opaque UUID only to deduplicate observations of the same
-order. The client sends only that UTC date rather than its precise local
-timestamp. PostHog ingestion disables IP capture. The raw order UUID and HMAC
-secret never reach PostHog. Duplicate buyer and merchant observations use the
-same event UUID, event name, UTC-day timestamp, and static service identity so
-PostHog treats them as one logical event. Insights must also group by event UUID
-before summing `estimated_gmv_sats`, so dashboard totals remain structurally
-deduplicated even during PostHog's asynchronous ingestion deduplication window.
-Signals may disagree on the estimate; a later accepted signal may replace the
-amount on that same logical event without adding another order. Slight
-overstatement or understatement from that last-estimate behavior is accepted.
+The Worker immediately transforms the raw order UUID into a day-scoped opaque
+fingerprint, then atomically accepts it at most once in the Durable Object for
+that UTC day. The Durable Object stores the opaque fingerprint but no per-order
+amount. The first accepted estimate wins when shopper and merchant signals
+disagree. It emits immutable daily aggregate revision snapshots with a UTC-day
+timestamp, the running daily total, and a shared static service identity. Each
+revision uses an opaque event UUID deterministically derived from the daily
+seed and revision. The first snapshot is scheduled 12 hours after that UTC day
+closes; later reconciliation is batched into fixed 12-hour windows rather than
+forwarded per observation. Failed or ambiguous delivery retries the exact
+frozen aggregate revision, total, and UUID; observations accepted meanwhile
+wait for the next fixed window, which uses a different UUID. PostHog ingestion
+disables IP capture and person-profile processing. Neither the raw order UUID
+nor the opaque per-order fingerprint reaches PostHog. Multiple immutable
+revision snapshots can therefore exist for one UTC day. Dashboard and query
+consumers must select the greatest `estimated_gmv_sats` value for each UTC day
+and must never sum those snapshots.
+
+Active opaque fingerprints are retained through 30 days after the UTC order
+day to cover delayed merchant reconciliation. At expiry the Worker attempts
+one final snapshot, then deletes active state even if that provider delivery
+fails. Cloudflare's provider-managed SQLite point-in-time recovery may retain
+restorable state beyond active deletion for its recovery window. The Worker
+ignores observations outside the accepted window so an expired day cannot be
+recreated.
 
 It must not include app, route, session, buyer, merchant, order, product,
 public key, comment, invoice, payment hash, preimage, receipt, relay, wallet,
 connection, fee, or payment-rail data. Unpaid orders and zero-sat orders do not
 emit. Delivery is best effort and can still undercount. Buyer reports and
 client-originated requests are intentionally not settlement proof and can
-inflate the estimate. Payment state never depends on telemetry availability.
+inflate the estimate. A first accepted estimate can slightly overstate or
+understate exact invoiced sats, which is accepted for this recall-biased
+metric. Payment state never depends on telemetry availability.
 Aggregate reporting must call this estimated Conduit commerce GMV, not verified
 settlement or merchant revenue. Exact amounts can be distinctive, so the event
 is privacy-minimized rather than guaranteed unlinkable from outside knowledge.

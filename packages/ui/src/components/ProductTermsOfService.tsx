@@ -2,7 +2,7 @@ import { ProductLegalPageLayout } from "./ProductLegalPageLayout"
 import {
   ProductTermsOfServiceVersion,
   ProductTermsScopeNoticeVersion,
-} from "../legal/versions/product-legal-v1.3-2026-09-17"
+} from "../legal/versions/product-legal-v1.4-2026-09-20"
 
 export function ProductTermsOfService({
   deploymentHostname,

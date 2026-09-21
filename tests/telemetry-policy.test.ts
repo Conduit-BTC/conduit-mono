@@ -60,6 +60,14 @@ describe("telemetry policy", () => {
         },
       ])
     ).toContain("commerce_gmv_estimated must use only estimated_gmv_sats")
+    expect(
+      validateTelemetryEvents([
+        {
+          eventName: "commerce_gmv_estimated_daily",
+          properties: ["estimated_gmv_sats", "app"],
+        },
+      ])
+    ).toContain("commerce_gmv_estimated_daily must use only estimated_gmv_sats")
   })
 
   it("validates the repo telemetry allowlist", () => {

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy --keep-vars",
+    "test": "WRANGLER_LOG_PATH=/tmp/conduit-posthog-proxy-vitest.log vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\""
   },
@@ -13,7 +14,10 @@
     "@conduit/core": "workspace:*"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.1.12",
+    "@cloudflare/workers-types": "5.20260831.1",
     "typescript": "^6.0.3",
+    "vitest": "^4.1.0",
     "wrangler": "4.131.1"
   }
 }

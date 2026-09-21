@@ -67,13 +67,13 @@ Anonymous reliability, performance, and public commerce page counters:
 ### Estimated Commerce GMV (first-party aggregate measurement)
 
 When a Conduit commerce order moves through any supported paid signal, the
-telemetry Worker may emit one `commerce_gmv_estimated` event for that order.
-Supported signals are wallet success, a buyer payment report, automatic
-merchant wallet verification, manual merchant confirmation, and later paid or
-fulfilled order reconciliation. These signals are OR gates for one logical
-per-order estimate, not separate events. Its only business property is the
-best available positive whole-satoshi amount associated with the paid-order
-signal.
+telemetry Worker may add its first accepted estimate to one
+`commerce_gmv_estimated_daily` aggregate for the UTC order day. Supported
+signals are wallet success, a buyer payment report, automatic merchant wallet
+verification, manual merchant confirmation, and later paid or fulfilled order
+reconciliation. These signals are OR gates for one logical per-order
+contribution, not separate contributions. Its only business property is the
+positive whole-satoshi daily total.
 
 This measurement is distinct from optional browser product analytics. Official
 Shop and Sell clients may report it even when generic browser telemetry is
@@ -85,17 +85,41 @@ cross-context behavioral advertising, build a person profile, or identify a
 buyer or merchant.
 
 This is a narrow exception to the bucket-only amount rule for browser and
-operational telemetry. The event must:
+operational telemetry. The pipeline must:
 
 - use a shared static service identity with PostHog person-profile processing
   disabled;
-- round its event timestamp to the UTC order day;
-- use a secret-key-derived opaque event UUID only to deduplicate the same
-  order across buyer and merchant observations;
-- use a dedicated HMAC secret and domain that cannot join the event UUID to
-  identifiers in other datasets;
+- immediately transform the random order UUID into an opaque fingerprint with
+  a dedicated HMAC secret and domain that cannot join it to identifiers in
+  other datasets;
+- in post-cutover daily mode, bind that fingerprint to the UTC order date and
+  a dedicated daily domain;
+- use one SQLite-backed Durable Object per UTC order day to atomically accept
+  each opaque fingerprint at most once;
+- persist only the opaque per-order fingerprint, the daily total, an opaque
+  daily seed UUID, and delivery revision state, never a per-order amount;
+- retain active deduplication state through 30 days after the UTC order day,
+  attempt one final daily snapshot at expiry, and delete active state even if
+  that provider delivery fails;
+- recognize that Cloudflare's provider-managed SQLite point-in-time recovery
+  may retain restorable state for its separate recovery window after active
+  deletion;
+- use the first accepted positive amount when shopper and merchant signals
+  disagree;
+- schedule the first daily snapshot 12 hours after the UTC order day closes and
+  batch later reconciliation into fixed 12-hour windows so PostHog does not
+  receive a running update for each accepted order;
+- freeze the aggregate revision and total for each delivery attempt, retry that
+  exact snapshot after a failed or ambiguous response, and defer observations
+  accepted meanwhile to the next fixed window;
+- emit an immutable PostHog event for each aggregate revision using an opaque
+  event UUID deterministically bound to the daily seed and revision;
+- reuse that event UUID when retrying the same frozen revision, and use a
+  different event UUID for every later revision;
 - use the raw random order UUID only transiently inside the telemetry Worker
-  and prevent it and the HMAC secret from reaching PostHog;
+  and prevent it from entering Durable Object storage or PostHog;
+- prevent the opaque per-order fingerprint and HMAC secret from reaching
+  PostHog;
 - send only the UTC order date to the Worker, not a more precise order
   timestamp;
 - prevent PostHog from recording the requesting browser's IP address; and
@@ -111,14 +135,28 @@ undercount it. Exact amounts and the UTC order day can be distinctive through
 outside knowledge, so reporting is privacy-minimized rather than guaranteed
 unlinkable. Aggregate reporting must describe the resulting metric as
 estimated Conduit commerce GMV, not verified settlement, total platform sales,
-merchant revenue, or funds processed by Conduit. PostHog considers matching
-event UUID, event name, timestamp, and static service identity to be one logical
-event. Signals may disagree on the estimated amount; a later accepted signal
-may replace the value for that same logical event without adding another order.
-This accepted last-estimate behavior can slightly overstate or understate exact
-invoiced sats. Insights must still group by the opaque event UUID before
-summing the amount so totals remain structurally deduplicated during
-asynchronous provider ingestion.
+merchant revenue, or funds processed by Conduit. Signals may disagree on the
+estimated amount; a later accepted signal for the same order is treated as a
+duplicate, so the first accepted estimate wins. This can slightly overstate or
+understate exact invoiced sats. The daily total is monotonic, and PostHog may
+retain multiple immutable revision snapshots for one UTC order day. Dashboards
+and other consumers must select the greatest `estimated_gmv_sats` value for
+each UTC day and must never sum the revision snapshots.
+
+Before activation, the bounded legacy path sends PostHog one opaque per-order
+UUID, estimated amount, UTC order date, and static service identity. It does
+not send the raw order UUID or an actor identifier. Activation requires an
+explicit, strictly future UTC cutover whose first valid
+value is durably latched. This prevents observations already accepted while the
+legacy grain was active from later entering the daily grain. Removing its
+configuration must not deactivate it, and a conflicting later value must fail
+collection closed. The content-free Worker health check must persist and verify
+the configured future cutover before that date begins, without creating a GMV
+observation. For a bounded 30-day transition,
+pre-cutover order days may continue using the legacy
+`commerce_gmv_estimated` per-order upsert so delayed merchant reconciliation is
+not discarded. Post-cutover order days must use daily aggregation, and no
+observation may enter both event grains.
 
 Allowed fields:
 
@@ -127,7 +165,8 @@ Allowed fields:
   `mode`, `rail`, `method`, `event_family`, `count_bucket`,
   `result_count_bucket`, `amount_bucket`, `product_type`
 
-The Worker-emitted `commerce_gmv_estimated` event additionally allows
+The Worker-emitted `commerce_gmv_estimated_daily` event and bounded legacy
+`commerce_gmv_estimated` transition event additionally allow
 `estimated_gmv_sats` under the constraints above. No other event may use that
 field or send an exact payment amount.
 
