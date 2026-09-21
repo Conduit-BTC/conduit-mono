@@ -203,17 +203,21 @@ describe("app account-network read propagation", () => {
   })
 
   it("keeps Merchant event reads bound to the live authenticated account", async () => {
-    const [handoff, events, products] = await Promise.all([
+    const [handoff, events, eventDetailRoute, products] = await Promise.all([
       source("apps/merchant/src/lib/event-market-handoff.ts"),
       source("apps/merchant/src/routes/events.tsx"),
+      source("apps/merchant/src/routes/events/$collectionRef.tsx"),
       source("apps/merchant/src/routes/products.tsx"),
     ])
 
     expect(handoff).toContain("authenticatedPubkey?: string | null")
     expect(handoff).toContain("authenticatedPubkey: input.authenticatedPubkey")
     expect(handoff).not.toContain("authenticatedPubkey: organizer")
-    expect(events).toContain(
+    expect(eventDetailRoute).toContain(
       'const authenticatedPubkey = status === "connected" ? pubkey : null'
+    )
+    expect(eventDetailRoute).toContain(
+      "authenticatedPubkey={authenticatedPubkey}"
     )
     expect(
       events.match(

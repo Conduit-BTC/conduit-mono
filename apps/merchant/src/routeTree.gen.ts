@@ -21,6 +21,9 @@ import { Route as ProductsRouteImport } from './routes/products'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as ShippingRouteImport } from './routes/shipping'
 import { Route as TermsOfServiceRouteImport } from './routes/terms-of-service'
+import { Route as EventsIndexRouteImport } from './routes/events/index'
+import { Route as EventsCollectionRefRouteImport } from './routes/events/$collectionRef'
+import { Route as EventsNewRouteImport } from './routes/events/new'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -82,11 +85,26 @@ const TermsOfServiceRoute = TermsOfServiceRouteImport.update({
   path: '/terms-of-service',
   getParentRoute: () => rootRouteImport,
 } as any)
+const EventsIndexRoute = EventsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => EventsRoute,
+} as any)
+const EventsCollectionRefRoute = EventsCollectionRefRouteImport.update({
+  id: '/$collectionRef',
+  path: '/$collectionRef',
+  getParentRoute: () => EventsRoute,
+} as any)
+const EventsNewRoute = EventsNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => EventsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
-  '/events': typeof EventsRoute
+  '/events': typeof EventsRouteWithChildren
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
@@ -96,11 +114,13 @@ export interface FileRoutesByFullPath {
   '/profile': typeof ProfileRoute
   '/shipping': typeof ShippingRoute
   '/terms-of-service': typeof TermsOfServiceRoute
+  '/events/$collectionRef': typeof EventsCollectionRefRoute
+  '/events/new': typeof EventsNewRoute
+  '/events/': typeof EventsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
-  '/events': typeof EventsRoute
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
@@ -110,12 +130,15 @@ export interface FileRoutesByTo {
   '/profile': typeof ProfileRoute
   '/shipping': typeof ShippingRoute
   '/terms-of-service': typeof TermsOfServiceRoute
+  '/events/$collectionRef': typeof EventsCollectionRefRoute
+  '/events/new': typeof EventsNewRoute
+  '/events': typeof EventsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
-  '/events': typeof EventsRoute
+  '/events': typeof EventsRouteWithChildren
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
@@ -125,6 +148,9 @@ export interface FileRoutesById {
   '/profile': typeof ProfileRoute
   '/shipping': typeof ShippingRoute
   '/terms-of-service': typeof TermsOfServiceRoute
+  '/events/$collectionRef': typeof EventsCollectionRefRoute
+  '/events/new': typeof EventsNewRoute
+  '/events/': typeof EventsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -141,11 +167,13 @@ export interface FileRouteTypes {
     | '/profile'
     | '/shipping'
     | '/terms-of-service'
+    | '/events/$collectionRef'
+    | '/events/new'
+    | '/events/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/about'
-    | '/events'
     | '/messages'
     | '/network'
     | '/orders'
@@ -155,6 +183,9 @@ export interface FileRouteTypes {
     | '/profile'
     | '/shipping'
     | '/terms-of-service'
+    | '/events/$collectionRef'
+    | '/events/new'
+    | '/events'
   id:
     | '__root__'
     | '/'
@@ -169,12 +200,15 @@ export interface FileRouteTypes {
     | '/profile'
     | '/shipping'
     | '/terms-of-service'
+    | '/events/$collectionRef'
+    | '/events/new'
+    | '/events/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AboutRoute: typeof AboutRoute
-  EventsRoute: typeof EventsRoute
+  EventsRoute: typeof EventsRouteWithChildren
   MessagesRoute: typeof MessagesRoute
   NetworkRoute: typeof NetworkRoute
   OrdersRoute: typeof OrdersRoute
@@ -272,13 +306,49 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TermsOfServiceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/events/': {
+      id: '/events/'
+      path: '/'
+      fullPath: '/events/'
+      preLoaderRoute: typeof EventsIndexRouteImport
+      parentRoute: typeof EventsRoute
+    }
+    '/events/$collectionRef': {
+      id: '/events/$collectionRef'
+      path: '/$collectionRef'
+      fullPath: '/events/$collectionRef'
+      preLoaderRoute: typeof EventsCollectionRefRouteImport
+      parentRoute: typeof EventsRoute
+    }
+    '/events/new': {
+      id: '/events/new'
+      path: '/new'
+      fullPath: '/events/new'
+      preLoaderRoute: typeof EventsNewRouteImport
+      parentRoute: typeof EventsRoute
+    }
   }
 }
+
+interface EventsRouteChildren {
+  EventsCollectionRefRoute: typeof EventsCollectionRefRoute
+  EventsNewRoute: typeof EventsNewRoute
+  EventsIndexRoute: typeof EventsIndexRoute
+}
+
+const EventsRouteChildren: EventsRouteChildren = {
+  EventsCollectionRefRoute: EventsCollectionRefRoute,
+  EventsNewRoute: EventsNewRoute,
+  EventsIndexRoute: EventsIndexRoute,
+}
+
+const EventsRouteWithChildren =
+  EventsRoute._addFileChildren(EventsRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
-  EventsRoute: EventsRoute,
+  EventsRoute: EventsRouteWithChildren,
   MessagesRoute: MessagesRoute,
   NetworkRoute: NetworkRoute,
   OrdersRoute: OrdersRoute,

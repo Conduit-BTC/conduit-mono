@@ -47,7 +47,7 @@ describe("Market live account authority", () => {
       "apps/market/src/routes/cart.tsx",
       "apps/market/src/routes/checkout.tsx",
       "apps/market/src/routes/events/$collectionRef.tsx",
-      "apps/market/src/routes/events/index.tsx",
+      "apps/market/src/components/MarketEventsTimeline.tsx",
       "apps/market/src/routes/messages.tsx",
       "apps/market/src/routes/orders.tsx",
       "apps/market/src/routes/products/$productId.tsx",
