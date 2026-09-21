@@ -165,21 +165,16 @@ async function runCompleteJourney(
   await installTestSigner(page, pubkey, { secretKey })
 
   await page.goto(merchantUrl)
-  const privateInboxRow = page
-    .getByRole("link")
-    .filter({ hasText: "Private inbox" })
-  await expect(privateInboxRow).toContainText("Needs setup", {
-    timeout: 20_000,
-  })
-  await expect(page.getByRole("link", { name: "Network Ready" })).toBeVisible()
   const readinessPanel = page
     .locator("section")
     .filter({ hasText: "Merchant readiness" })
     .first()
-  await captureEvidence(
-    readinessPanel,
-    `${viewportName}-private-inbox-readiness`
-  )
+  await expect(readinessPanel).toBeVisible({ timeout: 20_000 })
+  await expect(readinessPanel.getByText("Private inbox")).toHaveCount(0)
+  await expect(
+    readinessPanel.getByRole("link", { name: "Network Ready" })
+  ).toBeVisible()
+  await captureEvidence(readinessPanel, `${viewportName}-merchant-readiness`)
 
   await page.goto(`${merchantUrl}/products`)
   await expect(

@@ -506,7 +506,7 @@ test("merchant ConnectGate opens the host-local Product Privacy Policy with full
   expect(privacyDocumentRequests).toBe(1)
 })
 
-test("merchant signed menu opens the host-local Product Terms with full navigation @merchant", async ({
+test("merchant signed navigation opens the host-local Product Terms with full navigation @merchant", async ({
   context,
   page,
 }) => {
@@ -524,10 +524,9 @@ test("merchant signed menu opens the host-local Product Terms with full navigati
   )
 
   await page.goto(`${merchantTestOrigin}/`)
-  await page.getByRole("button", { name: "Open merchant account menu" }).click()
-  const termsLink = page.getByRole("menu").getByRole("menuitem", {
-    name: "Terms",
-  })
+  const termsLink = page
+    .getByRole("navigation", { name: "Merchant navigation" })
+    .getByRole("link", { name: "Terms", exact: true })
   await expect(termsLink).toHaveAttribute("href", "/terms-of-service")
   await expect(termsLink).not.toHaveAttribute("target", "_blank")
   await termsLink.click()

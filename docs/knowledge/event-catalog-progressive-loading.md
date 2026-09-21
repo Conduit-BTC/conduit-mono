@@ -35,8 +35,8 @@ current signed revisions and
 local deletions before display; final reconciliation must not restore older
 terms. The overlapping read is reused at completion. If final accepted evidence
 identifies a missing or newer product, one exact read reconciles it. Coordinate
-changes cancel obsolete progress, and the existing target limits, author
-concurrency and relay budgets remain in force.
+changes cancel obsolete progress, and the existing per-batch target limits,
+author concurrency and relay budgets remain in force.
 
 The final read still resolves collection/calendar revisions, exact product and
 pickup frontiers, known withdrawals and same-author deletions. Independent
