@@ -11,6 +11,7 @@ import {
   filterSellersByName,
   getSellerEligibilityState,
   groupDiscoveredSellers,
+  isSellerCatalogEvidenceIncomplete,
   isSellerDirectoryUnavailable,
 } from "../lib/sellerDirectory"
 import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
@@ -98,6 +99,12 @@ export function useSellerDirectory(input: {
     isRefreshPaused: productsQuery.isRefreshPaused,
     discoveryStale: productsQuery.discoveryStale,
   })
+  const catalogEvidenceIncomplete = isSellerCatalogEvidenceIncomplete({
+    error: productsQuery.error,
+    meta: productsQuery.meta,
+    isRefreshPaused: productsQuery.isRefreshPaused,
+    discoveryStale: productsQuery.discoveryStale,
+  })
   const refreshCatalog = productsQuery.refetch
   const refreshGuestDiscovery = guestMarket.refetch
   const refreshAccountSearch = accountSearch.refetch
@@ -112,6 +119,7 @@ export function useSellerDirectory(input: {
     effectiveSource,
     eligibilityState,
     catalogProducts: productsQuery.products,
+    catalogEvidenceIncomplete,
     isFetching,
     isUnavailable,
     retry,

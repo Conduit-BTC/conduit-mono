@@ -11,6 +11,7 @@ import {
   filterSellersByName,
   getSellerEligibilityState,
   groupDiscoveredSellers,
+  isSellerCatalogEvidenceIncomplete,
   isSellerDirectoryUnavailable,
 } from "../apps/market/src/lib/sellerDirectory"
 import type { ProfileSearchMatch } from "../packages/core/src/protocol/profile-search"
@@ -167,6 +168,14 @@ describe("seller directory", () => {
     expect(
       isSellerDirectoryUnavailable({ ...unavailable, hasSellers: true })
     ).toBe(false)
+    expect(
+      isSellerCatalogEvidenceIncomplete({
+        error: unavailable.error,
+        meta: unavailable.meta,
+        isRefreshPaused: unavailable.isRefreshPaused,
+        discoveryStale: unavailable.discoveryStale,
+      })
+    ).toBe(true)
   })
 
   it("offers retry for the unavailable directory without changing empty copy", async () => {

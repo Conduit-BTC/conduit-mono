@@ -81,7 +81,7 @@ export function useMarketHeaderSuggestions(input: {
   const evidence = describeMarketHeaderSearchEvidence(
     accountSearch.data,
     sellerDirectory.eligibilityState,
-    sellerDirectory.isUnavailable
+    sellerDirectory.catalogEvidenceIncomplete
   )
   const loading =
     sellerDirectory.eligibilityState === "loading" ||

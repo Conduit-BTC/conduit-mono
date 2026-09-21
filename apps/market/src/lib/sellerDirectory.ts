@@ -53,6 +53,19 @@ export function isSellerDirectoryUnavailable(input: {
   discoveryStale: boolean
 }): boolean {
   if (input.hasSellers || input.isFetching) return false
+  return isSellerCatalogEvidenceIncomplete(input)
+}
+
+/**
+ * Retained sellers stay usable while this signal preserves evidence that the
+ * active catalog read is stale, partial, paused, or unavailable.
+ */
+export function isSellerCatalogEvidenceIncomplete(input: {
+  error: unknown
+  meta: CommerceFreshnessMeta | null
+  isRefreshPaused: boolean
+  discoveryStale: boolean
+}): boolean {
   return (
     !!input.error ||
     !input.meta ||

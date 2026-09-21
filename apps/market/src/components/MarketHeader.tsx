@@ -652,11 +652,13 @@ export function MarketHeader() {
                   footer={
                     suggestionFooter ||
                     sellerDirectory.eligibilityState === "partial" ||
-                    sellerDirectory.eligibilityState === "unavailable" ? (
+                    sellerDirectory.eligibilityState === "unavailable" ||
+                    sellerDirectory.catalogEvidenceIncomplete ? (
                       <span className="flex items-center justify-between gap-2">
                         <span>{suggestionFooter}</span>
                         {sellerDirectory.eligibilityState === "partial" ||
-                        sellerDirectory.eligibilityState === "unavailable" ? (
+                        sellerDirectory.eligibilityState === "unavailable" ||
+                        sellerDirectory.catalogEvidenceIncomplete ? (
                           <Button
                             type="button"
                             variant="ghost"

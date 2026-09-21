@@ -9,6 +9,7 @@ import {
   describeMarketHeaderSearchEvidence,
   getCategoryBrowseSearch,
 } from "../apps/market/src/lib/marketHeaderSearch"
+import { isSellerCatalogEvidenceIncomplete } from "../apps/market/src/lib/sellerDirectory"
 
 const SELLER = "1".repeat(64)
 const ACCOUNT = "2".repeat(64)
@@ -120,6 +121,76 @@ describe("Market header suggestion evidence", () => {
       "categories, merchants, or accounts may be missing"
     )
     expect(evidence).toContain("Search relay results are incomplete")
+  })
+
+  it("keeps retained category suggestions visible with incomplete catalog evidence", () => {
+    const model = buildMarketHeaderSuggestionModel({
+      listboxId: "market-search-suggestions",
+      categories: [
+        {
+          value: "art",
+          label: "art",
+          count: 3,
+          selected: false,
+        },
+      ],
+      accounts: [],
+    })
+    const incompleteReads = [
+      {
+        label: "stale",
+        meta: { stale: true, degraded: false, capped: false },
+      },
+      {
+        label: "degraded",
+        meta: { stale: false, degraded: true, capped: false },
+      },
+      {
+        label: "capped",
+        meta: { stale: false, degraded: false, capped: true },
+      },
+      {
+        label: "failed",
+        meta: { stale: false, degraded: false, capped: false },
+        error: new Error("offline"),
+      },
+      {
+        label: "paused",
+        meta: { stale: false, degraded: false, capped: false },
+        isRefreshPaused: true,
+      },
+    ]
+
+    expect(model.items.map((item) => item.id)).toEqual(["category:art"])
+    for (const incompleteRead of incompleteReads) {
+      const catalogIncomplete = isSellerCatalogEvidenceIncomplete({
+        error: incompleteRead.error ?? null,
+        meta: incompleteRead.meta,
+        isRefreshPaused: incompleteRead.isRefreshPaused ?? false,
+        discoveryStale: false,
+      })
+      expect(
+        describeMarketHeaderSearchEvidence(
+          undefined,
+          "ready",
+          catalogIncomplete
+        ),
+        incompleteRead.label
+      ).toContain("catalog is incomplete")
+    }
+
+    expect(
+      describeMarketHeaderSearchEvidence(
+        undefined,
+        "ready",
+        isSellerCatalogEvidenceIncomplete({
+          error: null,
+          meta: { stale: false, degraded: false, capped: false },
+          isRefreshPaused: false,
+          discoveryStale: false,
+        })
+      )
+    ).toBeNull()
   })
 
   it("uses generalized cold and unavailable empty states", () => {

@@ -146,10 +146,16 @@ test("market header preserves account search inside the eligible author scope @m
 test("market header selects cached categories inside the active catalog scope @market", async ({
   page,
 }) => {
+  // Use a different connected account so the seller stays inside the Conduit
+  // author set while guest follow-discovery evidence stays out of this case.
+  await installTestSigner(page, ELIGIBLE_ACCOUNT_PUBKEY)
   await page.goto(
     `${marketUrl}/products?source=conduit&merchant=${SELLER_PUBKEY}&sort=price_asc&q=old`
   )
   await seedAccounts(page)
+  await page.routeWebSocket(/.*/, async (webSocket) => {
+    await webSocket.close({ code: 1011, reason: "catalog unavailable fixture" })
+  })
   await page.reload()
 
   const input = page.getByRole("combobox", {
@@ -162,6 +168,12 @@ test("market header selects cached categories inside the active catalog scope @m
   })
   const categories = listbox.getByRole("group", { name: "Categories" })
   await expect(categories).toBeVisible()
+  await expect(
+    page.getByText(
+      "The active Market catalog is incomplete. Some categories or merchants may be missing.",
+      { exact: true }
+    )
+  ).toBeVisible()
   await expect(
     categories.getByRole("option", {
       name: /^# art Browse category$/i,

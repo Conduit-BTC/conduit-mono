@@ -90,7 +90,7 @@ export function getCategoryBrowseSearch(
 
 function describeCatalogEvidence(
   eligibilityState: SellerEligibilityState,
-  catalogUnavailable: boolean
+  catalogIncomplete: boolean
 ): string | null {
   switch (eligibilityState) {
     case "loading":
@@ -100,8 +100,8 @@ function describeCatalogEvidence(
     case "unavailable":
       return "Market discovery is unavailable right now. Saved categories, merchants, or accounts may still appear."
     case "ready":
-      return catalogUnavailable
-        ? "The active Market catalog is unavailable. Some categories or merchants may be missing."
+      return catalogIncomplete
+        ? "The active Market catalog is incomplete. Some categories or merchants may be missing."
         : null
   }
 }
@@ -109,10 +109,10 @@ function describeCatalogEvidence(
 export function describeMarketHeaderSearchEvidence(
   result: ProfileSearchResult | undefined,
   eligibilityState: SellerEligibilityState,
-  catalogUnavailable: boolean
+  catalogIncomplete: boolean
 ): string | null {
   const sentences = [
-    describeCatalogEvidence(eligibilityState, catalogUnavailable),
+    describeCatalogEvidence(eligibilityState, catalogIncomplete),
     describeAccountSearchEvidence(result),
   ].filter((sentence): sentence is string => !!sentence)
   return sentences.length > 0 ? sentences.join(" ") : null
