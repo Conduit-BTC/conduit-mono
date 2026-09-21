@@ -165,14 +165,23 @@ describe("Merchant event actor identity", () => {
     expect(second).not.toContain(pubkeyToNpub(actorPubkey))
   })
 
-  it("keeps compact signed organizer provenance on non-owned event details", async () => {
-    const panel = await Bun.file(
-      "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
-    ).text()
+  it("keeps compact signed organizer provenance on both Merchant event details", async () => {
+    const [participantPanel, organizerPanel] = await Promise.all([
+      Bun.file(
+        "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
+      ).text(),
+      Bun.file(
+        "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
+      ).text(),
+    ])
 
-    expect(panel).toContain("EventActorProvenance")
-    expect(panel).toContain('copyLabel="Copy organizer npub"')
-    expect(panel).toMatch(/!ownsMarket[\s\S]{0,300}<EventActorProvenance/)
+    expect(participantPanel).toContain("EventActorProvenance")
+    expect(participantPanel).toContain('copyLabel="Copy organizer npub"')
+    expect(participantPanel).toMatch(
+      /!ownsMarket[\s\S]{0,300}<EventActorProvenance/
+    )
+    expect(organizerPanel).toContain("EventActorProvenance")
+    expect(organizerPanel).toContain('copyLabel="Copy organizer signer npub"')
   })
 
   it("renders organizer handoff with friendly identity and exact provenance", () => {

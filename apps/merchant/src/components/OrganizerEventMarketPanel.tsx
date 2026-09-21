@@ -13,7 +13,6 @@ import {
 import {
   formatNpub,
   formatSourcePrice,
-  getProfileDisplayLabel,
   getProfileName,
   normalizeCurrencyCode,
   pubkeyToNpub,
@@ -67,7 +66,11 @@ import {
   getOrganizerEventParticipantPubkeys,
   normalizeEventActorPubkey,
 } from "../lib/event-actor-identity"
-import { EventPickupHandlerIdentity } from "./EventActorIdentity"
+import {
+  EventActorName,
+  EventActorProvenance,
+  EventPickupHandlerIdentity,
+} from "./EventActorIdentity"
 import { EventQrPrintPreview } from "./EventQrPrintPreview"
 
 function formatSchedule(market: MerchantOrganizerEventMarket): string {
@@ -587,12 +590,6 @@ export function OrganizerEventMarketPanel({
   const organizerProfile = organizerProfileQuery.getProfile(
     organizerIdentityPubkey
   )
-  const organizerName = getProfileDisplayLabel(
-    organizerProfile,
-    organizerIdentityPubkey,
-    { lookupSettled: organizerProfileQuery.lookupSettled }
-  )
-
   function profileQueryForActor(pubkey: string) {
     return pubkey.trim().toLowerCase() === market.organizerPubkey.toLowerCase()
       ? organizerProfileQuery
@@ -661,7 +658,7 @@ export function OrganizerEventMarketPanel({
           market.eventLocation || market.eventGeohash || "Location not provided"
         }
         organizer={
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 items-start gap-2">
             <Avatar className="size-7 shrink-0 border border-[var(--border)]">
               <AvatarImage
                 src={organizerProfile?.picture}
@@ -675,11 +672,20 @@ export function OrganizerEventMarketPanel({
                 />
               </AvatarFallback>
             </Avatar>
-            <span className="min-w-0 break-words">
-              Organized by{" "}
-              <span className="font-medium text-[var(--text-primary)]">
-                {organizerName}
+            <span className="min-w-0">
+              <span className="block break-words">
+                Organized by{" "}
+                <EventActorName
+                  pubkey={organizerIdentityPubkey}
+                  profile={organizerProfile}
+                  className="inline text-sm"
+                />
               </span>
+              <EventActorProvenance
+                pubkey={organizerIdentityPubkey}
+                copyLabel="Copy organizer signer npub"
+                className="mt-0.5 max-w-full text-[11px]"
+              />
             </span>
           </div>
         }
