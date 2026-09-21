@@ -364,6 +364,12 @@ test("a canceled connection resolving late cannot close a reopened signer dialog
   await mountSignerModal(page)
   const dialog = page.getByRole("dialog", { name: "Sign in to Conduit" })
   await expect(dialog).toBeVisible()
+  await dialog
+    .getByRole("button", { name: "Connect from another device", exact: true })
+    .click()
+  await dialog
+    .getByRole("button", { name: "Start new connection", exact: true })
+    .click()
   await expect
     .poll(() => page.evaluate(() => window.__signerModalHarness.starts))
     .toBe(1)
@@ -372,6 +378,12 @@ test("a canceled connection resolving late cannot close a reopened signer dialog
   expect(await page.evaluate(() => window.__signerModalHarness.cancels)).toBe(1)
   await page.evaluate(() => window.__signerModalHarness.reopen())
   await expect(dialog).toBeVisible()
+  await dialog
+    .getByRole("button", { name: "Connect from another device", exact: true })
+    .click()
+  await dialog
+    .getByRole("button", { name: "Start new connection", exact: true })
+    .click()
   await expect
     .poll(() => page.evaluate(() => window.__signerModalHarness.starts))
     .toBe(2)
@@ -385,7 +397,7 @@ test("a canceled connection resolving late cannot close a reopened signer dialog
   await expect(dialog).not.toBeVisible()
 })
 
-test("switching accounts prepares the next mobile connection only after logout settles @market", async ({
+test("switching accounts exposes the next iOS bunker connection only after logout settles @market", async ({
   page,
 }) => {
   await mountSignerModal(page, true)
@@ -398,18 +410,18 @@ test("switching accounts prepares the next mobile connection only after logout s
     .toBe(1)
   expect(await page.evaluate(() => window.__signerModalHarness.starts)).toBe(0)
   await expect(
-    page.getByRole("link", { name: "Connect with Clave", exact: true })
+    page.getByRole("button", { name: "Connect with Clave", exact: true })
   ).toHaveCount(0)
 
   await page.evaluate(() => window.__signerModalHarness.settleDisconnect())
   await expect
     .poll(() => page.evaluate(() => window.__signerModalHarness.starts))
-    .toBe(1)
+    .toBe(0)
   await expect(
     page.getByRole("dialog", { name: "Sign in to Conduit" })
   ).toBeVisible()
   await expect(
-    page.getByRole("link", { name: "Connect with Clave", exact: true })
+    page.getByRole("button", { name: "Connect with Clave", exact: true })
   ).toBeVisible()
 })
 

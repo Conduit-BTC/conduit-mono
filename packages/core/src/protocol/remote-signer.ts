@@ -121,7 +121,6 @@ export interface RemoteBunkerSigner {
   ): Promise<string | null>
   ping(options?: Nip46RpcRequestOptions): Promise<void>
   getPublicKey(options?: Nip46RpcRequestOptions): Promise<string>
-  switchRelays(): Promise<boolean>
   signEvent(
     event: EventTemplate,
     options?: Nip46RpcRequestOptions
@@ -229,6 +228,7 @@ export interface RemoteSignerConnection {
   signer: NdkBunkerSignerAdapter
   clientPrivateKey: string
   clientKeyAlreadyPersisted: boolean
+  previousBunkerSigner?: RemoteBunkerSigner
 }
 
 export async function verifyRemoteSignerConnection(
@@ -655,11 +655,23 @@ export function abandonRemoteSignerConnection(
   connection: RemoteSignerConnection
 ): void {
   connection.signer.invalidate()
+  const previousBunkerSigner = connection.previousBunkerSigner
+  connection.previousBunkerSigner = undefined
+  if (previousBunkerSigner) void closeRemoteSigner(previousBunkerSigner)
   if (connection.clientKeyAlreadyPersisted) {
     void closeRemoteSigner(connection.bunkerSigner)
     return
   }
   void logoutRemoteSigner(connection.bunkerSigner)
+}
+
+/** Retire the verified previous route only after the replacement is persisted and installed. */
+export async function commitRemoteSignerConnection(
+  connection: RemoteSignerConnection
+): Promise<void> {
+  const previousBunkerSigner = connection.previousBunkerSigner
+  connection.previousBunkerSigner = undefined
+  if (previousBunkerSigner) await closeRemoteSigner(previousBunkerSigner)
 }
 
 export async function rollbackAndAbandonRemoteSignerConnection(
@@ -1074,8 +1086,6 @@ function requireRemoteSignerPubkey(pubkey: string, operation: string): string {
   return normalized
 }
 
-// Remote signer sessions retain this already-connected relay set. nostr-tools
-// relay migration cannot be canceled and may mutate after a local timeout.
 function requireSignerRelayUrls(
   bunkerSigner: RemoteBunkerSigner,
   operation: string
@@ -1091,6 +1101,166 @@ function requireSignerRelayUrls(
   return [...new Set(relayUrls)]
 }
 
+function signerRelaySetsMatch(
+  currentRelayUrls: readonly string[],
+  nextRelayUrls: readonly string[]
+): boolean {
+  const nextRelaySet = new Set(nextRelayUrls)
+  return (
+    currentRelayUrls.length === nextRelayUrls.length &&
+    currentRelayUrls.every((relayUrl) => nextRelaySet.has(relayUrl))
+  )
+}
+
+function parseSignerRelaySwitchResult(result: string | null): string[] | null {
+  if (result === null || result === "null") return null
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(result)
+  } catch (cause) {
+    throw new RemoteSignerError(
+      "invalid_response",
+      "The remote signer returned a malformed relay list.",
+      { cause, operation: "switch relays" }
+    )
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length === 0 ||
+    !parsed.every(isRelayUrl)
+  ) {
+    throw new RemoteSignerError(
+      "invalid_response",
+      "The remote signer returned an invalid secure relay list.",
+      { operation: "switch relays" }
+    )
+  }
+  return [...new Set(parsed)]
+}
+
+async function verifySignerRoute(
+  bunkerSigner: RemoteBunkerSigner,
+  expectedUserPubkey: string,
+  operation: string,
+  options: RemoteSignerOptions
+): Promise<void> {
+  await withRemoteSignerTimeout(
+    `${operation} ping`,
+    (signal) => bunkerSigner.ping({ signal }),
+    options
+  )
+  const actualPubkey = requireUserPubkey(
+    await withRemoteSignerTimeout(
+      `${operation} identity`,
+      (signal) => bunkerSigner.getPublicKey({ signal }),
+      options
+    ),
+    `${operation} identity`
+  )
+  if (actualPubkey !== expectedUserPubkey) {
+    throw new RemoteSignerError(
+      "session_identity_mismatch",
+      "The remote signer returned a different account. Sign in again.",
+      { operation: `${operation} identity` }
+    )
+  }
+}
+
+interface NegotiatedSignerRoute {
+  bunkerSigner: RemoteBunkerSigner
+  relayUrls: string[]
+  previousBunkerSigner?: RemoteBunkerSigner
+}
+
+async function negotiateSignerRelays(
+  bunkerSigner: RemoteBunkerSigner,
+  clientPrivateKey: Uint8Array,
+  remoteSignerPubkey: string,
+  userPubkey: string,
+  options: RemoteSignerOptions
+): Promise<NegotiatedSignerRoute> {
+  const currentRelayUrls = requireSignerRelayUrls(bunkerSigner, "switch relays")
+  let result: string | null
+  try {
+    result = await withRemoteSignerTimeout(
+      "switch relays",
+      (signal) => bunkerSigner.sendRequest("switch_relays", [], { signal }),
+      options
+    )
+  } catch (error) {
+    const remoteError = classifyRemoteSignerError(error, "switch relays")
+    if (remoteError.code === "unsupported" || remoteError.code === "rejected") {
+      return { bunkerSigner, relayUrls: currentRelayUrls }
+    }
+    await verifySignerRoute(
+      bunkerSigner,
+      userPubkey,
+      "retain current relays",
+      options
+    )
+    return { bunkerSigner, relayUrls: currentRelayUrls }
+  }
+
+  let nextRelayUrls: string[] | null
+  try {
+    nextRelayUrls = parseSignerRelaySwitchResult(result)
+  } catch {
+    await verifySignerRoute(
+      bunkerSigner,
+      userPubkey,
+      "retain current relays",
+      options
+    )
+    return { bunkerSigner, relayUrls: currentRelayUrls }
+  }
+  if (
+    nextRelayUrls === null ||
+    signerRelaySetsMatch(currentRelayUrls, nextRelayUrls)
+  ) {
+    return { bunkerSigner, relayUrls: currentRelayUrls }
+  }
+
+  let candidate: RemoteBunkerSigner | null = null
+  try {
+    candidate = createBunkerSigner(
+      clientPrivateKey,
+      {
+        pubkey: remoteSignerPubkey,
+        relays: nextRelayUrls,
+        secret: null,
+      },
+      options
+    )
+    await verifySignerRoute(candidate, userPubkey, "new relay route", options)
+    return {
+      bunkerSigner: candidate,
+      relayUrls: nextRelayUrls,
+      previousBunkerSigner: bunkerSigner,
+    }
+  } catch (error) {
+    if (candidate) await closeRemoteSigner(candidate, options)
+    const candidateError = classifyRemoteSignerError(error, "new relay route")
+    try {
+      await verifySignerRoute(
+        bunkerSigner,
+        userPubkey,
+        "retain current relays",
+        options
+      )
+      return { bunkerSigner, relayUrls: currentRelayUrls }
+    } catch (currentRouteError) {
+      if (
+        candidateError.code === "invalid_response" ||
+        candidateError.code === "session_identity_mismatch"
+      ) {
+        throw candidateError
+      }
+      throw currentRouteError
+    }
+  }
+}
+
 function createRemoteSignerConnection(
   bunkerSigner: RemoteBunkerSigner,
   clientPrivateKey: Uint8Array,
@@ -1098,7 +1268,8 @@ function createRemoteSignerConnection(
   relayUrls: string[],
   userPubkey: string,
   options: RemoteSignerOptions,
-  existingSession?: Nip46AuthSession
+  existingSession?: Nip46AuthSession,
+  previousBunkerSigner?: RemoteBunkerSigner
 ): RemoteSignerConnection {
   if (bunkerSigner.isTransportAvailable?.() === false) {
     throw new RemoteSignerError(
@@ -1129,6 +1300,7 @@ function createRemoteSignerConnection(
     signer,
     clientPrivateKey: bytesToHex(clientPrivateKey),
     clientKeyAlreadyPersisted: existingSession !== undefined,
+    previousBunkerSigner,
   }
 }
 
@@ -1148,12 +1320,18 @@ export async function pairRemoteSigner(
     )
   }
   const bunkerSigner = createBunkerSigner(clientPrivateKey, pointer, options)
+  let activeBunkerSigner = bunkerSigner
+  let previousBunkerSigner: RemoteBunkerSigner | undefined
   let connected = false
 
   try {
-    const connectParams = [pointer.pubkey, pointer.secret ?? ""]
+    const connectParams = [
+      pointer.pubkey,
+      pointer.secret ?? "",
+      CONDUIT_NIP46_PERMISSIONS.join(","),
+    ]
     if (options.clientMetadata) {
-      connectParams.push("", JSON.stringify(options.clientMetadata))
+      connectParams.push(JSON.stringify(options.clientMetadata))
     }
     const connectResult = await withRemoteSignerTimeout(
       "connect",
@@ -1175,7 +1353,7 @@ export async function pairRemoteSigner(
       )
     }
     connected = true
-    const relayUrls = requireSignerRelayUrls(bunkerSigner, "session setup")
+    requireSignerRelayUrls(bunkerSigner, "session setup")
     const userPubkey = requireUserPubkey(
       await withRemoteSignerTimeout(
         "get public key",
@@ -1184,19 +1362,33 @@ export async function pairRemoteSigner(
       ),
       "get public key"
     )
-    return createRemoteSignerConnection(
+    const negotiated = await negotiateSignerRelays(
       bunkerSigner,
       clientPrivateKey,
       pointer.pubkey,
-      relayUrls,
       userPubkey,
       options
     )
+    activeBunkerSigner = negotiated.bunkerSigner
+    previousBunkerSigner = negotiated.previousBunkerSigner
+    return createRemoteSignerConnection(
+      activeBunkerSigner,
+      clientPrivateKey,
+      pointer.pubkey,
+      negotiated.relayUrls,
+      userPubkey,
+      options,
+      undefined,
+      previousBunkerSigner
+    )
   } catch (error) {
     if (connected) {
-      await logoutRemoteSigner(bunkerSigner, options)
+      await logoutRemoteSigner(activeBunkerSigner, options)
     } else {
-      await closeRemoteSigner(bunkerSigner, options)
+      await closeRemoteSigner(activeBunkerSigner, options)
+    }
+    if (previousBunkerSigner) {
+      await closeRemoteSigner(previousBunkerSigner, options)
     }
     throw error
   }
@@ -1380,6 +1572,7 @@ export async function pairRemoteSignerFromNostrConnect(
   options.onNostrConnectUri?.(uri)
 
   let bunkerSigner: RemoteBunkerSigner | null = null
+  let previousBunkerSigner: RemoteBunkerSigner | undefined
   try {
     bunkerSigner = await listenForNostrConnectSigner(
       clientPrivateKey,
@@ -1422,16 +1615,30 @@ export async function pairRemoteSignerFromNostrConnect(
       ),
       "get public key"
     )
+    const negotiated = await negotiateSignerRelays(
+      bunkerSigner,
+      clientPrivateKey,
+      remoteSignerPubkey,
+      userPubkey,
+      options
+    )
+    bunkerSigner = negotiated.bunkerSigner
+    previousBunkerSigner = negotiated.previousBunkerSigner
     return createRemoteSignerConnection(
       bunkerSigner,
       clientPrivateKey,
       remoteSignerPubkey,
-      connectedRelayUrls,
+      negotiated.relayUrls,
       userPubkey,
-      options
+      options,
+      undefined,
+      previousBunkerSigner
     )
   } catch (error) {
     if (bunkerSigner) await logoutRemoteSigner(bunkerSigner, options)
+    if (previousBunkerSigner) {
+      await closeRemoteSigner(previousBunkerSigner, options)
+    }
     throw error
   }
 }
@@ -1485,6 +1692,8 @@ export async function restoreRemoteSigner(
     },
     options
   )
+  let activeBunkerSigner = bunkerSigner
+  let previousBunkerSigner: RemoteBunkerSigner | undefined
 
   try {
     await withRemoteSignerTimeout(
@@ -1492,7 +1701,7 @@ export async function restoreRemoteSigner(
       (signal) => bunkerSigner.ping({ signal }),
       options
     )
-    const relayUrls = requireSignerRelayUrls(bunkerSigner, "restore session")
+    requireSignerRelayUrls(bunkerSigner, "restore session")
     const actualPubkey = requireUserPubkey(
       await withRemoteSignerTimeout(
         "restore identity",
@@ -1508,22 +1717,35 @@ export async function restoreRemoteSigner(
         { operation: "restore identity" }
       )
     }
-    const restoredSession = {
-      ...parsed,
-      relayUrls,
-      updatedAt: (options.now ?? Date.now)(),
-    }
-    return createRemoteSignerConnection(
+    const negotiated = await negotiateSignerRelays(
       bunkerSigner,
       hexToBytes(clientPrivateKey),
       parsed.remoteSignerPubkey,
-      relayUrls,
+      actualPubkey,
+      options
+    )
+    activeBunkerSigner = negotiated.bunkerSigner
+    previousBunkerSigner = negotiated.previousBunkerSigner
+    const restoredSession = {
+      ...parsed,
+      relayUrls: negotiated.relayUrls,
+      updatedAt: (options.now ?? Date.now)(),
+    }
+    return createRemoteSignerConnection(
+      activeBunkerSigner,
+      hexToBytes(clientPrivateKey),
+      parsed.remoteSignerPubkey,
+      negotiated.relayUrls,
       actualPubkey,
       options,
-      restoredSession
+      restoredSession,
+      previousBunkerSigner
     )
   } catch (error) {
-    await closeRemoteSigner(bunkerSigner, options)
+    await closeRemoteSigner(activeBunkerSigner, options)
+    if (previousBunkerSigner) {
+      await closeRemoteSigner(previousBunkerSigner, options)
+    }
     throw error
   }
 }
@@ -1932,7 +2154,8 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
   async encryptionEnabled(
     scheme?: NDKEncryptionScheme
   ): Promise<NDKEncryptionScheme[]> {
-    return scheme ? [scheme] : ["nip04", "nip44"]
+    if (scheme === "nip04") return []
+    return ["nip44"]
   }
 
   async encrypt(
@@ -1940,10 +2163,15 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
     value: string,
     scheme: NDKEncryptionScheme = "nip04"
   ): Promise<string> {
+    if (scheme === "nip04") {
+      throw new RemoteSignerError(
+        "unsupported",
+        "This remote signer connection does not request NIP-04 encryption permission.",
+        { operation: "nip04 encrypt" }
+      )
+    }
     return this.request(`${scheme} encrypt`, (signal) =>
-      scheme === "nip44"
-        ? this.bunkerSigner.nip44Encrypt(recipient.pubkey, value, { signal })
-        : this.bunkerSigner.nip04Encrypt(recipient.pubkey, value, { signal })
+      this.bunkerSigner.nip44Encrypt(recipient.pubkey, value, { signal })
     )
   }
 

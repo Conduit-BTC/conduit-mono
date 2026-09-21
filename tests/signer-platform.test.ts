@@ -75,10 +75,9 @@ describe("Android signer handoff", () => {
     const request = connectionFixture()
     const packages: Record<AndroidSigner, string> = {
       amber: "com.greenart7c3.nostrsigner",
-      primal: "net.primal.android",
     }
 
-    for (const signer of ["amber", "primal"] as const) {
+    for (const signer of ["amber"] as const) {
       const handoff = androidSignerConnectUrl(signer, request)
       const marker = handoff.indexOf("#Intent;")
       const recoveredRequest = `nostrconnect:${handoff.slice("intent:".length, marker)}`
@@ -115,7 +114,7 @@ describe("Android signer handoff", () => {
       "#Intent;package=example.untrusted;S.browser_fallback_url=https%3A%2F%2Fexample.test;end",
     ]) {
       expect(() =>
-        androidSignerConnectUrl("primal", request + fragment)
+        androidSignerConnectUrl("amber", request + fragment)
       ).toThrow(TypeError)
     }
   })

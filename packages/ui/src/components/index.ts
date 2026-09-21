@@ -180,11 +180,6 @@ export {
 } from "./EventMarketCard"
 export { EventPageHeader, type EventPageHeaderProps } from "./EventPageHeader"
 export {
-  ClaveConnectButton,
-  claveConnectUrl,
-  type ClaveConnectButtonProps,
-} from "./ClaveConnectButton"
-export {
   NoSignerSetupGuide,
   SignerConnectPanel,
   SignerSwitch,

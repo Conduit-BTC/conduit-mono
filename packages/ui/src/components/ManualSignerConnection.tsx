@@ -9,6 +9,59 @@ const primaryClassName = "h-12 w-full rounded-xl text-base font-semibold"
 const tabClassName =
   "min-h-11 min-w-0 gap-1 rounded-lg px-1 text-xs whitespace-normal data-[state=active]:bg-primary-500 data-[state=active]:text-white sm:text-sm"
 
+export function BunkerSignerConnection({
+  bunkerUri,
+  onBunkerChange,
+  onSubmitBunker,
+  connectDisabled,
+  connectPending,
+  error,
+  errorId,
+  buttonLabel = "Connect with bunker link",
+}: {
+  bunkerUri: string
+  onBunkerChange: (uri: string) => void
+  onSubmitBunker: () => Promise<void>
+  connectDisabled: boolean
+  connectPending: boolean
+  error?: string | null
+  errorId: string
+  buttonLabel?: string
+}) {
+  const bunkerHelpId = useId()
+  return (
+    <div className="space-y-3">
+      <p
+        id={bunkerHelpId}
+        className="text-sm leading-6 text-[var(--text-secondary)]"
+      >
+        Create a connection in your signer app, then paste its bunker link here.
+      </p>
+      <Textarea
+        value={bunkerUri}
+        onChange={(event) => onBunkerChange(event.target.value)}
+        placeholder="bunker://..."
+        aria-label="Remote signer bunker URL"
+        aria-describedby={error ? `${bunkerHelpId} ${errorId}` : bunkerHelpId}
+        aria-invalid={!!error}
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
+        disabled={connectDisabled}
+        className="min-h-20 resize-none break-all font-mono"
+      />
+      <Button
+        type="button"
+        onClick={() => void onSubmitBunker()}
+        disabled={connectDisabled || !bunkerUri.trim()}
+        className={primaryClassName}
+      >
+        {connectPending ? "Connecting…" : buttonLabel}
+      </Button>
+    </div>
+  )
+}
+
 export function ManualSignerConnection({
   id,
   activeTab,
@@ -24,6 +77,7 @@ export function ManualSignerConnection({
   connectPending,
   error,
   errorId,
+  allowBunker = true,
 }: {
   id: string
   activeTab: string
@@ -39,19 +93,21 @@ export function ManualSignerConnection({
   connectPending: boolean
   error?: string | null
   errorId: string
+  allowBunker?: boolean
 }) {
-  const bunkerHelpId = useId()
   return (
     <div
       id={id}
       className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
     >
       <p className="text-sm leading-6 text-[var(--text-secondary)]">
-        Use another signer or connect from another device.
+        {allowBunker
+          ? "Use another signer or connect from another device."
+          : "Connect with a signer on another device."}
       </p>
       <Tabs value={activeTab} onValueChange={onTabChange}>
         <TabsList
-          className="grid h-auto w-full grid-cols-3 rounded-xl p-1"
+          className={`grid h-auto w-full ${allowBunker ? "grid-cols-3" : "grid-cols-2"} rounded-xl p-1`}
           aria-label="Remote signer connection method"
         >
           <TabsTrigger value="qr" className={tabClassName}>
@@ -62,10 +118,12 @@ export function ManualSignerConnection({
             <Link2 className="h-4 w-4 shrink-0" aria-hidden="true" />
             Copy link
           </TabsTrigger>
-          <TabsTrigger value="bunker" className={tabClassName}>
-            <KeyRound className="h-4 w-4 shrink-0" aria-hidden="true" />
-            Paste bunker
-          </TabsTrigger>
+          {allowBunker && (
+            <TabsTrigger value="bunker" className={tabClassName}>
+              <KeyRound className="h-4 w-4 shrink-0" aria-hidden="true" />
+              Paste bunker
+            </TabsTrigger>
+          )}
         </TabsList>
         <TabsContent value="qr" className="min-w-0">
           {nostrConnectUri ? (
@@ -110,38 +168,19 @@ export function ManualSignerConnection({
             startButton
           )}
         </TabsContent>
-        <TabsContent value="bunker" className="min-w-0 space-y-3">
-          <p
-            id={bunkerHelpId}
-            className="text-sm leading-6 text-[var(--text-secondary)]"
-          >
-            Create a connection in your signer app, then paste its bunker link
-            here.
-          </p>
-          <Textarea
-            value={bunkerUri}
-            onChange={(event) => onBunkerChange(event.target.value)}
-            placeholder="bunker://..."
-            aria-label="Remote signer bunker URL"
-            aria-describedby={
-              error ? `${bunkerHelpId} ${errorId}` : bunkerHelpId
-            }
-            aria-invalid={!!error}
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            disabled={connectDisabled}
-            className="min-h-20 resize-none break-all font-mono"
-          />
-          <Button
-            type="button"
-            onClick={() => void onSubmitBunker()}
-            disabled={connectDisabled || !bunkerUri.trim()}
-            className={primaryClassName}
-          >
-            {connectPending ? "Connecting…" : "Connect with bunker link"}
-          </Button>
-        </TabsContent>
+        {allowBunker && (
+          <TabsContent value="bunker" className="min-w-0 space-y-3">
+            <BunkerSignerConnection
+              bunkerUri={bunkerUri}
+              onBunkerChange={onBunkerChange}
+              onSubmitBunker={onSubmitBunker}
+              connectDisabled={connectDisabled}
+              connectPending={connectPending}
+              error={error}
+              errorId={errorId}
+            />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   )

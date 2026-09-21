@@ -5,13 +5,11 @@ export interface SignerEnvironmentInput {
 }
 
 export type SignerPlatform = "ios" | "android" | "desktop" | "unknown-mobile"
-export type AndroidSigner = "amber" | "primal"
+export type AndroidSigner = "amber"
 
 export const CLAVE_APP_STORE_URL = "https://apps.apple.com/app/id6762104155"
 export const AMBER_INSTALL_URL =
   "https://f-droid.org/en/packages/com.greenart7c3.nostrsigner/"
-export const PRIMAL_INSTALL_URL =
-  "https://play.google.com/store/apps/details?id=net.primal.android"
 
 export function getSignerPlatform(
   input?: SignerEnvironmentInput
@@ -37,12 +35,7 @@ export function androidSignerConnectUrl(
   signer: AndroidSigner,
   nostrConnectUri: string
 ): string {
-  const packageName =
-    signer === "amber"
-      ? "com.greenart7c3.nostrsigner"
-      : signer === "primal"
-        ? "net.primal.android"
-        : null
+  const packageName = signer === "amber" ? "com.greenart7c3.nostrsigner" : null
   if (!packageName) throw new TypeError("Unsupported Android signer.")
 
   const hasControlCharacter = Array.from(nostrConnectUri).some((character) => {

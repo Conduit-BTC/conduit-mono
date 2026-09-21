@@ -547,12 +547,6 @@ export class ConduitNip46Signer {
     return result
   }
 
-  async switchRelays(): Promise<boolean> {
-    // PR 2 adopts signer-provided relays transactionally. PR 1 deliberately
-    // retains the already verified route instead of partially mutating it.
-    return false
-  }
-
   async signEvent(
     event: EventTemplate,
     options?: Nip46RpcRequestOptions
