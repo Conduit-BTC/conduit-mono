@@ -4602,6 +4602,42 @@ export function getEventMarketSupersededEvidence(
   const calendarRevision = calendarEvidence.event
     ? parseEventMarketCalendarEvent(calendarEvidence.event)
     : null
+  let collectionLifecycleDeclarationRemoved = false
+  if (
+    collectionEvidence.event &&
+    resolution.collection &&
+    !collectionEvidence.event.tags.some(
+      (tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG
+    )
+  ) {
+    const coordinate = parseAddressableCoordinate(
+      resolution.collection.coordinate,
+      [EVENT_KINDS.PRODUCT_COLLECTION]
+    )
+    if (coordinate && resolution.collection.signedEvent) {
+      const candidates = [
+        ...new Map(
+          [resolution.collection.signedEvent, ...valid]
+            .filter((candidate) =>
+              eventHasCoordinateShape(candidate, coordinate)
+            )
+            .map((candidate) => [candidate.id.toLowerCase(), candidate])
+        ).values(),
+      ].sort(compareAddressableEvents)
+      collectionLifecycleDeclarationRemoved = Boolean(
+        findCanonicalEventMarketLifecyclePredecessor(
+          collectionEvidence.event,
+          candidates,
+          (candidate) =>
+            deletionEvidenceForAddressableEvent(
+              candidate,
+              coordinate,
+              deletions
+            ).length > 0
+        )
+      )
+    }
+  }
   const collectionEventCoordinates = new Set(
     collectionRevision?.eventCoordinates ?? []
   )
@@ -4641,6 +4677,7 @@ export function getEventMarketSupersededEvidence(
       (!collectionEvidence.event ||
         !collectionRevision ||
         collectionRevisionRevokesEventMarketGraph(collectionRevision) ||
+        collectionLifecycleDeclarationRemoved ||
         collectionEventDependencyRemoved)) ||
     (calendarReplaced && (!calendarEvidence.event || !calendarRevision)) ||
     supersedingGraphEndsOrdering

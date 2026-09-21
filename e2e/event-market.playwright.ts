@@ -7066,6 +7066,7 @@ for (const revocation of [
   "pickup-conflict",
   "unsupported-reference",
   "legacy-ended",
+  "lifecycle-removal",
 ] as const) {
   test(`event catalog keeps a signed local graph ${revocation} terminal without relay rechecks @market`, async ({
     page,
@@ -7100,6 +7101,13 @@ for (const revocation of [
           : []),
       ],
     })
+    if (revocation === "lifecycle-removal") {
+      expect(collection.tags).toContainEqual([
+        "conduit_event_market",
+        "1",
+        "open",
+      ])
+    }
     const pastCalendar =
       revocation === "legacy-ended"
         ? signEvent(ORGANIZER_SECRET, {
@@ -7215,6 +7223,20 @@ for (const revocation of [
         card.getByRole("button", { name: "Add", exact: true })
       ).toHaveCount(0)
       expect(catalogReads()).toBe(before)
+
+      if (revocation === "lifecycle-removal") {
+        await page.reload()
+        await held.captured
+        held.release()
+        await expect(
+          page.getByRole("alert").filter({
+            hasText: "Event reference or records are malformed",
+          })
+        ).toBeVisible({ timeout: 30_000 })
+        await expect(
+          page.getByRole("button", { name: "Add", exact: true })
+        ).toHaveCount(0)
+      }
     } finally {
       held.release()
       await writer.close()

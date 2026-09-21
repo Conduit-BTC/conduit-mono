@@ -565,6 +565,119 @@ describe("Market event adapter", () => {
     ).toBe("terminal")
   })
 
+  it("keeps a lifecycle-stripped future collection terminal during local reconciliation", () => {
+    const secret = generateSecretKey()
+    const signedOrganizer = getPublicKey(secret)
+    const signedCollection = `30405:${signedOrganizer}:future-market`
+    const signedCalendar = `31923:${signedOrganizer}:future-market`
+    const signedPickup = `30406:${signedOrganizer}:future-pickup`
+    const current = finalizeEvent(
+      {
+        ...buildEventMarketCollectionDraft({
+          dTag: "future-market",
+          title: "Future market",
+          eventCoordinate: signedCalendar,
+          pickupCoordinate: signedPickup,
+          productCoordinates: [productCoordinate],
+          orderAcceptance: "open",
+        }),
+        created_at: 100,
+      },
+      secret
+    )
+    const stripped = finalizeEvent(
+      {
+        ...current,
+        created_at: 200,
+        tags: current.tags.filter((tag) => tag[0] !== "conduit_event_market"),
+      },
+      secret
+    )
+    const base = market()
+    const pickup = {
+      ...base.pickup!,
+      coordinate: signedPickup,
+      authorPubkey: signedOrganizer,
+      dTag: "future-pickup",
+    }
+    const candidate = product({
+      collectionRefs: [signedCollection],
+      shippingOptionRefs: [{ coordinate: signedPickup }],
+    })
+    const resolution: EventMarketResolution = {
+      ...base,
+      reference: signedCollection,
+      organizerPubkey: signedOrganizer,
+      collectionCoordinate: signedCollection,
+      calendarCoordinate: signedCalendar,
+      pickupCoordinate: signedPickup,
+      collection: {
+        ...base.collection!,
+        signedEvent: current,
+        orderAcceptance: "open",
+        coordinate: signedCollection,
+        eventId: current.id,
+        authorPubkey: signedOrganizer,
+        dTag: "future-market",
+        eventCoordinates: [signedCalendar],
+        pickupCoordinates: [signedPickup],
+        createdAt: current.created_at * 1_000,
+      },
+      calendar: {
+        ...base.calendar!,
+        coordinate: signedCalendar,
+        authorPubkey: signedOrganizer,
+        dTag: "future-market",
+      },
+      pickup,
+      pickups: [pickup],
+      acceptedProductEvidence: base.acceptedProductEvidence.map((evidence) => ({
+        ...evidence,
+        shippingOptionCoordinates: [signedPickup],
+      })),
+    }
+    const reconciled = reconcileEventCatalogGraph(
+      {
+        reference: signedCollection,
+        resolution,
+        result: productRead({ product: candidate }),
+        complete: true,
+      },
+      { status: "ready", events: [stripped] }
+    )
+
+    expect(reconciled).toMatchObject({
+      localGraphSuperseded: true,
+      localGraphRevoked: true,
+    })
+    expect(projectRawEventCatalog(reconciled).products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupReadiness: "terminal",
+    })
+
+    const reopened = finalizeEvent(
+      {
+        ...current,
+        created_at: 300,
+      },
+      secret
+    )
+    const recovered = reconcileEventCatalogGraph(
+      {
+        reference: signedCollection,
+        resolution,
+        result: productRead({ product: candidate }),
+        complete: true,
+      },
+      { status: "ready", events: [stripped, reopened] }
+    )
+    expect(recovered.localGraphRevoked).toBeUndefined()
+    expect(projectRawEventCatalog(recovered).products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupReadiness: "recoverable",
+    })
+  })
+
   it("keeps a retained card terminal for a newer malformed product while a valid revision stays recoverable", () => {
     const secret = generateSecretKey()
     const signedMerchant = getPublicKey(secret)

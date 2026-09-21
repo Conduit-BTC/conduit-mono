@@ -373,6 +373,103 @@ describe("retained event market dependencies", () => {
     })
   })
 
+  it("keeps a stripped lifecycle declaration terminal before the calendar ends", () => {
+    const openCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+        orderAcceptance: "open",
+      })
+    )
+    const explicitlyOpen = resolution([
+      graph[0]!,
+      graph[1]!,
+      openCollection,
+      graph[3]!,
+    ])
+    const strippedCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Stripped lifecycle",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+      }),
+      300
+    )
+    const localOpenCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Local lifecycle predecessor",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+        orderAcceptance: "open",
+      }),
+      200
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(explicitlyOpen, [strippedCollection])
+    ).toEqual({
+      ...empty,
+      graph: true,
+      graphRevoked: true,
+    })
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        localOpenCollection,
+        strippedCollection,
+      ])
+    ).toEqual({
+      ...empty,
+      graph: true,
+      graphRevoked: true,
+    })
+
+    const deletedOpenCollection = signed(
+      {
+        kind: 5,
+        tags: [["e", openCollection.id]],
+      },
+      200
+    )
+    expect(
+      getEventMarketSupersededEvidence(explicitlyOpen, [
+        deletedOpenCollection,
+        strippedCollection,
+      ])
+    ).toEqual({
+      ...empty,
+      graph: true,
+    })
+
+    const reopenedCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Reopened after stripped lifecycle",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+        orderAcceptance: "open",
+      }),
+      400
+    )
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        localOpenCollection,
+        strippedCollection,
+        reopenedCollection,
+      ])
+    ).toEqual({
+      ...empty,
+      graph: true,
+    })
+  })
+
   it("classifies products omitted by a newer signed collection revision", () => {
     const withoutProduct = signed(
       buildEventMarketCollectionDraft({
