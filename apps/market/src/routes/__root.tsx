@@ -58,9 +58,15 @@ function RootShell({
   useLayoutEffect(() => {
     const footer = footerRef.current
     if (!footer) return
+    const documentRoot = document.documentElement
 
     const updateFooterHeight = () => {
-      setFooterHeight(Math.ceil(footer.getBoundingClientRect().height))
+      const height = Math.ceil(footer.getBoundingClientRect().height)
+      setFooterHeight(height)
+      documentRoot.style.setProperty(
+        "--market-fixed-footer-height",
+        `${height}px`
+      )
     }
 
     updateFooterHeight()
@@ -71,6 +77,7 @@ function RootShell({
     observer?.observe(footer)
     return () => {
       observer?.disconnect()
+      documentRoot.style.removeProperty("--market-fixed-footer-height")
     }
   }, [])
 
@@ -87,7 +94,6 @@ function RootShell({
       className="flex min-h-screen min-w-0 flex-col overflow-x-clip"
       style={
         {
-          "--market-fixed-footer-height": `${footerHeight}px`,
           "--market-footer-hidden-shift": mobileChromeHidden
             ? `${footerHeight}px`
             : "0px",
