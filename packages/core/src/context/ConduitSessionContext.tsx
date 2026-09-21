@@ -61,8 +61,8 @@ export function ConduitSessionProvider({
   allowGuest = appId === "market",
   children,
 }: ConduitSessionProviderProps) {
-  const { authGeneration, pubkey, status } = useAuth()
-  const signedInPubkey = status === "connected" ? pubkey : null
+  const { accountPubkey, authGeneration } = useAuth()
+  const signedInPubkey = accountPubkey
   const profileAuthorityRef = useRef({ authGeneration, pubkey: signedInPubkey })
   useLayoutEffect(() => {
     profileAuthorityRef.current = { authGeneration, pubkey: signedInPubkey }

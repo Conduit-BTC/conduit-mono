@@ -9,6 +9,7 @@ import {
   beginAuthRestorePending,
   getNip07Capabilities,
   getAuthSignerReadiness,
+  getRetainedAuthAccountPubkey,
   hasNip07,
   isAuthRestoreAttemptCurrent,
   isTransientNip07ConnectError,
@@ -1130,6 +1131,78 @@ describe("authenticated signer readiness", () => {
         capabilities,
       })
     ).toBe("pending")
+  })
+
+  it("keeps established account ownership separate from remote signer readiness", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "connected",
+        pubkey: "a".repeat(64),
+        signer,
+        capabilities,
+        remoteSignerState: "verifying",
+      })
+    ).toBe("pending")
+    expect(
+      getAuthSignerReadiness({
+        status: "connected",
+        pubkey: "a".repeat(64),
+        signer,
+        capabilities,
+        remoteSignerState: "recoverable",
+      })
+    ).toBe("unavailable")
+  })
+
+  it("retains only an established remote account through recovery", () => {
+    const remoteSession: Nip46AuthSession = {
+      version: 1,
+      type: "nip46",
+      userPubkey: ACCOUNT_A_PUBKEY,
+      remoteSignerPubkey: ACCOUNT_B_PUBKEY,
+      relayUrls: ["wss://relay.example"],
+      clientKeyId: "client-key-retained",
+      createdAt: 1,
+      updatedAt: 1,
+    }
+
+    expect(getRetainedAuthAccountPubkey(remoteSession, true)).toBe(
+      ACCOUNT_A_PUBKEY
+    )
+    expect(
+      getRetainedAuthAccountPubkey(
+        { version: 1, type: "nip07", userPubkey: ACCOUNT_A_PUBKEY },
+        true
+      )
+    ).toBeNull()
+    expect(getRetainedAuthAccountPubkey(remoteSession, false)).toBeNull()
+  })
+
+  it("uses event-driven resume verification without a heartbeat or action replay", () => {
+    const source = readFileSync(
+      new URL("../packages/core/src/context/AuthContext.tsx", import.meta.url),
+      "utf8"
+    )
+    const resumeStart = source.indexOf("const verifyRemoteSignerAfterResume")
+    const resumeEnd = source.indexOf("const dismissAuthUrl", resumeStart)
+    const resume = source.slice(resumeStart, resumeEnd)
+    const eventEffectStart = source.indexOf(
+      'document.addEventListener("visibilitychange"'
+    )
+    const eventEffect = source.slice(eventEffectStart, eventEffectStart + 800)
+
+    expect(resume).toContain("verifyRemoteSignerConnection(connection")
+    expect(resume).toContain('setRemoteSignerState("verifying")')
+    expect(resume).toContain("hasPendingRequests")
+    expect(resume).toContain("whenIdle")
+    expect(resume).not.toMatch(/sign\(|encrypt\(|publish\(|mutate/)
+    expect(eventEffect).toContain('window.addEventListener("online"')
+    expect(eventEffect).toContain('window.addEventListener("offline"')
+    expect(eventEffect).toContain('window.addEventListener("pageshow"')
+    expect(source).toContain("connection.signer.hasPendingRequests()")
+    expect(source).toContain("if (shouldFenceImmediately)")
+    expect(source).toContain("connection.signer.beginDraining()")
+    expect(source).not.toContain("setInterval(")
   })
 
   it("does not silently downgrade a failed authenticated session to guest checkout", () => {
