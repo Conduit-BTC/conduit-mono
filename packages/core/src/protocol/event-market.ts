@@ -2800,6 +2800,22 @@ function chunkValues<T>(values: readonly T[], size: number): T[][] {
   return chunks
 }
 
+function mergeFanoutResults(
+  results: readonly FetchEventsFanoutResult[]
+): FetchEventsFanoutResult {
+  const eventsById = new Map<string, NDKEvent>()
+  for (const result of results) {
+    for (const event of result.events) {
+      eventsById.set(event.id.toLowerCase(), event)
+    }
+  }
+  return {
+    events: Array.from(eventsById.values()),
+    relays: mergeRelayReadStatuses(...results.map((result) => result.relays)),
+    eventsVerified: results.every((result) => result.eventsVerified === true),
+  }
+}
+
 interface EventMarketFrontierFilterResult extends FetchEventsFanoutResult {
   remainingRelayUrls: string[]
   remainingRelayUrlsByAuthor: Map<string, string[]>
@@ -2922,16 +2938,8 @@ async function fetchEventMarketFrontierFilters(input: {
     )
   }
 
-  const eventsById = new Map<string, NDKEvent>()
-  for (const result of results) {
-    for (const event of result.events) {
-      eventsById.set(event.id.toLowerCase(), event)
-    }
-  }
   return {
-    events: Array.from(eventsById.values()),
-    relays: mergeRelayReadStatuses(...results.map((result) => result.relays)),
-    eventsVerified: results.every((result) => result.eventsVerified === true),
+    ...mergeFanoutResults(results),
     remainingRelayUrls,
     remainingRelayUrlsByAuthor,
   }
@@ -3450,20 +3458,8 @@ async function fetchEventMarketPickupFrontiers(
       )
       batchResults.push(result)
     }
-    const eventsById = new Map<string, NDKEvent>()
-    for (const result of batchResults) {
-      for (const event of result.events) {
-        eventsById.set(event.id.toLowerCase(), event)
-      }
-    }
     return {
-      events: Array.from(eventsById.values()),
-      relays: mergeRelayReadStatuses(
-        ...batchResults.map((result) => result.relays)
-      ),
-      eventsVerified: batchResults.every(
-        (result) => result.eventsVerified === true
-      ),
+      ...mergeFanoutResults(batchResults),
       pickupBudget,
     }
   }
@@ -3576,20 +3572,8 @@ async function fetchEventMarketProductRequestFrontiers(
       )
       batchResults.push(result)
     }
-    const eventsById = new Map<string, NDKEvent>()
-    for (const result of batchResults) {
-      for (const event of result.events) {
-        eventsById.set(event.id.toLowerCase(), event)
-      }
-    }
     return {
-      events: Array.from(eventsById.values()),
-      relays: mergeRelayReadStatuses(
-        ...batchResults.map((result) => result.relays)
-      ),
-      eventsVerified: batchResults.every(
-        (result) => result.eventsVerified === true
-      ),
+      ...mergeFanoutResults(batchResults),
       participationBudget,
     }
   }
