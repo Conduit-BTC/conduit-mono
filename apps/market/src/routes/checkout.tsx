@@ -129,7 +129,10 @@ import {
   hasPhysicalItemsMissingShippingZone,
   prepareCartFulfillment,
 } from "../lib/cart-shipping-options"
-import { authorizeCurrentCheckoutItems } from "../lib/checkout-authorization"
+import {
+  authorizeCurrentCheckoutItems,
+  type CheckoutAuthorizationResult,
+} from "../lib/checkout-authorization"
 import {
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityVerificationMessage,
@@ -2053,7 +2056,7 @@ function CheckoutPage() {
   async function assertCheckoutItemsAvailable(
     checkoutMode: CheckoutTelemetryMode,
     rateInput: PricingRateInput = btcUsdRateQuery.data ?? null
-  ): Promise<CartItem[]> {
+  ): Promise<Extract<CheckoutAuthorizationResult, { status: "ok" }>> {
     const refreshResult = await checkoutAvailability.refresh()
     if (refreshResult.decision.status === "unverified") {
       recordCheckoutStepResult({
@@ -2128,7 +2131,10 @@ function CheckoutPage() {
       status: "success",
       stepName: "availability",
     })
-    return authorization.items
+    // Keep the final signed product and shipping-option evidence together
+    // with the rebuilt cart. The router must freeze its quote from this same
+    // authorization read, not from another potentially changed relay view.
+    return authorization
   }
 
   function updateShipping<K extends keyof ShippingFormState>(
@@ -2450,10 +2456,11 @@ function CheckoutPage() {
 
     try {
       const freshPricingRate = await getFreshPricingRateInput(checkoutItems)
-      const authoritativeCheckoutItems = await assertCheckoutItemsAvailable(
+      const checkoutAuthorization = await assertCheckoutItemsAvailable(
         "order_first",
         freshPricingRate
       )
+      const authoritativeCheckoutItems = checkoutAuthorization.items
       const checkoutPricing = buildCheckoutPricingIntent(
         authoritativeCheckoutItems,
         freshPricingRate
@@ -2997,10 +3004,11 @@ function CheckoutPage() {
       const currentLnurlMetadata =
         await getFreshLnurlMetadata(currentMerchantLud16)
       const freshPricingRate = await getFreshPricingRateInput(checkoutItems)
-      const authoritativeCheckoutItems = await assertCheckoutItemsAvailable(
+      const checkoutAuthorization = await assertCheckoutItemsAvailable(
         requestedCheckoutMode,
         freshPricingRate
       )
+      const authoritativeCheckoutItems = checkoutAuthorization.items
       const authoritativeDestinationEligibility =
         getCartFulfillmentLane(authoritativeCheckoutItems) !== "shipping"
           ? ({ eligible: true } as const)

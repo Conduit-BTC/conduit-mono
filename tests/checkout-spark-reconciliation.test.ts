@@ -55,7 +55,116 @@ function planInput() {
   }
 }
 
+function commerceQuote() {
+  return {
+    commerceTotalSats: 1_000,
+    lines: [
+      {
+        productCoordinate: `30402:${MERCHANT_PUBKEY}:router-fixture`,
+        productEventId: "d".repeat(64),
+        merchantPubkey: MERCHANT_PUBKEY,
+        quantity: 1,
+        unitMerchandiseSats: 1_000,
+        unitShippingSats: 0,
+      },
+    ],
+  }
+}
+
 describe("checkout Spark reconciliation", () => {
+  it("binds signed commerce quote evidence to a versioned plan and recovery state", () => {
+    const legacy = freezeCheckoutSparkPlan(planInput())
+    const quoted = freezeCheckoutSparkPlan({
+      ...planInput(),
+      commerceQuote: commerceQuote(),
+    })
+
+    expect(legacy.schemaVersion).toBe(1)
+    expect(quoted.schemaVersion).toBe(2)
+    expect(quoted.planDigest).not.toBe(legacy.planDigest)
+    expect(quoted).toEqual(
+      freezeCheckoutSparkPlan({
+        ...planInput(),
+        commerceQuote: commerceQuote(),
+      })
+    )
+    expect(Object.isFrozen(quoted.commerceQuote)).toBe(true)
+    expect(Object.isFrozen(quoted.commerceQuote?.lines[0])).toBe(true)
+    expect(
+      restoreCheckoutSparkReconciliation(
+        structuredClone(createCheckoutSparkReconciliation(quoted))
+      ).plan
+    ).toEqual(quoted)
+    expect(
+      restoreCheckoutSparkReconciliation(
+        structuredClone(createCheckoutSparkReconciliation(legacy))
+      ).plan
+    ).toEqual(legacy)
+  })
+
+  it("rejects quote tampering and cross-version replay on restore", () => {
+    const quoted = freezeCheckoutSparkPlan({
+      ...planInput(),
+      commerceQuote: commerceQuote(),
+    })
+    const state = createCheckoutSparkReconciliation(quoted)
+    for (const change of [
+      (candidate: ReturnType<typeof JSON.parse>) => {
+        candidate.plan.commerceQuote!.lines[0]!.productEventId = "e".repeat(64)
+      },
+      (candidate: ReturnType<typeof JSON.parse>) => {
+        candidate.plan.commerceQuote!.lines[0]!.quantity = 2
+      },
+      (candidate: ReturnType<typeof JSON.parse>) => {
+        candidate.plan.commerceQuote!.commerceTotalSats = 999
+      },
+      (candidate: ReturnType<typeof JSON.parse>) => {
+        candidate.plan.schemaVersion = 1
+      },
+      (candidate: ReturnType<typeof JSON.parse>) => {
+        delete candidate.plan.commerceQuote
+      },
+    ]) {
+      const candidate = JSON.parse(JSON.stringify(state))
+      change(candidate)
+      expect(() => restoreCheckoutSparkReconciliation(candidate)).toThrow()
+    }
+    const legacy = JSON.parse(
+      JSON.stringify(
+        createCheckoutSparkReconciliation(freezeCheckoutSparkPlan(planInput()))
+      )
+    )
+    legacy.plan.commerceQuote = commerceQuote()
+    expect(() => restoreCheckoutSparkReconciliation(legacy)).toThrow()
+  })
+
+  it("rejects invalid signed quote economics before freezing a new plan", () => {
+    const base = commerceQuote()
+    const variants = [
+      { ...base, commerceTotalSats: 999 },
+      { ...base, lines: [...base.lines, base.lines[0]!] },
+      {
+        ...base,
+        lines: [{ ...base.lines[0]!, merchantPubkey: "f".repeat(64) }],
+      },
+      {
+        ...base,
+        lines: [
+          {
+            ...base.lines[0]!,
+            unitMerchandiseSats: 900,
+            unitShippingSats: 100,
+          },
+        ],
+      },
+    ]
+    for (const commerceQuote of variants) {
+      expect(() =>
+        freezeCheckoutSparkPlan({ ...planInput(), commerceQuote })
+      ).toThrow()
+    }
+  })
+
   it("freezes one deterministic plan with stable obligation and outgoing IDs", () => {
     const first = freezeCheckoutSparkPlan(planInput())
     const restored = freezeCheckoutSparkPlan(planInput())

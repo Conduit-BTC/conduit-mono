@@ -188,6 +188,7 @@ import {
   getCheckoutPaymentTargetOptions,
   getCheckoutPaymentTargetValue,
 } from "../lib/checkout-payment-target"
+import { assertLegacyOrderPaymentAllowed } from "../lib/checkout-spark-order-admission"
 
 type OrdersSearch = {
   order?: string
@@ -892,6 +893,7 @@ function OrderDetail({
     if (zeroCostPickupOrder) return null
     const lc = row.lifecycle
     if (!lc) return null
+    if (lc.checkoutSparkRouterBinding !== undefined) return null
     if (!lc.merchantLightningAddress) return null
     const paymentTarget =
       retryTarget?.type === "wallet" &&
@@ -934,6 +936,8 @@ function OrderDetail({
   }
 
   async function persistTargetAndBuildServiceCtx(): Promise<OrderPaymentContext> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
+    assertLegacyOrderPaymentAllowed(await getOrderLifecycle(vm.orderId))
     if (!selectedStoredPaymentTarget) {
       throw new Error("Choose how to pay before trying again.")
     }
@@ -1010,11 +1014,13 @@ function OrderDetail({
   }
 
   async function retryPayment(): Promise<void> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
     assertGeneralPaymentRetryEligible()
     await verifyRetryFreshness()
     assertGeneralPaymentRetryEligible()
     const ctx = await persistTargetAndBuildServiceCtx()
     const lifecycle = await getOrderLifecycle(vm.orderId)
+    assertLegacyOrderPaymentAllowed(lifecycle)
     assertGeneralPaymentRetryEligible()
     if (
       lifecycle &&
@@ -1101,6 +1107,8 @@ function OrderDetail({
     ctx: OrderPaymentContext,
     update?: OrderPaymentAddressUpdate
   ): Promise<void> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
+    assertLegacyOrderPaymentAllowed(await getOrderLifecycle(vm.orderId))
     const run = (context: OrderPaymentContext) =>
       update
         ? runOrderPaymentWithUpdatedAddress(
@@ -1255,6 +1263,7 @@ function OrderDetail({
       !paymentFocused ||
       !actionsReady ||
       row.lifecycle?.orderDeliveryStatus !== "sent" ||
+      row.lifecycle.checkoutSparkRouterBinding !== undefined ||
       row.lifecycle.paymentTarget?.type !== "wallet" ||
       row.lifecycle.paymentTarget.providerId !== "spark"
     ) {
@@ -1281,6 +1290,7 @@ function OrderDetail({
     buyerPubkey,
     paymentFocused,
     row.lifecycle?.orderDeliveryStatus,
+    row.lifecycle?.checkoutSparkRouterBinding,
     row.lifecycle?.paymentTarget,
     sparkFeeApproval.requestApproval,
     vm.orderId,
@@ -1288,6 +1298,7 @@ function OrderDetail({
   ])
 
   async function confirmPaymentAddressUpdate(): Promise<void> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
     const pending = paymentAddressUpdate
     if (!pending) return
     assertGeneralPaymentRetryEligible()
