@@ -557,19 +557,45 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(rows.map((row) => row.url)).toEqual(latestPreferredOrder)
   })
 
-  it("keeps the relay editor reset key insensitive to local reordering", async () => {
+  it("preserves relay drafts by account while invalidating prepared signer work", async () => {
     const panelSource = await Bun.file(
       "packages/ui/src/components/RelaySettingsPanel.tsx"
     ).text()
-    const revisionHelper = panelSource.match(
-      /function getRelaySettingsEditorRevision\([\s\S]*?\n\}/
-    )?.[0]
-
-    expect(revisionHelper).toBeDefined()
-    expect(revisionHelper).toContain(
-      ".sort((left, right) => left[0].localeCompare(right[0]))"
+    const invalidationStart = panelSource.indexOf(
+      "useLayoutEffect(() => {",
+      panelSource.indexOf("const [removalPreparationError")
     )
-    expect(revisionHelper).toContain("Boolean(row.recoveryReadOnly)")
-    expect(panelSource).toContain("key={editorRevision}")
+    const invalidationEnd = panelSource.indexOf(
+      "const baselineRoles",
+      invalidationStart
+    )
+    const invalidationEffect = panelSource.slice(
+      invalidationStart,
+      invalidationEnd
+    )
+
+    expect(panelSource).toContain('key={accountPubkey ?? "no-account"}')
+    expect(panelSource).toContain(
+      'key={`media:${accountPubkey ?? "no-account"}`}'
+    )
+    expect(panelSource).toContain("signerReviewKey={signerReviewKey}")
+    expect(panelSource).not.toContain("getRelaySettingsEditorRevision")
+    expect(invalidationEffect).toContain("setPublishDialogOpen(false)")
+    expect(invalidationEffect).toContain("setPreparedPublishChange(null)")
+    expect(invalidationEffect).toContain("setPreparedRemovalChange(null)")
+    expect(invalidationEffect).toContain("}, [signerReviewKey])")
+    expect(invalidationEffect).not.toContain("setRows(")
+
+    const [marketRoute, merchantRoute, controllerSource] = await Promise.all([
+      Bun.file("apps/market/src/routes/network.tsx").text(),
+      Bun.file("apps/merchant/src/routes/network.tsx").text(),
+      Bun.file("packages/core/src/hooks/useAccountNetworkSettings.ts").text(),
+    ])
+    for (const route of [marketRoute, merchantRoute]) {
+      expect(route).toContain(
+        'signerReviewKey={`${accountPubkey ?? "none"}:${authGeneration}:${signerReadiness}`}'
+      )
+    }
+    expect(controllerSource).toContain('current.signerReadiness === "ready"')
   })
 })

@@ -26,12 +26,12 @@ describe("account Network hook authority timing", () => {
     )
     expect(reconciliationEffect).toContain("authGeneration,")
     expect(session).toContain(
-      "const { accountPubkey, authGeneration } = useAuth()"
+      "const { accountPubkey, authGeneration, signerReadiness } = useAuth()"
     )
     expect(session).toContain("const signedInPubkey = accountPubkey")
     expect(session).not.toContain('status === "connected" ? pubkey : null')
     expect(session).toMatch(
-      /useAccountNetworkPreferences\([\s\S]{0,180}authGeneration\s*\)/
+      /useAccountNetworkPreferences\([\s\S]{0,320}signerReadiness === "ready",\s+authGeneration\s*\)/
     )
   })
 

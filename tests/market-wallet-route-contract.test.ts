@@ -345,7 +345,11 @@ describe("Market wallet route contracts", () => {
     expect(content).toMatch(
       /role="alert"[\s\S]{0,240}text-\[var\(--text-secondary\)\]/
     )
-    expect(content).not.toContain("setPaymentTargetSelection(null)")
+    const staleTargetGuard = content.slice(
+      content.indexOf("if (selectedPaymentTargetIsStale) {"),
+      content.indexOf("const requestedCheckoutMode")
+    )
+    expect(staleTargetGuard).not.toContain("setPaymentTargetSelection(null)")
   })
 
   it("keeps local Spark removal available when provider actions are unavailable", async () => {

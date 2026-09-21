@@ -1062,6 +1062,39 @@ describe("order payment admission", () => {
     })
   })
 
+  it("records receipt proof work for explicit retry without claiming it", async () => {
+    const waiting: OrderLifecycle = {
+      ...lifecycle,
+      paymentClaimId: input.paymentClaimId,
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+      proofDeliveryStatus: "pending",
+      invoice: "lnbc1public",
+      zapRequestId: "zap-request-current",
+      zapReceiptStatus: "waiting",
+    }
+
+    await withMockOrderPaymentDb({ lifecycle: waiting }, async (state) => {
+      const receipt = await recordObservedOrderPaymentReceipt(waiting.orderId, {
+        zapRequestId: waiting.zapRequestId!,
+        zapReceiptId: "zap-receipt-current",
+        proofDeliveryStatus: "retry_needed",
+      })
+
+      expect(receipt.status).toBe("recorded")
+      if (receipt.status !== "recorded") throw new Error("receipt not recorded")
+      expect(receipt.proofDeliveryClaimed).toBe(false)
+      expect(state.lifecycle()).toMatchObject({
+        paymentStatus: "paid",
+        proofDeliveryStatus: "retry_needed",
+        zapReceiptStatus: "observed",
+        zapReceiptId: "zap-receipt-current",
+      })
+      expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
+      expect(state.lifecycle()?.proofDeliveryClaimId).toBeUndefined()
+    })
+  })
+
   it("keeps a deferred receipt timeout from overwriting exact evidence", async () => {
     const waiting: OrderLifecycle = {
       ...lifecycle,

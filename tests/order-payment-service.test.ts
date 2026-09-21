@@ -2350,6 +2350,63 @@ describe("runOrderPayment", () => {
     })
   })
 
+  it("defers proof signing when a resumed observer finds a receipt", async () => {
+    const orderId = "observe-only-zapout-settlement"
+    const waiting = lifecycle({
+      orderId,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+      proofDeliveryStatus: "pending",
+      zapReceiptStatus: "waiting",
+      zapRequestId: "zap-request-id",
+      zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+      zapLnurl: "lnurl1test",
+      zapReceiptPubkey: "a".repeat(64),
+      zapReceiptRelayUrls: ["wss://relay.example"],
+      zapReceiptObservationDeadline: Date.now() + 60_000,
+    })
+    const observed = lifecycle({
+      ...waiting,
+      paymentStatus: "paid",
+      proofDeliveryStatus: "retry_needed",
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
+    })
+    const receipt = {
+      id: "f".repeat(64),
+      rawEvent: () => ({ id: "f".repeat(64) }),
+    } as unknown as NDKEvent
+    let recordedProofStatus: string | undefined
+    let recordedClaimId: string | undefined
+
+    await observeOrderPublicZapReceipt(
+      orderId,
+      undefined,
+      {
+        getOrderLifecycle: async () => waiting,
+        waitForZapReceipt: async () => receipt,
+        recordObservedOrderPaymentReceipt: async (_orderId, input) => {
+          recordedProofStatus = input.proofDeliveryStatus
+          recordedClaimId = input.proofDeliveryClaimId
+          return {
+            status: "recorded",
+            lifecycle: observed,
+            proofDeliveryClaimed: false,
+          }
+        },
+      },
+      null,
+      null,
+      undefined,
+      { mode: "observe_only" }
+    )
+
+    expect(recordedProofStatus).toBe("retry_needed")
+    expect(recordedClaimId).toBeUndefined()
+  })
+
   it.each(["anon", "shopper"] as const)(
     "uses current durable truth after a %s receipt observer wait",
     async (publicZapSigner) => {

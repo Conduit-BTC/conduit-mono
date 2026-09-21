@@ -11,7 +11,7 @@ import {
   claveConnectUrl,
 } from "../packages/ui/src/components/ClaveConnectButton"
 import { SignerAuthUrlNotice } from "../packages/ui/src/components/SignerAuthUrlNotice"
-import { ProductSignerRecoveryNotice } from "../apps/merchant/src/components/ProductSignerRecoveryNotice"
+import { SignerRecoveryNotice } from "../packages/ui/src/components/SignerRecoveryNotice"
 
 const commonProps = {
   description: "Connect to continue.",
@@ -497,10 +497,10 @@ describe("remote signer UI", () => {
     }
   })
 
-  it("renders truthful accessible recovery actions without an awaiting flash", () => {
+  it("renders shared, truthful recovery actions without an awaiting flash", async () => {
     const savedMarkup = renderToStaticMarkup(
-      <ProductSignerRecoveryNotice
-        draftStorageAvailable
+      <SignerRecoveryNotice
+        description="Your draft is saved on this device."
         reconnecting={false}
         restoreFailed={false}
         changingSigner={false}
@@ -510,10 +510,11 @@ describe("remote signer UI", () => {
       />
     )
     const savedFailedMarkup = renderToStaticMarkup(
-      <ProductSignerRecoveryNotice
-        draftStorageAvailable
+      <SignerRecoveryNotice
+        description="Your draft is saved on this device."
         reconnecting={false}
         restoreFailed
+        restoreFailureDescription="Your draft will remain saved for this account."
         changingSigner={false}
         changeSignerError={null}
         onReconnect={async () => undefined}
@@ -521,15 +522,19 @@ describe("remote signer UI", () => {
       />
     )
     const unsavedFailedMarkup = renderToStaticMarkup(
-      <ProductSignerRecoveryNotice
-        draftStorageAvailable={false}
+      <SignerRecoveryNotice
+        description="Keep this page open because this draft could not be saved."
         reconnecting={false}
         restoreFailed
+        restoreFailureDescription="This draft is not saved on this device, so another signer cannot be opened safely."
         changingSigner={false}
         changeSignerError={null}
         onReconnect={async () => undefined}
-        onUseDifferentSigner={async () => undefined}
       />
+    )
+    const productsSource = await readFile(
+      "apps/merchant/src/routes/products.tsx",
+      "utf8"
     )
 
     expect(savedMarkup).toContain('role="alert"')
@@ -542,6 +547,10 @@ describe("remote signer UI", () => {
     expect(unsavedFailedMarkup).not.toContain("Use a different signer")
     expect(unsavedFailedMarkup).toContain(
       "another signer cannot be opened safely"
+    )
+    expect(productsSource).toContain("<SignerRecoveryNotice")
+    expect(productsSource).toContain(
+      "draftStorageAvailable\n                      ? useDifferentProductSigner\n                      : undefined"
     )
   })
 })

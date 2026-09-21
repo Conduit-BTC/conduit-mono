@@ -68,10 +68,12 @@ export function useMerchantCheckoutCapability(input: {
   wallets?: UseWalletsReturn
 }): MerchantCheckoutCapabilityView {
   const {
+    accountPubkey,
     pubkey,
     restorePendingPubkey,
     signer,
     capabilities,
+    signerReadiness,
     status: authStatus,
   } = useAuth()
   const enabled = input.enabled ?? true
@@ -102,7 +104,7 @@ export function useMerchantCheckoutCapability(input: {
   const isAllDigital = Boolean(
     items.length && items.every((item) => item.format === "digital")
   )
-  const identityPubkey = authStatus === "connected" ? pubkey : null
+  const identityPubkey = accountPubkey
   const shippingPreset = restorePendingPubkey
     ? DEFAULT_CHECKOUT_SHIPPING
     : readCheckoutShippingCapabilityInitialization(
@@ -196,6 +198,7 @@ export function useMerchantCheckoutCapability(input: {
     )
   })()
   const authSignerReady =
+    signerReadiness === "ready" &&
     getAuthSignerReadiness({
       status: authStatus,
       pubkey,

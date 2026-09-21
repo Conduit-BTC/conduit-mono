@@ -61,12 +61,20 @@ export function ConduitSessionProvider({
   allowGuest = appId === "market",
   children,
 }: ConduitSessionProviderProps) {
-  const { accountPubkey, authGeneration } = useAuth()
+  const { accountPubkey, authGeneration, signerReadiness } = useAuth()
   const signedInPubkey = accountPubkey
-  const profileAuthorityRef = useRef({ authGeneration, pubkey: signedInPubkey })
+  const profileAuthorityRef = useRef({
+    authGeneration,
+    pubkey: signedInPubkey,
+    signerReadiness,
+  })
   useLayoutEffect(() => {
-    profileAuthorityRef.current = { authGeneration, pubkey: signedInPubkey }
-  }, [authGeneration, signedInPubkey])
+    profileAuthorityRef.current = {
+      authGeneration,
+      pubkey: signedInPubkey,
+      signerReadiness,
+    }
+  }, [authGeneration, signedInPubkey, signerReadiness])
   const session = useMemo(
     () =>
       resolveConduitSession({
@@ -79,11 +87,16 @@ export function ConduitSessionProvider({
   const profileQuery = useProfile(
     session.mode === "signed_in" ? session.pubkey : null,
     {
-      authenticatedPubkey:
+      accountPubkey:
         session.mode === "signed_in" ? session.pubkey : null,
+      authenticatedPubkey:
+        session.mode === "signed_in" && signerReadiness === "ready"
+          ? session.pubkey
+          : null,
       shouldContinue: () =>
         profileAuthorityRef.current.authGeneration === authGeneration &&
-        profileAuthorityRef.current.pubkey === signedInPubkey,
+        profileAuthorityRef.current.pubkey === signedInPubkey &&
+        profileAuthorityRef.current.signerReadiness === signerReadiness,
     }
   )
   const identityReady =
@@ -100,7 +113,8 @@ export function ConduitSessionProvider({
     session.pubkey,
     accountNetworkPreferencesEnabled,
     accountNetworkPreferencesEnabled &&
-      activatedRelayScope === session.relayScope,
+      activatedRelayScope === session.relayScope &&
+      signerReadiness === "ready",
     authGeneration
   )
   const localRelayAuthorityReady =

@@ -58,6 +58,7 @@ import {
   SelectTrigger,
   SelectValue,
   ShareLinkButton,
+  SignerRecoveryNotice,
   SignedActionStatus,
   StatusPill,
   Textarea,
@@ -66,7 +67,6 @@ import {
 import { ProductCombinationMatrix } from "../components/ProductCombinationMatrix"
 import { ProductInboxReadinessDialog } from "../components/ProductInboxReadinessDialog"
 import { ProductPaymentSetupNotice } from "../components/ProductPaymentSetupNotice"
-import { ProductSignerRecoveryNotice } from "../components/ProductSignerRecoveryNotice"
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ProductFulfillmentEditor } from "../components/ProductFulfillmentEditor"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
@@ -239,6 +239,7 @@ type ProductPublishMutationPayload = {
 }
 
 type ProductDeleteMutationPayload = {
+  merchantPubkey: string
   product?: MerchantProductFamily
   deliveryJobId?: string
   previousNotice?: ProductDeliveryNotice
@@ -1153,6 +1154,7 @@ async function deleteProduct(
 
 function ProductsPage() {
   const {
+    accountPubkey,
     pubkey,
     signer,
     status: authStatus,
@@ -1180,6 +1182,7 @@ function ProductsPage() {
   const productPublishStartedAtRef = useRef<number | null>(null)
   const productPublishInFlightRef = useRef(false)
   const dirtyCreateDraftKeyRef = useRef<string | null>(null)
+  const productWorkOwnerRef = useRef(accountPubkey)
   const signerRestoredNoticeRef = useRef<HTMLDivElement | null>(null)
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
   const [editing, setEditing] = useState<MerchantProductFamily | null>(null)
@@ -1210,6 +1213,10 @@ function ProductsPage() {
     null
   )
 
+  function isCurrentProductOwner(merchantPubkey: string): boolean {
+    return productWorkOwnerRef.current === merchantPubkey
+  }
+
   const draftOwnerPubkey = activeProductDraftTarget?.merchantPubkey ?? null
   const productImageUploadScopeId = activeProductDraftTarget
     ? getProductImageUploadScopeId(activeProductDraftTarget)
@@ -1218,29 +1225,36 @@ function ProductsPage() {
     authStatus === "connected" &&
     !!signer &&
     !remoteSignerRecovery &&
-    isProductDraftOwnedBySigner(activeProductDraftTarget, pubkey)
+    isProductDraftOwnedBySigner(activeProductDraftTarget, authenticatedPubkey)
 
   useEffect(() => {
     if (signerRestoredForDraft) signerRestoredNoticeRef.current?.focus()
   }, [signerRestoredForDraft])
 
+  useEffect(() => {
+    setPendingProductPublish(null)
+  }, [authGeneration, signerReady])
+
   // Product publishing stays permissive. This readiness check only provides
   // guidance before a new listing; it never changes order delivery routing.
   const inboxReadinessEnabled =
-    !!pubkey && productDialogOpen && !editing && session.relaySettingsReady
-  const inboxReadiness = useInboxDeclaration(pubkey, {
+    !!accountPubkey &&
+    productDialogOpen &&
+    !editing &&
+    session.relaySettingsReady
+  const inboxReadiness = useInboxDeclaration(accountPubkey, {
     enabled: inboxReadinessEnabled,
     relayScope: session.relayScope,
   })
 
   const productsQuery = useQuery({
-    queryKey: ["merchant-products-live", pubkey ?? "none", authStatus],
-    enabled: !!pubkey,
+    queryKey: ["merchant-products-live", accountPubkey ?? "none"],
+    enabled: !!accountPubkey,
     queryFn: ({ signal }) =>
       fetchMerchantProducts(
-        pubkey!,
-        pubkey!,
-        authStatus === "connected" ? pubkey : null,
+        accountPubkey!,
+        accountPubkey!,
+        authenticatedPubkey,
         () => !signal.aborted && authGenerationRef.current === authGeneration
       ),
     refetchInterval: 15_000,
@@ -1271,14 +1285,16 @@ function ProductsPage() {
     queryKey: [
       "merchant-product-organizer-events",
       session.relayScope ?? "no-relay-scope",
-      pubkey ?? "none",
+      accountPubkey ?? "none",
       authenticatedPubkey ?? "disconnected",
     ],
     enabled:
-      productDialogOpen && form.fulfillment === "local_pickup" && !!pubkey,
+      productDialogOpen &&
+      form.fulfillment === "local_pickup" &&
+      !!accountPubkey,
     queryFn: ({ signal }) =>
       listOrganizerEventMarkets(
-        pubkey!,
+        accountPubkey!,
         authenticatedPubkey,
         signal,
         () => !signal.aborted && authGenerationRef.current === authGeneration
@@ -1290,7 +1306,7 @@ function ProductsPage() {
     queryKey: [
       "merchant-product-organizer-inbox",
       session.relayScope ?? "no-relay-scope",
-      pubkey ?? "anonymous",
+      accountPubkey ?? "anonymous",
       authStatus,
       localPickupQuery.data?.organizerPubkey ?? "none",
     ],
@@ -1300,8 +1316,8 @@ function ProductsPage() {
       !!localPickupQuery.data?.organizerPubkey,
     queryFn: ({ signal }) =>
       resolveEventMarketOrganizerInbox(localPickupQuery.data!.organizerPubkey, {
-        requestingAccountPubkey: pubkey,
-        authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+        requestingAccountPubkey: accountPubkey,
+        authenticatedPubkey,
         signal,
         shouldContinue: () =>
           !signal.aborted && authGenerationRef.current === authGeneration,
@@ -1310,15 +1326,15 @@ function ProductsPage() {
     staleTime: 30_000,
   })
   const cachedProductsQuery = useQuery({
-    queryKey: ["merchant-products", pubkey ?? "none"],
-    enabled: !!pubkey,
-    queryFn: () => fetchCachedMerchantProducts(pubkey!),
+    queryKey: ["merchant-products", accountPubkey ?? "none"],
+    enabled: !!accountPubkey,
+    queryFn: () => fetchCachedMerchantProducts(accountPubkey!),
     staleTime: 5_000,
   })
   const pendingDeletionJobsQuery = useQuery({
-    queryKey: ["merchant-product-deletion-jobs", pubkey ?? "none"],
-    enabled: !!pubkey,
-    queryFn: () => getPendingProductDeletionJobs(pubkey!),
+    queryKey: ["merchant-product-deletion-jobs", accountPubkey ?? "none"],
+    enabled: !!accountPubkey,
+    queryFn: () => getPendingProductDeletionJobs(accountPubkey!),
     refetchInterval: 5_000,
   })
   const pendingDeletionJobs = useMemo<ProductDeletionDeliveryJob[]>(
@@ -1399,11 +1415,11 @@ function ProductsPage() {
     queryKey: [
       "merchant-product-event-context",
       session.relayScope ?? "no-relay-scope",
-      pubkey ?? "none",
+      accountPubkey ?? "none",
       authenticatedPubkey ?? "disconnected",
       eventProductCollectionCoordinates,
     ],
-    enabled: !!pubkey && eventProductCollectionCoordinates.length > 0,
+    enabled: !!accountPubkey && eventProductCollectionCoordinates.length > 0,
     queryFn: async ({ signal }) => {
       const markets = await Promise.allSettled(
         eventProductCollectionCoordinates.map((reference) =>
@@ -1433,26 +1449,26 @@ function ProductsPage() {
     retry: false,
     staleTime: 30_000,
   })
-  const shippingConfig = loadShippingConfig(pubkey)
+  const shippingConfig = loadShippingConfig(accountPubkey)
   const hasPresetShippingZone = isShippingComplete(shippingConfig)
 
   useEffect(() => {
     setDraftContinuationError(null)
-    if (!pubkey) {
+    if (!accountPubkey) {
       setHasResumableCreateDraft(false)
       return
     }
 
-    const draftTarget = getProductDraftTarget(pubkey)
+    const draftTarget = getProductDraftTarget(accountPubkey)
     const loadedDraft = productDraftStoreRef.current.load(draftTarget)
-    const loadedReturnIntent = loadProductDraftReturnIntent(pubkey)
+    const loadedReturnIntent = loadProductDraftReturnIntent(accountPubkey)
     setHasResumableCreateDraft(!!loadedDraft.draft)
     setDraftStorageAvailable(
       loadedDraft.storageAvailable && loadedReturnIntent.storageAvailable
     )
 
     if (loadedReturnIntent.intent && !loadedDraft.draft) {
-      clearProductDraftReturnIntent(pubkey)
+      clearProductDraftReturnIntent(accountPubkey)
       return
     }
     if (
@@ -1461,7 +1477,7 @@ function ProductsPage() {
     ) {
       return
     }
-    const consumedReturnIntent = consumeProductDraftResumeRequest(pubkey)
+    const consumedReturnIntent = consumeProductDraftResumeRequest(accountPubkey)
     if (!consumedReturnIntent) {
       setDraftContinuationError(
         "Your draft is still saved, but automatic return could not be completed. Use Resume product draft to continue."
@@ -1481,18 +1497,20 @@ function ProductsPage() {
     )
     setSignerRestoredForDraft(false)
     setProductDialogOpen(true)
-  }, [hasPresetShippingZone, pubkey])
+  }, [accountPubkey, hasPresetShippingZone])
 
-  async function refreshProductQueries(): Promise<void> {
+  async function refreshProductQueries(
+    merchantPubkey = accountPubkey
+  ): Promise<void> {
     await Promise.all([
       queryClient.invalidateQueries({
-        queryKey: ["merchant-products", pubkey ?? "none"],
+        queryKey: ["merchant-products", merchantPubkey ?? "none"],
       }),
       queryClient.invalidateQueries({
-        queryKey: ["merchant-products-live", pubkey ?? "none"],
+        queryKey: ["merchant-products-live", merchantPubkey ?? "none"],
       }),
       queryClient.invalidateQueries({
-        queryKey: ["merchant-product-deletion-jobs", pubkey ?? "none"],
+        queryKey: ["merchant-product-deletion-jobs", merchantPubkey ?? "none"],
       }),
     ])
   }
@@ -1507,7 +1525,9 @@ function ProductsPage() {
       ["merchant-products-live", merchantPubkey],
       localResult
     )
-    setProductDeliveryNotice(buildLocalProductDeliveryNotice(action))
+    if (isCurrentProductOwner(merchantPubkey)) {
+      setProductDeliveryNotice(buildLocalProductDeliveryNotice(action))
+    }
   }
 
   function productPublishPayloadIsAuthorized(
@@ -1545,6 +1565,7 @@ function ProductsPage() {
       authoringTarget,
       variables.form.variations
     )
+    if (!isCurrentProductOwner(variables.merchantPubkey)) return
     setEditing(null)
     setActiveProductDraftTarget(null)
     setForm(createEmptyProductForm(hasPresetShippingZone))
@@ -1558,6 +1579,11 @@ function ProductsPage() {
   const saveMutation = useMutation({
     mutationFn: async (payload: ProductPublishMutationPayload) => {
       if (payload.signedBundle) {
+        if (!isCurrentProductOwner(payload.merchantPubkey)) {
+          throw new Error(
+            "This signed product update belongs to a different merchant account. Switch back before retrying delivery."
+          )
+        }
         return deliverSignedProductWriteBundle(
           payload.signedBundle,
           payload.merchantPubkey,
@@ -1602,18 +1628,26 @@ function ProductsPage() {
                 fallbackDestinationScope
               )
             }
-            setProductDeliveryRetry({
-              action: "publish",
-              payload: { ...payload, signedBundle },
-            })
+            if (isCurrentProductOwner(payload.merchantPubkey)) {
+              setProductDeliveryRetry({
+                action: "publish",
+                payload: { ...payload, signedBundle },
+              })
+            }
             completeLocalProductSave(payload, authoringTarget)
             await showLocalProductProjection("publish", payload.merchantPubkey)
           },
           payload.existing,
-          setProductSignerProgress,
+          (progress) => {
+            if (isCurrentProductOwner(payload.merchantPubkey)) {
+              setProductSignerProgress(progress)
+            }
+          },
           () => {
-            setProductSignerProgress(null)
-            setProductSignerRequestsComplete(true)
+            if (isCurrentProductOwner(payload.merchantPubkey)) {
+              setProductSignerProgress(null)
+              setProductSignerRequestsComplete(true)
+            }
           },
           authStatus === "connected" ? pubkey : null,
           () => authGenerationRef.current === authGeneration
@@ -1629,6 +1663,7 @@ function ProductsPage() {
       }
     },
     onMutate: (payload) => {
+      if (!isCurrentProductOwner(payload.merchantPubkey)) return
       productPublishStartedAtRef.current = Date.now()
       setProductSignerProgress(null)
       setProductSignerRequestsComplete(!!payload.signedBundle)
@@ -1658,11 +1693,15 @@ function ProductsPage() {
         }),
       })
       productPublishStartedAtRef.current = null
+      if (!isCurrentProductOwner(variables.merchantPubkey)) {
+        await refreshProductQueries(variables.merchantPubkey)
+        return
+      }
       setProductSignerProgress(null)
       setProductSignerRequestsComplete(false)
       setProductDeliveryNotice(notice)
       if (notice.failedRelayUrls.length === 0) setProductDeliveryRetry(null)
-      await refreshProductQueries()
+      await refreshProductQueries(variables.merchantPubkey)
     },
     onError: async (error, variables) => {
       recordBrowserTelemetryEvent({
@@ -1680,6 +1719,10 @@ function ProductsPage() {
         }),
       })
       productPublishStartedAtRef.current = null
+      if (!isCurrentProductOwner(variables.merchantPubkey)) {
+        await refreshProductQueries(variables.merchantPubkey)
+        return
+      }
       setProductSignerProgress(null)
       setProductSignerRequestsComplete(false)
       const diagnosticsError = getRelayPublishDiagnosticsError(error)
@@ -1702,7 +1745,7 @@ function ProductsPage() {
             : current
         )
       }
-      await refreshProductQueries()
+      await refreshProductQueries(variables.merchantPubkey)
     },
     onSettled: () => {
       productPublishInFlightRef.current = false
@@ -1711,6 +1754,11 @@ function ProductsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: async (payload: ProductDeleteMutationPayload) => {
+      if (!isCurrentProductOwner(payload.merchantPubkey)) {
+        throw new Error(
+          "This signed deletion belongs to a different merchant account. Switch back before retrying delivery."
+        )
+      }
       if (payload.deliveryJobId) {
         return {
           delivery: await deliverQueuedProductDeletion(payload.deliveryJobId, {
@@ -1722,23 +1770,38 @@ function ProductsPage() {
       }
       if (!payload.product)
         throw new Error("Product deletion target is missing")
+      if (
+        pubkey !== payload.merchantPubkey ||
+        payload.product.product.pubkey !== payload.merchantPubkey
+      ) {
+        throw new Error(
+          "The product deletion target does not match the connected merchant account."
+        )
+      }
 
       return deleteProduct(
-        pubkey!,
+        payload.merchantPubkey,
         payload.product,
         async (_event, deliveryJobId) => {
-          setProductDeliveryRetry({
-            action: "delete",
-            payload: { ...payload, deliveryJobId },
-          })
-          await showLocalProductProjection("delete", pubkey!)
+          if (isCurrentProductOwner(payload.merchantPubkey)) {
+            setProductDeliveryRetry({
+              action: "delete",
+              payload: { ...payload, deliveryJobId },
+            })
+          }
+          await showLocalProductProjection("delete", payload.merchantPubkey)
         },
-        setProductSignerProgress,
+        (progress) => {
+          if (isCurrentProductOwner(payload.merchantPubkey)) {
+            setProductSignerProgress(progress)
+          }
+        },
         authStatus === "connected" ? pubkey : null,
         () => authGenerationRef.current === authGeneration
       )
     },
     onMutate: (payload) => {
+      if (!isCurrentProductOwner(payload.merchantPubkey)) return
       setProductSignerProgress(null)
       if (!payload.deliveryJobId) setProductDeliveryRetry(null)
       setProductDeliveryNotice(
@@ -1749,7 +1812,6 @@ function ProductsPage() {
     },
     onSuccess: async (data, variables) => {
       const { product } = variables
-      setProductSignerProgress(null)
       if (product) {
         productImageUpload.clearFallbackClaim(
           getProductImageUploadScopeId(
@@ -1762,13 +1824,21 @@ function ProductsPage() {
         const authoringCleared = clearProductVariationAuthoringState(
           getProductVariationAuthoringTarget(product.product.pubkey, product)
         )
-        if (activeProductDraftTarget?.productAddressId === product.addressId) {
+        if (
+          isCurrentProductOwner(variables.merchantPubkey) &&
+          activeProductDraftTarget?.productAddressId === product.addressId
+        ) {
           setEditing(null)
           setActiveProductDraftTarget(null)
           setForm(createEmptyProductForm(hasPresetShippingZone))
           setDraftStorageAvailable(draftCleared && authoringCleared)
         }
       }
+      if (!isCurrentProductOwner(variables.merchantPubkey)) {
+        await refreshProductQueries(variables.merchantPubkey)
+        return
+      }
+      setProductSignerProgress(null)
       const notice = buildProductDeliveryNotice(
         "delete",
         data.delivery,
@@ -1776,9 +1846,13 @@ function ProductsPage() {
       )
       setProductDeliveryNotice(notice)
       if (notice.failedRelayUrls.length === 0) setProductDeliveryRetry(null)
-      await refreshProductQueries()
+      await refreshProductQueries(variables.merchantPubkey)
     },
     onError: async (error, variables) => {
+      if (!isCurrentProductOwner(variables.merchantPubkey)) {
+        await refreshProductQueries(variables.merchantPubkey)
+        return
+      }
       setProductSignerProgress(null)
       const diagnosticsError = getRelayPublishDiagnosticsError(error)
       if (diagnosticsError) {
@@ -1805,13 +1879,20 @@ function ProductsPage() {
             : current
         )
       }
-      await refreshProductQueries()
+      await refreshProductQueries(variables.merchantPubkey)
     },
   })
 
   useEffect(() => {
     if (deleteMutation.isPending) return
-    const job = pendingDeletionJobs.at(-1)
+    const job = [...pendingDeletionJobs]
+      .reverse()
+      .find(
+        (candidate) =>
+          !!accountPubkey &&
+          candidate.signedEvent.pubkey === accountPubkey &&
+          isCurrentProductOwner(accountPubkey)
+      )
     if (!job) {
       setProductDeliveryRetry((current) =>
         current?.action === "delete" ? null : current
@@ -1830,7 +1911,10 @@ function ProductsPage() {
     setProductDeliveryRetry((current) =>
       reconcilePendingProductDeletionRetry<ProductDeliveryRetryState>(current, {
         action: "delete",
-        payload: { deliveryJobId: job.id },
+        payload: {
+          merchantPubkey: job.signedEvent.pubkey,
+          deliveryJobId: job.id,
+        },
       })
     )
     setProductDeliveryNotice((current) => {
@@ -1842,7 +1926,7 @@ function ProductsPage() {
             productDeletionJobToPublishResult(job)
           )
     })
-  }, [deleteMutation.isPending, pendingDeletionJobs])
+  }, [accountPubkey, deleteMutation.isPending, pendingDeletionJobs])
 
   const productDeliveryCanRetry =
     (productDeliveryNotice?.state === "partial" ||
@@ -1850,14 +1934,22 @@ function ProductsPage() {
     productDeliveryRetry?.action === productDeliveryNotice.action
 
   function startProductSave(payload: ProductPublishMutationPayload): void {
-    if (productPublishInFlightRef.current || productImageUpload.isBusy) return
+    if (
+      !isCurrentProductOwner(payload.merchantPubkey) ||
+      productPublishInFlightRef.current ||
+      productImageUpload.isBusy
+    )
+      return
     productPublishInFlightRef.current = true
     saveMutation.mutate(payload)
   }
 
   function retryProductDelivery(): void {
     if (productDeliveryRetry?.action === "delete") {
-      if (productDeliveryRetry.payload.deliveryJobId) {
+      if (
+        isCurrentProductOwner(productDeliveryRetry.payload.merchantPubkey) &&
+        productDeliveryRetry.payload.deliveryJobId
+      ) {
         deleteMutation.mutate({
           ...productDeliveryRetry.payload,
           previousNotice: productDeliveryNotice ?? undefined,
@@ -1868,7 +1960,8 @@ function ProductsPage() {
 
     if (
       productDeliveryRetry?.action === "publish" &&
-      productDeliveryRetry.payload.signedBundle
+      productDeliveryRetry.payload.signedBundle &&
+      isCurrentProductOwner(productDeliveryRetry.payload.merchantPubkey)
     ) {
       startProductSave({
         ...productDeliveryRetry.payload,
@@ -1890,6 +1983,24 @@ function ProductsPage() {
     () => JSON.stringify(form) !== JSON.stringify(savedProductForm),
     [form, savedProductForm]
   )
+  useLayoutEffect(() => {
+    const previousOwner = productWorkOwnerRef.current
+    productWorkOwnerRef.current = accountPubkey
+    if (!previousOwner || previousOwner === accountPubkey) return
+    setPendingProductPublish(null)
+    setProductDialogOpen(false)
+    setEditing(null)
+    setActiveProductDraftTarget(null)
+    setHasResumableCreateDraft(false)
+    setDraftStorageAvailable(true)
+    setForm(createEmptyProductForm(hasPresetShippingZone))
+    setDraftContinuationError(null)
+    setProductSignerProgress(null)
+    setProductSignerRequestsComplete(false)
+    setProductDeliveryNotice(null)
+    setProductDeliveryRetry(null)
+    setSignerRestoredForDraft(false)
+  }, [accountPubkey, hasPresetShippingZone])
   useEffect(() => {
     if (!productDialogOpen || !activeProductDraftTarget) return
     const isCreateDraft = !activeProductDraftTarget.productAddressId
@@ -2027,7 +2138,7 @@ function ProductsPage() {
         : "Save changes to publish this listing update."
       : "Publish this product to add it to your store."
   const productsInitialLoading =
-    !!pubkey && productsQuery.isPending && cachedProductsQuery.isPending
+    !!accountPubkey && productsQuery.isPending && cachedProductsQuery.isPending
 
   const tagFilters = useMemo(
     () => buildProductTagCatalog(merchantProducts.map((item) => item.product)),
@@ -2300,14 +2411,14 @@ function ProductsPage() {
 
   function openCreateDialog(): void {
     rememberProductDialogTrigger()
-    if (pubkey) clearProductDraftReturnIntent(pubkey)
+    if (accountPubkey) clearProductDraftReturnIntent(accountPubkey)
     focusProductTitleOnOpenRef.current = false
     setDraftContinuationError(null)
     setSignerRestoredForDraft(false)
     saveMutation.reset()
     if (
       activeProductDraftTarget &&
-      activeProductDraftTarget.merchantPubkey === pubkey &&
+      activeProductDraftTarget.merchantPubkey === accountPubkey &&
       !activeProductDraftTarget.productAddressId &&
       !editing &&
       hasProductChanges
@@ -2321,7 +2432,9 @@ function ProductsPage() {
       return
     }
     const emptyForm = createEmptyProductForm(hasPresetShippingZone)
-    const draftTarget = pubkey ? getProductDraftTarget(pubkey) : null
+    const draftTarget = accountPubkey
+      ? getProductDraftTarget(accountPubkey)
+      : null
     const loaded = draftTarget
       ? productDraftStoreRef.current.load(draftTarget)
       : { draft: null, storageAvailable: false }
@@ -2341,15 +2454,15 @@ function ProductsPage() {
   }
 
   function resumeCreateDraft(): void {
-    if (!pubkey) return
+    if (!accountPubkey) return
     rememberProductDialogTrigger()
-    clearProductDraftReturnIntent(pubkey)
+    clearProductDraftReturnIntent(accountPubkey)
     focusProductTitleOnOpenRef.current = true
     setDraftContinuationError(null)
     setSignerRestoredForDraft(false)
     saveMutation.reset()
 
-    const draftTarget = getProductDraftTarget(pubkey)
+    const draftTarget = getProductDraftTarget(accountPubkey)
     const loaded = productDraftStoreRef.current.load(draftTarget)
     if (!loaded.draft) {
       setHasResumableCreateDraft(false)
@@ -2386,13 +2499,15 @@ function ProductsPage() {
       setProductDialogOpen(true)
       return
     }
-    const draftTarget = pubkey ? getProductDraftTarget(pubkey, item) : null
+    const draftTarget = accountPubkey
+      ? getProductDraftTarget(accountPubkey, item)
+      : null
     const loaded = draftTarget
       ? productDraftStoreRef.current.load(draftTarget)
       : { draft: null, storageAvailable: false }
-    const authored = pubkey
+    const authored = accountPubkey
       ? loadProductVariationAuthoringState(
-          getProductVariationAuthoringTarget(pubkey, item)
+          getProductVariationAuthoringTarget(accountPubkey, item)
         )
       : { state: null, storageAvailable: false }
     const editingItem = authored.state
@@ -2493,20 +2608,20 @@ function ProductsPage() {
           >
             {itemCountLabel}
           </Badge>
-          <Button onClick={openCreateDialog} disabled={!pubkey}>
+          <Button onClick={openCreateDialog} disabled={!accountPubkey}>
             <Plus className="h-4 w-4" />
             Add product
           </Button>
         </div>
       </div>
 
-      {!pubkey && (
+      {!accountPubkey && (
         <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
           Connect your signer to create and manage listings.
         </div>
       )}
 
-      {pubkey && hasResumableCreateDraft && (
+      {accountPubkey && hasResumableCreateDraft && (
         <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
             <div>
@@ -2697,7 +2812,7 @@ function ProductsPage() {
               <Button
                 className="mt-4"
                 onClick={openCreateDialog}
-                disabled={!pubkey}
+                disabled={!accountPubkey}
               >
                 <Plus className="h-4 w-4" />
                 Add product
@@ -2741,10 +2856,10 @@ function ProductsPage() {
                     context={eventProductContext}
                     eventTitle={eventMarket?.title}
                     onOpenEvent={() => {
-                      if (!pubkey) return
+                      if (!accountPubkey) return
                       const titleFrontiers =
                         expectedOrganizerEventMarketTitleFrontiers(eventMarket)
-                      rememberDiscoveredEventMarket(pubkey, {
+                      rememberDiscoveredEventMarket(accountPubkey, {
                         reference: eventProductContext.naddr,
                         ...(titleFrontiers.titleCollectionEventId &&
                         titleFrontiers.titleCalendarEventId
@@ -2829,7 +2944,12 @@ function ProductsPage() {
                                 ? `Delete "${item.product.title}" and its ${item.variations.length} variations?`
                                 : `Delete "${item.product.title}"?`
                             )
-                            if (ok) deleteMutation.mutate({ product: item })
+                            if (ok) {
+                              deleteMutation.mutate({
+                                merchantPubkey: item.product.pubkey,
+                                product: item,
+                              })
+                            }
                           }}
                         >
                           {isDeleting ? "..." : "Delete"}
@@ -2863,7 +2983,12 @@ function ProductsPage() {
                           ? `Delete "${item.product.title}" and its ${item.variations.length} variations?`
                           : `Delete "${item.product.title}"?`
                       )
-                      if (ok) deleteMutation.mutate({ product: item })
+                      if (ok) {
+                        deleteMutation.mutate({
+                          merchantPubkey: item.product.pubkey,
+                          product: item,
+                        })
+                      }
                     }}
                   >
                     {isDeleting ? "..." : "Delete"}
@@ -2959,7 +3084,12 @@ function ProductsPage() {
                               ? `Delete "${item.product.title}" and its ${item.variations.length} variations?`
                               : `Delete "${item.product.title}"?`
                           )
-                          if (ok) deleteMutation.mutate({ product: item })
+                          if (ok) {
+                            deleteMutation.mutate({
+                              merchantPubkey: item.product.pubkey,
+                              product: item,
+                            })
+                          }
                         }}
                       >
                         {isDeleting ? "..." : "Delete"}
@@ -3027,9 +3157,9 @@ function ProductsPage() {
             </DialogDescription>
           </DialogHeader>
 
-          {pubkey && (
+          {accountPubkey && (
             <ProductPaymentSetupNotice
-              merchantPubkey={pubkey}
+              merchantPubkey={accountPubkey}
               enabled={productDialogOpen}
             />
           )}
@@ -4118,14 +4248,27 @@ function ProductsPage() {
                 )}
               </fieldset>
               {remoteSignerRecovery ? (
-                <ProductSignerRecoveryNotice
-                  draftStorageAvailable={draftStorageAvailable}
+                <SignerRecoveryNotice
+                  description={
+                    draftStorageAvailable
+                      ? "Your signing connection stopped responding. Reconnect your signer to continue. Your draft is saved on this device."
+                      : "Your signing connection stopped responding. Reconnect your signer to continue. Keep this page open because this draft could not be saved on this device."
+                  }
                   reconnecting={authStatus === "restoring"}
                   restoreFailed={!!remoteSignerRecovery.restoreError}
+                  restoreFailureDescription={
+                    draftStorageAvailable
+                      ? "That saved connection could not be restored. Try again, or use a different signer. Your draft will close and remain saved for this account."
+                      : "That saved connection could not be restored. Reconnect this account to continue. This draft is not saved on this device, so another signer cannot be opened safely."
+                  }
                   changingSigner={signerChangePending}
                   changeSignerError={signerChangeError}
                   onReconnect={reconnectProductSigner}
-                  onUseDifferentSigner={useDifferentProductSigner}
+                  onUseDifferentSigner={
+                    draftStorageAvailable
+                      ? useDifferentProductSigner
+                      : undefined
+                  }
                 />
               ) : (
                 <SignedActionStatus

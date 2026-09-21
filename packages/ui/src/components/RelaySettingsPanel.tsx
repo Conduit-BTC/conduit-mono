@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -60,6 +61,11 @@ import { StatusPill } from "./StatusPill"
 export interface RelaySettingsPanelProps {
   controller: AccountNetworkSettingsController
   className?: string
+  /** Stable verified account owner. Changing it discards account-private edits. */
+  accountPubkey?: string | null
+  /** Changes whenever prepared signer authority must be invalidated. */
+  signerReviewKey?: string
+  signerReady?: boolean
   onUnpublishedRelayChangesChange?: (hasUnpublishedChanges: boolean) => void
 }
 
@@ -946,6 +952,7 @@ export function RelayRemovalDialog({
   instruction,
   errorMessage,
   busy,
+  signerReady = true,
   returnFocusRef,
   fallbackFocusRef,
   onCancel,
@@ -956,6 +963,7 @@ export function RelayRemovalDialog({
   instruction: string | null
   errorMessage: string | null
   busy: boolean
+  signerReady?: boolean
   returnFocusRef?: RefObject<HTMLButtonElement | null>
   fallbackFocusRef?: RefObject<HTMLHeadingElement | null>
   onCancel: () => void
@@ -1024,7 +1032,9 @@ export function RelayRemovalDialog({
           <Button
             type="button"
             variant="destructive"
-            disabled={busy || Boolean(instruction) || !preparedChange}
+            disabled={
+              busy || !signerReady || Boolean(instruction) || !preparedChange
+            }
             onClick={onProceed}
             className="min-h-11"
           >
@@ -1128,6 +1138,8 @@ function removalInstructionForReview(
 
 function useRelaySettingsReview(
   controller: AccountNetworkSettingsController,
+  signerReady: boolean,
+  signerReviewKey: string,
   onUnpublishedRelayChangesChange?: (hasUnpublishedChanges: boolean) => void,
   removalFallbackFocusRef?: RefObject<HTMLHeadingElement | null>
 ) {
@@ -1155,6 +1167,14 @@ function useRelaySettingsReview(
   const [removalPreparationError, setRemovalPreparationError] = useState<
     string | null
   >(null)
+
+  useLayoutEffect(() => {
+    setPublishDialogOpen(false)
+    setPreparedPublishChange(null)
+    setRelayPendingRemoval(null)
+    setPreparedRemovalChange(null)
+    setRemovalPreparationError(null)
+  }, [signerReviewKey])
 
   const baselineRoles = useMemo(
     () => baselineRolesFromRows(controller.view.rows),
@@ -1269,7 +1289,7 @@ function useRelaySettingsReview(
   )
   const busy = operationIsBusy(controller.operation.phase) || reordering
   const metadataReady = controller.status === "ready" && !busy
-  const mutationReady = metadataReady && !pendingRetry
+  const mutationReady = metadataReady && !pendingRetry && signerReady
   const inboxCount = rows.filter((row) => row.privateInboxEnabled).length
   const removalInstruction = removalInstructionForReview(
     relayPendingRemoval,
@@ -1515,6 +1535,7 @@ function useRelaySettingsReview(
   }
 
   async function confirmPublish(): Promise<void> {
+    if (!signerReady) return
     const prepared = preparedPublishChange
     if (!prepared) return
     setPublishDialogOpen(false)
@@ -1546,6 +1567,7 @@ function useRelaySettingsReview(
   }
 
   async function proceedRemoval(): Promise<void> {
+    if (!signerReady) return
     if (!relayPendingRemoval || !preparedRemovalChange) return
     try {
       await preparedRemovalChange.execute()
@@ -1587,6 +1609,7 @@ function useRelaySettingsReview(
     busy,
     metadataReady,
     mutationReady,
+    signerReady,
     inboxCount,
     removalInstruction,
     operationText,
@@ -2035,6 +2058,7 @@ function PublishNetworkReviewDialog({
           </Button>
           <Button
             type="button"
+            disabled={!review.mutationReady}
             onClick={() => void review.confirmPublish()}
             className="min-h-11"
           >
@@ -2079,7 +2103,10 @@ function RelayPreferencesSection({
   const checking =
     controller.status === "reconciling" || controller.relayInformationRefreshing
   const refreshDisabled =
-    checking || review.busy || review.hasUnpublishedChanges
+    checking ||
+    review.busy ||
+    review.hasUnpublishedChanges ||
+    !review.signerReady
   return (
     <PreferenceSectionCard
       headingId="relay-list-heading"
@@ -2143,6 +2170,8 @@ function RelayPreferencesSection({
 
 function RelayPreferencesEditor({
   controller,
+  signerReady,
+  signerReviewKey,
   onUnpublishedRelayChangesChange,
   removalFallbackFocusRef,
 }: RelaySettingsPanelProps & {
@@ -2150,6 +2179,8 @@ function RelayPreferencesEditor({
 }) {
   const review = useRelaySettingsReview(
     controller,
+    signerReady ?? true,
+    signerReviewKey ?? "default",
     onUnpublishedRelayChangesChange,
     removalFallbackFocusRef
   )
@@ -2168,6 +2199,7 @@ function RelayPreferencesEditor({
             : null
         }
         busy={review.busy}
+        signerReady={review.signerReady}
         returnFocusRef={review.removalTriggerRef}
         fallbackFocusRef={removalFallbackFocusRef}
         onCancel={review.cancelRemoval}
@@ -2177,35 +2209,14 @@ function RelayPreferencesEditor({
   )
 }
 
-/** Keep signer-free ordering out of the editor reset identity. */
-function getRelaySettingsEditorRevision(
-  controller: AccountNetworkSettingsController
-): string {
-  const rows = controller.view.rows
-    .map(
-      (row) =>
-        [
-          row.url,
-          row.readState,
-          row.publishState,
-          row.privateInboxState,
-          Boolean(row.recoveryReadOnly),
-        ] as const
-    )
-    .sort((left, right) => left[0].localeCompare(right[0]))
-
-  return JSON.stringify({
-    revision: controller.revision,
-    rows,
-  })
-}
-
 export function RelaySettingsPanel({
   controller,
   className,
+  accountPubkey = null,
+  signerReady = true,
+  signerReviewKey = "default",
   onUnpublishedRelayChangesChange,
 }: RelaySettingsPanelProps) {
-  const editorRevision = getRelaySettingsEditorRevision(controller)
   const removalFallbackFocusRef = useRef<HTMLHeadingElement | null>(null)
   return (
     <section
@@ -2217,13 +2228,20 @@ export function RelaySettingsPanel({
       <div className="space-y-6">
         <NetworkHeader focusRef={removalFallbackFocusRef} />
         <RelayPreferencesEditor
-          key={editorRevision}
+          key={accountPubkey ?? "no-account"}
           controller={controller}
+          accountPubkey={accountPubkey}
+          signerReady={signerReady}
+          signerReviewKey={signerReviewKey}
           onUnpublishedRelayChangesChange={onUnpublishedRelayChangesChange}
           removalFallbackFocusRef={removalFallbackFocusRef}
         />
         {controller.mediaServers ? (
-          <MediaServerPreferencesSection {...controller.mediaServers} />
+          <MediaServerPreferencesSection
+            key={`media:${accountPubkey ?? "no-account"}`}
+            {...controller.mediaServers}
+            signerReviewKey={signerReviewKey}
+          />
         ) : null}
       </div>
     </section>

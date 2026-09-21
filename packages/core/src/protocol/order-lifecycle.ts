@@ -975,7 +975,7 @@ export async function recordObservedOrderPaymentReceipt(
   input: {
     zapRequestId: string
     zapReceiptId: string
-    proofDeliveryStatus: "pending" | "sent"
+    proofDeliveryStatus: "pending" | "retry_needed" | "sent"
     proofDeliveryClaimId?: string
   }
 ): Promise<ObservedOrderPaymentReceiptResult> {

@@ -1,25 +1,32 @@
+import type { ReactNode } from "react"
 import { AlertTriangle, KeyRound } from "lucide-react"
-import { Button } from "@conduit/ui"
+import { Button } from "./Button"
 
-interface ProductSignerRecoveryNoticeProps {
-  draftStorageAvailable: boolean
+export interface SignerRecoveryNoticeProps {
+  description: ReactNode
   reconnecting: boolean
-  restoreFailed: boolean
-  changingSigner: boolean
-  changeSignerError: string | null
-  onReconnect: () => Promise<void>
-  onUseDifferentSigner: () => Promise<void>
+  restoreFailed?: boolean
+  restoreFailureDescription?: ReactNode
+  changingSigner?: boolean
+  changeSignerError?: string | null
+  onReconnect: () => Promise<void> | void
+  onUseDifferentSigner?: () => Promise<void> | void
 }
 
-export function ProductSignerRecoveryNotice({
-  draftStorageAvailable,
+/**
+ * Presents signer recovery without owning or replaying the interrupted work.
+ * The calling workflow remains responsible for a fresh, explicit retry.
+ */
+export function SignerRecoveryNotice({
+  description,
   reconnecting,
-  restoreFailed,
-  changingSigner,
-  changeSignerError,
+  restoreFailed = false,
+  restoreFailureDescription,
+  changingSigner = false,
+  changeSignerError = null,
   onReconnect,
   onUseDifferentSigner,
-}: ProductSignerRecoveryNoticeProps) {
+}: SignerRecoveryNoticeProps) {
   const busy = reconnecting || changingSigner
   return (
     <div
@@ -41,40 +48,40 @@ export function ProductSignerRecoveryNotice({
                 ? "Opening signer options"
                 : "Signer reconnect needed"}
           </p>
-          <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
-            {draftStorageAvailable
-              ? "Your signing connection stopped responding. Reconnect your signer to continue. Your draft is saved on this device."
-              : "Your signing connection stopped responding. Reconnect your signer to continue. Keep this page open because this draft could not be saved on this device."}
-          </p>
-          {restoreFailed && (
-            <p className="mt-2 text-sm leading-6 text-error">
-              {draftStorageAvailable
-                ? "That saved connection could not be restored. Try again, or use a different signer. Your draft will close and remain saved for this account."
-                : "That saved connection could not be restored. Reconnect this account to continue. This draft is not saved on this device, so another signer cannot be opened safely."}
-            </p>
-          )}
-          {changeSignerError && (
+          <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+            {description}
+          </div>
+          {restoreFailed && restoreFailureDescription ? (
+            <div className="mt-2 text-sm leading-6 text-error">
+              {restoreFailureDescription}
+            </div>
+          ) : null}
+          {changeSignerError ? (
             <p className="mt-2 text-sm leading-6 text-error">
               {changeSignerError}
             </p>
-          )}
+          ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             <Button
               type="button"
               size="sm"
-              onClick={() => void onReconnect().catch(() => undefined)}
+              onClick={() =>
+                void Promise.resolve(onReconnect()).catch(() => undefined)
+              }
               disabled={busy}
             >
               <KeyRound className="h-4 w-4" aria-hidden="true" />
               {reconnecting ? "Reconnecting..." : "Reconnect signer"}
             </Button>
-            {restoreFailed && draftStorageAvailable && (
+            {restoreFailed && onUseDifferentSigner ? (
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
                 onClick={() =>
-                  void onUseDifferentSigner().catch(() => undefined)
+                  void Promise.resolve(onUseDifferentSigner()).catch(
+                    () => undefined
+                  )
                 }
                 disabled={busy}
               >
@@ -82,7 +89,7 @@ export function ProductSignerRecoveryNotice({
                   ? "Opening signer options..."
                   : "Use a different signer"}
               </Button>
-            )}
+            ) : null}
           </div>
         </div>
       </div>
