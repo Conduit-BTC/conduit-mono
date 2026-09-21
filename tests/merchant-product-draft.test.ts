@@ -108,6 +108,7 @@ function form(
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
     supplierAllocationEnabled: false,
+    supplierAllocationRepairRequired: false,
     merchantAllocationWeight: "1",
     merchantAllocationRelayHint: "",
     supplierAllocations: [],
@@ -207,6 +208,49 @@ describe("merchant product drafts", () => {
 
     expect(saveProductDraft(draftTarget, values, storage)).toBe(true)
     expect(loadProductDraft(draftTarget, storage).draft).toEqual(values)
+  })
+
+  it("keeps invalid allocation repair requirements fail-closed across reloads", () => {
+    const storage = new MemoryStorage()
+    const editTarget = target({
+      productAddressId: `30402:${"a".repeat(64)}:pocket-relay`,
+      baseEventId: "event-1",
+    })
+    const values = form({
+      fulfillment: "preserve",
+      supplierAllocationEnabled: true,
+      supplierAllocationRepairRequired: true,
+      merchantAllocationWeight: "3",
+      merchantAllocationRelayHint: "wss://relay.conduit.market",
+      supplierAllocations: [
+        {
+          identity: "b".repeat(64),
+          relayHint: "wss://nos.lol",
+          weight: "1",
+        },
+      ],
+    })
+
+    expect(saveProductDraft(editTarget, values, storage)).toBe(true)
+    expect(
+      loadProductDraft(editTarget, storage).draft
+        ?.supplierAllocationRepairRequired
+    ).toBe(true)
+
+    const storageKey = getProductDraftStorageKey(editTarget)
+    if (!storageKey) throw new Error("Expected an edit draft storage key")
+    const stored = JSON.parse(storage.getItem(storageKey) ?? "null") as {
+      version: number
+      form: Record<string, unknown>
+    }
+    stored.version = 8
+    delete stored.form.supplierAllocationRepairRequired
+    storage.setItem(storageKey, JSON.stringify(stored))
+
+    expect(
+      loadProductDraft(editTarget, storage).draft
+        ?.supplierAllocationRepairRequired
+    ).toBe(true)
   })
 
   it("round-trips constrained variation options and overrides", () => {

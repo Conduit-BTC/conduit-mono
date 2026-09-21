@@ -21,7 +21,6 @@ import {
   getNdk,
   isCommerceReadIncomplete,
   prepareProductCatalog,
-  pubkeyToNpub,
   recordBrowserTelemetryEvent,
   resolveEventMarketOrganizerInbox,
   waitForVisibleDocument,
@@ -92,9 +91,11 @@ import {
   saveProductDraftReturnIntent,
 } from "../lib/productDraftReturn"
 import {
+  applyMerchantProductSupplierAllocationFormChange,
   buildProductShippingMetadata,
   canUseZeroProductPrice,
   canSubmitProductForm,
+  getMerchantProductSupplierAllocationFormState,
   getProductShippingPricingMode,
   isProductUsingPresetShippingZone,
   MAX_PRODUCT_TAG_COUNT,
@@ -292,6 +293,7 @@ function createEmptyProductForm(
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
     supplierAllocationEnabled: false,
+    supplierAllocationRepairRequired: false,
     merchantAllocationWeight: "1",
     merchantAllocationRelayHint: "",
     supplierAllocations: [],
@@ -385,9 +387,8 @@ function productToForm(
   const sourceShippingCost = product.sourceShippingCost
   const currency = source?.normalizedCurrency ?? product.currency
   const supplierAllocation = product.supplierAllocation
-  const merchantAllocation = supplierAllocation?.recipients.find(
-    (recipient) => recipient.role === "merchant"
-  )
+  const supplierAllocationForm =
+    getMerchantProductSupplierAllocationFormState(supplierAllocation)
   return {
     title: product.title,
     summary: product.summary ?? "",
@@ -421,18 +422,7 @@ function productToForm(
     zapMessagePolicy: product.publicZapPolicyKnown
       ? product.zapMessagePolicy
       : "generic_only",
-    supplierAllocationEnabled:
-      !!supplierAllocation && supplierAllocation.state !== "absent",
-    merchantAllocationWeight: String(merchantAllocation?.weight ?? 1),
-    merchantAllocationRelayHint: merchantAllocation?.relayHint ?? "",
-    supplierAllocations:
-      supplierAllocation?.recipients
-        .filter((recipient) => recipient.role === "supplier")
-        .map((recipient) => ({
-          identity: pubkeyToNpub(recipient.pubkey),
-          relayHint: recipient.relayHint,
-          weight: String(recipient.weight),
-        })) ?? [],
+    ...supplierAllocationForm,
     images: product.images.map((image) => ({ ...image })),
     tags: product.tags.join(", "),
   }
@@ -3582,13 +3572,12 @@ function ProductsPage() {
                 }}
                 validation={supplierAllocationValidation}
                 onChange={(allocation) =>
-                  setForm((previous) => ({
-                    ...previous,
-                    supplierAllocationEnabled: allocation.enabled,
-                    merchantAllocationWeight: allocation.merchantWeight,
-                    merchantAllocationRelayHint: allocation.merchantRelayHint,
-                    supplierAllocations: allocation.suppliers,
-                  }))
+                  setForm((previous) =>
+                    applyMerchantProductSupplierAllocationFormChange(
+                      previous,
+                      allocation
+                    )
+                  )
                 }
               />
               <ProductImageUrlCollectionField

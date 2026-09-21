@@ -4,6 +4,7 @@ import {
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   MAX_PRODUCT_IMAGE_CANDIDATES,
   normalizePublicMediaUrl,
+  pubkeyToNpub,
   getProductShippingOptionAddress,
   getProductShippingOptionDTag,
   type ProductFulfillmentIntent,
@@ -79,6 +80,7 @@ export interface MerchantProductFormValues extends ProductPublishFormValues {
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
   supplierAllocationEnabled: boolean
+  supplierAllocationRepairRequired: boolean
   merchantAllocationWeight: string
   merchantAllocationRelayHint: string
   supplierAllocations: MerchantProductSupplierAllocationFormRecipient[]
@@ -88,6 +90,56 @@ export interface MerchantProductSupplierAllocationFormRecipient {
   identity: string
   relayHint: string
   weight: string
+}
+
+export interface MerchantProductSupplierAllocationFormChange {
+  enabled: boolean
+  merchantWeight: string
+  merchantRelayHint: string
+  suppliers: MerchantProductSupplierAllocationFormRecipient[]
+}
+
+export function getMerchantProductSupplierAllocationFormState(
+  allocation: ProductSupplierAllocation | undefined
+): Pick<
+  MerchantProductFormValues,
+  | "supplierAllocationEnabled"
+  | "supplierAllocationRepairRequired"
+  | "merchantAllocationWeight"
+  | "merchantAllocationRelayHint"
+  | "supplierAllocations"
+> {
+  const merchant = allocation?.recipients.find(
+    (recipient) => recipient.role === "merchant"
+  )
+  return {
+    supplierAllocationEnabled: !!allocation && allocation.state !== "absent",
+    supplierAllocationRepairRequired: allocation?.state === "invalid",
+    merchantAllocationWeight: String(merchant?.weight ?? 1),
+    merchantAllocationRelayHint: merchant?.relayHint ?? "",
+    supplierAllocations:
+      allocation?.recipients
+        .filter((recipient) => recipient.role === "supplier")
+        .map((recipient) => ({
+          identity: pubkeyToNpub(recipient.pubkey),
+          relayHint: recipient.relayHint,
+          weight: String(recipient.weight),
+        })) ?? [],
+  }
+}
+
+export function applyMerchantProductSupplierAllocationFormChange(
+  form: MerchantProductFormValues,
+  change: MerchantProductSupplierAllocationFormChange
+): MerchantProductFormValues {
+  return {
+    ...form,
+    supplierAllocationEnabled: change.enabled,
+    supplierAllocationRepairRequired: false,
+    merchantAllocationWeight: change.merchantWeight,
+    merchantAllocationRelayHint: change.merchantRelayHint,
+    supplierAllocations: change.suppliers,
+  }
 }
 
 export interface MerchantProductSupplierAllocationFormValidation {
@@ -140,11 +192,18 @@ export function validateMerchantProductSupplierAllocationForm(
     | "merchantAllocationWeight"
     | "merchantAllocationRelayHint"
     | "supplierAllocations"
-  >,
+  > & { supplierAllocationRepairRequired?: boolean },
   merchantPubkey: string
 ): MerchantProductSupplierAllocationFormValidation {
   if (!form.supplierAllocationEnabled) {
     return { canPublish: true, error: null }
+  }
+  if (form.supplierAllocationRepairRequired) {
+    return {
+      canPublish: false,
+      error:
+        "Repair the invalid signed revenue-split terms or remove them before publishing.",
+    }
   }
 
   const result = buildProductSupplierAllocation({

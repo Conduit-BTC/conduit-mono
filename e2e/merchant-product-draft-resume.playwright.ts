@@ -2,10 +2,15 @@ import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { nip19 } from "@nostr-dev-kit/ndk"
-import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   TEST_RELAY_URL,
   installTestSigner,
+  publishTestRelayEvents,
   readTestRelayEvents,
   seedTestRelayIdentity,
 } from "./helpers/auth"
@@ -513,4 +518,67 @@ test("merchant publishes versioned supplier allocation terms with explicit profi
         ["zap", supplierPubkey, "wss://nos.lol/", "1"],
       ])
     )
+})
+
+test("merchant must explicitly repair or remove malformed allocation evidence before editing @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const merchantSecretKey = generateSecretKey()
+  const merchantPubkey = getPublicKey(merchantSecretKey)
+  const supplierPubkey = getPublicKey(generateSecretKey())
+  const title = `Malformed allocation ${Date.now().toString(36)}`
+  const createdAt = Math.floor(Date.now() / 1_000)
+  await seedTestRelayIdentity(merchantSecretKey, { inboxDeclaration: "omit" })
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: PRODUCT_KIND,
+        created_at: createdAt,
+        tags: [
+          ["d", `malformed-allocation-${createdAt}`],
+          ["title", title],
+          ["summary", "A listing with malformed signed split evidence."],
+          ["price", "10", "SATS"],
+          ["type", "simple", "digital"],
+          ["image", "https://media.conduit.market/malformed-allocation.png"],
+          ["t", "allocation"],
+          ["t", "merchant"],
+          ["t", "test"],
+          ["conduit_supplier_allocation", "2"],
+          ["zap", merchantPubkey, "wss://relay.conduit.market", "3"],
+          ["zap", supplierPubkey, "wss://nos.lol", "1"],
+          ["zap", "not-a-public-key", "wss://relay.ditto.pub", "1"],
+        ],
+        content: "A listing with malformed signed split evidence.",
+      },
+      merchantSecretKey
+    ),
+  ])
+  await installTestSigner(page, merchantPubkey, {
+    secretKey: merchantSecretKey,
+  })
+  await page.goto(`${merchantUrl}/products`)
+
+  await expect(page.getByText(title, { exact: true })).toBeVisible({
+    timeout: 30_000,
+  })
+  await page.getByRole("button", { name: "Edit", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Edit listing" })
+  await expect(dialog).toBeVisible()
+  await dialog.getByLabel("Title").fill(`${title} updated`)
+  await expect(
+    dialog.getByRole("alert").filter({
+      hasText:
+        "Repair the invalid signed revenue-split terms or remove them before publishing.",
+    })
+  ).toBeVisible()
+  await expect(
+    dialog.getByRole("button", { name: "Save changes", exact: true })
+  ).toBeDisabled()
+
+  await dialog.getByLabel("Merchant weight").fill("4")
+  await expect(
+    dialog.getByRole("button", { name: "Save changes", exact: true })
+  ).toBeEnabled()
 })

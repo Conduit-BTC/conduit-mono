@@ -12,7 +12,7 @@ import {
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 8
+const PRODUCT_DRAFT_VERSION = 9
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
   "conduit:merchant:product_variation_authoring:v1"
@@ -133,6 +133,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         candidate.version !== 5 &&
         candidate.version !== 6 &&
         candidate.version !== 7 &&
+        candidate.version !== 8 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -285,6 +286,18 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
             ? false
             : null
         : false
+    const supplierAllocationRepairRequired =
+      candidate.version >= 9
+        ? form.supplierAllocationRepairRequired === true
+          ? true
+          : form.supplierAllocationRepairRequired === false
+            ? false
+            : null
+        : candidate.version >= 8 &&
+            typeof candidate.baseEventId === "string" &&
+            supplierAllocationEnabled
+          ? true
+          : false
     const merchantAllocationWeight =
       candidate.version >= 8
         ? typeof form.merchantAllocationWeight === "string"
@@ -327,6 +340,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         : []
     if (
       supplierAllocationEnabled === null ||
+      supplierAllocationRepairRequired === null ||
       merchantAllocationWeight === null ||
       supplierAllocations === null
     ) {
@@ -376,6 +390,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         publicZapEnabled: form.publicZapEnabled,
         zapMessagePolicy: form.zapMessagePolicy,
         supplierAllocationEnabled,
+        supplierAllocationRepairRequired,
         merchantAllocationWeight,
         merchantAllocationRelayHint,
         supplierAllocations,
