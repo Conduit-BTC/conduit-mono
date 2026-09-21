@@ -37,6 +37,7 @@ import { EVENT_KINDS } from "@conduit/core/protocol/kinds"
 import type { AccountNetworkPreferencesReconciliation } from "@conduit/core/protocol/network-preferences"
 import { NostrSignerError } from "@conduit/core/protocol/nostr-event-signer"
 import {
+  accountNetworkDiscoveryRelayUrls,
   applyOwnerRelayListEvidenceReconciliation,
   type OwnerRelayListResolution,
 } from "@conduit/core/protocol/owner-relay-list-evidence"
@@ -346,7 +347,9 @@ interface ExecutionOptions {
   filterEligibleRelayUrls?: (
     relayUrls: readonly string[],
     ownerSelectedRelayUrls: readonly string[],
-    authenticatedPubkey: string | null
+    authenticatedPubkey: string | null,
+    appRelayUrls: readonly string[],
+    personalRelayUrls: readonly string[]
   ) => string[]
   stageError?: Error
 }
@@ -360,6 +363,8 @@ interface ExecutionHarness {
     relayUrl: string
     signedEvent: SignedPublicNostrEvent
     ownerSelectedRelayUrls: readonly string[]
+    appRelayUrls: readonly string[]
+    personalRelayUrls: readonly string[]
     authenticatedPubkey: string | null
   }>
   readbackCalls: Array<{
@@ -367,6 +372,8 @@ interface ExecutionHarness {
     eventId: string
     kind: number
     ownerSelectedRelayUrls: readonly string[]
+    appRelayUrls: readonly string[]
+    personalRelayUrls: readonly string[]
     authenticatedPubkey: string | null
   }>
   restageInputs: Array<{
@@ -421,12 +428,16 @@ function createExecutionHarness(
       _pubkey,
       relayUrls,
       ownerSelectedRelayUrls,
-      authenticatedPubkey
+      authenticatedPubkey,
+      appRelayUrls,
+      personalRelayUrls
     ) =>
       options.filterEligibleRelayUrls?.(
         relayUrls,
         ownerSelectedRelayUrls,
-        authenticatedPubkey
+        authenticatedPubkey,
+        appRelayUrls,
+        personalRelayUrls
       ) ?? [...relayUrls],
     publishToRelay: async (input) => {
       const key = `${input.signedEvent.kind}:${input.relayUrl}`
@@ -437,6 +448,8 @@ function createExecutionHarness(
         relayUrl: input.relayUrl,
         signedEvent: structuredClone(input.signedEvent),
         ownerSelectedRelayUrls: [...(input.ownerSelectedRelayUrls ?? [])],
+        appRelayUrls: [...(input.appRelayUrls ?? [])],
+        personalRelayUrls: [...(input.personalRelayUrls ?? [])],
         authenticatedPubkey: input.authenticatedPubkey ?? null,
       })
       publishedById.set(
@@ -469,6 +482,8 @@ function createExecutionHarness(
         eventId,
         kind,
         ownerSelectedRelayUrls: [...(readOptions.ownerSelectedRelayUrls ?? [])],
+        appRelayUrls: [...(readOptions.appRelayUrls ?? [])],
+        personalRelayUrls: [...(readOptions.personalRelayUrls ?? [])],
         authenticatedPubkey: readOptions.authenticatedPubkey ?? null,
       })
       const behavior =
@@ -812,6 +827,87 @@ describe("account network mutation", () => {
       )
     ).toBe(false)
     expect(signer.signedDrafts).toHaveLength(1)
+  })
+
+  it("rechecks staged Network distribution against current source toggles", async () => {
+    const fixture = createFixture()
+    const appRelayUrl = accountNetworkDiscoveryRelayUrls()[0]
+    const personalOnlyRelayUrl = "wss://personal-only-network.example"
+    if (!appRelayUrl) throw new Error("Expected one app discovery relay")
+    let appEnabled = true
+    let personalEnabled = true
+    const execution = createExecutionHarness(fixture, {
+      planForKind: (kind) =>
+        kind === EVENT_KINDS.RELAY_LIST
+          ? [personalOnlyRelayUrl, RELAY_B, appRelayUrl]
+          : [appRelayUrl],
+      filterEligibleRelayUrls: (
+        relayUrls,
+        _ownerSelectedRelayUrls,
+        _authenticatedPubkey,
+        appRelayUrls,
+        personalRelayUrls
+      ) =>
+        relayUrls.filter((relayUrl) => {
+          const app = appRelayUrls.includes(relayUrl)
+          const personal = personalRelayUrls.includes(relayUrl)
+          if (!app && !personal) return true
+          return (app && appEnabled) || (personal && personalEnabled)
+        }),
+      publishBehavior: () => "timed_out",
+      readbackBehavior: () => "timed_out",
+    })
+    const signer = createSignerHarness({ log: execution.log })
+    const reviewed = reviewAccountNetworkMutation(
+      fixture.reconciliation,
+      action([
+        ...ownerChangedRoles(),
+        {
+          url: personalOnlyRelayUrl,
+          read: false,
+          publish: true,
+          privateInbox: false,
+        },
+      ])
+    )
+
+    await publishAccountNetworkMutation({
+      reviewed,
+      authenticatedPubkey: ACCOUNT,
+      signer: signer.signer,
+      dependencies: execution.dependencies,
+    })
+    expect(execution.publishCalls.map((call) => call.relayUrl)).toEqual([
+      RELAY_B,
+      appRelayUrl,
+      personalOnlyRelayUrl,
+    ])
+
+    appEnabled = true
+    personalEnabled = false
+    execution.publishCalls.splice(0)
+    execution.readbackCalls.splice(0)
+    await retryAccountNetworkMutation({
+      pubkey: ACCOUNT,
+      authenticatedPubkey: ACCOUNT,
+      kind: EVENT_KINDS.RELAY_LIST,
+      dependencies: execution.dependencies,
+    })
+
+    for (const calls of [execution.publishCalls, execution.readbackCalls]) {
+      expect(calls.map((call) => call.relayUrl)).toEqual([RELAY_B, appRelayUrl])
+      expect(calls.some((call) => call.relayUrl === personalOnlyRelayUrl)).toBe(
+        false
+      )
+      for (const call of calls) {
+        expect(call.appRelayUrls).toEqual(
+          expect.arrayContaining([appRelayUrl, RELAY_B])
+        )
+        expect(call.personalRelayUrls).toEqual(
+          expect.arrayContaining([RELAY_B, personalOnlyRelayUrl])
+        )
+      }
+    }
   })
 
   it("does not record durable owner ws attempts when authority changes during eligibility or publication", async () => {

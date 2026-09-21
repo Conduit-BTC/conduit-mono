@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { nip19, nip44 } from "nostr-tools"
@@ -246,6 +245,14 @@ type HeldRelayRequest = {
   release: () => void
 }
 
+type HeldRelayEventResponse = {
+  captured: Promise<{
+    request: RelayRequest
+    heldEventIds: string[]
+  }>
+  release: () => void
+}
+
 type RelayRequest = {
   clientId?: string
   relayUrl: string
@@ -353,6 +360,12 @@ function createRelayHarness() {
     released: Promise<void>
     captured: boolean
   } | null = null
+  let heldRelayEventResponse: {
+    predicate: (request: RelayRequest, event: SignedEvent) => boolean
+    capture: (value: { request: RelayRequest; heldEventIds: string[] }) => void
+    released: Promise<void>
+    captured: boolean
+  } | null = null
   const rejectedKinds = new Set<number>()
   let rejectReads = false
 
@@ -382,7 +395,7 @@ function createRelayHarness() {
     holdRelayRequests(
       predicate: (request: RelayRequest) => boolean
     ): HeldRelayRequest {
-      if (heldRelayRequest) {
+      if (heldRelayRequest || heldRelayEventResponse) {
         throw new Error("Synthetic relay requests are already being held.")
       }
       let capture!: (request: RelayRequest) => void
@@ -398,6 +411,38 @@ function createRelayHarness() {
         resolveRelease()
       }
       heldRelayRequest = { predicate, capture, released, captured: false }
+      return { captured, release }
+    },
+    holdRelayEventResponses(
+      predicate: (request: RelayRequest, event: SignedEvent) => boolean
+    ): HeldRelayEventResponse {
+      if (heldRelayRequest || heldRelayEventResponse) {
+        throw new Error("Synthetic relay responses are already being held.")
+      }
+      let capture!: (value: {
+        request: RelayRequest
+        heldEventIds: string[]
+      }) => void
+      let resolveRelease!: () => void
+      const captured = new Promise<{
+        request: RelayRequest
+        heldEventIds: string[]
+      }>((resolve) => {
+        capture = resolve
+      })
+      const released = new Promise<void>((resolve) => {
+        resolveRelease = resolve
+      })
+      const release = () => {
+        heldRelayEventResponse = null
+        resolveRelease()
+      }
+      heldRelayEventResponse = {
+        predicate,
+        capture,
+        released,
+        captured: false,
+      }
       return { captured, release }
     },
     rejectKind(kind: number, reject: boolean) {
@@ -465,9 +510,45 @@ function createRelayHarness() {
                 }
               }
               const limitedMatches = Array.from(limitedMatchesById.values())
-              request.matchedEventIds = limitedMatches.map((event) => event.id)
-              for (const event of limitedMatches) {
+              const heldResponse = heldRelayEventResponse
+              const heldMatches = heldResponse
+                ? limitedMatches.filter((event) =>
+                    heldResponse.predicate(request, event)
+                  )
+                : []
+              const immediateMatches =
+                heldMatches.length > 0
+                  ? limitedMatches.filter(
+                      (event) =>
+                        !heldMatches.some((held) => held.id === event.id)
+                    )
+                  : limitedMatches
+              request.matchedEventIds = immediateMatches.map(
+                (event) => event.id
+              )
+              for (const event of immediateMatches) {
                 socket.send(JSON.stringify(["EVENT", subscriptionId, event]))
+              }
+              if (heldResponse && heldMatches.length > 0) {
+                if (!heldResponse.captured) {
+                  heldResponse.captured = true
+                  heldResponse.capture({
+                    request: structuredClone(request),
+                    heldEventIds: heldMatches.map((event) => event.id),
+                  })
+                }
+                void heldResponse.released.then(() => {
+                  request.matchedEventIds.push(
+                    ...heldMatches.map((event) => event.id)
+                  )
+                  for (const event of heldMatches) {
+                    socket.send(
+                      JSON.stringify(["EVENT", subscriptionId, event])
+                    )
+                  }
+                  socket.send(JSON.stringify(["EOSE", subscriptionId]))
+                })
+                return
               }
               socket.send(JSON.stringify(["EOSE", subscriptionId]))
             }
@@ -869,6 +950,119 @@ async function readCanonicalCartLines(
   )
 }
 
+async function readCanonicalCartProductFrontier(
+  page: Page,
+  productId: string
+): Promise<{
+  productUpdatedAt?: number
+  productEventId?: string
+  fulfillmentType?: string
+} | null> {
+  return page.evaluate(
+    ({ selectedProductId }) =>
+      new Promise<{
+        productUpdatedAt?: number
+        productEventId?: string
+        fulfillmentType?: string
+      } | null>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction("shoppingCarts", "readonly")
+          const get = transaction.objectStore("shoppingCarts").get("market")
+          transaction.oncomplete = () => {
+            const lines = Array.isArray(get.result?.lines)
+              ? get.result.lines
+              : []
+            const line = lines.find(
+              (candidate: { item?: { productId?: string } }) =>
+                candidate.item?.productId === selectedProductId
+            ) as
+              | {
+                  item: {
+                    productUpdatedAt?: number
+                    productEventId?: string
+                    fulfillment?: { type?: string }
+                  }
+                }
+              | undefined
+            resolve(
+              line
+                ? {
+                    productUpdatedAt: line.item.productUpdatedAt,
+                    productEventId: line.item.productEventId,
+                    fulfillmentType: line.item.fulfillment?.type,
+                  }
+                : null
+            )
+            database.close()
+          }
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      }),
+    { selectedProductId: productId }
+  )
+}
+
+async function addPendingEventPickupCartItem(
+  page: Page,
+  input: {
+    collectionCoordinate: string
+    productEvent: SignedEvent
+    quantity: number
+    previewStock: number
+  }
+): Promise<void> {
+  await page.evaluate(
+    async ({ collectionCoordinate, productEvent, quantity, previewStock }) => {
+      const repositoryPath = "/src/lib/cart-repository.ts"
+      const modelPath = "/src/lib/cart-model.ts"
+      const repository = (await import(/* @vite-ignore */ repositoryPath)) as {
+        addCartRepositoryItem(
+          input: unknown,
+          quantity: number
+        ): Promise<{ changed: boolean }>
+      }
+      const model = (await import(/* @vite-ignore */ modelPath)) as {
+        createPendingEventPickupFulfillment(
+          coordinate: string
+        ):
+          | { type: "event_pickup_pending"; collectionCoordinate: string }
+          | undefined
+      }
+      const dTag = productEvent.tags.find((tag) => tag[0] === "d")?.[1]
+      if (!dTag) throw new Error("Synthetic pending product has no d tag.")
+      const fulfillment =
+        model.createPendingEventPickupFulfillment(collectionCoordinate)
+      if (!fulfillment) throw new Error("Synthetic pending pickup is invalid.")
+      const result = await repository.addCartRepositoryItem(
+        {
+          productId: `${productEvent.kind}:${productEvent.pubkey}:${dTag}`,
+          merchantPubkey: productEvent.pubkey,
+          title:
+            productEvent.tags.find((tag) => tag[0] === "title")?.[1] ??
+            "Synthetic pending pickup product",
+          price: 0,
+          currency: "SAT",
+          priceSats: 0,
+          format: "physical",
+          stock: previewStock,
+          productUpdatedAt: productEvent.created_at,
+          productEventId: productEvent.id,
+          fulfillment,
+        },
+        quantity
+      )
+      if (!result.changed) {
+        throw new Error("Synthetic pending cart fixture was rejected.")
+      }
+    },
+    input
+  )
+}
+
 async function installSyntheticEnvironment(
   page: Page,
   relay: RelayHarness,
@@ -921,7 +1115,7 @@ async function publishOrganizerMarket(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByRole("heading", { name: "Event timeline", exact: true })
+    page.getByRole("region", { name: "Event discovery", exact: true })
   ).toBeVisible()
   await page.getByRole("button", { name: "Create event" }).first().click()
   const editor = page.getByRole("dialog", { name: "Create event market" })
@@ -1095,7 +1289,7 @@ test("signed-out merchant participation preserves the exact event through auth @
   ).toBeVisible()
 })
 
-test("Merchant event timeline supports perspective, relationship, mobile, and keyboard flows @merchant", async ({
+test("Merchant event timeline uses combined discovery with relationship, mobile, and keyboard flows @merchant", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -1118,14 +1312,14 @@ test("Merchant event timeline supports perspective, relationship, mobile, and ke
   await page.setViewportSize({ width: 390, height: 844 })
   await gotoAs(page, merchantUrl, "/events", "merchant")
 
-  const timeline = page.getByRole("region", { name: "Event timeline" })
+  const timeline = page.getByRole("region", { name: "Event discovery" })
   await expect(timeline).toBeVisible()
   await expect(
     timeline.getByRole("group", { name: "Event network perspective" })
-  ).toBeVisible()
+  ).toHaveCount(0)
   await expect(
-    timeline.getByRole("button", { name: "Combined", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
+    page.getByText("Merchant workspace", { exact: true })
+  ).toHaveCount(0)
   const relationshipFilter = timeline.getByRole("combobox", {
     name: "Relationship",
     exact: true,
@@ -1153,16 +1347,6 @@ test("Merchant event timeline supports perspective, relationship, mobile, and ke
       .getByLabel(`Your relationship to ${eventTitle}`)
       .getByText("Saved", { exact: true })
   ).toBeVisible()
-  const following = timeline.getByRole("button", {
-    name: "Following",
-    exact: true,
-  })
-  await following.focus()
-  await page.keyboard.press("Enter")
-  await expect(following).toHaveAttribute("aria-pressed", "true")
-  await expect
-    .poll(() => new URL(page.url()).searchParams.get("source"))
-    .toBe("following")
   await expect
     .poll(() =>
       page.evaluate(
@@ -1179,7 +1363,7 @@ test("organizer discovery offers empty-read recovery without losing saved events
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
   await gotoAs(page, merchantUrl, "/events", "organizer")
-  const timeline = page.getByRole("region", { name: "Event timeline" })
+  const timeline = page.getByRole("region", { name: "Event discovery" })
   const emptyHeading = timeline.getByRole("heading", { name: "No events yet" })
   await expect(emptyHeading).toBeVisible()
   relay.rejectReads(true)
@@ -1233,7 +1417,7 @@ test("direct and pasted event imports hydrate one saved selector title outside t
   )
 
   await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
-  const timeline = page.getByRole("region", { name: "Event timeline" })
+  const timeline = page.getByRole("region", { name: "Event discovery" })
   await expect(
     timeline.getByRole("heading", { name: eventTitle, exact: true })
   ).toBeVisible({ timeout: 30_000 })
@@ -1619,7 +1803,7 @@ async function publishMerchantProductFromEvent(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByRole("heading", { name: "Event timeline", exact: true })
+    page.getByRole("region", { name: "Event discovery", exact: true })
   ).toBeVisible()
 
   if (options.discoveryMode === "followed") {
@@ -1963,6 +2147,347 @@ function createMerchantProductEvent(input: {
     ],
   })
 }
+
+function seedMerchantMutationMarket(
+  relay: RelayHarness,
+  now: number,
+  startOffset: number,
+  omitEnd = false
+): { product: SignedEvent; collection: SignedEvent; calendar: SignedEvent } {
+  const calendarCoordinate = `31923:${ORGANIZER_PUBKEY}:inventory-event`
+  const collectionCoordinate = `30405:${ORGANIZER_PUBKEY}:inventory-catalog`
+  const pickupCoordinate = `30406:${ORGANIZER_PUBKEY}:inventory-pickup`
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31923,
+    created_at: now - 60,
+    content: "Synthetic organizer-owned event.",
+    tags: [
+      ["d", "inventory-event"],
+      ["title", "Synthetic inventory event"],
+      ["start", String(now + startOffset)],
+      ...(omitEnd ? [] : [["end", String(now + startOffset + 3600)]]),
+      ["location", "Synthetic public hall"],
+    ],
+  })
+  const initialProduct = createMerchantProductEvent({
+    dTag: "inventory-product",
+    title: "Merchant-owned inventory product",
+    collectionCoordinate,
+    pickupCoordinate,
+    createdAt: now - 30,
+  })
+  const product = signEvent(MERCHANT_SECRET, {
+    ...initialProduct,
+    tags: [
+      ...initialProduct.tags,
+      ["t", "synthetic"],
+      ["t", "merchant"],
+      ["t", "inventory"],
+      ["visibility", "hidden"],
+    ],
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: now - 20,
+    content: "Synthetic accepted merchant product.",
+    tags: [
+      ["d", "inventory-catalog"],
+      ["title", "Synthetic inventory event"],
+      ["a", calendarCoordinate],
+      ["a", eventCoordinate(product)],
+      ["shipping_option", pickupCoordinate],
+    ],
+  })
+  relay.seed(
+    calendar,
+    collection,
+    product,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30406,
+      created_at: now - 60,
+      content: "",
+      tags: [
+        ["d", "inventory-pickup"],
+        ["title", "Synthetic organizer pickup"],
+        ["price", "0", "SAT"],
+        ["country", "US"],
+        ["service", "pickup"],
+        ["location", "Synthetic public hall pickup desk"],
+      ],
+    })
+  )
+  return { product, collection, calendar }
+}
+
+const merchantMutationCases = [
+  { phase: "before start", startOffset: 3600, fault: "delayed" },
+  { phase: "at start", startOffset: 0, fault: "delayed" },
+  { phase: "during the event", startOffset: -1800, fault: "delayed" },
+  { phase: "after the event", startOffset: -7200, fault: "delayed" },
+  { phase: "during the event", startOffset: -1800, fault: "unavailable" },
+  { phase: "during the event", startOffset: -1800, fault: "changed" },
+  { phase: "during the event", startOffset: -1800, fault: "pickup delayed" },
+  { phase: "after start without an end", startOffset: -1800, fault: "delayed" },
+] as const
+
+for (const scenario of merchantMutationCases) {
+  const scenarioTitle =
+    scenario.fault === "unavailable"
+      ? `merchant-owned direct pickup edits fail closed ${scenario.phase} when pickup evidence is unavailable @merchant`
+      : scenario.fault === "pickup delayed"
+        ? `merchant-owned direct pickup edits wait ${scenario.phase} for delayed pickup evidence @merchant`
+        : `merchant-owned product edits preserve fulfillment ${scenario.phase} with ${scenario.fault} organizer verification @merchant`
+
+  test(scenarioTitle, async ({ page }) => {
+    test.setTimeout(60_000)
+    page.setDefaultTimeout(15_000)
+    const now = Math.floor(Date.now() / 1000)
+    await page.clock.setFixedTime(new Date(now * 1000))
+    const relay = createRelayHarness()
+    const { product, collection } = seedMerchantMutationMarket(
+      relay,
+      now,
+      scenario.startOffset,
+      scenario.phase === "after start without an end"
+    )
+    await installSyntheticEnvironment(page, relay)
+    const heldKind = scenario.fault === "pickup delayed" ? 30406 : 30405
+    const held = relay.holdRelayRequests((request) =>
+      request.filters.some((filter) => filter.kinds?.includes(heldKind))
+    )
+    try {
+      await gotoAs(page, merchantUrl, "/products", "merchant")
+      await expect(
+        page.getByRole("button", { name: /^(Edit|Fix listing)$/ })
+      ).toBeVisible()
+      // The product list's independent event-context query is already pending.
+      // The edit/save path must not await it or launch its own market proof.
+      await expect
+        .poll(() =>
+          relay.requests.some((request) =>
+            request.filters.some((filter) => filter.kinds?.includes(heldKind))
+          )
+        )
+        .toBe(true)
+      if (scenario.fault === "unavailable") {
+        relay.rejectReads(true)
+        held.release()
+      } else if (scenario.fault === "changed") {
+        relay.remove(collection)
+        const changedCollection = signEvent(ORGANIZER_SECRET, {
+          ...collection,
+          created_at: now - 1,
+          tags: collection.tags.filter(
+            (tag) =>
+              tag[0] !== "shipping_option" &&
+              tag[1] !== eventCoordinate(product)
+          ),
+        })
+        relay.seed(changedCollection)
+        held.release()
+        await expect
+          .poll(() =>
+            relay.requests.some((request) =>
+              request.matchedEventIds.includes(changedCollection.id)
+            )
+          )
+          .toBe(true)
+      }
+
+      await page.getByRole("button", { name: /^(Edit|Fix listing)$/ }).click()
+      const editor = page.getByRole("dialog", { name: "Edit listing" })
+      await expect(
+        editor.getByText("Current fulfillment is kept", { exact: true })
+      ).toBeVisible()
+      await expect(editor.getByLabel("Price", { exact: true })).toHaveValue("0")
+      await editor.getByLabel("Stock quantity", { exact: true }).fill("7")
+      await editor
+        .getByLabel("Title", { exact: true })
+        .fill("Updated merchant inventory product")
+      const publicationStart = relay.publications.length
+      const pickupReadsBeforeSave = relay.requests.filter((request) =>
+        request.filters.some((filter) => filter.kinds?.includes(30406))
+      ).length
+      await editor
+        .getByRole("button", { name: "Save changes", exact: true })
+        .click()
+
+      if (scenario.fault === "unavailable") {
+        await expect(
+          editor.getByText(
+            "Event pickup could not be verified safely. Try again or choose Change fulfillment before saving.",
+            { exact: true }
+          )
+        ).toBeVisible()
+        await expect(editor).toBeVisible()
+        expect(
+          uniquePublishedEvents(relay.publications.slice(publicationStart))
+        ).toHaveLength(0)
+        return
+      }
+
+      if (scenario.fault === "pickup delayed") {
+        await expect
+          .poll(
+            () =>
+              relay.requests.filter((request) =>
+                request.filters.some((filter) => filter.kinds?.includes(30406))
+              ).length
+          )
+          .toBeGreaterThan(pickupReadsBeforeSave)
+        await expect(editor).toBeVisible()
+        expect(
+          uniquePublishedEvents(relay.publications.slice(publicationStart))
+        ).toHaveLength(0)
+        held.release()
+      }
+
+      await expect(editor).toBeHidden({ timeout: 15_000 })
+
+      await expect
+        .poll(
+          () =>
+            uniquePublishedEvents(relay.publications.slice(publicationStart))
+              .length
+        )
+        .toBe(1)
+      const published = uniquePublishedEvents(
+        relay.publications.slice(publicationStart)
+      )
+      expect(published).toHaveLength(1)
+      const updated = published[0]!
+      expect(verifyEvent(updated)).toBe(true)
+      expect(updated.pubkey).toBe(MERCHANT_PUBKEY)
+      expect(eventCoordinate(updated)).toBe(eventCoordinate(product))
+      expect(updated.tags).toContainEqual(["stock", "7"])
+      expect(updated.tags).toContainEqual([
+        "title",
+        "Updated merchant inventory product",
+      ])
+      expect(
+        updated.tags.find((tag) => tag[0] === "price")?.slice(1, 2)
+      ).toEqual(["0"])
+      for (const name of ["a", "shipping_option", "visibility"]) {
+        expect(updated.tags.filter((tag) => tag[0] === name)).toEqual(
+          product.tags.filter((tag) => tag[0] === name)
+        )
+      }
+      // Exactly one merchant-owned product event: no pickup reconstruction or
+      // organizer-owned calendar/catalog publication accompanies a routine edit.
+      expect(published.map((event) => event.kind)).toEqual([30402])
+    } finally {
+      held.release()
+    }
+  })
+}
+
+test("changing an existing product association requires verification and can return to preserving fulfillment @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const relay = createRelayHarness()
+  const { product } = seedMerchantMutationMarket(
+    relay,
+    Math.floor(Date.now() / 1000),
+    3600
+  )
+  await installSyntheticEnvironment(page, relay)
+  const held = relay.holdRelayRequests((request) =>
+    request.filters.some((filter) => filter.kinds?.includes(30405))
+  )
+  try {
+    await gotoAs(page, merchantUrl, "/products", "merchant")
+    await page.getByRole("button", { name: /^(Edit|Fix listing)$/ }).click()
+    const editor = page.getByRole("dialog", { name: "Edit listing" })
+    await editor.getByLabel("Stock quantity", { exact: true }).fill("8")
+    await expect(
+      editor.getByRole("button", { name: "Save changes", exact: true })
+    ).toBeEnabled()
+    await editor
+      .getByRole("button", { name: "Change fulfillment", exact: true })
+      .click()
+    await editor.locator("#product-fulfillment").click()
+    await page
+      .getByRole("option", { name: "Local pickup", exact: true })
+      .click()
+    await expect
+      .poll(() =>
+        relay.requests.some((request) =>
+          request.filters.some((filter) => filter.kinds?.includes(30405))
+        )
+      )
+      .toBe(true)
+    await expect(
+      editor.getByText(
+        "Verifying organizer, event, collection, and pickup evidence..."
+      )
+    ).toBeVisible()
+    await expect(
+      editor.getByRole("button", { name: "Save changes", exact: true })
+    ).toBeDisabled()
+    expect(relay.publications).toHaveLength(0)
+    await editor
+      .getByRole("button", { name: "Keep existing fulfillment", exact: true })
+      .click()
+    await expect(
+      editor.getByRole("button", { name: "Save changes", exact: true })
+    ).toBeEnabled()
+    await editor
+      .getByRole("button", { name: "Save changes", exact: true })
+      .click()
+    await expect(editor).toBeHidden()
+    await expect
+      .poll(() => uniquePublishedEvents(relay.publications).length)
+      .toBe(1)
+    const updated = uniquePublishedEvents(relay.publications)[0]!
+    expect(verifyEvent(updated)).toBe(true)
+    expect(eventCoordinate(updated)).toBe(eventCoordinate(product))
+    expect(updated.tags).toContainEqual(["stock", "8"])
+    for (const name of ["a", "shipping_option", "visibility"]) {
+      expect(updated.tags.filter((tag) => tag[0] === name)).toEqual(
+        product.tags.filter((tag) => tag[0] === name)
+      )
+    }
+  } finally {
+    held.release()
+  }
+})
+
+test("returning to preserved fulfillment discards fulfillment-only edits @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const relay = createRelayHarness()
+  seedMerchantMutationMarket(relay, Math.floor(Date.now() / 1000), 3600)
+  await installSyntheticEnvironment(page, relay)
+
+  await gotoAs(page, merchantUrl, "/products", "merchant")
+  await page.getByRole("button", { name: /^(Edit|Fix listing)$/ }).click()
+  const editor = page.getByRole("dialog", { name: "Edit listing" })
+  const save = editor.getByRole("button", {
+    name: "Save changes",
+    exact: true,
+  })
+  await expect(save).toBeDisabled()
+
+  await editor
+    .getByRole("button", { name: "Change fulfillment", exact: true })
+    .click()
+  const coordinateShipping = editor.getByRole("checkbox", {
+    name: "Coordinate shipping with the buyer after the order",
+  })
+  await coordinateShipping.uncheck()
+  await editor.getByLabel(/^Shipping \(/).fill("123")
+  await editor
+    .getByRole("button", { name: "Keep existing fulfillment", exact: true })
+    .click()
+
+  await expect(
+    editor.getByText("Current fulfillment is kept", { exact: true })
+  ).toBeVisible()
+  await expect(save).toBeDisabled()
+  expect(relay.publications).toHaveLength(0)
+})
 
 async function acceptMerchantProduct(
   page: Page,
@@ -3558,7 +4083,7 @@ test("terminal event deletion removes the exact-record retry path @merchant", as
     })
   ).toHaveCount(0)
   await expect(
-    page.getByRole("region", { name: "Event timeline" }).getByRole("heading", {
+    page.getByRole("region", { name: "Event discovery" }).getByRole("heading", {
       name: "Synthetic Deleted Retry Event",
       exact: true,
     })
@@ -4271,7 +4796,7 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
   await expect(card).toHaveCount(0)
   expect(relay.publications).toHaveLength(publications)
   console.log(
-    "Event timeline loading timings (synthetic, ms):",
+    "Event discovery loading timings (synthetic, ms):",
     JSON.stringify(timings)
   )
 })
@@ -4852,14 +5377,22 @@ test("cold event catalog shows a completed merchant product before a slower merc
       )
       .toBe(true)
     await expect(fastCard).toBeVisible()
-    await expect(
-      fastCard.getByRole("button", { name: "Checking pickup…", exact: true })
-    ).toBeDisabled()
-    await expect(
-      fastCard.getByRole("button", { name: "Add", exact: true })
-    ).toHaveCount(0)
+    const add = fastCard.getByRole("button", { name: "Add", exact: true })
+    await expect(add).toBeEnabled()
     await expect(slowCard).toHaveCount(0)
     await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+    await add.click()
+    await expect
+      .poll(() => readCanonicalCartLines(page))
+      .toEqual([{ productId: eventCoordinate(fast), quantity: 1 }])
+    await fastCard.hover()
+    await fastCard
+      .getByRole("button", {
+        name: "Remove one Synthetic fast merchant product from cart",
+        exact: true,
+      })
+      .click()
+    await expect.poll(() => readCanonicalCartLines(page)).toEqual([])
   } finally {
     held.release()
   }
@@ -4874,7 +5407,676 @@ test("cold event catalog shows a completed merchant product before a slower merc
   }
 })
 
-test("verified event catalog enables a completed merchant while another exact product read is held @market", async ({
+test("unrelated catalog hydration does not make terminal pickup evidence cartable @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic terminal pickup catalog",
+    organizerHandoffEnabled: true,
+  })
+  const terminalTemplate = createMerchantProductEvent({
+    dTag: "terminal-pickup-product",
+    title: "Synthetic terminal pickup product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const terminalProduct = signEvent(MERCHANT_SECRET, {
+    kind: terminalTemplate.kind,
+    created_at: terminalTemplate.created_at,
+    content: terminalTemplate.content,
+    tags: terminalTemplate.tags.filter((tag) => tag[0] !== "shipping_option"),
+  })
+  const unresolvedSecret = generateSecretKey()
+  const unresolvedProduct = signEvent(unresolvedSecret, {
+    kind: terminalTemplate.kind,
+    created_at: terminalTemplate.created_at,
+    content: "Synthetic unresolved product fixture.",
+    tags: terminalTemplate.tags.map((tag) =>
+      tag[0] === "d"
+        ? ["d", "unresolved-product"]
+        : tag[0] === "title"
+          ? ["title", "Synthetic unresolved product"]
+          : tag
+    ),
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [
+      ...market.initialCollection.tags,
+      ["a", eventCoordinate(terminalProduct)],
+      ["a", eventCoordinate(unresolvedProduct)],
+    ],
+  })
+  relay.seed(
+    terminalProduct,
+    unresolvedProduct,
+    collection,
+    ...[MERCHANT_SECRET, unresolvedSecret].map((secret) =>
+      signEvent(secret, {
+        kind: 10002,
+        created_at: terminalProduct.created_at,
+        content: "",
+        tags: [["r", FIXTURE_RELAY]],
+      })
+    )
+  )
+  let held: HeldRelayRequest | undefined
+  const terminalCard = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic terminal pickup product" })
+  const terminalAction = terminalCard.getByRole("button", {
+    name: "Pickup unavailable",
+    exact: true,
+  })
+
+  try {
+    await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+    await expect(terminalCard).toBeVisible()
+    await expect(terminalAction).toBeDisabled()
+
+    // Start from settled selected-product evidence, then degrade only the
+    // unrelated merchant on refresh. Catalog-wide checking must not turn this
+    // terminal product into reversible cart intent.
+    await page.getByText("Technical details", { exact: true }).click()
+    held = relay.holdRelayRequests((request) =>
+      request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(30402) &&
+          filter.authors?.includes(unresolvedProduct.pubkey)
+      )
+    )
+    await page
+      .getByRole("button", { name: "Refresh evidence", exact: true })
+      .click()
+    await held.captured
+    await expect(terminalAction).toBeDisabled()
+    await expect.poll(() => readCanonicalCartLines(page)).toEqual([])
+  } finally {
+    held?.release()
+  }
+
+  await expect(terminalCard).toBeVisible()
+  await expect(terminalAction).toBeDisabled()
+})
+
+test("cold merchant QR keeps selected cart intent reversible while another merchant frontier is held @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic merchant-first QR catalog",
+    organizerHandoffEnabled: true,
+  })
+  const selectedProduct = createMerchantProductEvent({
+    dTag: "fast-merchant-product",
+    title: "Synthetic fast merchant product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const unrelatedSecret = generateSecretKey()
+  const unrelatedProduct = signEvent(unrelatedSecret, {
+    kind: selectedProduct.kind,
+    created_at: selectedProduct.created_at,
+    content: "Synthetic unrelated QR merchant product fixture.",
+    tags: selectedProduct.tags.map((tag) =>
+      tag[0] === "d"
+        ? ["d", "slow-merchant-product"]
+        : tag[0] === "title"
+          ? ["title", "Synthetic slow merchant product"]
+          : tag
+    ),
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [
+      ...market.initialCollection.tags,
+      ["a", eventCoordinate(selectedProduct)],
+      ["a", eventCoordinate(unrelatedProduct)],
+    ],
+  })
+  relay.seed(
+    selectedProduct,
+    unrelatedProduct,
+    collection,
+    ...[MERCHANT_SECRET, unrelatedSecret].map((secret) =>
+      signEvent(secret, {
+        kind: 10002,
+        created_at: selectedProduct.created_at,
+        content: "",
+        tags: [["r", FIXTURE_RELAY]],
+      })
+    )
+  )
+
+  // Hold only the other booth's product-participation frontier. A merchant QR
+  // visit must not wait for it before accepting the selected booth's
+  // reversible, client-local cart intent.
+  const isUnrelatedMerchantFrontier = (
+    _request: RelayRequest,
+    event: SignedEvent
+  ) => event.pubkey === unrelatedProduct.pubkey && event.kind === 30402
+  const held = relay.holdRelayEventResponses(isUnrelatedMerchantFrontier)
+  const selectedMerchant = nip19.npubEncode(selectedProduct.pubkey)
+  const selectedCard = page.getByRole("listitem").filter({
+    hasText: "Synthetic fast merchant product",
+  })
+  const unrelatedCard = page.getByRole("listitem").filter({
+    hasText: "Synthetic slow merchant product",
+  })
+  const publicationStart = relay.publications.length
+  try {
+    // This is the first Market-origin visit, matching a cold scan of a printed
+    // merchant QR code rather than a warmed event or product route.
+    await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer", {
+      merchant: selectedMerchant,
+    })
+    const heldRequest = await Promise.race([
+      held.captured,
+      page.waitForTimeout(15_000).then(() => null),
+    ])
+    expect(new URL(page.url()).searchParams.get("merchant")).toBe(
+      selectedMerchant
+    )
+
+    await expect(selectedCard).toBeVisible()
+    await expect(unrelatedCard).toHaveCount(0)
+    await expect.poll(() => readCanonicalCartLines(page)).toEqual([])
+    if (heldRequest) {
+      expect(heldRequest.heldEventIds).toContain(unrelatedProduct.id)
+      expect(heldRequest.request.matchedEventIds).not.toContain(
+        unrelatedProduct.id
+      )
+    } else {
+      expect(
+        relay.requests.some((request) =>
+          request.matchedEventIds.includes(unrelatedProduct.id)
+        )
+      ).toBe(false)
+    }
+
+    const add = selectedCard.getByRole("button", {
+      name: "Add",
+      exact: true,
+    })
+    await expect(add).toBeEnabled({ timeout: 10_000 })
+    await add.click()
+    await expect
+      .poll(() => readCanonicalCartLines(page))
+      .toEqual([{ productId: eventCoordinate(selectedProduct), quantity: 1 }])
+
+    await selectedCard.hover()
+    const remove = selectedCard.getByRole("button", {
+      name: "Remove one Synthetic fast merchant product from cart",
+      exact: true,
+    })
+    await expect(remove).toBeEnabled()
+    await remove.click()
+    await expect.poll(() => readCanonicalCartLines(page)).toEqual([])
+
+    // Forming and withdrawing cart intent is local and reversible. This test
+    // does not enter checkout, and it must not publish an order or otherwise
+    // treat partial event hydration as final purchase authority.
+    expect(relay.publications).toHaveLength(publicationStart)
+    expect(page.url()).toContain(`/events/${market.canonicalNaddr}`)
+  } finally {
+    held.release()
+  }
+})
+
+test("pending merchant booth pickup retries unresolved terms and reapplies them after quantity correction @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic pending pickup cart",
+    organizerHandoffEnabled: true,
+  })
+  const merchantPickup = signEvent(MERCHANT_SECRET, {
+    kind: 30406,
+    created_at: market.initialCollection.created_at + 1,
+    content: "",
+    tags: [
+      ["d", "pending-booth"],
+      ["title", "Synthetic pending booth"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Synthetic pending booth"],
+    ],
+  })
+  const product = createMerchantProductEvent({
+    dTag: "pending-pickup-product",
+    title: "Synthetic pending pickup product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: eventCoordinate(merchantPickup),
+    createdAt: market.initialCollection.created_at + 1,
+    stock: 1,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+  })
+  relay.seed(
+    product,
+    collection,
+    signEvent(MERCHANT_SECRET, {
+      kind: 10002,
+      created_at: product.created_at,
+      content: "",
+      tags: [["r", FIXTURE_RELAY]],
+    })
+  )
+  const pickupReads = () =>
+    relay.requests.filter((request) =>
+      request.filters.some((filter) =>
+        eventMatchesFilter(merchantPickup, filter)
+      )
+    ).length
+
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  const firstReadStart = pickupReads()
+  await addPendingEventPickupCartItem(page, {
+    collectionCoordinate: market.collectionCoordinate,
+    productEvent: product,
+    quantity: 2,
+    // The reversible preview allowed two. The exact signed listing read below
+    // reports one, exercising the transactional stock refusal.
+    previewStock: 3,
+  })
+  const pendingCard = page.getByTestId("pending-event-pickup-cart")
+  await expect(pendingCard).toBeVisible()
+  await expect(
+    pendingCard.getByText("Event pickup · Verification required", {
+      exact: true,
+    })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Zap out", exact: true })
+  ).toHaveCount(0)
+
+  await expect
+    .poll(() => readCanonicalCartLines(page))
+    .toEqual([{ productId: eventCoordinate(product), quantity: 2 }])
+
+  // The first cart-owned read completes successfully without the exact pickup.
+  // Publishing the missing signed terms must be discovered by a bounded
+  // background retry in this same mounted cart.
+  await expect.poll(pickupReads).toBeGreaterThan(firstReadStart)
+  await expect
+    .poll(async () => {
+      const before = pickupReads()
+      await page.waitForTimeout(750)
+      return pickupReads() === before && before > firstReadStart
+    })
+    .toBe(true)
+  const unresolvedReadCount = pickupReads()
+  relay.seed(merchantPickup)
+  await expect
+    .poll(pickupReads, { timeout: 20_000 })
+    .toBeGreaterThan(unresolvedReadCount)
+  await page.waitForTimeout(250)
+
+  // Exact stock is one, so the transactional upgrade correctly refuses the
+  // two-item line while retaining the verified snapshot in query data.
+  await expect(pendingCard).toBeVisible()
+  const readsBeforeQuantityCorrection = pickupReads()
+  await pendingCard
+    .getByRole("button", {
+      name: "Decrease quantity for Synthetic pending pickup product",
+      exact: true,
+    })
+    .click()
+
+  // The quantity change reapplies the cached exact snapshot. It must not wait
+  // for focus, remounting, or another relay read.
+  await expect(pendingCard).toHaveCount(0, { timeout: 10_000 })
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toBeEnabled({ timeout: 10_000 })
+  expect(pickupReads()).toBe(readsBeforeQuantityCorrection)
+})
+
+test("pending event pickup reapplies cached terms after an exact sibling frees stock @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic sibling pickup cart",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "sibling-pickup-product",
+    title: "Synthetic sibling pickup product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+    stock: 2,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+  })
+  relay.seed(
+    product,
+    collection,
+    signEvent(MERCHANT_SECRET, {
+      kind: 10002,
+      created_at: product.created_at,
+      content: "",
+      tags: [["r", FIXTURE_RELAY]],
+    })
+  )
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const productCard = page.getByRole("listitem").filter({
+    hasText: "Synthetic sibling pickup product",
+  })
+  const add = productCard.getByRole("button", {
+    name: "Add",
+    exact: true,
+  })
+  await expect(add).toBeEnabled({ timeout: 10_000 })
+  await add.click()
+  await expect
+    .poll(() => readCanonicalCartLines(page))
+    .toEqual([{ productId: eventCoordinate(product), quantity: 1 }])
+
+  const pickupReads = () =>
+    relay.requests.filter((request) =>
+      request.filters.some((filter) =>
+        eventMatchesFilter(market.pickupEvent!, filter)
+      )
+    ).length
+
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  const pendingReadStart = pickupReads()
+  await addPendingEventPickupCartItem(page, {
+    collectionCoordinate: market.collectionCoordinate,
+    productEvent: product,
+    quantity: 2,
+    previewStock: 3,
+  })
+  const pendingCard = page.getByTestId("pending-event-pickup-cart")
+  await expect(pendingCard).toBeVisible()
+  await expect.poll(pickupReads).toBeGreaterThan(pendingReadStart)
+  await expect
+    .poll(async () => {
+      const before = pickupReads()
+      await page.waitForTimeout(500)
+      return pickupReads() === before
+    })
+    .toBe(true)
+
+  // Exact stock is two, so the signed upgrade cannot merge the pending two
+  // with the existing exact one. Removing only that exact purchase must
+  // reapply the already-cached upgrade without another relay read.
+  await expect
+    .poll(async () =>
+      (await readCanonicalCartLines(page))
+        .map((line) => line.quantity)
+        .sort((left, right) => left - right)
+    )
+    .toEqual([1, 2])
+  const readsBeforeSiblingRemoval = pickupReads()
+  await page
+    .getByRole("button", {
+      name: /^Clear Event pickup · .* purchase, reference /,
+    })
+    .click()
+  await page.getByRole("button", { name: "Clear cart", exact: true }).click()
+
+  await expect(pendingCard).toHaveCount(0, { timeout: 10_000 })
+  await expect
+    .poll(() => readCanonicalCartLines(page))
+    .toEqual([{ productId: eventCoordinate(product), quantity: 2 }])
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toBeEnabled({ timeout: 10_000 })
+  expect(pickupReads()).toBe(readsBeforeSiblingRemoval)
+})
+
+test("closed event route keeps retained exact pickup pending and purchase actions blocked @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic closed pending pickup",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "closed-pending-pickup",
+    title: "Synthetic closed pending product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const closedCollection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [
+      ...market.initialCollection.tags.filter(
+        (tag) => tag[0] !== "conduit_event_market"
+      ),
+      ["a", eventCoordinate(product)],
+      ["conduit_event_market", "1", "closed"],
+    ],
+  })
+  relay.seed(product, closedCollection)
+
+  await gotoAs(page, marketUrl, "/about", "buyer")
+  await addPendingEventPickupCartItem(page, {
+    collectionCoordinate: market.collectionCoordinate,
+    productEvent: product,
+    quantity: 1,
+    previewStock: 3,
+  })
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  await expect(
+    page.getByRole("button", { name: "Event closed", exact: true })
+  ).toBeVisible()
+  await expect(
+    page
+      .getByRole("listitem")
+      .filter({ hasText: "Synthetic closed pending product" })
+  ).toBeVisible()
+  await page.waitForTimeout(750)
+
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  await expect(page.getByTestId("pending-event-pickup-cart")).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Zap out", exact: true })
+  ).toHaveCount(0)
+})
+
+test("signed pickup withdrawal leaves pending cart blocked without background retries @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic withdrawn pending pickup",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "withdrawn-pending-pickup",
+    title: "Synthetic withdrawn pending product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+  })
+  const withdrawal = signEvent(MERCHANT_SECRET, {
+    kind: product.kind,
+    created_at: product.created_at + 2,
+    content: product.content,
+    tags: product.tags.filter(
+      (tag) => tag[0] !== "a" && tag[0] !== "shipping_option"
+    ),
+  })
+  relay.seed(product, collection, withdrawal)
+
+  const productDTag = product.tags.find((tag) => tag[0] === "d")![1]!
+  const exactProductReads = () =>
+    relay.requests.filter((request) =>
+      request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(30402) &&
+          filter.authors?.includes(product.pubkey) &&
+          Array.isArray(filter["#d"]) &&
+          (filter["#d"] as string[]).includes(productDTag) &&
+          filter.limit === undefined
+      )
+    ).length
+
+  // Keep the cart page's independent availability checks out of this counter;
+  // the app-level pending resolver is mounted on every route.
+  await gotoAs(page, marketUrl, "/about", "buyer")
+  const firstReadStart = exactProductReads()
+  await addPendingEventPickupCartItem(page, {
+    collectionCoordinate: market.collectionCoordinate,
+    productEvent: product,
+    quantity: 1,
+    previewStock: 3,
+  })
+  await expect.poll(exactProductReads).toBeGreaterThan(firstReadStart)
+  await expect
+    .poll(async () => {
+      const before = exactProductReads()
+      await page.waitForTimeout(750)
+      return exactProductReads() === before
+    })
+    .toBe(true)
+  const terminalReadCount = exactProductReads()
+
+  // A newer signed product revision removed the event references. Unlike a
+  // partial or unavailable read, that positive terminal evidence must not be
+  // polled as though pickup authority could appear from the same revision.
+  await page.waitForTimeout(6_000)
+  expect(exactProductReads()).toBe(terminalReadCount)
+
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  const pendingCard = page.getByTestId("pending-event-pickup-cart")
+  await expect(pendingCard).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toHaveCount(0)
+})
+
+test("signed merchant booth deletion leaves pending cart blocked without background retries @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic deleted booth pending pickup",
+    organizerHandoffEnabled: true,
+  })
+  const merchantPickup = signEvent(MERCHANT_SECRET, {
+    kind: 30406,
+    created_at: market.initialCollection.created_at + 1,
+    content: "",
+    tags: [
+      ["d", "deleted-pending-booth"],
+      ["title", "Synthetic deleted pending booth"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Synthetic deleted pending booth"],
+    ],
+  })
+  const product = createMerchantProductEvent({
+    dTag: "deleted-booth-pending-product",
+    title: "Synthetic deleted booth pending product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: eventCoordinate(merchantPickup),
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 2,
+    content: market.initialCollection.content,
+    tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+  })
+  const deletion = signEvent(MERCHANT_SECRET, {
+    kind: 5,
+    created_at: merchantPickup.created_at + 2,
+    content: "",
+    tags: [["a", eventCoordinate(merchantPickup)]],
+  })
+  relay.seed(product, collection, merchantPickup, deletion)
+
+  const pickupReads = () =>
+    relay.requests.filter((request) =>
+      request.filters.some((filter) =>
+        eventMatchesFilter(merchantPickup, filter)
+      )
+    ).length
+
+  await gotoAs(page, marketUrl, "/about", "buyer")
+  const firstReadStart = pickupReads()
+  await addPendingEventPickupCartItem(page, {
+    collectionCoordinate: market.collectionCoordinate,
+    productEvent: product,
+    quantity: 1,
+    previewStock: 3,
+  })
+  await expect.poll(pickupReads).toBeGreaterThan(firstReadStart)
+  await expect
+    .poll(async () => {
+      const before = pickupReads()
+      await page.waitForTimeout(750)
+      return pickupReads() === before
+    })
+    .toBe(true)
+  const terminalReadCount = pickupReads()
+
+  await page.waitForTimeout(6_000)
+  expect(pickupReads()).toBe(terminalReadCount)
+
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  await expect(page.getByTestId("pending-event-pickup-cart")).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toHaveCount(0)
+})
+
+test("verified event catalog keeps exact pickup ready while another merchant forms pending intent @market", async ({
   page,
 }) => {
   test.setTimeout(120_000)
@@ -4966,11 +6168,13 @@ test("verified event catalog enables a completed merchant while another exact pr
     ).toBeEnabled()
     await expect(slowCard).toBeVisible()
     await expect(
-      slowCard.getByRole("button", { name: "Checking pickup…", exact: true })
-    ).toBeDisabled()
-    await expect(
       slowCard.getByRole("button", { name: "Add", exact: true })
-    ).toHaveCount(0)
+    ).toBeEnabled()
+    await expect(
+      slowCard.getByText(
+        /Current pickup terms are being verified.*checkout stays locked/s
+      )
+    ).toBeVisible()
     await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
     const slowExactReads = relay.requests.filter(isSlowExactRead)
     expect(slowExactReads.length).toBeGreaterThan(0)
@@ -4988,6 +6192,29 @@ test("verified event catalog enables a completed merchant while another exact pr
           ) && request.matchedEventIds.includes(slow.id)
       )
     ).toBe(true)
+    await test.step("pending preview cart retains its signed product frontier", async () => {
+      const add = slowCard.getByRole("button", { name: "Add", exact: true })
+      await expect(add).toBeEnabled()
+      await add.click({ timeout: 10_000 })
+      await expect
+        .poll(
+          () => readCanonicalCartProductFrontier(page, eventCoordinate(slow)),
+          { timeout: 10_000 }
+        )
+        .toEqual({
+          productUpdatedAt: slow.created_at * 1_000,
+          productEventId: slow.id,
+          fulfillmentType: "event_pickup_pending",
+        })
+      await slowCard.hover()
+      await slowCard
+        .getByRole("button", {
+          name: "Remove one Synthetic slow merchant product from cart",
+          exact: true,
+        })
+        .click({ timeout: 10_000 })
+      await expect.poll(() => readCanonicalCartLines(page)).toEqual([])
+    })
     console.log(
       "Synthetic independent purchase readiness:",
       JSON.stringify({
@@ -5011,7 +6238,7 @@ test("verified event catalog enables a completed merchant while another exact pr
   }
 })
 
-test("event catalog paints before held product reads and keeps cached browsing closed to purchase @market", async ({
+test("event catalog paints before held product reads and allows reversible cached cart intent @market", async ({
   page,
 }) => {
   test.setTimeout(120_000)
@@ -5101,13 +6328,23 @@ test("event catalog paints before held product reads and keeps cached browsing c
     card.getByRole("button", { name: "Add", exact: true })
   ).toBeEnabled()
   const publications = relay.publications.length
-  const warmRead = relay.holdRelayRequests((request) =>
+  const isWarmCatalogRead = (request: RelayRequest) =>
     request.filters.some((filter) =>
       filter.kinds?.some((kind) =>
         [30402, 30405, 30406, 31922, 31923].includes(kind)
       )
     )
+  const warmRead = relay.holdRelayRequests(isWarmCatalogRead)
+  const writer = await page.context().newPage()
+  const writerUrl = `${marketUrl}/__synthetic-progressive-removal-writer.html`
+  await writer.route(writerUrl, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Synthetic progressive removal writer</title>",
+    })
   )
+  await writer.goto(writerUrl)
+  const warmRequestStart = relay.requests.length
   const warmStarted = Date.now()
   try {
     await page.reload()
@@ -5121,16 +6358,68 @@ test("event catalog paints before held product reads and keeps cached browsing c
     await expect(card).toBeVisible()
     timings.warmProductsMs = Date.now() - warmStarted
     await expect(
-      card.getByRole("button", { name: "Checking pickup…", exact: true })
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(
+      card.getByText(
+        /Current pickup terms are being verified.*checkout stays locked/s
+      )
+    ).toBeVisible()
+    await expect
+      .poll(() =>
+        relay.requests
+          .slice(warmRequestStart)
+          .some((request) =>
+            request.filters.some(
+              (filter) =>
+                filter.kinds?.includes(30402) &&
+                filter["#d"]?.includes("progressive-catalog")
+            )
+          )
+      )
+      .toBe(true)
+    const readsBeforeRemoval = relay.requests.filter(isWarmCatalogRead).length
+    const removedCollection = signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: collection.created_at + 10,
+      content: collection.content,
+      tags: collection.tags.filter(
+        (tag) => !(tag[0] === "a" && tag[1] === eventCoordinate(product))
+      ),
+    })
+    const dbUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url))}`
+    await writer.evaluate(
+      async ({ moduleUrl, event }) => {
+        const { db } = await import(moduleUrl)
+        await db.eventMarketEvidence.put({
+          id: event.id,
+          organizerPubkey: event.pubkey,
+          kind: event.kind,
+          signedEvent: event,
+          sourceRelayUrls: [],
+          cachedAt: Date.now(),
+        })
+      },
+      { moduleUrl: dbUrl, event: removedCollection }
+    )
+    await expect(card).toBeVisible()
+    await expect(
+      card.getByRole("button", { name: "Pickup unavailable", exact: true })
     ).toBeDisabled()
     await expect(
       card.getByRole("button", { name: "Add", exact: true })
     ).toHaveCount(0)
-    // The next response carries stronger evidence than the cached preview.
+    expect(
+      relay.requests
+        .filter(isWarmCatalogRead)
+        .slice(readsBeforeRemoval)
+        .map((request) => request.filters)
+    ).toEqual([])
+    // The next response carries terminal evidence beyond the cached preview.
     relay.seed(
       signEvent(ORGANIZER_SECRET, {
         kind: 5,
-        created_at: collection.created_at + 1,
+        created_at: removedCollection.created_at + 1,
         content: "",
         tags: [
           ["a", market.collectionCoordinate],
@@ -5140,6 +6429,7 @@ test("event catalog paints before held product reads and keeps cached browsing c
     )
   } finally {
     warmRead.release()
+    await writer.close()
   }
   await expect(
     page.getByRole("heading", { name: "Event deleted", exact: true })
@@ -5309,6 +6599,127 @@ test("event catalogs honor cross-tab signed listing withdrawals while mounted an
   }
 })
 
+test("mounted event catalog keeps a newer malformed product terminal without relay rechecks @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay, "malformed-product-reader")
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic malformed product catalog",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "malformed-product-replacement",
+    title: "Synthetic retained product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  relay.seed(
+    product,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: market.initialCollection.created_at + 2,
+      content: market.initialCollection.content,
+      tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+    })
+  )
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const card = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic retained product" })
+  await expect(
+    card.getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled()
+
+  const writer = await page.context().newPage()
+  const writerUrl = `${marketUrl}/__synthetic-malformed-product-writer.html`
+  await writer.route(writerUrl, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Synthetic malformed product writer</title>",
+    })
+  )
+  await writer.goto(writerUrl)
+  const isCatalogRead = (request: RelayRequest) =>
+    request.clientId === "malformed-product-reader" &&
+    request.filters.some((filter) =>
+      filter.kinds?.some((kind) =>
+        [5, 30402, 30405, 30406, 31922, 31923].includes(kind)
+      )
+    )
+  const catalogReads = () => relay.requests.filter(isCatalogRead).length
+  const before = catalogReads()
+  const held = relay.holdRelayRequests(isCatalogRead)
+  const dbUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url))}`
+  const persistEvidence = async (event: SignedEvent) => {
+    await writer.evaluate(
+      async ({ moduleUrl, organizerPubkey, signedEvent }) => {
+        const { db } = await import(moduleUrl)
+        await db.eventMarketEvidence.put({
+          id: signedEvent.id,
+          organizerPubkey,
+          kind: signedEvent.kind,
+          signedEvent,
+          sourceRelayUrls: [],
+          cachedAt: Date.now(),
+        })
+      },
+      {
+        moduleUrl: dbUrl,
+        organizerPubkey: market.initialCollection.pubkey,
+        signedEvent: event,
+      }
+    )
+  }
+
+  try {
+    const malformed = signEvent(MERCHANT_SECRET, {
+      kind: product.kind,
+      created_at: product.created_at + 10,
+      content: product.content,
+      tags: product.tags.map((tag) =>
+        tag[0] === "title" ? ["title", "x".repeat(201)] : tag
+      ),
+    })
+    await persistEvidence(malformed)
+
+    await expect(card).toBeVisible()
+    await expect(
+      card.getByRole("button", { name: "Pickup unavailable", exact: true })
+    ).toBeDisabled()
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toHaveCount(0)
+    expect(catalogReads()).toBe(before)
+
+    const valid = signEvent(MERCHANT_SECRET, {
+      kind: product.kind,
+      created_at: malformed.created_at + 1,
+      content: product.content,
+      tags: product.tags.map((tag) =>
+        tag[0] === "title" ? ["title", "Synthetic updated product"] : tag
+      ),
+    })
+    await persistEvidence(valid)
+
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(
+      card.getByText(
+        /Current pickup terms are being verified.*checkout stays locked/s
+      )
+    ).toBeVisible()
+    expect(catalogReads()).toBe(before)
+  } finally {
+    held.release()
+    await writer.close()
+  }
+})
+
 for (const mounted of [true, false]) {
   test(`event catalog revokes a superseded cross-tab graph ${mounted ? "while mounted" : "on warm return"} without relay rechecks @market`, async ({
     page,
@@ -5412,10 +6823,12 @@ for (const mounted of [true, false]) {
         await expect(card).toBeVisible()
         await expect(
           card.getByRole("button", { name: "Add", exact: true })
-        ).toHaveCount(0)
+        ).toBeEnabled()
         await expect(
-          card.getByRole("button", { name: "Checking pickup…", exact: true })
-        ).toHaveCount(0)
+          card.getByText(
+            /Current pickup terms are being verified.*checkout stays locked/s
+          )
+        ).toBeVisible()
       }
       await expect(
         page
@@ -5431,10 +6844,399 @@ for (const mounted of [true, false]) {
           observedRevisionKind: revised.kind,
           reconciliationMs: Date.now() - started,
           retainedBrowseProducts: cards.length,
-          remainingAddableProducts: 0,
+          reversibleCartIntentProducts: cards.length,
+          checkoutAuthorizedProducts: 0,
           catalogRechecks: 0,
         })
       )
+    } finally {
+      held.release()
+      await writer.close()
+    }
+  })
+}
+
+test("mounted event catalog scopes product and pickup removals to exact dependencies @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay, "scoped-graph-reader")
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic scoped graph catalog",
+    organizerHandoffEnabled: true,
+  })
+  const createdAt = market.initialCollection.created_at + 1
+  const merchantPickup = signEvent(MERCHANT_SECRET, {
+    kind: 30406,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "scoped-merchant-booth"],
+      ["title", "Synthetic scoped merchant booth"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Synthetic scoped merchant booth"],
+    ],
+  })
+  const parentCoordinate = `30402:${MERCHANT_PUBKEY}:scoped-family`
+  const family = ["parent", "Small"].map((size, index) =>
+    signEvent(MERCHANT_SECRET, {
+      kind: 30402,
+      created_at: createdAt + index,
+      content: "Synthetic scoped family product",
+      tags: [
+        ["d", index === 0 ? "scoped-family" : "scoped-family-small"],
+        [
+          "title",
+          index === 0
+            ? "Synthetic scoped family"
+            : "Synthetic scoped family Small",
+        ],
+        ["type", index === 0 ? "variable" : "variation", "physical"],
+        ["price", "1000", "SATS"],
+        ["stock", "3"],
+        ["visibility", "hidden"],
+        ["image", "https://cdn.conduit.market/conduit-test/scoped-family.png"],
+        ["a", market.collectionCoordinate],
+        ["shipping_option", eventCoordinate(merchantPickup), "0"],
+        ...(index === 0
+          ? []
+          : [
+              ["a", parentCoordinate],
+              ["spec", "size", size],
+            ]),
+      ],
+    })
+  )
+  const organizerPickupProduct = createMerchantProductEvent({
+    dTag: "scoped-organizer-pickup",
+    title: "Synthetic scoped organizer pickup product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: createdAt + 3,
+    content: market.initialCollection.content,
+    tags: [
+      ...market.initialCollection.tags,
+      ...family.map((record) => ["a", eventCoordinate(record)]),
+      ["a", eventCoordinate(organizerPickupProduct)],
+    ],
+  })
+  relay.seed(merchantPickup, ...family, organizerPickupProduct, collection)
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const familyCard = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic scoped family" })
+  const organizerCard = page.getByRole("listitem").filter({
+    hasText: "Synthetic scoped organizer pickup product",
+  })
+  for (const card of [familyCard, organizerCard]) {
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+  }
+
+  const writer = await page.context().newPage()
+  const writerUrl = `${marketUrl}/__synthetic-scoped-graph-writer.html`
+  await writer.route(writerUrl, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Synthetic scoped graph writer</title>",
+    })
+  )
+  await writer.goto(writerUrl)
+  const isCatalogRead = (request: RelayRequest) =>
+    request.clientId === "scoped-graph-reader" &&
+    request.filters.some((filter) =>
+      filter.kinds?.some((kind) =>
+        [5, 30402, 30405, 30406, 31922, 31923].includes(kind)
+      )
+    )
+  const catalogReads = () => relay.requests.filter(isCatalogRead).length
+  const held = relay.holdRelayRequests(
+    (request) =>
+      request.clientId === "scoped-graph-reader" &&
+      request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(30402) && typeof filter.limit === "number"
+      )
+  )
+  try {
+    // Keep the warm organizer products visible from browse evidence while the
+    // exact event graph and participation reads remain unsettled.
+    await page.reload()
+    await held.captured
+    for (const card of [familyCard, organizerCard]) {
+      await expect(card).toBeVisible()
+      await expect(
+        card.getByRole("button", { name: "Add", exact: true })
+      ).toBeEnabled()
+      await expect(
+        card.getByText(
+          /Current pickup terms are being verified.*checkout stays locked/s
+        )
+      ).toBeVisible()
+    }
+    // The progressive reader can enqueue another stage after the first held
+    // request and card paint. Establish a quiet baseline so that this assertion
+    // measures reads caused by the local evidence write, not already scheduled
+    // hydration work.
+    let settledCatalogReads = catalogReads()
+    let stableSince = Date.now()
+    await expect
+      .poll(
+        () => {
+          const current = catalogReads()
+          if (current !== settledCatalogReads) {
+            settledCatalogReads = current
+            stableSince = Date.now()
+          }
+          return Date.now() - stableSince
+        },
+        { timeout: 10_000, intervals: [100] }
+      )
+      .toBeGreaterThanOrEqual(1_000)
+    const before = settledCatalogReads
+    const revised = signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: collection.created_at + 10,
+      content: collection.content,
+      tags: collection.tags.filter(
+        (tag) =>
+          !(tag[0] === "a" && tag[1] === eventCoordinate(family[0]!)) &&
+          !(tag[0] === "shipping_option" && tag[1] === market.pickupCoordinate)
+      ),
+    })
+    const dbUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url))}`
+    await writer.evaluate(
+      async ({ moduleUrl, event }) => {
+        const { db } = await import(moduleUrl)
+        await db.eventMarketEvidence.put({
+          id: event.id,
+          organizerPubkey: event.pubkey,
+          kind: event.kind,
+          signedEvent: event,
+          sourceRelayUrls: [],
+          cachedAt: Date.now(),
+        })
+      },
+      { moduleUrl: dbUrl, event: revised }
+    )
+
+    await expect(familyCard).toBeVisible()
+    await familyCard.hover()
+    await expect(
+      familyCard.getByRole("combobox", { name: "Choose size" })
+    ).toBeVisible()
+    await expect(
+      familyCard.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(
+      familyCard.getByText(
+        /Current pickup terms are being verified.*checkout stays locked/s
+      )
+    ).toBeVisible()
+    await expect(
+      organizerCard.getByRole("button", {
+        name: "Pickup unavailable",
+        exact: true,
+      })
+    ).toBeDisabled()
+    await expect(
+      organizerCard.getByRole("button", { name: "Add", exact: true })
+    ).toHaveCount(0)
+    expect(catalogReads()).toBe(before)
+  } finally {
+    held.release()
+    await writer.close()
+  }
+})
+
+for (const revocation of [
+  "closure",
+  "removal",
+  "deletion",
+  "calendar-conflict",
+  "pickup-conflict",
+  "unsupported-reference",
+  "legacy-ended",
+  "lifecycle-removal",
+] as const) {
+  test(`event catalog keeps a signed local graph ${revocation} terminal without relay rechecks @market`, async ({
+    page,
+  }) => {
+    test.setTimeout(120_000)
+    const relay = createRelayHarness()
+    await installSyntheticEnvironment(page, relay, `graph-${revocation}-reader`)
+    const market = await publishOrganizerMarket(page, relay, {
+      title: `Synthetic graph ${revocation}`,
+      organizerHandoffEnabled: true,
+    })
+    const product = createMerchantProductEvent({
+      dTag: `graph-${revocation}-product`,
+      title: `Synthetic graph ${revocation} product`,
+      collectionCoordinate: market.collectionCoordinate,
+      pickupCoordinate: market.pickupCoordinate!,
+      createdAt: market.initialCollection.created_at + 1,
+    })
+    const collection = signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: market.initialCollection.created_at + 2,
+      content: market.initialCollection.content,
+      tags: [
+        ...(revocation === "legacy-ended"
+          ? market.initialCollection.tags.filter(
+              (tag) => tag[0] !== "conduit_event_market"
+            )
+          : market.initialCollection.tags),
+        ["a", eventCoordinate(product)],
+        ...(revocation === "legacy-ended"
+          ? [["conduit_event_market", "1", "open"]]
+          : []),
+      ],
+    })
+    if (revocation === "lifecycle-removal") {
+      expect(collection.tags).toContainEqual([
+        "conduit_event_market",
+        "1",
+        "open",
+      ])
+    }
+    const pastCalendar =
+      revocation === "legacy-ended"
+        ? signEvent(ORGANIZER_SECRET, {
+            kind: market.calendarEvent.kind,
+            created_at: market.calendarEvent.created_at + 1,
+            content: market.calendarEvent.content,
+            tags: market.calendarEvent.tags.map((tag) =>
+              tag[0] === "start"
+                ? [
+                    "start",
+                    market.calendarEvent.kind === 31922
+                      ? "2023-11-14"
+                      : "1700000000",
+                  ]
+                : tag[0] === "end"
+                  ? [
+                      "end",
+                      market.calendarEvent.kind === 31922
+                        ? "2023-11-15"
+                        : "1700003600",
+                    ]
+                  : tag
+            ),
+          })
+        : null
+    relay.seed(product, collection, ...(pastCalendar ? [pastCalendar] : []))
+    await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+    const card = page.getByRole("listitem").filter({
+      hasText: `Synthetic graph ${revocation} product`,
+    })
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
+
+    const writer = await page.context().newPage()
+    const writerUrl = `${marketUrl}/__synthetic-graph-revocation-writer.html`
+    await writer.route(writerUrl, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Synthetic graph revocation writer</title>",
+      })
+    )
+    await writer.goto(writerUrl)
+    const isCatalogRead = (request: RelayRequest) =>
+      request.clientId === `graph-${revocation}-reader` &&
+      request.filters.some((filter) =>
+        filter.kinds?.some((kind) =>
+          [5, 30402, 30405, 30406, 31922, 31923].includes(kind)
+        )
+      )
+    const catalogReads = () => relay.requests.filter(isCatalogRead).length
+    const before = catalogReads()
+    const held = relay.holdRelayRequests(isCatalogRead)
+    try {
+      const revised = signEvent(ORGANIZER_SECRET, {
+        kind: revocation === "deletion" ? 5 : 30405,
+        created_at: collection.created_at + 10,
+        content: revocation === "deletion" ? "" : collection.content,
+        tags:
+          revocation === "deletion"
+            ? [["e", collection.id]]
+            : [
+                ...collection.tags.filter(
+                  (tag) =>
+                    tag[0] !== "conduit_event_market" &&
+                    !(
+                      revocation === "removal" &&
+                      tag[0] === "a" &&
+                      tag[1] === eventCoordinate(product)
+                    )
+                ),
+                ...(revocation === "closure"
+                  ? [["conduit_event_market", "1", "closed"]]
+                  : []),
+                ...(revocation === "calendar-conflict"
+                  ? [["a", `31923:${collection.pubkey}:conflicting-calendar`]]
+                  : []),
+                ...(revocation === "pickup-conflict"
+                  ? [
+                      [
+                        "shipping_option",
+                        `30406:${collection.pubkey}:conflicting-pickup`,
+                      ],
+                    ]
+                  : []),
+                ...(revocation === "unsupported-reference"
+                  ? [["a", `30407:${collection.pubkey}:unsupported`]]
+                  : []),
+              ],
+      })
+      const dbUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url))}`
+      await writer.evaluate(
+        async ({ moduleUrl, event }) => {
+          const { db } = await import(moduleUrl)
+          await db.eventMarketEvidence.put({
+            id: event.id,
+            organizerPubkey: event.pubkey,
+            kind: event.kind,
+            signedEvent: event,
+            sourceRelayUrls: [],
+            cachedAt: Date.now(),
+          })
+        },
+        { moduleUrl: dbUrl, event: revised }
+      )
+
+      await expect(card).toBeVisible()
+      await expect(
+        card.getByRole("button", { name: "Pickup unavailable", exact: true })
+      ).toBeDisabled()
+      await expect(
+        card.getByRole("button", { name: "Add", exact: true })
+      ).toHaveCount(0)
+      expect(catalogReads()).toBe(before)
+
+      if (revocation === "lifecycle-removal") {
+        await page.reload()
+        await held.captured
+        held.release()
+        await expect(
+          page.getByRole("alert").filter({
+            hasText: "Event reference or records are malformed",
+          })
+        ).toBeVisible({ timeout: 30_000 })
+        await expect(
+          page.getByRole("button", { name: "Add", exact: true })
+        ).toHaveCount(0)
+      }
     } finally {
       held.release()
       await writer.close()
@@ -5666,8 +7468,13 @@ test("event variation choices remain stable while cached pickup authorization re
     const selector = card.getByRole("combobox", { name: "Choose size" })
     await expect(selector).toBeVisible()
     await expect(
-      card.getByRole("button", { name: "Checking pickup…", exact: true })
-    ).toBeDisabled()
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(
+      card.getByText(
+        /Current pickup terms are being verified.*checkout stays locked/s
+      )
+    ).toBeVisible()
     await selector.click()
     await expect(
       page.getByRole("option", { name: "Small", exact: true })
@@ -5695,10 +7502,12 @@ test("event variation choices remain stable while cached pickup authorization re
   ).toBeVisible()
   await expect(
     card.getByRole("button", { name: "Add", exact: true })
-  ).toHaveCount(0)
+  ).toBeEnabled()
   await expect(
-    card.getByRole("button", { name: "Pickup unavailable", exact: true })
-  ).toBeDisabled()
+    card.getByText(
+      /Current pickup terms are being verified.*checkout stays locked/s
+    )
+  ).toBeVisible()
 })
 
 test("failed event refresh retains cards with stale warning and a working retry @market", async ({
@@ -5774,8 +7583,13 @@ const loadRawEventCatalog = async (...args) => {
   await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
   await expect(card).toBeVisible()
   await expect(
-    card.getByRole("button", { name: "Pickup unavailable", exact: true })
-  ).toBeDisabled()
+    card.getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled()
+  await expect(
+    card.getByText(
+      /Current pickup terms are being verified.*checkout stays locked/s
+    )
+  ).toBeVisible()
   await page
     .getByRole("button", { name: "Refresh evidence", exact: true })
     .click()
@@ -5846,11 +7660,24 @@ const loadRawEventCatalog = async (...args) => {
     "1 product remains unresolved and unavailable."
   )
   await expect(card).toBeVisible()
+  const add = card.getByRole("button", { name: "Add", exact: true })
+  await expect(add).toBeEnabled()
   await expect(
-    card.getByRole("button", { name: "Pickup unavailable", exact: true })
-  ).toBeDisabled()
+    card.getByText(
+      /Current pickup terms are being verified.*checkout stays locked/s
+    )
+  ).toBeVisible()
+  await add.click()
+  await expect
+    .poll(() => readCanonicalCartLines(page))
+    .toEqual([{ productId: eventCoordinate(product), quantity: 1 }])
+  await page.goto(`${marketUrl}/cart`)
+  await expect(page.getByTestId("pending-event-pickup-cart")).toBeVisible()
   await expect(
-    card.getByRole("button", { name: "Add", exact: true })
+    page.getByRole("button", { name: "Order", exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Zap out", exact: true })
   ).toHaveCount(0)
   expect(relay.publications).toHaveLength(publicationCount)
 })

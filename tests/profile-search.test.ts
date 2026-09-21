@@ -26,6 +26,12 @@ const ERIN = "e".repeat(64)
 const FRANK = "f".repeat(64)
 const GRACE = "9".repeat(64)
 
+function authorPubkeys(count: number): string[] {
+  return Array.from({ length: count }, (_, index) =>
+    (index + 1).toString(16).padStart(64, "0")
+  )
+}
+
 function profileEvent(
   pubkey: string,
   content: Record<string, string>,
@@ -304,6 +310,274 @@ describe("profile search relay plan", () => {
   })
 })
 
+describe("profile search author transport chunks", () => {
+  it("finds a scoped account beyond the first 64-author relay filter", async () => {
+    const authors = authorPubkeys(65)
+    const target = authors[64]
+    const attemptedAuthors: string[][] = []
+
+    const result = await searchNetworkProfiles(
+      { query: "alice", authorPubkeys: authors },
+      deps({
+        fetchEvents: async (filter) => {
+          const chunk = [...(filter.authors ?? [])]
+          attemptedAuthors.push(chunk)
+          if (chunk.length > 64) throw new Error("authors filter too large")
+          const events = chunk.includes(target)
+            ? [profileEvent(target, { name: "Alice Target" })]
+            : []
+          return {
+            events,
+            relays: [
+              {
+                relayUrl: "wss://search.example",
+                status: "success",
+                eventCount: events.length,
+              },
+            ],
+            eventsVerified: true,
+          }
+        },
+      })
+    )
+
+    expect(attemptedAuthors.map((chunk) => chunk.length)).toEqual([64, 1])
+    expect(attemptedAuthors.flat()).toEqual(authors)
+    expect(result.matches.map((entry) => entry.pubkey)).toEqual([target])
+    expect(result.relaysCompleted).toBe(1)
+    expect(result.relaysDegraded).toBe(0)
+    expect(result.evidence).toBe("present_current")
+  })
+
+  it("retains successful chunk matches but degrades incomplete relay coverage", async () => {
+    const authors = authorPubkeys(65)
+    const target = authors[0]
+
+    const result = await searchNetworkProfiles(
+      { query: "alice", authorPubkeys: authors },
+      deps({
+        fetchEvents: async (filter) => {
+          const chunk = filter.authors ?? []
+          if (!chunk.includes(target)) throw new Error("chunk unavailable")
+          return {
+            events: [profileEvent(target, { name: "Alice Retained" })],
+            relays: [
+              {
+                relayUrl: "wss://search.example",
+                status: "success",
+                eventCount: 1,
+              },
+            ],
+            eventsVerified: true,
+          }
+        },
+      })
+    )
+
+    expect(result.matches.map((entry) => entry.pubkey)).toEqual([target])
+    expect(result.relaysCompleted).toBe(0)
+    expect(result.relaysDegraded).toBe(1)
+    expect(result.evidence).toBe("lookup_partial")
+  })
+
+  it("reports unavailability when no author chunk receives a relay answer", async () => {
+    let attempts = 0
+    const result = await searchNetworkProfiles(
+      { query: "alice", authorPubkeys: authorPubkeys(65) },
+      deps({
+        fetchEvents: async () => {
+          attempts += 1
+          throw new Error("offline")
+        },
+      })
+    )
+
+    expect(attempts).toBe(2)
+    expect(result.relaysCompleted).toBe(0)
+    expect(result.relaysDegraded).toBe(0)
+    expect(result.evidence).toBe("lookup_unavailable")
+  })
+
+  it("classifies the per-chunk limit independently", async () => {
+    const authors = authorPubkeys(65)
+    let attempt = 0
+    const result = await searchNetworkProfiles(
+      { query: "alice", authorPubkeys: authors },
+      deps({
+        fetchEvents: async () => {
+          attempt += 1
+          return {
+            events: [],
+            relays: [
+              {
+                relayUrl: "wss://search.example",
+                status: "success",
+                eventCount: attempt === 1 ? 24 : 0,
+              },
+            ],
+            eventsVerified: true,
+          }
+        },
+      })
+    )
+
+    expect(attempt).toBe(2)
+    expect(result.relaysCompleted).toBe(0)
+    expect(result.relaysDegraded).toBe(1)
+    expect(result.evidence).toBe("lookup_partial")
+  })
+
+  it("does not treat the combined event count as one filter cap", async () => {
+    let attempt = 0
+    const result = await searchNetworkProfiles(
+      { query: "alice", authorPubkeys: authorPubkeys(65) },
+      deps({
+        fetchEvents: async () => {
+          attempt += 1
+          return {
+            events: [],
+            relays: [
+              {
+                relayUrl: "wss://search.example",
+                status: "success",
+                eventCount: attempt === 1 ? 20 : 10,
+              },
+            ],
+            eventsVerified: true,
+          }
+        },
+      })
+    )
+
+    expect(attempt).toBe(2)
+    expect(result.relaysCompleted).toBe(1)
+    expect(result.relaysDegraded).toBe(0)
+    expect(result.evidence).toBe("absent_within_scope")
+  })
+
+  it("keeps complementary per-chunk relay answers partial", async () => {
+    let attempt = 0
+    const result = await searchNetworkProfiles(
+      { query: "alice", authorPubkeys: authorPubkeys(65) },
+      deps({
+        planSearchRelayUrls: () => ["wss://one.example", "wss://two.example"],
+        fetchEvents: async () => {
+          attempt += 1
+          return {
+            events: [],
+            relays: [
+              {
+                relayUrl: "wss://one.example",
+                status: attempt === 1 ? "success" : "failed",
+                eventCount: 0,
+              },
+              {
+                relayUrl: "wss://two.example",
+                status: attempt === 1 ? "failed" : "success",
+                eventCount: 0,
+              },
+            ],
+            eventsVerified: true,
+          }
+        },
+      })
+    )
+
+    expect(attempt).toBe(2)
+    expect(result.relaysCompleted).toBe(0)
+    expect(result.relaysDegraded).toBe(2)
+    expect(result.evidence).toBe("lookup_partial")
+  })
+
+  it("bounds chunk reads to two in flight while scheduling every author", async () => {
+    let active = 0
+    let peak = 0
+    let attempts = 0
+    const attemptedAuthors: string[][] = []
+
+    const result = await searchNetworkProfiles(
+      { query: "alice", authorPubkeys: authorPubkeys(129) },
+      deps({
+        fetchEvents: async (filter) => {
+          attempts += 1
+          active += 1
+          peak = Math.max(peak, active)
+          attemptedAuthors.push([...(filter.authors ?? [])])
+          await Bun.sleep(10)
+          active -= 1
+          return {
+            events: [],
+            relays: [
+              {
+                relayUrl: "wss://search.example",
+                status: "success",
+                eventCount: 0,
+              },
+            ],
+            eventsVerified: true,
+          }
+        },
+      })
+    )
+
+    expect(attempts).toBe(3)
+    expect(peak).toBeLessThanOrEqual(2)
+    expect(attemptedAuthors.flat()).toHaveLength(129)
+    expect(result.relaysCompleted).toBe(1)
+    expect(result.evidence).toBe("absent_within_scope")
+  })
+
+  it("stops queued chunks at the whole-query deadline and retains completed matches", async () => {
+    const authors = authorPubkeys(193)
+    const target = authors[0]
+    const attemptedAuthors: string[][] = []
+
+    const result = await searchNetworkProfiles(
+      { query: "alice", authorPubkeys: authors },
+      deps({
+        networkBudgetMs: 20,
+        fetchEvents: async (filter) => {
+          const chunk = [...(filter.authors ?? [])]
+          attemptedAuthors.push(chunk)
+          if (chunk.includes(target)) {
+            return {
+              events: [profileEvent(target, { name: "Alice Before Deadline" })],
+              relays: [
+                {
+                  relayUrl: "wss://search.example",
+                  status: "success",
+                  eventCount: 1,
+                },
+              ],
+              eventsVerified: true,
+            }
+          }
+
+          await Bun.sleep(60)
+          return {
+            events: [],
+            relays: [
+              {
+                relayUrl: "wss://search.example",
+                status: "success",
+                eventCount: 0,
+              },
+            ],
+            eventsVerified: true,
+          }
+        },
+      })
+    )
+
+    expect(attemptedAuthors).toHaveLength(3)
+    expect(attemptedAuthors.flat()).toHaveLength(192)
+    expect(result.matches.map((entry) => entry.pubkey)).toEqual([target])
+    expect(result.relaysCompleted).toBe(0)
+    expect(result.relaysDegraded).toBe(1)
+    expect(result.evidence).toBe("lookup_partial")
+  })
+})
+
 describe("account-scoped search plan", () => {
   it("plans with the active account and keeps a guest plan separate", async () => {
     const scopes: (string | null)[] = []
@@ -391,6 +665,120 @@ describe("account-scoped search plan", () => {
 })
 
 describe("profile search phase integration", () => {
+  it("applies the eligible-author boundary before ranking and limiting", async () => {
+    const cached = await searchCachedProfiles(
+      { query: "alice", limit: 1, authorPubkeys: [CAROL] },
+      deps({
+        loadCachedProfileRows: async () =>
+          new Map(
+            [
+              { pubkey: ALICE, name: "alice", cachedAt: 1 },
+              { pubkey: ALICIA, name: "alice", cachedAt: 1 },
+              { pubkey: CAROL, displayName: "Alice Allowed", cachedAt: 1 },
+            ].map((row) => [row.pubkey, row])
+          ),
+      })
+    )
+
+    expect(cached.matches.map((entry) => entry.pubkey)).toEqual([CAROL])
+  })
+
+  it("loads eligible cached authors directly beyond the capped general scan", async () => {
+    let generalCacheReads = 0
+    let relayReads = 0
+    const scopedReads: string[][] = []
+    const generalRows = authorPubkeys(5_000).map((pubkey) => ({
+      pubkey,
+      name: "Another account",
+      cachedAt: 1,
+    }))
+    const scopedRow = {
+      pubkey: ALICE,
+      name: "Alice Allowed",
+      cachedAt: 1,
+    }
+
+    const outcome = await runProfileSearch(
+      { query: "a", authorPubkeys: [ALICE] },
+      deps({
+        loadCachedProfiles: async () => {
+          generalCacheReads += 1
+          return generalRows
+        },
+        loadCachedProfileRows: async (pubkeys) => {
+          scopedReads.push([...pubkeys])
+          return new Map([[ALICE, scopedRow]])
+        },
+        fetchEvents: async () => {
+          relayReads += 1
+          return { events: [], relays: [], eventsVerified: true }
+        },
+      })
+    )
+
+    expect(generalCacheReads).toBe(0)
+    expect(scopedReads).toEqual([[ALICE]])
+    expect(relayReads).toBe(0)
+    expect(outcome.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
+  })
+
+  it("sends the eligible authors with NIP-50 search and rejects out-of-scope events", async () => {
+    const filters: unknown[] = []
+    const network = await searchNetworkProfiles(
+      { query: "alice", authorPubkeys: [ALICE] },
+      deps({
+        fetchEvents: async (filter) => {
+          filters.push(filter)
+          return {
+            events: [
+              profileEvent(ALICE, { name: "Alice Allowed" }),
+              profileEvent(ALICIA, { name: "Alice Outside" }),
+            ],
+            relays: [
+              {
+                relayUrl: "wss://search.example",
+                status: "success",
+                eventCount: 2,
+              },
+            ],
+            eventsVerified: true,
+          }
+        },
+      })
+    )
+
+    expect(filters).toEqual([
+      { kinds: [0], search: "alice", authors: [ALICE], limit: 24 },
+    ])
+    expect(network.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
+  })
+
+  it("treats an explicit empty author scope as authoritative without I/O", async () => {
+    let reads = 0
+    const dependencies = deps({
+      loadCachedProfiles: async () => {
+        reads += 1
+        return []
+      },
+      fetchEvents: async () => {
+        reads += 1
+        return { events: [], relays: [], eventsVerified: true }
+      },
+    })
+
+    const [cached, network] = await Promise.all([
+      searchCachedProfiles({ query: "alice", authorPubkeys: [] }, dependencies),
+      searchNetworkProfiles(
+        { query: "alice", authorPubkeys: [] },
+        dependencies
+      ),
+    ])
+
+    expect(reads).toBe(0)
+    expect(cached.matches).toEqual([])
+    expect(network.matches).toEqual([])
+  })
+
   it("skips relay traffic for queries below the minimum length", async () => {
     let fetched = 0
     const result = await runProfileSearch(

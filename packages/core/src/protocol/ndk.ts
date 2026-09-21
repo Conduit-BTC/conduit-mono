@@ -33,6 +33,12 @@ export interface FetchEventsFanoutOptions {
   /** Omit for configured defaults; pass an empty array for no relay traffic. */
   relayUrls?: string[]
   /**
+   * Bound actual relay attempts after the live account source-policy check.
+   * Policy-suppressed and durably excluded candidates do not consume this
+   * limit, allowing a later eligible source to fill the bounded fanout.
+   */
+  maxRelayAttempts?: number
+  /**
    * Explicit account whose locally removed whole relays must be excluded.
    * Omit for guest/public reads; event authors and filter pubkeys are never
    * treated as the active account.
@@ -1033,6 +1039,13 @@ function readRelayEvents(
   })
 }
 
+interface FetchEventsFromRelayResult {
+  relayUrl: string
+  events: NDKEvent[]
+  status: FetchEventsRelayStatus["status"]
+  rejectedEventCount: number
+}
+
 async function fetchEventsFromRelay(
   relayUrl: string,
   filter: NDKFilter,
@@ -1050,12 +1063,7 @@ async function fetchEventsFromRelay(
     | "shouldContinue"
     | "signal"
   >
-): Promise<{
-  relayUrl: string
-  events: NDKEvent[]
-  status: FetchEventsRelayStatus["status"]
-  rejectedEventCount: number
-} | null> {
+): Promise<FetchEventsFromRelayResult | null> {
   let acquiredRelayReadSlot = false
   let admittedRelayUrl: string | null = null
   try {
@@ -1190,6 +1198,42 @@ async function fetchEventsFromRelay(
   }
 }
 
+async function runBoundedRelayAttempts(
+  relayUrls: readonly string[],
+  maxRelayAttempts: number | undefined,
+  attempt: (relayUrl: string) => Promise<FetchEventsFromRelayResult | null>
+): Promise<FetchEventsFromRelayResult[]> {
+  if (
+    maxRelayAttempts === undefined ||
+    !Number.isSafeInteger(maxRelayAttempts) ||
+    maxRelayAttempts <= 0
+  ) {
+    return (await Promise.all(relayUrls.map(attempt))).filter(
+      (result): result is FetchEventsFromRelayResult => result !== null
+    )
+  }
+
+  let nextIndex = 0
+  const workerCount = Math.min(maxRelayAttempts, relayUrls.length)
+  const results = await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < relayUrls.length) {
+        const relayUrl = relayUrls[nextIndex]
+        nextIndex += 1
+        const result = await attempt(relayUrl)
+        // An eligible attempt consumes this worker's one bounded slot. A
+        // source-policy suppression returns null and backfills from the next
+        // ordered candidate without opening another socket.
+        if (result !== null) return result
+      }
+      return null
+    })
+  )
+  return results.filter(
+    (result): result is FetchEventsFromRelayResult => result !== null
+  )
+}
+
 function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
   if (options.relayUrls?.length === 0) return []
 
@@ -1299,42 +1343,42 @@ export async function fetchEventsFanoutDetailed(
   const progressEvents = new Map<string, NDKEvent>()
   const progressRelays: FetchEventsRelayStatus[] = []
   try {
-    const perRelayResults = (
-      await Promise.all(
-        relayUrls.map(async (relayUrl) => {
-          const result = await fetchEventsFromRelay(
-            relayUrl,
-            filter,
-            connectTimeoutMs,
-            fetchTimeoutMs,
-            connections,
-            options
-          )
-          throwIfAborted(options.signal)
-          if (
-            result &&
-            options.onProgress &&
-            options.shouldContinue?.() !== false
-          ) {
-            mergeEventsInto(progressEvents, result.events)
-            progressRelays.push({
-              relayUrl: result.relayUrl,
-              status: result.status,
-              eventCount: result.events.length,
-              ...(result.rejectedEventCount > 0
-                ? { rejectedEventCount: result.rejectedEventCount }
-                : {}),
-            })
-            options.onProgress({
-              events: Array.from(progressEvents.values()),
-              relays: [...progressRelays],
-              eventsVerified: true,
-            })
-          }
-          return result
-        })
-      )
-    ).filter((result) => result !== null)
+    const perRelayResults = await runBoundedRelayAttempts(
+      relayUrls,
+      options.maxRelayAttempts,
+      async (relayUrl) => {
+        const result = await fetchEventsFromRelay(
+          relayUrl,
+          filter,
+          connectTimeoutMs,
+          fetchTimeoutMs,
+          connections,
+          options
+        )
+        throwIfAborted(options.signal)
+        if (
+          result &&
+          options.onProgress &&
+          options.shouldContinue?.() !== false
+        ) {
+          mergeEventsInto(progressEvents, result.events)
+          progressRelays.push({
+            relayUrl: result.relayUrl,
+            status: result.status,
+            eventCount: result.events.length,
+            ...(result.rejectedEventCount > 0
+              ? { rejectedEventCount: result.rejectedEventCount }
+              : {}),
+          })
+          options.onProgress({
+            events: Array.from(progressEvents.values()),
+            relays: [...progressRelays],
+            eventsVerified: true,
+          })
+        }
+        return result
+      }
+    )
     throwIfAborted(options.signal)
 
     const merged = new Map<string, NDKEvent>()
@@ -1408,8 +1452,10 @@ export async function fetchEventsFanoutProgressive(
       : relayConnections
 
   try {
-    await Promise.all(
-      relayUrls.map(async (relayUrl) => {
+    await runBoundedRelayAttempts(
+      relayUrls,
+      options.maxRelayAttempts,
+      async (relayUrl) => {
         const result = await fetchEventsFromRelay(
           relayUrl,
           filter,
@@ -1418,7 +1464,7 @@ export async function fetchEventsFanoutProgressive(
           connections,
           options
         )
-        if (!result) return
+        if (!result) return null
         throwIfAborted(options.signal)
         mergeEventsInto(merged, result.events)
         await onProgress({
@@ -1427,7 +1473,8 @@ export async function fetchEventsFanoutProgressive(
           mergedEvents: Array.from(merged.values()),
           status: result.status,
         })
-      })
+        return result
+      }
     )
 
     throwIfAborted(options.signal)

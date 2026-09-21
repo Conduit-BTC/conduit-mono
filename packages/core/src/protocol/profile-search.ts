@@ -2,6 +2,7 @@ import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
 import { db, type CachedProfile } from "../db"
 import type { Profile } from "../types"
+import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
 import { fetchEventsFanoutDetailed, type FetchEventsFanoutResult } from "./ndk"
 import {
@@ -22,7 +23,16 @@ export const PROFILE_SEARCH_MIN_QUERY_LENGTH = 1
 export const PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH = 2
 export const PROFILE_SEARCH_DEFAULT_LIMIT = 5
 const NETWORK_FETCH_LIMIT = 24
+const NETWORK_CONNECT_TIMEOUT_MS = 1_500
+const NETWORK_FETCH_TIMEOUT_MS = 3_000
+const PROFILE_SEARCH_NETWORK_BUDGET_MS =
+  NETWORK_CONNECT_TIMEOUT_MS + NETWORK_FETCH_TIMEOUT_MS
 const LOCAL_CACHE_SCAN_LIMIT = 5_000
+// Keep scoped kind-0 filters small enough for public relays that reject or
+// truncate very large authors arrays. This is a transport batch size, not an
+// account-discovery limit.
+const PROFILE_SEARCH_AUTHOR_CHUNK_SIZE = 64
+const PROFILE_SEARCH_AUTHOR_CHUNK_CONCURRENCY = 2
 /**
  * One settled query must finish within a single bounded read window. Relay
  * lists grow with the account's own NIP-65 settings, so the plan keeps the
@@ -155,6 +165,12 @@ export interface ProfileSearchQuery {
   query: string
   limit?: number
   signal?: AbortSignal
+  /**
+   * Optional author boundary applied before ranking and limiting. An empty
+   * list is an authoritative empty scope and performs no relay I/O; omission
+   * preserves the generic unscoped search contract.
+   */
+  authorPubkeys?: readonly string[]
   /** Cached phase only; `Infinity` waits for the seller lookup. */
   sellerLookupBudgetMs?: number
   /**
@@ -171,6 +187,8 @@ export interface ProfileSearchQuery {
 }
 
 export interface ProfileSearchDependencies {
+  /** Whole-query relay budget; overridden only by deterministic tests. */
+  networkBudgetMs: number
   loadCachedProfiles: () => Promise<CachedProfile[]>
   /** Targeted read for the pubkeys a relay returned. */
   loadCachedProfileRows: (
@@ -352,12 +370,24 @@ async function defaultPlanSearchRelayUrls(
   const snapshot = authenticatedPubkey
     ? await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)
     : loadRelaySettingsPlanningSnapshot()
-  return planProfileSearchRelayUrls(
+  const personalRelayUrls = snapshot.settings.entries
+    .filter((entry) => entry.readEnabled && entry.capabilities.search)
+    .map((entry) => entry.url)
+  const candidateRelayUrls = planProfileSearchRelayUrls(
     config.searchIndexRelayUrls,
-    snapshot.settings.entries
-      .filter((entry) => entry.readEnabled && entry.capabilities.search)
-      .map((entry) => entry.url)
+    personalRelayUrls,
+    Number.MAX_SAFE_INTEGER
   )
+  const admittedRelayUrls = authenticatedPubkey
+    ? await filterEligibleAccountRelayUrls({
+        accountPubkey: authenticatedPubkey,
+        authenticatedPubkey,
+        candidateRelayUrls,
+        appRelayUrls: config.searchIndexRelayUrls,
+        personalRelayUrls,
+      })
+    : candidateRelayUrls
+  return admittedRelayUrls.slice(0, PROFILE_SEARCH_MAX_RELAYS)
 }
 
 async function defaultLoadSellerPubkeys(
@@ -384,6 +414,7 @@ async function defaultLoadCachedProfileRows(
 }
 
 const defaultDependencies: ProfileSearchDependencies = {
+  networkBudgetMs: PROFILE_SEARCH_NETWORK_BUDGET_MS,
   loadCachedProfiles: () => db.profiles.limit(LOCAL_CACHE_SCAN_LIMIT).toArray(),
   loadCachedProfileRows: defaultLoadCachedProfileRows,
   loadSellerPubkeys: defaultLoadSellerPubkeys,
@@ -411,8 +442,8 @@ const defaultDependencies: ProfileSearchDependencies = {
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
       signal: options.signal,
-      connectTimeoutMs: 1_500,
-      fetchTimeoutMs: 3_000,
+      connectTimeoutMs: NETWORK_CONNECT_TIMEOUT_MS,
+      fetchTimeoutMs: NETWORK_FETCH_TIMEOUT_MS,
     })
   },
 }
@@ -429,6 +460,147 @@ function emptyResult(query: string): ProfileSearchResult {
     device: emptyDeviceEvidence(),
     superseded: [],
   }
+}
+
+function normalizeProfileSearchAuthors(
+  authorPubkeys: readonly string[] | undefined
+): string[] | undefined {
+  if (authorPubkeys === undefined) return undefined
+  return Array.from(
+    new Set(
+      authorPubkeys.map((pubkey) => pubkey.trim().toLowerCase()).filter(Boolean)
+    )
+  ).sort()
+}
+
+function chunkProfileSearchAuthors(
+  authorPubkeys: string[] | undefined
+): Array<string[] | undefined> {
+  if (!authorPubkeys) return [undefined]
+  const chunks: string[][] = []
+  for (
+    let index = 0;
+    index < authorPubkeys.length;
+    index += PROFILE_SEARCH_AUTHOR_CHUNK_SIZE
+  ) {
+    chunks.push(
+      authorPubkeys.slice(index, index + PROFILE_SEARCH_AUTHOR_CHUNK_SIZE)
+    )
+  }
+  return chunks
+}
+
+async function mapProfileSearchAuthorChunks<R>(
+  chunks: readonly (string[] | undefined)[],
+  signal: AbortSignal,
+  worker: (chunk: string[] | undefined) => Promise<R>
+): Promise<Array<R | null>> {
+  const results = Array.from<R | null>({ length: chunks.length }).fill(null)
+  let nextIndex = 0
+  const workerCount = Math.min(
+    PROFILE_SEARCH_AUTHOR_CHUNK_CONCURRENCY,
+    chunks.length
+  )
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < chunks.length && !signal.aborted) {
+        const index = nextIndex
+        nextIndex += 1
+        results[index] = await settleProfileSearchChunkRead(
+          worker(chunks[index]),
+          signal
+        )
+      }
+    })
+  )
+  return results
+}
+
+function settleProfileSearchChunkRead<R>(
+  read: Promise<R>,
+  signal: AbortSignal
+): Promise<R | null> {
+  if (signal.aborted) return Promise.resolve(null)
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value: R | null) => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener("abort", onAbort)
+      resolve(value)
+    }
+    const onAbort = () => finish(null)
+    signal.addEventListener("abort", onAbort, { once: true })
+    read.then(
+      (value) => finish(value),
+      () => finish(null)
+    )
+  })
+}
+
+function profileSearchRelayKey(url: string): string {
+  return (
+    normalizeSearchRelayUrl(url) ?? url.trim().replace(/\/+$/, "")
+  ).toLowerCase()
+}
+
+function relayObservationIsComplete(
+  relay: FetchEventsFanoutResult["relays"][number],
+  fetchLimit: number
+): boolean {
+  return (
+    relay.status === "success" &&
+    (relay.rejectedEventCount ?? 0) === 0 &&
+    relay.eventCount < fetchLimit
+  )
+}
+
+function summarizeProfileSearchRelayChunks(
+  results: readonly (FetchEventsFanoutResult | null)[],
+  relayUrls: readonly string[],
+  fetchLimit: number = NETWORK_FETCH_LIMIT
+): Omit<ProfileSearchRelaySummary, "relaysPlanned"> {
+  let relaysCompleted = 0
+  let relaysDegraded = 0
+  let verified = true
+
+  for (const result of results) {
+    if (result?.eventsVerified === false) verified = false
+  }
+
+  for (const relayUrl of relayUrls) {
+    const relayKey = profileSearchRelayKey(relayUrl)
+    let answeredChunks = 0
+    let allChunksComplete = results.length > 0
+
+    for (const result of results) {
+      const relay = result?.relays.find(
+        (observation) =>
+          profileSearchRelayKey(observation.relayUrl) === relayKey
+      )
+      if (!relay || relay.status === "failed") {
+        allChunksComplete = false
+        continue
+      }
+
+      answeredChunks += 1
+      if (
+        result?.eventsVerified === false ||
+        !relayObservationIsComplete(relay, fetchLimit)
+      ) {
+        allChunksComplete = false
+      }
+    }
+
+    if (allChunksComplete && answeredChunks === results.length) {
+      relaysCompleted += 1
+    } else if (answeredChunks > 0) {
+      relaysDegraded += 1
+    }
+  }
+
+  return { relaysCompleted, relaysDegraded, verified }
 }
 
 function toMatch(
@@ -519,16 +691,24 @@ export async function searchCachedProfiles(
   if (normalizedQuery.length < PROFILE_SEARCH_MIN_QUERY_LENGTH) {
     return emptyResult(query)
   }
+  const authorPubkeys = normalizeProfileSearchAuthors(input.authorPubkeys)
+  if (authorPubkeys?.length === 0) return emptyResult(query)
+  const authorSet = authorPubkeys ? new Set(authorPubkeys) : null
 
   let profileCache: ProfileSearchDeviceReadState = "read"
-  const cachedRows: CachedProfile[] = await deps
-    .loadCachedProfiles()
-    .catch(() => {
-      profileCache = "unavailable"
-      return []
-    })
+  const cachedRows: CachedProfile[] = await (
+    authorPubkeys
+      ? deps
+          .loadCachedProfileRows(authorPubkeys)
+          .then((rows) => [...rows.values()])
+      : deps.loadCachedProfiles()
+  ).catch(() => {
+    profileCache = "unavailable"
+    return []
+  })
   const candidates: ProfileSearchMatch[] = []
   for (const row of cachedRows) {
+    if (authorSet && !authorSet.has(row.pubkey.toLowerCase())) continue
     const match = toMatch(
       projectCachedProfile(row),
       "local_cache",
@@ -577,6 +757,9 @@ export async function searchNetworkProfiles(
   if (normalizedQuery.length < PROFILE_SEARCH_MIN_NETWORK_QUERY_LENGTH) {
     return emptyResult(query)
   }
+  const authorPubkeys = normalizeProfileSearchAuthors(input.authorPubkeys)
+  if (authorPubkeys?.length === 0) return emptyResult(query)
+  const authorSet = authorPubkeys ? new Set(authorPubkeys) : null
 
   const relayUrls = await deps.planSearchRelayUrls(
     input.authenticatedPubkey ?? null
@@ -592,21 +775,58 @@ export async function searchNetworkProfiles(
   let cachedFrontiers: ProfileSearchDeviceReadState = "not_read"
   if (relayUrls.length > 0) {
     try {
-      const result = await deps.fetchEvents(
-        {
-          kinds: [EVENT_KINDS.PROFILE],
-          search: query,
-          limit: NETWORK_FETCH_LIMIT,
-        },
-        {
-          relayUrls,
-          accountPubkey: input.authenticatedPubkey ?? null,
-          authenticatedPubkey: input.authenticatedPubkey ?? null,
-          signal: input.signal,
-        }
+      const networkController = new AbortController()
+      const forwardCallerAbort = () =>
+        networkController.abort(input.signal?.reason)
+      if (input.signal?.aborted) forwardCallerAbort()
+      else
+        input.signal?.addEventListener("abort", forwardCallerAbort, {
+          once: true,
+        })
+      const networkDeadline = setTimeout(
+        () => networkController.abort(),
+        Math.max(0, deps.networkBudgetMs)
       )
-      summary = { ...summary, ...summarizeProfileSearchRelays(result) }
-      const events = pickLatestEventPerPubkey(result.events)
+
+      let chunkResults: Array<FetchEventsFanoutResult | null>
+      try {
+        chunkResults = await mapProfileSearchAuthorChunks(
+          chunkProfileSearchAuthors(authorPubkeys),
+          networkController.signal,
+          (authors) =>
+            deps.fetchEvents(
+              {
+                kinds: [EVENT_KINDS.PROFILE],
+                ...(authors ? { authors } : {}),
+                search: query,
+                limit: NETWORK_FETCH_LIMIT,
+              },
+              {
+                relayUrls,
+                accountPubkey: input.authenticatedPubkey ?? null,
+                authenticatedPubkey: input.authenticatedPubkey ?? null,
+                signal: networkController.signal,
+              }
+            )
+        )
+      } finally {
+        clearTimeout(networkDeadline)
+        input.signal?.removeEventListener("abort", forwardCallerAbort)
+      }
+      if (input.signal?.aborted) {
+        throw input.signal.reason instanceof Error
+          ? input.signal.reason
+          : new DOMException("Aborted", "AbortError")
+      }
+      summary = {
+        ...summary,
+        ...summarizeProfileSearchRelayChunks(chunkResults, relayUrls),
+      }
+      const events = pickLatestEventPerPubkey(
+        chunkResults.flatMap((result) => result?.events ?? [])
+      ).filter(
+        (event) => !authorSet || authorSet.has(event.pubkey.toLowerCase())
+      )
       // A relay can answer with a kind-0 event this device already replaced.
       // Reconcile before scoring so a stale name is never offered as a match.
       cachedFrontiers = events.length > 0 ? "read" : "not_read"

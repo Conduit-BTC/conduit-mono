@@ -672,6 +672,80 @@ describe("durable product deletion delivery", () => {
     })
   })
 
+  it("preserves source provenance so retries honor current layer toggles", async () => {
+    const appRelayUrl = "wss://app-delete.conduit.market"
+    const personalRelayUrl = "wss://personal-delete.example"
+    const overlapRelayUrl = "wss://overlap-delete.example"
+    const independentSourceRelayUrl = "wss://source-delete.nostr.com"
+    const cases = [
+      {
+        appEnabled: false,
+        personalEnabled: true,
+        expected: [
+          overlapRelayUrl,
+          personalRelayUrl,
+          independentSourceRelayUrl,
+        ],
+      },
+      {
+        appEnabled: true,
+        personalEnabled: false,
+        expected: [appRelayUrl, overlapRelayUrl, independentSourceRelayUrl],
+      },
+    ]
+
+    for (const [index, testCase] of cases.entries()) {
+      const repository = new MemoryProductDeletionOutbox()
+      const event = signedDeletionEvent(String(index + 1).repeat(64))
+      const state = emptyAccountNetworkLocalState(event.pubkey, () => NOW)
+      const accountNetworkLocalStateRepository =
+        createInMemoryAccountNetworkLocalStateRepository([
+          {
+            ...state,
+            routingPolicy: {
+              ...state.routingPolicy,
+              appRelaysEnabled: testCase.appEnabled,
+              personalRelaysEnabled: testCase.personalEnabled,
+              appRelaysTouched: true,
+              personalRelaysTouched: true,
+            },
+          },
+        ])
+      const job = await persistProductDeletionDelivery(
+        {
+          signedEvent: event,
+          currentWriteRelayUrls: [
+            appRelayUrl,
+            personalRelayUrl,
+            overlapRelayUrl,
+          ],
+          currentAppRelayUrls: [appRelayUrl, overlapRelayUrl],
+          currentPersonalRelayUrls: [personalRelayUrl, overlapRelayUrl],
+          sourceRelayUrls: [independentSourceRelayUrl],
+          canonicalConduitRelayUrl: appRelayUrl,
+        },
+        { repository, now: () => NOW }
+      )
+      const attemptedRelayUrls: string[] = []
+
+      await deliverProductDeletionJob(
+        job.id,
+        async ({ relayUrl }) => {
+          attemptedRelayUrls.push(relayUrl)
+          return { status: "acked" }
+        },
+        {
+          repository,
+          authenticatedPubkey: event.pubkey,
+          accountNetworkLocalStateRepository,
+          now: tickingClock(),
+        }
+      )
+
+      expect(attemptedRelayUrls).toEqual([...testCase.expected].sort())
+    }
+  })
+
   it("revalidates a persisted exact event before deriving its account principal", async () => {
     const repository = new MemoryProductDeletionOutbox()
     const event = signedDeletionEvent()

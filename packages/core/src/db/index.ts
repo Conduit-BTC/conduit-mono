@@ -183,6 +183,10 @@ export type ProductDeletionDeliveryState = "pending" | "partial" | "delivered"
 export interface ProductDeletionRelayTarget {
   relayUrl: string
   roles: ProductDeletionRelayRole[]
+  /** Persisted source provenance for live App-layer admission. */
+  appRelay?: boolean
+  /** Persisted source provenance for live Personal-layer admission. */
+  personalRelay?: boolean
 }
 
 export interface ProductDeletionRelayDelivery {

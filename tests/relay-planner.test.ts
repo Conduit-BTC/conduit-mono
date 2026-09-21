@@ -360,6 +360,19 @@ describe("planRelayReads", () => {
       maxRelays: 2,
     })
     expect(plan.relayUrls.length).toBe(2)
+    expect(plan.relayUrls).toEqual([
+      "wss://r1.conduit.market",
+      "wss://r2.conduit.market",
+    ])
+    expect(plan.candidateRelayUrls.slice(0, 3)).toEqual([
+      "wss://r1.conduit.market",
+      "wss://r2.conduit.market",
+      "wss://r3.conduit.market",
+    ])
+    expect(plan.maxRelayAttempts).toBe(2)
+    expect(plan.personalRelayUrls).toEqual(
+      expect.arrayContaining(["wss://r3.conduit.market"])
+    )
   })
 
   it("dedupes overlapping hint and base relays", () => {
@@ -447,6 +460,8 @@ describe("planRelayWrites", () => {
     ).toEqual({
       intent: "author_products",
       relayUrls: [isolatedRelayUrl],
+      candidateRelayUrls: [isolatedRelayUrl],
+      maxRelayAttempts: 1,
       parkedRelayUrls: [],
       hintRelayUrls: [],
       ownerSelectedRelayUrls: [],
@@ -464,7 +479,10 @@ describe("planRelayWrites", () => {
     ).toEqual({
       intent: "author_event",
       primaryRelayUrls: [isolatedRelayUrl],
+      primaryCandidateRelayUrls: [isolatedRelayUrl],
+      maxPrimaryRelayAttempts: 1,
       broadcastRelayUrls: [],
+      broadcastCandidateRelayUrls: [],
       parkedRelayUrls: [],
       appRelayUrls: [isolatedRelayUrl],
       personalRelayUrls: [],
@@ -823,6 +841,15 @@ describe("planRelayWrites", () => {
       maxPrimaryRelays: 2,
     })
     expect(plan.primaryRelayUrls.length).toBe(2)
+    expect(plan.primaryCandidateRelayUrls?.slice(0, 3)).toEqual([
+      "wss://w1.conduit.market",
+      "wss://w2.conduit.market",
+      "wss://w3.conduit.market",
+    ])
+    expect(plan.maxPrimaryRelayAttempts).toBe(2)
+    expect(plan.personalRelayUrls).toEqual(
+      expect.arrayContaining(["wss://w3.conduit.market"])
+    )
   })
 
   it("excludes parked relays from both primary and broadcast", () => {

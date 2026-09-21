@@ -682,10 +682,22 @@ export async function readLatestFollowLists(
       entry.writeEnabled ? [entry.url] : []
     ) ?? []
   )
-  const relayLookupOptions = {
-    accountPubkey: normalizedAccountPubkey,
+  const relayListReadPlan = planRelayReads({
+    intent: "relay_lists",
     authenticatedPubkey: normalizedAuthenticatedPubkey,
     ownerSelectedRelayUrls: ownerReadRelayUrls,
+    settings: ownerSettingsSnapshot?.settings,
+    signedRelayListAuthoritative:
+      ownerSettingsSnapshot?.signedRelayListAuthoritative,
+  })
+  const relayLookupOptions = {
+    relayUrls: relayListReadPlan.candidateRelayUrls,
+    maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
+    accountPubkey: normalizedAccountPubkey,
+    authenticatedPubkey: normalizedAuthenticatedPubkey,
+    ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
+    appRelayUrls: relayListReadPlan.appRelayUrls,
+    personalRelayUrls: relayListReadPlan.personalRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     shouldContinue: options.shouldContinue,

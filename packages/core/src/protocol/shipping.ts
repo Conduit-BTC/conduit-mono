@@ -1626,7 +1626,14 @@ export async function getShippingOptions(
   const resolveRelayLists = shippingTestOverrides.getRelayLists ?? getRelayLists
   const relayLists = await resolveRelayLists([merchantPubkey], {
     cacheOnly: false,
-    ...(relayListReadPlan ? { relayUrls: relayListReadPlan.relayUrls } : {}),
+    ...(relayListReadPlan
+      ? {
+          relayUrls: relayListReadPlan.candidateRelayUrls,
+          maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
+          appRelayUrls: relayListReadPlan.appRelayUrls,
+          personalRelayUrls: relayListReadPlan.personalRelayUrls,
+        }
+      : {}),
     accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
     authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
     ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
@@ -1647,12 +1654,15 @@ export async function getShippingOptions(
       ownerRelayAuthority?.signedRelayListAuthoritative,
   })
   const relayUrls = await getEligibleShippingReadRelayUrls(
-    readPlan.relayUrls,
+    readPlan.candidateRelayUrls,
     readPlan.ownerSelectedRelayUrls ?? [],
     readPlan.appRelayUrls ?? [],
     readPlan.personalRelayUrls ?? [],
     options
   )
+  if (readPlan.maxRelayAttempts) {
+    relayUrls.splice(readPlan.maxRelayAttempts)
+  }
   const executableRelayUrls = new Set(relayUrls)
   const executableOwnerSelectedRelayUrls = (
     readPlan.ownerSelectedRelayUrls ?? []
@@ -1795,7 +1805,10 @@ function requireCompleteShippingRead(
     relayUrls.some(
       (relayUrl) => relayStatuses.get(relayUrl)?.status !== "success"
     ) ||
-    result.relays.some((relay) => relay.eventCount >= queryLimit)
+    result.relays.some(
+      (relay) =>
+        relay.eventCount + (relay.rejectedEventCount ?? 0) >= queryLimit
+    )
   ) {
     throw new Error(
       "Fixed shipping could not be verified across the planned relays"
@@ -1848,7 +1861,14 @@ export async function getShippingOptionsByCoordinates(
   const resolveRelayLists = shippingTestOverrides.getRelayLists ?? getRelayLists
   const relayLists = await resolveRelayLists(authors, {
     cacheOnly: false,
-    ...(relayListReadPlan ? { relayUrls: relayListReadPlan.relayUrls } : {}),
+    ...(relayListReadPlan
+      ? {
+          relayUrls: relayListReadPlan.candidateRelayUrls,
+          maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
+          appRelayUrls: relayListReadPlan.appRelayUrls,
+          personalRelayUrls: relayListReadPlan.personalRelayUrls,
+        }
+      : {}),
     accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
     authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
     ownerSelectedRelayUrls: ownerRelayAuthority?.readRelayUrls,
@@ -1878,12 +1898,15 @@ export async function getShippingOptionsByCoordinates(
           ownerRelayAuthority?.signedRelayListAuthoritative,
       })
       const relayUrls = await getEligibleShippingReadRelayUrls(
-        readPlan.relayUrls,
+        readPlan.candidateRelayUrls,
         readPlan.ownerSelectedRelayUrls ?? [],
         readPlan.appRelayUrls ?? [],
         readPlan.personalRelayUrls ?? [],
         options
       )
+      if (readPlan.maxRelayAttempts) {
+        relayUrls.splice(readPlan.maxRelayAttempts)
+      }
       const executableRelayUrls = new Set(relayUrls)
       const executableOwnerSelectedRelayUrls = (
         readPlan.ownerSelectedRelayUrls ?? []

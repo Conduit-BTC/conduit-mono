@@ -24,6 +24,7 @@ import {
 import { planRelayReads } from "./relay-planner"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
+import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -883,13 +884,32 @@ async function readEventMarketCollectionCandidatesWithinBudget(
         maxRelays: FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT,
         now: input.nowMs,
       })
-  const plannedRelayUrls = Array.from(
+  const candidateRelayUrls = Array.from(
     new Set(
-      (testOverrides.collectionCandidateRelayUrls ?? relayPlan?.relayUrls ?? [])
+      (
+        testOverrides.collectionCandidateRelayUrls ??
+        relayPlan?.candidateRelayUrls ??
+        []
+      )
         .map((relayUrl) => relayUrl.trim())
         .filter(Boolean)
     )
-  ).slice(0, FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT)
+  )
+  const admittedRelayUrls = authenticatedPubkey
+    ? await filterEligibleAccountRelayUrls({
+        accountPubkey: authenticatedPubkey,
+        authenticatedPubkey,
+        candidateRelayUrls,
+        ownerSelectedRelayUrls,
+        appRelayUrls: relayPlan?.appRelayUrls,
+        personalRelayUrls: relayPlan?.personalRelayUrls,
+        repository: input.accountNetworkLocalStateRepository,
+      })
+    : candidateRelayUrls
+  const plannedRelayUrls = admittedRelayUrls.slice(
+    0,
+    FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT
+  )
   const emptyCoverage: EventMarketCandidateReadCoverage = {
     plannedRelayUrls,
     authorChunkCount: authorChunks.length,

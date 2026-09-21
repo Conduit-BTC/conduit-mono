@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test, type Locator, type Page } from "@playwright/test"
+import { THEME_STORAGE_KEY } from "@conduit/ui/theme"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 import {
   TEST_RELAY_URL,
@@ -11,6 +12,8 @@ import {
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 const screenshotDirectory = process.env.PLAYWRIGHT_NETWORK_UI_SCREENSHOT_DIR
+const merchantNavigationScreenshotDirectory =
+  process.env.PLAYWRIGHT_MERCHANT_NAV_SCREENSHOT_DIR
 const accountNetworkLocalStateModuleUrl = `/@fs/${join(
   process.cwd(),
   "packages/core/src/protocol/account-network-local-state.ts"
@@ -34,9 +37,7 @@ async function openNetwork(
   await expect(
     page.getByRole("button", {
       name:
-        app === "market"
-          ? "Open account menu"
-          : /^Open (merchant account )?menu$/,
+        app === "market" ? "Open account menu" : "Open merchant account menu",
     })
   ).toBeVisible({ timeout: 15_000 })
   await page.goto(`${appUrl}/network`)
@@ -52,6 +53,324 @@ async function expectMinimumTouchTarget(locator: Locator): Promise<void> {
   expect(box!.width).toBeGreaterThanOrEqual(44)
   expect(box!.height).toBeGreaterThanOrEqual(44)
 }
+
+test("merchant mobile drawer closes after current and different route selections @merchant", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(merchantUrl)
+
+  const menuTrigger = page.getByRole("button", { name: "Open menu" })
+  const drawer = page.getByRole("dialog", {
+    name: "Conduit Merchant navigation",
+  })
+  await expect(
+    page.getByRole("button", { name: "Open merchant account menu" })
+  ).toBeVisible({ timeout: 15_000 })
+  await menuTrigger.click()
+  await drawer.getByRole("link", { name: "Home", exact: true }).click()
+  await expect(drawer).toBeHidden()
+  await expect(page).toHaveURL(`${merchantUrl}/`)
+
+  await menuTrigger.click()
+  await drawer.getByRole("link", { name: "Products", exact: true }).click()
+  await expect(drawer).toBeHidden()
+  await expect(page).toHaveURL(`${merchantUrl}/products`)
+})
+
+test("merchant navigation stays aligned and overflow-free across responsive states @merchant", async ({
+  page,
+}) => {
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.addInitScript(
+    ([key, preference]) => localStorage.setItem(key, preference),
+    [THEME_STORAGE_KEY, "night-market"] as const
+  )
+
+  async function expectNoDocumentOverflow(): Promise<void> {
+    const viewport = await page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }))
+    expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth + 1)
+  }
+
+  async function expectControlsWithinViewport(
+    controls: Locator[]
+  ): Promise<void> {
+    for (const control of controls) {
+      await expect(control).toBeInViewport({ ratio: 1 })
+    }
+  }
+
+  async function readPanelAlignment(panel: Locator): Promise<{
+    brandInset: number
+    homeInset: number
+    reportInset: number
+    width: number
+  }> {
+    const panelBox = await panel.boundingBox()
+    const brandBox = await panel
+      .getByRole("link", { name: "Conduit Merchant home" })
+      .boundingBox()
+    const homeBox = await panel
+      .getByRole("link", { name: "Home", exact: true })
+      .boundingBox()
+    const reportBox = await panel
+      .getByRole("link", { name: "Report a Bug", exact: true })
+      .boundingBox()
+
+    expect(panelBox).not.toBeNull()
+    expect(brandBox).not.toBeNull()
+    expect(homeBox).not.toBeNull()
+    expect(reportBox).not.toBeNull()
+
+    return {
+      brandInset: brandBox!.x - panelBox!.x,
+      homeInset: homeBox!.x - panelBox!.x,
+      reportInset: reportBox!.x - panelBox!.x,
+      width: panelBox!.width,
+    }
+  }
+
+  async function expectPanelHasNoHorizontalOverflow(
+    panel: Locator
+  ): Promise<void> {
+    const widths = await panel
+      .locator("[data-merchant-navigation-scroll]")
+      .evaluate((element) => ({
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }))
+    expect(widths.scrollWidth).toBeLessThanOrEqual(widths.clientWidth)
+  }
+
+  if (merchantNavigationScreenshotDirectory) {
+    mkdirSync(merchantNavigationScreenshotDirectory, { recursive: true })
+  }
+
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.goto(merchantUrl)
+  await expect(
+    page.getByRole("button", { name: "Open merchant account menu" })
+  ).toBeVisible({ timeout: 15_000 })
+
+  const desktopPanel = page.locator("[data-merchant-navigation-panel]:visible")
+  await expect(desktopPanel).toBeVisible()
+  await expect(page.getByRole("button", { name: "Open menu" })).toBeHidden()
+  await expectPanelHasNoHorizontalOverflow(desktopPanel)
+  await expectNoDocumentOverflow()
+  const desktopAlignment = await readPanelAlignment(desktopPanel)
+  const desktopBrandBox = await desktopPanel
+    .getByRole("link", { name: "Conduit Merchant home" })
+    .boundingBox()
+  expect(desktopBrandBox).not.toBeNull()
+  expect(desktopAlignment.width).toBeGreaterThanOrEqual(319)
+  expect(desktopAlignment.width).toBeLessThanOrEqual(320)
+  expect(desktopAlignment.brandInset).toBe(desktopAlignment.homeInset)
+  expect(desktopAlignment.homeInset).toBe(desktopAlignment.reportInset)
+  const dashboardStatIconBoxes = await page
+    .locator("[data-dashboard-stat-icon]")
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const box = element.getBoundingClientRect()
+        return { height: box.height, width: box.width }
+      })
+    )
+  expect(dashboardStatIconBoxes).toHaveLength(4)
+  for (const box of dashboardStatIconBoxes) {
+    expect(box.width).toBe(44)
+    expect(box.height).toBe(44)
+  }
+  if (merchantNavigationScreenshotDirectory) {
+    await page.screenshot({
+      path: join(
+        merchantNavigationScreenshotDirectory,
+        "merchant-navigation-desktop.png"
+      ),
+      animations: "disabled",
+    })
+  }
+
+  await page.setViewportSize({ width: 1008, height: 900 })
+  const workspaceHeader = page.getByRole("banner", {
+    name: "Merchant workspace controls",
+  })
+  const headerControls = [
+    workspaceHeader.getByRole("link", { name: "Conduit Merchant home" }),
+    workspaceHeader.getByRole("button", { name: "Open menu" }),
+    workspaceHeader.locator("[data-theme-toggle-preference]"),
+    workspaceHeader.getByRole("button", {
+      name: "Open merchant account menu",
+    }),
+  ]
+  for (const control of headerControls) await expect(control).toBeVisible()
+  await expect(workspaceHeader.locator("[data-merchant-brand-logo]")).toHaveCSS(
+    "width",
+    "108px"
+  )
+  const headerBoxes = await Promise.all(
+    headerControls.map((control) => control.boundingBox())
+  )
+  const headerCenters = headerBoxes.map((box) => box!.y + box!.height / 2)
+  expect(Math.max(...headerCenters) - Math.min(...headerCenters)).toBeLessThan(
+    1
+  )
+  expect(Math.abs(headerBoxes[0]!.y - desktopBrandBox!.y)).toBeLessThan(1)
+  await expectNoDocumentOverflow()
+
+  for (const { path, heading, screenshotName } of [
+    {
+      path: "/",
+      heading: "Merchant Portal",
+      screenshotName: "merchant-navigation-collapsed-desktop.png",
+    },
+    {
+      path: "/products",
+      heading: "Products",
+      screenshotName: "merchant-products-header.png",
+    },
+    {
+      path: "/orders",
+      heading: "Orders",
+      screenshotName: "merchant-orders-header.png",
+    },
+    {
+      path: "/messages",
+      heading: "Buyer support inbox",
+      screenshotName: "merchant-messages-header.png",
+    },
+  ]) {
+    await page.goto(`${merchantUrl}${path}`)
+    for (const control of headerControls) await expect(control).toBeVisible()
+    const pageHeading = page.getByRole("heading", {
+      name: heading,
+      exact: true,
+    })
+    await expect(pageHeading).toBeVisible()
+    const [workspaceHeaderBox, pageHeadingBox] = await Promise.all([
+      workspaceHeader.boundingBox(),
+      pageHeading.boundingBox(),
+    ])
+    expect(workspaceHeaderBox).not.toBeNull()
+    expect(pageHeadingBox).not.toBeNull()
+    expect(
+      pageHeadingBox!.y - (workspaceHeaderBox!.y + workspaceHeaderBox!.height)
+    ).toBeGreaterThanOrEqual(16)
+    if (merchantNavigationScreenshotDirectory) {
+      await page.screenshot({
+        path: join(merchantNavigationScreenshotDirectory, screenshotName),
+        animations: "disabled",
+      })
+    }
+  }
+  await page.goto(merchantUrl)
+
+  for (const { width, height, logoWidth, screenshotName } of [
+    {
+      width: 320,
+      height: 700,
+      logoWidth: "24px",
+      screenshotName: "merchant-navigation-mobile-narrow.png",
+    },
+    { width: 400, height: 844, logoWidth: "24px", screenshotName: null },
+    { width: 420, height: 844, logoWidth: "108px", screenshotName: null },
+  ] as const) {
+    await page.setViewportSize({ width, height })
+    await expect(
+      workspaceHeader.locator("[data-merchant-brand-logo]")
+    ).toHaveCSS("width", logoWidth)
+    for (const control of headerControls) await expect(control).toBeVisible()
+    await expectControlsWithinViewport(headerControls)
+    await expectNoDocumentOverflow()
+    if (merchantNavigationScreenshotDirectory && screenshotName) {
+      await page.screenshot({
+        path: join(merchantNavigationScreenshotDirectory, screenshotName),
+        animations: "disabled",
+      })
+    }
+  }
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  const compactAccountBox = await workspaceHeader
+    .getByRole("button", { name: "Open merchant account menu" })
+    .boundingBox()
+  expect(compactAccountBox!.width).toBe(44)
+  const menuTrigger = workspaceHeader.getByRole("button", {
+    name: "Open menu",
+  })
+  const menuTriggerBox = await menuTrigger.boundingBox()
+  const menuIconBox = await menuTrigger.locator("svg").boundingBox()
+  const collapsedBrandBox = await workspaceHeader
+    .getByRole("link", { name: "Conduit Merchant home" })
+    .boundingBox()
+  const collapsedHeaderBackground = await workspaceHeader.evaluate(
+    (element) => getComputedStyle(element).backgroundColor
+  )
+  await expectNoDocumentOverflow()
+  if (merchantNavigationScreenshotDirectory) {
+    await page.screenshot({
+      path: join(
+        merchantNavigationScreenshotDirectory,
+        "merchant-navigation-mobile.png"
+      ),
+      animations: "disabled",
+    })
+  }
+
+  await workspaceHeader.getByRole("button", { name: "Open menu" }).click()
+  const drawer = page.getByRole("dialog", {
+    name: "Conduit Merchant navigation",
+  })
+  const mobilePanel = drawer.locator("[data-merchant-navigation-panel]")
+  await expect(mobilePanel).toBeVisible()
+  await expectPanelHasNoHorizontalOverflow(mobilePanel)
+  const mobileAlignment = await readPanelAlignment(mobilePanel)
+  expect(mobileAlignment).toEqual(desktopAlignment)
+  const expandedBrandBox = await mobilePanel
+    .getByRole("link", { name: "Conduit Merchant home" })
+    .boundingBox()
+  const closeButton = drawer.getByRole("button", { name: "Close", exact: true })
+  const closeButtonBox = await closeButton.boundingBox()
+  const closeIconBox = await closeButton.locator("svg").boundingBox()
+  const expandedPanelBackground = await mobilePanel.evaluate(
+    (element) => getComputedStyle(element).backgroundColor
+  )
+  expect(collapsedBrandBox).not.toBeNull()
+  expect(expandedBrandBox).not.toBeNull()
+  expect(menuTriggerBox).not.toBeNull()
+  expect(closeButtonBox).not.toBeNull()
+  expect(menuIconBox).not.toBeNull()
+  expect(closeIconBox).not.toBeNull()
+  expect(Math.abs(collapsedBrandBox!.x - expandedBrandBox!.x)).toBeLessThan(1)
+  expect(Math.abs(collapsedBrandBox!.y - expandedBrandBox!.y)).toBeLessThan(1)
+  expect(Math.abs(collapsedBrandBox!.y - desktopBrandBox!.y)).toBeLessThan(1)
+  for (const dimension of ["x", "y", "width", "height"] as const) {
+    expect(
+      Math.abs(menuTriggerBox![dimension] - closeButtonBox![dimension])
+    ).toBeLessThan(1)
+    expect(
+      Math.abs(menuIconBox![dimension] - closeIconBox![dimension])
+    ).toBeLessThan(1)
+  }
+  expect(collapsedHeaderBackground).toBe(expandedPanelBackground)
+  if (merchantNavigationScreenshotDirectory) {
+    await page.screenshot({
+      path: join(
+        merchantNavigationScreenshotDirectory,
+        "merchant-navigation-mobile-open.png"
+      ),
+      animations: "disabled",
+    })
+  }
+})
 
 test("account-local relay preference reaches another storage-sharing tab without reload @market @merchant", async ({
   page,
@@ -406,7 +725,7 @@ for (const app of ["market", "merchant"] as const) {
       await expect(leaveTrigger).toBeFocused()
       if (app === "merchant" && layout.name === "mobile") {
         await page
-          .getByRole("dialog", { name: "Conduit" })
+          .getByRole("dialog", { name: "Conduit Merchant navigation" })
           .getByRole("button", { name: "Close" })
           .click()
       }

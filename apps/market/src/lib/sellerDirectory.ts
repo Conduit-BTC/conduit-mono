@@ -1,16 +1,42 @@
 import {
   isCommerceReadIncomplete,
   normalizeProfileSearchText,
+  scoreProfileSearchMatch,
   type CommerceFreshnessMeta,
   type Product,
   type ProfileSearchMatch,
 } from "@conduit/core"
 import type { MerchantIdentityView } from "./marketBrowseModel"
+import type { ProductCatalogSourceMode } from "./productCatalogRead"
 
 export interface DiscoveredSeller {
   pubkey: string
   listingCount: number
   latestListingAt: number
+}
+
+export type SellerEligibilityState =
+  "loading" | "ready" | "partial" | "unavailable"
+
+export function getSellerEligibilityState(input: {
+  authorPubkeys: readonly string[] | undefined
+  source: ProductCatalogSourceMode
+  followLookupStatus: "idle" | "loading" | "ready" | "error"
+  discoveryStale: boolean
+}): SellerEligibilityState {
+  if (input.authorPubkeys === undefined) {
+    return input.followLookupStatus === "error" ? "unavailable" : "loading"
+  }
+  if (input.source === "conduit") {
+    return input.discoveryStale ? "partial" : "ready"
+  }
+  if (input.followLookupStatus === "error") {
+    return input.authorPubkeys.length > 0 ? "partial" : "unavailable"
+  }
+  if (input.discoveryStale || input.followLookupStatus === "loading") {
+    return "partial"
+  }
+  return "ready"
 }
 
 /**
@@ -27,6 +53,19 @@ export function isSellerDirectoryUnavailable(input: {
   discoveryStale: boolean
 }): boolean {
   if (input.hasSellers || input.isFetching) return false
+  return isSellerCatalogEvidenceIncomplete(input)
+}
+
+/**
+ * Retained sellers stay usable while this signal preserves evidence that the
+ * active catalog read is stale, partial, paused, or unavailable.
+ */
+export function isSellerCatalogEvidenceIncomplete(input: {
+  error: unknown
+  meta: CommerceFreshnessMeta | null
+  isRefreshPaused: boolean
+  discoveryStale: boolean
+}): boolean {
   return (
     !!input.error ||
     !input.meta ||
@@ -72,13 +111,33 @@ export function filterSellersByName(
 ): DiscoveredSeller[] {
   const normalizedQuery = normalizeProfileSearchText(query)
   if (!normalizedQuery) return [...sellers]
-  return sellers.filter((seller) => {
-    const identity = getIdentity(seller.pubkey)
-    if (identity.status !== "resolved") return false
-    return normalizeProfileSearchText(identity.displayName).includes(
-      normalizedQuery
+  return sellers
+    .map((seller, catalogIndex) => {
+      const identity = getIdentity(seller.pubkey)
+      if (identity.status !== "resolved") return null
+      const score = scoreProfileSearchMatch(
+        identity.searchProfile ?? {
+          pubkey: seller.pubkey,
+          displayName: identity.displayName,
+        },
+        normalizedQuery
+      )
+      return Number.isFinite(score) ? { seller, score, catalogIndex } : null
+    })
+    .filter(
+      (
+        match
+      ): match is {
+        seller: DiscoveredSeller
+        score: number
+        catalogIndex: number
+      } => match !== null
     )
-  })
+    .sort(
+      (left, right) =>
+        left.score - right.score || left.catalogIndex - right.catalogIndex
+    )
+    .map((match) => match.seller)
 }
 
 /** Network account matches that are not already shown as discovered sellers. */

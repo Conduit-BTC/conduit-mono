@@ -214,7 +214,9 @@ export interface AccountNetworkMutationDependencies {
     pubkey: string,
     relayUrls: readonly string[],
     ownerSelectedRelayUrls: readonly string[],
-    authenticatedPubkey: string | null
+    authenticatedPubkey: string | null,
+    appRelayUrls: readonly string[],
+    personalRelayUrls: readonly string[]
   ) => Promise<string[]>
   publishToRelay?: typeof publishSignedEventToRelay
   fetchEvents?: typeof fetchSignedEventsFanoutDetailed
@@ -1134,6 +1136,8 @@ async function eligibleRelayUrls(
   authenticatedPubkey: string | null,
   relayUrls: readonly string[],
   ownerSelectedRelayUrls: readonly string[],
+  appRelayUrls: readonly string[],
+  personalRelayUrls: readonly string[],
   dependencies: AccountNetworkMutationDependencies
 ): Promise<string[]> {
   const authorizedOwnerSelectedRelayUrls =
@@ -1143,7 +1147,9 @@ async function eligibleRelayUrls(
       pubkey,
       relayUrls,
       authorizedOwnerSelectedRelayUrls,
-      authenticatedPubkey
+      authenticatedPubkey,
+      appRelayUrls,
+      personalRelayUrls
     )
   }
   return await filterEligibleAccountRelayUrls({
@@ -1151,8 +1157,41 @@ async function eligibleRelayUrls(
     authenticatedPubkey,
     candidateRelayUrls: relayUrls,
     ownerSelectedRelayUrls: authorizedOwnerSelectedRelayUrls,
+    appRelayUrls,
+    personalRelayUrls,
     repository: dexieAccountNetworkLocalStateRepository,
   })
+}
+
+function distributionRelaySources(input: {
+  kind: AccountNetworkSignedKind
+  signedEvent?: SignedPublicNostrEvent
+  relayUrls: readonly string[]
+  desiredPublishRelayUrls?: readonly string[]
+}): { appRelayUrls: string[]; personalRelayUrls: string[] } {
+  const relayUrlSet = new Set(input.relayUrls)
+  if (input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS) {
+    return {
+      // Publishing and confirming the owner's declaration uses Conduit's
+      // shared discovery registry. Runtime reads from the relays declared by
+      // that kind-10050 event remain independent of both layer toggles.
+      appRelayUrls: [...input.relayUrls],
+      personalRelayUrls: [],
+    }
+  }
+
+  const personalCandidates = input.signedEvent
+    ? parseNip65RelayTags(input.signedEvent.tags).flatMap((preference) =>
+        preference.writeEnabled ? [preference.url] : []
+      )
+    : (input.desiredPublishRelayUrls ?? [])
+  const appRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+    accountNetworkDiscoveryRelayUrls()
+  ).filter((relayUrl) => relayUrlSet.has(relayUrl))
+  const personalRelayUrls = normalizeOwnerSelectedRelayUrls(
+    personalCandidates
+  ).filter((relayUrl) => relayUrlSet.has(relayUrl))
+  return { appRelayUrls, personalRelayUrls }
 }
 
 async function resolveDistributionPlan(input: {
@@ -1197,11 +1236,18 @@ async function resolveDistributionPlan(input: {
   const requested = Array.from(
     new Set([...remoteOrCodeOwnedRelayUrls, ...ownerSelectedRelayUrls])
   ).filter((relayUrl) => !excluded.has(relayUrl))
+  const relaySources = distributionRelaySources({
+    kind: input.kind,
+    relayUrls: requested,
+    desiredPublishRelayUrls: input.desiredPublishRelayUrls,
+  })
   const eligible = await eligibleRelayUrls(
     input.pubkey,
     input.authenticatedPubkey,
     requested,
     ownerSelectedRelayUrls,
+    relaySources.appRelayUrls,
+    relaySources.personalRelayUrls,
     input.dependencies
   )
   const eligibleSet = new Set(
@@ -1295,6 +1341,11 @@ async function deliverPendingKind(input: {
     input.authenticatedPubkey === input.pubkey
       ? ownerSelectedRelayUrlsFromSnapshot(input.pubkey, snapshot)
       : []
+  const relaySources = distributionRelaySources({
+    kind: input.kind,
+    signedEvent,
+    relayUrls: pending.publishRelayUrls,
+  })
   const publishTargets = unresolvedNetworkPreferencePublishRelayUrls(
     pending.relayOutcomes
   )
@@ -1313,6 +1364,8 @@ async function deliverPendingKind(input: {
         input.authenticatedPubkey,
         [relayUrl],
         ownerSelectedRelayUrls,
+        relaySources.appRelayUrls,
+        relaySources.personalRelayUrls,
         input.dependencies
       )
       assertContinue(input.dependencies.shouldContinue)
@@ -1326,6 +1379,8 @@ async function deliverPendingKind(input: {
           authenticatedPubkey: input.authenticatedPubkey,
           accountPubkey: input.pubkey,
           ownerSelectedRelayUrls,
+          appRelayUrls: relaySources.appRelayUrls,
+          personalRelayUrls: relaySources.personalRelayUrls,
           shouldContinue: input.dependencies.shouldContinue,
         })
       } catch (error) {
@@ -1375,6 +1430,8 @@ async function deliverPendingKind(input: {
         input.authenticatedPubkey,
         [relayUrl],
         ownerSelectedRelayUrls,
+        relaySources.appRelayUrls,
+        relaySources.personalRelayUrls,
         input.dependencies
       )
       assertContinue(input.dependencies.shouldContinue)
@@ -1395,6 +1452,8 @@ async function deliverPendingKind(input: {
             accountPubkey: input.pubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             ownerSelectedRelayUrls,
+            appRelayUrls: relaySources.appRelayUrls,
+            personalRelayUrls: relaySources.personalRelayUrls,
             shouldContinue: input.dependencies.shouldContinue,
           }
         )

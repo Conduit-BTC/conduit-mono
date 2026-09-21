@@ -706,6 +706,10 @@ function hasCommerceFetchTestOverride(): boolean {
  */
 type CommerceReadRelayPlan = {
   relayUrls: string[]
+  /** Ordered candidates retained until the final live-policy admission gate. */
+  candidateRelayUrls: string[]
+  /** Maximum candidates that may reach relay I/O after policy filtering. */
+  maxRelayAttempts?: number
   parkedRelayUrls: string[]
   /** Complete NIP-65 hint set before the executable fanout cap. */
   hintRelayUrls: string[]
@@ -759,24 +763,29 @@ async function planCommerceReadRelayPlan(input: {
     (input.relayHintMode === "force" ||
       (input.relayHintMode !== "skip" &&
         hintPubkeys.length <= BROAD_AUTHOR_HINT_LIMIT))
-  const relayListLookupRelayUrls = getGeneralReadRelayUrls({
-    settings: settingsSnapshot.settings,
-    fallbackRelayUrls: config.defaultRelays,
-    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
-  })
   const normalizedAuthenticatedPubkey = input.authenticatedPubkey
     ?.trim()
     .toLowerCase()
   const normalizedPolicyAccount = accountPubkey?.trim().toLowerCase()
-  const ownerSelectedRelayListLookupUrls =
+  const configuredOwnerRelayListLookupUrls =
     normalizedAuthenticatedPubkey &&
     normalizedAuthenticatedPubkey === normalizedPolicyAccount
       ? normalizeOwnerSelectedRelayUrls(
           settingsSnapshot.settings.entries.flatMap((entry) =>
             entry.readEnabled ? [entry.url] : []
           )
-        ).filter((relayUrl) => relayListLookupRelayUrls.includes(relayUrl))
+        )
       : []
+  const relayListLookupPlan = planRelayReads({
+    intent: "relay_lists",
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: configuredOwnerRelayListLookupUrls,
+    settings: settingsSnapshot.settings,
+    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
+  })
+  const relayListLookupRelayUrls = relayListLookupPlan.candidateRelayUrls
+  const ownerSelectedRelayListLookupUrls =
+    relayListLookupPlan.ownerSelectedRelayUrls ?? []
   const relayLists =
     input.relayLists ??
     (shouldFetchRelayHints
@@ -789,6 +798,9 @@ async function planCommerceReadRelayPlan(input: {
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
                 ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
+                appRelayUrls: relayListLookupPlan.appRelayUrls,
+                personalRelayUrls: relayListLookupPlan.personalRelayUrls,
+                maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
                 accountNetworkLocalStateRepository:
                   testOverrides.accountNetworkLocalStateRepository,
                 shouldContinue: input.shouldContinue,
@@ -800,6 +812,9 @@ async function planCommerceReadRelayPlan(input: {
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
                 ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
+                appRelayUrls: relayListLookupPlan.appRelayUrls,
+                personalRelayUrls: relayListLookupPlan.personalRelayUrls,
+                maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
                 accountNetworkLocalStateRepository:
                   testOverrides.accountNetworkLocalStateRepository,
                 shouldContinue: input.shouldContinue,
@@ -849,7 +864,7 @@ async function planCommerceReadRelayPlan(input: {
   )
   const authenticatedAuthorRelayHints = normalizeUntrustedRelayHintsForContext({
     relayUrls: input.authenticatedAuthorRelayUrls ?? [],
-    approvedRelayUrls: plan.relayUrls,
+    approvedRelayUrls: plan.candidateRelayUrls,
     allowApprovedPrivate: !!input.authenticatedPubkey,
   })
   const externalRelayHints = uniqueStrings([
@@ -860,21 +875,21 @@ async function planCommerceReadRelayPlan(input: {
     ? uniqueStrings([
         ...fallbackRelayUrls,
         ...externalRelayHints,
-        ...plan.relayUrls,
+        ...plan.candidateRelayUrls,
       ])
     : uniqueStrings([
         ...externalRelayHints,
-        ...plan.relayUrls,
+        ...plan.candidateRelayUrls,
         ...fallbackRelayUrls,
       ])
   const effectiveMaxRelays = input.maxRelays ?? DEFAULT_READ_FANOUT
   const clampRelayFanout = (relayUrls: string[]): string[] =>
     effectiveMaxRelays <= 0 ? relayUrls : relayUrls.slice(0, effectiveMaxRelays)
-  const expandedRelayUrls = clampRelayFanout(plannedRelayUrls)
-  const executableRelayUrls = config.e2eRelayIsolationEnabled
-    ? normalizePublicOrIsolatedE2eRelayHints(expandedRelayUrls)
-    : expandedRelayUrls
-  const executableRelayUrlSet = new Set(executableRelayUrls)
+  const candidateRelayUrls = config.e2eRelayIsolationEnabled
+    ? normalizePublicOrIsolatedE2eRelayHints(plannedRelayUrls)
+    : plannedRelayUrls
+  const executableRelayUrls = clampRelayFanout(candidateRelayUrls)
+  const candidateRelayUrlSet = new Set(candidateRelayUrls)
   const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
   const policyAccount = accountPubkey?.trim().toLowerCase()
   const includesAuthenticatedOwner = Boolean(
@@ -892,7 +907,7 @@ async function planCommerceReadRelayPlan(input: {
               ? [entry.url]
               : []
           )
-        ).filter((relayUrl) => executableRelayUrlSet.has(relayUrl))
+        ).filter((relayUrl) => candidateRelayUrlSet.has(relayUrl))
       : []
   const appRelayUrlSet = new Set([
     ...(plan.appRelayUrls ?? []),
@@ -907,12 +922,16 @@ async function planCommerceReadRelayPlan(input: {
   ) {
     return {
       relayUrls: executableRelayUrls,
+      candidateRelayUrls,
+      ...(effectiveMaxRelays > 0
+        ? { maxRelayAttempts: effectiveMaxRelays }
+        : {}),
       parkedRelayUrls: plan.parkedRelayUrls.filter(
-        (relayUrl) => !executableRelayUrlSet.has(relayUrl)
+        (relayUrl) => !candidateRelayUrlSet.has(relayUrl)
       ),
       hintRelayUrls: plan.hintRelayUrls,
       ownerSelectedRelayUrls,
-      appRelayUrls: executableRelayUrls.filter((relayUrl) =>
+      appRelayUrls: candidateRelayUrls.filter((relayUrl) =>
         appRelayUrlSet.has(relayUrl)
       ),
       personalRelayUrls: ownerSelectedRelayUrls,
@@ -926,14 +945,19 @@ async function planCommerceReadRelayPlan(input: {
     case "author_products": {
       const relayUrls = clampRelayFanout(commerceReadRelayUrls())
       const relayUrlSet = new Set(relayUrls)
+      const candidateRelayUrls = commerceReadRelayUrls()
       return {
         relayUrls,
+        candidateRelayUrls,
+        ...(effectiveMaxRelays > 0
+          ? { maxRelayAttempts: effectiveMaxRelays }
+          : {}),
         parkedRelayUrls: plan.parkedRelayUrls.filter(
           (relayUrl) => !relayUrlSet.has(relayUrl)
         ),
         hintRelayUrls: plan.hintRelayUrls,
         ownerSelectedRelayUrls: [],
-        appRelayUrls: relayUrls,
+        appRelayUrls: candidateRelayUrls,
         personalRelayUrls: [],
         relayLists,
       }
@@ -941,14 +965,19 @@ async function planCommerceReadRelayPlan(input: {
     default: {
       const relayUrls = clampRelayFanout(publicReadRelayUrls())
       const relayUrlSet = new Set(relayUrls)
+      const candidateRelayUrls = publicReadRelayUrls()
       return {
         relayUrls,
+        candidateRelayUrls,
+        ...(effectiveMaxRelays > 0
+          ? { maxRelayAttempts: effectiveMaxRelays }
+          : {}),
         parkedRelayUrls: plan.parkedRelayUrls.filter(
           (relayUrl) => !relayUrlSet.has(relayUrl)
         ),
         hintRelayUrls: plan.hintRelayUrls,
         ownerSelectedRelayUrls: [],
-        appRelayUrls: relayUrls,
+        appRelayUrls: candidateRelayUrls,
         personalRelayUrls: [],
         relayLists,
       }
@@ -1366,6 +1395,7 @@ async function streamProductRecordChunks(input: {
   baseFilter: NDKFilter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
+  maxRelayAttempts?: number
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
   personalRelayUrls: string[]
@@ -1405,6 +1435,7 @@ async function streamProductRecordChunks(input: {
           chunkFilter,
           {
             relayUrls: input.relayUrls,
+            maxRelayAttempts: input.maxRelayAttempts,
             ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
             appRelayUrls: input.appRelayUrls,
             personalRelayUrls: input.personalRelayUrls,
@@ -4019,7 +4050,8 @@ async function fetchPublicProductRecords(query: {
   })
 
   const result = await runFetchEventsFanoutDetailed(filter, {
-    relayUrls: relayPlan.relayUrls,
+    relayUrls: relayPlan.candidateRelayUrls,
+    maxRelayAttempts: relayPlan.maxRelayAttempts,
     ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
     appRelayUrls: relayPlan.appRelayUrls,
     personalRelayUrls: relayPlan.personalRelayUrls,
@@ -4119,7 +4151,8 @@ async function fetchPublicProductRecordsProgressive(
   await streamProductRecordChunks({
     baseFilter: filter,
     authorChunks,
-    relayUrls: relayPlan.relayUrls,
+    relayUrls: relayPlan.candidateRelayUrls,
+    maxRelayAttempts: relayPlan.maxRelayAttempts,
     ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
     appRelayUrls: relayPlan.appRelayUrls,
     personalRelayUrls: relayPlan.personalRelayUrls,
@@ -4134,8 +4167,8 @@ async function fetchPublicProductRecordsProgressive(
   })
 
   const expandedRelayPlan = await expandedRelayPlanPromise
-  const initialRelayUrlSet = new Set(relayPlan.relayUrls)
-  const expansionRelayUrls = expandedRelayPlan.relayUrls.filter(
+  const initialRelayUrlSet = new Set(relayPlan.candidateRelayUrls)
+  const expansionRelayUrls = expandedRelayPlan.candidateRelayUrls.filter(
     (relayUrl) => !initialRelayUrlSet.has(relayUrl)
   )
   if (expansionRelayUrls.length > 0) {
@@ -4144,6 +4177,7 @@ async function fetchPublicProductRecordsProgressive(
       baseFilter: filter,
       authorChunks,
       relayUrls: expansionRelayUrls,
+      maxRelayAttempts: expandedRelayPlan.maxRelayAttempts,
       ownerSelectedRelayUrls: expandedRelayPlan.ownerSelectedRelayUrls.filter(
         (relayUrl) => expansionRelayUrlSet.has(relayUrl)
       ),
@@ -5032,8 +5066,11 @@ async function fetchVariationGroupRecordBatch(
       // Each transport-safe chunk starts with at most two family reads.
       // Saturated results split below without increasing concurrency.
       const fetchOptions = {
-        relayUrls: relayPlan.relayUrls,
+        relayUrls: relayPlan.candidateRelayUrls,
+        maxRelayAttempts: relayPlan.maxRelayAttempts,
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+        appRelayUrls: relayPlan.appRelayUrls,
+        personalRelayUrls: relayPlan.personalRelayUrls,
         accountPubkey: options.authenticatedPubkey,
         authenticatedPubkey: options.authenticatedPubkey,
         accountNetworkLocalStateRepository:
@@ -6139,8 +6176,11 @@ async function readPreparedProductTargets(
               "#d": uniqueStrings(targets.map((target) => target.dTag)),
             },
             {
-              relayUrls: relayPlan.relayUrls,
+              relayUrls: relayPlan.candidateRelayUrls,
+              maxRelayAttempts: relayPlan.maxRelayAttempts,
               ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+              appRelayUrls: relayPlan.appRelayUrls,
+              personalRelayUrls: relayPlan.personalRelayUrls,
               accountPubkey: options.authenticatedPubkey,
               authenticatedPubkey: options.authenticatedPubkey,
               accountNetworkLocalStateRepository:
@@ -6884,8 +6924,11 @@ export async function getProfiles(
       limit: Math.max(10, missing.length * 3),
     }
     const fanoutOptions = {
-      relayUrls: relayPlan.relayUrls,
+      relayUrls: relayPlan.candidateRelayUrls,
+      maxRelayAttempts: relayPlan.maxRelayAttempts,
       ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+      appRelayUrls: relayPlan.appRelayUrls,
+      personalRelayUrls: relayPlan.personalRelayUrls,
       accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
       authenticatedPubkey: query.authenticatedPubkey,
       accountNetworkLocalStateRepository:
@@ -7941,6 +7984,9 @@ async function fetchNewInboxWraps(
     authenticatedPubkey: principalPubkey,
     maxRelays: DM_INBOX_READ_FANOUT,
   })
+  const compatibilityAppRelayUrls = readPlan.relayUrls.filter(
+    (relayUrl) => readPlan.relaySources[relayUrl] === "compatibility"
+  )
 
   if (
     testOverrides.fetchEventsFanoutWithDiagnostics ||
@@ -7949,6 +7995,8 @@ async function fetchNewInboxWraps(
     const result = await runFetchEventsFanoutWithDiagnostics(filter, {
       relayUrls: readPlan.relayUrls,
       ownerSelectedRelayUrls: readPlan.ownerSelectedRelayUrls,
+      appRelayUrls: compatibilityAppRelayUrls,
+      personalRelayUrls: [],
       accountPubkey: principalPubkey,
       authenticatedPubkey: principalPubkey,
       accountNetworkLocalStateRepository:
@@ -7983,6 +8031,7 @@ async function fetchNewInboxWraps(
     principalPubkey,
     relayUrls: readPlan.relayUrls,
     ownerSelectedRelayUrls: readPlan.ownerSelectedRelayUrls,
+    appRelayUrls: compatibilityAppRelayUrls,
     limit,
     authorization,
     accountNetworkLocalStateRepository:
@@ -8207,7 +8256,8 @@ async function runLegacyDmSync(
         limit: 400,
       },
       {
-        relayUrls: relayPlan.relayUrls,
+        relayUrls: relayPlan.candidateRelayUrls,
+        maxRelayAttempts: relayPlan.maxRelayAttempts,
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
         appRelayUrls: relayPlan.appRelayUrls,
         personalRelayUrls: relayPlan.personalRelayUrls,
@@ -8226,7 +8276,8 @@ async function runLegacyDmSync(
         limit: 400,
       },
       {
-        relayUrls: relayPlan.relayUrls,
+        relayUrls: relayPlan.candidateRelayUrls,
+        maxRelayAttempts: relayPlan.maxRelayAttempts,
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
         appRelayUrls: relayPlan.appRelayUrls,
         personalRelayUrls: relayPlan.personalRelayUrls,

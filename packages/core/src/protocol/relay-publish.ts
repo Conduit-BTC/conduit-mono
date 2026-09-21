@@ -90,6 +90,10 @@ export interface PublishWithPlannerInput {
    * fanout for protocols such as NIP-17 that define an exclusive relay set.
    */
   exclusiveRelayUrls?: readonly string[]
+  /** Exact exclusive targets contributed by Conduit's app-owned layer. */
+  appRelayUrls?: readonly string[]
+  /** Exact exclusive targets contributed by the owner's NIP-65 layer. */
+  personalRelayUrls?: readonly string[]
   /**
    * Exact exclusive-target subset backed by this authenticated owner's own
    * Network selection. Recipient or discovered relay URLs must never populate
@@ -489,6 +493,8 @@ async function publishToRelayUrls(input: {
   event: NDKEvent
   ndk: ReturnType<typeof getNdk>
   relayUrls: readonly string[]
+  /** Bound attempts after live account source-policy filtering. */
+  maxRelayAttempts?: number
   requiredRelayCount: number
   timeoutMs: number
   accountPubkey?: string | null
@@ -548,7 +554,7 @@ async function publishToRelayUrls(input: {
             repository: accountNetworkLocalStateRepository,
           })
         ).map((operation) => operation.value)
-  const relayUrls =
+  const eligibleRelayUrls =
     orderedCandidateRelayUrls.length === 0
       ? []
       : input.accountPubkey === undefined || input.accountPubkey === null
@@ -562,6 +568,10 @@ async function publishToRelayUrls(input: {
             personalRelayUrls: input.personalRelayUrls,
             repository: accountNetworkLocalStateRepository,
           })
+  const relayUrls =
+    input.maxRelayAttempts && input.maxRelayAttempts > 0
+      ? eligibleRelayUrls.slice(0, input.maxRelayAttempts)
+      : eligibleRelayUrls
 
   // NDKEvent.publish() reads the instance from the event itself even when the
   // relay set was built with an NDK instance. Gift-wrap helpers can return an
@@ -595,11 +605,19 @@ async function publishToRelayUrls(input: {
     const relayFailureMessages: Record<string, string> = {}
     const attemptedRelayUrls: string[] = []
     let signerFailureSuppressed = false
+    let actualAttemptCount = 0
 
     // Serialize auth-capable relay writes so one foreground action cannot open
     // concurrent external-signer prompts. Each target still receives the same
     // already-signed gift wrap and remains inside the exact exclusive set.
-    for (const candidateRelayUrl of relayUrls) {
+    for (const candidateRelayUrl of orderedCandidateRelayUrls) {
+      if (
+        input.maxRelayAttempts !== undefined &&
+        input.maxRelayAttempts > 0 &&
+        actualAttemptCount >= input.maxRelayAttempts
+      ) {
+        break
+      }
       let freshlyEligibleRelayUrls: string[]
       try {
         assertPublishSessionCurrent(input.shouldContinue)
@@ -625,6 +643,7 @@ async function publishToRelayUrls(input: {
       }
       const relayUrl = freshlyEligibleRelayUrls[0]
       if (!relayUrl) continue
+      actualAttemptCount += 1
       attemptedRelayUrls.push(relayUrl)
       const authorization: ExactRelayWriteAuthorization = {
         expectedPubkey: input.relayAuthentication.expectedPubkey,
@@ -761,6 +780,10 @@ interface ExactRelayTargetInput {
   authenticatedPubkey?: string | null
   /** Exact target subset selected by that authenticated account owner. */
   ownerSelectedRelayUrls?: readonly string[]
+  /** Exact target when it belongs to Conduit's app-owned relay layer. */
+  appRelayUrls?: readonly string[]
+  /** Exact target when it belongs to the owner's NIP-65 relay layer. */
+  personalRelayUrls?: readonly string[]
   /** Explicit account for last-mile whole-relay exclusion enforcement. */
   accountPubkey?: string | null
   /** Injectable durable-state reader for deterministic boundary tests. */
@@ -828,6 +851,8 @@ export async function publishSignedEventToRelay(
             authenticatedPubkey: input.authenticatedPubkey,
             candidateRelayUrls: [candidateRelayUrl],
             ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+            appRelayUrls: input.appRelayUrls,
+            personalRelayUrls: input.personalRelayUrls,
             repository: input.accountNetworkLocalStateRepository,
           })
         )[0]
@@ -869,11 +894,24 @@ export async function planPublishRelays(
         (relayUrl) => ownerSelectedSet.has(relayUrl)
       ),
     ])
+    const primaryRelayUrlSet = new Set(primaryRelayUrls)
     return {
       intent: input.intent,
       primaryRelayUrls,
+      primaryCandidateRelayUrls: primaryRelayUrls,
+      maxPrimaryRelayAttempts: primaryRelayUrls.length,
       broadcastRelayUrls: [],
+      broadcastCandidateRelayUrls: [],
       parkedRelayUrls: [],
+      appRelayUrls: normalizeSecureOrIsolatedE2eRelayUrls(
+        input.appRelayUrls ?? []
+      ).filter((relayUrl) => primaryRelayUrlSet.has(relayUrl)),
+      personalRelayUrls: mergeUnique([
+        normalizeSecureOrIsolatedE2eRelayUrls(input.personalRelayUrls ?? []),
+        normalizeOwnerSelectedRelayUrls(input.personalRelayUrls ?? []).filter(
+          (relayUrl) => ownerSelectedSet.has(relayUrl)
+        ),
+      ]).filter((relayUrl) => primaryRelayUrlSet.has(relayUrl)),
     }
   }
 
@@ -1076,6 +1114,14 @@ export async function publishWithPlanner(
             basePlan.primaryRelayUrls,
             extraPrimaryRelayUrls,
           ]),
+          primaryCandidateRelayUrls: mergeUnique([
+            basePlan.primaryCandidateRelayUrls ?? basePlan.primaryRelayUrls,
+            extraPrimaryRelayUrls,
+          ]),
+          maxPrimaryRelayAttempts: mergeUnique([
+            basePlan.primaryRelayUrls,
+            extraPrimaryRelayUrls,
+          ]).length,
         }
       : basePlan
   const plan = config.e2eRelayIsolationEnabled
@@ -1089,13 +1135,19 @@ export async function publishWithPlanner(
         return {
           ...expandedPlan,
           primaryRelayUrls: [isolatedRelayUrl],
+          primaryCandidateRelayUrls: [isolatedRelayUrl],
+          maxPrimaryRelayAttempts: 1,
           broadcastRelayUrls: [],
+          broadcastCandidateRelayUrls: [],
           parkedRelayUrls: [],
         }
       })()
     : expandedPlan
   const plannedRelayUrls = Array.from(
-    new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
+    new Set([
+      ...(plan.primaryCandidateRelayUrls ?? plan.primaryRelayUrls),
+      ...(plan.broadcastCandidateRelayUrls ?? plan.broadcastRelayUrls),
+    ])
   )
   let attemptedRelayUrls: string[] = []
   const authorFallbackAllowed =
@@ -1185,8 +1237,12 @@ export async function publishWithPlanner(
   const primary = await publishToRelayUrls({
     event,
     ndk,
-    relayUrls: plan.primaryRelayUrls,
-    requiredRelayCount: plan.primaryRelayUrls.length > 0 ? 1 : 0,
+    relayUrls: plan.primaryCandidateRelayUrls ?? plan.primaryRelayUrls,
+    maxRelayAttempts: plan.maxPrimaryRelayAttempts,
+    requiredRelayCount:
+      (plan.primaryCandidateRelayUrls ?? plan.primaryRelayUrls).length > 0
+        ? 1
+        : 0,
     timeoutMs: publishTimeoutMs,
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
@@ -1372,8 +1428,12 @@ export async function publishWithPlanner(
   const broadcast = await publishToRelayUrls({
     event,
     ndk,
-    relayUrls: plan.broadcastRelayUrls,
-    requiredRelayCount: plan.broadcastRelayUrls.length > 0 ? 1 : 0,
+    relayUrls: plan.broadcastCandidateRelayUrls ?? plan.broadcastRelayUrls,
+    maxRelayAttempts: plan.maxBroadcastRelayAttempts,
+    requiredRelayCount:
+      (plan.broadcastCandidateRelayUrls ?? plan.broadcastRelayUrls).length > 0
+        ? 1
+        : 0,
     timeoutMs: publishTimeoutMs,
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,

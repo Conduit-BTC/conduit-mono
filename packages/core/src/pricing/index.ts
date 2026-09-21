@@ -201,6 +201,15 @@ export function isBtcLikeCurrency(currency: string): boolean {
   return normalized === "BTC" || normalized === "XBT"
 }
 
+/** Comparison identity only; does not convert between BTC, sats, and msats. */
+export function normalizeCurrencyIdentity(currency: string): string {
+  const normalized = normalizeCurrencyCode(currency)
+  if (isSatsLikeCurrency(normalized)) return "SATS"
+  if (isMsatsLikeCurrency(normalized)) return "MSATS"
+  if (isBtcLikeCurrency(normalized)) return "BTC"
+  return normalized
+}
+
 export function isUsdCurrencyCode(currency: string): boolean {
   return normalizeCurrencyCode(currency) === "USD"
 }

@@ -3,6 +3,8 @@ import { useEffect, type ReactNode } from "react"
 
 import { installBrowserClientErrorTelemetry } from "@conduit/core"
 
+import { MerchantBrandLockup } from "./MerchantHeader"
+
 const SHOW_DEVTOOLS =
   import.meta.env.DEV && import.meta.env.VITE_DISABLE_DEVTOOLS !== "true"
 
@@ -20,26 +22,13 @@ export function MerchantPublicAboutShell({
   return (
     <div className="min-h-dvh bg-[var(--background)] text-[var(--text-primary)]">
       <header className="border-b border-[var(--border)] bg-[var(--surface)]">
-        <div className="mx-auto flex w-full max-w-[1280px] items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex w-full max-w-[1280px] items-center px-4 py-4 sm:px-6 lg:px-8">
           <a
             href="/"
-            className="flex items-center gap-3 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            aria-label="Conduit Merchant home"
+            className="inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
-            <img
-              src="/images/logo/logo-full.svg"
-              alt="Conduit"
-              className="h-8 w-auto"
-            />
-            <span className="hidden border-l border-[var(--border)] pl-3 font-display text-lg font-medium text-[var(--text-primary)] sm:inline">
-              merchant
-            </span>
-          </a>
-          <a
-            href="/"
-            className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-          >
-            <span className="sm:hidden">Open workspace</span>
-            <span className="hidden sm:inline">Open merchant workspace</span>
+            <MerchantBrandLockup />
           </a>
         </div>
       </header>

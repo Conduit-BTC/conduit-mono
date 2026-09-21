@@ -47,6 +47,8 @@ async function publishProductDeletionRelay(
       accountPubkey: input.accountPubkey,
       authenticatedPubkey,
       ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+      appRelayUrls: input.appRelayUrls,
+      personalRelayUrls: input.personalRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
       shouldContinue:
@@ -71,7 +73,11 @@ export async function planCurrentProductDeletionWriteRelays(
   merchantPubkey: string,
   authenticatedPubkey: string | null,
   shouldContinue?: () => boolean
-): Promise<string[]> {
+): Promise<{
+  relayUrls: string[]
+  appRelayUrls: string[]
+  personalRelayUrls: string[]
+}> {
   const plan = await planPublishRelays({
     intent: "author_event",
     authorPubkey: merchantPubkey,
@@ -82,17 +88,29 @@ export async function planCurrentProductDeletionWriteRelays(
     skipHealthFilter: true,
     shouldContinue,
   })
-  return uniqueRelayUrls([
-    ...plan.primaryRelayUrls,
-    ...plan.broadcastRelayUrls,
+  const relayUrls = uniqueRelayUrls([
+    ...(plan.primaryCandidateRelayUrls ?? plan.primaryRelayUrls),
+    ...(plan.broadcastCandidateRelayUrls ?? plan.broadcastRelayUrls),
     ...plan.parkedRelayUrls,
   ])
+  const relayUrlSet = new Set(relayUrls)
+  return {
+    relayUrls,
+    appRelayUrls: (plan.appRelayUrls ?? []).filter((relayUrl) =>
+      relayUrlSet.has(relayUrl)
+    ),
+    personalRelayUrls: (plan.personalRelayUrls ?? []).filter((relayUrl) =>
+      relayUrlSet.has(relayUrl)
+    ),
+  }
 }
 
 export async function persistSignedProductDeletion(
   input: {
     signedEvent: SignedPublicNostrEvent
     currentWriteRelayUrls: readonly string[]
+    currentAppRelayUrls?: readonly string[]
+    currentPersonalRelayUrls?: readonly string[]
     sourceRelayUrls: readonly string[]
   },
   options: ProductDeletionDeliveryOptions = {}
@@ -105,6 +123,8 @@ export async function persistSignedProductDeletion(
     {
       signedEvent: input.signedEvent,
       currentWriteRelayUrls: input.currentWriteRelayUrls,
+      currentAppRelayUrls: input.currentAppRelayUrls,
+      currentPersonalRelayUrls: input.currentPersonalRelayUrls,
       sourceRelayUrls: input.sourceRelayUrls,
       canonicalConduitRelayUrl,
     },

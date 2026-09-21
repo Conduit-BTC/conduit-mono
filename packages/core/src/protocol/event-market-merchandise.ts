@@ -1,6 +1,7 @@
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import type { EventMarketReadyReceiptSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
+import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import {
   fetchEventsFanoutDetailed,
@@ -339,11 +340,23 @@ export async function getEventMarketReceiptMerchandise(
     ) ?? []
   )
   const lookup = testOverrides.getRelayLists ?? getRelayLists
+  const relayListReadPlan = planRelayReads({
+    intent: "relay_lists",
+    authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    settings: ownerSettingsSnapshot?.settings,
+    signedRelayListAuthoritative:
+      ownerSettingsSnapshot?.signedRelayListAuthoritative,
+  })
   const relayLists = await lookup([merchant], {
     signal: input.signal,
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
-    ownerSelectedRelayUrls,
+    relayUrls: relayListReadPlan.candidateRelayUrls,
+    maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
+    ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
+    appRelayUrls: relayListReadPlan.appRelayUrls,
+    personalRelayUrls: relayListReadPlan.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -359,7 +372,18 @@ export async function getEventMarketReceiptMerchandise(
     signedRelayListAuthoritative:
       ownerSettingsSnapshot?.signedRelayListAuthoritative,
   })
-  const relayUrls = plan.relayUrls.slice(0, MAX_RECEIPT_READ_RELAYS)
+  const admittedRelayUrls = authenticatedPubkey
+    ? await filterEligibleAccountRelayUrls({
+        accountPubkey: authenticatedPubkey,
+        authenticatedPubkey,
+        candidateRelayUrls: plan.candidateRelayUrls,
+        ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
+        appRelayUrls: plan.appRelayUrls,
+        personalRelayUrls: plan.personalRelayUrls,
+        repository: input.accountNetworkLocalStateRepository,
+      })
+    : plan.candidateRelayUrls
+  const relayUrls = admittedRelayUrls.slice(0, MAX_RECEIPT_READ_RELAYS)
   const productIds = Array.from(
     new Set(input.receipt.items.map((item) => item.product.eventId))
   )

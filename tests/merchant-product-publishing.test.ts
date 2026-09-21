@@ -751,7 +751,7 @@ describe("merchant product event delivery", () => {
     ])
     expect(stagedDeletion?.relayPlan).toContainEqual({
       relayUrl: deletionAckRelayUrl,
-      roles: ["author_write", "source"],
+      roles: ["source"],
     })
     expect(stagedDeletion?.relayPlan).toContainEqual({
       relayUrl: deletionPendingRelayUrl,

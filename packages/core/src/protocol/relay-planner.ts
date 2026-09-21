@@ -108,8 +108,17 @@ export interface RelayReadPlanInput {
 
 export interface RelayReadPlan {
   intent: RelayReadIntent
-  /** Ordered relay URLs to query. */
+  /** Ordered relay URLs to query under the legacy planner-time fanout cap. */
   relayUrls: string[]
+  /**
+   * Full ordered, health-eligible candidate set. Final I/O applies
+   * `maxRelayAttempts` after re-reading live account source policy so a
+   * disabled source cannot consume the bounded fanout ahead of an enabled
+   * source.
+   */
+  candidateRelayUrls: string[]
+  /** Maximum admitted relay attempts. Omitted when fanout is unbounded. */
+  maxRelayAttempts?: number
   /** Relays that were parked by health and excluded. */
   parkedRelayUrls: string[]
   /** Relays that came from per-author NIP-65 hints. */
@@ -167,12 +176,20 @@ export interface RelayWritePlan {
    * (commerce + public).
    */
   primaryRelayUrls: string[]
+  /** Full ordered candidates retained until final live-policy admission. */
+  primaryCandidateRelayUrls?: string[]
+  /** Maximum admitted primary relay attempts; omitted when unbounded. */
+  maxPrimaryRelayAttempts?: number
   /**
    * Best-effort broadcast targets. Failures here do not fail the publish.
    * Used to seed an event into the user's write relays even when the
    * primary set is recipient-driven.
    */
   broadcastRelayUrls: string[]
+  /** Full ordered broadcast candidates retained until final admission. */
+  broadcastCandidateRelayUrls?: string[]
+  /** Maximum admitted broadcast attempts; omitted when unbounded. */
+  maxBroadcastRelayAttempts?: number
   /** Relays that were parked by health and excluded. */
   parkedRelayUrls: string[]
   /** Planned targets contributed by Conduit's transparent app layer. */
@@ -409,6 +426,8 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     return {
       intent: input.intent,
       relayUrls: [isolatedRelayUrl],
+      candidateRelayUrls: [isolatedRelayUrl],
+      maxRelayAttempts: 1,
       parkedRelayUrls: [],
       hintRelayUrls: [],
       ownerSelectedRelayUrls: [],
@@ -551,8 +570,11 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     input.now
   )
 
-  const relayUrls = clampFanout(kept, input.maxRelays ?? DEFAULT_READ_FANOUT)
-  const executableRelayUrls = new Set(relayUrls)
+  const requestedMaxRelays = input.maxRelays ?? DEFAULT_READ_FANOUT
+  const maxRelayAttempts =
+    requestedMaxRelays > 0 ? requestedMaxRelays : undefined
+  const relayUrls = clampFanout(kept, requestedMaxRelays)
+  const candidateRelayUrlSet = new Set(kept)
   const appRelaySet = new Set(appBaseRelays)
   const personalRelaySet = new Set([
     ...ownerSelectedRelayUrls,
@@ -563,13 +585,15 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
   return {
     intent: input.intent,
     relayUrls,
+    candidateRelayUrls: kept,
+    ...(maxRelayAttempts === undefined ? {} : { maxRelayAttempts }),
     parkedRelayUrls: parked,
     hintRelayUrls,
     ownerSelectedRelayUrls: ownerSelectedRelayUrls.filter((relayUrl) =>
-      executableRelayUrls.has(relayUrl)
+      candidateRelayUrlSet.has(relayUrl)
     ),
-    appRelayUrls: relayUrls.filter((relayUrl) => appRelaySet.has(relayUrl)),
-    personalRelayUrls: relayUrls.filter((relayUrl) =>
+    appRelayUrls: kept.filter((relayUrl) => appRelaySet.has(relayUrl)),
+    personalRelayUrls: kept.filter((relayUrl) =>
       personalRelaySet.has(relayUrl)
     ),
   }
@@ -602,7 +626,10 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     return {
       intent: input.intent,
       primaryRelayUrls: [isolatedRelayUrl],
+      primaryCandidateRelayUrls: [isolatedRelayUrl],
+      maxPrimaryRelayAttempts: 1,
       broadcastRelayUrls: [],
+      broadcastCandidateRelayUrls: [],
       parkedRelayUrls: [],
       appRelayUrls: [isolatedRelayUrl],
       personalRelayUrls: [],
@@ -662,21 +689,23 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
       input.skipHealthFilter,
       input.now
     )
-    const primaryRelayUrls = clampFanout(
-      kept,
+    const requestedMaxPrimaryRelays =
       input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
-    )
+    const primaryRelayUrls = clampFanout(kept, requestedMaxPrimaryRelays)
     const authorWriteHintSet = new Set(authorWriteHints)
     return {
       intent: input.intent,
       signedRelayListAuthoritative: hasReconciledOwnerProjection,
       primaryRelayUrls,
+      primaryCandidateRelayUrls: kept,
+      ...(requestedMaxPrimaryRelays > 0
+        ? { maxPrimaryRelayAttempts: requestedMaxPrimaryRelays }
+        : {}),
       broadcastRelayUrls: [],
+      broadcastCandidateRelayUrls: [],
       parkedRelayUrls: parked,
-      appRelayUrls: primaryRelayUrls.filter((relayUrl) =>
-        appWriteRelaySet.has(relayUrl)
-      ),
-      personalRelayUrls: primaryRelayUrls.filter(
+      appRelayUrls: kept.filter((relayUrl) => appWriteRelaySet.has(relayUrl)),
+      personalRelayUrls: kept.filter(
         (relayUrl) =>
           personalWriteRelaySet.has(relayUrl) ||
           (isAuthenticatedAuthor && authorWriteHintSet.has(relayUrl))
@@ -756,24 +785,30 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     input.now
   )
 
-  const primaryRelayUrls = clampFanout(
-    primaryKept,
+  const requestedMaxPrimaryRelays =
     input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
-  )
+  const requestedMaxBroadcastRelays =
+    input.maxBroadcastRelays ?? DEFAULT_BROADCAST_FANOUT
+  const primaryRelayUrls = clampFanout(primaryKept, requestedMaxPrimaryRelays)
   const broadcastRelayUrls = clampFanout(
     broadcastKept,
-    input.maxBroadcastRelays ?? DEFAULT_BROADCAST_FANOUT
+    requestedMaxBroadcastRelays
   )
-  const executableRelayUrls = dedupeOrdered([
-    ...primaryRelayUrls,
-    ...broadcastRelayUrls,
-  ])
+  const executableRelayUrls = dedupeOrdered([...primaryKept, ...broadcastKept])
   const missingRecipientFallbackSet = new Set(missingRecipientFallback)
   const authenticatedRecipientHintSet = new Set(authenticatedRecipientHints)
   return {
     intent: input.intent,
     primaryRelayUrls,
+    primaryCandidateRelayUrls: primaryKept,
+    ...(requestedMaxPrimaryRelays > 0
+      ? { maxPrimaryRelayAttempts: requestedMaxPrimaryRelays }
+      : {}),
     broadcastRelayUrls,
+    broadcastCandidateRelayUrls: broadcastKept,
+    ...(requestedMaxBroadcastRelays > 0
+      ? { maxBroadcastRelayAttempts: requestedMaxBroadcastRelays }
+      : {}),
     parkedRelayUrls: dedupeOrdered([...primaryParked, ...broadcastParked]),
     appRelayUrls: executableRelayUrls.filter(
       (relayUrl) =>

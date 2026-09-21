@@ -843,6 +843,61 @@ describe("shared progressive event catalogs", () => {
         eventCatalogQueryIdentity(collectionCoordinate, changed).queryKey
       ).not.toEqual(key)
     }
+    expect(
+      eventCatalogQueryIdentity(collectionCoordinate, {
+        ...scope,
+        selectedMerchantPubkey: merchant,
+      }).queryKey
+    ).not.toEqual(key)
+    expect(
+      eventCatalogQueryIdentity(collectionCoordinate, {
+        ...scope,
+        selectedMerchantPubkey: merchant.toUpperCase(),
+      }).queryKey
+    ).toEqual(
+      eventCatalogQueryIdentity(collectionCoordinate, {
+        ...scope,
+        selectedMerchantPubkey: merchant,
+      }).queryKey
+    )
+    expect(
+      eventCatalogQueryIdentity(collectionCoordinate, {
+        ...scope,
+        selectedMerchantPubkey: "invalid-a",
+      }).queryKey
+    ).not.toEqual(
+      eventCatalogQueryIdentity(collectionCoordinate, {
+        ...scope,
+        selectedMerchantPubkey: "invalid-b",
+      }).queryKey
+    )
+  })
+
+  it("forwards the selected merchant only to its isolated catalog read", async () => {
+    const client = new QueryClient()
+    let forwardedMerchant: unknown
+    const merchantScope = { ...scope, selectedMerchantPubkey: merchant }
+    await client.fetchQuery(
+      eventCatalogQueryOptions(
+        client,
+        collectionCoordinate,
+        merchantScope,
+        () => true,
+        async (_reference, options) => {
+          forwardedMerchant = (
+            options as { selectedMerchantPubkey?: string } | undefined
+          )?.selectedMerchantPubkey
+          return raw()
+        }
+      )
+    )
+    expect(forwardedMerchant).toBe(merchant)
+    expect(
+      client.getQueryData(
+        eventCatalogQueryIdentity(collectionCoordinate, scope).queryKey
+      )
+    ).toBeUndefined()
+    client.clear()
   })
 
   type FocusRecoveryCase = {

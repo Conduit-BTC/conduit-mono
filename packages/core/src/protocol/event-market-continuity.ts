@@ -175,6 +175,8 @@ export async function getEventMarketCollectionLifecycleEvidence(
     authenticatedPubkey,
     relayUrls: plan.relayUrls,
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
+    appRelayUrls: plan.appRelayUrls,
+    personalRelayUrls: plan.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,

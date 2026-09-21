@@ -250,6 +250,60 @@ describe("order relay delivery retry", () => {
     ])
   })
 
+  it("blocks App compatibility retries without suppressing declared inbox retries", async () => {
+    const relayUrl = "wss://shared-route.conduit.market"
+    const accountState = emptyAccountNetworkLocalState(BUYER, () => 1)
+    accountState.routingPolicy = {
+      ...accountState.routingPolicy,
+      appRelaysEnabled: false,
+      appRelaysTouched: true,
+    }
+    const accountNetworkLocalStateRepository = {
+      get: async () => structuredClone(accountState),
+    }
+
+    for (const route of ["compatibility_order", "declared_inbox"] as const) {
+      const candidate = lifecycle({ orderDeliveryRoute: route })
+      candidate.orderRelayDelivery = {
+        ...candidate.orderRelayDelivery!,
+        route,
+        relayDelivery: [
+          {
+            relayUrl,
+            source:
+              route === "compatibility_order"
+                ? "compatibility_registry"
+                : "declared",
+            status: "timed_out",
+            attemptCount: 1,
+          },
+        ],
+      }
+      const store = repository(candidate)
+      const attempts: Array<{
+        relayUrl: string
+        appRelayUrls?: readonly string[]
+      }> = []
+
+      await retryOrderRelayDelivery("order-id", BUYER, {
+        repository: store.repository,
+        accountNetworkLocalStateRepository,
+        leaseOwner: `worker-${route}`,
+        now: () => 100,
+        publisher: async (input) => {
+          attempts.push(input)
+          return "acked"
+        },
+      })
+
+      expect(attempts).toEqual(
+        route === "compatibility_order"
+          ? []
+          : [expect.objectContaining({ relayUrl, appRelayUrls: [] })]
+      )
+    }
+  })
+
   it("refuses background replay for a guest or different active account", async () => {
     for (const candidate of [
       lifecycle({ buyerIdentityKind: "guest_ephemeral" }),

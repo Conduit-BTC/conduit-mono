@@ -53,6 +53,8 @@ export interface RelayListLookupOptions {
   cacheOnly?: boolean
   /** Custom relay set to scan; defaults to user's general read relays. */
   relayUrls?: readonly string[]
+  /** Bound admitted relay attempts after live source-policy filtering. */
+  maxRelayAttempts?: number
   /**
    * Preserve local/private and ws:// relay URLs only when the requested
    * kind-10002 owner matches this authenticated pubkey. Third-party relay hints
@@ -397,6 +399,7 @@ async function runFetch(
     | "ownerSelectedRelayUrls"
     | "appRelayUrls"
     | "personalRelayUrls"
+    | "maxRelayAttempts"
     | "accountNetworkLocalStateRepository"
     | "shouldContinue"
     | "signal"
@@ -411,6 +414,7 @@ async function runFetch(
     ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
     appRelayUrls: options.appRelayUrls,
     personalRelayUrls: options.personalRelayUrls,
+    maxRelayAttempts: options.maxRelayAttempts,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     shouldContinue: options.shouldContinue,
@@ -430,6 +434,7 @@ async function runFetchDetailed(
     | "ownerSelectedRelayUrls"
     | "appRelayUrls"
     | "personalRelayUrls"
+    | "maxRelayAttempts"
     | "accountNetworkLocalStateRepository"
     | "shouldContinue"
     | "signal"
@@ -446,6 +451,7 @@ async function runFetchDetailed(
       ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
       appRelayUrls: options.appRelayUrls,
       personalRelayUrls: options.personalRelayUrls,
+      maxRelayAttempts: options.maxRelayAttempts,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
       shouldContinue: options.shouldContinue,
@@ -463,6 +469,7 @@ async function runFetchDetailed(
       ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
       appRelayUrls: options.appRelayUrls,
       personalRelayUrls: options.personalRelayUrls,
+      maxRelayAttempts: options.maxRelayAttempts,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
       shouldContinue: options.shouldContinue,
@@ -488,6 +495,7 @@ async function runFetchDetailed(
     ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
     appRelayUrls: options.appRelayUrls,
     personalRelayUrls: options.personalRelayUrls,
+    maxRelayAttempts: options.maxRelayAttempts,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     shouldContinue: options.shouldContinue,

@@ -2049,6 +2049,53 @@ describe("planPublishRelays", () => {
     expect(result.failedRelayUrls).toContain(primaryRelay)
   })
 
+  it("backfills a capped publish after source policy suppresses the preview target", async () => {
+    const personalRelayUrl = "wss://personal-disabled-write.example"
+    const appRelayUrl = "wss://app-enabled-write.example"
+    const attempts: string[][] = []
+    const event = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        signedRelayListAuthoritative: true,
+        primaryRelayUrls: [personalRelayUrl],
+        primaryCandidateRelayUrls: [personalRelayUrl, appRelayUrl],
+        maxPrimaryRelayAttempts: 1,
+        broadcastRelayUrls: [],
+        broadcastCandidateRelayUrls: [],
+        parkedRelayUrls: [],
+        appRelayUrls: [appRelayUrl],
+        personalRelayUrls: [personalRelayUrl],
+      }),
+    })
+
+    const result = await publishWithPlanner(event, {
+      intent: "author_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      authenticatedPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: {
+        get: async (pubkey) =>
+          accountNetworkState(pubkey, [], {
+            appRelaysEnabled: true,
+            personalRelaysEnabled: false,
+          }),
+      },
+    })
+
+    expect(attempts).toEqual([[`${appRelayUrl}/`]])
+    expect(result.attemptedRelayUrls).toEqual([appRelayUrl])
+  })
+
   it("filters a stale publish plan by explicit account without changing other or public callers", async () => {
     const relayUrl = "wss://stale-publish-plan.conduit.market"
     const attempts: string[][] = []

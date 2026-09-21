@@ -1,13 +1,11 @@
+import { Link, useRouterState } from "@tanstack/react-router"
 import {
+  Bug,
   CalendarDays,
   ChevronDown,
-  Check,
-  CircleHelp,
-  Copy,
   CreditCard,
   ExternalLink,
   FileText,
-  GitFork,
   Info,
   LogOut,
   Menu,
@@ -19,15 +17,22 @@ import {
   Truck,
   UserRound,
   Wifi,
+  X,
 } from "lucide-react"
-import { useLayoutEffect, useRef, useState, type ComponentType } from "react"
-import { Link, useRouterState } from "@tanstack/react-router"
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from "react"
+
 import {
   buildBugReportUrl,
   config,
   formatNpub,
   getProfileDisplayLabel,
-  pubkeyToNpub,
   useAuth,
   useProfile,
 } from "@conduit/core"
@@ -43,149 +48,97 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Sheet,
+  SheetClose,
   SheetContent,
-  SheetHeader,
   SheetTitle,
   SheetTrigger,
   StatusPill,
+  ThemeToggleButton,
   cn,
 } from "@conduit/ui"
-import { SignerSwitch } from "./SignerSwitch"
+
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
+import { SignerSwitch } from "./SignerSwitch"
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type NavRoute =
+type CommerceNavRoute =
   | "/"
-  | "/orders"
-  | "/messages"
   | "/products"
   | "/events"
-  | "/profile"
+  | "/orders"
   | "/payments"
   | "/shipping"
-  | "/network"
-  | "/about"
+  | "/messages"
 
-type NavItem = {
-  to: NavRoute
+type MerchantInternalNavRoute = CommerceNavRoute | "/about"
+
+type CommerceNavItem = {
+  to: CommerceNavRoute
   label: string
   icon: ComponentType<{ className?: string }>
-  /** If true, this nav item has readiness that can be incomplete */
   hasReadiness?: boolean
 }
 
-const mainNavItems: NavItem[] = [
+const commerceNavItems: CommerceNavItem[] = [
   { to: "/", label: "Home", icon: Store },
-  { to: "/orders", label: "Orders", icon: ShoppingBag },
-  { to: "/messages", label: "Messages", icon: MessageCircle },
   { to: "/products", label: "Products", icon: Package },
   { to: "/events", label: "Events", icon: CalendarDays },
-  { to: "/about", label: "About", icon: Info },
-]
-
-const setupNavItems: NavItem[] = [
-  { to: "/profile", label: "Profile", icon: UserRound, hasReadiness: true },
+  { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/payments", label: "Payments", icon: CreditCard, hasReadiness: true },
   { to: "/shipping", label: "Shipping", icon: Truck, hasReadiness: true },
-  { to: "/network", label: "Network", icon: Wifi, hasReadiness: true },
+  { to: "/messages", label: "Messages", icon: MessageCircle },
 ]
 
-type MerchantResourceLink = {
-  label: string
-  href: string
-  external: boolean
-} & (
-  | { icon: ComponentType<{ className?: string }>; imageSrc?: never }
-  | { imageSrc: string; icon?: never }
-)
+const navItemClassName =
+  "group relative flex min-h-10 w-full min-w-0 items-center gap-3 rounded-xl border border-transparent px-3 py-2 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
 
-const merchantResourceLinks: readonly MerchantResourceLink[] = [
-  {
-    label: "conduit.market",
-    href: "https://conduit.market/",
-    external: true,
-    icon: ExternalLink,
-  },
-  {
-    label: "GitHub",
-    href: "https://github.com/Conduit-BTC/conduit-mono",
-    external: true,
-    icon: GitFork,
-  },
-  {
-    label: "Support",
-    href: "https://github.com/Conduit-BTC/conduit-mono/issues",
-    external: true,
-    icon: CircleHelp,
-  },
-  {
-    label: "Nostr",
-    href: "https://njump.me/npub1nkfqwlz7xkhhdaa3ekz88qqqk7a0ks7jpv9zdsv0u206swxjw9rq0g2svu",
-    external: true,
-    imageSrc: "/images/logo/nostr-n-logo-white.png",
-  },
-  {
-    label: "Terms",
-    href: "/terms-of-service",
-    external: false,
-    icon: FileText,
-  },
-  {
-    label: "Privacy",
-    href: "/privacy-policy",
-    external: false,
-    icon: ShieldCheck,
-  },
-] as const
-
-// ---------------------------------------------------------------------------
-// Avatar / logo helpers
-// ---------------------------------------------------------------------------
-
-function MerchantAvatarFallback({
-  iconClassName = "h-4 w-4",
-}: {
-  iconClassName?: string
-}) {
+function MerchantAvatarFallback() {
   return (
-    <div className="flex h-full w-full items-center justify-center rounded-full bg-[var(--avatar-bg)]">
+    <span className="flex size-full items-center justify-center rounded-full bg-[var(--avatar-bg)]">
       <img
         src="/images/logo/logo-icon.svg"
         alt=""
         aria-hidden="true"
-        className={`${iconClassName} rotate-180 select-none object-contain brightness-0 invert`}
+        className="h-4 w-auto rotate-180 select-none object-contain brightness-0 invert"
         draggable="false"
       />
-    </div>
+    </span>
   )
 }
 
-function Logo({
-  variant = "full",
-  className,
-}: {
-  variant?: "full" | "bg" | "icon"
-  className?: string
-}) {
-  const src =
-    variant === "bg"
-      ? "/images/logo/logo-full-bg.svg"
-      : variant === "icon"
-        ? "/images/logo/logo-icon.svg"
-        : "/images/logo/logo-full.svg"
+export function MerchantBrandLockup() {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-3 select-none">
+      <span
+        data-merchant-brand-logo=""
+        className="h-8 w-6 shrink-0 overflow-hidden min-[420px]:w-[6.75rem]"
+      >
+        <img
+          src="/images/logo/logo-full.svg"
+          alt="Conduit"
+          width={386}
+          height={115}
+          className="h-8 w-[6.75rem] max-w-none object-left"
+          draggable="false"
+        />
+      </span>
+      <span className="shrink-0 border-l border-[var(--border)] pl-3 pr-1 font-display text-xl font-medium text-[var(--text-primary)]">
+        merchant
+      </span>
+    </span>
+  )
+}
 
+function MerchantLogoLink({ className }: { className?: string }) {
   return (
     <Link
       to="/"
-      className={cn("flex items-center gap-3 select-none", className)}
+      aria-label="Conduit Merchant home"
+      className={cn(
+        "inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
+        className
+      )}
     >
-      <img src={src} alt="Conduit" className="h-8 w-auto" />
-      <span className="hidden border-l border-[var(--border)] pl-3 pr-2 font-display text-xl font-medium tracking-tight text-[var(--text-primary)] md:block">
-        merchant
-      </span>
+      <MerchantBrandLockup />
     </Link>
   )
 }
@@ -198,267 +151,248 @@ function IncompleteBadge({ className }: { className?: string }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Nav links
-// ---------------------------------------------------------------------------
-
-function MerchantNavLinks({
+function CommerceNavLink({
+  item,
+  incomplete,
   onNavigate,
-  compact = false,
-  paymentsIncomplete,
-  profileIncomplete,
-  shippingIncomplete,
-  networkIncomplete,
 }: {
-  onNavigate?: () => void
-  compact?: boolean
-  profileIncomplete: boolean
-  paymentsIncomplete: boolean
-  shippingIncomplete: boolean
-  networkIncomplete: boolean
+  item: CommerceNavItem
+  incomplete: boolean
+  onNavigate?: (to: CommerceNavRoute) => void
 }) {
-  const setupIncompleteMap: Record<NavRoute, boolean> = {
-    "/profile": profileIncomplete,
-    "/payments": paymentsIncomplete,
-    "/shipping": shippingIncomplete,
-    "/network": networkIncomplete,
-    "/about": false,
-    "/": false,
-    "/orders": false,
-    "/messages": false,
-    "/products": false,
-    "/events": false,
-  }
+  const Icon = item.icon
 
-  function renderItem(item: NavItem) {
-    const Icon = item.icon
-    const incomplete = item.hasReadiness ? setupIncompleteMap[item.to] : false
+  return (
+    <Link
+      to={item.to}
+      onClick={() => onNavigate?.(item.to)}
+      className={navItemClassName}
+      activeProps={{
+        className:
+          "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
+      }}
+    >
+      <Icon className="size-4 shrink-0" />
+      <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
+      {incomplete ? <IncompleteBadge className="ml-auto shrink-0" /> : null}
+    </Link>
+  )
+}
 
-    return (
+function InformationNavLinks({
+  onInternalNavigate,
+  onExternalNavigate,
+}: {
+  onInternalNavigate?: (to: MerchantInternalNavRoute) => void
+  onExternalNavigate?: () => void
+}) {
+  return (
+    <div className="grid gap-1">
       <Link
-        key={item.to}
-        to={item.to}
-        onClick={onNavigate}
-        className={cn(
-          "group relative flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]",
-          compact ? "px-3 py-2" : ""
-        )}
+        to="/about"
+        onClick={() => onInternalNavigate?.("/about")}
+        className={navItemClassName}
         activeProps={{
           className:
             "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
         }}
       >
-        <Icon className="h-4 w-4 shrink-0" />
-        {compact ? (
-          <>
-            <span className="min-w-0 flex-1 truncate text-left">
-              {item.label}
-            </span>
-            {incomplete && <IncompleteBadge className="ml-auto shrink-0" />}
-          </>
-        ) : (
-          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="whitespace-nowrap">{item.label}</span>
-            {incomplete && <IncompleteBadge className="ml-0" />}
-          </span>
-        )}
+        <Info className="size-4 shrink-0" />
+        <span>About</span>
       </Link>
-    )
-  }
+      <a href="/terms-of-service" className={navItemClassName}>
+        <FileText className="size-4 shrink-0" />
+        <span>Terms</span>
+      </a>
+      <a href="/privacy-policy" className={navItemClassName}>
+        <ShieldCheck className="size-4 shrink-0" />
+        <span>Privacy</span>
+      </a>
+      <a
+        href="https://conduit.market/"
+        target="_blank"
+        rel="noopener noreferrer"
+        referrerPolicy="no-referrer"
+        onClick={onExternalNavigate}
+        className={navItemClassName}
+      >
+        <ExternalLink className="size-4 shrink-0" />
+        <span>conduit.market</span>
+      </a>
+    </div>
+  )
+}
 
+function MerchantNavLinks({
+  onInternalNavigate,
+  onExternalNavigate,
+  paymentsIncomplete,
+  shippingIncomplete,
+}: {
+  onInternalNavigate?: (to: MerchantInternalNavRoute) => void
+  onExternalNavigate?: () => void
+  paymentsIncomplete: boolean
+  shippingIncomplete: boolean
+}) {
   return (
-    <nav className={cn("grid gap-1.5", compact ? "gap-1" : "gap-1.5")}>
-      {mainNavItems.map(renderItem)}
-      <div className="my-1 border-t border-[var(--border)]" />
-      <div className="px-3 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--text-muted)]">
-        Setup
+    <nav aria-label="Merchant navigation" className="grid gap-2">
+      <div className="grid gap-1">
+        {commerceNavItems.map((item) => (
+          <CommerceNavLink
+            key={item.to}
+            item={item}
+            incomplete={
+              item.hasReadiness && item.to === "/payments"
+                ? paymentsIncomplete
+                : item.hasReadiness && item.to === "/shipping"
+                  ? shippingIncomplete
+                  : false
+            }
+            onNavigate={onInternalNavigate}
+          />
+        ))}
       </div>
-      {setupNavItems.map(renderItem)}
+      <div className="my-1 border-t border-[var(--border)]" />
+      <InformationNavLinks
+        onInternalNavigate={onInternalNavigate}
+        onExternalNavigate={onExternalNavigate}
+      />
     </nav>
   )
 }
 
-// ---------------------------------------------------------------------------
-// UserMenu
-// ---------------------------------------------------------------------------
+function NetworkBadge() {
+  if (config.lightningNetwork === "mainnet") return null
 
-function UserMenu({ className }: { className?: string } = {}) {
+  return (
+    <Badge
+      variant="secondary"
+      className={cn(
+        "mt-4 border",
+        config.lightningNetwork === "mock"
+          ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]"
+          : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]"
+      )}
+    >
+      {config.lightningNetwork}
+    </Badge>
+  )
+}
+
+function AccountMenuLink({
+  to,
+  icon,
+  children,
+  onNavigate,
+}: {
+  to: "/profile" | "/network"
+  icon: ReactNode
+  children: ReactNode
+  onNavigate: () => void
+}) {
+  return (
+    <DropdownMenuItem
+      asChild
+      className="min-h-11 cursor-pointer rounded-xl px-3 py-2 text-[15px] font-medium text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]"
+    >
+      <Link to={to} onClick={onNavigate}>
+        <span className="mr-3 inline-flex size-5 shrink-0 items-center justify-center">
+          {icon}
+        </span>
+        <span>{children}</span>
+      </Link>
+    </DropdownMenuItem>
+  )
+}
+
+export function MerchantAccountMenu() {
   const { pubkey, status, disconnect, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
+  const [open, setOpen] = useState(false)
+
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
-  const [npubCopied, setNpubCopied] = useState(false)
-  const pathname = useRouterState({
-    select: (state) => state.location.pathname,
-  })
+
   const authenticatedPubkey = status === "connected" ? pubkey : null
   const profileQuery = useProfile(pubkey, {
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
     shouldContinue: () => authGenerationRef.current === authGeneration,
   })
+
+  if (!pubkey || status !== "connected") return <SignerSwitch />
+
   const profile = profileQuery.data
-  const readiness = useMerchantReadinessState()
-  const bugReportUrl = buildBugReportUrl({ app: "merchant", route: pathname })
-
-  if (!pubkey || status !== "connected") return null
-
   const displayName = getProfileDisplayLabel(profile, pubkey, {
     lookupSettled: !profileQuery.isPlaceholderData,
     pendingLabel: "Loading profile",
     chars: 6,
   })
-  const npub = formatNpub(pubkey, 12)
-  const displayNpub = formatNpub(pubkey)
-  const fullNpub = pubkeyToNpub(pubkey)
-  const setupIncomplete =
-    !readiness.setupComplete && readiness.missingAreas.length > 0
-
-  async function handleCopyNpub(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(fullNpub)
-      setNpubCopied(true)
-      window.setTimeout(() => setNpubCopied(false), 1_200)
-    } catch {
-      setNpubCopied(false)
-    }
-  }
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
           aria-label="Open merchant account menu"
-          className={cn(
-            "inline-flex h-12 min-w-[12.75rem] items-center gap-3 rounded-[16px] bg-primary-500 px-3 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50",
-            className
-          )}
+          className="inline-flex size-11 shrink-0 items-center justify-center rounded-[16px] bg-primary-500 p-1.5 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:h-12 sm:w-auto sm:min-w-[12.75rem] sm:justify-start sm:gap-3 sm:px-3"
         >
-          <span className="relative shrink-0">
-            <Avatar className="h-8 w-8 border border-[var(--border)]">
-              <AvatarImage
-                src={profile?.picture ?? undefined}
-                alt={displayName}
-              />
-              <AvatarFallback className="bg-[var(--avatar-bg)] text-[var(--on-primary)]">
-                <MerchantAvatarFallback iconClassName="h-4 w-4" />
-              </AvatarFallback>
-            </Avatar>
-            {setupIncomplete ? (
-              <span
-                aria-hidden="true"
-                className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-primary-500 bg-[var(--warning)]"
-              />
-            ) : null}
-          </span>
-          <span className="min-w-0 flex-1">
+          <Avatar className="size-8 shrink-0 border border-[color-mix(in_srgb,var(--on-primary)_24%,transparent)]">
+            <AvatarImage
+              src={profile?.picture ?? undefined}
+              alt={displayName}
+            />
+            <AvatarFallback className="bg-[var(--avatar-bg)] text-[var(--on-primary)]">
+              <MerchantAvatarFallback />
+            </AvatarFallback>
+          </Avatar>
+          <span className="hidden min-w-0 flex-1 sm:block">
             <span className="block truncate text-sm font-semibold">
               {displayName}
             </span>
             <span className="block truncate text-[11px] text-white/70">
-              {npub}
+              {formatNpub(pubkey, 12)}
             </span>
           </span>
-          <ChevronDown className="h-4 w-4 shrink-0 text-white/70" />
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              "hidden size-4 shrink-0 text-white/70 transition-transform duration-150 sm:block",
+              open && "rotate-180"
+            )}
+          />
         </button>
       </DropdownMenuTrigger>
 
       <DropdownMenuContent
-        align="start"
-        side="top"
-        sideOffset={12}
-        className="w-[16rem] rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-overlay)] p-2 text-[var(--text-primary)] shadow-[var(--shadow-dialog)]"
+        align="end"
+        sideOffset={10}
+        className="w-[14rem] rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-overlay)] p-3 text-[var(--text-primary)] shadow-[var(--shadow-dialog)]"
       >
-        <div className="px-2 py-2">
-          <div className="text-sm font-semibold">{displayName}</div>
-          <div className="mt-1 flex items-start gap-2">
-            <div className="min-w-0 flex-1 break-all text-xs leading-5 text-[var(--text-secondary)]">
-              {displayNpub}
-            </div>
-            <button
-              type="button"
-              aria-label={npubCopied ? "Npub copied" : "Copy npub"}
-              title={npubCopied ? "Copied" : "Copy npub"}
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-              onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                void handleCopyNpub()
-              }}
-            >
-              {npubCopied ? (
-                <Check className="h-3.5 w-3.5 text-[var(--success)]" />
-              ) : (
-                <Copy className="h-3.5 w-3.5" />
-              )}
-            </button>
-          </div>
-          {setupIncomplete ? (
-            <StatusPill variant="warning" className="mt-3 text-[10px]">
-              Needs completion
-            </StatusPill>
-          ) : (
-            <StatusPill variant="success" className="mt-3 text-[10px]">
-              Ready to sell
-            </StatusPill>
-          )}
-        </div>
-
+        <AccountMenuLink
+          to="/profile"
+          icon={<UserRound className="size-4" />}
+          onNavigate={() => setOpen(false)}
+        >
+          Profile
+        </AccountMenuLink>
+        <AccountMenuLink
+          to="/network"
+          icon={<Wifi className="size-4" />}
+          onNavigate={() => setOpen(false)}
+        >
+          Network
+        </AccountMenuLink>
         <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
-
-        {merchantResourceLinks.map((link) => {
-          const Icon = "icon" in link ? link.icon : null
-
-          return (
-            <DropdownMenuItem
-              key={link.href}
-              asChild
-              className="h-10 rounded-xl px-2 text-sm font-medium text-[var(--text-primary)] focus:bg-[var(--surface-elevated)]"
-            >
-              <a
-                href={link.href}
-                target={link.external ? "_blank" : undefined}
-                rel={link.external ? "noopener noreferrer" : undefined}
-                referrerPolicy={link.external ? "no-referrer" : undefined}
-              >
-                {"imageSrc" in link ? (
-                  <img
-                    src={link.imageSrc}
-                    alt=""
-                    aria-hidden="true"
-                    className="mr-2 h-4 w-4 object-contain opacity-75"
-                    draggable="false"
-                  />
-                ) : Icon ? (
-                  <Icon className="mr-2 h-4 w-4 text-[var(--text-secondary)]" />
-                ) : null}
-                <span>{link.label}</span>
-              </a>
-            </DropdownMenuItem>
-          )
-        })}
-
-        <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
-
         <DropdownMenuItem
-          className="h-10 rounded-xl px-2 text-sm font-medium text-[var(--text-primary)] focus:bg-[var(--surface-elevated)]"
+          className="min-h-11 cursor-pointer rounded-xl px-3 py-2 text-[15px] font-medium text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
           onSelect={() => {
-            window.open(bugReportUrl, "_blank", "noopener,noreferrer")
+            setOpen(false)
+            disconnect()
           }}
         >
-          <CircleHelp className="mr-2 h-4 w-4 text-[var(--text-secondary)]" />
-          <span>Report a Bug</span>
-        </DropdownMenuItem>
-
-        <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
-
-        <DropdownMenuItem
-          className="h-10 rounded-xl px-2 text-sm font-medium text-error focus:bg-[var(--surface-elevated)] focus:text-error"
-          onSelect={disconnect}
-        >
-          <LogOut className="mr-2 h-4 w-4" />
+          <LogOut className="mr-3 size-4" />
           <span>Disconnect</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -466,128 +400,151 @@ function UserMenu({ className }: { className?: string } = {}) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Mobile nav
-// ---------------------------------------------------------------------------
-
-export function MerchantMobileNav() {
-  const { pubkey, status } = useAuth()
-  const readiness = useMerchantReadinessState()
+function ReportBugLink({ onNavigate }: { onNavigate?: () => void }) {
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+  const bugReportUrl = buildBugReportUrl({ app: "merchant", route: pathname })
 
   return (
-    <Sheet>
+    <a
+      href={bugReportUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      referrerPolicy="no-referrer"
+      onClick={onNavigate}
+      className={navItemClassName}
+    >
+      <Bug className="size-4 shrink-0" />
+      <span>Report a Bug</span>
+    </a>
+  )
+}
+
+export function MerchantMobileNav() {
+  const [open, setOpen] = useState(false)
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+
+  useEffect(() => {
+    setOpen(false)
+  }, [pathname])
+
+  return (
+    <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger asChild>
         <Button
           variant="ghost"
           size="sm"
-          className="h-11 w-11 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-md lg:hidden"
+          className="size-11 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-md lg:hidden"
           aria-label="Open menu"
         >
-          <Menu className="h-5 w-5" />
+          <Menu className="size-5" />
         </Button>
       </SheetTrigger>
       <SheetContent
         side="left"
-        className="flex h-dvh w-[320px] flex-col border-r border-[var(--border)] bg-[var(--surface-dialog)]"
+        showCloseButton={false}
+        className="h-dvh w-[min(320px,calc(100vw-1rem))] gap-0 overflow-hidden border-y-0 border-l-0 border-r border-[var(--border)] bg-[var(--surface-dialog)] p-0"
       >
-        <SheetHeader className="shrink-0">
-          <SheetTitle>
-            <Logo variant="full" className="justify-start" />
-          </SheetTitle>
-        </SheetHeader>
-
-        <div className="mt-6 flex min-h-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <MerchantNavLinks
-              compact
-              profileIncomplete={
-                !readiness.profileComplete && !readiness.profileCheckPending
-              }
-              paymentsIncomplete={
-                !readiness.paymentsComplete && !readiness.paymentsCheckPending
-              }
-              shippingIncomplete={
-                !readiness.shippingComplete && !readiness.shippingCheckPending
-              }
-              networkIncomplete={!readiness.networkComplete}
-            />
-          </div>
-
-          <div className="mt-6 shrink-0 space-y-3">
-            {config.lightningNetwork !== "mainnet" && (
-              <Badge
-                variant="secondary"
-                className={cn(
-                  "self-start border",
-                  config.lightningNetwork === "mock"
-                    ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]"
-                    : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]"
-                )}
+        <SheetTitle className="sr-only">Conduit Merchant navigation</SheetTitle>
+        <MerchantNavigationPanel
+          headerAction={
+            <SheetClose asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="size-11 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-md"
+                aria-label="Close"
               >
-                {config.lightningNetwork}
-              </Badge>
-            )}
-            {status === "connected" && pubkey ? (
-              <UserMenu className="w-full min-w-0" />
-            ) : (
-              <SignerSwitch />
-            )}
-          </div>
-        </div>
+                <X className="size-5" />
+              </Button>
+            </SheetClose>
+          }
+          onInternalNavigate={(to) => {
+            if (to === pathname) setOpen(false)
+          }}
+          onExternalNavigate={() => setOpen(false)}
+          onReportBug={() => setOpen(false)}
+        />
       </SheetContent>
     </Sheet>
   )
 }
 
-// ---------------------------------------------------------------------------
-// Sidebar
-// ---------------------------------------------------------------------------
-
-export function MerchantSidebar() {
-  const { pubkey, status } = useAuth()
+function MerchantNavigationPanel({
+  headerAction,
+  onInternalNavigate,
+  onExternalNavigate,
+  onReportBug,
+}: {
+  headerAction?: ReactNode
+  onInternalNavigate?: (to: MerchantInternalNavRoute) => void
+  onExternalNavigate?: () => void
+  onReportBug?: () => void
+}) {
   const readiness = useMerchantReadinessState()
 
   return (
-    <aside className="hidden h-screen min-h-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
-      <div className="shrink-0 border-b border-[var(--border)] px-5 py-5">
-        <Logo />
+    <div
+      data-merchant-navigation-panel=""
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--surface-dialog)] pb-6 pl-[max(1.5rem,env(safe-area-inset-left))] pr-[max(1.5rem,env(safe-area-inset-right))]"
+    >
+      <div className="flex h-[calc(5rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 pt-[env(safe-area-inset-top)] min-[360px]:gap-2">
+        <MerchantLogoLink />
+        {headerAction}
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-5">
+      <div
+        data-merchant-navigation-scroll=""
+        className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pr-1"
+      >
         <MerchantNavLinks
-          profileIncomplete={
-            !readiness.profileComplete && !readiness.profileCheckPending
-          }
+          onInternalNavigate={onInternalNavigate}
+          onExternalNavigate={onExternalNavigate}
           paymentsIncomplete={
             !readiness.paymentsComplete && !readiness.paymentsCheckPending
           }
           shippingIncomplete={
             !readiness.shippingComplete && !readiness.shippingCheckPending
           }
-          networkIncomplete={!readiness.networkComplete}
         />
+        <NetworkBadge />
       </div>
 
-      <div className="shrink-0 border-t border-[var(--border)] px-4 py-4">
-        {config.lightningNetwork !== "mainnet" && (
-          <Badge
-            variant="secondary"
-            className={cn(
-              "mb-3 border",
-              config.lightningNetwork === "mock"
-                ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]"
-                : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]"
-            )}
-          >
-            {config.lightningNetwork}
-          </Badge>
-        )}
-        {status === "connected" && pubkey ? (
-          <UserMenu className="w-full min-w-0" />
-        ) : (
-          <SignerSwitch />
-        )}
+      <div className="mt-4 shrink-0 border-t border-[var(--border)] pb-[max(0px,env(safe-area-inset-bottom))] pt-4">
+        <ReportBugLink onNavigate={onReportBug} />
       </div>
+    </div>
+  )
+}
+
+export function MerchantWorkspaceHeader() {
+  return (
+    <header
+      aria-label="Merchant workspace controls"
+      className="fixed inset-x-0 top-0 z-40 flex h-[calc(5rem+env(safe-area-inset-top))] min-w-0 items-center gap-1 bg-[var(--surface-dialog)] pl-[max(1.5rem,env(safe-area-inset-left))] pr-[max(0.25rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)] after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[var(--border)] min-[360px]:gap-2 min-[360px]:pr-[max(0.5rem,env(safe-area-inset-right))] lg:inset-x-auto lg:right-[max(1rem,env(safe-area-inset-right))] lg:top-[max(1rem,env(safe-area-inset-top))] lg:h-auto lg:bg-transparent lg:p-0 lg:after:hidden"
+    >
+      <div className="flex min-w-0 shrink-0 items-center gap-1 min-[360px]:gap-2 lg:hidden">
+        <MerchantLogoLink />
+        <MerchantMobileNav />
+      </div>
+      <div className="ml-auto flex shrink-0 items-center gap-1 min-[360px]:gap-2">
+        <ThemeToggleButton />
+        <MerchantAccountMenu />
+      </div>
+    </header>
+  )
+}
+
+export function MerchantSidebar() {
+  return (
+    <aside
+      aria-label="Merchant navigation"
+      className="hidden h-dvh min-h-0 min-w-0 overflow-hidden border-r border-[var(--border)] bg-[var(--surface-dialog)] lg:block"
+    >
+      <MerchantNavigationPanel />
     </aside>
   )
 }

@@ -25,6 +25,8 @@ async function emptyReadPlan(): Promise<EventMarketReadPlan> {
   return {
     relayUrls: [],
     ownerSelectedRelayUrls: [],
+    appRelayUrls: [],
+    personalRelayUrls: [],
     relayListState: "missing",
     relayHintTruncated: false,
   }
@@ -162,6 +164,8 @@ describe("exact event collection lifecycle continuity", () => {
       "wss://fallback.example",
     ]
     const ownerSelectedRelayUrls = ["ws://127.0.0.1:7777"]
+    const appRelayUrls = ["wss://fallback.example"]
+    const personalRelayUrls = ["ws://127.0.0.1:7777"]
     const events = await getEventMarketCollectionLifecycleEvidence(
       {
         original: parseEventMarketCollectionEvent(original)!,
@@ -180,6 +184,8 @@ describe("exact event collection lifecycle continuity", () => {
           return {
             relayUrls,
             ownerSelectedRelayUrls,
+            appRelayUrls,
+            personalRelayUrls,
             relayListState: "network",
             relayHintTruncated: false,
           }
@@ -188,6 +194,8 @@ describe("exact event collection lifecycle continuity", () => {
           reads.push(filter)
           expect(options.relayUrls).toEqual(relayUrls)
           expect(options.ownerSelectedRelayUrls).toEqual(ownerSelectedRelayUrls)
+          expect(options.appRelayUrls).toEqual(appRelayUrls)
+          expect(options.personalRelayUrls).toEqual(personalRelayUrls)
           expect(options.authenticatedPubkey).toBe(organizer)
           return {
             events: filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)

@@ -750,7 +750,7 @@ function frontierExceptionMessage(
     return "No preference was found in the relay responses received."
   }
   if (frontier.state === "not_observed") {
-    return "No published preference found."
+    return "No published preference found on the relays checked."
   }
   return "Not checked yet."
 }
@@ -2400,8 +2400,9 @@ function PersonalRelaysHeader({
             Your Relays
           </h3>
           <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Your signed relay preferences stay synchronized with Nostr. Enable
-            them to include these relays in Conduit routing.
+            Your signed relay preferences stay synchronized with Nostr. This
+            switch adds only your NIP-65 Read and Publish relays to Conduit
+            routing. Current Private inbox routes remain active.
           </p>
         </div>
         <div className="flex min-h-11 shrink-0 items-center gap-3">

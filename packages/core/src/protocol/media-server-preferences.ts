@@ -923,6 +923,8 @@ async function resolveReadPlan(
       plan: {
         intent: "general",
         relayUrls,
+        candidateRelayUrls: relayUrls,
+        maxRelayAttempts: MAX_MEDIA_SERVER_READ_RELAYS,
         parkedRelayUrls: [],
         hintRelayUrls: [],
       },
@@ -932,20 +934,29 @@ async function resolveReadPlan(
       ),
     }
   }
+  const relayListReadPlan = (dependencies.planReads ?? planRelayReads)({
+    intent: "relay_lists",
+    authenticatedPubkey,
+    ownerSelectedRelayUrls: authority.readRelayUrls,
+    maxRelays: MAX_MEDIA_SERVER_READ_RELAYS,
+    skipHealthFilter: true,
+    settings: authority.snapshot?.settings,
+    signedRelayListAuthoritative:
+      authority.snapshot?.signedRelayListAuthoritative,
+  })
   const relayLists = await (dependencies.getRelayLists ?? getRelayLists)(
     [owner],
     {
       cacheOnly: false,
-      relayUrls:
-        authority.readRelayUrls.length > 0 ||
-        authority.snapshot?.signedRelayListAuthoritative
-          ? authority.readRelayUrls
-          : undefined,
+      relayUrls: relayListReadPlan.candidateRelayUrls,
+      maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
       allowInsecureRelayUrlsForPubkey:
         authenticatedPubkey === owner ? owner : undefined,
       accountPubkey: authenticatedPubkey,
       authenticatedPubkey,
-      ownerSelectedRelayUrls: authority.readRelayUrls,
+      ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
+      appRelayUrls: relayListReadPlan.appRelayUrls,
+      personalRelayUrls: relayListReadPlan.personalRelayUrls,
       accountNetworkLocalStateRepository:
         dependencies.accountNetworkLocalStateRepository,
       shouldContinue: dependencies.shouldContinue,
@@ -963,12 +974,16 @@ async function resolveReadPlan(
     signedRelayListAuthoritative:
       authority.snapshot?.signedRelayListAuthoritative,
   })
+  const candidateRelayUrls = applyOwnerTransportAuthority(
+    planned.candidateRelayUrls,
+    ownerSelectedRelayUrls
+  )
   const relayUrls = applyOwnerTransportAuthority(
     planned.relayUrls,
     ownerSelectedRelayUrls
   )
   return {
-    plan: { ...planned, relayUrls },
+    plan: { ...planned, relayUrls, candidateRelayUrls },
     authenticatedPubkey,
     ownerSelectedRelayUrls: ownerSelectedRelayUrls.filter((relayUrl) =>
       relayUrls.includes(relayUrl)
@@ -1085,10 +1100,13 @@ export async function readMediaServerPreferences(
         limit: 24,
       } satisfies Filter,
       {
-        relayUrls: resolvedPlan.plan.relayUrls,
+        relayUrls: resolvedPlan.plan.candidateRelayUrls,
+        maxRelayAttempts: resolvedPlan.plan.maxRelayAttempts,
         accountPubkey: resolvedPlan.authenticatedPubkey,
         authenticatedPubkey: resolvedPlan.authenticatedPubkey,
         ownerSelectedRelayUrls: resolvedPlan.ownerSelectedRelayUrls,
+        appRelayUrls: resolvedPlan.plan.appRelayUrls,
+        personalRelayUrls: resolvedPlan.plan.personalRelayUrls,
         accountNetworkLocalStateRepository:
           dependencies.accountNetworkLocalStateRepository,
         shouldContinue: dependencies.shouldContinue,
@@ -1111,6 +1129,7 @@ export async function readMediaServerPreferences(
       plan: {
         intent: "general",
         relayUrls: [],
+        candidateRelayUrls: [],
         parkedRelayUrls: [],
         hintRelayUrls: [],
       },
