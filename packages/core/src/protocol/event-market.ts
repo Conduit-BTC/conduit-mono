@@ -2597,7 +2597,7 @@ function mergeRelayUrls(...groups: readonly (readonly string[])[]): string[] {
   return Array.from(result)
 }
 
-function mergeRelayUrlsWithOwnerAuthority(
+function mergeRelayCandidatesWithOwnerAuthority(
   ownerSelectedRelayUrls: readonly string[],
   ...groups: readonly (readonly string[])[]
 ): string[] {
@@ -2618,14 +2618,27 @@ function mergeRelayUrlsWithOwnerAuthority(
         if (!normalized.ok || !ownerSelected.has(normalized.url)) continue
         result.add(normalized.url)
       }
-      if (result.size >= EVENT_MARKET_MAX_RELAY_HINTS) return Array.from(result)
     }
   }
   return Array.from(result)
 }
 
+function mergeRelayUrlsWithOwnerAuthority(
+  ownerSelectedRelayUrls: readonly string[],
+  ...groups: readonly (readonly string[])[]
+): string[] {
+  return mergeRelayCandidatesWithOwnerAuthority(
+    ownerSelectedRelayUrls,
+    ...groups
+  ).slice(0, EVENT_MARKET_MAX_RELAY_HINTS)
+}
+
 export interface EventMarketReadPlan {
+  /** Legacy bounded prefix used for coverage and truncation reporting. */
   relayUrls: string[]
+  /** Full ordered candidates passed to final source-policy admission. */
+  candidateRelayUrls: string[]
+  maxRelayAttempts?: number
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
   personalRelayUrls: string[]
@@ -2750,7 +2763,7 @@ export async function getEventMarketReadPlan(input: {
       relayUrl.toLowerCase()
     )
   )
-  const planFallbackRelayUrls = plan.relayUrls.filter((relayUrl) => {
+  const planFallbackRelayUrls = plan.candidateRelayUrls.filter((relayUrl) => {
     const key = relayUrl.toLowerCase()
     return !organizerHintRelays.has(key) && !ownerSelectedRelays.has(key)
   })
@@ -2770,19 +2783,29 @@ export async function getEventMarketReadPlan(input: {
         reservedPlanFallback.length
     )
   )
-  const relayUrls = mergeRelayUrlsWithOwnerAuthority(
+  const selectedRelayUrls = mergeRelayUrlsWithOwnerAuthority(
     plan.ownerSelectedRelayUrls ?? [],
     relayPrefix,
     portableHintsBeforeFallback,
     reservedPlanFallback,
     portableRelayHints.slice(portableHintsBeforeFallback.length),
-    plan.relayUrls
+    plan.candidateRelayUrls
+  )
+  const relayUrls = mergeRelayCandidatesWithOwnerAuthority(
+    plan.ownerSelectedRelayUrls ?? [],
+    selectedRelayUrls,
+    usableOrganizerHints,
+    portableRelayHints,
+    planFallbackRelayUrls,
+    plan.candidateRelayUrls
   )
   const selectedRelays = new Set(
-    relayUrls.map((relayUrl) => relayUrl.toLowerCase())
+    selectedRelayUrls.map((relayUrl) => relayUrl.toLowerCase())
   )
   return {
-    relayUrls,
+    relayUrls: selectedRelayUrls,
+    candidateRelayUrls: relayUrls,
+    maxRelayAttempts: plan.maxRelayAttempts ?? EVENT_MARKET_MAX_RELAY_HINTS,
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
     appRelayUrls: plan.appRelayUrls ?? [],
     personalRelayUrls: plan.personalRelayUrls ?? [],
@@ -2796,6 +2819,7 @@ export async function getEventMarketReadPlan(input: {
 async function fetchEventMarketRecords(input: {
   organizerPubkey: string
   relayUrls: string[]
+  maxRelayAttempts?: number
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
@@ -2822,6 +2846,7 @@ async function fetchEventMarketRecords(input: {
   } as NDKFilter
   return fetch(filter, {
     relayUrls: input.relayUrls,
+    maxRelayAttempts: input.maxRelayAttempts,
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
@@ -2863,6 +2888,7 @@ interface EventMarketCollectionDiscoveryResult {
 async function fetchEventMarketCollectionDiscovery(input: {
   organizerPubkey: string
   relayUrls: string[]
+  maxRelayAttempts?: number
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
@@ -2890,6 +2916,7 @@ async function fetchEventMarketCollectionDiscovery(input: {
     },
     {
       relayUrls: input.relayUrls,
+      maxRelayAttempts: input.maxRelayAttempts,
       accountPubkey: input.accountPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
@@ -2925,6 +2952,7 @@ async function fetchEventMarketCollectionDiscovery(input: {
 async function fetchEventMarketProductRequests(input: {
   collectionCoordinates: readonly string[]
   relayUrls: string[]
+  maxRelayAttempts?: number
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
@@ -2947,6 +2975,7 @@ async function fetchEventMarketProductRequests(input: {
   } as NDKFilter
   return fetch(filter, {
     relayUrls: input.relayUrls,
+    maxRelayAttempts: input.maxRelayAttempts,
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
@@ -3046,6 +3075,7 @@ function saturatedRecordCoordinatesForFilters(input: {
 async function fetchEventMarketFrontierFilters(input: {
   filters: readonly NDKFilter[]
   relayUrls: string[]
+  maxRelayAttempts?: number
   relayUrlsByAuthor?: ReadonlyMap<string, readonly string[]>
   relayHealthSnapshot?: RelayHealthSnapshot
   accountPubkey?: string | null
@@ -3075,7 +3105,7 @@ async function fetchEventMarketFrontierFilters(input: {
       author,
       input.relayUrlsByAuthor?.has(author)
         ? eligibleRelayUrls(
-            mergeRelayUrlsWithOwnerAuthority(
+            mergeRelayCandidatesWithOwnerAuthority(
               input.ownerSelectedRelayUrls ?? [],
               input.relayUrlsByAuthor.get(author) ?? []
             )
@@ -3126,6 +3156,7 @@ async function fetchEventMarketFrontierFilters(input: {
       batchPlans.map(({ filter, relayUrls }) =>
         fetch(filter, {
           relayUrls,
+          maxRelayAttempts: input.maxRelayAttempts,
           accountPubkey: input.accountPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
@@ -3160,7 +3191,10 @@ async function fetchEventMarketFrontierFilters(input: {
       const missingRelayUrls = plan.relayUrls.filter(
         (relayUrl) => !relayStatuses.has(relayUrl.toLowerCase())
       )
-      if (missingRelayUrls.length > 0) {
+      // Candidate mode intentionally omits source-policy suppressions and
+      // post-budget overflow from the result. Only legacy uncapped callers
+      // may interpret a missing planned relay as an incomplete attempt.
+      if (input.maxRelayAttempts === undefined && missingRelayUrls.length > 0) {
         incompleteFilterCount += 1
         for (const relayUrl of missingRelayUrls) {
           incompleteRelayUrls.add(relayUrl.toLowerCase())
@@ -3210,6 +3244,7 @@ async function fetchEventMarketFrontierFilters(input: {
 async function fetchEventMarketOrganizerRecordFrontiers(input: {
   coordinates: readonly AddressableEventCoordinate[]
   relayUrls: string[]
+  maxRelayAttempts?: number
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
@@ -3241,6 +3276,7 @@ async function fetchEventMarketOrganizerRecordFrontiers(input: {
   const recordResult = await fetchEventMarketFrontierFilters({
     filters: recordFilters,
     relayUrls: input.relayUrls,
+    maxRelayAttempts: input.maxRelayAttempts,
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
@@ -3293,6 +3329,7 @@ async function fetchEventMarketOrganizerRecordFrontiers(input: {
       })),
     ],
     relayUrls: recordResult.remainingRelayUrls,
+    maxRelayAttempts: input.maxRelayAttempts,
     relayUrlsByAuthor: recordResult.remainingRelayUrlsByAuthor,
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
@@ -3463,12 +3500,12 @@ async function eventMarketParticipantRelayPlans(input: {
       const planAppRelayUrls = new Set(plan.appRelayUrls ?? [])
       const planPersonalRelayUrls = new Set(plan.personalRelayUrls ?? [])
       const relayUrls = partitionByHealthSnapshot(
-        mergeRelayUrlsWithOwnerAuthority(
+        mergeRelayCandidatesWithOwnerAuthority(
           plan.ownerSelectedRelayUrls ?? [],
           plan.hintRelayUrls,
           observedRelaysByAuthor.get(author) ?? [],
           input.fallbackRelayUrls,
-          plan.relayUrls
+          plan.candidateRelayUrls
         ),
         input.relayHealthSnapshot
       ).healthy
@@ -3748,6 +3785,7 @@ async function fetchEventMarketPickupFrontiers(
     candidateEvents: readonly SignedPublicNostrEvent[]
     candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
     relayUrls: string[]
+    maxRelayAttempts?: number
     authenticatedPubkey?: string | null
     ownerSelectedRelayUrls?: readonly string[]
     appRelayUrls?: readonly string[]
@@ -3841,6 +3879,7 @@ async function fetchEventMarketPickupFrontiers(
   const pickupResult = await fetchEventMarketFrontierFilters({
     filters: pickupFilters,
     relayUrls: input.relayUrls,
+    maxRelayAttempts: input.maxRelayAttempts,
     relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
     relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
@@ -3869,6 +3908,7 @@ async function fetchEventMarketPickupFrontiers(
       frontierEvents: pickupFrontiers,
     }),
     relayUrls: pickupResult.remainingRelayUrls,
+    maxRelayAttempts: input.maxRelayAttempts,
     relayUrlsByAuthor: pickupResult.remainingRelayUrlsByAuthor,
     relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
@@ -4117,6 +4157,7 @@ async function fetchEventMarketProductRequestFrontiers(
     candidateCoordinates: readonly string[]
     candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
     relayUrls: string[]
+    maxRelayAttempts?: number
     authenticatedPubkey?: string | null
     ownerSelectedRelayUrls?: readonly string[]
     appRelayUrls?: readonly string[]
@@ -4208,6 +4249,7 @@ async function fetchEventMarketProductRequestFrontiers(
   const productResult = await fetchEventMarketFrontierFilters({
     filters: productFilters,
     relayUrls: input.relayUrls,
+    maxRelayAttempts: input.maxRelayAttempts,
     relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
     relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
@@ -4236,6 +4278,7 @@ async function fetchEventMarketProductRequestFrontiers(
       frontierEvents: productFrontiers,
     }),
     relayUrls: productResult.remainingRelayUrls,
+    maxRelayAttempts: input.maxRelayAttempts,
     relayUrlsByAuthor: productResult.remainingRelayUrlsByAuthor,
     relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
@@ -6091,14 +6134,21 @@ export async function getEventMarket(
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
-  const { relayUrls, ownerSelectedRelayUrls, appRelayUrls, personalRelayUrls } =
-    readPlan
+  const {
+    relayUrls: plannedRelayUrls,
+    candidateRelayUrls: relayUrls,
+    maxRelayAttempts,
+    ownerSelectedRelayUrls,
+    appRelayUrls,
+    personalRelayUrls,
+  } = readPlan
   const observedAt = input.nowMs ?? Date.now()
   const [recordResult, cachedRecords] = await Promise.all([
     requiresExactOrganizerRead
       ? fetchEventMarketOrganizerRecordFrontiers({
           coordinates: [decoded],
           relayUrls,
+          maxRelayAttempts,
           accountPubkey: input.authenticatedPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls,
@@ -6112,6 +6162,7 @@ export async function getEventMarket(
       : fetchEventMarketRecords({
           organizerPubkey: decoded.authorPubkey,
           relayUrls,
+          maxRelayAttempts,
           accountPubkey: input.authenticatedPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls,
@@ -6141,6 +6192,7 @@ export async function getEventMarket(
           relayUrls,
           recordResult.relays
         ),
+        maxRelayAttempts,
         accountPubkey: input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
@@ -6177,6 +6229,7 @@ export async function getEventMarket(
             recordResult.relays,
             collectionFrontierResult.relays
           ),
+          maxRelayAttempts,
           accountPubkey: input.authenticatedPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls,
@@ -6267,6 +6320,7 @@ export async function getEventMarket(
                 relayUrls,
                 organizerRecordRelays
               ),
+              maxRelayAttempts,
               accountPubkey: input.authenticatedPubkey,
               authenticatedPubkey: input.authenticatedPubkey,
               ownerSelectedRelayUrls,
@@ -6289,6 +6343,7 @@ export async function getEventMarket(
               organizerRecordRelays,
               requestResult.relays
             ),
+            maxRelayAttempts,
             authenticatedPubkey: input.authenticatedPubkey,
             ownerSelectedRelayUrls,
             appRelayUrls,
@@ -6310,6 +6365,7 @@ export async function getEventMarket(
           relayUrls,
           organizerRecordRelays
         ),
+        maxRelayAttempts,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
         appRelayUrls,
@@ -6401,6 +6457,7 @@ export async function getEventMarket(
           requestResult.relays,
           requestFrontierResult.relays
         ),
+        maxRelayAttempts,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
         appRelayUrls,
@@ -6474,7 +6531,7 @@ export async function getEventMarket(
         requestFrontierResult.relays,
         directPickupResult.relays
       ),
-      relayUrls.length
+      plannedRelayUrls.length
     ),
     pickupBudget,
     expectedOrganizerPubkey: expectedOrganizer ?? undefined,
@@ -6601,13 +6658,20 @@ export async function getOrganizerEventMarketsDetailed(
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
-  const { relayUrls, ownerSelectedRelayUrls, appRelayUrls, personalRelayUrls } =
-    readPlan
+  const {
+    relayUrls: plannedRelayUrls,
+    candidateRelayUrls: relayUrls,
+    maxRelayAttempts,
+    ownerSelectedRelayUrls,
+    appRelayUrls,
+    personalRelayUrls,
+  } = readPlan
   const observedAt = input.nowMs ?? Date.now()
   const [recordResult, cachedRecords] = await Promise.all([
     fetchEventMarketRecords({
       organizerPubkey,
       relayUrls,
+      maxRelayAttempts,
       accountPubkey: input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       ownerSelectedRelayUrls,
@@ -6654,6 +6718,7 @@ export async function getOrganizerEventMarketsDetailed(
     ? await fetchEventMarketCollectionDiscovery({
         organizerPubkey,
         relayUrls: collectionDiscoveryRelayUrls,
+        maxRelayAttempts,
         accountPubkey: input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
@@ -6674,16 +6739,12 @@ export async function getOrganizerEventMarketsDetailed(
       "Organizer event-market discovery exceeded its bounded collection scan."
     )
   }
-  const collectionDiscoveryStatusByRelay = new Map(
-    collectionDiscoveryResult.relays.map((relay) => [
-      relay.relayUrl.toLowerCase(),
-      relay.status,
-    ])
-  )
-  const collectionDiscoveryIsIncomplete = collectionDiscoveryRelayUrls.some(
-    (relayUrl) =>
-      collectionDiscoveryStatusByRelay.get(relayUrl.toLowerCase()) !== "success"
-  )
+  const collectionDiscoveryIsIncomplete =
+    collectionDiscoveryResult.relays.some(
+      (relay) => relay.status !== "success"
+    ) ||
+    (collectionDiscoveryRelayUrls.length > 0 &&
+      collectionDiscoveryResult.relays.length === 0)
   const preliminaryOrganizerRecords = mergeCachedAndLiveEvidence({
     cached: cachedRecords,
     live: mergeRawSignedEventGroups(
@@ -6727,6 +6788,7 @@ export async function getOrganizerEventMarketsDetailed(
           relayUrls,
           collectionDiscoveryResult.relays
         ),
+        maxRelayAttempts,
         accountPubkey: input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
@@ -6774,6 +6836,7 @@ export async function getOrganizerEventMarketsDetailed(
           collectionDiscoveryResult.relays,
           collectionFrontierResult.relays
         ),
+        maxRelayAttempts,
         accountPubkey: input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
@@ -6838,7 +6901,10 @@ export async function getOrganizerEventMarketsDetailed(
         organizerRecords
       ),
       state: "partial",
-      coverage: coverageForNetworkRead(organizerRecordRelays, relayUrls.length),
+      coverage: coverageForNetworkRead(
+        organizerRecordRelays,
+        plannedRelayUrls.length
+      ),
       relayListState: readPlan.relayListState,
       relayHintTruncated: readPlan.relayHintTruncated,
     })
@@ -6856,6 +6922,7 @@ export async function getOrganizerEventMarketsDetailed(
             relayUrls,
             organizerRecordRelays
           ),
+          maxRelayAttempts,
           accountPubkey: input.authenticatedPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls,
@@ -6874,6 +6941,7 @@ export async function getOrganizerEventMarketsDetailed(
         relayUrls,
         organizerRecordRelays
       ),
+      maxRelayAttempts,
       authenticatedPubkey: input.authenticatedPubkey,
       ownerSelectedRelayUrls,
       appRelayUrls,
@@ -6911,6 +6979,7 @@ export async function getOrganizerEventMarketsDetailed(
           organizerRecordRelays,
           requestResult.relays
         ),
+        maxRelayAttempts,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls,
         appRelayUrls,
@@ -6990,6 +7059,7 @@ export async function getOrganizerEventMarketsDetailed(
       requestResult.relays,
       requestFrontierResult.relays
     ),
+    maxRelayAttempts,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls,
     appRelayUrls,
@@ -7041,7 +7111,7 @@ export async function getOrganizerEventMarketsDetailed(
       requestFrontierResult.relays,
       directPickupResult.relays
     ),
-    relayUrls.length
+    plannedRelayUrls.length
   )
   const markets = collectionCoordinates.map((reference) => {
     const productRequestEvents =

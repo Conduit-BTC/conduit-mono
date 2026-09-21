@@ -774,42 +774,46 @@ export async function readLatestFollowLists(
       })
       const hintSet = new Set(authorPlan.hintRelayUrls)
       const hinted = [...authorPlan.hintRelayUrls]
-      const nonHinted = authorPlan.relayUrls.filter((url) => !hintSet.has(url))
-      const reservedBaseRelay = basePlan.relayUrls[0]
+      const nonHinted = authorPlan.candidateRelayUrls.filter(
+        (url) => !hintSet.has(url)
+      )
+      const reservedBaseRelay = basePlan.candidateRelayUrls[0]
       const hintCapacity =
         reservedBaseRelay && !hintSet.has(reservedBaseRelay)
           ? maxRelays - 1
           : maxRelays
       const selectedHints = hinted.slice(0, hintCapacity)
       const relayHintTruncated = selectedHints.length < hinted.length
-      const plannedRelayUrls = Array.from(
+      const candidateRelayUrls = Array.from(
         new Set([
           ...selectedHints,
-          ...basePlan.relayUrls.slice(0, 1),
+          ...basePlan.candidateRelayUrls.slice(0, 1),
+          ...hinted.slice(selectedHints.length),
           ...nonHinted,
+          ...basePlan.candidateRelayUrls.slice(1),
         ])
-      ).slice(0, maxRelays)
-      const plannedRelaySet = new Set(plannedRelayUrls)
+      )
+      const candidateRelaySet = new Set(candidateRelayUrls)
       const plannedOwnerSelectedRelayUrls = Array.from(
         new Set([
           ...(authorPlan.ownerSelectedRelayUrls ?? []),
           ...(basePlan.ownerSelectedRelayUrls ?? []),
         ])
-      ).filter((relayUrl) => plannedRelaySet.has(relayUrl))
+      ).filter((relayUrl) => candidateRelaySet.has(relayUrl))
       const plannedAppRelayUrls = Array.from(
         new Set([
           ...(authorPlan.appRelayUrls ?? []),
           ...(basePlan.appRelayUrls ?? []),
         ])
-      ).filter((relayUrl) => plannedRelaySet.has(relayUrl))
+      ).filter((relayUrl) => candidateRelaySet.has(relayUrl))
       const plannedPersonalRelayUrls = Array.from(
         new Set([
           ...(authorPlan.personalRelayUrls ?? []),
           ...(basePlan.personalRelayUrls ?? []),
         ])
-      ).filter((relayUrl) => plannedRelaySet.has(relayUrl))
+      ).filter((relayUrl) => candidateRelaySet.has(relayUrl))
 
-      if (plannedRelayUrls.length === 0) {
+      if (candidateRelayUrls.length === 0) {
         return await preserveStrongestOwnFollowList(
           {
             pubkey,
@@ -840,7 +844,8 @@ export async function readLatestFollowLists(
             limit: FOLLOW_LIST_EVENTS_PER_AUTHOR,
           },
           {
-            relayUrls: plannedRelayUrls,
+            relayUrls: candidateRelayUrls,
+            maxRelayAttempts: maxRelays,
             accountPubkey: normalizedAccountPubkey,
             authenticatedPubkey: normalizedAuthenticatedPubkey,
             ownerSelectedRelayUrls: plannedOwnerSelectedRelayUrls,
@@ -871,8 +876,8 @@ export async function readLatestFollowLists(
             pubkey,
             eventSourceRelayUrls: [],
             hintRelayUrls: selectedHints,
-            plannedRelayUrls,
-            relays: plannedRelayUrls.map((relayUrl) => ({
+            plannedRelayUrls: candidateRelayUrls.slice(0, maxRelays),
+            relays: candidateRelayUrls.slice(0, maxRelays).map((relayUrl) => ({
               relayUrl,
               status: "failed",
               eventCount: 0,
@@ -891,17 +896,8 @@ export async function readLatestFollowLists(
         )
       }
 
-      const statusByRelay = new Map(
-        result.relays.map((relay) => [relay.relayUrl, relay] as const)
-      )
-      const relays = plannedRelayUrls.map(
-        (relayUrl): RelayReadSourceStatus =>
-          statusByRelay.get(relayUrl) ?? {
-            relayUrl,
-            status: "failed",
-            eventCount: 0,
-          }
-      )
+      const relays: RelayReadSourceStatus[] = result.relays
+      const plannedRelayUrls = relays.map(({ relayUrl }) => relayUrl)
       const usesVerifiedReader =
         fetchEvents === fetchSignedEventsFanoutDetailed &&
         result.eventsVerified === true

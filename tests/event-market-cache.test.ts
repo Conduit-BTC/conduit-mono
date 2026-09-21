@@ -14,8 +14,11 @@ import {
   buildEventMarketCollectionDraft,
   buildEventMarketPickupDraft,
   config,
+  createDefaultAccountNetworkRoutingPolicy,
   decodeEventMarketReference,
+  emptyAccountNetworkLocalState,
   EVENT_KINDS,
+  filterEligibleAccountRelayUrls,
   getEventMarket,
   getOrganizerEventMarkets,
   getOrganizerEventMarketsDetailed,
@@ -1319,6 +1322,138 @@ describe("event-market retained evidence", () => {
       shouldContinue,
     })
     expectLiveAuthority()
+  })
+
+  it("backfills an enabled App relay after disabled Personal candidates", async () => {
+    const personalRelayUrls = Array.from(
+      { length: 6 },
+      (_, index) => `wss://personal-event-market-${index}.example`
+    )
+    const appRelayUrls = Array.from(
+      { length: 3 },
+      (_, index) => `wss://app-event-market-${index}.example`
+    )
+    Object.assign(config, {
+      appCommerceRelayUrls: [],
+      commerceDiscoveryRelayUrls: [],
+      appReadRelayUrls: appRelayUrls,
+    })
+    const localState = emptyAccountNetworkLocalState(MERCHANT, () => 1)
+    localState.routingPolicy = {
+      ...createDefaultAccountNetworkRoutingPolicy(),
+      personalRelaysEnabled: false,
+      personalRelaysTouched: true,
+    }
+    const repository = { get: async () => localState }
+    const reads: Array<{
+      candidates: string[]
+      attempted: string[]
+      maxRelayAttempts?: number
+    }> = []
+    const evidence = graph()
+
+    __setEventMarketTestOverrides({
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: {
+          version: 1,
+          updatedAt: 1,
+          entries: personalRelayUrls.map((url) => ({
+            url,
+            readEnabled: true,
+            writeEnabled: true,
+            section: "public" as const,
+            capabilities: {
+              nip11: false,
+              search: false,
+              dm: false,
+              auth: false,
+              commerce: false,
+            },
+            warnings: {
+              dmWithoutAuth: false,
+              staleRelayInfo: false,
+              unreachable: false,
+              commercePartialSupport: false,
+            },
+          })),
+        },
+        signedRelayListAuthoritative: true,
+      }),
+      getRelayLists: async () => new Map(),
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        const filter = rawFilter as TagFilter
+        const candidates = [...(options.relayUrls ?? [])]
+        const eligible = await filterEligibleAccountRelayUrls({
+          accountPubkey: options.accountPubkey ?? MERCHANT,
+          authenticatedPubkey: options.authenticatedPubkey,
+          candidateRelayUrls: candidates,
+          ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+          appRelayUrls: options.appRelayUrls,
+          personalRelayUrls: options.personalRelayUrls,
+          repository,
+        })
+        const attempted = eligible.slice(
+          0,
+          options.maxRelayAttempts ?? eligible.length
+        )
+        reads.push({
+          candidates,
+          attempted,
+          maxRelayAttempts: options.maxRelayAttempts,
+        })
+        const events = evidence.filter(
+          (event) =>
+            (!filter.kinds || filter.kinds.includes(event.kind as never)) &&
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            ["a", "d", "e"].every((tagName) => {
+              const values = filter[`#${tagName}` as "#a" | "#d" | "#e"]
+              return (
+                !values ||
+                event.tags.some(
+                  (tag) => tag[0] === tagName && values.includes(tag[1]!)
+                )
+              )
+            })
+        )
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: attempted.map((relayUrl) => ({
+            relayUrl,
+            status: relayUrl === appRelayUrls[2] ? "success" : "failed",
+            eventCount: relayUrl === appRelayUrls[2] ? events.length : 0,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+
+    const result = await getEventMarket({
+      reference: COLLECTION,
+      includeParticipation: false,
+      authenticatedPubkey: MERCHANT,
+      accountNetworkLocalStateRepository: repository,
+    })
+
+    expect(reads.length).toBeGreaterThan(0)
+    expect(reads[0]?.candidates.slice(0, 8)).toEqual([
+      ...personalRelayUrls,
+      ...appRelayUrls.slice(0, 2),
+    ])
+    expect(reads[0]?.candidates[8]).toBe(appRelayUrls[2])
+    for (const read of reads) {
+      expect(read.candidates).toContain(appRelayUrls[2])
+      expect(read.maxRelayAttempts).toBe(8)
+      expect(read.attempted.length).toBeLessThanOrEqual(8)
+      expect(read.attempted).toContain(appRelayUrls[2])
+      expect(
+        read.attempted.some((relayUrl) => personalRelayUrls.includes(relayUrl))
+      ).toBe(false)
+    }
+    expect(result.state).toBe("partial")
+    expect(result.coverage.completeRelayCount).toBe(1)
+    expect(result.coverage.failedRelayCount).toBe(2)
   })
 
   it("uses a verified candidate collection when the organizer read omits it", async () => {
