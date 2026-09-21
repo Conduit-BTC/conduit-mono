@@ -22,6 +22,7 @@ import {
   getShippingOptionsByCoordinates,
   parseEventMarketPickupEvent,
   setSigner,
+  type CachedEventMarketEvidence,
   type CommerceProductRecord,
   type OrderSummary,
   type ParsedEventMarketPickup,
@@ -191,17 +192,56 @@ function pickupOption(
   }
 }
 
+function retainEventPickupEvidenceRows(
+  retainedRows: CachedEventMarketEvidence[],
+  organizerPubkey: string,
+  events: readonly SignedPublicNostrEvent[]
+): void {
+  for (const event of events) {
+    const row: CachedEventMarketEvidence = {
+      id: event.id,
+      organizerPubkey,
+      kind: event.kind,
+      addressId:
+        event.kind === 30406
+          ? `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1] ?? ""}`
+          : undefined,
+      signedEvent: event,
+      sourceRelayUrls: [],
+      cachedAt: START,
+    }
+    const existingIndex = retainedRows.findIndex(
+      (existing) =>
+        existing.organizerPubkey === organizerPubkey && existing.id === event.id
+    )
+    if (existingIndex === -1) retainedRows.push(row)
+    else retainedRows[existingIndex] = row
+  }
+}
+
 function installEventPickupReadHarness(
   events: readonly SignedPublicNostrEvent[],
   harnessOptions: {
     omittedStatusKinds?: readonly number[]
     rejectedSaturatedKinds?: readonly number[]
     relayUrls?: readonly string[]
+    retainedRows?: CachedEventMarketEvidence[]
     saturatedKinds?: readonly number[]
   } = {}
 ): void {
   const relayUrls = harnessOptions.relayUrls ?? ["wss://pickup.example"]
+  const retainedRows = harnessOptions.retainedRows ?? []
   __setEventMarketTestOverrides({
+    getActiveOrderCollectionEvidencePins: async () => ({
+      status: "ready",
+      eventIds: [],
+    }),
+    loadCachedEvidence: async (organizerPubkey) =>
+      retainedRows.filter((row) => row.organizerPubkey === organizerPubkey),
+    loadCachedPickupEvidence: async () => retainedRows,
+    persistCachedEvidence: async ({ organizerPubkey, events }) => {
+      retainEventPickupEvidenceRows(retainedRows, organizerPubkey, events)
+    },
     readAccountRelaySettingsPlanningSnapshot: async () => ({
       settings: { version: 1, updatedAt: 1, entries: [] },
       signedRelayListAuthoritative: true,
@@ -1200,6 +1240,286 @@ describe("merchant-owned product mutation boundary", () => {
       publishedKinds: [],
       signedBundleCount: 0,
     })
+  })
+
+  for (const deletionTarget of ["a", "e"] as const) {
+    it(`keeps retained pickup ${deletionTarget}-deletions authoritative without promoting cached positives`, async () => {
+      const pickupSecret = SECRET
+      const pickupPubkey = MERCHANT
+      const dTag = `retained-pickup-${deletionTarget}-deletion`
+      const coordinate = `30406:${pickupPubkey}:${dTag}`
+      const baseline = product(dTag, {
+        collectionRefs: [`30405:${ORGANIZER}:market`],
+        shippingOptionId: coordinate,
+        shippingOptionDTag: dTag,
+        shippingOptionRefs: [{ coordinate }],
+      })
+      const pickup = finalizeEvent(
+        {
+          kind: 30406,
+          created_at: Math.floor((baseline.updatedAt - 1) / 1000),
+          content: "",
+          tags: [
+            ["d", dTag],
+            ["title", "Public pickup"],
+            ["price", "0", "SATS"],
+            ["country", "US"],
+            ["service", "pickup"],
+            ["location", "Public pickup desk"],
+          ],
+        },
+        pickupSecret
+      )
+      const deletion = finalizeEvent(
+        {
+          kind: 5,
+          created_at: pickup.created_at + 1,
+          content: "",
+          tags: [
+            [deletionTarget, deletionTarget === "a" ? coordinate : pickup.id],
+          ],
+        },
+        pickupSecret
+      )
+      const retainedRows: CachedEventMarketEvidence[] = []
+
+      installEventPickupReadHarness([pickup, deletion], {
+        retainedRows,
+        ...(deletionTarget === "e"
+          ? {
+              omittedStatusKinds: [5],
+              relayUrls: ["wss://pickup-a.example", "wss://pickup-b.example"],
+            }
+          : {}),
+      })
+      await expect(
+        attemptPreservedPublication({
+          baseline,
+          update: { stock: 4 },
+          getEventMarketPickups: getEventMarketPickupsByCoordinates,
+        })
+      ).rejects.toThrow("Event pickup could not be verified safely")
+      expect(retainedRows.map((row) => row.signedEvent.id).sort()).toEqual(
+        [pickup.id, deletion.id].sort()
+      )
+      for (const row of retainedRows) {
+        row.organizerPubkey = ORGANIZER
+        row.id = `${ORGANIZER}:${row.signedEvent.id}`
+      }
+
+      __resetEventMarketTestOverrides()
+      installEventPickupReadHarness([pickup], { retainedRows })
+      const observed = {
+        signerRequests: [] as ProductSignerRequestProgress[],
+        publishedKinds: [] as number[],
+        signedBundleCount: 0,
+      }
+      await expect(
+        attemptPreservedPublication({
+          baseline,
+          update: { stock: 4 },
+          getEventMarketPickups: getEventMarketPickupsByCoordinates,
+          observed,
+        })
+      ).rejects.toThrow("Event pickup could not be verified safely")
+      expect(observed).toEqual({
+        signerRequests: [],
+        publishedKinds: [],
+        signedBundleCount: 0,
+      })
+
+      retainedRows.splice(
+        0,
+        retainedRows.length,
+        ...retainedRows.filter((row) => row.kind === 30406)
+      )
+      __resetEventMarketTestOverrides()
+      installEventPickupReadHarness([], { retainedRows })
+      const cachedOnlyObservation = {
+        signerRequests: [] as ProductSignerRequestProgress[],
+        publishedKinds: [] as number[],
+        signedBundleCount: 0,
+      }
+      await expect(
+        attemptPreservedPublication({
+          baseline,
+          update: { stock: 4 },
+          getEventMarketPickups: getEventMarketPickupsByCoordinates,
+          observed: cachedOnlyObservation,
+        })
+      ).rejects.toThrow("Event pickup could not be verified safely")
+      expect(cachedOnlyObservation).toEqual({
+        signerRequests: [],
+        publishedKinds: [],
+        signedBundleCount: 0,
+      })
+    })
+  }
+
+  it("retains pickup deletion evidence after a durable write failure", async () => {
+    const pickupSecret = generateSecretKey()
+    const pickupPubkey = getPublicKey(pickupSecret)
+    const dTag = "volatile-pickup-deletion"
+    const coordinate = `30406:${pickupPubkey}:${dTag}`
+    const baseline = product(dTag, {
+      collectionRefs: [`30405:${pickupPubkey}:market`],
+      shippingOptionId: coordinate,
+      shippingOptionDTag: dTag,
+      shippingOptionRefs: [{ coordinate }],
+    })
+    const pickup = finalizeEvent(
+      {
+        kind: 30406,
+        created_at: Math.floor((baseline.updatedAt - 1) / 1000),
+        content: "",
+        tags: [
+          ["d", dTag],
+          ["title", "Public pickup"],
+          ["price", "0", "SATS"],
+          ["country", "US"],
+          ["service", "pickup"],
+          ["location", "Public pickup desk"],
+        ],
+      },
+      pickupSecret
+    )
+    const deletion = finalizeEvent(
+      {
+        kind: 5,
+        created_at: pickup.created_at + 1,
+        content: "",
+        tags: [["a", coordinate]],
+      },
+      pickupSecret
+    )
+    const retainedRows: CachedEventMarketEvidence[] = []
+
+    installEventPickupReadHarness([pickup, deletion], { retainedRows })
+    __setEventMarketTestOverrides({
+      persistCachedEvidence: async () => {
+        throw new Error("IndexedDB unavailable")
+      },
+    })
+    await expect(
+      attemptPreservedPublication({
+        baseline,
+        update: { stock: 4 },
+        getEventMarketPickups: getEventMarketPickupsByCoordinates,
+      })
+    ).rejects.toThrow("Event pickup could not be verified safely")
+    expect(retainedRows).toEqual([])
+
+    installEventPickupReadHarness([pickup], { retainedRows })
+    const observed = {
+      signerRequests: [] as ProductSignerRequestProgress[],
+      publishedKinds: [] as number[],
+      signedBundleCount: 0,
+    }
+    await expect(
+      attemptPreservedPublication({
+        baseline,
+        update: { stock: 4 },
+        getEventMarketPickups: getEventMarketPickupsByCoordinates,
+        observed,
+      })
+    ).rejects.toThrow("Event pickup could not be verified safely")
+    expect(observed).toEqual({
+      signerRequests: [],
+      publishedKinds: [],
+      signedBundleCount: 0,
+    })
+  })
+
+  it("rechecks retained deletion evidence after an overlapping stale pickup read", async () => {
+    const pickupSecret = generateSecretKey()
+    const pickupPubkey = getPublicKey(pickupSecret)
+    const dTag = "overlapping-pickup-deletion"
+    const coordinate = `30406:${pickupPubkey}:${dTag}`
+    const pickup = finalizeEvent(
+      {
+        kind: 30406,
+        created_at: Math.floor((START - 1) / 1000),
+        content: "",
+        tags: [
+          ["d", dTag],
+          ["title", "Public pickup"],
+          ["price", "0", "SATS"],
+          ["country", "US"],
+          ["service", "pickup"],
+          ["location", "Public pickup desk"],
+        ],
+      },
+      pickupSecret
+    )
+    const deletion = finalizeEvent(
+      {
+        kind: 5,
+        created_at: pickup.created_at + 1,
+        content: "",
+        tags: [["e", pickup.id]],
+      },
+      pickupSecret
+    )
+    const retainedRows: CachedEventMarketEvidence[] = []
+    const relayEvents: SignedPublicNostrEvent[] = [pickup]
+    let markStalePersistStarted!: () => void
+    let releaseStalePersist!: () => void
+    let markDeletionPersistStarted!: () => void
+    let releaseDeletionPersist!: () => void
+    const stalePersistStarted = new Promise<void>((resolve) => {
+      markStalePersistStarted = resolve
+    })
+    const stalePersistRelease = new Promise<void>((resolve) => {
+      releaseStalePersist = resolve
+    })
+    const deletionPersistStarted = new Promise<void>((resolve) => {
+      markDeletionPersistStarted = resolve
+    })
+    const deletionPersistRelease = new Promise<void>((resolve) => {
+      releaseDeletionPersist = resolve
+    })
+    let staleRead: Promise<ParsedEventMarketPickup[]> | undefined
+    let deletionRead: Promise<ParsedEventMarketPickup[]> | undefined
+
+    installEventPickupReadHarness(relayEvents, { retainedRows })
+    __setEventMarketTestOverrides({
+      persistCachedEvidence: async ({ organizerPubkey, events }) => {
+        if (events.some((event) => event.kind === 5)) {
+          markDeletionPersistStarted()
+          await deletionPersistRelease
+        } else {
+          markStalePersistStarted()
+          await stalePersistRelease
+        }
+        retainEventPickupEvidenceRows(retainedRows, organizerPubkey, events)
+      },
+    })
+    try {
+      staleRead = getEventMarketPickupsByCoordinates([coordinate])
+      await stalePersistStarted
+
+      relayEvents.splice(0, relayEvents.length, pickup, deletion)
+      deletionRead = getEventMarketPickupsByCoordinates([coordinate])
+      await deletionPersistStarted
+
+      releaseStalePersist()
+      await expect(staleRead).resolves.toEqual([])
+
+      releaseDeletionPersist()
+      await expect(deletionRead).resolves.toEqual([])
+      expect(retainedRows.map((row) => row.signedEvent.id).sort()).toEqual(
+        [pickup.id, deletion.id].sort()
+      )
+    } finally {
+      releaseStalePersist()
+      releaseDeletionPersist()
+      await Promise.allSettled(
+        [staleRead, deletionRead].filter(
+          (read): read is Promise<ParsedEventMarketPickup[]> =>
+            read !== undefined
+        )
+      )
+    }
   })
 
   it("preserves reference extras and unresolved network projections through the actual draft", () => {
