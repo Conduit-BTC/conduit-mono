@@ -5,6 +5,7 @@ import {
   createEmptyEventProductForm,
   createFreshEventProductDTag,
   eventProductFormFromTemplate,
+  getMerchantEventPublishPresentation,
   validateEventProductPublishForm,
 } from "../apps/merchant/src/lib/event-product-publishing"
 
@@ -42,6 +43,66 @@ const PRODUCT = {
 } as ProductSchema
 
 describe("merchant event-led product publishing", () => {
+  it("distinguishes closed and ended events from recoverable exact reads", () => {
+    expect(
+      getMerchantEventPublishPresentation({
+        actionReady: true,
+        orderAcceptance: "closed",
+        refreshing: false,
+        requiredRecordsResolved: true,
+        state: "ended",
+      })
+    ).toEqual({
+      message: "This event is closed. New products can't be published.",
+      publishable: false,
+      retryLabel: null,
+      state: "closed",
+    })
+
+    expect(
+      getMerchantEventPublishPresentation({
+        actionReady: true,
+        refreshing: false,
+        requiredRecordsResolved: true,
+        state: "ended",
+      })
+    ).toEqual({
+      message: "This event has ended. New products can't be published.",
+      publishable: false,
+      retryLabel: null,
+      state: "ended",
+    })
+
+    expect(
+      getMerchantEventPublishPresentation({
+        actionReady: false,
+        refreshing: false,
+        requiredRecordsResolved: false,
+        state: "partial",
+      })
+    ).toEqual({
+      message:
+        "Current event details couldn't be confirmed. Retry before publishing a product.",
+      publishable: false,
+      retryLabel: "Retry event details",
+      state: "recoverable",
+    })
+
+    expect(
+      getMerchantEventPublishPresentation({
+        actionReady: false,
+        refreshing: true,
+        requiredRecordsResolved: false,
+        state: "partial",
+      })
+    ).toMatchObject({
+      message: "Checking current event details before publishing.",
+      publishable: false,
+      retryLabel: "Checking event details...",
+      state: "checking",
+    })
+  })
+
   it("publishes dedicated event products as hidden ordinary-market listings", async () => {
     const source = await Bun.file(
       "apps/merchant/src/lib/event-product-publishing.ts"

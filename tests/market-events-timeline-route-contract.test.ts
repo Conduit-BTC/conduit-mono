@@ -9,7 +9,10 @@ import { subscribeToTimeBoundaries } from "@conduit/ui"
 import {
   filterAndSortEventMarkets,
   getEventTimelineBoundaries,
+  getEventTimelinePresentation,
   getEventTimelineStatus,
+  getNextEventTimelineLimit,
+  MARKET_EVENT_TIMELINE_PAGE_SIZE,
   type EventTimelineWindow,
 } from "../apps/market/src/lib/eventTimeline"
 import { createFakeTimeBoundaryClock } from "./helpers/fake-time-boundary-clock"
@@ -107,8 +110,9 @@ describe("Market Events timeline route", () => {
   })
 
   it("uses bounded perspective discovery and preserves partial positives", async () => {
-    const [route, emptyState, hook, discovery] = await Promise.all([
+    const [route, timeline, emptyState, hook, discovery] = await Promise.all([
       Bun.file("apps/market/src/routes/events/index.tsx").text(),
+      Bun.file("apps/market/src/components/MarketEventsTimeline.tsx").text(),
       Bun.file("apps/market/src/components/EventTimelineEmptyState.tsx").text(),
       Bun.file("apps/market/src/hooks/useEventTimeline.ts").text(),
       Bun.file("packages/core/src/protocol/event-market-discovery.ts").text(),
@@ -121,29 +125,28 @@ describe("Market Events timeline route", () => {
     expect(hook).toContain("includeEnded: true")
     expect(route).not.toContain("getOrganizerDiscoveryPresentation")
     expect(route).not.toContain("discoveryPresentation")
-    expect(route).toContain('aria-label="Refresh events"')
-    expect(route).toContain("EventTimelineEmptyState")
-    expect(route).toContain("getResultPresentation")
-    expect(route).toContain("resultCount: discovery.markets.length")
-    expect(route).toContain("visibleResultCount: filteredMarkets.length")
-    expect(route).toContain("!discovery.isRefreshStale")
-    expect(route).toContain(
-      'filteredResultPresentation.visibility === "compact"'
-    )
-    expect(route).toContain(
+    expect(timeline).toContain('aria-label="Refresh events"')
+    expect(timeline).toContain("EventTimelineEmptyState")
+    expect(timeline).toContain("getResultPresentation")
+    expect(timeline).toContain("resultCount: discovery.markets.length")
+    expect(timeline).toContain("visibleResultCount: filteredMarkets.length")
+    expect(timeline).toContain("!discovery.isRefreshStale")
+    expect(timeline).toContain('resultPresentation.visibility === "compact"')
+    expect(timeline).toContain(
       "Discovery is incomplete, so matching events may still be available."
     )
     expect(emptyState).toContain("getResultPresentation")
     expect(emptyState).toContain("onRetry")
-    expect(route).toContain("filteredMarkets.map")
+    expect(timeline).toContain("presentation.currentAndFuture.map")
     expect(discovery).toContain("readEventMarketCollectionCandidates")
     expect(discovery).toContain("perspectiveOrganizerSet.has(organizerPubkey)")
     expect(discovery).not.toContain("FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT")
   })
 
   it("keeps the event page focused on useful filters and results", async () => {
-    const [route, merchantEditor] = await Promise.all([
+    const [route, timeline, merchantEditor] = await Promise.all([
       Bun.file("apps/market/src/routes/events/index.tsx").text(),
+      Bun.file("apps/market/src/components/MarketEventsTimeline.tsx").text(),
       Bun.file(
         "apps/merchant/src/components/OrganizerEventMarketEditor.tsx"
       ).text(),
@@ -152,10 +155,41 @@ describe("Market Events timeline route", () => {
     expect(route).not.toContain("Event markets")
     expect(route).not.toContain("Browse organizer event markets")
     expect(route).not.toContain('id="event-topic-filter"')
+    expect(route).not.toContain('id="event-date-filter"')
+    expect(route).not.toContain("EVENT_TIMELINE_WINDOWS")
     expect(route).not.toContain("Retry discovery")
-    expect(route).toContain('id="event-results-heading"')
-    expect(route).toContain('aria-label="Refresh events"')
+    expect(route).toContain("MarketEventsTimeline")
+    expect(timeline).toContain('aria-label="Events timeline"')
+    expect(timeline).toContain('aria-label="Refresh events"')
+    expect(timeline).toContain("EventTimelineViewport")
     expect(merchantEditor).not.toMatch(/htmlFor="[^"]*topic/i)
+  })
+
+  it("paginates chronologically around Now with past events above", () => {
+    const day = 86_400_000
+    const past = Array.from({ length: 14 }, (_, index) =>
+      timedMarket(index * day, index * day + day)
+    )
+    const future = Array.from({ length: 14 }, (_, index) =>
+      timedMarket((20 + index) * day, (21 + index) * day)
+    )
+    const now = 18 * day
+    const markets = filterAndSortEventMarkets(
+      [...past, ...future],
+      { window: "all" },
+      now
+    )
+    const first = getEventTimelinePresentation(markets, {}, now)
+
+    expect(first.past).toHaveLength(MARKET_EVENT_TIMELINE_PAGE_SIZE)
+    expect(first.currentAndFuture).toHaveLength(MARKET_EVENT_TIMELINE_PAGE_SIZE)
+    expect(first.hiddenEarlierCount).toBe(2)
+    expect(first.hiddenLaterCount).toBe(2)
+    expect(first.past.at(-1)?.calendar.end).toBeLessThanOrEqual(now)
+    expect(first.currentAndFuture[0]?.calendar.end).toBeGreaterThan(now)
+    expect(getNextEventTimelineLimit(first.past.length, past.length)).toBe(
+      past.length
+    )
   })
 
   it("binds timeline and follow reads to the current authenticated session", async () => {
@@ -177,23 +211,24 @@ describe("Market Events timeline route", () => {
     expect(hook).toContain("discoveryScopeRef.current === discoveryScope")
   })
 
-  it("renders reusable cards with exact event links and no product-count claim", async () => {
-    const [route, card] = await Promise.all([
+  it("renders shared timeline entries with exact event links and no product-count claim", async () => {
+    const [route, timeline, entry] = await Promise.all([
       Bun.file("apps/market/src/routes/events/index.tsx").text(),
-      Bun.file("packages/ui/src/components/EventMarketCard.tsx").text(),
+      Bun.file("apps/market/src/components/MarketEventsTimeline.tsx").text(),
+      Bun.file("packages/ui/src/components/EventTimeline.tsx").text(),
     ])
 
-    expect(route).toContain("encodeEventMarketNaddr")
-    expect(route).toContain('to="/events/$collectionRef"')
-    expect(route).toContain("EventMarketCard")
-    expect(card).toContain("export function EventMarketCard")
-    expect(route).not.toMatch(/product count/i)
-    expect(route).not.toContain("acceptedProductCoordinates.length")
+    expect(timeline).toContain("encodeEventMarketNaddr")
+    expect(route).toContain('to: "/events/$collectionRef"')
+    expect(timeline).toContain("EventTimelineEntry")
+    expect(entry).toContain("export function EventTimelineEntry")
+    expect(timeline).not.toMatch(/product count/i)
+    expect(timeline).not.toContain("acceptedProductCoordinates.length")
   })
 
   it("balances saturated exact-link hints across collection, calendar, and pickup sources", async () => {
-    const route = await Bun.file(
-      "apps/market/src/routes/events/index.tsx"
+    const timeline = await Bun.file(
+      "apps/market/src/components/MarketEventsTimeline.tsx"
     ).text()
     const collectionRelays = Array.from(
       { length: 8 },
@@ -228,8 +263,8 @@ describe("Market Events timeline route", () => {
     expect(decodeEventMarketReference(naddr, [30405])?.relayHints).toEqual(
       relayHints
     )
-    expect(route).toContain("buildEventMarketShareRelayHints")
-    expect(route).toContain(
+    expect(timeline).toContain("buildEventMarketShareRelayHints")
+    expect(timeline).toContain(
       "...market.pickups.map((pickup) => pickup.sourceRelayUrls)"
     )
   })
@@ -255,8 +290,8 @@ describe("Market Events timeline route", () => {
   })
 
   it("advances a mounted timeline at start and end without polling", async () => {
-    const route = await Bun.file(
-      "apps/market/src/routes/events/index.tsx"
+    const timeline = await Bun.file(
+      "apps/market/src/components/MarketEventsTimeline.tsx"
     ).text()
     const start = 1_000
     const end = 2_000
@@ -275,9 +310,9 @@ describe("Market Events timeline route", () => {
       cancel: clock.cancel,
     })
 
-    expect(route).toContain("useTimeBoundaryNow(timelineBoundaries)")
-    expect(route).not.toContain("const nowMs = Date.now()")
-    expect(route).not.toContain("setInterval")
+    expect(timeline).toContain("useTimeBoundaryNow(timelineBoundaries)")
+    expect(timeline).not.toContain("const nowMs = Date.now()")
+    expect(timeline).not.toContain("setInterval")
     expect(
       getEventTimelineStatus(
         filterAndSortEventMarkets([event], {}, renderedNowMs)[0]!,

@@ -24,6 +24,14 @@ export {
   CollapsibleTrigger,
   type CollapsibleProps,
 } from "./Collapsible"
+export {
+  EventTimelineEntry,
+  EventTimelineLoading,
+  EventTimelineViewport,
+  type EventTimelineDateParts,
+  type EventTimelineEntryProps,
+  type EventTimelineViewportProps,
+} from "./EventTimeline"
 export { ShareLinkButton, type ShareLinkButtonProps } from "./ShareLinkButton"
 export {
   HoldToReleaseButton,
@@ -176,6 +184,7 @@ export {
   type EventMarketCardProps,
   type EventMarketCardStatusTone,
 } from "./EventMarketCard"
+export { EventPageHeader, type EventPageHeaderProps } from "./EventPageHeader"
 export {
   ClaveConnectButton,
   claveConnectUrl,

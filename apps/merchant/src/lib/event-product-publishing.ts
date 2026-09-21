@@ -4,6 +4,7 @@ import {
   decodeProductReference,
   getMerchantStorefront,
   type EventMarketHandoffMode,
+  type EventMarketResolutionState,
   type ProductImage,
   type ProductSchema,
   type PublishWithPlannerResult,
@@ -65,6 +66,93 @@ export interface EventProductFormValidation {
   pickupError: string | null
   canPublish: boolean
   firstError: string | null
+}
+
+export interface MerchantEventPublishPresentation {
+  message: string | null
+  publishable: boolean
+  retryLabel: string | null
+  state: "available" | "checking" | "closed" | "ended" | "recoverable"
+}
+
+export function getMerchantEventPublishPresentation(input: {
+  actionReady: boolean
+  orderAcceptance?: "open" | "closed"
+  refreshing: boolean
+  requiredRecordsResolved: boolean
+  state: EventMarketResolutionState
+}): MerchantEventPublishPresentation {
+  const publishable =
+    input.actionReady &&
+    input.orderAcceptance !== "closed" &&
+    input.requiredRecordsResolved &&
+    (input.state === "active" || input.state === "partial")
+
+  if (publishable) {
+    return {
+      message: null,
+      publishable: true,
+      retryLabel: null,
+      state: "available",
+    }
+  }
+  if (input.orderAcceptance === "closed") {
+    return {
+      message: "This event is closed. New products can't be published.",
+      publishable: false,
+      retryLabel: null,
+      state: "closed",
+    }
+  }
+  if (input.state === "ended") {
+    return {
+      message: "This event has ended. New products can't be published.",
+      publishable: false,
+      retryLabel: null,
+      state: "ended",
+    }
+  }
+  if (input.refreshing) {
+    return {
+      message: "Checking current event details before publishing.",
+      publishable: false,
+      retryLabel: "Checking event details...",
+      state: "checking",
+    }
+  }
+  return {
+    message:
+      "Current event details couldn't be confirmed. Retry before publishing a product.",
+    publishable: false,
+    retryLabel: "Retry event details",
+    state: "recoverable",
+  }
+}
+
+export function assertEventProductMarketPublishable(
+  market: Pick<
+    MerchantOrganizerEventMarket,
+    "orderAcceptance" | "source" | "state"
+  >
+): void {
+  const requiredRecordsResolved = Boolean(
+    market.source.collection &&
+    market.source.calendar &&
+    (!market.source.pickupCoordinate || market.source.pickup)
+  )
+  const presentation = getMerchantEventPublishPresentation({
+    actionReady: true,
+    orderAcceptance: market.orderAcceptance,
+    refreshing: false,
+    requiredRecordsResolved,
+    state: market.state,
+  })
+  if (!presentation.publishable) {
+    throw new Error(
+      presentation.message ??
+        "Current event details do not permit publishing a product."
+    )
+  }
 }
 
 function slugify(input: string): string {
@@ -215,8 +303,12 @@ export async function publishEventProduct(input: {
     undefined,
     input.authenticatedPubkey,
     undefined,
-    input.shouldContinue
+    input.shouldContinue,
+    { includeParticipation: false }
   )
+  // Re-check the current organizer-authored graph before any signer request or
+  // publication. A newly closed event must not leave an orphan booth pickup.
+  assertEventProductMarketPublishable(market)
   const dTag = createFreshEventProductDTag(
     input.form.title,
     input.form.templateCoordinate
