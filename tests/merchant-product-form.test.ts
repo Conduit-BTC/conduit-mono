@@ -17,6 +17,7 @@ import {
   reconcileProductFormShippingPreset,
   removeProductTagAtIndex,
   isProductUsingPresetShippingZone,
+  validateMerchantProductSupplierAllocationForm,
   validateProductPublishForm,
   type MerchantProductFormValues,
   type ProductPublishFormValues,
@@ -26,6 +27,11 @@ import {
   createEmptyProductVariationForm,
   generateProductVariationRows,
 } from "../apps/merchant/src/lib/productVariations"
+
+const VALID_MERCHANT_PUBKEY =
+  "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+const VALID_SUPPLIER_PUBKEY =
+  "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 
 function form(
   overrides: Partial<ProductPublishFormValues> = {}
@@ -148,6 +154,10 @@ describe("merchant product form validation", () => {
       merchantPickupCountry: "US",
       publicZapEnabled: true,
       zapMessagePolicy: "generic_only",
+      supplierAllocationEnabled: false,
+      merchantAllocationWeight: "1",
+      merchantAllocationRelayHint: "",
+      supplierAllocations: [],
     }
 
     expect(reconcileProductFormShippingPreset(values, false)).toEqual({
@@ -159,6 +169,111 @@ describe("merchant product form validation", () => {
         .usePresetShippingZone
     ).toBe(false)
     expect(reconcileProductFormShippingPreset(values, true)).toBe(values)
+  })
+
+  it("builds signed supplier allocation terms only when enabled and valid", () => {
+    const merchantPubkey = VALID_MERCHANT_PUBKEY
+    const supplierPubkey = VALID_SUPPLIER_PUBKEY
+
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        {
+          supplierAllocationEnabled: false,
+          merchantAllocationWeight: "",
+          merchantAllocationRelayHint: "",
+          supplierAllocations: [],
+        },
+        merchantPubkey
+      )
+    ).toEqual({ canPublish: true, error: null })
+
+    const valid = validateMerchantProductSupplierAllocationForm(
+      {
+        supplierAllocationEnabled: true,
+        merchantAllocationWeight: "3",
+        merchantAllocationRelayHint: "wss://relay.conduit.market",
+        supplierAllocations: [
+          {
+            identity: supplierPubkey,
+            relayHint: "wss://nos.lol",
+            weight: "1",
+          },
+        ],
+      },
+      merchantPubkey
+    )
+
+    expect(valid.canPublish).toBe(true)
+    expect(valid.error).toBeNull()
+    expect(valid.allocation?.state).toBe("valid")
+    expect(valid.allocation?.recipients).toEqual([
+      expect.objectContaining({
+        pubkey: merchantPubkey,
+        role: "merchant",
+        weight: 3,
+      }),
+      expect.objectContaining({
+        pubkey: supplierPubkey,
+        role: "supplier",
+        weight: 1,
+      }),
+    ])
+  })
+
+  it("blocks incomplete, duplicate, and non-positive supplier allocations", () => {
+    const merchantPubkey = VALID_MERCHANT_PUBKEY
+    const supplierPubkey = VALID_SUPPLIER_PUBKEY
+
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        {
+          supplierAllocationEnabled: true,
+          merchantAllocationWeight: "1",
+          merchantAllocationRelayHint: "wss://relay.conduit.market",
+          supplierAllocations: [],
+        },
+        merchantPubkey
+      ).error
+    ).toContain("at least one supplier")
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        {
+          supplierAllocationEnabled: true,
+          merchantAllocationWeight: "1",
+          merchantAllocationRelayHint: "wss://relay.conduit.market",
+          supplierAllocations: [
+            {
+              identity: supplierPubkey,
+              relayHint: "wss://nos.lol",
+              weight: "1",
+            },
+            {
+              identity: supplierPubkey,
+              relayHint: "wss://nos.lol",
+              weight: "1",
+            },
+          ],
+        },
+        merchantPubkey
+      ).error
+    ).toContain("only once")
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        {
+          supplierAllocationEnabled: true,
+          merchantAllocationWeight: "1",
+          merchantAllocationRelayHint: "wss://relay.conduit.market",
+          supplierAllocations: [
+            {
+              identity: supplierPubkey,
+              relayHint: "wss://nos.lol",
+              weight: "0",
+            },
+          ],
+        },
+        merchantPubkey
+      ).error
+    ).toContain("positive whole-number")
   })
 
   it("keeps a blank create form invalid", () => {

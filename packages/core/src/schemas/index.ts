@@ -1,5 +1,8 @@
 import { z } from "zod"
-import { normalizePublicMediaUrl } from "../network-target-safety"
+import {
+  normalizePublicMediaUrl,
+  normalizePublicWebSocketUrl,
+} from "../network-target-safety"
 
 const publicMediaUrlSchema = z
   .string()
@@ -56,6 +59,142 @@ export const productShippingOptionReferenceSchema = z.object({
 
 export type ProductShippingOptionReference = z.infer<
   typeof productShippingOptionReferenceSchema
+>
+
+export const productSupplierAllocationIssueSchema = z.enum([
+  "invalid_version",
+  "invalid_author",
+  "invalid_recipient",
+  "invalid_relay_hint",
+  "invalid_weight",
+  "duplicate_recipient",
+  "missing_merchant",
+  "duplicate_merchant",
+  "missing_supplier",
+  "weight_total_overflow",
+])
+
+export type ProductSupplierAllocationIssue = z.infer<
+  typeof productSupplierAllocationIssueSchema
+>
+
+export const productSupplierAllocationRecipientSchema = z.object({
+  pubkey: z.string().regex(/^[0-9a-f]{64}$/),
+  relayHint: z
+    .string()
+    .min(1)
+    .refine(
+      (value) => normalizePublicWebSocketUrl(value) === value,
+      "Relay hint must be a normalized public WebSocket URL"
+    ),
+  weight: z.number().int().positive(),
+  role: z.enum(["merchant", "supplier"]),
+})
+
+export type ProductSupplierAllocationRecipient = z.infer<
+  typeof productSupplierAllocationRecipientSchema
+>
+
+const productSupplierAllocationRevisionEventSchema = z
+  .object({
+    id: z.string().regex(/^[0-9a-f]{64}$/),
+    pubkey: z.string().regex(/^[0-9a-f]{64}$/),
+    created_at: z.number().int().min(0),
+    kind: z.literal(30_402),
+    tags: z.array(z.array(z.string())),
+    content: z.string(),
+    sig: z.string().regex(/^[0-9a-f]{128}$/),
+  })
+  .strict()
+
+export const productSupplierAllocationSchema = z
+  .object({
+    state: z.enum(["absent", "valid", "invalid"]),
+    recipients: z.array(productSupplierAllocationRecipientSchema),
+    issues: z.array(productSupplierAllocationIssueSchema),
+    revisionEventId: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+    revisionCreatedAt: z.number().int().min(0).optional(),
+    revisionEvent: productSupplierAllocationRevisionEventSchema.optional(),
+  })
+  .superRefine((allocation, context) => {
+    if (allocation.state === "absent") {
+      if (allocation.recipients.length > 0 || allocation.issues.length > 0) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Absent allocation evidence cannot include terms or issues",
+        })
+      }
+      return
+    }
+
+    if (allocation.state === "valid" && allocation.issues.length > 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Valid allocation evidence cannot include issues",
+      })
+    }
+    if (allocation.state === "invalid" && allocation.issues.length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Invalid allocation evidence must explain why it is invalid",
+      })
+    }
+
+    if (allocation.state !== "valid") return
+
+    if (
+      allocation.revisionEvent &&
+      (allocation.revisionEvent.id !== allocation.revisionEventId ||
+        allocation.revisionEvent.created_at !== allocation.revisionCreatedAt)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Allocation revision evidence must match its signed event",
+      })
+    }
+
+    const pubkeys = allocation.recipients.map((recipient) => recipient.pubkey)
+    if (new Set(pubkeys).size !== pubkeys.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Allocation recipients must be unique",
+      })
+    }
+    const merchantCount = allocation.recipients.filter(
+      (recipient) => recipient.role === "merchant"
+    ).length
+    const supplierCount = allocation.recipients.filter(
+      (recipient) => recipient.role === "supplier"
+    ).length
+    if (merchantCount !== 1) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Valid allocation evidence requires one merchant recipient",
+      })
+    }
+    if (supplierCount === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Valid allocation evidence requires a supplier recipient",
+      })
+    }
+    const totalWeight = allocation.recipients.reduce(
+      (sum, recipient) => sum + recipient.weight,
+      0
+    )
+    if (!Number.isSafeInteger(totalWeight)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Allocation weight total must be a safe integer",
+      })
+    }
+  })
+
+export type ProductSupplierAllocation = z.infer<
+  typeof productSupplierAllocationSchema
 >
 
 export const productSchema = z.object({
@@ -130,6 +269,8 @@ export const productSchema = z.object({
   publicZapEnabled: z.boolean().default(true),
   zapMessagePolicy: productZapMessagePolicySchema.default("generic_only"),
   publicZapPolicyKnown: z.boolean().default(false),
+  /** Signed NIP-57 zap allocation terms declared by this product revision. */
+  supplierAllocation: productSupplierAllocationSchema.optional(),
   location: z.string().optional(),
   createdAt: z.number(),
   updatedAt: z.number(),

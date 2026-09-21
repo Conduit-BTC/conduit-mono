@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { expect, test, type Locator, type Page } from "@playwright/test"
+import { nip19 } from "@nostr-dev-kit/ndk"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 import {
   TEST_RELAY_URL,
@@ -448,4 +449,68 @@ test("publish choices keep editing or enter the signer path exactly once @mercha
       ).length
     })
     .toBe(1)
+})
+
+test("merchant publishes versioned supplier allocation terms with explicit profile relays @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const merchantSecretKey = generateSecretKey()
+  const merchantPubkey = getPublicKey(merchantSecretKey)
+  const supplierPubkey = getPublicKey(generateSecretKey())
+  const title = `Supplier allocation ${Date.now().toString(36)}`
+  await seedTestRelayIdentity(merchantSecretKey, { inboxDeclaration: "omit" })
+  await installTestSigner(page, merchantPubkey, {
+    secretKey: merchantSecretKey,
+  })
+  await page.goto(`${merchantUrl}/products`)
+
+  const productDialog = await fillProductDraft(page, title)
+  await productDialog
+    .getByRole("checkbox", {
+      name: "Publish signed supplier allocation terms",
+    })
+    .check()
+  await productDialog.getByLabel("Merchant weight").fill("3")
+  await productDialog
+    .getByLabel("Merchant profile relay")
+    .fill("wss://relay.conduit.market")
+  await productDialog.getByRole("button", { name: "Add supplier" }).click()
+  await productDialog
+    .getByLabel("Supplier identity")
+    .fill(nip19.npubEncode(supplierPubkey))
+  await productDialog
+    .getByLabel("Profile relay", { exact: true })
+    .fill("wss://nos.lol")
+  await productDialog.getByLabel("Weight", { exact: true }).fill("1")
+  await expect(
+    productDialog.getByRole("button", { name: "Publish product" })
+  ).toBeEnabled()
+  await productDialog.getByRole("button", { name: "Publish product" }).click()
+  const readinessDialog = page.getByRole("alertdialog")
+  await expect(
+    readinessDialog.getByRole("heading", {
+      name: "Set up your private inbox",
+    })
+  ).toBeVisible({ timeout: 15_000 })
+  await readinessDialog.getByRole("button", { name: "Publish anyway" }).click()
+  await expect(productDialog).toBeHidden({ timeout: 15_000 })
+
+  await expect
+    .poll(async () => {
+      const events = await readTestRelayEvents({
+        kinds: [PRODUCT_KIND],
+        authors: [merchantPubkey],
+      })
+      return events.find((event) =>
+        event.tags.some(([name, value]) => name === "title" && value === title)
+      )?.tags
+    })
+    .toEqual(
+      expect.arrayContaining([
+        ["conduit_supplier_allocation", "1"],
+        ["zap", merchantPubkey, "wss://relay.conduit.market/", "3"],
+        ["zap", supplierPubkey, "wss://nos.lol/", "1"],
+      ])
+    )
 })

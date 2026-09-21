@@ -1,4 +1,5 @@
 import {
+  buildProductSupplierAllocation,
   canonicalizeProductTags,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   MAX_PRODUCT_IMAGE_CANDIDATES,
@@ -8,6 +9,8 @@ import {
   type ProductFulfillmentIntent,
   type ProductImage,
   type ProductSchema,
+  type ProductSupplierAllocation,
+  type ProductSupplierAllocationIssue,
   type ProductZapMessagePolicy,
   type EventMarketHandoffMode,
 } from "@conduit/core"
@@ -75,6 +78,100 @@ export interface MerchantProductFormValues extends ProductPublishFormValues {
   merchantPickupCountry: string
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
+  supplierAllocationEnabled: boolean
+  merchantAllocationWeight: string
+  merchantAllocationRelayHint: string
+  supplierAllocations: MerchantProductSupplierAllocationFormRecipient[]
+}
+
+export interface MerchantProductSupplierAllocationFormRecipient {
+  identity: string
+  relayHint: string
+  weight: string
+}
+
+export interface MerchantProductSupplierAllocationFormValidation {
+  canPublish: boolean
+  allocation?: ProductSupplierAllocation
+  error: string | null
+}
+
+function getSupplierAllocationError(
+  issues: readonly ProductSupplierAllocationIssue[],
+  supplierCount: number
+): string {
+  if (supplierCount === 0) {
+    return "Add at least one supplier to publish revenue-split terms."
+  }
+  if (issues.includes("invalid_author")) {
+    return "Reconnect your merchant identity before publishing revenue-split terms."
+  }
+  if (issues.includes("invalid_recipient")) {
+    return "Enter a valid supplier npub, nprofile, or public key."
+  }
+  if (issues.includes("invalid_relay_hint")) {
+    return "Each allocation recipient needs a safe public relay hint."
+  }
+  if (issues.includes("invalid_weight")) {
+    return "Use positive whole-number weights for the merchant and every supplier."
+  }
+  if (
+    issues.includes("duplicate_recipient") ||
+    issues.includes("duplicate_merchant")
+  ) {
+    return "List each allocation recipient only once."
+  }
+  if (issues.includes("missing_merchant")) {
+    return "Keep an explicit merchant share in the allocation."
+  }
+  if (issues.includes("missing_supplier")) {
+    return "Add at least one valid supplier to publish revenue-split terms."
+  }
+  if (issues.includes("weight_total_overflow")) {
+    return "Use smaller allocation weights."
+  }
+  return "Review the signed revenue-split terms before publishing."
+}
+
+export function validateMerchantProductSupplierAllocationForm(
+  form: Pick<
+    MerchantProductFormValues,
+    | "supplierAllocationEnabled"
+    | "merchantAllocationWeight"
+    | "merchantAllocationRelayHint"
+    | "supplierAllocations"
+  >,
+  merchantPubkey: string
+): MerchantProductSupplierAllocationFormValidation {
+  if (!form.supplierAllocationEnabled) {
+    return { canPublish: true, error: null }
+  }
+
+  const result = buildProductSupplierAllocation({
+    merchantPubkey,
+    merchantWeight: form.merchantAllocationWeight,
+    merchantRelayHint: form.merchantAllocationRelayHint,
+    suppliers: form.supplierAllocations.map((supplier) => ({
+      identity: supplier.identity,
+      relayHint: supplier.relayHint,
+      weight: supplier.weight,
+    })),
+  })
+  if (!result.ok) {
+    return {
+      canPublish: false,
+      error: getSupplierAllocationError(
+        result.issues,
+        form.supplierAllocations.length
+      ),
+    }
+  }
+
+  return {
+    canPublish: true,
+    allocation: result.allocation,
+    error: null,
+  }
 }
 
 export function isProductUsingPresetShippingZone(

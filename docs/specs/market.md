@@ -288,6 +288,20 @@ contents, shipping/contact data, invoices, payment request strings, product
 names, product identifiers, or other private checkout details. Product details
 are included only when the shopper writes a custom public comment.
 
+### Supplier allocation display
+
+Market may show declared supplier terms only when the product carries the
+supported Conduit allocation version marker and the complete signed allocation
+validates. Unmarked standard NIP-57 `zap` tags are not supplier allocation
+terms. Marked but malformed evidence is displayed as unavailable or malformed,
+not silently repaired from profile or relay defaults.
+
+The product card and detail view describe validated terms as a declared revenue
+split and may show recipient weights. They must not imply that any supplier was
+paid. Checkout/payment coordination separately revalidates the exact signed
+revision and each recipient's current NIP-57 endpoint readiness before a funded
+payment flow can rely on those terms.
+
 ## Orders Surface
 
 Orders is the canonical status and order-history surface. It renders interpreted

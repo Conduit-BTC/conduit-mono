@@ -21,6 +21,7 @@ import {
   getNdk,
   isCommerceReadIncomplete,
   prepareProductCatalog,
+  pubkeyToNpub,
   recordBrowserTelemetryEvent,
   resolveEventMarketOrganizerInbox,
   waitForVisibleDocument,
@@ -67,6 +68,7 @@ import { ProductCombinationMatrix } from "../components/ProductCombinationMatrix
 import { ProductInboxReadinessDialog } from "../components/ProductInboxReadinessDialog"
 import { ProductPaymentSetupNotice } from "../components/ProductPaymentSetupNotice"
 import { ProductSignerRecoveryNotice } from "../components/ProductSignerRecoveryNotice"
+import { ProductSupplierAllocationEditor } from "../components/ProductSupplierAllocationEditor"
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ProductFulfillmentEditor } from "../components/ProductFulfillmentEditor"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
@@ -99,6 +101,7 @@ import {
   MAX_PRODUCT_TAG_LENGTH,
   prepareProductImages,
   reconcileProductFormShippingPreset,
+  validateMerchantProductSupplierAllocationForm,
   validateProductPublishForm,
   type MerchantProductFormValues,
 } from "../lib/productForm"
@@ -193,6 +196,7 @@ import {
   MAX_PRODUCT_VARIATION_COUNT,
   mergeProductVariationAuthoringState,
   parseProductVariationImageInput,
+  productFamilyReadSupportsAllocationChange,
   reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
   removeProductVariationAxis,
@@ -224,6 +228,7 @@ type MerchantProductFamily = MerchantProduct & {
   variations: MerchantProduct[]
   orphanVariation: boolean
   variationForm: ProductVariationFormResult
+  familyEvidenceComplete: boolean
   family?: PreparedProductFamily<MerchantProduct>
 }
 
@@ -234,6 +239,7 @@ type ProductPublishMutationPayload = {
   form: ProductFormState
   dTag: string
   existing?: MerchantProductFamily
+  familyEvidenceComplete?: boolean
   signedBundle?: SignedProductWriteBundle
   previousNotice?: ProductDeliveryNotice
 }
@@ -285,6 +291,10 @@ function createEmptyProductForm(
     customShippingConfig: { countries: [] },
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
+    supplierAllocationEnabled: false,
+    merchantAllocationWeight: "1",
+    merchantAllocationRelayHint: "",
+    supplierAllocations: [],
     images: [],
     tags: "",
   }
@@ -374,6 +384,10 @@ function productToForm(
   const source = product.sourcePrice
   const sourceShippingCost = product.sourceShippingCost
   const currency = source?.normalizedCurrency ?? product.currency
+  const supplierAllocation = product.supplierAllocation
+  const merchantAllocation = supplierAllocation?.recipients.find(
+    (recipient) => recipient.role === "merchant"
+  )
   return {
     title: product.title,
     summary: product.summary ?? "",
@@ -407,6 +421,18 @@ function productToForm(
     zapMessagePolicy: product.publicZapPolicyKnown
       ? product.zapMessagePolicy
       : "generic_only",
+    supplierAllocationEnabled:
+      !!supplierAllocation && supplierAllocation.state !== "absent",
+    merchantAllocationWeight: String(merchantAllocation?.weight ?? 1),
+    merchantAllocationRelayHint: merchantAllocation?.relayHint ?? "",
+    supplierAllocations:
+      supplierAllocation?.recipients
+        .filter((recipient) => recipient.role === "supplier")
+        .map((recipient) => ({
+          identity: pubkeyToNpub(recipient.pubkey),
+          relayHint: recipient.relayHint,
+          weight: String(recipient.weight),
+        })) ?? [],
     images: product.images.map((image) => ({ ...image })),
     tags: product.tags.join(", "),
   }
@@ -808,7 +834,8 @@ async function publishProduct(
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void,
   onSignerRequestsComplete?: () => void,
   authenticatedPubkey?: string | null,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  existingFamilyEvidenceComplete?: boolean
 ): Promise<PublishWithPlannerResult> {
   const preserveFulfillment = form.fulfillment === "preserve"
   if (preserveFulfillment && !existing) {
@@ -839,6 +866,15 @@ async function publishProduct(
   if (!formValidation.canPublish) {
     throw new Error(
       formValidation.firstError ?? "Product form is not publishable"
+    )
+  }
+
+  const supplierAllocationValidation =
+    validateMerchantProductSupplierAllocationForm(form, merchantPubkey)
+  if (!supplierAllocationValidation.canPublish) {
+    throw new Error(
+      supplierAllocationValidation.error ??
+        "Revenue-split terms are not publishable"
     )
   }
 
@@ -996,6 +1032,9 @@ async function publishProduct(
     publicZapEnabled: form.publicZapEnabled,
     zapMessagePolicy: form.zapMessagePolicy,
     publicZapPolicyKnown: true,
+    ...(supplierAllocationValidation.allocation
+      ? { supplierAllocation: supplierAllocationValidation.allocation }
+      : {}),
     location: undefined,
     createdAt: existing?.product.createdAt ?? now,
     updatedAt: now,
@@ -1016,6 +1055,7 @@ async function publishProduct(
           orphanVariation: existing.orphanVariation,
         }
       : undefined,
+    existingFamilyEvidenceComplete,
     now,
   })
 
@@ -1335,6 +1375,12 @@ function ProductsPage() {
     isCommerceReadIncomplete(merchantProductReadMeta) ||
     !!productsQuery.error ||
     productsQuery.isPaused
+  const merchantProductFamilyEvidenceComplete =
+    productFamilyReadSupportsAllocationChange({
+      meta: merchantProductReadMeta,
+      readFailed: !!productsQuery.error,
+      readPaused: productsQuery.isPaused,
+    })
   const merchantProducts = useMemo<MerchantProductFamily[]>(
     () =>
       // Group at the read boundary so edit and delete always operate on the
@@ -1371,10 +1417,15 @@ function ProductsPage() {
           variations: family.variations,
           orphanVariation: family.orphanVariation,
           variationForm,
+          familyEvidenceComplete: merchantProductFamilyEvidenceComplete,
           family: prepared?.kind === "family" ? prepared.family : undefined,
         }
       }),
-    [merchantProductReadMeta, merchantProductRecords]
+    [
+      merchantProductFamilyEvidenceComplete,
+      merchantProductReadMeta,
+      merchantProductRecords,
+    ]
   )
   const eventProductContexts = useMemo(() => {
     const contexts = new Map<string, MerchantProductEventContext>()
@@ -1616,7 +1667,8 @@ function ProductsPage() {
             setProductSignerRequestsComplete(true)
           },
           authStatus === "connected" ? pubkey : null,
-          () => authGenerationRef.current === authGeneration
+          () => authGenerationRef.current === authGeneration,
+          payload.familyEvidenceComplete
         )
       } catch (error) {
         if (fallbackMovePrepared && !signedLocally) {
@@ -1980,6 +2032,8 @@ function ProductsPage() {
         !!localPickupQuery.data &&
         !productFulfillmentError,
     })
+  const supplierAllocationValidation =
+    validateMerchantProductSupplierAllocationForm(form, pubkey ?? "")
   const productFormValidation = useMemo(() => {
     const validation = validateProductPublishForm(
       form.fulfillment === "local_pickup" || preservingFulfillment
@@ -1992,11 +2046,13 @@ function ProductsPage() {
         preserveExistingFulfillment: preservingFulfillment,
       }
     )
-    return productFulfillmentError
+    const blockingError =
+      productFulfillmentError ?? supplierAllocationValidation.error
+    return blockingError
       ? {
           ...validation,
           canPublish: false,
-          firstError: validation.firstError ?? productFulfillmentError,
+          firstError: validation.firstError ?? blockingError,
         }
       : validation
   }, [
@@ -2006,6 +2062,7 @@ function ProductsPage() {
     shippingConfig,
     zeroPriceFormAuthorized,
     preservingFulfillment,
+    supplierAllocationValidation.error,
   ])
   const productTagFieldError =
     productFormValidation.errors.tags &&
@@ -3055,6 +3112,10 @@ function ProductsPage() {
                     editing?.dTag ??
                     `${slugify(form.title.trim()) || "product"}-${randomSuffix()}`,
                   existing: editing ?? undefined,
+                  familyEvidenceComplete: editing
+                    ? editing.familyEvidenceComplete &&
+                      merchantProductFamilyEvidenceComplete
+                    : true,
                 })
               }}
             >
@@ -3512,6 +3573,24 @@ function ProductsPage() {
                 </div>
               </div>
 
+              <ProductSupplierAllocationEditor
+                value={{
+                  enabled: form.supplierAllocationEnabled,
+                  merchantWeight: form.merchantAllocationWeight,
+                  merchantRelayHint: form.merchantAllocationRelayHint,
+                  suppliers: form.supplierAllocations,
+                }}
+                validation={supplierAllocationValidation}
+                onChange={(allocation) =>
+                  setForm((previous) => ({
+                    ...previous,
+                    supplierAllocationEnabled: allocation.enabled,
+                    merchantAllocationWeight: allocation.merchantWeight,
+                    merchantAllocationRelayHint: allocation.merchantRelayHint,
+                    supplierAllocations: allocation.suppliers,
+                  }))
+                }
+              />
               <ProductImageUrlCollectionField
                 id="product-image"
                 images={form.images}

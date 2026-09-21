@@ -7,6 +7,7 @@ import {
   type ShopperPricePreference,
 } from "@conduit/core"
 import {
+  Badge,
   ProductCard,
   ProductCardSkeleton,
   ProductCartAction,
@@ -221,6 +222,13 @@ export function ProductGridCard({
       }
       onFocus={(event) => updateVariationPanelPlacement(event.currentTarget)}
       title={product.title}
+      titleAside={
+        selectedProduct.supplierAllocation?.state === "valid" ? (
+          <Badge variant="outline" className="shrink-0 text-[10px]">
+            Revenue split
+          </Badge>
+        ) : undefined
+      }
       notice={notice}
       merchantName={merchantName}
       merchantNamePending={merchantNamePending}

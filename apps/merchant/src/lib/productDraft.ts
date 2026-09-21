@@ -12,7 +12,7 @@ import {
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 7
+const PRODUCT_DRAFT_VERSION = 8
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
   "conduit:merchant:product_variation_authoring:v1"
@@ -132,6 +132,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         candidate.version !== 4 &&
         candidate.version !== 5 &&
         candidate.version !== 6 &&
+        candidate.version !== 7 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -276,6 +277,62 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         : createEmptyProductVariationForm()
     if (!variations) return null
 
+    const supplierAllocationEnabled =
+      candidate.version >= 8
+        ? form.supplierAllocationEnabled === true
+          ? true
+          : form.supplierAllocationEnabled === false
+            ? false
+            : null
+        : false
+    const merchantAllocationWeight =
+      candidate.version >= 8
+        ? typeof form.merchantAllocationWeight === "string"
+          ? form.merchantAllocationWeight
+          : null
+        : "1"
+    const merchantAllocationRelayHint =
+      candidate.version >= 8
+        ? typeof form.merchantAllocationRelayHint === "string"
+          ? form.merchantAllocationRelayHint
+          : ""
+        : ""
+    const supplierAllocations =
+      candidate.version >= 8
+        ? Array.isArray(form.supplierAllocations) &&
+          form.supplierAllocations.every(
+            (recipient) =>
+              !!recipient &&
+              typeof recipient === "object" &&
+              typeof (recipient as { identity?: unknown }).identity ===
+                "string" &&
+              ((recipient as { relayHint?: unknown }).relayHint === undefined ||
+                typeof (recipient as { relayHint?: unknown }).relayHint ===
+                  "string") &&
+              typeof (recipient as { weight?: unknown }).weight === "string"
+          )
+          ? form.supplierAllocations.map((recipient) => {
+              const allocation = recipient as {
+                identity: string
+                relayHint?: string
+                weight: string
+              }
+              return {
+                identity: allocation.identity,
+                relayHint: allocation.relayHint ?? "",
+                weight: allocation.weight,
+              }
+            })
+          : null
+        : []
+    if (
+      supplierAllocationEnabled === null ||
+      merchantAllocationWeight === null ||
+      supplierAllocations === null
+    ) {
+      return null
+    }
+
     return {
       version: PRODUCT_DRAFT_VERSION,
       baseEventId: candidate.baseEventId,
@@ -318,6 +375,10 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         ),
         publicZapEnabled: form.publicZapEnabled,
         zapMessagePolicy: form.zapMessagePolicy,
+        supplierAllocationEnabled,
+        merchantAllocationWeight,
+        merchantAllocationRelayHint,
+        supplierAllocations,
         images,
         tags: form.tags as string,
       },

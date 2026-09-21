@@ -19,6 +19,23 @@ export interface ReplaceableEventFrontier {
 
 const HEX_64 = /^[0-9a-f]{64}$/i
 
+/**
+ * Validate one Nostr x-only public key against the BIP-340 secp256k1 curve.
+ * Shape-only 32-byte hex values are not necessarily usable public keys.
+ */
+export function isValidNostrPublicKey(
+  value: string | null | undefined
+): boolean {
+  if (!value || !HEX_64.test(value)) return false
+
+  try {
+    schnorr.utils.lift_x(BigInt(`0x${value}`))
+    return true
+  } catch {
+    return false
+  }
+}
+
 function normalizeFrontierCreatedAt(
   value: number | undefined
 ): number | undefined {

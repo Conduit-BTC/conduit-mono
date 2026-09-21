@@ -23,6 +23,10 @@ import {
   parseSignedProductShippingOptionTags as parseShippingOptionTags,
   signedProductPriceEvidenceIsMalformed,
 } from "./product-event-evidence"
+import {
+  emitProductSupplierAllocationTags,
+  parseProductSupplierAllocationTags,
+} from "./product-supplier-allocation"
 
 export const MAX_PRODUCT_IMAGE_CANDIDATES = 12
 const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
@@ -328,6 +332,21 @@ export function buildProductListingEventDraft({
   }
   for (const tag of canonicalizeProductTags(product.tags)) {
     tags.push(["t", tag])
+  }
+
+  if (product.supplierAllocation?.state === "invalid") {
+    throw new Error("Product supplier allocation evidence is malformed")
+  }
+  if (product.supplierAllocation?.state === "valid") {
+    const merchantRecipient = product.supplierAllocation.recipients.find(
+      (recipient) => recipient.role === "merchant"
+    )
+    if (merchantRecipient?.pubkey !== product.pubkey) {
+      throw new Error(
+        "Product supplier allocation merchant must match the product author"
+      )
+    }
+    tags.push(...emitProductSupplierAllocationTags(product.supplierAllocation))
   }
 
   if (clientAppId) {
@@ -984,7 +1003,8 @@ export function normalizeProductSummaryForDisplay(
  *   NIP-99/Open Markets tags and Markdown content.
  */
 export function parseProductEvent(
-  event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id">
+  event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id"> &
+    Partial<Pick<NDKEvent, "kind" | "sig">>
 ): ProductSchema {
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")
@@ -1006,6 +1026,29 @@ export function parseProductEvent(
   const productTypeTag = parseProductTypeTag(event.tags)
   const visibilityTag = parseProductVisibilityTag(event.tags)
   const specifications = parseProductSpecifications(event.tags)
+  const signedRevisionEvent =
+    typeof event.id === "string" &&
+    typeof event.pubkey === "string" &&
+    typeof event.created_at === "number" &&
+    typeof event.kind === "number" &&
+    Array.isArray(event.tags) &&
+    typeof event.content === "string" &&
+    typeof event.sig === "string"
+      ? {
+          id: event.id,
+          pubkey: event.pubkey,
+          created_at: event.created_at,
+          kind: event.kind,
+          tags: event.tags,
+          content: event.content,
+          sig: event.sig,
+        }
+      : undefined
+  const supplierAllocation = parseProductSupplierAllocationTags({
+    tags: event.tags,
+    merchantPubkey: event.pubkey,
+    signedRevisionEvent,
+  })
 
   // Try legacy Conduit JSON content first for already-published listings.
   try {
@@ -1031,6 +1074,7 @@ export function parseProductEvent(
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
       pubkey: event.pubkey,
       ...zapPolicy,
+      supplierAllocation,
       canonicalShippingResolved: false,
       createdAt: createdAtMs,
       updatedAt: createdAtMs,
@@ -1143,6 +1187,7 @@ export function parseProductEvent(
       ...(visibilityTag ? { visibility: visibilityTag } : {}),
       ...shippingTags,
       ...zapPolicy,
+      supplierAllocation,
       ...stockTag,
       images,
       tags,

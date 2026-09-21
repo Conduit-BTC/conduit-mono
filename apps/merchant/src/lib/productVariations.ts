@@ -1,8 +1,10 @@
 import {
   canonicalizeProductPrice,
   getProductShippingOptionAddress,
+  isCommerceReadIncomplete,
   MAX_PRODUCT_IMAGE_CANDIDATES,
   normalizePublicMediaUrl,
+  type CommerceFreshnessMeta,
   type ProductImage,
   type ProductSchema,
 } from "@conduit/core"
@@ -103,6 +105,52 @@ export interface ProductFamilyChangePlan<
   desired: ProductFamilyPublishTarget<TRecord>[]
   publish: ProductFamilyPublishTarget<TRecord>[]
   remove: TRecord[]
+}
+
+export function productFamilyReadSupportsAllocationChange(input: {
+  meta: CommerceFreshnessMeta | null | undefined
+  readFailed?: boolean
+  readPaused?: boolean
+}): boolean {
+  return (
+    !!input.meta &&
+    !isCommerceReadIncomplete(input.meta) &&
+    !input.readFailed &&
+    !input.readPaused
+  )
+}
+
+function getSupplierAllocationTerms(product: ProductSchema): string {
+  const allocation = product.supplierAllocation
+  if (!allocation || allocation.state === "absent") return "absent"
+
+  return JSON.stringify({
+    state: allocation.state,
+    recipients: allocation.recipients.map((recipient) => ({
+      pubkey: recipient.pubkey,
+      relayHint: recipient.relayHint,
+      weight: recipient.weight,
+      role: recipient.role,
+    })),
+    issues: allocation.issues,
+  })
+}
+
+function supplierAllocationTermsChanged(
+  previous: ProductSchema,
+  next: ProductSchema
+): boolean {
+  return (
+    getSupplierAllocationTerms(previous) !== getSupplierAllocationTerms(next)
+  )
+}
+
+function productFamilySupplierAllocationTermsChanged<
+  TRecord extends ProductListingRecordLike,
+>(existing: ProductListingFamily<TRecord>, next: ProductSchema): boolean {
+  return [existing.root, ...existing.variations].some(({ product }) =>
+    supplierAllocationTermsChanged(product, next)
+  )
 }
 
 interface ParsedVariationAxis {
@@ -1403,6 +1451,12 @@ function buildVariationProduct(
     updatedAt: now,
   }
 
+  if (parent.supplierAllocation) {
+    product.supplierAllocation = parent.supplierAllocation
+  } else {
+    delete product.supplierAllocation
+  }
+
   if (!row.price.trim()) {
     product = {
       ...product,
@@ -1603,11 +1657,24 @@ export function buildProductFamilyChangePlan<
   authoringCountries: readonly string[]
   preservationBaselineVariations?: ProductVariationFormState
   existing?: ProductListingFamily<TRecord>
+  existingFamilyEvidenceComplete?: boolean
   now?: number
 }): ProductFamilyChangePlan<TRecord> {
   const now = input.now ?? Date.now()
   const parentDTag = input.parentDTag.trim()
   if (!parentDTag) throw new Error("Product d tag is required")
+  if (
+    input.existing &&
+    !input.existingFamilyEvidenceComplete &&
+    productFamilySupplierAllocationTermsChanged(
+      input.existing,
+      input.baseProduct
+    )
+  ) {
+    throw new Error(
+      "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+    )
+  }
   if (input.fulfillmentIntent.kind === "preserve_existing") {
     return buildPreservedProductFamilyChangePlan({ ...input, parentDTag })
   }

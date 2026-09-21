@@ -1,5 +1,6 @@
 export * from "./kinds"
 export * from "./products"
+export * from "./product-supplier-allocation"
 export * from "./product-reference"
 export * from "./product-family"
 export * from "./listing-safety"

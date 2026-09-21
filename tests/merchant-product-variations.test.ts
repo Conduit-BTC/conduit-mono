@@ -22,6 +22,7 @@ import {
   mergeProductVariationAuthoringState,
   parseProductVariationImageInput,
   parseProductVariationFormState,
+  productFamilyReadSupportsAllocationChange,
   reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
   removeProductVariationAxis,
@@ -36,6 +37,8 @@ import {
 
 const MERCHANT_PUBKEY = "a".repeat(64)
 const ORGANIZER_PUBKEY = "b".repeat(64)
+const SUPPLIER_PUBKEY =
+  "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 const NOW = 1_800_000_000_000
 
 function baseProduct(overrides: Partial<ProductSchema> = {}): ProductSchema {
@@ -1155,6 +1158,225 @@ describe("merchant product variation planning", () => {
           !buildProductListingEventDraft({ product, dTag }).tags.some(
             (tag) => tag[0] === "visibility"
           )
+      )
+    ).toBe(true)
+  })
+
+  it("fails allocation changes closed when Merchant family evidence is incomplete", async () => {
+    const completeMeta = { stale: false, degraded: false, capped: false }
+    expect(
+      productFamilyReadSupportsAllocationChange({ meta: completeMeta })
+    ).toBe(true)
+    for (const input of [
+      { meta: { ...completeMeta, stale: true } },
+      { meta: { ...completeMeta, degraded: true } },
+      { meta: { ...completeMeta, capped: true } },
+      { meta: completeMeta, readFailed: true },
+      { meta: completeMeta, readPaused: true },
+      { meta: undefined },
+    ]) {
+      expect(productFamilyReadSupportsAllocationChange(input)).toBe(false)
+    }
+
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct(),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const family = toFamily(initialPlan)
+    const restored = getProductVariationFormState(
+      family.root,
+      family.variations
+    ).state
+    const supplierAllocation = {
+      state: "valid" as const,
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 3,
+          role: "merchant" as const,
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier" as const,
+        },
+      ],
+      issues: [],
+    }
+    const changedInput = {
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...family.root.product,
+        supplierAllocation,
+      },
+      variations: restored,
+      currency: "USD",
+      existing: family,
+      now: NOW + 60_000,
+    }
+
+    expect(() =>
+      buildProductFamilyChangePlan({
+        ...changedInput,
+        existingFamilyEvidenceComplete: false,
+      })
+    ).toThrow(
+      "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+    )
+    expect(
+      buildProductFamilyChangePlan({
+        ...changedInput,
+        existingFamilyEvidenceComplete: true,
+      }).desired.every(
+        ({ product }) => product.supplierAllocation === supplierAllocation
+      )
+    ).toBe(true)
+    expect(() =>
+      buildProductFamilyChangePlan({
+        ...changedInput,
+        baseProduct: { ...family.root.product, title: "Updated title" },
+        existingFamilyEvidenceComplete: false,
+      })
+    ).not.toThrow()
+
+    const route = await Bun.file("apps/merchant/src/routes/products.tsx").text()
+    expect(route).toContain("productFamilyReadSupportsAllocationChange")
+    expect(route).toContain("editing.familyEvidenceComplete &&")
+    expect(route).toContain("merchantProductFamilyEvidenceComplete")
+
+    const divergentChild = family.variations[0]!
+    const childDivergedFamily = {
+      ...family,
+      variations: [
+        {
+          ...divergentChild,
+          product: {
+            ...divergentChild.product,
+            supplierAllocation,
+          },
+        },
+        ...family.variations.slice(1),
+      ],
+    }
+    const childRepairInput = {
+      ...changedInput,
+      baseProduct: family.root.product,
+      existing: childDivergedFamily,
+    }
+
+    expect(() =>
+      buildProductFamilyChangePlan({
+        ...childRepairInput,
+        existingFamilyEvidenceComplete: false,
+      })
+    ).toThrow(
+      "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+    )
+
+    const repaired = buildProductFamilyChangePlan({
+      ...childRepairInput,
+      existingFamilyEvidenceComplete: true,
+    })
+    expect(
+      repaired.desired.every(
+        ({ product }) => product.supplierAllocation === undefined
+      )
+    ).toBe(true)
+    expect(repaired.publish.map(({ dTag }) => dTag)).toContain(
+      divergentChild.dTag
+    )
+  })
+
+  it("propagates supplier allocation rotation and removal across a variation family", () => {
+    const originalAllocation = {
+      state: "valid" as const,
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 3,
+          role: "merchant" as const,
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier" as const,
+        },
+      ],
+      issues: [],
+    }
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({ supplierAllocation: originalAllocation }),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const family = toFamily(initialPlan)
+    const restored = getProductVariationFormState(
+      family.root,
+      family.variations
+    ).state
+    const rotatedAllocation = {
+      ...originalAllocation,
+      recipients: [
+        originalAllocation.recipients[0]!,
+        {
+          pubkey: "d".repeat(64),
+          relayHint: "wss://relay.ditto.pub/",
+          weight: 2,
+          role: "supplier" as const,
+        },
+      ],
+    }
+    const rotated = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...family.root.product,
+        supplierAllocation: rotatedAllocation,
+      },
+      variations: restored,
+      currency: "USD",
+      existing: family,
+      existingFamilyEvidenceComplete: true,
+      now: NOW + 60_000,
+    })
+
+    expect(rotated.publish.map(({ dTag }) => dTag)).toEqual(
+      rotated.desired.map(({ dTag }) => dTag)
+    )
+    expect(
+      rotated.desired.every(
+        ({ product }) => product.supplierAllocation === rotatedAllocation
+      )
+    ).toBe(true)
+
+    const rotatedFamily = toFamily(rotated)
+    const removed = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...rotatedFamily.root.product,
+        supplierAllocation: undefined,
+      },
+      variations: restored,
+      currency: "USD",
+      existing: rotatedFamily,
+      existingFamilyEvidenceComplete: true,
+      now: NOW + 120_000,
+    })
+
+    expect(removed.publish.map(({ dTag }) => dTag)).toEqual(
+      removed.desired.map(({ dTag }) => dTag)
+    )
+    expect(
+      removed.desired.every(
+        ({ product }) => product.supplierAllocation === undefined
       )
     ).toBe(true)
   })
