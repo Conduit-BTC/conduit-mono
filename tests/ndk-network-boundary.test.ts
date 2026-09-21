@@ -319,6 +319,44 @@ describe("NDK network boundary", () => {
     }
   })
 
+  it("keeps independent remote authority when its URL overlaps a disabled local source", async () => {
+    const remoteOverlap = "wss://relay.ditto.pub"
+    const appOnly = "wss://relay.dreamith.to"
+    const opened = installEoseWebSocket()
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => ({
+        ...accountNetworkState(pubkey, []),
+        routingPolicy: {
+          ...createDefaultAccountNetworkRoutingPolicy(),
+          appRelaysEnabled: false,
+          appRelaysTouched: true,
+        },
+      }),
+    }
+
+    try {
+      const result = await fetchEventsFanoutDetailed(
+        { kinds: [1] },
+        {
+          relayUrls: [appOnly, remoteOverlap],
+          accountPubkey: ACCOUNT_A,
+          authenticatedPubkey: ACCOUNT_A,
+          appRelayUrls: [appOnly, remoteOverlap],
+          independentRelayUrls: [remoteOverlap],
+          accountNetworkLocalStateRepository: repository,
+          reuseRelayConnections: false,
+        }
+      )
+
+      expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual([
+        remoteOverlap,
+      ])
+      expect(opened.openedUrls).toEqual([remoteOverlap])
+    } finally {
+      opened.restore()
+    }
+  })
+
   it("applies whole-relay exclusions only to the explicit account", async () => {
     const relayUrl = "wss://stale-read-plan.conduit.market"
     const opened = installEoseWebSocket()

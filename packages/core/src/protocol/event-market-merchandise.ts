@@ -357,6 +357,7 @@ export async function getEventMarketReceiptMerchandise(
     ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
     appRelayUrls: relayListReadPlan.appRelayUrls,
     personalRelayUrls: relayListReadPlan.personalRelayUrls,
+    independentRelayUrls: relayListReadPlan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -380,6 +381,7 @@ export async function getEventMarketReceiptMerchandise(
         ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
         appRelayUrls: plan.appRelayUrls,
         personalRelayUrls: plan.personalRelayUrls,
+        independentRelayUrls: plan.independentRelayUrls,
         repository: input.accountNetworkLocalStateRepository,
       })
     : plan.candidateRelayUrls
@@ -435,6 +437,9 @@ export async function getEventMarketReceiptMerchandise(
           ),
           personalRelayUrls: (plan.personalRelayUrls ?? []).filter((relayUrl) =>
             remainingRelayUrlSet.has(relayUrl)
+          ),
+          independentRelayUrls: (plan.independentRelayUrls ?? []).filter(
+            (relayUrl) => remainingRelayUrlSet.has(relayUrl)
           ),
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,

@@ -2642,6 +2642,7 @@ export interface EventMarketReadPlan {
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
   personalRelayUrls: string[]
+  independentRelayUrls: string[]
   relayListState: RelayListResolutionState
   relayHintTruncated: boolean
 }
@@ -2704,6 +2705,7 @@ export async function getEventMarketReadPlan(input: {
     ownerSelectedRelayUrls,
     appRelayUrls: relayListLookupPlan.appRelayUrls,
     personalRelayUrls: relayListLookupPlan.personalRelayUrls,
+    independentRelayUrls: relayListLookupPlan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -2772,6 +2774,10 @@ export async function getEventMarketReadPlan(input: {
     usableOrganizerHints
   )
   const portableRelayHints = normalizePortableRelayHints(input.relayHints)
+  const independentRelaySet = new Set([
+    ...(plan.independentRelayUrls ?? []),
+    ...portableRelayHints,
+  ])
   const reservedPlanFallback =
     portableRelayHints.length > 0 ? planFallbackRelayUrls.slice(0, 1) : []
   const portableHintsBeforeFallback = portableRelayHints.slice(
@@ -2809,6 +2815,9 @@ export async function getEventMarketReadPlan(input: {
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
     appRelayUrls: plan.appRelayUrls ?? [],
     personalRelayUrls: plan.personalRelayUrls ?? [],
+    independentRelayUrls: relayUrls.filter((relayUrl) =>
+      independentRelaySet.has(relayUrl)
+    ),
     relayListState,
     relayHintTruncated: plan.hintRelayUrls.some(
       (relayUrl) => !selectedRelays.has(relayUrl.toLowerCase())
@@ -2825,6 +2834,7 @@ async function fetchEventMarketRecords(input: {
   ownerSelectedRelayUrls?: readonly string[]
   appRelayUrls?: readonly string[]
   personalRelayUrls?: readonly string[]
+  independentRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   onProgress?: FetchEventsFanoutOptions["onProgress"]
@@ -2852,6 +2862,7 @@ async function fetchEventMarketRecords(input: {
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
     appRelayUrls: input.appRelayUrls,
     personalRelayUrls: input.personalRelayUrls,
+    independentRelayUrls: input.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -2894,6 +2905,7 @@ async function fetchEventMarketCollectionDiscovery(input: {
   ownerSelectedRelayUrls?: readonly string[]
   appRelayUrls?: readonly string[]
   personalRelayUrls?: readonly string[]
+  independentRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
@@ -2922,6 +2934,7 @@ async function fetchEventMarketCollectionDiscovery(input: {
       ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
       appRelayUrls: input.appRelayUrls,
       personalRelayUrls: input.personalRelayUrls,
+      independentRelayUrls: input.independentRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
       shouldContinue: input.shouldContinue,
@@ -2958,6 +2971,7 @@ async function fetchEventMarketProductRequests(input: {
   ownerSelectedRelayUrls?: readonly string[]
   appRelayUrls?: readonly string[]
   personalRelayUrls?: readonly string[]
+  independentRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
@@ -2981,6 +2995,7 @@ async function fetchEventMarketProductRequests(input: {
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
     appRelayUrls: input.appRelayUrls,
     personalRelayUrls: input.personalRelayUrls,
+    independentRelayUrls: input.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3083,6 +3098,7 @@ async function fetchEventMarketFrontierFilters(input: {
   ownerSelectedRelayUrls?: readonly string[]
   appRelayUrls?: readonly string[]
   personalRelayUrls?: readonly string[]
+  independentRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
@@ -3162,6 +3178,7 @@ async function fetchEventMarketFrontierFilters(input: {
           ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
           appRelayUrls: input.appRelayUrls,
           personalRelayUrls: input.personalRelayUrls,
+          independentRelayUrls: input.independentRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -3250,6 +3267,7 @@ async function fetchEventMarketOrganizerRecordFrontiers(input: {
   ownerSelectedRelayUrls?: readonly string[]
   appRelayUrls?: readonly string[]
   personalRelayUrls?: readonly string[]
+  independentRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
@@ -3282,6 +3300,7 @@ async function fetchEventMarketOrganizerRecordFrontiers(input: {
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
     appRelayUrls: input.appRelayUrls,
     personalRelayUrls: input.personalRelayUrls,
+    independentRelayUrls: input.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3336,6 +3355,7 @@ async function fetchEventMarketOrganizerRecordFrontiers(input: {
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
     appRelayUrls: input.appRelayUrls,
     personalRelayUrls: input.personalRelayUrls,
+    independentRelayUrls: input.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3394,6 +3414,7 @@ async function eventMarketParticipantRelayPlans(input: {
   fallbackRelayUrls: readonly string[]
   fallbackAppRelayUrls?: readonly string[]
   fallbackPersonalRelayUrls?: readonly string[]
+  fallbackIndependentRelayUrls?: readonly string[]
   relayHealthSnapshot: RelayHealthSnapshot
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
@@ -3404,6 +3425,7 @@ async function eventMarketParticipantRelayPlans(input: {
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
   personalRelayUrls: string[]
+  independentRelayUrls: string[]
 }> {
   const authors = Array.from(
     new Set(input.coordinates.map((coordinate) => coordinate.authorPubkey))
@@ -3452,6 +3474,7 @@ async function eventMarketParticipantRelayPlans(input: {
     ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
     appRelayUrls: relayListReadPlan.appRelayUrls,
     personalRelayUrls: relayListReadPlan.personalRelayUrls,
+    independentRelayUrls: relayListReadPlan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3472,9 +3495,13 @@ async function eventMarketParticipantRelayPlans(input: {
   const ownerSelectedRelayUrls = new Set<string>()
   const appRelayUrls = new Set<string>()
   const personalRelayUrls = new Set<string>()
+  const independentRelayUrls = new Set<string>()
   const fallbackAppRelayUrls = new Set(input.fallbackAppRelayUrls ?? [])
   const fallbackPersonalRelayUrls = new Set(
     input.fallbackPersonalRelayUrls ?? []
+  )
+  const fallbackIndependentRelayUrls = new Set(
+    input.fallbackIndependentRelayUrls ?? []
   )
   const relayUrlsByAuthor = new Map(
     authors.map((author) => {
@@ -3499,6 +3526,10 @@ async function eventMarketParticipantRelayPlans(input: {
       }
       const planAppRelayUrls = new Set(plan.appRelayUrls ?? [])
       const planPersonalRelayUrls = new Set(plan.personalRelayUrls ?? [])
+      const planIndependentRelayUrls = new Set(plan.independentRelayUrls ?? [])
+      const observedRelayUrls = new Set(
+        observedRelaysByAuthor.get(author) ?? []
+      )
       const relayUrls = partitionByHealthSnapshot(
         mergeRelayCandidatesWithOwnerAuthority(
           plan.ownerSelectedRelayUrls ?? [],
@@ -3522,6 +3553,13 @@ async function eventMarketParticipantRelayPlans(input: {
         ) {
           personalRelayUrls.add(relayUrl)
         }
+        if (
+          planIndependentRelayUrls.has(relayUrl) ||
+          observedRelayUrls.has(relayUrl) ||
+          fallbackIndependentRelayUrls.has(relayUrl)
+        ) {
+          independentRelayUrls.add(relayUrl)
+        }
       }
       return [author, relayUrls]
     })
@@ -3531,6 +3569,7 @@ async function eventMarketParticipantRelayPlans(input: {
     ownerSelectedRelayUrls: Array.from(ownerSelectedRelayUrls),
     appRelayUrls: Array.from(appRelayUrls),
     personalRelayUrls: Array.from(personalRelayUrls),
+    independentRelayUrls: Array.from(independentRelayUrls),
   }
 }
 
@@ -3790,6 +3829,7 @@ async function fetchEventMarketPickupFrontiers(
     ownerSelectedRelayUrls?: readonly string[]
     appRelayUrls?: readonly string[]
     personalRelayUrls?: readonly string[]
+    independentRelayUrls?: readonly string[]
     accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
     shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
     signal?: AbortSignal
@@ -3855,6 +3895,7 @@ async function fetchEventMarketPickupFrontiers(
     fallbackRelayUrls: input.relayUrls,
     fallbackAppRelayUrls: input.appRelayUrls,
     fallbackPersonalRelayUrls: input.personalRelayUrls,
+    fallbackIndependentRelayUrls: input.independentRelayUrls,
     relayHealthSnapshot,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
@@ -3875,6 +3916,10 @@ async function fetchEventMarketPickupFrontiers(
     input.personalRelayUrls ?? [],
     participantPlan.personalRelayUrls
   )
+  const independentRelayUrls = mergeRelayUrls(
+    input.independentRelayUrls ?? [],
+    participantPlan.independentRelayUrls
+  )
   const pickupFilters = pickupFrontierFilters(input.coordinates)
   const pickupResult = await fetchEventMarketFrontierFilters({
     filters: pickupFilters,
@@ -3887,6 +3932,7 @@ async function fetchEventMarketPickupFrontiers(
     ownerSelectedRelayUrls,
     appRelayUrls,
     personalRelayUrls,
+    independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3916,6 +3962,7 @@ async function fetchEventMarketPickupFrontiers(
     ownerSelectedRelayUrls,
     appRelayUrls,
     personalRelayUrls,
+    independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -4162,6 +4209,7 @@ async function fetchEventMarketProductRequestFrontiers(
     ownerSelectedRelayUrls?: readonly string[]
     appRelayUrls?: readonly string[]
     personalRelayUrls?: readonly string[]
+    independentRelayUrls?: readonly string[]
     accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
     shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
     signal?: AbortSignal
@@ -4225,6 +4273,7 @@ async function fetchEventMarketProductRequestFrontiers(
     fallbackRelayUrls: input.relayUrls,
     fallbackAppRelayUrls: input.appRelayUrls,
     fallbackPersonalRelayUrls: input.personalRelayUrls,
+    fallbackIndependentRelayUrls: input.independentRelayUrls,
     relayHealthSnapshot,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
@@ -4245,6 +4294,10 @@ async function fetchEventMarketProductRequestFrontiers(
     input.personalRelayUrls ?? [],
     participantPlan.personalRelayUrls
   )
+  const independentRelayUrls = mergeRelayUrls(
+    input.independentRelayUrls ?? [],
+    participantPlan.independentRelayUrls
+  )
   const productFilters = productFrontierFilters(coordinates)
   const productResult = await fetchEventMarketFrontierFilters({
     filters: productFilters,
@@ -4257,6 +4310,7 @@ async function fetchEventMarketProductRequestFrontiers(
     ownerSelectedRelayUrls,
     appRelayUrls,
     personalRelayUrls,
+    independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -4286,6 +4340,7 @@ async function fetchEventMarketProductRequestFrontiers(
     ownerSelectedRelayUrls,
     appRelayUrls,
     personalRelayUrls,
+    independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -6141,6 +6196,7 @@ export async function getEventMarket(
     ownerSelectedRelayUrls,
     appRelayUrls,
     personalRelayUrls,
+    independentRelayUrls,
   } = readPlan
   const observedAt = input.nowMs ?? Date.now()
   const [recordResult, cachedRecords] = await Promise.all([
@@ -6154,6 +6210,7 @@ export async function getEventMarket(
           ownerSelectedRelayUrls,
           appRelayUrls,
           personalRelayUrls,
+          independentRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -6168,6 +6225,7 @@ export async function getEventMarket(
           ownerSelectedRelayUrls,
           appRelayUrls,
           personalRelayUrls,
+          independentRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -6198,6 +6256,7 @@ export async function getEventMarket(
         ownerSelectedRelayUrls,
         appRelayUrls,
         personalRelayUrls,
+        independentRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -6235,6 +6294,7 @@ export async function getEventMarket(
           ownerSelectedRelayUrls,
           appRelayUrls,
           personalRelayUrls,
+          independentRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -6326,6 +6386,7 @@ export async function getEventMarket(
               ownerSelectedRelayUrls,
               appRelayUrls,
               personalRelayUrls,
+              independentRelayUrls,
               accountNetworkLocalStateRepository:
                 input.accountNetworkLocalStateRepository,
               shouldContinue: input.shouldContinue,
@@ -6348,6 +6409,7 @@ export async function getEventMarket(
             ownerSelectedRelayUrls,
             appRelayUrls,
             personalRelayUrls,
+            independentRelayUrls,
             accountNetworkLocalStateRepository:
               input.accountNetworkLocalStateRepository,
             shouldContinue: input.shouldContinue,
@@ -6370,6 +6432,7 @@ export async function getEventMarket(
         ownerSelectedRelayUrls,
         appRelayUrls,
         personalRelayUrls,
+        independentRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -6462,6 +6525,7 @@ export async function getEventMarket(
         ownerSelectedRelayUrls,
         appRelayUrls,
         personalRelayUrls,
+        independentRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -6665,6 +6729,7 @@ export async function getOrganizerEventMarketsDetailed(
     ownerSelectedRelayUrls,
     appRelayUrls,
     personalRelayUrls,
+    independentRelayUrls,
   } = readPlan
   const observedAt = input.nowMs ?? Date.now()
   const [recordResult, cachedRecords] = await Promise.all([
@@ -6677,6 +6742,7 @@ export async function getOrganizerEventMarketsDetailed(
       ownerSelectedRelayUrls,
       appRelayUrls,
       personalRelayUrls,
+      independentRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
       shouldContinue: input.shouldContinue,
@@ -6724,6 +6790,7 @@ export async function getOrganizerEventMarketsDetailed(
         ownerSelectedRelayUrls,
         appRelayUrls,
         personalRelayUrls,
+        independentRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -6794,6 +6861,7 @@ export async function getOrganizerEventMarketsDetailed(
         ownerSelectedRelayUrls,
         appRelayUrls,
         personalRelayUrls,
+        independentRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -6842,6 +6910,7 @@ export async function getOrganizerEventMarketsDetailed(
         ownerSelectedRelayUrls,
         appRelayUrls,
         personalRelayUrls,
+        independentRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -6928,6 +6997,7 @@ export async function getOrganizerEventMarketsDetailed(
           ownerSelectedRelayUrls,
           appRelayUrls,
           personalRelayUrls,
+          independentRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -6946,6 +7016,7 @@ export async function getOrganizerEventMarketsDetailed(
       ownerSelectedRelayUrls,
       appRelayUrls,
       personalRelayUrls,
+      independentRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
       shouldContinue: input.shouldContinue,
@@ -6984,6 +7055,7 @@ export async function getOrganizerEventMarketsDetailed(
         ownerSelectedRelayUrls,
         appRelayUrls,
         personalRelayUrls,
+        independentRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -7064,6 +7136,7 @@ export async function getOrganizerEventMarketsDetailed(
     ownerSelectedRelayUrls,
     appRelayUrls,
     personalRelayUrls,
+    independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,

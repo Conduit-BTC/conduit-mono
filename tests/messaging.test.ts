@@ -2221,6 +2221,7 @@ describe("publishPrivateMessage", () => {
         ])
         expect(options.appRelayUrls).toEqual(relayUrls)
         expect(options.personalRelayUrls).toEqual([])
+        expect(options.independentRelayUrls).toEqual([])
         const diagnostics = {
           plan: {
             intent: "recipient_event",
@@ -2417,6 +2418,9 @@ describe("publishPrivateMessage", () => {
         publishes.push(options.exclusiveRelayUrls ?? [])
         expect(options.appRelayUrls).toEqual([])
         expect(options.personalRelayUrls).toEqual([])
+        expect(options.independentRelayUrls).toEqual([
+          "wss://recipient.inbox.conduit.market",
+        ])
         return {} as never
       }) as never,
     })

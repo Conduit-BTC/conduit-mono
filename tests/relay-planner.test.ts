@@ -390,6 +390,67 @@ describe("planRelayReads", () => {
     expect(plan.relayUrls).toEqual(["wss://shared.conduit.market"])
   })
 
+  it("tracks remote signed hints independently when relay URLs overlap local sources", () => {
+    const appOverlap = "wss://relay.ditto.pub"
+    const personalOverlap = "wss://relay.nostr.band"
+    const lists = new Map<string, RelayList>([
+      [
+        "remote-author",
+        relayList("remote-author", [], [appOverlap, personalOverlap]),
+      ],
+    ])
+    const plan = planRelayReads({
+      intent: "general",
+      authors: ["remote-author"],
+      relayLists: lists,
+      settings: settings([entry(personalOverlap)]),
+      routingPolicy: {
+        appRelaysEnabled: true,
+        personalRelaysEnabled: true,
+      },
+      maxRelays: 20,
+      skipHealthFilter: true,
+    })
+
+    expect(plan.appRelayUrls).toContain(appOverlap)
+    expect(plan.personalRelayUrls).toContain(personalOverlap)
+    expect(plan.independentRelayUrls).toEqual(
+      expect.arrayContaining([appOverlap, personalOverlap])
+    )
+  })
+
+  it("tracks remote recipient hints independently across write-layer overlaps", () => {
+    const appOverlap = "wss://relay.ditto.pub"
+    const personalOverlap = "wss://relay.nostr.band"
+    const lists = new Map<string, RelayList>([
+      [
+        "remote-recipient",
+        relayList("remote-recipient", [appOverlap, personalOverlap], []),
+      ],
+    ])
+    const plan = planRelayWrites({
+      intent: "recipient_event",
+      recipientPubkeys: ["remote-recipient"],
+      relayLists: lists,
+      settings: settings([
+        entry(personalOverlap, { readEnabled: true, writeEnabled: true }),
+      ]),
+      routingPolicy: {
+        appRelaysEnabled: true,
+        personalRelaysEnabled: true,
+      },
+      maxPrimaryRelays: 20,
+      maxBroadcastRelays: 20,
+      skipHealthFilter: true,
+    })
+
+    expect(plan.appRelayUrls).toContain(appOverlap)
+    expect(plan.personalRelayUrls).toContain(personalOverlap)
+    expect(plan.independentRelayUrls).toEqual(
+      expect.arrayContaining([appOverlap, personalOverlap])
+    )
+  })
+
   it("plans shopper trust from merchant and shopper NIP-65 hints before public relays", () => {
     const state = settings([entry("wss://public.conduit.market")])
     const lists = new Map<string, RelayList>([
@@ -467,6 +528,7 @@ describe("planRelayWrites", () => {
       ownerSelectedRelayUrls: [],
       appRelayUrls: [isolatedRelayUrl],
       personalRelayUrls: [],
+      independentRelayUrls: [],
     })
     expect(
       planRelayWrites({
@@ -486,6 +548,7 @@ describe("planRelayWrites", () => {
       parkedRelayUrls: [],
       appRelayUrls: [isolatedRelayUrl],
       personalRelayUrls: [],
+      independentRelayUrls: [],
     })
   })
 

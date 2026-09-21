@@ -49,6 +49,7 @@ async function publishProductDeletionRelay(
       ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
       appRelayUrls: input.appRelayUrls,
       personalRelayUrls: input.personalRelayUrls,
+      independentRelayUrls: input.independentRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
       shouldContinue:
@@ -151,6 +152,7 @@ export function productDeletionJobToPublishResult(
       primaryRelayUrls: job.relayPlan.map((target) => target.relayUrl),
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
+      independentRelayUrls: [],
     },
     attemptedRelayUrls,
     successfulRelayUrls,

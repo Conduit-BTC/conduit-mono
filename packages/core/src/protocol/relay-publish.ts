@@ -94,6 +94,8 @@ export interface PublishWithPlannerInput {
   appRelayUrls?: readonly string[]
   /** Exact exclusive targets contributed by the owner's NIP-65 layer. */
   personalRelayUrls?: readonly string[]
+  /** Exact exclusive targets with authority outside both local source layers. */
+  independentRelayUrls?: readonly string[]
   /**
    * Exact exclusive-target subset backed by this authenticated owner's own
    * Network selection. Recipient or discovered relay URLs must never populate
@@ -299,6 +301,7 @@ function emptyPlan(intent: RelayWriteIntent): RelayWritePlan {
     primaryRelayUrls: [],
     broadcastRelayUrls: [],
     parkedRelayUrls: [],
+    independentRelayUrls: [],
   }
 }
 
@@ -506,6 +509,8 @@ async function publishToRelayUrls(input: {
   appRelayUrls?: readonly string[]
   /** Exact candidates contributed by the owner's NIP-65 relay layer. */
   personalRelayUrls?: readonly string[]
+  /** Exact candidates independently authorized outside the local source layers. */
+  independentRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
@@ -566,6 +571,7 @@ async function publishToRelayUrls(input: {
             ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
             appRelayUrls: input.appRelayUrls,
             personalRelayUrls: input.personalRelayUrls,
+            independentRelayUrls: input.independentRelayUrls,
             repository: accountNetworkLocalStateRepository,
           })
   const relayUrls =
@@ -631,6 +637,7 @@ async function publishToRelayUrls(input: {
                 ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
                 appRelayUrls: input.appRelayUrls,
                 personalRelayUrls: input.personalRelayUrls,
+                independentRelayUrls: input.independentRelayUrls,
                 repository: accountNetworkLocalStateRepository,
               })
         assertPublishSessionCurrent(input.shouldContinue)
@@ -784,6 +791,8 @@ interface ExactRelayTargetInput {
   appRelayUrls?: readonly string[]
   /** Exact target when it belongs to the owner's NIP-65 relay layer. */
   personalRelayUrls?: readonly string[]
+  /** Exact target when another authority independently selected it. */
+  independentRelayUrls?: readonly string[]
   /** Explicit account for last-mile whole-relay exclusion enforcement. */
   accountPubkey?: string | null
   /** Injectable durable-state reader for deterministic boundary tests. */
@@ -853,6 +862,7 @@ export async function publishSignedEventToRelay(
             ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
             appRelayUrls: input.appRelayUrls,
             personalRelayUrls: input.personalRelayUrls,
+            independentRelayUrls: input.independentRelayUrls,
             repository: input.accountNetworkLocalStateRepository,
           })
         )[0]
@@ -912,6 +922,9 @@ export async function planPublishRelays(
           (relayUrl) => ownerSelectedSet.has(relayUrl)
         ),
       ]).filter((relayUrl) => primaryRelayUrlSet.has(relayUrl)),
+      independentRelayUrls: normalizeSecureOrIsolatedE2eRelayUrls(
+        input.independentRelayUrls ?? []
+      ).filter((relayUrl) => primaryRelayUrlSet.has(relayUrl)),
     }
   }
 
@@ -981,6 +994,7 @@ export async function planPublishRelays(
           ownerSelectedRelayUrls: ownerSelectedReadRelayUrls,
           appRelayUrls: relayListReadPlan.appRelayUrls,
           personalRelayUrls: relayListReadPlan.personalRelayUrls,
+          independentRelayUrls: relayListReadPlan.independentRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -1249,6 +1263,7 @@ export async function publishWithPlanner(
     ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
     appRelayUrls: plan.appRelayUrls,
     personalRelayUrls: plan.personalRelayUrls,
+    independentRelayUrls: plan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -1279,6 +1294,7 @@ export async function publishWithPlanner(
         ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
         appRelayUrls: plan.appRelayUrls,
         personalRelayUrls: plan.personalRelayUrls,
+        independentRelayUrls: plan.independentRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -1440,6 +1456,7 @@ export async function publishWithPlanner(
     ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
     appRelayUrls: plan.appRelayUrls,
     personalRelayUrls: plan.personalRelayUrls,
+    independentRelayUrls: plan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,

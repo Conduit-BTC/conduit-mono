@@ -719,6 +719,8 @@ type CommerceReadRelayPlan = {
   appRelayUrls: string[]
   /** Exact executable subset contributed by the owner's NIP-65 layer. */
   personalRelayUrls: string[]
+  /** Exact candidates with signed remote or retained source authority. */
+  independentRelayUrls: string[]
   /** Resolved once so per-family plans do not repeat the NIP-65 lookup. */
   relayLists: ReadonlyMap<string, RelayList>
 }
@@ -813,6 +815,9 @@ async function planCommerceReadRelayPlan(input: {
   const personalRelayListLookupUrls = (
     relayListLookupPlan.personalRelayUrls ?? []
   ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
+  const independentRelayListLookupUrls = (
+    relayListLookupPlan.independentRelayUrls ?? []
+  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
   const relayLists =
     input.relayLists ??
     (shouldFetchRelayHints
@@ -827,6 +832,7 @@ async function planCommerceReadRelayPlan(input: {
                 ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
                 appRelayUrls: appRelayListLookupUrls,
                 personalRelayUrls: personalRelayListLookupUrls,
+                independentRelayUrls: independentRelayListLookupUrls,
                 maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
                 accountNetworkLocalStateRepository:
                   testOverrides.accountNetworkLocalStateRepository,
@@ -841,6 +847,7 @@ async function planCommerceReadRelayPlan(input: {
                 ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
                 appRelayUrls: appRelayListLookupUrls,
                 personalRelayUrls: personalRelayListLookupUrls,
+                independentRelayUrls: independentRelayListLookupUrls,
                 maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
                 accountNetworkLocalStateRepository:
                   testOverrides.accountNetworkLocalStateRepository,
@@ -940,6 +947,10 @@ async function planCommerceReadRelayPlan(input: {
     ...(plan.appRelayUrls ?? []),
     ...fallbackRelayUrls,
   ])
+  const independentRelayUrlSet = new Set([
+    ...(plan.independentRelayUrls ?? []),
+    ...publicExternalRelayHints,
+  ])
 
   if (
     config.e2eRelayIsolationEnabled ||
@@ -962,6 +973,9 @@ async function planCommerceReadRelayPlan(input: {
         appRelayUrlSet.has(relayUrl)
       ),
       personalRelayUrls: ownerSelectedRelayUrls,
+      independentRelayUrls: candidateRelayUrls.filter((relayUrl) =>
+        independentRelayUrlSet.has(relayUrl)
+      ),
       relayLists,
     }
   }
@@ -986,6 +1000,7 @@ async function planCommerceReadRelayPlan(input: {
         ownerSelectedRelayUrls: [],
         appRelayUrls: candidateRelayUrls,
         personalRelayUrls: [],
+        independentRelayUrls: [],
         relayLists,
       }
     }
@@ -1006,6 +1021,7 @@ async function planCommerceReadRelayPlan(input: {
         ownerSelectedRelayUrls: [],
         appRelayUrls: candidateRelayUrls,
         personalRelayUrls: [],
+        independentRelayUrls: [],
         relayLists,
       }
     }
@@ -1426,6 +1442,7 @@ async function streamProductRecordChunks(input: {
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
   personalRelayUrls: string[]
+  independentRelayUrls: string[]
   authenticatedPubkey?: string | null
   accountPubkey?: string | null
   shouldContinue?: () => boolean
@@ -1466,6 +1483,7 @@ async function streamProductRecordChunks(input: {
             ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
             appRelayUrls: input.appRelayUrls,
             personalRelayUrls: input.personalRelayUrls,
+            independentRelayUrls: input.independentRelayUrls,
             accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             accountNetworkLocalStateRepository:
@@ -4082,6 +4100,7 @@ async function fetchPublicProductRecords(query: {
     ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
     appRelayUrls: relayPlan.appRelayUrls,
     personalRelayUrls: relayPlan.personalRelayUrls,
+    independentRelayUrls: relayPlan.independentRelayUrls,
     accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
     authenticatedPubkey: query.authenticatedPubkey,
     accountNetworkLocalStateRepository:
@@ -4183,6 +4202,7 @@ async function fetchPublicProductRecordsProgressive(
     ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
     appRelayUrls: relayPlan.appRelayUrls,
     personalRelayUrls: relayPlan.personalRelayUrls,
+    independentRelayUrls: relayPlan.independentRelayUrls,
     authenticatedPubkey: query.authenticatedPubkey,
     accountPubkey: query.accountPubkey,
     shouldContinue: query.shouldContinue,
@@ -4212,6 +4232,9 @@ async function fetchPublicProductRecordsProgressive(
         expansionRelayUrlSet.has(relayUrl)
       ),
       personalRelayUrls: expandedRelayPlan.personalRelayUrls.filter(
+        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
+      ),
+      independentRelayUrls: expandedRelayPlan.independentRelayUrls.filter(
         (relayUrl) => expansionRelayUrlSet.has(relayUrl)
       ),
       authenticatedPubkey: query.authenticatedPubkey,
@@ -5098,6 +5121,7 @@ async function fetchVariationGroupRecordBatch(
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
         appRelayUrls: relayPlan.appRelayUrls,
         personalRelayUrls: relayPlan.personalRelayUrls,
+        independentRelayUrls: relayPlan.independentRelayUrls,
         accountPubkey: options.authenticatedPubkey,
         authenticatedPubkey: options.authenticatedPubkey,
         accountNetworkLocalStateRepository:
@@ -6208,6 +6232,7 @@ async function readPreparedProductTargets(
               ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
               appRelayUrls: relayPlan.appRelayUrls,
               personalRelayUrls: relayPlan.personalRelayUrls,
+              independentRelayUrls: relayPlan.independentRelayUrls,
               accountPubkey: options.authenticatedPubkey,
               authenticatedPubkey: options.authenticatedPubkey,
               accountNetworkLocalStateRepository:
@@ -6956,6 +6981,7 @@ export async function getProfiles(
       ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
       appRelayUrls: relayPlan.appRelayUrls,
       personalRelayUrls: relayPlan.personalRelayUrls,
+      independentRelayUrls: relayPlan.independentRelayUrls,
       accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
       authenticatedPubkey: query.authenticatedPubkey,
       accountNetworkLocalStateRepository:
@@ -8288,6 +8314,7 @@ async function runLegacyDmSync(
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
         appRelayUrls: relayPlan.appRelayUrls,
         personalRelayUrls: relayPlan.personalRelayUrls,
+        independentRelayUrls: relayPlan.independentRelayUrls,
         accountPubkey: principalPubkey,
         authenticatedPubkey: principalPubkey,
         accountNetworkLocalStateRepository:
@@ -8308,6 +8335,7 @@ async function runLegacyDmSync(
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
         appRelayUrls: relayPlan.appRelayUrls,
         personalRelayUrls: relayPlan.personalRelayUrls,
+        independentRelayUrls: relayPlan.independentRelayUrls,
         accountPubkey: principalPubkey,
         authenticatedPubkey: principalPubkey,
         accountNetworkLocalStateRepository:

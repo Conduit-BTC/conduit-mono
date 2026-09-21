@@ -583,6 +583,7 @@ export async function fetchShopperPresets(
     ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
     appRelayUrls: relayListReadPlan.appRelayUrls,
     personalRelayUrls: relayListReadPlan.personalRelayUrls,
+    independentRelayUrls: relayListReadPlan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       dependencies.accountNetworkLocalStateRepository,
     shouldContinue: dependencies.shouldContinue,
@@ -629,6 +630,7 @@ export async function fetchShopperPresets(
       settings: ownerSettingsSnapshot?.settings,
     }),
   ])
+  const independentRelaySet = new Set(plan.independentRelayUrls ?? [])
   if (relayUrls.length === 0)
     return { state: "unavailable", reason: "relay_read" }
 
@@ -650,6 +652,9 @@ export async function fetchShopperPresets(
       appRelayUrls: relayUrls.filter((relayUrl) => appRelaySet.has(relayUrl)),
       personalRelayUrls: relayUrls.filter((relayUrl) =>
         personalRelaySet.has(relayUrl)
+      ),
+      independentRelayUrls: relayUrls.filter((relayUrl) =>
+        independentRelaySet.has(relayUrl)
       ),
       accountNetworkLocalStateRepository:
         dependencies.accountNetworkLocalStateRepository,

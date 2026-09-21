@@ -698,6 +698,7 @@ export async function readLatestFollowLists(
     ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
     appRelayUrls: relayListReadPlan.appRelayUrls,
     personalRelayUrls: relayListReadPlan.personalRelayUrls,
+    independentRelayUrls: relayListReadPlan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     shouldContinue: options.shouldContinue,
@@ -812,6 +813,12 @@ export async function readLatestFollowLists(
           ...(basePlan.personalRelayUrls ?? []),
         ])
       ).filter((relayUrl) => candidateRelaySet.has(relayUrl))
+      const plannedIndependentRelayUrls = Array.from(
+        new Set([
+          ...(authorPlan.independentRelayUrls ?? []),
+          ...(basePlan.independentRelayUrls ?? []),
+        ])
+      ).filter((relayUrl) => candidateRelaySet.has(relayUrl))
 
       if (candidateRelayUrls.length === 0) {
         return await preserveStrongestOwnFollowList(
@@ -851,6 +858,7 @@ export async function readLatestFollowLists(
             ownerSelectedRelayUrls: plannedOwnerSelectedRelayUrls,
             appRelayUrls: plannedAppRelayUrls,
             personalRelayUrls: plannedPersonalRelayUrls,
+            independentRelayUrls: plannedIndependentRelayUrls,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
             shouldContinue: options.shouldContinue,

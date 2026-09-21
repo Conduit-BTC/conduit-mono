@@ -67,6 +67,7 @@ export type ProductDeletionRelayPublisher = (input: {
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
   personalRelayUrls: string[]
+  independentRelayUrls: string[]
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
@@ -126,10 +127,9 @@ function cloneRelayPlan(
   return plan.map((target) => ({
     relayUrl: target.relayUrl,
     roles: [...target.roles],
-    // Legacy jobs did not persist source flags. `conduit` remains
-    // unambiguously App-owned through its existing role; an old
-    // `author_write` role is intentionally left unclassified instead of
-    // guessing App, Personal, or both.
+    // Legacy jobs did not persist layer flags. Delivery classifies those
+    // targets against the current canonical App writes and otherwise treats
+    // `author_write` as Personal; retain the old shape here for compatibility.
     ...(target.appRelay === true ? { appRelay: true } : {}),
     ...(target.personalRelay === true ? { personalRelay: true } : {}),
   }))
@@ -139,6 +139,52 @@ function cloneRelayDelivery(
   deliveries: readonly ProductDeletionRelayDelivery[]
 ): ProductDeletionRelayDelivery[] {
   return deliveries.map((delivery) => ({ ...delivery }))
+}
+
+function persistedTargetRelaySources(
+  target: ProductDeletionRelayTarget | undefined
+): {
+  ownerSelectedRelayUrls: string[]
+  appRelayUrls: string[]
+  personalRelayUrls: string[]
+  independentRelayUrls: string[]
+} {
+  if (!target) {
+    return {
+      ownerSelectedRelayUrls: [],
+      appRelayUrls: [],
+      personalRelayUrls: [],
+      independentRelayUrls: [],
+    }
+  }
+
+  const relayUrl = target.relayUrl
+  const hasPersistedLayerProvenance =
+    target.appRelay === true || target.personalRelay === true
+  const legacyAuthorWrite =
+    target.roles.includes("author_write") && !hasPersistedLayerProvenance
+  const configuredAppWriteRelayUrls = new Set(
+    [...config.appWriteRelayUrls, ...config.appBackplaneRelayUrls].flatMap(
+      (rawRelayUrl) => {
+        const normalized = tryNormalizeRelayUrl(rawRelayUrl)
+        return normalized.ok ? [normalized.url] : []
+      }
+    )
+  )
+  const appRelay =
+    target.appRelay === true ||
+    target.roles.includes("conduit") ||
+    (legacyAuthorWrite && configuredAppWriteRelayUrls.has(relayUrl))
+  const personalRelay =
+    target.personalRelay === true || (legacyAuthorWrite && !appRelay)
+
+  return {
+    ownerSelectedRelayUrls:
+      personalRelay && target.roles.includes("author_write") ? [relayUrl] : [],
+    appRelayUrls: appRelay ? [relayUrl] : [],
+    personalRelayUrls: personalRelay ? [relayUrl] : [],
+    independentRelayUrls: target.roles.includes("source") ? [relayUrl] : [],
+  }
 }
 
 function cloneJob(job: ProductDeletionDeliveryJob): ProductDeletionDeliveryJob {
@@ -737,25 +783,12 @@ async function deliverProductDeletionJobUnlocked(
       const claimedTarget = claimed.relayPlan.find(
         (target) => target.relayUrl === relayUrl
       )
-      const claimedOwnerSelectedRelayUrls = claimedTarget?.roles.includes(
-        "author_write"
-      )
-        ? [relayUrl]
-        : []
-      const claimedAppRelayUrls =
-        claimedTarget?.appRelay === true ||
-        claimedTarget?.roles.includes("conduit")
-          ? [relayUrl]
-          : []
-      const claimedPersonalRelayUrls =
-        claimedTarget?.personalRelay === true ? [relayUrl] : []
+      const claimedSources = persistedTargetRelaySources(claimedTarget)
       const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
         accountPubkey,
         authenticatedPubkey,
         candidateRelayUrls: [relayUrl],
-        ownerSelectedRelayUrls: claimedOwnerSelectedRelayUrls,
-        appRelayUrls: claimedAppRelayUrls,
-        personalRelayUrls: claimedPersonalRelayUrls,
+        ...claimedSources,
         repository: options.accountNetworkLocalStateRepository,
       })
       if (eligibleRelayUrls.length === 0) {
@@ -804,18 +837,7 @@ async function deliverProductDeletionJobUnlocked(
       const currentTarget = current.relayPlan.find(
         (target) => target.relayUrl === relayUrl
       )
-      const currentOwnerSelectedRelayUrls = currentTarget?.roles.includes(
-        "author_write"
-      )
-        ? [relayUrl]
-        : []
-      const currentAppRelayUrls =
-        currentTarget?.appRelay === true ||
-        currentTarget?.roles.includes("conduit")
-          ? [relayUrl]
-          : []
-      const currentPersonalRelayUrls =
-        currentTarget?.personalRelay === true ? [relayUrl] : []
+      const currentSources = persistedTargetRelaySources(currentTarget)
 
       let outcome: ProductDeletionPublisherResult
       if (!isApprovedPersistedRelayTarget(currentTarget)) {
@@ -832,9 +854,7 @@ async function deliverProductDeletionJobUnlocked(
             accountPubkey,
             authenticatedPubkey,
             isAuthenticatedPubkeyCurrent: options.isAuthenticatedPubkeyCurrent,
-            ownerSelectedRelayUrls: currentOwnerSelectedRelayUrls,
-            appRelayUrls: currentAppRelayUrls,
-            personalRelayUrls: currentPersonalRelayUrls,
+            ...currentSources,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
           })
@@ -843,9 +863,7 @@ async function deliverProductDeletionJobUnlocked(
             accountPubkey,
             authenticatedPubkey: getCurrentAuthenticatedPubkey(options),
             candidateRelayUrls: [relayUrl],
-            ownerSelectedRelayUrls: currentOwnerSelectedRelayUrls,
-            appRelayUrls: currentAppRelayUrls,
-            personalRelayUrls: currentPersonalRelayUrls,
+            ...currentSources,
             repository: options.accountNetworkLocalStateRepository,
           })
           if (stillEligible.length === 0) {

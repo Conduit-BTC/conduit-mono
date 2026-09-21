@@ -927,6 +927,7 @@ async function resolveReadPlan(
         maxRelayAttempts: MAX_MEDIA_SERVER_READ_RELAYS,
         parkedRelayUrls: [],
         hintRelayUrls: [],
+        independentRelayUrls: [],
       },
       authenticatedPubkey,
       ownerSelectedRelayUrls: ownerSelectedRelayUrls.filter((relayUrl) =>
@@ -957,6 +958,7 @@ async function resolveReadPlan(
       ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
       appRelayUrls: relayListReadPlan.appRelayUrls,
       personalRelayUrls: relayListReadPlan.personalRelayUrls,
+      independentRelayUrls: relayListReadPlan.independentRelayUrls,
       accountNetworkLocalStateRepository:
         dependencies.accountNetworkLocalStateRepository,
       shouldContinue: dependencies.shouldContinue,
@@ -1107,6 +1109,7 @@ export async function readMediaServerPreferences(
         ownerSelectedRelayUrls: resolvedPlan.ownerSelectedRelayUrls,
         appRelayUrls: resolvedPlan.plan.appRelayUrls,
         personalRelayUrls: resolvedPlan.plan.personalRelayUrls,
+        independentRelayUrls: resolvedPlan.plan.independentRelayUrls,
         accountNetworkLocalStateRepository:
           dependencies.accountNetworkLocalStateRepository,
         shouldContinue: dependencies.shouldContinue,
@@ -1132,6 +1135,7 @@ export async function readMediaServerPreferences(
         candidateRelayUrls: [],
         parkedRelayUrls: [],
         hintRelayUrls: [],
+        independentRelayUrls: [],
       },
       authenticatedPubkey: null,
       ownerSelectedRelayUrls: [],

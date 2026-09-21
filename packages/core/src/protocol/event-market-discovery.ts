@@ -313,6 +313,7 @@ type DiscoveryReadAuthority = Pick<
   | "shouldContinue"
   | "appRelayUrls"
   | "personalRelayUrls"
+  | "independentRelayUrls"
 >
 
 export interface DiscoverPerspectiveEventMarketsInput extends DiscoveryReadAuthority {
@@ -903,6 +904,7 @@ async function readEventMarketCollectionCandidatesWithinBudget(
         ownerSelectedRelayUrls,
         appRelayUrls: relayPlan?.appRelayUrls,
         personalRelayUrls: relayPlan?.personalRelayUrls,
+        independentRelayUrls: relayPlan?.independentRelayUrls,
         repository: input.accountNetworkLocalStateRepository,
       })
     : candidateRelayUrls
@@ -954,6 +956,7 @@ async function readEventMarketCollectionCandidatesWithinBudget(
     fetchSignedEventsFanoutDetailed
   const appRelayUrlSet = new Set(relayPlan?.appRelayUrls ?? [])
   const personalRelayUrlSet = new Set(relayPlan?.personalRelayUrls ?? [])
+  const independentRelayUrlSet = new Set(relayPlan?.independentRelayUrls ?? [])
   const unitResults = (
     await mapWithConcurrency({
       values: tasks,
@@ -970,6 +973,9 @@ async function readEventMarketCollectionCandidatesWithinBudget(
               ? [task.relayUrl]
               : [],
             personalRelayUrls: personalRelayUrlSet.has(task.relayUrl)
+              ? [task.relayUrl]
+              : [],
+            independentRelayUrls: independentRelayUrlSet.has(task.relayUrl)
               ? [task.relayUrl]
               : [],
             accountNetworkLocalStateRepository:

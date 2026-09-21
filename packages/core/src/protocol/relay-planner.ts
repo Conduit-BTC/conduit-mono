@@ -129,6 +129,8 @@ export interface RelayReadPlan {
   appRelayUrls?: string[]
   /** Planned targets contributed by the authenticated owner's NIP-65 layer. */
   personalRelayUrls?: string[]
+  /** Remote signed NIP-65 hints that remain authoritative across local switches. */
+  independentRelayUrls: string[]
 }
 
 export interface RelayWritePlanInput {
@@ -196,6 +198,8 @@ export interface RelayWritePlan {
   appRelayUrls?: string[]
   /** Planned targets contributed by the authenticated owner's NIP-65 layer. */
   personalRelayUrls?: string[]
+  /** Remote signed NIP-65 hints that remain authoritative across local switches. */
+  independentRelayUrls: string[]
 }
 
 export const DEFAULT_READ_FANOUT = 6
@@ -433,6 +437,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
       ownerSelectedRelayUrls: [],
       appRelayUrls: [isolatedRelayUrl],
       personalRelayUrls: [],
+      independentRelayUrls: [],
     }
   }
 
@@ -582,6 +587,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     ...authenticatedOwnerAuthorHints,
     ...authenticatedOwnerRecipientHints,
   ])
+  const independentRelaySet = new Set([...authorHints, ...recipientHints])
   return {
     intent: input.intent,
     relayUrls,
@@ -595,6 +601,9 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     appRelayUrls: kept.filter((relayUrl) => appRelaySet.has(relayUrl)),
     personalRelayUrls: kept.filter((relayUrl) =>
       personalRelaySet.has(relayUrl)
+    ),
+    independentRelayUrls: kept.filter((relayUrl) =>
+      independentRelaySet.has(relayUrl)
     ),
   }
 }
@@ -633,6 +642,7 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
       parkedRelayUrls: [],
       appRelayUrls: [isolatedRelayUrl],
       personalRelayUrls: [],
+      independentRelayUrls: [],
     }
   }
 
@@ -671,7 +681,8 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
       input.signedRelayListAuthoritative && isAuthenticatedAuthor
     )
     const authorWriteHints =
-      hasReconciledOwnerProjection || !personalLayerEnabled(input.routingPolicy)
+      hasReconciledOwnerProjection ||
+      (isAuthenticatedAuthor && !personalLayerEnabled(input.routingPolicy))
         ? []
         : hintReadRelaysForAuthors(
             input.authorPubkey ? [input.authorPubkey] : [],
@@ -710,6 +721,9 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
           personalWriteRelaySet.has(relayUrl) ||
           (isAuthenticatedAuthor && authorWriteHintSet.has(relayUrl))
       ),
+      independentRelayUrls: isAuthenticatedAuthor
+        ? []
+        : kept.filter((relayUrl) => authorWriteHintSet.has(relayUrl)),
     }
   }
 
@@ -819,6 +833,9 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
       (relayUrl) =>
         personalWriteRelaySet.has(relayUrl) ||
         authenticatedRecipientHintSet.has(relayUrl)
+    ),
+    independentRelayUrls: executableRelayUrls.filter((relayUrl) =>
+      remoteRecipientHints.includes(relayUrl)
     ),
   }
 }

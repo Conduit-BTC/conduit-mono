@@ -58,6 +58,8 @@ export interface FetchEventsFanoutOptions {
   appRelayUrls?: readonly string[]
   /** Exact candidates contributed by the owner's NIP-65 relay layer. */
   personalRelayUrls?: readonly string[]
+  /** Exact candidates independently authorized outside the local source layers. */
+  independentRelayUrls?: readonly string[]
   /** Injectable durable-state reader for deterministic boundary tests. */
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
@@ -1059,6 +1061,7 @@ async function fetchEventsFromRelay(
     | "ownerSelectedRelayUrls"
     | "appRelayUrls"
     | "personalRelayUrls"
+    | "independentRelayUrls"
     | "accountNetworkLocalStateRepository"
     | "shouldContinue"
     | "signal"
@@ -1081,6 +1084,7 @@ async function fetchEventsFromRelay(
         ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
         appRelayUrls: options.appRelayUrls,
         personalRelayUrls: options.personalRelayUrls,
+        independentRelayUrls: options.independentRelayUrls,
         repository: options.accountNetworkLocalStateRepository,
       })
       admittedRelayUrl = eligibleRelayUrls[0] ?? null

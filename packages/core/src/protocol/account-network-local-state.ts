@@ -781,6 +781,12 @@ export async function filterEligibleAccountRelayUrls(input: {
   appRelayUrls?: readonly string[]
   /** Exact candidates whose provenance includes the owner's NIP-65 layer. */
   personalRelayUrls?: readonly string[]
+  /**
+   * Exact candidates with authority independent from both local source
+   * switches, such as a remote author's signed NIP-65 hint or retained public
+   * event-source provenance.
+   */
+  independentRelayUrls?: readonly string[]
   repository?: Pick<AccountNetworkLocalStateRepository, "get">
 }): Promise<string[]> {
   const accountPubkey = normalizeAccountNetworkPubkey(input.accountPubkey)
@@ -825,6 +831,9 @@ export async function filterEligibleAccountRelayUrls(input: {
         ownerSelectedRelayUrls
       )
     )
+    const independentRelayUrls = new Set(
+      normalizeCandidateRelayUrls(input.independentRelayUrls ?? [])
+    )
     const appEnabled = isAccountNetworkRoutingSourceEnabled(
       routingPolicy,
       "app"
@@ -837,7 +846,12 @@ export async function filterEligibleAccountRelayUrls(input: {
       if (excluded.has(relayUrl)) return false
       const isAppRelay = appRelayUrls.has(relayUrl)
       const isPersonalRelay = personalRelayUrls.has(relayUrl)
-      if (!isAppRelay && !isPersonalRelay) return true
+      if (
+        independentRelayUrls.has(relayUrl) ||
+        (!isAppRelay && !isPersonalRelay)
+      ) {
+        return true
+      }
       return (isAppRelay && appEnabled) || (isPersonalRelay && personalEnabled)
     })
   } catch {

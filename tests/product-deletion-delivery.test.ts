@@ -7,6 +7,7 @@ import {
   config,
   createInMemoryAccountNetworkLocalStateRepository,
   emptyAccountNetworkLocalState,
+  setAccountNetworkRoutingSourceEnabled,
 } from "@conduit/core"
 import type { ProductDeletionDeliveryJob } from "@conduit/core/db"
 import {
@@ -744,6 +745,127 @@ describe("durable product deletion delivery", () => {
 
       expect(attemptedRelayUrls).toEqual([...testCase.expected].sort())
     }
+  })
+
+  it("classifies legacy app write targets through the App cutoff", async () => {
+    const legacyAppRelayUrl = "wss://relay.ditto.pub"
+    const cases = [
+      {
+        appEnabled: true,
+        personalEnabled: false,
+        expectedAttempt: true,
+      },
+      {
+        appEnabled: false,
+        personalEnabled: true,
+        expectedAttempt: false,
+      },
+    ]
+
+    for (const [index, testCase] of cases.entries()) {
+      const repository = new MemoryProductDeletionOutbox()
+      const event = signedDeletionEvent(String(index + 3).repeat(64))
+      const accountNetworkLocalStateRepository =
+        createInMemoryAccountNetworkLocalStateRepository()
+      await accountNetworkLocalStateRepository.updateRoutingPolicy(
+        event.pubkey,
+        (policy) =>
+          setAccountNetworkRoutingSourceEnabled(
+            setAccountNetworkRoutingSourceEnabled(
+              policy,
+              "app",
+              testCase.appEnabled
+            ),
+            "personal",
+            testCase.personalEnabled
+          )
+      )
+      const job = await persistProductDeletionDelivery(
+        {
+          signedEvent: event,
+          currentWriteRelayUrls: [legacyAppRelayUrl],
+          sourceRelayUrls: [],
+          canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        },
+        { repository, now: () => NOW }
+      )
+      expect(
+        job.relayPlan.find(({ relayUrl }) => relayUrl === legacyAppRelayUrl)
+      ).toEqual({
+        relayUrl: legacyAppRelayUrl,
+        roles: ["author_write"],
+      })
+      const attemptedRelayUrls: string[] = []
+
+      await deliverProductDeletionJob(
+        job.id,
+        async ({ relayUrl }) => {
+          attemptedRelayUrls.push(relayUrl)
+          return { status: "acked" }
+        },
+        {
+          repository,
+          authenticatedPubkey: event.pubkey,
+          accountNetworkLocalStateRepository,
+          now: tickingClock(),
+        }
+      )
+
+      expect(attemptedRelayUrls.includes(legacyAppRelayUrl)).toBe(
+        testCase.expectedAttempt
+      )
+    }
+  })
+
+  it("keeps source authority independent when it overlaps an app deletion target", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const event = signedDeletionEvent("5".repeat(64))
+    const overlapRelayUrl = "wss://relay.ditto.pub"
+    const accountNetworkLocalStateRepository =
+      createInMemoryAccountNetworkLocalStateRepository()
+    await accountNetworkLocalStateRepository.updateRoutingPolicy(
+      event.pubkey,
+      (policy) =>
+        setAccountNetworkRoutingSourceEnabled(
+          setAccountNetworkRoutingSourceEnabled(policy, "app", false),
+          "personal",
+          false
+        )
+    )
+    const job = await persistProductDeletionDelivery(
+      {
+        signedEvent: event,
+        currentWriteRelayUrls: [overlapRelayUrl],
+        currentAppRelayUrls: [overlapRelayUrl],
+        sourceRelayUrls: [overlapRelayUrl],
+        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+      },
+      { repository, now: () => NOW }
+    )
+    const publisherInputs: Parameters<ProductDeletionRelayPublisher>[0][] = []
+
+    await deliverProductDeletionJob(
+      job.id,
+      async (input) => {
+        publisherInputs.push(input)
+        return { status: "acked" }
+      },
+      {
+        repository,
+        authenticatedPubkey: event.pubkey,
+        accountNetworkLocalStateRepository,
+        now: tickingClock(),
+      }
+    )
+
+    expect(publisherInputs.map(({ relayUrl }) => relayUrl)).toEqual([
+      overlapRelayUrl,
+    ])
+    expect(publisherInputs[0]).toMatchObject({
+      appRelayUrls: [overlapRelayUrl],
+      personalRelayUrls: [],
+      independentRelayUrls: [overlapRelayUrl],
+    })
   })
 
   it("revalidates a persisted exact event before deriving its account principal", async () => {

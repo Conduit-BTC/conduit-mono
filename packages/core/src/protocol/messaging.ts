@@ -1302,6 +1302,10 @@ export async function publishPrivateMessage(
           ? recipientRoute.relayUrls
           : [],
       personalRelayUrls: [],
+      independentRelayUrls:
+        recipientRoute.route === "compatibility_order"
+          ? []
+          : recipientRoute.relayUrls,
       shouldContinue: input.shouldContinue,
       refreshRelayLists,
       deliveryMode: "critical",
@@ -1393,6 +1397,10 @@ export async function publishPrivateMessage(
                 ? senderRoute.relayUrls
                 : [],
             personalRelayUrls: [],
+            independentRelayUrls:
+              senderRoute.route === "compatibility_order"
+                ? []
+                : senderRoute.relayUrls,
             ownerSelectedRelayUrls: senderRoute.ownerSelectedRelayUrls,
             shouldContinue: input.shouldContinue,
             refreshRelayLists,

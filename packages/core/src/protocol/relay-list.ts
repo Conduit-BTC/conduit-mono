@@ -71,6 +71,8 @@ export interface RelayListLookupOptions {
   appRelayUrls?: readonly string[]
   /** Exact lookup targets contributed by the owner's NIP-65 layer. */
   personalRelayUrls?: readonly string[]
+  /** Exact lookup targets independently authorized outside local source layers. */
+  independentRelayUrls?: readonly string[]
   /** Injectable durable policy reader for the final per-relay I/O gate. */
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   /** Live caller authority for final account-scoped relay admission. */
@@ -399,6 +401,7 @@ async function runFetch(
     | "ownerSelectedRelayUrls"
     | "appRelayUrls"
     | "personalRelayUrls"
+    | "independentRelayUrls"
     | "maxRelayAttempts"
     | "accountNetworkLocalStateRepository"
     | "shouldContinue"
@@ -414,6 +417,7 @@ async function runFetch(
     ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
     appRelayUrls: options.appRelayUrls,
     personalRelayUrls: options.personalRelayUrls,
+    independentRelayUrls: options.independentRelayUrls,
     maxRelayAttempts: options.maxRelayAttempts,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
@@ -434,6 +438,7 @@ async function runFetchDetailed(
     | "ownerSelectedRelayUrls"
     | "appRelayUrls"
     | "personalRelayUrls"
+    | "independentRelayUrls"
     | "maxRelayAttempts"
     | "accountNetworkLocalStateRepository"
     | "shouldContinue"
@@ -451,6 +456,7 @@ async function runFetchDetailed(
       ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
       appRelayUrls: options.appRelayUrls,
       personalRelayUrls: options.personalRelayUrls,
+      independentRelayUrls: options.independentRelayUrls,
       maxRelayAttempts: options.maxRelayAttempts,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
@@ -469,6 +475,7 @@ async function runFetchDetailed(
       ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
       appRelayUrls: options.appRelayUrls,
       personalRelayUrls: options.personalRelayUrls,
+      independentRelayUrls: options.independentRelayUrls,
       maxRelayAttempts: options.maxRelayAttempts,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
@@ -495,6 +502,7 @@ async function runFetchDetailed(
     ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
     appRelayUrls: options.appRelayUrls,
     personalRelayUrls: options.personalRelayUrls,
+    independentRelayUrls: options.independentRelayUrls,
     maxRelayAttempts: options.maxRelayAttempts,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
