@@ -32,6 +32,8 @@ export interface RelayHealthRecord {
 
 export interface RelayHealthSnapshot {
   records: ReadonlyMap<string, RelayHealthRecord>
+  /** Fixed comparison time so cooldown expiry cannot change a bounded read. */
+  capturedAt: number
 }
 
 const BASE_COOLDOWN_MS = 30_000
@@ -121,8 +123,39 @@ export function partitionByHealth(
   return { healthy, parked }
 }
 
-export function snapshotRelayHealth(): RelayHealthSnapshot {
-  return { records: new Map(records) }
+/** Apply one immutable health view throughout a bounded multi-step read. */
+export function partitionByHealthSnapshot(
+  urls: readonly string[],
+  snapshot: RelayHealthSnapshot
+): { healthy: string[]; parked: string[] } {
+  const healthy: string[] = []
+  const parked: string[] = []
+  for (const url of urls) {
+    const normalized = tryNormalize(url)
+    if (!normalized) continue
+    const cooldownUntil = snapshot.records.get(normalized)?.cooldownUntil
+    if (
+      cooldownUntil !== null &&
+      cooldownUntil !== undefined &&
+      cooldownUntil > snapshot.capturedAt
+    ) {
+      parked.push(normalized)
+    } else {
+      healthy.push(normalized)
+    }
+  }
+  return { healthy, parked }
+}
+
+export function snapshotRelayHealth(
+  now: number = nowMs()
+): RelayHealthSnapshot {
+  return {
+    records: new Map(
+      Array.from(records, ([url, record]) => [url, { ...record }])
+    ),
+    capturedAt: now,
+  }
 }
 
 /** Test seam: clear all health state. */

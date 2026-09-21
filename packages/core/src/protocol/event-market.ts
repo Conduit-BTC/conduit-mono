@@ -34,6 +34,11 @@ import {
   type RelayListResolutionState,
 } from "./relay-list"
 import {
+  partitionByHealthSnapshot,
+  snapshotRelayHealth,
+  type RelayHealthSnapshot,
+} from "./relay-health"
+import {
   publishWithPlanner,
   type PublishWithPlannerResult,
 } from "./relay-publish"
@@ -2804,6 +2809,7 @@ async function fetchEventMarketFrontierFilters(input: {
   filters: readonly NDKFilter[]
   relayUrls: string[]
   relayUrlsByAuthor?: ReadonlyMap<string, readonly string[]>
+  relayHealthSnapshot?: RelayHealthSnapshot
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
@@ -2816,6 +2822,11 @@ async function fetchEventMarketFrontierFilters(input: {
     const authors = filter.authors ?? []
     return authors.length === 1 ? normalizePubkey(authors[0]) : null
   }
+  const eligibleRelayUrls = (relayUrls: readonly string[]): string[] =>
+    input.relayHealthSnapshot
+      ? partitionByHealthSnapshot(relayUrls, input.relayHealthSnapshot).healthy
+      : [...relayUrls]
+  const invocationRelayUrls = eligibleRelayUrls(input.relayUrls)
   const remainingRelayUrlsByAuthor = new Map<string, string[]>()
   for (const filter of input.filters) {
     const author = filterAuthor(filter)
@@ -2823,11 +2834,13 @@ async function fetchEventMarketFrontierFilters(input: {
     remainingRelayUrlsByAuthor.set(
       author,
       input.relayUrlsByAuthor?.has(author)
-        ? mergeRelayUrlsWithOwnerAuthority(
-            input.ownerSelectedRelayUrls ?? [],
-            input.relayUrlsByAuthor.get(author) ?? []
+        ? eligibleRelayUrls(
+            mergeRelayUrlsWithOwnerAuthority(
+              input.ownerSelectedRelayUrls ?? [],
+              input.relayUrlsByAuthor.get(author) ?? []
+            )
           )
-        : [...input.relayUrls]
+        : [...invocationRelayUrls]
     )
   }
   if (input.filters.length === 0) {
@@ -2835,7 +2848,7 @@ async function fetchEventMarketFrontierFilters(input: {
       events: [],
       relays: [],
       eventsVerified: true,
-      remainingRelayUrls: [...input.relayUrls],
+      remainingRelayUrls: [...invocationRelayUrls],
       remainingRelayUrlsByAuthor,
     }
   }
@@ -2843,7 +2856,7 @@ async function fetchEventMarketFrontierFilters(input: {
     eventMarketTestOverrides.fetchEventsFanoutDetailed ??
     fetchEventsFanoutDetailed
   const results: FetchEventsFanoutResult[] = []
-  let remainingRelayUrls = [...input.relayUrls]
+  let remainingRelayUrls = [...invocationRelayUrls]
   for (
     let index = 0;
     index < input.filters.length;
@@ -2872,6 +2885,7 @@ async function fetchEventMarketFrontierFilters(input: {
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
+          skipHealthFilter: input.relayHealthSnapshot ? true : undefined,
           signal: input.signal,
           reuseRelayConnections: true,
         })
@@ -3048,6 +3062,7 @@ async function eventMarketParticipantRelayPlans(input: {
   candidateEvents: readonly SignedPublicNostrEvent[]
   sourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
   fallbackRelayUrls: readonly string[]
+  relayHealthSnapshot: RelayHealthSnapshot
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
@@ -3122,6 +3137,7 @@ async function eventMarketParticipantRelayPlans(input: {
         authenticatedPubkey,
         ownerSelectedRelayUrls: selectedForAuthor,
         maxRelays: EVENT_MARKET_MAX_RELAY_HINTS,
+        skipHealthFilter: true,
         settings: ownerSettingsSnapshot?.settings,
         signedRelayListAuthoritative:
           ownerSettingsSnapshot?.signedRelayListAuthoritative,
@@ -3131,13 +3147,16 @@ async function eventMarketParticipantRelayPlans(input: {
       }
       return [
         author,
-        mergeRelayUrlsWithOwnerAuthority(
-          plan.ownerSelectedRelayUrls ?? [],
-          plan.hintRelayUrls,
-          observedRelaysByAuthor.get(author) ?? [],
-          input.fallbackRelayUrls,
-          plan.relayUrls
-        ),
+        partitionByHealthSnapshot(
+          mergeRelayUrlsWithOwnerAuthority(
+            plan.ownerSelectedRelayUrls ?? [],
+            plan.hintRelayUrls,
+            observedRelaysByAuthor.get(author) ?? [],
+            input.fallbackRelayUrls,
+            plan.relayUrls
+          ),
+          input.relayHealthSnapshot
+        ).healthy,
       ]
     })
   )
@@ -3392,17 +3411,20 @@ function pickupDeletionFrontierFilters(input: {
   return filters
 }
 
-async function fetchEventMarketPickupFrontiers(input: {
-  coordinates: readonly AddressableEventCoordinate[]
-  candidateEvents: readonly SignedPublicNostrEvent[]
-  candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
-  relayUrls: string[]
-  authenticatedPubkey?: string | null
-  ownerSelectedRelayUrls?: readonly string[]
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
-  signal?: AbortSignal
-}): Promise<EventMarketPickupFrontierResult> {
+async function fetchEventMarketPickupFrontiers(
+  input: {
+    coordinates: readonly AddressableEventCoordinate[]
+    candidateEvents: readonly SignedPublicNostrEvent[]
+    candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
+    relayUrls: string[]
+    authenticatedPubkey?: string | null
+    ownerSelectedRelayUrls?: readonly string[]
+    accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+    shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+    signal?: AbortSignal
+  },
+  relayHealthSnapshot: RelayHealthSnapshot = snapshotRelayHealth()
+): Promise<EventMarketPickupFrontierResult> {
   assertEventMarketReadCurrent(input)
   const pickupBudget: EventMarketParticipationBudget = {
     state: "within_budget",
@@ -3413,16 +3435,19 @@ async function fetchEventMarketPickupFrontiers(input: {
     input.coordinates.length > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
   ) {
     const batchResults: EventMarketPickupFrontierResult[] = []
-    // Scope incomplete relays to one target batch so an earlier deletion read
-    // cannot suppress a later pickup's only positive source.
+    // Reuse the invocation health view so an earlier bounded batch cannot
+    // suppress a later pickup's only positive source.
     for (const coordinates of chunkValues(
       input.coordinates,
       EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
     )) {
-      const result = await fetchEventMarketPickupFrontiers({
-        ...input,
-        coordinates,
-      })
+      const result = await fetchEventMarketPickupFrontiers(
+        {
+          ...input,
+          coordinates,
+        },
+        relayHealthSnapshot
+      )
       batchResults.push(result)
     }
     const eventsById = new Map<string, NDKEvent>()
@@ -3450,6 +3475,7 @@ async function fetchEventMarketPickupFrontiers(input: {
     candidateEvents: input.candidateEvents,
     sourceRelayUrlsById: input.candidateSourceRelayUrlsById,
     fallbackRelayUrls: input.relayUrls,
+    relayHealthSnapshot,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
@@ -3464,6 +3490,7 @@ async function fetchEventMarketPickupFrontiers(input: {
     filters: pickupFrontierFilters(input.coordinates),
     relayUrls: input.relayUrls,
     relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
+    relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls,
@@ -3489,6 +3516,7 @@ async function fetchEventMarketPickupFrontiers(input: {
     }),
     relayUrls: pickupResult.remainingRelayUrls,
     relayUrlsByAuthor: pickupResult.remainingRelayUrlsByAuthor,
+    relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls,
@@ -3523,7 +3551,8 @@ async function fetchEventMarketProductRequestFrontiers(
     shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
     signal?: AbortSignal
   },
-  targetCoordinates?: readonly AddressableEventCoordinate[]
+  targetCoordinates?: readonly AddressableEventCoordinate[],
+  relayHealthSnapshot: RelayHealthSnapshot = snapshotRelayHealth()
 ): Promise<EventMarketProductRequestFrontierResult> {
   assertEventMarketReadCurrent(input)
   const coordinates = targetCoordinates ?? candidateProductCoordinates(input)
@@ -3534,15 +3563,16 @@ async function fetchEventMarketProductRequestFrontiers(
   }
   if (coordinates.length > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT) {
     const batchResults: EventMarketProductRequestFrontierResult[] = []
-    // Scope incomplete relays to one target batch so an earlier deletion read
-    // cannot suppress a later product's only positive source.
+    // Reuse the invocation health view so an earlier bounded batch cannot
+    // suppress a later product's only positive source.
     for (const batchCoordinates of chunkValues(
       coordinates,
       EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
     )) {
       const result = await fetchEventMarketProductRequestFrontiers(
         input,
-        batchCoordinates
+        batchCoordinates,
+        relayHealthSnapshot
       )
       batchResults.push(result)
     }
@@ -3576,6 +3606,7 @@ async function fetchEventMarketProductRequestFrontiers(
     candidateEvents: input.candidateEvents,
     sourceRelayUrlsById: input.candidateSourceRelayUrlsById,
     fallbackRelayUrls: input.relayUrls,
+    relayHealthSnapshot,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
@@ -3590,6 +3621,7 @@ async function fetchEventMarketProductRequestFrontiers(
     filters: productFrontierFilters(coordinates),
     relayUrls: input.relayUrls,
     relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
+    relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls,
@@ -3615,6 +3647,7 @@ async function fetchEventMarketProductRequestFrontiers(
     }),
     relayUrls: productResult.remainingRelayUrls,
     relayUrlsByAuthor: productResult.remainingRelayUrlsByAuthor,
+    relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls,
