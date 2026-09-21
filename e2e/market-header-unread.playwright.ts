@@ -54,7 +54,7 @@ test("market header shows unread cached direct messages as a live icon badge @ma
   await page.waitForLoadState("networkidle")
 
   const messages = page
-    .getByRole("navigation", { name: "Market navigation" })
+    .getByRole("navigation", { name: "Buyer navigation" })
     .getByRole("button", { name: /^Messages/ })
   await expect(messages).toHaveAttribute("aria-label", "Messages, 0 unread")
   await expect(messages.getByText("Messages")).toHaveClass(/sr-only/)
