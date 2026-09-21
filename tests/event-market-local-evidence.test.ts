@@ -12,12 +12,13 @@ import {
   buildEventMarketCollectionDraft,
   buildEventMarketPickupDraft,
   getEventMarket,
-  getEventMarketSupersededEvidence,
+  getEventMarketSupersededEvidence as getEventMarketSupersededEvidenceAtTime,
   getLocalEventMarketEvidenceSnapshot,
   getOrganizerEventMarketsDetailed,
   resolveEventMarketEvidence,
   subscribeLocalEventMarketEvidenceChanges,
   type CachedEventMarketEvidence,
+  type EventMarketResolution,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 
@@ -29,6 +30,24 @@ const calendar = `31923:${organizer}:calendar`
 const pickup = `30406:${organizer}:pickup`
 const product = `30402:${organizer}:product`
 const now = 1_800_000_001_000
+
+function getEventMarketSupersededEvidence(
+  market: EventMarketResolution,
+  events: readonly SignedPublicNostrEvent[],
+  records: readonly {
+    addressId: string
+    eventId: string
+    eventCreatedAt: number
+  }[] = [],
+  observedAt = now
+) {
+  return getEventMarketSupersededEvidenceAtTime(
+    market,
+    events,
+    records,
+    observedAt
+  )
+}
 
 function signed(
   draft: { kind: number; tags: string[][]; content?: string },
@@ -108,7 +127,15 @@ function row(event: SignedPublicNostrEvent): CachedEventMarketEvidence {
     cachedAt: now,
   }
 }
-const empty = { graph: false, productCoordinates: [], pickupCoordinates: [] }
+const empty = {
+  graph: false,
+  graphRevoked: false,
+  productCoordinates: [],
+  removedProductCoordinates: [],
+  terminalProductCoordinates: [],
+  pickupCoordinates: [],
+  terminalPickupCoordinates: [],
+}
 afterEach(() => __resetEventMarketTestOverrides())
 
 describe("retained event market dependencies", () => {
@@ -143,11 +170,19 @@ describe("retained event market dependencies", () => {
         const event = graph[index]!
         const coordinate = `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")![1]}`
         const tags = [[target, target === "a" ? coordinate : event.id]]
+        const deletionExpected =
+          event.kind === 30405 || event.kind === 31923
+            ? { ...expected, graphRevoked: true }
+            : event.kind === 30406
+              ? { ...expected, terminalPickupCoordinates: [pickup] }
+              : event.kind === 30402
+                ? { ...expected, terminalProductCoordinates: [product] }
+                : expected
         expect(
           getEventMarketSupersededEvidence(resolution(), [
             signed({ kind: 5, tags }, 200),
           ])
-        ).toEqual(expected)
+        ).toEqual(deletionExpected)
         expect(
           getEventMarketSupersededEvidence(resolution(), [
             signed({ kind: 5, tags }, 200, otherSecret),
@@ -156,6 +191,353 @@ describe("retained event market dependencies", () => {
       })
     }
   }
+
+  for (const target of ["a", "e"] as const) {
+    it(`keeps a valid pickup replacement recoverable after an older ${target} deletion`, () => {
+      const retainedPickup = graph[1]!
+      const deletionTarget = target === "a" ? pickup : retainedPickup.id
+      const deletion = signed(
+        { kind: 5, tags: [[target, deletionTarget]] },
+        200
+      )
+      const replacement = signed(
+        buildEventMarketPickupDraft({
+          dTag: "pickup",
+          title: "Replacement pickup",
+          price: 0,
+          currency: "SATS",
+          countries: ["US"],
+          location: "Replacement hall",
+        }),
+        300
+      )
+
+      expect(
+        getEventMarketSupersededEvidence(resolution(), [deletion, replacement])
+      ).toEqual({
+        ...empty,
+        pickupCoordinates: [pickup],
+      })
+    })
+  }
+
+  it("does not let a malformed pickup revision erase terminal deletion evidence", () => {
+    const deletedPickup = graph[1]!
+    const malformedReplacement = signed(
+      {
+        ...deletedPickup,
+        tags: deletedPickup.tags.filter((tag) => tag[0] !== "service"),
+      },
+      300
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        signed({ kind: 5, tags: [["e", deletedPickup.id]] }, 200),
+        malformedReplacement,
+      ])
+    ).toEqual({
+      ...empty,
+      pickupCoordinates: [pickup],
+      terminalPickupCoordinates: [pickup],
+    })
+  })
+
+  it("classifies a newer malformed pickup revision as terminal evidence", () => {
+    const currentPickup = graph[1]!
+    const malformedReplacement = signed(
+      {
+        ...currentPickup,
+        tags: currentPickup.tags.filter((tag) => tag[0] !== "service"),
+      },
+      300
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [malformedReplacement])
+    ).toEqual({
+      ...empty,
+      pickupCoordinates: [pickup],
+      terminalPickupCoordinates: [pickup],
+    })
+  })
+
+  it("classifies a newer signed collection closure as a terminal graph revocation", () => {
+    const closed = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+        orderAcceptance: "closed",
+      }),
+      200
+    )
+
+    expect(getEventMarketSupersededEvidence(resolution(), [closed])).toEqual({
+      ...empty,
+      graph: true,
+      graphRevoked: true,
+    })
+  })
+
+  for (const [condition, reference] of [
+    ["a second calendar", ["a", `31923:${organizer}:other-calendar`]],
+    ["a second pickup", ["shipping_option", `30406:${organizer}:other-pickup`]],
+    ["an unsupported reference", ["a", `30407:${organizer}:unsupported`]],
+  ] as const) {
+    it(`classifies a newer signed collection with ${condition} as a terminal graph revocation`, () => {
+      const revised = signed(
+        {
+          ...graph[2]!,
+          tags: [...graph[2]!.tags, [...reference]],
+        },
+        200
+      )
+
+      expect(getEventMarketSupersededEvidence(resolution(), [revised])).toEqual(
+        {
+          ...empty,
+          graph: true,
+          graphRevoked: true,
+        }
+      )
+    })
+  }
+
+  it("applies legacy calendar end semantics to stronger signed graph evidence", () => {
+    const pastCalendarDraft = buildEventMarketCalendarDraft({
+      kind: 31923,
+      dTag: "calendar",
+      title: "Past market",
+      start: 1_799_999_000,
+      end: 1_800_000_000,
+    })
+    const pastCalendar = signed(pastCalendarDraft, 200)
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [pastCalendar], [], now)
+    ).toEqual({
+      ...empty,
+      graph: true,
+      graphRevoked: true,
+    })
+
+    const futureCalendar = signed(graph[0]!, 200)
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [futureCalendar], [], now)
+    ).toEqual({ ...empty, graph: true })
+
+    const openCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+        orderAcceptance: "open",
+      })
+    )
+    const explicitlyOpen = resolution([
+      signed(pastCalendarDraft),
+      graph[1]!,
+      openCollection,
+      graph[3]!,
+    ])
+    expect(explicitlyOpen.state).toBe("active")
+    expect(
+      getEventMarketSupersededEvidence(explicitlyOpen, [pastCalendar], [], now)
+    ).toEqual({ ...empty, graph: true })
+
+    const legacyCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog metadata revision",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+      }),
+      200
+    )
+    expect(
+      getEventMarketSupersededEvidence(
+        explicitlyOpen,
+        [legacyCollection],
+        [],
+        now
+      )
+    ).toEqual({
+      ...empty,
+      graph: true,
+      graphRevoked: true,
+    })
+  })
+
+  it("keeps a stripped lifecycle declaration terminal before the calendar ends", () => {
+    const openCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+        orderAcceptance: "open",
+      })
+    )
+    const explicitlyOpen = resolution([
+      graph[0]!,
+      graph[1]!,
+      openCollection,
+      graph[3]!,
+    ])
+    const strippedCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Stripped lifecycle",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+      }),
+      300
+    )
+    const localOpenCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Local lifecycle predecessor",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+        orderAcceptance: "open",
+      }),
+      200
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(explicitlyOpen, [strippedCollection])
+    ).toEqual({
+      ...empty,
+      graph: true,
+      graphRevoked: true,
+    })
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        localOpenCollection,
+        strippedCollection,
+      ])
+    ).toEqual({
+      ...empty,
+      graph: true,
+      graphRevoked: true,
+    })
+
+    const deletedOpenCollection = signed(
+      {
+        kind: 5,
+        tags: [["e", openCollection.id]],
+      },
+      200
+    )
+    expect(
+      getEventMarketSupersededEvidence(explicitlyOpen, [
+        deletedOpenCollection,
+        strippedCollection,
+      ])
+    ).toEqual({
+      ...empty,
+      graph: true,
+    })
+
+    const reopenedCollection = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Reopened after stripped lifecycle",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [product],
+        orderAcceptance: "open",
+      }),
+      400
+    )
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        localOpenCollection,
+        strippedCollection,
+        reopenedCollection,
+      ])
+    ).toEqual({
+      ...empty,
+      graph: true,
+    })
+  })
+
+  it("classifies products omitted by a newer signed collection revision", () => {
+    const withoutProduct = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [],
+      }),
+      200
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [withoutProduct])
+    ).toEqual({
+      ...empty,
+      graph: true,
+      removedProductCoordinates: [product],
+    })
+  })
+
+  it("scopes a removed organizer pickup to products that depend on it", () => {
+    const withoutPickup = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        productCoordinates: [product],
+      }),
+      200
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [withoutPickup])
+    ).toEqual({
+      ...empty,
+      graph: true,
+      terminalPickupCoordinates: [pickup],
+    })
+  })
+
+  it("classifies an organizer-listed product removed before participation settles", () => {
+    const previewResolution: EventMarketResolution = {
+      ...resolution(),
+      acceptedProductCoordinates: [],
+      acceptedProductEvidence: [],
+      organizerOnlyProductCoordinates: [product],
+      participationRequests: [],
+    }
+    const withoutProduct = signed(
+      buildEventMarketCollectionDraft({
+        dTag: "catalog",
+        title: "Catalog",
+        eventCoordinate: calendar,
+        pickupCoordinate: pickup,
+        productCoordinates: [],
+      }),
+      200
+    )
+
+    expect(
+      getEventMarketSupersededEvidence(previewResolution, [withoutProduct])
+    ).toEqual({
+      ...empty,
+      graph: true,
+      removedProductCoordinates: [product],
+    })
+  })
 
   it("ignores older, forged, unrelated, and already deleted newer evidence", () => {
     const newer = signed(graph[2]!, 200)
@@ -224,6 +606,65 @@ describe("retained event market dependencies", () => {
         [{ addressId: product, eventId: graph[3]!.id, eventCreatedAt: 100 }]
       ).productCoordinates
     ).toEqual([product])
+  })
+
+  it("keeps only a valid canonical product revision recoverable", () => {
+    const current = graph[3]!
+    const replacement = (title: string, tags = current.tags, createdAt = 200) =>
+      signed(
+        {
+          ...current,
+          tags: tags.map((tag) =>
+            tag[0] === "title" ? ["title", title] : tag
+          ),
+        },
+        createdAt
+      )
+
+    const deleted = signed({ kind: 5, tags: [["a", product]] }, 200)
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [deleted])
+    ).toMatchObject({
+      productCoordinates: [product],
+      terminalProductCoordinates: [product],
+    })
+
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        replacement("x".repeat(201)),
+      ])
+    ).toMatchObject({
+      productCoordinates: [product],
+      terminalProductCoordinates: [product],
+    })
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        replacement("Conflicting coordinate", [
+          ["d", "other-product"],
+          ...current.tags,
+        ]),
+      ])
+    ).toMatchObject({
+      productCoordinates: [product],
+      terminalProductCoordinates: [product],
+    })
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        replacement("Updated product"),
+      ])
+    ).toMatchObject({
+      productCoordinates: [product],
+      terminalProductCoordinates: [],
+    })
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        deleted,
+        replacement("Replacement after deletion", current.tags, 300),
+      ])
+    ).toMatchObject({
+      productCoordinates: [product],
+      terminalProductCoordinates: [],
+    })
   })
 })
 

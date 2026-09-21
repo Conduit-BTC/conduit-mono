@@ -28,6 +28,7 @@ import {
 } from "../components/MarketHeader"
 import { MarketCartHud } from "../components/MarketCartHud"
 import { EventActorIdentityProvider } from "../hooks/useEventActorIdentity"
+import { usePendingEventPickupCartResolution } from "../hooks/usePendingEventPickupCartResolution"
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -226,6 +227,7 @@ function RootLayout() {
 
 function MarketProductRoot({ pathname }: { pathname: string }) {
   const { authUrl, dismissAuthUrl, method, status } = useAuth()
+  usePendingEventPickupCartResolution()
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
   const previousAuthMethodRef = useRef(method)

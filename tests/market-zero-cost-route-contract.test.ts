@@ -5,7 +5,7 @@ async function source(path: string): Promise<string> {
 }
 
 describe("Market verified zero-cost pickup route contract", () => {
-  it("opts into Free / 0 sats only after exact pickup resolution", async () => {
+  it("keeps zero-price display separate from exact purchase authority", async () => {
     const [card, resolvedCard, eventRoute, detail, cart, checkout, orders] =
       await Promise.all([
         source("apps/market/src/components/ProductGridCard.tsx"),
@@ -22,11 +22,19 @@ describe("Market verified zero-cost pickup route contract", () => {
     expect(resolvedCard).toContain(
       'allowZeroPrice={resolution?.status === "pickup"}'
     )
-    expect(eventRoute).toContain("allowZeroPrice={pickupFulfillment !== null}")
+    expect(eventRoute).toContain(
+      "allowZeroPrice={pickupFulfillment !== null || pendingEvidenceMayRecover}"
+    )
+    expect(eventRoute).toContain(
+      "checkout stays locked until this exact product is confirmed"
+    )
     expect(detail).toContain(
       'allowZero: productCartResolution?.status === "pickup"'
     )
-    expect(cart).toContain("{ allowZero: !pricing.paymentRequired }")
+    expect(cart).toContain("allowZero: allowZeroPrice && pickup !== undefined")
+    expect(checkout).toContain(
+      'item.fulfillment?.type === "event_pickup_pending"'
+    )
     expect(checkout).toContain("{ allowZero: !pricing.paymentRequired }")
     expect(orders).toContain("allowZero: zeroCostPickupOrder")
     expect(orders).toContain('"Free · 0 sats"')
