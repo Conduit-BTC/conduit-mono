@@ -323,8 +323,9 @@ function DashboardPage() {
   useEffect(() => {
     if (!signerConnected || !authRequired || !pendingEvent) return
     void navigate({
-      to: "/events",
-      search: { event: pendingEvent },
+      to: "/events/$collectionRef",
+      params: { collectionRef: pendingEvent },
+      search: {},
       replace: true,
     })
   }, [authRequired, navigate, pendingEvent, signerConnected])

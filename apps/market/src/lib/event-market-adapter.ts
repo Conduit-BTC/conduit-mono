@@ -32,14 +32,20 @@ import type {
 
 const EVENT_COLLECTION_KIND = 30405
 
+export type EventCatalogPickupReadiness =
+  "resolved" | "recoverable" | "terminal"
+
 export type EventCatalogProduct = {
   product: Product
   family?: PreparedProductFamily<CommerceProductRecord>
   evidenceState: "live" | "retained"
   participation: ReturnType<typeof resolveEventMarketProductParticipation>
   pickupFulfillment: CartPickupFulfillment | null
+  /** Selected-product evidence only; unrelated catalog reads cannot relax it. */
+  pickupReadiness: EventCatalogPickupReadiness
   /** Exact child snapshots only; parent acceptance never authorizes a child. */
   familyPickupFulfillments?: Record<string, CartPickupFulfillment | null>
+  familyPickupReadiness?: Record<string, EventCatalogPickupReadiness>
 }
 
 export type EventCatalog = {
@@ -257,6 +263,88 @@ export function buildEventCatalogFamilyPickupFulfillments(
         rateInput
       ),
     ])
+  )
+}
+
+function getEventCatalogPickupReadiness(
+  product: Product,
+  resolution: EventMarketResolution,
+  fulfillment: CartPickupFulfillment | null,
+  productEventId: string
+): EventCatalogPickupReadiness {
+  if (fulfillment) return "resolved"
+  const decision = resolveEventMarketProductFulfillment(product, resolution)
+  const accepted = getAcceptedProductPickupReadiness(
+    product,
+    resolution,
+    productEventId
+  )
+  // Accepted evidence cannot authorize missing terms, but it preserves the
+  // distinction between unavailable evidence and a signed pickup deletion.
+  if (accepted) return accepted
+  return getPickupDecisionReadiness(product, resolution, decision)
+}
+
+function getPickupDecisionReadiness(
+  product: Product,
+  resolution: EventMarketResolution,
+  decision: ReturnType<typeof resolveEventMarketProductFulfillment>
+): EventCatalogPickupReadiness {
+  if (decision.status === "resolved") return "recoverable"
+  if (
+    decision.status === "ambiguous" &&
+    (decision.reason === "missing_pickup_evidence" ||
+      decision.reason === "stale_pickup_evidence")
+  ) {
+    return "recoverable"
+  }
+  if (
+    decision.status === "none" &&
+    !resolution.collection &&
+    [
+      ...(product.shippingOptionRefs ?? []),
+      ...(product.shippingOptionId
+        ? [{ coordinate: product.shippingOptionId }]
+        : []),
+    ].some((reference) => reference.coordinate.startsWith("30405:"))
+  ) {
+    return "recoverable"
+  }
+  return "terminal"
+}
+
+function getAcceptedProductPickupReadiness(
+  product: Product,
+  resolution: EventMarketResolution,
+  productEventId: string
+): EventCatalogPickupReadiness | null {
+  const evidence = resolution.acceptedProductEvidence.find(
+    (candidate) =>
+      candidate.productCoordinate === product.id &&
+      candidate.eventId.toLowerCase() === productEventId.toLowerCase()
+  )
+  if (evidence?.fulfillmentStatus === "none") return "terminal"
+  if (
+    evidence?.fulfillmentStatus === "ambiguous" &&
+    evidence.fulfillmentReason !== undefined &&
+    evidence.fulfillmentReason !== "missing_pickup_evidence" &&
+    evidence.fulfillmentReason !== "stale_pickup_evidence"
+  ) {
+    return "terminal"
+  }
+  if (evidence?.fulfillmentStatus) return "recoverable"
+  return null
+}
+
+function getRetainedProductPickupReadiness(
+  product: Product,
+  resolution: EventMarketResolution,
+  productEventId: string,
+  decision = resolveEventMarketProductFulfillment(product, resolution)
+): EventCatalogPickupReadiness {
+  return (
+    getAcceptedProductPickupReadiness(product, resolution, productEventId) ??
+    getPickupDecisionReadiness(product, resolution, decision)
   )
 }
 
@@ -590,6 +678,10 @@ export function projectEventCatalogProducts({
     string,
     Record<string, CartPickupFulfillment | null>
   >()
+  const familyPickupReadinessByParent = new Map<
+    string,
+    Record<string, EventCatalogPickupReadiness>
+  >()
   const foldedChildCoordinates = new Set<string>()
 
   for (const coordinate of requested) {
@@ -609,6 +701,20 @@ export function projectEventCatalogProducts({
       ])
     )
     familyPickupFulfillmentsByParent.set(coordinate, familyPickupFulfillments)
+    familyPickupReadinessByParent.set(
+      coordinate,
+      Object.fromEntries(
+        record.family.children.map((child) => [
+          child.product.id,
+          getEventCatalogPickupReadiness(
+            child.product,
+            resolution,
+            familyPickupFulfillments[child.product.id] ?? null,
+            child.eventId
+          ),
+        ])
+      )
+    )
     for (const child of record.family.children) {
       if (requested.includes(child.product.id)) {
         foldedChildCoordinates.add(child.product.id)
@@ -636,6 +742,9 @@ export function projectEventCatalogProducts({
     ) {
       return []
     }
+    const pickupFulfillment = live
+      ? buildPickupFulfillmentSnapshot(product, resolution, record, rateInput)
+      : null
 
     return [
       {
@@ -643,16 +752,16 @@ export function projectEventCatalogProducts({
         family: record.family,
         evidenceState: live ? "live" : "retained",
         participation,
-        pickupFulfillment: live
-          ? buildPickupFulfillmentSnapshot(
-              product,
-              resolution,
-              record,
-              rateInput
-            )
-          : null,
+        pickupFulfillment,
+        pickupReadiness: getEventCatalogPickupReadiness(
+          product,
+          resolution,
+          pickupFulfillment,
+          record.eventId
+        ),
         familyPickupFulfillments:
           familyPickupFulfillmentsByParent.get(coordinate),
+        familyPickupReadiness: familyPickupReadinessByParent.get(coordinate),
       },
     ]
   })
@@ -826,6 +935,7 @@ export function buildEventCatalogProductPreviewRecords(
           collectionRefs: [resolution.collectionCoordinate],
           createdAt: preview.createdAt,
           updatedAt: preview.createdAt,
+          sourceEventId: preview.eventId,
         }
         const record: CommerceProductRecord = {
           product,
@@ -863,6 +973,10 @@ export type RawEventCatalog = {
   localEvidencePending?: boolean
   /** Stronger local collection/calendar evidence invalidates this graph. */
   localGraphSuperseded?: boolean
+  /** Stronger signed local evidence definitively revokes this graph. */
+  localGraphRevoked?: boolean
+  /** Exact products made terminal by stronger signed local evidence. */
+  localTerminalProductCoordinates?: readonly string[]
 }
 
 export function projectRawEventCatalog(
@@ -872,6 +986,9 @@ export function projectRawEventCatalog(
 ): EventCatalog {
   const resolution = raw.resolution
   if (!resolution) return unavailableCatalog(raw.reference, "malformed")
+  const locallyTerminalProducts = new Set(
+    raw.localTerminalProductCoordinates ?? []
+  )
   const complete =
     (raw.complete || raw.resolutionComplete === true) &&
     allowPurchase &&
@@ -951,6 +1068,11 @@ export function projectRawEventCatalog(
           evidenceState: "retained",
           participation: { ...participation, purchaseReady: false },
           pickupFulfillment: null,
+          pickupReadiness: getRetainedProductPickupReadiness(
+            record.product,
+            resolution,
+            record.eventId
+          ),
         },
       ]
     })
@@ -963,7 +1085,15 @@ export function projectRawEventCatalog(
           (coordinate) =>
             !pendingProducts.some((entry) => entry.product.id === coordinate)
         ),
-      products: complete ? products : products.map(browseOnlyProduct),
+      products: products.map((entry) =>
+        complete
+          ? applyTerminalLocalEvidence(entry, locallyTerminalProducts)
+          : browseOnlyProduct(
+              entry,
+              !!raw.localGraphRevoked,
+              locallyTerminalProducts
+            )
+      ),
       purchaseReady:
         complete &&
         (resolution.state === "active" || resolution.state === "partial"),
@@ -1032,12 +1162,31 @@ export function projectRawEventCatalog(
         evidenceState: "retained",
         participation: { ...participation, purchaseReady: false },
         pickupFulfillment: null,
+        pickupReadiness: getRetainedProductPickupReadiness(
+          record.product,
+          resolution,
+          record.eventId
+        ),
+        familyPickupReadiness: record.family
+          ? Object.fromEntries(
+              record.family.children.map((child) => [
+                child.product.id,
+                getRetainedProductPickupReadiness(
+                  child.product,
+                  resolution,
+                  child.eventId
+                ),
+              ])
+            )
+          : undefined,
       },
     ]
   })
   return {
     ...base,
-    products,
+    products: products.map((entry) =>
+      browseOnlyProduct(entry, !!raw.localGraphRevoked, locallyTerminalProducts)
+    ),
     productReadState: complete ? "unavailable" : "not_requested",
     unresolvedProductCoordinates: [...requested].filter(
       (coordinate) =>
@@ -1052,18 +1201,82 @@ export function projectRawEventCatalog(
   }
 }
 
-function browseOnlyProduct(entry: EventCatalogProduct): EventCatalogProduct {
+function applyTerminalLocalEvidence(
+  entry: EventCatalogProduct,
+  terminalProducts: ReadonlySet<string>
+): EventCatalogProduct {
+  const productRevoked = terminalProducts.has(entry.product.id)
+  const familyRevoked = entry.family?.children.some((child) =>
+    terminalProducts.has(child.product.id)
+  )
+  if (!productRevoked && !familyRevoked) return entry
+
+  return {
+    ...entry,
+    evidenceState: productRevoked ? "retained" : entry.evidenceState,
+    participation: productRevoked
+      ? { ...entry.participation, purchaseReady: false }
+      : entry.participation,
+    pickupFulfillment: productRevoked ? null : entry.pickupFulfillment,
+    pickupReadiness: productRevoked ? "terminal" : entry.pickupReadiness,
+    familyPickupFulfillments: entry.familyPickupFulfillments
+      ? Object.fromEntries(
+          Object.entries(entry.familyPickupFulfillments).map(
+            ([coordinate, fulfillment]) => [
+              coordinate,
+              terminalProducts.has(coordinate) ? null : fulfillment,
+            ]
+          )
+        )
+      : undefined,
+    familyPickupReadiness: entry.familyPickupReadiness
+      ? Object.fromEntries(
+          Object.entries(entry.familyPickupReadiness).map(
+            ([coordinate, readiness]) => [
+              coordinate,
+              terminalProducts.has(coordinate) ? "terminal" : readiness,
+            ]
+          )
+        )
+      : undefined,
+  }
+}
+
+function browseOnlyProduct(
+  entry: EventCatalogProduct,
+  graphRevoked: boolean,
+  terminalProducts: ReadonlySet<string>
+): EventCatalogProduct {
+  const productRevoked = graphRevoked || terminalProducts.has(entry.product.id)
   return {
     ...entry,
     evidenceState: "retained",
     participation: { ...entry.participation, purchaseReady: false },
     pickupFulfillment: null,
+    pickupReadiness:
+      productRevoked || entry.pickupReadiness === "terminal"
+        ? "terminal"
+        : "recoverable",
     familyPickupFulfillments: entry.familyPickupFulfillments
       ? Object.fromEntries(
           Object.keys(entry.familyPickupFulfillments).map((coordinate) => [
             coordinate,
             null,
           ])
+        )
+      : undefined,
+    familyPickupReadiness: entry.familyPickupReadiness
+      ? Object.fromEntries(
+          Object.entries(entry.familyPickupReadiness).map(
+            ([coordinate, readiness]) => [
+              coordinate,
+              graphRevoked ||
+              terminalProducts.has(coordinate) ||
+              readiness === "terminal"
+                ? "terminal"
+                : "recoverable",
+            ]
+          )
         )
       : undefined,
   }
@@ -1074,6 +1287,8 @@ export async function loadRawEventCatalog(
   options: {
     /** Submission checks hydrate only these exact listings, never the browse catalog. */
     selectedProductCoordinates?: readonly string[]
+    /** Foreground event browsing may hydrate one merchant before the full catalog. */
+    selectedMerchantPubkey?: string
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -1206,6 +1421,7 @@ export async function loadRawEventCatalog(
       selectedProductCoordinates: options.selectedProductCoordinates,
       authenticatedPubkey: options.authenticatedPubkey,
       shouldContinue: active,
+      selectedMerchantPubkey: options.selectedMerchantPubkey,
       signal: options.signal,
       onProgress: options.onProgress
         ? (snapshot) => {
