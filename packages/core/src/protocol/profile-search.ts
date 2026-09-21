@@ -665,12 +665,16 @@ export async function searchCachedProfiles(
   const authorSet = authorPubkeys ? new Set(authorPubkeys) : null
 
   let profileCache: ProfileSearchDeviceReadState = "read"
-  const cachedRows: CachedProfile[] = await deps
-    .loadCachedProfiles()
-    .catch(() => {
-      profileCache = "unavailable"
-      return []
-    })
+  const cachedRows: CachedProfile[] = await (
+    authorPubkeys
+      ? deps
+          .loadCachedProfileRows(authorPubkeys)
+          .then((rows) => [...rows.values()])
+      : deps.loadCachedProfiles()
+  ).catch(() => {
+    profileCache = "unavailable"
+    return []
+  })
   const candidates: ProfileSearchMatch[] = []
   for (const row of cachedRows) {
     if (authorSet && !authorSet.has(row.pubkey.toLowerCase())) continue

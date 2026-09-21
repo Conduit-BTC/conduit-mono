@@ -669,15 +669,57 @@ describe("profile search phase integration", () => {
     const cached = await searchCachedProfiles(
       { query: "alice", limit: 1, authorPubkeys: [CAROL] },
       deps({
-        loadCachedProfiles: async () => [
-          { pubkey: ALICE, name: "alice", cachedAt: 1 },
-          { pubkey: ALICIA, name: "alice", cachedAt: 1 },
-          { pubkey: CAROL, displayName: "Alice Allowed", cachedAt: 1 },
-        ],
+        loadCachedProfileRows: async () =>
+          new Map(
+            [
+              { pubkey: ALICE, name: "alice", cachedAt: 1 },
+              { pubkey: ALICIA, name: "alice", cachedAt: 1 },
+              { pubkey: CAROL, displayName: "Alice Allowed", cachedAt: 1 },
+            ].map((row) => [row.pubkey, row])
+          ),
       })
     )
 
     expect(cached.matches.map((entry) => entry.pubkey)).toEqual([CAROL])
+  })
+
+  it("loads eligible cached authors directly beyond the capped general scan", async () => {
+    let generalCacheReads = 0
+    let relayReads = 0
+    const scopedReads: string[][] = []
+    const generalRows = authorPubkeys(5_000).map((pubkey) => ({
+      pubkey,
+      name: "Another account",
+      cachedAt: 1,
+    }))
+    const scopedRow = {
+      pubkey: ALICE,
+      name: "Alice Allowed",
+      cachedAt: 1,
+    }
+
+    const outcome = await runProfileSearch(
+      { query: "a", authorPubkeys: [ALICE] },
+      deps({
+        loadCachedProfiles: async () => {
+          generalCacheReads += 1
+          return generalRows
+        },
+        loadCachedProfileRows: async (pubkeys) => {
+          scopedReads.push([...pubkeys])
+          return new Map([[ALICE, scopedRow]])
+        },
+        fetchEvents: async () => {
+          relayReads += 1
+          return { events: [], relays: [], eventsVerified: true }
+        },
+      })
+    )
+
+    expect(generalCacheReads).toBe(0)
+    expect(scopedReads).toEqual([[ALICE]])
+    expect(relayReads).toBe(0)
+    expect(outcome.matches.map((entry) => entry.pubkey)).toEqual([ALICE])
   })
 
   it("sends the eligible authors with NIP-50 search and rejects out-of-scope events", async () => {
