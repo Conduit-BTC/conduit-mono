@@ -1,18 +1,22 @@
-import { useState } from "react"
-import { ExternalLink, PackagePlus, Printer, RefreshCw } from "lucide-react"
-import { useProductImageUpload, useProfile } from "@conduit/core"
+import { useMemo, useState } from "react"
+import { ExternalLink, PackagePlus, Printer, UserRound } from "lucide-react"
 import {
-  Badge,
+  getProfileDisplayLabel,
+  useProductImageUpload,
+  useProfile,
+  useProfiles,
+} from "@conduit/core"
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
   Button,
-  Card,
-  CardContent,
   EventPageHeader,
   eventMarketRequiredRecordsResolved,
-  formatEventRelayReadCoverage,
-  getEventActionabilityPresentation,
 } from "@conduit/ui"
 import {
   buildMerchantEventQrSignSheet,
+  getEligibleEventSignMerchants,
   isMerchantEligibleForEventSign,
 } from "../lib/event-signage"
 import {
@@ -21,7 +25,6 @@ import {
   type MerchantOrganizerEventMarket,
 } from "../lib/event-market"
 import { getEventMarketUrl } from "../lib/market-links"
-import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { EventProductPublisherDialog } from "./EventProductPublisherDialog"
 import { EventQrPrintPreview } from "./EventQrPrintPreview"
 
@@ -46,39 +49,6 @@ function formatSchedule(market: MerchantOrganizerEventMarket): string {
     return end ? `${start} – ${end}` : start
   } catch {
     return "Schedule unavailable"
-  }
-}
-
-function actionabilityClassName(
-  presentation: ReturnType<typeof getEventActionabilityPresentation>
-): string {
-  if (presentation.visibility !== "prominent") {
-    return "text-pretty text-sm font-medium text-[var(--text-secondary)]"
-  }
-  return presentation.tone === "destructive"
-    ? "rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-pretty text-sm font-medium text-error"
-    : "rounded-lg border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-pretty text-sm font-medium text-[var(--text-primary)]"
-}
-
-function getMerchantProductAvailability(market: MerchantOrganizerEventMarket): {
-  availableProductCount: number
-  unresolvedProductCount: number
-} {
-  const acceptedProducts = market.participation.filter(
-    (item) => item.status === "accepted"
-  )
-  const organizerOnlyProductCount = market.participation.filter(
-    (item) => item.status === "organizer_only"
-  ).length
-  const availableProductCount = acceptedProducts.filter((item) =>
-    isParticipationProductAvailable(item, market.organizerPubkey)
-  ).length
-
-  return {
-    availableProductCount,
-    unresolvedProductCount:
-      organizerOnlyProductCount +
-      (acceptedProducts.length - availableProductCount),
   }
 }
 
@@ -175,7 +145,10 @@ export function MerchantEventMarketPanel({
   )
   const ownsMarket = merchantPubkey === market.organizerPubkey
   const publishable =
-    actionReady && (market.state === "active" || market.state === "partial")
+    actionReady &&
+    (market.state === "active" ||
+      (market.state === "partial" &&
+        eventMarketRequiredRecordsResolved(market.source)))
   const organizerProfileQuery = useProfile(market.organizerPubkey, {
     accountPubkey: merchantPubkey,
     authenticatedPubkey,
@@ -184,31 +157,49 @@ export function MerchantEventMarketPanel({
     priority: "visible",
     maxUnresolvedRefetches: 1,
   })
-  const { availableProductCount, unresolvedProductCount } =
-    getMerchantProductAvailability(market)
-  const actionability = getEventActionabilityPresentation({
-    state: market.state,
-    orderAcceptance: market.orderAcceptance,
-    availableProductCount,
-    unresolvedProductCount,
-    requiredEventRecordsResolved: eventMarketRequiredRecordsResolved(
-      market.source
-    ),
+  const sellerPubkeys = useMemo(
+    () =>
+      getEligibleEventSignMerchants(market)
+        .filter((seller) =>
+          market.participation.some(
+            (item) =>
+              item.status === "accepted" &&
+              item.merchantPubkey === seller.pubkey &&
+              isParticipationProductAvailable(item, market.organizerPubkey)
+          )
+        )
+        .map((seller) => seller.pubkey),
+    [market]
+  )
+  const sellerProfiles = useProfiles(sellerPubkeys, {
+    accountPubkey: merchantPubkey,
+    authenticatedPubkey,
+    shouldContinue,
+    priority: "visible",
+    maxUnresolvedRefetches: 1,
   })
-  const relayCoverage = formatEventRelayReadCoverage(market.source.coverage)
+  const organizerName = getProfileDisplayLabel(
+    organizerProfileQuery.data,
+    market.organizerPubkey,
+    { lookupSettled: organizerProfileQuery.lookupSettled }
+  )
+  const shopperUrl = getEventMarketUrl(market.naddr)
   const publisherControls = (
-    <>
-      <div className="flex flex-col gap-3 rounded-xl border border-primary-500/30 bg-primary-500/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+    <section className="rounded-2xl border border-primary-500/30 bg-primary-500/10 p-5">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h3 className="text-balance font-semibold text-[var(--text-primary)]">
+          <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
             Sell at this event
-          </h3>
+          </h2>
           <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Publish a new product from scratch or copy one of your existing
             products.{" "}
             {ownsMarket
               ? "Your own product is accepted into this event when you approve its collection signature."
               : "The organizer reviews it before it appears in the event collection."}
+          </p>
+          <p className="mt-2 text-pretty text-sm text-[var(--text-muted)]">
+            {getPickupSummary(market)}
           </p>
           {publishedAccepted !== null && (
             <p className="mt-2 text-xs font-medium text-success" role="status">
@@ -231,13 +222,13 @@ export function MerchantEventMarketPanel({
       {!publishable && (
         <p
           id="event-publish-disabled"
-          className="text-xs leading-5 text-[var(--text-muted)]"
+          className="mt-3 text-pretty text-sm leading-6 text-[var(--text-secondary)]"
         >
-          Publishing is unavailable until the current event details can be
-          confirmed.
+          Event details are still updating. Publishing will become available
+          after the current organizer records are confirmed.
         </p>
       )}
-    </>
+    </section>
   )
 
   return (
@@ -257,40 +248,35 @@ export function MerchantEventMarketPanel({
               market.eventLocation || market.eventGeohash || "Not provided"
             }
             organizer={
-              <div className="min-w-0">
-                <span>Organized by </span>
-                <EventActorName
-                  pubkey={market.organizerPubkey}
-                  profile={organizerProfileQuery.data}
-                  className="inline text-sm"
-                />
-                <EventActorProvenance
-                  pubkey={market.organizerPubkey}
-                  copyLabel="Copy organizer npub"
-                  className="mt-0.5 max-w-full text-xs"
-                />
+              <div
+                className="flex min-w-0 items-center gap-2"
+                data-testid="merchant-event-organizer"
+              >
+                <Avatar className="size-7 shrink-0 border border-[var(--border)]">
+                  <AvatarImage
+                    src={organizerProfileQuery.data?.picture}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                  />
+                  <AvatarFallback>
+                    <UserRound
+                      className="size-4 text-[var(--text-muted)]"
+                      aria-hidden="true"
+                    />
+                  </AvatarFallback>
+                </Avatar>
+                <span className="min-w-0 break-words">
+                  Organized by{" "}
+                  <span className="font-medium text-[var(--text-primary)]">
+                    {organizerName}
+                  </span>
+                </span>
               </div>
             }
             actions={
               <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={refreshing}
-                  onClick={() => void onRefresh()}
-                >
-                  <RefreshCw
-                    className={refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"}
-                  />
-                  Refresh
-                </Button>
                 <Button type="button" variant="outline" size="sm" asChild>
-                  <a
-                    href={getEventMarketUrl(market.naddr)}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
+                  <a href={shopperUrl} target="_blank" rel="noreferrer">
                     <ExternalLink /> Shopper page
                   </a>
                 </Button>
@@ -304,57 +290,77 @@ export function MerchantEventMarketPanel({
                 />
               </>
             }
-            shareUrl={getEventMarketUrl(market.naddr)}
+            shareUrl={shopperUrl}
             shareTitle={market.title}
-          >
-            <div className="flex flex-wrap items-center gap-2">
-              {actionability.visibility !== "silent" ? (
-                <Badge variant={actionability.tone}>
-                  {actionability.label}
-                </Badge>
-              ) : null}
-              <Badge variant="outline">Published by organizer</Badge>
-            </div>
-            {actionability.visibility !== "silent" ? (
-              <p
-                className={actionabilityClassName(actionability)}
-                role={actionability.role}
-                data-testid="merchant-event-actionability-status"
-              >
-                {actionability.visibility === "prominent" ? (
-                  <span className="sr-only">{actionability.label}: </span>
-                ) : null}
-                {actionability.message}
-              </p>
-            ) : null}
-            {relayCoverage ? (
-              <details className="text-xs text-[var(--text-muted)]">
-                <summary className="w-fit cursor-pointer rounded-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
-                  Technical details
-                </summary>
-                <p
-                  className="mt-2 text-pretty tabular-nums"
-                  data-testid="merchant-event-relay-read-coverage"
-                >
-                  {relayCoverage}
-                </p>
-              </details>
-            ) : null}
-          </EventPageHeader>
+          />
 
-          <Card>
-            <CardContent className="grid gap-5 pt-6">
-              <section className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-                <h2 className="text-sm font-medium text-[var(--text-primary)]">
-                  Pickup
+          {publisherControls}
+
+          <section
+            className="rounded-2xl border border-[var(--border)] p-5"
+            aria-labelledby="event-sellers-title"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2
+                  id="event-sellers-title"
+                  className="text-balance text-lg font-semibold text-[var(--text-primary)]"
+                >
+                  Sellers at this event
                 </h2>
-                <p className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-                  {getPickupSummary(market)}
+                <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
+                  Merchants with products accepted by the organizer.
                 </p>
-              </section>
-              {publisherControls}
-            </CardContent>
-          </Card>
+              </div>
+              <Button asChild variant="outline" size="sm">
+                <a href={shopperUrl} target="_blank" rel="noreferrer">
+                  <ExternalLink aria-hidden="true" />
+                  View products
+                </a>
+              </Button>
+            </div>
+
+            {sellerPubkeys.length > 0 ? (
+              <ul className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {sellerPubkeys.map((sellerPubkey) => {
+                  const profile = sellerProfiles.getProfile(sellerPubkey)
+                  const sellerName = getProfileDisplayLabel(
+                    profile,
+                    sellerPubkey,
+                    { lookupSettled: sellerProfiles.lookupSettled }
+                  )
+                  return (
+                    <li
+                      key={sellerPubkey}
+                      data-testid="merchant-event-seller"
+                      className="flex min-w-0 items-center gap-3 rounded-xl bg-[var(--surface-elevated)] p-3"
+                    >
+                      <Avatar className="size-10 shrink-0 border border-[var(--border)]">
+                        <AvatarImage
+                          src={profile?.picture}
+                          alt=""
+                          referrerPolicy="no-referrer"
+                        />
+                        <AvatarFallback>
+                          <UserRound
+                            className="size-5 text-[var(--text-muted)]"
+                            aria-hidden="true"
+                          />
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="min-w-0 truncate text-sm font-medium text-[var(--text-primary)]">
+                        {sellerName}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            ) : (
+              <p className="mt-4 text-pretty text-sm text-[var(--text-muted)]">
+                No participating sellers are listed yet.
+              </p>
+            )}
+          </section>
         </div>
       )}
 

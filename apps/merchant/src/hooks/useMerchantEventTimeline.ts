@@ -46,6 +46,8 @@ import { merchantEventTimelineQueryOptions } from "../lib/merchant-event-query"
 export const CONDUIT_MARKET_PERSPECTIVE_PUBKEY =
   "9d92077c5e35af76f7b1cd84738000b7bafb43d20b0a26c18fe29fa838d27146"
 
+export const MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS = 60_000
+
 export interface MerchantEventTimelineDiscovery {
   network: PerspectiveEventMarketDiscoveryResult | undefined
   items: MerchantEventTimelineItem[]
@@ -121,7 +123,9 @@ export function useMerchantEventTimeline(input: {
     retry: false,
     refetchInterval: (query) => {
       const data = query.state.data as FollowListResult | undefined
-      return data && !data.meta.eventObserved ? 5_000 : false
+      return data && !data.meta.eventObserved
+        ? 5_000
+        : MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS
     },
   })
   const retainedFollowingQuery = useQuery({
@@ -182,6 +186,7 @@ export function useMerchantEventTimeline(input: {
     enabled: conduitEnabled,
     staleTime: 60_000,
     retry: false,
+    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
   const conduitAuthors = conduitQuery.data?.meta.eventObserved
     ? conduitQuery.data.data
@@ -357,6 +362,7 @@ export function useMerchantEventTimeline(input: {
       session.relaySettingsReady &&
       !!merchantPubkey &&
       authorPubkeys !== undefined,
+    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
 
   const ownedQueryKey = [
@@ -385,6 +391,7 @@ export function useMerchantEventTimeline(input: {
     enabled: session.relaySettingsReady && !!merchantPubkey,
     retry: false,
     staleTime: 30_000,
+    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
 
   const productsQuery = useQuery({
@@ -405,6 +412,7 @@ export function useMerchantEventTimeline(input: {
     enabled: session.relaySettingsReady && !!merchantPubkey,
     retry: false,
     staleTime: 60_000,
+    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
   const sellingCollectionCoordinates = useMemo(
     () =>
@@ -475,6 +483,7 @@ export function useMerchantEventTimeline(input: {
       exactReferences.length > 0,
     retry: false,
     staleTime: 30_000,
+    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
 
   const perspectiveMarkets = useMemo(

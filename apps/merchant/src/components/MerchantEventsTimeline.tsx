@@ -172,12 +172,11 @@ export function MerchantEventsTimeline({
     maxUnresolvedRefetches: 1,
     relayHintsByPubkey: discovery.profileRelayHintsByPubkey,
   })
-  const discoveryTruncated = discovery.network?.perspective.truncated === true
   const discoveryComplete =
     !!discovery.network &&
     ["complete", "complete_empty"].includes(discovery.network.state) &&
     !discovery.isRefreshStale &&
-    !discoveryTruncated
+    discovery.network.perspective.truncated !== true
   const resultPresentation = getResultPresentation({
     resultCount: discovery.items.length,
     visibleResultCount: filteredItems.length,
@@ -190,6 +189,7 @@ export function MerchantEventsTimeline({
       const viewport = timelineViewportRef.current
       const nowAnchor = nowAnchorRef.current
       if (!viewport || !nowAnchor) return
+      const hasSavedPosition = timelineViewportPositions.has(viewportKey)
       const saved = timelineViewportPositions.get(viewportKey)
       viewport.scrollTop = saved
         ? saved.scrollTop
@@ -199,10 +199,20 @@ export function MerchantEventsTimeline({
               nowAnchor.getBoundingClientRect().top -
               viewport.getBoundingClientRect().top
           )
-      restoredViewportKeyRef.current = viewportKey
+      // Progressive discovery can prepend past events after the first useful
+      // result. Keep Now anchored until that initial read settles, then leave
+      // subsequent background refreshes alone so they never steal the scroll.
+      if (hasSavedPosition || !discovery.isFetching) {
+        restoredViewportKeyRef.current = viewportKey
+      }
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [filteredItems.length, viewportKey])
+  }, [
+    discovery.isFetching,
+    filteredItems.length,
+    presentation.past.length,
+    viewportKey,
+  ])
 
   useLayoutEffect(() => {
     const previousTop = pendingPrependAnchorTopRef.current
@@ -294,45 +304,35 @@ export function MerchantEventsTimeline({
             </SegmentedControlItem>
           ))}
         </SegmentedControl>
-        <p
-          className="text-sm tabular-nums text-[var(--text-muted)]"
-          aria-live="polite"
-        >
-          {discovery.isInitialLoading
-            ? "Loading events"
-            : `${filteredItems.length} ${filteredItems.length === 1 ? "event" : "events"}`}
-        </p>
-      </div>
-
-      {!discovery.isInitialLoading &&
-      !discoveryComplete &&
-      discovery.items.length > 0 ? (
-        <div
-          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm"
-          role="status"
-        >
-          <div className="min-w-0">
-            <p className="font-semibold text-[var(--text-primary)]">
-              Timeline may be incomplete
-            </p>
-            <p className="mt-1 text-pretty text-[var(--text-secondary)]">
-              {discoveryTruncated
-                ? "Discovery reached its current limit, so more events may exist beyond this timeline."
-                : "Some event sources could not be fully refreshed. Events already shown remain available, and more may appear after retrying."}
-            </p>
-          </div>
+        <div className="flex items-center gap-2">
+          <p
+            className="text-sm tabular-nums text-[var(--text-muted)]"
+            aria-live="polite"
+          >
+            {discovery.isInitialLoading
+              ? "Loading events"
+              : `${filteredItems.length} ${filteredItems.length === 1 ? "event" : "events"}`}
+          </p>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             size="sm"
+            aria-label="Refresh events"
             disabled={discovery.isFetching}
             onClick={discovery.refetch}
           >
-            <RefreshCw className="size-4" aria-hidden="true" />
-            {discovery.isFetching ? "Refreshing…" : "Retry"}
+            <RefreshCw
+              className={cn(
+                "size-4",
+                discovery.isFetching &&
+                  "animate-spin motion-reduce:animate-none"
+              )}
+              aria-hidden="true"
+            />
+            Refresh
           </Button>
         </div>
-      ) : null}
+      </div>
 
       {discovery.isInitialLoading ? (
         <div className="space-y-5" role="status" aria-label="Loading events">

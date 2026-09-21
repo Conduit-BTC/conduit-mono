@@ -39,10 +39,10 @@ function NewEventPage() {
 
   return (
     <div className="mx-auto max-w-[68rem] space-y-6 py-2 sm:py-6">
-      <Button asChild variant="ghost" size="sm">
+      <Button asChild variant="outline" className="w-fit">
         <Link to="/events" search={{}}>
           <ArrowLeft aria-hidden="true" />
-          All events
+          Back to events
         </Link>
       </Button>
 
@@ -51,10 +51,8 @@ function NewEventPage() {
         organizerPubkey={merchantPubkey}
         authenticatedPubkey={authenticatedPubkey}
         shouldContinue={shouldContinue}
-        embedded
         startCreate
         onPublished={openEvent}
-        onSelected={openEvent}
         onCreateDismiss={closeCreation}
       />
     </div>

@@ -14,15 +14,23 @@ async function source(path: string): Promise<string> {
 
 describe("Merchant live account authority", () => {
   it("combines query cancellation with the mounted account generation", async () => {
-    const [dashboard, orders, products, events, shipping, readiness] =
-      await Promise.all([
-        source("apps/merchant/src/routes/index.tsx"),
-        source("apps/merchant/src/routes/orders.tsx"),
-        source("apps/merchant/src/routes/products.tsx"),
-        source("apps/merchant/src/routes/events.tsx"),
-        source("apps/merchant/src/routes/shipping.tsx"),
-        source("apps/merchant/src/hooks/useMerchantReadiness.ts"),
-      ])
+    const [
+      dashboard,
+      orders,
+      products,
+      events,
+      eventTimeline,
+      shipping,
+      readiness,
+    ] = await Promise.all([
+      source("apps/merchant/src/routes/index.tsx"),
+      source("apps/merchant/src/routes/orders.tsx"),
+      source("apps/merchant/src/routes/products.tsx"),
+      source("apps/merchant/src/routes/events.tsx"),
+      source("apps/merchant/src/hooks/useMerchantEventTimeline.ts"),
+      source("apps/merchant/src/routes/shipping.tsx"),
+      source("apps/merchant/src/hooks/useMerchantReadiness.ts"),
+    ])
 
     const generationGuard =
       /!signal\.aborted && authGenerationRef\.current === authGeneration/g
@@ -31,7 +39,13 @@ describe("Merchant live account authority", () => {
     expect(products.match(generationGuard)).toHaveLength(5)
     expect(
       events.match(/!signal\.aborted && shouldContinue\(\)/g)
-    ).toHaveLength(5)
+    ).toHaveLength(1)
+    expect(
+      events.match(
+        /shouldContinue\(\) && queryScopeTokenRef\.current === queryScopeToken/g
+      )
+    ).toHaveLength(2)
+    expect(eventTimeline.match(generationGuard)).toHaveLength(5)
     expect(shipping.match(generationGuard)).toHaveLength(1)
     expect(readiness.match(generationGuard)).toHaveLength(1)
   })
@@ -81,7 +95,7 @@ describe("Merchant live account authority", () => {
       hook.match(
         /!signal.aborted && authGenerationRef.current === authGeneration/g
       )
-    ).toHaveLength(6)
+    ).toHaveLength(5)
     expect(hook).toMatch(
       /session.relayScope[\s\S]{0,80}authenticatedPubkey,[\s\S]{0,30}authGeneration/
     )

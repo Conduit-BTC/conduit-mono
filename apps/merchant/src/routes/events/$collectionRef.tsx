@@ -51,10 +51,10 @@ function EventDetailPage() {
   if (!eventReference || !canonicalReference) {
     return (
       <div className="mx-auto max-w-[68rem] space-y-6 py-2 sm:py-6">
-        <Button asChild variant="ghost" size="sm">
+        <Button asChild variant="outline" className="w-fit">
           <Link to="/events" search={{}}>
             <ArrowLeft aria-hidden="true" />
-            All events
+            Back to events
           </Link>
         </Button>
         <Card>
@@ -94,10 +94,10 @@ function EventDetailPage() {
 
   return (
     <div className="mx-auto max-w-[68rem] space-y-6 py-2 sm:py-6">
-      <Button asChild variant="ghost" size="sm">
+      <Button asChild variant="outline" className="w-fit">
         <Link to="/events" search={{}}>
           <ArrowLeft aria-hidden="true" />
-          All events
+          Back to events
         </Link>
       </Button>
 
@@ -106,9 +106,7 @@ function EventDetailPage() {
           key={`${merchantPubkey}:${canonicalReference}`}
           organizerPubkey={merchantPubkey}
           initialReference={canonicalReference}
-          embedded
           onPublished={openEvent}
-          onSelected={openEvent}
           authenticatedPubkey={authenticatedPubkey}
           shouldContinue={shouldContinue}
         />
@@ -119,7 +117,6 @@ function EventDetailPage() {
           authenticatedPubkey={authenticatedPubkey}
           shouldContinue={shouldContinue}
           initialReference={canonicalReference}
-          embedded
         />
       )}
     </div>

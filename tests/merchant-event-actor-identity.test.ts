@@ -55,7 +55,7 @@ describe("Merchant event actor identity", () => {
         (match) => match[1]!
       )
     )
-    expect(reads).toHaveLength(6)
+    expect(reads).toHaveLength(7)
     for (const options of reads) {
       expect(options).toMatch(/accountPubkey[,:]/)
       expect(options).toContain("authenticatedPubkey,")

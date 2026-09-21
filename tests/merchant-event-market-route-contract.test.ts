@@ -169,9 +169,12 @@ describe("merchant organizer event market route", () => {
   })
 
   it("keeps protocol behavior behind the Merchant adapter", async () => {
-    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const [route, timelineHook] = await Promise.all([
+      Bun.file("apps/merchant/src/routes/events.tsx").text(),
+      Bun.file("apps/merchant/src/hooks/useMerchantEventTimeline.ts").text(),
+    ])
 
-    expect(route).toContain("listOrganizerEventMarkets")
+    expect(timelineHook).toContain("listOrganizerEventMarkets")
     expect(route).toContain("publishMerchantOrganizerEventMarket")
     expect(route).toContain("publishMerchantOrganizerMembership")
     expect(route).toContain("retryMerchantOrganizerRecord")
@@ -200,8 +203,11 @@ describe("merchant organizer event market route", () => {
     expect(detailRoute).toContain(
       "authGenerationRef.current === authGeneration"
     )
-    expect(route).toContain("queryFn: ({ signal }) =>")
+    expect(route).toContain("merchantEventMarketQueryOptions(")
     expect(route).toContain("queryFn: async ({ signal }) =>")
+    expect(route).toContain(
+      "shouldContinue: () => !signal.aborted && shouldContinue()"
+    )
     expect(route).toContain("shouldContinue,")
     expect(route).toMatch(
       /publishMerchantOrganizerEventMarket\(\{\r?\n\s+organizerPubkey,\r?\n\s+authenticatedPubkey,\r?\n\s+shouldContinue,/
@@ -249,8 +255,15 @@ describe("merchant organizer event market route", () => {
     expect(timeline).not.toContain('saved: "Saved"')
     expect(timeline).toContain("<MerchantEventTimelineEntry")
     expect(timeline).not.toContain("Open a known event")
+    expect(timeline).not.toContain("Timeline may be incomplete")
+    expect(timeline).not.toContain("Discovery reached its current limit")
+    expect(timeline).toContain('aria-label="Refresh events"')
     expect(route).toContain("merchantEventMarketQueryOptions")
     expect(panel).toContain("Sell at this event")
+    expect(panel).toContain("Sellers at this event")
+    expect(panel).not.toContain("Published by organizer")
+    expect(panel).not.toContain("Technical details")
+    expect(panel).not.toContain("formatEventRelayReadCoverage")
     expect(panel).toContain("isParticipationProductAvailable")
     expect(panel).toContain("eventMarketRequiredRecordsResolved")
     expect(panel).toContain("<EventProductPublisherDialog")
@@ -283,11 +296,14 @@ describe("merchant organizer event market route", () => {
     expect(adapter).toContain("discoverFollowedOrganizerEventMarkets")
     expect(core).toContain('projection: "discovery"')
     expect(core).toContain("FOLLOWED_EVENT_MARKET_READ_CONCURRENCY = 4")
-    expect(route).toContain("getResultPresentation")
+    expect(route).not.toContain("getResultPresentation")
     expect(core).toContain("FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT = 128")
     expect(core).toContain("kinds: [EVENT_KINDS.PRODUCT_COLLECTION]")
     expect(core).not.toContain("FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT")
     expect(timelineHook).toContain("merchantEventTimelineQueryOptions(")
+    expect(timelineHook).toContain(
+      "MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS"
+    )
     expect(query).toContain("discoverPerspectiveEventMarkets")
     expect(timelineHook).toContain("includeEnded: true")
     expect(timelineHook).toContain("resolveEventMarketPerspectiveAuthorPubkeys")
@@ -334,25 +350,52 @@ describe("merchant organizer event market route", () => {
     expect(route).not.toContain("selectedFromDiscovery")
   })
 
+  it("keeps the initial timeline centered on Now while progressive results arrive", async () => {
+    const timeline = await Bun.file(
+      "apps/merchant/src/components/MerchantEventsTimeline.tsx"
+    ).text()
+
+    expect(timeline).toContain("!discovery.isFetching")
+    expect(timeline).toContain("presentation.past.length")
+    expect(timeline).toContain("timelineViewportPositions.has(viewportKey)")
+  })
+
+  it("keeps ordinary event pages focused on people and actions", async () => {
+    const [detailRoute, organizerPanel] = await Promise.all([
+      Bun.file("apps/merchant/src/routes/events/$collectionRef.tsx").text(),
+      Bun.file(
+        "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
+      ).text(),
+    ])
+
+    expect(detailRoute).toContain("Back to events")
+    expect(detailRoute).not.toContain(">\n            All events\n")
+    expect(organizerPanel).not.toContain("Refresh evidence")
+    expect(organizerPanel).not.toContain("Technical details")
+    expect(organizerPanel).not.toContain("formatEventRelayReadCoverage")
+  })
+
   it("keeps exact selections URL-backed and prevents stale organizer actions", async () => {
     const [route, newRoute, detailRoute] = await Promise.all([
       Bun.file("apps/merchant/src/routes/events.tsx").text(),
       Bun.file("apps/merchant/src/routes/events/new.tsx").text(),
       Bun.file("apps/merchant/src/routes/events/$collectionRef.tsx").text(),
     ])
-    const routeSources = `${route}\n${newRoute}\n${detailRoute}`
     const panel = await Bun.file(
       "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
     ).text()
 
-    expect(routeSources.match(/onSelected={openEvent}/g)).toHaveLength(2)
-    expect(route).toContain("onSelected?.(selected)")
-    expect(route).toContain("onSelected?.(reference)")
+    expect(detailRoute).toContain('to: "/events/$collectionRef"')
+    expect(detailRoute).toContain("params: { collectionRef: nextReference }")
+    expect(newRoute).toContain('to: "/events/$collectionRef"')
+    expect(route).not.toContain("embedded")
+    expect(route).not.toContain("onSelected")
+    expect(route).not.toContain("Open an organizer catalog")
+    expect(route).not.toContain("merchant-followed-event-markets")
     expect(route).toContain(
       "shouldResolveSelectedReference && !selectedSettledRead"
     )
     expect(route).toContain("!selectedReferenceResolutionPending &&")
-    expect(route).toContain("enabled: !!organizerPubkey && !embedded")
     expect(route).toContain("compact")
     expect(panel).toContain("compact = false")
     expect(panel).toContain("{compact ? (")
@@ -372,15 +415,17 @@ describe("merchant organizer event market route", () => {
       'if (record.record === "collection") setPublishState("publishing")'
     )
     expect(editor).toContain("Everything here is published publicly")
-    expect(route).toContain("organizerCatalogPresentation")
-    expect(route).toContain("Events couldn't be loaded")
-    expect(route).toContain("Retry to check for events")
+    expect(route).not.toContain("organizerCatalogPresentation")
+    expect(route).not.toContain("Open an organizer catalog")
+    expect(route).toContain("Event details couldn't be confirmed")
+    expect(route).toContain("Retry event details")
     expect(panel).toContain("acknowledged")
     expect(panel).toContain("rejected")
     expect(panel).toContain("timed out")
     expect(panel).toContain("Retry delivery")
     expect(panel).toContain("Pending request")
-    expect(panel).toContain("label={actionability.label}")
+    expect(panel).not.toContain("getEventActionabilityPresentation")
+    expect(panel).not.toContain("Refresh evidence")
     expect(panel).toContain(
       'removable ? "Remove" : canAccept ? "Accept" : "Cannot accept"'
     )
@@ -395,15 +440,13 @@ describe("merchant organizer event market route", () => {
     expect(panel).toContain(
       "The exact signed product preview is unavailable or no longer matches this request."
     )
-    expect(panel).toContain("organizer-owned collection coordinate")
+    expect(panel).not.toContain("organizer-owned collection coordinate")
     expect(route).toContain("loadOrganizerEventMarketDeliveryOutbox")
     expect(route).toContain("saveOrganizerEventMarketDelivery")
     expect(
       route.match(/findSavedOrganizerEventMarketReference/g)?.length
     ).toBeGreaterThanOrEqual(4)
-    expect(route).toMatch(
-      /setSelectedReference\(reference\)\r?\n\s+onSelected\?\.\(reference\)/
-    )
+    expect(route).toContain("onPublished?.(reference)")
   })
 
   it("hydrates merchant identity without changing organizer acceptance authority", async () => {

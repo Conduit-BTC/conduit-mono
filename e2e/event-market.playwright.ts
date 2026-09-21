@@ -911,11 +911,12 @@ async function publishOrganizerMarket(
   options: {
     title: string
     organizerHandoffEnabled: boolean
+    identity?: "organizer" | "merchant"
     beforePublish?: (start: number) => void
     afterEditorClosed?: () => Promise<void>
   }
 ): Promise<PublishedOrganizerMarket> {
-  await gotoAs(page, merchantUrl, "/events", "organizer")
+  await gotoAs(page, merchantUrl, "/events", options.identity ?? "organizer")
   await expect(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
@@ -1089,7 +1090,7 @@ test("signed-out merchant participation preserves the exact event through auth @
       return { pathname: url.pathname, event: url.searchParams.get("event") }
     })
     .toEqual({ pathname: `/events/${eventNaddr}`, event: null })
-  await expect(page.getByRole("link", { name: "All events" })).toBeVisible()
+  await expect(page.getByRole("link", { name: "Back to events" })).toBeVisible()
 })
 
 test("Market sends sellers to the canonical Merchant event route @market @merchant", async ({
@@ -1207,6 +1208,225 @@ test("Merchant event timeline uses combined discovery with relationship, mobile,
     .toBe(true)
 })
 
+test("Merchant event timeline stays centered on Now as past events arrive @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(30_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const pastTemplate = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Progressive Past 1",
+    organizerHandoffEnabled: false,
+  })
+  const futureTemplate = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Progressive Future 1",
+    organizerHandoffEnabled: false,
+    identity: "merchant",
+  })
+
+  const cloneMarket = (
+    calendarTemplate: SignedEvent,
+    collectionTemplate: SignedEvent,
+    secret: Uint8Array,
+    identifier: string,
+    title: string,
+    start: string,
+    end: string,
+    createdAt: number
+  ) => {
+    const calendar = signEvent(secret, {
+      kind: calendarTemplate.kind,
+      created_at: createdAt,
+      content: calendarTemplate.content,
+      tags: calendarTemplate.tags.map((tag) => {
+        if (tag[0] === "d") return ["d", `${identifier}-calendar`]
+        if (tag[0] === "title") return ["title", title]
+        if (tag[0] === "start") return ["start", start]
+        if (tag[0] === "end") return ["end", end]
+        return tag
+      }),
+    })
+    const collection = signEvent(secret, {
+      kind: collectionTemplate.kind,
+      created_at: createdAt + 1,
+      content: collectionTemplate.content,
+      tags: collectionTemplate.tags.map((tag) => {
+        if (tag[0] === "d") return ["d", identifier]
+        if (
+          tag[0] === "a" &&
+          (tag[1]?.startsWith("31922:") || tag[1]?.startsWith("31923:"))
+        ) {
+          return ["a", eventCoordinate(calendar)]
+        }
+        return tag
+      }),
+    })
+    return [calendar, collection]
+  }
+
+  const baseCreatedAt = futureTemplate.initialCollection.created_at + 20
+  const pastMarkets = Array.from({ length: 5 }, (_, index) =>
+    cloneMarket(
+      pastTemplate.calendarEvent,
+      pastTemplate.initialCollection,
+      ORGANIZER_SECRET,
+      `progressive-past-${index + 2}`,
+      `Synthetic Progressive Past ${index + 2}`,
+      `2020-01-${String(index + 2).padStart(2, "0")}`,
+      `2020-01-${String(index + 3).padStart(2, "0")}`,
+      baseCreatedAt + index * 2
+    )
+  ).flat()
+  const futureMarkets = Array.from({ length: 4 }, (_, index) =>
+    cloneMarket(
+      futureTemplate.calendarEvent,
+      futureTemplate.initialCollection,
+      MERCHANT_SECRET,
+      `progressive-future-${index + 2}`,
+      `Synthetic Progressive Future ${index + 2}`,
+      `2099-09-${String(index + 2).padStart(2, "0")}`,
+      `2099-09-${String(index + 3).padStart(2, "0")}`,
+      baseCreatedAt + 20 + index * 2
+    )
+  ).flat()
+  const revisedPastCalendar = signEvent(ORGANIZER_SECRET, {
+    kind: pastTemplate.calendarEvent.kind,
+    created_at: baseCreatedAt + 40,
+    content: pastTemplate.calendarEvent.content,
+    tags: pastTemplate.calendarEvent.tags.map((tag) =>
+      tag[0] === "start"
+        ? ["start", "2020-01-01"]
+        : tag[0] === "end"
+          ? ["end", "2020-01-02"]
+          : tag
+    ),
+  })
+  relay.seed(
+    ...pastMarkets,
+    ...futureMarkets,
+    revisedPastCalendar,
+    createFollowList("merchant", [ORGANIZER_PUBKEY], baseCreatedAt + 60)
+  )
+
+  const heldPastDiscovery = relay.holdRelayRequests((request) =>
+    request.filters.some(
+      (filter) =>
+        filter.authors?.includes(ORGANIZER_PUBKEY) &&
+        filter.kinds?.includes(30405)
+    )
+  )
+  await page.setViewportSize({ width: 390, height: 844 })
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await expect(
+    page.getByRole("button", { name: /^Open Synthetic Progressive Future 1\./ })
+  ).toBeVisible({ timeout: 30_000 })
+  await heldPastDiscovery.captured
+  heldPastDiscovery.release()
+  await expect(
+    page.getByRole("button", { name: /^Open Synthetic Progressive Past 1\./ })
+  ).toBeAttached({ timeout: 30_000 })
+
+  const timelineViewport = page.getByRole("region", {
+    name: "Chronological events",
+  })
+  await expect
+    .poll(async () =>
+      timelineViewport.evaluate((viewport) => {
+        const now = viewport.querySelector<HTMLElement>(
+          '[role="separator"][aria-label="Now"]'
+        )
+        if (!now) return 0
+        return viewport.scrollTop
+      })
+    )
+    .toBeGreaterThan(100)
+  await expect
+    .poll(async () =>
+      timelineViewport.evaluate((viewport) => {
+        const now = viewport.querySelector<HTMLElement>(
+          '[role="separator"][aria-label="Now"]'
+        )
+        if (!now) return Number.POSITIVE_INFINITY
+        return Math.abs(
+          now.getBoundingClientRect().top - viewport.getBoundingClientRect().top
+        )
+      })
+    )
+    .toBeLessThan(24)
+})
+
+test("Merchant event detail presents organizer and accepted sellers without technical chrome @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(30_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Seller Directory Event",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "seller-directory-product",
+    title: "Synthetic Seller Directory Product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  const accepted = await acceptMerchantProduct(
+    page,
+    relay,
+    product,
+    market.collectionCoordinate
+  )
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 0,
+      created_at: accepted.created_at + 1,
+      tags: [],
+      content: JSON.stringify({
+        name: "Synthetic Event Organizer",
+        picture:
+          "https://cdn.conduit.market/conduit-test/organizer-profile.svg",
+      }),
+    }),
+    signEvent(MERCHANT_SECRET, {
+      kind: 0,
+      created_at: accepted.created_at + 2,
+      tags: [],
+      content: JSON.stringify({
+        name: "Synthetic Accepted Seller",
+        picture: "https://cdn.conduit.market/conduit-test/seller-profile.svg",
+      }),
+    })
+  )
+
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "buyer")
+  const organizer = page.getByTestId("merchant-event-organizer")
+  await expect(organizer).toContainText("Synthetic Event Organizer", {
+    timeout: 30_000,
+  })
+  await expect(organizer.locator("img")).toHaveAttribute(
+    "src",
+    /organizer-profile\.svg/
+  )
+  const sellers = page.getByRole("region", {
+    name: "Sellers at this event",
+  })
+  await expect(sellers).toContainText("Synthetic Accepted Seller", {
+    timeout: 30_000,
+  })
+  await expect(
+    sellers.getByTestId("merchant-event-seller").locator("img")
+  ).toHaveAttribute("src", /seller-profile\.svg/)
+  await expect(page.getByText("Published by organizer")).toHaveCount(0)
+  await expect(page.getByText("Technical details")).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Refresh", exact: true })
+  ).toHaveCount(0)
+})
+
 test("organizer discovery offers empty-read recovery without losing retained events or claiming absence @merchant", async ({
   page,
 }) => {
@@ -1234,7 +1454,7 @@ test("organizer discovery offers empty-read recovery without losing retained eve
     title,
     organizerHandoffEnabled: false,
   })
-  await page.getByRole("link", { name: "All events", exact: true }).click()
+  await page.getByRole("link", { name: "Back to events", exact: true }).click()
   await expect(
     page.getByRole("button", { name: new RegExp(`^Open ${title}\\.`) })
   ).toBeVisible({ timeout: 30_000 })
@@ -1938,7 +2158,7 @@ async function acceptMerchantProduct(
   expect(productTitle).toBeTruthy()
   expect(productSummary).toBeTruthy()
   relay.seed(productEvent)
-  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  await refreshOrganizerMarketRead(page)
   const productPreview = page
     .getByTestId("organizer-product-preview")
     .filter({ hasText: productTitle! })
@@ -2001,7 +2221,10 @@ async function acceptMerchantProduct(
 }
 
 async function selectOrganizerMarket(page: Page, title: string): Promise<void> {
-  const allEvents = page.getByRole("link", { name: "All events", exact: true })
+  const allEvents = page.getByRole("link", {
+    name: "Back to events",
+    exact: true,
+  })
   if (new URL(page.url()).pathname !== "/events") {
     await expect(allEvents).toBeVisible({ timeout: 30_000 })
     await allEvents.click()
@@ -2017,6 +2240,13 @@ async function selectOrganizerMarket(page: Page, title: string): Promise<void> {
   await expect(
     page.getByRole("heading", { name: title, exact: true }).first()
   ).toBeVisible()
+}
+
+async function refreshOrganizerMarketRead(page: Page): Promise<void> {
+  await page.reload({ waitUntil: "domcontentloaded" })
+  await expect(
+    page.getByRole("link", { name: "Back to events", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
 }
 
 test.use({
@@ -2777,7 +3007,7 @@ test("event membership and retry completions stay bound to their initiating even
   relay.seed(product)
 
   await selectOrganizerMarket(page, "Synthetic Race Event A")
-  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  await refreshOrganizerMarketRead(page)
   await expect(page.getByText("Pending request", { exact: true })).toBeVisible()
 
   const membershipAck = relay.holdNextPublicationAck(
@@ -2970,7 +3200,7 @@ test("keeps consecutive membership actions available while acknowledged collecti
     createdAt: market.initialCollection.created_at + 2,
   })
   relay.seed(firstProduct, secondProduct)
-  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  await refreshOrganizerMarketRead(page)
 
   const participationRow = (title: string) =>
     page
@@ -3052,7 +3282,7 @@ test("keeps exact collection retry available while rejected membership readback 
     createdAt: market.initialCollection.created_at + 1,
   })
   relay.seed(requestedProduct)
-  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  await refreshOrganizerMarketRead(page)
 
   const participationRow = page
     .getByTestId("organizer-product-preview")
@@ -3480,7 +3710,7 @@ test("terminal event deletion removes the exact-record retry path @merchant", as
     })
   )
   const publicationCount = relay.publications.length
-  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  await refreshOrganizerMarketRead(page)
 
   await expect(
     page.getByRole("heading", { name: "Event deleted", exact: true })
@@ -3491,7 +3721,7 @@ test("terminal event deletion removes the exact-record retry path @merchant", as
   await expect(
     page.getByRole("heading", { name: "Event deleted", exact: true })
   ).toBeVisible({ timeout: 30_000 })
-  await page.getByRole("link", { name: "All events", exact: true }).click()
+  await page.getByRole("link", { name: "Back to events", exact: true }).click()
   await expect(
     page.getByRole("button", {
       name: /^Open Synthetic Deleted Retry Event\./,
@@ -3543,13 +3773,7 @@ test("organizer actions wait for an initial hinted read and use its newer collec
   await expect(updateEvent).toBeEnabled({ timeout: 30_000 })
 
   relay.seed(requestedProduct)
-  const refreshEvidence = page.getByRole("button", {
-    name: "Refresh evidence",
-    exact: true,
-  })
-  await refreshEvidence.click()
-  await expect(refreshEvidence).toBeDisabled()
-  await expect(refreshEvidence).toBeEnabled({ timeout: 30_000 })
+  await refreshOrganizerMarketRead(page)
   const acceptRequest = page.getByRole("button", {
     name: "Accept",
     exact: true,
@@ -3664,7 +3888,7 @@ test("a newer external collection can remove the organizer pickup without leavin
     content: market.initialCollection.content,
   })
   relay.seed(pickupRemovedCollection)
-  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  await refreshOrganizerMarketRead(page)
 
   await expect(
     page.getByText("Organizer handoff not offered", { exact: true })
@@ -3705,7 +3929,7 @@ test("a newer external collection can replace its calendar without inheriting th
     content: market.initialCollection.content,
   })
   relay.seed(replacementCalendar, replacementCollection)
-  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  await refreshOrganizerMarketRead(page)
 
   await expect(page.getByText("Event loaded", { exact: true })).toHaveCount(0)
   await expect(
@@ -3798,7 +4022,7 @@ test("membership updates retain externally replaced children and retire removed 
     content: acceptedCollection.content,
   })
   relay.seed(pickupRemovedCollection)
-  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  await refreshOrganizerMarketRead(page)
   await expect(
     page.getByText("Organizer handoff not offered", { exact: true })
   ).toBeVisible({ timeout: 30_000 })
@@ -6923,7 +7147,7 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   // the independent organizer starts a new edit; cached-only child evidence
   // must not be used as fresh authority for the recovery phase.
   relay.seed(removedCollection)
-  await concurrentPage.getByRole("button", { name: "Refresh evidence" }).click()
+  await refreshOrganizerMarketRead(concurrentPage)
   await expect(acceptAgain).toBeEnabled({ timeout: 30_000 })
 
   const restoreAck = relay.holdNextPublicationAck(
@@ -6947,7 +7171,7 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   expect(concurrentBrowserErrors.consoleErrors).toEqual([])
   await concurrentContext.close()
 
-  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  await refreshOrganizerMarketRead(page)
   await expect(queue).toBeVisible({ timeout: 30_000 })
   await expect(acknowledge).toBeEnabled({ timeout: 30_000 })
 
@@ -7147,9 +7371,7 @@ test("open overtime event closes into history and reopens without changing picku
     pastCalendar,
     createFollowList("buyer", [ORGANIZER_PUBKEY], accepted.created_at + 1)
   )
-  await page
-    .getByRole("button", { name: "Refresh evidence", exact: true })
-    .click()
+  await refreshOrganizerMarketRead(page)
   await expect(
     page.getByRole("button", { name: "Close event", exact: true })
   ).toBeEnabled()

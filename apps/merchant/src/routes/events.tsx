@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { CalendarDays, Loader2, Plus, Search } from "lucide-react"
+import { Loader2, Plus } from "lucide-react"
 import { createFileRoute, Outlet, useNavigate } from "@tanstack/react-router"
 import {
   useIsMutating,
@@ -21,14 +21,6 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-  getResultPresentation,
-  Input,
-  Label,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
   SignedActionStatus,
   Skeleton,
   type SignedActionStatusState,
@@ -45,8 +37,6 @@ import {
   OrganizerEventMarketPanel,
 } from "../components/OrganizerEventMarketPanel"
 import {
-  listOrganizerEventMarkets,
-  discoverFollowedEventMarkets,
   loadOrganizerEventMarketDeliveryOutbox,
   mergeOrganizerEventMarketDeliveryState,
   organizerEventMarketReferenceWithAllDeliveryRelayHints,
@@ -57,13 +47,11 @@ import {
   publishMerchantOrganizerEventMarket,
   publishMerchantOrganizerMembership,
   publishMerchantOrganizerOrderAcceptance,
-  retainMerchantOrganizerEventMarkets,
   reconcileAcknowledgedMerchantOrganizerCollectionEvidence,
   resolveOrganizerEventMarket,
   retryMerchantOrganizerRecord,
   saveOrganizerEventMarketDelivery,
   type MerchantOrganizerEventMarket,
-  type MerchantOrganizerEventMarketsReadResult,
   type MerchantOrganizerParticipation,
   type MerchantOrganizerPublishResult,
   type MerchantOrganizerRecordDelivery,
@@ -74,18 +62,12 @@ import {
   expectedOrganizerEventMarketFrontier,
   expectedOrganizerEventMarketFrontiersAfterMembership,
   expectedOrganizerEventMarketFrontiersAfterRetry,
-  expectedOrganizerEventMarketTitleFrontiers,
-  loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
-  organizerEventMarketCanSupplySavedTitle,
   organizerEventMarketDeletionRetiresDelivery,
-  organizerEventMarketHasSavedTitleEvidence,
   organizerEventMarketReachesExpectedFrontiers,
   organizerEventMarketRetryRemainsCurrent,
-  rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
   selectOrganizerEventMarketResolution,
-  shortenOrganizerEventMarketReference,
   shouldResolveOrganizerEventMarketReference,
   type OrganizerCollectionMembershipAction,
   type SavedOrganizerEventMarketReference,
@@ -156,23 +138,6 @@ type OrganizerRetryMutationInput = {
   reference: string
   title?: string
   savedReference?: SavedOrganizerEventMarketReference
-}
-
-function referenceLabel(
-  reference: SavedOrganizerEventMarketReference,
-  markets: readonly MerchantOrganizerEventMarket[]
-): string {
-  return (
-    markets.find(
-      (market) =>
-        organizerEventMarketReferencesMatch(
-          market.collectionCoordinate,
-          reference.reference
-        ) && organizerEventMarketCanSupplySavedTitle(market, reference)
-    )?.title ??
-    reference.title ??
-    shortenOrganizerEventMarketReference(reference.reference)
-  )
 }
 
 function expectedEventMarketFrontiers(
@@ -273,31 +238,16 @@ export function EventsDirectoryPage() {
   )
 }
 
-function loadInitialDiscoveredSelection(
-  _merchantPubkey: string,
-  initialReference: string | undefined
-): {
-  references: SavedOrganizerEventMarketReference[]
-  selectedReference: string
-} {
-  return {
-    references: [],
-    selectedReference: initialReference ?? "",
-  }
-}
-
 export function FindEventsPanel({
   merchantPubkey,
   authenticatedPubkey,
   shouldContinue,
   initialReference,
-  embedded = false,
 }: {
   merchantPubkey: string
   authenticatedPubkey: string | null
   shouldContinue: () => boolean
   initialReference: string
-  embedded?: boolean
 }) {
   const queryClient = useQueryClient()
   const session = useConduitSession()
@@ -307,87 +257,7 @@ export function FindEventsPanel({
   useLayoutEffect(() => {
     queryScopeTokenRef.current = queryScopeToken
   }, [queryScopeToken])
-  const [initialSelection] = useState(() =>
-    loadInitialDiscoveredSelection(merchantPubkey, initialReference)
-  )
-  const [savedReferences, setSavedReferences] = useState<
-    SavedOrganizerEventMarketReference[]
-  >(initialSelection.references)
-  const [selectedReferenceOverride, setSelectedReference] = useState(
-    initialSelection.selectedReference
-  )
-  const [importValue, setImportValue] = useState("")
-  const [importError, setImportError] = useState("")
-
-  useEffect(() => {
-    if (!initialReference) return
-    setSelectedReference(initialReference)
-  }, [initialReference])
-
-  const discoveryQuery = useQuery({
-    queryKey: [
-      "merchant-followed-event-markets",
-      merchantPubkey || "none",
-      authenticatedPubkey ?? "disconnected",
-    ],
-    enabled: !!merchantPubkey && !embedded,
-    queryFn: ({ signal }) =>
-      discoverFollowedEventMarkets(merchantPubkey, {
-        authenticatedPubkey,
-        signal,
-        shouldContinue: () => !signal.aborted && shouldContinue(),
-      }),
-    refetchInterval: 60_000,
-    retry: false,
-  })
-  const discoveredMarkets = useMemo(
-    () => discoveryQuery.data?.markets ?? [],
-    [discoveryQuery.data?.markets]
-  )
-  const discoveryResultPresentation = getResultPresentation({
-    resultCount: discoveredMarkets.length + savedReferences.length,
-    reliability:
-      discoveryQuery.data &&
-      ["complete", "complete_empty"].includes(discoveryQuery.data.state) &&
-      !discoveryQuery.isError
-        ? "complete"
-        : "degraded",
-  })
-
-  useEffect(() => {
-    if (!merchantPubkey || discoveredMarkets.length === 0) return
-    let next = loadSavedDiscoveredEventMarkets(merchantPubkey)
-    let changed = false
-    for (const market of discoveredMarkets) {
-      const existing = findSavedOrganizerEventMarketReference(
-        next,
-        market.collectionCoordinate
-      )
-      if (
-        !existing ||
-        organizerEventMarketHasSavedTitleEvidence(market, existing) ||
-        !organizerEventMarketCanSupplySavedTitle(market, existing)
-      ) {
-        continue
-      }
-      next = rememberDiscoveredEventMarket(merchantPubkey, {
-        ...existing,
-        title: market.title,
-        ...expectedOrganizerEventMarketTitleFrontiers(market),
-      })
-      changed = true
-    }
-    if (changed) setSavedReferences(next)
-  }, [discoveredMarkets, merchantPubkey])
-
-  const selectedReference =
-    selectedReferenceOverride ||
-    discoveredMarkets[0]?.naddr ||
-    savedReferences[0]?.reference ||
-    ""
-  const selectedSavedReference = selectedReference
-    ? findSavedOrganizerEventMarketReference(savedReferences, selectedReference)
-    : undefined
+  const selectedReference = initialReference
 
   const selectedMarketQuery = useQuery({
     ...merchantEventMarketQueryOptions(
@@ -410,262 +280,8 @@ export function FindEventsPanel({
   const selectedMarketActionReady =
     !!settledRead && !("terminal" in settledRead)
 
-  useEffect(() => {
-    if (
-      !selectedMarket ||
-      !selectedSavedReference ||
-      organizerEventMarketHasSavedTitleEvidence(
-        selectedMarket,
-        selectedSavedReference
-      ) ||
-      !organizerEventMarketCanSupplySavedTitle(
-        selectedMarket,
-        selectedSavedReference
-      )
-    ) {
-      return
-    }
-    const saved = rememberDiscoveredEventMarket(merchantPubkey, {
-      ...selectedSavedReference,
-      title: selectedMarket.title,
-      ...expectedOrganizerEventMarketTitleFrontiers(selectedMarket),
-    })
-    setSavedReferences(saved)
-  }, [merchantPubkey, selectedMarket, selectedSavedReference])
-
-  const allReferences = useMemo(() => {
-    const next = [...savedReferences]
-    for (const market of discoveredMarkets) {
-      if (
-        next.some((reference) =>
-          organizerEventMarketReferencesMatch(
-            reference.reference,
-            market.collectionCoordinate
-          )
-        )
-      ) {
-        continue
-      }
-      next.push({
-        reference: market.naddr,
-        title: market.title,
-        savedAt: market.collectionCreatedAt ?? 0,
-        ...expectedOrganizerEventMarketTitleFrontiers(market),
-      })
-    }
-    return next
-  }, [discoveredMarkets, savedReferences])
-
-  function rememberAndSelect(market: MerchantOrganizerEventMarket): void {
-    const saved = rememberDiscoveredEventMarket(merchantPubkey, {
-      reference: market.naddr,
-      title: market.title,
-      savedAt: Date.now(),
-      ...expectedOrganizerEventMarketTitleFrontiers(market),
-    })
-    setSavedReferences(saved)
-    setSelectedReference(
-      findSavedOrganizerEventMarketReference(saved, market.collectionCoordinate)
-        ?.reference ?? market.naddr
-    )
-  }
-
-  function handleImport(event: React.FormEvent<HTMLFormElement>): void {
-    event.preventDefault()
-    try {
-      const reference = parseOrganizerEventMarketReference(importValue).naddr
-      const saved = rememberDiscoveredEventMarket(merchantPubkey, {
-        reference,
-        savedAt: Date.now(),
-      })
-      setSavedReferences(saved)
-      setSelectedReference(
-        findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
-          reference
-      )
-      setImportValue("")
-      setImportError("")
-    } catch (error) {
-      setImportError(
-        errorMessage(error, "Paste a valid event naddr or shopper event link.")
-      )
-    }
-  }
-
   return (
     <div className="space-y-6">
-      {!embedded ? (
-        <>
-          <Card>
-            <CardHeader>
-              <CardTitle>Find an event</CardTitle>
-              <CardDescription className="text-pretty">
-                Events from organizers you follow appear here. You can also open
-                an event directly from its naddr or shopper link.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4 lg:grid-cols-2">
-              <div className="grid gap-1.5">
-                <Label htmlFor="discovered-event-selector">Opened events</Label>
-                <Select
-                  value={selectedReference || undefined}
-                  onValueChange={setSelectedReference}
-                  disabled={allReferences.length === 0}
-                >
-                  <SelectTrigger id="discovered-event-selector">
-                    <SelectValue
-                      placeholder={
-                        discoveryQuery.isPending
-                          ? "Checking event collections…"
-                          : "No events opened yet"
-                      }
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {allReferences.map((reference) => (
-                      <SelectItem
-                        key={reference.reference}
-                        value={reference.reference}
-                      >
-                        {referenceLabel(
-                          reference,
-                          selectedMarket
-                            ? [selectedMarket, ...discoveredMarkets]
-                            : discoveredMarkets
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <form className="grid gap-1.5" onSubmit={handleImport}>
-                <Label htmlFor="discovered-event-import">
-                  Event naddr or link
-                </Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="discovered-event-import"
-                    value={importValue}
-                    onChange={(event) => setImportValue(event.target.value)}
-                    placeholder="naddr1... or https://..."
-                    aria-invalid={!!importError}
-                    aria-describedby={
-                      importError ? "discovered-event-import-error" : undefined
-                    }
-                  />
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    disabled={!importValue.trim()}
-                  >
-                    <Search /> Open
-                  </Button>
-                </div>
-                {importError && (
-                  <p
-                    id="discovered-event-import-error"
-                    className="text-xs leading-5 text-error"
-                    role="alert"
-                  >
-                    {importError}
-                  </p>
-                )}
-              </form>
-            </CardContent>
-          </Card>
-
-          {discoveryQuery.isPending && (
-            <div
-              className="flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] px-4 py-3 text-sm text-[var(--text-muted)]"
-              aria-busy="true"
-            >
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Loading events…
-            </div>
-          )}
-
-          {discoveredMarkets.length > 0 && (
-            <section aria-labelledby="followed-events-title">
-              <h2
-                id="followed-events-title"
-                className="text-balance text-lg font-semibold text-[var(--text-primary)]"
-              >
-                Events from organizers you follow
-              </h2>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {discoveredMarkets.map((market) => (
-                  <Card key={market.collectionCoordinate}>
-                    <CardHeader>
-                      <CardTitle className="text-balance text-base">
-                        {market.title}
-                      </CardTitle>
-                      <CardDescription className="line-clamp-2 text-pretty">
-                        {market.eventLocation || "Location not provided"}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="w-full"
-                        aria-label={`View ${market.title}`}
-                        onClick={() => rememberAndSelect(market)}
-                      >
-                        View event
-                      </Button>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {!discoveryQuery.isPending &&
-            discoveredMarkets.length === 0 &&
-            savedReferences.length === 0 && (
-              <Card
-                className={
-                  discoveryResultPresentation.kind === "degraded_empty"
-                    ? "border-warning/40 bg-warning/10"
-                    : "border-dashed"
-                }
-                role={
-                  discoveryResultPresentation.kind === "degraded_empty"
-                    ? "alert"
-                    : undefined
-                }
-              >
-                <CardContent className="flex flex-col items-center px-6 py-12 text-center">
-                  <Search className="h-8 w-8 text-[var(--text-muted)]" />
-                  <h2 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
-                    {discoveryResultPresentation.kind === "degraded_empty"
-                      ? "Events couldn't be loaded"
-                      : "No current followed-organizer events found"}
-                  </h2>
-                  <p className="mt-2 max-w-lg text-pretty text-sm leading-6 text-[var(--text-muted)]">
-                    {discoveryResultPresentation.kind === "degraded_empty"
-                      ? "Retry to check for events, or paste a known event link above."
-                      : "Paste a known event link above to open it directly."}
-                  </p>
-                  {discoveryResultPresentation.kind === "degraded_empty" ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="mt-4"
-                      disabled={discoveryQuery.isFetching}
-                      onClick={() => void discoveryQuery.refetch()}
-                    >
-                      Retry
-                    </Button>
-                  ) : null}
-                </CardContent>
-              </Card>
-            )}
-        </>
-      ) : null}
-
       {!!selectedReference && selectedMarketQuery.isPending && (
         <div
           className="space-y-4"
@@ -723,14 +339,9 @@ export function FindEventsPanel({
           shouldContinue={shouldContinue}
           market={selectedMarket}
           actionReady={selectedMarketActionReady}
-          refreshing={
-            discoveryQuery.isFetching || selectedMarketQuery.isFetching
-          }
+          refreshing={selectedMarketQuery.isFetching}
           onRefresh={async () => {
-            await Promise.all([
-              ...(embedded ? [] : [discoveryQuery.refetch()]),
-              selectedMarketQuery.refetch(),
-            ])
+            await selectedMarketQuery.refetch()
           }}
         />
       )}
@@ -743,20 +354,16 @@ export function MyEventsPanel({
   authenticatedPubkey,
   shouldContinue,
   initialReference,
-  embedded = false,
   startCreate = false,
   onPublished,
-  onSelected,
   onCreateDismiss,
 }: {
   organizerPubkey: string
   authenticatedPubkey: string | null
   shouldContinue: () => boolean
   initialReference?: string
-  embedded?: boolean
   startCreate?: boolean
   onPublished?: (reference: string) => void
-  onSelected?: (reference: string) => void
   onCreateDismiss?: () => void
 }) {
   const initiatingPanelMounted = useRef(true)
@@ -784,8 +391,6 @@ export function MyEventsPanel({
   const [selectedReference, setSelectedReference] = useState(
     initialReference ?? ""
   )
-  const [importValue, setImportValue] = useState("")
-  const [importError, setImportError] = useState("")
   const [editorOpen, setEditorOpen] = useState(startCreate)
   const [editingMarket, setEditingMarket] =
     useState<MerchantOrganizerEventMarket | null>(null)
@@ -807,44 +412,6 @@ export function MyEventsPanel({
       : []
   }, [handoffDeliveryRevision, organizerPubkey])
 
-  const marketsQueryKey = [
-    "merchant-organizer-event-markets",
-    organizerPubkey || "none",
-    authenticatedPubkey ?? "disconnected",
-  ] as const
-  const marketsQuery = useQuery({
-    queryKey: marketsQueryKey,
-    enabled: !!organizerPubkey && !embedded,
-    queryFn: async ({ signal }) => {
-      const result = await listOrganizerEventMarkets(
-        organizerPubkey,
-        authenticatedPubkey,
-        signal,
-        () => !signal.aborted && shouldContinue()
-      )
-      const retained =
-        queryClient.getQueryData<MerchantOrganizerEventMarketsReadResult>(
-          marketsQueryKey
-        )?.markets ?? []
-      return {
-        ...result,
-        markets: retainMerchantOrganizerEventMarkets(retained, result),
-      }
-    },
-    refetchInterval: 30_000,
-  })
-  const markets = useMemo(
-    () => marketsQuery.data?.markets ?? [],
-    [marketsQuery.data?.markets]
-  )
-  const organizerCatalogPresentation = getResultPresentation({
-    resultCount: markets.length + savedReferences.length,
-    reliability:
-      marketsQuery.data?.state === "complete" && !marketsQuery.isError
-        ? "complete"
-        : "degraded",
-  })
-
   useEffect(() => {
     if (!initialReference) return
     try {
@@ -864,45 +431,6 @@ export function MyEventsPanel({
     }
   }, [initialReference, organizerPubkey])
 
-  useEffect(() => {
-    if (!organizerPubkey || markets.length === 0) return
-    let next = loadSavedOrganizerEventMarkets(organizerPubkey)
-    for (const market of markets) {
-      const existing = findSavedOrganizerEventMarketReference(
-        next,
-        market.collectionCoordinate
-      )
-      if (organizerEventMarketHasSavedTitleEvidence(market, existing)) continue
-      if (
-        existing &&
-        !organizerEventMarketCanSupplySavedTitle(market, existing)
-      ) {
-        continue
-      }
-      next = rememberOrganizerEventMarket(
-        organizerPubkey,
-        existing
-          ? {
-              ...existing,
-              title: market.title,
-              ...expectedOrganizerEventMarketTitleFrontiers(market),
-            }
-          : {
-              reference: market.collectionCoordinate,
-              title: market.title,
-              savedAt: market.collectionCreatedAt ?? Date.now(),
-              ...expectedOrganizerEventMarketTitleFrontiers(market),
-            }
-      )
-    }
-    setSavedReferences(next)
-  }, [markets, organizerPubkey])
-
-  useEffect(() => {
-    if (selectedReference || savedReferences.length === 0) return
-    setSelectedReference(savedReferences[0]!.reference)
-  }, [savedReferences, selectedReference])
-
   const selectedIdentity = useMemo(() => {
     if (!selectedReference) return null
     try {
@@ -911,17 +439,12 @@ export function MyEventsPanel({
       return null
     }
   }, [selectedReference])
-  const selectedListMarket = selectedIdentity
-    ? markets.find(
-        (market) => market.collectionCoordinate === selectedIdentity.coordinate
-      )
-    : undefined
   const selectedSavedReference = selectedReference
     ? findSavedOrganizerEventMarketReference(savedReferences, selectedReference)
     : undefined
   const shouldResolveSelectedReference =
     shouldResolveOrganizerEventMarketReference(
-      selectedListMarket,
+      undefined,
       selectedSavedReference
     )
   const selectedMarketQuery = useQuery({
@@ -946,7 +469,7 @@ export function MyEventsPanel({
     getSettledMerchantEventMarketRead(selectedMarketQuery)
   const selectedResolution =
     selectOrganizerEventMarketResolution(
-      selectedListMarket,
+      undefined,
       selectedProgressRead,
       selectedSavedReference
     ) ?? null
@@ -964,29 +487,6 @@ export function MyEventsPanel({
     !("terminal" in selectedResolution)
       ? selectedResolution
       : null
-
-  useEffect(() => {
-    if (
-      !selectedMarket ||
-      !selectedSavedReference ||
-      organizerEventMarketHasSavedTitleEvidence(
-        selectedMarket,
-        selectedSavedReference
-      ) ||
-      !organizerEventMarketCanSupplySavedTitle(
-        selectedMarket,
-        selectedSavedReference
-      )
-    ) {
-      return
-    }
-    const saved = rememberOrganizerEventMarket(organizerPubkey, {
-      ...selectedSavedReference,
-      title: selectedMarket.title,
-      ...expectedOrganizerEventMarketTitleFrontiers(selectedMarket),
-    })
-    setSavedReferences(saved)
-  }, [organizerPubkey, selectedMarket, selectedSavedReference])
 
   const selectedPresentedMarket = useMemo(
     () =>
@@ -1118,9 +618,6 @@ export function MyEventsPanel({
     })
     await queryClient.invalidateQueries({
       queryKey: identity.queryKey,
-    })
-    await queryClient.invalidateQueries({
-      queryKey: ["merchant-organizer-event-markets", organizerPubkey],
     })
   }
 
@@ -1521,28 +1018,6 @@ export function MyEventsPanel({
     lifecycleMutation.isPending ||
     retryMutation.isPending
 
-  const allReferences = useMemo(() => {
-    const next = [...savedReferences]
-    for (const market of markets) {
-      if (
-        !next.some((reference) =>
-          organizerEventMarketReferencesMatch(
-            reference.reference,
-            market.collectionCoordinate
-          )
-        )
-      ) {
-        next.push({
-          reference: market.collectionCoordinate,
-          title: market.title,
-          savedAt: market.collectionCreatedAt ?? 0,
-          ...expectedOrganizerEventMarketTitleFrontiers(market),
-        })
-      }
-    }
-    return next
-  }, [markets, savedReferences])
-
   const selectedReadPending =
     !!selectedReference && !selectedMarket && selectedMarketQuery.isPending
   const selectedReadError =
@@ -1563,43 +1038,6 @@ export function MyEventsPanel({
           )
       )
     : deliveries
-
-  function handleImport(event: React.FormEvent<HTMLFormElement>): void {
-    event.preventDefault()
-    try {
-      const parsed = parseOrganizerEventMarketReference(importValue)
-      if (parsed.coordinate.split(":")[1] !== organizerPubkey) {
-        throw new Error(
-          "This event belongs to another organizer. Open it under Find events."
-        )
-      }
-      const reference = parsed.naddr
-      const saved = rememberOrganizerEventMarket(organizerPubkey, {
-        reference,
-        savedAt: Date.now(),
-      })
-      setSavedReferences(saved)
-      const selected =
-        findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
-        reference
-      setSelectedReference(selected)
-      onSelected?.(selected)
-      setImportValue("")
-      setImportError("")
-    } catch (error) {
-      setImportError(
-        errorMessage(error, "Paste a valid event catalog naddr or share link.")
-      )
-    }
-  }
-
-  function openCreate(): void {
-    if (organizerAuthorityMutationPending) return
-    setEditingMarket(null)
-    setPublishState("dirty")
-    setPublishError("")
-    setEditorOpen(true)
-  }
 
   function openEdit(): void {
     if (
@@ -1629,105 +1067,6 @@ export function MyEventsPanel({
 
   return (
     <div className="space-y-6">
-      {!embedded ? (
-        <>
-          <header className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)]">
-                My events
-              </h2>
-              <p className="mt-2 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-                Create organizer-owned events, review merchant product requests,
-                and coordinate pickup handoffs.
-              </p>
-            </div>
-            <Button
-              type="button"
-              disabled={organizerAuthorityMutationPending}
-              onClick={openCreate}
-            >
-              <Plus />
-              Create event
-            </Button>
-          </header>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Open an organizer catalog</CardTitle>
-              <CardDescription>
-                Choose an event or open one from its naddr or Market share link.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4 lg:grid-cols-2">
-              <div className="grid gap-1.5">
-                <Label htmlFor="event-market-selector">Your events</Label>
-                <Select
-                  value={selectedReference || undefined}
-                  onValueChange={(reference) => {
-                    setSelectedReference(reference)
-                    onSelected?.(reference)
-                  }}
-                  disabled={allReferences.length === 0}
-                >
-                  <SelectTrigger id="event-market-selector">
-                    <SelectValue
-                      placeholder={
-                        marketsQuery.isPending
-                          ? "Loading events..."
-                          : "No events yet"
-                      }
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {allReferences.map((reference) => (
-                      <SelectItem
-                        key={reference.reference}
-                        value={reference.reference}
-                      >
-                        {referenceLabel(
-                          reference,
-                          selectedMarket
-                            ? [selectedMarket, ...markets]
-                            : markets
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <form className="grid gap-1.5" onSubmit={handleImport}>
-                <Label htmlFor="event-market-import">
-                  Catalog naddr or link
-                </Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="event-market-import"
-                    value={importValue}
-                    onChange={(event) => setImportValue(event.target.value)}
-                    placeholder="naddr1... or https://..."
-                    aria-invalid={!!importError}
-                  />
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    disabled={!importValue.trim()}
-                  >
-                    <Search />
-                    Open
-                  </Button>
-                </div>
-                {importError && (
-                  <p className="text-xs leading-5 text-error" role="alert">
-                    {importError}
-                  </p>
-                )}
-              </form>
-            </CardContent>
-          </Card>
-        </>
-      ) : null}
-
       {publishState !== "idle" && !editorOpen && (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
           <SignedActionStatus
@@ -1881,9 +1220,7 @@ export function MyEventsPanel({
             shouldContinue={shouldContinue}
             deliveries={deliveries}
             copiedUrl={copiedUrl}
-            refreshing={
-              marketsQuery.isFetching || selectedMarketQuery.isFetching
-            }
+            refreshing={selectedMarketQuery.isFetching}
             membershipPending={organizerAuthorityMutationPending}
             actionsDisabled={
               !selectedMembershipActionableMarket ||
@@ -2008,61 +1345,6 @@ export function MyEventsPanel({
           )}
         </>
       )}
-
-      {!embedded &&
-        !marketsQuery.isPending &&
-        !selectedMarket &&
-        (organizerCatalogPresentation.kind === "complete_empty" ||
-          organizerCatalogPresentation.kind === "degraded_empty") && (
-          <Card
-            className={
-              organizerCatalogPresentation.kind === "degraded_empty"
-                ? "border-warning/40 bg-warning/10"
-                : "border-dashed"
-            }
-            role={
-              organizerCatalogPresentation.kind === "degraded_empty"
-                ? "alert"
-                : undefined
-            }
-            data-testid="my-events-empty"
-          >
-            <CardContent className="flex flex-col items-center px-6 py-14 text-center">
-              <CalendarDays className="h-9 w-9 text-[var(--text-muted)]" />
-              <h2 className="mt-4 text-lg font-semibold text-[var(--text-primary)]">
-                {organizerCatalogPresentation.kind === "degraded_empty"
-                  ? "Events couldn't be loaded"
-                  : "No events here yet"}
-              </h2>
-              <p className="mt-2 max-w-lg text-sm leading-6 text-[var(--text-muted)]">
-                {organizerCatalogPresentation.kind === "degraded_empty"
-                  ? "Retry to check for events, or open one directly with its naddr or share link."
-                  : "Create your first event, or open one directly with its naddr or share link."}
-              </p>
-              {organizerCatalogPresentation.kind === "degraded_empty" ? (
-                <Button
-                  type="button"
-                  className="mt-5"
-                  variant="outline"
-                  disabled={marketsQuery.isFetching}
-                  onClick={() => marketsQuery.refetch()}
-                >
-                  Retry
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  className="mt-5"
-                  disabled={organizerAuthorityMutationPending}
-                  onClick={openCreate}
-                >
-                  <Plus />
-                  Create event
-                </Button>
-              )}
-            </CardContent>
-          </Card>
-        )}
 
       <OrganizerEventMarketEditor
         key={`${editorOpen ? "open" : "closed"}:${editingMarket?.collectionCoordinate ?? "new"}`}
