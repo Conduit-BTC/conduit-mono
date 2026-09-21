@@ -17,10 +17,12 @@ import {
   __setShippingTestOverrides,
   __setRelayPublishTestOverrides,
   buildProductListingEventDraft,
+  EVENT_KINDS,
   getEventMarketPickupsByCoordinates,
   getProductShippingOptionAddress,
   getShippingOptionsByCoordinates,
   parseEventMarketPickupEvent,
+  selectEventMarketEvidenceForRetention,
   setSigner,
   type CachedEventMarketEvidence,
   type CommerceProductRecord,
@@ -1397,6 +1399,148 @@ describe("merchant-owned product mutation boundary", () => {
       })
     })
   }
+
+  it("keeps a retained pickup tombstone through capped persistence and restart", async () => {
+    const pickupSecret = generateSecretKey()
+    const pickupPubkey = getPublicKey(pickupSecret)
+    const dTag = "capped-retained-pickup-deletion"
+    const coordinate = `30406:${pickupPubkey}:${dTag}`
+    const baseline = product(dTag, {
+      collectionRefs: [`30405:${pickupPubkey}:market`],
+      shippingOptionId: coordinate,
+      shippingOptionDTag: dTag,
+      shippingOptionRefs: [{ coordinate }],
+    })
+    const pickup = finalizeEvent(
+      {
+        kind: 30406,
+        created_at: Math.floor((baseline.updatedAt - 1) / 1000),
+        content: "",
+        tags: [
+          ["d", dTag],
+          ["title", "Public pickup"],
+          ["price", "0", "SATS"],
+          ["country", "US"],
+          ["service", "pickup"],
+          ["location", "Public pickup desk"],
+        ],
+      },
+      pickupSecret
+    )
+    const deletion = finalizeEvent(
+      {
+        kind: 5,
+        created_at: pickup.created_at + 1,
+        content: "",
+        tags: [["e", pickup.id]],
+      },
+      pickupSecret
+    )
+    const retainedRows: CachedEventMarketEvidence[] = []
+    retainEventPickupEvidenceRows(retainedRows, pickupPubkey, [
+      pickup,
+      deletion,
+    ])
+
+    const installCappedPersistence = () => {
+      installEventPickupReadHarness([pickup], { retainedRows })
+      __setEventMarketTestOverrides({
+        maxCachedEvidencePerOrganizer: 1,
+        persistCachedEvidence: async ({
+          organizerPubkey,
+          events,
+          requiredRetainedEventIds,
+        }) => {
+          expect(requiredRetainedEventIds).toContain(deletion.id)
+          retainEventPickupEvidenceRows(retainedRows, organizerPubkey, events)
+          const incomingIds = new Set(events.map((event) => event.id))
+          for (const row of retainedRows) {
+            if (!incomingIds.has(row.signedEvent.id)) continue
+            row.cachedAt =
+              row.kind === EVENT_KINDS.DELETION ? START + 2 : START + 1
+          }
+          retainedRows.splice(
+            0,
+            retainedRows.length,
+            ...selectEventMarketEvidenceForRetention(
+              retainedRows,
+              1,
+              [],
+              requiredRetainedEventIds
+            )
+          )
+        },
+      })
+    }
+    const expectPublicationBlocked = async () => {
+      const observed = {
+        signerRequests: [] as ProductSignerRequestProgress[],
+        publishedKinds: [] as number[],
+        signedBundleCount: 0,
+      }
+      await expect(
+        attemptPreservedPublication({
+          baseline,
+          update: { stock: 4 },
+          getEventMarketPickups: getEventMarketPickupsByCoordinates,
+          observed,
+        })
+      ).rejects.toThrow("Event pickup could not be verified safely")
+      expect(observed).toEqual({
+        signerRequests: [],
+        publishedKinds: [],
+        signedBundleCount: 0,
+      })
+      expect(retainedRows.map((row) => row.signedEvent.id)).toEqual([
+        deletion.id,
+      ])
+    }
+
+    installCappedPersistence()
+    await expectPublicationBlocked()
+
+    __resetEventMarketTestOverrides()
+    installCappedPersistence()
+    await expectPublicationBlocked()
+  })
+
+  it("does not mutate bounded pickup persistence when retained evidence cannot be loaded", async () => {
+    const pickupSecret = generateSecretKey()
+    const pickupPubkey = getPublicKey(pickupSecret)
+    const dTag = "unavailable-retained-pickup"
+    const coordinate = `30406:${pickupPubkey}:${dTag}`
+    const pickup = finalizeEvent(
+      {
+        kind: 30406,
+        created_at: Math.floor(START / 1000),
+        content: "",
+        tags: [
+          ["d", dTag],
+          ["title", "Public pickup"],
+          ["price", "0", "SATS"],
+          ["country", "US"],
+          ["service", "pickup"],
+          ["location", "Public pickup desk"],
+        ],
+      },
+      pickupSecret
+    )
+    let persistenceRequests = 0
+    installEventPickupReadHarness([pickup])
+    __setEventMarketTestOverrides({
+      loadCachedPickupEvidence: async () => {
+        throw new Error("IndexedDB unavailable")
+      },
+      persistCachedEvidence: async () => {
+        persistenceRequests += 1
+      },
+    })
+
+    await expect(
+      getEventMarketPickupsByCoordinates([coordinate])
+    ).rejects.toThrow("Event pickup retained evidence is unavailable")
+    expect(persistenceRequests).toBe(0)
+  })
 
   it("retains pickup deletion evidence after a durable write failure", async () => {
     const pickupSecret = generateSecretKey()
