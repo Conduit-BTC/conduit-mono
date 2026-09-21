@@ -1,5 +1,11 @@
-import { useMemo, useState } from "react"
-import { ExternalLink, PackagePlus, Printer, UserRound } from "lucide-react"
+import { useId, useMemo, useState } from "react"
+import {
+  ExternalLink,
+  PackagePlus,
+  Printer,
+  RefreshCw,
+  UserRound,
+} from "lucide-react"
 import {
   getProfileDisplayLabel,
   useProductImageUpload,
@@ -24,7 +30,9 @@ import {
   getResolvedEventMarketRelayHints,
   type MerchantOrganizerEventMarket,
 } from "../lib/event-market"
+import { getMerchantEventPublishPresentation } from "../lib/event-product-publishing"
 import { getEventMarketUrl } from "../lib/market-links"
+import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { EventProductPublisherDialog } from "./EventProductPublisherDialog"
 import { EventQrPrintPreview } from "./EventQrPrintPreview"
 
@@ -102,7 +110,7 @@ function MerchantEventSignageAction({
         size="sm"
         onClick={() => setOpen(true)}
       >
-        <Printer />
+        <Printer className="size-4 shrink-0" aria-hidden="true" />
         Print my event sign
       </Button>
       <EventQrPrintPreview
@@ -139,16 +147,19 @@ export function MerchantEventMarketPanel({
   compact?: boolean
 }) {
   const [publisherOpen, setPublisherOpen] = useState(false)
+  const publishDisabledId = useId()
   const productImageUpload = useProductImageUpload()
   const [publishedAccepted, setPublishedAccepted] = useState<boolean | null>(
     null
   )
   const ownsMarket = merchantPubkey === market.organizerPubkey
-  const publishable =
-    actionReady &&
-    (market.state === "active" ||
-      (market.state === "partial" &&
-        eventMarketRequiredRecordsResolved(market.source)))
+  const publishPresentation = getMerchantEventPublishPresentation({
+    actionReady,
+    orderAcceptance: market.orderAcceptance,
+    refreshing,
+    requiredRecordsResolved: eventMarketRequiredRecordsResolved(market.source),
+    state: market.state,
+  })
   const organizerProfileQuery = useProfile(market.organizerPubkey, {
     accountPubkey: merchantPubkey,
     authenticatedPubkey,
@@ -178,11 +189,11 @@ export function MerchantEventMarketPanel({
     priority: "visible",
     maxUnresolvedRefetches: 1,
   })
-  const organizerName = getProfileDisplayLabel(
-    organizerProfileQuery.data,
-    market.organizerPubkey,
-    { lookupSettled: organizerProfileQuery.lookupSettled }
-  )
+  const organizerProfile =
+    organizerProfileQuery.data?.pubkey.toLowerCase() ===
+    market.organizerPubkey.toLowerCase()
+      ? organizerProfileQuery.data
+      : undefined
   const shopperUrl = getEventMarketUrl(market.naddr)
   const publisherControls = (
     <section className="rounded-2xl border border-primary-500/30 bg-primary-500/10 p-5">
@@ -212,22 +223,41 @@ export function MerchantEventMarketPanel({
         <Button
           type="button"
           className="shrink-0"
-          disabled={!publishable}
-          aria-describedby={!publishable ? "event-publish-disabled" : undefined}
+          disabled={!publishPresentation.publishable}
+          aria-describedby={
+            publishPresentation.message ? publishDisabledId : undefined
+          }
           onClick={() => setPublisherOpen(true)}
         >
-          <PackagePlus /> Publish product
+          <PackagePlus className="size-4 shrink-0" aria-hidden="true" />
+          Publish product
         </Button>
       </div>
-      {!publishable && (
-        <p
-          id="event-publish-disabled"
-          className="mt-3 text-pretty text-sm leading-6 text-[var(--text-secondary)]"
-        >
-          Event details are still updating. Publishing will become available
-          after the current organizer records are confirmed.
-        </p>
-      )}
+      {publishPresentation.message ? (
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <p
+            id={publishDisabledId}
+            className="min-w-0 flex-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]"
+          >
+            {publishPresentation.message}
+          </p>
+          {publishPresentation.retryLabel ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={refreshing}
+              onClick={() => void onRefresh()}
+            >
+              <RefreshCw
+                className={`size-4 shrink-0 ${refreshing ? "animate-spin motion-reduce:animate-none" : ""}`}
+                aria-hidden="true"
+              />
+              {publishPresentation.retryLabel}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   )
 
@@ -249,12 +279,12 @@ export function MerchantEventMarketPanel({
             }
             organizer={
               <div
-                className="flex min-w-0 items-center gap-2"
+                className="flex min-w-0 items-start gap-2"
                 data-testid="merchant-event-organizer"
               >
                 <Avatar className="size-7 shrink-0 border border-[var(--border)]">
                   <AvatarImage
-                    src={organizerProfileQuery.data?.picture}
+                    src={organizerProfile?.picture}
                     alt=""
                     referrerPolicy="no-referrer"
                   />
@@ -265,30 +295,34 @@ export function MerchantEventMarketPanel({
                     />
                   </AvatarFallback>
                 </Avatar>
-                <span className="min-w-0 break-words">
-                  Organized by{" "}
-                  <span className="font-medium text-[var(--text-primary)]">
-                    {organizerName}
+                <span className="min-w-0">
+                  <span className="block break-words">
+                    Organized by{" "}
+                    <EventActorName
+                      pubkey={market.organizerPubkey}
+                      profile={organizerProfile}
+                      className="inline text-sm"
+                    />
                   </span>
+                  {!ownsMarket ? (
+                    <EventActorProvenance
+                      pubkey={market.organizerPubkey}
+                      copyLabel="Copy organizer npub"
+                      className="mt-0.5 max-w-full text-[11px]"
+                    />
+                  ) : null}
                 </span>
               </div>
             }
             actions={
-              <>
-                <Button type="button" variant="outline" size="sm" asChild>
-                  <a href={shopperUrl} target="_blank" rel="noreferrer">
-                    <ExternalLink /> Shopper page
-                  </a>
-                </Button>
-                <MerchantEventSignageAction
-                  merchantPubkey={merchantPubkey}
-                  authenticatedPubkey={authenticatedPubkey}
-                  shouldContinue={shouldContinue}
-                  market={market}
-                  refreshing={refreshing}
-                  onRefresh={onRefresh}
-                />
-              </>
+              <MerchantEventSignageAction
+                merchantPubkey={merchantPubkey}
+                authenticatedPubkey={authenticatedPubkey}
+                shouldContinue={shouldContinue}
+                market={market}
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+              />
             }
             shareUrl={shopperUrl}
             shareTitle={market.title}
@@ -314,7 +348,10 @@ export function MerchantEventMarketPanel({
               </div>
               <Button asChild variant="outline" size="sm">
                 <a href={shopperUrl} target="_blank" rel="noreferrer">
-                  <ExternalLink aria-hidden="true" />
+                  <ExternalLink
+                    className="size-4 shrink-0"
+                    aria-hidden="true"
+                  />
                   View products
                 </a>
               </Button>

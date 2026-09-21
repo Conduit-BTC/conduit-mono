@@ -18,6 +18,14 @@ export {
 } from "./ThemeToggleButton"
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
+export {
+  EventTimelineEntry,
+  EventTimelineLoading,
+  EventTimelineViewport,
+  type EventTimelineDateParts,
+  type EventTimelineEntryProps,
+  type EventTimelineViewportProps,
+} from "./EventTimeline"
 export { ShareLinkButton, type ShareLinkButtonProps } from "./ShareLinkButton"
 export {
   HoldToReleaseButton,

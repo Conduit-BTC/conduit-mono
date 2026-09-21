@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { CalendarDays, Plus, RefreshCw } from "lucide-react"
 import { useQueryClient } from "@tanstack/react-query"
 import {
@@ -10,9 +10,13 @@ import {
 import {
   Button,
   cn,
+  EventTimelineEntry,
+  EventTimelineLoading,
+  EventTimelineViewport,
   getResultPresentation,
   SegmentedControl,
   SegmentedControlItem,
+  useEventTimelineAnchor,
   useTimeBoundaryNow,
 } from "@conduit/ui"
 import { useMerchantEventTimeline } from "../hooks/useMerchantEventTimeline"
@@ -24,15 +28,16 @@ import {
 import {
   filterAndSortMerchantEventTimeline,
   getMerchantEventTimelineBoundaries,
+  getMerchantEventTimelineDateParts,
   getMerchantEventTimelinePresentation,
   getNextMerchantEventTimelineLimit,
+  formatMerchantEventTimelineSchedule,
   MERCHANT_EVENT_RELATIONSHIP_FILTERS,
   MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
   type MerchantEventRelationshipFilter,
   type MerchantEventTimelineItem,
   type MerchantEventTimelineSearch,
 } from "../lib/merchant-event-timeline"
-import { MerchantEventTimelineEntry } from "./MerchantEventTimelineEntry"
 
 const RELATIONSHIP_LABELS: Record<MerchantEventRelationshipFilter, string> = {
   all: "All events",
@@ -40,43 +45,10 @@ const RELATIONSHIP_LABELS: Record<MerchantEventRelationshipFilter, string> = {
   selling: "Selling at",
 }
 
-interface TimelineViewportPosition {
-  scrollTop: number
-}
-
 interface TimelinePresentationLimits {
   earlier: number
   key: string
   later: number
-}
-
-const timelineViewportPositions = new Map<string, TimelineViewportPosition>()
-
-function rememberTimelineViewport(
-  key: string,
-  viewport: HTMLDivElement | null
-): void {
-  if (!viewport) return
-  timelineViewportPositions.set(key, {
-    scrollTop: viewport.scrollTop,
-  })
-}
-
-function preserveTimelineAnchor(
-  viewport: HTMLDivElement | null,
-  delta: number
-): void {
-  if (!viewport) return
-  if (Math.abs(delta) < 0.5) return
-  viewport.scrollTop += delta
-}
-
-function paginationControlLabel(
-  direction: "earlier" | "later",
-  hiddenCount: number
-): string {
-  const count = Math.min(hiddenCount, MERCHANT_EVENT_TIMELINE_PAGE_SIZE)
-  return `Load ${count} ${direction} ${count === 1 ? "event" : "events"}`
 }
 
 export function MerchantEventsTimeline({
@@ -94,7 +66,6 @@ export function MerchantEventsTimeline({
   onCreate: () => void
   createDisabled?: boolean
 }) {
-  const timelineId = useId()
   const queryClient = useQueryClient()
   const session = useConduitSession()
   const { pubkey, status, authGeneration } = useAuth()
@@ -105,10 +76,6 @@ export function MerchantEventsTimeline({
   const authenticatedPubkey = status === "connected" ? pubkey : null
   const relationship = search.relation ?? "all"
   const viewportKey = `${merchantPubkey}:${relationship}`
-  const restoredViewportKeyRef = useRef<string | null>(null)
-  const timelineViewportRef = useRef<HTMLDivElement>(null)
-  const nowAnchorRef = useRef<HTMLDivElement>(null)
-  const pendingPrependAnchorTopRef = useRef<number | null>(null)
   const [presentationLimits, setPresentationLimits] =
     useState<TimelinePresentationLimits>({
       earlier: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
@@ -157,6 +124,12 @@ export function MerchantEventsTimeline({
     () => [...presentation.past, ...presentation.currentAndFuture],
     [presentation.currentAndFuture, presentation.past]
   )
+  const timelineAnchor = useEventTimelineAnchor({
+    isFetching: discovery.isFetching,
+    itemCount: filteredItems.length,
+    pastCount: presentation.past.length,
+    viewportKey,
+  })
   const organizerPubkeys = useMemo(
     () =>
       Array.from(
@@ -182,47 +155,6 @@ export function MerchantEventsTimeline({
     visibleResultCount: filteredItems.length,
     reliability: discoveryComplete ? "complete" : "degraded",
   })
-  useLayoutEffect(() => {
-    if (restoredViewportKeyRef.current === viewportKey) return
-    if (filteredItems.length === 0 || typeof window === "undefined") return
-    const frame = window.requestAnimationFrame(() => {
-      const viewport = timelineViewportRef.current
-      const nowAnchor = nowAnchorRef.current
-      if (!viewport || !nowAnchor) return
-      const hasSavedPosition = timelineViewportPositions.has(viewportKey)
-      const saved = timelineViewportPositions.get(viewportKey)
-      viewport.scrollTop = saved
-        ? saved.scrollTop
-        : Math.max(
-            0,
-            viewport.scrollTop +
-              nowAnchor.getBoundingClientRect().top -
-              viewport.getBoundingClientRect().top
-          )
-      // Progressive discovery can prepend past events after the first useful
-      // result. Keep Now anchored until that initial read settles, then leave
-      // subsequent background refreshes alone so they never steal the scroll.
-      if (hasSavedPosition || !discovery.isFetching) {
-        restoredViewportKeyRef.current = viewportKey
-      }
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [
-    discovery.isFetching,
-    filteredItems.length,
-    presentation.past.length,
-    viewportKey,
-  ])
-
-  useLayoutEffect(() => {
-    const previousTop = pendingPrependAnchorTopRef.current
-    if (previousTop === null) return
-    pendingPrependAnchorTopRef.current = null
-    const nextTop = nowAnchorRef.current?.getBoundingClientRect().top
-    if (nextTop === undefined) return
-    preserveTimelineAnchor(timelineViewportRef.current, nextTop - previousTop)
-  }, [presentation.past.length])
-
   function openMarket(market: MerchantOrganizerEventMarket): void {
     const identity = merchantEventMarketQueryIdentity(market.naddr, {
       relayScope: session.relayScope,
@@ -234,21 +166,20 @@ export function MerchantEventsTimeline({
       (current) => current ?? { read: market, complete: false },
       { updatedAt: 0 }
     )
-    rememberTimelineViewport(viewportKey, timelineViewportRef.current)
+    timelineAnchor.rememberPosition()
     onOpen(market.naddr)
   }
 
   function changeRelationship(value: string): void {
     const nextRelationship = value as MerchantEventRelationshipFilter
-    rememberTimelineViewport(viewportKey, timelineViewportRef.current)
+    timelineAnchor.rememberPosition()
     onSearchChange({
       relation: nextRelationship === "all" ? undefined : nextRelationship,
     })
   }
 
   function loadEarlier(): void {
-    pendingPrependAnchorTopRef.current =
-      nowAnchorRef.current?.getBoundingClientRect().top ?? null
+    timelineAnchor.prepareForPrepend()
     const totalCount =
       presentation.past.length + presentation.hiddenEarlierCount
     setPresentationLimits((current) => {
@@ -278,13 +209,16 @@ export function MerchantEventsTimeline({
     const market = item.market
     const profile = profiles.getProfile(market.organizerPubkey)
     return (
-      <MerchantEventTimelineEntry
+      <EventTimelineEntry
         key={market.collectionCoordinate}
-        market={market}
+        date={getMerchantEventTimelineDateParts(market)}
+        imageUrl={market.imageUrl}
         organizerName={getProfileDisplayLabel(profile, market.organizerPubkey, {
           lookupSettled: profiles.lookupSettled,
         })}
         organizerPending={!profiles.lookupSettled && !profile}
+        schedule={formatMerchantEventTimelineSchedule(market)}
+        title={market.title}
         onOpen={() => openMarket(market)}
       />
     )
@@ -335,115 +269,22 @@ export function MerchantEventsTimeline({
       </div>
 
       {discovery.isInitialLoading ? (
-        <div className="space-y-5" role="status" aria-label="Loading events">
-          <span className="sr-only">Loading events</span>
-          {Array.from({ length: 3 }, (_, index) => (
-            <div
-              key={index}
-              className="grid grid-cols-[3.5rem_0.75rem_minmax(0,1fr)] gap-x-2 sm:grid-cols-[5.5rem_1rem_minmax(0,1fr)] sm:gap-x-4"
-              aria-hidden="true"
-            >
-              <div className="h-14 rounded-lg bg-[var(--surface-elevated)]" />
-              <div className="relative">
-                <div className="absolute inset-y-0 left-1/2 w-px bg-[var(--border)]" />
-              </div>
-              <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
-                <div className="aspect-[3/1] bg-[var(--surface-elevated)]" />
-                <div className="space-y-3 p-4">
-                  <div className="h-5 w-2/3 rounded bg-[var(--surface-elevated)]" />
-                  <div className="h-4 w-1/2 rounded bg-[var(--surface-elevated)]" />
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <EventTimelineLoading />
       ) : filteredItems.length > 0 ? (
-        <div
-          ref={timelineViewportRef}
-          id={`${timelineId}-results`}
-          role="region"
-          aria-label="Chronological events"
-          tabIndex={0}
-          className="max-h-[70dvh] overflow-y-auto overscroll-contain rounded-2xl border border-[var(--border)] bg-[var(--background)] px-3 py-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:px-5"
-          aria-busy={discovery.isFetching}
-        >
-          {presentation.hiddenEarlierCount > 0 ? (
-            <div className="grid grid-cols-[3.5rem_0.75rem_minmax(0,1fr)] gap-x-2 pb-4 sm:grid-cols-[5.5rem_1rem_minmax(0,1fr)] sm:gap-x-4">
-              <span />
-              <span className="relative" aria-hidden="true">
-                <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--border)]" />
-              </span>
-              <div className="flex justify-center sm:justify-start">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-controls={`${timelineId}-past-events`}
-                  onClick={loadEarlier}
-                >
-                  {paginationControlLabel(
-                    "earlier",
-                    presentation.hiddenEarlierCount
-                  )}
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
-          <ol id={`${timelineId}-past-events`} aria-label="Past events">
-            {presentation.past.map(renderEntry)}
-          </ol>
-
-          <div
-            ref={nowAnchorRef}
-            id={`${timelineId}-now`}
-            role="separator"
-            aria-label="Now"
-            className="grid grid-cols-[3.5rem_0.75rem_minmax(0,1fr)] gap-x-2 py-2 sm:grid-cols-[5.5rem_1rem_minmax(0,1fr)] sm:gap-x-4"
-          >
-            <span className="self-center text-right text-sm font-semibold text-primary-500">
-              Now
-            </span>
-            <span className="relative min-h-8" aria-hidden="true">
-              <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-primary-500" />
-              <span className="absolute left-1/2 top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[var(--background)] bg-primary-500 ring-1 ring-primary-500" />
-            </span>
-            <span
-              className="self-center h-px bg-primary-500/50"
-              aria-hidden="true"
-            />
-          </div>
-
-          <ol
-            id={`${timelineId}-current-and-future-events`}
-            aria-label="Current and upcoming events"
-          >
-            {presentation.currentAndFuture.map(renderEntry)}
-          </ol>
-
-          {presentation.hiddenLaterCount > 0 ? (
-            <div className="grid grid-cols-[3.5rem_0.75rem_minmax(0,1fr)] gap-x-2 pt-1 sm:grid-cols-[5.5rem_1rem_minmax(0,1fr)] sm:gap-x-4">
-              <span />
-              <span className="relative" aria-hidden="true">
-                <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--border)]" />
-              </span>
-              <div className="flex justify-center sm:justify-start">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-controls={`${timelineId}-current-and-future-events`}
-                  onClick={loadLater}
-                >
-                  {paginationControlLabel(
-                    "later",
-                    presentation.hiddenLaterCount
-                  )}
-                </Button>
-              </div>
-            </div>
-          ) : null}
-        </div>
+        <EventTimelineViewport
+          busy={discovery.isFetching}
+          currentAndFutureEvents={presentation.currentAndFuture.map(
+            renderEntry
+          )}
+          hiddenEarlierCount={presentation.hiddenEarlierCount}
+          hiddenLaterCount={presentation.hiddenLaterCount}
+          nowAnchorRef={timelineAnchor.nowAnchorRef}
+          onLoadEarlier={loadEarlier}
+          onLoadLater={loadLater}
+          pageSize={MERCHANT_EVENT_TIMELINE_PAGE_SIZE}
+          pastEvents={presentation.past.map(renderEntry)}
+          viewportRef={timelineAnchor.timelineViewportRef}
+        />
       ) : (
         <div
           className={cn(
@@ -506,7 +347,7 @@ export function MerchantEventsTimeline({
               onClick={onCreate}
               disabled={createDisabled}
             >
-              <Plus aria-hidden="true" />
+              <Plus className="size-4 shrink-0" aria-hidden="true" />
               Create event
             </Button>
           )}

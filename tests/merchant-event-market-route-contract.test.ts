@@ -253,7 +253,7 @@ describe("merchant organizer event market route", () => {
     expect(timeline).toContain('organizing: "Organizing"')
     expect(timeline).toContain('selling: "Selling at"')
     expect(timeline).not.toContain('saved: "Saved"')
-    expect(timeline).toContain("<MerchantEventTimelineEntry")
+    expect(timeline).toContain("<EventTimelineEntry")
     expect(timeline).not.toContain("Open a known event")
     expect(timeline).not.toContain("Timeline may be incomplete")
     expect(timeline).not.toContain("Discovery reached its current limit")
@@ -351,13 +351,17 @@ describe("merchant organizer event market route", () => {
   })
 
   it("keeps the initial timeline centered on Now while progressive results arrive", async () => {
-    const timeline = await Bun.file(
-      "apps/merchant/src/components/MerchantEventsTimeline.tsx"
-    ).text()
+    const [timeline, anchor] = await Promise.all([
+      Bun.file(
+        "apps/merchant/src/components/MerchantEventsTimeline.tsx"
+      ).text(),
+      Bun.file("packages/ui/src/hooks/useEventTimelineAnchor.ts").text(),
+    ])
 
-    expect(timeline).toContain("!discovery.isFetching")
-    expect(timeline).toContain("presentation.past.length")
-    expect(timeline).toContain("timelineViewportPositions.has(viewportKey)")
+    expect(timeline).toContain("useEventTimelineAnchor")
+    expect(anchor).toContain("!input.isFetching")
+    expect(anchor).toContain("input.pastCount")
+    expect(anchor).toContain("timelineViewportPositions.has(input.viewportKey)")
   })
 
   it("keeps ordinary event pages focused on people and actions", async () => {

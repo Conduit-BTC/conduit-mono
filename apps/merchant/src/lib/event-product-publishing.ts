@@ -4,6 +4,7 @@ import {
   decodeProductReference,
   getMerchantStorefront,
   type EventMarketHandoffMode,
+  type EventMarketResolutionState,
   type ProductImage,
   type ProductSchema,
   type PublishWithPlannerResult,
@@ -65,6 +66,66 @@ export interface EventProductFormValidation {
   pickupError: string | null
   canPublish: boolean
   firstError: string | null
+}
+
+export interface MerchantEventPublishPresentation {
+  message: string | null
+  publishable: boolean
+  retryLabel: string | null
+  state: "available" | "checking" | "closed" | "ended" | "recoverable"
+}
+
+export function getMerchantEventPublishPresentation(input: {
+  actionReady: boolean
+  orderAcceptance?: "open" | "closed"
+  refreshing: boolean
+  requiredRecordsResolved: boolean
+  state: EventMarketResolutionState
+}): MerchantEventPublishPresentation {
+  const publishable =
+    input.actionReady &&
+    (input.state === "active" ||
+      (input.state === "partial" && input.requiredRecordsResolved))
+
+  if (publishable) {
+    return {
+      message: null,
+      publishable: true,
+      retryLabel: null,
+      state: "available",
+    }
+  }
+  if (input.orderAcceptance === "closed") {
+    return {
+      message: "This event is closed. New products can't be published.",
+      publishable: false,
+      retryLabel: null,
+      state: "closed",
+    }
+  }
+  if (input.state === "ended") {
+    return {
+      message: "This event has ended. New products can't be published.",
+      publishable: false,
+      retryLabel: null,
+      state: "ended",
+    }
+  }
+  if (input.refreshing) {
+    return {
+      message: "Checking current event details before publishing.",
+      publishable: false,
+      retryLabel: "Checking event details...",
+      state: "checking",
+    }
+  }
+  return {
+    message:
+      "Current event details couldn't be confirmed. Retry before publishing a product.",
+    publishable: false,
+    retryLabel: "Retry event details",
+    state: "recoverable",
+  }
 }
 
 function slugify(input: string): string {

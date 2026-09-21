@@ -1195,6 +1195,17 @@ test("Merchant event timeline uses combined discovery with relationship, mobile,
   })
   await expect(publishProduct).toBeVisible()
   await expect(publishProduct).toBeDisabled()
+  await expect(
+    page.getByText("Checking current event details before publishing.", {
+      exact: true,
+    })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", {
+      name: "Checking event details...",
+      exact: true,
+    })
+  ).toBeDisabled()
   exactRead.release()
   await expect(publishProduct).toBeEnabled({ timeout: 30_000 })
 
@@ -1208,7 +1219,7 @@ test("Merchant event timeline uses combined discovery with relationship, mobile,
     .toBe(true)
 })
 
-test("Merchant event timeline stays centered on Now as past events arrive @merchant", async ({
+test("Merchant and Market event timelines start centered on Now @market @merchant", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -1354,6 +1365,47 @@ test("Merchant event timeline stays centered on Now as past events arrive @merch
       })
     )
     .toBeLessThan(24)
+
+  relay.seed(
+    createFollowList(
+      "buyer",
+      [ORGANIZER_PUBKEY, MERCHANT_PUBKEY],
+      baseCreatedAt + 61
+    )
+  )
+  await gotoAs(page, marketUrl, "/events", "buyer", {
+    source: "following",
+  })
+  await expect(page.getByLabel("Date")).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: /^Open Synthetic Progressive Past 1\./ })
+  ).toBeAttached({ timeout: 30_000 })
+  await expect(
+    page.getByRole("button", {
+      name: /^Open Synthetic Progressive Future 1\./,
+    })
+  ).toBeVisible({ timeout: 30_000 })
+  const marketTimelineViewport = page.getByRole("region", {
+    name: "Chronological events",
+  })
+  await expect
+    .poll(() =>
+      marketTimelineViewport.evaluate((viewport) => viewport.scrollTop)
+    )
+    .toBeGreaterThan(100)
+  await expect
+    .poll(async () =>
+      marketTimelineViewport.evaluate((viewport) => {
+        const now = viewport.querySelector<HTMLElement>(
+          '[role="separator"][aria-label="Now"]'
+        )
+        if (!now) return Number.POSITIVE_INFINITY
+        return Math.abs(
+          now.getBoundingClientRect().top - viewport.getBoundingClientRect().top
+        )
+      })
+    )
+    .toBeLessThan(24)
 })
 
 test("Merchant event detail presents organizer and accepted sellers without technical chrome @merchant", async ({
@@ -1386,7 +1438,7 @@ test("Merchant event detail presents organizer and accepted sellers without tech
       created_at: accepted.created_at + 1,
       tags: [],
       content: JSON.stringify({
-        name: "Synthetic Event Organizer",
+        name: "Synthetic Shared Event Profile",
         picture:
           "https://cdn.conduit.market/conduit-test/organizer-profile.svg",
       }),
@@ -1396,25 +1448,36 @@ test("Merchant event detail presents organizer and accepted sellers without tech
       created_at: accepted.created_at + 2,
       tags: [],
       content: JSON.stringify({
-        name: "Synthetic Accepted Seller",
+        name: "Synthetic Shared Event Profile",
         picture: "https://cdn.conduit.market/conduit-test/seller-profile.svg",
       }),
     })
   )
 
+  await page.setViewportSize({ width: 390, height: 844 })
   await gotoAs(page, merchantUrl, market.merchantParticipationPath, "buyer")
   const organizer = page.getByTestId("merchant-event-organizer")
-  await expect(organizer).toContainText("Synthetic Event Organizer", {
+  await expect(organizer).toContainText("Synthetic Shared Event Profile", {
     timeout: 30_000,
   })
   await expect(organizer.locator("img")).toHaveAttribute(
     "src",
     /organizer-profile\.svg/
   )
+  const organizerNpub = nip19.npubEncode(ORGANIZER_PUBKEY)
+  await expect(
+    organizer.locator(`a[href$="/u/${organizerNpub}"]`)
+  ).toBeVisible()
+  await expect(
+    organizer.getByRole("button", {
+      name: "Copy organizer npub",
+      exact: true,
+    })
+  ).toBeVisible()
   const sellers = page.getByRole("region", {
     name: "Sellers at this event",
   })
-  await expect(sellers).toContainText("Synthetic Accepted Seller", {
+  await expect(sellers).toContainText("Synthetic Shared Event Profile", {
     timeout: 30_000,
   })
   await expect(
@@ -1425,6 +1488,19 @@ test("Merchant event detail presents organizer and accepted sellers without tech
   await expect(
     page.getByRole("button", { name: "Refresh", exact: true })
   ).toHaveCount(0)
+  await expect(
+    page.getByRole("link", { name: "Shopper page", exact: true })
+  ).toHaveCount(0)
+  await expect(
+    sellers.getByRole("link", { name: "View products", exact: true })
+  ).toBeVisible()
+  const publishIconBounds = await page
+    .getByRole("button", { name: "Publish product", exact: true })
+    .locator("svg")
+    .boundingBox()
+  expect(publishIconBounds).not.toBeNull()
+  expect(publishIconBounds!.width).toBeLessThanOrEqual(20)
+  expect(publishIconBounds!.height).toBeLessThanOrEqual(20)
 })
 
 test("organizer discovery offers empty-read recovery without losing retained events or claiming absence @merchant", async ({
@@ -2875,15 +2951,16 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   await page.setViewportSize({ width: 390, height: 844 })
   await gotoAs(page, marketUrl, "/events", "buyer", {
     source: "following",
-    window: "all",
   })
 
-  const eventCard = page.getByRole("article").filter({
-    has: page.getByRole("heading", { name: "Synthetic Timeline Event" }),
+  const eventCard = page.getByRole("button", {
+    name: /^Open Synthetic Timeline Event\./,
   })
   await expect(eventCard).toBeVisible({ timeout: 60_000 })
-  await expect(eventCard.getByText("Synthetic Fixture Hall")).toBeVisible()
-  await expect(eventCard.getByText("Upcoming", { exact: true })).toBeVisible()
+  await expect(page.getByLabel("Date")).toHaveCount(0)
+  await expect(
+    page.getByRole("region", { name: "Chronological events" })
+  ).toBeVisible()
   await expect(
     page.getByRole("button", { name: "Following", exact: true })
   ).toHaveAttribute("aria-pressed", "true")
@@ -2901,14 +2978,15 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
     .focus()
   await page.keyboard.press("Tab")
   await expect(
-    page.getByRole("button", { name: "Clear filters" })
+    page.getByRole("button", { name: "Refresh events", exact: true })
   ).toBeFocused()
   await page.keyboard.press("Tab")
-  await expect(page.getByLabel("Date")).toBeFocused()
+  await expect(page.getByLabel("Organizer")).toBeFocused()
+  await page.keyboard.press("Tab")
+  await expect(page.getByLabel("Location")).toBeFocused()
 
-  const viewLink = eventCard.getByRole("link", { name: "View" })
-  await viewLink.focus()
-  await expect(viewLink).toBeFocused()
+  await eventCard.focus()
+  await expect(eventCard).toBeFocused()
   await page.keyboard.press("Enter")
   await expect(page).toHaveURL(
     new RegExp(
@@ -4338,11 +4416,8 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
       Math.floor(Date.now() / 1000) + 1
     )
   )
-  const card = page.getByRole("article").filter({
-    has: page.getByRole("heading", {
-      name: "Synthetic progressive timeline",
-      exact: true,
-    }),
+  const card = page.getByRole("button", {
+    name: /^Open Synthetic progressive timeline\./,
   })
   const held = relay.holdRelayRequests((request) =>
     request.filters.some(
@@ -4363,31 +4438,8 @@ test("event timeline paints before held pickup reads and keeps cached cards unti
     // A usable organizer header must render before pickup hydration settles.
     await expect(card).toBeVisible()
     timings.coldListCardMs = Date.now() - coldStarted
-    await expect(
-      card.getByRole("link", { name: "View", exact: true })
-    ).toBeVisible()
     await expect(refreshEvents).toBeDisabled()
-
-    await page.getByLabel("Date").click()
-    await page.getByRole("option", { name: "Past events", exact: true }).click()
-    const incompleteFilteredEmpty = page.getByRole("alert").filter({
-      hasText: "No events match these filters",
-    })
-    await expect(
-      incompleteFilteredEmpty.getByText(
-        "Discovery is incomplete, so matching events may still be available. Retry or change the filters.",
-        { exact: true }
-      )
-    ).toBeVisible()
-    await expect(
-      incompleteFilteredEmpty.getByRole("button", {
-        name: "Retry",
-        exact: true,
-      })
-    ).toBeDisabled()
-
-    await page.getByLabel("Date").click()
-    await page.getByRole("option", { name: "All dates", exact: true }).click()
+    await expect(page.getByLabel("Date")).toHaveCount(0)
     await expect(card).toBeVisible()
   } finally {
     held.release()
@@ -7419,16 +7471,39 @@ test("open overtime event closes into history and reopens without changing picku
     await expect(
       shopper.getByRole("button", { name: "Add", exact: true })
     ).toHaveCount(0)
-    await gotoAs(shopper, marketUrl, "/events?source=following", "buyer")
-    await shopper.getByLabel("Date").click()
-    await shopper.getByRole("option", { name: "History", exact: true }).click()
+    await gotoAs(
+      shopper,
+      merchantUrl,
+      market.merchantParticipationPath,
+      "merchant"
+    )
     await expect(
-      shopper.getByRole("heading", { name: title, exact: true })
+      shopper.getByRole("button", { name: "Publish product", exact: true })
+    ).toBeDisabled()
+    await expect(
+      shopper.getByText(
+        "This event is closed. New products can't be published.",
+        { exact: true }
+      )
     ).toBeVisible()
+    await expect(
+      shopper.getByRole("button", {
+        name: "Retry event details",
+        exact: true,
+      })
+    ).toHaveCount(0)
+    await gotoAs(shopper, marketUrl, "/events?source=following", "buyer")
+    await expect(
+      shopper.getByRole("button", {
+        name: /^Open Synthetic flexible event hours\./,
+      })
+    ).toBeAttached()
     await shopper.reload()
     await expect(
-      shopper.getByRole("heading", { name: title, exact: true })
-    ).toBeVisible()
+      shopper.getByRole("button", {
+        name: /^Open Synthetic flexible event hours\./,
+      })
+    ).toBeAttached()
 
     const reopenStart = relay.publications.length
     await page
@@ -7457,11 +7532,10 @@ test("open overtime event closes into history and reopens without changing picku
     ).toBeEnabled()
     await gotoAs(shopper, marketUrl, "/events?source=following", "buyer")
     await expect(
-      shopper.getByRole("heading", { name: title, exact: true })
-    ).toBeVisible()
-    await expect(
-      shopper.getByText("Scheduled time has passed · Open", { exact: true })
-    ).toBeVisible()
+      shopper.getByRole("button", {
+        name: /^Open Synthetic flexible event hours\./,
+      })
+    ).toBeAttached()
   } finally {
     await shopperContext.close()
   }
