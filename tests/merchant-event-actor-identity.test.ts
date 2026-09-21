@@ -12,7 +12,11 @@ import {
   orderPickupFulfillmentSchema,
   pubkeyToNpub,
 } from "@conduit/core"
-import { EventPickupHandlerIdentity } from "../apps/merchant/src/components/EventActorIdentity"
+import {
+  EventActorName,
+  EventActorProvenance,
+  EventPickupHandlerIdentity,
+} from "../apps/merchant/src/components/EventActorIdentity"
 import {
   getEventActorDisplayName,
   getOrganizerEventParticipantPubkeys,
@@ -55,7 +59,7 @@ describe("Merchant event actor identity", () => {
         (match) => match[1]!
       )
     )
-    expect(reads).toHaveLength(6)
+    expect(reads).toHaveLength(7)
     for (const options of reads) {
       expect(options).toMatch(/accountPubkey[,:]/)
       expect(options).toContain("authenticatedPubkey,")
@@ -120,6 +124,64 @@ describe("Merchant event actor identity", () => {
     expect(getEventActorDisplayName(actorPubkey)).toBe(
       formatNpub(actorPubkey, 8)
     )
+  })
+
+  it("keeps same-name organizer profiles distinguishable by exact npub", () => {
+    const sharedName = "Same organizer name"
+    const first = renderToStaticMarkup(
+      createElement(
+        "div",
+        null,
+        createElement(EventActorName, {
+          pubkey: actorPubkey,
+          profile: { pubkey: actorPubkey, name: sharedName },
+        }),
+        createElement(EventActorProvenance, {
+          pubkey: actorPubkey,
+          copyLabel: "Copy organizer npub",
+        })
+      )
+    )
+    const second = renderToStaticMarkup(
+      createElement(
+        "div",
+        null,
+        createElement(EventActorName, {
+          pubkey: otherPubkey,
+          profile: { pubkey: otherPubkey, name: sharedName },
+        }),
+        createElement(EventActorProvenance, {
+          pubkey: otherPubkey,
+          copyLabel: "Copy organizer npub",
+        })
+      )
+    )
+
+    expect(first).toContain(sharedName)
+    expect(second).toContain(sharedName)
+    expect(first).toContain(pubkeyToNpub(actorPubkey))
+    expect(second).toContain(pubkeyToNpub(otherPubkey))
+    expect(first).not.toContain(pubkeyToNpub(otherPubkey))
+    expect(second).not.toContain(pubkeyToNpub(actorPubkey))
+  })
+
+  it("keeps compact signed organizer provenance on both Merchant event details", async () => {
+    const [participantPanel, organizerPanel] = await Promise.all([
+      Bun.file(
+        "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
+      ).text(),
+      Bun.file(
+        "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
+      ).text(),
+    ])
+
+    expect(participantPanel).toContain("EventActorProvenance")
+    expect(participantPanel).toContain('copyLabel="Copy organizer npub"')
+    expect(participantPanel).toMatch(
+      /!ownsMarket[\s\S]{0,300}<EventActorProvenance/
+    )
+    expect(organizerPanel).toContain("EventActorProvenance")
+    expect(organizerPanel).toContain('copyLabel="Copy organizer signer npub"')
   })
 
   it("renders organizer handoff with friendly identity and exact provenance", () => {

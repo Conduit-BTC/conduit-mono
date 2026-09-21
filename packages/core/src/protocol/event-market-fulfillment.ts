@@ -9,6 +9,8 @@ import type { EventMarketResolution } from "./event-market"
 export type EventMarketProductFulfillmentAmbiguityReason =
   | "missing_pickup_evidence"
   | "stale_pickup_evidence"
+  | "deleted_pickup_evidence"
+  | "malformed_pickup_evidence"
   | "conflicting_pickup_evidence"
   | "pickup_not_accepted_by_collection"
   | "missing_product_identity"

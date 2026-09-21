@@ -1,120 +1,141 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
+import { CalendarDays, Plus, RefreshCw } from "lucide-react"
+import { useQueryClient } from "@tanstack/react-query"
 import {
-  CalendarDays,
-  RefreshCw,
-  Search,
-  SlidersHorizontal,
-} from "lucide-react"
-import {
-  formatNpub,
   getProfileDisplayLabel,
   useAuth,
+  useConduitSession,
   useProfiles,
 } from "@conduit/core"
 import {
-  Badge,
   Button,
-  EventMarketCard,
+  cn,
+  EventTimelineEntry,
+  EventTimelineLoading,
+  EventTimelineViewport,
   getResultPresentation,
-  Input,
-  Label,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  SegmentedControl,
+  SegmentedControlItem,
+  useEventTimelineAnchor,
   useTimeBoundaryNow,
 } from "@conduit/ui"
 import { useMerchantEventTimeline } from "../hooks/useMerchantEventTimeline"
+import type { MerchantOrganizerEventMarket } from "../lib/event-market"
 import {
-  parseOrganizerEventMarketReference,
-  type MerchantOrganizerEventMarket,
-} from "../lib/event-market"
-import { rememberDiscoveredEventMarket } from "../lib/event-market-workflow"
+  merchantEventMarketQueryIdentity,
+  type MerchantEventMarketQueryData,
+} from "../lib/merchant-event-query"
 import {
   filterAndSortMerchantEventTimeline,
-  formatMerchantEventTimelineSchedule,
   getMerchantEventTimelineBoundaries,
-  getMerchantEventTimelineStatus,
+  getMerchantEventTimelineDateParts,
+  getMerchantEventTimelinePresentation,
+  getNextMerchantEventTimelineLimit,
+  formatMerchantEventTimelineSchedule,
   MERCHANT_EVENT_RELATIONSHIP_FILTERS,
-  MERCHANT_EVENT_TIMELINE_WINDOWS,
-  type MerchantEventRelationship,
+  MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
   type MerchantEventRelationshipFilter,
+  type MerchantEventTimelineItem,
   type MerchantEventTimelineSearch,
-  type MerchantEventTimelineWindow,
 } from "../lib/merchant-event-timeline"
 
 const RELATIONSHIP_LABELS: Record<MerchantEventRelationshipFilter, string> = {
   all: "All events",
   organizing: "Organizing",
   selling: "Selling at",
-  saved: "Saved",
 }
 
-const WINDOW_LABELS: Record<MerchantEventTimelineWindow, string> = {
-  upcoming: "Open & upcoming",
-  "7d": "Next 7 days",
-  "30d": "Next 30 days",
-  past: "Past events",
-  history: "History",
-  all: "All dates",
-}
-
-function relationshipActionLabel(
-  relationships: readonly MerchantEventRelationship[]
-): string {
-  if (relationships.includes("organizing")) return "Manage"
-  if (relationships.includes("selling")) return "Open"
-  return "Sell here"
-}
-
-function organizerFallback(market: MerchantOrganizerEventMarket): string {
-  return market.organizerPubkey.slice(0, 1).toUpperCase() || "C"
+interface TimelinePresentationLimits {
+  earlier: number
+  key: string
+  later: number
 }
 
 export function MerchantEventsTimeline({
   merchantPubkey,
-  currentReference,
   search,
   onSearchChange,
   onOpen,
+  onCreate,
+  createDisabled = false,
 }: {
   merchantPubkey: string
-  currentReference?: string
   search: MerchantEventTimelineSearch
   onSearchChange: (search: MerchantEventTimelineSearch) => void
   onOpen: (reference: string) => void
+  onCreate: () => void
+  createDisabled?: boolean
 }) {
+  const queryClient = useQueryClient()
+  const session = useConduitSession()
   const { pubkey, status, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
   const authenticatedPubkey = status === "connected" ? pubkey : null
-  const [storageRevision, setStorageRevision] = useState(0)
-  const [importValue, setImportValue] = useState("")
-  const [importError, setImportError] = useState("")
+  const relationship = search.relation ?? "all"
+  const viewportKey = `${merchantPubkey}:${relationship}`
+  const [presentationLimits, setPresentationLimits] =
+    useState<TimelinePresentationLimits>({
+      earlier: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
+      key: relationship,
+      later: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
+    })
+  const activePresentationLimits =
+    presentationLimits.key === relationship
+      ? presentationLimits
+      : {
+          earlier: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
+          key: relationship,
+          later: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
+        }
   const discovery = useMerchantEventTimeline({
     merchantPubkey,
     source: "combined",
-    currentReference,
-    storageRevision,
   })
   const timelineBoundaries = useMemo(
-    () => getMerchantEventTimelineBoundaries(discovery.items, search.window),
-    [discovery.items, search.window]
+    () => getMerchantEventTimelineBoundaries(discovery.items),
+    [discovery.items]
   )
   const nowMs = useTimeBoundaryNow(timelineBoundaries)
-  const visibleItems = useMemo(
+  const filteredItems = useMemo(
     () => filterAndSortMerchantEventTimeline(discovery.items, search, nowMs),
     [discovery.items, nowMs, search]
   )
+  const presentation = useMemo(
+    () =>
+      getMerchantEventTimelinePresentation(
+        filteredItems,
+        {
+          earlier: activePresentationLimits.earlier,
+          later: activePresentationLimits.later,
+        },
+        nowMs
+      ),
+    [
+      activePresentationLimits.earlier,
+      activePresentationLimits.later,
+      filteredItems,
+      nowMs,
+    ]
+  )
+  const presentedItems = useMemo(
+    () => [...presentation.past, ...presentation.currentAndFuture],
+    [presentation.currentAndFuture, presentation.past]
+  )
+  const timelineAnchor = useEventTimelineAnchor({
+    isFetching: discovery.isFetching,
+    itemCount: filteredItems.length,
+    pastCount: presentation.past.length,
+    viewportKey,
+  })
   const organizerPubkeys = useMemo(
     () =>
       Array.from(
-        new Set(visibleItems.map((item) => item.market.organizerPubkey))
+        new Set(presentedItems.map((item) => item.market.organizerPubkey))
       ),
-    [visibleItems]
+    [presentedItems]
   )
   const profiles = useProfiles(organizerPubkeys, {
     accountPubkey: authenticatedPubkey,
@@ -124,263 +145,177 @@ export function MerchantEventsTimeline({
     maxUnresolvedRefetches: 1,
     relayHintsByPubkey: discovery.profileRelayHintsByPubkey,
   })
+  const discoveryComplete =
+    !!discovery.network &&
+    ["complete", "complete_empty"].includes(discovery.network.state) &&
+    !discovery.isRefreshStale &&
+    discovery.network.perspective.truncated !== true
   const resultPresentation = getResultPresentation({
     resultCount: discovery.items.length,
-    visibleResultCount: visibleItems.length,
-    reliability:
-      discovery.network &&
-      ["complete", "complete_empty"].includes(discovery.network.state) &&
-      !discovery.isRefreshStale
-        ? "complete"
-        : "degraded",
+    visibleResultCount: filteredItems.length,
+    reliability: discoveryComplete ? "complete" : "degraded",
   })
-  const selectedCoordinate = useMemo(() => {
-    if (!currentReference) return null
-    try {
-      return parseOrganizerEventMarketReference(currentReference).coordinate
-    } catch {
-      return null
-    }
-  }, [currentReference])
-
   function openMarket(market: MerchantOrganizerEventMarket): void {
-    rememberDiscoveredEventMarket(merchantPubkey, {
-      reference: market.naddr,
-      title: market.title,
-      savedAt: Date.now(),
+    const identity = merchantEventMarketQueryIdentity(market.naddr, {
+      relayScope: session.relayScope,
+      authenticatedPubkey,
+      authGeneration,
     })
-    setStorageRevision((current) => current + 1)
+    queryClient.setQueryData<MerchantEventMarketQueryData>(
+      identity.queryKey,
+      (current) => current ?? { read: market, complete: false },
+      { updatedAt: 0 }
+    )
+    timelineAnchor.rememberPosition()
     onOpen(market.naddr)
   }
 
-  function importEvent(event: React.FormEvent<HTMLFormElement>): void {
-    event.preventDefault()
-    try {
-      const parsed = parseOrganizerEventMarketReference(importValue)
-      rememberDiscoveredEventMarket(merchantPubkey, {
-        reference: parsed.naddr,
-        savedAt: Date.now(),
-      })
-      setStorageRevision((current) => current + 1)
-      setImportValue("")
-      setImportError("")
-      onOpen(parsed.naddr)
-    } catch (error) {
-      setImportError(
-        error instanceof Error && error.message.trim()
-          ? error.message
-          : "Paste a valid event naddr or shopper link."
-      )
-    }
+  function changeRelationship(value: string): void {
+    const nextRelationship = value as MerchantEventRelationshipFilter
+    timelineAnchor.rememberPosition()
+    onSearchChange({
+      relation: nextRelationship === "all" ? undefined : nextRelationship,
+    })
+  }
+
+  function loadEarlier(): void {
+    timelineAnchor.prepareForPrepend()
+    const totalCount =
+      presentation.past.length + presentation.hiddenEarlierCount
+    setPresentationLimits((current) => {
+      const active =
+        current.key === relationship ? current : activePresentationLimits
+      return {
+        ...active,
+        earlier: getNextMerchantEventTimelineLimit(active.earlier, totalCount),
+      }
+    })
+  }
+
+  function loadLater(): void {
+    const totalCount =
+      presentation.currentAndFuture.length + presentation.hiddenLaterCount
+    setPresentationLimits((current) => {
+      const active =
+        current.key === relationship ? current : activePresentationLimits
+      return {
+        ...active,
+        later: getNextMerchantEventTimelineLimit(active.later, totalCount),
+      }
+    })
+  }
+
+  function renderEntry(item: MerchantEventTimelineItem) {
+    const market = item.market
+    const profile = profiles.getProfile(market.organizerPubkey)
+    return (
+      <EventTimelineEntry
+        key={market.collectionCoordinate}
+        date={getMerchantEventTimelineDateParts(market)}
+        imageUrl={market.imageUrl}
+        organizerName={getProfileDisplayLabel(profile, market.organizerPubkey, {
+          lookupSettled: profiles.lookupSettled,
+        })}
+        organizerPending={!profiles.lookupSettled && !profile}
+        schedule={formatMerchantEventTimelineSchedule(market)}
+        title={market.title}
+        onOpen={() => openMarket(market)}
+      />
+    )
   }
 
   return (
-    <section className="space-y-5" aria-label="Event discovery">
-      <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)]">
-        <div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="grid gap-1.5 text-xs text-[var(--text-secondary)]">
-              <Label
-                htmlFor="timeline-relationship-filter"
-                className="flex items-center gap-1.5"
-              >
-                <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
-                Relationship
-              </Label>
-              <Select
-                value={search.relation ?? "all"}
-                onValueChange={(value) =>
-                  onSearchChange({
-                    ...search,
-                    relation: value as MerchantEventRelationshipFilter,
-                  })
-                }
-              >
-                <SelectTrigger id="timeline-relationship-filter">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MERCHANT_EVENT_RELATIONSHIP_FILTERS.map((relationship) => (
-                    <SelectItem key={relationship} value={relationship}>
-                      {RELATIONSHIP_LABELS[relationship]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-1.5 text-xs text-[var(--text-secondary)]">
-              <Label
-                htmlFor="timeline-date-filter"
-                className="flex items-center gap-1.5"
-              >
-                <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
-                Date
-              </Label>
-              <Select
-                value={search.window ?? "upcoming"}
-                onValueChange={(value) =>
-                  onSearchChange({
-                    ...search,
-                    window: value as MerchantEventTimelineWindow,
-                  })
-                }
-              >
-                <SelectTrigger id="timeline-date-filter">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MERCHANT_EVENT_TIMELINE_WINDOWS.map((window) => (
-                    <SelectItem key={window} value={window}>
-                      {WINDOW_LABELS[window]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </div>
-
-        <form className="grid content-start gap-1.5" onSubmit={importEvent}>
-          <Label htmlFor="event-timeline-import">Open a known event</Label>
-          <div className="flex gap-2">
-            <Input
-              id="event-timeline-import"
-              value={importValue}
-              onChange={(event) => setImportValue(event.target.value)}
-              placeholder="naddr1... or https://..."
-              aria-invalid={!!importError}
-              aria-describedby={
-                importError ? "event-timeline-import-error" : undefined
-              }
+    <section className="space-y-5" aria-label="Events timeline">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <SegmentedControl role="group" aria-label="Event relationship">
+          {MERCHANT_EVENT_RELATIONSHIP_FILTERS.map((option) => (
+            <SegmentedControlItem
+              key={option}
+              selected={relationship === option}
+              onClick={() => changeRelationship(option)}
+            >
+              {RELATIONSHIP_LABELS[option]}
+            </SegmentedControlItem>
+          ))}
+        </SegmentedControl>
+        <div className="flex items-center gap-2">
+          <p
+            className="text-sm tabular-nums text-[var(--text-muted)]"
+            aria-live="polite"
+          >
+            {discovery.isInitialLoading
+              ? "Loading events"
+              : `${filteredItems.length} ${filteredItems.length === 1 ? "event" : "events"}`}
+          </p>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label="Refresh events"
+            disabled={discovery.isFetching}
+            onClick={discovery.refetch}
+          >
+            <RefreshCw
+              className={cn(
+                "size-4",
+                discovery.isFetching &&
+                  "animate-spin motion-reduce:animate-none"
+              )}
+              aria-hidden="true"
             />
-            <Button
-              type="submit"
-              variant="outline"
-              disabled={!importValue.trim()}
-            >
-              <Search aria-hidden="true" />
-              Open
-            </Button>
-          </div>
-          {importError ? (
-            <p
-              id="event-timeline-import-error"
-              className="text-xs text-error"
-              role="alert"
-            >
-              {importError}
-            </p>
-          ) : (
-            <p className="text-xs leading-5 text-[var(--text-muted)]">
-              Paste a known event address or shopper link to open it directly.
-            </p>
-          )}
-        </form>
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {discovery.isInitialLoading ? (
-        <div
-          className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
-          aria-label="Loading events"
-        >
-          {Array.from({ length: 3 }, (_, index) => (
-            <div
-              key={index}
-              className="h-80 animate-pulse rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]"
-            />
-          ))}
-        </div>
-      ) : visibleItems.length > 0 ? (
-        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {visibleItems.map((item) => {
-            const market = item.market
-            const profile = profiles.getProfile(market.organizerPubkey)
-            const status = getMerchantEventTimelineStatus(item, nowMs)
-            return (
-              <div key={market.collectionCoordinate} className="space-y-2">
-                <EventMarketCard
-                  title={market.title}
-                  summary={market.summary}
-                  imageUrl={market.imageUrl}
-                  organizerName={getProfileDisplayLabel(
-                    profile,
-                    market.organizerPubkey,
-                    { lookupSettled: profiles.lookupSettled }
-                  )}
-                  organizerImageUrl={profile?.picture}
-                  organizerFallback={organizerFallback(market)}
-                  organizerPending={!profiles.lookupSettled && !profile}
-                  schedule={formatMerchantEventTimelineSchedule(market)}
-                  location={market.eventLocation ?? market.eventGeohash}
-                  statusLabel={status.label}
-                  statusTone={status.tone}
-                  topics={market.source.calendar?.topics}
-                  className={
-                    selectedCoordinate === market.collectionCoordinate
-                      ? "border-primary-500"
-                      : undefined
-                  }
-                  action={
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      aria-label={`${relationshipActionLabel(item.relationships)} ${market.title}`}
-                      onClick={() => openMarket(market)}
-                    >
-                      {relationshipActionLabel(item.relationships)}
-                    </Button>
-                  }
-                />
-                {item.relationships.length > 0 ? (
-                  <div
-                    className="flex flex-wrap gap-1.5 px-1"
-                    aria-label={`Your relationship to ${market.title}`}
-                  >
-                    {item.relationships.map((relationship) => (
-                      <Badge key={relationship} variant="outline">
-                        {RELATIONSHIP_LABELS[relationship]}
-                      </Badge>
-                    ))}
-                  </div>
-                ) : null}
-                <span className="sr-only">
-                  Organized by {formatNpub(market.organizerPubkey)}
-                </span>
-              </div>
-            )
-          })}
-        </div>
+        <EventTimelineLoading />
+      ) : filteredItems.length > 0 ? (
+        <EventTimelineViewport
+          busy={discovery.isFetching}
+          currentAndFutureEvents={presentation.currentAndFuture.map(
+            renderEntry
+          )}
+          hiddenEarlierCount={presentation.hiddenEarlierCount}
+          hiddenLaterCount={presentation.hiddenLaterCount}
+          nowAnchorRef={timelineAnchor.nowAnchorRef}
+          onLoadEarlier={loadEarlier}
+          onLoadLater={loadLater}
+          pageSize={MERCHANT_EVENT_TIMELINE_PAGE_SIZE}
+          pastEvents={presentation.past.map(renderEntry)}
+          viewportRef={timelineAnchor.timelineViewportRef}
+        />
       ) : (
         <div
-          className={
+          className={cn(
+            "rounded-xl px-6 py-12 text-center",
             resultPresentation.visibility === "compact"
-              ? "rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-6 py-12 text-center"
-              : "rounded-xl border border-dashed border-[var(--border)] px-6 py-12 text-center"
-          }
+              ? "border border-[var(--warning)]/40 bg-[var(--warning)]/10"
+              : "border border-dashed border-[var(--border)]"
+          )}
           role={
             resultPresentation.visibility === "compact" ? "alert" : undefined
           }
         >
-          <Search
-            className="mx-auto h-8 w-8 text-[var(--text-muted)]"
+          <CalendarDays
+            className="mx-auto size-8 text-[var(--text-muted)]"
             aria-hidden="true"
           />
-          <h3 className="mt-4 text-lg font-semibold text-[var(--text-primary)]">
+          <h3 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
             {resultPresentation.kind === "degraded_empty"
               ? "Events couldn't be fully loaded"
               : resultPresentation.kind === "filter_empty"
-                ? "No events match these filters"
+                ? "No events match this relationship"
                 : "No events yet"}
           </h3>
           <p className="mx-auto mt-2 max-w-xl text-pretty text-sm leading-6 text-[var(--text-muted)]">
             {resultPresentation.kind === "degraded_empty"
-              ? "Retry to check for events, or open a known event directly."
+              ? "Retry to check for more events."
               : resultPresentation.kind === "filter_empty"
                 ? resultPresentation.visibility === "compact"
-                  ? "Discovery is incomplete, so matching events may still be available. Retry or change the relationship or date filter."
-                  : "Change the relationship or date filter to see other events."
-                : "Open a known event directly or create your first event."}
+                  ? "Discovery is incomplete, so matching events may still be available. Retry or choose another relationship."
+                  : "Choose another relationship to see other events."
+                : "Create your first event to add it to the timeline."}
           </p>
           {resultPresentation.visibility === "compact" ? (
             <Button
@@ -391,13 +326,31 @@ export function MerchantEventsTimeline({
               disabled={discovery.isFetching}
               onClick={discovery.refetch}
             >
-              <RefreshCw
-                className={discovery.isFetching ? "animate-spin" : ""}
-                aria-hidden="true"
-              />
-              Retry
+              <RefreshCw className="size-4" aria-hidden="true" />
+              {discovery.isFetching ? "Refreshing…" : "Retry"}
             </Button>
-          ) : null}
+          ) : resultPresentation.kind === "filter_empty" ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => changeRelationship("all")}
+            >
+              Show all events
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              className="mt-4"
+              onClick={onCreate}
+              disabled={createDisabled}
+            >
+              <Plus className="size-4 shrink-0" aria-hidden="true" />
+              Create event
+            </Button>
+          )}
         </div>
       )}
     </section>

@@ -3,6 +3,7 @@ import {
   getLocalProductDeletionSnapshot,
   getLocalEventMarketEvidenceSnapshot,
   getEventMarketSupersededEvidence,
+  resolveEventMarketProductFulfillment,
   subscribeLocalEventMarketEvidenceChanges,
   type LocalEventMarketEvidenceSnapshot,
   reconcileProductRecordsWithRevisions,
@@ -13,10 +14,7 @@ import {
   subscribeLocalProductDeletionChanges,
   type LocalProductDeletionSnapshot,
 } from "@conduit/core"
-import {
-  buildPickupFulfillmentTerms,
-  type RawEventCatalog,
-} from "./event-market-adapter"
+import type { RawEventCatalog } from "./event-market-adapter"
 
 /** Local evidence changes do not restart relay reads or renew their freshness. */
 export function reconcileEventCatalog(
@@ -111,27 +109,46 @@ export function reconcileEventCatalogGraph(
   snapshot: LocalEventMarketEvidenceSnapshot
 ): RawEventCatalog {
   if (!raw.resolution) return raw
-  const records = (raw.result?.data ?? []).flatMap((record) => [
+  const exactRecords = (raw.result?.data ?? []).flatMap((record) => [
     record,
     ...(record.family?.children ?? []),
   ])
+  const displayRecords = [
+    ...(raw.result?.data ?? []),
+    ...(raw.previewRecords ?? []),
+  ].flatMap((record) => [record, ...(record.family?.children ?? [])])
   const superseded = getEventMarketSupersededEvidence(
     raw.resolution,
     snapshot.events,
-    records
+    exactRecords
   )
-  const affected = new Set(superseded.productCoordinates)
-  for (const record of records) {
-    const pickup = buildPickupFulfillmentTerms(
+  const affected = new Set([
+    ...superseded.productCoordinates,
+    ...superseded.removedProductCoordinates,
+    ...superseded.terminalProductCoordinates,
+  ])
+  const terminalProducts = new Set([
+    ...superseded.removedProductCoordinates,
+    ...superseded.terminalProductCoordinates,
+  ])
+  const supersededPickupCoordinates = new Set(superseded.pickupCoordinates)
+  const terminalPickupCoordinates = new Set(
+    superseded.terminalPickupCoordinates
+  )
+  // Preview records are browse evidence, not purchase authority. They still
+  // need known terminal pickup evidence so reversible Add is not exposed for
+  // a dependency that has already been revoked.
+  for (const record of displayRecords) {
+    const fulfillment = resolveEventMarketProductFulfillment(
       record.product,
-      raw.resolution,
-      record
+      raw.resolution
     )
-    if (
-      pickup &&
-      superseded.pickupCoordinates.includes(pickup.option.coordinate)
-    )
+    if (fulfillment.status !== "resolved") continue
+    const pickupCoordinate = fulfillment.selectedPickup.coordinate
+    if (supersededPickupCoordinates.has(pickupCoordinate))
       affected.add(record.addressId)
+    if (terminalPickupCoordinates.has(pickupCoordinate))
+      terminalProducts.add(record.addressId)
   }
   const diagnostics = raw.result?.diagnostics.map((diagnostic) =>
     affected.has(diagnostic.addressId ?? diagnostic.productId) &&
@@ -147,8 +164,18 @@ export function reconcileEventCatalogGraph(
       : diagnostic
   )
   const pending = !!raw.localEvidencePending || snapshot.status === "loading"
+  const terminalProductCoordinates = [...terminalProducts].sort()
+  const sameTerminalProducts =
+    (raw.localTerminalProductCoordinates?.length ?? 0) ===
+      terminalProductCoordinates.length &&
+    terminalProductCoordinates.every(
+      (coordinate, index) =>
+        raw.localTerminalProductCoordinates?.[index] === coordinate
+    )
   if (
     !!raw.localGraphSuperseded === superseded.graph &&
+    !!raw.localGraphRevoked === superseded.graphRevoked &&
+    sameTerminalProducts &&
     !!raw.localEvidencePending === pending &&
     (!diagnostics ||
       diagnostics.every(
@@ -159,6 +186,11 @@ export function reconcileEventCatalogGraph(
   return {
     ...raw,
     localGraphSuperseded: superseded.graph || undefined,
+    localGraphRevoked: superseded.graphRevoked || undefined,
+    localTerminalProductCoordinates:
+      terminalProductCoordinates.length > 0
+        ? terminalProductCoordinates
+        : undefined,
     localEvidencePending: pending || undefined,
     result:
       raw.result && diagnostics ? { ...raw.result, diagnostics } : raw.result,

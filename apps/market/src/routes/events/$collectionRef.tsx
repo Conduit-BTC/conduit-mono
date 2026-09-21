@@ -1,23 +1,17 @@
 import {
   AlertCircle,
   Archive,
-  CalendarDays,
   Check,
   ChevronDown,
-  MapPin,
+  ExternalLink,
   RefreshCw,
 } from "lucide-react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import {
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   buildMarketEventCatalogUrl,
+  buildMerchantEventParticipationUrl,
+  inferConduitAppOrigin,
   normalizePubkey,
   pubkeyToNpub,
   useAuth,
@@ -31,8 +25,7 @@ import {
   AvatarImage,
   Badge,
   Button,
-  ShareLinkButton,
-  cn,
+  EventPageHeader,
   eventMarketRequiredRecordsResolved,
   formatEventRelayReadCoverage,
   getEventActionabilityPresentation,
@@ -64,13 +57,20 @@ import { useCart } from "../../hooks/useCart"
 import { useEventMarket } from "../../hooks/useEventMarket"
 import { useMerchantIdentities } from "../../hooks/useMerchantIdentities"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
-import { selectCartLine } from "../../lib/cart-model"
+import {
+  createPendingEventPickupFulfillment,
+  isPendingEventPickupCartItem,
+  selectCartLine,
+} from "../../lib/cart-model"
 import {
   cartItemInputFromProductSelection,
   getDefaultProductSelection,
   getProductSelection,
 } from "../../lib/productVariations"
-import { getEventCatalogCartAction } from "../../lib/event-market-cart-action"
+import {
+  getEventCatalogCartAction,
+  getEventCatalogPickupGate,
+} from "../../lib/event-market-cart-action"
 import {
   getEventCatalogProductAvailability,
   type EventCatalog,
@@ -118,6 +118,7 @@ function EventCatalogProductCard({
   onCartNotice: (message: string) => void
 }) {
   const cart = useCart()
+  const { upgradePendingEventPickupItem } = cart
   const { product } = entry
   // The adapter has already applied listing and membership safety. Keep the
   // display family intact while exact child pickup authorization is checked.
@@ -138,6 +139,10 @@ function EventCatalogProductCard({
     selectedProduct.id === product.id && product.type !== "variable"
       ? entry.pickupFulfillment
       : (entry.familyPickupFulfillments?.[selectedProduct.id] ?? null)
+  const pickupReadiness =
+    selectedProduct.id === product.id && product.type !== "variable"
+      ? entry.pickupReadiness
+      : (entry.familyPickupReadiness?.[selectedProduct.id] ?? "terminal")
   const pickupLocation =
     pickupFulfillment?.option.location ?? pickupFulfillment?.option.geohash
   const handoff = pickupFulfillment
@@ -154,21 +159,46 @@ function EventCatalogProductCard({
         },
       })
     : null
-  const candidate = pickupFulfillment
+  const exactCandidate = pickupFulfillment
     ? cartItemInputFromProductSelection(
         product,
         selectedProduct,
         pickupFulfillment
       )
     : null
-  const existing = candidate ? selectCartLine(cart.items, candidate) : undefined
+  const pendingFulfillment =
+    catalog.collection && selectedProduct.format !== "digital"
+      ? createPendingEventPickupFulfillment(catalog.collection.coordinate)
+      : null
+  const pendingCandidate = pendingFulfillment
+    ? cartItemInputFromProductSelection(
+        product,
+        selectedProduct,
+        pendingFulfillment
+      )
+    : null
+  const exactExisting = exactCandidate
+    ? selectCartLine(cart.items, exactCandidate)
+    : undefined
+  const pendingExisting = pendingCandidate
+    ? selectCartLine(cart.items, pendingCandidate)
+    : undefined
+  const existing = exactExisting ?? pendingExisting
   const cartQuantity = existing?.quantity ?? 0
+  const pickupGate = getEventCatalogPickupGate({
+    pickupReadiness,
+    hasPickupFulfillment: pickupFulfillment !== null,
+    hasPendingCandidate: pendingCandidate !== null,
+    isChecking,
+  })
+  const pendingEvidenceMayRecover = pickupGate.allowPendingCart
   const cartAction = getEventCatalogCartAction({
     state: catalog.state,
     orderAcceptance: catalog.collection?.orderAcceptance,
     purchaseReady,
     hasPickupFulfillment: pickupFulfillment !== null,
-    isChecking: isChecking && !pickupFulfillment,
+    allowPendingCart: pendingEvidenceMayRecover,
+    isChecking: pickupGate.isChecking,
   })
   const canAdd = cartAction.enabled
 
@@ -181,17 +211,63 @@ function EventCatalogProductCard({
     )
   }, [defaultSelection.id, family, product.id])
 
+  useEffect(() => {
+    if (
+      !canAdd ||
+      !pendingExisting ||
+      !exactCandidate ||
+      !pickupFulfillment ||
+      !selectedProduct.sourceEventId
+    ) {
+      return
+    }
+    void upgradePendingEventPickupItem(pendingExisting, {
+      ...exactCandidate,
+      fulfillment: pickupFulfillment,
+      productUpdatedAt: selectedProduct.updatedAt,
+      productEventId: selectedProduct.sourceEventId,
+    })
+  }, [
+    canAdd,
+    exactCandidate,
+    pendingExisting,
+    pickupFulfillment,
+    selectedProduct.sourceEventId,
+    selectedProduct.updatedAt,
+    upgradePendingEventPickupItem,
+  ])
+
   const add = async (selection: Product) => {
+    const candidate = exactCandidate ?? pendingCandidate
     if (selection.id !== selectedProduct.id || !canAdd || !candidate) return
     const added = await cart.addItem(candidate, 1)
     if (!added) return
     onCartNotice(
-      `${product.title} was added for ${handoff?.label.toLowerCase() ?? "event pickup"}.`
+      pickupFulfillment
+        ? `${product.title} was added for ${handoff?.label.toLowerCase() ?? "event pickup"}.`
+        : `${product.title} was added. Pickup terms are being verified in the background.`
     )
   }
-  const increment = (selection: Product) => {
+  const increment = async (selection: Product) => {
+    const candidate = exactCandidate ?? pendingCandidate
     if (selection.id !== selectedProduct.id || !existing || !candidate) return
-    cart.refreshAndIncrementItem(existing, candidate, 1)
+    if (
+      isPendingEventPickupCartItem(existing) &&
+      exactCandidate &&
+      pickupFulfillment &&
+      selectedProduct.sourceEventId
+    ) {
+      const upgraded = await upgradePendingEventPickupItem(existing, {
+        ...exactCandidate,
+        fulfillment: pickupFulfillment,
+        productUpdatedAt: selectedProduct.updatedAt,
+        productEventId: selectedProduct.sourceEventId,
+      })
+      if (!upgraded.changed) return
+      await cart.addItem(exactCandidate, 1)
+      return
+    }
+    await cart.refreshAndIncrementItem(existing, candidate, 1)
   }
 
   const decrement = (selection: Product) => {
@@ -220,7 +296,7 @@ function EventCatalogProductCard({
         imageLoading={imageLoading}
         btcUsdRate={btcUsdRate}
         pricePreference={pricePreference}
-        allowZeroPrice={pickupFulfillment !== null}
+        allowZeroPrice={pickupFulfillment !== null || pendingEvidenceMayRecover}
         cartQuantity={cartQuantity}
         onProductActivate={null}
         onMerchantActivate={onMerchantActivate}
@@ -232,10 +308,10 @@ function EventCatalogProductCard({
       />
       {!pickupFulfillment ? (
         <div className="rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-          {isChecking ? (
+          {pendingEvidenceMayRecover ? (
             <>
-              Checking the current product and pickup terms. You can browse
-              while this finishes.
+              Current pickup terms are being verified. You can add this item
+              now; checkout stays locked until this exact product is confirmed.
             </>
           ) : entry.evidenceState === "retained" ? (
             <>
@@ -417,61 +493,6 @@ function StatePanel({
   )
 }
 
-function EventHeaderActions({
-  summary,
-  shareUrl,
-  shareTitle,
-  shareLabel,
-}: {
-  summary?: string
-  shareUrl?: string
-  shareTitle: string
-  shareLabel: string
-}) {
-  const [aboutOpen, setAboutOpen] = useState(false)
-  const summaryId = useId()
-
-  if (!summary && !shareUrl) return null
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {summary ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          aria-expanded={aboutOpen}
-          aria-controls={summaryId}
-          onClick={() => setAboutOpen((open) => !open)}
-        >
-          About this event
-          <ChevronDown
-            aria-hidden="true"
-            className={cn("size-3.5", aboutOpen && "rotate-180")}
-          />
-        </Button>
-      ) : null}
-      {shareUrl ? (
-        <ShareLinkButton
-          url={shareUrl}
-          shareTitle={shareTitle}
-          idleLabel={shareLabel}
-          className="shrink-0"
-        />
-      ) : null}
-      {summary ? (
-        <p
-          id={summaryId}
-          hidden={!aboutOpen}
-          className="basis-full whitespace-pre-wrap break-words text-pretty text-sm leading-6 text-[var(--text-secondary)]"
-        >
-          {summary}
-        </p>
-      ) : null}
-    </div>
-  )
-}
-
 function EventCatalogPage() {
   const { authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -483,6 +504,8 @@ function EventCatalogPage() {
   const { collectionRef } = Route.useParams()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
+  const [catalogSearch, setCatalogSearch] = useState("")
+  useEffect(() => setCatalogSearch(""), [collectionRef])
   const selectedMerchantPubkey = normalizePubkey(search.merchant) ?? ""
   const updateMerchantFilter = (merchantPubkey: string) => {
     const normalized = merchantPubkey ? normalizePubkey(merchantPubkey) : null
@@ -499,7 +522,15 @@ function EventCatalogPage() {
   const shopperPricing = useShopperPricing()
   const session = useConduitSession()
   const [cartNotice, setCartNotice] = useState<string | null>(null)
-  const query = useEventMarket(collectionRef, shopperPricing.quote)
+  const query = useEventMarket(collectionRef, shopperPricing.quote, {
+    selectedMerchantPubkey: selectedMerchantPubkey || undefined,
+  })
+  // A booth QR gets exclusive foreground transport until its merchant-scoped
+  // graph settles. The complete event catalog then warms quietly for filter
+  // removal and later navigation without delaying the first cart action.
+  useEventMarket(collectionRef, shopperPricing.quote, {
+    enabled: !!selectedMerchantPubkey && !!query.data && !query.isHydrating,
+  })
   const catalog = query.data
   const scheduleBoundaries = useMemo(
     () =>
@@ -658,40 +689,78 @@ function EventCatalogPage() {
         </div>
       ) : null}
 
-      <header className="space-y-3">
-        {calendar.image || collection.image ? (
-          <img
-            src={calendar.image ?? collection.image}
-            alt={`${calendar.title} banner`}
-            className="aspect-[3/1] w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] object-contain"
-          />
-        ) : null}
-        <h1 className="min-w-0 break-words text-balance text-3xl font-semibold text-[var(--text-primary)] sm:text-4xl">
-          {calendar.title}
-        </h1>
-        <EventHeaderActions
-          key={collection.coordinate}
-          summary={calendar.summary ?? collection.summary}
-          shareUrl={
-            catalog.canonicalNaddr
-              ? buildMarketEventCatalogUrl(
-                  window.location.origin,
-                  catalog.canonicalNaddr,
-                  selectedMerchantPubkey
-                    ? { merchantPubkey: selectedMerchantPubkey }
-                    : undefined
-                )
-              : undefined
-          }
-          shareTitle={
-            selectedMerchantName
-              ? `${selectedMerchantName} at ${calendar.title}`
-              : calendar.title
-          }
-          shareLabel={
-            selectedMerchantPubkey ? "Share this view" : "Share event"
-          }
-        />
+      <EventPageHeader
+        key={`event-header:${collection.coordinate}`}
+        title={calendar.title}
+        summary={calendar.summary ?? collection.summary}
+        imageUrl={calendar.image ?? collection.image}
+        schedule={formatCalendarSchedule(calendar)}
+        location={
+          calendarLocation || calendar.geohash || "Location not published"
+        }
+        organizer={
+          <div className="flex min-w-0 items-center gap-2">
+            <Avatar className="size-7 shrink-0 border border-[var(--border)]">
+              <AvatarImage
+                src={organizerProfile?.picture}
+                alt=""
+                referrerPolicy="no-referrer"
+              />
+              <AvatarFallback>
+                <MerchantAvatarFallback iconClassName="size-4" />
+              </AvatarFallback>
+            </Avatar>
+            <span className="min-w-0 break-words">
+              Organized by{" "}
+              <span className="font-medium text-[var(--text-primary)]">
+                {organizerName}
+              </span>
+            </span>
+            {organizerNip05 ? (
+              <Nip05TrustIndicator
+                pubkey={organizerPubkey}
+                nip05={organizerNip05}
+              />
+            ) : null}
+          </div>
+        }
+        actions={
+          catalog.canonicalNaddr ? (
+            <Button asChild variant="outline" size="sm">
+              <a
+                href={buildMerchantEventParticipationUrl(
+                  inferConduitAppOrigin(
+                    "merchant",
+                    window.location,
+                    import.meta.env.VITE_BUILD_BRANCH
+                  ),
+                  catalog.canonicalNaddr
+                )}
+              >
+                Sell at this event
+                <ExternalLink aria-hidden="true" className="size-3.5" />
+              </a>
+            </Button>
+          ) : null
+        }
+        shareUrl={
+          catalog.canonicalNaddr
+            ? buildMarketEventCatalogUrl(
+                window.location.origin,
+                catalog.canonicalNaddr,
+                selectedMerchantPubkey
+                  ? { merchantPubkey: selectedMerchantPubkey }
+                  : undefined
+              )
+            : undefined
+        }
+        shareTitle={
+          selectedMerchantName
+            ? `${selectedMerchantName} at ${calendar.title}`
+            : calendar.title
+        }
+        shareLabel={selectedMerchantPubkey ? "Share this view" : "Share event"}
+      >
         {collection.orderAcceptance === "open" &&
         calendar.end <= scheduleNow ? (
           <p className="text-pretty text-sm text-[var(--text-secondary)]">
@@ -701,50 +770,6 @@ function EventCatalogPage() {
               : "This event remains open until the organizer closes it."}
           </p>
         ) : null}
-        <dl className="flex flex-col gap-x-6 gap-y-2 text-sm text-[var(--text-secondary)] sm:flex-row sm:flex-wrap">
-          <div className="flex min-w-0 items-start gap-2">
-            <CalendarDays
-              aria-hidden="true"
-              className="mt-0.5 size-4 shrink-0 text-secondary-400"
-            />
-            <dt className="sr-only">Date and time</dt>
-            <dd className="text-pretty">{formatCalendarSchedule(calendar)}</dd>
-          </div>
-          <div className="flex min-w-0 items-start gap-2">
-            <MapPin
-              aria-hidden="true"
-              className="mt-0.5 size-4 shrink-0 text-secondary-400"
-            />
-            <dt className="sr-only">Location</dt>
-            <dd className="break-words text-pretty">
-              {calendarLocation || calendar.geohash || "Location not published"}
-            </dd>
-          </div>
-        </dl>
-        <div className="flex min-w-0 items-center gap-2 text-sm text-[var(--text-secondary)]">
-          <Avatar className="size-7 shrink-0 border border-[var(--border)]">
-            <AvatarImage
-              src={organizerProfile?.picture}
-              alt=""
-              referrerPolicy="no-referrer"
-            />
-            <AvatarFallback>
-              <MerchantAvatarFallback iconClassName="size-4" />
-            </AvatarFallback>
-          </Avatar>
-          <span className="min-w-0 break-words">
-            Organized by{" "}
-            <span className="font-medium text-[var(--text-primary)]">
-              {organizerName}
-            </span>
-          </span>
-          {organizerNip05 ? (
-            <Nip05TrustIndicator
-              pubkey={organizerPubkey}
-              nip05={organizerNip05}
-            />
-          ) : null}
-        </div>
         {!isChecking && actionability.visibility === "inline" ? (
           <p
             className="text-pretty text-sm text-[var(--text-secondary)]"
@@ -758,14 +783,16 @@ function EventCatalogPage() {
             Organizer handoff details are unresolved.
           </p>
         ) : null}
-      </header>
+      </EventPageHeader>
 
       <EventCatalogBrowser
         key={collection.coordinate}
         products={catalog.products}
         identities={merchantIdentities.identitiesByPubkey}
+        search={catalogSearch}
         merchant={selectedMerchantPubkey}
         selectedMerchantName={selectedMerchantName}
+        onSearchChange={setCatalogSearch}
         onMerchantChange={updateMerchantFilter}
         renderProduct={(entry, index, onMerchantActivate) => (
           <EventCatalogProductCard
@@ -816,7 +843,9 @@ function EventCatalogPage() {
           catalog.acceptedProductCount === 0 &&
           catalog.products.length === 0 ? (
           <p className="rounded-xl border border-dashed border-[var(--border)] p-8 text-center text-sm text-[var(--text-secondary)]">
-            The organizer has not accepted any products for this event.
+            {selectedMerchantPubkey
+              ? "This merchant has no organizer-accepted products for this event."
+              : "The organizer has not accepted any products for this event."}
           </p>
         ) : null}
       </EventCatalogBrowser>
