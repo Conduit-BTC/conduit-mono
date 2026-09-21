@@ -290,7 +290,7 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
   return <MerchantProductRootError error={error} />
 }
 
-function MerchantPublicRootError({ error }: { error: Error }) {
+function MerchantPublicRootError({ error }: { error: unknown }) {
   useEffect(() => {
     recordBrowserClientError({
       app: "merchant",
@@ -310,7 +310,7 @@ function MerchantPublicRootError({ error }: { error: Error }) {
   )
 }
 
-function MerchantProductRootError({ error }: { error: Error }) {
+function MerchantProductRootError({ error }: { error: unknown }) {
   const { pubkey, status } = useAuth()
   const signerConnected = status === "connected" && !!pubkey
 
@@ -325,7 +325,11 @@ function MerchantProductRootError({ error }: { error: Error }) {
   const errorPage = (
     <ErrorPage
       title="Something went wrong"
-      message={error.message || "An unexpected error occurred."}
+      message={
+        error instanceof Error && error.message
+          ? error.message
+          : "An unexpected error occurred."
+      }
       showReload
     >
       <ReportBugAction />

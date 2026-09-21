@@ -401,7 +401,7 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
   return <MarketProductRootError error={error} />
 }
 
-function MarketProductRootError({ error }: { error: Error }) {
+function MarketProductRootError({ error }: { error: unknown }) {
   useEffect(() => {
     recordBrowserClientError({
       app: "market",
@@ -414,7 +414,11 @@ function MarketProductRootError({ error }: { error: Error }) {
     <RootShell>
       <ErrorPage
         title="Something went wrong"
-        message={error.message || "An unexpected error occurred."}
+        message={
+          error instanceof Error && error.message
+            ? error.message
+            : "An unexpected error occurred."
+        }
         showReload
       >
         <div className="space-y-2 text-sm">
