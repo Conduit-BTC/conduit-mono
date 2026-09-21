@@ -108,8 +108,7 @@ body {
   display: grid;
   grid-template-areas:
     "brand account"
-    "utilities utilities"
-    "search search";
+    "lower lower";
   grid-template-columns: minmax(0, 1fr) auto;
   row-gap: 0.75rem;
 }
@@ -118,9 +117,8 @@ body {
   grid-area: brand;
 }
 
-.market-header-utility-nav {
-  grid-area: utilities;
-  justify-self: end;
+.market-header-lower-row {
+  grid-area: lower;
 }
 
 .market-header-account-slot {
@@ -128,22 +126,9 @@ body {
   justify-self: end;
 }
 
-.market-header-search {
-  grid-area: search;
-}
-
-@media (min-width: 768px) {
-  .market-header-layout {
-    grid-template-areas:
-      "brand utilities account"
-      "search search search";
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-}
-
 @media (min-width: 1280px) {
   .market-header-layout {
-    grid-template-areas: "brand search utilities account";
-    grid-template-columns: auto minmax(16rem, 1fr) auto auto;
+    grid-template-areas: "brand lower account";
+    grid-template-columns: auto minmax(16rem, 1fr) auto;
   }
 }

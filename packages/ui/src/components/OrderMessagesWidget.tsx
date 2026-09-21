@@ -58,7 +58,13 @@ export function OrderMessagesWidget({
   }, [latestMessageId, open])
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 sm:bottom-6 sm:right-6">
+    <div
+      className="fixed bottom-4 right-4 z-50 transition-transform duration-200 ease-out motion-reduce:transition-none sm:bottom-6 sm:right-6"
+      style={{
+        marginBottom: "var(--order-messages-bottom-offset, 0px)",
+        transform: "translateY(var(--order-messages-hidden-shift, 0px))",
+      }}
+    >
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="inset-0 left-0 top-0 flex h-dvh max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 bg-[var(--surface)] p-0 sm:inset-auto sm:bottom-24 sm:right-6 sm:left-auto sm:top-auto sm:h-[32rem] sm:max-h-[calc(100dvh-7rem)] sm:w-[calc(100vw-2rem)] sm:max-w-sm sm:translate-x-0 sm:translate-y-0 sm:rounded-xl sm:border sm:border-[var(--border)]">
           <div className="border-b border-[var(--border)] p-4 pr-12">
