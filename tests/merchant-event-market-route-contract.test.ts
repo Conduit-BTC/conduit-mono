@@ -192,7 +192,14 @@ describe("merchant organizer event market route", () => {
 
     expect(route).toContain("<MerchantEventsTimeline")
     expect(route).not.toContain("<TabsTrigger")
-    expect(timeline).toContain("Network perspective")
+    expect(route).not.toContain("Merchant workspace")
+    expect(route).not.toContain("onSourceChange")
+    expect(timeline).not.toContain("Network perspective")
+    expect(timeline).not.toContain("Event timeline")
+    expect(timeline).not.toContain("Browse events from your network")
+    expect(timeline).toContain('aria-label="Event discovery"')
+    expect(route).toContain("Create event")
+    expect(timeline).toContain('source: "combined"')
     expect(timeline).toContain('organizing: "Organizing"')
     expect(timeline).toContain('selling: "Selling at"')
     expect(timeline).toContain('saved: "Saved"')
@@ -214,7 +221,7 @@ describe("merchant organizer event market route", () => {
     expect(adapter).toContain("buildProductLocalPickupMetadata")
   })
 
-  it("shows explicit bounded discovery states and exact-hydrates a selected event", async () => {
+  it("projects discovery through result consequences and exact-hydrates a selected event", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
     const timeline = await Bun.file(
       "apps/merchant/src/components/MerchantEventsTimeline.tsx"
@@ -232,9 +239,7 @@ describe("merchant organizer event market route", () => {
     expect(adapter).toContain("discoverFollowedOrganizerEventMarkets")
     expect(core).toContain('projection: "discovery"')
     expect(core).toContain("FOLLOWED_EVENT_MARKET_READ_CONCURRENCY = 4")
-    expect(route).toContain("getOrganizerDiscoveryPresentation")
-    expect(route).toContain("incompleteOrganizerCount")
-    expect(route).toContain("candidateScanCoverage")
+    expect(route).toContain("getResultPresentation")
     expect(core).toContain("FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT = 128")
     expect(core).toContain("kinds: [EVENT_KINDS.PRODUCT_COLLECTION]")
     expect(core).not.toContain("FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT")
@@ -254,16 +259,28 @@ describe("merchant organizer event market route", () => {
       "if (authorPubkeys !== undefined) void refreshPerspective()"
     )
     expect(timelineHook).toContain("sellingCollectionCoordinates")
+    expect(timelineHook).toMatch(
+      /const productReadIncomplete =\s*\n\s*isCommerceReadIncomplete\(productsQuery\.data\?\.meta\) \|\|\s*\n\s*productsQuery\.isError \|\|\s*\n\s*productsQuery\.isPaused/
+    )
+    expect(timelineHook).toContain("isMerchantEventTimelineInitialLoading")
+    expect(timelineHook).toMatch(
+      /productRelationshipReadPending:\s*\n\s*productsQuery\.isPending && !productsQuery\.isPaused/
+    )
     expect(timelineHook).toContain("listOrganizerEventMarkets")
     expect(timelineHook).not.toContain("ORGANIZER_LIMIT")
     expect(core).toContain("candidate-first relay scans")
     expect(core).toContain("readEventMarketCollectionCandidates")
-    expect(timeline).toContain("getOrganizerDiscoveryPresentation")
-    expect(timeline).toContain("Retry event discovery")
-    expect(timeline).toContain("bounded view does not prove")
-    expect(timeline).toMatch(
-      /Existing verified events remain\s+available; retry before inferring/
+    expect(timeline).toContain("getResultPresentation")
+    expect(timeline).toContain("Events couldn't be fully loaded")
+    expect(timeline).toContain("Retry to check for events")
+    expect(timeline).toContain(
+      "Discovery is incomplete, so matching events may still be available."
     )
+    expect(timeline).toContain('resultPresentation.visibility === "compact"')
+    expect(timeline).not.toContain("getOrganizerDiscoveryPresentation")
+    expect(timeline).not.toContain("planned bounded relay")
+    expect(route).not.toContain("getOrganizerDiscoveryPresentation")
+    expect(route).not.toContain("formatEventRelayReadCoverage")
     expect(route).toContain("resolveOrganizerEventMarket(")
     expect(route).toMatch(/authenticatedPubkey,\r?\n\s+signal/)
     expect(route).not.toContain("selectedFromDiscovery")
@@ -288,7 +305,7 @@ describe("merchant organizer event market route", () => {
     expect(panel).toContain("{compact ? (")
   })
 
-  it("exposes signer, delivery, bounded discovery, and organizer acceptance workflows", async () => {
+  it("exposes signer, delivery, result recovery, and organizer acceptance workflows", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
     const editor = await Bun.file(
       "apps/merchant/src/components/OrganizerEventMarketEditor.tsx"
@@ -302,8 +319,9 @@ describe("merchant organizer event market route", () => {
       'if (record.record === "collection") setPublishState("publishing")'
     )
     expect(editor).toContain("Everything here is published publicly")
-    expect(route).toContain("Organizer discovery could not be completed")
-    expect(route).toContain("No missing event is inferred")
+    expect(route).toContain("organizerCatalogPresentation")
+    expect(route).toContain("Events couldn't be loaded")
+    expect(route).toContain("Retry to check for events")
     expect(panel).toContain("acknowledged")
     expect(panel).toContain("rejected")
     expect(panel).toContain("timed out")
@@ -563,6 +581,13 @@ describe("merchant organizer event market route", () => {
     )
     expect(productEditor).toContain("no organizer receipt is shared")
     expect(queue).toContain("Only minimal merchant-authorized pickup receipts")
+    expect(queue).toContain("degradedResultsAreMaterial: true")
+    expect(queue).toContain('resultPresentation.visibility === "compact"')
+    expect(queue).toContain("(!loading || claims.length > 0)")
+    expect(queue).toContain("disabled={loading}")
+    expect(queue).toContain(
+      "Retry before handing out an item to check for a newer or revoked receipt."
+    )
     expect(queue).toContain("Mark handed out")
     expect(queue).toContain("formatEventMarketPickupClaimCode")
     expect(queue).toContain("safePickupClaimCode")

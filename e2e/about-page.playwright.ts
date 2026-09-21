@@ -60,18 +60,17 @@ for (const { app, appName, url } of appCases) {
         page.getByRole("navigation", { name: "Market navigation" })
       ).toBeVisible()
     } else {
-      const workspaceLink = page.getByRole("link", {
-        name: "Open merchant workspace",
+      const merchantHomeLink = page.getByRole("link", {
+        name: "Conduit Merchant home",
       })
-      await expect(workspaceLink).toBeVisible()
+      await expect(merchantHomeLink).toBeVisible()
+      await expect(merchantHomeLink).toHaveAttribute("href", "/")
       await expect(
         page.getByRole("heading", { name: "Sign in to Conduit" })
       ).toHaveCount(0)
-      await workspaceLink.click()
-      await expect(page).toHaveURL(`${url}/`)
       await expect(
-        page.getByRole("heading", { name: "Sign in to Conduit" })
-      ).toBeVisible()
+        page.getByRole("link", { name: "Open merchant workspace" })
+      ).toHaveCount(0)
     }
   })
 
@@ -98,8 +97,11 @@ for (const { app, appName, url } of appCases) {
 
     if (app === "merchant") {
       await expect(
-        page.getByRole("link", { name: "Open workspace" })
+        page.getByRole("link", { name: "Conduit Merchant home" })
       ).toBeVisible()
+      await expect(
+        page.getByRole("link", { name: "Open workspace" })
+      ).toHaveCount(0)
     }
   })
 }

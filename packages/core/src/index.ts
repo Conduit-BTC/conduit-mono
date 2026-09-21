@@ -339,6 +339,11 @@ export {
   type UseMediaServerPreferencesResult,
 } from "./hooks/useMediaServerPreferences"
 export {
+  useProductImageUpload,
+  type ProductImageUploadController,
+  type ProductImageUploadRequest,
+} from "./hooks/useProductImageUpload"
+export {
   useUpdateProfile,
   type UseUpdateProfileOptions,
 } from "./hooks/useUpdateProfile"

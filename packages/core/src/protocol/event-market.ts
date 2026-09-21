@@ -34,6 +34,11 @@ import {
   type RelayListResolutionState,
 } from "./relay-list"
 import {
+  partitionByHealthSnapshot,
+  snapshotRelayHealth,
+  type RelayHealthSnapshot,
+} from "./relay-health"
+import {
   publishWithPlanner,
   type PublishWithPlannerResult,
 } from "./relay-publish"
@@ -74,8 +79,8 @@ const EVENT_MARKET_COLLECTION_DISCOVERY_READ_LIMIT =
 const DEFAULT_EVENT_MARKET_EVIDENCE_MAX_AGE_MS = 5 * 60_000
 
 /**
- * Client execution-safety budget for one bounded participation read. This is
- * not a Nostr, Gamma Markets, location, or event-specific protocol limit.
+ * Client execution-safety batch size for bounded participation reads. This is
+ * not a Nostr, Open Markets, location, or event-specific protocol limit.
  */
 export const EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT = 64
 /** Per-coordinate revision cap within the same client execution budget. */
@@ -1145,6 +1150,7 @@ export interface EventMarketAcceptedProductEvidence {
 export interface EventMarketParticipationBudget {
   state: "within_budget" | "exceeded"
   targetCount: number
+  /** Maximum number of targets resolved in one internal batch. */
   targetLimit: number
 }
 
@@ -1930,11 +1936,7 @@ function participationBudgetForEvidence(input: {
     : 0
   const targetCount = Math.max(localTargetCount, networkTargetCount)
   return {
-    state:
-      input.networkBudget?.state === "exceeded" ||
-      targetCount > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount,
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
@@ -2064,11 +2066,7 @@ export function resolveEventMarketEvidence(
     ),
   ]).size
   const pickupBudget: EventMarketParticipationBudget = {
-    state:
-      input.pickupBudget?.state === "exceeded" ||
-      pickupTargetCount > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount: Math.max(
       pickupTargetCount,
       input.pickupBudget?.targetCount ?? 0
@@ -2099,9 +2097,6 @@ export function resolveEventMarketEvidence(
   }
   if (collection.pickupCoordinates.length > 1) {
     return { ...base, state: "conflicting", collection }
-  }
-  if (pickupBudget.state === "exceeded") {
-    return { ...base, state: "unsupported", collection }
   }
   const calendarCoordinate = parseAddressableCoordinate(
     collection.eventCoordinates[0],
@@ -2225,19 +2220,6 @@ export function resolveEventMarketEvidence(
       : pickup
   )
 
-  if (participationBudget.state === "exceeded") {
-    return {
-      ...graphBase,
-      state: "unsupported",
-      calendar: calendarResult.value,
-      ...(organizerPickup ? { pickup: organizerPickup } : {}),
-      pickups,
-      organizerOnlyProductCoordinates: [...organizerProductCoordinates].sort(),
-      acceptedProductCoordinates: [],
-      acceptedProductEvidence: [],
-      participationRequests: [],
-    }
-  }
   const participation = includeParticipation
     ? getCurrentParticipation(
         productRequestEvents,
@@ -2825,9 +2807,26 @@ function chunkValues<T>(values: readonly T[], size: number): T[][] {
   return chunks
 }
 
+function mergeFanoutResults(
+  results: readonly FetchEventsFanoutResult[]
+): FetchEventsFanoutResult {
+  const eventsById = new Map<string, NDKEvent>()
+  for (const result of results) {
+    for (const event of result.events) {
+      eventsById.set(event.id.toLowerCase(), event)
+    }
+  }
+  return {
+    events: Array.from(eventsById.values()),
+    relays: mergeRelayReadStatuses(...results.map((result) => result.relays)),
+    eventsVerified: results.every((result) => result.eventsVerified === true),
+  }
+}
+
 interface EventMarketFrontierFilterResult extends FetchEventsFanoutResult {
   remainingRelayUrls: string[]
   remainingRelayUrlsByAuthor: Map<string, string[]>
+  incompleteFilterCount: number
   saturatedFilterCount: number
 }
 
@@ -2835,6 +2834,7 @@ async function fetchEventMarketFrontierFilters(input: {
   filters: readonly NDKFilter[]
   relayUrls: string[]
   relayUrlsByAuthor?: ReadonlyMap<string, readonly string[]>
+  relayHealthSnapshot?: RelayHealthSnapshot
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   ownerSelectedRelayUrls?: readonly string[]
@@ -2842,10 +2842,16 @@ async function fetchEventMarketFrontierFilters(input: {
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
   signal?: AbortSignal
 }): Promise<EventMarketFrontierFilterResult> {
+  assertEventMarketReadCurrent(input)
   const filterAuthor = (filter: NDKFilter): string | null => {
     const authors = filter.authors ?? []
     return authors.length === 1 ? normalizePubkey(authors[0]) : null
   }
+  const eligibleRelayUrls = (relayUrls: readonly string[]): string[] =>
+    input.relayHealthSnapshot
+      ? partitionByHealthSnapshot(relayUrls, input.relayHealthSnapshot).healthy
+      : [...relayUrls]
+  const invocationRelayUrls = eligibleRelayUrls(input.relayUrls)
   const remainingRelayUrlsByAuthor = new Map<string, string[]>()
   for (const filter of input.filters) {
     const author = filterAuthor(filter)
@@ -2853,11 +2859,13 @@ async function fetchEventMarketFrontierFilters(input: {
     remainingRelayUrlsByAuthor.set(
       author,
       input.relayUrlsByAuthor?.has(author)
-        ? mergeRelayUrlsWithOwnerAuthority(
-            input.ownerSelectedRelayUrls ?? [],
-            input.relayUrlsByAuthor.get(author) ?? []
+        ? eligibleRelayUrls(
+            mergeRelayUrlsWithOwnerAuthority(
+              input.ownerSelectedRelayUrls ?? [],
+              input.relayUrlsByAuthor.get(author) ?? []
+            )
           )
-        : [...input.relayUrls]
+        : [...invocationRelayUrls]
     )
   }
   if (input.filters.length === 0) {
@@ -2865,8 +2873,9 @@ async function fetchEventMarketFrontierFilters(input: {
       events: [],
       relays: [],
       eventsVerified: true,
-      remainingRelayUrls: [...input.relayUrls],
+      remainingRelayUrls: [...invocationRelayUrls],
       remainingRelayUrlsByAuthor,
+      incompleteFilterCount: 0,
       saturatedFilterCount: 0,
     }
   }
@@ -2874,13 +2883,15 @@ async function fetchEventMarketFrontierFilters(input: {
     eventMarketTestOverrides.fetchEventsFanoutDetailed ??
     fetchEventsFanoutDetailed
   const results: FetchEventsFanoutResult[] = []
+  let incompleteFilterCount = 0
   let saturatedFilterCount = 0
-  let remainingRelayUrls = [...input.relayUrls]
+  let remainingRelayUrls = [...invocationRelayUrls]
   for (
     let index = 0;
     index < input.filters.length;
     index += EVENT_MARKET_FRONTIER_QUERY_CONCURRENCY
   ) {
+    assertEventMarketReadCurrent(input)
     const batch = input.filters.slice(
       index,
       index + EVENT_MARKET_FRONTIER_QUERY_CONCURRENCY
@@ -2903,6 +2914,7 @@ async function fetchEventMarketFrontierFilters(input: {
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
+          skipHealthFilter: input.relayHealthSnapshot ? true : undefined,
           signal: input.signal,
           reuseRelayConnections: true,
         })
@@ -2920,12 +2932,28 @@ async function fetchEventMarketFrontierFilters(input: {
       resultIndex++
     ) {
       const result = batchResults[resultIndex]!
-      const filterLimit = batchPlans[resultIndex]?.filter.limit
+      const plan = batchPlans[resultIndex]
+      if (!plan) continue
+      const relayStatuses = new Map(
+        result.relays.map((relay) => [relay.relayUrl.toLowerCase(), relay])
+      )
+      const missingOrIncompleteRelayUrls = plan.relayUrls.filter(
+        (relayUrl) =>
+          relayStatuses.get(relayUrl.toLowerCase())?.status !== "success"
+      )
+      if (missingOrIncompleteRelayUrls.length > 0) {
+        incompleteFilterCount += 1
+        for (const relayUrl of missingOrIncompleteRelayUrls) {
+          incompleteRelayUrls.add(relayUrl.toLowerCase())
+        }
+      }
+      const filterLimit = plan.filter.limit
       if (
         typeof filterLimit === "number" &&
         result.relays.some(
           (relay) =>
-            relay.status === "success" && relay.eventCount >= filterLimit
+            relay.status === "success" &&
+            relay.eventCount + (relay.rejectedEventCount ?? 0) >= filterLimit
         )
       ) {
         saturatedFilterCount += 1
@@ -2949,18 +2977,11 @@ async function fetchEventMarketFrontierFilters(input: {
     )
   }
 
-  const eventsById = new Map<string, NDKEvent>()
-  for (const result of results) {
-    for (const event of result.events) {
-      eventsById.set(event.id.toLowerCase(), event)
-    }
-  }
   return {
-    events: Array.from(eventsById.values()),
-    relays: mergeRelayReadStatuses(...results.map((result) => result.relays)),
-    eventsVerified: results.every((result) => result.eventsVerified === true),
+    ...mergeFanoutResults(results),
     remainingRelayUrls,
     remainingRelayUrlsByAuthor,
+    incompleteFilterCount,
     saturatedFilterCount,
   }
 }
@@ -3090,6 +3111,7 @@ async function eventMarketParticipantRelayPlans(input: {
   candidateEvents: readonly SignedPublicNostrEvent[]
   sourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
   fallbackRelayUrls: readonly string[]
+  relayHealthSnapshot: RelayHealthSnapshot
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
@@ -3164,6 +3186,7 @@ async function eventMarketParticipantRelayPlans(input: {
         authenticatedPubkey,
         ownerSelectedRelayUrls: selectedForAuthor,
         maxRelays: EVENT_MARKET_MAX_RELAY_HINTS,
+        skipHealthFilter: true,
         settings: ownerSettingsSnapshot?.settings,
         signedRelayListAuthoritative:
           ownerSettingsSnapshot?.signedRelayListAuthoritative,
@@ -3173,13 +3196,16 @@ async function eventMarketParticipantRelayPlans(input: {
       }
       return [
         author,
-        mergeRelayUrlsWithOwnerAuthority(
-          plan.ownerSelectedRelayUrls ?? [],
-          plan.hintRelayUrls,
-          observedRelaysByAuthor.get(author) ?? [],
-          input.fallbackRelayUrls,
-          plan.relayUrls
-        ),
+        partitionByHealthSnapshot(
+          mergeRelayUrlsWithOwnerAuthority(
+            plan.ownerSelectedRelayUrls ?? [],
+            plan.hintRelayUrls,
+            observedRelaysByAuthor.get(author) ?? [],
+            input.fallbackRelayUrls,
+            plan.relayUrls
+          ),
+          input.relayHealthSnapshot
+        ).healthy,
       ]
     })
   )
@@ -3296,6 +3322,7 @@ interface EventMarketProductRequestFrontierResult extends FetchEventsFanoutResul
 
 interface EventMarketPickupFrontierResult extends FetchEventsFanoutResult {
   pickupBudget: EventMarketParticipationBudget
+  incompleteFilterCount: number
   saturatedFilterCount: number
 }
 
@@ -3435,32 +3462,65 @@ function pickupDeletionFrontierFilters(input: {
   return filters
 }
 
-async function fetchEventMarketPickupFrontiers(input: {
-  coordinates: readonly AddressableEventCoordinate[]
-  candidateEvents: readonly SignedPublicNostrEvent[]
-  candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
-  relayUrls: string[]
-  authenticatedPubkey?: string | null
-  ownerSelectedRelayUrls?: readonly string[]
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
-  signal?: AbortSignal
-}): Promise<EventMarketPickupFrontierResult> {
+async function fetchEventMarketPickupFrontiers(
+  input: {
+    coordinates: readonly AddressableEventCoordinate[]
+    candidateEvents: readonly SignedPublicNostrEvent[]
+    candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
+    relayUrls: string[]
+    authenticatedPubkey?: string | null
+    ownerSelectedRelayUrls?: readonly string[]
+    accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+    shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+    signal?: AbortSignal
+  },
+  relayHealthSnapshot: RelayHealthSnapshot = snapshotRelayHealth()
+): Promise<EventMarketPickupFrontierResult> {
+  assertEventMarketReadCurrent(input)
   const pickupBudget: EventMarketParticipationBudget = {
-    state:
-      input.coordinates.length >
-      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount: input.coordinates.length,
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
-  if (pickupBudget.state === "exceeded" || input.coordinates.length === 0) {
+  if (
+    input.coordinates.length > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
+  ) {
+    const batchResults: EventMarketPickupFrontierResult[] = []
+    // Reuse the invocation health view so an earlier bounded batch cannot
+    // suppress a later pickup's only positive source.
+    for (const coordinates of chunkValues(
+      input.coordinates,
+      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
+    )) {
+      const result = await fetchEventMarketPickupFrontiers(
+        {
+          ...input,
+          coordinates,
+        },
+        relayHealthSnapshot
+      )
+      batchResults.push(result)
+    }
+    return {
+      ...mergeFanoutResults(batchResults),
+      pickupBudget,
+      incompleteFilterCount: batchResults.reduce(
+        (count, result) => count + result.incompleteFilterCount,
+        0
+      ),
+      saturatedFilterCount: batchResults.reduce(
+        (count, result) => count + result.saturatedFilterCount,
+        0
+      ),
+    }
+  }
+  if (input.coordinates.length === 0) {
     return {
       events: [],
       relays: [],
       eventsVerified: true,
       pickupBudget,
+      incompleteFilterCount: 0,
       saturatedFilterCount: 0,
     }
   }
@@ -3469,22 +3529,25 @@ async function fetchEventMarketPickupFrontiers(input: {
     candidateEvents: input.candidateEvents,
     sourceRelayUrlsById: input.candidateSourceRelayUrlsById,
     fallbackRelayUrls: input.relayUrls,
+    relayHealthSnapshot,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls([
+    ...(input.ownerSelectedRelayUrls ?? []),
+    ...participantPlan.ownerSelectedRelayUrls,
+  ])
   const pickupResult = await fetchEventMarketFrontierFilters({
     filters: pickupFrontierFilters(input.coordinates),
     relayUrls: input.relayUrls,
     relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
+    relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls([
-      ...(input.ownerSelectedRelayUrls ?? []),
-      ...participantPlan.ownerSelectedRelayUrls,
-    ]),
+    ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3507,12 +3570,10 @@ async function fetchEventMarketPickupFrontiers(input: {
     }),
     relayUrls: pickupResult.remainingRelayUrls,
     relayUrlsByAuthor: pickupResult.remainingRelayUrlsByAuthor,
+    relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls([
-      ...(input.ownerSelectedRelayUrls ?? []),
-      ...participantPlan.ownerSelectedRelayUrls,
-    ]),
+    ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3529,6 +3590,8 @@ async function fetchEventMarketPickupFrontiers(input: {
       pickupResult.eventsVerified === true &&
       deletionResult.eventsVerified === true,
     pickupBudget,
+    incompleteFilterCount:
+      pickupResult.incompleteFilterCount + deletionResult.incompleteFilterCount,
     saturatedFilterCount:
       pickupResult.saturatedFilterCount + deletionResult.saturatedFilterCount,
   }
@@ -3571,6 +3634,7 @@ export async function getEventMarketPickupsByCoordinates(
   })
   if (
     result.pickupBudget.state !== "within_budget" ||
+    result.incompleteFilterCount > 0 ||
     result.saturatedFilterCount > 0 ||
     result.eventsVerified !== true ||
     result.relays.length === 0 ||
@@ -3603,31 +3667,45 @@ export async function getEventMarketPickupsByCoordinates(
   return pickups
 }
 
-async function fetchEventMarketProductRequestFrontiers(input: {
-  candidateEvents: readonly SignedPublicNostrEvent[]
-  candidateCoordinates: readonly string[]
-  candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
-  relayUrls: string[]
-  authenticatedPubkey?: string | null
-  ownerSelectedRelayUrls?: readonly string[]
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
-  signal?: AbortSignal
-}): Promise<EventMarketProductRequestFrontierResult> {
-  const coordinates = candidateProductCoordinates(input)
+async function fetchEventMarketProductRequestFrontiers(
+  input: {
+    candidateEvents: readonly SignedPublicNostrEvent[]
+    candidateCoordinates: readonly string[]
+    candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
+    relayUrls: string[]
+    authenticatedPubkey?: string | null
+    ownerSelectedRelayUrls?: readonly string[]
+    accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+    shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+    signal?: AbortSignal
+  },
+  targetCoordinates?: readonly AddressableEventCoordinate[],
+  relayHealthSnapshot: RelayHealthSnapshot = snapshotRelayHealth()
+): Promise<EventMarketProductRequestFrontierResult> {
+  assertEventMarketReadCurrent(input)
+  const coordinates = targetCoordinates ?? candidateProductCoordinates(input)
   const participationBudget: EventMarketParticipationBudget = {
-    state:
-      coordinates.length > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount: coordinates.length,
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
-  if (participationBudget.state === "exceeded") {
+  if (coordinates.length > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT) {
+    const batchResults: EventMarketProductRequestFrontierResult[] = []
+    // Reuse the invocation health view so an earlier bounded batch cannot
+    // suppress a later product's only positive source.
+    for (const batchCoordinates of chunkValues(
+      coordinates,
+      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
+    )) {
+      const result = await fetchEventMarketProductRequestFrontiers(
+        input,
+        batchCoordinates,
+        relayHealthSnapshot
+      )
+      batchResults.push(result)
+    }
     return {
-      events: [],
-      relays: [],
-      eventsVerified: true,
+      ...mergeFanoutResults(batchResults),
       participationBudget,
     }
   }
@@ -3644,22 +3722,25 @@ async function fetchEventMarketProductRequestFrontiers(input: {
     candidateEvents: input.candidateEvents,
     sourceRelayUrlsById: input.candidateSourceRelayUrlsById,
     fallbackRelayUrls: input.relayUrls,
+    relayHealthSnapshot,
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls([
+    ...(input.ownerSelectedRelayUrls ?? []),
+    ...participantPlan.ownerSelectedRelayUrls,
+  ])
   const productResult = await fetchEventMarketFrontierFilters({
     filters: productFrontierFilters(coordinates),
     relayUrls: input.relayUrls,
     relayUrlsByAuthor: participantPlan.relayUrlsByAuthor,
+    relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls([
-      ...(input.ownerSelectedRelayUrls ?? []),
-      ...participantPlan.ownerSelectedRelayUrls,
-    ]),
+    ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -3682,12 +3763,10 @@ async function fetchEventMarketProductRequestFrontiers(input: {
     }),
     relayUrls: productResult.remainingRelayUrls,
     relayUrlsByAuthor: productResult.remainingRelayUrlsByAuthor,
+    relayHealthSnapshot,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls([
-      ...(input.ownerSelectedRelayUrls ?? []),
-      ...participantPlan.ownerSelectedRelayUrls,
-    ]),
+    ownerSelectedRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -5368,11 +5447,7 @@ export async function getEventMarket(
   )
   const pickupCoordinates = Array.from(pickupCoordinatesByIdentity.values())
   const pickupBudget: EventMarketParticipationBudget = {
-    state:
-      pickupCoordinates.length >
-      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount: pickupCoordinates.length,
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
@@ -5380,40 +5455,32 @@ export async function getEventMarket(
     rawRequestCandidates,
     rawRequestFrontiers
   )
-  const directPickupResult =
-    pickupBudget.state === "exceeded"
-      ? {
-          events: [],
-          relays: [],
-          eventsVerified: true,
-          pickupBudget,
-        }
-      : await fetchEventMarketPickupFrontiers({
-          coordinates: selectedProductCoordinates
-            ? pickupCoordinates
-            : directMerchantPickupCoordinates,
-          candidateEvents: selectedProductCoordinates
-            ? [...organizerRecords.events, ...requestEvidence.events]
-            : requestEvidence.events,
-          candidateSourceRelayUrlsById: selectedProductCoordinates
-            ? new Map([
-                ...organizerRecords.sourceRelayUrlsById,
-                ...requestEvidence.sourceRelayUrlsById,
-              ])
-            : requestEvidence.sourceRelayUrlsById,
-          relayUrls: relayUrlsWithoutObservedFailures(
-            relayUrls,
-            organizerRecordRelays,
-            requestResult.relays,
-            requestFrontierResult.relays
-          ),
-          authenticatedPubkey: input.authenticatedPubkey,
-          ownerSelectedRelayUrls,
-          accountNetworkLocalStateRepository:
-            input.accountNetworkLocalStateRepository,
-          shouldContinue: input.shouldContinue,
-          signal: input.signal,
-        })
+  const directPickupResult = await fetchEventMarketPickupFrontiers({
+    coordinates: selectedProductCoordinates
+      ? pickupCoordinates
+      : directMerchantPickupCoordinates,
+    candidateEvents: selectedProductCoordinates
+      ? [...organizerRecords.events, ...requestEvidence.events]
+      : requestEvidence.events,
+    candidateSourceRelayUrlsById: selectedProductCoordinates
+      ? new Map([
+          ...organizerRecords.sourceRelayUrlsById,
+          ...requestEvidence.sourceRelayUrlsById,
+        ])
+      : requestEvidence.sourceRelayUrlsById,
+    relayUrls: relayUrlsWithoutObservedFailures(
+      relayUrls,
+      organizerRecordRelays,
+      requestResult.relays,
+      requestFrontierResult.relays
+    ),
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
+    signal: input.signal,
+  })
   const rawDirectPickupFrontiers = rawSignedEvents(directPickupResult)
   const rawPickupFrontiers = mergeRawSignedEventGroups(
     rawOrganizerPickupFrontiers,
@@ -5920,11 +5987,7 @@ export async function getOrganizerEventMarketsDetailed(
   )
   const pickupCoordinates = Array.from(pickupCoordinatesByIdentity.values())
   const pickupBudget: EventMarketParticipationBudget = {
-    state:
-      pickupCoordinates.length >
-      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-        ? "exceeded"
-        : "within_budget",
+    state: "within_budget",
     targetCount: pickupCoordinates.length,
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
@@ -5932,31 +5995,23 @@ export async function getOrganizerEventMarketsDetailed(
     rawRequestCandidates,
     rawRequestFrontiers
   )
-  const directPickupResult =
-    pickupBudget.state === "exceeded"
-      ? {
-          events: [],
-          relays: [],
-          eventsVerified: true,
-          pickupBudget,
-        }
-      : await fetchEventMarketPickupFrontiers({
-          coordinates: directMerchantPickupCoordinates,
-          candidateEvents: requestEvidence.events,
-          candidateSourceRelayUrlsById: requestEvidence.sourceRelayUrlsById,
-          relayUrls: relayUrlsWithoutObservedFailures(
-            relayUrls,
-            organizerRecordRelays,
-            requestResult.relays,
-            requestFrontierResult.relays
-          ),
-          authenticatedPubkey: input.authenticatedPubkey,
-          ownerSelectedRelayUrls,
-          accountNetworkLocalStateRepository:
-            input.accountNetworkLocalStateRepository,
-          shouldContinue: input.shouldContinue,
-          signal: input.signal,
-        })
+  const directPickupResult = await fetchEventMarketPickupFrontiers({
+    coordinates: directMerchantPickupCoordinates,
+    candidateEvents: requestEvidence.events,
+    candidateSourceRelayUrlsById: requestEvidence.sourceRelayUrlsById,
+    relayUrls: relayUrlsWithoutObservedFailures(
+      relayUrls,
+      organizerRecordRelays,
+      requestResult.relays,
+      requestFrontierResult.relays
+    ),
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
+    shouldContinue: input.shouldContinue,
+    signal: input.signal,
+  })
   const rawDirectPickupFrontiers = rawSignedEvents(directPickupResult)
   const rawPickupFrontiers = mergeRawSignedEventGroups(
     rawOrganizerPickupFrontiers,

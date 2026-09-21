@@ -9,7 +9,6 @@ import type {
   OrganizerEventMarketsReadResult,
 } from "@conduit/core"
 import {
-  getMerchantOrganizerEventCatalogView,
   listOrganizerEventMarkets,
   projectOrganizerEventMarketsReadResult,
   retainMerchantOrganizerEventMarkets,
@@ -145,43 +144,6 @@ describe("Merchant organizer event discovery evidence", () => {
       title: "Night market",
       state: "active",
     })
-    expect(getMerchantOrganizerEventCatalogView(result, 0)).toEqual({
-      discoveryState: "complete",
-      emptyState: null,
-      hasKnownReferences: true,
-    })
-  })
-
-  it("allows the definitive empty state only for a complete bounded read", () => {
-    const complete = projectOrganizerEventMarketsReadResult(
-      organizerRead("complete")
-    )
-
-    expect(getMerchantOrganizerEventCatalogView(complete, 0)).toEqual({
-      discoveryState: "complete",
-      emptyState: "complete",
-      hasKnownReferences: false,
-    })
-  })
-
-  it("keeps partial events visible and distinguishes a partial empty read", () => {
-    const withEvents = projectOrganizerEventMarketsReadResult(
-      organizerRead("partial", [eventMarket()])
-    )
-    const empty = projectOrganizerEventMarketsReadResult(
-      organizerRead("partial")
-    )
-
-    expect(getMerchantOrganizerEventCatalogView(withEvents, 0)).toEqual({
-      discoveryState: "partial",
-      emptyState: null,
-      hasKnownReferences: true,
-    })
-    expect(getMerchantOrganizerEventCatalogView(empty, 0)).toEqual({
-      discoveryState: "partial",
-      emptyState: "partial",
-      hasKnownReferences: false,
-    })
   })
 
   it("keeps retained access during unavailable reads without inventing an empty catalog", () => {
@@ -195,17 +157,6 @@ describe("Merchant organizer event discovery evidence", () => {
         },
       })
     )
-
-    expect(getMerchantOrganizerEventCatalogView(unavailable, 0)).toEqual({
-      discoveryState: "unavailable",
-      emptyState: "unavailable",
-      hasKnownReferences: false,
-    })
-    expect(getMerchantOrganizerEventCatalogView(unavailable, 1)).toEqual({
-      discoveryState: "unavailable",
-      emptyState: null,
-      hasKnownReferences: true,
-    })
 
     const retained = retainMerchantOrganizerEventMarkets(
       projectOrganizerEventMarketsReadResult(
@@ -310,59 +261,20 @@ describe("Merchant organizer event discovery evidence", () => {
     })
   })
 
-  it("transitions from partial uncertainty to a complete result after retry", () => {
-    const partial = projectOrganizerEventMarketsReadResult(
-      organizerRead("partial")
-    )
-    const complete = projectOrganizerEventMarketsReadResult(
-      organizerRead("complete")
-    )
-
-    expect(getMerchantOrganizerEventCatalogView(partial, 0).emptyState).toBe(
-      "partial"
-    )
-    expect(getMerchantOrganizerEventCatalogView(complete, 0).emptyState).toBe(
-      "complete"
-    )
-  })
-
-  it("does not reuse a prior complete-empty claim after a failed refresh", () => {
-    const priorCompleteEmpty = projectOrganizerEventMarketsReadResult(
-      organizerRead("complete")
-    )
-
-    expect(
-      getMerchantOrganizerEventCatalogView(priorCompleteEmpty, 0, true)
-        .emptyState
-    ).toBeNull()
-  })
-
-  it("does not wire definitive no-events language to incomplete evidence", async () => {
+  it("projects incomplete empty reads into recovery instead of absence", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
-    const definitiveStart = route.indexOf(
-      'catalogView.emptyState === "complete"'
-    )
-    const definitiveCopy = route.indexOf(
-      "No events found in the completed planned reads"
-    )
-    const partialStart = route.indexOf('catalogView.emptyState === "partial"')
-    const partialCopy = route.indexOf("No events found in the checked portion")
-    const unavailableStart = route.indexOf(
-      'catalogView.emptyState === "unavailable"'
-    )
 
-    expect(partialStart).toBeGreaterThan(-1)
-    expect(partialCopy).toBeGreaterThan(partialStart)
-    expect(route).toMatch(/No global\s+absence is/)
-    expect(unavailableStart).toBeGreaterThan(-1)
-    expect(definitiveStart).toBeGreaterThan(unavailableStart)
-    expect(definitiveCopy).toBeGreaterThan(definitiveStart)
-    expect(route.slice(definitiveStart - 80, definitiveStart)).toContain(
-      "!marketsQuery.isError"
+    expect(route).toContain("getResultPresentation")
+    expect(route).toContain(
+      'organizerCatalogPresentation.kind === "degraded_empty"'
     )
-    expect(route.slice(partialStart, definitiveStart)).not.toContain(
+    expect(route).toContain("Events couldn't be loaded")
+    expect(route).toContain("Retry to check for events")
+    expect(route).toContain("No events here yet")
+    expect(route).not.toContain("No events found in the checked portion")
+    expect(route).not.toContain(
       "No events found in the completed planned reads"
     )
-    expect(route).toContain("Retry organizer discovery")
+    expect(route).not.toContain("formatEventRelayReadCoverage")
   })
 })

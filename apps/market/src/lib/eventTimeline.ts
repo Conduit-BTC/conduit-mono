@@ -15,7 +15,6 @@ export interface EventTimelineSearch {
   window?: EventTimelineWindow
   organizer?: string
   location?: string
-  topic?: string
 }
 
 export type TimelineEventMarket = EventMarketResolution & {
@@ -27,7 +26,6 @@ export type TimelineEventMarket = EventMarketResolution & {
 export interface EventTimelineFacets {
   organizers: string[]
   locations: string[]
-  topics: string[]
 }
 
 export interface EventTimelineStatus {
@@ -127,7 +125,6 @@ export function filterAndSortEventMarkets(
   const window = search.window ?? "upcoming"
   const organizer = normalized(search.organizer)
   const location = normalized(search.location)
-  const topic = normalized(search.topic)
 
   return markets
     .filter(isTimelineEventMarket)
@@ -140,13 +137,6 @@ export function filterAndSortEventMarkets(
         !location ||
         [...market.calendar.locations, market.calendar.geohash ?? ""].some(
           (value) => normalized(value) === location
-        )
-    )
-    .filter(
-      (market) =>
-        !topic ||
-        (market.calendar.topics ?? []).some(
-          (value) => normalized(value) === topic
         )
     )
     .sort((left, right) => compareTimelineMarkets(left, right, nowMs))
@@ -174,7 +164,6 @@ export function getEventTimelineFacets(
 ): EventTimelineFacets {
   const organizers = new Set<string>()
   const locations = new Set<string>()
-  const topics = new Set<string>()
   for (const market of markets.filter(isTimelineEventMarket)) {
     organizers.add(market.organizerPubkey)
     for (const location of market.calendar.locations) {
@@ -183,16 +172,12 @@ export function getEventTimelineFacets(
     if (market.calendar.geohash?.trim()) {
       locations.add(market.calendar.geohash.trim())
     }
-    for (const topic of market.calendar.topics ?? []) {
-      if (topic.trim()) topics.add(topic.trim())
-    }
   }
   const byLabel = (left: string, right: string) =>
     left.localeCompare(right, undefined, { sensitivity: "base" })
   return {
     organizers: Array.from(organizers).sort(),
     locations: Array.from(locations).sort(byLabel),
-    topics: Array.from(topics).sort(byLabel),
   }
 }
 
@@ -207,10 +192,7 @@ export function getEventTimelineStatus(
     if (market.collection.orderAcceptance !== "open") {
       return { label: "Past event", tone: "secondary" }
     }
-    if (market.state === "partial") {
-      return { label: "Partial relay view", tone: "warning" }
-    }
-    const refreshNeeded = market.state !== "active"
+    const refreshNeeded = market.state === "stale"
     return {
       label: refreshNeeded
         ? "Scheduled time has passed · Refresh needed"
@@ -218,8 +200,8 @@ export function getEventTimelineStatus(
       tone: refreshNeeded ? "warning" : "secondary",
     }
   }
-  if (market.state === "partial" || market.state === "stale") {
-    return { label: "Partial relay view", tone: "warning" }
+  if (market.state === "stale") {
+    return { label: "Refresh needed", tone: "warning" }
   }
   if (market.calendar.start <= nowMs) {
     return { label: "Happening now", tone: "success" }

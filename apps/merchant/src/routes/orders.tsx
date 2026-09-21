@@ -71,10 +71,10 @@ import {
   Checkbox,
   Input,
   Label,
-  LiveReadNotice,
   MessagingReadinessNotice,
   toMessagingReadinessNoticeState,
   OrderMessagesWidget,
+  ProtectedInboxNotice,
   RefreshChip,
   Select,
   SelectContent,
@@ -818,10 +818,10 @@ function OrdersPage() {
   const isOrdersInitialHydration = signerConnected && ordersQuery.isPending
   const refetchOrders = ordersQuery.refetch
 
-  const handleRefresh = useCallback(() => {
+  const handleRefresh = useCallback(async () => {
     if (!signerConnected || !pubkey) return
     clearProtectedReadAuthenticationSuppression(pubkey)
-    void refetchOrders()
+    await refetchOrders()
   }, [pubkey, refetchOrders, signerConnected])
 
   const conversations = useMemo(
@@ -2562,15 +2562,15 @@ function OrdersPage() {
           />
         )}
 
-      {signerConnected &&
-        protectedOrdersReadState !== "complete" &&
-        protectedOrdersReadState !== "pending" && (
-          <LiveReadNotice
-            state={protectedOrdersReadState}
-            onRetry={handleRefresh}
-            retrying={ordersQuery.isRefetching}
-          />
-        )}
+      {signerConnected && protectedOrdersReadState !== "pending" && (
+        <ProtectedInboxNotice
+          state={protectedOrdersReadState}
+          subject="orders"
+          decryptFailureCount={ordersMeta?.decryptFailures?.length ?? 0}
+          onRetry={handleRefresh}
+          retrying={ordersQuery.isRefetching}
+        />
+      )}
 
       {signerConnected &&
         !cachedOrdersQuery.isLoading &&

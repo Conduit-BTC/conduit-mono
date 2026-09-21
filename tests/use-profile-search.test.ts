@@ -74,6 +74,7 @@ describe("profile search query keys", () => {
       "ali",
       5,
       ACCOUNT,
+      "authors:unscoped",
     ])
     expect(getProfileSearchQueryKey("Ali", 5, "network")).toEqual([
       "profile-search",
@@ -81,6 +82,7 @@ describe("profile search query keys", () => {
       "ali",
       5,
       "guest",
+      "authors:unscoped",
     ])
     expect(getProfileSearchQueryKey("Ali", 5, "cached", ACCOUNT)).not.toEqual(
       getProfileSearchQueryKey("Ali", 5, "network", ACCOUNT)
@@ -91,6 +93,24 @@ describe("profile search query keys", () => {
       "utf8"
     )
     expect(hook).toContain("authenticatedPubkey: accountPubkey")
+  })
+
+  it("separates author scopes and normalizes their order", () => {
+    const first = "1".repeat(64)
+    const second = "2".repeat(64)
+    expect(
+      getProfileSearchQueryKey("Ali", 5, "network", ACCOUNT, [second, first])
+    ).toEqual(
+      getProfileSearchQueryKey("Ali", 5, "network", ACCOUNT, [first, second])
+    )
+    expect(
+      getProfileSearchQueryKey("Ali", 5, "network", ACCOUNT, [first])
+    ).not.toEqual(
+      getProfileSearchQueryKey("Ali", 5, "network", ACCOUNT, [second])
+    )
+    expect(
+      getProfileSearchQueryKey("Ali", 5, "network", ACCOUNT, [])
+    ).toContain("authors:")
   })
 })
 

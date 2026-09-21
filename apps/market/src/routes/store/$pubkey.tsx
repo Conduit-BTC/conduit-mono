@@ -22,6 +22,7 @@ import {
   AvatarFallback,
   AvatarImage,
   Button,
+  getResultPresentation,
   RefreshChip,
   Select,
   SelectContent,
@@ -320,6 +321,11 @@ function StorefrontPage() {
       search.sort,
     ]
   )
+  const resultPresentation = getResultPresentation({
+    resultCount: storeProducts.length,
+    visibleResultCount: filteredProducts.length,
+    reliability: productReadIncomplete ? "degraded" : "complete",
+  })
 
   useEffect(() => {
     setLocalSearch(search.q ?? "")
@@ -533,9 +539,11 @@ function StorefrontPage() {
                       className="inline-flex size-10 shrink-0 items-center justify-center text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
                       onClick={handleShareStore}
                       aria-label={
-                        shareCopied ? "Store link copied" : "Copy store link"
+                        shareCopied
+                          ? "Merchant link copied"
+                          : "Copy merchant link"
                       }
-                      title={shareCopied ? "Copied" : "Copy store link"}
+                      title={shareCopied ? "Copied" : "Copy merchant link"}
                     >
                       {shareCopied ? (
                         <Check className="h-[18px] w-[18px] text-success" />
@@ -725,7 +733,7 @@ function StorefrontPage() {
                   setLocalSearch(event.target.value)
                   setSearchDirty(true)
                 }}
-                placeholder="Search items in this store"
+                placeholder="Search this merchant's items"
                 className="h-11 w-full bg-transparent text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]"
               />
               <div className="text-[var(--text-muted)]">
@@ -776,7 +784,7 @@ function StorefrontPage() {
               refreshing={productsQuery.isHydrating}
               onRefresh={productsQuery.refetch}
               stale={productReadIncomplete}
-              refreshingLabel="Updating store..."
+              refreshingLabel="Updating merchant..."
               className="absolute right-0 top-0"
             />
             {hasUnavailablePriceForSort && (
@@ -796,24 +804,60 @@ function StorefrontPage() {
             </ul>
           )}
 
-          {!!productsQuery.error && (
-            <div className="mt-4 rounded-xl border border-error/20 bg-error/10 p-4 text-sm text-error">
-              Failed to load this storefront.
-            </div>
-          )}
+          {!productsQuery.isInitialLoading &&
+            resultPresentation.kind === "degraded_empty" && (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm text-[var(--text-primary)]">
+                <span>
+                  This merchant&apos;s listings couldn&apos;t be loaded. Retry
+                  to check again.
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={productsQuery.isHydrating}
+                  onClick={() => productsQuery.refetch()}
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
 
           {!productsQuery.isInitialLoading &&
-            storeProducts.length > 0 &&
-            filteredProducts.length === 0 && (
+            resultPresentation.kind === "complete_empty" && (
               <div className="mt-4 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6">
                 <div className="text-lg font-semibold text-[var(--text-primary)]">
-                  No listings match this store view
+                  No listings yet
                 </div>
                 <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
-                  Try clearing the store search or category filter to see the
-                  merchant’s other listings.
+                  This merchant has not published any current listings.
                 </p>
-                <div className="mt-4">
+              </div>
+            )}
+
+          {!productsQuery.isInitialLoading &&
+            resultPresentation.kind === "filter_empty" && (
+              <div
+                className={
+                  resultPresentation.visibility === "compact"
+                    ? "mt-4 rounded-[1.5rem] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-6"
+                    : "mt-4 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6"
+                }
+                role={
+                  resultPresentation.visibility === "compact"
+                    ? "alert"
+                    : undefined
+                }
+              >
+                <div className="text-lg font-semibold text-[var(--text-primary)]">
+                  No loaded listings match this merchant view
+                </div>
+                <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
+                  {resultPresentation.visibility === "compact"
+                    ? "Discovery is incomplete, so other matching listings may still be available. Retry or clear the current filters."
+                    : "Try clearing the merchant search or category filter to see the merchant’s other listings."}
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
                   <Button
                     variant="outline"
                     onClick={() => {
@@ -829,6 +873,16 @@ function StorefrontPage() {
                   >
                     Clear filters
                   </Button>
+                  {resultPresentation.visibility === "compact" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={productsQuery.isHydrating}
+                      onClick={() => void productsQuery.refetch()}
+                    >
+                      Retry
+                    </Button>
+                  )}
                 </div>
               </div>
             )}

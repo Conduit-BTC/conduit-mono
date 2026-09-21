@@ -258,7 +258,10 @@ describe("event catalog refresh presentation", () => {
           state: display.data!.state,
           availableProductCount: 0,
         })
-      ).toMatchObject({ label: "Event evidence is stale", prominent: true })
+      ).toMatchObject({
+        label: "Event evidence is stale",
+        visibility: "prominent",
+      })
       expect(JSON.stringify(client.getQueryData(options.queryKey))).toBe(before)
     } finally {
       release()

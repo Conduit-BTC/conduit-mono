@@ -14,7 +14,10 @@ import {
 import type { FacetOption } from "./facets"
 import { compareCommercePrices, getComparablePriceValue } from "./pricing"
 import { diversifyMerchantProductOrder } from "./productFeedDiversity"
-import type { ProductCatalogSourceMode } from "./productCatalogRead"
+import {
+  getCatalogAuthorKey,
+  type ProductCatalogSourceMode,
+} from "./productCatalogRead"
 
 export type MarketBrowseSortOption = "newest" | "price_asc" | "price_desc"
 
@@ -30,6 +33,8 @@ export interface MarketBrowseSearch {
 export interface MerchantIdentityView {
   pubkey: string
   displayName: string
+  /** Raw public name fields used only for local matching and ranking. */
+  searchProfile?: Pick<Profile, "pubkey" | "name" | "displayName" | "nip05">
   picture?: string
   status: "resolved" | "pending" | "fallback"
   relayHints: string[]
@@ -45,24 +50,34 @@ export function allowsGlobalProductSearch(input: {
 export async function refreshMarketBrowseData(input: {
   globalSearchEnabled: boolean
   refreshDiscovery?: () => Promise<boolean>
-  refreshCatalog: () => void
+  refreshCatalog: () => unknown
   refreshGlobalSearch: () => unknown
 }): Promise<void> {
+  const refreshGlobalSearch = () =>
+    input.globalSearchEnabled
+      ? Promise.resolve(input.refreshGlobalSearch())
+      : Promise.resolve()
+
   if (!input.refreshDiscovery) {
-    input.refreshCatalog()
-    if (input.globalSearchEnabled) void input.refreshGlobalSearch()
+    await Promise.all([
+      Promise.resolve(input.refreshCatalog()),
+      refreshGlobalSearch(),
+    ])
     return
   }
 
   const discoveryRefresh = input.refreshDiscovery()
-  if (input.globalSearchEnabled) void input.refreshGlobalSearch()
+  const globalSearchRefresh = refreshGlobalSearch()
   let authorSetChanged = false
   try {
     authorSetChanged = await discoveryRefresh
   } catch {
     // The catalog still refreshes against the retained safe author set.
   }
-  if (!authorSetChanged) input.refreshCatalog()
+  const catalogRefresh = authorSetChanged
+    ? Promise.resolve()
+    : Promise.resolve(input.refreshCatalog())
+  await Promise.all([catalogRefresh, globalSearchRefresh])
 }
 
 type BrowseFreshnessMeta = CommerceFreshnessMeta
@@ -94,6 +109,7 @@ export function getGlobalProductSearchQueryKey(input: {
   pubkey: string | null
   catalogSource: ProductCatalogSourceMode
   anonymous: boolean
+  authorPubkeys: readonly string[] | undefined
 }) {
   return [
     "market-global-product-search",
@@ -101,6 +117,7 @@ export function getGlobalProductSearchQueryKey(input: {
     input.pubkey,
     input.catalogSource,
     input.anonymous ? "anonymous" : "connected",
+    getCatalogAuthorKey(input.authorPubkeys),
   ] as const
 }
 
@@ -181,7 +198,7 @@ export function isPriceSort(sort: MarketBrowseSortOption | undefined): boolean {
 }
 
 export function getPendingMerchantName(pubkey: string): string {
-  return `Store ${formatNpub(pubkey, 6)}`
+  return `Merchant ${formatNpub(pubkey, 6)}`
 }
 
 export function getMerchantIdentityView(
@@ -197,6 +214,14 @@ export function getMerchantIdentityView(
   return {
     pubkey,
     displayName: profileName ?? fallbackName,
+    searchProfile: profile
+      ? {
+          pubkey: profile.pubkey,
+          name: profile.name,
+          displayName: profile.displayName,
+          nip05: profile.nip05,
+        }
+      : undefined,
     picture: picture || undefined,
     status: profileName
       ? "resolved"
@@ -311,9 +336,9 @@ export function sortStoreFacetOptionsByRecentPublisher(
 }
 
 export function getStoreTriggerLabel(selectedMerchants: readonly string[]) {
-  if (selectedMerchants.length === 0) return "All stores"
-  if (selectedMerchants.length === 1) return "1 store"
-  return `${selectedMerchants.length} stores`
+  if (selectedMerchants.length === 0) return "All merchants"
+  if (selectedMerchants.length === 1) return "1 merchant"
+  return `${selectedMerchants.length} merchants`
 }
 
 export function getBrowseSearchKey(input: {

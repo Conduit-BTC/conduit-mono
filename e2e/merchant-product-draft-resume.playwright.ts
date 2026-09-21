@@ -54,10 +54,9 @@ async function fillProductDraft(page: Page, title = draftFixture.title) {
   await page.getByRole("option", { name: draftFixture.format }).click()
 
   await expect(dialog.getByLabel("Image 2 URL")).toHaveCount(0)
+  await dialog.getByRole("button", { name: "Add by URL" }).click()
   await dialog.getByLabel("Primary image URL").fill(draftFixture.imageUrls[0])
-  await dialog
-    .getByRole("button", { name: "Add another image", exact: true })
-    .click()
+  await dialog.getByRole("button", { name: "Add by URL", exact: true }).click()
   const secondImage = dialog.getByLabel("Image 2 URL")
   await expect(secondImage).toBeFocused()
   await secondImage.fill(draftFixture.imageUrls[1])
@@ -166,21 +165,16 @@ async function runCompleteJourney(
   await installTestSigner(page, pubkey, { secretKey })
 
   await page.goto(merchantUrl)
-  const privateInboxRow = page
-    .getByRole("link")
-    .filter({ hasText: "Private inbox" })
-  await expect(privateInboxRow).toContainText("Needs setup", {
-    timeout: 20_000,
-  })
-  await expect(page.getByRole("link", { name: "Network Ready" })).toBeVisible()
   const readinessPanel = page
     .locator("section")
     .filter({ hasText: "Merchant readiness" })
     .first()
-  await captureEvidence(
-    readinessPanel,
-    `${viewportName}-private-inbox-readiness`
-  )
+  await expect(readinessPanel).toBeVisible({ timeout: 20_000 })
+  await expect(readinessPanel.getByText("Private inbox")).toHaveCount(0)
+  await expect(
+    readinessPanel.getByRole("link", { name: "Network Ready" })
+  ).toBeVisible()
+  await captureEvidence(readinessPanel, `${viewportName}-merchant-readiness`)
 
   await page.goto(`${merchantUrl}/products`)
   await expect(

@@ -4,8 +4,10 @@ import {
   getRelayHealth,
   isRelayInCooldown,
   partitionByHealth,
+  partitionByHealthSnapshot,
   recordRelayFailure,
   recordRelaySuccess,
+  snapshotRelayHealth,
 } from "@conduit/core"
 
 const T0 = 1_700_000_000_000
@@ -63,6 +65,23 @@ describe("relay-health", () => {
     )
     expect(healthy).toEqual(["wss://healthy.example.com"])
     expect(parked).toEqual(["wss://parked.example.com"])
+  })
+
+  it("keeps one health view stable while live relay state changes", () => {
+    const parked = "wss://parked.example.com"
+    const healthy = "wss://healthy.example.com"
+    recordRelayFailure(parked, T0)
+    recordRelayFailure(parked, T0)
+    const snapshot = snapshotRelayHealth(T0 + 1)
+
+    recordRelaySuccess(parked, T0 + 2)
+    recordRelayFailure(healthy, T0 + 2)
+    recordRelayFailure(healthy, T0 + 2)
+
+    expect(partitionByHealthSnapshot([healthy, parked], snapshot)).toEqual({
+      healthy: [healthy],
+      parked: [parked],
+    })
   })
 
   it("ignores invalid relay urls in partitionByHealth", () => {

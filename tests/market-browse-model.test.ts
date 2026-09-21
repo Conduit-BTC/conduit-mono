@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { readFile } from "node:fs/promises"
 import {
   prepareProductCatalog,
   type CommerceProductRecord,
@@ -97,6 +98,35 @@ describe("market browse model helpers", () => {
     expect(refreshes).not.toContain("obsolete-catalog")
   })
 
+  it("settles only after every directly refreshed browse source", async () => {
+    let finishCatalog!: () => void
+    let finishGlobalSearch!: () => void
+    let settled = false
+    const refresh = refreshMarketBrowseData({
+      globalSearchEnabled: true,
+      refreshCatalog: () =>
+        new Promise<void>((resolve) => {
+          finishCatalog = resolve
+        }),
+      refreshGlobalSearch: () =>
+        new Promise<void>((resolve) => {
+          finishGlobalSearch = resolve
+        }),
+    })
+    void refresh.then(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    finishCatalog()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    finishGlobalSearch()
+    await refresh
+    expect(settled).toBe(true)
+  })
+
   it("treats stale or incomplete active browse sources as not updated", () => {
     expect(
       isMarketBrowseRefreshStale({
@@ -182,14 +212,35 @@ describe("market browse model helpers", () => {
       pubkey: "viewer",
       catalogSource: "following",
       anonymous: false,
+      authorPubkeys: ["merchant-a"],
     })
     const combinedKey = getGlobalProductSearchQueryKey({
       query: "soap",
       pubkey: "viewer",
       catalogSource: "combined",
       anonymous: false,
+      authorPubkeys: ["merchant-a"],
     })
     expect(followingKey).not.toEqual(combinedKey)
+
+    expect(combinedKey).not.toEqual(
+      getGlobalProductSearchQueryKey({
+        query: "soap",
+        pubkey: "viewer",
+        catalogSource: "combined",
+        anonymous: false,
+        authorPubkeys: ["merchant-b"],
+      })
+    )
+  })
+
+  it("scopes extended product search to the resolved catalog authors", async () => {
+    const hook = await readFile(
+      "apps/market/src/hooks/useMarketBrowseModel.ts",
+      "utf8"
+    )
+    expect(hook).toContain("catalogAuthorPubkeys !== undefined")
+    expect(hook).toContain("authorPubkeys: catalogAuthorPubkeys")
   })
 
   it("merges relay search results into the perspective catalog by product id", () => {
@@ -302,7 +353,7 @@ describe("market browse model helpers", () => {
       "wss://relay.example",
     ])
 
-    expect(pending.displayName).toBe("Store merchant-a")
+    expect(pending.displayName).toBe("Merchant merchant-a")
     expect(pending.status).toBe("pending")
     expect(pending.relayHints).toEqual(["wss://relay.example"])
   })
@@ -315,7 +366,7 @@ describe("market browse model helpers", () => {
       { lookupSettled: true }
     )
 
-    expect(fallback.displayName).toBe("Store merchant-a")
+    expect(fallback.displayName).toBe("Merchant merchant-a")
     expect(fallback.status).toBe("fallback")
     expect(fallback.relayHints).toEqual(["wss://relay.example"])
   })

@@ -1,7 +1,10 @@
 import { Link } from "@tanstack/react-router"
 import { CalendarDays, LayoutGrid, Store, type LucideIcon } from "lucide-react"
 import { SegmentedControl, SegmentedControlItem } from "@conduit/ui"
-import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
+import {
+  DEFAULT_MARKET_CATALOG_SOURCE,
+  type ProductCatalogSourceMode,
+} from "../lib/productCatalogRead"
 
 export const MARKET_SOURCE_OPTIONS: ProductCatalogSourceMode[] = [
   "combined",
@@ -15,17 +18,17 @@ const MARKET_SOURCE_LABELS: Record<ProductCatalogSourceMode, string> = {
   conduit: "Conduit",
 }
 
-type MarketBrowseSection = "catalog" | "events" | "sellers"
+type MarketBrowseSection = "products" | "merchants" | "events"
 
 const MARKET_BROWSE_SECTIONS: {
   id: MarketBrowseSection
-  to: "/products" | "/events" | "/sellers"
+  to: "/products" | "/merchants" | "/events"
   label: string
   icon: LucideIcon
 }[] = [
-  { id: "catalog", to: "/products", label: "Catalog", icon: LayoutGrid },
+  { id: "products", to: "/products", label: "Products", icon: LayoutGrid },
+  { id: "merchants", to: "/merchants", label: "Merchants", icon: Store },
   { id: "events", to: "/events", label: "Events", icon: CalendarDays },
-  { id: "sellers", to: "/sellers", label: "Sellers", icon: Store },
 ]
 
 export function MarketBrowseNavigation({
@@ -39,7 +42,8 @@ export function MarketBrowseNavigation({
   connected: boolean
   onSelectSource: (source: ProductCatalogSourceMode) => void
 }) {
-  const sectionSearch = source === "combined" ? {} : { source }
+  const sectionSearch =
+    source === DEFAULT_MARKET_CATALOG_SOURCE ? {} : { source }
 
   return (
     <section className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -60,28 +64,28 @@ export function MarketBrowseNavigation({
         </nav>
       </SegmentedControl>
 
-      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
-        <div className="shrink-0 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
-          Perspective
+      {connected && (
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="shrink-0 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
+            Perspective
+          </div>
+          <SegmentedControl role="group" aria-label="Market perspective">
+            {MARKET_SOURCE_OPTIONS.map((option) => {
+              const selected = source === option
+              return (
+                <SegmentedControlItem
+                  key={option}
+                  selected={selected}
+                  aria-pressed={selected}
+                  onClick={() => onSelectSource(option)}
+                >
+                  {MARKET_SOURCE_LABELS[option]}
+                </SegmentedControlItem>
+              )
+            })}
+          </SegmentedControl>
         </div>
-        <SegmentedControl role="group" aria-label="Market perspective">
-          {MARKET_SOURCE_OPTIONS.map((option) => {
-            const selected = source === option
-            const disabled = !connected && option !== "conduit"
-            return (
-              <SegmentedControlItem
-                key={option}
-                selected={selected}
-                disabled={disabled}
-                aria-pressed={selected}
-                onClick={() => onSelectSource(option)}
-              >
-                {MARKET_SOURCE_LABELS[option]}
-              </SegmentedControlItem>
-            )
-          })}
-        </SegmentedControl>
-      </div>
+      )}
     </section>
   )
 }

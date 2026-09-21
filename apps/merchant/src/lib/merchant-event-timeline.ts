@@ -54,6 +54,24 @@ export interface MerchantEventTimelineStatus {
   tone: EventMarketCardStatusTone
 }
 
+export function isMerchantEventTimelineInitialLoading(input: {
+  authorResolutionPending: boolean
+  itemCount: number
+  perspectiveReadPending: boolean
+  ownedReadPending: boolean
+  productRelationshipReadPending: boolean
+  exactRelationshipReadPending: boolean
+}): boolean {
+  return (
+    input.authorResolutionPending ||
+    (input.itemCount === 0 &&
+      (input.perspectiveReadPending ||
+        input.ownedReadPending ||
+        input.productRelationshipReadPending ||
+        input.exactRelationshipReadPending))
+  )
+}
+
 export function qualifyMerchantEventTimelineNetwork(
   network: PerspectiveEventMarketDiscoveryResult | undefined,
   perspectiveRefreshStale: boolean
@@ -434,11 +452,8 @@ export function getMerchantEventTimelineStatus(
     if (item.market.orderAcceptance !== "open") {
       return { label: "Past event", tone: "secondary" }
     }
-    if (item.market.state === "partial") {
-      return { label: "Partial relay view", tone: "warning" }
-    }
     const refreshNeeded =
-      item.market.state !== "active" || item.reconciliationPending
+      item.market.state === "stale" || item.reconciliationPending
     return {
       label: refreshNeeded
         ? "Scheduled time has passed · Refresh needed"
@@ -447,13 +462,13 @@ export function getMerchantEventTimelineStatus(
     }
   }
   if (item.reconciliationPending) {
-    return { label: "Refreshing evidence", tone: "warning" }
+    return { label: "Refresh needed", tone: "warning" }
   }
   const labels: Partial<
     Record<EventMarketResolutionState, MerchantEventTimelineStatus>
   > = {
     active: { label: "Active event", tone: "success" },
-    partial: { label: "Partial relay view", tone: "warning" },
+    partial: { label: "Active event", tone: "success" },
     stale: { label: "Refresh needed", tone: "warning" },
   }
   return labels[item.market.state] ?? { label: "Event", tone: "outline" }

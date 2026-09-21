@@ -3,6 +3,7 @@ import type { Product } from "@conduit/core"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
+  getCategorySuggestionOptions,
   getStoreFacetOptions,
   normalizeFacetValues,
 } from "../apps/market/src/lib/facets"
@@ -86,6 +87,60 @@ describe("Market facet helpers", () => {
       ["food", 2],
       ["art", 1],
     ])
+  })
+
+  it("ranks category suggestions by match quality before facet order", () => {
+    const rankedProducts = [
+      product("exact", "merchant-a", ["art"]),
+      product("prefix-1", "merchant-a", ["artisan goods"]),
+      product("prefix-2", "merchant-b", ["artisan goods"]),
+      product("word-1", "merchant-a", ["fine art"]),
+      product("word-2", "merchant-b", ["fine art"]),
+      product("word-3", "merchant-c", ["fine art"]),
+      product("substring-1", "merchant-a", ["smart goods"]),
+      product("substring-2", "merchant-b", ["smart goods"]),
+      product("substring-3", "merchant-c", ["smart goods"]),
+      product("substring-4", "merchant-d", ["smart goods"]),
+    ]
+
+    expect(
+      getCategorySuggestionOptions(rankedProducts, { query: "art" }).map(
+        (option) => option.value
+      )
+    ).toEqual(["art", "artisan goods", "fine art", "smart goods"])
+  })
+
+  it("uses count and label as deterministic category suggestion tie-breakers", () => {
+    const suggestionProducts = [
+      product("a1", "merchant-a", ["apricot"]),
+      product("a2", "merchant-b", ["apricot"]),
+      product("b", "merchant-a", ["apple"]),
+      product("c", "merchant-a", ["appliance"]),
+    ]
+
+    expect(
+      getCategorySuggestionOptions(suggestionProducts, {
+        query: "ap",
+        limit: 2,
+      }).map((option) => option.value)
+    ).toEqual(["apricot", "apple"])
+  })
+
+  it("matches normalized category text inside the selected merchant scope", () => {
+    const suggestionProducts = [
+      product("a", "merchant-a", ["Café goods"]),
+      product("b", "merchant-b", ["Cafe supplies"]),
+    ]
+
+    expect(
+      getCategorySuggestionOptions(suggestionProducts, {
+        query: "cafe",
+        merchants: ["merchant-a"],
+      }).map((option) => option.value)
+    ).toEqual(["café goods"])
+    expect(
+      getCategorySuggestionOptions(suggestionProducts, { query: "  " })
+    ).toEqual([])
   })
 
   it("computes category counts from search and store filters only", () => {

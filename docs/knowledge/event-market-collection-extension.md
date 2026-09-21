@@ -62,8 +62,8 @@ sufficient for official membership.
 - Only the organizer authors the calendar, collection, and optional organizer
   pickup. A merchant authors its product and optional booth pickup.
 - Reads use at most eight relay hints and bounded planner sources. Participation
-  is capped at 64 product/pickup targets, four product revisions per target, and
-  exact author-scoped NIP-09 queries.
+  resolves product and pickup targets in sequential batches of at most 64, with
+  four product revisions per target and exact author-scoped NIP-09 queries.
 - The extension writer is unavailable to unrelated generic collection routes.
   Widening kinds, actors, routes, or fanout requires a reviewed code and contract
   change.

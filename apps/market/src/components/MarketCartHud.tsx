@@ -325,7 +325,8 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   }
 
   const merchantName =
-    getProfileName(activeProfile) ?? `Store ${formatNpub(selectedMerchant, 6)}`
+    getProfileName(activeProfile) ??
+    `Merchant ${formatNpub(selectedMerchant, 6)}`
   const zapReady = checkoutCapability.outcome === "zap_candidate"
   const startZapOut = () => {
     if (!zapReady || zapStarting || !pubkey || pricingIntent?.status !== "ok") {
@@ -455,7 +456,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
             <Link
               to="/store/$pubkey"
               params={{ pubkey: selectedMerchant }}
-              aria-label={`Open ${merchantName} store`}
+              aria-label={`Open ${merchantName} merchant page`}
               className="flex min-h-11 w-fit min-w-0 max-w-60 items-center justify-self-start gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             >
               <Avatar className="h-7 w-7">
@@ -578,7 +579,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                 <Link
                   to="/store/$pubkey"
                   params={{ pubkey: selectedMerchant }}
-                  aria-label={`Open ${merchantName} store`}
+                  aria-label={`Open ${merchantName} merchant page`}
                   className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-lg px-2 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                 >
                   <Avatar className="h-7 w-7">

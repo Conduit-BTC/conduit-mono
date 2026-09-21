@@ -452,7 +452,9 @@ test("merchant locked signer shows waiting state then connects after unlock @mer
     .getByRole("button", { name: /Connect Extension \(NIP-07\)/i })
     .click()
   await expect(
-    page.getByRole("button", { name: "Connecting...", exact: true })
+    page
+      .getByRole("main", { name: "Sign in to Conduit" })
+      .getByRole("button", { name: "Connecting...", exact: true })
   ).toBeDisabled({
     timeout: 5_000,
   })
@@ -483,7 +485,9 @@ test("merchant remembered auth falls back to explicit retry when signer needs ac
   await expect(connectButton).toBeEnabled()
   await connectButton.click()
   await expect(
-    page.getByRole("button", { name: "Connecting...", exact: true })
+    page
+      .getByRole("main", { name: "Sign in to Conduit" })
+      .getByRole("button", { name: "Connecting...", exact: true })
   ).toBeDisabled({
     timeout: 5_000,
   })

@@ -11,12 +11,15 @@ import {
 } from "nostr-tools/pure"
 import {
   __resetCommerceTestOverrides,
+  __resetShippingTestOverrides,
   __resetRelayPublishTestOverrides,
   __setCommerceTestOverrides,
+  __setShippingTestOverrides,
   __setRelayPublishTestOverrides,
   buildProductListingEventDraft,
   getEventMarketPickupsByCoordinates,
   getProductShippingOptionAddress,
+  getShippingOptionsByCoordinates,
   parseEventMarketPickupEvent,
   setSigner,
   type CommerceProductRecord,
@@ -190,9 +193,14 @@ function pickupOption(
 
 function installEventPickupReadHarness(
   events: readonly SignedPublicNostrEvent[],
-  harnessOptions: { saturatedKinds?: readonly number[] } = {}
+  harnessOptions: {
+    omittedStatusKinds?: readonly number[]
+    rejectedSaturatedKinds?: readonly number[]
+    relayUrls?: readonly string[]
+    saturatedKinds?: readonly number[]
+  } = {}
 ): void {
-  const relayUrl = "wss://pickup.example"
+  const relayUrls = harnessOptions.relayUrls ?? ["wss://pickup.example"]
   __setEventMarketTestOverrides({
     readAccountRelaySettingsPlanningSnapshot: async () => ({
       settings: { version: 1, updatedAt: 1, entries: [] },
@@ -204,7 +212,7 @@ function installEventPickupReadHarness(
           author,
           {
             pubkey: author,
-            readRelayUrls: [relayUrl],
+            readRelayUrls: [...relayUrls],
             writeRelayUrls: [],
             eventCreatedAt: 1,
             cachedAt: 1,
@@ -241,15 +249,29 @@ function installEventPickupReadHarness(
       const saturated = filter.kinds?.some((kind) =>
         harnessOptions.saturatedKinds?.includes(kind)
       )
+      const rejectedSaturated = filter.kinds?.some((kind) =>
+        harnessOptions.rejectedSaturatedKinds?.includes(kind)
+      )
+      const omitStatus = filter.kinds?.some((kind) =>
+        harnessOptions.omittedStatusKinds?.includes(kind)
+      )
+      const plannedRelayUrls = fetchOptions.relayUrls ?? []
       return {
         events: matches.map((event) => new NDKEvent(undefined, event)),
-        relays: (fetchOptions.relayUrls ?? []).map((url) => ({
+        relays: (omitStatus
+          ? plannedRelayUrls.slice(0, -1)
+          : plannedRelayUrls
+        ).map((url) => ({
           relayUrl: url,
           status: "success" as const,
           eventCount:
             saturated && typeof filter.limit === "number"
               ? filter.limit
               : matches.length,
+          rejectedEventCount:
+            rejectedSaturated && typeof filter.limit === "number"
+              ? Math.max(0, filter.limit - matches.length)
+              : 0,
         })),
         eventsVerified: true,
       }
@@ -352,6 +374,7 @@ afterEach(() => {
   __resetCommerceTestOverrides()
   __resetRelayPublishTestOverrides()
   __resetEventMarketTestOverrides()
+  __resetShippingTestOverrides()
   __resetNdkTestState()
 })
 
@@ -571,6 +594,58 @@ describe("merchant-owned product mutation boundary", () => {
       ],
       publishedKinds: [30406, 30402],
       signedBundleCount: 1,
+    })
+  })
+
+  it("stops before signing when rejected fixed-shipping matches saturate the read", async () => {
+    const baseline = canonicalProduct("rejected-saturation")
+    __setShippingTestOverrides({
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: { version: 1, updatedAt: 1, entries: [] },
+        signedRelayListAuthoritative: true,
+      }),
+      getRelayLists: async (authors) =>
+        new Map(
+          authors.map((author) => [
+            author,
+            {
+              pubkey: author,
+              readRelayUrls: ["wss://shipping.example"],
+              writeRelayUrls: [],
+              eventCreatedAt: 1,
+              cachedAt: 1,
+            },
+          ])
+        ),
+      fetchEventsFanoutDetailed: async (filter, options) => ({
+        events: [],
+        relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: 0,
+          rejectedEventCount: filter.kinds?.includes(30406) ? 100 : 0,
+        })),
+        eventsVerified: true,
+      }),
+    })
+    const observed = {
+      signerRequests: [] as ProductSignerRequestProgress[],
+      publishedKinds: [] as number[],
+      signedBundleCount: 0,
+    }
+
+    await expect(
+      attemptPreservedPublication({
+        baseline,
+        update: { stock: 4 },
+        getShippingOptions: getShippingOptionsByCoordinates,
+        observed,
+      })
+    ).rejects.toThrow("could not be verified safely")
+    expect(observed).toEqual({
+      signerRequests: [],
+      publishedKinds: [],
+      signedBundleCount: 0,
     })
   })
 
@@ -971,6 +1046,52 @@ describe("merchant-owned product mutation boundary", () => {
         `${saturation.label} frontier`
       ).rejects.toThrow("Event pickup could not be verified safely")
       expect(blocked, `${saturation.label} frontier`).toEqual({
+        signerRequests: [],
+        publishedKinds: [],
+        signedBundleCount: 0,
+      })
+    }
+
+    for (const incomplete of [
+      {
+        label: "pickup missing relay status",
+        options: {
+          omittedStatusKinds: [30406],
+          relayUrls: ["wss://pickup-a.example", "wss://pickup-b.example"],
+        },
+      },
+      {
+        label: "deletion missing relay status",
+        options: {
+          omittedStatusKinds: [5],
+          relayUrls: ["wss://pickup-a.example", "wss://pickup-b.example"],
+        },
+      },
+      {
+        label: "pickup rejected-match saturation",
+        options: { rejectedSaturatedKinds: [30406] },
+      },
+      {
+        label: "deletion rejected-match saturation",
+        options: { rejectedSaturatedKinds: [5] },
+      },
+    ]) {
+      installEventPickupReadHarness([pickup], incomplete.options)
+      const blocked = {
+        signerRequests: [] as ProductSignerRequestProgress[],
+        publishedKinds: [] as number[],
+        signedBundleCount: 0,
+      }
+      await expect(
+        attemptPreservedPublication({
+          baseline,
+          update: { stock: 4 },
+          getEventMarketPickups: getEventMarketPickupsByCoordinates,
+          observed: blocked,
+        }),
+        incomplete.label
+      ).rejects.toThrow("Event pickup could not be verified safely")
+      expect(blocked, incomplete.label).toEqual({
         signerRequests: [],
         publishedKinds: [],
         signedBundleCount: 0,

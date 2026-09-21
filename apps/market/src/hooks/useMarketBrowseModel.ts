@@ -87,8 +87,10 @@ export function useMarketBrowseModel({
     sort: "newest",
   })
   const normalizedSearchQuery = search.q?.trim() ?? ""
+  const catalogAuthorPubkeys = productsQuery.catalogAuthorPubkeys
   const globalSearchEnabled =
     normalizedSearchQuery.length > 0 &&
+    catalogAuthorPubkeys !== undefined &&
     allowsGlobalProductSearch({
       catalogSource: effectiveCatalogSource,
       anonymous: usesAnonymousPerspective,
@@ -99,12 +101,14 @@ export function useMarketBrowseModel({
       pubkey,
       catalogSource: effectiveCatalogSource,
       anonymous: usesAnonymousPerspective,
+      authorPubkeys: catalogAuthorPubkeys,
     }),
     queryFn: ({ signal }) =>
       getMarketplaceProducts({
         authenticatedPubkey: status === "connected" ? pubkey : null,
         shouldContinue: () => !signal.aborted && shouldContinueAccountRead(),
         textQuery: normalizedSearchQuery,
+        authorPubkeys: catalogAuthorPubkeys,
         sort: "newest",
         readPolicy: {
           maxRelays: 12,
@@ -139,8 +143,8 @@ export function useMarketBrowseModel({
   const refreshCatalog = productsQuery.refetch
   const refreshGuestDiscovery = guestMarket.refetch
   const refreshGlobalSearch = globalSearchQuery.refetch
-  const refetch = useCallback(() => {
-    void refreshMarketBrowseData({
+  const refetch = useCallback(async () => {
+    await refreshMarketBrowseData({
       globalSearchEnabled,
       refreshDiscovery: usesAnonymousPerspective
         ? refreshGuestDiscovery
@@ -247,6 +251,14 @@ export function useMarketBrowseModel({
     relayHintsByPubkey: productsQuery.profileRelayHintsByPubkey,
   })
   const getMerchantIdentity = merchantIdentities.getIdentity
+  const categoryFacetProducts = useMemo(
+    () =>
+      filterProductsByFacets(productData, {
+        q: search.q,
+        merchants: selectedMerchants,
+      }),
+    [productData, search.q, selectedMerchants]
+  )
   const categoryFacetOptions = useMemo(
     () =>
       getCategoryFacetOptions(productData, {
@@ -339,6 +351,7 @@ export function useMarketBrowseModel({
     auth: { pubkey, status },
     catalogSource: effectiveCatalogSource,
     categoryFacetOptions,
+    categoryFacetTotal: categoryFacetProducts.length,
     filtered,
     filteredProducts,
     hasActiveFilters: !!(

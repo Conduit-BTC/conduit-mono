@@ -13,6 +13,12 @@ export interface ProductFacetFilters {
   tags?: string[]
 }
 
+export interface CategorySuggestionFilters {
+  query: string
+  merchants?: string[]
+  limit?: number
+}
+
 export function normalizeFacetValues(raw: unknown): string[] {
   const values = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : []
 
@@ -58,6 +64,30 @@ function sortFacetOptions(options: FacetOption[]): FacetOption[] {
     if (b.count !== a.count) return b.count - a.count
     return a.label.localeCompare(b.label)
   })
+}
+
+function normalizeSuggestionText(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ")
+}
+
+function getCategorySuggestionRank(
+  label: string,
+  query: string
+): number | null {
+  const normalizedLabel = normalizeSuggestionText(label)
+  if (normalizedLabel === query) return 0
+  if (normalizedLabel.startsWith(query)) return 1
+  if (
+    normalizedLabel.split(/[\s/_-]+/).some((word) => word.startsWith(query))
+  ) {
+    return 2
+  }
+  return normalizedLabel.includes(query) ? 3 : null
 }
 
 export function filterProductsByFacets(
@@ -109,6 +139,40 @@ export function getCategoryFacetOptions(
       }))
       .filter((option) => option.count > 0 || option.selected)
   )
+}
+
+/**
+ * Ranks category suggestions from the already prepared catalog. Facet order is
+ * retained as the tie-breaker, so equally relevant tags stay deterministic by
+ * usage count and then label without presenting those counts as global truth.
+ */
+export function getCategorySuggestionOptions(
+  products: Product[],
+  filters: CategorySuggestionFilters
+): FacetOption[] {
+  const query = normalizeSuggestionText(filters.query)
+  if (!query) return []
+
+  return getCategoryFacetOptions(products, {
+    merchants: filters.merchants,
+  })
+    .map((option, index) => ({
+      index,
+      option,
+      rank: getCategorySuggestionRank(option.label, query),
+    }))
+    .filter(
+      (
+        candidate
+      ): candidate is {
+        index: number
+        option: FacetOption
+        rank: number
+      } => candidate.rank !== null
+    )
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .slice(0, Math.max(0, filters.limit ?? 5))
+    .map(({ option }) => option)
 }
 
 export function getStoreFacetOptions(

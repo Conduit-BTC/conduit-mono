@@ -494,10 +494,10 @@ describe("LivePresenceIndicator", () => {
       "20 visitors are looking at this product"
     )
     expect(getLivePresenceLabel(1, "store")).toBe(
-      "1 visitor is browsing this store"
+      "1 visitor is browsing this merchant"
     )
     expect(getLivePresenceLabel(8, "store")).toBe(
-      "8 visitors are browsing this store"
+      "8 visitors are browsing this merchant"
     )
   })
 

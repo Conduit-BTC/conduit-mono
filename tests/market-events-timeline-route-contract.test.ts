@@ -75,7 +75,7 @@ function timedMarket(start: number, end: number): EventMarketResolution {
 }
 
 describe("Market Events timeline route", () => {
-  it("registers a guest-visible Events route beside Catalog", async () => {
+  it("registers Products, Merchants, and Events in that order", async () => {
     const [route, navigation, root, tree] = await Promise.all([
       Bun.file("apps/market/src/routes/events/index.tsx").text(),
       Bun.file("apps/market/src/components/MarketBrowseNavigation.tsx").text(),
@@ -85,9 +85,19 @@ describe("Market Events timeline route", () => {
 
     expect(route).toContain('createFileRoute("/events/")')
     expect(navigation).toContain('to: "/products"')
+    expect(navigation).toContain('to: "/merchants"')
     expect(navigation).toContain('to: "/events"')
+    expect(navigation.indexOf('label: "Products"')).toBeLessThan(
+      navigation.indexOf('label: "Merchants"')
+    )
+    expect(navigation.indexOf('label: "Merchants"')).toBeLessThan(
+      navigation.indexOf('label: "Events"')
+    )
     expect(navigation).toContain("SegmentedControl")
     expect(navigation).toContain("Following + Conduit")
+    expect(navigation).toMatch(
+      /\{connected && \([\s\S]*?aria-label="Market perspective"/
+    )
     expect(navigation).toContain('aria-label="Market perspective"')
     expect(navigation).toContain("aria-pressed={selected}")
     expect(root).toContain('pathname === "/events"')
@@ -97,8 +107,9 @@ describe("Market Events timeline route", () => {
   })
 
   it("uses bounded perspective discovery and preserves partial positives", async () => {
-    const [route, hook, discovery] = await Promise.all([
+    const [route, emptyState, hook, discovery] = await Promise.all([
       Bun.file("apps/market/src/routes/events/index.tsx").text(),
+      Bun.file("apps/market/src/components/EventTimelineEmptyState.tsx").text(),
       Bun.file("apps/market/src/hooks/useEventTimeline.ts").text(),
       Bun.file("packages/core/src/protocol/event-market-discovery.ts").text(),
     ])
@@ -108,13 +119,43 @@ describe("Market Events timeline route", () => {
     expect(hook).toContain("firstDegreeQuery.isPaused")
     expect(hook).toContain("discoverPerspectiveEventMarkets")
     expect(hook).toContain("includeEnded: true")
-    expect(route).toContain("getOrganizerDiscoveryPresentation")
-    expect(route).toContain("getEventTimelinePresentationPerspective")
-    expect(route).toContain("discovery.isRefreshStale")
+    expect(route).not.toContain("getOrganizerDiscoveryPresentation")
+    expect(route).not.toContain("discoveryPresentation")
+    expect(route).toContain('aria-label="Refresh events"')
+    expect(route).toContain("EventTimelineEmptyState")
+    expect(route).toContain("getResultPresentation")
+    expect(route).toContain("resultCount: discovery.markets.length")
+    expect(route).toContain("visibleResultCount: filteredMarkets.length")
+    expect(route).toContain("!discovery.isRefreshStale")
+    expect(route).toContain(
+      'filteredResultPresentation.visibility === "compact"'
+    )
+    expect(route).toContain(
+      "Discovery is incomplete, so matching events may still be available."
+    )
+    expect(emptyState).toContain("getResultPresentation")
+    expect(emptyState).toContain("onRetry")
     expect(route).toContain("filteredMarkets.map")
     expect(discovery).toContain("readEventMarketCollectionCandidates")
     expect(discovery).toContain("perspectiveOrganizerSet.has(organizerPubkey)")
     expect(discovery).not.toContain("FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT")
+  })
+
+  it("keeps the event page focused on useful filters and results", async () => {
+    const [route, merchantEditor] = await Promise.all([
+      Bun.file("apps/market/src/routes/events/index.tsx").text(),
+      Bun.file(
+        "apps/merchant/src/components/OrganizerEventMarketEditor.tsx"
+      ).text(),
+    ])
+
+    expect(route).not.toContain("Event markets")
+    expect(route).not.toContain("Browse organizer event markets")
+    expect(route).not.toContain('id="event-topic-filter"')
+    expect(route).not.toContain("Retry discovery")
+    expect(route).toContain('id="event-results-heading"')
+    expect(route).toContain('aria-label="Refresh events"')
+    expect(merchantEditor).not.toMatch(/htmlFor="[^"]*topic/i)
   })
 
   it("binds timeline and follow reads to the current authenticated session", async () => {

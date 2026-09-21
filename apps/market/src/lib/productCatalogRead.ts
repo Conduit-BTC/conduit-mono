@@ -10,6 +10,8 @@ import {
 
 export type ProductCatalogScope = "marketplace" | "storefront"
 export type ProductCatalogSourceMode = "following" | "conduit" | "combined"
+export const DEFAULT_MARKET_CATALOG_SOURCE: ProductCatalogSourceMode =
+  "combined"
 
 export interface ProductCatalogReadInput {
   scope: ProductCatalogScope
@@ -48,7 +50,7 @@ export async function refreshProductCatalogSources(input: {
   usesPerspectiveGraph: boolean
   catalogSource: ProductCatalogSourceMode
   refreshPerspectiveAuthors: () => boolean | Promise<boolean>
-  restartNetworkStream: () => void
+  restartNetworkStream: () => unknown
   refreshNetwork: () => unknown
   refreshCache: () => unknown
 }): Promise<void> {
@@ -60,9 +62,13 @@ export async function refreshProductCatalogSources(input: {
   }
 
   if (!input.catalogReady) return
-  if (input.streamsNetwork) input.restartNetworkStream()
-  else void input.refreshNetwork()
-  void input.refreshCache()
+  const networkRefresh = input.streamsNetwork
+    ? input.restartNetworkStream()
+    : input.refreshNetwork()
+  await Promise.all([
+    Promise.resolve(networkRefresh),
+    Promise.resolve(input.refreshCache()),
+  ])
 }
 
 export function isProductDiscoveryReadIncomplete(
@@ -202,7 +208,7 @@ export function getProductCatalogQueryKey(
   source: "cache" | "network"
 ) {
   const perspectiveMarketplace = isPerspectiveMarketplaceRead(input)
-  const catalogSource = input.catalogSource ?? "following"
+  const catalogSource = input.catalogSource ?? DEFAULT_MARKET_CATALOG_SOURCE
 
   return [
     "progressive-products",

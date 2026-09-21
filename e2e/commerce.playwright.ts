@@ -309,7 +309,8 @@ async function publishProduct(page: Page, title: string): Promise<void> {
   await page.getByRole("option", { name: "SATS", exact: true }).click()
   await dialog.locator("#product-fulfillment").click()
   await page.getByRole("option", { name: "Digital", exact: true }).click()
-  await dialog.getByLabel("Image URL").fill(productImageUrl)
+  await dialog.getByRole("button", { name: "Add by URL" }).click()
+  await dialog.getByLabel("Primary image URL").fill(productImageUrl)
   const publicZaps = dialog.getByRole("checkbox", {
     name: /Enable public zaps for purchases/,
   })
@@ -414,7 +415,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await expect(
       buyerPage.getByRole("heading", { name: merchantName, exact: true })
     ).toBeVisible({ timeout: 30_000 })
-    const search = buyerPage.getByPlaceholder("Search items in this store")
+    const search = buyerPage.getByPlaceholder("Search this merchant's items")
     await search.fill(productTitle)
     await search.press("Enter")
     const product = buyerPage

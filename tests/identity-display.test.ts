@@ -31,10 +31,10 @@ describe("profile display labels", () => {
   it("uses a shortened pubkey only after lookup settles empty", () => {
     const label = getProfileDisplayLabel(undefined, "a".repeat(64), {
       lookupSettled: true,
-      emptyPrefix: "Store",
+      emptyPrefix: "Merchant",
       chars: 6,
     })
 
-    expect(label.startsWith("Store npub1")).toBe(true)
+    expect(label.startsWith("Merchant npub1")).toBe(true)
   })
 })
