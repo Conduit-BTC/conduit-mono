@@ -132,6 +132,7 @@ const empty = {
   graphRevoked: false,
   productCoordinates: [],
   removedProductCoordinates: [],
+  terminalProductCoordinates: [],
   pickupCoordinates: [],
   terminalPickupCoordinates: [],
 }
@@ -174,7 +175,9 @@ describe("retained event market dependencies", () => {
             ? { ...expected, graphRevoked: true }
             : event.kind === 30406
               ? { ...expected, terminalPickupCoordinates: [pickup] }
-              : expected
+              : event.kind === 30402
+                ? { ...expected, terminalProductCoordinates: [product] }
+                : expected
         expect(
           getEventMarketSupersededEvidence(resolution(), [
             signed({ kind: 5, tags }, 200),
@@ -506,6 +509,65 @@ describe("retained event market dependencies", () => {
         [{ addressId: product, eventId: graph[3]!.id, eventCreatedAt: 100 }]
       ).productCoordinates
     ).toEqual([product])
+  })
+
+  it("keeps only a valid canonical product revision recoverable", () => {
+    const current = graph[3]!
+    const replacement = (title: string, tags = current.tags, createdAt = 200) =>
+      signed(
+        {
+          ...current,
+          tags: tags.map((tag) =>
+            tag[0] === "title" ? ["title", title] : tag
+          ),
+        },
+        createdAt
+      )
+
+    const deleted = signed({ kind: 5, tags: [["a", product]] }, 200)
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [deleted])
+    ).toMatchObject({
+      productCoordinates: [product],
+      terminalProductCoordinates: [product],
+    })
+
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        replacement("x".repeat(201)),
+      ])
+    ).toMatchObject({
+      productCoordinates: [product],
+      terminalProductCoordinates: [product],
+    })
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        replacement("Conflicting coordinate", [
+          ["d", "other-product"],
+          ...current.tags,
+        ]),
+      ])
+    ).toMatchObject({
+      productCoordinates: [product],
+      terminalProductCoordinates: [product],
+    })
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        replacement("Updated product"),
+      ])
+    ).toMatchObject({
+      productCoordinates: [product],
+      terminalProductCoordinates: [],
+    })
+    expect(
+      getEventMarketSupersededEvidence(resolution(), [
+        deleted,
+        replacement("Replacement after deletion", current.tags, 300),
+      ])
+    ).toMatchObject({
+      productCoordinates: [product],
+      terminalProductCoordinates: [],
+    })
   })
 })
 

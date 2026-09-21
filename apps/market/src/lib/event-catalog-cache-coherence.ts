@@ -125,8 +125,12 @@ export function reconcileEventCatalogGraph(
   const affected = new Set([
     ...superseded.productCoordinates,
     ...superseded.removedProductCoordinates,
+    ...superseded.terminalProductCoordinates,
   ])
-  const terminalProducts = new Set(superseded.removedProductCoordinates)
+  const terminalProducts = new Set([
+    ...superseded.removedProductCoordinates,
+    ...superseded.terminalProductCoordinates,
+  ])
   const supersededPickupCoordinates = new Set(superseded.pickupCoordinates)
   const terminalPickupCoordinates = new Set(
     superseded.terminalPickupCoordinates

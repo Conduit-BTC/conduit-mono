@@ -565,6 +565,80 @@ describe("Market event adapter", () => {
     ).toBe("terminal")
   })
 
+  it("keeps a retained card terminal for a newer malformed product while a valid revision stays recoverable", () => {
+    const secret = generateSecretKey()
+    const signedMerchant = getPublicKey(secret)
+    const signedProduct = `30402:${signedMerchant}:malformed-replacement`
+    const current = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: 103,
+        content: "",
+        tags: [
+          ["d", "malformed-replacement"],
+          ["title", "Current product"],
+          ["price", "2000", "SATS"],
+          ["type", "simple", "physical"],
+          ["a", collectionCoordinate],
+          ["shipping_option", pickupCoordinate],
+        ],
+      },
+      secret
+    )
+    const candidate = product({
+      id: signedProduct,
+      pubkey: signedMerchant,
+      title: "Current product",
+      createdAt: 103_000,
+      updatedAt: 103_000,
+    })
+    const record = commerceRecord(candidate, {
+      eventId: current.id,
+      eventCreatedAt: current.created_at,
+    })
+    const raw = {
+      reference: collectionCoordinate,
+      resolution: marketWithAcceptedRecords([record], [signedProduct]),
+      result: productRead({
+        product: candidate,
+        eventId: current.id,
+        eventCreatedAt: current.created_at,
+      }),
+      complete: true,
+    }
+    const replacement = (title: string) =>
+      finalizeEvent(
+        {
+          ...current,
+          created_at: 104,
+          tags: current.tags.map((tag) =>
+            tag[0] === "title" ? ["title", title] : tag
+          ),
+        },
+        secret
+      )
+
+    const malformed = reconcileEventCatalogGraph(raw, {
+      status: "ready",
+      events: [replacement("x".repeat(201))],
+    })
+    expect(malformed.localTerminalProductCoordinates).toEqual([signedProduct])
+    expect(projectRawEventCatalog(malformed).products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupReadiness: "terminal",
+    })
+
+    const valid = reconcileEventCatalogGraph(raw, {
+      status: "ready",
+      events: [replacement("Updated product")],
+    })
+    expect(valid.localTerminalProductCoordinates).toBeUndefined()
+    expect(projectRawEventCatalog(valid).products[0]).toMatchObject({
+      evidenceState: "retained",
+      pickupReadiness: "recoverable",
+    })
+  })
+
   it("keeps unaffected completed products authorized after a product-scoped terminal observation", () => {
     const unaffected = product({
       id: `30402:${merchant}:tea`,

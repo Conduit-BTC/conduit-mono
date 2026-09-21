@@ -4556,6 +4556,7 @@ export function getEventMarketSupersededEvidence(
   graphRevoked: boolean
   productCoordinates: string[]
   removedProductCoordinates: string[]
+  terminalProductCoordinates: string[]
   pickupCoordinates: string[]
   terminalPickupCoordinates: string[]
 } {
@@ -4588,14 +4589,6 @@ export function getEventMarketSupersededEvidence(
       undefined
     )
     return { deleted, event }
-  }
-  const superseded = (record: {
-    coordinate: string
-    eventId: string
-    createdAt: number
-  }) => {
-    const evidence = supersedingEvidence(record)
-    return evidence.deleted || !!evidence.event
   }
   const collectionEvidence = resolution.collection
     ? supersedingEvidence(resolution.collection)
@@ -4663,33 +4656,54 @@ export function getEventMarketSupersededEvidence(
     coordinate: record.coordinate,
     evidence: supersedingEvidence(record),
   }))
+  const supersededProductEvidence = resolution.acceptedProductEvidence.flatMap(
+    (record) => {
+      const revision = records
+        .filter((candidate) => candidate.addressId === record.productCoordinate)
+        .map((candidate) => ({
+          eventId: candidate.eventId,
+          createdAt: candidate.eventCreatedAt * 1_000,
+        }))
+        .reduce(
+          (latest, candidate) =>
+            compareAddressableEvents(
+              { id: candidate.eventId, created_at: candidate.createdAt },
+              { id: latest.eventId, created_at: latest.createdAt }
+            ) < 0
+              ? candidate
+              : latest,
+          record
+        )
+      const evidence = supersedingEvidence({
+        coordinate: record.productCoordinate,
+        ...revision,
+      })
+      return evidence.deleted || evidence.event
+        ? [{ coordinate: record.productCoordinate, evidence }]
+        : []
+    }
+  )
   return {
     graph: collectionReplaced || calendarReplaced,
     graphRevoked,
-    productCoordinates: resolution.acceptedProductEvidence
-      .filter((record) => {
-        const revision = records
-          .filter(
-            (candidate) => candidate.addressId === record.productCoordinate
-          )
-          .map((candidate) => ({
-            eventId: candidate.eventId,
-            createdAt: candidate.eventCreatedAt * 1_000,
-          }))
-          .reduce(
-            (latest, candidate) =>
-              compareAddressableEvents(
-                { id: candidate.eventId, created_at: candidate.createdAt },
-                { id: latest.eventId, created_at: latest.createdAt }
-              ) < 0
-                ? candidate
-                : latest,
-            record
-          )
-        return superseded({ coordinate: record.productCoordinate, ...revision })
-      })
-      .map((record) => record.productCoordinate),
+    productCoordinates: supersededProductEvidence.map(
+      ({ coordinate }) => coordinate
+    ),
     removedProductCoordinates,
+    terminalProductCoordinates: [
+      ...new Set(
+        supersededProductEvidence.flatMap(({ coordinate, evidence }) => {
+          if (!evidence.event) return [coordinate]
+          try {
+            return parseProductEvent(evidence.event).id === coordinate
+              ? []
+              : [coordinate]
+          } catch {
+            return [coordinate]
+          }
+        })
+      ),
+    ],
     pickupCoordinates: [
       ...new Set(
         supersededPickupEvidence.flatMap(({ coordinate, evidence }) =>

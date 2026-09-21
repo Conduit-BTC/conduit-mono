@@ -6599,6 +6599,127 @@ test("event catalogs honor cross-tab signed listing withdrawals while mounted an
   }
 })
 
+test("mounted event catalog keeps a newer malformed product terminal without relay rechecks @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay, "malformed-product-reader")
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic malformed product catalog",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "malformed-product-replacement",
+    title: "Synthetic retained product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+  relay.seed(
+    product,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: market.initialCollection.created_at + 2,
+      content: market.initialCollection.content,
+      tags: [...market.initialCollection.tags, ["a", eventCoordinate(product)]],
+    })
+  )
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const card = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic retained product" })
+  await expect(
+    card.getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled()
+
+  const writer = await page.context().newPage()
+  const writerUrl = `${marketUrl}/__synthetic-malformed-product-writer.html`
+  await writer.route(writerUrl, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Synthetic malformed product writer</title>",
+    })
+  )
+  await writer.goto(writerUrl)
+  const isCatalogRead = (request: RelayRequest) =>
+    request.clientId === "malformed-product-reader" &&
+    request.filters.some((filter) =>
+      filter.kinds?.some((kind) =>
+        [5, 30402, 30405, 30406, 31922, 31923].includes(kind)
+      )
+    )
+  const catalogReads = () => relay.requests.filter(isCatalogRead).length
+  const before = catalogReads()
+  const held = relay.holdRelayRequests(isCatalogRead)
+  const dbUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url))}`
+  const persistEvidence = async (event: SignedEvent) => {
+    await writer.evaluate(
+      async ({ moduleUrl, organizerPubkey, signedEvent }) => {
+        const { db } = await import(moduleUrl)
+        await db.eventMarketEvidence.put({
+          id: signedEvent.id,
+          organizerPubkey,
+          kind: signedEvent.kind,
+          signedEvent,
+          sourceRelayUrls: [],
+          cachedAt: Date.now(),
+        })
+      },
+      {
+        moduleUrl: dbUrl,
+        organizerPubkey: market.initialCollection.pubkey,
+        signedEvent: event,
+      }
+    )
+  }
+
+  try {
+    const malformed = signEvent(MERCHANT_SECRET, {
+      kind: product.kind,
+      created_at: product.created_at + 10,
+      content: product.content,
+      tags: product.tags.map((tag) =>
+        tag[0] === "title" ? ["title", "x".repeat(201)] : tag
+      ),
+    })
+    await persistEvidence(malformed)
+
+    await expect(card).toBeVisible()
+    await expect(
+      card.getByRole("button", { name: "Pickup unavailable", exact: true })
+    ).toBeDisabled()
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toHaveCount(0)
+    expect(catalogReads()).toBe(before)
+
+    const valid = signEvent(MERCHANT_SECRET, {
+      kind: product.kind,
+      created_at: malformed.created_at + 1,
+      content: product.content,
+      tags: product.tags.map((tag) =>
+        tag[0] === "title" ? ["title", "Synthetic updated product"] : tag
+      ),
+    })
+    await persistEvidence(valid)
+
+    await expect(
+      card.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+    await expect(
+      card.getByText(
+        /Current pickup terms are being verified.*checkout stays locked/s
+      )
+    ).toBeVisible()
+    expect(catalogReads()).toBe(before)
+  } finally {
+    held.release()
+    await writer.close()
+  }
+})
+
 for (const mounted of [true, false]) {
   test(`event catalog revokes a superseded cross-tab graph ${mounted ? "while mounted" : "on warm return"} without relay rechecks @market`, async ({
     page,
