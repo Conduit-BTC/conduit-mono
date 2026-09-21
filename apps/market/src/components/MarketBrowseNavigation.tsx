@@ -1,7 +1,10 @@
 import { Link } from "@tanstack/react-router"
 import { CalendarDays, LayoutGrid, Store, type LucideIcon } from "lucide-react"
 import { SegmentedControl, SegmentedControlItem } from "@conduit/ui"
-import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
+import {
+  DEFAULT_MARKET_CATALOG_SOURCE,
+  type ProductCatalogSourceMode,
+} from "../lib/productCatalogRead"
 
 export const MARKET_SOURCE_OPTIONS: ProductCatalogSourceMode[] = [
   "combined",
@@ -39,7 +42,8 @@ export function MarketBrowseNavigation({
   connected: boolean
   onSelectSource: (source: ProductCatalogSourceMode) => void
 }) {
-  const sectionSearch = source === "combined" ? {} : { source }
+  const sectionSearch =
+    source === DEFAULT_MARKET_CATALOG_SOURCE ? {} : { source }
 
   return (
     <section className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

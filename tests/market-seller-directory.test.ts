@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
-import type { ProfileSearchMatch } from "../packages/core/src/protocol/profile-search"
 import {
   ACCOUNT_SEARCH_CANDIDATE_LIMIT,
   ACCOUNT_SUGGESTION_LIMIT,
@@ -10,15 +9,21 @@ import {
 import {
   excludeDiscoveredSellers,
   filterSellersByName,
+  getSellerEligibilityState,
   groupDiscoveredSellers,
+  isSellerCatalogEvidenceIncomplete,
   isSellerDirectoryUnavailable,
 } from "../apps/market/src/lib/sellerDirectory"
+import type { ProfileSearchMatch } from "../packages/core/src/protocol/profile-search"
 import type { Product } from "../packages/core/src/types"
 
 const SELLER = "1".repeat(64)
-const BUYER = "2".repeat(64)
+const OTHER_SELLER = "2".repeat(64)
+const OTHER_ACCOUNT = "3".repeat(64)
 
-function match(overrides: Partial<ProfileSearchMatch> & { pubkey: string }) {
+function match(
+  overrides: Partial<ProfileSearchMatch> & { pubkey: string }
+): ProfileSearchMatch {
   return {
     profile: { pubkey: overrides.pubkey },
     isSeller: false,
@@ -34,43 +39,89 @@ describe("seller directory", () => {
     { id: "p1", pubkey: SELLER, type: "simple", createdAt: 10 },
     { id: "p2", pubkey: SELLER, type: "variable", createdAt: 30 },
     { id: "p3", pubkey: SELLER, type: "variation", createdAt: 40 },
-    { id: "p4", pubkey: BUYER, type: "simple", createdAt: 20 },
+    { id: "p4", pubkey: OTHER_SELLER, type: "simple", createdAt: 20 },
   ] as unknown as Product[]
 
   it("groups listings per seller without counting variations", () => {
     expect(groupDiscoveredSellers(products)).toEqual([
       { pubkey: SELLER, listingCount: 2, latestListingAt: 30 },
-      { pubkey: BUYER, listingCount: 1, latestListingAt: 20 },
+      { pubkey: OTHER_SELLER, listingCount: 1, latestListingAt: 20 },
     ])
   })
 
-  it("filters only resolved names and excludes discovered sellers from network results", () => {
+  it("matches every public name field and ranks before applying the catalog order", () => {
     const sellers = groupDiscoveredSellers(products)
     const getIdentity = (pubkey: string) =>
       pubkey === SELLER
         ? {
             pubkey,
-            displayName: "Alice Store",
+            displayName: "Wonderland Goods",
+            searchProfile: {
+              pubkey,
+              name: "alice",
+              displayName: "Wonderland Goods",
+              nip05: "shop@alice.example",
+            },
             status: "resolved" as const,
             relayHints: [],
           }
         : {
             pubkey,
-            displayName: "npub1...",
-            status: "pending" as const,
+            displayName: "Alice Outlet",
+            searchProfile: {
+              pubkey,
+              displayName: "Alice Outlet",
+            },
+            status: "resolved" as const,
             relayHints: [],
           }
     expect(
-      filterSellersByName(sellers, getIdentity, "ALICE").map((s) => s.pubkey)
+      filterSellersByName(sellers, getIdentity, "ALICE").map(
+        (seller) => seller.pubkey
+      )
+    ).toEqual([SELLER, OTHER_SELLER])
+    expect(
+      filterSellersByName(sellers, getIdentity, "shop").map(
+        (seller) => seller.pubkey
+      )
     ).toEqual([SELLER])
-    expect(filterSellersByName(sellers, getIdentity, "npub")).toEqual([])
     expect(filterSellersByName(sellers, getIdentity, "")).toHaveLength(2)
     expect(
       excludeDiscoveredSellers(
-        [match({ pubkey: SELLER }), match({ pubkey: "3".repeat(64) })],
+        [match({ pubkey: SELLER }), match({ pubkey: OTHER_ACCOUNT })],
         sellers
-      ).map((m) => m.pubkey)
-    ).toEqual(["3".repeat(64)])
+      ).map((entry) => entry.pubkey)
+    ).toEqual([OTHER_ACCOUNT])
+  })
+
+  it("keeps incomplete eligibility distinct from a completed author set", () => {
+    const ready = {
+      authorPubkeys: [SELLER],
+      source: "combined" as const,
+      followLookupStatus: "ready" as const,
+      discoveryStale: false,
+    }
+    expect(getSellerEligibilityState(ready)).toBe("ready")
+    expect(
+      getSellerEligibilityState({
+        ...ready,
+        followLookupStatus: "loading",
+      })
+    ).toBe("partial")
+    expect(
+      getSellerEligibilityState({
+        ...ready,
+        authorPubkeys: [],
+        followLookupStatus: "error",
+      })
+    ).toBe("unavailable")
+    expect(
+      getSellerEligibilityState({
+        ...ready,
+        authorPubkeys: undefined,
+        followLookupStatus: "loading",
+      })
+    ).toBe("loading")
   })
 
   it("distinguishes a cold unavailable read from a completed empty read", () => {
@@ -117,6 +168,14 @@ describe("seller directory", () => {
     expect(
       isSellerDirectoryUnavailable({ ...unavailable, hasSellers: true })
     ).toBe(false)
+    expect(
+      isSellerCatalogEvidenceIncomplete({
+        error: unavailable.error,
+        meta: unavailable.meta,
+        isRefreshPaused: unavailable.isRefreshPaused,
+        discoveryStale: unavailable.discoveryStale,
+      })
+    ).toBe(true)
   })
 
   it("offers retry for the unavailable directory without changing empty copy", async () => {
@@ -138,7 +197,7 @@ describe("other accounts capping", () => {
       describeAccountSearchSource(
         {
           query: "a",
-          matches: [match({ pubkey: BUYER, source: "local_cache" })],
+          matches: [match({ pubkey: OTHER_ACCOUNT, source: "local_cache" })],
           evidence: "not_queried",
           relaysPlanned: 0,
           relaysCompleted: 0,
@@ -171,14 +230,14 @@ describe("other accounts capping", () => {
   it("removes discovered sellers before applying the display cap", async () => {
     const sellers = Array.from(
       { length: ACCOUNT_SUGGESTION_LIMIT },
-      (_, i) => ({
-        pubkey: `a${i}`.padEnd(64, "0"),
+      (_, index) => ({
+        pubkey: `a${index}`.padEnd(64, "0"),
         listingCount: 1,
         latestListingAt: 1,
       })
     )
-    const others = Array.from({ length: 3 }, (_, i) => ({
-      pubkey: `b${i}`.padEnd(64, "0"),
+    const others = Array.from({ length: 3 }, (_, index) => ({
+      pubkey: `b${index}`.padEnd(64, "0"),
     }))
     const candidates = [
       ...sellers.map((seller) => match({ pubkey: seller.pubkey })),
@@ -229,15 +288,33 @@ describe("merchant matches on the product search", () => {
     )
   })
 
-  it("keeps the header box a product search and gives Merchants its own field", async () => {
+  it("keeps product submit behavior while restoring scoped account suggestions", async () => {
     const header = await readFile(
       "apps/market/src/components/MarketHeader.tsx",
       "utf8"
     )
     expect(header).not.toContain('"/merchants"')
     expect(header).toContain('const isBrowseRoute = pathname === "/products"')
-    expect(header).toContain('heading: "Merchants"')
-    expect(header).toContain('heading: "Accounts"')
+    expect(header).toContain("useMarketHeaderSuggestions({")
+    expect(header).toContain("catalogSource: routeCatalogSource")
+
+    const suggestionsHook = await readFile(
+      "apps/market/src/hooks/useMarketHeaderSuggestions.ts",
+      "utf8"
+    )
+    expect(suggestionsHook).toContain("useSellerDirectory({")
+    expect(suggestionsHook).toContain("sellerDirectory.accountSearch")
+
+    const suggestionModel = await readFile(
+      "apps/market/src/lib/marketHeaderSearch.ts",
+      "utf8"
+    )
+    expect(suggestionModel).toContain('heading: "Categories"')
+    expect(suggestionModel).toContain('heading: "Merchants"')
+    expect(suggestionModel).toContain('heading: "Accounts"')
+    expect(suggestionModel).toContain(
+      "Categories, merchants, and accounts could not be fully loaded."
+    )
 
     const merchants = await readFile(
       "apps/market/src/routes/merchants.tsx",
@@ -245,6 +322,10 @@ describe("merchant matches on the product search", () => {
     )
     expect(merchants).toContain('aria-label="Filter merchants"')
     expect(merchants).toContain("updateSearch({ q: trimmed || undefined })")
+    expect(merchants).toContain("describeScopedAccountSearchEvidence")
+    expect(merchants).toContain("Other eligible accounts")
+    expect(merchants).toContain("directory.eligibilityState")
+    expect(merchants).toContain("onClick={directory.retry}")
   })
 
   it("moves product categories into the same dropdown pattern as merchants", async () => {
