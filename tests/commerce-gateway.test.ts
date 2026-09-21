@@ -5705,6 +5705,63 @@ describe("commerce gateway", () => {
     expect(relayListFanoutCount).toBe(0)
   })
 
+  it("keeps app relay discovery for remote authors when the owner relay list is signed empty", async () => {
+    const remotePubkey = getPublicKey(MERCHANT_B_SECRET)
+    const remoteRelayUrl = "wss://relay.remote-author.dev"
+    const relayListLookupAuthors: string[][] = []
+    const relayListLookupAppRelays: string[][] = []
+    let profileReadRelayUrls: string[] = []
+
+    __setCommerceTestOverrides({
+      ownerRelayListEvidenceRepository:
+        await durableMerchantRelayListRepository([]),
+      getRelayLists: async (pubkeys, options) => {
+        relayListLookupAuthors.push([...pubkeys])
+        relayListLookupAppRelays.push([...(options?.appRelayUrls ?? [])])
+        if ((options?.appRelayUrls?.length ?? 0) === 0) return new Map()
+        return new Map([
+          [
+            remotePubkey,
+            {
+              pubkey: remotePubkey,
+              readRelayUrls: [],
+              writeRelayUrls: [remoteRelayUrl],
+              eventCreatedAt: 10,
+              lookupState: "network",
+              sourceRelayUrls: [options?.appRelayUrls?.[0] ?? ""],
+              cachedAt: FIXED_NOW,
+            },
+          ],
+        ])
+      },
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
+        profileReadRelayUrls = [...(options?.relayUrls ?? [])]
+        if (!profileReadRelayUrls.includes(remoteRelayUrl)) return []
+        return [
+          {
+            id: "remote-profile-through-discovered-relay",
+            pubkey: remotePubkey,
+            created_at: 10,
+            content: JSON.stringify({ name: "Remote merchant" }),
+            tags: [],
+          },
+        ] as never
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: [MERCHANT_A_PUBKEY, remotePubkey],
+      authenticatedPubkey: MERCHANT_A_PUBKEY,
+      skipCache: true,
+    })
+
+    expect(relayListLookupAuthors).toEqual([[remotePubkey]])
+    expect(relayListLookupAppRelays[0]?.length).toBeGreaterThan(0)
+    expect(profileReadRelayUrls).toContain(remoteRelayUrl)
+    expect(result.data[remotePubkey]?.name).toBe("Remote merchant")
+  })
+
   it("reads visible profiles through explicit planned relay fanout", async () => {
     let calledRequireNdk = false
     let seenFilterAuthors: string[] | undefined

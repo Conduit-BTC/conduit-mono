@@ -758,11 +758,6 @@ async function planCommerceReadRelayPlan(input: {
     )
   )
 
-  const shouldFetchRelayHints =
-    hintPubkeys.length > 0 &&
-    (input.relayHintMode === "force" ||
-      (input.relayHintMode !== "skip" &&
-        hintPubkeys.length <= BROAD_AUTHOR_HINT_LIMIT))
   const normalizedAuthenticatedPubkey = input.authenticatedPubkey
     ?.trim()
     .toLowerCase()
@@ -784,12 +779,28 @@ async function planCommerceReadRelayPlan(input: {
     signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
   })
   // A durable signed-empty owner projection is already authoritative. Do not
-  // activate ambient app discovery merely to refresh that owner's NIP-65
-  // hints before the account relay-settings scope is available. App relays
-  // remain independently available to the requested commerce/profile read.
-  const relayListLookupRelayUrls =
+  // activate ambient app discovery merely to refresh that owner's own NIP-65
+  // hints before the account relay-settings scope is available. This boundary
+  // is author-specific: unrelated authors still need bounded App discovery so
+  // their advertised write relays can participate in the requested read.
+  const suppressAmbientOwnerRelayListLookup =
+    !!normalizedAuthenticatedPubkey &&
+    normalizedAuthenticatedPubkey === normalizedPolicyAccount &&
     settingsSnapshot.signedRelayListAuthoritative &&
     configuredOwnerRelayListLookupUrls.length === 0
+  const relayListLookupPubkeys = suppressAmbientOwnerRelayListLookup
+    ? hintPubkeys.filter(
+        (pubkey) =>
+          pubkey.trim().toLowerCase() !== normalizedAuthenticatedPubkey
+      )
+    : hintPubkeys
+  const shouldFetchRelayHints =
+    relayListLookupPubkeys.length > 0 &&
+    (input.relayHintMode === "force" ||
+      (input.relayHintMode !== "skip" &&
+        relayListLookupPubkeys.length <= BROAD_AUTHOR_HINT_LIMIT))
+  const relayListLookupRelayUrls =
+    relayListLookupPubkeys.length === 0
       ? []
       : relayListLookupPlan.candidateRelayUrls
   const relayListLookupRelayUrlSet = new Set(relayListLookupRelayUrls)
@@ -806,7 +817,7 @@ async function planCommerceReadRelayPlan(input: {
     input.relayLists ??
     (shouldFetchRelayHints
       ? await (testOverrides.getRelayLists ?? getRelayLists)(
-          hintPubkeys,
+          relayListLookupPubkeys,
           hasCommerceFetchTestOverride()
             ? {
                 cacheOnly: true,
