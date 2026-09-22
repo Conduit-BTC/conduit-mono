@@ -29,6 +29,11 @@ const appCases = [
   },
 ] as const
 
+const hostileBoundaryCases = [
+  "react_error_boundary_proxy_prototype",
+  "react_error_boundary_proxy_message",
+] as const
+
 async function readClientErrorEvents(
   page: Page
 ): Promise<CapturedTelemetryEvent[]> {
@@ -130,6 +135,34 @@ test("merchant authenticated route errors retain account recovery actions @merch
 })
 
 for (const { app, url } of appCases) {
+  for (const hostileCase of hostileBoundaryCases) {
+    test(`${app} route boundary safely handles ${hostileCase} @${app}`, async ({
+      page,
+    }) => {
+      const pathname = app === "merchant" ? "/products" : "/about"
+      if (app === "merchant") {
+        await installTestSigner(page, TEST_MERCHANT_PUBKEY)
+      }
+      await page.goto(
+        `${url}${pathname}?__conduit_telemetry_test=${hostileCase}&secret=private-proxy-token`
+      )
+
+      await expect(
+        page.getByRole("heading", { name: "Something went wrong" })
+      ).toBeVisible()
+      await expect(
+        page.getByText("An unexpected error occurred.")
+      ).toBeVisible()
+      await expect
+        .poll(async () => (await readClientErrorEvents(page)).length)
+        .toBe(1)
+
+      const boundaryEvents = await readClientErrorEvents(page)
+      expect(boundaryEvents[0]?.properties.event_family).toBe("non_error")
+      expect(JSON.stringify(boundaryEvents).includes("private")).toBe(false)
+    })
+  }
+
   test(`${app} client-error telemetry covers runtime, boundary, and host gates @${app}`, async ({
     page,
   }) => {
