@@ -174,6 +174,11 @@ export {
   type ProductImageUrlCollectionFieldProps,
 } from "./ProductImageUrlCollectionField"
 export {
+  ClaveConnectButton,
+  claveConnectUrl,
+  type ClaveConnectButtonProps,
+} from "./ClaveConnectButton"
+export {
   EventMarketCard,
   type EventMarketCardProps,
   type EventMarketCardStatusTone,

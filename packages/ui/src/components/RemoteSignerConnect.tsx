@@ -2,14 +2,11 @@ import { Check, Copy } from "lucide-react"
 import { useEffect, useId, useRef, useState } from "react"
 import { Button } from "./Button"
 import { SignerAppChoices, type SignerApp } from "./SignerAppChoices"
-import { CLAVE_APP_STORE_URL, type SignerPlatform } from "./signer-platform"
-import {
-  BunkerSignerConnection,
-  ManualSignerConnection,
-} from "./ManualSignerConnection"
+import type { SignerPlatform } from "./signer-platform"
+import { ManualSignerConnection } from "./ManualSignerConnection"
 
 const primaryClassName = "h-12 w-full rounded-xl text-base font-semibold"
-const appNames = { amber: "Amber" } as const
+const appNames = { clave: "Clave", amber: "Amber" } as const
 
 export function RemoteSignerConnect({
   platform,
@@ -33,7 +30,7 @@ export function RemoteSignerConnect({
   onCancelConnect: () => void
 }) {
   const otherWaysId = useId()
-  const hasAppChoices = platform === "android"
+  const hasAppChoices = platform === "ios" || platform === "android"
   const hasOtherWaysToggle = platform === "ios" || platform === "android"
   const [showOtherWays, setShowOtherWays] = useState(!hasOtherWaysToggle)
   const [activeTab, setActiveTab] = useState("qr")
@@ -139,41 +136,9 @@ export function RemoteSignerConnect({
 
   return (
     <div className="space-y-3">
-      {platform === "ios" && (
-        <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-          <div className="space-y-1 text-center">
-            <p className="font-semibold text-[var(--text-primary)]">
-              Connect with Clave
-            </p>
-            <p className="text-sm leading-6 text-[var(--text-secondary)]">
-              Create a remote connection in Clave, then paste its bunker link.
-            </p>
-          </div>
-          <BunkerSignerConnection
-            bunkerUri={bunkerUri}
-            onBunkerChange={setBunkerUri}
-            onSubmitBunker={submitBunker}
-            connectDisabled={connectDisabled}
-            connectPending={connectPending && !nostrConnectUri}
-            error={error}
-            errorId={errorId}
-            buttonLabel="Connect with Clave"
-          />
-          <p className="text-center text-sm leading-6 text-[var(--text-secondary)]">
-            <a
-              className="inline-flex min-h-11 items-center rounded-sm text-primary-400 underline underline-offset-4 focus-visible:outline focus-visible:outline-2"
-              href={CLAVE_APP_STORE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Get Clave on the App Store
-            </a>
-          </p>
-        </div>
-      )}
-
       {hasAppChoices && (
         <SignerAppChoices
+          platform={platform}
           nostrConnectUri={nostrConnectUri}
           selectedApp={selectedApp}
           onSelectApp={setSelectedApp}
@@ -188,15 +153,13 @@ export function RemoteSignerConnect({
         >
           {selectedApp
             ? `Approve in ${appNames[selectedApp]}, then return to Conduit.`
-            : platform === "ios" && !nostrConnectUri
-              ? "Approve the connection in Clave, then return to Conduit."
-              : nostrConnectUri
-                ? hasAppChoices
-                  ? "Ready. Open your app to approve sign-in."
-                  : "Scan or copy the connection link, then approve in your app."
-                : activeTab === "bunker"
-                  ? "Approve the connection in your app, then return here."
-                  : "Preparing your connection…"}
+            : nostrConnectUri
+              ? hasAppChoices
+                ? "Ready. Open your app to approve sign-in."
+                : "Scan or copy the connection link, then approve in your app."
+              : activeTab === "bunker"
+                ? "Approve the connection in your app, then return here."
+                : "Preparing your connection…"}
         </div>
       )}
 
@@ -226,11 +189,7 @@ export function RemoteSignerConnect({
             setShowOtherWays(!showOtherWays)
           }}
         >
-          {showOtherWays
-            ? "Hide other ways"
-            : platform === "ios"
-              ? "Connect from another device"
-              : "Other ways to connect"}
+          {showOtherWays ? "Hide other ways" : "Other ways to connect"}
         </Button>
       )}
 
@@ -250,7 +209,6 @@ export function RemoteSignerConnect({
           connectPending={connectPending}
           error={error}
           errorId={errorId}
-          allowBunker={platform !== "ios"}
         />
       )}
       {copyError && (

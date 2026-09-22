@@ -5,11 +5,14 @@ choices before protocol terminology while preserving standard NIP-46 connections
 
 ## Platform choices
 
-- iPhone and iPad: Clave uses its signer-issued `bunker://` connection as the
-  primary same-device path. The user creates a remote connection in Clave and
-  pastes that link into Conduit. This follows Clave's compatibility guidance and
-  avoids depending on a browser listener that iOS may suspend during a
-  `nostrconnect://` handoff. QR and copy remain explicit cross-device fallbacks.
+- iPhone and iPad: "Connect with Clave" preserves the established one-tap
+  Universal Link setup. Conduit prepares a standard `nostrconnect://` request,
+  including its client metadata and requested permissions, then percent-encodes
+  that request once in `https://clave.casa/connect/?uri=...`. The Universal Link
+  gives Clave the app context needed for its connection approval UI. It does not
+  extend Safari's background WebSocket lifetime, so a signer-issued `bunker://`
+  connection remains the explicit same-device fallback when the direct handoff
+  misses its acknowledgement. QR and copy remain cross-device fallbacks.
 - Android: Amber uses a Chrome-compatible NIP-46 intent with the explicit package
   `com.greenart7c3.nostrsigner`. The request query is preserved byte-for-byte and
   the install link goes to F-Droid. No connection data is placed in an install
@@ -22,18 +25,18 @@ choices before protocol terminology while preserving standard NIP-46 connections
 
 "Other ways to connect" exposes QR, copy, and bunker entry. QR and copied links
 carry the same client-initiated request; a bunker link starts from the signer.
-There is no same-phone `nostrconnect:` launch button on iPhone. Intentional manual
-connections remain interoperable with any compatible signer; the protocol does
-not attest app brands.
+The named Clave action uses Clave's HTTPS Universal Link rather than the shared
+`nostrconnect:` scheme. Intentional manual connections remain interoperable with
+any compatible signer; the protocol does not attest app brands.
 
 ## Preparation and cancellation
 
-The Android panel prepares one request on its initial eligible mount. iOS prepares
-no client-initiated request until the user opens the cross-device fallback. All
-preparation is suppressed during restoration or another operation, for a remembered
-session, or while an error or existing request is present. The Amber link remains a
-native anchor so the user's tap can open the app without an asynchronous redirect.
-Preparing a URI does not prove Amber is installed or the relay is ready.
+The iOS and Android panels prepare one request on their initial eligible mount.
+Preparation is suppressed during restoration or another operation, for a remembered
+session, or while an error or existing request is present. The Clave Universal Link
+and Amber intent remain native anchors so the user's tap can open the app without
+an asynchronous redirect. Preparing a URI does not prove the signer is installed
+or the relay is ready.
 
 The panel owns its generated and pasted-bunker attempts. Closing it, canceling,
 or changing to bunker entry cancels owned work.
@@ -51,10 +54,13 @@ only. Existing identity checks, encrypted established-session storage,
 authentication locks, and revocation rules remain unchanged.
 
 NIP-46 approvals are ephemeral events, so recovery does not query relay history or
-assume a missed approval can be replayed. "Open Amber again" reuses only the same
-bounded in-memory pairing attempt. The client validates the matching secret and
-requests the user's public key before accepting the session. This does not cover a
-discarded tab, page reload, or expired connection.
+assume a missed approval can be replayed. "Open Clave again" or "Open Amber again"
+reuses only the same bounded in-memory pairing attempt. The client validates the
+matching secret and requests the user's public key before accepting the session.
+This does not cover a discarded tab, page reload, or expired connection. Once the
+session is established, pairing-path UI no longer controls transport: the shared
+NIP-46 session health, relay negotiation, foreground recovery, and explicit
+reconnect model apply.
 
 The UI never asks users to transfer private keys. Browser app-opening settings and
 missing apps have copy/manual/install recovery; there is no install detection.

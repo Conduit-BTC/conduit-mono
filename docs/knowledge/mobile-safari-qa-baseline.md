@@ -73,7 +73,7 @@ required real-device result.
 | P1-02 | P1       | Primary navigation, dialog close, signer choices, checkout controls, and retry actions work by touch without hover; adjacent targets do not cause accidental activation and primary targets provide a 44-by-44 CSS-pixel touch area.                                          |
 | P1-03 | P1       | Focusing, typing, selecting, and dismissing the software keyboard keeps the active field, its label/error, and the next action reachable; the page does not involuntarily zoom and entered checkout data is preserved.                                                        |
 | P1-04 | P1       | Internal links plus browser Back, Forward, and refresh return to a usable route without blank content, lost navigation, duplicate submission, or a trapped modal.                                                                                                             |
-| P1-05 | P1       | NIP-46 setup presents a usable connection path; Clave bunker connection and reconnect work on iPhone, Amber handoff and return work on Android, and cancel/reject returns to a recoverable signer screen without exposing connection material.                                |
+| P1-05 | P1       | NIP-46 setup presents a usable connection path; the one-tap Clave Universal Link, bunker fallback, and reconnect work on iPhone, Amber handoff and return work on Android, and cancel/reject returns to a recoverable signer screen without exposing connection material.     |
 | P1-06 | P1       | After signer connection, refresh and same-browser foreground resume restore or clearly reconnect the supported authentication session; disconnect removes access cleanly. Guest state follows its documented same-browser lifetime.                                           |
 | P1-07 | P1       | A clean browser session can complete guest checkout without a signer: fields validate, order submission is single-shot, navigation reaches a clear result, and refresh does not create a second order.                                                                        |
 | P1-08 | P1       | With the zap-out booth fixture loaded, initiating zap-out and invoking the existing confirm/handoff action takes no more than two Conduit taps; cancel, signer rejection, or return from the wallet leaves a clear retry path and no duplicate payment attempt.               |
@@ -90,22 +90,22 @@ Legend: `A` = automated assertion, `M` = required manual check, `S` = supporting
 spot check, `—` = not applicable. An `A` result identifies the Playwright project;
 it does not satisfy an `M` cell.
 
-| Requirement | Playwright WebKit / mobile Chromium                         | iPhone current Safari | iPhone previous Safari | Android current Chrome  | Desktop current browser                     |
-| ----------- | ----------------------------------------------------------- | --------------------- | ---------------------- | ----------------------- | ------------------------------------------- |
-| P1-01       | A: both                                                     | M                     | M                      | M                       | M                                           |
-| P1-02       | A: representative 44 px targets in both                     | M                     | M                      | M                       | S                                           |
-| P1-03       | A: both for layout, focus, and persistence only             | M                     | M                      | M                       | S                                           |
-| P1-04       | A: browser navigation and reload                            | M                     | M                      | M                       | M                                           |
-| P1-05       | A: affordances only                                         | M: Clave bunker path  | S: Clave bunker path   | M: Amber NIP-46 handoff | S: QR/connection path only                  |
-| P1-06       | A: storage and reload only                                  | M                     | M                      | M                       | M                                           |
-| P1-07       | A: checkout form and reload only; no submission             | M                     | M                      | M                       | M                                           |
-| P1-08       | —: manual fixture, tap count, and native handoff            | M                     | S                      | M                       | S                                           |
-| P1-09       | —: focused unit contracts are separate; full flow is manual | M: buyer leg          | S: buyer leg           | M: buyer leg            | M: Merchant receipt and signed stock update |
-| P1-10       | —: focused unit contract coverage is separate               | M                     | S                      | M                       | M                                           |
-| P1-11       | —: physical network/socket observation                      | M                     | M                      | S                       | S                                           |
-| P1-12       | A: reload interruption boundaries only; no OS suspension    | M                     | M                      | M                       | —                                           |
-| P2-01       | A: viewport/focus smoke only                                | M                     | M                      | M                       | S                                           |
-| P2-02       | A: invalid-form, cancel, and recovery affordances only      | M                     | S                      | M                       | M                                           |
+| Requirement | Playwright WebKit / mobile Chromium                         | iPhone current Safari      | iPhone previous Safari     | Android current Chrome  | Desktop current browser                     |
+| ----------- | ----------------------------------------------------------- | -------------------------- | -------------------------- | ----------------------- | ------------------------------------------- |
+| P1-01       | A: both                                                     | M                          | M                          | M                       | M                                           |
+| P1-02       | A: representative 44 px targets in both                     | M                          | M                          | M                       | S                                           |
+| P1-03       | A: both for layout, focus, and persistence only             | M                          | M                          | M                       | S                                           |
+| P1-04       | A: browser navigation and reload                            | M                          | M                          | M                       | M                                           |
+| P1-05       | A: affordances only                                         | M: Clave direct + fallback | S: Clave direct + fallback | M: Amber NIP-46 handoff | S: QR/connection path only                  |
+| P1-06       | A: storage and reload only                                  | M                          | M                          | M                       | M                                           |
+| P1-07       | A: checkout form and reload only; no submission             | M                          | M                          | M                       | M                                           |
+| P1-08       | —: manual fixture, tap count, and native handoff            | M                          | S                          | M                       | S                                           |
+| P1-09       | —: focused unit contracts are separate; full flow is manual | M: buyer leg               | S: buyer leg               | M: buyer leg            | M: Merchant receipt and signed stock update |
+| P1-10       | —: focused unit contract coverage is separate               | M                          | S                          | M                       | M                                           |
+| P1-11       | —: physical network/socket observation                      | M                          | M                          | S                       | S                                           |
+| P1-12       | A: reload interruption boundaries only; no OS suspension    | M                          | M                          | M                       | —                                           |
+| P2-01       | A: viewport/focus smoke only                                | M                          | M                          | M                       | S                                           |
+| P2-02       | A: invalid-form, cancel, and recovery affordances only      | M                          | S                          | M                       | M                                           |
 
 ## 110-minute full run
 
@@ -172,16 +172,18 @@ bunx playwright test e2e/mobile-safari-baseline.playwright.ts \
 - [ ] In portrait, open the Market product and cart paths. Tap primary navigation,
       use Back/Forward, rotate once, and confirm no clipped content or horizontal page
       scroll (P1-01, P1-02, P1-04, P2-01).
-- [ ] Open sign-in. Confirm Clave bunker entry is visible immediately. Create a
-      remote connection in Clave, paste the `bunker://` link, approve, and return.
-      Confirm the install link opens the App Store and no generic same-phone
-      `nostrconnect://` launch is offered. Cancel once, reopen, then approve and
-      return. Refresh and background/foreground once; confirm a usable restored
-      or reconnecting session (P1-05, P1-06, P2-02).
-- [ ] Exercise "Connect from another device": start the bounded pairing, scan its
-      QR from another device, and test the copied connection link. The iPhone path
-      must not claim this cross-device fallback is a reliable same-device Clave
-      handoff. NIP-46 behavior follows [NIP-46][nip-46].
+- [ ] Open sign-in. Confirm one tap on "Connect with Clave" opens Clave through
+      its Universal Link with Conduit's app metadata and requested permissions.
+      Approve and return. Cancel once, reopen, then approve and return. Confirm
+      the install link opens the App Store. Refresh and background/foreground
+      once; confirm a usable restored or reconnecting session (P1-05, P1-06,
+      P2-02).
+- [ ] Exercise "Other ways to connect": create a Clave remote connection, paste
+      its `bunker://` link, and approve; then start a client pairing, scan its QR
+      from another device, and test the copied connection link. Treat bunker as
+      the same-device fallback when the direct handoff misses its acknowledgement,
+      not as a replacement for the one-tap setup. NIP-46 behavior follows
+      [NIP-46][nip-46].
 - [ ] Background Safari for 30–60 seconds with an established Clave session, then
       return and confirm Conduit re-verifies the exact account before enabling
       signing. Interrupt the relay connection and verify reconnect does not

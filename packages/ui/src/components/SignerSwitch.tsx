@@ -300,7 +300,7 @@ function SignerDisconnectedContent({
   const isMobile = mobile ?? platform !== "desktop"
   const reconnectOnly = rememberedMethod === "nip46"
   const pairing = useSignerPairing({
-    autoPrepare: platform === "android",
+    autoPrepare: platform === "ios" || platform === "android",
     connectPending,
     connectDisabled,
     rememberedMethod,
