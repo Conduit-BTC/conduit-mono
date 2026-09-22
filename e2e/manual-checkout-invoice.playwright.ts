@@ -321,6 +321,9 @@ for (const scenario of scenarios) {
 
     await expect(page).toHaveURL(/\/orders\?order=/, { timeout: 30_000 })
     await expect(
+      page.getByRole("heading", { name: "Orders", exact: true })
+    ).toHaveCount(0)
+    await expect(
       page.getByRole("heading", { name: "Pay with an external wallet" })
     ).toBeVisible()
     await expect(
@@ -371,6 +374,9 @@ for (const scenario of scenarios) {
       await page.reload()
       await expect(
         page.getByRole("heading", { name: "Orders", exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("heading", { name: "Complete payment", exact: true })
       ).toBeVisible()
       await expectRetainedCart()
     }
@@ -462,6 +468,9 @@ for (const scenario of scenarios) {
       await page.reload()
       await expect(
         page.getByRole("heading", { name: "Orders", exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("heading", { name: "Complete payment", exact: true })
       ).toBeVisible()
       await expectStoppedInvoice()
       await page

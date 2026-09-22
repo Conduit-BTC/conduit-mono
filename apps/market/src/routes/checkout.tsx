@@ -3119,7 +3119,7 @@ function CheckoutPage() {
       paymentInFlightRef.current = false
       void navigate({
         to: "/orders",
-        search: { order: orderId },
+        search: { order: orderId, focus: "payment" },
         replace: true,
       })
     } catch (e) {
@@ -3150,7 +3150,7 @@ function CheckoutPage() {
         })
         void navigate({
           to: "/orders",
-          search: { order: publishedOrderId },
+          search: { order: publishedOrderId, focus: "payment" },
           replace: true,
         })
         return

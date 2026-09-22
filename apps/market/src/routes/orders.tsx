@@ -78,10 +78,7 @@ import {
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CopyButton } from "../components/CopyButton"
 import { ExternalWalletPanel } from "../components/ExternalWalletPanel"
-import {
-  EventActorName,
-  EventActorProvenance,
-} from "../components/EventActorIdentity"
+import { EventActorName } from "../components/EventActorIdentity"
 import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME,
@@ -118,7 +115,6 @@ import { verifyPickupCartFreshness } from "../lib/event-market-adapter"
 import {
   assertCartPickupHandlerReady,
   getOrganizerPickupClaimCode,
-  getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
 } from "../lib/pickup-handoff"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
@@ -173,7 +169,12 @@ import {
   getCheckoutPaymentTargetValue,
 } from "../lib/checkout-payment-target"
 
-const ORDERS_SEARCH_DEFAULT: { order?: string } = {}
+type OrdersSearch = {
+  order?: string
+  focus?: "payment"
+}
+
+const ORDERS_SEARCH_DEFAULT: OrdersSearch = {}
 
 function getRetryZapMode(lifecycle: OrderLifecycle): CheckoutZapMode {
   if (
@@ -191,11 +192,12 @@ function getRetryZapMode(lifecycle: OrderLifecycle): CheckoutZapMode {
 }
 
 export const Route = createFileRoute("/orders")({
-  validateSearch: (search: Record<string, unknown>): { order?: string } => {
+  validateSearch: (search: Record<string, unknown>): OrdersSearch => {
     const order = search.order
-    return typeof order === "string" && order.length > 0
-      ? { order }
-      : ORDERS_SEARCH_DEFAULT
+    if (typeof order !== "string" || order.length === 0) {
+      return ORDERS_SEARCH_DEFAULT
+    }
+    return search.focus === "payment" ? { order, focus: "payment" } : { order }
   },
   component: OrdersPage,
 })
@@ -653,11 +655,13 @@ function OrderDetail({
   buyerPubkey,
   guestIdentity,
   authenticatedPubkey,
+  paymentFocused = false,
 }: {
   row: OrderRow
   buyerPubkey: string
   guestIdentity?: GuestOrderSigningIdentity | null
   authenticatedPubkey?: string | null
+  paymentFocused?: boolean
 }) {
   const { vm, headerStatus } = row
   const currentViewRef = useRef(vm)
@@ -690,10 +694,9 @@ function OrderDetail({
     () =>
       Array.from(
         new Set(
-          vm.pickupFulfillments.flatMap((pickup) => [
-            getPickupHandoffSummary(pickup).handlerPubkey,
-            normalizeEventActorPubkey(pickup.organizerPubkey),
-          ])
+          vm.pickupFulfillments.map(
+            (pickup) => getPickupHandoffSummary(pickup).handlerPubkey
+          )
         )
       ),
     [vm.pickupFulfillments]
@@ -1227,56 +1230,64 @@ function OrderDetail({
   return (
     <div className="space-y-4">
       {/* Hero */}
-      <>
-        <section className="hidden rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 xl:block">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="flex min-w-0 items-center gap-3">
-              <MerchantAvatar
-                pubkey={row.merchantPubkey}
-                name={merchantName}
-                picture={profile?.picture}
-              />
-              <div className="min-w-0">
-                <Link
-                  to="/store/$pubkey"
-                  params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
-                  className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
-                >
-                  {merchantName}
-                </Link>
-                <div className="mt-0.5 text-sm text-[var(--text-secondary)]">
-                  {vm.items[0]?.displayTitle ?? "Order"}
-                </div>
-                {typeof vm.totalSats === "number" && (
-                  <div className="text-sm font-medium text-secondary-300">
-                    {formatOrderTotal(vm, formatSats)}
+      {!paymentFocused && (
+        <>
+          <section className="hidden rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 xl:block">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <MerchantAvatar
+                  pubkey={row.merchantPubkey}
+                  name={merchantName}
+                  picture={profile?.picture}
+                />
+                <div className="min-w-0">
+                  <Link
+                    to="/store/$pubkey"
+                    params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
+                    className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+                  >
+                    {merchantName}
+                  </Link>
+                  <div className="mt-0.5 text-sm text-[var(--text-secondary)]">
+                    {vm.items[0]?.displayTitle ?? "Order"}
                   </div>
-                )}
-                <div className="mt-2">
-                  <OrderHeaderPill status={headerStatus} />
+                  {typeof vm.totalSats === "number" && (
+                    <div className="text-sm font-medium text-secondary-300">
+                      {formatOrderTotal(vm, formatSats)}
+                    </div>
+                  )}
+                  <div className="mt-2">
+                    <OrderHeaderPill status={headerStatus} />
+                  </div>
                 </div>
               </div>
+              <div className="flex flex-wrap gap-2 lg:justify-end">
+                {messageMerchant}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2 lg:justify-end">
-              {messageMerchant}
-            </div>
-          </div>
-        </section>
+          </section>
 
-        <section className="xl:hidden">
-          <OrderItemsSection
-            vm={vm}
-            productsById={productsById}
-            formatPrice={(price, options) =>
-              shopperPricing.formatPrice(price, {
-                ...options,
-                settledSatsAreAuthoritative: true,
-              })
-            }
-            formatSats={formatSats}
-          />
-        </section>
-      </>
+          <section className="xl:hidden">
+            <OrderItemsSection
+              vm={vm}
+              productsById={productsById}
+              formatPrice={(price, options) =>
+                shopperPricing.formatPrice(price, {
+                  ...options,
+                  settledSatsAreAuthoritative: true,
+                })
+              }
+              formatSats={formatSats}
+            />
+          </section>
+        </>
+      )}
+
+      {paymentFocused && !showExternalWallet && !headerStatus.actionNeeded && (
+        <div>
+          <OrderHeaderPill status={headerStatus} />
+        </div>
+      )}
 
       {(manualInvoiceAccess === "report_only" ||
         manualInvoiceAccess === "receipt_only") && (
@@ -1310,43 +1321,6 @@ function OrderDetail({
 
       {showExternalWallet && (
         <div className="space-y-3">
-          <StatusNotice
-            variant="warning"
-            title={
-              autoDetectPublicReceipt
-                ? "Pay with any Lightning wallet"
-                : vm.merchantInvoiceAction?.status === "blocked"
-                  ? "Invoice needs review"
-                  : vm.merchantInvoiceAction
-                    ? "Merchant invoice ready"
-                    : vm.publicZapFallback
-                      ? "Checkout continued privately"
-                      : "Action needed"
-            }
-            detail={
-              autoDetectPublicReceipt
-                ? "Receipt detection is automatic"
-                : vm.merchantInvoiceAction?.status === "blocked"
-                  ? "Payment unavailable"
-                  : vm.merchantInvoiceAction
-                    ? "Pay from Orders"
-                    : vm.publicZapFallback
-                      ? "Optional public note unavailable"
-                      : "Pay with an external wallet"
-            }
-          >
-            <p className="text-pretty text-sm text-[var(--text-secondary)]">
-              {autoDetectPublicReceipt
-                ? "Pay the invoice below. Conduit is watching for the matching public receipt and will notify the merchant automatically."
-                : vm.merchantInvoiceAction?.status === "blocked"
-                  ? "Orders checked the latest merchant invoice but could not make it payable."
-                  : vm.merchantInvoiceAction
-                    ? "Orders checked the merchant invoice against this saved order. Payment details appear automatically below."
-                    : vm.publicZapFallback
-                      ? "Your order is still ready. The optional public checkout note was unavailable, so this invoice is private. Pay it once, then report the payment so the merchant can verify it."
-                      : "No automatic wallet was available. Pay the invoice below, then report the payment to the merchant for verification."}
-            </p>
-          </StatusNotice>
           <ExternalWalletPanel
             vm={vm}
             pricing={shopperPricing}
@@ -1638,288 +1612,236 @@ function OrderDetail({
         }
       />
 
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-        <OrderTimeline vm={vm} formatSats={formatSats} />
-
+      {paymentFocused ? (
         <div className="space-y-4">
-          <div className="hidden xl:block">
-            <OrderItemsSection
-              vm={vm}
-              productsById={productsById}
-              formatPrice={(price, options) =>
-                shopperPricing.formatPrice(price, {
-                  ...options,
-                  settledSatsAreAuthoritative: true,
-                })
-              }
-              formatSats={formatSats}
-            />
-          </div>
+          {!showExternalWallet && (
+            <OrderTimeline vm={vm} formatSats={formatSats} />
+          )}
+          <OrderItemsSection
+            vm={vm}
+            productsById={productsById}
+            formatPrice={(price, options) =>
+              shopperPricing.formatPrice(price, {
+                ...options,
+                settledSatsAreAuthoritative: true,
+              })
+            }
+            formatSats={formatSats}
+          />
+          <Button asChild variant="outline" className="h-10 w-full text-sm">
+            <Link to="/orders" search={{ order: vm.orderId }}>
+              View full order details
+            </Link>
+          </Button>
+        </div>
+      ) : (
+        <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <OrderTimeline vm={vm} formatSats={formatSats} />
 
-          {/* Shipping address */}
-          {vm.pickupFulfillments.map((pickup) => {
-            const handoff = getPickupHandoffSummary(pickup)
-            const pickupClaimCode = getOrganizerPickupClaimCode(
-              row.orderId,
-              pickup
-            )
-            const collectionRef = encodeEventMarketNaddr(
-              pickup.collection.coordinate
-            )
-            const pickupCost =
-              typeof pickup.costSats === "number"
-                ? formatSats(pickup.costSats)
-                : pickup.sourceCost
-                  ? `${pickup.sourceCost.amount.toLocaleString()} ${pickup.sourceCost.currency}`
-                  : "Not available"
-            return (
-              <section
-                key={pickup.option.coordinate}
-                className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
-              >
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-400">
-                    <MapPin className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                      {handoff.label}
-                    </h3>
-                    <div className="mt-2 text-sm font-medium text-[var(--text-primary)]">
-                      {pickup.option.title}
+          <div className="space-y-4">
+            <div className="hidden xl:block">
+              <OrderItemsSection
+                vm={vm}
+                productsById={productsById}
+                formatPrice={(price, options) =>
+                  shopperPricing.formatPrice(price, {
+                    ...options,
+                    settledSatsAreAuthoritative: true,
+                  })
+                }
+                formatSats={formatSats}
+              />
+            </div>
+
+            {/* Shipping address */}
+            {vm.pickupFulfillments.map((pickup) => {
+              const handoff = getPickupHandoffSummary(pickup)
+              const pickupClaimCode = getOrganizerPickupClaimCode(
+                row.orderId,
+                pickup
+              )
+              const collectionRef = encodeEventMarketNaddr(
+                pickup.collection.coordinate
+              )
+              return (
+                <section
+                  key={pickup.option.coordinate}
+                  className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-400">
+                      <MapPin className="h-4 w-4" />
                     </div>
-                    <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
-                      {pickup.option.location ??
-                        pickup.option.geohash ??
-                        "Public pickup location was not published."}
-                    </div>
-                    <dl className="mt-4 grid grid-cols-1 gap-3 border-t border-[var(--border)] pt-4 text-xs sm:grid-cols-2 xl:grid-cols-1">
-                      <div>
-                        <dt className="text-[var(--text-muted)]">
-                          Resolved pickup cost
-                        </dt>
-                        <dd className="mt-1 font-medium text-[var(--text-primary)]">
-                          {pickupCost}
-                        </dd>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                        {handoff.label}
+                      </h3>
+                      <div className="mt-2 text-sm font-medium text-[var(--text-primary)]">
+                        {pickup.option.title}
                       </div>
-                      <div>
-                        <dt className="text-[var(--text-muted)]">
-                          Pickup handler
-                        </dt>
-                        <dd className="mt-1 min-w-0">
-                          <EventActorName
-                            identity={eventActorIdentity(handoff.handlerPubkey)}
-                            className="block truncate"
-                          />
-                          <EventActorProvenance
-                            pubkey={handoff.handlerPubkey}
-                            copyLabel="Copy pickup handler npub"
-                            className="mt-1"
-                          />
-                        </dd>
+                      <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+                        {pickup.option.location ??
+                          pickup.option.geohash ??
+                          "Public pickup location was not published."}
+                      </div>
+                      <div className="mt-2 text-xs text-[var(--text-muted)]">
+                        Handled by{" "}
+                        <EventActorName
+                          identity={eventActorIdentity(handoff.handlerPubkey)}
+                        />
                       </div>
                       {pickupClaimCode && (
-                        <div>
-                          <dt className="text-[var(--text-muted)]">
+                        <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
+                          <span className="text-[var(--text-secondary)]">
                             Pickup code
-                          </dt>
-                          <dd className="mt-1 flex items-center gap-2 font-mono font-semibold tracking-wide text-[var(--text-primary)]">
-                            <span>{pickupClaimCode}</span>
+                          </span>
+                          <span className="flex items-center gap-2 font-mono font-semibold tracking-wide text-[var(--text-primary)]">
+                            {pickupClaimCode}
                             <CopyButton
                               value={pickupClaimCode}
                               npub={false}
                               label="Copy organizer pickup code"
                             />
-                          </dd>
+                          </span>
                         </div>
                       )}
-                      <div>
-                        <dt className="text-[var(--text-muted)]">
-                          Event organizer
-                        </dt>
-                        <dd className="mt-1 min-w-0">
-                          <EventActorName
-                            identity={eventActorIdentity(
-                              pickup.organizerPubkey
-                            )}
-                            className="block truncate"
-                          />
-                          <EventActorProvenance
-                            pubkey={pickup.organizerPubkey}
-                            copyLabel="Copy event organizer npub"
-                            className="mt-1"
-                          />
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="text-[var(--text-muted)]">
-                          Calendar revision
-                        </dt>
-                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
-                          <span>
-                            {formatPubkey(pickup.calendar.eventId, 8)}
-                          </span>
-                          <CopyButton
-                            value={pickup.calendar.eventId}
-                            npub={false}
-                            label="Copy calendar event id"
-                          />
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="text-[var(--text-muted)]">
-                          Pickup revision
-                        </dt>
-                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
-                          <span>{formatPubkey(pickup.option.eventId, 8)}</span>
-                          <CopyButton
-                            value={pickup.option.eventId}
-                            npub={false}
-                            label="Copy pickup event id"
-                          />
-                        </dd>
-                      </div>
-                    </dl>
-                    <p className="mt-4 border-t border-[var(--border)] pt-4 text-xs leading-5 text-[var(--text-secondary)]">
-                      {getPickupHandoffPrivacyCopy(handoff)}
-                    </p>
-                    {pickupClaimCode && (
-                      <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">
-                        Show this code to the organizer only after the merchant
-                        says your pickup is ready.
-                      </p>
-                    )}
-                    <Button asChild variant="outline" className="mt-4 h-9">
-                      <Link
-                        to="/events/$collectionRef"
-                        params={{ collectionRef }}
-                      >
-                        View event catalog
-                      </Link>
-                    </Button>
+                      <Button asChild variant="outline" className="mt-4 h-9">
+                        <Link
+                          to="/events/$collectionRef"
+                          params={{ collectionRef }}
+                        >
+                          View event catalog
+                        </Link>
+                      </Button>
+                    </div>
                   </div>
+                </section>
+              )
+            })}
+
+            {/* Shipping address */}
+            {vm.shippingAddress && (
+              <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                    Shipping address
+                  </h3>
+                  {!guestIdentity && (
+                    <Button
+                      variant="ghost"
+                      className="h-8 px-3 text-xs"
+                      onClick={() => setMessagesOpen(true)}
+                    >
+                      Send correction
+                    </Button>
+                  )}
+                </div>
+                <div className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+                  <div className="text-[var(--text-primary)]">
+                    {vm.shippingAddress.name}
+                  </div>
+                  <div>{vm.shippingAddress.street}</div>
+                  <div>
+                    {vm.shippingAddress.city}
+                    {vm.shippingAddress.state
+                      ? `, ${vm.shippingAddress.state}`
+                      : ""}{" "}
+                    {vm.shippingAddress.postalCode}
+                  </div>
+                  <div>{vm.shippingAddress.country}</div>
                 </div>
               </section>
-            )
-          })}
+            )}
 
-          {/* Shipping address */}
-          {vm.shippingAddress && (
-            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                  Shipping address
-                </h3>
-                {!guestIdentity && (
-                  <Button
-                    variant="ghost"
-                    className="h-8 px-3 text-xs"
-                    onClick={() => setMessagesOpen(true)}
+            {/* Order details (technical, collapsed) */}
+            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)]">
+              <button
+                type="button"
+                onClick={() => setDetailsOpen((open) => !open)}
+                aria-expanded={detailsOpen}
+                aria-controls="market-order-details-panel"
+                className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left"
+              >
+                <span className="text-sm font-semibold text-[var(--text-primary)]">
+                  Order details
+                </span>
+                <ChevronRight
+                  className={`h-4 w-4 text-[var(--text-muted)] transition-transform ${detailsOpen ? "rotate-90" : ""}`}
+                />
+              </button>
+              {detailsOpen && (
+                <div
+                  id="market-order-details-panel"
+                  className="space-y-2 border-t border-[var(--border)] px-5 py-4 text-sm"
+                >
+                  <DetailRow label="Order ID">
+                    <span className="font-mono text-xs">
+                      {formatPubkey(vm.orderId, 8)}
+                    </span>
+                    <CopyButton value={vm.orderId} label="Copy order id" />
+                  </DetailRow>
+                  <DetailRow label="Merchant npub">
+                    <span className="font-mono text-xs">
+                      {formatNpub(row.merchantPubkey, 8)}
+                    </span>
+                    <CopyButton
+                      value={row.merchantPubkey}
+                      label="Copy pubkey"
+                    />
+                  </DetailRow>
+                  {typeof vm.totalSats === "number" && (
+                    <DetailRow
+                      label={zeroCostPickupOrder ? "Total" : "Payment"}
+                    >
+                      <span>{formatOrderTotal(vm, formatSats)}</span>
+                    </DetailRow>
+                  )}
+                  <DetailRow
+                    label={zeroCostPickupOrder ? "Payment" : "Paid with"}
                   >
-                    Send correction
-                  </Button>
-                )}
-              </div>
-              <div className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-                <div className="text-[var(--text-primary)]">
-                  {vm.shippingAddress.name}
+                    <span>{getOrderPaymentMethodLabel(vm)}</span>
+                  </DetailRow>
+                  <DetailRow label="Ordered">
+                    <span>{new Date(vm.createdAt).toLocaleString()}</span>
+                  </DetailRow>
                 </div>
-                <div>{vm.shippingAddress.street}</div>
-                <div>
-                  {vm.shippingAddress.city}
-                  {vm.shippingAddress.state
-                    ? `, ${vm.shippingAddress.state}`
-                    : ""}{" "}
-                  {vm.shippingAddress.postalCode}
-                </div>
-                <div>{vm.shippingAddress.country}</div>
+              )}
+            </section>
+
+            <section className="flex items-center gap-3 px-1 xl:hidden">
+              <MerchantAvatar
+                pubkey={row.merchantPubkey}
+                name={merchantName}
+                picture={profile?.picture}
+              />
+              <div className="min-w-0">
+                <Link
+                  to="/store/$pubkey"
+                  params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
+                  className="truncate text-base font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+                >
+                  {merchantName}
+                </Link>
               </div>
             </section>
-          )}
 
-          {/* Order details (technical, collapsed) */}
-          <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)]">
-            <button
-              type="button"
-              onClick={() => setDetailsOpen((open) => !open)}
-              aria-expanded={detailsOpen}
-              aria-controls="market-order-details-panel"
-              className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left"
-            >
-              <span className="text-sm font-semibold text-[var(--text-primary)]">
-                Order details
-              </span>
-              <ChevronRight
-                className={`h-4 w-4 text-[var(--text-muted)] transition-transform ${detailsOpen ? "rotate-90" : ""}`}
-              />
-            </button>
-            {detailsOpen && (
-              <div
-                id="market-order-details-panel"
-                className="space-y-2 border-t border-[var(--border)] px-5 py-4 text-sm"
-              >
-                <DetailRow label="Order ID">
-                  <span className="font-mono text-xs">
-                    {formatPubkey(vm.orderId, 8)}
-                  </span>
-                  <CopyButton value={vm.orderId} label="Copy order id" />
-                </DetailRow>
-                <DetailRow label="Merchant npub">
-                  <span className="font-mono text-xs">
-                    {formatNpub(row.merchantPubkey, 8)}
-                  </span>
-                  <CopyButton value={row.merchantPubkey} label="Copy pubkey" />
-                </DetailRow>
-                {typeof vm.totalSats === "number" && (
-                  <DetailRow label={zeroCostPickupOrder ? "Total" : "Payment"}>
-                    <span>{formatOrderTotal(vm, formatSats)}</span>
-                  </DetailRow>
-                )}
-                <DetailRow
-                  label={zeroCostPickupOrder ? "Payment" : "Paid with"}
-                >
-                  <span>{getOrderPaymentMethodLabel(vm)}</span>
-                </DetailRow>
-                <DetailRow label="Ordered">
-                  <span>{new Date(vm.createdAt).toLocaleString()}</span>
-                </DetailRow>
-              </div>
-            )}
-          </section>
-
-          <section className="flex items-center gap-3 px-1 xl:hidden">
-            <MerchantAvatar
-              pubkey={row.merchantPubkey}
-              name={merchantName}
-              picture={profile?.picture}
-            />
-            <div className="min-w-0">
-              <Link
-                to="/store/$pubkey"
-                params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
-                className="truncate text-base font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
-              >
-                {merchantName}
-              </Link>
-            </div>
-          </section>
-
-          {/* Need help */}
-          <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-              Need help?
-            </h3>
-            <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              {guestIdentity
-                ? vm.requiresPickup
-                  ? "The merchant can use the email or phone submitted at checkout only if guest pickup recovery is needed."
-                  : "The merchant will use the phone and email contact details submitted at checkout for questions and fulfillment updates."
-                : "Message the merchant for any questions or issues."}
-            </p>
-            {messageMerchant && <div className="mt-3">{messageMerchant}</div>}
-          </section>
+            {/* Need help */}
+            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                Need help?
+              </h3>
+              <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                {guestIdentity
+                  ? vm.requiresPickup
+                    ? "The merchant can use the email or phone submitted at checkout only if guest pickup recovery is needed."
+                    : "The merchant will use the phone and email contact details submitted at checkout for questions and fulfillment updates."
+                  : "Message the merchant for any questions or issues."}
+              </p>
+              {messageMerchant && <div className="mt-3">{messageMerchant}</div>}
+            </section>
+          </div>
         </div>
-      </div>
+      )}
 
       {!guestIdentity && (
         <OrderMessagesWidget
@@ -2000,7 +1922,8 @@ function OrdersPage() {
   const shopperPricing = useShopperPricing()
   const formatSats = (sats: number) =>
     shopperPricing.formatSatsAmount(sats).primary
-  const { order: selectedFromUrl } = Route.useSearch()
+  const { order: selectedFromUrl, focus } = Route.useSearch()
+  const paymentFocused = focus === "payment" && !!selectedFromUrl
   const [searchValue, setSearchValue] = useState("")
   const [tab, setTab] = useState<PhaseTab>("all")
   const [changeOrderOpen, setChangeOrderOpen] = useState(false)
@@ -2326,25 +2249,40 @@ function OrdersPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Orders
+      {paymentFocused && activeBuyerPubkey && hasOrders && (
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
+            Complete payment
           </h1>
-          <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
-            {signerConnected
-              ? "Track your purchases, payment status, and shipping progress."
-              : "Review this guest order and its locally saved checkout status. The merchant can use your submitted private recovery contact."}
-          </p>
+          <RefreshChip
+            refreshing={ordersRefreshState.refreshing}
+            stale={ordersRefreshState.stale}
+            onRefresh={refetchAll}
+            doneDurationMs={900}
+          />
         </div>
-        <RefreshChip
-          refreshing={ordersRefreshState.refreshing}
-          stale={ordersRefreshState.stale}
-          onRefresh={refetchAll}
-          doneDurationMs={900}
-          disabled={!activeBuyerPubkey}
-        />
-      </div>
+      )}
+      {!paymentFocused && (
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+              Orders
+            </h1>
+            <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
+              {signerConnected
+                ? "Track your purchases, payment status, and shipping progress."
+                : "Review this guest order and its locally saved checkout status. The merchant can use your submitted private recovery contact."}
+            </p>
+          </div>
+          <RefreshChip
+            refreshing={ordersRefreshState.refreshing}
+            stale={ordersRefreshState.stale}
+            onRefresh={refetchAll}
+            doneDurationMs={900}
+            disabled={!activeBuyerPubkey}
+          />
+        </div>
+      )}
 
       {!activeBuyerPubkey && (
         <EmptyState
@@ -2361,15 +2299,17 @@ function OrdersPage() {
         />
       )}
 
-      {signerConnected && protectedOrdersReadState !== "pending" && (
-        <ProtectedInboxNotice
-          state={protectedOrdersReadState}
-          subject="orders"
-          decryptFailureCount={messagesMeta?.decryptFailures?.length ?? 0}
-          onRetry={refetchAll}
-          retrying={messagesQuery.isRefetching}
-        />
-      )}
+      {!paymentFocused &&
+        signerConnected &&
+        protectedOrdersReadState !== "pending" && (
+          <ProtectedInboxNotice
+            state={protectedOrdersReadState}
+            subject="orders"
+            decryptFailureCount={messagesMeta?.decryptFailures?.length ?? 0}
+            onRetry={refetchAll}
+            retrying={messagesQuery.isRefetching}
+          />
+        )}
 
       {activeBuyerPubkey &&
         !lifecyclesQuery.isPending &&
@@ -2393,59 +2333,20 @@ function OrdersPage() {
         )}
 
       {activeBuyerPubkey && hasOrders && (
-        <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
+        <div
+          className={
+            paymentFocused
+              ? "mx-auto max-w-3xl"
+              : "grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]"
+          }
+        >
           {/* Desktop left rail */}
-          <aside className="hidden xl:block">
-            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
-              <div className="text-sm font-medium text-[var(--text-primary)]">
-                Your orders
-              </div>
-              <SearchBox value={searchValue} onChange={setSearchValue} />
-              <MobileOrderFilterPills tab={tab} onChange={setTab} />
-              <OrderList
-                rows={filteredOrders}
-                selectedOrderId={selectedOrderId}
-                merchantName={merchantName}
-                merchantPicture={(pk) =>
-                  merchantProfilesQuery.data?.[pk]?.picture
-                }
-                formatSats={formatSats}
-                onSelect={selectOrder}
-              />
-            </section>
-          </aside>
-
-          {/* Mobile: filter pills + browse sheet + horizontal orders */}
-          <div className="min-w-0 space-y-4 overflow-visible xl:hidden">
-            <Sheet open={changeOrderOpen} onOpenChange={setChangeOrderOpen}>
-              <div className="flex flex-wrap items-center gap-2 overflow-visible">
-                <div className="min-w-full flex-1 overflow-visible sm:min-w-[14rem]">
-                  <MobileOrderFilterPills tab={tab} onChange={setTab} />
+          {!paymentFocused && (
+            <aside className="hidden xl:block">
+              <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+                <div className="text-sm font-medium text-[var(--text-primary)]">
+                  Your orders
                 </div>
-                <SheetTrigger asChild>
-                  <button
-                    type="button"
-                    className="inline-flex h-10 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]"
-                  >
-                    Browse
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                </SheetTrigger>
-              </div>
-              <MobileOrdersScroller
-                rows={filteredOrders}
-                selectedOrderId={selectedOrderId}
-                merchantName={merchantName}
-                formatSats={formatSats}
-                onSelect={selectOrder}
-              />
-              <SheetContent
-                side="bottom"
-                className="h-[100dvh] overflow-y-auto"
-              >
-                <SheetHeader>
-                  <SheetTitle>Your orders</SheetTitle>
-                </SheetHeader>
                 <SearchBox value={searchValue} onChange={setSearchValue} />
                 <MobileOrderFilterPills tab={tab} onChange={setTab} />
                 <OrderList
@@ -2458,9 +2359,58 @@ function OrdersPage() {
                   formatSats={formatSats}
                   onSelect={selectOrder}
                 />
-              </SheetContent>
-            </Sheet>
-          </div>
+              </section>
+            </aside>
+          )}
+
+          {/* Mobile: filter pills + browse sheet + horizontal orders */}
+          {!paymentFocused && (
+            <div className="min-w-0 space-y-4 overflow-visible xl:hidden">
+              <Sheet open={changeOrderOpen} onOpenChange={setChangeOrderOpen}>
+                <div className="flex flex-wrap items-center gap-2 overflow-visible">
+                  <div className="min-w-full flex-1 overflow-visible sm:min-w-[14rem]">
+                    <MobileOrderFilterPills tab={tab} onChange={setTab} />
+                  </div>
+                  <SheetTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex h-10 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]"
+                    >
+                      Browse
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </SheetTrigger>
+                </div>
+                <MobileOrdersScroller
+                  rows={filteredOrders}
+                  selectedOrderId={selectedOrderId}
+                  merchantName={merchantName}
+                  formatSats={formatSats}
+                  onSelect={selectOrder}
+                />
+                <SheetContent
+                  side="bottom"
+                  className="h-[100dvh] overflow-y-auto"
+                >
+                  <SheetHeader>
+                    <SheetTitle>Your orders</SheetTitle>
+                  </SheetHeader>
+                  <SearchBox value={searchValue} onChange={setSearchValue} />
+                  <MobileOrderFilterPills tab={tab} onChange={setTab} />
+                  <OrderList
+                    rows={filteredOrders}
+                    selectedOrderId={selectedOrderId}
+                    merchantName={merchantName}
+                    merchantPicture={(pk) =>
+                      merchantProfilesQuery.data?.[pk]?.picture
+                    }
+                    formatSats={formatSats}
+                    onSelect={selectOrder}
+                  />
+                </SheetContent>
+              </Sheet>
+            </div>
+          )}
 
           {/* Detail */}
           <section className="min-w-0">
@@ -2471,6 +2421,7 @@ function OrdersPage() {
                 buyerPubkey={activeBuyerPubkey}
                 guestIdentity={guestIdentity}
                 authenticatedPubkey={signerConnected ? activeBuyerPubkey : null}
+                paymentFocused={paymentFocused}
               />
             ) : (
               <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">
