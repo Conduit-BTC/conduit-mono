@@ -582,3 +582,157 @@ test("merchant must explicitly repair or remove malformed allocation evidence be
     dialog.getByRole("button", { name: "Save changes", exact: true })
   ).toBeEnabled()
 })
+
+test("merchant rejects a stale unrelated family edit before signing refreshed allocation terms @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const merchantSecretKey = generateSecretKey()
+  const merchantPubkey = getPublicKey(merchantSecretKey)
+  const supplierPubkey = getPublicKey(generateSecretKey())
+  const suffix = Date.now().toString(36)
+  const parentDTag = `allocation-refresh-${suffix}`
+  const childDTag = `${parentDTag}-small`
+  const initialTitle = `Allocation refresh ${suffix}`
+  const refreshedTitle = `${initialTitle} current`
+  const parentCoordinate = `${PRODUCT_KIND}:${merchantPubkey}:${parentDTag}`
+  const initialCreatedAt = Math.floor(Date.now() / 1_000) - 60
+  const familyEvent = (input: {
+    dTag: string
+    title: string
+    child: boolean
+    createdAt: number
+    allocated: boolean
+  }) =>
+    finalizeEvent(
+      {
+        kind: PRODUCT_KIND,
+        created_at: input.createdAt,
+        tags: [
+          ["d", input.dTag],
+          ["title", input.title],
+          ["summary", "A signed family for allocation refresh QA."],
+          ["price", "10", "SATS"],
+          ["type", input.child ? "variation" : "variable", "digital"],
+          ["image", "https://media.conduit.market/allocation-refresh.png"],
+          ["t", "allocation"],
+          ["t", "family"],
+          ["t", "regression"],
+          ...(input.child
+            ? [
+                ["a", parentCoordinate],
+                ["spec", "size", "Small"],
+              ]
+            : []),
+          ...(input.allocated
+            ? [
+                ["conduit_supplier_allocation", "1"],
+                ["zap", merchantPubkey, "wss://relay.conduit.market", "3"],
+                ["zap", supplierPubkey, "wss://nos.lol", "1"],
+              ]
+            : []),
+        ],
+        content: "A signed family for allocation refresh QA.",
+      },
+      merchantSecretKey
+    )
+
+  await seedTestRelayIdentity(merchantSecretKey, { inboxDeclaration: "omit" })
+  await publishTestRelayEvents([
+    familyEvent({
+      dTag: parentDTag,
+      title: initialTitle,
+      child: false,
+      createdAt: initialCreatedAt,
+      allocated: false,
+    }),
+    familyEvent({
+      dTag: childDTag,
+      title: `${initialTitle} Small`,
+      child: true,
+      createdAt: initialCreatedAt + 1,
+      allocated: false,
+    }),
+  ])
+  await installTestSigner(page, merchantPubkey, {
+    secretKey: merchantSecretKey,
+  })
+  await page.goto(`${merchantUrl}/products`)
+
+  await expect(page.getByText(initialTitle, { exact: true })).toBeVisible({
+    timeout: 30_000,
+  })
+  await page.getByRole("button", { name: "Edit", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Edit product family" })
+  await expect(dialog).toBeVisible()
+  await dialog
+    .getByLabel("Title", { exact: true })
+    .fill(`${initialTitle} edited`)
+  await page.evaluate((productKind) => {
+    const browserWindow = window as unknown as {
+      nostr: {
+        signEvent: (
+          event: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>
+      }
+      __staleFamilyProductSignCount: number
+    }
+    const originalSignEvent = browserWindow.nostr.signEvent.bind(
+      browserWindow.nostr
+    )
+    browserWindow.__staleFamilyProductSignCount = 0
+    browserWindow.nostr.signEvent = async (event) => {
+      if (event.kind === productKind) {
+        browserWindow.__staleFamilyProductSignCount += 1
+      }
+      return originalSignEvent(event)
+    }
+  }, PRODUCT_KIND)
+
+  await publishTestRelayEvents([
+    familyEvent({
+      dTag: parentDTag,
+      title: refreshedTitle,
+      child: false,
+      createdAt: initialCreatedAt + 30,
+      allocated: true,
+    }),
+    familyEvent({
+      dTag: childDTag,
+      title: `${refreshedTitle} Small`,
+      child: true,
+      createdAt: initialCreatedAt + 31,
+      allocated: true,
+    }),
+  ])
+  // The root card updating behind the still-open dialog proves Merchant has
+  // consumed a newer complete family read before the stale form is submitted.
+  await expect(page.getByText(refreshedTitle, { exact: true })).toBeVisible({
+    timeout: 35_000,
+  })
+  await dialog.getByRole("button", { name: "Save changes" }).click()
+  await expect(
+    dialog.getByText(
+      "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+    )
+  ).toBeVisible()
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __staleFamilyProductSignCount: number })
+          .__staleFamilyProductSignCount
+    )
+  ).toBe(0)
+  const productEvents = await readTestRelayEvents({
+    kinds: [PRODUCT_KIND],
+    authors: [merchantPubkey],
+  })
+  // Replaceable kind-30402 coordinates expose only the latest signed root and
+  // child. The rejected stale title must never appear as another revision.
+  expect(productEvents).toHaveLength(2)
+  expect(
+    productEvents.map(
+      (event) => event.tags.find(([name]) => name === "title")?.[1]
+    )
+  ).toEqual(expect.arrayContaining([refreshedTitle, `${refreshedTitle} Small`]))
+})

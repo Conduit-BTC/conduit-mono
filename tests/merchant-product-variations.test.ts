@@ -1494,6 +1494,111 @@ describe("merchant product variation planning", () => {
         evidenceComplete: false,
       })
     ).toEqual({ requiresCurrentSnapshot: false })
+    expect(
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline: absentFamily,
+        current: structuredClone(absentFamily),
+        nextAllocation: undefined,
+        evidenceComplete: true,
+      })
+    ).toEqual({ requiresCurrentSnapshot: false })
+
+    const unrelatedEdit = buildProductFamilyChangePlan({
+      parentDTag: "ordinary-product",
+      baseProduct: {
+        ...absentFamily.root.product,
+        title: "Updated ordinary product",
+      },
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      existing: absentFamily,
+      existingFamilyEvidenceComplete: false,
+      now: NOW + 1_000,
+    })
+    expect(unrelatedEdit.publish.map(({ dTag }) => dTag)).toEqual([
+      "ordinary-product",
+    ])
+  })
+
+  it("blocks a stale unrelated save after the current root or child gains allocation terms", () => {
+    const explicitAbsent = {
+      state: "absent" as const,
+      recipients: [],
+      issues: [],
+    }
+    const baseline = toFamily(
+      buildProductFamilyChangePlan({
+        parentDTag: "conduit-tee",
+        baseProduct: baseProduct({ supplierAllocation: explicitAbsent }),
+        variations: sizeVariationForm("S, M"),
+        currency: "USD",
+        now: NOW,
+      })
+    )
+    const newlySignedAllocation = {
+      state: "valid" as const,
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 3,
+          role: "merchant" as const,
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier" as const,
+        },
+      ],
+      issues: [],
+    }
+
+    for (const changedMember of ["root", "child"] as const) {
+      const current = structuredClone(baseline)
+      const record =
+        changedMember === "root" ? current.root : current.variations[0]!
+      record.eventId = `${changedMember}-new-revision`
+      record.product.supplierAllocation = newlySignedAllocation
+
+      expect(() =>
+        validateProductFamilySupplierAllocationSaveSnapshot({
+          baseline,
+          current,
+          nextAllocation: undefined,
+          evidenceComplete: false,
+        })
+      ).toThrow(
+        "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+      )
+      expect(() =>
+        validateProductFamilySupplierAllocationSaveSnapshot({
+          baseline,
+          current,
+          nextAllocation: undefined,
+          evidenceComplete: true,
+        })
+      ).toThrow(
+        "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+      )
+    }
+
+    const sameRevisionWithChangedTerms = structuredClone(baseline)
+    sameRevisionWithChangedTerms.variations[0]!.product.supplierAllocation =
+      newlySignedAllocation
+    expect(
+      productFamilySnapshotsMatch(baseline, sameRevisionWithChangedTerms)
+    ).toBe(true)
+    expect(() =>
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline,
+        current: sameRevisionWithChangedTerms,
+        nextAllocation: undefined,
+        evidenceComplete: true,
+      })
+    ).toThrow(
+      "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+    )
   })
 
   it("rejects a stale unrelated save when refresh restores cached allocation terms", () => {

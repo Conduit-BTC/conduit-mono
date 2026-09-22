@@ -216,13 +216,23 @@ export function validateProductFamilySupplierAllocationSaveSnapshot<
 }): { requiresCurrentSnapshot: boolean } {
   const baselineHasUnknownAllocation =
     productFamilyHasUnknownSupplierAllocationEvidence(input.baseline)
+  const baselineTermsChanged = productFamilySupplierAllocationChangeRequested(
+    input.baseline,
+    input.nextAllocation
+  )
+  // An unrelated save can still be stale: the dialog may have opened before
+  // a newer root or child allocation reached the current Merchant read.
+  const currentTermsChanged = input.current
+    ? productFamilySupplierAllocationChangeRequested(
+        input.current,
+        input.nextAllocation
+      )
+    : false
   const requiresCurrentSnapshot =
     baselineHasUnknownAllocation ||
     (!!input.nextAllocation && input.nextAllocation.state !== "absent") ||
-    productFamilySupplierAllocationChangeRequested(
-      input.baseline,
-      input.nextAllocation
-    )
+    baselineTermsChanged ||
+    currentTermsChanged
   if (!requiresCurrentSnapshot) return { requiresCurrentSnapshot: false }
 
   if (!input.evidenceComplete) {
@@ -233,6 +243,7 @@ export function validateProductFamilySupplierAllocationSaveSnapshot<
   if (
     !input.current ||
     !productFamilySnapshotsMatch(input.baseline, input.current) ||
+    (!baselineTermsChanged && currentTermsChanged) ||
     (baselineHasUnknownAllocation &&
       (productFamilyHasUnknownSupplierAllocationEvidence(input.current) ||
         productFamilySupplierAllocationChangeRequested(
