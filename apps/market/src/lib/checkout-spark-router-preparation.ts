@@ -1,9 +1,10 @@
 import {
+  buildCheckoutSparkRouterObligations,
   createCheckoutSparkReconciliation,
   freezeCheckoutSparkPlan,
   restoreCheckoutSparkReconciliation,
+  type BuildCheckoutSparkRouterObligationsInput,
   type CheckoutSparkNetwork,
-  type CheckoutSparkObligationPlanInput,
   type CheckoutSparkPlan,
   type CheckoutSparkReconciliation,
 } from "@conduit/core"
@@ -52,7 +53,10 @@ export interface PrepareCheckoutSparkRouterFundingInput {
   grossFundingSats: number
   fundingExpirySecs: number
   identity: CheckoutSparkRecoverySigningIdentity
-  obligations: readonly CheckoutSparkObligationPlanInput[]
+  routerObligationInputs: Omit<
+    BuildCheckoutSparkRouterObligationsInput,
+    "network" | "nowSeconds"
+  >
   storage?: RouterStorage | null
 }
 
@@ -284,19 +288,6 @@ export function deleteCheckoutSparkRouterPreparation(
   )
 }
 
-function requiredFundingSats(
-  obligations: readonly CheckoutSparkObligationPlanInput[]
-): number {
-  const required = obligations.reduce(
-    (sum, obligation) => sum + obligation.amountSats + obligation.maxFeeSats,
-    0
-  )
-  if (!Number.isSafeInteger(required) || required <= 0) {
-    throw new Error("Checkout Spark required funding is invalid.")
-  }
-  return required
-}
-
 function defaultCreateWalletMaterial(
   network: CheckoutSparkNetwork
 ): CheckoutSparkRouterWalletMaterial {
@@ -349,7 +340,12 @@ export async function prepareCheckoutSparkRouterFunding(
   const publishRecoveryHandoff =
     dependencies.publishRecoveryHandoff ?? publishCheckoutSparkRecoveryHandoff
 
-  const requiredNetSats = requiredFundingSats(input.obligations)
+  const routerObligations = buildCheckoutSparkRouterObligations({
+    ...input.routerObligationInputs,
+    network: input.network,
+    nowSeconds: Math.floor(now() / 1_000),
+  })
+  const requiredNetSats = routerObligations.requiredNetSats
   const wallet = createWalletMaterial(input.network)
   if (wallet.network !== input.network) {
     throw new Error("Checkout Spark wallet network does not match the router.")
@@ -393,7 +389,7 @@ export async function prepareCheckoutSparkRouterFunding(
         createdAt: funding.createdAt,
         expiresAt: funding.expiresAt,
       },
-      obligations: input.obligations,
+      obligations: routerObligations.obligations,
     })
     const reconciliation = createCheckoutSparkReconciliation(plan)
     preparation = saveCheckoutSparkRouterPreparation(

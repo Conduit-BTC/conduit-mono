@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
+import {
+  bolt11PaymentHashField,
+  bolt11PlainDescriptionField,
+} from "./support/bolt11-fixture"
+import {
+  bolt11PaymentSecretField,
+  makeSignedBolt11Fixture,
+} from "./support/signed-bolt11-fixture"
 
 import {
   getCheckoutSparkRouterPreparation,
@@ -12,6 +20,18 @@ const MERCHANT = getPublicKey(generateSecretKey())
 const BUYER = NDKPrivateKeySigner.generate()
 const MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+function invoice(amountSats: number, paymentHashByte: number): string {
+  return makeSignedBolt11Fixture({
+    hrp: `lnbc${amountSats * 10}n`,
+    createdAt: CREATED_AT / 1_000,
+    fields: [
+      bolt11PaymentHashField(new Uint8Array(32).fill(paymentHashByte)),
+      bolt11PaymentSecretField(),
+      bolt11PlainDescriptionField(),
+    ],
+  })
+}
 
 class MemoryStorage {
   readonly values = new Map<string, string>()
@@ -45,22 +65,22 @@ function preparationInput() {
       pubkey: BUYER.pubkey,
       signer: BUYER,
     },
-    obligations: [
-      {
-        kind: "merchant" as const,
-        recipientId: MERCHANT,
-        paymentRequest: "lnbc-merchant-obligation",
-        amountSats: 1_000,
-        maxFeeSats: 100,
-      },
-      {
-        kind: "conduit" as const,
-        recipientId: "conduithodlings@strike.me",
-        paymentRequest: "lnbc-conduit-obligation",
-        amountSats: 111,
+    routerObligationInputs: {
+      commerceTotalSats: 1_000,
+      commerce: [
+        {
+          kind: "merchant",
+          recipientId: MERCHANT,
+          paymentRequest: invoice(1_000, 1),
+          amountSats: 1_000,
+          maxFeeSats: 100,
+        },
+      ],
+      conduit: {
+        paymentRequest: invoice(111, 2),
         maxFeeSats: 24,
       },
-    ],
+    },
   }
 }
 
@@ -90,6 +110,30 @@ function fundingReceive() {
 }
 
 describe("checkout Spark router preparation", () => {
+  it("rejects invalid economics before creating a wallet", async () => {
+    let walletCreateCalls = 0
+
+    await expect(
+      prepareCheckoutSparkRouterFunding(
+        {
+          ...preparationInput(),
+          routerObligationInputs: {
+            ...preparationInput().routerObligationInputs,
+            commerceTotalSats: 999,
+          },
+        },
+        {
+          createWalletMaterial: () => {
+            walletCreateCalls += 1
+            return walletMaterial()
+          },
+        }
+      )
+    ).rejects.toThrow("commerce obligations do not match")
+
+    expect(walletCreateCalls).toBe(0)
+  })
+
   it("persists the frozen plan and exact recovery handoff before exposing funding", async () => {
     const storage = new MemoryStorage()
     const calls: string[] = []
