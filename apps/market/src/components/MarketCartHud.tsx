@@ -35,11 +35,9 @@ import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapab
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
   getCartCommerceFingerprint,
-  getCartCostSummary,
   getCartItemKey,
   getCartItemStockEvidenceForAvailability,
   getCartItemStockForAvailability,
-  getCartPurchaseReference,
   groupCartPurchases,
   isCartProductAvailabilityBlocking,
 } from "../lib/cart-model"
@@ -133,14 +131,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const merchantLud16 = getProfilePaymentAddress(
     selectedMerchant ? profiles.profileContexts[selectedMerchant] : undefined
   )
-  const activeSummary = activeGroup
-    ? getCartCostSummary(activeGroup.items, shopperPricing.quote)
-    : null
-  const activeTotal = activeSummary
-    ? activeSummary.itemPricesAvailable
-      ? shopperPricing.formatSatsAmount(activeSummary.totalSats)
-      : null
-    : null
   const activeAvailabilityMessage = activeReadiness?.blockingMessage ?? null
   const checkoutDisabled = !!activeAvailabilityMessage
   // Cart presence is sufficient shopper intent for the LNURL metadata
@@ -156,7 +146,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   })
   const checkoutCapability = capabilityView.capability
   const pricingIntent = capabilityView.pricingIntent
-  const checkoutFallbackMessage = capabilityView.fallbackMessage
   // Collapsing hides and inerts the panel. If focus is inside, move it to
   // the disclosure toggle first so keyboard and screen-reader users are not
   // dropped at the document root.
@@ -390,23 +379,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
             >
               {groups.map((group) => {
                 const profile = profiles.data[group.merchantPubkey]
-                const groupSummary = getCartCostSummary(
-                  group.items,
-                  shopperPricing.quote
-                )
-                const groupTotal = shopperPricing.formatSatsAmount(
-                  groupSummary.totalSats
-                )
                 const selected = group.id === activeGroup.id
-                const purchaseReference = getCartPurchaseReference(group.id)
-                const fulfillmentLabel =
-                  group.kind === "pickup"
-                    ? group.items[0]?.fulfillment?.type === "pickup"
-                      ? group.items[0].fulfillment.option.title
-                      : "Event pickup"
-                    : group.items.some((item) => item.format !== "digital")
-                      ? "Shipping"
-                      : "Digital"
                 return (
                   <button
                     key={group.id}
@@ -440,13 +413,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                           {group.totalItems}
                         </StatusPill>
                       </span>
-                      <span className="block max-w-44 truncate text-xs font-normal text-[var(--text-muted)]">
-                        {fulfillmentLabel} · {group.items[0]?.title ?? "Cart"} ·
-                        Ref {purchaseReference}
-                        {selected && expanded
-                          ? ` · ${groupSummary.itemPricesAvailable ? groupTotal.primary : "Total unavailable"}`
-                          : ""}
-                      </span>
                     </span>
                   </button>
                 )
@@ -476,11 +442,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     {activeGroup.totalItems}
                   </StatusPill>
                 </span>
-                {expanded && activeSummary ? (
-                  <span className="block truncate text-xs font-normal text-[var(--text-muted)]">
-                    {activeTotal?.primary ?? "Total unavailable"}
-                  </span>
-                ) : null}
               </span>
             </Link>
           )}
@@ -552,7 +513,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                       merchant: pubkeyToNpub(selectedMerchant),
                       purchase: activeGroup.id,
                     }}
-                    title={checkoutFallbackMessage}
                   >
                     Checkout
                   </Link>
@@ -710,18 +670,20 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
-                <span
-                  role="status"
-                  className="max-w-md text-xs text-[var(--text-muted)]"
-                >
-                  {activeAvailabilityMessage ??
-                    (activeReadiness?.isChecking
-                      ? "Checking stock…"
-                      : activeReadiness?.isRefreshing
-                        ? "Refreshing availability…"
-                        : checkoutFallbackMessage)}
-                </span>
-                <div className="flex shrink-0 gap-2">
+                {activeAvailabilityMessage ||
+                activeReadiness?.isChecking ||
+                activeReadiness?.isRefreshing ? (
+                  <span
+                    role="status"
+                    className="max-w-md text-xs text-[var(--text-muted)]"
+                  >
+                    {activeAvailabilityMessage ??
+                      (activeReadiness?.isChecking
+                        ? "Checking stock…"
+                        : "Refreshing availability…")}
+                  </span>
+                ) : null}
+                <div className="ml-auto flex shrink-0 gap-2">
                   <Button asChild variant="outline" size="sm">
                     <Link
                       to="/cart"
@@ -730,7 +692,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         purchase: activeGroup.id,
                       }}
                     >
-                      View cart
+                      View full cart
                     </Link>
                   </Button>
                   {checkoutDisabled ? (
@@ -766,7 +728,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                           merchant: pubkeyToNpub(selectedMerchant),
                           purchase: activeGroup.id,
                         }}
-                        title={checkoutFallbackMessage}
                       >
                         Continue to checkout
                       </Link>

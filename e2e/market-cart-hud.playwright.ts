@@ -506,7 +506,7 @@ test("market cart presence starts one shared merchant-scoped LNURL preflight wit
   if ((await toggle.getAttribute("aria-expanded")) === "false") {
     await toggle.click()
   }
-  await hud.getByRole("link", { name: "View cart" }).click()
+  await hud.getByRole("link", { name: "View full cart" }).click()
   await expect(page).toHaveURL(/\/cart/)
   await expect(page.getByText("Lamp Merchant").first()).toBeVisible()
   await page.waitForTimeout(1_500)
@@ -537,7 +537,7 @@ test("market cart HUD isolates a failed merchant-scoped LNURL endpoint and stays
   ).toBeVisible()
 })
 
-test("market cart HUD does not present a partial total @market", async ({
+test("market cart HUD keeps totals out of the merchant selector @market", async ({
   page,
 }) => {
   await page.addInitScript(
@@ -574,7 +574,7 @@ test("market cart HUD does not present a partial total @market", async ({
   )
   await page.goto(`${marketUrl}/products`)
   const hud = page.getByRole("region", { name: "Cart inventory" })
-  await expect(hud).toContainText("Total unavailable")
+  await expect(hud).not.toContainText("Total unavailable")
   await expect(hud).not.toContainText("1,200 sats")
   await expect
     .poll(() => readCanonicalCartProductIds(page))

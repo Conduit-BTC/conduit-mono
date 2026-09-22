@@ -333,18 +333,18 @@ function MerchantIdentity({
         <Link
           to="/store/$pubkey"
           params={{ pubkey: pubkeyToNpub(merchantPubkey) }}
-          className="block truncate text-lg font-semibold leading-tight text-[var(--text-primary)] transition-colors hover:text-secondary-300 sm:text-xl"
+          className="flex min-w-0 items-center gap-1.5 text-lg font-semibold leading-tight text-[var(--text-primary)] transition-colors hover:text-secondary-300 sm:text-xl"
         >
-          {merchantName}
+          <span className="truncate">{merchantName}</span>
+          {nip05 ? (
+            <Nip05TrustIndicator
+              pubkey={merchantPubkey}
+              nip05={nip05}
+              display="icon"
+            />
+          ) : null}
         </Link>
-        {nip05 ? (
-          <div
-            className="mt-1 truncate text-xs font-medium text-[var(--text-muted)]"
-            title={nip05}
-          >
-            <Nip05TrustIndicator pubkey={merchantPubkey} nip05={nip05} />
-          </div>
-        ) : (
+        {!nip05 ? (
           <button
             type="button"
             className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md text-left font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
@@ -363,7 +363,7 @@ function MerchantIdentity({
               <Copy className="h-3.5 w-3.5 shrink-0" />
             )}
           </button>
-        )}
+        ) : null}
       </div>
     </div>
   )

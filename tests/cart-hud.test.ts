@@ -43,7 +43,9 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain("min-h-11 w-fit min-w-0 max-w-60 items-center")
     expect(source.match(/<StatusPill/g)?.length).toBe(2)
     expect(source).toContain('variant="neutral"')
-    expect(source).toContain("selected && expanded")
+    expect(source).not.toContain("getCartPurchaseReference")
+    expect(source).not.toContain("checkoutFallbackMessage")
+    expect(source).toContain("View full cart")
   })
 
   it("uses one truthful activation and disclosure interaction model", () => {
@@ -226,7 +228,7 @@ describe("Market cart HUD policy", () => {
     expect(hud).toContain("<HoldToReleaseButton")
     expect(hud).toContain("Zap out")
     expect(hud).toContain('intent: "zap"')
-    expect(hud).toContain("checkoutFallbackMessage")
+    expect(hud).not.toContain("checkoutFallbackMessage")
     // Capability comes from the shared per-merchant derivation over prepared
     // readiness and the LNURL preflight, not from HUD-local wallet probing.
     expect(hud).toContain("useMerchantCheckoutCapability({")

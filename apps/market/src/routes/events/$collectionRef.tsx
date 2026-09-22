@@ -1,7 +1,6 @@
 import {
   AlertCircle,
   Archive,
-  Check,
   ChevronDown,
   ExternalLink,
   RefreshCw,
@@ -102,7 +101,6 @@ function EventCatalogProductCard({
   imageLoading,
   btcUsdRate,
   pricePreference,
-  onCartNotice,
   onMerchantActivate,
 }: {
   entry: EventCatalog["products"][number]
@@ -115,7 +113,6 @@ function EventCatalogProductCard({
   btcUsdRate: ReturnType<typeof useShopperPricing>["quote"]
   pricePreference: ReturnType<typeof useShopperPricing>["preference"]
   onMerchantActivate: () => void
-  onCartNotice: (message: string) => void
 }) {
   const cart = useCart()
   const { upgradePendingEventPickupItem } = cart
@@ -240,13 +237,7 @@ function EventCatalogProductCard({
   const add = async (selection: Product) => {
     const candidate = exactCandidate ?? pendingCandidate
     if (selection.id !== selectedProduct.id || !canAdd || !candidate) return
-    const added = await cart.addItem(candidate, 1)
-    if (!added) return
-    onCartNotice(
-      pickupFulfillment
-        ? `${product.title} was added for ${handoff?.label.toLowerCase() ?? "event pickup"}.`
-        : `${product.title} was added. Pickup terms are being verified in the background.`
-    )
+    await cart.addItem(candidate, 1)
   }
   const increment = async (selection: Product) => {
     const candidate = exactCandidate ?? pendingCandidate
@@ -521,7 +512,6 @@ function EventCatalogPage() {
   }
   const shopperPricing = useShopperPricing()
   const session = useConduitSession()
-  const [cartNotice, setCartNotice] = useState<string | null>(null)
   const query = useEventMarket(collectionRef, shopperPricing.quote, {
     selectedMerchantPubkey: selectedMerchantPubkey || undefined,
   })
@@ -720,6 +710,7 @@ function EventCatalogPage() {
               <Nip05TrustIndicator
                 pubkey={organizerPubkey}
                 nip05={organizerNip05}
+                display="icon"
               />
             ) : null}
           </div>
@@ -737,7 +728,7 @@ function EventCatalogPage() {
                   catalog.canonicalNaddr
                 )}
               >
-                Sell at this event
+                Sell here
                 <ExternalLink aria-hidden="true" className="size-3.5" />
               </a>
             </Button>
@@ -805,7 +796,6 @@ function EventCatalogPage() {
             imageLoading={index < 4 ? "eager" : "lazy"}
             btcUsdRate={shopperPricing.quote}
             pricePreference={shopperPricing.preference}
-            onCartNotice={setCartNotice}
             onMerchantActivate={onMerchantActivate}
           />
         )}
@@ -815,18 +805,6 @@ function EventCatalogPage() {
             Some accepted products are unresolved. Previously verified product
             details remain visible. Products that cannot be confirmed are
             unavailable for checkout.
-          </div>
-        ) : null}
-        {cartNotice ? (
-          <div
-            role="status"
-            className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]"
-          >
-            <Check
-              className="mt-0.5 size-4 shrink-0 text-[var(--success)]"
-              aria-hidden="true"
-            />
-            {cartNotice}
           </div>
         ) : null}
         {isChecking && catalog.products.length === 0 ? (

@@ -1301,7 +1301,7 @@ test("Market sends sellers to the canonical Merchant event route @market @mercha
 
   await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
   const sellAtEventLinks = page.getByRole("link", {
-    name: "Sell at this event",
+    name: "Sell here",
     exact: true,
   })
   const sellAtEvent = sellAtEventLinks.first()
@@ -4825,10 +4825,7 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
     .toBe(handlerNpub)
   await productCard.getByRole("button", { name: "Add", exact: true }).click()
   await expect(
-    page.getByText(
-      "Synthetic Owner Product was added for pickup from merchant booth.",
-      { exact: true }
-    )
+    page.getByRole("region", { name: "Cart inventory" })
   ).toBeVisible()
   await page.setViewportSize({ width: 390, height: 844 })
   await gotoAs(page, marketUrl, "/cart", "buyer")
@@ -5081,10 +5078,7 @@ test("a stale event tab does not announce an add rejected at the stock limit @ma
 
   await currentAdd.click()
   await expect(
-    page.getByText(
-      "Synthetic last-stock product was added for pickup from event organizer.",
-      { exact: true }
-    )
+    page.getByRole("region", { name: "Cart inventory" })
   ).toBeVisible()
   await expect
     .poll(() =>
@@ -8373,10 +8367,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   ).toBeVisible()
   await productCard.getByRole("button", { name: "Add", exact: true }).click()
   await expect(
-    page.getByText(
-      `${MERCHANT_PRODUCT_TITLE} was added for pickup from merchant booth.`,
-      { exact: true }
-    )
+    page.getByRole("region", { name: "Cart inventory" })
   ).toBeVisible()
 
   const checkoutReadStart = relay.requests.length
@@ -8391,7 +8382,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
       cartHud.getByRole("link", { name: MERCHANT_PRODUCT_TITLE, exact: true })
     ).toBeVisible()
     await expect(
-      cartHud.getByRole("link", { name: "View cart", exact: true })
+      cartHud.getByRole("link", { name: "View full cart", exact: true })
     ).toBeVisible()
   }
   await page.setViewportSize({ width: 1280, height: 900 })
@@ -8544,10 +8535,7 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   await expect(productCard.getByText("0 sats", { exact: true })).toBeVisible()
   await productCard.getByRole("button", { name: "Add", exact: true }).click()
   await expect(
-    page.getByText(
-      `${ORGANIZER_PRODUCT_TITLE} was added for pickup from event organizer.`,
-      { exact: true }
-    )
+    page.getByRole("region", { name: "Cart inventory" })
   ).toBeVisible()
 
   await gotoAs(page, marketUrl, "/checkout", "buyer", {
